@@ -1,4 +1,4 @@
-import { X } from 'lucide-react'
+import { Forward, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { SnoozeMenu } from './actions'
@@ -20,7 +20,7 @@ type Props = {
 export function BulkBar({ count, approvals, pending, onDismiss, onSnooze, onResolve, onClear }: Props) {
   const leaves = useQuerySupport(['attention_dismiss_many'])
   return (
-    <div role="toolbar" aria-label="Selection" className="flex shrink-0 flex-col gap-1 border-t border-border-subtle bg-background px-3 pt-2 pb-[calc(0.5rem+var(--safe-bottom))]">
+    <div role="toolbar" aria-label="Selection" className="flex shrink-0 flex-col gap-1 border-t border-border-subtle bg-layer-1 px-3 pt-2 pb-[calc(0.5rem+var(--safe-bottom))]">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="mr-auto text-xs font-medium tabular-nums">{count} selected</span>
         {approvals && (
@@ -34,14 +34,15 @@ export function BulkBar({ count, approvals, pending, onDismiss, onSnooze, onReso
           </>
         )}
         <SnoozeMenu size="xs" disabled={pending} label={`Snooze ${count}`} onPick={onSnooze} />
-        <Button size="xs" variant="ghost" disabled={pending} title={leaves ? DISMISS_HINT : 'Hide the selected items'} onClick={onDismiss}>
+        <Button size="xs" variant="outline" disabled={pending} title={leaves ? DISMISS_HINT : 'Hide the selected items'} onClick={onDismiss}>
+          <Forward />
           Dismiss {count}
         </Button>
         <Button size="icon-xs" variant="ghost" aria-label="Clear selection" onClick={onClear}>
           <X />
         </Button>
       </div>
-      {leaves && <p className="text-[11px] text-fg-tertiary">{DISMISS_HINT}</p>}
+      {leaves && <p className="text-[11px] text-fg-tertiary">Requests are left to their agents: nothing is refused, no session is woken.</p>}
     </div>
   )
 }

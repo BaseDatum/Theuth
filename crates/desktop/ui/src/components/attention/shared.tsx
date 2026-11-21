@@ -13,7 +13,7 @@ import type { Packet } from "@/rpc/bindings/method.roster.output"
 import type { Priority } from "@/rpc/bindings/method.roster.output"
 import { nextAfter } from './model'
 import { SnoozeDismiss } from './actions'
-import { itemLabel } from './labels'
+import { chipLabel } from './labels'
 
 /**
  * 101 D11: where the pane goes once `item` left the list — desktop: the next newest item (the list in cache still holds
@@ -30,8 +30,8 @@ export function useResolved(item: AttentionItem): () => void {
   }
 }
 
-export function Chip({ kind, id = '' }: { kind: AttentionItem['kind']; id?: string }) {
-  return <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{itemLabel({ id, kind })}</span>
+export function Chip({ kind, id = '', stop = null }: { kind: AttentionItem['kind']; id?: string; stop?: AttentionItem['stop'] }) {
+  return <span className="rounded-full bg-layer-2 px-2 py-0.5 text-[11px] uppercase tracking-wide text-fg-secondary">{chipLabel({ id, kind, stop })}</span>
 }
 
 /** The scrolling column every screen shares: 720 px of content, padded. A size container so `PacketBoard.css` can use its width (`cqi`) and visible height (`cqh`). */

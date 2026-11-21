@@ -20,9 +20,12 @@ type Props = {
   onSort: (s: SortKey) => void
 }
 
+const SELECT = 'h-8 w-auto shrink-0 gap-1 px-2 text-xs whitespace-nowrap'
+
 /**
- * 207 §6: search (`/`), sort, project and the kind chips with counts — any combination of chips; none lit = every kind.
- * Esc in the search clears it (the list's own Esc then clears the selection).
+ * 207 §6: search (`/`), sort and project on the first row; the kind chips with counts on one row that scrolls
+ * sideways — any combination of chips, none lit = every kind. Esc in the search clears it (the list's own Esc then
+ * clears the selection).
  */
 export function Toolbar({ filter, sort, kinds, projects, searchRef, onFilter, onSort }: Props) {
   const toggleKind = (kind: string) => {
@@ -30,17 +33,19 @@ export function Toolbar({ filter, sort, kinds, projects, searchRef, onFilter, on
     if (!next.delete(kind)) next.add(kind)
     onFilter({ ...filter, kinds: next })
   }
+  const showProjects = projects.length > 1 || (projects.length === 1 && projects[0]?.name !== null)
   return (
-    <div className="flex shrink-0 flex-col gap-2 border-b border-border-subtle px-3 py-2">
-      <div className="flex items-center gap-1.5">
+    <div className="flex shrink-0 flex-col gap-2 border-b border-border-subtle py-2">
+      <div className="flex min-w-0 items-center gap-1.5 px-3">
         <div className="relative min-w-0 flex-1">
-          <Search className="pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2 text-fg-tertiary" />
           <Input
             ref={searchRef}
+            dictate={false}
             value={filter.query}
-            placeholder="Search title, agent, tool, project…"
+            placeholder="Search"
             aria-label="Search attention"
-            className="h-8 rounded-[10px] bg-layer-2 pl-8 text-base md:text-[13px]"
+            title="Search title, agent, tool, task, project, path ( / )"
+            className="h-8 rounded-[10px] bg-layer-2 pr-7 pl-8 text-base md:text-[13px]"
             onChange={(e) => onFilter({ ...filter, query: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === 'Escape' && filter.query) {
@@ -49,6 +54,7 @@ export function Toolbar({ filter, sort, kinds, projects, searchRef, onFilter, on
               }
             }}
           />
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-fg-tertiary" aria-hidden />
           {filter.query && (
             <button type="button" aria-label="Clear search" onClick={() => onFilter({ ...filter, query: '' })} className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded p-0.5 text-fg-tertiary hover:text-foreground">
               <X className="size-3.5" />
@@ -56,7 +62,8 @@ export function Toolbar({ filter, sort, kinds, projects, searchRef, onFilter, on
           )}
         </div>
         <Select value={sort} onValueChange={(v) => onSort(v as SortKey)}>
-          <SelectTrigger size="sm" aria-label="Sort" className="h-8 w-auto gap-1 px-2 text-xs">
+          <SelectTrigger size="sm" aria-label="Sort" className={SELECT}>
+            <span className="text-fg-tertiary">Sort</span>
             <SelectValue />
           </SelectTrigger>
           <SelectContent align="end">
@@ -67,26 +74,9 @@ export function Toolbar({ filter, sort, kinds, projects, searchRef, onFilter, on
             ))}
           </SelectContent>
         </Select>
-      </div>
-      <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Kinds">
-        {kinds.map(({ kind, n }) => {
-          const on = filter.kinds.has(kind)
-          return (
-            <button
-              key={kind}
-              type="button"
-              aria-pressed={on}
-              onClick={() => toggleKind(kind)}
-              className={cn('flex h-6 items-center gap-1 rounded-full border px-2 text-xs motion-safe:transition-colors', on ? 'border-fg-accent bg-accent' : 'border-border-subtle text-fg-secondary hover:bg-accent/60')}
-            >
-              {kindFilterLabel(kind)}
-              <span className="tabular-nums text-fg-tertiary">{n}</span>
-            </button>
-          )
-        })}
-        {projects.length > 1 || (projects.length === 1 && projects[0]?.name !== null) ? (
+        {showProjects && (
           <Select value={projectValue(filter.project)} onValueChange={(v) => onFilter({ ...filter, project: projectOf(v) })}>
-            <SelectTrigger size="sm" aria-label="Project" className={cn('ml-auto h-6 w-auto max-w-40 gap-1 rounded-full px-2 text-xs', filter.project.type !== 'all' && 'border-fg-accent bg-accent')}>
+            <SelectTrigger size="sm" aria-label="Project" className={cn(SELECT, 'max-w-32 [&_[data-slot=select-value]]:truncate', filter.project.type !== 'all' && 'border-foreground')}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end">
@@ -104,7 +94,29 @@ export function Toolbar({ filter, sort, kinds, projects, searchRef, onFilter, on
               )}
             </SelectContent>
           </Select>
-        ) : null}
+        )}
+      </div>
+      <div className="flex gap-1.5 overflow-x-auto px-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="group" aria-label="Kinds">
+        {kinds
+          .filter((k) => k.n > 0)
+          .map(({ kind, n }) => {
+            const on = filter.kinds.has(kind)
+            return (
+              <button
+                key={kind}
+                type="button"
+                aria-pressed={on}
+                onClick={() => toggleKind(kind)}
+                className={cn(
+                  'flex h-6 shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs whitespace-nowrap motion-safe:transition-colors',
+                  on ? 'border-foreground bg-foreground text-background' : 'border-border-subtle text-fg-secondary hover:bg-accent/60',
+                )}
+              >
+                {kindFilterLabel(kind)}
+                <span className={cn('tabular-nums', on ? 'opacity-70' : 'text-fg-tertiary')}>{n}</span>
+              </button>
+            )
+          })}
       </div>
     </div>
   )

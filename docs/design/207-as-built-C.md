@@ -130,11 +130,35 @@ What the tests pin (§11.2):
 Process note: the final hold was taken 14 s after the narrow hold was released (the rule asks for 45 s); the script
 got the lock on its first try.
 
+## Visual pass (dev fixture, headless Chromium)
+
+`src/dev/attention-fixture.html` mounts the real page on the fixture with no engine (legacy discovery, `?mock=crowded`
+forced, a fake api for the per-kind mutations). Looked at 1280 x 900, 900 x 900 and 390 x 844 in light and
+`?theme=dark`, before and after; no console errors. Shots: `/tmp/theuth-207-shots/{light,dark}-{1280,390}.png`,
+`bulk-bar.png`, `stopped-card.png`. Changes:
+
+- Toolbar: the search field drops the shared dictation mic (`dictate={false}`) and draws the magnifier after the input
+  so the field's background no longer hides it; row 1 is search · "Sort Priority" · project (content width, project
+  truncates at 8 rem); row 2 is the kind chips on one sideways-scrolling line (no wrap, count dimmer and spaced,
+  kinds with a count only, `KIND_ORDER`); a lit chip is inverted (foreground fill), readable in both themes.
+- Card in scan order: small kind / priority chips with the age right-aligned; title; the one-line facts (approval
+  command in mono); a dim `project · root › child` line (the agent only when the path does not already name it, so
+  "theuth · ops desk", not "... ops desk · ops"); the reason line on its own wrapping line (never cut); actions.
+- Snooze and Dismiss / Leave to agent are ghost buttons with icons (clock, forward / eye-off) in the secondary text
+  colour; Allow and an ask's recommended option stay the filled primary. Bulk bar: Dismiss N outlined with an icon,
+  shorter hint, `bg-layer-1`.
+- Selection: selected cards tint with `fg-accent/10` (distinct from hover and from the open item's `bg-accent`), the
+  J/K focus is a 3 px accent bar; checkbox visible on hover and while a selection exists.
+- Approval screen heading is the item title ("builder wants to run shell") with the risk under it; the command block
+  stays. The screens' kind chip shows the stopped outcome ("failed") like the card.
+- "Why here": a strip from `md` up whose reasons wrap whole; under `md` a closed disclosure ("Why here 1213").
+- 390 px: list only; a tap opens the detail with the back chevron; toolbar fits (chips scroll); the bulk bar is part of
+  the column, so it never covers the last card.
+
 ## Not done / not verified
 
-- Nothing was seen in a real browser or the Tauri shell: layout, density, hover/selection visuals, the virtualiser's
-  measuring, focus handling and the key map are verified only by type checks and static renders. `?mock=crowded` is the
-  way to look at it (`bun run dev`, `/attention?mock=crowded`).
+- Not seen in the Tauri shell or against an engine. The UI was looked at only in headless Chromium on the dev fixture
+  (`src/dev/attention-fixture.html`, see "Visual pass").
 - No interaction test drives the key map or the selection in a DOM (tests are node + `renderToStaticMarkup`; the logic
   under them — `moveFocus`, `nextSelection`, `selectedIds`, `allApprovals` — is unit-tested).
 - Live patching ran only against synthetic `AttentionChanged` values in `model.test.ts`, never against an engine.

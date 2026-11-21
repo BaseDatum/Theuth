@@ -1,7 +1,7 @@
 // The per-kind buttons of an Attention item — the card's inline block and the plain screen's action bar (101 D7) share
 // them. Moved out of `hud/Hud.tsx` (207); Snooze became a menu, Dismiss goes through the bulk call with one id.
 import { Link } from '@tanstack/react-router'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Clock, EyeOff, Forward } from 'lucide-react'
 import { useState } from 'react'
 import { DoubleUndo } from '@/components/chat/DoubleChip'
 import { snoozeUntil } from '@/components/hud/model'
@@ -33,7 +33,8 @@ export function SnoozeMenu({ size, disabled, label = 'Snooze', onPick }: { size:
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size={size} variant="ghost" disabled={disabled}>
+        <Button size={size} variant="ghost" disabled={disabled} className="text-fg-secondary hover:text-foreground">
+          <Clock />
           {label}
           <ChevronDown className="opacity-60" />
         </Button>
@@ -58,11 +59,13 @@ export function SnoozeDismiss({ item, ids = [item.id], size, onResolved }: { ite
   // `useAttentionBulk` toasts; the pane moves on only when something actually left the list.
   const done = (p: Promise<AttentionOutcome[]>) => void p.then((outs) => outs.some((o) => o.resolution !== 'failed') && onResolved?.())
   const leaves = useQuerySupport(['attention_dismiss_many'])
+  const label = dismissLabel(item, leaves)
   return (
     <>
       <SnoozeMenu size={size} disabled={bulk.pending} onPick={(until) => done(bulk.snooze(ids, until))} />
-      <Button size={size} variant="ghost" disabled={bulk.pending} title={leaves ? DISMISS_HINT : 'Hide this item'} onClick={() => done(bulk.dismiss(ids))}>
-        {dismissLabel(item, leaves)}
+      <Button size={size} variant="ghost" className="text-fg-secondary hover:text-foreground" disabled={bulk.pending} title={leaves ? DISMISS_HINT : 'Hide this item'} onClick={() => done(bulk.dismiss(ids))}>
+        {label === 'Dismiss' ? <EyeOff /> : <Forward />}
+        {label}
       </Button>
     </>
   )

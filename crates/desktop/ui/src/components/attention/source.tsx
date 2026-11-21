@@ -35,7 +35,7 @@ export function Source({ item }: { item: AttentionItem }) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-tertiary">
-        <Chip kind={item.kind} id={item.id} />
+        <Chip kind={item.kind} id={item.id} stop={item.stop} />
         <span className="min-w-0 truncate">
           {(from || item.agent) && 'From '}
           {from && <span className="text-fg-secondary">{from}</span>}

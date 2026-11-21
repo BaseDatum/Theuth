@@ -51,7 +51,8 @@ test('an approval card: kind, priority, the reason line, the command in mono, wh
   expect(html).toContain('>high<')
   expect(html).toContain('blocks 2 agents · denies itself in 2:00')
   expect(html).toMatch(/<p class="[^"]*font-mono[^"]*">kubectl delete deployment relay-canary -n prod<\/p>/)
-  expect(html).toContain('release-2.5 · Ship 2.5 release › builder · 3m')
+  expect(html).toContain('>release-2.5 · Ship 2.5 release › builder<')
+  expect(html).toContain('>3m<')
   for (const label of ['>Allow<', '>Deny<', 'Snooze', '>Dismiss<']) expect(html).toContain(label)
   // The selection box is there (hidden until hover or a selection exists).
   expect(html.match(/<button[^>]*role="checkbox"[^>]*>/)?.[0]).toContain('aria-checked="false"')
@@ -64,7 +65,8 @@ test('a stack card: ×3, Allow all 3 / Deny all 3, the head’s command, an expa
   expect(html).toContain('Deny all 3')
   expect(html).toContain('Show 3')
   expect(html).toContain('GET https://api.crunchbase.com/v4/entities/organizations/initech')
-  expect(html).toContain('theuth · ops desk')
+  // The path already names the desk: the agent is not repeated after it.
+  expect(html).toContain('>theuth · ops desk<')
 })
 
 test('a failed session-stopped card: the outcome word, the error, the reply box; a timed-out one adds its next step as a chip', async () => {

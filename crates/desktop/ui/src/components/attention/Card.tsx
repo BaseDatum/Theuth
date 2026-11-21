@@ -22,7 +22,7 @@ import { Reply } from './Reply'
 /** 132 D1/D4: `urgent` and `high` show a chip after the kind chip (gold-ochre · the warning hue); medium/low show nothing. */
 export function PriorityChip({ priority }: { priority: AttentionItem['priority'] | undefined }) {
   if (priority !== 'urgent' && priority !== 'high') return null
-  return <span className={cn('w-fit rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-wide', priority === 'urgent' ? 'border-fg-accent text-fg-accent' : 'border-warning text-warning')}>{priority}</span>
+  return <span className={cn('w-fit shrink-0 rounded-full border px-1.5 text-[10px] font-medium uppercase tracking-wide', priority === 'urgent' ? 'border-fg-accent text-fg-accent' : 'border-warning text-warning')}>{priority}</span>
 }
 
 /** A stopped session whose turn failed or timed out reads as a problem; a clean finish or a cancel does not. */
@@ -55,10 +55,18 @@ type FrameProps = {
 /** The interactive things inside a card; a click on one of them is theirs, not the card's. */
 const OWN_CLICK = 'a,button,input,textarea,select,form,label,[role="menu"],[role="menuitem"]'
 
-/** The card's rows: kind · ×N · priority · double · done ··· reason line / title / detail / path · agent · age / actions. */
+/** Words a path segment already says, so the agent is not repeated after it ("ops desk", not "ops desk · ops"). */
+const said = (segments: readonly string[], word: string) => segments.some((s) => s.toLowerCase().split(/[\s›·]+/).includes(word.toLowerCase()))
+
+/**
+ * The card's rows in scan order: what it is (kind · ×N · priority · double · done ··· age), the title, the one-line
+ * facts (an approval's command in mono), where it came from (`project · root › child`, the agent when the path does not
+ * already name it), why it sits here (the reason line, wrapping, never cut), then the actions.
+ */
 function Frame({ item, now, stack, active, focused, selected, selecting, onSelect, onOpen, detail, children, className, ...li }: FrameProps) {
   const path = pathText(item)
-  const lastSegment = item.path?.at(-1)
+  const agent = item.agent && !said([...(item.path ?? []), item.project ?? ''], item.agent) ? item.agent : null
+  const from = [path, agent].filter(Boolean).join(' · ')
   const reason = reasonLine(item, now)
   const click = (e: MouseEvent<HTMLDivElement>) => {
     if ((e.target as Element).closest(OWN_CLICK)) return
@@ -72,10 +80,10 @@ function Frame({ item, now, stack, active, focused, selected, selecting, onSelec
       <div
         onClick={click}
         className={cn(
-          'flex cursor-default gap-2.5 px-3 py-2.5 text-[13px] motion-safe:transition-colors hover:bg-accent/40',
-          selected && 'bg-accent/60',
-          active && 'bg-accent',
-          focused && 'shadow-[inset_2px_0_0_var(--color-fg-accent)]',
+          'flex cursor-default gap-2.5 px-3 py-2.5 text-[13px] motion-safe:transition-colors hover:bg-layer-2/60',
+          selected && 'bg-fg-accent/10 hover:bg-fg-accent/15',
+          active && 'bg-accent hover:bg-accent',
+          focused && 'shadow-[inset_3px_0_0_var(--color-fg-accent)]',
         )}
       >
         {onSelect && (
@@ -95,21 +103,22 @@ function Frame({ item, now, stack, active, focused, selected, selecting, onSelec
           </button>
         )}
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[11px] uppercase tracking-wide', troubled(item) ? 'bg-danger-bg text-danger' : 'bg-layer-2 text-fg-secondary')}>{chipLabel(item)}</span>
-            {stack !== undefined && <span className="shrink-0 text-xs font-medium tabular-nums text-fg-secondary">×{stack}</span>}
+          <div className="flex min-w-0 items-center gap-1">
+            <span className={cn('shrink-0 rounded-full px-1.5 py-px text-[10px] font-medium uppercase tracking-wide', troubled(item) ? 'bg-danger-bg text-danger' : 'bg-layer-2 text-fg-secondary')}>{chipLabel(item)}</span>
+            {stack !== undefined && <span className="shrink-0 text-[11px] font-medium tabular-nums text-fg-secondary">×{stack}</span>}
             <PriorityChip priority={item.priority} />
             {/* 155 §7.5: done ≠ idle — the engine keeps `alert` on a finished item until this connection has looked at the session. */}
-            {item.alert?.class === 'finished' && <span className="shrink-0 rounded-full border border-success-border px-2 py-0.5 text-[11px] uppercase tracking-wide text-success">done</span>}
+            {item.alert?.class === 'finished' && <span className="shrink-0 rounded-full border border-success-border px-1.5 text-[10px] uppercase tracking-wide text-success">done</span>}
             <DoubleChip ids={doubleIds(item)} />
-            {reason && <span className="ml-auto min-w-0 truncate pl-2 text-xs text-fg-tertiary tabular-nums">{reason}</span>}
+            <span className="ml-auto shrink-0 pl-2 text-[11px] text-fg-tertiary tabular-nums">{age(item.at_ms, now)}</span>
           </div>
-          <Link to="/attention/$id" params={{ id: item.id }} search={true} className="line-clamp-2 font-medium hover:underline">
+          <Link to="/attention/$id" params={{ id: item.id }} search={true} className="line-clamp-2 font-medium leading-snug hover:underline">
             {item.title}
           </Link>
           {detail}
-          <p className="truncate text-xs text-fg-tertiary tabular-nums">{[path, item.agent !== lastSegment && item.agent, age(item.at_ms, now)].filter(Boolean).join(' · ')}</p>
-          {children && <div className="flex min-w-0 flex-wrap items-center gap-1.5 pt-0.5">{children}</div>}
+          {from && <p className="truncate text-xs text-fg-tertiary">{from}</p>}
+          {reason && <p className="text-xs text-fg-secondary tabular-nums">{reason}</p>}
+          {children && <div className="flex min-w-0 flex-wrap items-center gap-1 pt-0.5">{children}</div>}
         </div>
       </div>
     </li>
