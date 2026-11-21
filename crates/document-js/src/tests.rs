@@ -280,10 +280,13 @@ async fn panic_in_an_op_is_contained() {
 async fn panic_on_the_thread_fails_pending_jobs_and_a_fresh_runtime_serves() {
     let t = thread(limits());
     round_trip(&t, "before").await;
+    // Keep the thread busy while the panic and the jobs behind it are enqueued, so they are all queued.
+    let busy = t.eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 300) {} }".into());
     let panicked = t.panic_on_thread();
     let queued: Vec<_> = (0..3)
         .map(|i| t.enqueue(json!({ "id": 50 + i, "op": "outline", "doc": "before" }).to_string()))
         .collect();
+    busy.await.expect("busy script");
     let r = panicked.await;
     assert!(
         matches!(&r, Err(Error::Crashed(m)) if m.contains("panic on the documents-js thread")),

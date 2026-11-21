@@ -89,7 +89,7 @@ fn op_documents_random_fill(state: &mut OpState, #[buffer] buf: &mut [u8]) {
 #[cfg(test)]
 #[op2(fast)]
 fn op_documents_test_panic(state: &mut OpState) {
-    guarded(state, |_| panic!("test: panic inside a documents op"));
+    guarded::<()>(state, |_| panic!("test: panic inside a documents op"));
 }
 
 fn extension() -> Extension {
