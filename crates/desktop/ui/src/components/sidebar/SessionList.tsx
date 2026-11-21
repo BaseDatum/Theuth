@@ -20,7 +20,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { SidebarMenuAction } from '@/components/ui/sidebar'
 import { openNewChat } from '@/components/chat/NewChatPane'
-import { leaves, usePanes } from '@/lib/panes'
+import { chatLeaves, usePanes } from '@/lib/panes'
 import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useLinger } from '@/lib/sidebar-linger'
@@ -292,7 +292,7 @@ export function SessionList({
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
   const [archivedOpen, setArchivedOpen] = useState(false)
   const root = usePanes((s) => s.root)
-  const open = useMemo(() => (root ? leaves(root) : active ? [active] : []), [root, active])
+  const open = useMemo(() => (root ? chatLeaves(root) : active ? [active] : []), [root, active])
   const subs = useMemo(() => subtrees(sessions), [sessions])
   const roots = useMemo(() => sessions.filter((s) => s.parent === null), [sessions])
   const approvals = useApprovals((s) => s.pending)

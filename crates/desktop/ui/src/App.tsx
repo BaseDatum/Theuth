@@ -21,7 +21,10 @@ import { FocusTracker, Throttle, deriveFocus } from '@/lib/event-focus'
 import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
-import { leaves, usePanes } from '@/lib/panes'
+import { chatLeaves, closeWeb, leaves, placeWeb, usePanes } from '@/lib/panes'
+import { closeAllWebViews, installWebViewEvents, useWebViews, webLeaf } from '@/lib/web-views'
+import * as webNative from '@/lib/web-view-native'
+import { isMobileLayout } from '@/hooks/use-mobile'
 import { installFenceSnapshot } from '@/lib/fence-snapshot'
 import { installPagePreview } from '@/lib/page-preview'
 import { container, isDesktop } from '@/lib/platform'
@@ -569,10 +572,31 @@ function useEventSideEffects(st: Stores): void {
       on("browser.events@1", 'BrowserShowLive', (e) => {
         if (!visible(e.session)) router.history.push(`/c/${e.session}`)
       }),
+      // 205 §4.4: the frame is recorded for its card; an open one (tile or pop-out) navigates, else a tile opens right of
+      // the session's pane when that chat is on screen and the layout tiles (popouts never get here: `AUX`). A view
+      // that is gone (its pop-out window closed) answers `no web view …`: then it is no longer popped and the tile rule applies.
+      on("artifact.web-view-opened@1", 'WebViewOpened', (e) => {
+        const old = useWebViews.getState().views[e.id]
+        useWebViews.getState().open({ id: e.id, session: e.session, url: e.url, title: e.title })
+        const place = () => {
+          if (!isMobileLayout() && visible(e.session)) placeWeb(e.session, e.id)
+        }
+        const { root } = usePanes.getState()
+        if (!old?.popped && !(root !== null && leaves(root).includes(webLeaf(e.id)))) return place()
+        webNative.navigate(e.id, e.url).catch((err: unknown) => {
+          if (!String(err).startsWith('no web view')) return console.warn('web_view_navigate', err)
+          useWebViews.getState().patch(e.id, { popped: false })
+          place()
+        })
+      }),
+      // The session's frames go with it: tiles, store entries, native views; a pop-out window holding one closes on
+      // `web-view://closed` (`WebFrame`).
       on("agent.events@1", 'SessionDeleted', (e) => {
+        for (const v of Object.values(useWebViews.getState().views)) if (v.session === e.session) closeWeb(v.id)
         const to = usePanes.getState().close(e.session)
         if (to) router.history.push(`/c/${to}`)
       }),
+      installWebViewEvents(),
       // `enabled: false`: observe the cached list, never fetch it here (the sidebar's `useAttention` owns the fetch).
       new QueryObserver<AttentionItem[]>(qc, { queryKey: ATTENTION_KEY, enabled: false }).subscribe((r) => {
         if (companion || !r.data) return
@@ -608,7 +632,7 @@ function useEventFocus(st: Stores): void {
       const { root } = usePanes.getState()
       const next = deriveFocus({
         pathname: router.state.location.pathname,
-        leaves: root ? leaves(root) : [],
+        leaves: root ? chatLeaves(root) : [],
         popout: popoutSession(POPOUT),
         desk: voiceKey.useVoiceKey.getState().desk,
       })
@@ -765,8 +789,11 @@ function Main() {
   useSyncExternalStore(switcher.subscribe, () => switcher.shown)
   useEffect(() => {
     if (!hydrated) return
-    // Panes name sessions of the engine being left.
-    if (switcher.shown !== null && switcher.shown !== active) usePanes.setState({ root: null, focused: null, drag: null })
+    // Panes name sessions of the engine being left; its web frames go too (native views included).
+    if (switcher.shown !== null && switcher.shown !== active) {
+      usePanes.setState({ root: null, focused: null, drag: null })
+      closeAllWebViews()
+    }
     const { pathname, href } = router.state.location
     void switcher.activate(active, { pathname, href })
   }, [hydrated, active])

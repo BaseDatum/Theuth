@@ -1,0 +1,26 @@
+[
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "id": "0123456789abcdef",
+      "url": "http://localhost:3000/",
+      "title": "localhost:3000"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "WebViewOpened",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "id": "0123456789abcdef",
+          "url": "http://localhost:3000/",
+          "title": "localhost:3000"
+        }
+      }
+    }
+  }
+]

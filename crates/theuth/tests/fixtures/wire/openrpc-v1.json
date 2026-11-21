@@ -9956,6 +9956,100 @@
         "format": "uuid",
         "type": "string"
       },
+      "event.artifact_2eweb_2dview_2dopened.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2eweb_2dview_2dopened.output.WebViewOpened": {
+        "description": "Event: a `show_web` call opened (or re-targeted) a web view tile (205 §4.2).\nWire shape `{ \"type\": \"WebViewOpened\", \"session\", \"call_id\", \"id\", \"url\", \"title\" }`.",
+        "properties": {
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "id": {
+            "description": "Frame identity: first 16 hex of `sha256(session ‖ \"\\n\" ‖ origin)` (205 D4).",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dopened.output.SessionId"
+              }
+            ],
+            "description": "Calling session."
+          },
+          "title": {
+            "description": "Tile and card title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "WebViewOpened",
+            "type": "string"
+          },
+          "url": {
+            "description": "The normalised address.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "id",
+          "url",
+          "title",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2eweb_2dview_2dopened.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2eweb_2dview_2dopened.receiver.WebViewOpened": {
+        "description": "Event: a `show_web` call opened (or re-targeted) a web view tile (205 §4.2).\nWire shape `{ \"type\": \"WebViewOpened\", \"session\", \"call_id\", \"id\", \"url\", \"title\" }`.",
+        "properties": {
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "id": {
+            "description": "Frame identity: first 16 hex of `sha256(session ‖ \"\\n\" ‖ origin)` (205 D4).",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dopened.receiver.SessionId"
+              }
+            ],
+            "description": "Calling session."
+          },
+          "title": {
+            "description": "Tile and card title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "WebViewOpened",
+            "type": "string"
+          },
+          "url": {
+            "description": "The normalised address.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "id",
+          "url",
+          "title",
+          "type"
+        ],
+        "type": "object"
+      },
       "event.autoresearch_2eevents.output.PauseReason": {
         "description": "Why a study paused (140 §4.2, §8.4).",
         "oneOf": [
@@ -137711,6 +137805,16 @@
           "$ref": "#/components/schemas/event.artifact_2eshown.output.ArtifactShown"
         },
         "topic": "artifact.shown",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dopened.receiver.WebViewOpened"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dopened.output.WebViewOpened"
+        },
+        "topic": "artifact.web-view-opened",
         "version": 1
       },
       {
