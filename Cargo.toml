@@ -127,6 +127,9 @@ opus = "0.4"
 # also kept pyke's protobuf 3.21 away from `sentencepiece`'s protobuf-lite 3.14; ptts no longer uses sentencepiece.)
 # The dylib lives beside the checkpoint.
 parakeet-rs = { version = "0.3", default-features = false, features = ["cpu", "load-dynamic"] }
+# Parakeet TDT on MLX in-process (crates/voice-mlx): Apple's MLX via mlx-rs; mlx-sys builds MLX v0.32.2 with cmake and links it statically. Default features = metal + accelerate.
+mlx-rs = "0.34"
+voice-mlx = { path = "crates/voice-mlx" }
 # ort held at rc.13: rc.14+ needs an explicit `Environment` per `Session::builder`, and wavekat-vad 0.1.17 (latest) still calls `Session::builder()`; ort-sys `links = "onnxruntime"` allows one ort per graph.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic", "half", "coreml", "api-22"] }  # parakeet-rs's pin; `half` = typed `f16` tensors for laya's fp16 outputs (57 §2); `coreml` = the CoreML EP option builder (registered on macOS only, 57 §12.6); `api-22` = plugin EP registration (`Environment::register_ep_library`, `SessionBuilder::with_devices`, 58 step 13) — the runtime must be ONNX Runtime ≥ 1.22 (we ship 1.32, scripts/ort-version.env)
 libloading = "0.9"  # ort's own loader version; `models::onnx` reopens the loaded runtime for `OrtGetApiBase()->GetVersionString()`, which rc.13 does not expose
