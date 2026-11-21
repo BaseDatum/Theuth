@@ -179,6 +179,11 @@ are rewritten on every start.
   compiles the markdown (or `source: typst`) in `content` and the result
   includes a picture of page 1. Same name again is a new version. *show* =
   in this chat; *message_user* = wherever the user is.
+- `show_web{url, title?}` opens a live web page (a dev server on localhost,
+  a dashboard, a docs site) in a tile beside the chat that the user can
+  click and pop out (design doc 205); http(s) only, the same origin again
+  reuses the tile. You do not see the page: read it with `read_url` or
+  `browser_*`.
 - `app{name, source, title?, edit?, base_call_id?}` publishes an OpenUI Lang
   program as an interactive screen the user opens and clicks on desktop/web
   (design doc 46; load the `apps` skill first). It renders progressively

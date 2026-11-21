@@ -52,6 +52,7 @@ async fn feature_golden_parity() {
     browser::declare_wire(&rt).await.unwrap();
     let mut feed = rt.wire_events();
     family::<artifact::ArtifactShown>(&rt, &mut feed, "artifact.shown").await;
+    family::<artifact::WebViewOpened>(&rt, &mut feed, "artifact.web-view-opened").await;
     family::<artifact::preview::PagePreviewRequested>(
         &rt,
         &mut feed,

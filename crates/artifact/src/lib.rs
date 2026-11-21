@@ -39,6 +39,7 @@ pub mod sniff;
 pub mod store;
 pub mod svg;
 pub mod tools;
+pub mod webview;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -57,6 +58,7 @@ pub use store::{
 };
 pub use svg::Raster;
 pub use tools::ShowArgs;
+pub use webview::{ShowWebArgs, ShowWebTool, WebViewOpened};
 
 /// Registry name of the [`ArtifactActor`].
 pub const ARTIFACT_ACTOR: &str = "artifact";
@@ -772,6 +774,7 @@ impl Message<::tools::CloseTree> for ArtifactActor {
 pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     use wire::RuntimeWire as _;
     rt.register_wire_event::<ArtifactShown>().await?;
+    rt.register_wire_event::<WebViewOpened>().await?;
     rt.register_wire_event::<preview::PagePreviewRequested>().await?;
     rt.register_wire_event::<preview::PagePreviewResolved>().await?;
     rt.register_wire_event::<snapshot::FenceSnapshotRequested>().await?;
@@ -858,6 +861,11 @@ impl runtime::Plugin for ArtifactPlugin {
                 let _ = reg
                     .ask(::tools::RegisterTool(Arc::new(tools::ShowTool {
                         stores: stores.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(webview::ShowWebTool {
+                        rt: rt.clone(),
                     })))
                     .await;
                 let _ = reg
