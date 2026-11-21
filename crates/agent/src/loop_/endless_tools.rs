@@ -79,12 +79,16 @@ pub fn specs() -> Vec<ToolSpec> {
     ]
 }
 
-/// Run one endless tool call. `name` is one of [`is_local`]'s.
+/// Run one endless tool call. `name` is one of [`is_local`]'s. `zoom_root`
+/// is the session tree's own `zoom` directory (`<data dir>/zoom` durable,
+/// `<scratch>/zoom` private; R3-1): an artefact's binary is written there
+/// for the caller to read and then [`discard`] at once.
 pub async fn run(
     endless: &Endless,
     session: SessionId,
     name: &str,
     args: &serde_json::Value,
+    zoom_root: &std::path::Path,
 ) -> ToolOutput {
     match name {
         ZOOM => match serde_json::from_value::<ZoomArgs>(args.clone()) {
@@ -92,7 +96,7 @@ pub async fn run(
                 if a.n == 1
                     && let Some(art) = endless.artefact(session, a.id).await =>
             {
-                artefact_output(session, a.id, art).await
+                artefact_output(zoom_root, session, a.id, art).await
             }
             Ok(a) => match endless.zoom(session, a.id, a.n).await {
                 Ok(lines) => ToolOutput::ok(render(&lines)),
@@ -138,6 +142,7 @@ pub async fn run(
 /// every picture-returning tool does). A binary no longer stored, or one
 /// that cannot be written, leaves the line with a note saying so.
 async fn artefact_output(
+    zoom_root: &std::path::Path,
     session: SessionId,
     id: u64,
     art: Result<(String, genai::chat::Binary), String>,
@@ -150,7 +155,7 @@ async fn artefact_output(
             ));
         }
     };
-    match write_binary(session, id, &b).await {
+    match write_binary(zoom_root, session, id, &b).await {
         Ok(path) => ToolOutput {
             files: vec![path],
             ..ToolOutput::ok(format!("{id}+1|{line}\n(attached below)"))
@@ -161,8 +166,11 @@ async fn artefact_output(
     }
 }
 
-/// The decoded bytes of `b` in `<tmp>/theuth-zoom/<session>/<id>-<name>`.
+/// R3-1: the decoded bytes of `b` in `<zoom_root>/<session>/<id>-<rand>-<name>`,
+/// directories 0700, the file created new with mode 0600. The caller reads
+/// it into a message part and then [`discard`]s it.
 async fn write_binary(
+    zoom_root: &std::path::Path,
     session: SessionId,
     id: u64,
     b: &genai::chat::Binary,
@@ -180,17 +188,46 @@ async fn write_binary(
         .and_then(|n| std::path::Path::new(n).file_name())
         .and_then(|n| n.to_str())
         .map_or_else(|| "file".to_owned(), str::to_owned);
-    let dir = std::env::temp_dir()
-        .join("theuth-zoom")
-        .join(session.to_string());
-    let path = dir.join(format!("{id}-{name}"));
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    tokio::fs::write(&path, bytes)
-        .await
-        .map_err(|e| e.to_string())?;
+    let dir = zoom_root.join(session.to_string());
+    let path = dir.join(format!(
+        "{id}-{}-{name}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    let p = path.clone();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        use std::io::Write as _;
+        platform::files::private_dir(&dir)?;
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        o.open(&p)?.write_all(&bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+/// R3-1: remove the scratch files a `zoom` result carried, once they have
+/// been read into message parts (or copied by the sandbox). Other tools'
+/// files are theirs and are left alone.
+pub async fn discard(name: &str, files: &[std::path::PathBuf]) {
+    if name != ZOOM {
+        return;
+    }
+    for f in files {
+        if let Err(e) = tokio::fs::remove_file(f).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = %f.display(), "zoom scratch: {e}");
+        }
+    }
+}
+
+/// R3-1: the session's zoom directory, removed when the session is deleted.
+pub fn forget(zoom_root: &std::path::Path, session: SessionId) {
+    let _ = std::fs::remove_dir_all(zoom_root.join(session.to_string()));
 }
 
 /// `id+n|text` per line, newlines of a whole unit (`n == 1`) kept.

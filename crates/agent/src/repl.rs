@@ -1939,7 +1939,7 @@ impl Repl {
                                 let mut out = match (done, &cx.endless) {
                                     (Some(out), _) => out,
                                     (None, Some(e)) if c.local => {
-                                        endless_tools::run(e, cx.session, &c.name, &c.args).await
+                                        endless_tools::run(e, cx.session, &c.name, &c.args, &cx.spill_dir.with_file_name("zoom")).await
                                     }
                                     (None, None) if c.local => ToolOutput::err(format!(
                                         "{}: not available in this process",
@@ -1973,7 +1973,10 @@ impl Repl {
                                         }
                                     }
                                 }
+                                let originals = out.files.clone();
                                 snapshot_files(&mut out, spill);
+                                // R3-1: the sandbox keeps its own copy; zoom's scratch goes.
+                                endless_tools::discard(&c.name, &originals).await;
                                 out
                             },
                         ))

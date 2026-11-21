@@ -4440,13 +4440,18 @@ impl Turn {
                 e.set_tool_pin(id, Some(pin));
                 let body = format!(
                     "New tools since this conversation's tool list was fixed. Call them from the python runtime now; they join the direct tool list at the next memory trim:\n{}",
-                    lines.join("\n")
+                    crate::endless_ext::quoted(&lines.join("\n"))
                 );
                 self.note("tools", &body).await;
             }
         }
         if let Some(body) = e.prefetch(id, &texts.join("\n")).await {
-            let body = format!("Earlier lines that match this message (zoom an id for more):\n{body}");
+            // R3-3: record data, labelled and escaped; never instructions.
+            let body = format!(
+                "{}\n{}",
+                crate::endless_ext::RECALL_LEAD,
+                crate::endless_ext::quoted(&body)
+            );
             self.note("recall", &body).await;
         }
     }
@@ -7779,7 +7784,15 @@ impl Turn {
                 match &self.shared.endless {
                     // 201 §9 (P6a): the ledger needs a generation, not lines.
                     Some(e) if e.served(session) || call.fn_name == endless_tools::LEDGER => {
-                        endless_tools::run(e, session, &call.fn_name, &call.fn_arguments).await
+                        let zoom_root = self.shared.spill_dir.with_file_name("zoom");
+                        endless_tools::run(
+                            e,
+                            session,
+                            &call.fn_name,
+                            &call.fn_arguments,
+                            &zoom_root,
+                        )
+                        .await
                     }
                     Some(_) => ToolOutput::err(format!(
                         "{}: nothing to search yet — this session's memory has no lines.",
@@ -7968,6 +7981,8 @@ impl Turn {
                     }
                 }
             }
+            // R3-1: a zoomed artefact's scratch copy is now in the part.
+            endless_tools::discard(&call.fn_name, &out.files).await;
             responses.push(ToolResponse::new(call.call_id.clone(), content).with_images(images));
         }
         if !failed {

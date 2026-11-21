@@ -101,6 +101,9 @@ pub struct EndlessMessage {
     pub excluded: bool,
     /// `messages.at`, when recorded.
     pub at: Option<DateTime<Utc>>,
+    /// R3-9: the row carries typed vision-note metadata (`messages.vision`,
+    /// 52 §6) — the only mark of a real `<vision_observation>` note.
+    pub vision: bool,
 }
 
 /// Delete every endless row of `sid` (session deletion).
@@ -782,8 +785,8 @@ impl Store {
         id: SessionId,
         seq: i64,
     ) -> anyhow::Result<Vec<EndlessMessage>> {
-        let rows: Vec<(i64, String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT seq, body, excluded, at FROM messages WHERE session_id = ?1 AND seq >= ?2 \
+        let rows: Vec<(i64, String, Option<String>, Option<String>, bool)> = sqlx::query_as(
+            "SELECT seq, body, excluded, at, vision IS NOT NULL FROM messages WHERE session_id = ?1 AND seq >= ?2 \
              AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
              ORDER BY seq",
         )
@@ -792,7 +795,7 @@ impl Store {
         .fetch_all(&self.read)
         .await?;
         rows.into_iter()
-            .map(|(seq, body, excluded, at)| {
+            .map(|(seq, body, excluded, at, vision)| {
                 Ok(EndlessMessage {
                     seq,
                     message: serde_json::from_str(&body)?,
@@ -801,6 +804,7 @@ impl Store {
                         .as_deref()
                         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                         .map(|d| d.with_timezone(&Utc)),
+                    vision,
                 })
             })
             .collect()

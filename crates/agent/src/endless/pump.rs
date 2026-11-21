@@ -1275,7 +1275,7 @@ async fn load(state: &State) -> anyhow::Result<()> {
     let drafting = state.live.lock().drafting();
     for r in &rows {
         let text = by_seq.get(&r.seq).and_then(|m| {
-            units::derive(m.seq, m.at, &m.message, state.cfg.read().cap_chars, 0)
+            units::derive_row(m, state.cfg.read().cap_chars, 0)
                 .into_iter()
                 .find(|u| u.part == r.part)
         });
@@ -1399,7 +1399,7 @@ async fn ingest(state: &State) -> anyhow::Result<()> {
             continue;
         }
         let cap_chars = state.cfg.read().cap_chars;
-        let mut units = units::derive(m.seq, m.at, &m.message, cap_chars, next_i);
+        let mut units = units::derive_row(m, cap_chars, next_i);
         units.retain(|u| filter.keeps(u));
         for (k, u) in units.iter_mut().enumerate() {
             u.i = next_i + k as u64;
@@ -1564,8 +1564,14 @@ pub(crate) fn describe_left(
             (c, format!("{DESCRIBED}vision:{}", v.id))
         })
     };
+    // R3-5: the calls' cancel token at the start (a detach, switch or retry
+    // cancels it): the job stops at once rather than describing the rest.
+    let cancel = state.current.read().cancel.clone();
     Some(tokio::spawn(async move {
         for (i, seq, part, note) in targets {
+            if cancel.is_cancelled() {
+                break;
+            }
             let (desc, by) = match note {
                 Some(a) => (a, format!("{DESCRIBED}note")),
                 None => {
@@ -1574,7 +1580,7 @@ pub(crate) fn describe_left(
                     else {
                         continue;
                     };
-                    let Some(r) = describe_call(&state, c, i, &b).await else {
+                    let Some(r) = describe_call(&state, c, i, &b, &cancel).await else {
                         tracing::info!(session = %state.session, unit = i, "endless: image description skipped; settling paused by spend");
                         continue;
                     };
@@ -1628,17 +1634,20 @@ async fn describe_call(
     c: &Arc<dyn Compactor>,
     i: u64,
     image: &genai::chat::Binary,
+    cancel: &CancellationToken,
 ) -> Option<Result<compactor::Reply, String>> {
     let cfg = state.cfg.read().clone();
     let owner = state.live.lock().drafting().then_some(state.session);
+    // R3-5: the wait for the gate and the call both end with the cancel
+    // token; the permit is a local, released on every return.
     let _permit = match c.local() {
-        Some(endpoint) => Some(
-            state
-                .queues
-                .get(&endpoint, cfg.local_jobs)
-                .acquire(0, owner)
-                .await,
-        ),
+        Some(endpoint) => {
+            let gate = state.queues.get(&endpoint, cfg.local_jobs);
+            tokio::select! {
+                p = gate.acquire(0, owner) => Some(p),
+                () = cancel.cancelled() => return Some(Err("cancelled".to_owned())),
+            }
+        }
         None => None,
     };
     if state.live.lock().paused_by.as_deref() == Some("spend") || spend_capped(state, &cfg).await {
@@ -1665,7 +1674,18 @@ async fn describe_call(
     if let Err(e) = state.store.mark_dispatched(&reserved).await {
         tracing::warn!(error = %e, "endless: mark_dispatched");
     }
-    let r = c.describe_image(image).await;
+    // R3-5: bounded like a compactor job's attempt (E6: after the permit).
+    let attempt = Duration::from_secs(u64::from(if c.local().is_some() {
+        cfg.local_attempt_secs.clamp(30, 7_200)
+    } else {
+        cfg.attempt_secs.clamp(10, 3_600)
+    }));
+    let r = tokio::select! {
+        r = tokio::time::timeout(attempt, c.describe_image(image)) => {
+            r.unwrap_or_else(|_| Err(format!("timed out after {}s", attempt.as_secs())))
+        }
+        () = cancel.cancelled() => Err("cancelled".to_owned()),
+    };
     let (status, usage) = match &r {
         Ok(reply) => (CallStatus::Settled, reply.usage.clone()),
         Err(_) => (CallStatus::Failed, None),
@@ -1698,12 +1718,33 @@ pub(crate) async fn artefact(
             .map_or_else(|| u.tagged(), |n| n.text.clone());
         (u.seq, u.part, line)
     };
-    Some(
-        match artefact_binary(&state.store, state.session, seq, part).await {
-            Some(b) => Ok((line, b)),
-            None => Err(line),
-        },
-    )
+    // R3-8: the row's part decides — a text that merely reads `[image: …`
+    // is no artefact (and zooms as text); a row or part gone is "no longer
+    // stored".
+    use genai::chat::ContentPart;
+    let m = state
+        .store
+        .endless_message(state.session, seq)
+        .await
+        .ok()
+        .flatten();
+    let (p, image) = units::locate(part);
+    let b = match (m.as_ref().and_then(|m| m.content.parts().get(p)), image) {
+        (Some(ContentPart::Binary(b)), None) => Some(b.clone()),
+        (Some(ContentPart::ToolResponse(r)), Some(k)) => r.images.get(k).cloned(),
+        (Some(_), _) => return None,
+        (None, _) => None,
+    };
+    // R3-15: an artefact zoom counts for `age_by_use` like any zoom.
+    {
+        let mut live = state.live.lock();
+        let generation = live.current_gen.as_ref().map_or(0, |g| g.n);
+        live.zooms.push((generation, Part { l: 0, i: id }));
+    }
+    Some(match b {
+        Some(b) => Ok((line, b)),
+        None => Err(line),
+    })
 }
 
 fn start_pump(state: Arc<State>, cancel: CancellationToken) {
@@ -3413,6 +3454,45 @@ async fn load_ledger(store: &Store, session: SessionId) -> anyhow::Result<super:
         .unwrap_or_default())
 }
 
+/// R3-7 / R1-13: [`load_ledger`] for the two writers (a trim, a tool op).
+/// With no `endless_ledger` row (the table is node-local: a session taken
+/// over by another node has none) the ledger is rebuilt by replaying the
+/// `ledger` tool calls of the replicated `messages` rows that were answered
+/// without an error, in order (a call still in flight has no answer); the
+/// caller persists it. Their notes were sent already and are dropped.
+async fn load_or_rebuild_ledger(
+    store: &Store,
+    session: SessionId,
+) -> anyhow::Result<super::ledger::Ledger> {
+    use genai::chat::ContentPart;
+    if let Some(b) = store.endless_ledger(session).await? {
+        return Ok(super::ledger::Ledger::from_json(&b));
+    }
+    let rows = store.messages(session).await?;
+    let answered: HashSet<&str> = rows
+        .iter()
+        .flat_map(|(_, m)| m.content.iter())
+        .filter_map(|p| match p {
+            ContentPart::ToolResponse(r) if !r.content.starts_with("ERROR:") => {
+                Some(r.call_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut ledger = super::ledger::Ledger::default();
+    for p in rows.iter().flat_map(|(_, m)| m.content.iter()) {
+        if let ContentPart::ToolCall(c) = p
+            && c.fn_name == crate::loop_::endless_tools::LEDGER
+            && answered.contains(c.call_id.as_str())
+            && let Ok(op) = serde_json::from_value::<super::ledger::Op>(c.fn_arguments.clone())
+        {
+            let _ = ledger.apply(&op, 0);
+        }
+    }
+    ledger.notes.clear();
+    Ok(ledger)
+}
+
 /// 201 §9 (P6a): the ledger's part of a trim into generation `n` — scan the
 /// units ingested since the last trim (artefacts, suggestions), mirror the
 /// `todo` list into Open tasks, lapse old suggestions, drop the pending
@@ -3428,7 +3508,7 @@ async fn ledger_at_trim(
         return Ok(None);
     }
     let _w = LEDGER_LOCK.lock().await;
-    let mut ledger = load_ledger(&state.store, session).await?;
+    let mut ledger = load_or_rebuild_ledger(&state.store, session).await?;
     let todos: Vec<(String, bool)> = state
         .store
         .todos(session)
@@ -3504,7 +3584,7 @@ pub(crate) async fn ledger_op(
     };
     let store = inner.store_for(session);
     let _w = LEDGER_LOCK.lock().await;
-    let mut ledger = load_ledger(&store, session)
+    let mut ledger = load_or_rebuild_ledger(&store, session)
         .await
         .map_err(|e| format!("ledger: {e:#}"))?;
     let note = ledger.apply(op, n)?;
@@ -3748,7 +3828,7 @@ async fn count_units(
         .iter()
         .filter(|m| !m.excluded)
         .map(|m| {
-            units::derive(m.seq, m.at, &m.message, cap_chars, 0)
+            units::derive_row(m, cap_chars, 0)
                 .iter()
                 .filter(|u| filter.keeps(u))
                 .count() as u64

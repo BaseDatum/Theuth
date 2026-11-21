@@ -29,8 +29,10 @@ struct FrontMatter {
     isolated_memory: Option<bool>,
     view_bytes: Option<u32>,
     tail_mode: Option<String>,
-    tail_low_bytes: Option<u32>,
-    tail_high_bytes: Option<u32>,
+    /// R3-12: read as a number and refused unless whole (a clear reason, not
+    /// a front-matter type error).
+    tail_low_bytes: Option<f64>,
+    tail_high_bytes: Option<f64>,
     tail_low_share: Option<f64>,
     tail_high_share: Option<f64>,
     profile: Option<String>,
@@ -98,16 +100,18 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
                 .map_err(|_| format!("profile: expected auto|standard|small, got {p:?}"))
         })
         .transpose()?;
-    for (key, v, lo, hi) in [
-        ("tail_low_bytes", fm.tail_low_bytes, 8_000, 256_000),
-        ("tail_high_bytes", fm.tail_high_bytes, 16_000, 512_000),
-    ] {
-        if let Some(v) = v
-            && !(lo..=hi).contains(&v)
-        {
+    let whole = |key: &str, v: Option<f64>, lo: u32, hi: u32| -> Result<Option<u32>, String> {
+        let Some(v) = v else { return Ok(None) };
+        if v.fract() != 0.0 || !v.is_finite() {
+            return Err(format!("{key}: expected a whole number of bytes, got {v}"));
+        }
+        if !(f64::from(lo)..=f64::from(hi)).contains(&v) {
             return Err(format!("{key}: expected {lo}..={hi}, got {v}"));
         }
-    }
+        Ok(Some(v as u32))
+    };
+    let tail_low_bytes = whole("tail_low_bytes", fm.tail_low_bytes, 8_000, 256_000)?;
+    let tail_high_bytes = whole("tail_high_bytes", fm.tail_high_bytes, 16_000, 512_000)?;
     for (key, v, lo, hi) in [
         ("tail_low_share", fm.tail_low_share, 0.02, 0.40),
         ("tail_high_share", fm.tail_high_share, 0.05, 0.60),
@@ -118,7 +122,7 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
             return Err(format!("{key}: expected {lo}..={hi}, got {v}"));
         }
     }
-    if let (Some(lo), Some(hi)) = (fm.tail_low_bytes, fm.tail_high_bytes)
+    if let (Some(lo), Some(hi)) = (tail_low_bytes, tail_high_bytes)
         && hi <= lo
     {
         return Err(format!(
@@ -154,8 +158,8 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
         isolated_memory: fm.isolated_memory.unwrap_or(false),
         view_bytes: fm.view_bytes,
         tail_mode,
-        tail_low_bytes: fm.tail_low_bytes,
-        tail_high_bytes: fm.tail_high_bytes,
+        tail_low_bytes,
+        tail_high_bytes,
         tail_low_share: fm.tail_low_share,
         tail_high_share: fm.tail_high_share,
         profile,
@@ -544,6 +548,11 @@ mod tests {
             ("profile: tiny", "profile: "),
             ("tail_low_bytes: 1000", "tail_low_bytes: "),
             ("tail_high_share: 0.9", "tail_high_share: "),
+            // R3-12: a byte mark that is not a whole number.
+            (
+                "tail_low_bytes: 24000.5",
+                "tail_low_bytes: expected a whole number",
+            ),
             (
                 "tail_low_bytes: 64000\ntail_high_bytes: 64000",
                 "tail_high_bytes: ",

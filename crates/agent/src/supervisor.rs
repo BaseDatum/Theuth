@@ -10037,6 +10037,9 @@ impl Message<DeleteSession> for Agents {
                 live.actor.kill().await;
             }
             self.endless.detach(*id);
+            // R3-1: a durable session's zoom scratch (a private one's goes
+            // with its tree's scratch root).
+            crate::loop_::endless_tools::forget(&self.rt.data_dir.join("zoom"), *id);
         }
         self.communication_changed(Some(m.session)).await;
         let removed = self

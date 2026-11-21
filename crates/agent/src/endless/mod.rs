@@ -261,23 +261,37 @@ impl EndlessConfig {
     }
 
     /// This config with the desk agent's `tail_*:` keys applied (201 §4.2;
-    /// each key that is set replaces the config's).
+    /// each key that is set replaces the config's). R3-12: the pair as
+    /// resolved (one mark the agent's, the other the config's) must keep
+    /// high above low; when it does not, the agent's marks of that pair are
+    /// not applied (the config's pair stays) and a warning says why.
     pub fn with_agent_tail(&self, a: &AgentTail) -> Self {
         let mut c = self.clone();
         if let Some(m) = a.mode {
             c.tail_mode = m;
         }
-        if let Some(v) = a.low_bytes {
-            c.tail_low_bytes = v;
+        let low = a.low_bytes.unwrap_or(self.tail_low_bytes);
+        let high = a.high_bytes.unwrap_or(self.tail_high_bytes);
+        match tail_pair_ok(
+            f64::from(low),
+            f64::from(high),
+            "tail_low_bytes",
+            "tail_high_bytes",
+        ) {
+            Ok(()) => (c.tail_low_bytes, c.tail_high_bytes) = (low, high),
+            Err(e) if a.low_bytes.is_some() || a.high_bytes.is_some() => {
+                tracing::warn!("agent tail marks not applied: {e}");
+            }
+            Err(_) => {}
         }
-        if let Some(v) = a.high_bytes {
-            c.tail_high_bytes = v;
-        }
-        if let Some(v) = a.low_share {
-            c.tail_low_share = v;
-        }
-        if let Some(v) = a.high_share {
-            c.tail_high_share = v;
+        let low = a.low_share.unwrap_or(self.tail_low_share);
+        let high = a.high_share.unwrap_or(self.tail_high_share);
+        match tail_pair_ok(low, high, "tail_low_share", "tail_high_share") {
+            Ok(()) => (c.tail_low_share, c.tail_high_share) = (low, high),
+            Err(e) if a.low_share.is_some() || a.high_share.is_some() => {
+                tracing::warn!("agent tail marks not applied: {e}");
+            }
+            Err(_) => {}
         }
         if let Some(p) = a.profile {
             c.profile = p;

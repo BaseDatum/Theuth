@@ -2626,6 +2626,37 @@ fn a_tail_pair_with_high_not_above_low_is_refused() {
     assert!(o.validate().unwrap_err().contains("must be above"));
 }
 
+/// R3-12: one agent mark is checked against the config's other one: a low
+/// mark at or above the config's high leaves the config pair in force.
+#[test]
+fn a_single_agent_mark_is_checked_against_the_config_pair() {
+    let cfg = EndlessConfig::default();
+    let bad = super::AgentTail {
+        low_bytes: Some(100_000),
+        ..Default::default()
+    };
+    let c = cfg.with_agent_tail(&bad);
+    assert_eq!(
+        (c.tail_low_bytes, c.tail_high_bytes),
+        (cfg.tail_low_bytes, cfg.tail_high_bytes)
+    );
+    let ok = super::AgentTail {
+        low_bytes: Some(32_000),
+        ..Default::default()
+    };
+    let c = cfg.with_agent_tail(&ok);
+    assert_eq!(
+        (c.tail_low_bytes, c.tail_high_bytes),
+        (32_000, cfg.tail_high_bytes)
+    );
+    let bad = super::AgentTail {
+        high_share: Some(0.01),
+        ..Default::default()
+    };
+    let c = cfg.with_agent_tail(&bad);
+    assert_eq!(c.tail_high_share, cfg.tail_high_share);
+}
+
 /// 201 §4.2: `tail_marks` for both modes and the allowance scale-down.
 #[test]
 fn tail_marks_fixed_scaled_and_scaled_down() {
@@ -3219,6 +3250,8 @@ struct Seer {
     saw_bytes: std::sync::atomic::AtomicBool,
     /// 201 P6c: the local endpoint, when the describer is local.
     local: Option<String>,
+    /// R3-5: `describe_image` never answers.
+    hang: std::sync::atomic::AtomicBool,
 }
 
 impl Seer {
@@ -3233,6 +3266,7 @@ impl Seer {
             described: AtomicU32::new(0),
             saw_bytes: std::sync::atomic::AtomicBool::new(false),
             local: local.map(str::to_owned),
+            hang: std::sync::atomic::AtomicBool::new(false),
         })
     }
 }
@@ -3270,6 +3304,9 @@ impl Compactor for Seer {
     ) -> BoxFuture<'a, Result<Reply, String>> {
         self.saw_bytes.store(true, Ordering::SeqCst);
         self.described.fetch_add(1, Ordering::SeqCst);
+        if self.hang.load(Ordering::SeqCst) {
+            return Box::pin(std::future::pending());
+        }
         Box::pin(async {
             Ok(Reply {
                 text: "a red square on white\n".into(),
@@ -3465,6 +3502,51 @@ async fn a_local_describer_waits_for_the_gate() {
     assert_eq!(seer.described.load(Ordering::SeqCst), 2);
 }
 
+/// R3-5: a stuck local description ends with the session's cancel token
+/// (a detach), the job stops, and the endpoint's permit is free again.
+#[tokio::test]
+async fn a_stuck_description_is_cancelled_and_frees_the_gate() {
+    let seer = Seer::at(true, Some("ep"));
+    seer.hang.store(true, Ordering::SeqCst);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), seer.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    let gate = super::pump::gate_for_tests(&endless.inner, "ep");
+    let job = endless
+        .describe_left(id, 0, i64::MAX, None)
+        .expect("a description job");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        seer.described.load(Ordering::SeqCst),
+        1,
+        "stuck on the first"
+    );
+    endless.detach(id);
+    tokio::time::timeout(Duration::from_secs(5), job)
+        .await
+        .expect("the job ends with the cancel token")
+        .unwrap();
+    assert_eq!(
+        seer.described.load(Ordering::SeqCst),
+        1,
+        "the rest are not tried"
+    );
+    let free = tokio::time::timeout(
+        Duration::from_secs(5),
+        gate.acquire(1, Some(runtime::SessionId(uuid::Uuid::nil()))),
+    )
+    .await;
+    assert!(free.is_ok(), "the permit was released");
+}
+
 /// 201 P6c: while settling is paused by spend no image is described (and no
 /// call row is written); the line stays as it was.
 #[tokio::test]
@@ -3497,12 +3579,17 @@ async fn no_description_while_paused_by_spend() {
 /// binary with its line; other units are no artefacts.
 #[tokio::test]
 async fn zoom_on_an_image_unit_returns_the_binary() {
-    let (_dir, endless, store, id) = harness_for(cfg_p1(16), Seer::new(false)).await;
+    let (dir, endless, store, id) = harness_for(cfg_p1(16), Seer::new(false)).await;
     store
         .set_session_memory(id, MemoryMode::Endless)
         .await
         .unwrap();
     seed_images(&store, id).await;
+    // R3-8: a user text that merely reads like an artefact line.
+    store
+        .append(id, &ChatMessage::user("[image: fake.png] is what I typed"))
+        .await
+        .unwrap();
     endless.attach(id, attached()).await.unwrap();
     let (line, b) = endless.artefact(id, 2).await.unwrap().unwrap();
     assert_eq!(line, "echo: [image: screen.png]");
@@ -3513,16 +3600,45 @@ async fn zoom_on_an_image_unit_returns_the_binary() {
         endless.artefact(id, 1).await.is_none(),
         "an echo is no artefact"
     );
+    // R3-1: written under the given tree root, 0700/0600, never the shared
+    // temp dir, and gone once discarded (the loop discards after reading).
+    let zoom_root = dir.0.join("zoom");
     let out = crate::loop_::endless_tools::run(
         &endless,
         id,
         crate::loop_::endless_tools::ZOOM,
         &serde_json::json!({"id": 2, "n": 1}),
+        &zoom_root,
     )
     .await;
     assert_eq!(out.files.len(), 1, "{}", out.content);
     assert!(out.content.starts_with("2+1|echo: [image: screen.png]"));
-    let _ = std::fs::remove_file(&out.files[0]);
+    let f = out.files[0].clone();
+    assert!(
+        f.starts_with(zoom_root.join(id.to_string())),
+        "{}",
+        f.display()
+    );
+    assert!(!f.starts_with(std::env::temp_dir().join("theuth-zoom")));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&f), 0o600);
+        assert_eq!(mode(f.parent().unwrap()), 0o700);
+    }
+    crate::loop_::endless_tools::discard(crate::loop_::endless_tools::RECALL, &out.files).await;
+    assert!(f.exists(), "another tool's files are not touched");
+    crate::loop_::endless_tools::discard(crate::loop_::endless_tools::ZOOM, &out.files).await;
+    assert!(!f.exists());
+    crate::loop_::endless_tools::forget(&zoom_root, id);
+    assert!(!zoom_root.join(id.to_string()).exists());
+    assert!(
+        endless.artefact(id, 3).await.is_none(),
+        "a typed `[image: ` text is no artefact (R3-8)"
+    );
+    // R3-15: the three artefact zooms above count like any zoom.
+    assert_eq!(endless.memory(id).await.unwrap().zooms, 3);
 }
 
 /// 201 §9 (P6a): appends a user line with a constraint cue and a tool call
@@ -3549,6 +3665,60 @@ async fn seed_ledger(store: &Store, id: SessionId) {
         )
         .await
         .unwrap();
+}
+
+/// R3-7: with no `endless_ledger` row (a session taken over from another
+/// node) the first trim rebuilds the ledger from the answered, error-free
+/// `ledger` tool calls of the message rows, and stores it.
+#[tokio::test]
+async fn a_missing_ledger_row_is_rebuilt_from_the_tool_calls() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    let call = |cid: &str, text: &str| {
+        ContentPart::ToolCall(ToolCall {
+            call_id: cid.into(),
+            fn_name: crate::loop_::endless_tools::LEDGER.into(),
+            fn_arguments: serde_json::json!({"section": "goals", "op": "add", "text": text}),
+            thought_signatures: None,
+        })
+    };
+    store
+        .append(
+            id,
+            &ChatMessage::assistant(MessageContent::from_parts(vec![
+                call("a", "ship v2 by friday"),
+                call("b", "refused one"),
+                call("c", "still in flight"),
+            ])),
+        )
+        .await
+        .unwrap();
+    store
+        .append(
+            id,
+            &ChatMessage::from(vec![
+                ToolResponse::new("a", "L1 added to Goals: ship v2 by friday"),
+                ToolResponse::new("b", "ERROR: refused"),
+            ]),
+        )
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    let g = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    let s = g.ledger.expect("ledger on");
+    assert!(s.contains("- [L1] ship v2 by friday"), "{s}");
+    assert!(
+        !s.contains("refused one") && !s.contains("still in flight"),
+        "{s}"
+    );
+    assert!(store.endless_ledger(id).await.unwrap().is_some(), "stored");
 }
 
 /// 201 §9 (P6a): the snapshot is frozen with its generation (byte-identical
