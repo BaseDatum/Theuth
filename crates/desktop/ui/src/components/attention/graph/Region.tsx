@@ -1,0 +1,236 @@
+// 208 §7.1 / §8.6: the Attention page's graph region — a 32 px strip collapsed; expanded, a resizable canvas with Fit,
+// Follow, Full screen and TTL; full screen over the app. Owns the data hook, the TTL clock and the list ↔ graph wiring;
+// the canvas itself (and `@xyflow/react`) loads lazily on first expand.
+import { ChevronLeft, Crosshair, Maximize2, Minimize2, Scan } from 'lucide-react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { CONTROL } from '@/components/attention/Page'
+import type { SubtreeFilter } from '@/components/attention/model'
+import { Button } from '@/components/ui/button'
+import { ResizeHandle } from '@/components/ui/resize-handle'
+import { useIsMobile } from '@/hooks/use-mobile'
+import { cn } from '@/lib/utils'
+import type { AttentionItem } from '@/rpc/bindings/method.roster.output'
+import { EdgePopover } from './EdgePopover'
+import { NodeBar } from './NodeBar'
+import { useGraphPrefs } from './prefs'
+import { graphNow, useAgentGraph } from './queries'
+import { attentionBySession, includeSessions, nodeLabel, stripCounts, stripText, subtreeIds } from './selectors'
+import { Strip } from './Strip'
+import { TtlPopover } from './TtlPopover'
+import { nextTtlTick, visibleGraph } from './ttl'
+
+const Canvas = lazy(() => import('./Canvas'))
+
+export type GraphRegionProps = {
+  /** The 207 cache, for attention counts and `include`. */
+  items: readonly AttentionItem[] | undefined
+  /** Session of the focused entry's head, else of the open item. */
+  highlight: string | null
+  /** "Show in graph": expand, centre (no zoom change), highlight. */
+  focus: { session: string; nonce: number } | null
+  /** The current filter's session. */
+  subtree: string | null
+  /** Node click; re-sent when the subtree's ids change. */
+  onSubtree: (f: SubtreeFilter | null) => void
+}
+
+const MIN_H = 160
+const DEFAULT_H = 320
+const sameIds = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every((x) => b.has(x))
+const editable = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || t.closest(CONTROL) !== null)
+
+export function GraphRegion({ items, highlight, focus, subtree, onSubtree }: GraphRegionProps) {
+  const prefs = useGraphPrefs()
+  const mobile = useIsMobile()
+  // Under md the region starts collapsed and opens as a full-screen pane; full screen is never stored.
+  const [open, setOpen] = useState(() => !mobile && prefs.expanded)
+  const [full, setFull] = useState(false)
+  const [selected, setSelected] = useState<string | null>(null)
+  const [edgeAt, setEdgeAt] = useState<{ id: string; at: { x: number; y: number } } | null>(null)
+  const [fitNonce, setFitNonce] = useState(0)
+  const realNow = Date.now()
+  const include = useMemo(() => includeSessions(items ?? [], realNow), [items, Math.floor(realNow / 60_000)])
+  const { state, supported, error } = useAgentGraph(prefs.ttl, include)
+  const attention = useMemo(() => attentionBySession(items ?? [], Date.now()), [items])
+
+  // The TTL clock: re-derived on every graph change and at the next visible change (nextTtlTick), never per second.
+  const [now, setNow] = useState(graphNow)
+  useEffect(() => setNow(graphNow()), [state])
+  const view = useMemo(() => (state ? visibleGraph(state, attention, prefs.ttl, now) : null), [state, attention, prefs.ttl, now])
+  useEffect(() => {
+    if (!state || !view) return
+    const t = setTimeout(() => setNow(graphNow()), nextTtlTick(state, view, prefs.ttl, now))
+    return () => clearTimeout(t)
+  }, [state, view, prefs.ttl, now])
+
+  // Keep the list's subtree filter in step with the graph: its ids follow spawns and deletions.
+  const sent = useRef<ReadonlySet<string> | null>(null)
+  useEffect(() => {
+    if (!state || subtree === null) {
+      sent.current = null
+      return
+    }
+    const ids = subtreeIds(state.nodes, subtree)
+    const node = state.nodes.get(subtree)
+    if (!node || (sent.current && sameIds(sent.current, ids))) return
+    sent.current = ids
+    onSubtree({ session: subtree, label: nodeLabel(node), ids })
+  }, [state, subtree, onSubtree])
+
+  // "Show in graph": open (full screen under md), select nothing, the canvas centres on the nonce.
+  useEffect(() => {
+    if (!focus) return
+    if (mobile) setFull(true)
+    else setOpen(true)
+  }, [focus?.nonce, mobile])
+
+  const toggle = () => {
+    if (mobile) {
+      setFull((f) => !f)
+      return
+    }
+    const next = !open
+    setOpen(next)
+    prefs.set({ expanded: next })
+  }
+  const latest = useRef({ toggle, full, setFull })
+  latest.current = { toggle, full, setFull }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || editable(e.target)) return
+      const l = latest.current
+      if (e.key === 'g' && !e.shiftKey) {
+        e.preventDefault()
+        l.toggle()
+      } else if (e.key === 'G' && e.shiftKey) {
+        e.preventDefault()
+        l.setFull(!l.full)
+      }
+    }
+    // Esc leaves full screen before anything below sees it (the page's own handlers swallow a bare Escape), unless a
+    // popover or menu is open — that one closes first.
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.shiftKey || !latest.current.full || editable(e.target)) return
+      if (document.querySelector('[data-radix-popper-content-wrapper]')) return
+      e.preventDefault()
+      e.stopPropagation()
+      latest.current.setFull(false)
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('keydown', onEsc, true)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onEsc, true)
+    }
+  }, [])
+
+  const regionRef = useRef<HTMLDivElement>(null)
+  const top = useRef(0)
+  const maxH = () => Math.max(MIN_H, 0.8 * (regionRef.current?.parentElement?.clientHeight ?? 1000))
+  const setHeight = (h: number) => prefs.set({ height: Math.round(Math.min(maxH(), Math.max(MIN_H, h))) })
+
+  // Legacy discovery counts every method as present: an engine that then rejects `agent_graph` shows no region either.
+  if (!supported || (error !== null && state === null)) return null
+  const counts = view ? stripCounts(view) : { needYou: 0, working: 0, finished: 0 }
+  const selectedNode = selected && state ? state.nodes.get(selected) : undefined
+  const edge = edgeAt && state ? state.edges.get(edgeAt.id) : undefined
+  const subtreeNode = subtree !== null ? state?.nodes.get(subtree) : undefined
+  const subtreeLabel = subtreeNode ? nodeLabel(subtreeNode) : subtree
+
+  const nodeClick = (id: string) => {
+    setEdgeAt(null)
+    const node = state?.nodes.get(id)
+    if (!node || !state) return
+    if (selected === id) {
+      setSelected(null)
+      if (subtree === id) onSubtree(null)
+      return
+    }
+    setSelected(id)
+    if (node.kind !== 'peer') onSubtree({ session: id, label: nodeLabel(node), ids: subtreeIds(state.nodes, id) })
+  }
+  const controls = (
+    <>
+      <Button size="icon-xs" variant="ghost" aria-label="Fit" title="Fit and re-pack" onClick={() => setFitNonce((n) => n + 1)}>
+        <Scan />
+      </Button>
+      <Button size="icon-xs" variant={prefs.follow ? 'secondary' : 'ghost'} aria-label="Follow activity" aria-pressed={prefs.follow} title="Follow activity" onClick={() => prefs.set({ follow: !prefs.follow })}>
+        <Crosshair />
+      </Button>
+      <TtlPopover />
+      <Button size="icon-xs" variant="ghost" aria-label={full ? 'Leave full screen' : 'Full screen'} aria-keyshortcuts="Shift+G" title={full ? 'Leave full screen (Esc)' : 'Full screen (Shift+G)'} onClick={() => setFull(!full)}>
+        {full ? <Minimize2 /> : <Maximize2 />}
+      </Button>
+    </>
+  )
+  const canvas = state && view && (
+    <div className="relative min-h-0 flex-1">
+      <Suspense fallback={<div className="size-full bg-background" />}>
+        <Canvas
+          state={state}
+          view={view}
+          now={now}
+          highlight={highlight}
+          selected={selected}
+          focus={focus}
+          follow={prefs.follow}
+          fitNonce={fitNonce}
+          onNodeClick={nodeClick}
+          onEdgeClick={(id, at) => setEdgeAt({ id, at })}
+          onPaneClick={() => setEdgeAt(null)}
+        />
+      </Suspense>
+      {selectedNode && (
+        <NodeBar
+          node={selectedNode}
+          filtered={subtree === selectedNode.id}
+          onFilter={() => (subtree === selectedNode.id ? onSubtree(null) : onSubtree({ session: selectedNode.id, label: nodeLabel(selectedNode), ids: subtreeIds(state.nodes, selectedNode.id) }))}
+          onClear={() => {
+            setSelected(null)
+            if (subtree === selectedNode.id) onSubtree(null)
+          }}
+        />
+      )}
+      {edge && edgeAt && <EdgePopover edge={edge} nodes={state.nodes} at={edgeAt.at} now={now} onClose={() => setEdgeAt(null)} />}
+    </div>
+  )
+
+  if (full)
+    return (
+      <div className="fixed inset-0 z-40 flex flex-col bg-background" role="region" aria-label="Agent graph, full screen">
+        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-2 text-xs">
+          <Button size="icon-xs" variant="ghost" aria-label="Leave full screen" title="Back (Esc)" onClick={() => setFull(false)}>
+            <ChevronLeft />
+          </Button>
+          <span className="text-sm font-semibold">Agents</span>
+          <span className={cn('min-w-0 truncate text-fg-secondary tabular-nums', counts.needYou > 0 && 'text-danger')}>{stripText(counts)}</span>
+          <div className="ml-auto flex items-center gap-0.5">{controls}</div>
+        </div>
+        {canvas}
+      </div>
+    )
+
+  return (
+    <div ref={regionRef} className="relative flex shrink-0 flex-col border-b border-border-subtle" style={open ? { height: prefs.height } : undefined} role="region" aria-label="Agent graph">
+      <Strip counts={counts} older={state?.older ?? null} subtree={subtreeLabel} expanded={open} onToggle={toggle} onClearSubtree={() => onSubtree(null)}>
+        {open && controls}
+      </Strip>
+      {open && canvas}
+      {open && (
+        <ResizeHandle
+          orientation="horizontal"
+          placement="center"
+          className="absolute right-0 bottom-0 left-0 z-10"
+          aria-label="Resize the agent graph"
+          value={{ now: prefs.height, min: MIN_H, max: Math.round(maxH()) }}
+          onStart={() => {
+            top.current = regionRef.current?.getBoundingClientRect().top ?? 0
+          }}
+          onMove={(_x, y) => setHeight(y - top.current)}
+          onNudge={(d) => setHeight(prefs.height + d * 16)}
+          onReset={() => setHeight(DEFAULT_H)}
+        />
+      )}
+    </div>
+  )
+}

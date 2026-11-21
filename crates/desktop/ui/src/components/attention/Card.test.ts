@@ -156,3 +156,14 @@ test('the bulk bar offers Allow N / Deny N only when every selected item is an a
   expect(mixed).not.toContain('Allow 4')
   expect(mixed).not.toContain('Deny 4')
 })
+
+test('208: "Show in graph" with onShowInGraph and a session; absent without either', async () => {
+  const withSession = { ...at(0), session: 'r1.builder' } as AttentionItem
+  const shown = await render(createElement(Card, { item: withSession, now: NOW, onShowInGraph: () => undefined }))
+  expect(shown).toContain('aria-label="Show in graph"')
+  expect(await render(createElement(Card, { item: withSession, now: NOW }))).not.toContain('Show in graph')
+  const noSession = { ...at(0), session: null } as AttentionItem
+  expect(await render(createElement(Card, { item: noSession, now: NOW, onShowInGraph: () => undefined }))).not.toContain('Show in graph')
+  const stack = await render(createElement(StackCard, { items: [{ ...at(3), session: 'r3' } as AttentionItem, at(4), at(5)], now: NOW, onShowInGraph: () => undefined }))
+  expect(stack).toContain('aria-label="Show in graph"')
+})
