@@ -2428,6 +2428,7 @@ impl Channel {
                         &card.body,
                         res.decision,
                         res.timed_out,
+                        res.dismissed,
                         card.by.as_deref(),
                     );
                     self.edit(at, &text, Some(&kb)).await;
@@ -2450,7 +2451,13 @@ impl Channel {
                     return;
                 }
                 let Some(at) = card.at else { return };
-                let text = asks::closed(&card.req, card.current, res.dismissed, res.timed_out);
+                let text = asks::closed(
+                    &card.req,
+                    card.current,
+                    res.dismissed,
+                    res.timed_out,
+                    res.left_to_agent,
+                );
                 self.edit(at, &text, None).await;
             }
             // 126 §10: the double's line follows the card it is about, as its own

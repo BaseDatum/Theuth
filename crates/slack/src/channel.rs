@@ -1167,7 +1167,7 @@ impl Channel {
             asks::Kind::Dismiss => {
                 card.done = true;
                 return Ok((
-                    asks::closed_card(&card.req, i, true, false),
+                    asks::closed_card(&card.req, i, true, false, false),
                     AskNext::Dismiss,
                 ));
             }
@@ -1770,6 +1770,7 @@ impl Channel {
                             &body,
                             res.decision,
                             res.timed_out,
+                            res.dismissed,
                             card.by.as_deref(),
                         );
                         if let Err(e) = self.api.update_blocks(dm, &ts, blocks).await {
@@ -1818,8 +1819,13 @@ impl Channel {
                 if card.done || card.ts.is_empty() {
                     return;
                 }
-                let blocks =
-                    asks::closed_card(&card.req, card.current, res.dismissed, res.timed_out);
+                let blocks = asks::closed_card(
+                    &card.req,
+                    card.current,
+                    res.dismissed,
+                    res.timed_out,
+                    res.left_to_agent,
+                );
                 if let Err(e) = self
                     .api
                     .update_blocks(&card.channel, &card.ts, blocks)
@@ -2525,7 +2531,8 @@ impl Worker {
         let Some((ts, body)) = self.approvals.remove(&res.id) else {
             return;
         };
-        let blocks = approvals::resolved_card(&body, res.decision, res.timed_out, by);
+        let blocks =
+            approvals::resolved_card(&body, res.decision, res.timed_out, res.dismissed, by);
         if let Err(e) = self
             .chan
             .api

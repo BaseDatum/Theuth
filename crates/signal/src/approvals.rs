@@ -45,6 +45,8 @@ pub enum Lookup {
         decision: Decision,
         /// Nobody answered in time.
         timed_out: bool,
+        /// 207: left to the agent from Attention, not refused.
+        dismissed: bool,
     },
     /// Never seen, or tombstone expired.
     Unknown,
@@ -54,6 +56,7 @@ pub enum Lookup {
 struct Tombstone {
     decision: Decision,
     timed_out: bool,
+    dismissed: bool,
     at: Instant,
 }
 
@@ -108,6 +111,7 @@ impl Pending {
             Some(t) if t.at.elapsed() <= TOMBSTONE_TTL => Lookup::Resolved {
                 decision: t.decision,
                 timed_out: t.timed_out,
+                dismissed: t.dismissed,
             },
             _ => Lookup::Unknown,
         }
@@ -130,6 +134,7 @@ impl Pending {
             Tombstone {
                 decision: res.decision,
                 timed_out: res.timed_out,
+                dismissed: res.dismissed,
                 at: Instant::now(),
             },
         );
@@ -193,20 +198,31 @@ pub fn decision_for_emoji(emoji: &str) -> Option<Decision> {
     }
 }
 
-/// Reaction we put on our own approval message once resolved.
-pub fn reaction_for(res: &ApprovalResolved) -> &'static str {
-    if res.timed_out {
-        "⌛"
+/// Reaction we put on our own approval message once resolved. `None` for one
+/// the user left to the agent (207): no reaction here reads as anything but
+/// allow / deny / expired, so the channel says it in words ([`left_text`]).
+pub fn reaction_for(res: &ApprovalResolved) -> Option<&'static str> {
+    if res.dismissed {
+        None
+    } else if res.timed_out {
+        Some("⌛")
     } else {
         match res.decision {
-            Decision::Allow => "✅",
-            Decision::Deny => "❌",
+            Decision::Allow => Some("✅"),
+            Decision::Deny => Some("❌"),
         }
     }
 }
 
-fn outcome(decision: Decision, timed_out: bool) -> &'static str {
-    if timed_out {
+/// 207: the line sent for an approval the user left to the agent.
+pub fn left_text(code: &str) -> String {
+    format!("{code} {}", outcome(Decision::Deny, false, true))
+}
+
+fn outcome(decision: Decision, timed_out: bool, dismissed: bool) -> &'static str {
+    if dismissed {
+        "left to the agent (not run, not refused)"
+    } else if timed_out {
         "timed out"
     } else {
         match decision {
@@ -226,13 +242,17 @@ pub async fn resolve_by_code(pending: &mut Pending, code: &str, decision: Decisi
         Lookup::Resolved {
             decision,
             timed_out,
-        } => format!("{code} was already {}", outcome(decision, timed_out)),
+            dismissed,
+        } => format!(
+            "{code} was already {}",
+            outcome(decision, timed_out, dismissed)
+        ),
         Lookup::Pending(id) => {
             let Ok(Some(actor)) = ActorRef::<tools::Approval>::lookup(tools::APPROVAL_ACTOR) else {
                 return "error: approval actor is not running".to_owned();
             };
             match actor.ask(tools::Resolve { id, decision }).await {
-                Ok(true) => format!("{code} {}", outcome(decision, false)),
+                Ok(true) => format!("{code} {}", outcome(decision, false, false)),
                 Ok(false) => format!("{code} was already resolved"),
                 Err(e) => format!("error: {e}"),
             }
@@ -306,7 +326,8 @@ mod tests {
             p.by_code(&code),
             Lookup::Resolved {
                 decision: Decision::Deny,
-                timed_out: true
+                timed_out: true,
+                dismissed: false,
             }
         );
         assert!(p.is_code(&code));
@@ -337,20 +358,54 @@ mod tests {
             timed_out: false,
             dismissed: false,
         };
-        assert_eq!(reaction_for(&allow), "✅");
+        assert_eq!(reaction_for(&allow), Some("✅"));
         assert_eq!(
             reaction_for(&ApprovalResolved {
                 decision: Decision::Deny,
                 ..allow
             }),
-            "❌"
+            Some("❌")
         );
         assert_eq!(
             reaction_for(&ApprovalResolved {
                 timed_out: true,
                 ..allow
             }),
-            "⌛"
+            Some("⌛")
+        );
+    }
+
+    /// 207 E4: an approval left to the agent gets no deny reaction and is
+    /// reported as left to the agent, on the card and on a late `/deny`.
+    #[test]
+    fn dismissed_approval_reads_left_to_the_agent() {
+        let mut p = Pending::default();
+        let r = req("shell", json!({}));
+        let code = p.insert(&r, "+1");
+        let res = ApprovalResolved {
+            id: r.id,
+            decision: Decision::Deny,
+            timed_out: false,
+            dismissed: true,
+        };
+        assert_eq!(reaction_for(&res), None);
+        assert_eq!(
+            left_text(&code),
+            format!("{code} left to the agent (not run, not refused)")
+        );
+        p.resolve(&res);
+        let Lookup::Resolved {
+            decision,
+            timed_out,
+            dismissed,
+        } = p.by_code(&code)
+        else {
+            panic!("tombstoned");
+        };
+        assert!(dismissed);
+        assert_eq!(
+            outcome(decision, timed_out, dismissed),
+            "left to the agent (not run, not refused)"
         );
     }
 

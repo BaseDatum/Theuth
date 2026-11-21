@@ -88,14 +88,18 @@ pub fn answered_card(req: &AskRequested, i: usize, answer: &Answer) -> serde_jso
 }
 
 /// Question `i` once the set closed without a click here: dismissed (turn
-/// cancelled), timed out, or answered from another frontend.
+/// cancelled), timed out, left to the agent from Attention (207: the turn
+/// goes on), or answered from another frontend.
 pub fn closed_card(
     req: &AskRequested,
     i: usize,
     dismissed: bool,
     timed_out: bool,
+    left_to_agent: bool,
 ) -> serde_json::Value {
-    single(if dismissed {
+    single(if left_to_agent {
+        "**Questions left to the agent** (not answered; the turn goes on)".to_owned()
+    } else if dismissed {
         "🚫 **Questions dismissed** (turn cancelled)".to_owned()
     } else if timed_out {
         format!(
@@ -344,12 +348,17 @@ mod tests {
             "✅ **Question 2/2** — Project name?\n→ _skipped_"
         );
         assert_eq!(
-            closed_card(&r, 0, true, false)[0]["text"],
+            closed_card(&r, 0, true, false, false)[0]["text"],
             "🚫 **Questions dismissed** (turn cancelled)"
         );
         assert_eq!(
-            closed_card(&r, 1, false, true)[0]["text"],
+            closed_card(&r, 1, false, true, false)[0]["text"],
             "⌛ **Question 2/2** — timed out"
+        );
+        // 207 E4: left to the agent is neither "answered elsewhere" nor a dismissal.
+        assert_eq!(
+            closed_card(&r, 0, false, false, true)[0]["text"],
+            "**Questions left to the agent** (not answered; the turn goes on)"
         );
     }
 
