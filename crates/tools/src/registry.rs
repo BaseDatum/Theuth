@@ -3240,7 +3240,9 @@ pub(crate) mod tests {
         ]);
         let (a, b) = (SessionId::new(), SessionId::new());
         let before = reg.ask(HiddenEpoch).await.unwrap();
-        switch(&reg, &["echo", "cat:files", "read_file"], true).await.unwrap();
+        switch(&reg, &["echo", "cat:files", "read_file"], true)
+            .await
+            .unwrap();
         // One call is one bump however many names it carries (each bump re-lists every
         // running turn; an endless chat pays a cold prefix for it).
         assert_eq!(reg.ask(HiddenEpoch).await.unwrap(), before + 1);
