@@ -74,7 +74,10 @@ echo "==> [1/5] TypeScript bindings"
 just ts-desktop
 
 echo "==> [1/5] building theuth (release, $HOST_TRIPLE)"
-cargo build --release -p theuth
+# 202: mlx-sys compiles MLX's Metal kernels into $MLX_RS_METAL_PATH/mlx.metallib; pinned here so the
+# copy into Contents/Resources below does not have to guess mlx-sys's ~/.mlx/lib/<key>/ directory.
+MLX_METAL_DIR="$ROOT/target/release/mlx-metal"
+MLX_RS_METAL_PATH="$MLX_METAL_DIR" cargo build --release -p theuth
 
 echo "==> [1/5] building $HELPER (bun build --compile)"
 build_helper
@@ -111,6 +114,13 @@ fi
 mkdir -p "$APP/Contents/Frameworks"
 tar -xzf "$ORT_TGZ" -O "onnxruntime-osx-arm64-${ORT_VERSION}/lib/libonnxruntime.${ORT_VERSION}.dylib" > "$APP/Contents/Frameworks/libonnxruntime.dylib"
 chmod 755 "$APP/Contents/Frameworks/libonnxruntime.dylib"
+
+# 202: the MLX speech model's Metal kernels. The sidecar (Contents/MacOS/t) finds them at
+# ../Resources/mlx.metallib (crates/voice-mlx/src/metal.rs); without the file the MLX engine reports
+# itself unavailable and dictation stays on ONNX.
+echo "==> [3/5] mlx.metallib → Contents/Resources"
+[[ -f "$MLX_METAL_DIR/mlx.metallib" ]] || { echo "error: $MLX_METAL_DIR/mlx.metallib not built (mlx-sys)" >&2; exit 1; }
+install -m 644 "$MLX_METAL_DIR/mlx.metallib" "$APP/Contents/Resources/mlx.metallib"
 
 echo "==> [3/5] $HELPER + $DOC_HELPER → Contents/MacOS"
 rm -f "$APP/Contents/MacOS"/theuth-app-parser-* "$APP/Contents/MacOS"/theuth-documents-*
