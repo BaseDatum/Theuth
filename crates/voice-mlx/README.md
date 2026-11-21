@@ -49,6 +49,10 @@ Faithfulness notes:
   metallib beside it (or in the app bundle's Resources); the build-machine path will not exist on users' machines.
   `mlx_rs::metal::set_metallib_path` overrides it at run time. The `metal-jit` feature shrinks the metallib to
   ~1.5 MB but compiles kernels from source on first use in every process.
+  This crate does the lookup itself before MLX does (`src/metal.rs`: beside the exe, `Resources/`, `../Resources/`
+  for an app bundle, then the build machine's path recorded by build.rs) and pins the hit with `set_metallib_path`
+  in `ParakeetMlx::load`; `unavailable_reason()` names the file when there is none. Without a metallib MLX throws
+  from its device constructor, which mlx-rs 0.34 turns into a panic on the first array ("Failed to create array").
 - **Linked:** static `libmlx` + `libmlxc` (+ gguflib), `libc++`, `objc`; frameworks `Foundation`, `Metal`,
   `Accelerate` (mlx-sys build.rs), plus `clang_rt.osx` from Xcode when found.
 - **Minimum macOS:** MLX v0.32.2's CMake builds for the *build host's* macOS version unless
