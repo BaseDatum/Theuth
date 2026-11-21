@@ -92,13 +92,14 @@ reusable pieces. `/prompt` shows the assembled prompt.
 | Where | How |
 |---|---|
 | TUI | `/skills` then Enter on a row; or `/<skill> [words]` (for example `/commit fix the typo`); `s` shows the body |
-| Desktop | the Library's Skills page (`/skills` route) with a Use action, and the same chat slash commands |
+| Desktop | the Library's Skills page (`/skills` route) with a Use action, the composer's `+` › Skills picker, and the same chat slash commands; every pick (and every `/skill:<name>`) adds a chip, so one message can carry several skills |
 | Slack, Signal, Telegram | `/theuth skills` and `/skills` list and manage; the model still loads skills itself with `load_skill` |
-| RPC | `use_skill{name, args}` |
+| RPC | `use_skill{name, args}`; `use_skills{names, args}` for several at once |
 
 Using a skill injects `<skill name="…">body</skill>` plus your words as your
-input: it starts a turn when the model is idle or steers the running one. The
-body is in context until compaction or `/clear`, not permanently.
+input: it starts a turn when the model is idle or steers the running one.
+Several skills are one input, their blocks in the order named, then your
+words. The body is in context until compaction or `/clear`, not permanently.
 
 ## Git repositories
 
@@ -128,7 +129,7 @@ upstream and sync, or remove the repo).
 
 Git is your `git` binary; without one the repo operations report that and
 everything else works. The same operations exist over RPC (`list_skills`,
-`load_skill`, `use_skill`, `add_skill`, `remove_skill`, `add_skill_repo`,
+`load_skill`, `use_skill`, `use_skills`, `add_skill`, `remove_skill`, `add_skill_repo`,
 `remove_skill_repo`, `sync_skills`), on Slack as
 `/theuth skills [add <url>|rm <name>|sync]` and on Signal and Telegram as
 `/skills [add <url>|rm <name>|sync]`.

@@ -250,7 +250,7 @@ export const MessageUser = memo(function MessageUser({
   return (
     <div className="group flex flex-col items-end gap-2 py-2" onClick={stamp.onClick}>
       {origin && <OriginChip origin={origin} />}
-      {skill && <SkillCard name={skill} />}
+      {skill?.split(', ').map((name) => <SkillCard key={name} name={name} />)}
       {cells?.length ? <SentResults cells={cells} disclosure={disclosureKey(session, id, 'cells')} /> : null}
       {screens.length === 0 && <Attachments files={paths} occurrences={occurrences} session={readOnly ? undefined : session} active={context?.active} className="justify-end" />}
       {!editing && <ChipRow refs={refs} session={readOnly ? undefined : session} />}

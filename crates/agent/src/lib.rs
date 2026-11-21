@@ -2498,17 +2498,17 @@ pub struct LoadSkill {
     pub name: String,
 }
 
-/// `ask` → `Result<SessionId, String>`: hand a skill to the model as user
-/// input (design doc 04 §2.4) — the body [`LoadSkill`] returns, wrapped in
-/// `<skill name="…">`, then `args` as the user's words. Same delivery as
-/// [`SendInput`]: a new turn when idle, a steer when one is running.
-/// `Err` names an unknown skill.
+/// `ask` → `Result<SessionId, String>`: hand skills to the model as one user
+/// input (design doc 04 §2.4) — each body [`LoadSkill`] returns, wrapped in
+/// its own `<skill name="…">` in order, then `args` as the user's words. Same
+/// delivery as [`SendInput`]: a new turn when idle, a steer when one is running.
+/// `Err` names an unknown skill (nothing is sent).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UseSkill {
     /// Existing session, or `None` for a new one.
     pub session: Option<SessionId>,
-    /// Skill name.
-    pub name: String,
+    /// Skill names, in order; at least one.
+    pub names: Vec<String>,
     /// What the user wants done with it; may be empty.
     pub args: String,
 }
