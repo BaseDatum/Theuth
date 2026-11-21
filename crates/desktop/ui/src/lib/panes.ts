@@ -2,8 +2,10 @@
 // sidebar → pane drag in flight. `root === null` is the plain single chat the route names. In memory only.
 // A leaf may also hold a draft id (`draft:<uuid>[?project=<label>]`, 25 §12.3): a new chat opened from the sidebar whose
 // session does not exist until the first send; `place(draft, session, 'center')` then swaps it in.
+// A leaf may also hold a web frame (`web:<id>`, 205 D5, `lib/web-views.ts`): never focused, never in the URL.
 
 import { create } from 'zustand'
+import { isWeb, useWebViews, webLeaf } from '@/lib/web-views'
 
 export type Edge = 'left' | 'right' | 'top' | 'bottom' | 'center'
 export type Node = { session: string } | { dir: 'row' | 'col'; ratio: number; a: Node; b: Node }
@@ -26,10 +28,14 @@ export function draftProject(id: string): string | undefined {
 
 /** Sessions shown, left-to-right, top-to-bottom. */
 export const leaves = (n: Node): string[] => ('session' in n ? [n.session] : [...leaves(n.a), ...leaves(n.b)])
+/** `leaves` without web frames: the chat panes (drafts included), for whatever expects a session id. */
+export const chatLeaves = (n: Node): string[] => leaves(n).filter((l) => !isWeb(l))
 
-/** The one leaf a phone shows (it does not tile, 25 §12.3): the focused pane while the tree has it, else its first leaf; the route's `session` without a tree. */
-export const shown = (root: Node | null, focused: string | null, session: string): string =>
-  root === null ? session : focused !== null && leaves(root).includes(focused) ? focused : (leaves(root)[0] as string)
+/** The one leaf a phone shows (it does not tile, 25 §12.3): the focused pane while the tree has it, else its first chat leaf; the route's `session` without a tree (or with only web frames). */
+export const shown = (root: Node | null, focused: string | null, session: string): string => {
+  const all = root ? chatLeaves(root) : []
+  return focused !== null && all.includes(focused) ? focused : (all[0] ?? session)
+}
 
 /** The tree with the leaf showing `session` swapped for `f(leaf)`. */
 function replace(n: Node, session: string, f: (leaf: Node) => Node): Node {
@@ -110,27 +116,31 @@ type PanesStore = {
   endDrag(drop: boolean): string | null
 }
 
-/** A lone real leaf is the single-chat mode; a lone draft stays a tree, since no route names it. */
-const normal = (n: Node | null): Node | null => (n && 'session' in n && !isDraft(n.session) ? null : n)
+/** A lone real leaf is the single-chat mode; a lone draft or web frame stays a tree, since no route names it (closing
+ * the chat beside a web tile leaves that tile on screen, and the URL on the closed chat, like a draft). */
+const normal = (n: Node | null): Node | null => (n && 'session' in n && !isDraft(n.session) && !isWeb(n.session) ? null : n)
 
 export const usePanes = create<PanesStore>()((set, get) => ({
   root: null,
   focused: null,
   drag: null,
   focus(session) {
-    if (get().focused !== session) set({ focused: session })
+    if (get().focused !== session && !isWeb(session)) set({ focused: session })
   },
   show(session) {
     const { root, focused } = get()
     if (root && !leaves(root).includes(session)) {
-      const target = focused && leaves(root).includes(focused) ? focused : (leaves(root)[0] as string)
-      set({ root: normal(replace(root, target, () => ({ session }))) })
+      const chats = chatLeaves(root)
+      const target = focused && chats.includes(focused) ? focused : chats[0]
+      // Only web frames left: the chat goes beside them instead of over one.
+      const lone = leaves(root)[0] as string
+      set({ root: target ? normal(replace(root, target, () => ({ session }))) : replace(root, lone, (leaf) => ({ dir: 'row', ratio: 0.5, a: { session }, b: leaf })) })
     }
     set({ focused: session })
   },
   place(target, session, edge) {
     if (target === session) {
-      set({ focused: session })
+      get().focus(session)
       return
     }
     // Moving an open pane: lift it first so the target's leaf is still there to split.
@@ -143,11 +153,12 @@ export const usePanes = create<PanesStore>()((set, get) => ({
             const first = edge === 'left' || edge === 'top'
             return { dir: edge === 'left' || edge === 'right' ? 'row' : 'col', ratio: 0.5, a: first ? fresh : leaf, b: first ? leaf : fresh }
           })
-    set({ root: normal(next), focused: session })
+    // A web frame never takes focus (205 D5): the URL stays on the chat beside it.
+    set({ root: normal(next), focused: isWeb(session) ? (get().focused ?? target) : session })
   },
   fresh(project) {
     const { root, focused } = get()
-    const all = root ? leaves(root) : []
+    const all = root ? chatLeaves(root) : []
     const target = focused && all.includes(focused) ? focused : all[0]
     if (target && isDraft(target)) return target
     if (all.length < 2) return null
@@ -161,8 +172,8 @@ export const usePanes = create<PanesStore>()((set, get) => ({
     const next = remove(root, session)
     set({ root: normal(next) })
     if (focused !== session || !next) return null
-    const to = leaves(next).find((s) => !isDraft(s)) ?? null
-    set({ focused: to ?? (leaves(next)[0] as string) })
+    const to = leaves(next).find((s) => !isDraft(s) && !isWeb(s)) ?? null
+    set({ focused: to ?? chatLeaves(next)[0] ?? null })
     return to
   },
   resize(path, ratio) {
@@ -186,3 +197,22 @@ export const usePanes = create<PanesStore>()((set, get) => ({
     return drag.session
   },
 }))
+
+/**
+ * 205 D5: web frame `id` opens to the right of `session`'s pane (the single chat on screen counts as one). An open
+ * tile is left where it is. `false` when `session` has no pane here: the frame then waits for its card.
+ */
+export function placeWeb(session: string, id: string): boolean {
+  const { root, place } = usePanes.getState()
+  const leaf = webLeaf(id)
+  if (root && leaves(root).includes(leaf)) return true
+  if (root && !leaves(root).includes(session)) return false
+  place(session, leaf, 'right')
+  return true
+}
+
+/** Close web frame `id` for good: its tile, its store entry and its native web view. */
+export function closeWeb(id: string): void {
+  usePanes.getState().close(webLeaf(id))
+  useWebViews.getState().close(id)
+}

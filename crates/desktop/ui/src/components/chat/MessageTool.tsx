@@ -11,6 +11,7 @@ import { ArtifactCard, Progress, SourceControl } from './ArtifactCard'
 import { AnsweredAskCard, askQuestions } from './AskCard'
 import { BoardCard, isBoardCreate } from './BoardCard'
 import { ScrapeCard } from './ScrapeCard'
+import { WebViewCard } from './WebViewCard'
 import { RosterCard, rosterRows } from './RosterCard'
 import { Attachments } from './Attachments'
 import { fenced, plugins, shikiTheme } from './MessageAssistant'
@@ -90,6 +91,8 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
   const card =
     tool.name === 'show' || tool.name === 'app' || tool.name === 'task_draft' || tool.name === 'agent_draft' || tool.name === 'routine_draft' || tool.name === 'autoresearch_draft' ? (
       <ArtifactCard tool={tool} session={session} readOnly={readOnly} />
+    ) : tool.name === 'show_web' ? (
+      <WebViewCard tool={tool} session={session} />
     ) : tool.name === 'crawl' || tool.name === 'map_site' || tool.name === 'scrape_url' || tool.name === 'search_web' ? (
       <ScrapeCard tool={tool} session={session} />
     ) : tool.name === 'remind_me_in' ? (

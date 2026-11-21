@@ -26,7 +26,9 @@ import { relistReminders, relistTerminals } from '@/components/chat/background'
 import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { chatName } from '@/lib/attach'
-import { isDraft, usePanes } from '@/lib/panes'
+import { closeWeb, isDraft, usePanes } from '@/lib/panes'
+import { isWeb, webId } from '@/lib/web-views'
+import { WebFrame } from '@/components/chat/WebFrame'
 import { reportLoadError, useRemoteStart } from '@/lib/remote-start'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
 import { ownedElsewhere } from '@/lib/owner'
@@ -84,7 +86,9 @@ function SessionRoute() {
     <Panes
       session={session}
       render={(id, first) =>
-        isDraft(id) ? (
+        isWeb(id) ? (
+          <WebFrame id={webId(id)} onClose={() => closeWeb(webId(id))} />
+        ) : isDraft(id) ? (
           <NewChatPane id={id} first={first} />
         ) : (
           <CodeMapPane session={id}>
