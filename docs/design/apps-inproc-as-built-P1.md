@@ -249,6 +249,9 @@ fail-open) and one canned responder (error lines).
   documents pump only kept numeric ids).
 - `BundleJs::new` loads under `max(deadline, LOAD_DEADLINE)`; document-js uses `max(deadline, DEFAULT_DEADLINE)`
   (both 30 s; separate constant here because the app deadline is 2 s).
+- The `invalid JSON: …` protocol error now carries V8's `JSON.parse` message instead of JavaScriptCore's
+  (Bun); every other response is byte-identical (golden replay, 36 cases). The Rust side never sends invalid
+  JSON, so this text is unobservable in practice.
 - Wire/RPC types and `crates/theuth/tests/fixtures/wire/openrpc-v1.json` untouched. Vestigial wire fields:
   none on the RPC surface; in `protocol.ts` the `MermaidRequest`/`MermaidResponse` types remain for the
   mermaid phase (unused by Rust in phase 1).
