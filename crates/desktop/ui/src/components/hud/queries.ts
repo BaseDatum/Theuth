@@ -1,14 +1,17 @@
 import { useQuerySupport } from '@/rpc/capabilities'
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { type QueryClient, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef } from 'react'
 import { useModels } from '@/components/agents/queries'
-import { ATTENTION_CROWDED, ATTENTION_SIM, SECRET_REQUESTS_SIM, crowdedFlag, simFlag } from '@/components/settings/sandbox-queries'
+import { type Cursor, applyChange, bulkTarget } from '@/components/attention/model'
+import { attentionFixture } from '@/components/settings/attention-fixtures'
+import { ATTENTION_SIM, SECRET_REQUESTS_SIM, crowdedFlag, simFlag } from '@/components/settings/sandbox-queries'
 import { useAction } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { useConnection } from '@/store/connection'
 import type { ContextBreakdown } from "@/rpc/bindings/method.agent.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
-import type { ActivityEntry } from "@/rpc/bindings/method.roster.output"
+import type { ActivityEntry, AttentionItem } from "@/rpc/bindings/method.roster.output"
 import type { Answer } from '@/rpc/bindings/method.tasks.input'
 import type { ApprovalId } from "@/rpc/bindings/method.roster.output"
 import type { AskId } from "@/rpc/bindings/method.roster.output"
@@ -30,31 +33,92 @@ export const SECRET_REQUESTS_KEY = ['secret-requests'] as const
 export const ACTIVITY_KEY = ['activity'] as const
 
 /**
- * Anything that can add or resolve an inbox item; the list is cheap to re-derive (104 A10: asks and shows too).
- * 130 E1: `AttentionChanged` is the engine's own answer (snooze expiry, budgets, finished turns); the 13 older kinds stay
- * so the UI works against an engine that predates it. 126: a double answer adds its row.
+ * Anything that can add or resolve an inbox item, for an engine before 207 (104 A10: asks and shows too; 126: a double
+ * answer adds its row). 207 §8.4: once the engine's `AttentionChanged` carries `seq`, the list is patched from it and
+ * these stop invalidating.
  */
-const ATTENTION_TOPICS = ["tasks.activity@1","tools.approval-requested@1","tools.approval-resolved@1","artifact.shown@1","tools.ask-requested@1","tools.ask-resolved@1","nodes.events@1","secrets.events@1","sandbox.events@1","double.answered@1","roster.attention@1"] as const
+const LEGACY_TOPICS = ["tasks.activity@1","tools.approval-requested@1","tools.approval-resolved@1","artifact.shown@1","tools.ask-requested@1","tools.ask-resolved@1","nodes.events@1","secrets.events@1","sandbox.events@1","double.answered@1"] as const
 
-/** `attention_list`, re-derived on every event that can change it (130 E1: no timer poll). 132 D10: `?mock=crowded` serves the sixty-row fixture. */
+/**
+ * 207 §8.4: per query client (one per engine) — the cursor of the last applied `AttentionChanged` and that event itself:
+ * every mounted `useAttention` hears each event, the first applies it, the rest see `last === ev` and skip.
+ */
+type Patch = { cursor: Cursor | null; last: unknown }
+const PATCH = new WeakMap<QueryClient, Patch>()
+function patchOf(qc: QueryClient): Patch {
+  let p = PATCH.get(qc)
+  if (!p) PATCH.set(qc, (p = { cursor: null, last: null }))
+  return p
+}
+
+/** 207: the engine patches this client's list from `AttentionChanged` (it sent `seq > 0`); otherwise a caller refetches itself. */
+export const attentionPatched = (qc: QueryClient): boolean => patchOf(qc).cursor !== null
+
+/** `?mock=crowded`: ids dismissed locally, kept out of every regenerated fixture (it is rebuilt at `Date.now()` on each refetch). */
+const MOCK_GONE = new Set<string>()
+
+/** Take `ids` out of the cached list now (a resolved item, before the engine's event), and out of the mock for good. */
+export function dropFromList(qc: QueryClient, ids: readonly string[]): void {
+  if (crowdedFlag()) for (const id of ids) MOCK_GONE.add(id)
+  const gone = new Set(ids)
+  qc.setQueryData<AttentionItem[]>(ATTENTION_KEY, (old) => old?.filter((i) => !gone.has(i.id)))
+}
+
+/**
+ * `attention_list`. 207 §8.4: an engine with `attention_dismiss_many` patches the cache from each `AttentionChanged`
+ * (`applyChange`) and refetches only on a gap, a new run, a count mismatch, an alert change or a reconnect; an older
+ * engine still refetches on every event that can change the list. `?mock=crowded` serves the 207 fixture.
+ */
 export function useAttention() {
   const canQuery1 = useQuerySupport(["attention_list"])
+  const patch = useQuerySupport(['attention_dismiss_many'])
   const api = useApi()
   const qc = useQueryClient()
   const crowded = crowdedFlag()
   const sim = simFlag()
+  const conn = useConnection((s) => s.state)
+  const prevConn = useRef(conn)
   useEffect(() => {
+    const p = patchOf(qc)
     const invalidate = () => {
       void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
       void qc.invalidateQueries({ queryKey: PACKET_KEY })
       void qc.invalidateQueries({ queryKey: SECRET_REQUESTS_KEY })
     }
-    const offs = ATTENTION_TOPICS.map((topic) => onTopic(topic, invalidate))
+    const offs = LEGACY_TOPICS.map((topic) => onTopic(topic, () => (p.cursor === null || !patch) && invalidate()))
+    offs.push(
+      onTopic('roster.attention@1', (ev) => {
+        if (p.last === ev) return
+        p.last = ev
+        if (!patch || !ev.seq) {
+          invalidate()
+          return
+        }
+        const r = applyChange(qc.getQueryData<AttentionItem[]>(ATTENTION_KEY), ev, p.cursor)
+        p.cursor = r.cursor
+        if (r.next) qc.setQueryData(ATTENTION_KEY, r.next)
+        if (r.refetch) void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
+        for (const item of ev.items) if (item.packet) void qc.invalidateQueries({ queryKey: [...PACKET_KEY, item.packet] })
+        if ([...ev.ids_added, ...ev.ids_removed, ...ev.items.map((i) => i.id)].some((id) => id.startsWith('secret:'))) void qc.invalidateQueries({ queryKey: SECRET_REQUESTS_KEY })
+      }),
+    )
     return () => {
       for (const off of offs) off()
     }
-  }, [qc])
-  return useQuery({ enabled: canQuery1, queryKey: ATTENTION_KEY, queryFn: () => (sim ? ATTENTION_SIM : crowded ? ATTENTION_CROWDED : api.attention_list()) })
+  }, [qc, patch])
+  // Back from a drop: events were missed, so start over from a fresh list.
+  useEffect(() => {
+    if (conn === 'open' && prevConn.current !== 'open') {
+      patchOf(qc).cursor = null
+      void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
+    }
+    prevConn.current = conn
+  }, [conn, qc])
+  return useQuery({
+    enabled: canQuery1,
+    queryKey: ATTENTION_KEY,
+    queryFn: () => (sim ? ATTENTION_SIM : crowded ? attentionFixture(Date.now()).filter((i) => !MOCK_GONE.has(i.id)) : api.attention_list()),
+  })
 }
 
 /**
@@ -199,9 +263,19 @@ export function useSessionContexts(sessions: readonly SessionSummary[] | undefin
 /** The inline decisions of an attention card; every one refetches the inbox and what it derives from. */
 export function useAttentionActions() {
   const api = useApi()
+  const many = useQuerySupport(['attention_dismiss_many'])
   const keys = [ATTENTION_KEY, taskKeys.tasks, taskKeys.agents] as const
   return {
-    dismiss: useAction((id: string) => api.attention_dismiss(id), { keys: [ATTENTION_KEY] }),
+    /** 207 §5: through `attention_dismiss_many` when the engine has it (a request is left to its agent); a `failed` outcome is an error. */
+    dismiss: useAction(
+      async (id: string) => {
+        if (!many) return api.attention_dismiss(id)
+        const [out] = await api.attention_dismiss_many(bulkTarget([id]))
+        if (out?.resolution === 'failed') throw new Error(out.error ?? 'dismiss failed')
+        return null
+      },
+      { keys: [ATTENTION_KEY] },
+    ),
     /** 109 §8.3: the Resume button of a `resume:` item under `durability.resume: ask`. */
     resume: useAction(
       async (session: string) => {

@@ -1,13 +1,12 @@
-// 126 §10: the inbox rows of `AttentionKind::Double` — undo during grace only, the rail group, the screen.
+// 126 §10: the inbox rows of `AttentionKind::Double` — undo during grace only, the screen.
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { DoubleUndo } from '@/components/chat/DoubleChip'
-import { doubleIds } from '@/components/hud/Hud'
+import { doubleIds } from './labels'
 import type * as Rpc from '@/lib/rpc'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { doubleStore } from '@/store/double'
-import { groupItems } from './model'
 
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
@@ -51,11 +50,4 @@ test('undo shows during the undo window only; a digest row (no DoubleAnswered) h
   doubleStore.getState().takeOver('appr-1')
   expect(row()).toBe('')
   expect(renderToStaticMarkup(createElement(DoubleUndo, { ids: doubleIds(item({ id: 'double:digest:2026-10-07' })) }))).toBe('')
-})
-
-test('double rows form their own rail group after Mesh, in the engine’s order (132 D4)', () => {
-  const groups = groupItems([item({ at_ms: 1 }), item({ id: 'double:b', at_ms: 2 }), item({ id: 'node:1', kind: 'node', at_ms: 3 })])
-  expect(groups.map((g) => g.key)).toEqual(['mesh', 'double'])
-  expect(groups[1]?.label).toBe('Answered by double')
-  expect(groups[1]?.items.map((i) => i.id)).toEqual(['double:appr-1', 'double:b'])
 })
