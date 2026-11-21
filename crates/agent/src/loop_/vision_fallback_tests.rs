@@ -452,6 +452,9 @@ impl Harness {
                 "onebig": model("onebig", false),
                 "listed": model("listed", false),
                 "boundary": model("boundary", false),
+                "trimnow": model("trimnow", false),
+                "nothingcut": model("nothingcut", false),
+                "refusal": model("refusal", false),
             }}})
             .to_string(),
         )

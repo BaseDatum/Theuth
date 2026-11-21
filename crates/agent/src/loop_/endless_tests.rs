@@ -661,17 +661,17 @@ async fn scenario_in_turn() {
 
 #[test]
 fn one_round_too_large_for_any_trim_falls_back_to_the_classic_cut() {
-    crate::with_test_registry(scenario_one_big_round());
+    // Over the turn allowance (≤ 64k tokens × 4 B), under the window's preflight.
+    crate::with_test_registry(scenario_one_big_round(300_000, "onebig"));
 }
 
 /// 201 P5: a single round over the whole allowance cannot be trimmed (the
 /// current round is never cut): the 07 §8.5 cut (137 D11, style `cut`, the
 /// view as head) still runs, once, and the turn completes.
-async fn scenario_one_big_round() {
+async fn scenario_one_big_round(pad: usize, model: &str) {
     let _reg_dir = registry().await;
-    // Over the turn allowance (≤ 64k tokens × 4 B), under the window's preflight.
-    let mut h = Harness::new(Rounds::new(1, 300_000)).await;
-    let (_endless, actor) = real_endless(&h, "onebig", true).await;
+    let mut h = Harness::new(Rounds::new(1, pad)).await;
+    let (_endless, actor) = real_endless(&h, model, true).await;
     let events = turn(&mut h, &actor, "Read the huge file.").await;
     // Exactly one fallback cut (the D11 view head, else the summary when
     // the fresh generation's view is still empty).
@@ -761,4 +761,159 @@ async fn scenario_listed() {
         calls[1]["tools"], calls[2]["tools"],
         "same list before and after the tree"
     );
+}
+
+#[test]
+fn compact_in_an_idle_endless_chat_trims_now() {
+    crate::with_test_registry(scenario_trim_now());
+}
+
+/// 201 P5 (B): `/compact` (`CompactNow`, what `endless_fold` routes to) in
+/// an idle endless chat whose tail is over the low mark but under the high
+/// mark trims at once: a new generation, the tail at or under the low mark,
+/// the last turn kept; the next turn carries it and not the first.
+async fn scenario_trim_now() {
+    let _reg_dir = registry().await;
+    let mut h = Harness::new(Fake::compact_held(Duration::ZERO)).await;
+    let (endless, actor) = real_endless(&h, "trimnow", true).await;
+    let big = |k: usize| format!("INPUT-{k} {}", "word ".repeat(4_000));
+    for k in 0..3 {
+        turn(&mut h, &actor, &big(k)).await;
+    }
+    let g0 = endless.generation(h.id).await.unwrap().unwrap().n;
+    actor
+        .ask(CompactNow {
+            style: None,
+            head: None,
+        })
+        .await
+        .expect("a trim now");
+    // The `/compact` handback publishes its own `settled`.
+    h.drain_until(
+        |e| matches!(e, AgentEvent::ContextChanged { reason, .. } if reason == "settled"),
+    )
+    .await;
+    let g1 = endless.generation(h.id).await.unwrap().unwrap();
+    assert_eq!(g1.n, g0 + 1, "a new generation at once");
+    let tail = endless.memory(h.id).await.unwrap().tail_bytes;
+    assert!(tail > 0 && tail <= 24_000, "tail {tail}");
+    turn(&mut h, &actor, "And now?").await;
+    let calls = main_calls(&h).await;
+    let req = calls.last().unwrap();
+    let last = texts(req).concat();
+    assert!(last.contains(&big(2)), "the last turn is kept");
+    // The carried tail is turn 2 alone: one assistant reply, not three.
+    let replies = req["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "assistant")
+        .count();
+    let shape: Vec<String> = req["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            let t: String = m["content"].to_string().chars().take(60).collect();
+            format!("{}:{t}", m["role"])
+        })
+        .collect();
+    assert_eq!(replies, 1, "turns 0 and 1 left the tail: {shape:#?}");
+}
+
+#[test]
+fn compact_with_nothing_to_cut_says_so() {
+    crate::with_test_registry(scenario_nothing_to_cut());
+}
+
+/// 201 P5 (B): a single small turn: nothing to cut, one plain line, no new
+/// generation.
+async fn scenario_nothing_to_cut() {
+    let _reg_dir = registry().await;
+    let mut h = Harness::new(Fake::compact_held(Duration::ZERO)).await;
+    let (endless, actor) = real_endless(&h, "nothingcut", true).await;
+    turn(&mut h, &actor, "Hello.").await;
+    let g0 = endless.generation(h.id).await.unwrap().unwrap().n;
+    let err = actor
+        .ask(CompactNow {
+            style: None,
+            head: None,
+        })
+        .await
+        .expect_err("nothing to cut")
+        .to_string();
+    assert!(err.starts_with("Nothing to cut"), "{err}");
+    assert!(!err.contains('\n'));
+    assert_eq!(endless.generation(h.id).await.unwrap().unwrap().n, g0);
+}
+
+/// 201 P5 (T): like [`Rounds`], and refuses main call `at` once as too long.
+struct RefuseAt {
+    inner: Rounds,
+    at: usize,
+    seen: std::sync::atomic::AtomicUsize,
+}
+
+impl wiremock::Respond for RefuseAt {
+    fn respond(&self, r: &wiremock::Request) -> wiremock::ResponseTemplate {
+        if super::vision_fallback_tests::body(r)["tools"].is_array()
+            && self.seen.fetch_add(1, Ordering::SeqCst) == self.at
+        {
+            return wiremock::ResponseTemplate::new(400).set_body_string(
+                json!({"error": {"type": "invalid_request_error",
+                    "message": "prompt is too long: 300000 tokens > 128000 maximum"}})
+                .to_string(),
+            );
+        }
+        self.inner.respond(r)
+    }
+}
+
+#[test]
+fn a_too_long_refusal_trims_in_turn_and_retries() {
+    crate::with_test_registry(scenario_refusal_trim());
+}
+
+/// 201 P5 (T): a provider "prompt too long" refusal mid-turn runs the
+/// in-turn trim once (a new generation), the round is retried and the turn
+/// completes; no classic cut, no view shrink.
+async fn scenario_refusal_trim() {
+    let _reg_dir = registry().await;
+    let rounds = 5;
+    let mut h = Harness::new(RefuseAt {
+        inner: Rounds::new(rounds, 2_000),
+        at: rounds,
+        seen: std::sync::atomic::AtomicUsize::new(0),
+    })
+    .await;
+    let (endless, actor) = real_endless(&h, "refusal", true).await;
+    let events = turn(&mut h, &actor, "Go.").await;
+    assert_eq!(compactions(&events), [], "no classic cut");
+    assert!(
+        !events.iter().any(|e| matches!(e, AgentEvent::Error { .. })),
+        "{events:?}"
+    );
+    let calls = main_calls(&h).await;
+    assert_eq!(calls.len(), rounds + 2, "one refused call, retried once");
+    let g = endless.generation(h.id).await.unwrap().unwrap();
+    assert_eq!(g.n, 2, "one in-turn trim");
+    let retry = &calls[rounds + 1];
+    let (c, r) = call_ids(retry);
+    assert_eq!(c, r);
+    assert!(
+        c.contains(&format!("call_{}", rounds - 1)),
+        "the current round is sent"
+    );
+    let sent = texts(retry);
+    assert!(
+        !sent
+            .iter()
+            .any(|t| t.contains("note: the summary view was shrunk"))
+    );
+    for b in &g.render.blocks {
+        assert!(
+            sent.iter().any(|t| t == &b.text),
+            "the new frozen view is sent"
+        );
+    }
 }

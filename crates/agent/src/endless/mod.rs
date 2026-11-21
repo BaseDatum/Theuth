@@ -938,6 +938,9 @@ pub(crate) struct Inner {
     pub(crate) compactor_for_tests: Option<pump::CompactorFactory>,
     /// 201 §4.2: desk sessions' per-agent tail keys (set at every desk open).
     pub(crate) agent_tails: Mutex<HashMap<SessionId, AgentTail>>,
+    /// 201 (P5): chats whose next turn boundary trims down to the low mark
+    /// (`endless_fold` / `/compact` while a turn ran).
+    pub(crate) trim_asked: Mutex<std::collections::HashSet<SessionId>>,
 }
 
 /// The one handle for the endless mode (137-contract.md §4). Cheap to clone.
@@ -972,6 +975,7 @@ impl Endless {
                 queues: pump::Queues::default(),
                 compactor_for_tests: None,
                 agent_tails: Mutex::new(HashMap::new()),
+                trim_asked: Mutex::new(std::collections::HashSet::new()),
             }),
         }
     }
@@ -1296,6 +1300,27 @@ impl Endless {
     /// An epochs session is untouched.
     pub async fn fold(&self, session: SessionId) -> anyhow::Result<SessionMemory> {
         pump::fold_all(&self.inner, session).await
+    }
+
+    /// 201 (P5): `endless_fold` / `/compact` on a busy chat: its next turn
+    /// boundary trims the tail down to the low mark, under the high mark too.
+    pub fn request_trim(&self, session: SessionId) {
+        self.inner.trim_asked.lock().insert(session);
+    }
+
+    /// 201 (P5): take the [`Endless::request_trim`] mark (once).
+    pub fn take_trim_request(&self, session: SessionId) -> bool {
+        self.inner.trim_asked.lock().remove(&session)
+    }
+
+    /// The session's tree is meeting-filtered (R1-D6): `endless_fold` keeps
+    /// its 137G meaning there.
+    pub fn meeting(&self, session: SessionId) -> bool {
+        self.inner
+            .sessions
+            .lock()
+            .get(&session)
+            .is_some_and(pump::Handle::meeting)
     }
 
     /// RPC `endless_pause` (137G): `true` stops new compactor calls and

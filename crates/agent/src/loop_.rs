@@ -2683,6 +2683,16 @@ impl Message<CompactNow> for Session {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let Some(state) = self.claim().await.filter(|_| self.inflight.is_none()) else {
+            // 201 (P5): an endless chat trims at its next turn boundary.
+            if let Some(e) = self.shared.endless.as_ref().filter(|e| {
+                e.active(self.shared.id) && !self.shared.meeting_filter.load(Ordering::Relaxed)
+            }) {
+                e.request_trim(self.shared.id);
+                tx.send(Err(
+                    "turn in flight: the tail will be trimmed at the next turn boundary".into(),
+                ));
+                return reply;
+            }
             tx.send(Err("turn in flight".into()));
             return reply;
         };
@@ -4869,7 +4879,7 @@ impl Turn {
         // 201 P1 (D5): no wait on the summary model; a failing compactor
         // shows as `stalled` in the status and never delays the turn.
         let allowance = self.view_allowance();
-        match self.endless_tail(&endless, allowance).await {
+        match self.endless_tail(&endless, allowance, false).await {
             Ok(v) => Some(v),
             Err(e) => {
                 tracing::warn!(session = %id, "endless generation: {e:#}; running the epochs frame this turn");
@@ -4880,11 +4890,13 @@ impl Turn {
 
     /// 201 §4.3: load the generation, bring `history` to its tail, trim at
     /// this turn boundary when due (over the high mark, or over the low mark
-    /// with a cold cache) and start the next generation.
+    /// with a cold cache or when `asked` / a trim was requested) and start
+    /// the next generation.
     async fn endless_tail(
         &mut self,
         endless: &crate::endless::Endless,
         allowance: usize,
+        asked: bool,
     ) -> anyhow::Result<TurnView> {
         use crate::endless::tail;
         let id = self.shared.id;
@@ -4920,7 +4932,15 @@ impl Turn {
             .is_none_or(|(at, _)| at.elapsed() > cold_after);
         // D11 put a head in place mid-generation: the next turn starts a new one.
         let forced = self.state.head.is_some();
-        let cut = tail::trim(&self.state.history, u64::from(low), u64::from(high), cold);
+        // 201 (P5): `endless_fold` / `/compact` asked for a trim now (or
+        // while a turn ran): down to the low mark even under the high mark.
+        let asked = asked || endless.take_trim_request(id);
+        let cut = tail::trim(
+            &self.state.history,
+            u64::from(low),
+            u64::from(high),
+            cold || asked,
+        );
         let mut trimmed = fresh;
         if cut.is_some() || forced {
             let keep_from = cut.map_or(0, |c| c.keep_from);
@@ -4936,7 +4956,7 @@ impl Turn {
             self.state.history.drain(..keep_from);
             self.state.head = None;
             let kept = tail::bytes(&self.state.history);
-            tracing::info!(session = %id, cut_bytes = before - kept, kept_bytes = kept, generation = g.n, cold, forced, low, high, view_bytes = g.render.text().len(), "endless: trim");
+            tracing::info!(session = %id, cut_bytes = before - kept, kept_bytes = kept, generation = g.n, cold, asked, forced, low, high, view_bytes = g.render.text().len(), "endless: trim");
             trimmed = true;
         }
         self.state.tail_gen = Some(g.n);
@@ -7854,6 +7874,34 @@ impl Turn {
         out
     }
 
+    /// 201 (P5): `/compact` / `endless_fold` in an idle endless chat: the
+    /// turn-boundary trim at once, down to the low mark even under the high
+    /// mark, and a new generation. Nothing to cut (the tail at or under the
+    /// low mark, or a single turn) is a one-line `Err` saying so.
+    async fn trim_now(&mut self, endless: &crate::endless::Endless) -> Result<u32, String> {
+        let id = self.shared.id;
+        let allowance = self.view_allowance();
+        let (low, _) = endless.tail_marks(id, allowance as u64);
+        let before = endless
+            .generation(id)
+            .await
+            .map_err(|e| format!("{e:#}"))?
+            .map(|g| g.n);
+        let v = self
+            .endless_tail(endless, allowance, true)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        if before.is_none_or(|n| n == v.generation) {
+            return Err(format!(
+                "Nothing to cut: the tail ({} bytes) is already at or under the low mark ({low} bytes) or holds a single turn.",
+                v.tail_bytes
+            ));
+        }
+        self.generation_reset().await;
+        tracing::info!(session = %id, generation = v.generation, tail_bytes = v.tail_bytes, low, "context_edit: /compact in endless = trim now");
+        Ok(self.state.epoch)
+    }
+
     /// `/compact` between turns: same baseline/tools/transport as a turn, then [`Turn::compact`].
     /// 137G G9: in an endless session it is `endless_fold` — every unbuilt
     /// line folded mechanically, no model call — plus a short note; the
@@ -7866,6 +7914,14 @@ impl Turn {
         if let Some(endless) = self.shared.endless.clone()
             && endless.mode(self.shared.id).await.ok() == Some(MemoryMode::Endless)
         {
+            // 201 (P5): in a chat on the endless frame `/compact` is "take
+            // a trim now"; a meeting-filtered tree keeps the 137G fold.
+            if self.shared.kind == SessionKind::Chat
+                && !self.shared.meeting_filter.load(Ordering::Relaxed)
+                && endless.active(self.shared.id)
+            {
+                return self.trim_now(&endless).await;
+            }
             let before = endless
                 .memory(self.shared.id)
                 .await

@@ -20,9 +20,16 @@
 - The tool list reads the stored memory mode once per `rebase` (one store read).
 - Meetings and `epochs`: `in_turn_trim_on` is false (no `view`, or `meeting_filter`); the test-hook view (`Shared::test_view`) also keeps the old D11 path, so `overflow_in_an_endless_turn_cuts_with_the_view_as_head` is unchanged.
 
+## Follow-up (B, T, the 600 KB question)
+
+- **B — trim now.** `Endless::{request_trim, take_trim_request, meeting}` (`Inner.trim_asked`, `pump::Handle::meeting`). `endless_tail(…, asked)`: `asked || take_trim_request` trims with the cold rule (down to the low mark when over it, whole turns, the last turn kept). `Turn::trim_now`: `compact_now` in an active, non-meeting endless chat runs `endless_tail(asked = true)` at once (the `CompactNow` mini-turn is idle by construction) and `generation_reset`; no new generation → `Err("Nothing to cut: the tail (N bytes) is already at or under the low mark (L bytes) or holds a single turn.")`. `CompactNow` while a turn runs: `request_trim` and `Err("turn in flight: the tail will be trimmed at the next turn boundary")`. Supervisor `EndlessFold` (now a `DelegatedReply`): an active non-meeting chat → the session actor's `CompactNow` off the mailbox, then `memory`; meetings, backfilling and unattached sessions → the old `Endless::fold`. A chat whose actor is not loaded is loaded by `Agents::actor`.
+- Supervisor tests changed to the new contract: `compact_in_an_endless_session_folds_without_a_model_call` → `compact_in_an_endless_session_trims_without_a_model_call` (rows appended to the store only, so the tail is empty: "Nothing to cut", epoch 0, no model line); `an_endless_session_reports_its_view_not_its_raw_history` makes its mechanical lines with `endless.fold` directly instead of `/compact`.
+- **T.** `a_too_long_refusal_trims_in_turn_and_retries`: 5 rounds, call 6 refused ("prompt is too long: 300000 tokens > 128000 maximum") → one in-turn trim (generation 2), the retry carries the current round and the new frozen view, the turn ends without `Error` and without `Compacted`.
+- **Tests B:** `compact_in_an_idle_endless_chat_trims_now` (3 turns of 20 KB, under the high mark: `CompactNow` → generation + 1, tail ≤ 24,000 B; the next request carries one assistant reply, turn 2's); `compact_with_nothing_to_cut_says_so`.
+- **600 KB.** With the round at 600 KB the fit check works as meant (no trim, the classic cut runs once: one `Compacted`), but the turn does not complete: only one main call reaches the provider (observed: 1 `Compacted`, 1 main call). Inferred, not traced in that run: after the cut the request still holds the 600 KB round (the 07 cut keeps the current round), the G1 preflight refuses it as over the window (≈150k tokens > 117,708) before sending, the refusal trim is off (the head is in place), `shrink_view` has no view, and the one 07 §8.5 compaction per turn is spent, so the turn ends with `model: prompt is too long … (theuth preflight, not sent …)`. That is the limit: a single round larger than the window cannot be carried by any cut; the test stays at 300 KB (over the allowance, under the window), where the fallback cut runs and the turn completes.
+
 ## Not done
 
-- B (`endless_fold` / `/compact` = "trim now"): not built; `compact_now` and `Endless::fold` unchanged.
-- C (`describe_left` through the local `Gate` and the cost ledger): not built.
-- No test of the refusal-triggered trim through the loop (the path is the same `trim_in_turn`; only covered by reading).
-- The test scenario uses 200 rounds × 6 KB with `max_tool_rounds: 250` (the default cap is 32). Verified: `cargo test -p agent -- endless view_blocks` = 125 passed, 0 failed.
+- C (`describe_left` through the local `Gate`, `model_calls` rows of kind `endless`, skip while paused by spend): not built; `describe_left` is still a plain spawned task with no ledger row.
+- The 200-tool-call scenario uses 200 rounds × 6 KB with `max_tool_rounds: 250` (the default cap is 32).
+- A round larger than the window ends its turn with the preflight error (above); no truncation of one oversized tool result is attempted.

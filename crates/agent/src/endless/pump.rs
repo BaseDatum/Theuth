@@ -134,6 +134,11 @@ impl Handle {
     pub(crate) fn served(&self) -> bool {
         self.state.live.lock().mode == MemoryMode::Endless
     }
+
+    /// R1-D6: the tree is meeting-filtered.
+    pub(crate) fn meeting(&self) -> bool {
+        self.state.live.lock().filter == UnitFilter::Meeting
+    }
 }
 
 impl Drop for Handle {
