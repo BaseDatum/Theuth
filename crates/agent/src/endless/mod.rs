@@ -26,6 +26,8 @@ pub mod tail;
 pub mod tool_pin;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) mod eval_tests;
 pub mod tree;
 pub mod units;
 

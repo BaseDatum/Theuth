@@ -10074,6 +10074,10 @@ mod fence_round_tests;
 #[cfg(test)]
 mod endless_tests;
 
+/// 201 evaluation E2: scenario tests through the turn loop (`docs/design/201-eval-E2.md`).
+#[cfg(test)]
+mod endless_eval_tests;
+
 /// 157 D2–D5: the notebook block once, change notices, the manifest after a compaction, endless memory.
 #[cfg(test)]
 mod notebook_ctx_tests;
