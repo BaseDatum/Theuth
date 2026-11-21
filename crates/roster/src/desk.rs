@@ -308,6 +308,14 @@ pub fn wake_text(wake: &tasks::Wake, task: Option<&tasks::Task>) -> String {
         if !t.blockers.is_empty() {
             s.push_str(&format!("\n\nBlockers: {}", t.blockers.join("; ")));
         }
+        // 207 §5.2: a decision the user left to the agent, until the agent drops the blocker.
+        for b in &t.blockers {
+            if let Some(rest) = b.strip_prefix(tasks::LEFT_PREFIX) {
+                s.push_str(&format!(
+                    "\n\nThe user left `{rest}` to you: choose yourself, record what you chose with task_note, then remove the `{b}` blocker with task_update."
+                ));
+            }
+        }
         if !t.external.is_empty() {
             s.push_str(&format!("\n\nExternal: {}", t.external.join(", ")));
         }
@@ -1042,6 +1050,20 @@ Attached (read with the tool for the kind, see Attachments):\n\
         assert_eq!(
             wake_text(&manual, None),
             "Wake: no task. Reason: manual. Do not switch to another task until this wake is handled."
+        );
+        let left = tasks::Task {
+            blockers: vec!["left:decision:d7".into()],
+            attachments: vec![],
+            external: vec![],
+            ..task.clone()
+        };
+        let text = wake_text(&manual, Some(&left));
+        assert!(
+            text.contains(
+                "\n\nBlockers: left:decision:d7\n\nThe user left `decision:d7` to you: choose yourself, record what you \
+chose with task_note, then remove the `left:decision:d7` blocker with task_update.\n</task>"
+            ),
+            "{text}"
         );
     }
 

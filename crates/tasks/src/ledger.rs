@@ -1024,6 +1024,13 @@ impl Ledger {
 
     /// `t` left its blocked state: back to `doing` under a live checkout, else `todo`.
     async fn unblock(&self, t: &mut Task, actor: &str, reason: WakeReason) -> R<()> {
+        self.resume(t, actor).await?;
+        self.wake(t, &t.owner, reason, actor).await;
+        Ok(())
+    }
+
+    /// [`Self::unblock`] without the wake (207: a decision left to the agent wakes no one).
+    async fn resume(&self, t: &mut Task, actor: &str) -> R<()> {
         let to = match &t.checkout {
             Some(c) if !fenced(t, c) => TaskState::Doing,
             _ => TaskState::Todo,
@@ -1041,7 +1048,6 @@ impl Ledger {
             Some(to.as_str().into()),
         )
         .await;
-        self.wake(t, &t.owner, reason, actor).await;
         Ok(())
     }
 
@@ -2152,6 +2158,7 @@ impl Ledger {
                 .if_wrong
                 .map(|w| w.trim().to_owned())
                 .filter(|w| !w.is_empty()),
+            left_to_agent_ms: None,
         };
         if manager == Owner::User {
             packet::require_for_user(&p)?;
@@ -2232,6 +2239,7 @@ impl Ledger {
             items: vec![],
             to: Some(self.effective_reviewer(&t, None).to_string()),
             if_wrong: m.if_wrong,
+            left_to_agent_ms: None,
         };
         packet::validate(&p)?;
         self.store.put_packet(&p).await.map_err(db)?;
@@ -2361,6 +2369,67 @@ impl Ledger {
             && p.by != actor
         {
             self.wake(&t, &by, WakeReason::Answer, actor).await;
+        }
+        Ok(())
+    }
+
+    /// 207: the thread line, `Packet.left_to_agent_ms`, a `disposition` event `left_to_agent:<decision>`; then
+    /// live → drop the blocker and, when none is left on a blocked task, `doing` under a live unfenced checkout
+    /// else `todo`; parked → replace the blocker by `left:<decision>`, state unchanged. Never calls `wake`.
+    pub async fn leave_decision(&mut self, decision: &str, actor: &str, live: bool) -> R<()> {
+        let mut t = self
+            .store
+            .blocked_on(decision)
+            .await
+            .map_err(db)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("no task is blocked on {decision}"))?;
+        self.check_home(actor, &t)?;
+        self.say(
+            &t,
+            actor,
+            &format!(
+                "**decision** (`{decision}`): left to the agent — the user did not decide; choose yourself"
+            ),
+        )
+        .await;
+        if let Some(mut p) = self.store.packet(decision).await.map_err(db)? {
+            p.left_to_agent_ms = Some(self.now());
+            self.store.put_packet(&p).await.map_err(db)?;
+        }
+        self.event(
+            &t,
+            actor,
+            None,
+            "disposition",
+            None,
+            Some(format!("left_to_agent:{decision}")),
+        )
+        .await;
+        let before = t.blockers.join(", ");
+        if live {
+            t.blockers.retain(|b| b != decision);
+        } else {
+            for b in &mut t.blockers {
+                if b.as_str() == decision {
+                    *b = format!("{}{decision}", crate::LEFT_PREFIX);
+                }
+            }
+        }
+        t.updated_ms = self.now();
+        self.save(&t).await?;
+        self.event(
+            &t,
+            actor,
+            None,
+            "blockers",
+            Some(before),
+            Some(t.blockers.join(", ")),
+        )
+        .await;
+        if live && t.state == TaskState::Blocked && t.blockers.is_empty() {
+            self.resume(&mut t, actor).await?;
         }
         Ok(())
     }
@@ -6190,6 +6259,114 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(r.ledger.get(&t.id).await.unwrap().blockers.is_empty());
+    }
+
+    /// 207: `lead` (manager: the user) escalates with a packet; `checkout` first when asked.
+    async fn escalated_to_user(r: &mut Rig, checkout: bool) -> (Task, String) {
+        let t = r.task("agent:lead").await;
+        if checkout {
+            r.ledger
+                .checkout(&t.id, "s-lead", "agent:lead")
+                .await
+                .unwrap();
+        }
+        board(&r.thread, "b1", &packet::DECISION_SECTIONS);
+        let ask = packet::Ask {
+            summary: Some("Spend or save.".into()),
+            board: Some("b1".into()),
+            if_wrong: Some("low, the budget line moves back".into()),
+            ..packet::Ask::new("budget?")
+        };
+        let (decision, manager) = r
+            .ledger
+            .escalate(&t.id, ask, "agent:lead", None)
+            .await
+            .unwrap();
+        assert_eq!(manager, Owner::User);
+        (t, decision)
+    }
+
+    /// 207: the thread line, the packet stamp and the disposition event of a left decision.
+    async fn assert_left(r: &Rig, t: &Task, decision: &str) {
+        let doc = t.thread.clone().unwrap();
+        let line = format!(
+            "**decision** (`{decision}`): left to the agent — the user did not decide; choose yourself"
+        );
+        assert!(
+            r.thread.0.lock().unwrap()[&doc]
+                .iter()
+                .any(|b| b.starts_with("**user** (") && b.ends_with(&line)),
+            "thread line missing"
+        );
+        let p = r.ledger.packet(decision).await.unwrap().unwrap();
+        assert_eq!(p.left_to_agent_ms, Some(r.clock.load(Ordering::SeqCst)));
+        assert!(
+            r.ledger
+                .events(&t.id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|e| e.field == "disposition"
+                    && e.after.as_deref() == Some(&format!("left_to_agent:{decision}")[..]))
+        );
+    }
+
+    /// 207: a live `escalate` left to the agent: the blocker goes, the task is back under
+    /// its checkout, and nobody is woken.
+    #[tokio::test]
+    async fn leave_decision_live_unblocks_without_a_wake() {
+        let mut r = rig().await;
+        let (t, decision) = escalated_to_user(&mut r, true).await;
+        assert_eq!(r.ledger.get(&t.id).await.unwrap().state, TaskState::Blocked);
+        let wakes = r.ledger.wakes().await.unwrap();
+        r.tick(1_000);
+        r.ledger
+            .leave_decision(&decision, "user", true)
+            .await
+            .unwrap();
+        let a = r.ledger.get(&t.id).await.unwrap();
+        assert_eq!((a.state, a.blockers.is_empty()), (TaskState::Doing, true));
+        assert_eq!(r.ledger.wakes().await.unwrap(), wakes, "no wake raised");
+        assert_left(&r, &t, &decision).await;
+
+        // without a checkout the task goes back to `todo`
+        let (t, decision) = escalated_to_user(&mut r, false).await;
+        let wakes = r.ledger.wakes().await.unwrap();
+        r.ledger
+            .leave_decision(&decision, "user", true)
+            .await
+            .unwrap();
+        let a = r.ledger.get(&t.id).await.unwrap();
+        assert_eq!((a.state, a.blockers.is_empty()), (TaskState::Todo, true));
+        assert_eq!(r.ledger.wakes().await.unwrap(), wakes, "no wake raised");
+    }
+
+    /// 207: a parked decision left to the agent: the blocker becomes `left:decision:<id>`,
+    /// the task stays blocked, nobody is woken; a second leave finds nothing blocked on it.
+    #[tokio::test]
+    async fn leave_decision_parked_keeps_a_left_blocker() {
+        let mut r = rig().await;
+        let (t, decision) = escalated_to_user(&mut r, true).await;
+        let wakes = r.ledger.wakes().await.unwrap();
+        r.tick(1_000);
+        r.ledger
+            .leave_decision(&decision, "user", false)
+            .await
+            .unwrap();
+        let a = r.ledger.get(&t.id).await.unwrap();
+        assert_eq!(
+            (a.state, a.blockers),
+            (
+                TaskState::Blocked,
+                vec![format!("{}{decision}", crate::LEFT_PREFIX)]
+            )
+        );
+        assert_eq!(r.ledger.wakes().await.unwrap(), wakes, "no wake raised");
+        assert_left(&r, &t, &decision).await;
+        assert_eq!(
+            r.ledger.leave_decision(&decision, "user", false).await,
+            Err(format!("no task is blocked on {decision}"))
+        );
     }
 
     /// 101 D1: an agent audience needs no packet; one is stored when given.

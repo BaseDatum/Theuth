@@ -40,6 +40,7 @@ pub mod lease;
 pub mod pin;
 pub mod proposals;
 pub mod routing;
+pub mod score;
 pub mod store;
 pub mod tools;
 pub mod types;

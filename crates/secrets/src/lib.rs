@@ -13,7 +13,7 @@
 //!
 //! Public surface consumed by other plugins:
 //! - commands on the [`SECRETS_ACTOR`] actor ([`SecretsActor`]): [`List`],
-//!   [`Set`], [`Restore`], [`Delete`], [`Request`], [`Answer`], [`PendingRequests`],
+//!   [`Set`], [`Restore`], [`Delete`], [`Request`], [`Answer`], [`Waive`], [`PendingRequests`],
 //!   [`ListRequests`], [`SetEngine`], [`Handle`]; 183: [`GetRotation`] (the mesh reaches the
 //!   keyring through [`Handle`] and the [`Vault`] methods directly)
 //! - events: [`SecretsEvent`]
@@ -117,7 +117,7 @@ pub struct SecretRequest {
     /// Set by `answer_secret`.
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub answered_ms: Option<u64>,
-    /// `stored` | `declined` | `timeout` once answered.
+    /// `stored` | `declined` | `timeout` | [`PROCEED_WITHOUT`] once answered.
     pub outcome: Option<String>,
     /// Replication clock.
     pub hlc: Option<String>,
@@ -189,7 +189,12 @@ pub struct Outcome {
     pub stored: Vec<(String, u32)>,
     /// Nobody answered in time.
     pub timed_out: bool,
+    /// 207: the user left the request to the agent (outcome [`PROCEED_WITHOUT`]).
+    pub waived: bool,
 }
+
+/// 207: outcome of a request the user left to the agent (beside `stored` | `declined` | `timeout`).
+pub const PROCEED_WITHOUT: &str = "proceed_without";
 
 /// `ask` → `Result<bool, String>`: answer a request — one waiting here, or a
 /// replicated row from another engine (the vault rows and `answered_ms`
@@ -205,6 +210,13 @@ pub struct Answer {
     pub value: Option<String>,
     /// Field name → typed value for a form.
     pub values: HashMap<String, String>,
+}
+
+/// 207: `ask` → `Result<bool, String>` (true when it was unanswered): resolve as "none is coming".
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Waive {
+    /// From [`SecretsEvent::Requested`] / the row.
+    pub id: RequestId,
 }
 
 /// `tell`: this engine's mesh id, stamped on the rows this engine writes
@@ -538,7 +550,11 @@ async fn wait(
     } else {
         Vec::new()
     };
-    Outcome { stored, timed_out }
+    Outcome {
+        stored,
+        timed_out,
+        waived: outcome == PROCEED_WITHOUT,
+    }
 }
 
 impl Message<Answer> for SecretsActor {
@@ -581,6 +597,20 @@ impl Message<Answer> for SecretsActor {
             .await
             .map_err(|e| e.to_string())?;
         if let Some((_, _, tx)) = self.pending.remove(&m.id) {
+            let _ = tx.send(());
+        }
+        Ok(fresh)
+    }
+}
+
+impl Message<Waive> for SecretsActor {
+    type Reply = Result<bool, String>;
+
+    async fn handle(&mut self, m: Waive, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let fresh = requests::answer(self.vault.pool(), m.id, PROCEED_WITHOUT, now_ms())
+            .await
+            .map_err(|e| e.to_string())?;
+        if fresh && let Some((_, _, tx)) = self.pending.remove(&m.id) {
             let _ = tx.send(());
         }
         Ok(fresh)
@@ -1098,6 +1128,38 @@ mod tests {
         assert!(vault.get("TOKEN", 0).is_none());
         let after = requests::get(vault.pool(), row.id).await.unwrap().unwrap();
         assert_eq!(after.outcome.as_deref(), Some("declined"));
+    }
+
+    /// 207: `Waive` resolves a waiting request as `proceed_without` and wakes its waiter;
+    /// an answered or unknown request is not fresh.
+    #[tokio::test]
+    async fn waive_proceeds_without() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, vault) = actor(dir.path(), Duration::from_secs(10)).await;
+        let (ask, row) = open_request(&a, Some("f"), vec![field("A", "a"), field("B", "b")]).await;
+        assert!(a.ask(Waive { id: row.id }).await.unwrap());
+        let out = tokio::time::timeout(Duration::from_millis(500), ask)
+            .await
+            .expect("the waiter was not woken")
+            .unwrap()
+            .unwrap();
+        assert!(out.waived && !out.timed_out && out.stored.is_empty());
+        let after = requests::get(vault.pool(), row.id).await.unwrap().unwrap();
+        assert!(after.answered_ms.is_some());
+        assert_eq!(after.outcome.as_deref(), Some(PROCEED_WITHOUT));
+        assert!(a.ask(PendingRequests).await.unwrap().is_empty());
+        assert!(
+            !a.ask(Waive { id: row.id }).await.unwrap(),
+            "an answered request is not fresh"
+        );
+        assert!(
+            !a.ask(Waive {
+                id: RequestId(uuid::Uuid::from_u128(9)),
+            })
+            .await
+            .unwrap(),
+            "an unknown request is not fresh"
+        );
     }
 
     /// A peer's `answer_secret` reaches this engine as rows only: the vault row

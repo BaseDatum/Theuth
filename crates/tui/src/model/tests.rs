@@ -6123,6 +6123,7 @@
             id: req.id,
             dismissed: false,
             timed_out: false,
+            left_to_agent: false,
         }));
         assert!(m.ask().is_none());
     }
@@ -8428,6 +8429,7 @@
             id,
             decision: Decision::Allow,
             timed_out: false,
+            dismissed: false,
         }));
         assert_eq!(m.components.get::<Double>().unwrap().chip(), None);
         assert!(m.components.get::<Double>().unwrap().predictions.is_empty());

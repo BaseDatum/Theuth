@@ -3193,6 +3193,7 @@ mod tests {
                 id,
                 decision: Decision::Allow,
                 timed_out: false,
+                dismissed: false,
             }))
             .await;
         assert_eq!(
@@ -3283,6 +3284,7 @@ mod tests {
                 id,
                 dismissed: false,
                 timed_out: false,
+                left_to_agent: false,
             }))
             .await;
         assert!(last_text().starts_with("❓ Question 1/1: more?\n"));
@@ -3294,6 +3296,7 @@ mod tests {
                 id: next_id,
                 dismissed: true,
                 timed_out: false,
+                left_to_agent: false,
             }))
             .await;
         assert_eq!(last_text(), "🚫 dismissed; turn cancelled");

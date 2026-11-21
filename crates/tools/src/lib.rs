@@ -66,12 +66,12 @@ pub use activity::{
     Settle, Tracked,
 };
 pub use approval::{
-    Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, ForgetSession,
+    Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Dismiss, ForgetSession,
     PendingApprovals, Resolve, ResolveBy,
 };
 pub use ask::{
-    Answer, AnswerAsk, AnswerAskBy, AskId, AskRequested, AskResolved, AskUser, Choice, PendingAsks,
-    Question, late_answer_text,
+    Answer, AnswerAsk, AnswerAskBy, AskId, AskRequested, AskResolved, AskUser, Choice, LeaveAsk,
+    PendingAsks, Question, late_answer_text,
 };
 pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::CloseSessions;
