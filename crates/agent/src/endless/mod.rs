@@ -19,6 +19,7 @@ use crate::store::Store;
 pub mod compactor;
 pub mod fold;
 pub mod guards;
+pub mod lines;
 pub mod pump;
 pub mod tail;
 #[cfg(test)]
@@ -274,6 +275,9 @@ impl EndlessConfig {
         if let Some(v) = a.high_share {
             c.tail_high_share = v;
         }
+        if let Some(p) = a.profile {
+            c.profile = p;
+        }
         c
     }
 
@@ -477,6 +481,8 @@ pub struct AgentTail {
     pub low_share: Option<f64>,
     /// `tail_high_share:`.
     pub high_share: Option<f64>,
+    /// `profile:` (201 §7.1, P3).
+    pub profile: Option<Profile>,
 }
 
 /// 201 §4.2: a per-session (or per-agent) tail override: the mode and its two
@@ -1146,12 +1152,15 @@ impl Endless {
 
     /// 201 §4.2: the desk agent's tail keys for `session` (all `None` clears).
     pub fn set_agent_tail(&self, session: SessionId, tail: AgentTail) {
-        let mut m = self.inner.agent_tails.lock();
-        if tail == AgentTail::default() {
-            m.remove(&session);
-        } else {
-            m.insert(session, tail);
+        {
+            let mut m = self.inner.agent_tails.lock();
+            if tail == AgentTail::default() {
+                m.remove(&session);
+            } else {
+                m.insert(session, tail);
+            }
         }
+        pump::set_agent_profile(&self.inner, session, tail.profile);
     }
 
     /// 8.3 / 201 §6 "wake on append": rows reached `messages`; the session's

@@ -28,6 +28,42 @@ pub fn prompt(agent: &str) -> String {
     COMPACT.replace("{agent}", agent)
 }
 
+/// 201 §7.2 (P3): the `small` profile's system prompt (≤ 700 bytes, no ruler).
+pub const SMALL: &str = include_str!("small_prompt.txt");
+/// 201 §7.2: the `small` profile's reply cap in tokens (it also stops at the first newline).
+pub const SMALL_REPLY_TOKENS: u32 = 160;
+/// 201 §7.2: the `small` profile's context (nearby lines + the user's last message) in bytes at most.
+pub const SMALL_CTX_BYTES: usize = 2_000;
+/// 201 §7.2: a `small` chunk is never above this many bytes.
+pub const SMALL_CHUNK_MAX: usize = 4_096;
+
+/// 201 §7.2: the `small` profile's chunk for an oversized unit:
+/// `(window − prompt − reply) × 0.5`, never above [`SMALL_CHUNK_MAX`]
+/// (the prompt counted as the system prompt plus the context budget; at
+/// least 512 bytes so a tiny window still makes progress).
+pub fn small_chunk_bytes(window_bytes: usize) -> usize {
+    let fixed = SMALL.len() + SMALL_CTX_BYTES + SMALL_REPLY_TOKENS as usize * 4;
+    (window_bytes.saturating_sub(fixed) / 2).clamp(512, SMALL_CHUNK_MAX)
+}
+
+/// 201 §7.2: the `small` profile's user block for `step`: one short
+/// imperative and the input; no earlier lines, no ruler.
+pub fn small_render(step: &Step, node_bytes: u32) -> String {
+    match step {
+        Step::Unit { kind, text, .. } => format!(
+            "Write one line about this message, at most {node_bytes} bytes:\n{}: {text}",
+            kind.as_str()
+        ),
+        Step::Merge { a, b, .. } => {
+            format!("Join these two lines into one line, at most {node_bytes} bytes:\n{a}\n{b}")
+        }
+        Step::Batch { .. } => format!(
+            "Write one line about these messages, at most {node_bytes} bytes:\n{}",
+            step.input()
+        ),
+    }
+}
+
 /// Reply ceiling without thinking (§5.3).
 pub const MAX_TOKENS: u32 = 600;
 /// 137F E6: a local stream's between-chunk idle bound (its header bound is the attempt's).
@@ -423,6 +459,15 @@ pub trait Compactor: Send + Sync {
         let _ = (ctx, convo);
         true
     }
+    /// 201 §7.2 (P3): one `small`-profile attempt: the [`SMALL`] system
+    /// prompt, a [`SMALL_REPLY_TOKENS`] cap, stop at the first newline.
+    fn compress_small<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        self.compress(ctx, convo)
+    }
 }
 
 /// R2-11: `inner`, recording every answered attempt as it lands — so a job
@@ -522,6 +567,17 @@ impl Compactor for Tally<'_> {
     ) -> BoxFuture<'a, Result<Reply, String>> {
         Box::pin(async move {
             let r = self.inner.compress_thinking_off(ctx, convo).await;
+            self.record(&r);
+            r
+        })
+    }
+    fn compress_small<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(async move {
+            let r = self.inner.compress_small(ctx, convo).await;
             self.record(&r);
             r
         })
@@ -698,6 +754,138 @@ pub async fn build(
         }
         _ => build_one(c, ctx, step, node_bytes, tries, attempt).await,
     }
+}
+
+/// 201 §7.2 (P3) seam: constrained output (a JSON schema or grammar) for a
+/// `small` request where the server supports it. Nothing in the backend
+/// plumbs a response format today, so this returns `opts` unchanged; the
+/// phase that adds per-server capability detection fills it.
+fn small_output_format(opts: ChatOptions) -> ChatOptions {
+    opts
+}
+
+/// 201 §7.2 (P3): a `small`-profile build — one attempt per call, no
+/// correction dialogue; a unit over `chunk` bytes is summarised chunk by
+/// chunk, then one call joins the chunk lines. A guard trip (any part) is a
+/// [`Built`] with negative `tries`, which the pump never stores: the draft
+/// stays and the unit is retried once later.
+pub async fn build_small(
+    c: &dyn Compactor,
+    ctx: &str,
+    step: &Step,
+    node_bytes: u32,
+    attempt: Duration,
+    chunk: usize,
+) -> Result<Built, Failed> {
+    let Step::Unit { kind, text, .. } = step else {
+        return small_once(c, ctx, step, node_bytes, attempt).await;
+    };
+    if text.len() <= chunk {
+        return small_once(c, ctx, step, node_bytes, attempt).await;
+    }
+    let unit = |text: String| Step::Unit {
+        kind: *kind,
+        text,
+        earlier: Vec::new(),
+        aim: None,
+    };
+    let mut lines = Vec::new();
+    let mut calls = Vec::new();
+    let mut used = 0i32;
+    for part in chunks(text, chunk) {
+        match small_once(c, ctx, &unit(part.to_owned()), node_bytes, attempt).await {
+            Ok(b) if b.tries > 0 => {
+                used += b.tries;
+                calls.extend(b.calls);
+                lines.push(b.text);
+            }
+            Ok(mut b) => {
+                b.calls.splice(0..0, calls);
+                b.tries -= used;
+                return Ok(b);
+            }
+            Err(mut f) => {
+                f.calls.splice(0..0, calls);
+                return Err(f);
+            }
+        }
+    }
+    let joined = guards::cut_utf8(&lines.join("\n"), chunk).to_owned();
+    match small_once(c, ctx, &unit(joined), node_bytes, attempt).await {
+        Ok(mut b) => {
+            b.calls.splice(0..0, calls);
+            b.tries += if b.tries > 0 { used } else { -used };
+            Ok(b)
+        }
+        Err(mut f) => {
+            f.calls.splice(0..0, calls);
+            Err(f)
+        }
+    }
+}
+
+/// One `small` call: [`small_render`] as the only user turn after `ctx`,
+/// the reply's first non-empty line checked by the unchanged guards.
+async fn small_once(
+    c: &dyn Compactor,
+    ctx: &str,
+    step: &Step,
+    node_bytes: u32,
+    attempt: Duration,
+) -> Result<Built, Failed> {
+    let input = step.input();
+    let ruler = guards::ruler(node_bytes);
+    let convo = [ChatMessage::user(small_render(step, node_bytes))];
+    let reply = match bounded(c.compress_small(ctx, &convo), attempt, false).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return Err("compactor returned nothing".to_owned().into()),
+        Err(error) => {
+            return Err(Failed {
+                error,
+                calls: Vec::new(),
+            });
+        }
+    };
+    let row = |raw: &str, guard: Option<&'static str>| CallRow {
+        try_no: 0,
+        bytes: Some(raw.len() as u32),
+        guard,
+        usage: reply.usage.clone(),
+        usd_estimate: reply
+            .usage
+            .as_ref()
+            .and_then(|u| c.rates().map(|r| estimate_usd(u, &r))),
+        latency_ms: reply.latency.as_millis() as u64,
+    };
+    if reply.spent_on_thinking() {
+        return Err(Failed {
+            error: thinking_error(c.model_id(), &reply),
+            calls: vec![row("", Some(guards::Trip::Empty.as_str()))],
+        });
+    }
+    let raw = reply
+        .text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+        .to_owned();
+    let check = accept(&raw, &input, &ruler, node_bytes);
+    let calls = vec![row(&raw, check.as_ref().err().map(|t| t.as_str()))];
+    Ok(match check {
+        Ok(text) => Built {
+            text,
+            tries: 1,
+            calls,
+            lines: Vec::new(),
+        },
+        Err(_) => Built {
+            text: guards::cut_utf8(&raw, node_bytes as usize).to_owned(),
+            tries: -1,
+            calls,
+            lines: Vec::new(),
+        },
+    })
 }
 
 /// R1-3 / G11: the prompt bytes of the largest single call `step` makes,
@@ -1168,11 +1356,45 @@ impl ModelCompactor {
         lines: u32,
         forced: bool,
     ) -> (ChatRequest, ChatOptions) {
+        self.request_with(&self.system, t, ctx, convo, lines, forced)
+    }
+
+    /// 201 §7.2 (P3): a `small`-profile request: the [`SMALL`] system
+    /// prompt, a [`SMALL_REPLY_TOKENS`] cap (plus a chosen thinking budget,
+    /// within [`Self::carry`]) and a stop at the first newline; thinking off
+    /// and the transport options as [`Self::request_opts`].
+    pub fn request_small(
+        &self,
+        t: Transport,
+        ctx: &str,
+        convo: &[ChatMessage],
+    ) -> (ChatRequest, ChatOptions) {
+        let (req, opts) = self.request_with(SMALL, t, ctx, convo, 1, false);
+        let thinking = if self.chosen { self.budget() } else { 0 };
+        let cap = SMALL_REPLY_TOKENS
+            .saturating_add(thinking)
+            .min(self.carry());
+        let opts = small_output_format(
+            opts.with_max_tokens(cap)
+                .with_stop_sequences(vec!["\n".to_owned()]),
+        );
+        (req, opts)
+    }
+
+    fn request_with(
+        &self,
+        system: &str,
+        t: Transport,
+        ctx: &str,
+        convo: &[ChatMessage],
+        lines: u32,
+        forced: bool,
+    ) -> (ChatRequest, ChatOptions) {
         let anthropic = t == Transport::Anthropic;
         let mut messages = Vec::with_capacity(convo.len() + 2);
         if t == Transport::Anthropic {
             messages.push(
-                ChatMessage::system(self.system.clone()).with_options(CacheControl::Ephemeral1h),
+                ChatMessage::system(system.to_owned()).with_options(CacheControl::Ephemeral1h),
             );
             messages.push(ChatMessage::user(ctx.to_owned()).with_options(CacheControl::Ephemeral));
         } else {
@@ -1184,7 +1406,7 @@ impl ModelCompactor {
             .for_each(crate::diff_output::strip_message);
         let mut req = ChatRequest::new(messages);
         if t != Transport::Anthropic {
-            req = req.with_system(self.system.clone());
+            req = req.with_system(system.to_owned());
         }
         let ant_off = anthropic && !self.chosen;
         let cap = self.cap(ant_off, lines);
@@ -1273,7 +1495,7 @@ impl Compactor for ModelCompactor {
         ctx: &'a str,
         convo: &'a [ChatMessage],
     ) -> BoxFuture<'a, Result<Reply, String>> {
-        Box::pin(self.compress_inner(ctx, convo, 1, false))
+        Box::pin(self.compress_inner(ctx, convo, 1, false, false))
     }
 
     fn compress_lines<'a>(
@@ -1282,7 +1504,7 @@ impl Compactor for ModelCompactor {
         convo: &'a [ChatMessage],
         lines: u32,
     ) -> BoxFuture<'a, Result<Reply, String>> {
-        Box::pin(self.compress_inner(ctx, convo, lines, false))
+        Box::pin(self.compress_inner(ctx, convo, lines, false, false))
     }
 
     fn compress_thinking_off<'a>(
@@ -1290,7 +1512,15 @@ impl Compactor for ModelCompactor {
         ctx: &'a str,
         convo: &'a [ChatMessage],
     ) -> BoxFuture<'a, Result<Reply, String>> {
-        Box::pin(self.compress_inner(ctx, convo, 1, true))
+        Box::pin(self.compress_inner(ctx, convo, 1, true, false))
+    }
+
+    fn compress_small<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(self.compress_inner(ctx, convo, 1, false, true))
     }
 
     fn model(&self) -> &Resolved {
@@ -1319,9 +1549,14 @@ impl ModelCompactor {
         convo: &[ChatMessage],
         lines: u32,
         forced: bool,
+        small: bool,
     ) -> Result<Reply, String> {
         let transport = self.backend.transport(&self.model).await?;
-        let (req, opts) = self.request_opts(transport, ctx, convo, lines, forced);
+        let (req, opts) = if small {
+            self.request_small(transport, ctx, convo)
+        } else {
+            self.request_opts(transport, ctx, convo, lines, forced)
+        };
         let cap = opts.max_tokens.unwrap_or(0);
         let thinking_off = opts.extra_body.is_some() || opts.reasoning_effort.is_some();
         let started = Instant::now();
@@ -1878,5 +2113,78 @@ mod tests {
                 assert_eq!(message.content.first_text(), Some("receipt"));
             }
         }
+    }
+
+    fn talk(text: String) -> Step {
+        Step::Unit {
+            kind: Kind::Talk,
+            text,
+            earlier: vec![],
+            aim: None,
+        }
+    }
+
+    /// 201 §7.2 (P3): a small request (system prompt + ≤ 2 KB context +
+    /// one user block) stays under a fixed bound for any unit size, carries
+    /// no `<chat>` view, no ruler, and sends one unit per call.
+    #[tokio::test]
+    async fn small_request_is_bounded_and_has_no_chat_view() {
+        assert!(SMALL.len() <= 700, "small prompt is {} bytes", SMALL.len());
+        let ctx = format!("Context:\n{}", "user: fix it. ".repeat(140));
+        let ctx = guards::cut_utf8(&ctx, SMALL_CTX_BYTES);
+        let big = "the agent edited pump.rs and ran the tests again; ".repeat(600);
+        let chunk = small_chunk_bytes(400_000);
+        let n = chunks(&big, chunk).len();
+        let replies: Vec<&str> = vec!["The agent edited pump.rs and ran the tests."; n + 1];
+        let fake = Fake::new(&replies);
+        let b = build_small(&fake, ctx, &talk(big), 240, Duration::from_secs(5), chunk)
+            .await
+            .unwrap();
+        assert!(b.tries > 0, "tries {}", b.tries);
+        let sent = fake.sent.lock();
+        assert_eq!(sent.len(), n + 1, "one call per chunk plus the join");
+        for convo in sent.iter() {
+            assert_eq!(convo.len(), 1, "one user block per call");
+            let body = serde_json::to_string(&convo[0]).unwrap();
+            assert!(!body.contains("<chat>"), "no chat view");
+            assert!(!body.contains("|0123456789abcdef"), "no ruler");
+            let total = SMALL.len() + ctx.len() + body.len();
+            assert!(total < 8_000, "small request {total} bytes");
+        }
+    }
+
+    /// 201 §7.2: the small chunk follows the window, never above 4 KB.
+    #[test]
+    fn small_chunk_follows_the_window() {
+        let fixed = SMALL.len() + SMALL_CTX_BYTES + SMALL_REPLY_TOKENS as usize * 4;
+        assert_eq!(small_chunk_bytes(fixed + 4_000), 2_000);
+        assert_eq!(small_chunk_bytes(fixed + 6_000), 3_000);
+        assert_eq!(small_chunk_bytes(1_000_000), SMALL_CHUNK_MAX);
+        assert_eq!(
+            small_chunk_bytes(1_000),
+            512,
+            "a tiny window still progresses"
+        );
+    }
+
+    /// 201 §7.2: a guard trip in small is one call and no correction: the
+    /// build comes back with negative tries (the pump keeps the draft).
+    #[tokio::test]
+    async fn small_guard_trip_sends_no_second_message() {
+        let fake = Fake::new(&["", "never sent"]);
+        let b = build_small(
+            &fake,
+            "Context: none.",
+            &unit_step(),
+            240,
+            Duration::from_secs(5),
+            4_096,
+        )
+        .await
+        .unwrap();
+        assert!(b.tries < 0, "tries {}", b.tries);
+        let sent = fake.sent.lock();
+        assert_eq!(sent.len(), 1, "no retry inside the build");
+        assert_eq!(sent[0].len(), 1, "no correction turn");
     }
 }

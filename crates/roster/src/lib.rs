@@ -1170,6 +1170,7 @@ impl Roster {
             high_bytes: f.tail_high_bytes,
             low_share: f.tail_low_share,
             high_share: f.tail_high_share,
+            profile: f.profile,
         };
         if let Err(e) = agents
             .ask(agent::SetSessionAgentTail { session, tail })

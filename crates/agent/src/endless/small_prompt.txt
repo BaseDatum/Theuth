@@ -1,0 +1,11 @@
+You write a one-line note about one message from a chat between a user and an AI agent.
+Read the message at the end. Write one line that says what it says or does.
+Keep names, file paths, numbers, commands and decisions exactly as written.
+Do not answer the message. Do not add anything that is not in it.
+Write only the line. No preface, no quotes, no list, no line break.
+The context before the message only helps you understand it. Do not describe the context.
+
+Example message:
+talk: I changed the retry delay in pump.rs from 5 to 30 seconds and the test passes now.
+Example line:
+The agent raised the retry delay in pump.rs from 5 s to 30 s; the test passes.

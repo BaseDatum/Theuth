@@ -833,6 +833,8 @@ fn cfg_137f(model: Option<&str>) -> EndlessConfig {
         view_bytes: 16_000,
         retry_secs: 600,
         model: model.map(str::to_owned),
+        // 137F behaviour under test: a local compactor keeps `standard`.
+        profile: super::Profile::Standard,
         ..EndlessConfig::default()
     }
 }
@@ -1188,7 +1190,7 @@ async fn queued_merge_does_not_hold_back_the_frontier() {
     let p = Probe::with("fake/a", Act::Echo, Some("ep"), Duration::ZERO);
     let (_dir, endless, store, id) = harness_for(cfg_137f(None), p.clone()).await;
     let gate = super::pump::gate_for_tests(&endless.inner, "ep");
-    let held = gate.acquire(1).await;
+    let held = gate.acquire(1, runtime::SessionId(uuid::Uuid::nil())).await;
     store
         .set_session_memory(id, MemoryMode::Endless)
         .await
@@ -1541,7 +1543,11 @@ async fn seed_many(store: &Store, id: SessionId, n: usize, bad: &[usize]) {
             "{mark}message {k}: deploy step {k} touched /srv/app/config_{k}.yaml and {}",
             "the rollout notes repeat here ".repeat(19)
         );
-        store.append(id, &ChatMessage::user(text)).await.unwrap();
+        // 201 P3: a talk unit (a long user message is final at ingest, D8).
+        store
+            .append(id, &ChatMessage::assistant(text))
+            .await
+            .unwrap();
     }
 }
 
@@ -3057,4 +3063,100 @@ async fn refined_line_waits_for_the_next_generation() {
         "{}",
         g2.render.text()
     );
+}
+
+/// 201 §7.3 (P3, D8): a long user message, a tool call and an error echo
+/// get final (free) lines at ingest and are never sent to the model; only
+/// the long talk unit is refined.
+#[tokio::test]
+async fn kinds_that_need_no_model_are_never_sent() {
+    let p = Probe::new("fake/a", Act::Echo);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(1), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    let long = "please look at the deploy notes again. ".repeat(40);
+    store
+        .append(id, &ChatMessage::user(long.clone()))
+        .await
+        .unwrap();
+    store
+        .append(
+            id,
+            &ChatMessage::assistant(MessageContent::from_parts(vec![ContentPart::ToolCall(
+                ToolCall {
+                    call_id: "c1".into(),
+                    fn_name: "write".into(),
+                    fn_arguments: serde_json::json!({"path": "/srv/a.txt", "content": long}),
+                    thought_signatures: None,
+                },
+            )])),
+        )
+        .await
+        .unwrap();
+    let echo = format!("error: disk full\n{}", "wrote block\n".repeat(400));
+    store
+        .append(id, &ChatMessage::from(vec![ToolResponse::new("c1", echo)]))
+        .await
+        .unwrap();
+    store
+        .append(
+            id,
+            &ChatMessage::assistant("the deploy failed because the disk is full. ".repeat(30)),
+        )
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
+    let inputs = p.inputs.lock().clone();
+    assert_eq!(inputs.len(), 1, "{inputs:?}");
+    assert!(inputs[0].starts_with("talk: "), "{inputs:?}");
+    let nodes = level0(&store, id).await;
+    assert_eq!(nodes.len(), 4);
+    assert!(
+        nodes[1].text.starts_with("tool: write path=/srv/a.txt"),
+        "{}",
+        nodes[1].text
+    );
+    assert!(nodes[2].text.contains("1 errors"), "{}", nodes[2].text);
+}
+
+/// Model-built merges in the store.
+async fn model_merges(store: &Store, id: SessionId) -> usize {
+    store
+        .endless_nodes(id)
+        .await
+        .unwrap()
+        .iter()
+        .filter(|n| n.l > 0 && n.model.is_some())
+        .count()
+}
+
+/// 201 §6 (P3): lazy merges — no model merge while the view is under
+/// `merge_at` × `view_bytes`; over it, model merges are built.
+#[tokio::test]
+async fn model_merges_wait_for_merge_at() {
+    let p = Probe::new("fake/a", Act::Echo);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(1), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 4, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
+    assert_eq!(p.calls(), 4, "the four units only");
+    assert_eq!(model_merges(&store, id).await, 0, "under merge_at");
+    // ~60 refined lines of ~400 bytes: the view passes 0.75 × 16 KB.
+    seed_many(&store, id, 60, &[]).await;
+    endless.on_rows_committed(id);
+    let t0 = Instant::now();
+    while model_merges(&store, id).await == 0 {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "no merge over merge_at"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

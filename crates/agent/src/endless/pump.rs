@@ -175,6 +175,13 @@ pub(crate) struct Gate {
 
 /// One grant in this many serves the oldest waiter (R2-2).
 const AGE_EVERY: u64 = 4;
+/// 201 §6 (P3): a local endpoint keeps serving the session it served last
+/// for up to this many grants in a row (its prompt prefix stays warm on a
+/// single-slot server), then yields to another session's waiter.
+const RUN_MAX: u32 = 8;
+
+/// A waiter's key: `(priority, arrival)`.
+type WaitKey = (Reverse<u8>, u64);
 
 struct GateState {
     free: usize,
@@ -182,17 +189,35 @@ struct GateState {
     /// Permits handed out so far (the aging turn).
     grants: u64,
     /// `(priority, arrival)`; ordered highest priority first.
-    waiting: BTreeSet<(Reverse<u8>, u64)>,
+    waiting: BTreeSet<WaitKey>,
+    /// 201 P3: arrival → the session waiting.
+    owner: HashMap<u64, SessionId>,
+    /// 201 P3: the session served last and how many grants in a row it had.
+    last: Option<SessionId>,
+    run: u32,
 }
 
 impl GateState {
-    /// The waiter the next permit goes to.
-    fn head(&self) -> Option<(Reverse<u8>, u64)> {
-        if self.grants % AGE_EVERY == AGE_EVERY - 1 {
-            self.waiting.iter().min_by_key(|k| k.1).copied()
-        } else {
-            self.waiting.first().copied()
+    /// The waiter the next permit goes to. R2-2's aging turn first when the
+    /// oldest waiter is below the top priority (no starvation); then, 201
+    /// P3, the last-served session's best waiter at the top priority while
+    /// its run is under [`RUN_MAX`], or another session's best waiter once
+    /// the run is spent; else the top waiter.
+    fn head(&self) -> Option<WaitKey> {
+        let first = *self.waiting.first()?;
+        if self.grants % AGE_EVERY == AGE_EVERY - 1
+            && let Some(oldest) = self.waiting.iter().min_by_key(|k| k.1)
+            && oldest.0 != first.0
+        {
+            return Some(*oldest);
         }
+        let same = |k: &WaitKey| self.last.is_some() && self.owner.get(&k.1) == self.last.as_ref();
+        let pick = if self.run < RUN_MAX {
+            self.waiting.iter().find(|k| k.0 == first.0 && same(k))
+        } else {
+            self.waiting.iter().find(|k| !same(k))
+        };
+        Some(pick.copied().unwrap_or(first))
     }
 }
 
@@ -214,7 +239,9 @@ struct Ticket<'a> {
 
 impl Drop for Ticket<'_> {
     fn drop(&mut self) {
-        if self.gate.state.lock().waiting.remove(&self.key) {
+        let mut s = self.gate.state.lock();
+        s.owner.remove(&self.key.1);
+        if s.waiting.remove(&self.key) {
             self.gate.freed.notify_waiters();
         }
     }
@@ -228,19 +255,24 @@ impl Gate {
                 next: 0,
                 grants: 0,
                 waiting: BTreeSet::new(),
+                owner: HashMap::new(),
+                last: None,
+                run: 0,
             }),
             freed: Notify::new(),
         })
     }
 
     /// Wait for a permit; higher `priority` is served first, the oldest
-    /// waiter every [`AGE_EVERY`]th grant. Cancel-safe.
-    pub(crate) async fn acquire(self: &Arc<Self>, priority: u8) -> Permit {
+    /// waiter every [`AGE_EVERY`]th grant, `owner`'s run kept (201 P3).
+    /// Cancel-safe.
+    pub(crate) async fn acquire(self: &Arc<Self>, priority: u8, owner: SessionId) -> Permit {
         let key = {
             let mut s = self.state.lock();
             let key = (Reverse(priority), s.next);
             s.next += 1;
             s.waiting.insert(key);
+            s.owner.insert(key.1, owner);
             key
         };
         let _ticket = Ticket { gate: self, key };
@@ -252,8 +284,15 @@ impl Gate {
                 let mut s = self.state.lock();
                 if s.free > 0 && s.head() == Some(key) {
                     s.waiting.remove(&key);
+                    s.owner.remove(&key.1);
                     s.free -= 1;
                     s.grants += 1;
+                    if s.last == Some(owner) {
+                        s.run += 1;
+                    } else {
+                        s.last = Some(owner);
+                        s.run = 1;
+                    }
                     if s.free > 0 && !s.waiting.is_empty() {
                         self.freed.notify_waiters();
                     }
@@ -352,6 +391,7 @@ impl State {
             let mut live = self.live.lock();
             live.failed.clear();
             live.reported.clear();
+            live.tripped.clear();
             live.dirty = true;
         }
         self.wake.notify_one();
@@ -441,6 +481,12 @@ struct Live {
     /// 201 §4.2 (P2): the session model's turn allowance in bytes, as the
     /// last turn measured it (`scaled` marks in the status).
     allowance: Option<u64>,
+    /// 201 §7.1 (P3): the desk agent's `profile:` key (the config's
+    /// `profile` when unset).
+    agent_profile: Option<Profile>,
+    /// 201 §7.2 (P3): `small`-profile guard trips per level-0 unit: one
+    /// trip waits for an idle queue, two keep the draft until `endless_retry`.
+    tripped: HashMap<u64, u8>,
 }
 
 impl Live {
@@ -752,6 +798,8 @@ impl Live {
             current_gen: None,
             tail_bytes: 0,
             allowance: None,
+            agent_profile: None,
+            tripped: HashMap::new(),
         }
     }
 }
@@ -1144,6 +1192,11 @@ pub(crate) async fn attach(
             state
         }
     };
+    state.live.lock().agent_profile = inner
+        .agent_tails
+        .lock()
+        .get(&session)
+        .and_then(|a| a.profile);
     let cancel = CancellationToken::new();
     let handle = Handle {
         attached: attached.clone(),
@@ -1221,11 +1274,15 @@ async fn load(state: &State) -> anyhow::Result<()> {
 }
 
 /// 201 P1: the stored node of a new level-0 unit, no model call: its own
-/// tagged text when it fits (free), else its [`draft_line`].
+/// tagged text when it fits (free), else its per-kind draft line (P3,
+/// §7.3) — final (free) for a kind that never needs a model.
 fn draft_node(u: &Unit, node_bytes: u32) -> Node {
     let (text, quality) = match tree::free_unit(u, node_bytes) {
         Some(text) => (text, Quality::Free),
-        None => (draft_line(u, node_bytes), Quality::Draft),
+        None if !super::lines::needs_model(u) => {
+            (super::lines::draft_line(u, node_bytes), Quality::Free)
+        }
+        None => (super::lines::draft_line(u, node_bytes), Quality::Draft),
     };
     let mut node = Node {
         l: 0,
@@ -1400,7 +1457,13 @@ fn close(batch: &mut Vec<u64>) -> Option<Work> {
 /// behind the frontier.
 fn schedule(state: &Arc<State>) {
     let mut live = state.live.lock();
-    if live.mode != MemoryMode::Endless || live.paused_by.is_some() {
+    if live.mode != MemoryMode::Endless {
+        return;
+    }
+    // 201 P3: a paused drafting session still builds its deterministic
+    // merges (no model call); a meeting tree starts nothing (137 G8).
+    let paused = live.paused_by.is_some();
+    if paused && !live.drafting() {
         return;
     }
     let (jobs, batch_units, node_bytes) = {
@@ -1411,6 +1474,9 @@ fn schedule(state: &Arc<State>) {
             c.node_bytes,
         )
     };
+    // 201 §7.2 (P3): the small profile sends one unit per call.
+    let small = profile_of(state, &live).0 == Profile::Small;
+    let batch_units = if small { 1 } else { batch_units };
     let local = state.compactor().local().is_some();
     live.parallel = if local { 1 } else { jobs as u32 };
     let cfg = live.fold_cfg(&state.cfg.read());
@@ -1436,14 +1502,33 @@ fn schedule(state: &Arc<State>) {
     if live.near_cap && !local {
         slots = slots.min(usize::from(live.jobs == 0));
     }
+    if paused {
+        slots = 0;
+    }
+    let merge_due = merges_due(state, &mut live, cfg);
     let mut work: Vec<Work> = Vec::new();
     let mut instant: Vec<(u8, u64)> = Vec::new();
     let mut batch: Vec<u64> = Vec::new();
     let mut bytes = 0usize;
+    // 201 §7.2 (P3): a small-profile unit that tripped a guard once, retried
+    // only when nothing else is due.
+    let mut deferred: Option<u64> = None;
     {
         let live: &Live = &live;
+        // 201 §6 (P3): the oldest draft still in the tail first (it leaves
+        // the tail first), then the drafts already under the view.
         let todo: Box<dyn Iterator<Item = u64> + '_> = if drafting {
-            Box::new(live.drafts.range(base..t).copied())
+            let cut = live
+                .current_gen
+                .as_ref()
+                .map_or(base, |g| g.t_cut)
+                .clamp(base, t);
+            Box::new(
+                live.drafts
+                    .range(cut..t)
+                    .chain(live.drafts.range(base..cut))
+                    .copied(),
+            )
         } else {
             Box::new(frontier..t)
         };
@@ -1454,6 +1539,14 @@ fn schedule(state: &Arc<State>) {
             let key = (0u8, i);
             if (!drafting && live.tree.built(0, i)) || !due(live, &key) {
                 continue;
+            }
+            match live.tripped.get(&i) {
+                Some(n) if small && *n >= 2 => continue,
+                Some(_) if small => {
+                    deferred = deferred.or(Some(i));
+                    continue;
+                }
+                _ => {}
             }
             let u = &live.units[i as usize];
             let mech = live
@@ -1498,9 +1591,23 @@ fn schedule(state: &Arc<State>) {
         }
     }
     work.extend(close(&mut batch));
+    if let Some(i) = deferred
+        && work.is_empty()
+        && !level0_busy
+        && slots > 0
+    {
+        slots -= 1;
+        work.push(Work::Node((0, i)));
+    }
     // Merges: missing ones, and stale drafts (201 P1); a meeting tree's only
     // behind the frontier (137 rule 3).
-    let mut merges = if local { usize::from(!merging) } else { slots };
+    let mut merges = if paused {
+        0
+    } else if local {
+        usize::from(!merging)
+    } else {
+        slots
+    };
     let mut l = 1u8;
     while (1u64 << l) <= t && (drafting || merges > 0) {
         let n = 1u64 << l;
@@ -1528,7 +1635,7 @@ fn schedule(state: &Arc<State>) {
                     || tree::free_merge(&a.text, &b.text, node_bytes).is_some());
             if cheap {
                 instant.push(key);
-            } else if merges > 0 {
+            } else if merges > 0 && merge_due {
                 merges -= 1;
                 work.push(Work::Node(key));
             }
@@ -1602,6 +1709,130 @@ impl Drop for JobGuard {
         self.state.built_tx.send_modify(|v| *v += 1);
         self.state.wake.notify_one();
     }
+}
+
+/// 201 §6 (P3): whether model merges are due: always for a meeting tree;
+/// for a drafting session only once the view, as the fold renders it now,
+/// is over `merge_at` × `view_bytes`.
+fn merges_due(state: &State, live: &mut Live, cfg: FoldCfg) -> bool {
+    if !live.drafting() {
+        return true;
+    }
+    let merge_at = state.cfg.read().merge_at.clamp(0.5, 1.0);
+    live.fold(cfg).size() as f64 > merge_at * f64::from(cfg.view_bytes)
+}
+
+/// 201 §7.1 (P3): the compactor profile `want` resolves to for `model`, and
+/// why. `auto` is `small` for a local model or a known window of at most
+/// [`SMALL_WINDOW`] tokens, else `standard`.
+pub(crate) fn resolve_profile(
+    want: Profile,
+    model: &models::Resolved,
+    local: bool,
+) -> (Profile, &'static str) {
+    let known = model
+        .model
+        .as_ref()
+        .map(|m| {
+            if m.limit.context > 0 {
+                m.limit.context
+            } else {
+                m.limit.assumed
+            }
+        })
+        .filter(|w| *w > 0);
+    match want {
+        Profile::Standard => (Profile::Standard, "set to standard"),
+        Profile::Small => (Profile::Small, "set to small"),
+        Profile::Auto if local => (Profile::Small, "auto: the summary model is local"),
+        Profile::Auto if known.is_some_and(|w| u64::from(w) <= SMALL_WINDOW) => (
+            Profile::Small,
+            "auto: the summary model's window is at most 32k tokens",
+        ),
+        Profile::Auto => (
+            Profile::Standard,
+            "auto: a cloud summary model with a large window",
+        ),
+    }
+}
+
+/// 201 §7.1: `auto` picks `small` at or below this known window (tokens).
+const SMALL_WINDOW: u64 = 32_000;
+
+/// The profile in force for `state`'s session: the desk agent's key over the
+/// config's, resolved against the compactor in force. A meeting tree keeps
+/// 137 behaviour (`standard`).
+fn profile_of(state: &State, live: &Live) -> (Profile, &'static str) {
+    if !live.drafting() {
+        return (
+            Profile::Standard,
+            "meeting memory keeps the standard profile",
+        );
+    }
+    let want = live.agent_profile.unwrap_or(state.cfg.read().profile);
+    let c = state.compactor();
+    resolve_profile(want, c.model(), c.local().is_some())
+}
+
+/// 201 §7.1 (P3): the desk agent's `profile:` key for `session` (live).
+pub(crate) fn set_agent_profile(inner: &Inner, session: SessionId, profile: Option<Profile>) {
+    if let Some(state) = state_of(inner, session) {
+        state.live.lock().agent_profile = profile;
+        state.wake.notify_one();
+    }
+}
+
+/// 201 §7.2 (P3): the `small` profile's context for a job whose first unit
+/// is `first`: the user's most recent message before it and the last few
+/// lines of the same turn, at most [`compactor::SMALL_CTX_BYTES`]; never
+/// the `<chat>` view.
+fn small_ctx(live: &Live, first: u64) -> String {
+    const NEARBY: usize = 4;
+    const USER_BYTES: u32 = 700;
+    let turn = live.unit_turn(first);
+    let mut nearby: Vec<String> = Vec::new();
+    let mut j = first;
+    while j > live.base && nearby.len() < NEARBY {
+        j -= 1;
+        if live.unit_turn(j) != turn {
+            break;
+        }
+        if let Some(n) = live.tree.get(0, j) {
+            nearby.push(n.text.replace('\n', " "));
+        }
+    }
+    nearby.reverse();
+    let user = (live.base..first)
+        .rev()
+        .take(256)
+        .map(|j| &live.units[j as usize])
+        .find(|u| u.kind == tree::Kind::User)
+        .map(|u| match tree::free_unit(u, USER_BYTES) {
+            Some(t) => t,
+            None => super::lines::draft_line(u, USER_BYTES),
+        });
+    let render = |nearby: &[String]| {
+        let mut s = String::from("Context:\n");
+        if let Some(u) = &user {
+            s.push_str(u);
+            s.push('\n');
+        }
+        for l in nearby {
+            s.push_str(l);
+            s.push('\n');
+        }
+        s
+    };
+    let mut from = 0;
+    let mut s = render(&nearby);
+    while s.len() > compactor::SMALL_CTX_BYTES && from < nearby.len() {
+        from += 1;
+        s = render(&nearby[from..]);
+    }
+    if user.is_none() && from == nearby.len() {
+        return "Context: none.".to_owned();
+    }
+    super::guards::cut_utf8(&s, compactor::SMALL_CTX_BYTES).to_owned()
 }
 
 /// The `<chat>` context of a job whose last unit committed in `turn`: that
@@ -1702,10 +1933,12 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
         }
     };
     let drafting = live.drafting();
-    let ctx = if step.is_some() {
-        ctx_for(&state, live, last_turn)
-    } else {
-        String::new()
+    // 201 §7.2 (P3): the small profile's own short context.
+    let small = drafting && profile_of(&state, live).0 == Profile::Small;
+    let ctx = match (&step, small) {
+        (None, _) => String::new(),
+        (Some(_), true) => small_ctx(live, id),
+        (Some(_), false) => ctx_for(&state, live, last_turn),
     };
     let (compactor, cancel) = {
         let cur = state.current.read();
@@ -1732,6 +1965,7 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
                     priority,
                     cancel: &cancel,
                     lines: 1,
+                    small,
                 };
                 call(&state, &compactor, job, &ctx, &step)
                     .await
@@ -1756,6 +1990,11 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
             }
             (None, None) => Err("no step".to_owned()),
         };
+        // 201 §7.2 (P3): a small-profile guard trip keeps the draft and
+        // earns one later retry when the queue is idle (`schedule`).
+        if small && l == 0 && matches!(&outcome, Err(e) if e.starts_with(NO_PASSING_LINE)) {
+            *state.live.lock().tripped.entry(i).or_default() += 1;
+        }
         guard.armed = false;
         finish(
             &state,
@@ -1810,6 +2049,7 @@ fn spawn_batch(state: Arc<State>, units: Vec<u64>, live: &mut Live) {
             priority,
             cancel: &cancel,
             lines: units.len() as u32,
+            small: false,
         };
         let outcome = call(&state, &compactor, job, &ctx, &step).await;
         guard.armed = false;
@@ -1835,6 +2075,8 @@ struct Job<'a> {
     cancel: &'a CancellationToken,
     /// Reply lines (G6: a batch's unit count, else 1).
     lines: u32,
+    /// 201 §7.2 (P3): the `small` profile's build (one attempt, short prompt).
+    small: bool,
 }
 
 /// Prompt bytes one more try adds (the refused reply + the correction).
@@ -1966,6 +2208,7 @@ async fn call(
         priority,
         cancel,
         lines,
+        small,
     } = job;
     let local = c.local();
     let cfg = state.cfg.read().clone();
@@ -1974,7 +2217,7 @@ async fn call(
         Some(endpoint) => {
             let gate = state.queues.get(endpoint, cfg.local_jobs);
             tokio::select! {
-                p = gate.acquire(priority) => Some(p),
+                p = gate.acquire(priority, state.session) => Some(p),
                 _ = cancel.cancelled() => return Ok(None),
             }
         }
@@ -2002,10 +2245,20 @@ async fn call(
         cfg.attempt_secs.clamp(10, 3_600)
     }));
     let reply = c.out_tokens(lines);
-    let ctx = fit_ctx(
-        ctx,
-        ctx_budget(c.as_ref(), step, &cfg, local.is_some(), reply),
-    );
+    // 201 §7.2 (P3): a small context is already at most 2 KB.
+    let ctx = if small {
+        std::borrow::Cow::Borrowed(ctx)
+    } else {
+        fit_ctx(
+            ctx,
+            ctx_budget(c.as_ref(), step, &cfg, local.is_some(), reply),
+        )
+    };
+    // 201 §7.2: a small chunk follows the window.
+    let chunk = compactor::small_chunk_bytes(crate::tokens::bytes_of(
+        &model.id,
+        crate::tokens::memory_window(model),
+    ));
     let request_id = format!("endless:{l}:{i}:{}", uuid::Uuid::now_v7());
     let reserved = state
         .store
@@ -2027,7 +2280,10 @@ async fn call(
     // and the reduce; G5: the one retry); a panic is a failure whose ledger
     // row still settles (R1-4).
     let parts = match step {
-        Step::Unit { text, .. } if text.len() > compactor::MAP_REDUCE_OVER => {
+        Step::Unit { text, .. } if small && text.len() > chunk => {
+            compactor::chunks(text, chunk).len() as u32 + 1
+        }
+        Step::Unit { text, .. } if !small && text.len() > compactor::MAP_REDUCE_OVER => {
             compactor::chunks(text, compactor::CHUNK_BYTES).len() as u32 + 1
         }
         _ => 1,
@@ -2036,6 +2292,10 @@ async fn call(
     // R2-11: the answered attempts, kept even if the outer bound drops the build.
     let tally = compactor::Tally::new(c.as_ref());
     let run = async {
+        if small {
+            return compactor::build_small(&tally, &ctx, step, cfg.node_bytes, attempt, chunk)
+                .await;
+        }
         let first = compactor::build(&tally, &ctx, step, cfg.node_bytes, cfg.tries, attempt).await;
         let Err(f) = &first else { return first };
         // G5: the provider's (or preflight's) counts; a shape without numbers
@@ -2427,13 +2687,16 @@ pub(crate) async fn quiet_for_tests(inner: &Inner, session: SessionId, max: Dura
                 live.failed
                     .get(&(0, *i))
                     .is_some_and(|r| r.mechanical(last_ok))
+                    || live.tripped.get(i).is_some_and(|n| *n >= 2)
             };
             let drafts = live.drafts.iter().filter(|i| !given_up(i)).count();
             let failing = live.failed.iter().any(|(k, r)| {
                 r.failures >= 2 && (k.0 > 0 || (live.drafts.contains(&k.1) && !given_up(&k.1)))
             });
             (
-                unbuilt == 0 && drafts == 0 && live.stale.is_empty(),
+                unbuilt == 0
+                    && drafts == 0
+                    && (live.stale.is_empty() || !merges_due(&state, &mut live, cfg)),
                 live.frontier_stalled(cfg) || (live.drafting() && failing),
             )
         };
@@ -2764,7 +3027,15 @@ fn tail_status(
         tail_low,
         tail_high,
         tail_override: tail,
-        profile: Profile::Standard,
+        profile: match c.profile {
+            Profile::Auto => Profile::Standard,
+            p => p,
+        },
+        profile_reason: match c.profile {
+            Profile::Auto => "auto: resolved when the summary model runs",
+            _ => "set in settings",
+        }
+        .to_owned(),
         ..m
     }
 }
@@ -3188,13 +3459,17 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         ..Default::default()
     };
     let tail = live.tail;
+    let (profile, reason) = profile_of(&state, &live);
     drop(live);
-    Ok(tail_status(
+    let mut out = tail_status(
         m,
         &with_agent_tail(inner, session, &full_cfg),
         tail,
         turn_allowance_bytes(inner, session),
-    ))
+    );
+    out.profile = profile;
+    out.profile_reason = reason.to_owned();
+    Ok(out)
 }
 
 /// 201 §4.2: `cfg` with the desk agent's `tail_*:` keys for `session`
@@ -3279,14 +3554,6 @@ pub(crate) async fn fold_all(inner: &Inner, session: SessionId) -> anyhow::Resul
     state.built_tx.send_modify(|v| *v += 1);
     state.wake.notify_one();
     memory(inner, session).await
-}
-
-/// 201 P1: the deterministic line a level-0 unit that does not fit
-/// `node_bytes` gets at ingest (stored as a `draft`, refined later by the
-/// model). For now the 137G mechanical cut; phase P3 replaces this body
-/// with the per-kind lines of 201 §7.3.
-fn draft_line(u: &Unit, node_bytes: u32) -> String {
-    tree::mechanical_unit(u, node_bytes).unwrap_or_else(|| u.tagged())
 }
 
 /// The node `endless_fold` writes for unit `u`: free when it fits, else the
@@ -3763,12 +4030,12 @@ mod tests {
     #[tokio::test]
     async fn local_gate_serves_the_frontier_first() {
         let gate = Gate::new(1);
-        let held = gate.acquire(0).await;
+        let held = gate.acquire(0, ME).await;
         let order = Arc::new(Mutex::new(Vec::new()));
         let waiter = |name: &'static str, priority: u8| {
             let (gate, order) = (gate.clone(), order.clone());
             tokio::spawn(async move {
-                let _p = gate.acquire(priority).await;
+                let _p = gate.acquire(priority, ME).await;
                 order.lock().push(name);
                 tokio::task::yield_now().await;
             })
@@ -3776,7 +4043,7 @@ mod tests {
         let gone = {
             let gate = gate.clone();
             tokio::spawn(async move {
-                let _p = gate.acquire(1).await;
+                let _p = gate.acquire(1, ME).await;
                 unreachable!("aborted before the permit");
             })
         };
@@ -3805,12 +4072,12 @@ mod tests {
     #[tokio::test]
     async fn local_gate_ages_the_oldest_waiter_in() {
         let gate = Gate::new(1);
-        let held = gate.acquire(1).await; // grant 1
+        let held = gate.acquire(1, ME).await; // grant 1
         let order = Arc::new(Mutex::new(Vec::new()));
         let waiter = |name: &'static str, priority: u8| {
             let (gate, order) = (gate.clone(), order.clone());
             tokio::spawn(async move {
-                let _p = gate.acquire(priority).await;
+                let _p = gate.acquire(priority, ME).await;
                 order.lock().push(name);
                 tokio::task::yield_now().await;
             })
@@ -3827,5 +4094,96 @@ mod tests {
         }
         // Grants 2 and 3 by priority, grant 4 to the oldest, then priority again.
         assert_eq!(*order.lock(), ["f1", "f2", "merge", "f3", "f4"]);
+    }
+
+    /// One session for the gate tests that predate 201 P3's run rule.
+    const ME: SessionId = SessionId(uuid::Uuid::nil());
+
+    /// 201 §6 (P3): a local gate keeps serving the session it served last
+    /// for up to `RUN_MAX` grants (its prompt prefix), then yields to the
+    /// other session's waiter even though that one queued first.
+    #[tokio::test]
+    async fn local_gate_keeps_the_last_session_for_a_run() {
+        let gate = Gate::new(1);
+        let (a, b) = (
+            SessionId(uuid::Uuid::from_u128(1)),
+            SessionId(uuid::Uuid::from_u128(2)),
+        );
+        let held = gate.acquire(1, a).await; // a's run: 1
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let waiter = |name: String, s: SessionId| {
+            let (gate, order) = (gate.clone(), order.clone());
+            tokio::spawn(async move {
+                let _p = gate.acquire(1, s).await;
+                order.lock().push(name);
+                tokio::task::yield_now().await;
+            })
+        };
+        let mut tasks = vec![waiter("b0".into(), b)];
+        tokio::task::yield_now().await;
+        for k in 0..10 {
+            tasks.push(waiter(format!("a{k}"), a));
+            tokio::task::yield_now().await;
+        }
+        drop(held);
+        for t in tasks {
+            t.await.unwrap();
+        }
+        // a's run reaches RUN_MAX (8) with a6, then b0, then the rest of a.
+        let want: Vec<String> = [
+            "a0", "a1", "a2", "a3", "a4", "a5", "a6", "b0", "a7", "a8", "a9",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(*order.lock(), want);
+    }
+
+    fn with_window(id: &str, context: u32) -> models::Resolved {
+        let mut r = resolved_for_tests(id);
+        let mut limit = models::Limit::default();
+        limit.context = context;
+        r.model = Some(models::Model {
+            id: "m".into(),
+            name: "m".into(),
+            limit,
+            cost: None,
+            reasoning: false,
+            tool_call: true,
+            image: false,
+            reasoning_options: vec![],
+            protocol: None,
+            canonical: None,
+        });
+        r
+    }
+
+    /// 201 §7.1 (P3): `auto` is small for a local model and a 16k window,
+    /// standard for a large or unknown cloud window; explicit picks hold.
+    #[test]
+    fn auto_profile_follows_locality_and_window() {
+        let big = with_window("cloud/big", 200_000);
+        let small = with_window("cloud/small", 16_000);
+        let unknown = resolved_for_tests("cloud/unknown");
+        assert_eq!(resolve_profile(Profile::Auto, &big, true).0, Profile::Small);
+        assert_eq!(
+            resolve_profile(Profile::Auto, &small, false).0,
+            Profile::Small
+        );
+        assert_eq!(
+            resolve_profile(Profile::Auto, &big, false).0,
+            Profile::Standard
+        );
+        assert_eq!(
+            resolve_profile(Profile::Auto, &unknown, false).0,
+            Profile::Standard
+        );
+        assert_eq!(
+            resolve_profile(Profile::Small, &big, false).0,
+            Profile::Small
+        );
+        assert_eq!(
+            resolve_profile(Profile::Standard, &small, true).0,
+            Profile::Standard
+        );
     }
 }
