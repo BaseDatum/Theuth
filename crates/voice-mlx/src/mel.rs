@@ -9,7 +9,8 @@
 //! - the "magnitude" is `|re| + |im|` (parakeet-mlx views the complex spectrum as interleaved floats), squared.
 
 use anyhow::{Result, ensure};
-use mlx_rs::{Array, fft, ops};
+use mlx_rs::fft::rfft;
+use mlx_rs::{Array, ops};
 
 pub(crate) const SAMPLE_RATE: usize = 16_000;
 pub(crate) const N_MELS: usize = 128;
@@ -106,7 +107,7 @@ pub(crate) fn log_mel(pcm: &[f32], fb: &Array) -> Result<Array> {
         pcm.len()
     );
     let (fr, t) = frames(pcm);
-    let spec = fft::rfft(
+    let spec = rfft(
         Array::from_slice(&fr, &[t as i32, N_FFT as i32]),
         N_FFT as i32,
         -1,

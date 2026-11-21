@@ -44,8 +44,9 @@ serde_json = { workspace = true }
 flate2 = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
-# 202: Parakeet TDT on MLX in-process; stubs itself off macOS aarch64. Behind `mlx` until it builds.
-voice-mlx = { workspace = true, optional = true }
+# 202: Parakeet TDT on MLX in-process. Always a dependency: voice-mlx compiles MLX only on macOS aarch64
+# and stubs itself (`available() == false`) everywhere else, so no feature flag is needed.
+voice-mlx = { workspace = true }
 # 202 §4: the explicit MLX weights download.
 reqwest = { workspace = true }
 
@@ -58,8 +59,6 @@ ptts = { workspace = true, features = ["metal"] }
 
 [features]
 ts = ["dep:ts-rs", "runtime/ts"]
-# 202: the in-process MLX engine. TODO(202): on by default for macOS aarch64 once crates/voice-mlx is green.
-mlx = ["dep:voice-mlx"]
 
 [lints]
 workspace = true

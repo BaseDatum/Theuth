@@ -118,7 +118,10 @@ pub struct ParakeetMlx {
 
 impl ParakeetMlx {
     /// Load `config.json` and `model.safetensors` from `dir` (see [`crate::FILES`]); materialises all weights.
+    /// Fails without touching the GPU when no `mlx.metallib` is found (`src/metal.rs`): MLX would throw from
+    /// its Metal device constructor instead.
     pub fn load(dir: &Path) -> Result<Self> {
+        crate::metal::prepare()?;
         let cfg_path = dir.join("config.json");
         let raw =
             std::fs::read(&cfg_path).with_context(|| format!("reading {}", cfg_path.display()))?;

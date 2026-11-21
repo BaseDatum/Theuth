@@ -1,6 +1,6 @@
 //! The optional "mlx" whole-utterance STT engine (`docs/design/202-stt-mlx-engine.md`):
 //! Parakeet TDT 0.6B v3 (`mlx-community/parakeet-tdt-0.6b-v3`, the published weights) in-process
-//! on the Apple GPU through MLX (`voice_mlx`, behind this crate's `mlx` feature), beside the
+//! on the Apple GPU through MLX (`voice_mlx`, compiled in on macOS aarch64 only), beside the
 //! built-in ONNX int8 engine. Weights live under `<data_dir>/models/parakeet-tdt-mlx/`; nothing
 //! here downloads implicitly: [`install`] is the one explicit fetch.
 //!
@@ -24,11 +24,7 @@ pub const MLX_MODEL_SUBDIR: &str = "parakeet-tdt-mlx";
 /// Hugging Face repo [`install`] fetches from.
 pub const MLX_REPO: &str = "mlx-community/parakeet-tdt-0.6b-v3";
 /// The repo files the model loads (`voice_mlx::FILES`).
-#[cfg(feature = "mlx")]
 pub const FILES: &[&str] = voice_mlx::FILES;
-/// The repo files the model loads; mirrors `voice_mlx::FILES` while the `mlx` feature is off.
-#[cfg(not(feature = "mlx"))]
-pub const FILES: &[&str] = &["config.json", "model.safetensors"];
 /// Written last by [`install`]; its presence is "downloaded".
 const COMPLETE: &str = ".complete";
 /// Errors in a row (not deadlines) that retire the engine.
@@ -54,7 +50,7 @@ pub enum SttEngine {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum MlxState {
-    /// Not compiled into this build (only macOS on Apple silicon has it).
+    /// Cannot run here: not compiled in (only macOS on Apple silicon has it) or no `mlx.metallib`.
     Unavailable {
         /// Why, for the settings UI.
         reason: String,
@@ -78,15 +74,8 @@ pub enum MlxState {
 }
 
 /// The MLX model is compiled into this build.
-#[cfg(feature = "mlx")]
 pub fn compiled() -> bool {
     voice_mlx::available()
-}
-
-/// The MLX model is compiled into this build.
-#[cfg(not(feature = "mlx"))]
-pub fn compiled() -> bool {
-    false
 }
 
 /// `<data_dir>/models/parakeet-tdt-mlx`.
@@ -104,10 +93,8 @@ static INSTALL: LazyLock<Mutex<Option<MlxState>>> = LazyLock::new(|| Mutex::new(
 
 /// The engine's state under `data_dir`.
 pub fn state(data_dir: &Path) -> MlxState {
-    if !compiled() {
-        return MlxState::Unavailable {
-            reason: "this build has no MLX engine (macOS on Apple silicon only)".into(),
-        };
+    if let Some(reason) = voice_mlx::unavailable_reason() {
+        return MlxState::Unavailable { reason };
     }
     if let Some(s @ (MlxState::Downloading { .. } | MlxState::Failed { .. })) =
         INSTALL.lock().clone()
@@ -297,7 +284,6 @@ pub trait Model {
     fn transcribe(&mut self, pcm16k: &[f32]) -> anyhow::Result<String>;
 }
 
-#[cfg(feature = "mlx")]
 impl Model for voice_mlx::ParakeetMlx {
     fn warm(&mut self) -> anyhow::Result<()> {
         voice_mlx::ParakeetMlx::warm(self)
@@ -579,18 +565,9 @@ pub struct Mlx {
 }
 
 /// The real model loader.
-#[cfg(feature = "mlx")]
 fn loader(dir: PathBuf) -> Loader {
     Arc::new(move || -> Loaded {
         Ok(Box::new(voice_mlx::ParakeetMlx::load(&dir)?) as Box<dyn Model>)
-    })
-}
-
-/// Without the `mlx` feature every load fails (the engine is never selected then).
-#[cfg(not(feature = "mlx"))]
-fn loader(dir: PathBuf) -> Loader {
-    Arc::new(move || -> Loaded {
-        anyhow::bail!("built without the MLX engine ({})", dir.display())
     })
 }
 
@@ -999,9 +976,9 @@ mod tests {
     }
 
     /// The real model on a real dictation clip (`$THEUTH_MLX_DATA_DIR` with the weights under
-    /// `models/parakeet-tdt-mlx/`, `$THEUTH_MLX_CLIP` a 16 kHz `.pcm16`). Needs `--features mlx`.
+    /// `models/parakeet-tdt-mlx/`, `$THEUTH_MLX_CLIP` a 16 kHz `.pcm16`). macOS on Apple silicon.
     #[test]
-    #[ignore = "loads the MLX model (~2.5 GB); set THEUTH_MLX_DATA_DIR and THEUTH_MLX_CLIP, --features mlx"]
+    #[ignore = "loads the MLX model (~2.5 GB); set THEUTH_MLX_DATA_DIR and THEUTH_MLX_CLIP"]
     fn real_model_transcribes_a_clip() {
         let data_dir = PathBuf::from(std::env::var("THEUTH_MLX_DATA_DIR").unwrap());
         let clip = std::fs::read(std::env::var("THEUTH_MLX_CLIP").unwrap()).unwrap();

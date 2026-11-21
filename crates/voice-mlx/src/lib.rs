@@ -31,6 +31,8 @@ pub const FILES: &[&str] = &["config.json", "model.safetensors"];
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod mel;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod metal;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod model;
 #[cfg_attr(
     not(all(target_os = "macos", target_arch = "aarch64")),
@@ -41,6 +43,19 @@ mod text;
 /// True only where the MLX engine is compiled in (macOS on Apple silicon).
 pub fn available() -> bool {
     cfg!(all(target_os = "macos", target_arch = "aarch64"))
+}
+
+/// Why the engine cannot run in this process, if it cannot: not compiled in, or no `mlx.metallib` where
+/// MLX would look (see `src/metal.rs`). Touches no MLX state; [`ParakeetMlx::load`] checks it again.
+pub fn unavailable_reason() -> Option<String> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        metal::find().err().map(|e| e.to_string())
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        Some("Parakeet on MLX needs macOS on Apple silicon".into())
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
