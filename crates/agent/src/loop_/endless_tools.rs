@@ -12,10 +12,13 @@ use crate::endless::{Endless, ViewLine};
 pub const ZOOM: &str = "zoom";
 pub const RECALL: &str = "recall";
 pub const DATE: &str = "date";
+/// 201 §9 (P6a): the state ledger's tool; listed only while the
+/// generation in force has a ledger (the turn loop filters it).
+pub const LEDGER: &str = "ledger";
 
 /// Whether `name` is one of the endless tools.
 pub fn is_local(name: &str) -> bool {
-    matches!(name, ZOOM | RECALL | DATE)
+    matches!(name, ZOOM | RECALL | DATE | LEDGER)
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -67,6 +70,12 @@ pub fn specs() -> Vec<ToolSpec> {
             "The date and time of message id.",
             serde_json::to_value(schemars::schema_for!(DateArgs)).unwrap_or_default(),
         ),
+        spec(
+            LEDGER,
+            "Record goals, decisions and constraints in the user's own words when they are stated or change; close or replace them when they no longer hold; accept or drop the suggested ones (by their id).",
+            serde_json::to_value(schemars::schema_for!(crate::endless::ledger::Op))
+                .unwrap_or_default(),
+        ),
     ]
 }
 
@@ -112,6 +121,13 @@ pub async fn run(
                 Err(e) => ToolOutput::err(e),
             },
             Err(e) => ToolOutput::err(format!("date: bad arguments: {e}")),
+        },
+        LEDGER => match serde_json::from_value::<crate::endless::ledger::Op>(args.clone()) {
+            Ok(op) => match endless.ledger_op(session, &op).await {
+                Ok(note) => ToolOutput::ok(note),
+                Err(e) => ToolOutput::err(e),
+            },
+            Err(e) => ToolOutput::err(format!("ledger: bad arguments: {e}")),
         },
         other => ToolOutput::err(format!("{other} is not a fractal context tool")),
     }
@@ -191,10 +207,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn specs_are_the_three_tools_with_verbatim_descriptions() {
+    fn specs_are_the_endless_tools_with_verbatim_descriptions() {
         let s = specs();
         let names: Vec<&str> = s.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, [ZOOM, RECALL, DATE]);
+        assert_eq!(names, [ZOOM, RECALL, DATE, LEDGER]);
+        assert!(s[3].schema["properties"]["op"].is_object());
         assert!(s.iter().all(|t| t.direct && t.risk == Risk::ReadOnly));
         assert!(
             s[0].description

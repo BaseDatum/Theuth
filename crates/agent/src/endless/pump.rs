@@ -3054,6 +3054,10 @@ pub struct Generation {
     pub first_seq: i64,
     /// The frozen view.
     pub render: ViewRender,
+    /// 201 §9 (P6a): the ledger snapshot frozen with the view, its own
+    /// block between the system prompt and the view; `None` when the ledger
+    /// was off at this trim (or in a meeting).
+    pub ledger: Option<String>,
 }
 
 impl Generation {
@@ -3072,6 +3076,7 @@ impl Generation {
                 unbuilt: 0,
                 folded: 0,
             },
+            ledger: r.ledger,
         }
     }
 
@@ -3086,7 +3091,25 @@ impl Generation {
                 .iter()
                 .map(|b| (b.text.clone(), b.mark))
                 .collect(),
+            ledger: self.ledger.clone(),
         }
+    }
+
+    /// 201 §3/§9 (P6a): the blocks a turn of this generation sends — the
+    /// frozen ledger snapshot (unmarked: it takes none of the four cache
+    /// marks) before the frozen view blocks. Byte-stable within a generation.
+    pub fn framed(&self) -> ViewRender {
+        let mut r = self.render.clone();
+        if let Some(l) = &self.ledger {
+            r.blocks.insert(
+                0,
+                ViewBlock {
+                    text: l.clone(),
+                    mark: false,
+                },
+            );
+        }
+        r
     }
 }
 
@@ -3127,8 +3150,9 @@ pub(crate) async fn start_generation(
         anyhow::bail!("session {session} does not use fractal context");
     };
     ingest(&state).await?;
-    let prev = generation(inner, session).await?.map_or(0, |g| g.n);
-    let g = {
+    let prev_gen = generation(inner, session).await?;
+    let prev = prev_gen.as_ref().map_or(0, |g| g.n);
+    let mut g = {
         let mut live = state.live.lock();
         let first_seq = first_seq.unwrap_or(live.last_seq + 1);
         let t_cut = live.units.partition_point(|u| u.seq < first_seq) as u64;
@@ -3139,7 +3163,14 @@ pub(crate) async fn start_generation(
             t_cut,
             first_seq,
             render,
+            ledger: None,
         }
+    };
+    // 201 §9 (P6a): a re-render under the same number keeps its snapshot.
+    g.ledger = if again {
+        prev_gen.and_then(|p| p.ledger)
+    } else {
+        ledger_at_trim(&state, session, g.n).await?
     };
     state
         .store
@@ -3147,6 +3178,157 @@ pub(crate) async fn start_generation(
         .await?;
     state.live.lock().current_gen = Some(g.clone());
     Ok(g)
+}
+
+/// One writer at a time for every session's ledger (read-modify-write).
+static LEDGER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn load_ledger(store: &Store, session: SessionId) -> anyhow::Result<super::ledger::Ledger> {
+    Ok(store
+        .endless_ledger(session)
+        .await?
+        .map(|b| super::ledger::Ledger::from_json(&b))
+        .unwrap_or_default())
+}
+
+/// 201 §9 (P6a): the ledger's part of a trim into generation `n` — scan the
+/// units ingested since the last trim (artefacts, suggestions), mirror the
+/// `todo` list into Open tasks, lapse old suggestions, drop the pending
+/// notes, persist, and render the snapshot within `ledger_bytes`. `None`
+/// (nothing read or stored) when the ledger is off or the tree is a meeting's.
+async fn ledger_at_trim(
+    state: &State,
+    session: SessionId,
+    n: u32,
+) -> anyhow::Result<Option<String>> {
+    let cfg = state.cfg.read().clone().clamped();
+    if !cfg.ledger || state.live.lock().filter == UnitFilter::Meeting {
+        return Ok(None);
+    }
+    let _w = LEDGER_LOCK.lock().await;
+    let mut ledger = load_ledger(&state.store, session).await?;
+    let todos: Vec<(String, bool)> = state
+        .store
+        .todos(session)
+        .await?
+        .items
+        .into_iter()
+        .map(|t| {
+            let done = matches!(
+                t.status,
+                crate::todo::Status::Done | crate::todo::Status::Dropped
+            );
+            (t.text, done)
+        })
+        .collect();
+    let scanned: Vec<(u64, super::tree::Kind, String)> = {
+        let live = state.live.lock();
+        live.units
+            .iter()
+            .filter(|u| u.i >= ledger.scanned)
+            .filter(|u| matches!(u.kind, super::tree::Kind::Tool | super::tree::Kind::User))
+            .map(|u| (u.i, u.kind, u.text.clone()))
+            .collect()
+    };
+    let scans: Vec<super::ledger::Scan<'_>> = scanned
+        .iter()
+        .map(|(i, kind, text)| super::ledger::Scan {
+            i: *i,
+            kind: *kind,
+            text,
+        })
+        .collect();
+    ledger.trim(&scans, n, cfg.ledger_suggestions);
+    if let Some(last) = state.live.lock().units.last() {
+        ledger.scanned = ledger.scanned.max(last.i + 1);
+    }
+    ledger.mirror_todos(&todos, n);
+    state
+        .store
+        .endless_ledger_put(session, &ledger.to_json())
+        .await?;
+    Ok(Some(ledger.render(cfg.ledger_bytes as usize)))
+}
+
+/// 201 §9 (P6a): [`super::Endless::ledger_listed`].
+pub(crate) async fn ledger_listed(inner: &Inner, session: SessionId) -> bool {
+    match state_of(inner, session) {
+        Some(state) if state.live.lock().filter == UnitFilter::Meeting => false,
+        Some(_) => match generation(inner, session).await {
+            Ok(Some(g)) => g.ledger.is_some(),
+            _ => inner.cfg.read().ledger,
+        },
+        None => match inner.store_for(session).endless_generation(session).await {
+            Ok(Some(g)) => g.ledger.is_some(),
+            _ => inner.cfg.read().ledger,
+        },
+    }
+}
+
+/// 201 §9 (P6a): [`super::Endless::ledger_op`] — refused while the
+/// generation in force runs without a ledger.
+pub(crate) async fn ledger_op(
+    inner: &Inner,
+    session: SessionId,
+    op: &super::ledger::Op,
+) -> Result<String, String> {
+    let g = generation(inner, session)
+        .await
+        .map_err(|e| format!("ledger: {e:#}"))?;
+    let n = match g {
+        Some(g) if g.ledger.is_some() => g.n,
+        Some(_) => return Err("ledger: the state ledger is off in this session".to_owned()),
+        None => return Err("ledger: this session's memory has no generation yet".to_owned()),
+    };
+    let store = inner.store_for(session);
+    let _w = LEDGER_LOCK.lock().await;
+    let mut ledger = load_ledger(&store, session)
+        .await
+        .map_err(|e| format!("ledger: {e:#}"))?;
+    let note = ledger.apply(op, n)?;
+    store
+        .endless_ledger_put(session, &ledger.to_json())
+        .await
+        .map_err(|e| format!("ledger: {e:#}"))?;
+    Ok(note)
+}
+
+/// 201 §9 (P6a): [`super::Endless::ledger_notes`].
+pub(crate) async fn ledger_notes(inner: &Inner, session: SessionId) -> Option<String> {
+    let store = inner.store_for(session);
+    let _w = LEDGER_LOCK.lock().await;
+    let mut ledger = load_ledger(&store, session).await.ok()?;
+    let notes = ledger.take_notes()?;
+    if let Err(e) = store.endless_ledger_put(session, &ledger.to_json()).await {
+        tracing::warn!(%session, "ledger notes: {e:#}");
+    }
+    Some(notes)
+}
+
+/// 201 §9 (P6a): the status numbers (counts from the store, bytes from the
+/// frozen snapshot); `None` when the generation in force has no ledger.
+async fn ledger_status(
+    inner: &Inner,
+    session: SessionId,
+) -> anyhow::Result<Option<super::LedgerStatus>> {
+    let snapshot = match generation(inner, session).await? {
+        Some(g) => g.ledger,
+        None => return Ok(None),
+    };
+    let Some(snapshot) = snapshot else {
+        return Ok(None);
+    };
+    let l = load_ledger(&inner.store_for(session), session).await?;
+    let c = l.counts();
+    Ok(Some(super::LedgerStatus {
+        goals: c[0],
+        decisions: c[1],
+        constraints: c[2],
+        open_tasks: c[3],
+        artefacts: c[4],
+        suggested: c[5],
+        bytes: u32::try_from(snapshot.len()).unwrap_or(u32::MAX),
+    }))
 }
 
 /// 201 §6 (P2): a turn of the current generation opens — the compactor
@@ -3720,6 +3902,12 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
     );
     out.profile = profile;
     out.profile_reason = reason.to_owned();
+    if mode == MemoryMode::Endless {
+        out.ledger = ledger_status(inner, session).await.unwrap_or_else(|e| {
+            tracing::warn!(%session, "ledger status: {e:#}");
+            None
+        });
+    }
     Ok(out)
 }
 

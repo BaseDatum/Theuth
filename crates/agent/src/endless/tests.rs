@@ -3367,3 +3367,214 @@ async fn zoom_on_an_image_unit_returns_the_binary() {
     assert!(out.content.starts_with("2+1|echo: [image: screen.png]"));
     let _ = std::fs::remove_file(&out.files[0]);
 }
+
+/// 201 §9 (P6a): appends a user line with a constraint cue and a tool call
+/// naming a file.
+async fn seed_ledger(store: &Store, id: SessionId) {
+    store
+        .append(
+            id,
+            &ChatMessage::user("you must never touch the prod database"),
+        )
+        .await
+        .unwrap();
+    store
+        .append(
+            id,
+            &ChatMessage::assistant(MessageContent::from_parts(vec![ContentPart::ToolCall(
+                ToolCall {
+                    call_id: "c1".into(),
+                    fn_name: "write_file".into(),
+                    fn_arguments: serde_json::json!({"path": "/srv/app/main.rs", "content": "x"}),
+                    thought_signatures: None,
+                },
+            )])),
+        )
+        .await
+        .unwrap();
+}
+
+/// 201 §9 (P6a): the snapshot is frozen with its generation (byte-identical
+/// while tool ops arrive as notes), the changes fold in at the next trim,
+/// todo items and artefacts are mirrored, a suggestion is accepted, the
+/// status counts follow, and everything survives a restart.
+#[tokio::test]
+async fn the_ledger_freezes_per_generation_folds_at_a_trim_and_survives_a_restart() {
+    use super::ledger::Op;
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_ledger(&store, id).await;
+    store
+        .save_todos(
+            id,
+            crate::todo::TodoSource::Native,
+            &[crate::todo::Todo {
+                text: "migrate the schema".into(),
+                status: crate::todo::Status::Pending,
+                reason: None,
+            }],
+        )
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    assert!(endless.ledger_listed(id).await);
+    let g1 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    let s1 = g1.ledger.clone().expect("ledger on");
+    assert!(s1.contains("Open tasks\n- [L1] migrate the schema"), "{s1}");
+    assert!(
+        s1.contains("/srv/app/main.rs (write_file, generation 1)"),
+        "{s1}"
+    );
+    assert!(s1.contains("Suggested (unconfirmed)\n- [0+1] constraint? \"you must never touch the prod database\""), "{s1}");
+    // The frame: ledger block first, unmarked, then the view.
+    let framed = g1.framed();
+    assert_eq!(framed.blocks[0].text, s1);
+    assert!(!framed.blocks[0].mark);
+    assert_eq!(framed.blocks.len(), g1.render.blocks.len() + 1);
+    let op = |section: &str, op: &str, text: Option<&str>, id: Option<&str>| Op {
+        section: section.into(),
+        op: op.into(),
+        text: text.map(Into::into),
+        id: id.map(Into::into),
+    };
+    endless
+        .ledger_op(id, &op("goals", "add", Some("ship the ledger"), None))
+        .await
+        .unwrap();
+    endless
+        .ledger_op(id, &op("constraints", "accept", None, Some("0+1")))
+        .await
+        .unwrap();
+    // Same generation: the snapshot is byte-identical; the changes are notes.
+    let same = endless.generation(id).await.unwrap().unwrap();
+    assert_eq!(same.ledger.as_deref(), Some(s1.as_str()));
+    let notes = endless.ledger_notes(id).await.expect("notes");
+    assert!(notes.contains("added to Goals: ship the ledger"), "{notes}");
+    assert!(
+        notes.contains("accepted from 0+1 into Constraints"),
+        "{notes}"
+    );
+    assert_eq!(
+        endless.ledger_notes(id).await,
+        None,
+        "each note is sent once"
+    );
+    // The todo is done; a note queued now is folded by the trim instead.
+    store
+        .save_todos(
+            id,
+            crate::todo::TodoSource::Native,
+            &[crate::todo::Todo {
+                text: "migrate the schema".into(),
+                status: crate::todo::Status::Done,
+                reason: None,
+            }],
+        )
+        .await
+        .unwrap();
+    endless
+        .ledger_op(id, &op("decisions", "add", Some("use sqlite"), None))
+        .await
+        .unwrap();
+    let g2 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    let s2 = g2.ledger.clone().unwrap();
+    assert!(s2.contains("Goals\n- [L2] ship the ledger"), "{s2}");
+    assert!(
+        s2.contains("Constraints\n- [L3] you must never touch the prod database"),
+        "{s2}"
+    );
+    assert!(s2.contains("Decisions\n- [L4] use sqlite"), "{s2}");
+    assert!(s2.contains("- [L1] (closed) migrate the schema"), "{s2}");
+    assert!(!s2.contains("Suggested"), "{s2}");
+    assert_eq!(
+        endless.ledger_notes(id).await,
+        None,
+        "the trim folded the notes"
+    );
+    let m = endless.memory(id).await.unwrap();
+    let l = m.ledger.expect("status");
+    assert_eq!(
+        (
+            l.goals,
+            l.decisions,
+            l.constraints,
+            l.open_tasks,
+            l.artefacts,
+            l.suggested
+        ),
+        (1, 1, 1, 0, 1, 0)
+    );
+    assert_eq!(l.bytes as usize, s2.len());
+    // A restart: the state reloads from the store.
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    let back = endless.generation(id).await.unwrap().unwrap();
+    assert_eq!((back.n, back.ledger.as_deref()), (2, Some(s2.as_str())));
+    let g3 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert!(g3.ledger.unwrap().contains("use sqlite"));
+    endless.detach(id);
+}
+
+/// 201 §9 (P6a): with `ledger` off nothing is stored, no block, the tool
+/// is not listed and refuses; switching it on takes effect at the next trim.
+#[tokio::test]
+async fn ledger_off_means_absent_until_the_next_trim() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let cfg = EndlessConfig {
+        ledger: false,
+        ..cfg_p1(16)
+    };
+    let (_dir, endless, store, id) = harness_for(cfg.clone(), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_ledger(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    assert!(!endless.ledger_listed(id).await);
+    let g1 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!(g1.ledger, None);
+    assert_eq!(g1.framed(), g1.render);
+    assert_eq!(
+        store.endless_ledger(id).await.unwrap(),
+        None,
+        "nothing stored"
+    );
+    let op = super::ledger::Op {
+        section: "goals".into(),
+        op: "add".into(),
+        text: Some("x".into()),
+        id: None,
+    };
+    assert!(endless.ledger_op(id, &op).await.is_err());
+    assert_eq!(endless.memory(id).await.unwrap().ledger, None);
+    // On: the generation in force keeps its switch until the trim.
+    endless.set_config(EndlessConfig {
+        ledger: true,
+        ..cfg
+    });
+    assert!(!endless.ledger_listed(id).await);
+    let g2 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert!(g2.ledger.is_some());
+    assert!(endless.ledger_listed(id).await);
+    endless.detach(id);
+}

@@ -73,9 +73,11 @@ pub fn derive(
     };
     for (part, p) in m.content.iter().enumerate() {
         let (kind, text) = match (p, &m.role) {
-            // R1-7: the G9/G10 `<memory>` notices are about the memory, not in it.
+            // R1-7: the G9/G10 `<memory>` notices are about the memory, not
+            // in it; 201 §9: so are the `<ledger>` change notes.
             (ContentPart::Text(t), ChatRole::User)
-                if crate::endless_ext::memory_note(t).is_some() =>
+                if crate::endless_ext::memory_note(t).is_some()
+                    || crate::endless_ext::ledger_note(t).is_some() =>
             {
                 continue;
             }
@@ -281,6 +283,15 @@ mod tests {
             crate::endless_ext::memory_note("<memory>\n note \n</memory>"),
             Some("note")
         );
+    }
+
+    /// 201 §9 (P6a): a `<ledger>` change note is no unit.
+    #[test]
+    fn ledger_notes_are_not_units() {
+        let note = ChatMessage::user("<ledger>\nL1 added to Goals: ship it\n</ledger>");
+        assert!(derive(1, None, &note, 30_000, 0).is_empty());
+        let mine = ChatMessage::user("what does <ledger> mean here?");
+        assert_eq!(derive(2, None, &mine, 30_000, 0).len(), 1);
     }
 
     #[test]

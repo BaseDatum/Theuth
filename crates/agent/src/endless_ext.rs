@@ -112,6 +112,17 @@ pub fn memory_note(text: &str) -> Option<&str> {
         .map(str::trim)
 }
 
+/// 201 §9 (P6a): the body of a bare `<ledger>…</ledger>` change note (the
+/// ledger changes since the last turn's input) — no memory unit, like a
+/// `<memory>` note; `None` for anything else.
+pub fn ledger_note(text: &str) -> Option<&str> {
+    crate::clock::strip(text)
+        .trim()
+        .strip_prefix("<ledger>")?
+        .strip_suffix("</ledger>")
+        .map(str::trim)
+}
+
 /// `Nm Ns` / `Nh Nm` for an ETA.
 pub fn eta(secs: u64) -> String {
     match secs {

@@ -19,6 +19,7 @@ use crate::store::Store;
 pub mod compactor;
 pub mod fold;
 pub mod guards;
+pub mod ledger;
 pub mod lines;
 pub mod pump;
 pub mod tail;
@@ -854,6 +855,27 @@ pub struct SessionMemory {
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(as = "Option<String>", optional))]
     pub profile_reason: String,
+    /// 201 §9 (P6a): the state ledger's open entries per section, its
+    /// suggestions and the frozen snapshot's bytes; `None` when the ledger is
+    /// off, for a meeting or an epochs session.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub ledger: Option<LedgerStatus>,
+}
+
+/// 201 §9 (P6a): [`SessionMemory::ledger`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct LedgerStatus {
+    pub goals: u32,
+    pub decisions: u32,
+    pub constraints: u32,
+    pub open_tasks: u32,
+    pub artefacts: u32,
+    /// Unconfirmed suggestions.
+    pub suggested: u32,
+    /// Bytes of the snapshot frozen with the current generation (0 before one).
+    pub bytes: u32,
 }
 
 /// [`SessionMemory::profile`] when absent on the wire: the resolved profile is never `auto`.
@@ -1321,6 +1343,24 @@ impl Endless {
             .lock()
             .get(&session)
             .is_some_and(pump::Handle::meeting)
+    }
+
+    /// 201 §9 (P6a): whether the `ledger` tool is listed for `session` — the
+    /// current generation's switch (frozen at its trim), else the config's
+    /// (the first generation will take it); never for a meeting.
+    pub async fn ledger_listed(&self, session: SessionId) -> bool {
+        pump::ledger_listed(&self.inner, session).await
+    }
+
+    /// 201 §9 (P6a): one `ledger` tool call; the change note or a refusal.
+    pub async fn ledger_op(&self, session: SessionId, op: &ledger::Op) -> Result<String, String> {
+        pump::ledger_op(&self.inner, session, op).await
+    }
+
+    /// 201 §9 (P6a): the ledger changes made since the last turn's input,
+    /// as one `<ledger>` note body (taken: each is sent once).
+    pub async fn ledger_notes(&self, session: SessionId) -> Option<String> {
+        pump::ledger_notes(&self.inner, session).await
     }
 
     /// RPC `endless_pause` (137G): `true` stops new compactor calls and

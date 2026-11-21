@@ -53,6 +53,9 @@ pub struct GenerationRow {
     pub first_seq: i64,
     /// The rendered view blocks, `(text, mark)`.
     pub blocks: Vec<(String, bool)>,
+    /// 201 §9 (P6a): the ledger snapshot frozen with this generation
+    /// (`None`: the ledger was off at its trim).
+    pub ledger: Option<String>,
 }
 
 /// One `endless_units` row (the unit without its text).
@@ -322,14 +325,14 @@ impl Store {
     /// 201 §4.3 (P2): the session's newest generation row, if any.
     pub async fn endless_generation(&self, id: SessionId) -> anyhow::Result<Option<GenerationRow>> {
         let mut conn = self.read.acquire().await?;
-        let row: Option<(i64, i64, i64, String)> = sqlx::query_as(
-            "SELECT n, t_cut, first_seq, blocks FROM endless_generations \
+        let row: Option<(i64, i64, i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT n, t_cut, first_seq, blocks, ledger FROM endless_generations \
              WHERE session_id = ? ORDER BY n DESC LIMIT 1",
         )
         .bind(id.to_string())
         .fetch_optional(&mut *conn)
         .await?;
-        let Some((n, t_cut, first_seq, blocks)) = row else {
+        let Some((n, t_cut, first_seq, blocks, ledger)) = row else {
             return Ok(None);
         };
         let blocks: Vec<(String, bool)> = serde_json::from_str(&blocks)?;
@@ -338,7 +341,33 @@ impl Store {
             t_cut: t_cut as u64,
             first_seq,
             blocks,
+            ledger,
         }))
+    }
+
+    /// 201 §9 (P6a): the session's ledger body (JSON), `None` before one.
+    pub async fn endless_ledger(&self, id: SessionId) -> anyhow::Result<Option<String>> {
+        let mut conn = self.read.acquire().await?;
+        Ok(
+            sqlx::query_scalar("SELECT body FROM endless_ledger WHERE session_id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *conn)
+                .await?,
+        )
+    }
+
+    /// 201 §9 (P6a): store (or replace) the session's ledger body.
+    pub async fn endless_ledger_put(&self, id: SessionId, body: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO endless_ledger (session_id, body, updated_at) VALUES (?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(body)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
     }
 
     /// 201 §4.3 (P2): store (or replace) one generation's frozen view.
@@ -350,7 +379,7 @@ impl Store {
         let mut tx = self.begin_write().await?;
         sqlx::query(
             "INSERT OR REPLACE INTO endless_generations \
-             (session_id, n, t_cut, first_seq, blocks, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+             (session_id, n, t_cut, first_seq, blocks, created_at, ledger) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id.to_string())
         .bind(i64::from(g.n))
@@ -358,6 +387,7 @@ impl Store {
         .bind(g.first_seq)
         .bind(serde_json::to_string(&g.blocks)?)
         .bind(Utc::now().to_rfc3339())
+        .bind(g.ledger.as_deref())
         .execute(&mut *tx)
         .await?;
         tx.commit().await

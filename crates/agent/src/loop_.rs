@@ -1382,6 +1382,8 @@ impl Session {
             return false;
         }
         let rest: Vec<Queued> = inputs.collect();
+        // 201 §9 (P6a): ledger changes since the last input, as a note after it.
+        task.ledger_note().await;
         // 171 §9.3: quiet results opened ahead of a channel input; the turn is still its.
         if channel.is_none() {
             channel = rest.iter().find_map(|(_, i)| i.channel.clone());
@@ -4324,6 +4326,21 @@ impl Turn {
             .await
     }
 
+    /// 201 §9 (P6a): append the ledger changes made since the last turn's
+    /// input as one `<ledger>` note (no unit: `endless_ext::ledger_note`).
+    /// Only for a turn on the endless frame (a meeting never has one).
+    async fn ledger_note(&mut self) {
+        if self.view.is_none() {
+            return;
+        }
+        let Some(e) = self.shared.endless.clone() else {
+            return;
+        };
+        if let Some(body) = e.ledger_notes(self.shared.id).await {
+            self.note("ledger", &body).await;
+        }
+    }
+
     /// 36 §3: a frame ending in an assistant `tool_use` with no `tool_result`
     /// (the process died between the two persists) is rejected by the provider
     /// on every request. Append one tool message answering every call. 109
@@ -4963,7 +4980,7 @@ impl Turn {
         let tail_bytes = u32::try_from(tail::bytes(&self.state.history)).unwrap_or(u32::MAX);
         endless.turn_opened(id, tail_bytes, allowance as u64);
         Ok(TurnView {
-            render: g.render,
+            render: g.framed(),
             max_bytes: view_max,
             generation: g.n,
             first_seq: g.first_seq,
@@ -4998,7 +5015,7 @@ impl Turn {
         match endless
             .start_generation(id, Some(first_seq), to, true)
             .await
-            .map(|g| g.render)
+            .map(|g| g.framed())
         {
             Ok(render) => {
                 let Some(v) = self.view.as_mut() else {
@@ -5110,7 +5127,8 @@ impl Turn {
         self.generation_reset().await;
         let tail_bytes = u32::try_from(cut.kept).unwrap_or(u32::MAX);
         endless.turn_opened(id, tail_bytes, allowance as u64);
-        let blocks: Vec<String> = g.render.blocks.iter().map(|b| b.text.clone()).collect();
+        let render = g.framed();
+        let blocks: Vec<String> = render.blocks.iter().map(|b| b.text.clone()).collect();
         let (changed_from_byte, blocks_hit) = match &self.state.last_view {
             Some(prev) => (
                 Some(common_prefix(&prev.concat(), &blocks.concat())),
@@ -5120,9 +5138,9 @@ impl Turn {
         };
         self.state.last_view = Some(blocks);
         self.reset_this_round = true;
-        let view_bytes = g.render.text().len();
+        let view_bytes = render.text().len();
         if let Some(v) = self.view.as_mut() {
-            v.render = g.render;
+            v.render = render;
             v.changed_from_byte = changed_from_byte;
             v.blocks_hit = blocks_hit;
             v.logged = false;
@@ -5404,10 +5422,18 @@ impl Turn {
         // so an epochs session's tools are untouched.
         self.endless_listed = self.endless_tools_on() || self.stored_endless().await;
         if self.endless_listed {
+            // 201 §9 (P6a): `ledger` follows the generation's switch (it
+            // changes only at a trim); never in a meeting.
+            let ledger = !self.shared.meeting_filter.load(Ordering::Relaxed)
+                && match &self.shared.endless {
+                    Some(e) => e.ledger_listed(self.shared.id).await,
+                    None => false,
+                };
             let listed = |name: &str| {
-                toolset
-                    .as_ref()
-                    .is_none_or(|t| t.tools.iter().any(|n| n == name))
+                (name != endless_tools::LEDGER || ledger)
+                    && toolset
+                        .as_ref()
+                        .is_none_or(|t| t.tools.iter().any(|n| n == name))
             };
             specs.extend(
                 endless_tools::specs()
@@ -7467,7 +7493,8 @@ impl Turn {
                 // 137 §9 / 201 §11: defined for every endless session; a
                 // plain refusal while there is no tree to search.
                 match &self.shared.endless {
-                    Some(e) if e.served(session) => {
+                    // 201 §9 (P6a): the ledger needs a generation, not lines.
+                    Some(e) if e.served(session) || call.fn_name == endless_tools::LEDGER => {
                         endless_tools::run(e, session, &call.fn_name, &call.fn_arguments).await
                     }
                     Some(_) => ToolOutput::err(format!(
