@@ -175,8 +175,8 @@ export const HANDOFFS_SIM: Handoff[] = [
 
 /** Two unanswered `secret_requests` rows: a single field raised on `lab`, a form raised on this host (79 §6.6). */
 export const SECRET_REQUESTS_SIM: SecretRequest[] = [
-  { id: '0199aaaa-0000-7000-8000-00000000sim1', engine: 'engine-lab-0001', session: 'sess-lab-01a0f02b', title: null, fields: [{ name: 'GITHUB_TOKEN', label: 'a fine-grained token with repo scope', masked: true, current: 1 }], created_ms: NOW - 90_000, answered_ms: null, outcome: null, hlc: null },
-  { id: '0199aaaa-0000-7000-8000-00000000sim2', engine: 'engine-host-0000', session: 'sess-host-77aa11bb', title: 'Postgres login', fields: [{ name: 'PGUSER', label: 'User', masked: false, current: null }, { name: 'PGPASSWORD', label: 'Password', masked: true, current: null }], created_ms: NOW - 30_000, answered_ms: null, outcome: null, hlc: null },
+  { id: '0199aaaa-0000-7000-8000-00000000sim1', engine: 'engine-lab-0001', session: 'sess-lab-01a0f02b', title: null, fields: [{ name: 'GITHUB_TOKEN', label: 'a fine-grained token with repo scope', masked: true, current: 1 }], created_ms: NOW - 90_000, answered_ms: null, outcome: null, hlc: null, expires: null },
+  { id: '0199aaaa-0000-7000-8000-00000000sim2', engine: 'engine-host-0000', session: 'sess-host-77aa11bb', title: 'Postgres login', fields: [{ name: 'PGUSER', label: 'User', masked: false, current: null }, { name: 'PGPASSWORD', label: 'Password', masked: true, current: null }], created_ms: NOW - 30_000, answered_ms: null, outcome: null, hlc: null, expires: null },
 ]
 
 /** 101: the two mock-67 tasks the sim's decision and review hang off (`tasks/mock.ts` ids 2 and 3; `?mock=1` serves them). */

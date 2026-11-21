@@ -519,7 +519,9 @@ pub trait Backend: Send + Sync {
             session: SessionId::new(),
             quiet: true,
         };
-        let out = tokio::time::timeout(Duration::from_secs(60), reg.ask(::tools::Invoke(call)))
+        // 206: the harness's own call, not the model's: the builtin switch does not apply.
+        let map = reg.ask(::tools::HarnessInvoke(call));
+        let out = tokio::time::timeout(Duration::from_secs(60), map)
             .await
             .ok()?
             .ok()?;

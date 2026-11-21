@@ -7,7 +7,7 @@
 //! - commands on the `"tools"` actor ([`ToolRegistry`]): [`ListTools`], [`Invoke`], [`AppInvoke`], [`InspectTool`], [`DescribeTools`], [`ExternalApproval`], [`RegisterTool`], [`UnregisterTool`], [`RegisterActivity`], [`ActivityRecipient`], [`InstallCommunicationAccess`], [`InstallJournal`], [`RegisterLifecycle`], [`ExpectParticipants`], [`ParticipantsReady`], [`OpenTree`], [`CloseTreeAll`]
 //! - commands on the `"approval"` actor ([`Approval`]): [`Resolve`]
 //! - commands on the `"ask"` actor ([`AskUser`]): [`AnswerAsk`]
-//! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
+//! - commands on the `"mcp"` actor ([`Mcp`]): [`ListServers`], [`SetGate`], [`Restart`], [`StartServer`], [`AddServer`], [`RemoveServer`], [`AddRepo`], [`SyncMcp`], [`McpLogin`], [`McpLogout`]
 //! - commands on the `"jobs"` actor ([`Jobs`]): [`ListJobs`], [`CancelJob`], [`ListTerminals`], [`PtyScreen`], [`PtyInput`], [`CloseSessions`]
 //! - events: [`ApprovalRequested`], [`ApprovalResolved`], [`AskRequested`], [`AskResolved`], [`JobEvent`]
 //! - activity protocol (47 §4, [`activity`]): the supervisor implements [`Admit`], [`Settle`] and
@@ -32,12 +32,14 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     rpc_core::merge_described([
         rpc_tooling::rpc_module(server.clone()),
         rpc_settings::rpc_module(server),
-    ]).expect("tools RPC composition")
+    ])
+    .expect("tools RPC composition")
 }
 
 pub mod activity;
 pub mod approval;
 pub mod ask;
+pub mod builtins;
 pub mod communication;
 pub mod doc;
 pub mod edit;
@@ -73,6 +75,10 @@ pub use ask::{
     Answer, AnswerAsk, AnswerAskBy, AskId, AskRequested, AskResolved, AskUser, Choice, LeaveAsk,
     PendingAsks, Question, late_answer_text,
 };
+pub use builtins::{
+    BUILTIN_CATEGORY_PREFIX, BuiltinCategory, BuiltinTool, BuiltinsConfig, category_key,
+    category_of,
+};
 pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::CloseSessions;
 pub use jobs::{
@@ -86,7 +92,7 @@ pub use journal::{
 pub use mcp::{
     AddRepo, AddServer, ListServers, Mcp, McpAuth, McpHomeAction, McpLogin, McpLogout, McpProgress,
     McpServer, McpState, McpToolInfo, Progress, RemoveServer, RepoInfo, Restart, SetGate,
-    SetMcpHome, SyncMcp, peers_changed, set_machine, set_paired_check,
+    SetMcpHome, StartServer, SyncMcp, peers_changed, set_machine, set_paired_check,
 };
 pub use proctree::{PtyThresholds, TreeQuiet};
 pub use pty::{
@@ -106,8 +112,9 @@ pub use registry::{
     RestoreApprovals, RestoreHidden, SetAllowOnly, SetNoLan, SetPromoteAfter, SetTurnCap,
 };
 pub use registry::{
-    CloseTreeAll, ExpectParticipants, HiddenEpoch, MCP_SERVER_HIDE_PREFIX, OpenTree,
-    ParticipantsReady, RegisterLifecycle, mcp_server_key,
+    BuiltinsSwitchError, CloseTreeAll, ExpectParticipants, HarnessInvoke, HiddenEpoch,
+    ListBuiltins, MCP_SERVER_HIDE_PREFIX, OpenTree, ParticipantsReady, RegisterLifecycle,
+    SetBuiltinsDisabled, mcp_server_key,
 };
 pub use reminder::{
     CancelReminder, CancelReminders, RearmReminder, ReminderEvent, ReminderView, SetReminder,
@@ -542,6 +549,8 @@ pub struct ToolsConfig {
     /// 155 §6.2: a PTY job's process tree using more than this percent of one
     /// core over a one-second sample counts as busy (no `<job_idle>`).
     pub pty_tree_cpu_pct: u8,
+    /// 206: the harness-wide builtin switch (`tools.builtins.disabled`).
+    pub builtins: BuiltinsConfig,
 }
 
 impl Default for ToolsConfig {
@@ -560,6 +569,7 @@ impl Default for ToolsConfig {
             pty_shell: None,
             pty_reaction_secs: 10,
             pty_tree_cpu_pct: 2,
+            builtins: BuiltinsConfig::default(),
         }
     }
 }

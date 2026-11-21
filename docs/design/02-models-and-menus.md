@@ -459,8 +459,19 @@ hides registered tool names for one session and its subagents in memory
 uses to fill `McpToolInfo::hidden`. Nothing is written; the persistent switch
 stays `off` in `mcp/config.yaml`.
 
+`StartServer { name }` (`mcp_start(server)`) waits for one server this engine
+runs: a failed start waiting out its backoff is tried now, a pending connect is
+awaited (bounded by the connect timeout); it replies `Ok` once the server runs
+and its tools are registered, else with the connect error or why it does not run
+here (`off`, homed elsewhere). It writes nothing. The composer's MCP popover
+pairs it with `SetGate`: its per-server switch is harness-wide and persistent
+(on = clear an `off` server line, then `mcp_start`; a failed start restores the
+`off` line; off = `set_mcp_gate(server, null, off)`, which stops the process and
+unregisters its tools everywhere), while its checkbox is the per-chat
+`mcp:<server>` hide above.
+
 RPC: `list_mcp(session?)`, `set_mcp_gate(server, tool?, gate?)`,
-`set_mcp_hidden(session, tools, hidden)`.
+`set_mcp_hidden(session, tools, hidden)`, `mcp_start(server)`.
 
 ## 6. Implementation order
 

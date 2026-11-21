@@ -2877,6 +2877,7 @@
                 current: 2,
                 versions: vec![version(2, "user"), version(1, "import")],
                 updated: "2026-09-12T10:02:11Z".into(),
+                expires: None,
             }],
         }
     }
@@ -2957,6 +2958,7 @@
             current: None,
             title: None,
             fields: vec![],
+            expires: None,
         }));
         assert!(m.components.get::<Secrets>().unwrap().requests.front().is_none());
         m.apply(wire_event("secrets.events", secrets::SecretsEvent::Requested {
@@ -2967,13 +2969,17 @@
             current: Some(2),
             title: None,
             fields: vec![],
+            expires: None,
         }));
         assert!(m.components.get::<Secrets>().unwrap().requests.front().is_some() && m.input_focused());
         m.component_submit("ghp_requested");
+        assert!(m.components.get::<Secrets>().unwrap().requests.front().is_some(), "then the expiry step");
+        m.component_submit("");
         assert!(m.components.get::<Secrets>().unwrap().requests.front().is_none());
         assert!(matches!(
             component_request::<SecretRpc>(&mut rx),
-            Ok(SecretRpc::AnswerSecret { id: i, value: Some(v) }) if i == id && v == "ghp_requested"
+            Ok(SecretRpc::AnswerSecret { id: i, values: Some(v), expires_ms: None })
+                if i == id && v.get("github").map(String::as_str) == Some("ghp_requested")
         ));
         assert!(matches!(m.entries.last(), Some(Entry::Info(t)) if t == "github: stored"));
         // Resolved elsewhere (or timed out): the box goes away.
@@ -2985,6 +2991,7 @@
             current: None,
             title: None,
             fields: vec![],
+            expires: None,
         }));
         m.apply(wire_event("secrets.events", secrets::SecretsEvent::Resolved {
             id,

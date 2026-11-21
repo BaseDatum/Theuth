@@ -5,7 +5,7 @@ import { Link } from '@tanstack/react-router'
 import { Check, ChevronDown } from 'lucide-react'
 import { type ComponentProps, type MouseEvent, type ReactNode, useState } from 'react'
 import { DoubleChip } from '@/components/chat/DoubleChip'
-import { SecretRequestCard } from '@/components/chat/SecretRequestCard'
+import { SecretRequestCard, eventFields } from '@/components/chat/SecretRequestCard'
 import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useAttentionActions, useSecretRequestRows } from '@/components/hud/queries'
 import { useSandboxes } from '@/components/settings/sandbox-queries'
 import { age } from '@/components/tasks/helpers'
@@ -160,8 +160,8 @@ export function SecretInline({ item }: { item: AttentionItem }) {
     void qc.invalidateQueries({ queryKey: SECRET_REQUESTS_KEY })
     void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
   }
-  if (row) return <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} origin={origin} onAnswered={answered} />
-  if (local) return <SecretRequestCard id={local.id} note={local.note} fields={[{ name: local.name, label: local.name, masked: true, current: local.current }]} origin={origin} onAnswered={answered} />
+  if (row) return <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} expires={row.expires} origin={origin} onAnswered={answered} />
+  if (local) return <SecretRequestCard id={local.id} title={local.title} note={local.title ? undefined : local.note} fields={eventFields(local)} expires={local.expires} origin={origin} onAnswered={answered} />
   return <p className="text-xs text-fg-tertiary">{rows.isPending ? 'Loading the request…' : `Answer it in the session${item.detail ? ` on ${item.detail}` : ''}.`}</p>
 }
 

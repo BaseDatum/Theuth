@@ -60,13 +60,13 @@ function serverSwitch(s: McpServer): SwitchState {
 /** The gate select's `annotations` sentinel: no explicit risk override. */
 const ANNOTATIONS = 'annotations'
 /** Why a "this chat" switch is greyed on Settings › Tools › MCP: it needs the chat it would apply to. */
-const CHAT_HINT = 'Open from a chat: ⋯ › Tools… or /tools'
+export const CHAT_HINT = 'Open from a chat: ⋯ › Tools… or /tools'
 const RISKS: [Exclude<Gate, 'off'>, string][] = [
   ['read_only', 'Read-only'],
   ['mutating', 'Mutating'],
   ['destructive', 'Destructive'],
 ]
-const RISK_NAME: Record<Risk, string> = {
+export const RISK_NAME: Record<Risk, string> = {
   read_only: 'read-only',
   mutating: 'mutating',
   destructive: 'destructive',
@@ -439,7 +439,7 @@ function ToolRow({
 }
 
 /** A server or tool name with a `<wbr/>` after every underscore run: wraps at `_`/`__`, never mid-word. */
-function Name({ name }: { name: string }) {
+export function Name({ name }: { name: string }) {
   return segments(name).map((seg, i) => (
     <Fragment key={i}>
       {i > 0 && <wbr />}

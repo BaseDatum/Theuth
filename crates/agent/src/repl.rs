@@ -2838,6 +2838,58 @@ mod tests {
         });
     }
 
+    /// 206: a builtin switched off harness-wide (`set_builtins_disabled`, here by its
+    /// category key) leaves the live runtime at the next cell and comes back when switched
+    /// on again, globals intact.
+    #[test]
+    fn builtins_disabled_tool_leaves_and_rejoins_the_live_runtime() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = run_cx(&dir.0).await;
+            std::fs::write(dir.0.join("seen.txt"), "x").unwrap();
+            let listing = format!(
+                "reply = await list_dir(path={:?})\nprint(marker, reply)",
+                dir.0.to_string_lossy()
+            );
+            let switch = |disabled: bool| tools::SetBuiltinsDisabled {
+                names: vec![tools::category_key("files")],
+                disabled,
+            };
+            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let out = repl
+                .run("before", &format!("marker = 'kept'\n{listing}"))
+                .await;
+            assert!(
+                !out.is_error && out.content.contains("seen.txt"),
+                "{}",
+                out.content
+            );
+
+            cx.registry.ask(switch(true)).await.unwrap();
+            assert!(!prompt_block(&specs(&cx).await, true).contains("async def list_dir("));
+            let out = repl.run("off", &listing).await;
+            assert!(
+                out.is_error && out.content.contains("list_dir"),
+                "a disabled builtin must be gone from the runtime: {}",
+                out.content
+            );
+            assert!(find_tool(&cx, "list_dir").await.is_none());
+
+            cx.registry.ask(switch(false)).await.unwrap();
+            assert!(prompt_block(&specs(&cx).await, true).contains("async def list_dir("));
+            let out = repl.run("on", &listing).await;
+            assert!(
+                !out.is_error && out.content.contains("kept") && out.content.contains("seen.txt"),
+                "a switched-on builtin must be back, globals intact: {}",
+                out.content
+            );
+            repl.close().await;
+        });
+    }
+
     /// A whole MCP server hidden for a chat (`mcp:<server>`) before its tools register stays
     /// hidden from a subagent's live runtime once they do, and showing it again brings
     /// them back at the next cell.
@@ -2895,6 +2947,77 @@ mod tests {
                 "{}",
                 out.content
             );
+            repl.close().await;
+        });
+    }
+
+    /// The popover's switch on an `off` server: `set_mcp_gate(live, null, null)` +
+    /// `mcp_start` reaches a live runtime at its next cell; the chat's `mcp:live` hide
+    /// still keeps it out of that chat's subagent; `off` stops it everywhere.
+    #[test]
+    fn switching_a_server_on_and_off_reaches_a_live_runtime() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            std::fs::create_dir_all(dir.0.join("mcp")).unwrap();
+            std::fs::write(
+                dir.0.join("mcp/config.yaml"),
+                "servers:\n  live:\n    risk: off\n",
+            )
+            .unwrap();
+            std::fs::write(dir.0.join("mcp/live.json"), mcp_live_entry().to_string()).unwrap();
+            let cx = mcp_live_cx(&dir.0).await;
+            let parent = SessionId::new();
+            cx.registry
+                .tell(tools::SetParent {
+                    session: cx.session,
+                    parent,
+                })
+                .await
+                .unwrap();
+            let mcp = ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)
+                .unwrap()
+                .unwrap();
+            let gate = |gate| tools::SetGate {
+                server: "live".into(),
+                tool: None,
+                gate,
+            };
+            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let out = repl.run("off", "await live_echo(value='x')").await;
+            assert!(out.is_error, "{}", out.content);
+
+            mcp.ask(gate(None)).await.unwrap();
+            mcp.ask(tools::StartServer {
+                name: "live".into(),
+            })
+            .await
+            .unwrap();
+            let out = repl
+                .run("on", "reply = await live_echo(value='on')\nprint(reply)")
+                .await;
+            assert!(
+                !out.is_error && out.content.contains("live:on:"),
+                "{}",
+                out.content
+            );
+
+            let hide = |hidden: bool| tools::SetHidden {
+                session: parent,
+                tools: vec![tools::mcp_server_key("live")],
+                hidden,
+            };
+            cx.registry.ask(hide(true)).await.unwrap();
+            let out = repl.run("hidden", "await live_echo(value='x')").await;
+            assert!(out.is_error, "{}", out.content);
+            cx.registry.ask(hide(false)).await.unwrap();
+
+            mcp.ask(gate(Some(tools::Gate::Off))).await.unwrap();
+            assert!(!prompt_block(&specs(&cx).await, true).contains("async def live_echo("));
+            let out = repl.run("stopped", "await live_echo(value='x')").await;
+            assert!(out.is_error, "{}", out.content);
             repl.close().await;
         });
     }

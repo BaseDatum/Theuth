@@ -27,14 +27,16 @@ pub trait CredentialsApi {
     #[method(name = "delete_secret")]
     async fn delete_secret(&self, name: String) -> RpcResult<()>;
     /// Answer a `SecretsEvent::Requested` on this or any engine (79 §6.6): `value` for a
-    /// single field, `values` (`{ name: value }`) for a form, both `None` declines. Stored as
-    /// `source: user`. `true` if it was still unanswered.
+    /// single field, `values` (`{ name: value }`) for several, both `None` declines. Stored as
+    /// `source: user`. `expires_ms` (absolute Unix ms, in the future) makes every stored value
+    /// expire and be deleted then; `None` = never. `true` if it was still unanswered.
     #[method(name = "answer_secret")]
     async fn answer_secret(
         &self,
         id: secrets::RequestId,
         value: Option<String>,
         values: Option<HashMap<String, String>>,
+        expires_ms: Option<u64>,
     ) -> RpcResult<bool>;
     /// The unanswered replicated `secret_requests` rows, newest first (79 §6.6): what the
     /// attention inbox's `secret:<id>` items render (`title`, `fields`) and answer with
@@ -81,6 +83,7 @@ impl CredentialsApiServer for Server {
         id: secrets::RequestId,
         value: Option<String>,
         values: Option<HashMap<String, String>>,
+        expires_ms: Option<u64>,
     ) -> RpcResult<bool> {
         send(
             &secrets()?,
@@ -88,6 +91,7 @@ impl CredentialsApiServer for Server {
                 id,
                 value,
                 values: values.unwrap_or_default(),
+                expires_ms,
             },
         )
         .await

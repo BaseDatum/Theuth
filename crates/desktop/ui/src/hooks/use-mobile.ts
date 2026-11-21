@@ -9,7 +9,9 @@ const subscribe = (cb: () => void) => {
   mql.addEventListener('change', cb)
   return () => mql.removeEventListener('change', cb)
 }
-const snapshot = () => window.matchMedia(QUERY).matches
+/** `useIsMobile` outside React: an event handler deciding whether the layout tiles. */
+export const isMobileLayout = () => window.matchMedia(QUERY).matches
+const snapshot = isMobileLayout
 
 /**
  * Under `md` (768 px): the sidebar is a Sheet and the chat header carries its only toggle. Read from the media

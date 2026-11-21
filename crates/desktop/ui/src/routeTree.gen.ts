@@ -51,6 +51,7 @@ import { Route as TalkSessionRouteImport } from './routes/talk.$session'
 import { Route as TasksIndexRouteImport } from './routes/tasks.index'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
 import { Route as VmNameRouteImport } from './routes/vm.$name'
+import { Route as WebIdRouteImport } from './routes/web.$id'
 import { Route as AgentsNameIndexRouteImport } from './routes/agents.$name.index'
 import { Route as AgentsNameTabRouteImport } from './routes/agents.$name.$tab'
 import { Route as CodemapSessionRootRouteImport } from './routes/codemap.$session.$root'
@@ -268,6 +269,11 @@ const VmNameRoute = VmNameRouteImport.update({
   path: '/vm/$name',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WebIdRoute = WebIdRouteImport.update({
+  id: '/web/$id',
+  path: '/web/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AgentsNameIndexRoute = AgentsNameIndexRouteImport.update({
   id: '/agents/$name/',
   path: '/agents/$name/',
@@ -335,6 +341,7 @@ export interface FileRoutesByFullPath {
   '/talk/$session': typeof TalkSessionRoute
   '/tasks/$id': typeof TasksIdRoute
   '/vm/$name': typeof VmNameRoute
+  '/web/$id': typeof WebIdRoute
   '/agents/': typeof AgentsIndexRoute
   '/attention/': typeof AttentionIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
@@ -384,6 +391,7 @@ export interface FileRoutesByTo {
   '/talk/$session': typeof TalkSessionRoute
   '/tasks/$id': typeof TasksIdRoute
   '/vm/$name': typeof VmNameRoute
+  '/web/$id': typeof WebIdRoute
   '/agents': typeof AgentsIndexRoute
   '/attention': typeof AttentionIndexRoute
   '/meetings': typeof MeetingsIndexRoute
@@ -435,6 +443,7 @@ export interface FileRoutesById {
   '/talk/$session': typeof TalkSessionRoute
   '/tasks/$id': typeof TasksIdRoute
   '/vm/$name': typeof VmNameRoute
+  '/web/$id': typeof WebIdRoute
   '/agents/': typeof AgentsIndexRoute
   '/attention/': typeof AttentionIndexRoute
   '/meetings/': typeof MeetingsIndexRoute
@@ -487,6 +496,7 @@ export interface FileRouteTypes {
     | '/talk/$session'
     | '/tasks/$id'
     | '/vm/$name'
+    | '/web/$id'
     | '/agents/'
     | '/attention/'
     | '/meetings/'
@@ -536,6 +546,7 @@ export interface FileRouteTypes {
     | '/talk/$session'
     | '/tasks/$id'
     | '/vm/$name'
+    | '/web/$id'
     | '/agents'
     | '/attention'
     | '/meetings'
@@ -586,6 +597,7 @@ export interface FileRouteTypes {
     | '/talk/$session'
     | '/tasks/$id'
     | '/vm/$name'
+    | '/web/$id'
     | '/agents/'
     | '/attention/'
     | '/meetings/'
@@ -632,6 +644,7 @@ export interface RootRouteChildren {
   TalkSessionRoute: typeof TalkSessionRoute
   TasksIdRoute: typeof TasksIdRoute
   VmNameRoute: typeof VmNameRoute
+  WebIdRoute: typeof WebIdRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
   MeetingsIndexRoute: typeof MeetingsIndexRoute
   RoutinesIndexRoute: typeof RoutinesIndexRoute
@@ -942,6 +955,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof VmNameRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/web/$id': {
+      id: '/web/$id'
+      path: '/web/$id'
+      fullPath: '/web/$id'
+      preLoaderRoute: typeof WebIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/agents/$name/': {
       id: '/agents/$name/'
       path: '/agents/$name'
@@ -1070,6 +1090,7 @@ const rootRouteChildren: RootRouteChildren = {
   TalkSessionRoute: TalkSessionRoute,
   TasksIdRoute: TasksIdRoute,
   VmNameRoute: VmNameRoute,
+  WebIdRoute: WebIdRoute,
   AgentsIndexRoute: AgentsIndexRoute,
   MeetingsIndexRoute: MeetingsIndexRoute,
   RoutinesIndexRoute: RoutinesIndexRoute,

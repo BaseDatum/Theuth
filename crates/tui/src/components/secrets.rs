@@ -1,6 +1,6 @@
 //! Vault metadata, masked administration wizard and intrinsic live-request overlay.
 use super::*;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use serde::Deserialize;
 use rpc_compose::api::clients::*;
 use iocraft::prelude::{element, View as BoxView, Text, BorderStyle, FlexDirection, Weight, TextWrap};
@@ -17,11 +17,22 @@ pub struct Secrets {
     pub(crate) prompt: Option<Prompt>,
     pub(crate) requests: VecDeque<SecretRequest>,
 }
+// No Debug: `values` holds what the user typed until its one RPC submission.
 pub(crate) struct SecretRequest {
     pub(crate) id: ::secrets::RequestId,
-    pub(crate) name: String,
+    /// What it is for (a card's title, else the one field's label).
     note: String,
-    current: Option<u32>,
+    /// In card order; never empty.
+    pub(crate) fields: Vec<::secrets::SecretRequestField>,
+    /// The agent's suggestion (`2h`, an RFC 3339 instant); the expiry step shows it.
+    expires: Option<String>,
+    /// Typed so far, one per field in order; the expiry step follows the last.
+    values: Vec<String>,
+}
+impl SecretRequest {
+    /// The field being typed; `None` = the expiry step.
+    fn field(&self) -> Option<&::secrets::SecretRequestField> { self.fields.get(self.values.len()) }
+    fn names(&self) -> String { self.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ") }
 }
 pub(crate) enum Menu { Secrets { cursor: usize, history: Option<usize> } }
 // No Debug: the note step owns the value until its one RPC submission.
@@ -70,8 +81,10 @@ pub enum Request {
     AnswerSecret {
         /// Request identity.
         id: ::secrets::RequestId,
-        /// Value, or a decline.
-        value: Option<String>,
+        /// Field name → value, or `None` to decline.
+        values: Option<HashMap<String, String>>,
+        /// When every stored value expires (Unix ms); `None` = never.
+        expires_ms: Option<u64>,
     },
 }
 /// Value-free owner replies and live bus events.
@@ -93,7 +106,7 @@ impl Secrets {
                 Request::SetSecret { name, value, note } => Msg::Set(api.set_secret(name, value, note).await.map_err(crate::reason)),
                 Request::RestoreSecret { name, back } => Msg::Set(api.restore_secret(name, back).await.map_err(crate::reason)),
                 Request::DeleteSecret(name) => Msg::Done(api.delete_secret(name.clone()).await.map(|_| Some(format!("{name}: deleted"))).map_err(crate::reason)),
-                Request::AnswerSecret { id, value } => Msg::Done(api.answer_secret(id, value, None).await.map(|_| None).map_err(crate::reason)),
+                Request::AnswerSecret { id, values, expires_ms } => Msg::Done(api.answer_secret(id, None, values, expires_ms).await.map(|_| None).map_err(crate::reason)),
             }
         });
     }
@@ -142,11 +155,15 @@ impl Secrets {
             return s.versions.iter().enumerate().map(|(i, v)| format!("v{} · {} · {}{}", v.v, when(&v.created), v.source, if i == 0 { " · current" } else { "" })).collect();
         }
         if list.is_empty() { return vec!["no secrets · a adds one".into()] }
-        list.iter().map(|s| format!("{:<20} · v{} ({} kept) · {} · {}", s.name.chars().take(20).collect::<String>(), s.current, s.versions.len(), s.note, when(&s.updated))).collect()
+        let now = now_ms();
+        list.iter().map(|s| {
+            let expires = s.expires.as_deref().and_then(::secrets::expiry::from_rfc3339).map_or_else(String::new, |t| format!(" · {}", ::secrets::expiry::describe(t, now)));
+            format!("{:<20} · v{} ({} kept) · {} · {}{expires}", s.name.chars().take(20).collect::<String>(), s.current, s.versions.len(), s.note, when(&s.updated))
+        }).collect()
     }
     fn key(&mut self, code: KeyCode, cx: &mut Cx<'_, '_, Msg>) {
         if !self.requests.is_empty() {
-            if code == KeyCode::Esc { self.answer(None, cx); cx.consume_key(); }
+            if code == KeyCode::Esc { self.decline(cx); cx.consume_key(); }
             return;
         }
         if self.prompt.is_some() {
@@ -178,7 +195,7 @@ impl Secrets {
         }
     }
     fn submit(&mut self, line: &str, cx: &mut Cx<'_, '_, Msg>) {
-        if !self.requests.is_empty() { self.answer(Some(line.to_owned()), cx); cx.consume_key(); return; }
+        if !self.requests.is_empty() { cx.consume_key(); self.live_submit(line, cx); return; }
         let Some(prompt) = self.prompt.take() else { return };
         cx.consume_key();
         let request = match prompt {
@@ -197,25 +214,52 @@ impl Secrets {
         if self.prompt.is_none() { cx.close(); }
         if let Some(request) = request { self.request(request, cx); }
     }
-    fn answer(&mut self, value: Option<String>, cx: &mut Cx<'_, '_, Msg>) {
+    /// One step of the front request: the next field's value, then the expiry
+    /// (`30m` / `2h` / `3d` / `YYYY-MM-DD HH:MM` local; empty = never), which sends the answer.
+    fn live_submit(&mut self, line: &str, cx: &mut Cx<'_, '_, Msg>) {
+        let Some(r) = self.requests.front_mut() else { return };
+        if r.field().is_some() {
+            r.values.push(line.to_owned());
+            return;
+        }
+        let now = now_ms();
+        let expires_ms = if line.trim().is_empty() {
+            None
+        } else {
+            match ::secrets::expiry::parse(line, now) {
+                Ok(e) => Some(e.at(now)),
+                Err(e) => { cx.core(CoreAction::Reject(e)); return; }
+            }
+        };
+        let r = self.requests.pop_front().expect("front");
+        let when = expires_ms.map_or_else(String::new, |t| format!("; expires {}", ::secrets::expiry::local_time(t)));
+        cx.core(CoreAction::Notice(format!("{}: stored{when}", r.names())));
+        let values = r.fields.iter().map(|f| f.name.clone()).zip(r.values).collect();
+        self.request(Request::AnswerSecret { id: r.id, values: Some(values), expires_ms }, cx);
+    }
+    fn decline(&mut self, cx: &mut Cx<'_, '_, Msg>) {
         let Some(r) = self.requests.pop_front() else { return };
-        cx.core(CoreAction::Notice(format!("{}: {}", r.name, if value.is_some() { "stored" } else { "declined" })));
-        self.request(Request::AnswerSecret { id: r.id, value }, cx);
+        cx.core(CoreAction::Notice(format!("{}: declined", r.names())));
+        self.request(Request::AnswerSecret { id: r.id, values: None, expires_ms: None }, cx);
     }
     fn event(&mut self, event: ::secrets::SecretsEvent, cx: &mut Cx<'_, '_, Msg>) {
         use ::secrets::SecretsEvent::*;
         if cx.core.reasoning { cx.plain(Plain::Text("\x1b[0m\n".into())); }
         match event {
             Changed => self.refresh = self.secrets.is_some(),
-            Requested { id, session, name, note, current, .. } => {
+            Requested { id, session, name, note, current, fields, expires, .. } => {
                 cx.plain(Plain::Line(format!("secret requested: {name} — {note} (needs a TTY or another client)")));
                 if !self.requests.iter().any(|r| r.id == id) && cx.core.owns_session(session) {
-                    self.requests.push_back(SecretRequest { id, name, note, current });
+                    // A pre-79 engine sends the one field as `name` / `note` / `current` only.
+                    let fields = if fields.is_empty() {
+                        vec![::secrets::SecretRequestField { name, label: note.clone(), masked: true, current, note: None }]
+                    } else { fields };
+                    self.requests.push_back(SecretRequest { id, note, fields, expires, values: Vec::new() });
                 }
             }
             Resolved { id, timed_out, .. } => if let Some(i) = self.requests.iter().position(|r| r.id == id) {
                 let r = self.requests.remove(i).expect("position");
-                if timed_out { cx.core(CoreAction::Notice(format!("{}: request timed out", r.name))); }
+                if timed_out { cx.core(CoreAction::Notice(format!("{}: request timed out", r.names()))); }
             },
             Rotation(_) => {}
         }
@@ -241,7 +285,11 @@ impl Component for Secrets {
                 Ok(list) => {
                     if cx.core.reasoning { cx.plain(Plain::Text("\x1b[0m\n".into())); }
                     cx.plain(Plain::Line(format!("key: {}", list.key_store)));
-                    for s in &list.secrets { cx.plain(Plain::Line(format!("{} · v{} ({} kept) · {} · {}", s.name, s.current, s.versions.len(), s.note, s.updated))); }
+                    let now = now_ms();
+                    for s in &list.secrets {
+                        let expires = s.expires.as_deref().and_then(::secrets::expiry::from_rfc3339).map_or_else(String::new, |t| format!(" · {}", ::secrets::expiry::describe(t, now)));
+                        cx.plain(Plain::Line(format!("{} · v{} ({} kept) · {} · {}{expires}", s.name, s.current, s.versions.len(), s.note, s.updated)));
+                    }
                     if self.awaiting && self.menu.is_none() { self.menu = Some(Menu::Secrets { cursor: 0, history: None }); cx.focus(FocusClass::Modal); }
                     self.awaiting = false; self.secrets = Some(list);
                 }
@@ -280,22 +328,46 @@ impl Component for Secrets {
     }
     fn captures(&self, class: FocusClass) -> bool { class == FocusClass::Secret && !self.requests.is_empty() }
     fn editor(&self) -> Option<Editor> {
-        let live = !self.requests.is_empty();
-        if !live && self.prompt.is_none() { return None }
-        Some(Editor { hint: self.prompt.as_ref().map(Prompt::hint).unwrap_or_default(), masked: live || self.prompt.as_ref().is_some_and(Prompt::masked), submit_empty: !live && matches!(self.prompt, Some(Prompt::Note { .. })) })
+        if let Some(r) = self.requests.front() {
+            return Some(match r.field() {
+                Some(f) => Editor { hint: format!("{}  {}  ({}/{}; esc declines)", f.label, f.name, r.values.len() + 1, r.fields.len()), masked: f.masked, submit_empty: false },
+                None => Editor { hint: "expires  30m · 2h · 3d · YYYY-MM-DD HH:MM  (⏎ never; esc declines)".into(), masked: false, submit_empty: true },
+            });
+        }
+        let prompt = self.prompt.as_ref()?;
+        Some(Editor { hint: prompt.hint(), masked: prompt.masked(), submit_empty: matches!(prompt, Prompt::Note { .. }) })
     }
     fn view(&self, at: Surface<'_>, vc: &ViewCx<'_>) -> Option<View> {
         match at {
             Surface::Prompt(FocusClass::Secret) => {
                 let r = self.requests.front()?;
-                let head = if r.note.is_empty() { r.name.clone() } else { format!("{} — {}", r.name, r.note) };
-                let version = r.current.map_or_else(|| "(new secret)".to_owned(), |v| format!("(adds v{}; v{v} stays as {{{{secret:{}:-1}}}})", v + 1, r.name));
+                let head = r.note.clone();
+                let step = match r.field() {
+                    Some(f) => {
+                        let version = f.current.map_or_else(|| "new secret".to_owned(), |v| format!("adds v{}; v{v} stays as {{{{secret:{}:-1}}}}", v + 1, f.name));
+                        format!("{} ({}) · {version}", f.label, f.name)
+                    }
+                    None => match r.expires.as_deref() {
+                        Some(s) => match ::secrets::expiry::from_rfc3339(s) {
+                            Some(t) => {
+                                let typed = chrono::DateTime::from_timestamp_millis(t as i64).map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default();
+                                format!("expiry · the agent suggests {} — type {typed} to accept, ⏎ for never", ::secrets::expiry::local_time(t))
+                            }
+                            None => {
+                                let at = ::secrets::expiry::parse(s, now_ms()).map(|e| ::secrets::expiry::local_time(e.at(now_ms()))).unwrap_or_default();
+                                format!("expiry · the agent suggests {s} (until {at}) — type {s} to accept, ⏎ for never")
+                            }
+                        },
+                        None => "expiry · ⏎ keeps it until you delete it".to_owned(),
+                    },
+                };
+                let keys = if r.field().is_some() { "type it below · [⏎] next  [esc] decline" } else { "30m · 2h · 3d · YYYY-MM-DD HH:MM · [⏎] store  [esc] decline" };
                 Some(View::IntrinsicElement { element: element! {
                     BoxView(border_style: BorderStyle::Double, border_color: FAIENCE, flex_direction: FlexDirection::Column, padding_left: 1, padding_right: 1) {
                         Text(content: "secret requested", weight: Weight::Bold)
                         Text(content: head, color: FAIENCE, wrap: TextWrap::Wrap)
-                        Text(content: version, color: BONE_DIM)
-                        Text(content: "type it below · [⏎] store  [esc] decline", color: FAIENCE)
+                        Text(content: step, color: BONE_DIM, wrap: TextWrap::Wrap)
+                        Text(content: keys, color: FAIENCE)
                     }
                 }.into_any(), rows: 0, replace: false })
             }
@@ -309,6 +381,7 @@ impl Component for Secrets {
     fn wake(&self) -> Option<u64> { self.refresh.then_some(0) }
 }
 fn bad_secret_name(name: &str) -> String { format!("secrets: {name:?} is not a name; use [A-Za-z0-9_.-], at most 64") }
+fn now_ms() -> u64 { u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0) }
 
 #[cfg(test)]
 mod tests {
@@ -336,10 +409,12 @@ mod tests {
         });
         let value = "never-echo-this-request-value";
         model.component_submit(value);
+        assert!(rx.try_recv().is_err(), "the expiry step comes before the answer");
+        model.component_submit("");
         let command = rx.try_recv().unwrap();
         assert!(!format!("{command:?}").contains(value));
         let Command::Component(effect) = command else { panic!("expected request effect") };
-        assert!(matches!(effect.request::<Request>(), Some(Request::AnswerSecret { value: Some(v), .. }) if v == value));
+        assert!(matches!(effect.request::<Request>(), Some(Request::AnswerSecret { values: Some(v), expires_ms: None, .. }) if v.get("token").map(String::as_str) == Some(value)));
         model.apply(UiEvent::Wire(crate::components::tests::topic("secrets.events", 1, secret)));
         assert_eq!(model.components.get::<Secrets>().unwrap().requests.len(), 1);
         model.receive(UiEvent::Wire(TopicEvent::control(json!({"type":"PendingPrompts","secrets":[]}))), &mut |output| {
@@ -350,5 +425,37 @@ mod tests {
         assert_eq!(model.asks.iter().map(|r| r.req.id).collect::<Vec<_>>(), [ask.id]);
         assert!(!plain.contains(value));
         assert!(!format!("{model:?}").contains(value));
+    }
+
+    #[test]
+    fn a_form_takes_every_field_then_an_expiry_and_sends_them_together() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let session = SessionId::new();
+        let mut model = Model::new("model".into(), true);
+        model.components = crate::components::Registry::empty();
+        model.components.register(Secrets::default()).unwrap();
+        model.session = Some(session);
+        model.mount_components(&tx);
+        let secret = json!({"type":"SecretRequested","id":uuid::Uuid::now_v7(),"session":session,"name":"gh.user","note":"GitHub","current":null,
+            "title":"GitHub","expires":"2h","fields":[
+                {"name":"gh.user","label":"Username","masked":false,"current":null},
+                {"name":"gh.pass","label":"Password","masked":true,"current":3}]});
+        model.apply(UiEvent::Wire(crate::components::tests::topic("secrets.events", 1, secret)));
+        let editor = |m: &Model| m.components.get::<Secrets>().unwrap().editor().unwrap();
+        assert!(!editor(&model).masked, "a username is typed in the clear");
+        model.component_submit("alice");
+        assert!(editor(&model).masked);
+        model.component_submit("hunter22-password");
+        assert!(editor(&model).submit_empty && editor(&model).hint.starts_with("expires"));
+        model.component_submit("0m");
+        assert!(rx.try_recv().is_err(), "a zero expiry is rejected inline");
+        model.component_submit("2030-01-01 00:00");
+        let before = now_ms();
+        let Command::Component(effect) = rx.try_recv().unwrap() else { panic!("expected request effect") };
+        let Some(Request::AnswerSecret { values: Some(values), expires_ms: Some(at), .. }) = effect.request::<Request>() else { panic!("expected an answer") };
+        assert_eq!(values.get("gh.user").map(String::as_str), Some("alice"));
+        assert_eq!(values.get("gh.pass").map(String::as_str), Some("hunter22-password"));
+        assert_eq!(*at, ::secrets::expiry::parse("2030-01-01 00:00", before).unwrap().at(before));
+        assert!(model.components.get::<Secrets>().unwrap().requests.is_empty());
     }
 }

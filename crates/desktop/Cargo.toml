@@ -48,6 +48,9 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 # 130 D10 / 134 D10: `theuth://` on the desktop (registered on macOS and Windows, `lib.rs`); same crate the mobile table pins.
 tauri-plugin-deep-link = "2"
+# 205 §5 (`src/asset.rs`): Tauri's `asset` scheme handler, copied with a `web-*` check; same crates tauri uses.
+http-range = "0.1"
+percent-encoding = "2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["net"] }

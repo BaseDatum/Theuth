@@ -878,9 +878,9 @@ async fn built_by(store: &Store, id: SessionId) -> Vec<Option<String>> {
 }
 
 /// E1 + E2: a settings switch reaches the next node without a re-attach;
-/// the old model's failures are forgotten and the new one is called at once.
+/// the old model's failures may run at once on the new one.
 #[tokio::test]
-async fn settings_model_switch_is_live_and_resets_backoff() {
+async fn settings_model_switch_is_live_and_retries_at_once() {
     let (a, b) = (
         Probe::new("fake/a", Act::Fail),
         Probe::new("fake/b", Act::Echo),
@@ -895,11 +895,14 @@ async fn settings_model_switch_is_live_and_resets_backoff() {
     assert_eq!(endless.memory(id).await.unwrap().model, "fake/a");
 
     endless.set_config(cfg_137f(Some("fake/b")));
+    let now = Instant::now();
     assert!(
-        super::pump::failed_for_tests(&endless.inner, id).is_empty(),
-        "backoff reset"
+        super::pump::failed_for_tests(&endless.inner, id)
+            .iter()
+            .all(|(_, at, _)| *at <= now),
+        "every failed node is due at once"
     );
-    // The old failure backs off 600 s: a call to the new model is the reset's.
+    // The old failure backed off 600 s: a call to the new model is the switch's.
     until("a call to the new model", || b.calls() > 0).await;
     assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     let models = built_by(&store, id).await;
@@ -2719,8 +2722,12 @@ struct Scripted {
 
 impl Scripted {
     fn new(reply: fn(&str) -> Reply) -> Arc<Self> {
+        Self::named("fake/scripted", reply)
+    }
+
+    fn named(id: &str, reply: fn(&str) -> Reply) -> Arc<Self> {
         Arc::new(Self {
-            model: super::pump::resolved_for_tests("fake/scripted"),
+            model: super::pump::resolved_for_tests(id),
             reply,
             calls: AtomicU32::new(0),
         })
@@ -2818,6 +2825,166 @@ async fn guard_failing_reply_keeps_the_draft() {
         assert_eq!(quality(&n), super::tree::Quality::Draft);
         assert!(!n.text.contains("zebra"), "{}", n.text);
     }
+}
+
+/// 201 §7.3: a python cell's output whose draft is all a line could say.
+async fn seed_echo(store: &Store, id: SessionId) {
+    let mut out = String::from("ut.\n");
+    for k in 0..107 {
+        out.push_str(&format!("    row {k}: value of the cell output\n"));
+    }
+    out.push_str("bindings: out5 (str, 10321)\n");
+    store
+        .append(id, &ChatMessage::from(vec![ToolResponse::new("c1", out)]))
+        .await
+        .unwrap();
+}
+
+fn cfg_trips(retry_secs: u32, model: Option<&str>) -> EndlessConfig {
+    EndlessConfig {
+        retry_secs,
+        batch_units: 1,
+        model: model.map(str::to_owned),
+        profile: super::Profile::Standard,
+        ..cfg_p1(1)
+    }
+}
+
+/// 201 §7.3: an echo unit whose model line never passes the guards ends on
+/// its draft as a final line after `TRIP_LIMIT` builds — no more calls,
+/// no failure state, no notice.
+#[tokio::test]
+async fn echo_whose_line_never_passes_keeps_its_draft_as_final() {
+    let c = Scripted::new(ungrounded);
+    let (_dir, endless, store, id) = harness_for(cfg_trips(1, None), c.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_echo(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    let draft = level0(&store, id).await.remove(0);
+    assert_eq!(quality(&draft), super::tree::Quality::Draft);
+    assert!(draft.text.starts_with("echo: ut."), "{}", draft.text);
+    assert!(draft.text.contains("bindings: out5"), "{}", draft.text);
+    eventually("the echo line is final", || async {
+        level0(&store, id)
+            .await
+            .iter()
+            .all(|n| quality(n) == super::tree::Quality::Free)
+    })
+    .await;
+    let calls = c.calls.load(Ordering::SeqCst);
+    let tries = u32::from(cfg_p1(1).tries);
+    assert!(calls > 0 && calls <= 2 * tries, "{calls} calls");
+    // Past two more retry delays: nothing else is sent.
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    assert_eq!(
+        c.calls.load(Ordering::SeqCst),
+        calls,
+        "no call after the final line"
+    );
+    assert_eq!(
+        level0(&store, id).await[0].text,
+        draft.text,
+        "the draft text stays"
+    );
+    assert!(super::pump::failed_for_tests(&endless.inner, id).is_empty());
+    let m = endless.memory(id).await.unwrap();
+    assert!(m.stalled.is_none());
+    assert_eq!(m.drafts, 0);
+}
+
+/// A chat unit with a guard-failing model keeps its draft and keeps being
+/// retried on its backoff; the trip is no failure the user sees, a real
+/// failure still is.
+#[tokio::test]
+async fn chat_unit_guard_trip_retries_without_a_notice() {
+    let c = Scripted::new(ungrounded);
+    let (_dir, endless, store, id) = harness_for(cfg_trips(1, None), c.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 1, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    until("two guard trips", || {
+        super::pump::failed_for_tests(&endless.inner, id)
+            .iter()
+            .any(|(k, _, n)| *k == (0, 0) && *n >= 2)
+    })
+    .await;
+    let n = level0(&store, id).await.remove(0);
+    assert_eq!(
+        quality(&n),
+        super::tree::Quality::Draft,
+        "a chat draft stays a draft"
+    );
+    assert!(endless.memory(id).await.unwrap().stalled.is_none());
+    assert_eq!(
+        super::pump::notice_for_tests(
+            &endless.inner,
+            id,
+            (0, 0),
+            "no line passed the guards after 5 attempts"
+        ),
+        None
+    );
+    assert!(endless.memory(id).await.unwrap().stalled.is_none());
+    let real = super::pump::notice_for_tests(&endless.inner, id, (0, 0), "request timed out");
+    assert!(real.is_some_and(|e| e.contains("timed out")));
+    let s = endless
+        .memory(id)
+        .await
+        .unwrap()
+        .stalled
+        .expect("a real failure shows");
+    assert!(s.error.contains("timed out"), "{}", s.error);
+}
+
+/// A compactor switch retries a failed unit once with the new model; then
+/// the unit waits out its grown backoff (no retry per pump tick).
+#[tokio::test]
+async fn compactor_switch_retries_a_failed_unit_once() {
+    let (a, b) = (
+        Scripted::named("fake/a", ungrounded),
+        Scripted::named("fake/b", ungrounded),
+    );
+    let factory: super::pump::CompactorFactory = {
+        let (a, b) = (a.clone(), b.clone());
+        Arc::new(move |id: &str| -> Arc<dyn Compactor> {
+            if id == "fake/b" { b.clone() } else { a.clone() }
+        })
+    };
+    let (_dir, endless, store, id) = harness_factory(cfg_trips(600, Some("fake/a")), factory).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 1, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    until("a failure on fake/a", || {
+        super::pump::failed_for_tests(&endless.inner, id).len() == 1
+    })
+    .await;
+    endless.set_config(cfg_trips(600, Some("fake/b")));
+    let failures = || super::pump::failed_for_tests(&endless.inner, id)[0].2;
+    assert_eq!(failures(), 1, "the switch keeps the count");
+    until("the retry on fake/b", || failures() == 2).await;
+    let calls = b.calls.load(Ordering::SeqCst);
+    assert!(calls > 0);
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    assert_eq!(
+        b.calls.load(Ordering::SeqCst),
+        calls,
+        "one retry, then the backoff"
+    );
+    let (_, at, n) = super::pump::failed_for_tests(&endless.inner, id)[0];
+    assert_eq!(n, 2);
+    assert!(
+        at > Instant::now() + Duration::from_secs(1_000),
+        "600 s × 2"
+    );
 }
 
 /// 201 P1 (F8): a batch reply spent on thinking fails the batch once; its

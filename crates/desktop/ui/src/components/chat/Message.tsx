@@ -22,7 +22,7 @@ import { MeetingCard } from './MeetingCard'
 import { MessageUser } from './MessageUser'
 import { MessageVision } from './MessageVision'
 import { SendCard } from './SendCard'
-import { SecretRequestCard } from './SecretRequestCard'
+import { SecretRequestCard, eventFields } from './SecretRequestCard'
 import { Details, DisclosureScope, useScopedDisclosure } from './disclosure'
 import { ResultCard } from '@/components/cells/ResultCard'
 import { resolveSender, useDirectory } from './peer-identity'
@@ -311,7 +311,7 @@ export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo 
     ) : prompt.type === 'AskRequested' ? (
       <AskCard ask={prompt} />
     ) : (
-      <SecretRequestCard id={prompt.id} note={prompt.note} fields={[{ name: prompt.name, label: prompt.name, masked: true, current: prompt.current }]} />
+      <SecretRequestCard id={prompt.id} title={prompt.title} note={prompt.title ? undefined : prompt.note} fields={eventFields(prompt)} expires={prompt.expires} />
     )
   const card = by ? (
     <>
