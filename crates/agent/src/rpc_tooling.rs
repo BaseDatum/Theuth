@@ -156,18 +156,17 @@ impl AgentToolingApiServer for Server {
     }
 
     async fn set_builtins_disabled(&self, names: Vec<String>, disabled: bool) -> RpcResult<()> {
-        let unknown =
-            ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetBuiltinsDisabled { names, disabled })
-                .await?;
+        let unknown = ask::<ToolRegistry, _>(
+            tools::REGISTRY_ACTOR,
+            SetBuiltinsDisabled { names, disabled },
+        )
+        .await?;
         if unknown.is_empty() {
             return Ok(());
         }
         Err(ErrorObjectOwned::owned(
             jsonrpsee::types::error::INVALID_PARAMS_CODE,
-            format!(
-                "not a builtin tool or category key: {}",
-                unknown.join(", ")
-            ),
+            format!("not a builtin tool or category key: {}", unknown.join(", ")),
             None::<()>,
         ))
     }

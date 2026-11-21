@@ -23,11 +23,11 @@ use tokio_util::sync::CancellationToken;
 use crate::activity::{self, Activity, ActivitySink, Kind, OperationId};
 use crate::approval::{Approval, Decision, RequestApproval};
 use crate::ask::{AskUser, AskUserTool};
+use crate::builtins::{self, BUILTIN_CATEGORY_PREFIX, BuiltinCategory, BuiltinTool, CATEGORIES};
 use crate::communication::{self, Admitted, CommunicationAccess};
 use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::journal::{InstallJournal, Journal, NoopJournal, QuestionRow};
 use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
-use crate::builtins::{self, BUILTIN_CATEGORY_PREFIX, BuiltinCategory, BuiltinTool, CATEGORIES};
 use crate::{
     APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
     ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, edit, fs, glob, jobs, pty, reminder,
@@ -1112,8 +1112,11 @@ impl ToolRegistry {
     fn builtin_switched(&self, mut id: SessionId, name: &str) -> bool {
         let mut key: Option<Option<String>> = None;
         let mut key = || {
-            key.get_or_insert_with(|| self.is_native(name).then(|| builtins::category_key_of(name)))
-                .clone()
+            key.get_or_insert_with(|| {
+                self.is_native(name)
+                    .then(|| builtins::category_key_of(name))
+            })
+            .clone()
         };
         if !self.builtins_disabled.is_empty()
             && let Some(k) = key()
@@ -2076,10 +2079,7 @@ impl Message<Invoke> for ToolRegistry {
             {
                 format!("unknown tool: {}", call.name)
             } else {
-                format!(
-                    "{} is turned off (Settings > Tools > Builtins)",
-                    call.name
-                )
+                format!("{} is turned off (Settings > Tools > Builtins)", call.name)
             };
             tx.send(ToolOutput::err(text));
             return reply;
@@ -3159,7 +3159,10 @@ pub(crate) mod tests {
             ["echo", "read_file", "search"]
         );
         let out = reg.ask(Invoke(call("echo", a))).await.unwrap();
-        assert_eq!(out.content, "echo is turned off (Settings > Tools > Builtins)");
+        assert_eq!(
+            out.content,
+            "echo is turned off (Settings > Tools > Builtins)"
+        );
         assert!(!reg.ask(Invoke(call("search", a))).await.unwrap().is_error);
 
         // Removing a name that is not in the set is fine.
@@ -3322,7 +3325,8 @@ pub(crate) mod tests {
         assert!(text.contains("approvals: true"), "{text}");
 
         let rt = Runtime::new(
-            figment::Figment::new().merge(figment::providers::Yaml::file(&path)),
+            figment::Figment::new()
+                .merge(<figment::providers::Yaml as figment::providers::Format>::file(&path)),
             dir.clone(),
         );
         let cfg = config(&rt).unwrap();
@@ -3333,7 +3337,12 @@ pub(crate) mod tests {
             ..build(vec![Arc::new(Echo), Arc::new(fs::ReadFile)], None)
         });
         assert_eq!(
-            tool_names(restarted.ask(ListTools(Some(SessionId::new()))).await.unwrap()),
+            tool_names(
+                restarted
+                    .ask(ListTools(Some(SessionId::new())))
+                    .await
+                    .unwrap()
+            ),
             ["echo"]
         );
         let _ = std::fs::remove_dir_all(dir);

@@ -75,7 +75,8 @@ pub use ask::{
     Question, late_answer_text,
 };
 pub use builtins::{
-    BUILTIN_CATEGORY_PREFIX, BuiltinCategory, BuiltinTool, BuiltinsConfig, category_key, category_of,
+    BUILTIN_CATEGORY_PREFIX, BuiltinCategory, BuiltinTool, BuiltinsConfig, category_key,
+    category_of,
 };
 pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::CloseSessions;
