@@ -4787,9 +4787,9 @@ impl Turn {
         })
     }
 
-    /// The view this turn opens with: `settle` then `render_for_turn` on the
-    /// service when the session is active in endless mode; the test hook's
-    /// view in tests; `None` otherwise.
+    /// The view this turn opens with: `render_for_turn` on the service when
+    /// the session is active in endless mode (201 P1: no settle wait; every
+    /// unit has a line); the test hook's view in tests; `None` otherwise.
     async fn endless_view(&self) -> Option<(ViewRender, usize)> {
         #[cfg(test)]
         if let Some(v) = self.shared.test_view.lock().clone() {
@@ -4801,19 +4801,8 @@ impl Turn {
         if self.shared.meeting_filter.load(Ordering::Relaxed) || !endless.active(id) {
             return None;
         }
-        let max = Duration::from_secs(u64::from(endless.config().settle_secs));
-        let started = Instant::now();
-        let settled = tokio::select! {
-            _ = self.cancel.cancelled() => return None,
-            s = endless.settle(id, max) => s,
-        };
-        if !settled {
-            if endless.frontier_failing(id) {
-                tracing::info!(session = %id, waited_ms = started.elapsed().as_millis() as u64, "endless settle: frontier failing; not waiting");
-            } else {
-                tracing::info!(session = %id, waited_ms = started.elapsed().as_millis() as u64, "endless settle: timed out; unbuilt parts render per D10");
-            }
-        }
+        // 201 P1 (D5): no wait on the summary model; a failing compactor
+        // shows as `stalled` in the status and never delays the turn.
         let max_bytes = self.view_allowance();
         match endless.render_for_turn_within(id, max_bytes, false).await {
             Ok(r) => Some((r, max_bytes)),

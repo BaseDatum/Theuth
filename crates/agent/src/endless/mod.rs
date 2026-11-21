@@ -1031,9 +1031,18 @@ impl Endless {
             .is_some_and(pump::Handle::served)
     }
 
-    /// 8.1: wait until every view part is built, at most `max`. `true` = settled.
+    /// 201 P1 (D5): returns `true` at once — every unit has a line from its
+    /// ingest, so no turn waits on the summary model. Kept for callers and
+    /// old configs (`settle_secs` is accepted and unused); it wakes the pump.
     pub async fn settle(&self, session: SessionId, max: Duration) -> bool {
         pump::settle(&self.inner, session, max).await
+    }
+
+    /// Test seam: wait, at most `max`, until the session's drafts are
+    /// refined and its view built (the 137 `settle` wait).
+    #[cfg(test)]
+    pub(crate) async fn quiet_for_tests(&self, session: SessionId, max: Duration) -> bool {
+        pump::quiet_for_tests(&self.inner, session, max).await
     }
 
     /// 8.1: the view for this turn; freezes it as the `<chat>` context of the
@@ -1056,7 +1065,8 @@ impl Endless {
         pump::render_for_turn(&self.inner, session, Some(max_bytes), again).await
     }
 
-    /// 8.3: rows reached `messages`; the pump derives the units itself.
+    /// 8.3 / 201 §6 "wake on append": rows reached `messages`; the session's
+    /// pump wakes, derives the units and refines their drafts during the turn.
     pub fn on_rows_committed(&self, session: SessionId) {
         pump::nudge(&self.inner, session);
     }

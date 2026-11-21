@@ -720,8 +720,9 @@ const ROOT_HOPS: usize = 32;
 /// fences and page/app sources the user removed, the one thing
 /// [`crate::context::Mask::decode`] exists to prevent; so it must not take or
 /// apply these rows. **69 (201 PC):** `0069_endless_tail` adds the
-/// per-session tail override columns to `sessions`.
-pub const SESSIONS_WIRE_SCHEMA: u32 = 69;
+/// per-session tail override columns to `sessions`. **70 (201 P1):**
+/// `0070_endless_quality` adds `endless_nodes.quality`.
+pub const SESSIONS_WIRE_SCHEMA: u32 = 70;
 
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
@@ -4527,7 +4528,7 @@ mod tests {
     #[tokio::test]
     async fn sessions_wire_schema_tracks_the_replicated_columns() {
         const SNAPSHOT: (u32, &str) = (
-            69,
+            70,
             "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools,endless_effort,endless_agent_effort,knowledge_identity,endless_tail_mode,endless_tail_low,endless_tail_high
 messages: session_id,seq,body,excluded,vision,at,thinking_ms,advisory,channel,moved,peer
 epochs: session_id,n,at_seq,tail_from,head,created_at,excluded
@@ -4546,7 +4547,7 @@ pty_screens: session_id,job_id,revision,rows,cols,cursor_row,cursor_col,text,at_
 resume_reports: session_id,turn_id,kind,interrupted_at,at,replayed,interrupted,lost_jobs,children_restored,children_handed_off,cause
 session_advisors: session,advisor,model,effort,cursor,state,updated_at
 endless_units: session_id,i,seq,part,kind,size,turn
-endless_nodes: session_id,l,i,text,size,free,model,tries,created_at,mechanical
+endless_nodes: session_id,l,i,text,size,free,model,tries,created_at,mechanical,quality
 endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,latency_ms,created_at",
         );
         let (store, _id, _dir) = fresh().await;

@@ -385,11 +385,22 @@ impl Store {
         tx.commit().await
     }
 
-    /// Every built node of the session.
+    /// Every built node of the session. 201 P1: `quality` is the truth for
+    /// the node's flags ([`Node::set_quality`]).
     pub async fn endless_nodes(&self, id: SessionId) -> anyhow::Result<Vec<Node>> {
-        type Row = (i64, i64, String, i64, bool, Option<String>, i64, bool);
+        type Row = (
+            i64,
+            i64,
+            String,
+            i64,
+            bool,
+            Option<String>,
+            i64,
+            bool,
+            String,
+        );
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT l, i, text, size, free, model, tries, mechanical FROM endless_nodes \
+            "SELECT l, i, text, size, free, model, tries, mechanical, quality FROM endless_nodes \
              WHERE session_id = ? ORDER BY l, i",
         )
         .bind(id.to_string())
@@ -397,16 +408,22 @@ impl Store {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(l, i, text, size, free, model, tries, mechanical)| Node {
-                l: l as u8,
-                i: i as u64,
-                text,
-                size: size as u32,
-                free,
-                model,
-                tries: tries as i32,
-                mechanical,
-            })
+            .map(
+                |(l, i, text, size, free, model, tries, mechanical, quality)| {
+                    let mut node = Node {
+                        l: l as u8,
+                        i: i as u64,
+                        text,
+                        size: size as u32,
+                        free,
+                        model,
+                        tries: tries as i32,
+                        mechanical,
+                    };
+                    node.set_quality(crate::endless::tree::Quality::parse(&quality));
+                    node
+                },
+            )
             .collect())
     }
 
@@ -432,14 +449,14 @@ impl Store {
         let sid = id.to_string();
         let now = Utc::now().to_rfc3339();
         let sql = if replace {
-            "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, mechanical, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, mechanical, quality, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(session_id, l, i) DO UPDATE SET text = excluded.text, size = excluded.size, \
              free = excluded.free, model = excluded.model, tries = excluded.tries, \
-             mechanical = excluded.mechanical, created_at = excluded.created_at"
+             mechanical = excluded.mechanical, quality = excluded.quality, created_at = excluded.created_at"
         } else {
-            "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, mechanical, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, l, i) DO NOTHING"
+            "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, mechanical, quality, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, l, i) DO NOTHING"
         };
         let mut tx = self.begin_write().await?;
         for node in nodes {
@@ -453,6 +470,7 @@ impl Store {
                 .bind(&node.model)
                 .bind(i64::from(node.tries))
                 .bind(node.mechanical)
+                .bind(node.quality().as_str())
                 .bind(&now)
                 .execute(&mut *tx)
                 .await?;

@@ -750,6 +750,11 @@ pub fn chunks(text: &str, max: usize) -> Vec<&str> {
 /// guards as a single build (a size-only trip is cut, Q2), or names the
 /// guard it tripped. No in-call retries: a failing unit is retried alone
 /// with the single-unit prompt.
+/// 201 P1 (F8): a reply spent on thinking gets one retry with thinking off
+/// forced for a local compactor (as [`build_one`]); otherwise, or again,
+/// the whole batch fails with [`thinking_error`], and an empty reply fails
+/// it as "returned nothing": its units keep their drafts and backoff
+/// instead of each going solo.
 async fn build_batch(
     c: &dyn Compactor,
     ctx: &str,
@@ -758,17 +763,33 @@ async fn build_batch(
     node_bytes: u32,
     attempt: Duration,
 ) -> Result<Built, Failed> {
-    let convo = vec![ChatMessage::user(step.render(node_bytes))];
-    let reply = match tokio::time::timeout(
-        attempt,
-        c.compress_lines(ctx, &convo, units.len() as u32),
-    )
-    .await
-    {
-        Ok(Ok(reply)) => reply,
-        Ok(Err(e)) => return Err(e.into()),
-        Err(_) => return Err(format!("timed out after {}s", attempt.as_secs()).into()),
+    let convo = &vec![ChatMessage::user(step.render(node_bytes))];
+    let lines_n = units.len() as u32;
+    let send = |forced: bool| async move {
+        let fut = if forced {
+            c.compress_thinking_off(ctx, convo)
+        } else {
+            c.compress_lines(ctx, convo, lines_n)
+        };
+        match tokio::time::timeout(attempt, fut).await {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(e)) => Err(Failed::from(e)),
+            Err(_) => Err(format!("timed out after {}s", attempt.as_secs()).into()),
+        }
     };
+    let mut reply = send(false).await?;
+    if reply.spent_on_thinking() {
+        if c.local().is_none() || !c.can_grow(ctx, convo) {
+            return Err(thinking_error(c.model_id(), &reply).into());
+        }
+        reply = send(true).await?;
+        if reply.spent_on_thinking() {
+            return Err(thinking_error(c.model_id(), &reply).into());
+        }
+    }
+    if reply.text.trim().is_empty() {
+        return Err(Failed::from("compactor returned nothing".to_owned()));
+    }
     let raw = reply.text.trim();
     let ruler = guards::ruler(node_bytes);
     let lines = units

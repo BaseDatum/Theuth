@@ -286,7 +286,10 @@ async fn pump_builds_tree_and_tools_answer() {
         endless.active(id),
         "no history before the mode: no backfill"
     );
-    assert!(endless.settle(id, Duration::from_secs(10)).await, "settled");
+    assert!(
+        endless.quiet_for_tests(id, Duration::from_secs(10)).await,
+        "settled"
+    );
 
     let render = endless.render_for_turn(id).await.unwrap();
     assert!(render.settled && render.unbuilt == 0);
@@ -400,7 +403,7 @@ async fn history_backfills_then_activates_and_resumes_from_rows() {
         mem.backfill.is_some_and(|b| b.total == 6) || endless.active(id),
         "{mem:?}"
     );
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     assert!(endless.active(id), "covered → active");
     // Settle waits for the view only; let the merges above finish (6 + 3 + 1 nodes).
     for _ in 0..200 {
@@ -423,7 +426,7 @@ async fn history_backfills_then_activates_and_resumes_from_rows() {
     );
     endless.attach(id, attached()).await.unwrap();
     assert!(endless.active(id));
-    assert!(endless.settle(id, Duration::from_secs(5)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(5)).await);
     assert_eq!(store.endless_nodes(id).await.unwrap().len(), built_before);
     assert_eq!(*echo.calls.lock(), calls_before, "nothing rebuilt");
     assert_eq!(endless.resume_all().await.unwrap(), 1);
@@ -514,7 +517,7 @@ async fn backfill_cap_sets_base_and_keeps_raw_history_reachable() {
         "{:?}",
         on.memory.view
     );
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     assert!(endless.active(id));
     let r = endless.render_for_turn(id).await.unwrap();
     assert!(
@@ -668,7 +671,7 @@ async fn meeting_filter_session_is_served_but_never_active() {
         store.endless_meta(id).await.unwrap().filter,
         UnitFilter::Meeting
     );
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     assert!(!endless.active(id), "meetings never take the endless frame");
     let mem = endless.memory(id).await.unwrap();
     assert_eq!(
@@ -895,7 +898,7 @@ async fn settings_model_switch_is_live_and_resets_backoff() {
     );
     // The old failure backs off 600 s: a call to the new model is the reset's.
     until("a call to the new model", || b.calls() > 0).await;
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     let models = built_by(&store, id).await;
     assert!(
         !models.is_empty() && models.iter().all(|m| m.as_deref() == Some("fake/b")),
@@ -949,7 +952,7 @@ async fn switch_cancels_the_hung_call_and_rebuilds_on_the_new_model() {
     until("the hung call", || a.calls() == 1).await;
     endless.set_config(cfg_137f(Some("fake/b")));
     until("the drop", || a.dropped.load(Ordering::SeqCst) == 1).await;
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     assert!(
         built_by(&store, id)
             .await
@@ -981,19 +984,22 @@ async fn repeated_frontier_failure_is_stalled_and_settle_stops_waiting() {
     .await;
     let (key, ..) = super::pump::failed_for_tests(&endless.inner, id)[0];
     let one = endless.memory(id).await.unwrap().stalled.unwrap();
-    assert_eq!((one.failures, one.blocking), (1, true));
+    // 201 P1: drafts leave no frontier for a failure to block.
+    assert_eq!((one.failures, one.blocking), (1, false));
     assert_eq!(one.error, "400: model not loaded");
     assert_eq!(one.model, "fake/a");
     let t0 = Instant::now();
     assert!(
-        !endless.settle(id, Duration::from_millis(300)).await,
+        !endless
+            .quiet_for_tests(id, Duration::from_millis(300))
+            .await,
         "one failure: settle still waits its time"
     );
     assert!(t0.elapsed() >= Duration::from_millis(300));
 
     super::pump::finish_for_tests(&endless.inner, id, key, Err("400: again".into())).await;
     let s = endless.memory(id).await.unwrap().stalled.unwrap();
-    assert_eq!((s.failures, s.blocking), (2, true), "{s:?}");
+    assert_eq!((s.failures, s.blocking), (2, false), "{s:?}");
     assert_eq!(s.error, "400: again");
     let at = chrono::DateTime::parse_from_rfc3339(s.next_retry_at.as_deref().unwrap()).unwrap();
     assert!(
@@ -1001,7 +1007,7 @@ async fn repeated_frontier_failure_is_stalled_and_settle_stops_waiting() {
         "{at}"
     );
     let t0 = Instant::now();
-    assert!(!endless.settle(id, Duration::from_secs(45)).await);
+    assert!(!endless.quiet_for_tests(id, Duration::from_secs(45)).await);
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
 
     p.set(Act::Echo);
@@ -1025,7 +1031,7 @@ async fn repeated_frontier_failure_is_stalled_and_settle_stops_waiting() {
         .await;
     }
     assert!(endless.memory(id).await.unwrap().stalled.is_none());
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
 }
 
 /// E5 / R1-10: `retry` reschedules a backed-off node at once, restarts a
@@ -1094,7 +1100,7 @@ async fn local_endpoint_is_one_queue_engine_wide() {
         }
         if local.is_some() {
             for id in &ids {
-                assert!(endless.settle(*id, Duration::from_secs(30)).await);
+                assert!(endless.quiet_for_tests(*id, Duration::from_secs(30)).await);
             }
             assert_eq!(p.max_inflight.load(Ordering::SeqCst), 1, "local");
         } else {
@@ -1132,7 +1138,7 @@ async fn panicking_job_releases_its_node_and_retries() {
     // Backoff 600 s: the retry is the RPC's.
     endless.retry(id).await.unwrap();
     assert!(
-        endless.settle(id, Duration::from_secs(10)).await,
+        endless.quiet_for_tests(id, Duration::from_secs(10)).await,
         "retried and built"
     );
     assert!(endless.memory(id).await.unwrap().stalled.is_none());
@@ -1163,7 +1169,7 @@ async fn local_compactor_receives_the_capped_view() {
         store.append(id, &ChatMessage::user(text)).await.unwrap();
     }
     endless.attach(id, attached()).await.unwrap();
-    assert!(endless.settle(id, Duration::from_secs(20)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(20)).await);
     let full = endless.render_for_turn(id).await.unwrap().text().len();
     assert!(full > 8_000, "the view outgrew the cap: {full}");
     let sent = p.ctx_lens.lock().clone();
@@ -1218,7 +1224,7 @@ async fn queued_merge_does_not_hold_back_the_frontier() {
         inputs[0].contains("UNIT2"),
         "the frontier first: {inputs:?}"
     );
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
 }
 
 /// 137G G7 `endless_fold`: every unbuilt level-0 unit becomes a node at once
@@ -1263,7 +1269,7 @@ async fn fold_turns_the_backlog_into_mechanical_nodes_at_once() {
     })
     .await;
     assert!(super::pump::failed_for_tests(&endless.inner, id).is_empty());
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     let stored = store.endless_nodes(id).await.unwrap();
     assert_eq!(
         stored
@@ -1309,7 +1315,7 @@ async fn pause_stops_calls_survives_reattach_and_resume_restarts() {
     assert_eq!(p.calls(), calls, "no call while paused");
     assert!(super::pump::failed_for_tests(&endless.inner, id).is_empty());
     let t0 = Instant::now();
-    assert!(!endless.settle(id, Duration::from_secs(30)).await);
+    assert!(!endless.quiet_for_tests(id, Duration::from_secs(30)).await);
     assert!(
         t0.elapsed() < Duration::from_secs(5),
         "settle does not wait"
@@ -1744,7 +1750,7 @@ async fn three_hard_failures_over_ten_minutes_fold_the_unit() {
         mechanical(&store, id).await == [1]
     })
     .await;
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     assert!(
         super::pump::failed_for_tests(&endless.inner, id)
             .iter()
@@ -1943,7 +1949,7 @@ async fn long_unit_is_map_reduced_into_one_node() {
         .await
         .unwrap();
     endless.attach(id, attached()).await.unwrap();
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     let chunks = super::compactor::chunks(&long, super::compactor::CHUNK_BYTES).len();
     assert!(chunks >= 5, "{chunks}");
     let calls = s.calls.lock().clone();
@@ -2588,4 +2594,277 @@ async fn session_tail_override_round_trips_and_clears() {
         (24_000, 64_000, None)
     );
     assert_eq!(store.endless_meta(id).await.unwrap().tail, None);
+}
+
+/// 201 P1: a compactor whose reply is `reply(step input)`; counts calls.
+struct Scripted {
+    model: models::Resolved,
+    reply: fn(&str) -> Reply,
+    calls: AtomicU32,
+}
+
+impl Scripted {
+    fn new(reply: fn(&str) -> Reply) -> Arc<Self> {
+        Arc::new(Self {
+            model: super::pump::resolved_for_tests("fake/scripted"),
+            reply,
+            calls: AtomicU32::new(0),
+        })
+    }
+}
+
+impl Compactor for Scripted {
+    fn compress<'a>(
+        &'a self,
+        _ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let r = (self.reply)(&echo_line(convo));
+        Box::pin(async move { Ok(r) })
+    }
+
+    fn model(&self) -> &models::Resolved {
+        &self.model
+    }
+}
+
+fn ungrounded(_: &str) -> Reply {
+    Reply {
+        text: "zebra crossing painted blue".into(),
+        ..Default::default()
+    }
+}
+
+fn cfg_p1(batch_units: u8) -> EndlessConfig {
+    EndlessConfig {
+        view_bytes: 16_000,
+        retry_secs: 600,
+        batch_units,
+        ..EndlessConfig::default()
+    }
+}
+
+fn quality(n: &super::tree::Node) -> super::tree::Quality {
+    n.quality()
+}
+
+/// 201 P1 (D5): with a compactor that always errors, every unit has a line
+/// right after ingest, and a turn start does not wait.
+#[tokio::test]
+async fn every_unit_has_a_line_at_ingest_and_no_turn_waits() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 10, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    let nodes = level0(&store, id).await;
+    assert_eq!(nodes.len(), 10, "a line for every unit at once");
+    assert!(
+        nodes
+            .iter()
+            .all(|n| quality(n) == super::tree::Quality::Draft)
+    );
+    let t0 = Instant::now();
+    assert!(endless.settle(id, Duration::from_secs(45)).await);
+    let r = endless.render_for_turn(id).await.unwrap();
+    assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    assert_eq!(r.unbuilt, 0, "no placeholder");
+    assert_eq!(endless.memory(id).await.unwrap().drafts, 10);
+    // A unit appended later gets its draft on ingest, too.
+    seed_many(&store, id, 1, &[]).await;
+    endless.render_for_turn(id).await.unwrap();
+    assert_eq!(level0(&store, id).await.len(), 11);
+}
+
+/// 201 P1 (F9): a reply that fails its guards never becomes a stored line;
+/// the draft stays and the unit backs off.
+#[tokio::test]
+async fn guard_failing_reply_keeps_the_draft() {
+    let c = Scripted::new(ungrounded);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(1), c.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 3, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    until("every unit failed once", || {
+        super::pump::failed_for_tests(&endless.inner, id)
+            .iter()
+            .filter(|(k, ..)| k.0 == 0)
+            .count()
+            == 3
+    })
+    .await;
+    for n in level0(&store, id).await {
+        assert_eq!(quality(&n), super::tree::Quality::Draft);
+        assert!(!n.text.contains("zebra"), "{}", n.text);
+    }
+}
+
+/// 201 P1 (F8): a batch reply spent on thinking fails the batch once; its
+/// units keep their drafts and do not fan out into solo calls.
+#[tokio::test]
+async fn batch_spent_on_thinking_does_not_fan_out() {
+    fn thinking(_: &str) -> Reply {
+        Reply {
+            reasoning: true,
+            truncated: true,
+            ..Default::default()
+        }
+    }
+    let c = Scripted::new(thinking);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), c.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 4, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    until("the batch failed", || {
+        super::pump::failed_for_tests(&endless.inner, id).len() == 4
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(c.calls.load(Ordering::SeqCst), 1, "one batch call, no solo");
+    let s = endless.memory(id).await.unwrap().stalled.unwrap();
+    assert!(s.error.contains("thinking"), "{}", s.error);
+    assert!(
+        level0(&store, id)
+            .await
+            .iter()
+            .all(|n| quality(n) == super::tree::Quality::Draft)
+    );
+}
+
+/// 201 P1: refining a child marks its draft parent for rebuilding, and the
+/// rebuilt parent carries the model lines.
+#[tokio::test]
+async fn refined_child_rebuilds_its_draft_parent() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 2, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    let parent = || async {
+        store
+            .endless_nodes(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|n| (n.l, n.i) == (1, 0))
+    };
+    eventually("a draft parent", || async {
+        parent()
+            .await
+            .is_some_and(|n| quality(&n) == super::tree::Quality::Draft)
+    })
+    .await;
+    for (i, text) in [(0u64, "model line zero"), (1, "model line one")] {
+        super::pump::finish_for_tests(
+            &endless.inner,
+            id,
+            (0, i),
+            Ok(super::tree::Node {
+                l: 0,
+                i,
+                text: text.into(),
+                size: text.len() as u32,
+                free: false,
+                model: Some("fake/a".into()),
+                tries: 1,
+                mechanical: false,
+            }),
+        )
+        .await;
+    }
+    eventually("the parent rebuilt from the model lines", || async {
+        parent().await.is_some_and(|n| {
+            n.text.contains("model line zero")
+                && n.text.contains("model line one")
+                && quality(&n) != super::tree::Quality::Draft
+        })
+    })
+    .await;
+}
+
+/// 201 P1: loading a session whose units have no nodes gives them drafts.
+#[tokio::test]
+async fn load_drafts_node_less_units() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    let mut rows = Vec::new();
+    for k in 0..3u64 {
+        let text = format!(
+            "user note {k}: {}",
+            "the cache keeps these rows ".repeat(30)
+        );
+        let seq = store
+            .append(id, &ChatMessage::user(text.clone()))
+            .await
+            .unwrap();
+        rows.push(crate::store::endless::UnitRow {
+            i: k,
+            seq,
+            part: 0,
+            kind: super::tree::Kind::User,
+            size: (text.len() + "user: ".len()) as u32,
+            turn: 0,
+        });
+    }
+    store.endless_units_put(id, &rows).await.unwrap();
+    assert!(store.endless_nodes(id).await.unwrap().is_empty());
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    let nodes = level0(&store, id).await;
+    assert_eq!(nodes.len(), 3);
+    assert!(
+        nodes
+            .iter()
+            .all(|n| quality(n) == super::tree::Quality::Draft)
+    );
+}
+
+/// 201 P1 (F10): one unit that keeps failing stops neither later units nor
+/// the merges over them.
+#[tokio::test]
+async fn failing_unit_blocks_nothing() {
+    fn bad_fails(input: &str) -> Reply {
+        let text = if input.contains("BAD") {
+            "zebra crossing painted blue".to_owned()
+        } else {
+            input.to_owned()
+        };
+        Reply {
+            text,
+            ..Default::default()
+        }
+    }
+    let c = Scripted::new(bad_fails);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(1), c.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 4, &[0]).await;
+    endless.attach(id, attached()).await.unwrap();
+    eventually("units 1..4 refined and (1, 1) merged", || async {
+        let nodes = store.endless_nodes(id).await.unwrap();
+        let q = |l: u8, i: u64| nodes.iter().find(|n| (n.l, n.i) == (l, i)).map(quality);
+        (1..4).all(|i| q(0, i) == Some(super::tree::Quality::Model))
+            && q(1, 1).is_some_and(|q| q != super::tree::Quality::Draft)
+    })
+    .await;
+    let nodes = level0(&store, id).await;
+    assert_eq!(quality(&nodes[0]), super::tree::Quality::Draft);
 }

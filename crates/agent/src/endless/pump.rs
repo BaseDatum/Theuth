@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use super::compactor::{self, Compactor, ModelCompactor, Step};
 use super::fold::ViewBlock;
 use super::fold::{self, Fold, FoldCfg, Part, ViewRender};
-use super::tree::{self, Node, Tree, Unit, exists, id_n};
+use super::tree::{self, Node, Quality, Tree, Unit, exists, id_n};
 use super::{
     Attached, Backfill, Backlog, EndlessConfig, EndlessProgress, Inner, MemoryMode, Profile,
     SessionMemory, SetMode, Stalled, TailMode, TailOverride, UnitFilter, ViewLine, units,
@@ -419,6 +419,12 @@ struct Live {
     pending_error: Option<String>,
     /// `unit.i → turn` (a unit is pure §4 data; the turn is pump bookkeeping).
     turns: HashMap<u64, u32>,
+    /// 201 P1: level-0 units whose node is a draft — the refinement queue,
+    /// oldest first.
+    drafts: BTreeSet<u64>,
+    /// 201 P1: draft merges to rebuild (a child changed, or the model merge
+    /// failed and is retried after its backoff).
+    stale: HashSet<(u8, u64)>,
 }
 
 impl Live {
@@ -454,15 +460,14 @@ impl Live {
         self.fold = None;
     }
 
-    /// D14 progress; `None` once every history unit has its line.
+    /// D14 progress; `None` once every history unit has its line (201 P1:
+    /// a draft is not done until refined).
     fn backfill(&self) -> Option<Backfill> {
         let total = self.backfill_total;
         if total <= self.base {
             return None;
         }
-        let done = (self.base..total)
-            .filter(|i| self.tree.built(0, *i))
-            .count() as u64;
+        let done = (self.base..total).filter(|i| self.lined(*i)).count() as u64;
         let span = total - self.base;
         if done >= span {
             return None;
@@ -486,11 +491,77 @@ impl Live {
         per / f64::from(self.parallel.max(1))
     }
 
-    /// Level-0 units in `[base, T)` without a line.
+    /// Level-0 units in `[base, T)` without a line (201 P1: or with a draft).
     fn unbuilt_level0(&self) -> u64 {
         (self.base.min(self.t())..self.t())
-            .filter(|i| !self.tree.built(0, *i))
+            .filter(|i| !self.lined(*i))
             .count() as u64
+    }
+
+    /// 201 P1: unit `i` has its final line — built, and not a draft that
+    /// this session refines.
+    fn lined(&self, i: u64) -> bool {
+        self.tree
+            .get(0, i)
+            .is_some_and(|n| !(self.drafting() && n.quality() == Quality::Draft))
+    }
+
+    /// 201 P1: drafts are made at ingest and refined, merges are built from
+    /// drafts, and no frontier gates anything — every session but a
+    /// meeting's, whose tree enriches its head exactly as before.
+    fn drafting(&self) -> bool {
+        self.filter != UnitFilter::Meeting
+    }
+
+    /// Insert `node`, keeping the draft queue and the stale marks (201 P1):
+    /// a node that replaces another marks its draft ancestors for rebuilding.
+    fn put(&mut self, node: Node) {
+        let (l, i) = (node.l, node.i);
+        let replaced = self.tree.built(l, i);
+        if l == 0 {
+            if node.quality() == Quality::Draft {
+                self.drafts.insert(i);
+            } else {
+                self.drafts.remove(&i);
+            }
+        } else {
+            self.stale.remove(&(l, i));
+        }
+        self.tree.insert(node);
+        if replaced {
+            let (mut pl, mut pi) = (l + 1, i / 2);
+            while self
+                .tree
+                .get(pl, pi)
+                .is_some_and(|p| p.quality() == Quality::Draft)
+            {
+                self.stale.insert((pl, pi));
+                pl += 1;
+                pi /= 2;
+            }
+        }
+        self.invalidate();
+    }
+
+    /// 201 P1: rebuild the draft queue and the stale marks from the tree (load).
+    fn index_drafts(&mut self) {
+        self.drafts = self
+            .tree
+            .iter()
+            .filter(|n| n.l == 0 && n.quality() == Quality::Draft)
+            .map(|n| n.i)
+            .collect();
+        let q = |l: u8, i: u64| self.tree.get(l, i).map(Node::quality);
+        self.stale = self
+            .tree
+            .iter()
+            .filter(|n| n.l > 0 && n.quality() == Quality::Draft)
+            .filter(|n| {
+                let (a, b) = (q(n.l - 1, 2 * n.i), q(n.l - 1, 2 * n.i + 1));
+                a != Some(Quality::Draft) && b != Some(Quality::Draft)
+            })
+            .map(|n| (n.l, n.i))
+            .collect();
     }
 
     /// Nodes that exist over `[0, T)` (every level), and how many are built.
@@ -527,7 +598,7 @@ impl Live {
     fn history_unbuilt(&self) -> u64 {
         self.units
             .iter()
-            .filter(|u| u.i >= self.base && self.unit_turn(u.i) == 0 && !self.tree.built(0, u.i))
+            .filter(|u| u.i >= self.base && self.unit_turn(u.i) == 0 && !self.lined(u.i))
             .map(|u| u.i + 1)
             .max()
             .unwrap_or(0)
@@ -640,6 +711,8 @@ impl Live {
             dirty: false,
             pending_error: None,
             turns: HashMap::new(),
+            drafts: BTreeSet::new(),
+            stale: HashSet::new(),
         }
     }
 }
@@ -1095,11 +1168,70 @@ async fn load(state: &State) -> anyhow::Result<()> {
         live.last_seq = last_seq;
         live.turn = max_turn;
         live.tree = Tree::from_nodes(nodes);
+        live.index_drafts();
         live.backfill_total = live.history_unbuilt();
         live.invalidate();
     }
-    // Rows that landed after the cache (or a cache that never existed).
-    ingest(state).await
+    // Rows that landed after the cache (or a cache that never existed); then
+    // 201 P1: every unit without a node (an older session) gets its draft.
+    ingest(state).await?;
+    fill_drafts(state, 0).await?;
+    let mut live = state.live.lock();
+    live.backfill_total = live.history_unbuilt();
+    Ok(())
+}
+
+/// 201 P1: the stored node of a new level-0 unit, no model call: its own
+/// tagged text when it fits (free), else its [`draft_line`].
+fn draft_node(u: &Unit, node_bytes: u32) -> Node {
+    let (text, quality) = match tree::free_unit(u, node_bytes) {
+        Some(text) => (text, Quality::Free),
+        None => (draft_line(u, node_bytes), Quality::Draft),
+    };
+    let mut node = Node {
+        l: 0,
+        i: u.i,
+        size: text.len() as u32,
+        text,
+        free: false,
+        model: None,
+        tries: 0,
+        mechanical: false,
+    };
+    node.set_quality(quality);
+    node
+}
+
+/// 201 P1: give every level-0 unit in `[max(base, from), T)` without a node
+/// its [`draft_node`] (stored only where none exists yet). An epochs session
+/// and a meeting tree get none.
+async fn fill_drafts(state: &State, from: u64) -> anyhow::Result<()> {
+    let nodes: Vec<Node> = {
+        let live = state.live.lock();
+        if live.mode != MemoryMode::Endless || !live.drafting() {
+            return Ok(());
+        }
+        let node_bytes = state.cfg.read().node_bytes;
+        (live.base.max(from).min(live.t())..live.t())
+            .filter(|i| !live.tree.built(0, *i))
+            .map(|i| draft_node(&live.units[i as usize], node_bytes))
+            .collect()
+    };
+    if nodes.is_empty() {
+        return Ok(());
+    }
+    state
+        .store
+        .endless_nodes_put_new(state.session, &nodes)
+        .await?;
+    let mut live = state.live.lock();
+    for node in nodes {
+        if !live.tree.built(0, node.i) {
+            live.put(node);
+        }
+    }
+    live.dirty = true;
+    Ok(())
 }
 
 /// Derive units from `messages` rows beyond `last_seq` and cache them.
@@ -1118,6 +1250,7 @@ async fn ingest(state: &State) -> anyhow::Result<()> {
         let live = state.live.lock();
         (live.t(), live.turn, live.last_seq, live.filter)
     };
+    let first = next_i;
     for m in &rows {
         last_seq = last_seq.max(m.seq);
         if m.excluded {
@@ -1147,15 +1280,17 @@ async fn ingest(state: &State) -> anyhow::Result<()> {
         .store
         .endless_units_put(state.session, &unit_rows)
         .await?;
-    let mut live = state.live.lock();
-    for u in new_units {
-        live.turns.insert(u.i, turn);
-        live.units.push(u);
+    {
+        let mut live = state.live.lock();
+        for u in new_units {
+            live.turns.insert(u.i, turn);
+            live.units.push(u);
+        }
+        live.last_seq = last_seq;
+        live.invalidate();
+        live.dirty = true;
     }
-    live.last_seq = last_seq;
-    live.invalidate();
-    live.dirty = true;
-    Ok(())
+    fill_drafts(state, first).await
 }
 
 fn start_pump(state: Arc<State>, cancel: CancellationToken) {
@@ -1190,6 +1325,8 @@ const EARLIER_MAX: usize = 24;
 /// 137G G11: the error of a call whose prompt alone would cost over
 /// `max_usd_per_call` — never sent.
 const OVER_COST: &str = "over max_usd_per_call";
+/// 201 P1 (F9): the error of a build whose every candidate failed a guard.
+const NO_PASSING_LINE: &str = "no line passed the guards";
 /// R1-3: the notice when a unit's own call is over `max_usd_per_call`.
 const COST_NOTICE: &str =
     "summary model too expensive for max_usd_per_call; lines folded as excerpts";
@@ -1211,13 +1348,17 @@ fn close(batch: &mut Vec<u64>) -> Option<Work> {
     }
 }
 
-/// Start every eligible node (§5.2 rules 1–3). 137G G6: level 0 runs from
-/// the frontier on in batches of up to `batch_units` consecutive unbuilt
-/// units (≤ 24 KB of text); a unit that failed, or whose batch line failed
-/// its guard, runs alone; free and mechanical (G7) lines need no call. A
-/// cloud compactor runs up to `jobs` calls at once, level-0 batches
-/// included (level-0 nodes are independent; only merges wait for the
-/// frontier, rule 3); a local one one level-0 job and one merge (E9).
+/// Start every eligible node. 201 P1: every level-0 unit already has a
+/// line, so level 0 is "the next draft to refine", oldest first, and merges
+/// are "the next merge whose inputs changed" (missing, or a stale draft);
+/// nothing waits behind a failing unit (137 rule 3 is gone). 137G G6:
+/// level 0 runs in batches of up to `batch_units` consecutive drafts
+/// (≤ 24 KB of text); a unit whose batch line failed its guard runs alone.
+/// A merge with a draft child, or whose children fit, is built with no call.
+/// A cloud compactor runs up to `jobs` calls at once; a local one one
+/// level-0 job and one merge (E9). A meeting tree (no drafts) keeps the 137
+/// rules: unbuilt units from the frontier on, mechanical folds, merges only
+/// behind the frontier.
 fn schedule(state: &Arc<State>) {
     let mut live = state.live.lock();
     if live.mode != MemoryMode::Endless || live.paused_by.is_some() {
@@ -1237,7 +1378,8 @@ fn schedule(state: &Arc<State>) {
     let t = live.t();
     let base = live.base;
     let now = Instant::now();
-    let frontier = live.frontier(cfg);
+    let drafting = live.drafting();
+    let frontier = if drafting { t } else { live.frontier(cfg) };
     let due = |live: &Live, key: &(u8, u64)| {
         !live.running.contains(key) && live.failed.get(key).is_none_or(|r| r.at <= now)
     };
@@ -1259,65 +1401,95 @@ fn schedule(state: &Arc<State>) {
     let mut instant: Vec<(u8, u64)> = Vec::new();
     let mut batch: Vec<u64> = Vec::new();
     let mut bytes = 0usize;
-    let mut i = frontier;
-    while i < t && (slots > 0 || !batch.is_empty()) {
-        let key = (0u8, i);
-        i += 1;
-        if live.tree.built(0, key.1) || !due(&live, &key) {
-            continue;
-        }
-        let u = &live.units[key.1 as usize];
-        let mech = live
-            .failed
-            .get(&key)
-            .is_some_and(|r| r.mechanical(live.last_ok));
-        let fails = live.failed.get(&key).map_or(0, |r| r.failures);
-        if mech || tree::free_unit(u, node_bytes).is_some() {
-            instant.push(key);
-            continue;
-        }
-        if fails > 0
-            || live.solo.contains(&key.1)
-            || batch_units == 1
-            || u.size as usize > BATCH_BYTES
-        {
-            if slots > 0 {
-                slots -= 1;
-                work.push(Work::Node(key));
+    {
+        let live: &Live = &live;
+        let todo: Box<dyn Iterator<Item = u64> + '_> = if drafting {
+            Box::new(live.drafts.range(base..t).copied())
+        } else {
+            Box::new(frontier..t)
+        };
+        for i in todo {
+            if slots == 0 && batch.is_empty() {
+                break;
             }
-            continue;
-        }
-        if batch.is_empty() {
-            if slots == 0 {
+            let key = (0u8, i);
+            if (!drafting && live.tree.built(0, i)) || !due(live, &key) {
                 continue;
             }
-            slots -= 1;
-        }
-        batch.push(key.1);
-        bytes += u.size as usize;
-        if batch.len() >= batch_units || bytes >= BATCH_BYTES {
-            work.extend(close(&mut batch));
-            bytes = 0;
+            let u = &live.units[i as usize];
+            let mech = live
+                .failed
+                .get(&key)
+                .is_some_and(|r| r.mechanical(live.last_ok));
+            if drafting && mech {
+                // 201 P1: the unit's own call is over cost, or it keeps
+                // failing hard: its draft stays until `endless_retry`.
+                continue;
+            }
+            let fails = live.failed.get(&key).map_or(0, |r| r.failures);
+            if !drafting && (mech || tree::free_unit(u, node_bytes).is_some()) {
+                instant.push(key);
+                continue;
+            }
+            // 201 P1: a draft that failed in a batch rejoins one (F8); only
+            // a guard trip of its own batch line sends it alone.
+            if (fails > 0 && !drafting)
+                || live.solo.contains(&i)
+                || batch_units == 1
+                || u.size as usize > BATCH_BYTES
+            {
+                if slots > 0 {
+                    slots -= 1;
+                    work.push(Work::Node(key));
+                }
+                continue;
+            }
+            if batch.is_empty() {
+                if slots == 0 {
+                    continue;
+                }
+                slots -= 1;
+            }
+            batch.push(i);
+            bytes += u.size as usize;
+            if batch.len() >= batch_units || bytes >= BATCH_BYTES {
+                work.extend(close(&mut batch));
+                bytes = 0;
+            }
         }
     }
     work.extend(close(&mut batch));
-    // Merges (rule 3: only behind the frontier).
+    // Merges: missing ones, and stale drafts (201 P1); a meeting tree's only
+    // behind the frontier (137 rule 3).
     let mut merges = if local { usize::from(!merging) } else { slots };
     let mut l = 1u8;
-    while (1u64 << l) <= t && merges > 0 {
+    while (1u64 << l) <= t && (drafting || merges > 0) {
         let n = 1u64 << l;
         for i in 0..(t / n) {
-            if merges == 0 {
+            if merges == 0 && !drafting {
                 break;
             }
             let key = (l, i);
-            if i * n < base || live.tree.built(l, i) || !exists(l, i, t) || (i + 1) * n > frontier {
+            if i * n < base || !exists(l, i, t) || (!drafting && (i + 1) * n > frontier) {
                 continue;
             }
-            if !live.tree.built(l - 1, 2 * i) || !live.tree.built(l - 1, 2 * i + 1) {
+            if live.tree.built(l, i) && !live.stale.contains(&key) {
                 continue;
             }
-            if due(&live, &key) {
+            let (Some(a), Some(b)) = (live.tree.get(l - 1, 2 * i), live.tree.get(l - 1, 2 * i + 1))
+            else {
+                continue;
+            };
+            if !due(&live, &key) {
+                continue;
+            }
+            let cheap = drafting
+                && (a.quality() == Quality::Draft
+                    || b.quality() == Quality::Draft
+                    || tree::free_merge(&a.text, &b.text, node_bytes).is_some());
+            if cheap {
+                instant.push(key);
+            } else if merges > 0 {
                 merges -= 1;
                 work.push(Work::Node(key));
             }
@@ -1406,8 +1578,8 @@ fn ctx_for(state: &State, live: &mut Live, turn: u32) -> String {
 }
 
 /// Assemble the step for `(l, i)` under the lock and run it on its own task.
-/// `counted`: the job holds a call slot. A level-0 unit that failed
-/// [`MECH_AFTER`] times folds mechanically (G7) instead.
+/// `counted`: the job holds a call slot. A meeting tree's level-0 unit that
+/// failed [`MECH_AFTER`] times folds mechanically (G7) instead.
 fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool) {
     let (l, i) = key;
     let node_bytes = state.cfg.read().node_bytes;
@@ -1423,6 +1595,18 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
         tries: 0,
         mechanical: false,
     };
+    let draft = |text: String| Node {
+        l,
+        i,
+        size: text.len() as u32,
+        text,
+        free: false,
+        model: None,
+        tries: 0,
+        mechanical: true,
+    };
+    // 201 P1: the deterministic merge stored when the model merge fails.
+    let mut fallback: Option<Node> = None;
     let (ready, step) = if l == 0 {
         let u = &live.units[i as usize];
         if live
@@ -1449,28 +1633,36 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
             }
         }
     } else {
-        let a = live
-            .tree
-            .get(l - 1, 2 * i)
-            .map(|n| n.text.clone())
-            .unwrap_or_default();
-        let b = live
-            .tree
-            .get(l - 1, 2 * i + 1)
-            .map(|n| n.text.clone())
-            .unwrap_or_default();
-        match tree::free_merge(&a, &b, node_bytes) {
-            Some(text) => (Some(free(text)), None),
-            None => (
-                None,
-                Some(Step::Merge {
-                    a,
-                    b,
-                    earlier: live.earlier(last_turn, id),
-                }),
-            ),
+        let child = |i: u64| live.tree.get(l - 1, i);
+        let draft_child = live.drafting()
+            && [child(2 * i), child(2 * i + 1)]
+                .iter()
+                .any(|c| c.is_some_and(|c| c.quality() == Quality::Draft));
+        let a = child(2 * i).map(|n| n.text.clone()).unwrap_or_default();
+        let b = child(2 * i + 1).map(|n| n.text.clone()).unwrap_or_default();
+        if draft_child {
+            // 201 P1: a merge over a draft is itself a deterministic draft.
+            (Some(draft(tree::draft_merge(&a, &b, node_bytes))), None)
+        } else {
+            match tree::free_merge(&a, &b, node_bytes) {
+                Some(text) => (Some(free(text)), None),
+                None => {
+                    if live.drafting() {
+                        fallback = Some(draft(tree::draft_merge(&a, &b, node_bytes)));
+                    }
+                    (
+                        None,
+                        Some(Step::Merge {
+                            a,
+                            b,
+                            earlier: live.earlier(last_turn, id),
+                        }),
+                    )
+                }
+            }
         }
     };
+    let drafting = live.drafting();
     let ctx = if step.is_some() {
         ctx_for(&state, live, last_turn)
     } else {
@@ -1502,18 +1694,26 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
                     cancel: &cancel,
                     lines: 1,
                 };
-                call(&state, &compactor, job, &ctx, &step).await.map(|b| {
-                    b.map(|b| Node {
-                        l,
-                        i,
-                        size: b.text.len() as u32,
-                        text: b.text,
-                        free: false,
-                        model: Some(compactor.model_id().to_owned()),
-                        tries: b.tries,
-                        mechanical: false,
+                call(&state, &compactor, job, &ctx, &step)
+                    .await
+                    .and_then(|b| match b {
+                        // 201 P1 (F9): a line that failed its guards is never
+                        // stored; the draft stays (a meeting keeps 137's
+                        // shortest failing candidate).
+                        Some(b) if b.tries < 0 && drafting => {
+                            Err(format!("{NO_PASSING_LINE} after {} attempts", -b.tries))
+                        }
+                        b => Ok(b.map(|b| Node {
+                            l,
+                            i,
+                            size: b.text.len() as u32,
+                            text: b.text,
+                            free: false,
+                            model: Some(compactor.model_id().to_owned()),
+                            tries: b.tries,
+                            mechanical: false,
+                        })),
                     })
-                })
             }
             (None, None) => Err("no step".to_owned()),
         };
@@ -1526,6 +1726,7 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
             compactor.model_id(),
             &cancel,
             counted,
+            fallback,
         )
         .await;
     });
@@ -1945,7 +2146,10 @@ fn record_failure(state: &State, live: &mut Live, key: (u8, u64), e: &str, model
 /// Persist and publish one job's outcome (`Ok(None)`: its calls were
 /// cancelled). A failure of a job whose `cancel` fired is the old
 /// compactor's (or a retried / detached call's) and is dropped under the
-/// `live` lock, so no stale backoff outlives a switch (R1-3).
+/// `live` lock, so no stale backoff outlives a switch (R1-3). 201 P1: a
+/// failed model merge stores its deterministic `fallback` as a draft and
+/// stays marked for rebuilding after its backoff.
+#[allow(clippy::too_many_arguments)]
 async fn finish(
     state: &State,
     key: (u8, u64),
@@ -1954,6 +2158,7 @@ async fn finish(
     model: &str,
     cancel: &CancellationToken,
     counted: bool,
+    fallback: Option<Node>,
 ) {
     let outcome = match outcome {
         Ok(Some(node)) => match state.store.endless_node_put(state.session, &node).await {
@@ -1961,6 +2166,18 @@ async fn finish(
             Err(e) => Err(format!("store: {e}")),
         },
         other => other,
+    };
+    let fallback = match (&outcome, fallback) {
+        (Err(_), Some(node)) if !cancel.is_cancelled() => {
+            match state.store.endless_node_put(state.session, &node).await {
+                Ok(()) => Some(node),
+                Err(e) => {
+                    tracing::warn!(session = %state.session, error = %e, "endless: draft merge");
+                    None
+                }
+            }
+        }
+        _ => None,
     };
     let mut live = state.live.lock();
     release(&mut live, &[key], counted);
@@ -1975,16 +2192,20 @@ async fn finish(
             }
             live.failed.remove(&key);
             live.solo.remove(&key.1);
-            live.tree.insert(node);
-            live.invalidate();
+            live.put(node);
         }
         Ok(None) => {}
         Err(_) if cancel.is_cancelled() => {}
-        Err(e) => record_failure(state, &mut live, key, &e, model),
+        Err(e) => {
+            record_failure(state, &mut live, key, &e, model);
+            if let Some(node) = fallback {
+                live.put(node);
+                live.stale.insert(key);
+            }
+        }
     }
     live.dirty = true;
     drop(live);
-    // `settle` re-checks on every outcome (a failure may stall the frontier, E4).
     state.built_tx.send_modify(|v| *v += 1);
     state.wake.notify_one();
 }
@@ -2028,7 +2249,8 @@ async fn finish_batch(
         Ok(None) => (Vec::new(), Vec::new(), Ok(false)),
         Err(e) => (Vec::new(), Vec::new(), Err(e)),
     };
-    tracing::info!(session = %state.session, from = units[0], units = units.len(), built = nodes.len(), solo = solo.len(), secs = took.as_secs_f64(), "endless: batch");
+    let drafts = state.live.lock().drafts.len();
+    tracing::info!(session = %state.session, from = units[0], units = units.len(), built = nodes.len(), solo = solo.len(), drafts, secs = took.as_secs_f64(), "endless: batch");
     let mut live = state.live.lock();
     release(&mut live, &keys, true);
     match outcome {
@@ -2040,7 +2262,7 @@ async fn finish_batch(
             }
             for node in nodes {
                 live.failed.remove(&(0, node.i));
-                live.tree.insert(node);
+                live.put(node);
             }
             for (i, trip) in solo {
                 tracing::debug!(session = %state.session, i, guard = trip, "endless: batch line refused; the unit runs alone");
@@ -2127,30 +2349,55 @@ fn one_line(s: &str, max: usize) -> String {
         .collect()
 }
 
-pub(crate) async fn settle(inner: &Inner, session: SessionId, max: Duration) -> bool {
+/// 201 P1 (D5): no turn waits on the summary model — every unit has a line
+/// from its ingest on. Wakes the pump and returns `true` at once; `_max`
+/// (the old `settle_secs`) is accepted and ignored.
+pub(crate) async fn settle(inner: &Inner, session: SessionId, _max: Duration) -> bool {
+    if let Some(state) = state_of(inner, session) {
+        state.wake.notify_one();
+    }
+    true
+}
+
+/// Test seam (the 137 `settle` wait, for tests that need model lines):
+/// wait, at most `max`, until every view part is built and, in a drafting
+/// session, every draft refined (or given up) and no draft merge stale.
+/// `false` when a node keeps failing (≥ 2 in a row), when paused, or at `max`.
+#[cfg(test)]
+pub(crate) async fn quiet_for_tests(inner: &Inner, session: SessionId, max: Duration) -> bool {
     let Some(state) = state_of(inner, session) else {
         return true;
     };
     if let Err(e) = ingest(&state).await {
-        tracing::warn!(%session, error = %e, "endless: ingest before settle");
+        tracing::warn!(%session, error = %e, "endless: ingest before quiet");
     }
     state.wake.notify_one();
     let mut rx = state.built_tx.subscribe();
     let deadline = Instant::now() + max;
     loop {
-        let (unbuilt, stalled) = {
+        let (done, stalled) = {
             let mut live = state.live.lock();
             let cfg = live.fold_cfg(&state.cfg.read());
+            let unbuilt = live.fold(cfg).unbuilt(&live.tree);
+            let last_ok = live.last_ok;
+            let given_up = |i: &u64| {
+                live.failed
+                    .get(&(0, *i))
+                    .is_some_and(|r| r.mechanical(last_ok))
+            };
+            let drafts = live.drafts.iter().filter(|i| !given_up(i)).count();
+            let failing = live
+                .failed
+                .iter()
+                .any(|(k, r)| r.failures >= 2 && (k.0 > 0 || live.drafts.contains(&k.1)));
             (
-                live.fold(cfg).unbuilt(&live.tree),
-                live.frontier_stalled(cfg),
+                unbuilt == 0 && drafts == 0 && live.stale.is_empty(),
+                live.frontier_stalled(cfg) || (live.drafting() && failing),
             )
         };
-        if unbuilt == 0 {
+        if done {
             return true;
         }
-        // E4: a frontier that keeps failing will not land within this turn's
-        // wait; 137G: nor will anything while settling is paused.
         if stalled || state.live.lock().paused_by.is_some() {
             return false;
         }
@@ -2608,6 +2855,8 @@ pub(crate) async fn set_mode(
             attach(inner, session, attached).await?;
             if let Some(state) = state_of(inner, session) {
                 ingest(&state).await?;
+                // 201 P1: a session switched (back) on gets its drafts now.
+                fill_drafts(&state, 0).await?;
                 {
                     let mut live = state.live.lock();
                     live.backfill_total = live.history_unbuilt();
@@ -2705,6 +2954,7 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
         effort: usable_effort(state.compactor().model(), chosen(inner, &live.picks).2),
         effort_override: live.picks.chat_effort.clone(),
         spend_today_usd,
+        drafts: u32::try_from(live.drafts.len()).unwrap_or(u32::MAX),
         ..Default::default()
     };
     let tail = live.tail;
@@ -2772,7 +3022,7 @@ pub(crate) async fn fold_all(inner: &Inner, session: SessionId) -> anyhow::Resul
             if !live.tree.built(0, node.i) {
                 live.failed.remove(&(0, node.i));
                 live.reported.remove(&(0, node.i));
-                live.tree.insert(node);
+                live.put(node);
             }
         }
         live.invalidate();
@@ -2782,6 +3032,14 @@ pub(crate) async fn fold_all(inner: &Inner, session: SessionId) -> anyhow::Resul
     state.built_tx.send_modify(|v| *v += 1);
     state.wake.notify_one();
     memory(inner, session).await
+}
+
+/// 201 P1: the deterministic line a level-0 unit that does not fit
+/// `node_bytes` gets at ingest (stored as a `draft`, refined later by the
+/// model). For now the 137G mechanical cut; phase P3 replaces this body
+/// with the per-kind lines of 201 §7.3.
+fn draft_line(u: &Unit, node_bytes: u32) -> String {
+    tree::mechanical_unit(u, node_bytes).unwrap_or_else(|| u.tagged())
 }
 
 /// The node `endless_fold` writes for unit `u`: free when it fits, else the
@@ -3059,6 +3317,7 @@ pub(crate) async fn finish_for_tests(
         &model,
         &cancel,
         false,
+        None,
     )
     .await;
 }
