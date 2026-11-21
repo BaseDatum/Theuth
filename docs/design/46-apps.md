@@ -266,6 +266,15 @@ stub under that name (`crates/app-parser-stub`) and the updater now treats
 the entry as optional. As built: `apps-inproc-as-built-P1.md`. The text above
 describes the pre-2026-11-21 helper and is kept as history.
 
+**2026-11-21, phase 2: mermaid in-process.** `check_mermaid` (30 §5 reply
+fences) now runs the parse-only mermaid bundle (`packages/apps/src/inproc-mermaid.ts`,
+DOMPurify aliased to an identity shim, render-only layout engines stubbed;
+2,860,387 bytes) in a second deno_core isolate on its own lazily started
+`mermaid-js` thread, with its own admission lane (one served + 8 queued),
+10 s first-request / 5 s warm deadline, 256 MB heap; the "no errors" stub
+described above is gone. No jsdom at runtime. Spike: `apps-mermaid-inproc-spike.md`;
+as built: `apps-inproc-as-built-P1.md` § Phase 2.
+
 ## 3. Publishing, identity and edits
 
 ### 3.1 Tool contract

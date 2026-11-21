@@ -150,6 +150,8 @@ document-js.
 
 ## Mermaid seam
 
+*Superseded by Phase 2 (end of this note): the seam is gone, `check_mermaid` runs on its own isolate.*
+
 `crates/app/src/helper.rs`:
 
 ```rust
@@ -272,6 +274,8 @@ One V8: `deno_core = "0.412"` exactly as obscura-js resolves it (see verificatio
 
 ## Deletion list for when mermaid is in-process
 
+*Phase 2 status at the end of this note.*
+
 `packages/apps`: `src/mermaid-check.ts` once its logic lives in the mermaid bundle entry (or keep it as that
 entry's import), `jsdom` dependency if the mermaid bundle does not use it, `test/jsdom.d.ts`;
 `crates/app/src/helper.rs`: `MermaidBackend::FailOpen` (or keep as an off switch); `inproc.ts`'s
@@ -304,3 +308,101 @@ not executed; no PowerShell parse check); the stub inside a signed/notarized app
 
 Build note: the seeded `target/` carried CMake caches from another checkout; `opusic-sys` and `btls-sys`
 needed `cargo clean -p` (crate-scoped) before `cargo test -p app -p update` built.
+
+# Phase 2: mermaid (2026-11-21)
+
+The fail-open seam is replaced by the real thing: `check_mermaid` runs the parse-only mermaid bundle in a
+second isolate. Based on the sibling spike `spike/apps-mermaid-inproc` @ 24f8fbc2c (its doc is now
+`docs/design/apps-mermaid-inproc-spike.md`); its TS side was brought over, its Rust crate was not (`app-js`
+serves both bundles).
+
+## API
+
+- `app_js::MERMAID: Bundle` — `js/theuth-mermaid-inproc.js`, global `theuthMermaid` (`call(line) → Promise<string>`,
+  `version = "theuth-mermaid 1"`), thread `mermaid-js`. The pump already drove the event loop until the reply
+  op fired (`Promise.resolve(entry.call(line))`), so the async entry needed no runtime change; the sync APPS
+  entry behaves as before.
+- `app_js::Limits` gains `first_deadline`: the first request on each runtime runs under
+  `max(first_deadline, deadline)`, later ones under `deadline` (bundle load stays under `LOAD_DEADLINE`, 30 s).
+  APPS sets it equal to `DEADLINE` (2 s), so its behaviour is unchanged.
+- `app::helper`: `MermaidBackend` and `MERMAID` (the seam) are deleted. New consts `MERMAID_DEADLINE = 5 s`,
+  `MERMAID_FIRST_DEADLINE = 10 s` (redefined: was 15 s for the jsdom child); `HEAP_LIMIT = 256 MB` and
+  `MAX_LINE = 4 MiB` for both isolates. `Helper::check_mermaid(&self, source) -> Result<Vec<FenceError>, Error>`
+  unchanged: `{ok:true}` → `[]`, `{ok:false, errors}` → `FenceError { path: "line:N" | "", message }`.
+  `Helper::canned` answers both ops with the same responder. `fence.rs` is unchanged and still fails open on
+  any `Err` (agent `check_fences`).
+
+## Queue decision
+
+**Separate lanes.** Each isolate has its own admission semaphore of `PENDING + 1` (one served + 8 queued);
+`check`/`merge_check` and `check_mermaid` never share slots, and they run on different threads, so neither
+queued mermaid work nor a 5 s mermaid parse can delay or `Busy` a `check`
+(test `a_busy_mermaid_isolate_never_delays_check`). Cost: up to 18 in-flight parser requests in total instead
+of 9; both bounds are per isolate, which is what protects each deadline.
+
+## Bundle, globals
+
+`crates/app-js/js/theuth-mermaid-inproc.js`: **2,860,387 bytes** (minified IIFE, render-only libraries elkjs,
+cytoscape(+fcose, cose-bilkent), katex, roughjs, @upsetjs/venn.js stubbed; dompurify → identity shim), byte-
+identical to the spike's. `BUNDLE.sha256` now has four lines: `inputs`/`bundle` (OpenUI, unchanged scheme) and
+`mermaid-inputs` (packages/apps `src/**`, `patches/*`, `package.json`, `bun.lock`, `tsconfig.json`,
+`scripts/build-inproc-mermaid.ts`) / `mermaid-bundle`. `just apps-bundle` builds both; `apps-bundle-check`
+checks both. Polyfill additions: `URL` (constructor throws, `canParse` → false) and `structuredClone` via
+deno_core's `core.structuredClone` (V8 serializer, isolate realm) with the JS fallback kept for the bun vm
+tests. Mermaid's needs: `TextEncoder`/`TextDecoder`, `structuredClone`, `URL`; timers referenced, not called.
+
+## packages/apps changes
+
+- New: `src/inproc-mermaid.ts`, `src/mermaid-core.ts` (error formatting shared with the reference path),
+  `src/inproc/{dompurify-shim,stub}.ts`, `scripts/build-inproc-mermaid.ts`, `test-inproc/mermaid-corpus/`
+  (`valid.ts`, `corpus.ts`, `reference.ts`, `golden.json`), `test/inproc-mermaid.test.ts`.
+- `src/mermaid-check.ts` (the jsdom path) moved to `test-inproc/mermaid-corpus/jsdom-check.ts`: it is now only the
+  reference `reference.ts` records `golden.json` from (`warmMermaid` deleted). The spike's `parity-vm.ts` is
+  replaced by `test/inproc-mermaid.test.ts` (same comparison, inside `bun test`).
+- `jsdom` moved to devDependencies (still used by `test/dom.ts`, the reference recorder, and — through this
+  package's node_modules — the desktop UI's tests); `bun.lock`'s workspace block edited to match (a plain
+  `bun install` also re-resolved iconv-lite 0.7.3 → 0.6.3, so that resolution was discarded;
+  `bun install --frozen-lockfile` accepts the edited lock). `mermaid` stays a dependency. Both bundles
+  rebuilt byte-identical after the change.
+
+## Tests
+
+- `crates/app-js/tests/mermaid_golden.rs`: all 148 corpus sources through `BundleThread(&MERMAID)` against the
+  jsdom-recorded `golden.json`: 147 exact, `edge/timeline-typeerror` matched on `ok` + `line` (V8's TypeError
+  text differs), one runtime for the whole corpus.
+- `crates/app-js/src/tests.rs`: `mermaid_bundle_answers_asynchronously_on_its_own_lazy_thread`;
+  `a_request_sent_after_a_fatal_reply_runs_fresh_and_the_ones_queued_before_fail` — the spike's ordering fix.
+  This copy already had the guarantee: the thread moves the epoch on *before* sending the failing job's reply,
+  so jobs queued before it fail without running (with the same error) and a job enqueued after the reply is
+  seen runs on the fresh runtime; the test pins it.
+- `crates/app/src/helper.rs`: `check_mermaid_runs_on_its_own_lazily_started_isolate` (no mermaid isolate
+  until the first fence; generation 1 on both), `a_busy_mermaid_isolate_never_delays_check` (mermaid thread
+  blocked 3 s with a full lane → next mermaid request `Busy`, five `check`s answered < 1.5 s),
+  `mermaid_failures_are_contained_on_their_own_isolate` (runaway → Timeout at 5 s; heap bomb → OutOfMemory at
+  256 MB; hostile diagrams from the spike: `%%{init}%%` nested 200k, YAML front matter nested 100k,
+  `flowchart LR A((((…1M`, sequence 100k messages, pie + 1M `"`; each ends as an answer or `Timeout`, and
+  each is followed by a successful parse AND a successful `check`; the OpenUI isolate stays generation 1).
+- `crates/app/src/fence.rs`: `mermaid_fences_are_checked_by_the_in_process_bundle` (the `Mermaid` fence checker
+  over a real `Core`).
+- `packages/apps/test/inproc-mermaid.test.ts`: the committed bundle + polyfill in a bare `node:vm` context,
+  147/148 exact against `golden.json`, the same engine-wording case matched on ok + line.
+
+## Deviations (phase 2)
+
+- Bundle load is under `LOAD_DEADLINE` (30 s), not the 10 s first-call deadline the spike used for "runtime
+  build + first request": construction is outside every request deadline in `app-js`. The first request
+  itself gets 10 s.
+- `helper::Error::Timeout`'s text still says `DEADLINE` (2 s) also for a mermaid timeout; fence checks fail
+  open, so the text is not shown to the model.
+- The spike's runtime differences (no epochs, two deadlines inside the runtime) were not taken: `app-js` keeps
+  document-js's epochs and gets `first_deadline` instead.
+
+## Deletion list after phase 2
+
+Done: the seam, `mermaid-check.ts` from `src/`, `jsdom` from runtime dependencies. Left: `test/jsdom.d.ts` and
+the jsdom devDependency (tests); the `theuth-app-parser-<hash>` payload stub (see "Updater stub");
+`protocol.ts`'s `MermaidRequest`/`MermaidResponse` are now used by the mermaid bundle, not vestigial.
+
+## Verification (phase 2)
+
+See the final report of phase 2 for the commands and `test result:` lines; recorded below once run.
