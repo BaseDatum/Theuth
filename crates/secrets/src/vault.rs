@@ -893,6 +893,7 @@ impl Vault {
     /// ponytail: two engines writing the same name in one sync gap mint the
     /// same `(name, version)` id; per-column LWW then picks one ciphertext and
     /// the `vault_current` pointer picks one winner. Rare, and a re-set fixes it.
+    #[allow(clippy::too_many_arguments)]
     async fn write_row(
         &self,
         name: &str,
