@@ -17,7 +17,6 @@ import {
   Paperclip,
   Plus,
   Settings2,
-  Sparkles,
   Square,
   StickyNote,
   X,
@@ -55,7 +54,7 @@ import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useMesh } from '@/components/tasks/queries'
 import type { CreateSessionOptions } from '@/rpc/bindings/method.sessionsync.input'
-import { EMPTY, PLAIN_OPTIONS, sendFirst, useDraftTarget, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { EMPTY, PLAIN_OPTIONS, sendFirst, sendSkills, useDraftTarget, useDrafts, useSkillDraft } from '@/lib/drafts'
 import { type Suffix, activeSuffix, useSuffixes, withSuffix } from '@/lib/suffixes'
 import { YOUNG_MS, useRemoteStart } from '@/lib/remote-start'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
@@ -78,6 +77,7 @@ import { useSessionField, useSessions } from '@/store/sessions'
 import { createNote } from '@/components/notes/create'
 import { useNotes } from '@/components/notes/useNotes'
 import { AttachPicker } from './AttachPicker'
+import { SkillChips, SkillPicker, SkillsEntry } from './SkillPicker'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
@@ -146,6 +146,7 @@ export function placeholderFor(o: { readOnly?: boolean; running: boolean; export
 }
 
 const NONE = EMPTY.pastes
+const NO_SKILLS: readonly string[] = []
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp)$/i
 /**
  * Seed the next mount of `session`'s composer (`null` = the new chat at `/`; `panel` = a note page's panel) with `text`
@@ -382,9 +383,27 @@ export function Composer({
   const { text, pastes, unsent } = useDrafts((s) => s.by[draftKey] ?? EMPTY)
   const setText = (t: string) => useDrafts.getState().setText(draftKey, t)
   const setPastes = (p: Pastes | ((held: Pastes) => Pastes)) => useDrafts.getState().setPastes(draftKey, p)
-  /** Skill parked for the next send (`lib/skill-draft`): the send becomes `use_skill(session, skill, words)`. */
-  const skill = useSkillDraft((s) => (session ? s.by[session] : undefined))
-  const setSkill = (name: string | null) => session && useSkillDraft.getState().set(session, name)
+  /** Skills parked for the next send (`lib/drafts` `useSkillDraft`), in order: the send becomes `sendSkills`. */
+  const skills = useSkillDraft((s) => (session ? s.by[session] : undefined)) ?? NO_SKILLS
+  /** `+` › Skills: park the pick here; a new chat is created and opened the way `/skill:` does (`draftSkill`), the
+   * typed words and held chips moving with it. The menu closes; reopening it adds the next skill. */
+  const pickSkill = (name: string) => {
+    setMenu(false)
+    setSkillStep(false)
+    if (session) {
+      useSkillDraft.getState().add(session, name)
+      ref.current?.focus()
+      return
+    }
+    const held = pastes
+    draftSkill(api, navigate, null, name, text).then(
+      (id) => {
+        useDrafts.getState().setPastes(id, held)
+        reset()
+      },
+      (e: unknown) => toast.error(e instanceof Error ? e.message : String(e)),
+    )
+  }
   /** #3: the chat's prompt suffix (`lib/suffixes`), keyed by session — or by the draft until the chat exists. */
   const suffixChat = session ?? draftKey
   const suffixes = useSuffixes((s) => s.list)
@@ -490,6 +509,8 @@ export function Composer({
   const [menu, setMenu] = useState(false)
   /** #3: the `+` menu's suffix steps — `'list'` the saved suffixes, a suffix its scope question; `null` the menu. */
   const [suffixStep, setSuffixStep] = useState<'list' | Suffix | null>(null)
+  /** The `+` menu's Skills step (`SkillPicker`). */
+  const [skillStep, setSkillStep] = useState(false)
   const box = useRef<HTMLDivElement>(null)
   const qc = useQueryClient()
   const notes = useNotes()
@@ -837,7 +858,7 @@ export function Composer({
    * banner, and the retry (Retry, or Enter again) reuses the client input id so the engine never takes it twice. */
   const submit = async (spoken?: string, interject = false) => {
     const line = spoken ?? text.trim()
-    if ((!line && !skill && !held) || busy || starting) return
+    if ((!line && !skills.length && !held) || busy || starting) return
     // 153 §6.1: the typed box after a dictation is what was actually sent — the engine learns single-word edits from it.
     if (spoken === undefined && lastDictation.current) dictation.correction(api, lastDictation.current, line, me.current)
     lastDictation.current = null
@@ -874,14 +895,14 @@ export function Composer({
         reset()
         return
       }
-      // A parked skill: the server builds the `<skill>` input from its body and these words; `TurnStarted`
+      // Parked skills: the server builds one input from their `<skill>` bodies and these words; `TurnStarted`
       // (idle) or `InputQueued` (running) echoes it as the skill card, so nothing is marked sent here.
-      if (session && skill) {
+      if (session && skills.length) {
         reset()
-        setSkill(null)
+        useSkillDraft.getState().clear(session)
         mode(session)
         if (running && interject) await api.cancel(session, null, 'input')
-        await api.use_skill(session, skill, expand(line, pastes).text)
+        await sendSkills(api, session, skills, expand(line, pastes).text)
         return
       }
       const expanded = expand(line, pastes)
@@ -1034,7 +1055,7 @@ export function Composer({
   }
 
   // The composer's phase and its two gestures (`lib/composer-state`): Enter / the button, and ⌘↩ / a long press.
-  const filled = Boolean(text.trim() || skill || held)
+  const filled = Boolean(text.trim() || skills.length || held)
   const at = phase(Boolean(session && running), queued?.length ?? 0)
   const gesture = (g: 'press' | 'interrupt') => {
     const a = g === 'press' ? press(at, filled) : interrupt(at, filled)
@@ -1309,17 +1330,7 @@ export function Composer({
         </div>
       )}
       {session && <QueuedChips session={session} onEdit={editQueued} />}
-      {skill && (
-        <div className="flex justify-end pb-2">
-          <span className="flex items-center gap-1.5 rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary">
-            <Sparkles className="size-3.5" />
-            <span className="font-medium">{skill}</span>
-            <button type="button" aria-label="Remove skill" onClick={() => setSkill(null)} className="ml-1 hover:text-foreground">
-              <X className="size-3" />
-            </button>
-          </span>
-        </div>
-      )}
+      <SkillChips names={skills} onRemove={(name) => session && useSkillDraft.getState().remove(session, name)} />
       {suffix && (
         <div className="flex justify-end pb-2">
           <span className="flex max-w-full items-center gap-1.5 rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary" data-suffix={suffix.id}>
@@ -1388,7 +1399,10 @@ export function Composer({
             open={menu}
             onOpenChange={(open) => {
               setMenu(open)
-              if (!open) setSuffixStep(null)
+              if (!open) {
+                setSuffixStep(null)
+                setSkillStep(false)
+              }
             }}
           >
             <PopoverTrigger asChild>
@@ -1400,8 +1414,10 @@ export function Composer({
                 <Plus className="size-5" />
               </Button>
             </PopoverTrigger>
-            <PopoverContent align="start" className="w-52 p-1">
-              {suffixStep === 'list' ? (
+            <PopoverContent align="start" className={cn('p-1', skillStep ? 'w-72' : 'w-52')}>
+              {skillStep ? (
+                <SkillPicker skills={skillIndex} parked={skills} onPick={pickSkill} onBack={() => setSkillStep(false)} />
+              ) : suffixStep === 'list' ? (
                 <div role="menu" aria-label="Prompt suffixes">
                   <Button variant="ghost" className="w-full justify-start text-fg-secondary" onClick={() => setSuffixStep(null)}>
                     <ChevronLeft /> Add prompt suffix
@@ -1499,6 +1515,7 @@ export function Composer({
                   <Button variant="ghost" className="w-full justify-start" onClick={() => openBroadcastDialog({ text })}>
                     <Megaphone /> Send to many…
                   </Button>
+                  <SkillsEntry onOpen={() => setSkillStep(true)} />
                   <Button variant="ghost" className="w-full justify-start" onClick={() => setSuffixStep('list')}>
                     <MessageSquarePlus /> Add prompt suffix
                     <ChevronRight className="ml-auto" />
@@ -1557,7 +1574,7 @@ export function Composer({
                   onKeyDown={onKeyDown}
                   onPaste={onPaste}
                   rows={1}
-                  placeholder={placeholderFor({ readOnly, running, exports: exports.length > 0, skill, runsOn, short: isMobile || touch() || narrow })}
+                  placeholder={placeholderFor({ readOnly, running, exports: exports.length > 0, skill: skills.join(', ') || undefined, runsOn, short: isMobile || touch() || narrow })}
                   // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
                   className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
                 />

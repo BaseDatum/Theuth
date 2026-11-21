@@ -5,8 +5,9 @@
 // composer draft so entering/cancelling an edit never touches it and a virtualised row scrolling out keeps the edit.
 // `useDrafts.pick` is the new-chat draft's model/effort; `settings` holds its other per-chat choices.
 // Both persist with its text. `opening` keeps a created chat when a pending setter fails, including across reloads.
-// All persist to `localStorage` like `note-chat.ts`. `useSkillDraft` is a skill parked for the next send
-// (`/skill:<name>` or Use in the Skills panel), shown as a `◇ name` chip and sent as `use_skill(session, name, words)`.
+// All persist to `localStorage` like `note-chat.ts`. `useSkillDraft` is the skills parked for the next send, in order
+// and without duplicates (`/skill:<name>`, the `+` menu's Skills, or Use in the Skills panel), one `◇ name` chip each;
+// the send is `use_skill(session, name, words)` for one, `use_skills(session, names, words)` for several (`sendSkills`).
 //
 // A send never clears the draft before the engine acks it (70 SEND-NEVER-LOSES): `sending` marks the draft with the
 // client input id the send carries, `acked` drops what was sent, and a failure leaves the marked draft where it is,
@@ -198,18 +199,33 @@ if (typeof window !== 'undefined')
   })
 
 type SkillStore = {
-  by: Record<string, string>
-  set(session: string, name: string | null): void
+  by: Record<string, string[]>
+  /** Park `name` after the others; a skill already parked stays where it is. */
+  add(session: string, name: string): void
+  remove(session: string, name: string): void
+  clear(session: string): void
 }
 
-export const useSkillDraft = create<SkillStore>()((set) => ({
-  by: {},
-  set: (session, name) =>
+export const useSkillDraft = create<SkillStore>()((set) => {
+  const put = (session: string, f: (names: string[]) => string[]) =>
     set((s) => {
-      const { [session]: _, ...rest } = s.by
-      return { by: name === null ? rest : { ...rest, [session]: name } }
-    }),
-}))
+      const { [session]: was = [], ...rest } = s.by
+      const names = f(was)
+      return { by: names.length ? { ...rest, [session]: names } : rest }
+    })
+  return {
+    by: {},
+    add: (session, name) => put(session, (names) => (names.includes(name) ? names : [...names, name])),
+    remove: (session, name) => put(session, (names) => names.filter((n) => n !== name)),
+    clear: (session) => put(session, () => []),
+  }
+})
+
+/** Send the parked `names` with the typed `words`: the server builds one input, every `<skill>` block in order, then
+ * the words. One skill keeps `use_skill`; several go in one `use_skills`. */
+export function sendSkills(api: Pick<Api, 'use_skill' | 'use_skills'>, session: string, names: readonly string[], words: string): Promise<string> {
+  return names.length === 1 ? api.use_skill(session, names[0]!, words) : api.use_skills(session, [...names], words)
+}
 
 /** `create_session` options that give exactly what `new_session()` gives: every switch off, the engine's defaults. */
 export const PLAIN_OPTIONS: CreateSessionOptions = {

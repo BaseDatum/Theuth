@@ -6161,8 +6161,12 @@ impl Turn {
     /// consumed durably through [`Turn::consume_peer`] instead. `true` when the
     /// input is in the frame; `false` only for a peer exchange that was not.
     async fn take_input(&mut self, mut input: Input) -> bool {
-        if let Some((name, _, _)) = skills::injected(&input.text) {
-            self.note_skill(name.to_owned()).await;
+        let names: Vec<String> = skills::injected_names(&input.text)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        for name in names {
+            self.note_skill(name).await;
         }
         let ticket = input.ticket;
         let peer = input.peer.take();

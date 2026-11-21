@@ -322,9 +322,10 @@ export const FRESH: LoadedPage = receiveComponent("method.agent.output.Loaded", 
   retention: 'durable',
 })
 
-/** Park `name` (and any `words` typed after it) on `session`'s composer — creating and opening the session when
- * there is none (`openDraftSession`: a draft model/effort pick rides along, 148 R1) — and show that chat. No turn
- * starts: the next send hands the skill over with the user's words (`use_skill`). Returns the session shown. */
+/** Park `name` (and any `words` typed after it) on `session`'s composer, after any skills already parked there —
+ * creating and opening the session when there is none (`openDraftSession`: a draft model/effort pick rides along,
+ * 148 R1) — and show that chat. No turn starts: the next send hands the skills over with the user's words
+ * (`sendSkills`). Returns the session shown. */
 export async function draftSkill(
   api: Api,
   navigate: Navigate,
@@ -334,7 +335,7 @@ export async function draftSkill(
 ): Promise<string> {
   const id = session ?? (await openDraftSession(api)).id
   if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
-  useSkillDraft.getState().set(id, name)
+  useSkillDraft.getState().add(id, name)
   // Before `navigate`: the chat's composer reads its text from the draft store as it mounts.
   useDrafts.getState().set(id, { text: words, pastes: EMPTY.pastes })
   await navigate({ to: '/c/$session', params: { session: id } })
