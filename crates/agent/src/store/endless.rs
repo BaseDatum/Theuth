@@ -3,6 +3,8 @@
 //! ledger (`endless_calls`). Row shapes live here; the pure logic in
 //! `crate::endless`.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use genai::chat::ChatMessage;
 use runtime::SessionId;
@@ -595,12 +597,17 @@ impl Store {
         tx.commit().await
     }
 
-    /// Record the attempts of one node build.
+    /// Record the attempts of one node build (`l`, `i`), or of one batch:
+    /// a row with a `line` lands on `units[line]` (G6). `try` is the row's
+    /// 0-based attempt ordinal on its node across the session's ledger, so
+    /// a node retried in later jobs, a map-reduce's chunk calls and a batch
+    /// line each count on.
     pub async fn endless_calls_put(
         &self,
         id: SessionId,
         l: u8,
         i: u64,
+        units: &[u64],
         calls: &[CallRow],
     ) -> anyhow::Result<()> {
         if calls.is_empty() {
@@ -608,8 +615,30 @@ impl Store {
         }
         let sid = id.to_string();
         let now = Utc::now().to_rfc3339();
+        let mut next: HashMap<u64, i64> = HashMap::new();
         let mut tx = self.begin_write().await?;
         for c in calls {
+            let at = c
+                .line
+                .and_then(|k| units.get(k as usize).copied())
+                .unwrap_or(i);
+            let try_no = match next.get_mut(&at) {
+                Some(n) => n,
+                None => {
+                    let first: i64 = sqlx::query_scalar(
+                        "SELECT COALESCE(MAX(try) + 1, 0) FROM endless_calls \
+                         WHERE session_id = ? AND l = ? AND i = ?",
+                    )
+                    .bind(&sid)
+                    .bind(i64::from(l))
+                    .bind(at as i64)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    next.entry(at).or_insert(first)
+                }
+            };
+            let t = *try_no;
+            *try_no += 1;
             sqlx::query(
                 "INSERT INTO endless_calls (call_id, session_id, l, i, try, bytes, guard, usage_json, \
                  usd_estimate, latency_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -617,8 +646,8 @@ impl Store {
             .bind(uuid::Uuid::now_v7().to_string())
             .bind(&sid)
             .bind(i64::from(l))
-            .bind(i as i64)
-            .bind(i64::from(c.try_no))
+            .bind(at as i64)
+            .bind(t)
             .bind(c.bytes.map(i64::from))
             .bind(c.guard)
             .bind(c.usage.as_ref().and_then(|u| serde_json::to_string(u).ok()))
@@ -631,11 +660,13 @@ impl Store {
         tx.commit().await
     }
 
-    /// Per-session compactor totals (§6).
+    /// Per-session compactor totals (§6). `calls` counts model calls: a
+    /// batch's further line rows (`bytes` NULL, [`CallRow::bytes`]) share
+    /// line 0's call; every row's guard is a trip.
     pub async fn endless_stats(&self, id: SessionId) -> anyhow::Result<EndlessStats> {
         let sid = id.to_string();
         let (calls, usd): (i64, Option<f64>) = sqlx::query_as(
-            "SELECT COUNT(*), SUM(usd_estimate) FROM endless_calls WHERE session_id = ?",
+            "SELECT COUNT(bytes), SUM(usd_estimate) FROM endless_calls WHERE session_id = ?",
         )
         .bind(&sid)
         .fetch_one(&self.read)
@@ -1062,9 +1093,10 @@ mod tests {
                 id,
                 0,
                 0,
+                &[],
                 &[
                     CallRow {
-                        try_no: 0,
+                        line: None,
                         bytes: Some(600),
                         guard: Some("size"),
                         usage: serde_json::from_str(r#"{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":80}}"#).ok(),
@@ -1072,7 +1104,7 @@ mod tests {
                         latency_ms: 10,
                     },
                     CallRow {
-                        try_no: 1,
+                        line: None,
                         bytes: Some(400),
                         guard: None,
                         usage: None,
