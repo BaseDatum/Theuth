@@ -9,7 +9,7 @@ import type * as Rpc from '@/lib/rpc'
 import type * as SelectUi from '@/components/ui/select'
 import type * as SwitchUi from '@/components/ui/switch'
 import type * as Shared from './shared'
-import { useConnection } from '@/store/connection'
+import type * as Connection from '@/store/connection'
 import { tailPairError } from '@/lib/endless'
 import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
@@ -50,6 +50,15 @@ const config: EndlessConfig = receiveComponent("method.agent.output.EndlessConfi
 let served: EndlessConfig = config
 let listed: ModelInfo[] = []
 
+// The connection info the page reads (a server render only sees zustand's initial state, so the test overrides `info` here).
+const conn = vi.hoisted(() => ({ info: null as object | null }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof Connection>()
+  const live = m.useConnection
+  const hook = (selector: (s: object) => unknown = (s) => s) => selector(conn.info ? { ...live.getState(), info: conn.info } : live.getState())
+  for (const k of ['getState', 'getInitialState', 'setState', 'subscribe'] as const) Object.defineProperty(hook, k, { get: () => live[k] })
+  return { ...m, useConnection: hook }
+})
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({ endless_settings_get: async () => served, endless_settings_set: saved, list_models: async () => listed, title_model: async () => ({ id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5' }) }),
@@ -227,29 +236,39 @@ test('201: the sizing mode shows its own pair — KB with token estimates when f
   expect(fixed).toMatch(/<input type="range" aria-label="Kept after a trim in KB"[^>]*min="8" max="256" step="4" value="24"/)
   expect(fixed).toMatch(/<input type="range" aria-label="Trim at in KB"[^>]*min="16" max="512" step="8" value="64"/)
   expect(fixed).toContain('≈ 8 k tokens of the newest messages')
-  expect(fixed).not.toContain('in percent"')
+  // Slack and Start merging at are percentages in every mode; only the tail pair must be absent.
+  expect(fixed).not.toContain('aria-label="Kept after a trim in percent"')
+  expect(fixed).not.toContain('aria-label="Trim at in percent"')
   expect(fixed).toMatch(/<input[^>]*aria-label="Trim early when idle in seconds"[^>]*placeholder="automatic"/)
-  useConnection.setState({ info: { default_model: 'anthropic/big' } as never })
+  conn.info = { default_model: 'anthropic/big' }
   listed = [{ ...lfm, id: 'anthropic/big', name: 'Big', provider: 'anthropic', context: 200_000, local: false }]
   served = { ...config, tail_mode: 'scaled', tail_low_share: 0.1, tail_high_share: 0.25 }
   const scaled = await render()
   served = config
   listed = []
-  useConnection.setState({ info: null })
+  conn.info = null
   expect(scaled).toMatch(/<input type="range" aria-label="Kept after a trim in percent"[^>]*min="2" max="40" step="1" value="10"/)
   expect(scaled).toMatch(/<input type="range" aria-label="Trim at in percent"[^>]*min="5" max="60" step="1" value="25"/)
   expect(scaled).toContain('· ≈ 60 KB')
   expect(scaled).toContain('· ≈ 150 KB')
   expect(scaled).toContain(' on Big')
-  expect(scaled).not.toContain('in KB"')
+  expect(scaled).not.toContain('aria-label="Kept after a trim in KB"')
+  expect(scaled).not.toContain('aria-label="Trim at in KB"')
 })
 
 test('201: Automatic names what it resolves to for the summary model; the ledger switch gates its suggestions', async () => {
+  // The suggestions switch, whatever order the server renderer puts its attributes in.
+  const suggestions = (html: string) => html.match(/<button[^>]*aria-label="Show summary-model suggestions"[^>]*>/)?.[0] ?? ''
   served = { ...config, model: lfm.id, ledger: false }
   listed = [lfm]
   const html = await render()
-  served = config
+  served = { ...config, ledger: true }
   listed = []
+  const on = await render()
+  served = config
   expect(html).toContain('Automatic · small, because the model is local')
-  expect(html).toMatch(/aria-checked="false"[^>]*disabled=""[^>]*aria-label="Show summary-model suggestions"/)
+  expect(suggestions(html)).toMatch(/role="switch"/)
+  expect(suggestions(html)).toMatch(/ disabled=""/)
+  expect(suggestions(on)).toMatch(/role="switch"/)
+  expect(suggestions(on)).not.toMatch(/ disabled=""/)
 })

@@ -37,3 +37,10 @@ The UI of 201 §12.2 / D15 over the wire fields PC landed. TypeScript/React only
 
 - Ledger counts, zooms this generation, pending tool-list change: append to `LIVE` in `MemoryPanel.tsx`.
 - Engine-side turn allowance for the scaled preview: `scaledMarks` in `lib/endless.ts`.
+
+## Continuation (test fixes; component unchanged)
+
+- Both red tests in `Memory.test.ts` were test bugs; `Memory.tsx` already met §12.2.
+- Fixed-mode check now asserts the tail pair's percent labels are absent (Slack and Start merging at are percent in every mode). Scaled-mode check asserts the KB labels are absent.
+- Scaled preview: a server render reads zustand's `getInitialState`, so the test points it at `getState` while setting `info.default_model` (the repo's existing pattern), then restores it.
+- Suggestions gate: the test extracts the switch's `<button>` tag and asserts `disabled=""` with the ledger off and its absence with the ledger on, so attribute order no longer matters.
