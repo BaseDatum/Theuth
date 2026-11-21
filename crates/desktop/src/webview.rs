@@ -33,7 +33,7 @@ use tauri_plugin_opener::OpenerExt;
 #[cfg(target_os = "macos")]
 use crate::web_rules::DATA_STORE;
 use crate::web_rules::{
-    CLOSED_EVENT, Closed, STATE_EVENT, check_label, check_url, in_popout, may_open,
+    CLOSED_EVENT, Closed, STATE_EVENT, app_url, check_label, check_url, in_popout, may_open,
     navigation_allowed, no_view,
 };
 

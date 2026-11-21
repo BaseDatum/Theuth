@@ -394,8 +394,12 @@ fn create(
         }
     }
     parent.insertSubview_aboveSubview(&view, main);
-    load(&view, url)?;
-    Ok(Entry { view, delegate })
+    let entry = Entry { view, delegate };
+    if let Err(e) = load(&entry.view, url) {
+        destroy(entry);
+        return Err(e);
+    }
+    Ok(entry)
 }
 
 /// Detach the delegate and the observers, take the view off screen.
