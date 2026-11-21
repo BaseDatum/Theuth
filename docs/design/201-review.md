@@ -1,6 +1,6 @@
 # 201 — review and evaluation of the build
 
-Build: branch `feat/201-context`, base `5b88548ff`, builders' head `0bdf0ebb9` (25 commits, 57 files, +9,882/−605). One evaluation round on 2026-11-21: three read-only reviewers (R1 loop/tail/generations, R2 pump/drafts/small profile/changed tests, R3 units/ledger/tool pinning/wire/UI/safety) and two evaluators (E1 gates, E2 scenario tests), all separate from the builders. Findings are the reviewers' and evaluators' own; nothing below was re-verified by the orchestrator unless it says so. Severity: BLOCKER / MAJOR / MINOR.
+Build: branch `feat/201-context`, base `5b88548ff`, builders' head `0bdf0ebb9` (25 commits, 57 files, +9,882/−605); head after the fix round `67f93cbd9` (44 commits, 80 files, +14,624/−730). One evaluation round on 2026-11-21: three read-only reviewers (R1 loop/tail/generations, R2 pump/drafts/small profile/changed tests, R3 units/ledger/tool pinning/wire/UI/safety) and two evaluators (E1 gates, E2 scenario tests), all separate from the builders. Findings are the reviewers' and evaluators' own; nothing below was re-verified by the orchestrator unless it says so. Severity: BLOCKER / MAJOR / MINOR.
 
 ## R3 — units, artefacts, ledger, prefetch, tool pinning, wire/config/roster, UI, safety
 
@@ -116,8 +116,40 @@ The 8 red agent tests: 4 `sensor::tests::*` and `loop_::runtime_bridge_tests::gu
 
 Build regressions from the gates: `await_holding_lock` at `endless/pump.rs#L4006` (the `state.live.lock()` guard is held across `ledger_status(..).await` at `#L4063`: a real concern, not style); 30 `missing_docs`; `endless/tail.rs#L249` `int_plus_one`; `endless/compactor.rs#L970` `useless_vec`; `endless/pump.rs#L4745` `field_reassign_with_default`; `loop_/endless_tests.rs#L1008` needless reference; the four rustfmt hunks.
 
-## Fix round (in progress when this section was written)
+## Fix round — results
 
-- FU (UI and TUI): R3-2, R3-12 UI side, R3-13 fixed (`85e24d7ee`, `476143d35`, `78f9e3bc5`, `a49586812`); whole UI suite 2,585 passed, check clean.
-- F1 (loop, tail, generations): R1-1, -2, -3, -4, -5, -6, -7, -8, -9, -12, -14 fixed (`c69ceb548`); filtered agent run 180 passed, 0 failed, 2 ignored. Not done: R1-10, R1-11. New finding from F1: a message removed from context keeps its line in the tree and in every later view (handed to F2 as R1-3b).
-- F2 (pump), F3 (safety, ledger, units), then a polish pass for the gate regressions above: see `docs/design/201-as-built-FIX-*.md`.
+| Builder | Commits | Fixed | Not done |
+|---|---|---|---|
+| FU (UI, TUI) | `85e24d7ee`, `476143d35`, `78f9e3bc5`, `a49586812` | R3-2, R3-12 (UI side), R3-13 | notes still appear only after a reload (no live event; as before the build) |
+| F1 (loop, tail, generations) | `c69ceb548` | R1-1 (blocker), R1-2, -3, -4, -5, -6, -7, -8, -9, -12, -14 | R1-10 (view size computed before `rebase` on the first turn after a start: needs turn start reordered), R1-11 (turn starts from the journal) |
+| F2 (pump, compactor, lines) | `d984d747e`, `2a5c43f2f` | R2-1 … R2-8, R2-10, part of R2-12, and R1-3b (new: "remove from context" now removes the line from the tree, recall and every later view) | finished by FP |
+| F3 (zoom files, notes as data, ledger, units) | `fc536df2b` | R3-1 (blocker), R3-3, R3-5, R3-6, R3-7, R3-8, R3-10, R3-11, R3-12 (engine side), R3-14, R3-15, half of R3-9 | R3-9's other half: a user message that is exactly a bare `<ledger>`/`<recall>`/`<tools>`/`<memory>` tag is still taken for a harness note; a reliable marker needs a new `messages.harness` column (a replicated table, so another schema bump). Zoomed pictures still touch disk briefly (0700 folder, 0600 file, deleted once read); the python sandbox keeps its usual `spill/` copy |
+| FP (polish) | `103139430` | the lock held across an await in `pump::memory`; all clippy findings in changed files; the build's rustfmt hunks; R2-9, R2-11, the rest of R2-12 and the two missing tests; an in-flight merge over a removed row is discarded; the timing-dependent give-up test (the test miscounted; 10/10 afterwards) | R1-10 |
+
+R3-4 (accepting the wire fixture) is the owner's step. Deliberate behaviour changes made in the fix round: the cold-cache "automatic" lifetime is per transport (300 s Anthropic, 3,600 s OpenAI-compatible, never on time alone for a local model; no cold trim merely because no call time is known); a small-profile unit over 16 chunks is never sent and keeps its draft; a batch's units run solo after its second hard failure; error output is recognised only by lines that start with an error marker.
+
+## E3 — final gates at `67f93cbd9` (a fresh evaluator, in `~/Develop/skymoore/theuth-201-verify`)
+
+No regression from the build on any gate.
+
+| Gate | Verdict | Numbers (first run in brackets) |
+|---|---|---|
+| G1 workspace check | green | no code warnings (30 `missing_docs`) |
+| G2 `cargo test -p agent` | red, none from the build | lib 1169 passed, 8 failed, 4 ignored (1133 / 8 / 5); the same 8 in two runs |
+| G3 roster / rpc / tui | green | 108 / 17 / 251 |
+| G3 meeting | red, pre-existing | the calendar time-zone test; crate untouched |
+| G3 theuth | red, expected | wire snapshot equality; the classifier counts 305 changes, all additive; nothing removed or changed |
+| G4 clippy agent + roster | green once the pre-existing lint in `voice/src/history/mod.rs` is allowed | 0 warnings (32 + 35) |
+| G5 rustfmt on changed files | one new hunk | `crates/tui/src/model/tests.rs#L3364` (a new test indented like its already-misformatted neighbours); the rest are pre-existing |
+| G6 UI check / test / build | green / green / green | 365 files, 2,585 of 2,585 tests |
+| G7 filtered agent tests ×3 | green | 196 passed, 0 failed, 1 ignored (pre-existing) each time |
+| G7b the notices test at the base | red at `5b88548ff` too | same assertion, `notices.rs#L593`: pre-existing |
+| G8 ignores added by the build | none | |
+
+The 8 red agent tests: `notices_are_automatic_and_stop_at_the_chain_limit` (pre-existing, confirmed at the base); `loop_::runtime_bridge_tests::guessed_direct_calls_are_bridged_or_refused` and four `sensor::tests::*` (the installed `/opt/homebrew/bin/t` worker speaks protocol 5–6, the tree needs 8); two `skills::tests::*` (gpg signing without a tty).
+
+## Open after this round
+
+- Owner's steps: accept the wire fixture (`just wire-schema-accept`); decide the `messages.harness` column; a live run against a real model (no test here used one, and no loop test ran on the Anthropic transport, so cache marks are verified by reading only); flipping `agent.endless.default_chat`; merging with `integrate/issues-1-8` (conflicts expected in `loop_.rs` `rebase` and round start).
+- Not built: R1-10, R1-11, constrained output for the small profile (a seam), PDF descriptions, per-agent tail keys and zoom records surviving a restart, replication of the ledger and generations (the ledger is rebuilt from tool calls instead).
+- One formatting hunk in `crates/tui/src/model/tests.rs`.

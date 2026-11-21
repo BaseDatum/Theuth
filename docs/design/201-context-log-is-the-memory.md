@@ -1,6 +1,6 @@
 # 201 — Context: the log is the memory (supersedes 137)
 
-Status: design v1 + revisions 1 and 2 (Sky's answers of 2026-11-20 23:53 and the UI requirement of 2026-11-21, §16) · nothing built · 2026-11-20 · written from a review of 137 as built at `5b88548ff` (branch `fix/oauth-usage`, dirty tree). Supersedes **137 — Endless** as the design of record for the summary-tree memory mode. 137, 137F, 137G and the 137 as-builts stay as the record of what runs today; where this document and 137 differ, this document is the target. Product name stays **Fractal context**; internal identifiers keep `endless`. Extends 07 (frames, epochs, compaction), 11 (compaction styles), 52 (vision fallback), 136 (dreaming), 140 (autoresearch).
+Status: design v1 + revisions 1–3 (Sky's answers of 2026-11-20 23:53, the UI requirement of 2026-11-21, and the as-built record of §18) · built on branch `feat/201-context`, not merged · 2026-11-20 · written from a review of 137 as built at `5b88548ff` (branch `fix/oauth-usage`, dirty tree). Supersedes **137 — Endless** as the design of record for the summary-tree memory mode. 137, 137F, 137G and the 137 as-builts stay as the record of what runs today; where this document and 137 differ, this document is the target. Product name stays **Fractal context**; internal identifiers keep `endless`. Extends 07 (frames, epochs, compaction), 11 (compaction styles), 52 (vision fallback), 136 (dreaming), 140 (autoresearch).
 
 ## The ask
 
@@ -306,3 +306,30 @@ Still open: which `tail_mode` should be the default.
 - O4. Whether interleaved sessions evict the prefix cache on the local servers in use.
 - O5. That rows land in `messages` during a turn rather than at its end is inferred from the per-message `Store::append`, not traced through the turn loop (§2, §6).
 - O6. All token and cost figures in §4.3, §7.2 and §13's toy model are estimates.
+
+## 18. As built (revision 3, 2026-11-21)
+
+Built overnight on `feat/201-context` (worktree `~/Develop/skymoore/theuth-201`, base `5b88548ff`, head `67f93cbd9`: 44 commits, 80 files, +14,624/−730) by omp builders, one phase at a time, then reviewed and evaluated by separate agents and repaired in one fix round. The record is `201-as-built-<PHASE>.md` (PC, P1–P6c, PU), `201-review.md` (three reviews, the scenario evaluation, both gate runs, the fix round) and `201-eval-E2.md`. Where this document and an as-built differ, the as-built is what runs. Nothing is merged; `default_chat` is unchanged (P7 is Sky's decision).
+
+Built as designed: D1–D6, D9–D12, D15 and the keys of §12.1. New modules under `crates/agent/src/endless/`: `tail.rs` (trim rules), `lines.rs` (per-kind lines), `ledger.rs`, `tool_pin.rs`, `small_prompt.txt`; migrations 0069–0072.
+
+Where the build differs from the text above:
+
+| Section | As built |
+|---|---|
+| §4.3 cold cache | `cold_after_secs` 0 means 300 s on the Anthropic transport, 3,600 s on OpenAI-compatible ones, and never on time alone for a model served locally; an unknown last-call time is treated as warm. The last-call time no longer depends on the provider reporting usage |
+| §4.3 in-turn trim | at 90 % of `view_allowance()`; the turn's opening user message is always kept; when a trim cannot fit the frame the classic 07 cut runs once. A single round larger than the window ends the turn on the preflight refusal, as in classic mode |
+| §4 turn boundaries | inferred from message roles (rows have no turn id); a turn that ended on tool results is not recognised as a boundary until the in-turn trim catches it (R1-11, open) |
+| §5 | drafts and refinement apply to chats only: meeting sessions keep every pre-201 behaviour, by decision of the build brief |
+| §6 | `endless_fold` and `/compact` in a chat mean "take a trim now"; merges that need no model are built at once, also while paused or spend-capped, so a view never falls back to the folded-prefix line while lines exist |
+| §7.2 small profile | prompt 395 bytes with its own merge instruction; no stop sequence; a unit over 16 chunks is never sent and keeps its draft; a guard trip keeps the draft with one idle retry; constrained output is a seam, not built |
+| §7.3 | `user`, `tool` and `note` lines are final at ingest; an `echo` needs the model only above 2 KB and without error lines, where an error line is one that starts with an error marker |
+| §8 | tool pictures are named by content hash; only images are described, not PDFs; description calls take the local endpoint's gate, are charged as endless calls and have the attempt timeout; a zoomed picture is written to the session's own 0700 folder (the private scratch root for a private session) and deleted once read |
+| §9 ledger | written through the `ledger` tool (add, close, replace, accept, drop, list; goals, decisions, constraints only); suggestions come from a fixed list of cue phrases in the owner's own messages (the summary-model marker is an unused seam); the todo mirror, artefacts and suggestions refresh at trims; entries are capped at 300 characters and the snapshot hides the oldest open ones behind a count; the table is local and is rebuilt from the session's ledger tool calls when missing |
+| §10 | prefetch matches any rare word of the input; its note opens by saying it quotes the session's own record and is not instructions; zoom records are in memory only |
+| §11 | the tool definitions and the runtime index are pinned per generation; additions are announced in a `<tools>` note and callable through the runtime at once; a removed tool stays defined and refuses; a per-chat hide applies at once |
+| §12 | per-agent tail and profile keys are applied when a desk opens and are not persisted across an engine restart; `SESSIONS_WIRE_SCHEMA` went 67 → 70 (two replicated columns); generations and the ledger are local tables |
+| new | "remove from context" removes the message's line from the tree, recall and every later view (it did not in 137); deleting a session deletes its generations and ledger |
+| §13 | verification was the builders' unit tests, eleven end-to-end scenario tests (`eval_*`), two full gate runs and three code reviews; no run used a real model, and no loop test ran on the Anthropic transport |
+
+Open: the items listed at the end of `201-review.md`.
