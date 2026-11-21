@@ -1,5 +1,7 @@
 # 202 — MLX speech-to-text engine
 
+> **Superseded design (owner, 2026-11-21 00:20): one binary, no Python, no sidecar.** Route: (a) no maintained Rust crate runs Parakeet TDT on MLX (`parakeet-rs` is ONNX Runtime only; MLX Parakeet exists only as the Python `parakeet-mlx` / `mlx-audio`), so (b): port `parakeet-mlx`'s inference path (log-mel, FastConformer encoder, TDT decoder + joint, greedy TDT) onto `mlx-rs` 0.34 in `crates/voice-mlx`, loading `config.json` + `model.safetensors` directly, on one engine-owned OS thread. cmake 4.5.0 is present for `mlx-sys`. The sidecar sections below (§2–§4 process/uv parts) describe commits `97400c901`/`565619f7c` and are to be removed; what carries over unchanged: `mlx::Whole` + `final_text` + `deadline_for` (live-final replacement and its fallback), the `Utterer` buffering/replacement in `live.rs`, the `Transcriber` MLX-then-ONNX path in `stt.rs`, `voice.stt_engine`, `MlxState` (drop the `uv` reason), the weights dir `<data_dir>/models/parakeet-tdt-mlx/` and its `.complete` marker.
+
 An optional whole-utterance STT engine: Parakeet TDT 0.6B v3 (`mlx-community/parakeet-tdt-0.6b-v3`, the published weights, cast to bfloat16 by `parakeet_mlx.from_pretrained` exactly as the reference project does) on the Apple GPU through MLX, beside the built-in ONNX int8 engine (45 §4.2). Apple-silicon macOS only.
 
 ## 1. What was built
