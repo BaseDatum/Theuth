@@ -9,17 +9,17 @@ import type { Answer } from '@/rpc/bindings/method.tasks.input'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { usePrediction } from '@/store/double'
 import { useQuerySupport } from '@/rpc/capabilities'
-import { DISMISS_HINT } from './labels'
+import { DISMISS_HINT, dismissLabel } from './labels'
 import { useAttentionBulk } from './queries'
 import { Body, useResolved } from './shared'
 import { ActionBar, ContextLine, SnoozeButton, Source } from './source'
 
 /**
  * 104 A6: an `ask_user` from any session — Source · the context line · `AskCard`'s question blocks with the recommended
- * option pre-picked · **Send** (`answer_ask(id, answers)`) / Snooze in the fixed bar. 207 §5.2: with
- * `attention_dismiss_many` the second button is **Leave to agent** (the agent decides and its turn goes on); an older
- * engine keeps **Dismiss (ends the question)** (`answer_ask(id, null)`, which ends the turn). Without the questions on
- * the item (an older engine) the screen points at the session.
+ * option pre-picked · **Send** (`answer_ask(id, answers)`) / Snooze in the fixed bar. 207 §5.2 / review 6: the second
+ * button never ends the question: with `attention_dismiss_many` it is **Leave to agent** (the agent decides, its turn
+ * goes on); an older engine gets a hide-only **Dismiss** (`attention_dismiss`), never `answer_ask(id, null)`, which
+ * cancels the turn. Without the questions on the item (an older engine) the screen points at the session.
  */
 export function AskScreen({ item }: { item: AttentionItem }) {
   const ask = item.ask
@@ -34,7 +34,7 @@ export function AskScreen({ item }: { item: AttentionItem }) {
   const { draft, pick, typeOwn, drop } = useAskDraft(ask, prediction)
   const answered = allAnswered(draft.picks)
   const busy = act.ask.isPending || bulk.pending
-  const send = (answers: Answer[] | null) => {
+  const send = (answers: Answer[]) => {
     if (!ask) return
     void act.ask.mutateAsync({ id: ask.id, answers }).then(() => {
       drop()
@@ -95,15 +95,9 @@ export function AskScreen({ item }: { item: AttentionItem }) {
         <Button size="sm" disabled={busy || !ask || !answered} onClick={() => send(draft.picks.map(toAnswer))}>
           Send
         </Button>
-        {leaves ? (
-          <Button size="sm" variant="outline" disabled={busy} title={DISMISS_HINT} onClick={leave}>
-            Leave to agent
-          </Button>
-        ) : (
-          <Button size="sm" variant="outline" disabled={busy || !ask} title="Ends the agent's question without an answer" onClick={() => send(null)}>
-            Dismiss (ends the question)
-          </Button>
-        )}
+        <Button size="sm" variant="outline" disabled={busy} title={leaves ? DISMISS_HINT : 'Hide this question; the agent keeps waiting for it'} onClick={leave}>
+          {dismissLabel(item, leaves)}
+        </Button>
         <SnoozeButton item={item} onResolved={onResolved} />
         {ask && !answered && <span className="text-xs text-fg-tertiary">answer or skip every question</span>}
       </ActionBar>

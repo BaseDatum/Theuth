@@ -134,15 +134,107 @@ export function entryHead(e: Entry): AttentionItem {
   return e.type === 'item' ? e.item : (e.items[0] as AttentionItem)
 }
 
-/** Selection holds entry keys; expand to item ids in entry order. */
+/**
+ * 207 review 12: the selection holds ITEM ids, snapshotted when the user selected — a stack that gains a member after
+ * that is only partly selected, and a single approval that becomes a stack keeps its selection. Ids in entry order.
+ */
 export function selectedIds(entries: readonly Entry[], selection: ReadonlySet<string>): string[] {
-  return entries.filter((e) => selection.has(e.key)).flatMap(entryIds)
+  return entries.flatMap(entryIds).filter((id) => selection.has(id))
 }
 
 /** True when the selection is non-empty and every selected item is an approval. */
 export function allApprovals(entries: readonly Entry[], selection: ReadonlySet<string>): boolean {
-  const items = entries.filter((e) => selection.has(e.key)).flatMap(entryItems)
+  const items = entries.flatMap(entryItems).filter((i) => selection.has(i.id))
   return items.length > 0 && items.every((i) => i.kind === 'approval')
+}
+
+/** How much of an entry is selected: a stack whose newer members the user never saw is `some`. */
+export function entrySelection(e: Entry, selection: ReadonlySet<string>): 'all' | 'some' | 'none' {
+  const ids = entryIds(e)
+  const n = ids.filter((id) => selection.has(id)).length
+  return n === 0 ? 'none' : n === ids.length ? 'all' : 'some'
+}
+
+/**
+ * Toggle (an entry fully selected loses all its ids, otherwise gains the members it shows now) or range-select (every
+ * entry from `anchor` to `key`, both included, gains its members; an absent anchor acts as a toggle). A new set.
+ */
+export function selectEntries(selection: ReadonlySet<string>, entries: readonly Entry[], anchor: string | null, key: string, mode: 'toggle' | 'range'): Set<string> {
+  const next = new Set(selection)
+  const b = entries.findIndex((e) => e.key === key)
+  const a = anchor === null ? -1 : entries.findIndex((e) => e.key === anchor)
+  if (b < 0) return next
+  if (mode === 'range' && a >= 0) {
+    for (const e of entries.slice(Math.min(a, b), Math.max(a, b) + 1)) for (const id of entryIds(e)) next.add(id)
+    return next
+  }
+  const e = entries[b] as Entry
+  const all = entrySelection(e, selection) === 'all'
+  for (const id of entryIds(e)) (all ? next.delete(id) : next.add(id))
+  return next
+}
+
+const RISK_RANK: Record<string, number> = { destructive: 2, mutating: 1, read_only: 0 }
+
+/** A stack's card shows its highest risk, whichever member carries it. */
+export function stackRisk(items: readonly AttentionItem[]): AttentionItem['risk'] {
+  let best: AttentionItem['risk'] = null
+  for (const i of items) if (i.risk && (best === null || (RISK_RANK[i.risk] ?? 0) > (RISK_RANK[best] ?? 0))) best = i.risk
+  return best
+}
+
+/**
+ * 207 review 2 and 13: where focus (or the detail pane) goes when `key` left the list — itself while still present, else
+ * the first entry after it in the previous order that survived, else the nearest one before it, else the first entry.
+ */
+export function focusAfter(prev: readonly string[], next: readonly string[], key: string | null): string | null {
+  if (key !== null && next.includes(key)) return key
+  const i = key === null ? -1 : prev.indexOf(key)
+  if (i < 0) return next[0] ?? null
+  const alive = new Set(next)
+  for (let j = i + 1; j < prev.length; j++) if (alive.has(prev[j] as string)) return prev[j] as string
+  for (let j = i - 1; j >= 0; j--) if (alive.has(prev[j] as string)) return prev[j] as string
+  return null
+}
+
+/**
+ * 207 review 13: the item the detail pane opens once `id` leaves the displayed list — another member of its stack, else
+ * the head of the entry `focusAfter` picks; null when nothing else is listed.
+ */
+export function nextItemAfter(entries: readonly Entry[], id: string): string | null {
+  const mine = entries.find((e) => entryIds(e).includes(id))
+  if (!mine) return null
+  const sibling = entryIds(mine).find((x) => x !== id)
+  if (sibling) return sibling
+  const keys = entries.map((e) => e.key)
+  const key = focusAfter(keys, keys.filter((k) => k !== mine.key), mine.key)
+  const e = entries.find((x) => x.key === key)
+  return e ? entryHead(e).id : null
+}
+
+/**
+ * 207 review 11: a persisted kind or project filter whose value is gone leaves "Nothing matches" with no chip to undo:
+ * keep only kinds present in `kinds` and a project present in `projects` (`none` needs a project-less item). The same
+ * object when nothing was pruned.
+ */
+export function pruneFilter(f: ListFilter, kinds: readonly string[], projects: readonly (string | null)[]): ListFilter {
+  const kept = [...f.kinds].filter((k) => kinds.includes(k))
+  const project = f.project.type === 'none' ? projects.includes(null) : f.project.type === 'project' ? projects.includes(f.project.name) : true
+  if (kept.length === f.kinds.size && project) return f
+  return { ...f, kinds: new Set(kept), project: project ? f.project : { type: 'all' } }
+}
+
+/**
+ * 207 review 14: ms until the list must re-render — every second while a visible item counts down, else at the nearest
+ * expiry (a stopped card leaves on time), at most 30 s.
+ */
+export function nextTick(items: readonly AttentionItem[], now: number): number {
+  let wait = 30_000
+  for (const i of items) {
+    if (typeof i.deadline_ms === 'number' && i.deadline_ms > now - 1000) return 1000
+    if (typeof i.expires_ms === 'number' && i.expires_ms > now) wait = Math.min(wait, i.expires_ms - now + 50)
+  }
+  return Math.max(250, wait)
 }
 
 /** Kinds present with counts, in KIND_ORDER then unknown kinds by name. */
@@ -261,6 +353,7 @@ export type Cursor = { epoch: number; seq: number }
 /**
  * Apply one AttentionChanged to the cached list.
  * seq 0 (engine before 207) or no cache → { next: cache, refetch: true, cursor: seq ? {epoch_ms, seq} : cursor }.
+ * An event this cursor already passed (same epoch, seq <= cursor.seq) is stale: { next: undefined, refetch: false, cursor }.
  * Else: drop ids_removed; upsert ev.items keeping the cached item's alert (alert of a new id: null); next = ev.order mapped
  * through the map (ids not in order are dropped). refetch when: a gap (cursor set and (cursor.epoch !== ev.epoch_ms or
  * ev.seq !== cursor.seq + 1)), an id of order missing from the map, next.length !== ev.count, or ev.alerts_changed.
@@ -270,6 +363,7 @@ export function applyChange(cache: readonly AttentionItem[] | undefined, ev: Att
   // `?? 0` / `?? []`: an engine before 207 sends none of the new fields at all.
   const seq = ev.seq ?? 0
   if (seq === 0 || !cache) return { next: cache ? [...cache] : undefined, refetch: true, cursor: seq ? { epoch: ev.epoch_ms, seq } : cursor }
+  if (cursor !== null && cursor.epoch === ev.epoch_ms && seq <= cursor.seq) return { next: undefined, refetch: false, cursor }
   const map = new Map(cache.map((i) => [i.id, i]))
   for (const id of ev.ids_removed) map.delete(id)
   for (const item of ev.items ?? []) map.set(item.id, { ...item, alert: map.get(item.id)?.alert ?? null })
@@ -278,6 +372,53 @@ export function applyChange(cache: readonly AttentionItem[] | undefined, ev: Att
   const next = order.flatMap((id) => map.get(id) ?? [])
   const gap = cursor !== null && (cursor.epoch !== ev.epoch_ms || seq !== cursor.seq + 1)
   return { next, refetch: gap || missing || next.length !== ev.count || ev.alerts_changed === true, cursor: { epoch: ev.epoch_ms, seq } }
+}
+
+/** 207 review 9: the patcher's state — the cursor, a list refetch in flight, and whether an event landed during it. */
+export type PatchState = { cursor: Cursor | null; inflight: boolean; dirty: boolean }
+export const PATCH_START: PatchState = { cursor: null, inflight: false, dirty: false }
+
+/**
+ * One event: `applyChange`, then decide the refetch. Never two refetches at once: an event that needs one while one
+ * runs, or that patched the cache while one runs (the older snapshot will land over it), marks the state dirty.
+ */
+export function patchEvent(state: PatchState, cache: readonly AttentionItem[] | undefined, ev: AttentionChanged): { state: PatchState; next: AttentionItem[] | undefined; refetch: boolean } {
+  const r = applyChange(cache, ev, state.cursor)
+  const stale = r.next === undefined && !r.refetch && cache !== undefined
+  if (stale) return { state, next: undefined, refetch: false }
+  if (state.inflight) return { state: { ...state, cursor: r.cursor, dirty: true }, next: r.next, refetch: false }
+  return { state: { ...state, cursor: r.cursor, inflight: r.refetch }, next: r.next, refetch: r.refetch }
+}
+
+/** The refetch landed: refetch once more when an event arrived meanwhile, else idle. */
+export function patchSettled(state: PatchState): { state: PatchState; refetch: boolean } {
+  return state.dirty ? { state: { ...state, inflight: true, dirty: false }, refetch: true } : { state: { ...state, inflight: false }, refetch: false }
+}
+
+/** An item an action took out of the list, with where it stood. */
+export type Removed = { item: AttentionItem; index: number }
+
+/** 207 review 7: put optimistically removed items back where they stood (a failed action); ids already back are skipped. */
+export function restoreItems(list: readonly AttentionItem[], removed: readonly Removed[]): AttentionItem[] {
+  const out = [...list]
+  for (const r of [...removed].sort((a, b) => a.index - b.index)) if (!out.some((i) => i.id === r.item.id)) out.splice(Math.min(r.index, out.length), 0, r.item)
+  return out
+}
+
+/** 207 review 5: one approval's Allow / Deny — `done`, `gone` (already answered elsewhere) or `failed` (still pending). */
+export type ResolveOutcome = { id: string; result: 'done' | 'gone' | 'failed'; error: string | null }
+
+/** '3 allowed · 1 already answered · 1 failed'; '' for none. */
+export function resolveSummary(outcomes: readonly ResolveOutcome[], decision: 'allow' | 'deny'): string {
+  const n = (r: ResolveOutcome['result']) => outcomes.filter((o) => o.result === r).length
+  return [
+    [n('done'), decision === 'allow' ? 'allowed' : 'denied'],
+    [n('gone'), 'already answered'],
+    [n('failed'), 'failed, still waiting'],
+  ]
+    .filter(([k]) => (k as number) > 0)
+    .map(([k, w]) => `${k} ${w}`)
+    .join(' · ')
 }
 
 export const CONTEXT_MAX = 600
@@ -314,16 +455,6 @@ export function parseCodeRef(ref: string): CodeRef | null {
   const start = Number(m[2])
   const end = m[3] ? Number(m[3]) : start
   return start >= 1 && end >= start ? { path: m[1] as string, start, end } : null
-}
-
-/**
- * D11: the item the pane shows once `id` resolved — the one after it in the list, else the one before it, else `null`
- * (the empty state). `null` too when `id` is not in the list (already gone: the list refetched first).
- */
-export function nextAfter(items: readonly AttentionItem[], id: string): AttentionItem | null {
-  const i = items.findIndex((x) => x.id === id)
-  if (i < 0) return null
-  return items[i + 1] ?? items[i - 1] ?? null
 }
 
 export type PointerRoute =

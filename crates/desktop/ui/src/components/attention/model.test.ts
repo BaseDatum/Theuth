@@ -21,7 +21,18 @@ import {
   matchesFilter,
   matchesQuery,
   moveFocus,
-  nextAfter,
+  nextItemAfter,
+  nextTick,
+  PATCH_START,
+  patchEvent,
+  patchSettled,
+  pruneFilter,
+  resolveSummary,
+  restoreItems,
+  selectEntries,
+  stackRisk,
+  entrySelection,
+  focusAfter,
   outcomeSummary,
   parseCodeRef,
   pathText,
@@ -114,15 +125,26 @@ test('stackEntries: the three fetch approvals of ops desk are one entry at #4; a
   expect(visibleEntries(F, filter({ query: 'acme' }), 'priority', NOW)).toEqual([{ type: 'item', key: at(5).id, item: at(5) }])
 })
 
-test('selectedIds / allApprovals: entry keys expand to item ids in entry order; Allow/Deny only for all-approval selections', () => {
+test('selection by item ids: entries expand in entry order; Allow/Deny only for all-approval selections; a new stack member is not selected', () => {
   const entries = stackEntries(F)
-  const stack = entries[3]!.key
-  const sel = new Set([stack, at(0).id])
+  const stack = entries[3]!
+  let sel = selectEntries(new Set(), entries, null, stack.key, 'toggle')
+  sel = selectEntries(sel, entries, stack.key, at(0).id, 'toggle')
   expect(selectedIds(entries, sel)).toEqual([at(0).id, at(3).id, at(4).id, at(5).id])
   expect(allApprovals(entries, sel)).toBe(true)
-  expect(allApprovals(entries, new Set([stack, at(1).id]))).toBe(false)
+  expect(allApprovals(entries, new Set([at(3).id, at(1).id]))).toBe(false)
   expect(allApprovals(entries, new Set())).toBe(false)
   expect(selectedIds(entries, new Set(['gone']))).toEqual([])
+  // A fourth fetch approval joins the stack after it was selected: the stack is partly selected and the new one is out.
+  const late = { ...at(5), id: 'approval:late', approval: 'late' }
+  const grown = stackEntries([...F.slice(0, 6), late, ...F.slice(6)])
+  expect(entrySelection(grown[3]!, sel)).toBe('some')
+  expect(selectedIds(grown, sel)).not.toContain('approval:late')
+  // Toggling a fully selected entry clears it; toggling a partial one selects what it shows now.
+  expect(entrySelection(stack, selectEntries(sel, entries, null, stack.key, 'toggle'))).toBe('none')
+  expect(entrySelection(grown[3]!, selectEntries(sel, grown, null, stack.key, 'toggle'))).toBe('all')
+  // Range: every entry from the anchor to the key.
+  expect(selectedIds(entries, selectEntries(new Set(), entries, at(0).id, at(2).id, 'range'))).toEqual([at(0).id, at(1).id, at(2).id])
 })
 
 test('kindCounts: the 16 kinds of the fixture in chip order, unknown kinds after by name', () => {
@@ -265,6 +287,93 @@ test('applyChange: every refetch trigger — seq 0, no cache, a gap, a new run, 
   expect(applyChange(cache, ev({ seq: 5, order, count: 2 }), cursor).refetch).toBe(false)
 })
 
+test('applyChange: an event the cursor already passed is ignored — nothing applied, no refetch, the cursor stays', () => {
+  const cache = [at(0), at(1)]
+  const cursor = { epoch: EPOCH, seq: 7 }
+  const old = { ...at(0), title: 'stale title', alert: null }
+  for (const seq of [7, 5]) expect(applyChange(cache, ev({ seq, items: [old], order: [at(1).id, at(0).id], count: 2 }), cursor)).toEqual({ next: undefined, refetch: false, cursor })
+  // A lower seq of a NEW run is a restart, not stale: patched, then refetched.
+  expect(applyChange(cache, ev({ seq: 1, epoch_ms: EPOCH + 9, order: cache.map((i) => i.id), count: 2 }), cursor)).toMatchObject({ refetch: true, cursor: { epoch: EPOCH + 9, seq: 1 } })
+})
+
+test('patchEvent / patchSettled: one refetch at a time, and once more when an event landed while it ran', () => {
+  const cache = [at(0), at(1)]
+  const order = cache.map((i) => i.id)
+  const s0 = { ...PATCH_START, cursor: { epoch: EPOCH, seq: 4 } }
+  // A gap starts a refetch.
+  const gap = patchEvent(s0, cache, ev({ seq: 6, order, count: 2 }))
+  expect(gap.refetch).toBe(true)
+  expect(gap.state).toMatchObject({ inflight: true, dirty: false, cursor: { seq: 6 } })
+  // An event while it runs is applied, but the older snapshot will land over it: no second refetch now, dirty.
+  const mid = patchEvent(gap.state, cache, ev({ seq: 7, ids_removed: [at(0).id], order: [at(1).id], count: 1 }))
+  expect(mid.refetch).toBe(false)
+  expect(mid.next?.map((i) => i.id)).toEqual([at(1).id])
+  expect(mid.state).toMatchObject({ inflight: true, dirty: true, cursor: { seq: 7 } })
+  // The snapshot lands: refetch once more; that one lands clean: idle.
+  const again = patchSettled(mid.state)
+  expect(again).toEqual({ state: { ...mid.state, inflight: true, dirty: false }, refetch: true })
+  expect(patchSettled(again.state)).toEqual({ state: { ...again.state, inflight: false }, refetch: false })
+  // A stale event changes nothing, even mid-refetch.
+  expect(patchEvent(mid.state, cache, ev({ seq: 3, order, count: 2 }))).toEqual({ state: mid.state, next: undefined, refetch: false })
+  // No refetch in flight and a clean step: nothing to refetch.
+  expect(patchEvent(s0, cache, ev({ seq: 5, order, count: 2 }))).toMatchObject({ refetch: false, state: { inflight: false, dirty: false } })
+})
+
+test('focusAfter / nextItemAfter: the entry after the removed one, else before it; a stack sibling first', () => {
+  expect(focusAfter(['a', 'b', 'c'], ['a', 'c'], 'b')).toBe('c')
+  expect(focusAfter(['a', 'b', 'c'], ['a', 'b'], 'c')).toBe('b')
+  expect(focusAfter(['a', 'b', 'c', 'd'], ['a', 'd'], 'b')).toBe('d')
+  expect(focusAfter(['a', 'b'], ['a', 'b'], 'b')).toBe('b')
+  expect(focusAfter(['a'], [], 'a')).toBeNull()
+  expect(focusAfter(['a', 'b'], ['x'], 'gone')).toBe('x')
+  const entries = stackEntries(F)
+  // #1 resolved: the pane opens #2 (the list as shown); a stack member opens its sibling; the last item, the one before.
+  expect(nextItemAfter(entries, at(0).id)).toBe(at(1).id)
+  expect(nextItemAfter(entries, at(4).id)).toBe(at(3).id)
+  expect(nextItemAfter(entries, at(33).id)).toBe(at(32).id)
+  expect(nextItemAfter(visibleEntries(F, EMPTY_FILTER, 'newest', NOW), at(33).id)).toBe(at(6).id)
+  expect(nextItemAfter(entries, 'gone')).toBeNull()
+})
+
+test('restoreItems puts a failed action’s items back where they stood', () => {
+  const [a, b, c] = [at(0), at(1), at(2)]
+  expect(restoreItems([a, c], [{ item: b, index: 1 }]).map((i) => i.id)).toEqual([a.id, b.id, c.id])
+  expect(restoreItems([b], [{ item: a, index: 0 }, { item: c, index: 2 }]).map((i) => i.id)).toEqual([a.id, b.id, c.id])
+  expect(restoreItems([a, b], [{ item: b, index: 1 }]).map((i) => i.id)).toEqual([a.id, b.id])
+})
+
+test('resolveSummary: done, already answered and failed counted apart', () => {
+  const o = (id: string, result: 'done' | 'gone' | 'failed') => ({ id, result, error: null })
+  expect(resolveSummary([o('1', 'done'), o('2', 'done'), o('3', 'gone'), o('4', 'failed')], 'allow')).toBe('2 allowed · 1 already answered · 1 failed, still waiting')
+  expect(resolveSummary([o('1', 'done')], 'deny')).toBe('1 denied')
+  expect(resolveSummary([], 'allow')).toBe('')
+})
+
+test('pruneFilter: a remembered kind or project no longer listed is dropped; the same filter when nothing is', () => {
+  const f = filter({ kinds: new Set(['approval', 'hire']), project: { type: 'project', name: 'gone' } })
+  const pruned = pruneFilter(f, ['approval', 'ask'], ['theuth', null])
+  expect([...pruned.kinds]).toEqual(['approval'])
+  expect(pruned.project).toEqual({ type: 'all' })
+  expect(pruneFilter(filter({ project: { type: 'none' } }), ['ask'], ['theuth']).project).toEqual({ type: 'all' })
+  const kept = filter({ kinds: new Set(['ask']), project: { type: 'none' } })
+  expect(pruneFilter(kept, ['ask'], [null])).toBe(kept)
+})
+
+test('nextTick: every second while something counts down, else at the next expiry, at most 30 s', () => {
+  expect(nextTick(F, NOW)).toBe(1000)
+  const quiet = F.filter((i) => i.deadline_ms === null)
+  // The timed-out changelog card expires in 5 min: the next tick is the 30 s cap; 10 s before, it is that expiry.
+  expect(nextTick(quiet, NOW)).toBe(30_000)
+  expect(nextTick(quiet, NOW + 290_000)).toBe(10_050)
+  expect(nextTick([], NOW)).toBe(30_000)
+})
+
+test('stackRisk: the highest risk of the members', () => {
+  expect(stackRisk([at(3), at(4)])).toBe('mutating')
+  expect(stackRisk([at(3), at(0)])).toBe('destructive')
+  expect(stackRisk([at(1)])).toBeNull()
+})
+
 test('clampText: short text verbatim, long text cut at a word boundary with an ellipsis within the limit', () => {
   expect(clampText('  hello  ')).toBe('hello')
   const long = `${'word '.repeat(200)}end`
@@ -296,15 +405,6 @@ test('parseCodeRef reads path#L<a>-L<b> and path#L<a>; rejects the rest', () => 
   expect(parseCodeRef('#L3')).toBeNull()
 })
 
-test('nextAfter: the item below the resolved one, else the one above, else null', () => {
-  const items = [item('a'), item('b'), item('c')]
-  expect(nextAfter(items, 'a')?.id).toBe('b')
-  expect(nextAfter(items, 'b')?.id).toBe('c')
-  expect(nextAfter(items, 'c')?.id).toBe('b')
-  expect(nextAfter([item('a')], 'a')).toBeNull()
-  expect(nextAfter(items, 'zz')).toBeNull()
-  expect(nextAfter([], 'a')).toBeNull()
-})
 
 test('pointerRoute maps viewer kinds to their routes and leaves url/code/diff inline', () => {
   expect(pointerRoute(ptr('artifact', 'call-1'))).toEqual({ to: '/artifacts/$callId', params: { callId: 'call-1' } })

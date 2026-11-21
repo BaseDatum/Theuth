@@ -1,11 +1,11 @@
 import { useQuerySupport } from '@/rpc/capabilities'
-import { type QueryClient, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { type QueryClient, type QueryKey, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef } from 'react'
 import { useModels } from '@/components/agents/queries'
-import { type Cursor, applyChange, bulkTarget } from '@/components/attention/model'
+import { type PatchState, PATCH_START, type Removed, bulkTarget, patchEvent, patchSettled, restoreItems } from '@/components/attention/model'
 import { attentionFixture } from '@/components/settings/attention-fixtures'
 import { ATTENTION_SIM, SECRET_REQUESTS_SIM, crowdedFlag, simFlag } from '@/components/settings/sandbox-queries'
-import { useAction } from '@/components/settings/shared'
+import { errorText, useAction } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
@@ -34,25 +34,26 @@ export const ACTIVITY_KEY = ['activity'] as const
 
 /**
  * Anything that can add or resolve an inbox item, for an engine before 207 (104 A10: asks and shows too; 126: a double
- * answer adds its row). 207 §8.4: once the engine's `AttentionChanged` carries `seq`, the list is patched from it and
- * these stop invalidating.
+ * answer adds its row). 207 §8.4 / review 10: an engine with `attention_dismiss_many` patches the list from its own
+ * `AttentionChanged`, so these invalidate nothing there.
  */
 const LEGACY_TOPICS = ["tasks.activity@1","tools.approval-requested@1","tools.approval-resolved@1","artifact.shown@1","tools.ask-requested@1","tools.ask-resolved@1","nodes.events@1","secrets.events@1","sandbox.events@1","double.answered@1"] as const
 
 /**
- * 207 §8.4: per query client (one per engine) — the cursor of the last applied `AttentionChanged` and that event itself:
- * every mounted `useAttention` hears each event, the first applies it, the rest see `last === ev` and skip.
+ * 207 §8.4: per query client (one per engine) — the patcher's state (`model.ts` `PatchState`), whether the engine
+ * patches (feature-detected), and the last event seen: every mounted `useAttention` hears each event, the first applies
+ * it, the rest see `last === ev` and skip.
  */
-type Patch = { cursor: Cursor | null; last: unknown }
+type Patch = { state: PatchState; patch: boolean; last: unknown }
 const PATCH = new WeakMap<QueryClient, Patch>()
 function patchOf(qc: QueryClient): Patch {
   let p = PATCH.get(qc)
-  if (!p) PATCH.set(qc, (p = { cursor: null, last: null }))
+  if (!p) PATCH.set(qc, (p = { state: PATCH_START, patch: false, last: null }))
   return p
 }
 
-/** 207: the engine patches this client's list from `AttentionChanged` (it sent `seq > 0`); otherwise a caller refetches itself. */
-export const attentionPatched = (qc: QueryClient): boolean => patchOf(qc).cursor !== null
+/** 207: this client's list is patched from `AttentionChanged` (the engine has 207); otherwise a caller refetches itself. */
+export const attentionPatched = (qc: QueryClient): boolean => patchOf(qc).patch || patchOf(qc).state.cursor !== null
 
 /** `?mock=crowded`: ids dismissed locally, kept out of every regenerated fixture (it is rebuilt at `Date.now()` on each refetch). */
 const MOCK_GONE = new Set<string>()
@@ -64,10 +65,25 @@ export function dropFromList(qc: QueryClient, ids: readonly string[]): void {
   qc.setQueryData<AttentionItem[]>(ATTENTION_KEY, (old) => old?.filter((i) => !gone.has(i.id)))
 }
 
+/** Take the items matching `match` out of the cached list, returning them with their positions (to put back on failure). */
+export function takeFromList(qc: QueryClient, match: (i: AttentionItem) => boolean): Removed[] {
+  const list = qc.getQueryData<AttentionItem[]>(ATTENTION_KEY) ?? []
+  const removed = list.flatMap((item, index) => (match(item) ? [{ item, index }] : []))
+  if (removed.length > 0) dropFromList(qc, removed.map((r) => r.item.id))
+  return removed
+}
+
+/** Put items taken by `takeFromList` back (the action failed). */
+export function putBack(qc: QueryClient, removed: readonly Removed[]): void {
+  if (crowdedFlag()) for (const r of removed) MOCK_GONE.delete(r.item.id)
+  if (removed.length > 0) qc.setQueryData<AttentionItem[]>(ATTENTION_KEY, (old) => (old ? restoreItems(old, removed) : old))
+}
+
 /**
  * `attention_list`. 207 §8.4: an engine with `attention_dismiss_many` patches the cache from each `AttentionChanged`
- * (`applyChange`) and refetches only on a gap, a new run, a count mismatch, an alert change or a reconnect; an older
- * engine still refetches on every event that can change the list. `?mock=crowded` serves the 207 fixture.
+ * (`patchEvent`) and refetches only on a gap, a new run, a count mismatch, an alert change or a reconnect — one refetch
+ * at a time, and once more when an event landed while it ran; an older engine still refetches on every event that can
+ * change the list. `?mock=crowded` serves the 207 fixture.
  */
 export function useAttention() {
   const canQuery1 = useQuerySupport(["attention_list"])
@@ -80,12 +96,20 @@ export function useAttention() {
   const prevConn = useRef(conn)
   useEffect(() => {
     const p = patchOf(qc)
+    p.patch = patch
     const invalidate = () => {
       void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
       void qc.invalidateQueries({ queryKey: PACKET_KEY })
       void qc.invalidateQueries({ queryKey: SECRET_REQUESTS_KEY })
     }
-    const offs = LEGACY_TOPICS.map((topic) => onTopic(topic, () => (p.cursor === null || !patch) && invalidate()))
+    const refetch = () => {
+      void qc.invalidateQueries({ queryKey: ATTENTION_KEY }).finally(() => {
+        const s = patchSettled(p.state)
+        p.state = s.state
+        if (s.refetch) refetch()
+      })
+    }
+    const offs = LEGACY_TOPICS.map((topic) => onTopic(topic, () => !patch && invalidate()))
     offs.push(
       onTopic('roster.attention@1', (ev) => {
         if (p.last === ev) return
@@ -94,10 +118,10 @@ export function useAttention() {
           invalidate()
           return
         }
-        const r = applyChange(qc.getQueryData<AttentionItem[]>(ATTENTION_KEY), ev, p.cursor)
-        p.cursor = r.cursor
+        const r = patchEvent(p.state, qc.getQueryData<AttentionItem[]>(ATTENTION_KEY), ev)
+        p.state = r.state
         if (r.next) qc.setQueryData(ATTENTION_KEY, r.next)
-        if (r.refetch) void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
+        if (r.refetch) refetch()
         for (const item of ev.items) if (item.packet) void qc.invalidateQueries({ queryKey: [...PACKET_KEY, item.packet] })
         if ([...ev.ids_added, ...ev.ids_removed, ...ev.items.map((i) => i.id)].some((id) => id.startsWith('secret:'))) void qc.invalidateQueries({ queryKey: SECRET_REQUESTS_KEY })
       }),
@@ -106,10 +130,10 @@ export function useAttention() {
       for (const off of offs) off()
     }
   }, [qc, patch])
-  // Back from a drop: events were missed, so start over from a fresh list.
+  // Back from a drop: events were missed, so start over from one fresh list.
   useEffect(() => {
     if (conn === 'open' && prevConn.current !== 'open') {
-      patchOf(qc).cursor = null
+      patchOf(qc).state = PATCH_START
       void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
     }
     prevConn.current = conn
@@ -260,70 +284,101 @@ export function useSessionContexts(sessions: readonly SessionSummary[] | undefin
   }, [desks, data, models.data])
 }
 
-/** The inline decisions of an attention card; every one refetches the inbox and what it derives from. */
+/** The mutation key every Attention action carries (single and bulk), so any surface can tell one is in flight. */
+export const ATTENTION_ACTION_KEY = ['attention-action'] as const
+
+/**
+ * 207 review 7: an action that resolves inbox items. The items `gone` matches leave the cached list at once and come
+ * back where they stood when the call fails; on success the small task/agent `keys` refetch, the list itself only when
+ * this engine does not patch it from `AttentionChanged` (a full refetch per click is what 176 forbids).
+ */
+function useItemAction<V, R>(fn: (vars: V) => Promise<R>, gone: (vars: V, item: AttentionItem) => boolean, opts: { keys?: readonly QueryKey[]; onSuccess?: (result: R, vars: V) => void } = {}) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationKey: ATTENTION_ACTION_KEY,
+    mutationFn: fn,
+    onMutate: (vars: V) => takeFromList(qc, (i) => gone(vars, i)),
+    onError: (e, _vars, removed) => {
+      if (removed) putBack(qc, removed)
+      toast.error(errorText(e))
+    },
+    onSuccess: (result, vars) => {
+      for (const queryKey of opts.keys ?? []) void qc.invalidateQueries({ queryKey })
+      if (!attentionPatched(qc) && !crowdedFlag() && simFlag() === null) void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
+      opts.onSuccess?.(result, vars)
+    },
+  })
+}
+
+/** The inline decisions of an attention card: each takes its item out of the list at once (back on failure). */
 export function useAttentionActions() {
   const api = useApi()
   const many = useQuerySupport(['attention_dismiss_many'])
-  const keys = [ATTENTION_KEY, taskKeys.tasks, taskKeys.agents] as const
+  const keys = [taskKeys.tasks, taskKeys.agents] as const
   return {
     /** 207 §5: through `attention_dismiss_many` when the engine has it (a request is left to its agent); a `failed` outcome is an error. */
-    dismiss: useAction(
+    dismiss: useItemAction(
       async (id: string) => {
         if (!many) return api.attention_dismiss(id)
         const [out] = await api.attention_dismiss_many(bulkTarget([id]))
         if (out?.resolution === 'failed') throw new Error(out.error ?? 'dismiss failed')
         return null
       },
-      { keys: [ATTENTION_KEY] },
+      (id, i) => i.id === id,
     ),
     /** 109 §8.3: the Resume button of a `resume:` item under `durability.resume: ask`. */
-    resume: useAction(
+    resume: useItemAction(
       async (session: string) => {
         const ok = await api.resume_turn(session)
         if (!ok) toast.message('That turn was already resumed')
         return ok
       },
-      { keys: [ATTENTION_KEY] },
+      (session, i) => i.kind === 'resume' && i.session === session,
     ),
-    snooze: useAction(({ id, until }: { id: string; until: number }) => api.attention_snooze(id, until), { keys: [ATTENTION_KEY] }),
-    /** 104 A6: Send (answers) or Dismiss (`null`, ends the asking turn) on the Ask screen — `AskCard`'s two buttons. 132 D6: a late answer is not lost — the engine hands it to the session as a message; the toast says so. */
-    ask: useAction(
-      async ({ id, answers }: { id: AskId; answers: Answer[] | null }) => {
+    snooze: useItemAction(({ id, until }: { id: string; until: number }) => api.attention_snooze(id, until), (v, i) => i.id === v.id),
+    /** 104 A6: Send on the Ask screen and an option on the card. 132 D6: a late answer is not lost — the engine hands it to the session as a message; the toast says so. 207: never `null` (that ends the turn). */
+    ask: useItemAction(
+      async ({ id, answers }: { id: AskId; answers: Answer[] }) => {
         const ok = await api.answer_ask(id, answers)
-        if (!ok) toast.message(answers ? 'That question had already closed — your answer went to the session as a message.' : 'That question was already answered')
+        if (!ok) toast.message('That question had already closed — your answer went to the session as a message.')
         return ok
       },
-      { keys: [ATTENTION_KEY] },
+      (v, i) => i.ask?.id === v.id,
     ),
-    approve: useAction(
+    approve: useItemAction(
       async ({ id, allow }: { id: ApprovalId; allow: boolean }) => {
         const ok = await api.resolve_approval(id, allow ? 'allow' : 'deny')
         if (!ok) toast.message('That approval was already answered')
         return ok
       },
+      (v, i) => i.approval === v.id,
       { keys },
     ),
-    decide: useAction(({ decision, answer }: { decision: string; answer: string }) => api.task_decide(decision, answer), { keys }),
+    decide: useItemAction(({ decision, answer }: { decision: string; answer: string }) => api.task_decide(decision, answer), (v, i) => i.decision === v.decision, { keys }),
     /** 132 D4: the user sets a task's priority; the engine re-ranks the inbox on the refetch. */
-    priority: useAction(({ id, priority }: { id: string; priority: Priority }) => api.task_update(id, { priority }), { keys }),
-    hire: useAction((name: string) => api.agent_approve(name), { keys }),
-    decline: useAction((name: string) => api.agent_remove(name, null), { keys }),
+    priority: useAction(({ id, priority }: { id: string; priority: Priority }) => api.task_update(id, { priority }), { keys: [ATTENTION_KEY, ...keys] }),
+    hire: useItemAction((name: string) => api.agent_approve(name), (name, i) => i.kind === 'hire' && i.agent === name, { keys }),
+    decline: useItemAction((name: string) => api.agent_remove(name, null), (name, i) => i.kind === 'hire' && i.agent === name, { keys }),
     /** 101 D9: Approve → done / Send back → doing carry the reviewer's note into the thread. 132 D3: `next` (a review's picked next move) rides along only when picked, so an older engine sees the old three params. */
-    move: useAction(({ id, state, note = null, next }: { id: string; state: 'todo' | 'done' | 'doing'; note?: string | null; next?: number }) => (next === undefined ? api.task_move(id, state, note) : api.task_move(id, state, note, next)), { keys }),
+    move: useItemAction(
+      ({ id, state, note = null, next }: { id: string; state: 'todo' | 'done' | 'doing'; note?: string | null; next?: number }) => (next === undefined ? api.task_move(id, state, note) : api.task_move(id, state, note, next)),
+      (v, i) => i.task === v.id && (i.kind === 'review' || i.kind === 'blocked'),
+      { keys },
+    ),
     /** 182: the `home:<engine>` item's button — every task waiting on the offline engine moves to this one. */
-    moveHome: useAction(({ from }: { from: string; to: string }) => api.task_move_home_waiting(from), {
-      keys: [ATTENTION_KEY, taskKeys.tasks],
+    moveHome: useItemAction(({ from }: { from: string; to: string }) => api.task_move_home_waiting(from), (v, i) => i.id === `node:${v.from}`, {
+      keys: [taskKeys.tasks],
       onSuccess: (r, v) => {
         const m = movedToast(r, v.to)
         ;(m.error ? toast.error : toast)(m.title, { description: m.description })
       },
     }),
-    unpause: useAction((name: string) => api.agent_pause(name, false), { keys }),
+    unpause: useItemAction((name: string) => api.agent_pause(name, false), (name, i) => i.kind === 'budget' && i.agent === name, { keys }),
     /** 79 §6.6: Done / Cancel on a hand-off card; the pop-out's banner and the row's chip read the same list. */
-    handoff: useAction(({ id, outcome }: { id: string; outcome: 'done' | 'cancelled' }) => api.handoff_resolve(id, outcome), { keys: [ATTENTION_KEY, HANDOFFS_KEY] }),
+    handoff: useItemAction(({ id, outcome }: { id: string; outcome: 'done' | 'cancelled' }) => api.handoff_resolve(id, outcome), (v, i) => i.id === `handoff:${v.id}`, { keys: [HANDOFFS_KEY] }),
     /** 183 §7.6: a `contact_first` item's Allow once (`ask`) · Always (`allow`) · Block (`block`). */
-    contactFirst: useAction(({ contact, exp, answer }: { contact: string; exp: string; answer: FirstContact }) => api.contact_first_answer(contact, exp, answer), {
-      keys: [ATTENTION_KEY, queryKeys.contacts],
+    contactFirst: useItemAction(({ contact, exp, answer }: { contact: string; exp: string; answer: FirstContact }) => api.contact_first_answer(contact, exp, answer), (v, i) => i.id === `contact_first:${v.contact}:${v.exp}`, {
+      keys: [queryKeys.contacts],
     }),
   }
 }

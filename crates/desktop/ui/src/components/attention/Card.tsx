@@ -2,8 +2,8 @@
 // itself (Allow / Deny, a question's options, Enter secret, a reply to a stopped session) without opening the item.
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Check, ChevronDown } from 'lucide-react'
-import { type ComponentProps, type MouseEvent, type ReactNode, useState } from 'react'
+import { Check, ChevronDown, Minus } from 'lucide-react'
+import { type ComponentProps, type MouseEvent, type ReactNode, memo, useState } from 'react'
 import { DoubleChip } from '@/components/chat/DoubleChip'
 import { SecretRequestCard } from '@/components/chat/SecretRequestCard'
 import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useAttentionActions, useSecretRequestRows } from '@/components/hud/queries'
@@ -15,8 +15,8 @@ import type { AttentionItem } from '@/rpc/bindings/method.roster.output'
 import { useSecretRequests } from '@/store/approvals'
 import { KindActions, SnoozeDismiss } from './actions'
 import { chipLabel, doubleIds } from './labels'
-import { pathText, reasonLine } from './model'
-import { useAttentionBulk } from './queries'
+import { pathText, reasonLine, stackRisk } from './model'
+import { useAttentionBulk, useBulkPending } from './queries'
 import { Reply } from './Reply'
 
 /** 132 D1/D4: `urgent` and `high` show a chip after the kind chip (gold-ochre · the warning hue); medium/low show nothing. */
@@ -36,18 +36,21 @@ function needsPane(item: AttentionItem): boolean {
   return qs.length !== 1 || (qs[0]?.options.length ?? 0) === 0
 }
 
-export type SelectHandler = (mode: 'toggle' | 'range') => void
+export type SelectHandler = (mode: 'toggle' | 'range', key: string) => void
 
 type FrameProps = {
   item: AttentionItem
   now: number
+  /** The entry key the callbacks receive (an item's id, a stack's key); defaults to the item's id. */
+  entryKey?: string
   stack?: number
   active?: boolean
   focused?: boolean
-  selected?: boolean
+  /** `some`: a stack with members the user had not seen when selecting it. */
+  selected?: boolean | 'some'
   selecting?: boolean
   onSelect?: SelectHandler
-  onOpen?: () => void
+  onOpen?: (key: string) => void
   detail?: ReactNode
   children?: ReactNode
 } & Omit<ComponentProps<'li'>, 'onSelect' | 'children'>
@@ -63,19 +66,19 @@ const said = (segments: readonly string[], word: string) => segments.some((s) =>
  * facts (an approval's command in mono), where it came from (`project · root › child`, the agent when the path does not
  * already name it), why it sits here (the reason line, wrapping, never cut), then the actions.
  */
-function Frame({ item, now, stack, active, focused, selected, selecting, onSelect, onOpen, detail, children, className, ...li }: FrameProps) {
+function Frame({ item, now, entryKey = item.id, stack, active, focused, selected = false, selecting, onSelect, onOpen, detail, children, className, ...li }: FrameProps) {
   const path = pathText(item)
   const agent = item.agent && !said([...(item.path ?? []), item.project ?? ''], item.agent) ? item.agent : null
   const from = [path, agent].filter(Boolean).join(' · ')
   const reason = reasonLine(item, now)
   const click = (e: MouseEvent<HTMLDivElement>) => {
     if ((e.target as Element).closest(OWN_CLICK)) return
-    if (e.shiftKey) onSelect?.('range')
-    else if (e.metaKey || e.ctrlKey) onSelect?.('toggle')
-    else onOpen?.()
+    if (e.shiftKey) onSelect?.('range', entryKey)
+    else if (e.metaKey || e.ctrlKey) onSelect?.('toggle', entryKey)
+    else onOpen?.(entryKey)
   }
   return (
-    <li {...li} aria-selected={focused || undefined} className={cn('group border-b border-border-subtle', className)}>
+    <li {...li} data-entry-key={entryKey} data-focused={focused || undefined} aria-current={active || undefined} className={cn('group border-b border-border-subtle', className)}>
       {/* Mouse only: the list's own key map (J/K, Enter, X) opens and selects the focused card. */}
       <div
         onClick={click}
@@ -90,16 +93,17 @@ function Frame({ item, now, stack, active, focused, selected, selecting, onSelec
           <button
             type="button"
             role="checkbox"
-            aria-checked={selected ?? false}
+            aria-checked={selected === 'some' ? 'mixed' : selected}
             aria-label={`Select ${item.title}`}
-            onClick={(e) => onSelect(e.shiftKey ? 'range' : 'toggle')}
+            onClick={(e) => onSelect(e.shiftKey ? 'range' : 'toggle', entryKey)}
             className={cn(
               'mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-[4px] border motion-safe:transition-opacity',
               selected ? 'border-primary bg-primary text-primary-foreground' : 'border-border-strong bg-background',
               !selected && !selecting && 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100',
             )}
           >
-            {selected && <Check className="size-3" />}
+            {selected === true && <Check className="size-3" />}
+            {selected === 'some' && <Minus className="size-3" />}
           </button>
         )}
         <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -168,14 +172,37 @@ export function SecretInline({ item }: { item: AttentionItem }) {
 /** A single question with options: one button per option (the recommended one filled); the answer goes straight to the agent. */
 function AskOptions({ item }: { item: AttentionItem }) {
   const act = useAttentionActions()
+  const bulkPending = useBulkPending()
   const ask = item.ask
   const q = ask?.questions[0]
   if (!ask || !q) return null
   return q.options.map((o, index) => (
-    <Button key={o.label} size="xs" variant={q.recommended === index ? 'default' : 'outline'} disabled={act.ask.isPending} title={o.description ?? undefined} onClick={() => void act.ask.mutateAsync({ id: ask.id, answers: [{ kind: 'choice', index }] }).catch(() => undefined)}>
+    <Button key={o.label} size="xs" variant={q.recommended === index ? 'default' : 'outline'} disabled={act.ask.isPending || bulkPending} title={o.description ?? undefined} onClick={() => void act.ask.mutateAsync({ id: ask.id, answers: [{ kind: 'choice', index }] }).catch(() => undefined)}>
       {o.label}
     </Button>
   ))
+}
+
+/**
+ * 207 review 14: cards re-render only when what they show changed — the list ticks every second while something counts
+ * down, and the page hands a coarse clock to cards without a countdown. `style` is compared by its transform (a new
+ * object each render), a stack's `items` member by member.
+ */
+function sameProps<P extends object>(prev: P, next: P): boolean {
+  const a = prev as Record<string, unknown>
+  const b = next as Record<string, unknown>
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)])
+  for (const k of keys) {
+    if (a[k] === b[k]) continue
+    if (k === 'style') {
+      if ((a[k] as { transform?: string } | undefined)?.transform !== (b[k] as { transform?: string } | undefined)?.transform) return false
+    } else if (k === 'items') {
+      const x = a[k] as unknown[]
+      const y = b[k] as unknown[]
+      if (x.length !== y.length || x.some((v, i) => v !== y[i])) return false
+    } else return false
+  }
+  return true
 }
 
 export type CardProps = Omit<FrameProps, 'detail' | 'children' | 'stack'> & {
@@ -184,7 +211,7 @@ export type CardProps = Omit<FrameProps, 'detail' | 'children' | 'stack'> & {
 }
 
 /** One item's card. */
-export function Card({ open = false, ...props }: CardProps) {
+export const Card = memo(function Card({ open = false, ...props }: CardProps) {
   const { item } = props
   const [expanded, setExpanded] = useState(open)
   let actions: ReactNode
@@ -235,30 +262,39 @@ export function Card({ open = false, ...props }: CardProps) {
       {actions}
     </Frame>
   )
+}, sameProps)
+
+export type StackCardProps = Omit<FrameProps, 'item' | 'detail' | 'children' | 'stack'> & {
+  items: AttentionItem[]
+  /** The member list is shown (the page keeps it, so the keyboard can open it); uncontrolled when absent. */
+  expanded?: boolean
+  onExpand?: (key: string, open: boolean) => void
 }
 
-export type StackCardProps = Omit<FrameProps, 'item' | 'detail' | 'children' | 'stack'> & { items: AttentionItem[] }
-
 /**
- * Approvals of one session and tool, collapsed (207 §6): the head's rows, Allow all N / Deny all N, and an expander
- * listing every member with its own Allow / Deny. Snooze and Dismiss act on every member.
+ * Approvals of one session and tool, collapsed (207 §6): the head's rows with the stack's highest risk, Allow all N /
+ * Deny all N, and an expander listing every member with its own Allow / Deny. Snooze and Dismiss act on every member.
  */
-export function StackCard({ items, ...props }: StackCardProps) {
-  const head = items[0] as AttentionItem
+export const StackCard = memo(function StackCard({ items, expanded, onExpand, ...props }: StackCardProps) {
+  const head = { ...(items[0] as AttentionItem), risk: stackRisk(items) }
   const bulk = useAttentionBulk()
   const act = useAttentionActions()
-  const [open, setOpen] = useState(false)
+  const [local, setLocal] = useState(false)
+  const open = expanded ?? local
+  const key = props.entryKey ?? head.id
+  const toggle = () => (onExpand ? onExpand(key, !open) : setLocal(!open))
   const ids = items.map((i) => i.id)
   const approvals = items.flatMap((i) => (i.approval ? [i.approval] : []))
+  const busy = bulk.pending || act.approve.isPending
   return (
     <Frame {...props} item={head} stack={items.length} detail={<Detail item={head} />}>
-      <Button size="xs" disabled={bulk.pending} onClick={() => void bulk.resolve(approvals, 'allow')}>
+      <Button size="xs" disabled={busy} onClick={() => void bulk.resolve(approvals, 'allow')}>
         Allow all {items.length}
       </Button>
-      <Button size="xs" variant="outline" disabled={bulk.pending} onClick={() => void bulk.resolve(approvals, 'deny')}>
+      <Button size="xs" variant="outline" disabled={busy} onClick={() => void bulk.resolve(approvals, 'deny')}>
         Deny all {items.length}
       </Button>
-      <Button size="xs" variant="ghost" aria-expanded={open} onClick={() => setOpen((x) => !x)}>
+      <Button size="xs" variant="ghost" aria-expanded={open} onClick={toggle}>
         {open ? 'Hide' : `Show ${items.length}`}
         <ChevronDown className={cn('motion-safe:transition-transform', open && 'rotate-180')} />
       </Button>
@@ -268,12 +304,13 @@ export function StackCard({ items, ...props }: StackCardProps) {
           {items.map((m) => (
             <li key={m.id} className="flex min-w-0 items-center gap-2 px-2 py-1.5">
               <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-secondary">{m.detail ?? m.title}</span>
+              {m.risk === 'destructive' && <span className="shrink-0 text-[10px] uppercase tracking-wide text-danger">destructive</span>}
               {m.approval && (
                 <>
-                  <Button size="xs" disabled={act.approve.isPending} onClick={() => void act.approve.mutateAsync({ id: m.approval as string, allow: true }).catch(() => undefined)}>
+                  <Button size="xs" disabled={busy} onClick={() => void act.approve.mutateAsync({ id: m.approval as string, allow: true }).catch(() => undefined)}>
                     Allow
                   </Button>
-                  <Button size="xs" variant="outline" disabled={act.approve.isPending} onClick={() => void act.approve.mutateAsync({ id: m.approval as string, allow: false }).catch(() => undefined)}>
+                  <Button size="xs" variant="outline" disabled={busy} onClick={() => void act.approve.mutateAsync({ id: m.approval as string, allow: false }).catch(() => undefined)}>
                     Deny
                   </Button>
                 </>
@@ -284,4 +321,4 @@ export function StackCard({ items, ...props }: StackCardProps) {
       )}
     </Frame>
   )
-}
+}, sameProps)
