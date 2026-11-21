@@ -181,3 +181,118 @@ No longer red: `tools` `git::tests::clone_pull_and_list_against_a_local_bare_rep
   `tsc -b` failed before `vite build`). Those two results are not counted.
 - One launch came 20 s (not 45 s) after my own release at 18:19:48; the lock was held by another worker at the time,
   so the hold itself started at 18:21:48.
+
+## Review fixes (second integrator)
+
+On top of `da2a3301c` (the UI merge `cc84cecca` plus the status above). Supersedes "Review findings E1–E7" for E1
+and E3–E7. Gate script `/tmp/theuth-207-i2-gate.sh`, log `/tmp/theuth-207-i2-gate.log`.
+
+| commit | what |
+|---|---|
+| `1cc93befd` | E1 |
+| `adc6710a9` | E3 |
+| `b69014ca7`, `2767738f0` | E4 (the second: a telegram test call the first missed) |
+| `9da6240b9` | E5 |
+| `9c7afba1c` | E6 |
+| `0afafa5e7` | `207-attention-flat-list.md` §5.2 "Decided 2026-11-21" |
+| (this doc's commit) | this section |
+
+- **E1 fixed as far as ACP allows; the rest is an owner decision.** `ExternalApproval` now replies
+  `tools::ExternalVerdict { decision, dismissed }` (`registry.rs`; a plain allow/deny is `ExternalVerdict::plain`),
+  carrying the approval's `dismissed` instead of flattening it into `Deny`. `acp_child::outcome` answers a dismissal
+  with the harness's reject option (`reject_once` first) and attaches
+  `_meta.theuth = {left_to_agent: true, text: "not run: the user left this to you, choose another way or continue
+  without it"}`; a plain deny carries no `_meta`. Not `cancelled`: `agent-client-protocol-schema` 1.13
+  `src/v1/client.rs:2394-2402` defines `Cancelled` as "the prompt turn was cancelled before the user responded", the
+  answer a client MUST give to pending permission requests after `session/cancel`, and acp_child itself sends it only
+  when the turn's cancel token fires (`acp_child.rs` `permission`, the doc comment above it) — a harness following
+  the spec ends the turn on it, which would make a dismissal stop the session. `SelectedPermissionOutcome` has only
+  `option_id` and `_meta` (`client.rs:2415-2428`), and `_meta` is documented "Implementations MUST NOT make
+  assumptions about values at these keys" — so no harness is obliged to show the text to its model.
+  **An external harness that does not read `_meta.theuth` cannot be told the difference: it sees `reject_once`, as
+  for a denial.** No harness source is in the tree, so how Claude Code / Codex / omp word a `reject_once` to their
+  model was not verified. Owner decision: keep reject + `_meta` (the session goes on, the model may read it as a
+  refusal) or use `cancelled` (the harness may end its turn). Tests
+  `tools::registry::tests::dismissed_external_approval_is_marked_dismissed`,
+  `agent::acp_child::tests::dismissed_permission_is_reject_once_marked_left_to_agent` (and the updated
+  `permission_outcome_prefers_once_and_cancels_without_decision`).
+- **E2:** confirmed, `tasks::ledger::tests::left_decision_does_not_change_episode_closing` exists (`ledger.rs`) and
+  passed in hold 2.
+- **E3 fixed.** `attention::derive`: a Blocked task whose blockers are all `left:` makes `blocked:<task>` with title
+  "“<task>”: decision left to the agent" and detail `attention::LEFT_DECISION` ("Decision left to the agent; it will
+  act when it next runs"). `score::left_decision(item)` (kind Blocked, id `blocked:`, that detail) makes
+  `base_class` Notice and `base_text` "decision left to the agent"; `alert::class_of` gives it no alert. Dismiss is the
+  existing hidden (versioned) path; Unblock is the existing blocked action (`left:` blockers are system blockers).
+  No wake anywhere. Race: `AwaitDecision` first calls the new `Ledger::take_left_decision(decision)`; when a task
+  carries `left:<decision>` (the leave landed after `Escalate`, before the wait subscribed, so it was recorded as
+  parked) it drops that blocker, resumes the task when no blocker is left (as a live leave does; events under actor
+  `system`, no wake) and answers `LEFT_ANSWER` at once. Tests `roster::attention::tests::left_blocker_is_a_quiet_notice`
+  (replaces `left_blocker_makes_no_item`), `tasks::tests::leave_decision_reports_live_and_answers_the_waiter`
+  (extended: a late `AwaitDecision` on the parked-left decision returns `LEFT_ANSWER` within 5 s and the task is
+  unblocked). The score fixture had no `left:` item; no expectation changed. No UI label change: the chip stays
+  "blocked", the detail line carries the text.
+- **E4 fixed.** Signal: `reaction_for` returns `Option` and `None` for a dismissal (no reaction in that file reads as
+  "left to the agent"); the channel sends "`<code>` left to the agent (not run, not refused)" instead; tombstones keep
+  `dismissed`, so a late `/approve`/`/deny` reads "was already left to the agent …"; asks `closing_note` says
+  "questions left to the agent". Slack `approvals::resolved_card` / Telegram `approvals::resolved` take `dismissed`:
+  "**tool** left to the agent (not run, not refused)", no "by"; Telegram's disabled button "left to the agent".
+  Slack `asks::closed_card` / Telegram `asks::closed` take `left_to_agent`: "**Questions left to the agent** (not
+  answered; the turn goes on)". No new emoji. Tests `signal::approvals::tests::dismissed_approval_reads_left_to_the_agent`,
+  `slack::approvals::tests::resolved_card_drops_buttons_and_names_user`, `slack::asks::tests::answered_and_closed_cards`,
+  `telegram::approvals::tests::resolved_card_rewrites_the_verdict_line_and_disables_the_buttons`,
+  `telegram::asks::tests::card_steps_through_the_questions_and_rejects_stale_presses` (each extended).
+- **E5 fixed.** `double::actor` `item()` drops its `now` parameter; the grace title is "double answers <choice> for
+  <what> — take over" (no seconds); `deadline_ms` / detail carry the deadline. Test
+  `double::actor::tests::acts_at_l2_after_grace` (asserts no countdown in the title, `deadline_ms` set, detail =
+  `will_act_at`).
+- **E6 fixed.** `score.rs`: blocks and task points computed in u64, the total summed in u64, all through
+  `clamp(u64) -> u32` (saturating at `u32::MAX`). Test `roster::score::tests::huge_weights_saturate` (every weight
+  `u32::MAX`, `blocks = u32::MAX`, rank 199).
+- **E7 not fixed (pushed back).** The 60 s `RescoreTick` is not only a rescore: `gather` is the only path that sees
+  items with no event behind them — `mesh::Status` (node / home offline), `secrets::ListRequests` (Attention has no
+  secret-request handler), `tasks::HomesOffline`, the registered `Source`s (double, a2a contacts, autoresearch;
+  `RegisterSource` only pushes to `self.sources`, polled in `gather`), budgets via `ListAgents`, and snooze expiry
+  (`derive` filters `snoozed_until_ms > now`). Skipping the gather when the last list has no `deadline_ms` /
+  `expires_ms` would leave those unseen until some unrelated event. A safe version needs those producers to notify
+  Attention first; not done.
+
+### Gates (second integrator)
+
+Hold 1 (19:12:32–19:17:24, tree `adc6710a9`):
+
+| step | rc | counts |
+|---|---|---|
+| clippy `-D warnings --all-targets` roster tools tasks agent (+ the two allows) | 0 | |
+| `cargo test --no-fail-fast` roster tools tasks double | 101 | not counted: roster did not compile — my E6 edit (`clamp` not yet defined) landed in the working tree while the hold was building. Re-run in hold 2. |
+| `cargo test -p agent --lib acp_child` | 0 | 53 passed |
+| `cargo test -p agent --lib supervisor::waits` | 0 | 6 passed |
+
+Hold 2 (19:18:42–19:34:09, tree `9c7afba1c`, plus `2767738f0` for the telegram test steps):
+
+| step | rc | counts |
+|---|---|---|
+| clippy `-D warnings --all-targets` roster double signal slack telegram | 101 | only error: `telegram` lib test did not compile (a `resolved(...)` test call missed by E4); fixed in `2767738f0`; no lint from roster, double, signal, slack |
+| `cargo test --no-fail-fast` roster tools tasks double | 101 | roster 130/130, tasks 124/124, double 81/81, tools 294 passed 1 failed 3 ignored: `git::tests::clone_pull_and_list_against_a_local_bare_repo` (`gpg failed to sign the data`, pinentry cancelled — the machine's global `commit.gpgsign`, as A reported) |
+| `cargo test -p signal --lib approvals` / `asks` | 0 / 0 | 9 / 4 passed |
+| `cargo test -p slack --lib approvals` / `asks` | 0 / 0 | 5 / 5 passed |
+| `cargo test -p telegram --lib approvals` / `asks` | 0 / 0 | 4 / 5 passed |
+| `just wire-schema` | 0 | 1 passed; no tracked file changed (`git status` clean outside this doc) |
+| classifier (`cargo test -p theuth --test wire_schema_snapshot`) vs the accepted baseline | 0 | 1 passed, no difference reported (0 `class:` lines); nothing accepted or regenerated |
+
+Hold 3 (UI): UI_RESULT
+
+### Not verified
+
+- Nothing ran against a live engine; nothing was seen in the Tauri app.
+- How an external harness (Claude Code, Codex, omp) reacts to `reject_once` + `_meta.theuth`: no harness code in the
+  tree; reasoning from the ACP schema only.
+- Signal/Slack/Telegram changes are tested on their pure card/text functions; the channel call sites compiled
+  (clippy / test builds) but no channel-level test drives a dismissed `ApprovalResolved` / left `AskResolved`.
+- E3's `AwaitDecision` race test drives the actor in order (leave, then wait); the real interleaving with the
+  `escalate` tool was not reproduced.
+
+### Process slips
+
+- Hold 1's four-crate test step compiled a half-edited `score.rs` (E6 in progress): I edited a crate under test while
+  the hold ran. After that, only crates outside the running step were edited during a hold (the telegram test fix
+  while hold 2 ran the four-crate tests).
