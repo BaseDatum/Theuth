@@ -363,14 +363,28 @@ async fn scenario_bounded_view() {
             .await
             .unwrap();
     }
+    // 201 P1: settle never waits (paused or not); it wakes the pump, which
+    // ingests the rows and gives each its draft.
+    let t0 = std::time::Instant::now();
+    endless.settle(h.id, Duration::from_secs(30)).await;
     assert!(
-        !endless.settle(h.id, Duration::from_secs(30)).await,
-        "paused: settle ingests and returns at once"
+        t0.elapsed() < Duration::from_secs(5),
+        "settle returns at once"
     );
-    assert_eq!(
-        endless.memory(h.id).await.unwrap().backlog.unwrap().lines,
-        5_000
-    );
+    let mut lines = 0;
+    for _ in 0..200 {
+        lines = endless
+            .memory(h.id)
+            .await
+            .unwrap()
+            .backlog
+            .map_or(0, |b| b.lines);
+        if lines == 5_000 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(lines, 5_000);
     let (epoch, head, history) = h.store.frame(h.id).await.unwrap();
     let mut session = Session::new(
         h.id,
@@ -422,8 +436,8 @@ async fn scenario_bounded_view() {
         "the G10 note"
     );
     assert!(
-        all.contains("lines not yet summarized"),
-        "the folded run line"
+        all.contains("older lines folded to fit the view"),
+        "the folded prefix line (201 P1: every unit has its draft)"
     );
     assert!(
         !all.contains("user: message 0:"),

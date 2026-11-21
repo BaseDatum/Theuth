@@ -1227,11 +1227,11 @@ async fn queued_merge_does_not_hold_back_the_frontier() {
     assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
 }
 
-/// 137G G7 `endless_fold`: every unbuilt level-0 unit becomes a node at once
-/// with no model call — long units a flagged excerpt ≤ `node_bytes` (head
-/// and tail kept), short ones their free line; the hung level-0 call is
-/// cancelled (no failure); the view settles; recall still finds the rows;
-/// an epochs session is unchanged.
+/// 137G G7 `endless_fold`, 201 P1: every level-0 unit already has its line
+/// from ingest — long units a draft excerpt ≤ `node_bytes` (head and tail
+/// kept), short ones their free line — so the view is built before any
+/// model call; folding adds nothing and leaves the drafts to refinement;
+/// recall still finds the rows; an epochs session is unchanged.
 #[tokio::test]
 async fn fold_turns_the_backlog_into_mechanical_nodes_at_once() {
     let p = Probe::new("fake/a", Act::Hang);
@@ -1240,11 +1240,10 @@ async fn fold_turns_the_backlog_into_mechanical_nodes_at_once() {
     until("a call in flight", || p.calls() >= 1).await;
     let before = endless.memory(id).await.unwrap();
     let backlog = before.backlog.expect("a backlog");
-    // The two long units wait in the hung batch; the short ones are free lines.
+    // The two long drafts wait for refinement; the short ones are free lines.
     assert_eq!((backlog.lines, backlog.paused), (2, false), "{backlog:?}");
 
     let mem = endless.fold(id).await.unwrap();
-    assert!(mem.backlog.is_none(), "{:?}", mem.backlog);
     assert!(!mem.settling, "every part is a built line");
     let mech: Vec<_> = mem.view.iter().filter(|l| l.mechanical).collect();
     assert_eq!(mech.len(), 2, "{:?}", mem.view);
@@ -1264,12 +1263,7 @@ async fn fold_turns_the_backlog_into_mechanical_nodes_at_once() {
             .all(|l| l.built && !l.text.contains(" … ")),
         "short units stay verbatim free lines"
     );
-    until("the hung call cancelled", || {
-        p.dropped.load(Ordering::SeqCst) == 1
-    })
-    .await;
     assert!(super::pump::failed_for_tests(&endless.inner, id).is_empty());
-    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     let stored = store.endless_nodes(id).await.unwrap();
     assert_eq!(
         stored
@@ -1591,18 +1585,24 @@ async fn batches_settle_200_units_in_parallel_and_retry_a_bad_line_alone() {
     endless.attach(id, attached()).await.unwrap();
     let m = endless.memory(id).await.unwrap();
     let b = m.backlog.expect("a backlog");
-    let shown = m.view.iter().filter(|l| !l.built && l.n == 1).count() as u32;
+    // 201 P1: every unit has its draft at ingest — no unsummarized run;
+    // with merges paused the view stays bounded by the hard-cap prefix.
     assert_eq!((b.lines, b.paused, b.eta_secs), (200, true, 0), "{b:?}");
-    assert!(shown > 0 && b.folded == 200 - shown, "{b:?} shown {shown}");
     let folded_line = m
         .view
         .iter()
         .find(|l| l.n > 1 && !l.built)
         .expect("one folded line");
     assert!(
+        m.view.iter().all(|l| l.built || l.id == folded_line.id),
+        "every other line is a draft"
+    );
+    assert!(
         folded_line
             .text
-            .contains(&format!("({} lines not yet summarized", b.folded))
+            .contains("older lines folded to fit the view"),
+        "{}",
+        folded_line.text
     );
     // R1-5: a folded run is no tree node — zoom refuses it, its text names recall only.
     assert!(
@@ -1614,8 +1614,13 @@ async fn batches_settle_200_units_in_parallel_and_retry_a_bad_line_alone() {
     assert!(folded_line.text.contains("recall") && !folded_line.text.contains("zoom"));
 
     endless.pause(id, false).await.unwrap();
-    eventually("200 level-0 nodes", || async {
-        level0(&store, id).await.len() == 200
+    eventually("200 refined level-0 nodes", || async {
+        level0(&store, id)
+            .await
+            .iter()
+            .filter(|n| n.model.is_some())
+            .count()
+            == 200
     })
     .await;
     let batches = s.count("batch");
@@ -1722,10 +1727,10 @@ async fn mechanical(store: &Store, id: SessionId) -> Vec<u64> {
         .collect()
 }
 
-/// 137G G7 + R1-2 + R2-2: a unit folds mechanically only after three hard
-/// failures in a row (R2-2 a: an empty reply counts, whatever `classify`
-/// says), 10 minutes since the first, and another unit built since; before
-/// that it keeps retrying; then the frontier moves on, nothing stays failed.
+/// 137G G7 + R1-2 + R2-2, 201 P1: a unit that fails keeps its draft from
+/// ingest and never blocks another unit; after three hard failures in a row
+/// (R2-2 a: an empty reply counts), 10 minutes since the first and another
+/// unit built since, it is given up — its draft stays, no model line.
 #[tokio::test]
 async fn three_hard_failures_over_ten_minutes_fold_the_unit() {
     let (_dir, endless, store, id) =
@@ -1736,32 +1741,41 @@ async fn three_hard_failures_over_ten_minutes_fold_the_unit() {
             .any(|(k, _, n)| *k == (0, 1) && *n >= 3)
     })
     .await;
-    eventually("the good unit built", || async {
-        level0(&store, id).await.iter().any(|n| n.i == 0)
+    eventually("the good unit refined", || async {
+        level0(&store, id)
+            .await
+            .iter()
+            .any(|n| n.i == 0 && n.model.is_some())
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        mechanical(&store, id).await,
+        [1],
+        "the bad unit keeps its draft"
+    );
     assert!(
-        mechanical(&store, id).await.is_empty(),
-        "under 10 minutes: no fold yet"
+        !endless
+            .quiet_for_tests(id, Duration::from_millis(200))
+            .await,
+        "under 10 minutes: still being refined"
     );
     super::pump::age_failures_for_tests(&endless.inner, id, Duration::from_secs(601));
-    eventually("the bad unit folds", || async {
-        mechanical(&store, id).await == [1]
-    })
-    .await;
-    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     assert!(
-        super::pump::failed_for_tests(&endless.inner, id)
-            .iter()
-            .all(|(k, ..)| k.0 > 0),
-        "no level-0 failure left"
+        endless.quiet_for_tests(id, Duration::from_secs(10)).await,
+        "given up: nothing left to refine"
     );
+    let bad = level0(&store, id)
+        .await
+        .into_iter()
+        .find(|n| n.i == 1)
+        .unwrap();
+    assert!(bad.mechanical && bad.model.is_none(), "{bad:?}");
 }
 
-/// R2-2 (b): an error that fails every unit (a revoked key, no credit, an
-/// unknown model) folds nothing however old — the session stays stalled,
-/// visibly, for Retry or a model switch.
+/// R2-2 (b), 201 P1: an error that fails every unit (a revoked key, no
+/// credit, an unknown model) never gives a unit up however old — every
+/// unit keeps its draft and the session stays stalled, visibly, for Retry
+/// or a model switch.
 #[tokio::test]
 async fn an_error_failing_every_unit_stalls_and_folds_nothing() {
     let (_dir, endless, store, id) = picky_session(
@@ -1777,12 +1791,23 @@ async fn an_error_failing_every_unit_stalls_and_folds_nothing() {
     .await;
     super::pump::age_failures_for_tests(&endless.inner, id, Duration::from_secs(3_600));
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(mechanical(&store, id).await.is_empty());
+    let nodes = level0(&store, id).await;
+    assert!(
+        nodes.len() == 3 && nodes.iter().all(|n| n.mechanical && n.model.is_none()),
+        "every unit keeps its draft: {nodes:?}"
+    );
+    assert!(
+        !endless
+            .quiet_for_tests(id, Duration::from_millis(200))
+            .await,
+        "not given up"
+    );
     assert!(endless.memory(id).await.unwrap().stalled.is_some());
 }
 
-/// R1-2: transient failures (429/529, network) never fold a unit, however
-/// many and however old — even beside units that build.
+/// R1-2, 201 P1: transient failures (429/529, network) never give a unit
+/// up, however many and however old — even beside units that build; the
+/// unit keeps its draft and keeps being retried.
 #[tokio::test]
 async fn transient_failures_never_fold_a_unit() {
     let overloaded = "529 Overloaded: overloaded_error, try again later";
@@ -1797,13 +1822,22 @@ async fn transient_failures_never_fold_a_unit() {
             .any(|(k, _, n)| *k == (0, 1) && *n >= 5)
     })
     .await;
-    eventually("the good unit built", || async {
-        level0(&store, id).await.iter().any(|n| n.i == 0)
+    eventually("the good unit refined", || async {
+        level0(&store, id)
+            .await
+            .iter()
+            .any(|n| n.i == 0 && n.model.is_some())
     })
     .await;
     super::pump::age_failures_for_tests(&endless.inner, id, Duration::from_secs(3_600));
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(mechanical(&store, id).await.is_empty());
+    assert_eq!(mechanical(&store, id).await, [1], "the draft stays");
+    assert!(
+        !endless
+            .quiet_for_tests(id, Duration::from_millis(200))
+            .await,
+        "not given up"
+    );
 }
 
 /// A paused endless session holding the same-size units `message k` for
@@ -1834,6 +1868,8 @@ async fn unbuilt_session(
 /// R2-6: a folded-run line whose range happens to be a tree address
 /// (`0+512`: id % n == 0, n = 2^k) refuses zoom like an unaligned one.
 /// R2-10: a run of one unit (`0+1`) still zooms to the unit's raw text.
+/// 201 P1: every unit has its draft at ingest, so with merges paused the
+/// folded run is the hard-cap prefix, not an unsummarized run.
 #[tokio::test]
 async fn zoom_refuses_an_aligned_folded_run_but_opens_a_lone_unit() {
     let (_d, endless, _s, id) = unbuilt_session(100..400).await;
@@ -1850,7 +1886,7 @@ async fn zoom_refuses_an_aligned_folded_run_but_opens_a_lone_unit() {
     let run = endless.memory(id).await.unwrap().view[0].clone();
     assert_eq!((run.id, run.n, run.built), (0, 1, false), "{}", run.text);
     assert!(
-        run.text.contains("lines not yet summarized"),
+        run.text.contains("older lines folded to fit the view"),
         "a folded run: {}",
         run.text
     );
@@ -1859,8 +1895,8 @@ async fn zoom_refuses_an_aligned_folded_run_but_opens_a_lone_unit() {
 }
 
 /// R1-3: at $10/M input a batch over `max_usd_per_call` splits into solo
-/// calls (no failure, no fold); only a unit whose own call is over the cap
-/// folds mechanically, with one notice.
+/// calls (no failure); only a unit whose own call is over the cap is given
+/// up (201 P1: it keeps its draft), with one notice.
 #[tokio::test]
 async fn over_cost_batch_splits_and_only_an_over_cost_unit_folds() {
     let s = Script::priced(Duration::ZERO, Some(10.0), 1_000);
@@ -1885,13 +1921,19 @@ async fn over_cost_batch_splits_and_only_an_over_cost_unit_folds() {
     );
     store.append(id, &ChatMessage::user(big)).await.unwrap();
     endless.attach(id, attached()).await.unwrap();
-    eventually("every unit built", || async {
-        level0(&store, id).await.len() == 5
+    eventually("four units refined", || async {
+        level0(&store, id)
+            .await
+            .iter()
+            .filter(|n| n.model.is_some())
+            .count()
+            == 4
     })
     .await;
     let nodes = level0(&store, id).await;
+    assert_eq!(nodes.len(), 5);
     let mechanical: Vec<u64> = nodes.iter().filter(|n| n.mechanical).map(|n| n.i).collect();
-    assert_eq!(mechanical, [4], "only the big unit folds");
+    assert_eq!(mechanical, [4], "only the big unit keeps its draft");
     assert!(
         nodes[..4]
             .iter()
@@ -1910,8 +1952,10 @@ async fn context_length_refusal_retries_once_smaller() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let (_dir, endless, store, id) = harness_for(cfg_137f(None), s.clone()).await;
     endless_session(&endless, &store, id).await;
-    eventually("every unit built", || async {
-        level0(&store, id).await.len() == 6
+    // 201 P1: every unit has a line at ingest; wait for the drafts' refinement.
+    eventually("every unit refined", || async {
+        let nodes = level0(&store, id).await;
+        nodes.len() == 6 && nodes.iter().all(|n| !n.mechanical)
     })
     .await;
     let calls = s.calls.lock().clone();
@@ -2143,8 +2187,10 @@ async fn endless_off_with_5000_unbuilt_writes_a_bounded_head() {
         "unscaled it would not fit"
     );
     assert!(head.len() <= 25_000 + 4_096, "{} bytes", head.len());
+    // 201 P1: the units are drafts, the merges paused: the oldest fold into
+    // the hard-cap prefix line.
     assert!(
-        head.contains("lines not yet summarized"),
+        head.contains("older lines folded to fit the view"),
         "{}",
         &head[..300]
     );

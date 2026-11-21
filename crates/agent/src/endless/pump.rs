@@ -425,6 +425,9 @@ struct Live {
     /// 201 P1: draft merges to rebuild (a child changed, or the model merge
     /// failed and is retried after its backoff).
     stale: HashSet<(u8, u64)>,
+    /// 201 P1: merges whose child changed while they were being built; the
+    /// node that lands from the old inputs stays stale.
+    redo: HashSet<(u8, u64)>,
 }
 
 impl Live {
@@ -526,16 +529,31 @@ impl Live {
             }
         } else {
             self.stale.remove(&(l, i));
+            if self.redo.remove(&(l, i)) {
+                self.stale.insert((l, i));
+            }
         }
         self.tree.insert(node);
-        if replaced {
+        if replaced && self.drafting() {
+            // A draft ancestor is rebuilt; one being built right now was
+            // built from the old child, so it is rebuilt again when it lands.
             let (mut pl, mut pi) = (l + 1, i / 2);
-            while self
-                .tree
-                .get(pl, pi)
-                .is_some_and(|p| p.quality() == Quality::Draft)
-            {
-                self.stale.insert((pl, pi));
+            loop {
+                let key = (pl, pi);
+                let running = self.running.contains(&key);
+                let draft = self
+                    .tree
+                    .get(pl, pi)
+                    .is_some_and(|p| p.quality() == Quality::Draft);
+                if running {
+                    self.redo.insert(key);
+                }
+                if draft {
+                    self.stale.insert(key);
+                }
+                if !(running || draft) {
+                    break;
+                }
                 pl += 1;
                 pi /= 2;
             }
@@ -713,6 +731,7 @@ impl Live {
             turns: HashMap::new(),
             drafts: BTreeSet::new(),
             stale: HashSet::new(),
+            redo: HashSet::new(),
         }
     }
 }
@@ -2350,10 +2369,14 @@ fn one_line(s: &str, max: usize) -> String {
 }
 
 /// 201 P1 (D5): no turn waits on the summary model — every unit has a line
-/// from its ingest on. Wakes the pump and returns `true` at once; `_max`
-/// (the old `settle_secs`) is accepted and ignored.
+/// from its ingest on. Ingests (no model call: new units get their drafts),
+/// wakes the pump and returns `true`; `_max` (the old `settle_secs`) is
+/// accepted and ignored.
 pub(crate) async fn settle(inner: &Inner, session: SessionId, _max: Duration) -> bool {
     if let Some(state) = state_of(inner, session) {
+        if let Err(e) = ingest(&state).await {
+            tracing::warn!(%session, error = %e, "endless: ingest before a turn");
+        }
         state.wake.notify_one();
     }
     true
@@ -2386,10 +2409,9 @@ pub(crate) async fn quiet_for_tests(inner: &Inner, session: SessionId, max: Dura
                     .is_some_and(|r| r.mechanical(last_ok))
             };
             let drafts = live.drafts.iter().filter(|i| !given_up(i)).count();
-            let failing = live
-                .failed
-                .iter()
-                .any(|(k, r)| r.failures >= 2 && (k.0 > 0 || live.drafts.contains(&k.1)));
+            let failing = live.failed.iter().any(|(k, r)| {
+                r.failures >= 2 && (k.0 > 0 || (live.drafts.contains(&k.1) && !given_up(&k.1)))
+            });
             (
                 unbuilt == 0 && drafts == 0 && live.stale.is_empty(),
                 live.frontier_stalled(cfg) || (live.drafting() && failing),
@@ -3005,13 +3027,16 @@ pub(crate) async fn fold_all(inner: &Inner, session: SessionId) -> anyhow::Resul
     let node_bytes = state.cfg.read().node_bytes;
     let nodes: Vec<Node> = {
         let live = state.live.lock();
-        if live.running.iter().any(|k| k.0 == 0) {
-            state.cancel_calls();
-        }
-        (live.base.min(live.t())..live.t())
+        let nodes: Vec<Node> = (live.base.min(live.t())..live.t())
             .filter(|i| !live.tree.built(0, *i))
             .map(|i| mechanical_node(&live.units[i as usize], node_bytes))
-            .collect()
+            .collect();
+        // 201 P1: a drafting session has nothing to fold (every unit has
+        // its draft); its refinement calls go on.
+        if !nodes.is_empty() && live.running.iter().any(|k| k.0 == 0) {
+            state.cancel_calls();
+        }
+        nodes
     };
     // R1-8: a model line that landed since the snapshot is kept, never overwritten.
     state.store.endless_nodes_put_new(session, &nodes).await?;
