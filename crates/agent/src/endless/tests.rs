@@ -1268,7 +1268,7 @@ async fn fold_turns_the_backlog_into_mechanical_nodes_at_once() {
     assert_eq!(
         stored
             .iter()
-            .filter(|n| n.mechanical && n.tries == 0)
+            .filter(|n| n.l == 0 && n.mechanical && n.tries == 0)
             .count(),
         2
     );

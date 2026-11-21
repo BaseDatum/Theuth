@@ -48,11 +48,13 @@ Code fixes:
 - `settle` ingests (no model call) before waking the pump and returning `true`.
 - `fold_all` cancels level-0 calls only when it has units to fold (a drafting session has none; its refinement goes on).
 - `quiet_for_tests`: a given-up draft no longer counts as "failing".
+- **Backfill ended only at refinement (real regression of D5)**: `Live::backfill` counted a draft as not done, so `active()` (the endless frame) waited for the model. It now counts built units (drafts included); the backlog still counts drafts. This reverses the earlier P1 deviation "Backfill … count a draft as not yet lined" for backfill.
+- **Turn view over budget (real regression of G1)**: drafts are built lines, so with merges not built the fold caps at `high() + raw_bytes`, above `view_bytes + raw_bytes`; and the fold sizes lines without their `id+n|` prefix and newline (~1.6 KB over on 5,000 units). `render_within` now scales against `high() + raw_bytes` and re-renders smaller (at most 3 renders) while the text exceeds `max_bytes`.
 
 Verdicts (R = real regression, fixed in code; N = asserted removed 137 behaviour, test rewritten to the §5/§6 behaviour):
 - `refined_child_rebuilds_its_draft_parent` — R: the race above; test unchanged.
 - `context_length_refusal_retries_once_smaller` — N: "every unit built" held at ingest before any call; now waits for every draft refined. Retry-smaller assertions unchanged.
-- `fold_turns_the_backlog_into_mechanical_nodes_at_once` — N: units already have draft excerpts; asserts the view is built with ≤ node_bytes drafts before any call, fold adds nothing, no failure; no cancel of the refinement call.
+- `fold_turns_the_backlog_into_mechanical_nodes_at_once` — N: units already have draft excerpts; asserts the view is built with ≤ node_bytes drafts before any call, fold adds nothing, no failure; no cancel of the refinement call; the stored-draft count is level 0 only (draft merges carry the flag too).
 - `an_error_failing_every_unit_stalls_and_folds_nothing` — N: drafts carry the `mechanical` flag; asserts every unit keeps its draft, is never given up, stalled shown.
 - `three_hard_failures_over_ten_minutes_fold_the_unit` — N: asserts the bad unit keeps its draft, unit 0 refined meanwhile, still retried under 10 min, given up (draft kept, no model line) after.
 - `transient_failures_never_fold_a_unit` — N: asserts the draft stays and the unit is never given up.
@@ -60,7 +62,10 @@ Verdicts (R = real regression, fixed in code; N = asserted removed 137 behaviour
 - `batches_settle_200_units_in_parallel_and_retry_a_bad_line_alone` — N: paused view has drafts and the hard-cap prefix run (no unsummarized run); waits for 200 refined nodes; batch/solo/parallel assertions unchanged.
 - `zoom_refuses_an_aligned_folded_run_but_opens_a_lone_unit` — N: the folded run is now the hard-cap prefix ("older lines folded to fit the view"); alignment/zoom assertions unchanged.
 - `endless_off_with_5000_unbuilt_writes_a_bounded_head` — N: bound unchanged; head text is the prefix line.
-- `endless_turn_view_is_bounded_and_shrinks_after_a_refusal` (loop_) — N: settle returns at once (timed); bound and shrink assertions unchanged; prefix line text.
-- `pump_builds_tree_and_tools_answer`, `settings_model_switch_is_live_and_resets_backoff`, `switch_cancels_the_hung_call_and_rebuilds_on_the_new_model` — R: draft merges left behind by the stale race (`built_by` / the view saw model-less draft merges); tests unchanged.
+- `endless_turn_view_is_bounded_and_shrinks_after_a_refusal` (loop_) — R + N: the view exceeded its budget (117,607 B; fixed in `render_within`); settle now returns at once (timed); prefix line text.
+- `pump_builds_tree_and_tools_answer` — R: `active()` false after attach (backfill waited for refinement); fixed in `Live::backfill`, test unchanged.
+- `settings_model_switch_is_live_and_resets_backoff`, `switch_cancels_the_hung_call_and_rebuilds_on_the_new_model` — R: model-less draft merges left behind by the stale race; tests unchanged (green after the race fix).
 
 Not done: `Fold::folded` counts only unbuilt parts, so the G10 turn note reads "0 older unsummarized lines" when the view folds drafts into the prefix; `endless_fold` in a drafting session does nothing.
+
+Result: `cargo test -p agent endless` — `test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 1000 filtered out`.

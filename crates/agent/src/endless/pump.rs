@@ -463,14 +463,18 @@ impl Live {
         self.fold = None;
     }
 
-    /// D14 progress; `None` once every history unit has its line (201 P1:
-    /// a draft is not done until refined).
+    /// D14 progress; `None` once every history unit has its line. 201 P1
+    /// (D5): a draft is a line, so a drafting session's backfill ends at
+    /// ingest and the endless frame never waits on refinement (the backlog
+    /// still counts drafts); a meeting tree counts built units as before.
     fn backfill(&self) -> Option<Backfill> {
         let total = self.backfill_total;
         if total <= self.base {
             return None;
         }
-        let done = (self.base..total).filter(|i| self.lined(*i)).count() as u64;
+        let done = (self.base..total)
+            .filter(|i| self.tree.built(0, *i))
+            .count() as u64;
         let span = total - self.base;
         if done >= span {
             return None;
@@ -2463,38 +2467,47 @@ pub(crate) async fn render_for_turn(
 }
 
 /// The view under `cfg`, scaled down (view and raw budgets by one factor)
-/// when `view_bytes + raw_bytes` exceed `max_bytes` — a scaled fold is
-/// rebuilt for that render, the live fold is untouched (G1, R1-7).
+/// when its hard cap `high() + raw_bytes` exceeds `max_bytes` — a scaled
+/// fold is rebuilt for that render, the live fold is untouched (G1, R1-7).
+/// 201 P1: drafts are built lines, so a view whose merges are not built
+/// yet folds to that cap (not to `raw_bytes`); the slack is budgeted too.
 fn render_within(
     live: &mut Live,
     cfg: FoldCfg,
     max_bytes: Option<usize>,
     session: SessionId,
 ) -> ViewRender {
-    let want = (cfg.view_bytes + cfg.raw_bytes) as usize;
-    match max_bytes.filter(|m| *m < want) {
-        Some(m) => {
-            let scale = m as f64 / want as f64;
-            let small = FoldCfg {
-                view_bytes: ((f64::from(cfg.view_bytes) * scale) as u32).max(2_000),
-                raw_bytes: ((f64::from(cfg.raw_bytes) * scale) as u32).max(1_000),
-                slack: cfg.slack,
-            };
-            let f = Fold::rebuild(
-                &live.tree,
-                live.base.min(live.t()),
-                live.t(),
-                small,
-                &live.units,
-            );
-            let r = fold::render(&live.tree, &f, &live.units);
-            tracing::info!(%session, max_bytes = m, view_bytes = small.view_bytes, raw_bytes = small.raw_bytes, bytes = r.text().len(), folded = r.folded, "endless: view scaled down to the budget");
-            r
+    let want = cfg.high() + cfg.raw_bytes as usize;
+    let Some(m) = max_bytes.filter(|m| *m < want) else {
+        let f = live.fold(cfg);
+        return fold::render(&live.tree, &f, &live.units);
+    };
+    // The fold sizes lines without their `id+n|` prefix and newline, so a
+    // render can overshoot `m` by that overhead: shrink by the overshoot and
+    // render again (at most twice more).
+    let mut scale = m as f64 / want as f64;
+    let mut attempt = 0;
+    loop {
+        let small = FoldCfg {
+            view_bytes: ((f64::from(cfg.view_bytes) * scale) as u32).max(2_000),
+            raw_bytes: ((f64::from(cfg.raw_bytes) * scale) as u32).max(1_000),
+            slack: cfg.slack,
+        };
+        let f = Fold::rebuild(
+            &live.tree,
+            live.base.min(live.t()),
+            live.t(),
+            small,
+            &live.units,
+        );
+        let r = fold::render(&live.tree, &f, &live.units);
+        let bytes = r.text().len();
+        attempt += 1;
+        if bytes <= m || attempt == 3 {
+            tracing::info!(%session, max_bytes = m, view_bytes = small.view_bytes, raw_bytes = small.raw_bytes, bytes, folded = r.folded, "endless: view scaled down to the budget");
+            return r;
         }
-        None => {
-            let f = live.fold(cfg);
-            fold::render(&live.tree, &f, &live.units)
-        }
+        scale *= m as f64 / bytes as f64 * 0.98;
     }
 }
 
