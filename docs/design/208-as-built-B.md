@@ -57,13 +57,14 @@ Script `/tmp/theuth-208-b-gate.sh`, log `/tmp/theuth-208-b-gate.log`; each step'
 | 2 | export_bindings | 0 | |
 | 2 | classifier | 101 | 8 `Additive`: `/methods/agent_graph`; `agent.peer-message@1` `from`, `to`, `result` (schema + receiverSchema); `/x-theuth/events/agent.graph@1`. No `Nonbreaking`, `ReviewRequired` or `Breaking` |
 | 2 | accept + classifier | 0 | fixture `crates/theuth/tests/fixtures/wire/openrpc-v1.json` accepted |
+| 3 (21:43) | the notices test with `crates/agent` checked out at base `98bc9b58b` (B's files removed, restored afterwards) | 101 | 0 passed, 1 failed: the same assertion, so the failure predates B |
 
-`cargo fmt -p agent -p rpc-compose` also reformatted about 40 files B does not own; those changes were reverted, not committed. `lib.rs`, `client_mirror.rs` and `wire_golden.rs` carry only B's lines, so the agent and rpc-compose trees are still not `cargo fmt` clean, as on main. The new files are formatted. Hold 2 was launched 17 s after hold 1's first, aborted run released the lock, short of the 45 s spacing rule. One `graph.rs` edit (the coalescer fix) went in while hold 1 was still compiling the rpc-compose tests.
+`cargo fmt -p agent -p rpc-compose` also reformatted about 40 files B does not own; those changes were reverted, not committed. `lib.rs`, `client_mirror.rs` and `wire_golden.rs` carry only B's lines, so the agent and rpc-compose trees are still not `cargo fmt` clean, as on main. The new files are formatted. Rule breaches: the 21:24 rerun of hold 1 started 17 s after the aborted 21:22 run released the lock, short of the 45 s spacing rule. One `graph.rs` edit (the coalescer fix) went in while hold 1 was still compiling the rpc-compose tests; hold 2 re-ran every affected step.
 
 ## Reds
 
 - `rpc-compose` `wire_golden::legacy_event_families` and `wire_parity_inc4::agent_golden_parity`: the known stale `agent.events` sample (pre-existing, not fixed). Both stop before they reach `agent.graph` or `agent.peer-message`, which is why `graph::tests::wire_fixtures_round_trip` exists.
-- `agent` `communication::files::notices::tests::notices_are_automatic_and_stop_at_the_chain_limit` (`notices.rs:593`, `a.store.errors(s)` not empty): fails every time. The test drives `Agents::admit_notice` without the graph actor and calls none of B's code. Whether it also fails at base: see the hold 3 row, if present.
+- `agent` `communication::files::notices::tests::notices_are_automatic_and_stop_at_the_chain_limit` (`notices.rs:593`, `a.store.errors(s)` not empty): fails every time, and also fails with `crates/agent` at base `98bc9b58b` (hold 3), so it predates B. It is not on the round's list of known reds.
 
 ## Not done / not verified
 
