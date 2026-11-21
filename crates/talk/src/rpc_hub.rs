@@ -13,6 +13,14 @@ pub trait TalkHubApi {
     /// `set_input_devices` and `set_polish_model` left behind, plus the config-only keys.
     #[method(name = "voice_settings")]
     async fn voice_settings(&self) -> RpcResult<voice::VoiceSettings>;
+    /// `voice.stt_engine: mlx` (202 §4): absent | downloading (bytes) | ready |
+    /// failed | unavailable (not Apple silicon, no `uv`). Poll it for download progress.
+    #[method(name = "voice_mlx_status")]
+    async fn voice_mlx_status(&self) -> RpcResult<voice::mlx::MlxState>;
+    /// The explicit MLX download (202 §4): venv via `uv`, then the ~2.5 GB
+    /// weights. Returns at once with the state; progress via `voice_mlx_status`.
+    #[method(name = "voice_mlx_download")]
+    async fn voice_mlx_download(&self) -> RpcResult<voice::mlx::MlxState>;
 }
 
 #[async_trait]
@@ -25,6 +33,35 @@ impl TalkHubApiServer for Server {
             .await?
             .map(|m| m.id);
         Ok(settings)
+    }
+
+    async fn voice_mlx_status(&self) -> RpcResult<voice::mlx::MlxState> {
+        let data_dir = self.rt.data_dir.clone();
+        Ok(tokio::task::spawn_blocking(move || voice::mlx::state(&data_dir))
+            .await
+            .unwrap_or_else(|e| voice::mlx::MlxState::Failed {
+                reason: e.to_string(),
+            }))
+    }
+
+    async fn voice_mlx_download(&self) -> RpcResult<voice::mlx::MlxState> {
+        let data_dir = self.rt.data_dir.clone();
+        match voice::mlx::state(&data_dir) {
+            s @ (voice::mlx::MlxState::Unavailable { .. }
+            | voice::mlx::MlxState::Ready
+            | voice::mlx::MlxState::Downloading { .. }) => return Ok(s),
+            _ => {}
+        }
+        let dir = data_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = voice::mlx::install(&dir, |_| {}) {
+                tracing::warn!("voice: mlx download: {e:#}");
+            }
+        });
+        Ok(voice::mlx::MlxState::Downloading {
+            done_bytes: 0,
+            total_bytes: 0,
+        })
     }
 }
 

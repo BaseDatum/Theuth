@@ -32,6 +32,7 @@ pub mod live;
 pub mod mic;
 pub mod model;
 pub mod out;
+pub mod mlx;
 pub mod shape;
 mod speak;
 mod stt;
@@ -656,6 +657,9 @@ pub struct VoiceConfig {
     pub stt_model_dir: Option<PathBuf>,
     /// Unload the speech-to-text model after this long unused; `0` keeps it resident (45 §0.7).
     pub stt_idle_secs: u64,
+    /// Whole-utterance engine: `onnx` (built in) or `mlx` (Apple silicon, after the explicit
+    /// download; ONNX until then). See `docs/design/202-stt-mlx-engine.md`.
+    pub stt_engine: mlx::SttEngine,
     /// A local Nemotron streaming ONNX checkpoint (encoder.onnx, decoder_joint.onnx,
     /// tokenizer.model); `None` → `<data_dir>/models/nemotron-streaming-en` (54 §9).
     pub dictation_model_dir: Option<PathBuf>,
@@ -695,6 +699,7 @@ impl Default for VoiceConfig {
             model_dir: None,
             stt_model_dir: None,
             stt_idle_secs: 600,
+            stt_engine: mlx::SttEngine::Onnx,
             dictation_model_dir: None,
             dictation_max_secs: 300,
             player_buffer_ms: 200,
@@ -1273,10 +1278,16 @@ impl runtime::Plugin for VoicePlugin {
             .stt_model_dir
             .clone()
             .unwrap_or_else(|| rt.data_dir.join("models").join(TDT_MODEL_SUBDIR));
+        let mlx = mlx::select(
+            cfg.stt_engine,
+            &rt.data_dir,
+            Duration::from_secs(cfg.stt_idle_secs),
+        );
         let stt = Transcriber::spawn(Transcriber::new(
             stt_dir,
             rt.data_dir.clone(),
             Duration::from_secs(cfg.stt_idle_secs),
+            mlx,
         ));
         stt.register(TRANSCRIBER_ACTOR)?;
         let dict_dir = cfg
