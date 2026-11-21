@@ -254,7 +254,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
           label={
             <>
               Kept after a trim · <span className="tabular-nums">{fixed ? `${lowUi} KB` : `${lowUi} %`}</span>
-              {resolvedTail && <span className="text-fg-tertiary tabular-nums">{` · ≈ ${Math.round(resolvedTail.low / 1000)} KB`}</span>}
+              {resolvedTail && <span className="text-fg-tertiary tabular-nums">{` · about ${Math.round(resolvedTail.low / 1000)} KB`}</span>}
             </>
           }
           description={
@@ -279,7 +279,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
           label={
             <>
               Trim at · <span className="tabular-nums">{fixed ? `${highUi} KB` : `${highUi} %`}</span>
-              {resolvedTail && <span className="text-fg-tertiary tabular-nums">{` · ≈ ${Math.round(resolvedTail.high / 1000)} KB`}</span>}
+              {resolvedTail && <span className="text-fg-tertiary tabular-nums">{` · about ${Math.round(resolvedTail.high / 1000)} KB`}</span>}
             </>
           }
           description={
@@ -355,7 +355,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
             </SelectContent>
           </Select>
         </Row>
-        <Row label="Describe images" description="When an image or PDF leaves the word-for-word part, the summariser writes a one-line description of it; zoom brings the original back. Default on.">
+        <Row label="Describe images" description="When an image leaves the word-for-word part, the summariser writes a one-line description of it; zoom brings the original back. Default on.">
           <Switch aria-label="Describe images" checked={(s?.describe_images ?? ENDLESS_DEFAULTS.describe_images) !== 'off'} disabled={busy} onCheckedChange={(v) => patch({ describe_images: v ? 'auto' : 'off' })} />
         </Row>
         <Row stack label="Guards" description="Every summary line is checked before it is kept: no copied text, nothing the message does not say, no status words, one line in the format. Failures retry with the correction named.">
@@ -387,7 +387,7 @@ export function Memory({ focus = null }: { focus?: string | null }) {
         <Row label="Ledger size" description="How much the ledger may take in each turn, in KB. 1–16, default 4.">
           <Count aria-label="Ledger size in KB" value={s ? (s.ledger_bytes ?? ENDLESS_DEFAULTS.ledger_bytes) / 1000 : undefined} min={1} max={16} action={{ mutate: (n) => patch({ ledger_bytes: n * 1000 }), isPending: save.isPending }} />
         </Row>
-        <Row label="Show summary-model suggestions" description="What the summariser notices (a decision made, a task opened) appears in the ledger as an unconfirmed suggestion for the model to confirm or drop. Needs the ledger. Default on.">
+        <Row label="Show summary-model suggestions" description="Phrases in your own messages that read as a decision or a constraint are offered in the ledger as unconfirmed suggestions, for the model to confirm or drop. Needs the ledger. Default on.">
           <Switch aria-label="Show summary-model suggestions" checked={s?.ledger_suggestions ?? ENDLESS_DEFAULTS.ledger_suggestions} disabled={busy || !(s?.ledger ?? ENDLESS_DEFAULTS.ledger)} onCheckedChange={(v) => patch({ ledger_suggestions: v })} />
         </Row>
       </Section>

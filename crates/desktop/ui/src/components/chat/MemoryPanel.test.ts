@@ -207,7 +207,7 @@ test('backlog row: count, ETA, batch size, the share of lines summarized, what t
   expect(html).toContain('Newest 300 lines shown in full; older ones are folded until summarized. Model anthropic/claude-haiku-4-5.')
   expect(html).toContain('>Trim now</button>')
   expect(html).toContain('>Pause settling</button>')
-  expect(html).toContain('Trim now: cuts this chat&#x27;s verbatim tail back to its low mark and starts a new generation, at no cost. Recall still finds the originals.')
+  expect(html).toContain('Trim now: cuts this chat&#x27;s verbatim tail back to its low mark and starts a new generation, at no cost. In meetings and while history is still being summarised this folds the view instead. Recall still finds the originals.')
   expect(html).not.toContain('Settling 4812 lines')
   expect(html).not.toContain('%</span>')
   // The batch size is the setting's; no ETA while unknown.
@@ -360,7 +360,8 @@ test('201: the live numbers — the tail as a bar against its two marks, the gen
   const paint = (m: SessionMemory) => renderToStaticMarkup(createElement(Live, { m }))
   const html = paint({ ...memory, tail_mode: 'fixed', tail_low: 24_000, tail_high: 64_000, tail_bytes: 41_000, generation: 3, drafts: 2, profile: 'small', profile_reason: 'the model is local' })
   expect(html).toContain('tail 41 KB')
-  expect(html).toMatch(/role="meter" aria-label="Tail size" aria-valuemin="0" aria-valuemax="64000" aria-valuenow="41000"/)
+  expect(html).toMatch(/role="meter" aria-label="Tail fill" aria-valuemin="0" aria-valuemax="64000" aria-valuenow="41000"/)
+  expect(html).not.toContain('aria-label="Tail size setting"')
   expect(html).toContain('24–64 KB')
   expect(html).toContain('generation 3')
   expect(html).toContain('2 on a draft')
@@ -375,7 +376,8 @@ test('201: the live numbers — the tail as a bar against its two marks, the gen
 test("201: the chat's tail override — the trigger names the chat's own pick or the default in force; clearing sends null and the reply replaces the cache", async () => {
   const paint = (m: SessionMemory) => renderToStaticMarkup(createElement(TailSize, { m, onChange: () => {} }))
   const inherited = paint({ ...memory, tail_mode: 'fixed', tail_low: 24_000, tail_high: 64_000, tail_override: null })
-  expect(inherited).toMatch(/aria-label="Tail size"/)
+  expect(inherited).toMatch(/aria-label="Tail size setting"/)
+  expect(inherited).not.toMatch(/aria-label="Tail fill"/)
   expect(inherited).toContain('tail 24–64 KB')
   expect(inherited).toContain(' · default')
   const own = paint({ ...memory, tail_mode: 'scaled', tail_low: 0, tail_high: 0, tail_override: { mode: 'scaled', low: 0.1, high: 0.25 } })

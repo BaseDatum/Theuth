@@ -266,7 +266,7 @@ export function TailSize({ m, busy, onChange }: { m: Pick<SessionMemory, 'tail_m
   const inForce = own ? tailRange(own.mode, own.low, own.high) : m.tail_high > 0 ? tailRange('fixed', m.tail_low, m.tail_high) : mode
   return (
     <Select value={own ? tailKey(own) : DEFAULT_TAIL} disabled={busy} onValueChange={(v) => onChange(v === DEFAULT_TAIL ? null : (options.find((o) => tailKey(o) === v) ?? null))}>
-      <SelectTrigger size="sm" className="h-6 gap-1 px-2 text-xs text-fg-secondary" aria-label="Tail size" title="Kept after a trim – trim at">
+      <SelectTrigger size="sm" className="h-6 gap-1 px-2 text-xs text-fg-secondary" aria-label="Tail size setting" title="Kept after a trim – trim at">
         <SelectValue>
           tail {inForce}
           {!own && <span className="text-fg-tertiary"> · default</span>}
@@ -294,7 +294,7 @@ function TailBar({ m }: { m: SessionMemory }) {
   return (
     <span className="flex items-center gap-1.5 tabular-nums" title={`Trimmed back to ${kb(m.tail_low)} once it passes ${kb(m.tail_high)}`}>
       tail {kb(m.tail_bytes ?? 0)}
-      <span role="meter" aria-label="Tail size" aria-valuemin={0} aria-valuemax={m.tail_high} aria-valuenow={m.tail_bytes ?? 0} className="relative h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+      <span role="meter" aria-label="Tail fill" aria-valuemin={0} aria-valuemax={m.tail_high} aria-valuenow={m.tail_bytes ?? 0} className="relative h-1.5 w-16 overflow-hidden rounded-full bg-muted">
         <span className="absolute inset-y-0 left-0 bg-primary/70" style={{ width: `${fill}%` }} />
         <span className="absolute inset-y-0 w-px bg-fg-tertiary" style={{ left: `${(m.tail_low / m.tail_high) * 100}%` }} />
       </span>
@@ -517,9 +517,12 @@ export function nextTry(s: Stalled, now: number): string {
 /** 201 Trim now (`endless_fold`; 137G's Fold now), shared by the failing block and the backlog row; the footer owns the mutation. */
 type Fold = { run(): void; pending: boolean }
 
+/** R3-13: what Trim now does where there is no tail to cut (`endless_fold` folds the view there). */
+const TRIM_INSTEAD = 'In meetings and while history is still being summarised this folds the view instead.'
+
 function FoldButton({ fold }: { fold: Fold }) {
   return (
-    <Button size="xs" variant="outline" disabled={fold.pending} onClick={fold.run}>
+    <Button size="xs" variant="outline" disabled={fold.pending} onClick={fold.run} title={TRIM_INSTEAD}>
       {fold.pending && <LoaderCircle className="animate-spin" />}
       Trim now
     </Button>
@@ -674,7 +677,7 @@ function BacklogRow({ session, m, b, fold }: { session: string; m: SessionMemory
         {toggle(true, 'Pause settling')}
         <ChangeModel />
       </div>
-      <p className={help}>Trim now: cuts this chat's verbatim tail back to its low mark and starts a new generation, at no cost. Recall still finds the originals.</p>
+      <p className={help}>Trim now: cuts this chat's verbatim tail back to its low mark and starts a new generation, at no cost. {TRIM_INSTEAD} Recall still finds the originals.</p>
     </>
   )
 }

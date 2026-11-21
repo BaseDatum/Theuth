@@ -73,7 +73,7 @@ async function render(): Promise<string> {
 }
 
 test('token estimate: bytes ÷ 3, in thousands', () => {
-  expect([tokenEstimate(64_000), tokenEstimate(16_000), tokenEstimate(256_000)]).toEqual(['≈ 21 k tokens', '≈ 5 k tokens', '≈ 85 k tokens'])
+  expect([tokenEstimate(64_000), tokenEstimate(16_000), tokenEstimate(256_000)]).toEqual(['about 21 k tokens', 'about 5 k tokens', 'about 85 k tokens'])
 })
 
 test('the page reads agent.endless: switches and sliders show the stored values; the settle row is gone (201); the compactor row offers "Same as the session"', async () => {
@@ -86,7 +86,7 @@ test('the page reads agent.endless: switches and sliders show the stored values;
   // The tab is labelled Context; its id and URL stay `memory` so links keep working.
   expect(agent.tabs.find((t) => t.id === 'memory')?.label).toBe('Context')
   expect(html).toContain('View size · <span class="tabular-nums">128 KB</span>')
-  expect(html).toContain('≈ 43 k tokens')
+  expect(html).toContain('about 43 k tokens')
   expect(html).toMatch(/<input type="range" aria-label="View size in KB"[^>]*min="16" max="256" step="8" value="128"/)
   expect(html).toContain('Slack · <span class="tabular-nums">25 %</span>')
   expect(html).toMatch(/<input type="range" aria-label="Slack in percent"[^>]*min="0" max="50" step="2.5" value="25"/)
@@ -235,7 +235,7 @@ test('201: the sizing mode shows its own pair — KB with token estimates when f
   const fixed = await render()
   expect(fixed).toMatch(/<input type="range" aria-label="Kept after a trim in KB"[^>]*min="8" max="256" step="4" value="24"/)
   expect(fixed).toMatch(/<input type="range" aria-label="Trim at in KB"[^>]*min="16" max="512" step="8" value="64"/)
-  expect(fixed).toContain('≈ 8 k tokens of the newest messages')
+  expect(fixed).toContain('about 8 k tokens of the newest messages')
   // Slack and Start merging at are percentages in every mode; only the tail pair must be absent.
   expect(fixed).not.toContain('aria-label="Kept after a trim in percent"')
   expect(fixed).not.toContain('aria-label="Trim at in percent"')
@@ -249,8 +249,11 @@ test('201: the sizing mode shows its own pair — KB with token estimates when f
   conn.info = null
   expect(scaled).toMatch(/<input type="range" aria-label="Kept after a trim in percent"[^>]*min="2" max="40" step="1" value="10"/)
   expect(scaled).toMatch(/<input type="range" aria-label="Trim at in percent"[^>]*min="5" max="60" step="1" value="25"/)
-  expect(scaled).toContain('· ≈ 60 KB')
-  expect(scaled).toContain('· ≈ 150 KB')
+  expect(scaled).toContain('· about 60 KB')
+  expect(scaled).toContain('· about 150 KB')
+  // R3-13: no PDF promise; the suggestions text describes the cue list on the user's own messages.
+  expect(scaled).not.toContain('PDF')
+  expect(scaled).toContain('Phrases in your own messages that read as a decision or a constraint are offered')
   expect(scaled).toContain(' on Big')
   expect(scaled).not.toContain('aria-label="Kept after a trim in KB"')
   expect(scaled).not.toContain('aria-label="Trim at in KB"')
