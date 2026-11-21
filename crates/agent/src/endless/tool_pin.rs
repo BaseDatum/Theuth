@@ -184,7 +184,9 @@ pub fn switched_off_line(names: &[String]) -> String {
     } else {
         shown
     };
-    format!("Switched off for this chat (calls are refused until they are switched back on): {list}")
+    format!(
+        "Switched off for this chat (calls are refused until they are switched back on): {list}"
+    )
 }
 
 #[cfg(test)]

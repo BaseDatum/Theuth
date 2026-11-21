@@ -1053,7 +1053,10 @@ fn eval_s7_builtin_switches_through_the_loop() {
 
 /// The last `<tools>` note of request `b`.
 fn last_tools_note(b: &Value) -> Option<String> {
-    texts(b).into_iter().rev().find(|t| t.starts_with("<tools>"))
+    texts(b)
+        .into_iter()
+        .rev()
+        .find(|t| t.starts_with("<tools>"))
 }
 
 /// S7: 206 through the loop with a real python worker pool. Two builtins of
@@ -1128,7 +1131,11 @@ async fn s7() {
     assert!(!has(r2a, DIRECT), "off at once: {:?}", tool_names(r2a));
     endless_tools(r2a);
     assert_eq!(generation(&e, &h).await.n, g1, "no trim");
-    assert!(is_prefix(&r1, r2a), "diff at message {}", first_diff(&r1, r2a));
+    assert!(
+        is_prefix(&r1, r2a),
+        "diff at message {}",
+        first_diff(&r1, r2a)
+    );
     let note = last_tools_note(r2a).expect("a <tools> note");
     assert!(
         note.contains("Switched off for this chat") && note.contains(DIRECT),
@@ -1215,7 +1222,10 @@ async fn s7() {
     assert!(!note.contains("Switched off"), "{note}");
     let k = script.main_calls() - 2;
     let out = tool_result(r4b, &format!("ecall_{k}")).unwrap_or_default();
-    assert!(out.contains(&format!("{RUNTIME} ran")), "python calls it: {out}");
+    assert!(
+        out.contains(&format!("{RUNTIME} ran")),
+        "python calls it: {out}"
+    );
 
     // (6) A trim: both are back in the request's tool part.
     script.text("Five.");
