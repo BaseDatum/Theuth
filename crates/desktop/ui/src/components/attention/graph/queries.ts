@@ -1,7 +1,7 @@
 // 208 §8.5: the graph's data — one `agent_graph` snapshot, then `agent.graph@1` deltas through the pure reducer.
 // Re-snapshots only on a gap, a new epoch, a resync or a reconnect; a cursor renewal every 120 s keeps the engine's
 // lease alive. The dev fixture page swaps the source (`setGraphSource`) and the clock (`clock.ts` `setGraphClock`).
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { AgentGraphChanged } from '@/rpc/bindings/event.agent_2egraph.output'
 import type { GraphCursor } from '@/rpc/bindings/method.agent.input'
 import type { AgentGraph } from '@/rpc/bindings/method.agent.output'
@@ -10,6 +10,7 @@ import { graphRequirements } from '../requirements'
 import { useConnection } from '@/store/connection'
 import { onTopic } from '@/store/sessions'
 import { noteEngineTime } from './clock'
+import { retryDelay, streamRuns } from './lifecycle'
 import { applyDelta, cursorOf, type GraphState, mergeSnapshot, settleSnapshot } from './reducer'
 import { type TtlPrefs, windowMs } from './ttl'
 
@@ -30,16 +31,22 @@ export function setGraphSource(s: GraphSource | null): void {
   override = s
 }
 
+const subscribeVisibility = (cb: () => void) => {
+  document.addEventListener('visibilitychange', cb)
+  return () => document.removeEventListener('visibilitychange', cb)
+}
+
 /**
- * The graph state for `ttl`'s window, with `include` sessions shown regardless of age (contract §8.5). Only while
- * `active` (the region expanded or full screen) does it hold the stream and renew the lease; inactive it keeps the last
- * state and makes no calls, so the engine's graph actor goes dormant 300 s later. Re-activation starts from a full
- * snapshot (the stream had gaps meanwhile).
+ * The graph state for `ttl`'s window, with `include` sessions shown regardless of age (contract §8.5). While the caller
+ * is mounted and the document visible (`streamRuns`, review U4) it holds the stream, renews the lease every 120 s and
+ * retries failed calls with backoff; collapsed or not, so the strip's counts stay live. Hidden: everything pauses and
+ * the engine's lease runs out; visible again starts from a full snapshot. One caller (`GraphRegion`) owns the stream.
  */
-export function useAgentGraph(ttl: TtlPrefs, include: readonly string[], active: boolean): { state: GraphState | null; supported: boolean; error: string | null } {
+export function useAgentGraph(ttl: TtlPrefs, include: readonly string[]): { state: GraphState | null; supported: boolean; error: string | null } {
   const engineSupports = useSupported(graphRequirements)
   const api = useConnection((s) => s.api)
   const conn = useConnection((s) => s.state)
+  const visible = useSyncExternalStore(subscribeVisibility, () => document.visibilityState !== 'hidden', () => true)
   const source = useMemo<GraphSource | null>(
     () =>
       override ??
@@ -52,7 +59,7 @@ export function useAgentGraph(ttl: TtlPrefs, include: readonly string[], active:
     [api],
   )
   const supported = override !== null || engineSupports
-  const enabled = supported && source !== null && active
+  const enabled = streamRuns({ supported, source: source !== null, visible })
   const [state, setState] = useState<GraphState | null>(null)
   const [error, setError] = useState<string | null>(null)
   const window = windowMs(ttl)
@@ -61,7 +68,16 @@ export function useAgentGraph(ttl: TtlPrefs, include: readonly string[], active:
   // The 207 `patchEvent` rule: one call in flight; asks meanwhile collapse into one follow-up (full wins over cursor).
   // `gen` counts activations: a reply to a call from an earlier one is dropped, and no call starts while inactive.
   // `buffer` holds deltas that arrived while a call was in flight (review U3).
-  const run = useRef({ state: null as GraphState | null, pending: false, again: null as null | 'full' | 'cursor', on: false, gen: 0, buffer: [] as AgentGraphChanged[] })
+  const run = useRef({
+    state: null as GraphState | null,
+    pending: false,
+    again: null as null | 'full' | 'cursor',
+    on: false,
+    gen: 0,
+    buffer: [] as AgentGraphChanged[],
+    failures: 0,
+    cancelRetry: null as null | (() => void),
+  })
   const snapshot = useRef<(full: boolean) => void>(() => undefined)
   snapshot.current = (full: boolean) => {
     const r = run.current
@@ -86,6 +102,7 @@ export function useAgentGraph(ttl: TtlPrefs, include: readonly string[], active:
         r.state = out.state
         setState(out.state)
         setError(null)
+        r.failures = 0
         if (out.resnapshot) r.again = 'full'
       })
       .catch((e: unknown) => {
@@ -99,6 +116,14 @@ export function useAgentGraph(ttl: TtlPrefs, include: readonly string[], active:
           if (out.resnapshot) r.again = 'full'
         }
         r.buffer = []
+        // Review U4: retry after 5 s, 15 s, then every 60 s, instead of waiting for the next renewal.
+        r.failures += 1
+        r.cancelRetry?.()
+        const t = setTimeout(() => {
+          r.cancelRetry = null
+          snapshot.current(full || r.state === null)
+        }, retryDelay(r.failures))
+        r.cancelRetry = () => clearTimeout(t)
       })
       .finally(() => {
         r.pending = false
@@ -139,6 +164,8 @@ export function useAgentGraph(ttl: TtlPrefs, include: readonly string[], active:
     return () => {
       off()
       clearInterval(renew)
+      r.cancelRetry?.()
+      r.cancelRetry = null
       a.cancel?.()
       a.cancel = null
       r.on = false

@@ -9,6 +9,8 @@ import { type StripCounts, stripText } from './selectors'
 export type StripProps = {
   counts: StripCounts
   older: GraphOlder | null
+  /** The last engine call failed while an earlier state is shown (review U4). */
+  stale?: boolean
   /** The list's subtree filter label, mirrored here. */
   subtree: string | null
   expanded: boolean
@@ -18,7 +20,7 @@ export type StripProps = {
   children?: ReactNode
 }
 
-export function Strip({ counts, older, subtree, expanded, onToggle, onClearSubtree, children }: StripProps) {
+export function Strip({ counts, older, stale = false, subtree, expanded, onToggle, onClearSubtree, children }: StripProps) {
   return (
     <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border-subtle px-2 text-xs text-fg-secondary">
       <button
@@ -33,6 +35,11 @@ export function Strip({ counts, older, subtree, expanded, onToggle, onClearSubtr
         <span className="font-medium text-foreground">Agents</span>
         <span className={cn('truncate tabular-nums', counts.needYou > 0 && 'text-danger')}>{stripText(counts)}</span>
       </button>
+      {stale && (
+        <span className="shrink-0 text-fg-tertiary" title="The last update from the engine failed; retrying">
+          stale
+        </span>
+      )}
       {older && older.roots > 0 && (
         <span className="hidden shrink-0 text-fg-tertiary tabular-nums sm:inline" title={`${older.nodes} sessions in idle trees left out`}>
           +{older.roots} older trees

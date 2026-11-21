@@ -16,7 +16,14 @@ export function defaultGraphHeight(viewport: number): number {
 const clampInt = (v: unknown, lo: number, hi: number, fallback: number): number =>
   typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : fallback
 
-/** Parse; garbage or missing parts → defaults; height clamped to [160, 2000]; TTL minutes clamped per kind. */
+/** Largest TTL in minutes per kind: child 1 d, root and desk 7 d, edge 4 h. */
+export const TTL_MAX: TtlPrefs = { child_min: 1440, root_min: 10080, desk_min: 10080, edge_min: 240 }
+
+/** Review U9: a stored TTL counts only when finite, positive and within its bound (rounded, at least 1); else the default. */
+const ttlMin = (v: unknown, hi: number, fallback: number): number =>
+  typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= hi ? Math.max(1, Math.round(v)) : fallback
+
+/** Parse; garbage or missing parts → defaults; height clamped to [160, 2000]; a TTL outside (0, TTL_MAX] → its default. */
 export function readGraphPrefs(raw: string | null): GraphPrefs {
   let v: unknown = null
   try {
@@ -33,10 +40,10 @@ export function readGraphPrefs(raw: string | null): GraphPrefs {
     height: typeof o.height === 'number' && Number.isFinite(o.height) ? clampInt(o.height, 160, 2000, 160) : null,
     follow: typeof o.follow === 'boolean' ? o.follow : d.follow,
     ttl: {
-      child_min: clampInt(t.child_min, 1, 1440, d.ttl.child_min),
-      root_min: clampInt(t.root_min, 1, 10080, d.ttl.root_min),
-      desk_min: clampInt(t.desk_min, 1, 10080, d.ttl.desk_min),
-      edge_min: clampInt(t.edge_min, 1, 240, d.ttl.edge_min),
+      child_min: ttlMin(t.child_min, TTL_MAX.child_min, d.ttl.child_min),
+      root_min: ttlMin(t.root_min, TTL_MAX.root_min, d.ttl.root_min),
+      desk_min: ttlMin(t.desk_min, TTL_MAX.desk_min, d.ttl.desk_min),
+      edge_min: ttlMin(t.edge_min, TTL_MAX.edge_min, d.ttl.edge_min),
     },
   }
 }
@@ -46,7 +53,14 @@ export const useGraphPrefs = create<GraphPrefs & { set: (p: Partial<GraphPrefs>)
   ...readGraphPrefs(globalThis.localStorage?.getItem(GRAPH_PREFS_KEY) ?? null),
   set(p) {
     const { expanded, height, follow, ttl } = { ...get(), ...p }
-    const next = readGraphPrefs(JSON.stringify({ expanded, height, follow, ttl }))
+    // An in-app edit past a bound is clamped to it (the popover's input), not reset like garbage from storage.
+    const capped = {
+      child_min: Math.min(ttl.child_min, TTL_MAX.child_min),
+      root_min: Math.min(ttl.root_min, TTL_MAX.root_min),
+      desk_min: Math.min(ttl.desk_min, TTL_MAX.desk_min),
+      edge_min: Math.min(ttl.edge_min, TTL_MAX.edge_min),
+    }
+    const next = readGraphPrefs(JSON.stringify({ expanded, height, follow, ttl: capped }))
     globalThis.localStorage?.setItem(GRAPH_PREFS_KEY, JSON.stringify(next))
     set(next)
   },

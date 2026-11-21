@@ -14,6 +14,7 @@ import { EdgePopover } from './EdgePopover'
 import { NodeBar } from './NodeBar'
 import { defaultGraphHeight, useGraphPrefs } from './prefs'
 import { graphNow } from './clock'
+import { isStale } from './lifecycle'
 import { useAgentGraph } from './queries'
 import { attentionBySession, includeSessions, nodeLabel, stripCounts, stripText, subtreeIds } from './selectors'
 import { Strip } from './Strip'
@@ -52,8 +53,8 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree 
   const [fitNonce, setFitNonce] = useState(0)
   const realNow = Date.now()
   const include = useMemo(() => includeSessions(items ?? [], realNow), [items, Math.floor(realNow / 60_000)])
-  // The stream and the lease run only while the canvas shows; collapsed, the engine's graph goes dormant.
-  const { state, supported, error } = useAgentGraph(prefs.ttl, include, open || full)
+  // The stream lives with the page while the document is visible (review U4); the canvas mounts only when shown.
+  const { state, supported, error } = useAgentGraph(prefs.ttl, include)
   const attention = useMemo(() => attentionBySession(items ?? [], Date.now()), [items])
 
   // The TTL clock: re-derived on every graph change and at the next visible change (nextTtlTick), never per second.
@@ -229,7 +230,7 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree 
           <div className="ml-auto flex items-center gap-0.5">{controls}</div>
         </div>
       ) : (
-        <Strip key="head-strip" counts={counts} older={state?.older ?? null} subtree={subtreeLabel} expanded={open} onToggle={toggle} onClearSubtree={() => onSubtree(null)}>
+        <Strip key="head-strip" counts={counts} older={state?.older ?? null} stale={isStale(state !== null, error)} subtree={subtreeLabel} expanded={open} onToggle={toggle} onClearSubtree={() => onSubtree(null)}>
           {open && controls}
         </Strip>
       )}

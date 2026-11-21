@@ -9,12 +9,14 @@ test('defaults on null and garbage', () => {
   expect(readGraphPrefs('{"expanded":"yes","height":"tall","ttl":[]}')).toEqual(GRAPH_PREFS_DEFAULT)
 })
 
-test('clamps and rounds', () => {
+test('height clamps; stored TTLs that are not finite, positive and within bounds fall back to defaults (review U9)', () => {
   const p = readGraphPrefs(JSON.stringify({ height: 5000, ttl: { child_min: 0, root_min: 99_999, desk_min: 12.6, edge_min: 1000 } }))
   expect(p.height).toBe(2000)
-  expect(p.ttl).toEqual({ child_min: 1, root_min: 10080, desk_min: 13, edge_min: 240 })
+  expect(p.ttl).toEqual({ ...GRAPH_PREFS_DEFAULT.ttl, desk_min: 13 })
   expect(readGraphPrefs('{"height":10}').height).toBe(160)
-  expect(readGraphPrefs('{"ttl":{"child_min":5000}}').ttl.child_min).toBe(1440)
+  expect(readGraphPrefs('{"ttl":{"child_min":5000}}').ttl.child_min).toBe(GRAPH_PREFS_DEFAULT.ttl.child_min)
+  expect(readGraphPrefs('{"ttl":{"child_min":-5,"root_min":"60","edge_min":1e308}}').ttl).toEqual(GRAPH_PREFS_DEFAULT.ttl)
+  expect(readGraphPrefs('{"ttl":{"child_min":0.4,"edge_min":240}}').ttl).toEqual({ ...GRAPH_PREFS_DEFAULT.ttl, child_min: 1, edge_min: 240 })
 })
 
 test('partial objects keep the rest of the defaults', () => {
