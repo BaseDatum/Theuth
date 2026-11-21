@@ -31541,6 +31541,26 @@
           }
         ]
       },
+      "method.agent.input.CompactorProfile": {
+        "description": "201 §7.1: the compactor profile. Named `CompactorProfile` on the wire\n(TypeScript, JSON schema): `meeting` already exports a `Profile`.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "`small` for a local model or a known window of at most 32_000 tokens, else `standard`.",
+            "type": "string"
+          },
+          {
+            "const": "standard",
+            "description": "137G as built, with fixes.",
+            "type": "string"
+          },
+          {
+            "const": "small",
+            "description": "One unit per call, short prompt and reply (§7.2).",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.input.ContextLevel": {
         "description": "The context dial (144 §5.1): how much of an item the model sees in a thread.",
         "oneOf": [
@@ -31951,6 +31971,21 @@
           }
         ]
       },
+      "method.agent.input.DescribeImages": {
+        "description": "201 §8: whether an image leaving the tail gets a one-line description.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "Described by the compactor chain.",
+            "type": "string"
+          },
+          {
+            "const": "off",
+            "description": "Never described; the unit keeps its name only.",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.input.DocId": {
         "description": "A document id: 26 lowercase base32 characters (§4.1). Bound documents (knowledge, artifact,\nmeeting note) render uuid v5 of the binding key under [`DocId::NAMESPACE`], so every engine of a\nmesh mints the same id for the same thing (69 §5); notes, which have no natural key, render uuid v7.",
         "type": "string"
@@ -31958,6 +31993,11 @@
       "method.agent.input.EndlessConfig": {
         "description": "`agent.endless` (137 §11.1). Every key optional in YAML; the whole struct\nis what Settings › Memory reads and writes (`endless_settings_get/set`).",
         "properties": {
+          "age_by_use": {
+            "default": true,
+            "description": "201 §10: a zoomed line stays unmerged for one generation.",
+            "type": "boolean"
+          },
           "attempt_secs": {
             "default": 120,
             "description": "137F E6: one attempt's bound in seconds for a cloud compactor (10..=3600).",
@@ -31987,6 +32027,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "cold_after_secs": {
+            "default": 0,
+            "description": "201 §4.3: idle seconds after which a trim is taken early (0..=86_400);\n0 = the transport's cache lifetime.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "compactor_ctx_bytes": {
             "default": 48000,
             "description": "137G G3: the compactor's `<chat>` context cap in bytes for every model (8_000..=256_000); a local one takes the smaller of this and `local_ctx_bytes`.",
@@ -32009,6 +32056,15 @@
             "description": "Meeting sessions (R1-D6).",
             "type": "boolean"
           },
+          "describe_images": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.DescribeImages"
+              }
+            ],
+            "default": "auto",
+            "description": "201 §8: one-line description when an image leaves the tail (`auto` | `off`)."
+          },
           "effort": {
             "default": null,
             "description": "194: the compactor model's effort; `None` = thinking off (R1 Q1). Only\nwith `model` (validated against it, dropped when a new `model` does not take it).",
@@ -32024,6 +32080,23 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "ledger": {
+            "default": true,
+            "description": "201 §9: the state ledger and its tool.",
+            "type": "boolean"
+          },
+          "ledger_bytes": {
+            "default": 4000,
+            "description": "201 §9: ledger snapshot budget in bytes (1_000..=16_000).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ledger_suggestions": {
+            "default": true,
+            "description": "201 §9: summary-model flags shown as unconfirmed suggestions.",
+            "type": "boolean"
           },
           "local_attempt_secs": {
             "default": 600,
@@ -32066,6 +32139,12 @@
             "minimum": 0,
             "type": "integer"
           },
+          "merge_at": {
+            "default": 0.75,
+            "description": "201 §6: share of `view_bytes` at which merges start being built (0.50..=1.00).",
+            "format": "double",
+            "type": "number"
+          },
           "model": {
             "default": null,
             "description": "Compactor model; `None` = the session's own model (D8).",
@@ -32080,6 +32159,22 @@
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "prefetch_bytes": {
+            "default": 2000,
+            "description": "201 §10: recall hits appended to the input, in bytes (0..=8_000); 0 = off.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.CompactorProfile"
+              }
+            ],
+            "default": "auto",
+            "description": "201 §7.1: compactor profile (`auto` | `standard` | `small`)."
           },
           "raw_bytes": {
             "default": 32000,
@@ -32107,6 +32202,41 @@
             "description": "Slack band of the fold (0.0..=0.5), D5.",
             "format": "float",
             "type": "number"
+          },
+          "tail_high_bytes": {
+            "default": 64000,
+            "description": "201 §4.2 fixed mode: where a trim is due (16_000..=512_000); above the low mark.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tail_high_share": {
+            "default": 0.25,
+            "description": "201 §4.2 scaled mode: high mark as a share (0.05..=0.60); above the low share.",
+            "format": "double",
+            "type": "number"
+          },
+          "tail_low_bytes": {
+            "default": 24000,
+            "description": "201 §4.2 fixed mode: verbatim context kept after a trim (8_000..=256_000).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tail_low_share": {
+            "default": 0.1,
+            "description": "201 §4.2 scaled mode: low mark as a share of the session model's turn allowance (0.02..=0.40).",
+            "format": "double",
+            "type": "number"
+          },
+          "tail_mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.TailMode"
+              }
+            ],
+            "default": "fixed",
+            "description": "201 §4.2: how the verbatim tail is sized (`fixed` | `scaled`)."
           },
           "tries": {
             "default": 5,
@@ -32627,6 +32757,50 @@
             "type": "string"
           }
         ]
+      },
+      "method.agent.input.TailMode": {
+        "description": "201 §4.2: how the verbatim tail is sized.",
+        "oneOf": [
+          {
+            "const": "fixed",
+            "description": "`tail_low_bytes` / `tail_high_bytes`.",
+            "type": "string"
+          },
+          {
+            "const": "scaled",
+            "description": "`tail_low_share` / `tail_high_share` of the session model's turn allowance.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.agent.input.TailOverride": {
+        "description": "201 §4.2: a per-session (or per-agent) tail override: the mode and its two\nmarks in that mode's unit — bytes for `fixed`, shares of the turn\nallowance for `scaled`. Stored on the session row beside `endless_view_bytes`.",
+        "properties": {
+          "high": {
+            "description": "High mark: bytes (16_000..=512_000) or share (0.05..=0.60); above `low`.",
+            "format": "double",
+            "type": "number"
+          },
+          "low": {
+            "description": "Low mark: bytes (8_000..=256_000) or share (0.02..=0.40).",
+            "format": "double",
+            "type": "number"
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.TailMode"
+              }
+            ],
+            "description": "How the tail is sized."
+          }
+        },
+        "required": [
+          "mode",
+          "low",
+          "high"
+        ],
+        "type": "object"
       },
       "method.agent.output.AdvisorConsultCounts": {
         "description": "`consult` calls answered for one link (125 R1 D-R1.7).",
@@ -34346,6 +34520,26 @@
           {
             "const": "clear",
             "description": "`/clear` (11 §2.4): fold everything, keep nothing, no model call. Manual only —\nnever a default or automatic style.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.agent.output.CompactorProfile": {
+        "description": "201 §7.1: the compactor profile. Named `CompactorProfile` on the wire\n(TypeScript, JSON schema): `meeting` already exports a `Profile`.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "`small` for a local model or a known window of at most 32_000 tokens, else `standard`.",
+            "type": "string"
+          },
+          {
+            "const": "standard",
+            "description": "137G as built, with fixes.",
+            "type": "string"
+          },
+          {
+            "const": "small",
+            "description": "One unit per call, short prompt and reply (§7.2).",
             "type": "string"
           }
         ]
@@ -36138,6 +36332,21 @@
           }
         ]
       },
+      "method.agent.output.DescribeImages": {
+        "description": "201 §8: whether an image leaving the tail gets a one-line description.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "Described by the compactor chain.",
+            "type": "string"
+          },
+          {
+            "const": "off",
+            "description": "Never described; the unit keeps its name only.",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.output.DocId": {
         "description": "A document id: 26 lowercase base32 characters (§4.1). Bound documents (knowledge, artifact,\nmeeting note) render uuid v5 of the binding key under [`DocId::NAMESPACE`], so every engine of a\nmesh mints the same id for the same thing (69 §5); notes, which have no natural key, render uuid v7.",
         "type": "string"
@@ -36262,6 +36471,11 @@
       "method.agent.output.EndlessConfig": {
         "description": "`agent.endless` (137 §11.1). Every key optional in YAML; the whole struct\nis what Settings › Memory reads and writes (`endless_settings_get/set`).",
         "properties": {
+          "age_by_use": {
+            "default": true,
+            "description": "201 §10: a zoomed line stays unmerged for one generation.",
+            "type": "boolean"
+          },
           "attempt_secs": {
             "default": 120,
             "description": "137F E6: one attempt's bound in seconds for a cloud compactor (10..=3600).",
@@ -36291,6 +36505,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "cold_after_secs": {
+            "default": 0,
+            "description": "201 §4.3: idle seconds after which a trim is taken early (0..=86_400);\n0 = the transport's cache lifetime.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "compactor_ctx_bytes": {
             "default": 48000,
             "description": "137G G3: the compactor's `<chat>` context cap in bytes for every model (8_000..=256_000); a local one takes the smaller of this and `local_ctx_bytes`.",
@@ -36313,6 +36534,15 @@
             "description": "Meeting sessions (R1-D6).",
             "type": "boolean"
           },
+          "describe_images": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.DescribeImages"
+              }
+            ],
+            "default": "auto",
+            "description": "201 §8: one-line description when an image leaves the tail (`auto` | `off`)."
+          },
           "effort": {
             "default": null,
             "description": "194: the compactor model's effort; `None` = thinking off (R1 Q1). Only\nwith `model` (validated against it, dropped when a new `model` does not take it).",
@@ -36328,6 +36558,23 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "ledger": {
+            "default": true,
+            "description": "201 §9: the state ledger and its tool.",
+            "type": "boolean"
+          },
+          "ledger_bytes": {
+            "default": 4000,
+            "description": "201 §9: ledger snapshot budget in bytes (1_000..=16_000).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ledger_suggestions": {
+            "default": true,
+            "description": "201 §9: summary-model flags shown as unconfirmed suggestions.",
+            "type": "boolean"
           },
           "local_attempt_secs": {
             "default": 600,
@@ -36370,6 +36617,12 @@
             "minimum": 0,
             "type": "integer"
           },
+          "merge_at": {
+            "default": 0.75,
+            "description": "201 §6: share of `view_bytes` at which merges start being built (0.50..=1.00).",
+            "format": "double",
+            "type": "number"
+          },
           "model": {
             "default": null,
             "description": "Compactor model; `None` = the session's own model (D8).",
@@ -36384,6 +36637,22 @@
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "prefetch_bytes": {
+            "default": 2000,
+            "description": "201 §10: recall hits appended to the input, in bytes (0..=8_000); 0 = off.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.CompactorProfile"
+              }
+            ],
+            "default": "auto",
+            "description": "201 §7.1: compactor profile (`auto` | `standard` | `small`)."
           },
           "raw_bytes": {
             "default": 32000,
@@ -36411,6 +36680,41 @@
             "description": "Slack band of the fold (0.0..=0.5), D5.",
             "format": "float",
             "type": "number"
+          },
+          "tail_high_bytes": {
+            "default": 64000,
+            "description": "201 §4.2 fixed mode: where a trim is due (16_000..=512_000); above the low mark.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tail_high_share": {
+            "default": 0.25,
+            "description": "201 §4.2 scaled mode: high mark as a share (0.05..=0.60); above the low share.",
+            "format": "double",
+            "type": "number"
+          },
+          "tail_low_bytes": {
+            "default": 24000,
+            "description": "201 §4.2 fixed mode: verbatim context kept after a trim (8_000..=256_000).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tail_low_share": {
+            "default": 0.1,
+            "description": "201 §4.2 scaled mode: low mark as a share of the session model's turn allowance (0.02..=0.40).",
+            "format": "double",
+            "type": "number"
+          },
+          "tail_mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.TailMode"
+              }
+            ],
+            "default": "fixed",
+            "description": "201 §4.2: how the verbatim tail is sized (`fixed` | `scaled`)."
           },
           "tries": {
             "default": 5,
@@ -36452,7 +36756,21 @@
           "compactor_ctx_bytes",
           "batch_units",
           "max_usd_per_call",
-          "max_usd_per_session_day"
+          "max_usd_per_session_day",
+          "tail_mode",
+          "tail_low_bytes",
+          "tail_high_bytes",
+          "tail_low_share",
+          "tail_high_share",
+          "cold_after_secs",
+          "profile",
+          "merge_at",
+          "ledger",
+          "ledger_bytes",
+          "ledger_suggestions",
+          "prefetch_bytes",
+          "age_by_use",
+          "describe_images"
         ],
         "type": "object"
       },
@@ -37415,6 +37733,63 @@
           "tail",
           "name",
           "pty"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.LedgerStatus": {
+        "description": "201 §9 (P6a): [`SessionMemory::ledger`].",
+        "properties": {
+          "artefacts": {
+            "description": "Artefacts (files named by tool calls).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "bytes": {
+            "description": "Bytes of the snapshot frozen with the current generation (0 before one).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "constraints": {
+            "description": "Open Constraints entries.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "decisions": {
+            "description": "Open Decisions entries.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "goals": {
+            "description": "Open Goals entries.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "open_tasks": {
+            "description": "Open tasks mirrored from the `todo` list.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "suggested": {
+            "description": "Unconfirmed suggestions.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "goals",
+          "decisions",
+          "constraints",
+          "open_tasks",
+          "artefacts",
+          "suggested",
+          "bytes"
         ],
         "type": "object"
       },
@@ -40637,6 +41012,13 @@
             "default": null,
             "description": "137G: the unsettled backlog; `None` when nothing waits and the session is not paused."
           },
+          "drafts": {
+            "default": 0,
+            "description": "201 §5: units whose line is still a draft. Phase P1 fills it; 0 until then.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "effort": {
             "default": null,
             "description": "194: the effort `model` runs with — this chat's own pick\n(`set_session_compactor_effort`), else the effort of the link that chose\n`model` (the agent's `memory_effort`, `agent.endless.effort`); `None` =\nthinking off. An effort `model` does not take is dropped (`None`).",
@@ -40652,6 +41034,25 @@
               "string",
               "null"
             ]
+          },
+          "generation": {
+            "default": 0,
+            "description": "201 §4.3: trims taken so far (the view's generation). Phase P2 fills it; 0 until then.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ledger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.LedgerStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "201 §9 (P6a): the state ledger's open entries per section, its\nsuggestions and the frozen snapshot's bytes; `None` when the ledger is\noff, for a meeting or an epochs session."
           },
           "mode": {
             "allOf": [
@@ -40676,6 +41077,20 @@
           "model_source": {
             "default": "",
             "description": "137G: which link chose `model`: `\"chat\"` | `\"agent\"` | `\"settings\"` | `\"title\"` | `\"session\"`;\n`\"\"` for an epochs session.",
+            "type": "string"
+          },
+          "profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.CompactorProfile"
+              }
+            ],
+            "default": "standard",
+            "description": "201 §7.1: the resolved compactor profile, never `auto`. Phase P3\nresolves it; `standard` until then."
+          },
+          "profile_reason": {
+            "default": "",
+            "description": "201 §7.1: why `profile` was chosen, short text (\"the model is local\").\nPhase P3 fills it; `\"\"` until then.",
             "type": "string"
           },
           "settling": {
@@ -40708,6 +41123,53 @@
             ],
             "description": "Compactor totals."
           },
+          "tail_bytes": {
+            "default": 0,
+            "description": "201 §4.1: bytes of the verbatim tail now. Phase P2 fills it; 0 until then.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tail_high": {
+            "default": 0,
+            "description": "201 §4.2: the high mark in force, in bytes; as `tail_low`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tail_low": {
+            "default": 0,
+            "description": "201 §4.2: the low mark in force, in bytes ([`EndlessConfig::tail_marks`]).\nIn `scaled` mode 0 until phase P2 knows the session model's allowance.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tail_mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.TailMode"
+              }
+            ],
+            "default": "fixed",
+            "description": "201 §4.2: the tail sizing in force for this session (the session's\noverride, else `agent.endless.tail_mode`)."
+          },
+          "tail_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.TailOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "201 §4.2: this chat's own tail override (`set_session_tail`); `None` = inherit."
+          },
+          "tools_pending": {
+            "default": false,
+            "description": "201 §11 (P6b): a tool-list change waits for the next trim (new tools\nannounced and callable through the runtime, removed ones refusing).",
+            "type": "boolean"
+          },
           "unbuilt": {
             "description": "Parts rendered per D10 right now.",
             "format": "uint32",
@@ -40732,6 +41194,13 @@
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "zooms": {
+            "default": 0,
+            "description": "201 §10 (P6b): `zoom` calls during the generation in force (the page\nfaults that keep lines unmerged at the next trim).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
@@ -40750,7 +41219,19 @@
           "model_source",
           "effort",
           "effort_override",
-          "spend_today_usd"
+          "spend_today_usd",
+          "tail_mode",
+          "tail_low",
+          "tail_high",
+          "tail_override",
+          "tail_bytes",
+          "generation",
+          "drafts",
+          "profile",
+          "profile_reason",
+          "zooms",
+          "tools_pending",
+          "ledger"
         ],
         "type": "object"
       },
@@ -42090,6 +42571,50 @@
         "required": [
           "name",
           "status"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.TailMode": {
+        "description": "201 §4.2: how the verbatim tail is sized.",
+        "oneOf": [
+          {
+            "const": "fixed",
+            "description": "`tail_low_bytes` / `tail_high_bytes`.",
+            "type": "string"
+          },
+          {
+            "const": "scaled",
+            "description": "`tail_low_share` / `tail_high_share` of the session model's turn allowance.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.agent.output.TailOverride": {
+        "description": "201 §4.2: a per-session (or per-agent) tail override: the mode and its two\nmarks in that mode's unit — bytes for `fixed`, shares of the turn\nallowance for `scaled`. Stored on the session row beside `endless_view_bytes`.",
+        "properties": {
+          "high": {
+            "description": "High mark: bytes (16_000..=512_000) or share (0.05..=0.60); above `low`.",
+            "format": "double",
+            "type": "number"
+          },
+          "low": {
+            "description": "Low mark: bytes (8_000..=256_000) or share (0.02..=0.40).",
+            "format": "double",
+            "type": "number"
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.TailMode"
+              }
+            ],
+            "description": "How the tail is sized."
+          }
+        },
+        "required": [
+          "mode",
+          "low",
+          "high"
         ],
         "type": "object"
       },
@@ -44258,6 +44783,26 @@
           }
         ]
       },
+      "method.agent.receiver.CompactorProfile": {
+        "description": "201 §7.1: the compactor profile. Named `CompactorProfile` on the wire\n(TypeScript, JSON schema): `meeting` already exports a `Profile`.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "`small` for a local model or a known window of at most 32_000 tokens, else `standard`.",
+            "type": "string"
+          },
+          {
+            "const": "standard",
+            "description": "137G as built, with fixes.",
+            "type": "string"
+          },
+          {
+            "const": "small",
+            "description": "One unit per call, short prompt and reply (§7.2).",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.receiver.ConfigOption": {
         "description": "A harness's session config option (75 §8): theuth's flat, wire-ready view\nof the SDK's `SessionConfigOption`. `category` is the SDK's serde name\n(`model`, `thought_level`, `mode`, …); grouped selects are flattened; a\nboolean option lists `true`/`false`.",
         "properties": {
@@ -46025,6 +46570,21 @@
           }
         ]
       },
+      "method.agent.receiver.DescribeImages": {
+        "description": "201 §8: whether an image leaving the tail gets a one-line description.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "Described by the compactor chain.",
+            "type": "string"
+          },
+          {
+            "const": "off",
+            "description": "Never described; the unit keeps its name only.",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.receiver.DocId": {
         "description": "A document id: 26 lowercase base32 characters (§4.1). Bound documents (knowledge, artifact,\nmeeting note) render uuid v5 of the binding key under [`DocId::NAMESPACE`], so every engine of a\nmesh mints the same id for the same thing (69 §5); notes, which have no natural key, render uuid v7.",
         "type": "string"
@@ -46148,6 +46708,11 @@
       "method.agent.receiver.EndlessConfig": {
         "description": "`agent.endless` (137 §11.1). Every key optional in YAML; the whole struct\nis what Settings › Memory reads and writes (`endless_settings_get/set`).",
         "properties": {
+          "age_by_use": {
+            "default": true,
+            "description": "201 §10: a zoomed line stays unmerged for one generation.",
+            "type": "boolean"
+          },
           "attempt_secs": {
             "default": 120,
             "description": "137F E6: one attempt's bound in seconds for a cloud compactor (10..=3600).",
@@ -46177,6 +46742,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "cold_after_secs": {
+            "default": 0,
+            "description": "201 §4.3: idle seconds after which a trim is taken early (0..=86_400);\n0 = the transport's cache lifetime.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "compactor_ctx_bytes": {
             "default": 48000,
             "description": "137G G3: the compactor's `<chat>` context cap in bytes for every model (8_000..=256_000); a local one takes the smaller of this and `local_ctx_bytes`.",
@@ -46199,6 +46771,15 @@
             "description": "Meeting sessions (R1-D6).",
             "type": "boolean"
           },
+          "describe_images": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.DescribeImages"
+              }
+            ],
+            "default": "auto",
+            "description": "201 §8: one-line description when an image leaves the tail (`auto` | `off`)."
+          },
           "effort": {
             "default": null,
             "description": "194: the compactor model's effort; `None` = thinking off (R1 Q1). Only\nwith `model` (validated against it, dropped when a new `model` does not take it).",
@@ -46214,6 +46795,23 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "ledger": {
+            "default": true,
+            "description": "201 §9: the state ledger and its tool.",
+            "type": "boolean"
+          },
+          "ledger_bytes": {
+            "default": 4000,
+            "description": "201 §9: ledger snapshot budget in bytes (1_000..=16_000).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ledger_suggestions": {
+            "default": true,
+            "description": "201 §9: summary-model flags shown as unconfirmed suggestions.",
+            "type": "boolean"
           },
           "local_attempt_secs": {
             "default": 600,
@@ -46256,6 +46854,12 @@
             "minimum": 0,
             "type": "integer"
           },
+          "merge_at": {
+            "default": 0.75,
+            "description": "201 §6: share of `view_bytes` at which merges start being built (0.50..=1.00).",
+            "format": "double",
+            "type": "number"
+          },
           "model": {
             "default": null,
             "description": "Compactor model; `None` = the session's own model (D8).",
@@ -46270,6 +46874,22 @@
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "prefetch_bytes": {
+            "default": 2000,
+            "description": "201 §10: recall hits appended to the input, in bytes (0..=8_000); 0 = off.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.CompactorProfile"
+              }
+            ],
+            "default": "auto",
+            "description": "201 §7.1: compactor profile (`auto` | `standard` | `small`)."
           },
           "raw_bytes": {
             "default": 32000,
@@ -46297,6 +46917,41 @@
             "description": "Slack band of the fold (0.0..=0.5), D5.",
             "format": "float",
             "type": "number"
+          },
+          "tail_high_bytes": {
+            "default": 64000,
+            "description": "201 §4.2 fixed mode: where a trim is due (16_000..=512_000); above the low mark.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tail_high_share": {
+            "default": 0.25,
+            "description": "201 §4.2 scaled mode: high mark as a share (0.05..=0.60); above the low share.",
+            "format": "double",
+            "type": "number"
+          },
+          "tail_low_bytes": {
+            "default": 24000,
+            "description": "201 §4.2 fixed mode: verbatim context kept after a trim (8_000..=256_000).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tail_low_share": {
+            "default": 0.1,
+            "description": "201 §4.2 scaled mode: low mark as a share of the session model's turn allowance (0.02..=0.40).",
+            "format": "double",
+            "type": "number"
+          },
+          "tail_mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.TailMode"
+              }
+            ],
+            "default": "fixed",
+            "description": "201 §4.2: how the verbatim tail is sized (`fixed` | `scaled`)."
           },
           "tries": {
             "default": 5,
@@ -47250,6 +47905,63 @@
           "log",
           "tail",
           "pty"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.LedgerStatus": {
+        "description": "201 §9 (P6a): [`SessionMemory::ledger`].",
+        "properties": {
+          "artefacts": {
+            "description": "Artefacts (files named by tool calls).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "bytes": {
+            "description": "Bytes of the snapshot frozen with the current generation (0 before one).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "constraints": {
+            "description": "Open Constraints entries.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "decisions": {
+            "description": "Open Decisions entries.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "goals": {
+            "description": "Open Goals entries.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "open_tasks": {
+            "description": "Open tasks mirrored from the `todo` list.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "suggested": {
+            "description": "Unconfirmed suggestions.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "goals",
+          "decisions",
+          "constraints",
+          "open_tasks",
+          "artefacts",
+          "suggested",
+          "bytes"
         ],
         "type": "object"
       },
@@ -50378,6 +51090,13 @@
             "default": null,
             "description": "137G: the unsettled backlog; `None` when nothing waits and the session is not paused."
           },
+          "drafts": {
+            "default": 0,
+            "description": "201 §5: units whose line is still a draft. Phase P1 fills it; 0 until then.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "effort": {
             "default": null,
             "description": "194: the effort `model` runs with — this chat's own pick\n(`set_session_compactor_effort`), else the effort of the link that chose\n`model` (the agent's `memory_effort`, `agent.endless.effort`); `None` =\nthinking off. An effort `model` does not take is dropped (`None`).",
@@ -50393,6 +51112,25 @@
               "string",
               "null"
             ]
+          },
+          "generation": {
+            "default": 0,
+            "description": "201 §4.3: trims taken so far (the view's generation). Phase P2 fills it; 0 until then.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ledger": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.LedgerStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "201 §9 (P6a): the state ledger's open entries per section, its\nsuggestions and the frozen snapshot's bytes; `None` when the ledger is\noff, for a meeting or an epochs session."
           },
           "mode": {
             "allOf": [
@@ -50417,6 +51155,20 @@
           "model_source": {
             "default": "",
             "description": "137G: which link chose `model`: `\"chat\"` | `\"agent\"` | `\"settings\"` | `\"title\"` | `\"session\"`;\n`\"\"` for an epochs session.",
+            "type": "string"
+          },
+          "profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.CompactorProfile"
+              }
+            ],
+            "default": "standard",
+            "description": "201 §7.1: the resolved compactor profile, never `auto`. Phase P3\nresolves it; `standard` until then."
+          },
+          "profile_reason": {
+            "default": "",
+            "description": "201 §7.1: why `profile` was chosen, short text (\"the model is local\").\nPhase P3 fills it; `\"\"` until then.",
             "type": "string"
           },
           "settling": {
@@ -50449,6 +51201,53 @@
             ],
             "description": "Compactor totals."
           },
+          "tail_bytes": {
+            "default": 0,
+            "description": "201 §4.1: bytes of the verbatim tail now. Phase P2 fills it; 0 until then.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tail_high": {
+            "default": 0,
+            "description": "201 §4.2: the high mark in force, in bytes; as `tail_low`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tail_low": {
+            "default": 0,
+            "description": "201 §4.2: the low mark in force, in bytes ([`EndlessConfig::tail_marks`]).\nIn `scaled` mode 0 until phase P2 knows the session model's allowance.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tail_mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.TailMode"
+              }
+            ],
+            "default": "fixed",
+            "description": "201 §4.2: the tail sizing in force for this session (the session's\noverride, else `agent.endless.tail_mode`)."
+          },
+          "tail_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.TailOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "201 §4.2: this chat's own tail override (`set_session_tail`); `None` = inherit."
+          },
+          "tools_pending": {
+            "default": false,
+            "description": "201 §11 (P6b): a tool-list change waits for the next trim (new tools\nannounced and callable through the runtime, removed ones refusing).",
+            "type": "boolean"
+          },
           "unbuilt": {
             "description": "Parts rendered per D10 right now.",
             "format": "uint32",
@@ -50470,6 +51269,13 @@
           },
           "view_bytes": {
             "description": "The view budget in force (R1b: the session's own, else `agent.endless.view_bytes`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "zooms": {
+            "default": 0,
+            "description": "201 §10 (P6b): `zoom` calls during the generation in force (the page\nfaults that keep lines unmerged at the next trim).",
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
@@ -51776,6 +52582,50 @@
         "required": [
           "name",
           "status"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.TailMode": {
+        "description": "201 §4.2: how the verbatim tail is sized.",
+        "oneOf": [
+          {
+            "const": "fixed",
+            "description": "`tail_low_bytes` / `tail_high_bytes`.",
+            "type": "string"
+          },
+          {
+            "const": "scaled",
+            "description": "`tail_low_share` / `tail_high_share` of the session model's turn allowance.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.agent.receiver.TailOverride": {
+        "description": "201 §4.2: a per-session (or per-agent) tail override: the mode and its two\nmarks in that mode's unit — bytes for `fixed`, shares of the turn\nallowance for `scaled`. Stored on the session row beside `endless_view_bytes`.",
+        "properties": {
+          "high": {
+            "description": "High mark: bytes (16_000..=512_000) or share (0.05..=0.60); above `low`.",
+            "format": "double",
+            "type": "number"
+          },
+          "low": {
+            "description": "Low mark: bytes (8_000..=256_000) or share (0.02..=0.40).",
+            "format": "double",
+            "type": "number"
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.TailMode"
+              }
+            ],
+            "description": "How the tail is sized."
+          }
+        },
+        "required": [
+          "mode",
+          "low",
+          "high"
         ],
         "type": "object"
       },
@@ -95066,6 +95916,18 @@
             "description": "Receives no wakes while true.",
             "type": "boolean"
           },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.input.CompactorProfile"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "201 §7.1: per-agent compactor profile; `None` = `agent.endless.profile`."
+          },
           "proposed_by": {
             "description": "`agent:<name>` when this file came from `agent_propose` and is not yet approved (67 §6.5).",
             "type": [
@@ -95085,6 +95947,56 @@
             ],
             "default": "any",
             "description": "Placement pin (79 decision 14): where every work session of this agent runs."
+          },
+          "tail_high_bytes": {
+            "default": null,
+            "description": "201 §4.2: per-agent fixed high mark in bytes (16_000..=512_000), above the low one.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tail_high_share": {
+            "default": null,
+            "description": "201 §4.2: per-agent scaled high share (0.05..=0.60), above the low one.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tail_low_bytes": {
+            "default": null,
+            "description": "201 §4.2: per-agent fixed low mark in bytes (8_000..=256_000).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tail_low_share": {
+            "default": null,
+            "description": "201 §4.2: per-agent scaled low share (0.02..=0.40).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tail_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.input.TailMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "201 §4.2: per-agent tail sizing; `None` = `agent.endless.tail_mode`."
           },
           "title": {
             "description": "Display title; defaults to the name.",
@@ -95303,6 +96215,26 @@
           }
         ]
       },
+      "method.roster.input.CompactorProfile": {
+        "description": "201 §7.1: the compactor profile. Named `CompactorProfile` on the wire\n(TypeScript, JSON schema): `meeting` already exports a `Profile`.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "`small` for a local model or a known window of at most 32_000 tokens, else `standard`.",
+            "type": "string"
+          },
+          {
+            "const": "standard",
+            "description": "137G as built, with fixes.",
+            "type": "string"
+          },
+          {
+            "const": "small",
+            "description": "One unit per call, short prompt and reply (§7.2).",
+            "type": "string"
+          }
+        ]
+      },
       "method.roster.input.DoneBecause": {
         "description": "Why a task is `done` (70 DESK-PROTOCOL, Sky's ruling): the reviewer judges\nagainst `done_when` first, the user's evident intention second, and third\nthe follow-up tasks that carry the work on. Written into the thread as\n`done because: …`.",
         "oneOf": [
@@ -95486,6 +96418,21 @@
       "method.roster.input.RunsIn": {
         "description": "`runs_in:` front matter (79 §2.8): `any` (default) | `vm` (the agent's own\nVM, `vm-<agent>`) | `vm:<name>` (a named, shared VM). Wire form is the same\nstring.",
         "type": "string"
+      },
+      "method.roster.input.TailMode": {
+        "description": "201 §4.2: how the verbatim tail is sized.",
+        "oneOf": [
+          {
+            "const": "fixed",
+            "description": "`tail_low_bytes` / `tail_high_bytes`.",
+            "type": "string"
+          },
+          {
+            "const": "scaled",
+            "description": "`tail_low_share` / `tail_high_share` of the session model's turn allowance.",
+            "type": "string"
+          }
+        ]
       },
       "method.roster.input.TaskCreate": {
         "description": "`task_create` input. Missing `owner` = `user`; `reviewer` defaults per 67 §7.1;\n`state` (`backlog` | `todo`) defaults to `backlog` on the wire.",
@@ -96089,6 +97036,18 @@
             "description": "Receives no wakes while true.",
             "type": "boolean"
           },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.output.CompactorProfile"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "201 §7.1: per-agent compactor profile; `None` = `agent.endless.profile`."
+          },
           "proposed_by": {
             "description": "`agent:<name>` when this file came from `agent_propose` and is not yet approved (67 §6.5).",
             "type": [
@@ -96108,6 +97067,56 @@
             ],
             "default": "any",
             "description": "Placement pin (79 decision 14): where every work session of this agent runs."
+          },
+          "tail_high_bytes": {
+            "default": null,
+            "description": "201 §4.2: per-agent fixed high mark in bytes (16_000..=512_000), above the low one.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tail_high_share": {
+            "default": null,
+            "description": "201 §4.2: per-agent scaled high share (0.05..=0.60), above the low one.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tail_low_bytes": {
+            "default": null,
+            "description": "201 §4.2: per-agent fixed low mark in bytes (8_000..=256_000).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tail_low_share": {
+            "default": null,
+            "description": "201 §4.2: per-agent scaled low share (0.02..=0.40).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tail_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.output.TailMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "201 §4.2: per-agent tail sizing; `None` = `agent.endless.tail_mode`."
           },
           "title": {
             "description": "Display title; defaults to the name.",
@@ -96147,6 +97156,12 @@
           "memory",
           "isolated_memory",
           "view_bytes",
+          "tail_mode",
+          "tail_low_bytes",
+          "tail_high_bytes",
+          "tail_low_share",
+          "tail_high_share",
+          "profile",
           "memory_model",
           "memory_effort",
           "body"
@@ -96826,6 +97841,26 @@
           "label"
         ],
         "type": "object"
+      },
+      "method.roster.output.CompactorProfile": {
+        "description": "201 §7.1: the compactor profile. Named `CompactorProfile` on the wire\n(TypeScript, JSON schema): `meeting` already exports a `Profile`.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "`small` for a local model or a known window of at most 32_000 tokens, else `standard`.",
+            "type": "string"
+          },
+          {
+            "const": "standard",
+            "description": "137G as built, with fixes.",
+            "type": "string"
+          },
+          {
+            "const": "small",
+            "description": "One unit per call, short prompt and reply (§7.2).",
+            "type": "string"
+          }
+        ]
       },
       "method.roster.output.DocId": {
         "description": "A document id: 26 lowercase base32 characters (§4.1). Bound documents (knowledge, artifact,\nmeeting note) render uuid v5 of the binding key under [`DocId::NAMESPACE`], so every engine of a\nmesh mints the same id for the same thing (69 §5); notes, which have no natural key, render uuid v7.",
@@ -97548,6 +98583,21 @@
         "format": "uuid",
         "type": "string"
       },
+      "method.roster.output.TailMode": {
+        "description": "201 §4.2: how the verbatim tail is sized.",
+        "oneOf": [
+          {
+            "const": "fixed",
+            "description": "`tail_low_bytes` / `tail_high_bytes`.",
+            "type": "string"
+          },
+          {
+            "const": "scaled",
+            "description": "`tail_low_share` / `tail_high_share` of the session model's turn allowance.",
+            "type": "string"
+          }
+        ]
+      },
       "method.roster.output.Task": {
         "description": "The task record (67 §7.1).",
         "properties": {
@@ -98116,6 +99166,18 @@
             "description": "Receives no wakes while true.",
             "type": "boolean"
           },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.receiver.CompactorProfile"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "201 §7.1: per-agent compactor profile; `None` = `agent.endless.profile`."
+          },
           "proposed_by": {
             "description": "`agent:<name>` when this file came from `agent_propose` and is not yet approved (67 §6.5).",
             "type": [
@@ -98135,6 +99197,56 @@
             ],
             "default": "any",
             "description": "Placement pin (79 decision 14): where every work session of this agent runs."
+          },
+          "tail_high_bytes": {
+            "default": null,
+            "description": "201 §4.2: per-agent fixed high mark in bytes (16_000..=512_000), above the low one.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tail_high_share": {
+            "default": null,
+            "description": "201 §4.2: per-agent scaled high share (0.05..=0.60), above the low one.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tail_low_bytes": {
+            "default": null,
+            "description": "201 §4.2: per-agent fixed low mark in bytes (8_000..=256_000).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tail_low_share": {
+            "default": null,
+            "description": "201 §4.2: per-agent scaled low share (0.02..=0.40).",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "tail_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.roster.receiver.TailMode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "201 §4.2: per-agent tail sizing; `None` = `agent.endless.tail_mode`."
           },
           "title": {
             "description": "Display title; defaults to the name.",
@@ -98815,6 +99927,26 @@
           "label"
         ],
         "type": "object"
+      },
+      "method.roster.receiver.CompactorProfile": {
+        "description": "201 §7.1: the compactor profile. Named `CompactorProfile` on the wire\n(TypeScript, JSON schema): `meeting` already exports a `Profile`.",
+        "oneOf": [
+          {
+            "const": "auto",
+            "description": "`small` for a local model or a known window of at most 32_000 tokens, else `standard`.",
+            "type": "string"
+          },
+          {
+            "const": "standard",
+            "description": "137G as built, with fixes.",
+            "type": "string"
+          },
+          {
+            "const": "small",
+            "description": "One unit per call, short prompt and reply (§7.2).",
+            "type": "string"
+          }
+        ]
       },
       "method.roster.receiver.DocId": {
         "description": "A document id: 26 lowercase base32 characters (§4.1). Bound documents (knowledge, artifact,\nmeeting note) render uuid v5 of the binding key under [`DocId::NAMESPACE`], so every engine of a\nmesh mints the same id for the same thing (69 §5); notes, which have no natural key, render uuid v7.",
@@ -99508,6 +100640,21 @@
         "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
         "type": "string"
+      },
+      "method.roster.receiver.TailMode": {
+        "description": "201 §4.2: how the verbatim tail is sized.",
+        "oneOf": [
+          {
+            "const": "fixed",
+            "description": "`tail_low_bytes` / `tail_high_bytes`.",
+            "type": "string"
+          },
+          {
+            "const": "scaled",
+            "description": "`tail_low_share` / `tail_high_share` of the session model's turn allowance.",
+            "type": "string"
+          }
+        ]
       },
       "method.roster.receiver.Task": {
         "description": "The task record (67 §7.1).",
@@ -101187,7 +102334,7 @@
             "type": "integer"
           },
           "version": {
-            "description": "Harness version (`CARGO_PKG_VERSION`).",
+            "description": "Harness version (the product version, `platform::version`).",
             "type": "string"
           }
         },
@@ -103537,7 +104684,7 @@
             "type": "integer"
           },
           "version": {
-            "description": "Harness version (`CARGO_PKG_VERSION`).",
+            "description": "Harness version (the product version, `platform::version`).",
             "type": "string"
           }
         },
@@ -133473,6 +134620,47 @@
         },
         "x-theuth-receiverSchema": {
           "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_session_tail",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "tail",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.TailOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.SessionMemory"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.SessionMemory"
         }
       },
       "x-theuth-audience": "owner",
