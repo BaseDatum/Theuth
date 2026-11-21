@@ -6135,4 +6135,258 @@ mod tests {
             let _ = std::fs::remove_dir_all(&data);
         });
     }
+
+    /// 207 §4 through the live `Attention` actor: a root session's `TurnFinished` raises one
+    /// `finished:` item with `stop` and `expires_ms`; a later `TurnStarted` removes it; the
+    /// tick prunes a row past `stopped_ttl_mins` (the row is gone, not only filtered).
+    #[test]
+    fn stopped_card_through_the_attention_actor() {
+        with_engine_lock(async {
+            let data = tmp("stopped-card");
+            let rt = Runtime::new(figment::Figment::new(), data.clone());
+            let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true)
+                .await
+                .unwrap();
+            let store = crate::store::Store::open(&data.join("attention.sqlite"))
+                .await
+                .unwrap();
+            let att = attention::Attention::start(&rt, &store).await.unwrap();
+            async fn stopped(
+                att: &ActorRef<attention::Attention>,
+            ) -> Vec<attention::AttentionItem> {
+                att.ask(attention::ListAttention)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|i| i.kind == attention::AttentionKind::Finished)
+                    .collect()
+            }
+            let session = runtime::SessionId::new();
+            let finished = |turn| agent::AgentEvent::TurnFinished {
+                session,
+                turn,
+                stop_reason: "end_turn".into(),
+                usage: agent::Usage::default(),
+                context: 0,
+            };
+            att.ask(finished(runtime::TurnId::new())).await.unwrap();
+            let items = stopped(&att).await;
+            assert_eq!(items.len(), 1, "{items:?}");
+            let i = &items[0];
+            assert!(i.id.starts_with("finished:"), "{}", i.id);
+            assert_eq!(i.session.as_deref(), Some(&session.to_string()[..]));
+            let stop = i.stop.as_ref().expect("stop");
+            assert_eq!(
+                (stop.outcome, stop.reason.as_str()),
+                (attention::StopOutcome::Finished, "end_turn")
+            );
+            let ttl = RosterConfig::default().attention.stopped_ttl_mins * 60_000;
+            assert_eq!(i.expires_ms, Some(i.at_ms + ttl));
+
+            att.ask(agent::AgentEvent::TurnStarted {
+                session,
+                turn: runtime::TurnId::new(),
+                text: "go on".into(),
+                model: "m".into(),
+                turn_seq: 1,
+                channel: None,
+            })
+            .await
+            .unwrap();
+            assert!(stopped(&att).await.is_empty(), "a new turn clears the card");
+
+            att.ask(finished(runtime::TurnId::new())).await.unwrap();
+            assert_eq!(stopped(&att).await.len(), 1);
+            let rows = || async {
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM attention_finished")
+                    .fetch_one(store.pool())
+                    .await
+                    .unwrap()
+            };
+            att.ask(attention::RescoreTick).await.unwrap();
+            assert_eq!(rows().await, 1, "a fresh card survives the tick");
+            sqlx::query("UPDATE attention_finished SET at_ms = at_ms - ?")
+                .bind((ttl + 1) as i64)
+                .execute(store.pool())
+                .await
+                .unwrap();
+            att.ask(attention::RescoreTick).await.unwrap();
+            assert_eq!(rows().await, 0, "the tick pruned the expired row");
+            assert!(stopped(&att).await.is_empty());
+            att.kill();
+            agents.kill();
+            unregister(&[agent::AGENT_ACTOR, attention::ATTENTION_ACTOR]);
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
+
+    /// 207 §5.2 through the live `Attention`, `Approval` and `AskUser` actors: `DismissMany`
+    /// over an approval, an ask and a hidden-only kind (a stopped card) publishes exactly one
+    /// `AttentionChanged`; the approval's call is not run (dismissed, not denied), the ask's
+    /// call goes on left to the agent (not cancelled, no answers), and no agent event (no turn
+    /// started, none cancelled) is published.
+    #[test]
+    fn dismiss_many_mixed_batch_publishes_once_and_wakes_nobody() {
+        #[derive(kameo::Actor)]
+        struct Seen(Arc<std::sync::Mutex<(usize, usize)>>);
+        impl Message<attention::AttentionChanged> for Seen {
+            type Reply = ();
+            async fn handle(&mut self, _: attention::AttentionChanged, _: &mut Context<Self, ()>) {
+                self.0.lock().unwrap().0 += 1;
+            }
+        }
+        impl Message<agent::AgentEvent> for Seen {
+            type Reply = ();
+            async fn handle(&mut self, _: agent::AgentEvent, _: &mut Context<Self, ()>) {
+                self.0.lock().unwrap().1 += 1;
+            }
+        }
+        with_engine_lock(async {
+            let data = tmp("dismiss-many");
+            let rt = Runtime::new(figment::Figment::new(), data.clone());
+            let agents = agent::spawn_test_agents(rt.clone(), |_: &str| true)
+                .await
+                .unwrap();
+            let approval = ::tools::Approval::spawn(::tools::Approval::new(
+                rt.clone(),
+                Duration::from_secs(60),
+            ));
+            approval.register(::tools::APPROVAL_ACTOR).unwrap();
+            let asks =
+                ::tools::AskUser::spawn(::tools::AskUser::new(rt.clone(), Duration::from_secs(60)));
+            asks.register(::tools::ASK_ACTOR).unwrap();
+            let store = crate::store::Store::open(&data.join("attention.sqlite"))
+                .await
+                .unwrap();
+            let att = attention::Attention::start(&rt, &store).await.unwrap();
+            let seen = Arc::new(std::sync::Mutex::new((0, 0)));
+            let sub = Seen::spawn(Seen(seen.clone()));
+            rt.subscribe::<Seen, attention::AttentionChanged>(&sub)
+                .await;
+            rt.subscribe::<Seen, agent::AgentEvent>(&sub).await;
+
+            let approved = tokio::spawn({
+                let approval = approval.clone();
+                async move {
+                    approval
+                        .ask(::tools::approval::RequestApproval {
+                            session: runtime::SessionId::new(),
+                            tool: "shell".into(),
+                            args: serde_json::json!({"command": "rm -rf build"}),
+                            risk: ::tools::Risk::Mutating,
+                            call_id: Some("c1".into()),
+                        })
+                        .await
+                        .unwrap()
+                }
+            });
+            let asked = tokio::spawn({
+                let asks = asks.clone();
+                async move {
+                    asks.ask(::tools::ask::Request {
+                        session: runtime::SessionId::new(),
+                        questions: vec![::tools::Question {
+                            id: "q".into(),
+                            question: "Ship?".into(),
+                            options: vec![::tools::Choice {
+                                label: "Yes".into(),
+                                description: None,
+                            }],
+                            recommended: None,
+                        }],
+                        call_id: Some("c2".into()),
+                    })
+                    .await
+                    .unwrap()
+                }
+            });
+            att.ask(agent::AgentEvent::TurnFinished {
+                session: runtime::SessionId::new(),
+                turn: runtime::TurnId::new(),
+                stop_reason: "end_turn".into(),
+                usage: agent::Usage::default(),
+                context: 0,
+            })
+            .await
+            .unwrap();
+            let kinds = || async {
+                let mut k: Vec<_> = att
+                    .ask(attention::ListAttention)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|i| (i.id.split(':').next().unwrap().to_owned(), i.id))
+                    .collect();
+                k.sort();
+                k
+            };
+            eventually("approval, ask and stopped card listed", async || {
+                kinds()
+                    .await
+                    .iter()
+                    .map(|(k, _)| k.as_str())
+                    .collect::<Vec<_>>()
+                    == ["approval", "ask", "finished"]
+            })
+            .await;
+            let ids: Vec<String> = kinds().await.into_iter().map(|(_, id)| id).collect();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let before = *seen.lock().unwrap();
+
+            let out = att
+                .ask(attention::DismissMany {
+                    target: attention::AttentionTarget {
+                        ids: ids.clone(),
+                        filter: None,
+                    },
+                    actor: "user".into(),
+                })
+                .await
+                .unwrap();
+            let mut got: Vec<_> = out.iter().map(|o| (o.id.as_str(), o.resolution)).collect();
+            got.sort_by(|a, b| a.0.cmp(b.0));
+            assert_eq!(
+                got,
+                [
+                    (ids[0].as_str(), attention::AttentionResolution::NotRun),
+                    (ids[1].as_str(), attention::AttentionResolution::LeftToAgent),
+                    (ids[2].as_str(), attention::AttentionResolution::Hidden),
+                ]
+            );
+            let r = tokio::time::timeout(Duration::from_secs(5), approved)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(r.dismissed && !r.timed_out, "left, not denied: {r:?}");
+            let a = tokio::time::timeout(Duration::from_secs(5), asked)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                a.left_to_agent && !a.timed_out && a.answers.is_none(),
+                "the ask's call goes on, left to the agent"
+            );
+            // Let the trailing `ApprovalResolved` / `AskResolved` reach the actor and settle.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            assert!(att.ask(attention::ListAttention).await.unwrap().is_empty());
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let after = *seen.lock().unwrap();
+            assert_eq!(after.0, before.0 + 1, "exactly one AttentionChanged");
+            assert_eq!(
+                after.1, before.1,
+                "no agent event: no turn started or cancelled"
+            );
+            att.kill();
+            approval.kill();
+            asks.kill();
+            agents.kill();
+            unregister(&[
+                agent::AGENT_ACTOR,
+                attention::ATTENTION_ACTOR,
+                ::tools::APPROVAL_ACTOR,
+                ::tools::ASK_ACTOR,
+            ]);
+            let _ = std::fs::remove_dir_all(&data);
+        });
+    }
 }
