@@ -3084,28 +3084,16 @@ impl roster::attention::Source for FirstContactItems {
         let mut items: Vec<roster::attention::AttentionItem> = alerts
             .into_iter()
             .map(|(record, (alias, text, at))| roster::attention::AttentionItem {
-                id: format!("contact_roster:{record}"),
-                kind: roster::attention::AttentionKind::Node,
-                title: text,
-                detail: Some(format!(
-                    "remove that machine from your mesh, then ask {alias} to remove you and pair again"
-                )),
-                at_ms: at,
-                task: None,
-                agent: None,
-                session: None,
-                approval: None,
-                decision: None,
-                packet: None,
-                ask: None,
-                turn: None,
                 waiting_since_ms: None,
-                summary: None,
-                next_steps: Vec::new(),
-                context: None,
-                priority: None,
-                rank: 4,
-                alert: None,
+                ..roster::attention::AttentionItem::new(
+                    format!("contact_roster:{record}"),
+                    roster::attention::AttentionKind::Node,
+                    text,
+                    Some(format!(
+                        "remove that machine from your mesh, then ask {alias} to remove you and pair again"
+                    )),
+                    at,
+                )
             })
             .collect();
         items.extend(c.first_waiting().await.into_iter().map(|w| {
@@ -3115,37 +3103,25 @@ impl roster::attention::Source for FirstContactItems {
                 format!("{} ({})", w.contact, w.machine)
             };
             roster::attention::AttentionItem {
-                id: format!("contact_first:{}:{}", w.contact, w.export),
-                kind: roster::attention::AttentionKind::ContactFirst,
-                title: format!(
-                    "{who} wants to reach {} — {}",
-                    w.export,
-                    if w.elsewhere {
-                        "Always · Block"
-                    } else {
-                        "Allow once · Always · Block"
-                    }
-                ),
-                detail: Some(format!(
-                    "{} waiting · a contact outside your mesh",
-                    w.waiting
-                )),
-                at_ms: w.since_ms,
-                task: None,
-                agent: None,
                 session: Some(w.session.to_string()),
-                approval: None,
-                decision: None,
-                packet: None,
-                ask: None,
-                turn: None,
-                waiting_since_ms: Some(w.since_ms),
-                summary: None,
-                next_steps: Vec::new(),
-                context: None,
-                priority: None,
-                rank: 5,
-                alert: None,
+                ..roster::attention::AttentionItem::new(
+                    format!("contact_first:{}:{}", w.contact, w.export),
+                    roster::attention::AttentionKind::ContactFirst,
+                    format!(
+                        "{who} wants to reach {} — {}",
+                        w.export,
+                        if w.elsewhere {
+                            "Always · Block"
+                        } else {
+                            "Allow once · Always · Block"
+                        }
+                    ),
+                    Some(format!(
+                        "{} waiting · a contact outside your mesh",
+                        w.waiting
+                    )),
+                    w.since_ms,
+                )
             }
         }));
         items
