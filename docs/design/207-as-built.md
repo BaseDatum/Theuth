@@ -279,7 +279,12 @@ Hold 2 (19:18:42–19:34:09, tree `9c7afba1c`, plus `2767738f0` for the telegram
 | `just wire-schema` | 0 | 1 passed; no tracked file changed (`git status` clean outside this doc) |
 | classifier (`cargo test -p theuth --test wire_schema_snapshot`) vs the accepted baseline | 0 | 1 passed, no difference reported (0 `class:` lines); nothing accepted or regenerated |
 
-Hold 3 (UI): UI_RESULT
+Hold 3 (19:59:38–20:02:28, tree `559f45859`; a first launch at 19:34:58 waited on another worker's lock and was
+killed by the engine restart at 19:59:31 before it started): clippy `-D warnings --all-targets` telegram rc 0 (after
+`2767738f0`); in `crates/desktop/ui`: `bun run check` (`tsc -b --noEmit`) rc 0; `bun run test` rc 0 — 381 files,
+2736 tests passed; `bun run build` rc 0 (only the existing > 500 kB chunk warning). The three merged UI commits
+type-check and pass against the generated bindings; no UI source was changed. `Card.tsx` `SecretInline` still passes
+main's `title` / `eventFields(local)` / `expires` (read at lines 154-168).
 
 ### Not verified
 
