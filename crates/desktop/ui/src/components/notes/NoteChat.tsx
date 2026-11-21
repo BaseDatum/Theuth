@@ -1,10 +1,13 @@
-import { useQuerySupport } from '@/rpc/capabilities'
+import { Capability, useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ExternalLink, SquarePen, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Composer } from '@/components/chat/Composer'
+import { ModelMenu } from '@/components/chat/ModelMenu'
+import { ToolsSheet } from '@/components/chat/ToolsSheet'
+import { modelRequirements, toolsRequirements } from '@/components/chat/requirements'
 import { Transcript } from '@/components/chat/Transcript'
 import { Button } from '@/components/ui/button'
 import { ResizeHandle } from '@/components/ui/resize-handle'
@@ -12,7 +15,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useIsMobile } from '@/hooks/use-mobile'
 import { EMPTY, panelHeight, useNoteChat } from '@/lib/note-chat'
 import type { AttachRef } from '@/lib/attach'
-import { isPopout, openPopout } from '@/lib/popout'
+import { isSoloPopout, openPopout } from '@/lib/popout'
 import { PX_STEP } from '@/lib/resize-drag'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useSessionField, useSessions } from '@/store/sessions'
@@ -25,7 +28,9 @@ const PAGE = 60
  * keeps (`lib/note-chat`); with one, a resizable bottom panel with that session's transcript (`compact`) over the same
  * composer. Every message leads with the note's `[attached note …]` marker (66 §3.3). "New chat" forgets the session
  * (back to the bar); the session itself stays in the normal chat list. `about` names the document in the copy (an
- * agent's charter is one too).
+ * agent's charter is one too). #8: both headers carry the main chat's model picker (`ModelMenu`): the session's model
+ * and effort, or — before the first message — the draft's pick, which that message's `create_session` applies. The
+ * note page has no chat header, so the panel mounts the chat's Tools… sheet the composer's MCP button opens.
  */
 export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc: AttachRef; about?: string }) {
   const canQuery1 = useQuerySupport(["list_sessions"])
@@ -62,12 +67,24 @@ export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc
   const height = panelHeight(state.height, pane, mobile)
   const clampHeight = (h: number) => panelHeight(h, measure(), mobile)
   // 143 D11: a popped note has no shell to navigate inside — its chat opens in its own window.
-  const popped = isPopout()
+  const popped = isSoloPopout()
 
   const close = (
     <Button variant="ghost" size="icon-sm" aria-label="Close chat" onClick={() => set(note, { open: false })}>
       <X />
     </Button>
+  )
+  const picker = (
+    <Capability required={modelRequirements} hide>
+      <div className="min-w-0 shrink">
+        <ModelMenu session={session} small />
+      </div>
+    </Capability>
+  )
+  const sheet = (
+    <Capability required={toolsRequirements} hide>
+      <ToolsSheet session={session ?? ''} />
+    </Capability>
   )
   const composer = (
     <Composer
@@ -87,9 +104,11 @@ export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc
           <span className="min-w-0 flex-1 truncate">
             Ask theuth about {about} {'\u2014'} the first message starts a chat with it attached
           </span>
+          {picker}
           {close}
         </header>
         {composer}
+        {sheet}
       </section>
     )
 
@@ -111,6 +130,7 @@ export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc
       />
       <header className="flex h-8 shrink-0 items-center gap-1 px-2 text-xs text-fg-secondary">
         <span className="min-w-0 flex-1 truncate">{title || 'Chat'}</span>
+        {picker}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -136,6 +156,7 @@ export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc
       </header>
       <Transcript key={session} session={session} compact />
       {composer}
+      {sheet}
     </section>
   )
 }

@@ -20,7 +20,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { isMacDesktop, touch } from '@/lib/hotkeys'
 import { isDesktop } from '@/lib/platform'
-import { canPopout, isPopout, openPopout } from '@/lib/popout'
+import { canPopout, isSoloPopout, openPopout } from '@/lib/popout'
 import { meetingsQuery, useProjectChoices } from '@/lib/meeting-project'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { LOCAL, useEngines } from '@/link/engines'
@@ -45,7 +45,7 @@ export const duration = (ms: number): string => {
  */
 export function MeetingHeader({ title, back, children }: { title: ReactNode; back?: boolean; children?: ReactNode }) {
   const mac = isMacDesktop()
-  if (isPopout()) {
+  if (isSoloPopout()) {
     return (
       <header data-tauri-drag-region={mac || undefined} className="flex h-[52px] shrink-0 items-center gap-1 px-3">
         <h2 className="flex flex-1 items-center gap-1 truncate text-sm font-semibold">{title}</h2>

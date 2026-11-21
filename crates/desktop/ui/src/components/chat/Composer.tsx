@@ -7,12 +7,16 @@ import { open as pickFiles } from '@tauri-apps/plugin-dialog'
 import {
   ArrowUp,
   AudioLines,
+  ChevronLeft,
+  ChevronRight,
   CircleAlert,
   FileUp,
   Loader2,
   Megaphone,
+  MessageSquarePlus,
   Paperclip,
   Plus,
+  Settings2,
   Sparkles,
   Square,
   StickyNote,
@@ -52,6 +56,7 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { useMesh } from '@/components/tasks/queries'
 import type { CreateSessionOptions } from '@/rpc/bindings/method.sessionsync.input'
 import { EMPTY, PLAIN_OPTIONS, sendFirst, useDraftTarget, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { type Suffix, activeSuffix, useSuffixes, withSuffix } from '@/lib/suffixes'
 import { YOUNG_MS, useRemoteStart } from '@/lib/remote-start'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -80,6 +85,7 @@ import { MicButton } from './MicButton'
 import { StopButton } from './StopButton'
 import { CancelHint, DeleteNote, RecordingMeta, type Stage } from './VoiceHold'
 import { HeldStrip } from './HeldStrip'
+import { McpMenu } from './McpMenu'
 import { OwnerOfflineCard } from './OwnerOfflineCard'
 import { RecordingBox, VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
 import type { FrameSource, VisualFrame } from '@/lib/audio/types'
@@ -379,6 +385,11 @@ export function Composer({
   /** Skill parked for the next send (`lib/skill-draft`): the send becomes `use_skill(session, skill, words)`. */
   const skill = useSkillDraft((s) => (session ? s.by[session] : undefined))
   const setSkill = (name: string | null) => session && useSkillDraft.getState().set(session, name)
+  /** #3: the chat's prompt suffix (`lib/suffixes`), keyed by session — or by the draft until the chat exists. */
+  const suffixChat = session ?? draftKey
+  const suffixes = useSuffixes((s) => s.list)
+  const suffixOn = useSuffixes((s) => s.active[suffixChat])
+  const suffix = activeSuffix(suffixes, suffixOn)
   const [selected, setSelected] = useState(0)
   /** D15: a harness command picked from the menu that takes arguments; the next send goes to the harness verbatim. */
   const [rawCmd, setRawCmd] = useState<string | null>(null)
@@ -477,6 +488,8 @@ export function Composer({
   /** The attach picker (66 §7.1): `'menu'` from `+`/`theuth:attach-open`, `'at'` from the `@` trigger (§7.8). */
   const [picking, setPicking] = useState<'menu' | 'at' | null>(null)
   const [menu, setMenu] = useState(false)
+  /** #3: the `+` menu's suffix steps — `'list'` the saved suffixes, a suffix its scope question; `null` the menu. */
+  const [suffixStep, setSuffixStep] = useState<'list' | Suffix | null>(null)
   const box = useRef<HTMLDivElement>(null)
   const qc = useQueryClient()
   const notes = useNotes()
@@ -873,7 +886,8 @@ export function Composer({
       }
       const expanded = expand(line, pastes)
       // 59 §7.3: the pinned document leads every message, so its id survives compaction.
-      body = pinned ? compose([pinned], expanded.text) : expanded.text
+      // #3: the chat's prompt suffix closes every typed or spoken message (never a command or a skill).
+      body = withSuffix(pinned ? compose([pinned], expanded.text) : expanded.text, suffix?.text)
       const { files } = expanded
       const { markSent, applyEvents, loadHistory } = useSessions.getState()
       // 66 §7.6: recents are recorded on send, not on pick.
@@ -944,6 +958,9 @@ export function Composer({
         })
       }
       useDrafts.getState().acked(draftKey, spoken ?? text)
+      // #3: a "this message" suffix is spent; an "every message" one follows a new chat onto its session.
+      useSuffixes.getState().sent(suffixChat)
+      if (target && !session && !resolveSession) useSuffixes.getState().carry(suffixChat, target)
       retried.current = false
       ownerRetried.current = false
       shelf.current = new Map()
@@ -966,6 +983,7 @@ export function Composer({
         const drafts = useDrafts.getState()
         drafts.set(`${onCreated ? 'panel:' : ''}${target}`, drafts.by[draftKey] ?? EMPTY)
         drafts.set(draftKey, EMPTY)
+        useSuffixes.getState().carry(suffixChat, target)
         if (onCreated) onCreated(target)
         else await navigate({ to: '/c/$session', params: { session: target } })
       }
@@ -1302,6 +1320,23 @@ export function Composer({
           </span>
         </div>
       )}
+      {suffix && (
+        <div className="flex justify-end pb-2">
+          <span className="flex max-w-full items-center gap-1.5 rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary" data-suffix={suffix.id}>
+            <MessageSquarePlus className="size-3.5 shrink-0" />
+            <span className="truncate font-medium">{suffix.name}</span>
+            <span className="shrink-0 text-xs text-fg-tertiary">· {suffix.scope === 'once' ? 'this message' : 'every message'}</span>
+            <button
+              type="button"
+              aria-label="Turn off prompt suffix"
+              onClick={() => useSuffixes.getState().clear(suffixChat)}
+              className="ml-1 hover:text-foreground"
+            >
+              <X className="size-3" />
+            </button>
+          </span>
+        </div>
+      )}
       {session && !compact && <ContextPicker session={session} />}
       <input
         ref={fileInput}
@@ -1349,7 +1384,13 @@ export function Composer({
           {/* 89 VOICE-HOLD: a held or locked note takes the row — Delete (locked) · dot + timer stand in for Add. */}
           {stage === 'locked' && <DeleteNote onClick={() => stopRecording(true)} />}
           {stage !== 'idle' && <RecordingMeta secs={secs} stage={stage} />}
-          <Popover open={menu} onOpenChange={setMenu}>
+          <Popover
+            open={menu}
+            onOpenChange={(open) => {
+              setMenu(open)
+              if (!open) setSuffixStep(null)
+            }}
+          >
             <PopoverTrigger asChild>
               <Button
                 variant="ghost"
@@ -1360,54 +1401,114 @@ export function Composer({
               </Button>
             </PopoverTrigger>
             <PopoverContent align="start" className="w-52 p-1">
-              <Button
-                variant="ghost"
-                className="w-full justify-start"
-                onClick={() => {
-                  setMenu(false)
-                  setPicking('menu')
-                }}
-              >
-                <Paperclip /> Attach…
-              </Button>
-              <Button
-                variant="ghost"
-                className="w-full justify-start"
-                onClick={async () => {
-                  if (!hostFiles) {
-                    fileInput.current?.click()
-                    return
-                  }
-                  const picked = await pickFiles({
-                    multiple: true,
-                    filters: [
-                      {
-                        name: 'Images and PDF',
-                        extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'pdf'],
-                      },
-                    ],
-                  })
-                  if (picked) addFiles(picked)
-                }}
-              >
-                <FileUp /> Attach file
-              </Button>
-              <Button
-                variant="ghost"
-                className="w-full justify-start"
-                disabled={newNote.isPending}
-                onClick={() => {
-                  setMenu(false)
-                  newNote.mutate()
-                }}
-              >
-                <StickyNote /> New note
-              </Button>
-              <Button variant="ghost" className="w-full justify-start" onClick={() => openBroadcastDialog({ text })}>
-                <Megaphone /> Send to many…
-              </Button>
+              {suffixStep === 'list' ? (
+                <div role="menu" aria-label="Prompt suffixes">
+                  <Button variant="ghost" className="w-full justify-start text-fg-secondary" onClick={() => setSuffixStep(null)}>
+                    <ChevronLeft /> Add prompt suffix
+                  </Button>
+                  {suffixes.length === 0 && <p className="px-3 py-1.5 text-sm text-fg-tertiary">No suffixes saved yet.</p>}
+                  {suffixes.map((s) => (
+                    <Button key={s.id} variant="ghost" role="menuitem" className="w-full justify-start" onClick={() => setSuffixStep(s)}>
+                      <span className="truncate">{s.name}</span>
+                    </Button>
+                  ))}
+                  <div className="mt-1 border-t border-border-subtle pt-1">
+                    <Button
+                      variant="ghost"
+                      className="w-full justify-start"
+                      onClick={() => {
+                        setMenu(false)
+                        setSuffixStep(null)
+                        void navigate({ to: '/settings/$tab', params: { tab: 'suffixes' } })
+                      }}
+                    >
+                      <Settings2 /> Manage suffixes…
+                    </Button>
+                  </div>
+                </div>
+              ) : suffixStep ? (
+                <div role="menu" aria-label={`Add ${suffixStep.name}`}>
+                  <p className="truncate px-3 py-1.5 text-xs text-fg-tertiary">Add “{suffixStep.name}” to</p>
+                  {(
+                    [
+                      ['once', 'This message'],
+                      ['always', 'Every message until I turn it off'],
+                    ] as const
+                  ).map(([scope, label]) => (
+                    <Button
+                      key={scope}
+                      variant="ghost"
+                      role="menuitem"
+                      className="h-auto w-full justify-start py-1.5 text-left whitespace-normal"
+                      onClick={() => {
+                        useSuffixes.getState().activate(suffixChat, suffixStep.id, scope)
+                        setMenu(false)
+                        setSuffixStep(null)
+                        ref.current?.focus()
+                      }}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+              ) : (
+                <>
+                  <Button
+                    variant="ghost"
+                    className="w-full justify-start"
+                    onClick={() => {
+                      setMenu(false)
+                      setPicking('menu')
+                    }}
+                  >
+                    <Paperclip /> Attach…
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="w-full justify-start"
+                    onClick={async () => {
+                      if (!hostFiles) {
+                        fileInput.current?.click()
+                        return
+                      }
+                      const picked = await pickFiles({
+                        multiple: true,
+                        filters: [
+                          {
+                            name: 'Images and PDF',
+                            extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'pdf'],
+                          },
+                        ],
+                      })
+                      if (picked) addFiles(picked)
+                    }}
+                  >
+                    <FileUp /> Attach file
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="w-full justify-start"
+                    disabled={newNote.isPending}
+                    onClick={() => {
+                      setMenu(false)
+                      newNote.mutate()
+                    }}
+                  >
+                    <StickyNote /> New note
+                  </Button>
+                  <Button variant="ghost" className="w-full justify-start" onClick={() => openBroadcastDialog({ text })}>
+                    <Megaphone /> Send to many…
+                  </Button>
+                  <Button variant="ghost" className="w-full justify-start" onClick={() => setSuffixStep('list')}>
+                    <MessageSquarePlus /> Add prompt suffix
+                    <ChevronRight className="ml-auto" />
+                  </Button>
+                </>
+              )}
             </PopoverContent>
           </Popover>
+          {/* #4: this chat's MCP servers, beside `+`; a HUD composer sends into a chat named on demand, so it has none. */}
+          {!readOnly && !resolveSession && <McpMenu session={session ?? ''} className={cn(stage !== 'idle' && 'hidden')} />}
           <div ref={boxWrap} className="relative min-w-0 flex-1">
             {/* 82 §C: while a voice note records the wave is the box; the textarea stays mounted underneath. */}
             <RecordingBox recording={recording} source={noteSource}>

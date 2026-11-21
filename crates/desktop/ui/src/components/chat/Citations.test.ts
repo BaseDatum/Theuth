@@ -30,10 +30,12 @@ const render = (text: string, resolved: Citation[] | null, ...children: ReactNod
   return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(CitationsProvider, { text, children }) }))
 }
 
-test('a plain https link stays an ordinary anchor; a theuth link becomes chip 1', () => {
+test('an http(s) link opens outside the app (new window target, the browser via its click); a theuth link becomes chip 1', () => {
   const plain = renderToStaticMarkup(createElement(CitationLink, { href: 'https://example.com', children: 'site' }))
-  expect(plain).toBe('<a href="https://example.com">site</a>')
+  expect(plain).toBe('<a href="https://example.com" target="_blank" rel="noopener noreferrer">site</a>')
   expect(plain).not.toContain('theuth-cite')
+  // An in-page anchor stays an ordinary anchor.
+  expect(renderToStaticMarkup(createElement(CitationLink, { href: '#notes', children: 'notes' }))).toBe('<a href="#notes">notes</a>')
   const html = render(`see [runbook](${HREF})`, null, createElement(CitationLink, { href: HREF, children: 'runbook' }))
   expect(html).toMatch(/<a href="theuth:\/\/sources\/s1#b12" class="theuth-cite" data-kind="sources" title="sources · #b12"[^>]*>1<\/a>/)
 })

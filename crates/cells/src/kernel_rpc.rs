@@ -671,6 +671,7 @@ mod tests {
         KernelId {
             scope: Scope::Session(runtime::SessionId::new()),
             spec: cells::KernelSpec::Monty,
+            instance: 0,
         }
     }
 

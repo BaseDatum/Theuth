@@ -43,11 +43,11 @@ test('the page renders every section from the sim fixture synchronously — no s
   for (const t of ['Costs', 'Spend · 30D', 'Today', 'Calls', 'Tokens', 'Basis', 'Spend over time', 'Usage limits', 'By model · 30D', 'By owner · 30D', 'By provider · 30D', 'By kind · 30D', 'By project · 30D', 'When · hour × weekday', 'Sessions · 30D', 'Ledger']) expect(html).toContain(t)
   for (const p of ['Today', '24H', '7D', '30D', 'MTD', '90D', 'All', 'Custom']) expect(html).toContain(`>${p}<`)
   for (const c of ['Provider', 'Model', 'Owner', 'Kind', 'Via', 'Basis', 'Project', 'Session']) expect(html).toMatch(new RegExp(`${c} <b[^>]*>(all|any)</b>`))
-  // Limits: a gauge chart per window, the not-configured / unavailable rows as one muted line each.
+  // Limits: a gauge chart per window; providers with nothing measured (not configured / unavailable / error) are not shown.
   expect(html).toContain('Claude subscription')
   expect(html).toContain('limited')
-  expect(html).toMatch(/Groq/)
-  expect(html).toMatch(/Amazon Bedrock/)
+  expect(html).not.toMatch(/Groq/)
+  expect(html).not.toMatch(/Amazon Bedrock/)
   expect(html).toContain('recharts-radial-bar')
   // Charts are Recharts surfaces inside the shadcn container; the deleted root keeps its books.
   expect((html.match(/data-slot="chart"/g) ?? []).length).toBeGreaterThanOrEqual(10)

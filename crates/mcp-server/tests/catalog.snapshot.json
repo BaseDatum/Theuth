@@ -663,6 +663,11 @@
           ],
           "default": null
         },
+        "here": {
+          "description": "182 D3: only tasks this engine works (homed here; a legacy row while\nit holds the lease) — `task_inbox`.",
+          "type": "boolean",
+          "default": false
+        },
         "limit": {
           "description": "Items per page, 1..=200 (default 50).",
           "type": [
@@ -1102,10 +1107,44 @@
             "string",
             "null"
           ]
+        },
+        "project": {
+          "description": "File it under this project (the chats' project label); omitted = ungrouped.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "required": [
         "title"
+      ]
+    },
+    "read_only": false
+  },
+  {
+    "name": "doc_set_project",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "DocProject",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Document id (a note or board).",
+          "type": "string"
+        },
+        "project": {
+          "description": "Project label; omitted or empty clears it.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "id"
       ]
     },
     "read_only": false

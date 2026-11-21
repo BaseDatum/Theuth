@@ -55,8 +55,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tools::{
-    Invoke, ListPrompts, ListTools, REGISTRY_ACTOR, Risk, SessionResources, ToolOutput,
-    ToolRegistry, ToolSpec,
+    HiddenEpoch, Invoke, ListPrompts, ListTools, REGISTRY_ACTOR, Risk, SessionResources,
+    ToolOutput, ToolRegistry, ToolSpec,
 };
 use uuid::Uuid;
 
@@ -3037,6 +3037,11 @@ struct Turn {
     /// a direct call of one is bridged into a `python` cell; empty without the
     /// runtime, in `runtime_only: false` mode and under a `toolset`.
     runtime_names: HashSet<String>,
+    /// The registry's [`HiddenEpoch`] this turn's tools were listed under: a
+    /// round that finds it moved rebases first, so a tool hidden (or shown)
+    /// mid-turn leaves (or rejoins) the direct array, the `## Runtime` index
+    /// and the bridge set before the next model call.
+    hidden_epoch: Option<u64>,
     /// A rebase or compaction happened since the last call (07 §7).
     reset_this_round: bool,
     /// The overflow retry was used this turn (07 §8.5).
@@ -3959,6 +3964,7 @@ impl Turn {
             transport: None,
             tools: Vec::new(),
             runtime_names: HashSet::new(),
+            hidden_epoch: None,
             reset_this_round: false,
             overflowed: false,
             refusal_trimmed: false,
@@ -5500,6 +5506,8 @@ impl Turn {
             ),
             None => (String::new(), None),
         };
+        // Read before `ListTools`: a hide landing in between moves it again.
+        self.hidden_epoch = registry.ask(HiddenEpoch).await.ok();
         let specs = match registry.ask(ListTools(Some(self.shared.id))).await {
             Ok(specs) => specs,
             Err(e) => {
@@ -6965,6 +6973,12 @@ impl Turn {
         }
         if !self.hold_permit().await {
             return Round::Stop("cancelled".into());
+        }
+        // `set_mcp_hidden` since the last listing: re-list before this call.
+        if let Ok(epoch) = registry.ask(HiddenEpoch).await
+            && self.hidden_epoch != Some(epoch)
+        {
+            Box::pin(self.rebase(registry)).await;
         }
         // Boxed: these futures would otherwise widen `round`'s state machine.
         Box::pin(self.load_image_refusals()).await;
@@ -10492,8 +10506,11 @@ mod tests {
 ```bash\necho a snippet, never checked\n```\n";
         assert!(invalid_cells(&cells_of(runbook), &[], None, &[], &[]).is_empty());
 
-        let broken =
+        // #1: `after` is advisory — an unknown name is a warning, never a <cell_error>.
+        let advisory =
             "```bash\n#| name: apply-ir-prod1\n#| after: preview\n#| cwd: ~/s\npulumi up\n```\n";
+        assert!(invalid_cells(&cells_of(advisory), &cells_of(runbook), None, &[], &[]).is_empty());
+        let broken = "```bash\n#| name: apply-ir-prod1\n#| after: preview\npulumi up\n```\n";
         let invalid = invalid_cells(&cells_of(broken), &cells_of(runbook), None, &[], &[]);
         let msg = surface::cell_error(&invalid);
         assert!(
@@ -10501,9 +10518,10 @@ mod tests {
             "{msg}"
         );
         assert!(
-            msg.contains("- cell 1 \"apply-ir-prod1\": after_unknown — "),
+            msg.contains("- cell 1 \"apply-ir-prod1\": cwd_missing — "),
             "{msg}"
         );
+        assert!(!msg.contains("after_unknown"), "{msg}");
         assert!(msg.ends_with("</cell_error>"), "{msg}");
 
         // A later reply's `after` names an earlier reply's cell.
@@ -10546,12 +10564,12 @@ mod tests {
         use super::vision_fallback_tests::{Fake, Harness};
         let h = Harness::new(Fake::harvest_held(Duration::ZERO)).await;
         let (mut turn, _) = h.turn("openai/textonly", CancellationToken::new()).await;
-        let bad = "```bash\n#| name: apply\n#| after: preview\n#| cwd: /tmp\npulumi up\n```\n";
+        let bad = "```bash\n#| name: apply\n#| after: preview\npulumi up\n```\n";
         assert!(turn.check_cells(bad).await.is_none(), "no block, no check");
         turn.cells_on = true;
         assert!(turn.check_cells("```bash\nls\n```\n").await.is_none());
         let first = turn.check_cells(bad).await.expect("one round");
-        assert!(first.contains("after_unknown"), "{first}");
+        assert!(first.contains("cwd_missing"), "{first}");
         assert!(turn.check_cells(bad).await.is_none(), "the round is spent");
     }
 

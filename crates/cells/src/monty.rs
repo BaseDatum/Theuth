@@ -543,6 +543,7 @@ mod tests {
             id: KernelId {
                 scope: Scope::Session(SessionId(uuid::Uuid::nil())),
                 spec: KernelSpec::Monty,
+                instance: 0,
             },
             owner: SessionId(uuid::Uuid::nil()),
             login_env: Arc::default(),

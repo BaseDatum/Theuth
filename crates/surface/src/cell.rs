@@ -14,6 +14,20 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// The longest `label` the Run button shows whole (§3.2); a longer one is a warning and
+/// shows [`short_label`]-truncated, the full text kept as its tooltip.
+pub const LABEL_MAX: usize = 40;
+
+/// `label` cut to [`LABEL_MAX`] characters with `…` as the last one when longer.
+pub fn short_label(label: &str) -> String {
+    if label.chars().count() <= LABEL_MAX {
+        return label.to_string();
+    }
+    let mut s: String = label.chars().take(LABEL_MAX - 1).collect();
+    s.push('…');
+    s
+}
+
 /// Runnable fence languages (§3.1); every other language is never a cell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -88,7 +102,8 @@ pub fn is_runnable(info: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct HeaderLine {
-    /// The key (`[a-z]+`), or the raw line text when it does not parse as one.
+    /// The key (`[a-z]+`, written in any case), or the raw line text when it does not parse
+    /// as one.
     pub key: String,
     /// The value, trimmed, one pair of surrounding double quotes removed.
     pub value: Option<String>,
@@ -107,7 +122,8 @@ pub struct Cell {
     pub options: CellOptions,
     /// Everything after the header, LF line ends, one trailing newline removed.
     pub code: String,
-    /// Number of header lines; UI code line 1 is the line after them.
+    /// Lines before the code (leading blanks, a shebang, header and blank lines between
+    /// header lines); UI code line 1 is the line after them.
     pub header_lines: u32,
 }
 
@@ -119,11 +135,11 @@ pub struct CellOptions {
     pub cwd: Option<String>,
     /// Stable id, slug `[a-z0-9-]{1,48}`.
     pub name: Option<String>,
-    /// Run button text, ≤ 40 characters.
+    /// Run button text; over [`LABEL_MAX`] characters it shows truncated (a warning).
     pub label: Option<String>,
     /// Red outline; never in Run all.
     pub danger: bool,
-    /// Arms only after the named cell's latest run succeeded.
+    /// Advisory: a press before the named cell's latest run succeeded asks to confirm.
     pub after: Option<String>,
     /// Output expectations, one per `expect` line.
     pub expect: Vec<Expect>,
@@ -285,9 +301,11 @@ fn split_header(text: &str) -> Option<(String, Option<String>)> {
         Some(i) => (&text[..i], Some(&text[i + 1..])),
         None => (text, None),
     };
-    if key.is_empty() || !key.bytes().all(|b| b.is_ascii_lowercase()) {
+    if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphabetic()) {
         return None;
     }
+    // Keys are case-insensitive (`#| Label: x`); values keep their case.
+    let key = key.to_ascii_lowercase();
     let value = rest.map(|v| {
         let v = v.trim();
         match v.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
@@ -295,7 +313,7 @@ fn split_header(text: &str) -> Option<(String, Option<String>)> {
             None => v.to_string(),
         }
     });
-    Some((key.to_string(), value))
+    Some((key, value))
 }
 
 fn header_line(text: &str) -> HeaderLine {
@@ -335,8 +353,8 @@ fn non_empty(v: Option<&str>) -> Result<String, &'static str> {
 
 fn flag(v: Option<&str>) -> Result<bool, &'static str> {
     match v {
-        None | Some("true") => Ok(true),
-        Some("false") => Ok(false),
+        None | Some("true" | "yes" | "on") => Ok(true),
+        Some("false" | "no" | "off") => Ok(false),
         Some(_) => Err("bad_option"),
     }
 }
@@ -381,13 +399,8 @@ fn typed(line: &HeaderLine) -> Result<Opt, &'static str> {
             }
             Opt::Name(n)
         }
-        "label" => {
-            let l = non_empty(v)?;
-            if l.chars().count() > 40 {
-                return Err("bad_option");
-            }
-            Opt::Label(l)
-        }
+        // Any length: a long label is a warning (`label_long`) and shows truncated.
+        "label" => Opt::Label(non_empty(v)?),
         "danger" => Opt::Danger(flag(v)?),
         "review" => Opt::Review(flag(v)?),
         "private" => Opt::Private(flag(v)?),
@@ -441,29 +454,56 @@ fn fill(header: &[HeaderLine]) -> CellOptions {
     o
 }
 
+/// Whether a header-region line is blank (only whitespace).
+fn blank(line: &str) -> bool {
+    line.trim().is_empty()
+}
+
 /// Parse one fence (`lang` = info string, `body` = text between the fence lines) into a
 /// cell. `None` when the language is not runnable or the body has no header line.
+///
+/// The header may follow leading blank lines and one shebang line (`#!…`); blank lines
+/// between header lines stay in the header, which ends at the first line that is neither a
+/// header line nor blank (blank lines after the last header line belong to the code).
+/// `header_lines` counts every line before the code.
 pub fn parse(lang: &str, body: &str) -> Option<Cell> {
     let lang = lang_of(lang)?;
     let prefix = lang.prefix();
     let body = normalize(body);
     let lines: Vec<&str> = body.split('\n').collect();
-    let header: Vec<HeaderLine> = lines
-        .iter()
-        .take_while(|l| l.starts_with(prefix))
-        .map(|l| header_line(&l[prefix.len()..]))
-        .collect();
+    let mut start = 0;
+    let mut shebang = false;
+    while let Some(l) = lines.get(start) {
+        if blank(l) {
+            start += 1;
+        } else if !shebang && l.starts_with("#!") {
+            shebang = true;
+            start += 1;
+        } else {
+            break;
+        }
+    }
+    let mut header = Vec::new();
+    let mut end = start;
+    for (i, l) in lines.iter().enumerate().skip(start) {
+        if let Some(rest) = l.strip_prefix(prefix) {
+            header.push(header_line(rest));
+            end = i + 1;
+        } else if !blank(l) {
+            break;
+        }
+    }
     if header.is_empty() {
         return None;
     }
-    let mut code = lines[header.len()..].join("\n");
+    let mut code = lines[end..].join("\n");
     if code.ends_with('\n') {
         code.pop();
     }
     Some(Cell {
         lang,
         options: fill(&header),
-        header_lines: header.len() as u32,
+        header_lines: end as u32,
         header,
         code,
     })
@@ -588,42 +628,75 @@ pub fn validate(cell: &Cell, ctx: &ValidateCtx) -> Vec<Problem> {
         _ => {}
     }
 
+    // Problems that never stop a run (a bad value of an advisory key is ignored, `after` is
+    // advisory): warnings, listed first among the warnings below.
+    let mut soft = Vec::new();
     for line in &cell.header {
         if line.key == "python" && cell.lang != Lang::Python {
-            out.push(err(
+            soft.push(warn(
                 "python_option",
-                "`python:` on a non-python cell".to_string(),
+                "`python:` only applies to python cells; ignored".to_string(),
                 Some("python"),
             ));
             continue;
         }
         if let Err(code) = typed(line) {
             let shown = line.value.as_deref().unwrap_or("");
+            let key = line.key.as_str();
+            let hint = match key {
+                "name" => " (1–48 lowercase letters, digits or dashes)",
+                "danger" | "review" | "private" => " (use true or false, or the bare key)",
+                "expect" => " (text, or a /regex/ that compiles)",
+                "env" => " (use KEY=value with a shell variable name)",
+                "timeout" => " (a number with s, m or h, e.g. 30s or 10m)",
+                _ => "",
+            };
+            let advisory = matches!(
+                key,
+                "name" | "label" | "review" | "private" | "after" | "expect" | "timeout" | "on"
+            );
+            let tail = if advisory { "; ignored" } else { "" };
             let msg = match code {
                 "python_option" => {
                     format!("`python: {shown}` is not monty, auto, .venv, uv or a path")
                 }
-                _ if line.value.is_none() => format!("`{}` needs a value", line.key),
-                _ => format!("`{}: {shown}` is not a valid {}", line.key, line.key),
+                _ if line.value.is_none() => format!("`{key}` needs a value{tail}"),
+                _ => format!("`{key}: {shown}` is not a valid {key}{hint}{tail}"),
             };
-            out.push(err(code, msg, Some(&line.key)));
+            if advisory {
+                soft.push(warn(code, msg, Some(key)));
+            } else {
+                out.push(err(code, msg, Some(key)));
+            }
         }
     }
 
+    if let Some(l) = &o.label {
+        let n = l.chars().count();
+        if n > LABEL_MAX {
+            soft.push(warn(
+                "label_long",
+                format!("label is {n} characters; shown truncated to {LABEL_MAX}"),
+                Some("label"),
+            ));
+        }
+    }
+
+    // `after` is advisory (#1): an unknown or looping name is a warning; the cell runs.
     if let Some(a) = &o.after {
         let own = o.name.as_deref();
         if own == Some(a.as_str()) {
-            out.push(err(
+            soft.push(warn(
                 "after_cycle",
-                format!("`after: {a}` names this cell"),
+                format!("`after: {a}` names this cell; ignored"),
                 Some("after"),
             ));
         } else if !ctx.names.iter().any(|n| n == a) {
-            out.push(err("after_unknown", after_unknown(a, ctx), Some("after")));
+            soft.push(warn("after_unknown", after_unknown(a, ctx), Some("after")));
         } else if own.is_some_and(|me| reaches(&ctx.after_edges, a, me)) {
-            out.push(err(
+            soft.push(warn(
                 "after_cycle",
-                format!("`after: {a}` loops back to this cell"),
+                format!("`after: {a}` loops back to this cell; ignored"),
                 Some("after"),
             ));
         }
@@ -676,10 +749,11 @@ pub fn validate(cell: &Cell, ctx: &ValidateCtx) -> Vec<Problem> {
         out.push(err("empty", "no code after the header".to_string(), None));
     }
 
+    out.extend(soft);
     for k in &o.unknown {
         out.push(warn(
             "unknown_option",
-            format!("unknown option `{k}`"),
+            format!("unknown option `{k}`; ignored"),
             Some(k),
         ));
     }

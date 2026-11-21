@@ -386,3 +386,64 @@ fn after_unknown_lists_the_closest_names() {
         "`after: preview-prod`: no cell named `preview-prod` in this note"
     );
 }
+
+/// #1: header problems never make a reasonable cell unrunnable — a long label, an unknown
+/// or looping `after`, an unknown key and a bad advisory value are warnings that say why;
+/// the label is kept whole (the button truncates it with `short_label`).
+#[test]
+fn advisory_problems_are_warnings() {
+    use surface::cell::{LABEL_MAX, Severity, short_label};
+    let label = "Add 10.203 return route to west PostInspect in cent-net";
+    let cell = parse(
+        "zsh",
+        &format!(
+            "\n#!/bin/zsh\n#| Name: route\n\n#| label: {label}\n#| after: preview\n#| timeout: 5min\n#| colour: red\nip route add x\n"
+        ),
+    )
+    .expect("cell");
+    assert_eq!(cell.options.label.as_deref(), Some(label));
+    assert_eq!(cell.options.name.as_deref(), Some("route"));
+    assert_eq!(cell.code, "ip route add x");
+    let ctx = ValidateCtx {
+        chat: false,
+        names: vec!["route".into()],
+        defaults: Some(NoteDefaults {
+            cwd: Some("/tmp".into()),
+            ..NoteDefaults::default()
+        }),
+        ..ValidateCtx::default()
+    };
+    let problems = validate(&cell, &ctx);
+    assert!(
+        problems.iter().all(|p| p.severity == Severity::Warning),
+        "{problems:?}"
+    );
+    let msgs: Vec<&str> = problems.iter().map(|p| p.message.as_str()).collect();
+    assert_eq!(
+        msgs,
+        [
+            "`timeout: 5min` is not a valid timeout (a number with s, m or h, e.g. 30s or 10m); ignored",
+            "label is 55 characters; shown truncated to 40",
+            "`after: preview`: no cell named `preview` in this note",
+            "unknown option `colour`; ignored",
+        ]
+    );
+    let short = short_label(label);
+    assert_eq!(short.chars().count(), LABEL_MAX);
+    assert!(short.ends_with('…') && label.starts_with(short.trim_end_matches('…')));
+    assert_eq!(short_label("Apply"), "Apply");
+    // A cycle is a warning too.
+    let me = parse("bash", "#| cwd: /tmp\n#| name: a\n#| after: a\nls\n").expect("cell");
+    let p = validate(
+        &me,
+        &ValidateCtx {
+            names: vec!["a".into()],
+            ..ValidateCtx::default()
+        },
+    );
+    assert_eq!(p.len(), 1);
+    assert_eq!(
+        (p[0].code.as_str(), p[0].severity),
+        ("after_cycle", Severity::Warning)
+    );
+}

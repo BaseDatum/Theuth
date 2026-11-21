@@ -22,7 +22,7 @@ import { AnsiText, CellContainer, CellOutputs, ExecutionCount } from './Outputs'
 import { clock, duration, ended, errorText, exitText, refKey, scopeOf } from './store'
 import type { CellProps, CellViewState } from './types'
 import { OutputDisclosure } from './vendor/nteract/outputs/ansi-output'
-import { disarmedReason, interpreterText, labelOf, RUN_ANYWAY, titleOf } from './view'
+import { disarmedReason, gateQuestion, interpreterText, labelOf, RUN_ANYWAY, titleOf } from './view'
 // xterm loads with the first live run.
 const Terminal = lazy(() => import('@/components/chat/TerminalViewer').then((m) => ({ default: m.Terminal })))
 
@@ -393,8 +393,14 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
   const cwdMissing = warnings.find((p) => p.code === 'cwd_not_found')
   // A pending reply shows the button disabled with its reason ("ready when this message is saved"), not no button.
   const canPress = (runnable || !!extras.pending) && !readOnly && view !== 'invalid' && view !== 'superseded' && view !== 'guest'
-  // CELLAFTER (§7.6): an unarmed `after` gate warns (the strip) and the button runs anyway; the host sends the override.
+  // CELLAFTER (§7.6), #1: `after` is advisory — a press of an unarmed cell asks once inline ("preview `x` hasn't run —
+  // Run anyway?"); its Run anyway sends the override. Never a dead cell.
   const gate = canPress ? disarmedReason(state, cell) : null
+  const [asking, setAsking] = useState(false)
+  const press = (confirmed: boolean) => {
+    setAsking(false)
+    callbacks.onRun({ type: 'cell' }, confirmed)
+  }
   const stop = () => {
     if (!latest || !live) return
     if (stoppedAt === null) {
@@ -429,25 +435,26 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
           )}
         </div>
       )
-    // A member's edit still names whose text runs past the gate (171F `runText` "Run Alice's edit").
-    const text = gate ? (extras.runText ? `${extras.runText} anyway` : RUN_ANYWAY) : view === 'lost' ? 'Run again' : (extras.runText ?? label) /* 171:U2-ADD */
+    // A member's edit still names whose text runs (171F `runText` "Run Alice's edit").
+    const text = view === 'lost' ? 'Run again' : (extras.runText ?? label) /* 171:U2-ADD */
     const reason = extras.pending ? 'ready when this message is saved' : (gate ?? undefined)
     const disabled = !!extras.pending || !!cwdMissing
     return (
       <Button
         size="sm"
-        variant={o.danger ? 'destructive' : gate ? 'outline' : 'default'}
-        className={cn(
-          'h-7 gap-1 pointer-coarse:h-12 aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
-          gate && !o.danger && 'border-warning-border text-warning hover:bg-warning-bg hover:text-warning',
-          phoneDanger && 'w-full',
-        )}
+        variant={o.danger ? 'destructive' : 'default'}
+        className={cn('h-7 gap-1 pointer-coarse:h-12 aria-disabled:cursor-not-allowed aria-disabled:opacity-50', phoneDanger && 'w-full')}
         aria-disabled={disabled || undefined}
         aria-description={reason}
-        title={reason}
-        onClick={() => !disabled && callbacks.onRun({ type: 'cell' }, gate !== null)}
+        // #1: a long label shows cut with `…`; the whole label is the tooltip.
+        title={reason ?? (o.label && o.label !== label ? o.label : undefined)}
+        onClick={() => {
+          if (disabled) return
+          if (gate !== null) setAsking(true)
+          else press(false)
+        }}
       >
-        {!o.danger && (gate ? <AlertTriangle className="size-3" aria-hidden /> : <Play className="size-3" aria-hidden />)}
+        {!o.danger && <Play className="size-3" aria-hidden />}
         {text}
       </Button>
     )
@@ -467,7 +474,11 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
       )}
       {host && <Chip tone="info">on {host.label}</Chip>}
       {o.name && o.label && <Chip mono>{o.name}</Chip>}
-      {o.after && <Chip>after: {o.after}</Chip>}
+      {o.after && (
+        <Chip tone={gate ? 'warning' : undefined} title={gate ?? undefined}>
+          after: {o.after}
+        </Chip>
+      )}
       {o.expect.map((e, i) => (
         <Chip key={i} title="expect">
           expect: {e.kind === 'regex' ? `/${e.value}/` : e.value}
@@ -525,7 +536,20 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
           {`armed by ${(extras.afterLabel ?? o.after ?? '').toLowerCase()} ✓ ${clock(state.armed.at_ms)} · ${state.armed.summary}`}
         </Notice>
       )}
-      {gate && <Notice tone="danger">{gate}</Notice>}
+      {gate && asking && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-warning-border bg-warning-bg px-3 py-1.5 text-xs text-warning" role="alert">
+          <AlertTriangle className="size-3 shrink-0" aria-hidden />
+          <span>{gateQuestion(o.after ?? '', gate)}</span>
+          <span className="ml-auto flex items-center gap-1">
+            <Button size="sm" variant={o.danger ? 'destructive' : 'outline'} className="h-6 px-2 text-xs pointer-coarse:h-12" onClick={() => press(true)}>
+              {extras.runText ? `${extras.runText} anyway` : RUN_ANYWAY}
+            </Button>
+            <Button size="sm" variant="ghost" className="h-6 px-2 text-xs pointer-coarse:h-12" onClick={() => setAsking(false)}>
+              Cancel
+            </Button>
+          </span>
+        </div>
+      )}
       {view === 'lost' && <Notice tone="warning">lost — engine restarted{latest?.cwd ? ` · ${latest.cwd}` : ''}</Notice>}
       {view === 'stale' && !extras.staleInFooter && <Notice tone="muted">ran an earlier version</Notice>}
       {view === 'edited' && <Notice tone="muted">theuth will see the code that actually ran.</Notice>}

@@ -2778,7 +2778,7 @@ async fn doc_read_annotates_note_cells_through_the_hook() {
         .call(
             serde_json::from_value(serde_json::json!({
                 "doc": doc,
-                "markdown": "```bash\n#| name: apply\n#| after: nope\nx\n```\n",
+                "markdown": "```bash\n#| name: apply\n#| after: nope\n#| env: NOEQUALS\nx\n```\n",
             }))
             .unwrap(),
             cx(session),
@@ -2789,7 +2789,7 @@ async fn doc_read_annotates_note_cells_through_the_hook() {
     assert_eq!(
         refused.content,
         "nothing changed: a cell does not validate — fix it and retry\n\
-         cell 1: after_unknown — `after: nope`: no cell named `nope` in this note\n"
+         cell 1: bad_option — `env: NOEQUALS` is not a valid env (use KEY=value with a shell variable name)\n"
     );
     stop(actor).await;
 }

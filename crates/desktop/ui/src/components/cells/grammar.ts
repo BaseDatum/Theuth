@@ -41,8 +41,10 @@ const normalize = (body: string) => body.replaceAll('\r\n', '\n').replaceAll('\r
 function headerLine(raw: string): HeaderLine {
   const text = trim(raw)
   const i = text.indexOf(':')
-  const key = i < 0 ? text : text.slice(0, i)
-  if (!/^[a-z]+$/.test(key)) return { key: text, value: null }
+  const written = i < 0 ? text : text.slice(0, i)
+  if (!/^[A-Za-z]+$/.test(written)) return { key: text, value: null }
+  // Keys are case-insensitive (`#| Label: x`); values keep their case.
+  const key = written.toLowerCase()
   if (i < 0) return { key, value: null }
   const v = trim(text.slice(i + 1))
   return { key, value: v.length >= 2 && v.startsWith('"') && v.endsWith('"') ? v.slice(1, -1) : v }
@@ -95,7 +97,7 @@ function fill(header: HeaderLine[]): CellOptions {
   }
   for (const { key, value: v } of header) {
     const some = v !== null && v !== ''
-    const flag = v === null || v === 'true' ? true : v === 'false' ? false : null
+    const flag = v === null || v === 'true' || v === 'yes' || v === 'on' ? true : v === 'false' || v === 'no' || v === 'off' ? false : null
     switch (key) {
       case 'cwd':
         if (some) o.cwd = v
@@ -104,7 +106,8 @@ function fill(header: HeaderLine[]): CellOptions {
         if (some && /^[a-z0-9-]{1,48}$/.test(v)) o.name = v
         break
       case 'label':
-        if (some && [...v].length <= 40) o.label = v
+        // Any length: a long label is a warning (`label_long`) and the button shows `shortLabel`.
+        if (some) o.label = v
         break
       case 'danger':
       case 'review':
@@ -144,6 +147,15 @@ function fill(header: HeaderLine[]): CellOptions {
   return o
 }
 
+/** `surface::cell::LABEL_MAX`: the longest label the Run button shows whole. */
+export const LABEL_MAX = 40
+
+/** `surface::cell::short_label`: the label cut to `LABEL_MAX` characters, `…` last when longer. */
+export function shortLabel(label: string): string {
+  const chars = [...label]
+  return chars.length <= LABEL_MAX ? label : `${chars.slice(0, LABEL_MAX - 1).join('')}…`
+}
+
 /**
  * 171 §3: parse a fence body as a cell. `null` when `lang` is not a cell language or the body has no `#|` header.
  * U1 mirrors `surface::cell` (`crates/surface/src/cell.rs`) against the shared fixtures `crates/surface/tests/cells.json`.
@@ -153,12 +165,31 @@ export function cellOf(lang: string, text: string): CellSpec | null {
   if (l === null) return null
   const prefix = l === 'javascript' || l === 'typescript' ? '//|' : '#|'
   const lines = normalize(text).split('\n')
-  let n = 0
-  while (n < lines.length && (lines[n] as string).startsWith(prefix)) n++
-  if (n === 0) return null
-  const header = lines.slice(0, n).map((h) => headerLine(h.slice(prefix.length)))
-  const code = lines.slice(n).join('\n')
-  return { lang: l, header, options: fill(header), code: code.endsWith('\n') ? code.slice(0, -1) : code, header_lines: n }
+  const blank = (line: string) => trim(line) === ''
+  // Leading blank lines and one shebang line, then the header: `#|` lines with blank lines between them.
+  let start = 0
+  let shebang = false
+  for (; start < lines.length; start++) {
+    const line = lines[start] as string
+    if (blank(line)) continue
+    if (!shebang && line.startsWith('#!')) {
+      shebang = true
+      continue
+    }
+    break
+  }
+  const header: HeaderLine[] = []
+  let end = start
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i] as string
+    if (line.startsWith(prefix)) {
+      header.push(headerLine(line.slice(prefix.length)))
+      end = i + 1
+    } else if (!blank(line)) break
+  }
+  if (header.length === 0) return null
+  const code = lines.slice(end).join('\n')
+  return { lang: l, header, options: fill(header), code: code.endsWith('\n') ? code.slice(0, -1) : code, header_lines: end }
 }
 
 /** 171 §3.3: a note's ```` ```cells ```` block (U2): `cwd`, `shell`, `python`; everything else lands in `unknown`. */

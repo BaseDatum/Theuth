@@ -3,6 +3,7 @@
 import type { Cell as CellSpec } from '@/rpc/bindings/auxiliary.surface.output'
 import type { Interpreter } from "@/rpc/bindings/method.cells.output"
 import type { CellState } from "@/rpc/bindings/method.cells.output"
+import { shortLabel } from './grammar'
 import type { CellViewState } from './types'
 
 export function viewOf(state: CellState | null, cell: CellSpec, edited: boolean, guest = false): CellViewState {
@@ -30,8 +31,8 @@ export function viewOf(state: CellState | null, cell: CellSpec, edited: boolean,
 }
 
 /**
- * 171 §7.6 (CELLAFTER): why an `after` cell's gate is not armed (the engine's reason), `null` when it is or there is no
- * `after`. The cell warns with it and offers `RUN_ANYWAY`; a press then sends `confirmed`.
+ * 171 §7.6 (CELLAFTER), #1: why an `after` cell's gate is not armed (the engine's reason), `null` when it is or there is
+ * no `after`. `after` is advisory: a press asks once (`gateQuestion`) and `RUN_ANYWAY` sends `confirmed`.
  */
 export function disarmedReason(state: CellState | null, cell: CellSpec): string | null {
   const after = cell.options.after
@@ -39,11 +40,20 @@ export function disarmedReason(state: CellState | null, cell: CellSpec): string 
   return state?.disarmed ?? `after: ${after} is not armed`
 }
 
-/** The Run button of a disarmed cell. */
+/** #1: the one inline question a press of a disarmed cell asks — "preview `x` hasn't run — Run anyway?". */
+export function gateQuestion(after: string, reason: string): string {
+  const why = reason.replace(/ — run it (?:again|first)$/, '')
+  const head = `after: ${after}`
+  const rest = why.startsWith(head) ? why.slice(head.length).replace(/ is not armed$/, '') : null
+  const what = rest === null ? why : `preview \`${after}\` ${rest === '' ? 'hasn’t run' : rest.trim()}`
+  return `${what} — Run anyway?`
+}
+
+/** The Run button of a disarmed cell (the inline question's answer). */
 export const RUN_ANYWAY = 'Run anyway'
 
-/** The button's text and accessible name (§11.9): the label, else `Run`. */
-export const labelOf = (cell: CellSpec) => cell.options.label ?? 'Run'
+/** The button's text and accessible name (§11.9): the label (#1: cut to `LABEL_MAX` with `…`; the full one is its tooltip), else `Run`. */
+export const labelOf = (cell: CellSpec) => (cell.options.label === null ? 'Run' : shortLabel(cell.options.label))
 
 /** The header's title: the label, else the name, else `cell <ordinal>`. */
 export const titleOf = (cell: CellSpec, ordinal?: number) => cell.options.label ?? cell.options.name ?? (ordinal ? `cell ${ordinal}` : 'cell')

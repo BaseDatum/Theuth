@@ -22,7 +22,7 @@ vi.mock('@/components/share/ParticipantStrip', () => ({ ParticipantStrip: () => 
 vi.mock('@/components/share/ShareDialog', () => ({ ShareAction: () => null }))
 vi.mock('@/components/sidebar/SearchTrigger', () => ({ SearchTrigger: () => null }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
-vi.mock('@/lib/popout', () => ({ isPopout: () => false }))
+vi.mock('@/lib/popout', () => ({ isSoloPopout: () => false }))
 vi.mock('@/lib/hotkeys', () => ({ isMacDesktop: () => false }))
 vi.mock('@/lib/nav', () => ({ groupOf: () => 'library' }))
 // Radix renders menu content only when open; plain elements show what the chip lists.

@@ -1,8 +1,9 @@
 import { expect, test } from 'vitest'
 import type { KernelState } from "@/rpc/bindings/method.cells.output"
-import type { PassEnd } from "@/rpc/bindings/method.cells.output"
+import type { CellState, PassEnd } from "@/rpc/bindings/method.cells.output"
 import { digest } from './grammar'
-import { followSuperseded, kernelLabel, runAllLabel, runAllPairs, type Step } from './RunbookBar'
+import { followSuperseded, kernelLabel, newestOf, replacementOf, runAllLabel, runAllPairs, type Step } from './RunbookBar'
+import { refKey } from './store'
 import { RUNBOOK, SESSION, chatRef, run, spec, state } from './test-fixtures'
 
 const steps = (states: Parameters<typeof state>[1][] = []): Step[] => [0, 1, 2].map((i) => ({ ref: chatRef(i + 1), spec: spec(i), state: state(chatRef(i + 1), states[i] ?? {}) }))
@@ -20,11 +21,12 @@ test('a blocking lint chip, a missing folder or an invalid cell is a boundary; s
   expect(runAllLabel(steps([{ superseded_by: chatRef(1, '9') }])).label).toBe('Run all · stops before Apply to ir-prod1')
 })
 
-test('an `after` gate on an earlier cell of the pass is not a boundary in advance; one on a cell elsewhere is', () => {
+test('an unarmed `after` gate is never a boundary: the pass runs it (advisory, `ran_past`)', () => {
   const two = steps().slice(1)
   const safe = [{ ...two[0]! }, { ...two[1]!, spec: { ...two[1]!.spec, options: { ...two[1]!.spec.options, danger: false } } }]
   expect(runAllLabel(safe).label).toBe('Run all')
-  expect(runAllLabel(safe.slice(1)).label).toBe('Run all · stops before Apply to ir-prod1')
+  expect(runAllLabel(safe.slice(1)).label).toBe('Run all')
+  expect(runAllLabel(two.slice(1)).label).toBe('Run all · stops before Apply to ir-prod1')
 })
 
 test('after a pass stops it says where from the engine’s pass (171F B11): at a failed step, or before a boundary', () => {
@@ -59,8 +61,28 @@ test('a replaced step follows its replacement (171F B8): counted when the replac
   expect(runAllLabel(all)).toMatchObject({ label: 'Replaced by a newer version ↓', total: 0 })
 })
 
+test('item (c): a replaced cell stands for its newest version along superseded_by, loops and unread versions guarded', () => {
+  const [a, b, c] = [chatRef(2), chatRef(1, '77'), chatRef(1, '99')]
+  const rec = (...xs: CellState[]) => Object.fromEntries(xs.map((s) => [refKey(s.cell), s]))
+  const newest = state(c, { digest: 'd99' })
+  // Nothing replaced it: its own state, no replacement.
+  expect(newestOf(rec(state(a)), a)).toEqual({ state: state(a), chain: [] })
+  expect(replacementOf(rec(state(a)), a)).toBeNull()
+  // Replaced, the replacement not read yet: watch it; nothing to stand for.
+  expect(newestOf(rec(state(a, { superseded_by: c })), a).chain).toEqual([c])
+  expect(replacementOf(rec(state(a, { superseded_by: c })), a)).toBeNull()
+  // Read: the newest version, through an intermediate one.
+  const all = rec(state(a, { superseded_by: b }), state(b, { superseded_by: c }), newest)
+  expect(newestOf(all, a)).toEqual({ state: newest, chain: [b, c] })
+  expect(replacementOf(all, a)).toBe(newest)
+  // A loop never spins and never stands for anything.
+  const loop = rec(state(a, { superseded_by: b }), state(b, { superseded_by: a }))
+  expect(newestOf(loop, a).chain).toEqual([b])
+  expect(replacementOf(loop, a)).toBeNull()
+})
+
 test('the bar names the kernels its cells use, never another session kernel (171F B26)', () => {
-  const k = (spec: KernelState['id']['spec'], phase: KernelState['phase']): KernelState => ({ id: { scope: { type: 'session', id: SESSION }, spec }, phase, label: '', cwd: null, env_warning: null })
+  const k = (spec: KernelState['id']['spec'], phase: KernelState['phase']): KernelState => ({ id: { scope: { type: 'session', id: SESSION }, spec, instance: 0 }, phase, label: '', cwd: null, env_warning: null })
   const sh = k({ type: 'shell', kind: 'sh', path: '/bin/sh' }, 'busy')
   const bash = k({ type: 'shell', kind: 'bash', path: '/opt/homebrew/bin/bash' }, 'ready')
   const python = k({ type: 'python', path: '/usr/bin/python3' }, 'busy')

@@ -463,6 +463,7 @@ struct SessionRow {
     observed_tool_call: Option<String>,
     observed_detail: Option<String>,
     observed_cost_rule: Option<String>,
+    finished_at: Option<String>,
 }
 
 /// Scalar subquery: column `$col` of the root above the outer `sessions` row
@@ -500,7 +501,7 @@ macro_rules! session_cols {
             " AS notebook, sessions.owner, sessions.epoch, sessions.kind, sessions.memory, \
              sessions.acp_session, sessions.observed_source, sessions.observed_state, sessions.observed_stop, \
              sessions.observed_cancel, sessions.observed_description, sessions.observed_tool_call, \
-             sessions.observed_detail, sessions.observed_cost_rule"
+             sessions.observed_detail, sessions.observed_cost_rule, sessions.finished_at"
         )
     };
 }
@@ -515,6 +516,12 @@ impl SessionRow {
             id: r.id.parse().context("bad session id")?,
             created_at: r.created_at.parse().context("bad created_at")?,
             updated_at: r.updated_at.parse().context("bad updated_at")?,
+            // Written by `turn_finished` only (RFC 3339): never by an edit, rename or move.
+            finished_at: r
+                .finished_at
+                .as_deref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.with_timezone(&chrono::Utc)),
             title: r.title,
             tags: r
                 .tags

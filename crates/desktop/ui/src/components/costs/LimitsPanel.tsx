@@ -1,6 +1,7 @@
-// 160 §5 / §7: the "Usage limits" card — one card per provider snapshot (subscription windows as RadialBar gauges, rate
-// limits and balances as meters, status tag, `source · observed N ago`), theuth budget caps as meters, and providers that
-// expose nothing as one muted line each. Never a loading state: no data = one sentence.
+// 160 §5 / §7: the "Usage limits" card — one card per provider that reports a real limit (subscription windows as
+// RadialBar gauges, rate limits and balances as meters, status tag, `source · observed N ago`) and theuth's spending caps
+// as meters. A provider with nothing measured (no meter, unknown/empty schema, a stale placeholder without last values)
+// is not shown at all; routine runs (dreaming, schedules) are not spending caps. Never a loading state: no data = one sentence.
 
 import { memo, useMemo, type ReactNode } from 'react'
 import { PolarAngleAxis, RadialBar, RadialBarChart } from 'recharts'
@@ -191,27 +192,29 @@ function BudgetsCard({ budgets, now }: { budgets: BudgetLimit[]; now: number }) 
   )
 }
 
-/** A provider with nothing to meter (no usage API, not configured) takes one line, not a card. */
-const bare = (p: ProviderLimits): boolean => (p.status === 'unavailable' || p.status === 'not_configured') && p.windows.length === 0 && p.rates.length === 0 && !p.balance
+/**
+ * A provider earns a card only with something measured: a window, a rate bucket with a limit, or a balance with a value.
+ * Status alone (stale, error, no api, not configured) is not a limit; a stale card with last-known values still shows.
+ */
+export const hasLimits = (p: ProviderLimits): boolean =>
+  p.windows.length > 0 || p.rates.some((r) => r.limit > 0) || (p.balance != null && (p.balance.remaining != null || p.balance.used != null || p.balance.limit != null))
+
+/** User-facing spending caps only: a routine's run budget (`routine:<name>`, e.g. dreaming's night) is not one. */
+export const isSpendingCap = (b: BudgetLimit): boolean => !b.id.startsWith('routine:') && b.cap_usd > 0
 
 export const LimitsPanel = memo(function LimitsPanel({ now: pageNow, visible = true }: { now: number; visible?: boolean }) {
   const { data } = useUsageLimits(visible)
   // The page clock ticks per minute, the snapshot every 15 s: never read a snapshot as being from the future.
   const now = Math.max(pageNow, data?.generated_at_ms ?? 0)
-  const [cards, lines] = useMemo(() => {
-    const ps = data?.providers ?? []
-    return [ps.filter((p) => !bare(p)), ps.filter(bare)]
-  }, [data])
-  const budgets = data?.budgets ?? []
-  const empty = cards.length === 0 && lines.length === 0 && budgets.length === 0
+  const cards = useMemo(() => (data?.providers ?? []).filter(hasLimits), [data])
+  const budgets = useMemo(() => (data?.budgets ?? []).filter(isSpendingCap), [data])
   return (
     <Panel title="Usage limits" note={data && `generated ${ago(data.generated_at_ms, now)}`}>
       {!data ? (
         <p className="text-[12px] text-fg-tertiary">Usage limits are not available from this engine yet.</p>
-      ) : empty ? (
-        <p className="text-[12px] text-fg-tertiary">No provider exposes usage limits here.</p>
       ) : (
         <>
+          {cards.length === 0 && <p className={budgets.length > 0 ? 'mb-2.5 text-[12px] text-fg-tertiary' : 'text-[12px] text-fg-tertiary'}>No usage limits reported by your providers.</p>}
           {(cards.length > 0 || budgets.length > 0) && (
             <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))]">
               {cards.map((p) => (
@@ -219,16 +222,6 @@ export const LimitsPanel = memo(function LimitsPanel({ now: pageNow, visible = t
               ))}
               {budgets.length > 0 && <BudgetsCard budgets={budgets} now={now} />}
             </div>
-          )}
-          {lines.length > 0 && (
-            <ul className={cards.length > 0 || budgets.length > 0 ? 'mt-2.5 flex flex-col gap-1 text-[11.5px] text-fg-tertiary' : 'flex flex-col gap-1 text-[11.5px] text-fg-tertiary'}>
-              {lines.map((p) => (
-                <li key={p.id}>
-                  <span className="text-fg-secondary">{shownLabel(p)}</span> — {STATUS[p.status][1]}
-                  {p.message && ` · ${p.message}`}
-                </li>
-              ))}
-            </ul>
           )}
         </>
       )}
