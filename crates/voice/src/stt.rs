@@ -296,25 +296,16 @@ pub struct Transcriber {
     data_dir: PathBuf,
     /// Zero: never unload.
     idle: Duration,
-    /// `voice.stt_engine: mlx` (202 §5): whole clips go here when its model
-    /// is downloaded, ONNX otherwise and on any MLX error.
-    mlx: Option<Arc<crate::mlx::Mlx>>,
 }
 
 impl Transcriber {
-    pub(crate) fn new(
-        dir: PathBuf,
-        data_dir: PathBuf,
-        idle: Duration,
-        mlx: Option<Arc<crate::mlx::Mlx>>,
-    ) -> Self {
+    pub(crate) fn new(dir: PathBuf, data_dir: PathBuf, idle: Duration) -> Self {
         let this = Self {
             model: Arc::new(Mutex::new(None)),
             last_used: Arc::new(Mutex::new(Instant::now())),
             dir,
             data_dir,
             idle,
-            mlx,
         };
         if !idle.is_zero() {
             // ponytail: fixed 60 s interval, not a timer reset per note — the model
@@ -344,7 +335,9 @@ impl Transcriber {
         let (pcm, rate) = decode(bytes, ext)?;
         let pcm = resample(pcm, rate, MODEL_RATE)?;
         let duration_ms = pcm.len() as u64 * 1000 / MODEL_RATE as u64;
-        if let Some(m) = self.mlx.as_ref().filter(|m| m.installed()) {
+        // `voice.stt_engine: mlx` (202 §5): whole clips go to MLX when its model is downloaded,
+        // ONNX otherwise and on any MLX error. Read per clip, so `set_stt_engine` applies at once.
+        if let Some(m) = crate::mlx::current().filter(|m| m.installed()) {
             let parts: anyhow::Result<Vec<String>> =
                 pcm.chunks(PIECE).map(|p| m.transcribe_clip(p)).collect();
             match parts {
@@ -385,7 +378,6 @@ impl Message<Transcribe> for Transcriber {
             dir: self.dir.clone(),
             data_dir: self.data_dir.clone(),
             idle: self.idle,
-            mlx: self.mlx.clone(),
         };
         tokio::task::spawn_blocking(move || {
             let t = Instant::now();
@@ -493,7 +485,6 @@ impl Message<TranscribeWords> for Transcriber {
             dir: self.dir.clone(),
             data_dir: self.data_dir.clone(),
             idle: self.idle,
-            mlx: self.mlx.clone(),
         };
         tokio::task::spawn_blocking(move || {
             let t = Instant::now();

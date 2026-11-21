@@ -119,6 +119,10 @@ pub trait SpeechApi {
     /// 201: persist `voice.shape.enabled`; `false` bypasses the shaper on every surface.
     #[method(name = "set_shape_enabled")]
     async fn set_shape_enabled(&self, enabled: bool) -> RpcResult<()>;
+    /// 202 §5: persist `voice.stt_engine` and apply it at once; utterances already running keep
+    /// the engine they started with.
+    #[method(name = "set_stt_engine")]
+    async fn set_stt_engine(&self, engine: voice::mlx::SttEngine) -> RpcResult<()>;
     /// 153 §7.2: persist `voice.end_commands`.
     #[method(name = "set_end_phrases")]
     async fn set_end_phrases(&self, phrases: voice::EndPhrases) -> RpcResult<()>;
@@ -402,6 +406,19 @@ impl SpeechApiServer for Server {
     async fn set_shape_enabled(&self, enabled: bool) -> RpcResult<()> {
         self.write_voice_config(&["shape", "enabled"], if enabled { "true" } else { "false" })?;
         send(&dictation()?, voice::Setting::ShapeEnabled(enabled)).await
+    }
+
+    async fn set_stt_engine(&self, engine: voice::mlx::SttEngine) -> RpcResult<()> {
+        let value = match engine {
+            voice::mlx::SttEngine::Onnx => "onnx",
+            voice::mlx::SttEngine::Mlx => "mlx",
+        };
+        self.write_voice_config(&["stt_engine"], value)?;
+        let data_dir = self.rt.data_dir.clone();
+        // `select` stats the weights and may start the engine thread: off the async workers.
+        tokio::task::spawn_blocking(move || voice::mlx::switch(engine, &data_dir))
+            .await
+            .map_err(|e| failed(e.to_string()))
     }
 
     async fn set_end_phrases(&self, phrases: voice::EndPhrases) -> RpcResult<()> {

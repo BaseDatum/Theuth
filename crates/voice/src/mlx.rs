@@ -73,6 +73,18 @@ pub enum MlxState {
     },
 }
 
+/// `voice_mlx_status` (202 §4, §5): the engine in effect and where MLX stands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct MlxStatus {
+    /// `voice.stt_engine` as last applied (start or `set_stt_engine`).
+    pub engine: SttEngine,
+    /// MLX can run in this process; when not, `state` is `unavailable` with the reason.
+    pub available: bool,
+    /// Download / readiness of the MLX weights.
+    pub state: MlxState,
+}
+
 /// The MLX model is compiled into this build.
 pub fn compiled() -> bool {
     voice_mlx::available()
@@ -105,6 +117,16 @@ pub fn state(data_dir: &Path) -> MlxState {
         MlxState::Ready
     } else {
         MlxState::Absent
+    }
+}
+
+/// [`state`] plus the engine in effect.
+pub fn status(data_dir: &Path) -> MlxStatus {
+    let state = state(data_dir);
+    MlxStatus {
+        engine: selected(),
+        available: !matches!(state, MlxState::Unavailable { .. }),
+        state,
     }
 }
 
@@ -620,7 +642,8 @@ impl Whole for Mlx {
 /// The engine `voice.stt_engine` picks (202 §5): `None` = ONNX. `mlx` in a build without MLX
 /// falls back to ONNX with a warning; `mlx` not yet downloaded is returned anyway (each call
 /// checks [`Mlx::installed`], so a download made while running takes effect) and runs on ONNX
-/// until then. Publishes the engine to the live paths and prewarms it when installed.
+/// until then. Publishes the engine to the live paths and the voice-note path ([`current`]) and
+/// prewarms it when installed; [`switch`] calls it again at run time.
 pub fn select(engine: SttEngine, data_dir: &Path, idle: Duration) -> Option<Arc<Mlx>> {
     let m = match engine {
         SttEngine::Onnx => None,
@@ -643,7 +666,59 @@ pub fn select(engine: SttEngine, data_dir: &Path, idle: Duration) -> Option<Arc<
         }
     };
     set_live(m.clone().map(|m| m as Arc<dyn Whole>));
+    *SELECTED.write() = Selected {
+        engine,
+        idle: Some(idle),
+        mlx: m.clone(),
+    };
     m
+}
+
+/// What [`select`] last chose. `idle: None` until the voice plugin has started (voice disabled).
+struct Selected {
+    engine: SttEngine,
+    idle: Option<Duration>,
+    mlx: Option<Arc<Mlx>>,
+}
+
+static SELECTED: LazyLock<RwLock<Selected>> = LazyLock::new(|| {
+    RwLock::new(Selected {
+        engine: SttEngine::Onnx,
+        idle: None,
+        mlx: None,
+    })
+});
+
+/// The `voice.stt_engine` in effect.
+pub fn selected() -> SttEngine {
+    SELECTED.read().engine
+}
+
+/// The MLX engine whole clips (voice notes) go to; `None` = ONNX. Read per clip, so a [`switch`]
+/// applies to the next one.
+pub fn current() -> Option<Arc<Mlx>> {
+    SELECTED.read().mlx.clone()
+}
+
+/// `set_stt_engine` (202 §5): apply `engine` without a restart. Utterances and clips already
+/// running keep the `Arc` they took; the next ones read the new choice. Same engine: no-op (the
+/// MLX engine thread and its loaded model survive). Before the voice plugin started (voice
+/// disabled) only the choice is recorded; the plugin's own [`select`] at start reads the config.
+pub fn switch(engine: SttEngine, data_dir: &Path) {
+    let idle = {
+        let mut s = SELECTED.write();
+        if s.engine == engine {
+            return;
+        }
+        match s.idle {
+            Some(idle) => idle,
+            None => {
+                s.engine = engine;
+                return;
+            }
+        }
+    };
+    select(engine, data_dir, idle);
 }
 
 /// The engine live paths use for finals ([`crate::live::Utterer::open`] reads it); set by the
@@ -844,6 +919,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("theuth-mlx-{}", uuid::Uuid::now_v7()));
         assert!(select(SttEngine::Onnx, &dir, Duration::ZERO).is_none());
         assert!(live().is_none());
+        // The runtime switch (`set_stt_engine`): MLX published to both paths, then cleared.
+        switch(SttEngine::Mlx, &dir);
+        assert_eq!(selected(), SttEngine::Mlx);
+        assert_eq!(current().is_some(), compiled());
+        assert_eq!(live().is_some(), compiled());
+        let held = current();
+        switch(SttEngine::Onnx, &dir);
+        assert_eq!(selected(), SttEngine::Onnx);
+        assert!(current().is_none() && live().is_none());
+        // An utterance that took the engine before the switch keeps it.
+        assert_eq!(held.is_some(), compiled());
         // Not downloaded (and, without the feature, not compiled): nothing is ready, ONNX runs.
         let m = Mlx::new(&dir, Duration::ZERO);
         assert!(!m.installed());

@@ -13,12 +13,13 @@ pub trait TalkHubApi {
     /// `set_input_devices` and `set_polish_model` left behind, plus the config-only keys.
     #[method(name = "voice_settings")]
     async fn voice_settings(&self) -> RpcResult<voice::VoiceSettings>;
-    /// `voice.stt_engine: mlx` (202 §4): absent | downloading (bytes) | ready |
-    /// failed | unavailable (not Apple silicon, no `uv`). Poll it for download progress.
+    /// `voice.stt_engine` in effect and the MLX engine (202 §4, §5): `available` (with the reason
+    /// in `state` when not: not Apple silicon, no `mlx.metallib`) and absent | downloading
+    /// (bytes) | ready | failed. Poll it for download progress.
     #[method(name = "voice_mlx_status")]
-    async fn voice_mlx_status(&self) -> RpcResult<voice::mlx::MlxState>;
-    /// The explicit MLX download (202 §4): venv via `uv`, then the ~2.5 GB
-    /// weights. Returns at once with the state; progress via `voice_mlx_status`.
+    async fn voice_mlx_status(&self) -> RpcResult<voice::mlx::MlxStatus>;
+    /// The explicit MLX download (202 §4): the ~2.5 GB weights from the hub.
+    /// Returns at once with the state; progress via `voice_mlx_status`.
     #[method(name = "voice_mlx_download")]
     async fn voice_mlx_download(&self) -> RpcResult<voice::mlx::MlxState>;
 }
@@ -35,13 +36,11 @@ impl TalkHubApiServer for Server {
         Ok(settings)
     }
 
-    async fn voice_mlx_status(&self) -> RpcResult<voice::mlx::MlxState> {
+    async fn voice_mlx_status(&self) -> RpcResult<voice::mlx::MlxStatus> {
         let data_dir = self.rt.data_dir.clone();
-        Ok(tokio::task::spawn_blocking(move || voice::mlx::state(&data_dir))
+        tokio::task::spawn_blocking(move || voice::mlx::status(&data_dir))
             .await
-            .unwrap_or_else(|e| voice::mlx::MlxState::Failed {
-                reason: e.to_string(),
-            }))
+            .map_err(|e| rpc_core::failed(e.to_string()))
     }
 
     async fn voice_mlx_download(&self) -> RpcResult<voice::mlx::MlxState> {

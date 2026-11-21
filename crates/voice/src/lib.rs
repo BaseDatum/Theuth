@@ -1278,7 +1278,7 @@ impl runtime::Plugin for VoicePlugin {
             .stt_model_dir
             .clone()
             .unwrap_or_else(|| rt.data_dir.join("models").join(TDT_MODEL_SUBDIR));
-        let mlx = mlx::select(
+        mlx::select(
             cfg.stt_engine,
             &rt.data_dir,
             Duration::from_secs(cfg.stt_idle_secs),
@@ -1287,7 +1287,6 @@ impl runtime::Plugin for VoicePlugin {
             stt_dir,
             rt.data_dir.clone(),
             Duration::from_secs(cfg.stt_idle_secs),
-            mlx,
         ));
         stt.register(TRANSCRIBER_ACTOR)?;
         let dict_dir = cfg
