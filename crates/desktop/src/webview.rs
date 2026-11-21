@@ -69,8 +69,8 @@ fn check_label(label: &str) -> Result<(), String> {
     }
 }
 
-/// The navigation allowlist (205 D3, §5): http/https, and never an origin Tauri would call local.
-/// `app_url` is the `devUrl` in dev builds (the only http app origin); `None` in release.
+/// The load check of `web_view_attach` / `web_view_navigate` (205 D3, §5): http/https, and never an origin
+/// Tauri would call local. `app_url` is the `devUrl` in dev builds (the only http app origin); `None` in release.
 fn allowed(url: &Url, app_url: Option<&Url>) -> bool {
     if !matches!(url.scheme(), "http" | "https") {
         return false;
@@ -87,6 +87,22 @@ fn allowed(url: &Url, app_url: Option<&Url>) -> bool {
             && app.host() == url.host()
             && app.port_or_known_default() == url.port_or_known_default()
     })
+}
+
+/// The `on_navigation` predicate (205 §4.3, §5): wry applies it to every frame, so on top of [`allowed`] it
+/// lets through the subframe URLs real pages create, none of which can carry the app's origin:
+/// `about:blank` / `about:srcdoc` and `blob:` inherit the creator's origin, `data:` is opaque. A `blob:` whose
+/// inner part parses as a URL must pass [`allowed`] (`blob:http://tauri.localhost/…` is refused); an opaque
+/// creator (`blob:null/…`) has no inner URL and passes.
+fn navigation_allowed(url: &Url, app_url: Option<&Url>) -> bool {
+    match url.scheme() {
+        "about" => matches!(url.path(), "blank" | "srcdoc"),
+        "data" => true,
+        "blob" => Url::parse(url.path())
+            .ok()
+            .is_none_or(|inner| allowed(&inner, app_url)),
+        _ => allowed(url, app_url),
+    }
 }
 
 /// The app origin Tauri treats as local besides its schemes: `devUrl`, in dev builds only
@@ -157,7 +173,7 @@ fn builder<R: Runtime>(
     let fence = app_url(app);
     let opener = app.clone();
     let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
-        .on_navigation(move |url| allowed(url, fence.as_ref()))
+        .on_navigation(move |url| navigation_allowed(url, fence.as_ref()))
         // `target=_blank` / `window.open`: the system browser, never a window of ours.
         .on_new_window(move |url, _features| {
             if matches!(url.scheme(), "http" | "https")
@@ -330,16 +346,14 @@ mod tests {
     #[test]
     fn webview_navigation_allowlist() {
         let dev = url("http://localhost:1420");
-        for ok in [
+        let ok_both = [
             "http://localhost:3000/",
             "https://example.com/a?b#c",
             "http://127.0.0.1:1420/",
             "http://app.localhost/",
             "https://localhost:1420/",
-        ] {
-            assert!(allowed(&url(ok), Some(&dev)), "{ok}");
-        }
-        for bad in [
+        ];
+        let bad_both = [
             "http://localhost:1420/",
             "http://localhost:1420/sessions?x=1",
             "http://tauri.localhost/",
@@ -353,14 +367,40 @@ mod tests {
             "theuth-page://localhost/abc",
             "ipc://localhost/cmd",
             "file:///etc/passwd",
-            "data:text/html,hi",
             "javascript:alert(1)",
+            "about:config",
+            "blob:http://tauri.localhost/0b8e",
+            "blob:http://localhost:1420/0b8e",
+            "blob:tauri://localhost/0b8e",
+            "blob:theuth-page://localhost/0b8e",
+        ];
+        // Subframe URLs: fine to navigate to, never a load target for attach/navigate.
+        let ok_navigation_only = [
             "about:blank",
-        ] {
-            assert!(!allowed(&url(bad), Some(&dev)), "{bad}");
+            "about:srcdoc",
+            "data:text/html,hi",
+            "blob:https://example.com/0b8e",
+            "blob:http://localhost:3000/0b8e",
+            "blob:null/0b8e",
+        ];
+        for ok in ok_both {
+            assert!(allowed(&url(ok), Some(&dev)), "load {ok}");
+            assert!(navigation_allowed(&url(ok), Some(&dev)), "navigate {ok}");
+        }
+        for bad in bad_both {
+            assert!(!allowed(&url(bad), Some(&dev)), "load {bad}");
+            assert!(!navigation_allowed(&url(bad), Some(&dev)), "navigate {bad}");
+        }
+        for sub in ok_navigation_only {
+            assert!(!allowed(&url(sub), Some(&dev)), "load {sub}");
+            assert!(navigation_allowed(&url(sub), Some(&dev)), "navigate {sub}");
         }
         // Release: no http app origin.
         assert!(allowed(&url("http://localhost:1420/"), None));
+        assert!(navigation_allowed(
+            &url("blob:http://localhost:1420/0b8e"),
+            None
+        ));
     }
 
     #[test]
