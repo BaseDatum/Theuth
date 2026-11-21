@@ -29,6 +29,8 @@ mod point;
 mod quit;
 #[cfg(desktop)]
 mod update;
+#[cfg(desktop)]
+mod webview;
 
 /// Build and run the app. Desktop and mobile share the opener/notification
 /// plugins; everything else is one `cfg` side or the other.
@@ -274,7 +276,8 @@ mod desktop {
             .manage(launch::Launch::default())
             .manage(update::Pending::default())
             .manage(quit::Quit::default())
-            .manage(Flags::default());
+            .manage(Flags::default())
+            .manage(crate::webview::Views::default());
         // 58 §6.2: one island command set on every desktop OS; the `NSPanel` plugin is macOS's.
         #[cfg(target_os = "macos")]
         let builder = builder.plugin(tauri_nspanel::init());
@@ -313,6 +316,13 @@ mod desktop {
             crate::pages::page_drop,
             companion::companion_alive,
             companion::companion_login_item_status,
+            crate::webview::web_view_attach,
+            crate::webview::web_view_bounds,
+            crate::webview::web_view_visible,
+            crate::webview::web_view_navigate,
+            crate::webview::web_view_reload,
+            crate::webview::web_view_history,
+            crate::webview::web_view_close,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V reach the webview through it); GTK would paint it inside the window.
         #[cfg(target_os = "macos")]
