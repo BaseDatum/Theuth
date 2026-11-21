@@ -296,16 +296,25 @@ pub struct Transcriber {
     data_dir: PathBuf,
     /// Zero: never unload.
     idle: Duration,
+    /// `voice.stt_engine: mlx` (202 §5): whole clips go here when its model
+    /// is downloaded, ONNX otherwise and on any MLX error.
+    mlx: Option<Arc<crate::mlx::Mlx>>,
 }
 
 impl Transcriber {
-    pub(crate) fn new(dir: PathBuf, data_dir: PathBuf, idle: Duration) -> Self {
+    pub(crate) fn new(
+        dir: PathBuf,
+        data_dir: PathBuf,
+        idle: Duration,
+        mlx: Option<Arc<crate::mlx::Mlx>>,
+    ) -> Self {
         let this = Self {
             model: Arc::new(Mutex::new(None)),
             last_used: Arc::new(Mutex::new(Instant::now())),
             dir,
             data_dir,
             idle,
+            mlx,
         };
         if !idle.is_zero() {
             // ponytail: fixed 60 s interval, not a timer reset per note — the model
@@ -335,6 +344,21 @@ impl Transcriber {
         let (pcm, rate) = decode(bytes, ext)?;
         let pcm = resample(pcm, rate, MODEL_RATE)?;
         let duration_ms = pcm.len() as u64 * 1000 / MODEL_RATE as u64;
+        if let Some(m) = self.mlx.as_ref().filter(|m| m.installed()) {
+            let parts: anyhow::Result<Vec<String>> = pcm
+                .chunks(PIECE)
+                .map(|p| m.transcribe_piece(p, false).map(|p| p.text))
+                .collect();
+            match parts {
+                Ok(parts) => {
+                    return Ok(Transcript {
+                        text: parts.join(" ").trim().to_owned(),
+                        duration_ms,
+                    });
+                }
+                Err(e) => tracing::warn!("voice: mlx transcribe failed ({e:#}); using ONNX"),
+            }
+        }
         let mut guard = self.model.lock();
         let model = match guard.as_ref() {
             Some(m) => m,
@@ -363,6 +387,7 @@ impl Message<Transcribe> for Transcriber {
             dir: self.dir.clone(),
             data_dir: self.data_dir.clone(),
             idle: self.idle,
+            mlx: self.mlx.clone(),
         };
         tokio::task::spawn_blocking(move || {
             let t = Instant::now();
@@ -470,6 +495,7 @@ impl Message<TranscribeWords> for Transcriber {
             dir: self.dir.clone(),
             data_dir: self.data_dir.clone(),
             idle: self.idle,
+            mlx: self.mlx.clone(),
         };
         tokio::task::spawn_blocking(move || {
             let t = Instant::now();

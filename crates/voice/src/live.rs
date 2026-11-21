@@ -5,9 +5,11 @@
 //! knows nothing about microphones, clocks or actors.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use rubato::Resampler as _;
 
+use crate::mlx::Whole;
 use crate::stt::{Stream, WINDOW};
 use crate::vad::{Edge, FRAME, Gate, Vad};
 
@@ -55,6 +57,9 @@ pub struct Utterer {
     utterance: u32,
     /// Text of the open utterance.
     text: String,
+    /// `voice.stt_engine: mlx` (202 §5): transcribes each closed
+    /// utterance's whole audio for its final; `None` keeps the streaming final.
+    whole: Option<Arc<dyn Whole>>,
 }
 
 impl Utterer {
@@ -63,6 +68,10 @@ impl Utterer {
     /// [`MODEL_RATE`]; see [`Utterer::set_rate`].
     pub fn open(dir: &Path, data_dir: &Path) -> anyhow::Result<Utterer> {
         let stream = Stream::open(dir, data_dir)?;
+        let whole = crate::mlx::live();
+        if let Some(w) = &whole {
+            w.prewarm();
+        }
         let vad = Vad::new()?;
         Ok(Utterer {
             stream,
@@ -78,6 +87,7 @@ impl Utterer {
             start: 0,
             utterance: 0,
             text: String::new(),
+            whole,
         })
     }
 
@@ -153,6 +163,10 @@ impl Utterer {
                     let start = end.saturating_sub((Gate::ONSET + Gate::PREROLL) * FRAME);
                     self.start = start.max(self.base);
                     self.open = Some(self.start);
+                    // An idle-stopped sidecar starts loading while the user speaks.
+                    if let Some(w) = &self.whole {
+                        w.prewarm();
+                    }
                 }
                 Some(Edge::Close) => self.finish(out)?,
                 Some(Edge::Turn) => {
@@ -163,8 +177,17 @@ impl Utterer {
             }
         }
         self.feed_full(out)?;
+        // With a whole-utterance engine the open utterance's audio is kept from its
+        // start (pre-roll included) for the final; otherwise only what the model has not had.
         let keep = self
             .open
+            .map(|fed| {
+                if self.whole.is_some() {
+                    self.start
+                } else {
+                    fed
+                }
+            })
             .unwrap_or_else(|| self.total.saturating_sub(HISTORY))
             .max(self.base);
         self.buf.drain(..keep - self.base);
@@ -209,7 +232,12 @@ impl Utterer {
         window.fill(0.0);
         let t = self.stream.feed(&window)?;
         self.append(&t);
-        out.push(self.piece(true));
+        let mut piece = self.piece(true);
+        if let Some(w) = self.whole.as_deref() {
+            let audio = &self.buf[self.start - self.base..];
+            piece.text = crate::mlx::final_text(Some(w), audio, piece.text);
+        }
+        out.push(piece);
         self.utterance += 1;
         self.text.clear();
         Ok(())
