@@ -9,6 +9,8 @@
 //! `UIBackgroundTask` so the relay socket survives the grace period. `main.rs`
 //! and the generated iOS bridge both enter at [`run`].
 
+#[cfg(desktop)]
+mod asset;
 mod commands;
 #[cfg(desktop)]
 mod companion;
@@ -277,7 +279,9 @@ mod desktop {
             .manage(update::Pending::default())
             .manage(quit::Quit::default())
             .manage(Flags::default())
-            .manage(crate::webview::Views::default());
+            .manage(crate::webview::Views::default())
+            // 205 §5: Tauri's `asset` handler, minus `web-*` webviews (`asset.rs`).
+            .register_asynchronous_uri_scheme_protocol(crate::asset::SCHEME, crate::asset::handler);
         // 58 §6.2: one island command set on every desktop OS; the `NSPanel` plugin is macOS's.
         #[cfg(target_os = "macos")]
         let builder = builder.plugin(tauri_nspanel::init());

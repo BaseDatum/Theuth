@@ -1,16 +1,26 @@
 //! Native child webviews for the web view tile (205 §4.3): a `web-<16 hex>` webview inside the caller's window,
 //! positioned over a placeholder the UI measures. The page is a stranger (205 §5): http/https only, no
-//! capability names it, no `initialization_script`, its own data store shared by all web views.
+//! capability names it, its own data store shared by all web views where the platform has one.
 //!
-//! IPC fence (205 §5): Tauri attaches its IPC handler to every webview and grants a child the capabilities of
-//! its *window* label when the request origin is local (`tauri-2.12.5/src/ipc/authority.rs:476-478`), and
-//! lets app commands through for any local origin when the app has no ACL manifest
-//! (`tauri-2.12.5/src/webview/mod.rs:2080`). "Local" is the app URL (`devUrl` in dev builds) or a registered
-//! scheme, which on Windows is `http://<scheme>.localhost` (`webview/mod.rs:1961-2002`). [`allowed`] refuses
-//! exactly those, so a web view only ever runs at a remote origin, where every command is rejected.
+//! IPC fence (205 §5): Tauri attaches its IPC handler to every webview (`tauri-2.12.5/src/manager/webview.rs:555`)
+//! and grants a child the capabilities of its *window* label when the request origin is local
+//! (`ipc/authority.rs:476-478`), and lets app commands through for any local origin when the app has no ACL
+//! manifest (`webview/mod.rs:2080`). "Local" is the app URL (`devUrl` in dev builds) or a registered scheme,
+//! which on Windows is `http://<scheme>.localhost` (`webview/mod.rs:1961-2002`). [`allowed`] refuses exactly
+//! those, so a web view only ever runs at a remote origin: the IPC handler is present, but no ACL entry
+//! matches that origin and every command is rejected.
+//!
+//! `on_navigation` sees subframe navigations on macOS and Linux, but only top-level ones on Windows
+//! (wry 0.57.1 `webview2/mod.rs:754-772` hooks `NavigationStarting` only). Subframes have no IPC script
+//! (Tauri's are main-frame only, `manager/webview.rs:159-199`).
+//!
+//! The one `initialization_script` is the constant [`LINKS_SCRIPT`]. The macOS data store identifier needs
+//! macOS 14+; older systems silently use the default store, shared with the app (wry `wkwebview/mod.rs:276-287`).
+//! The `asset` scheme refuses `web-*` webviews (`crate::asset`).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
@@ -19,6 +29,24 @@ use tauri::{
     WebviewUrl, Window,
 };
 use tauri_plugin_opener::OpenerExt;
+
+/// tauri-plugin-opener 2.7.2 injects `init-iife.js` into every webview's main frame: a bubble-phase `click`
+/// listener on `window` that `preventDefault()`s `<a target=_blank>` and ctrl/shift clicks on http(s), mailto
+/// and tel links and invokes `plugin:opener|open_url`, which the ACL rejects for a remote origin, so the link
+/// is dead. This capture-phase listener on `window` runs before any bubble listener there (and before the
+/// page's own target/bubble listeners), whatever the registration order (Tauri adds plugin scripts first,
+/// `manager/webview.rs:204, 225`); for the same http(s) cases it stops the event and calls `window.open`,
+/// which reaches `on_new_window` (the system browser). mailto/tel stay with the opener script (dead, as before).
+const LINKS_SCRIPT: &str = r#"window.addEventListener("click",function(e){if(e.defaultPrevented||e.button!==0||e.metaKey||e.altKey)return;var a=e.composedPath().find(function(n){return n instanceof Node&&n.nodeName.toUpperCase()==="A"});if(!a||!a.href||(a.target!=="_blank"&&!e.ctrlKey&&!e.shiftKey))return;var p;try{p=new URL(a.href).protocol}catch(_){return}if(p!=="http:"&&p!=="https:")return;e.stopImmediatePropagation();e.preventDefault();window.open(a.href)},true);"#;
+
+/// At most one system-browser open per web view per this interval (205 §4.3): WebView2 needs no user
+/// gesture for `window.open`, so a page loop could otherwise spam tabs.
+const OPEN_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Whether a new-window request at `now` may open the browser, given the last one that did.
+fn may_open(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= OPEN_INTERVAL)
+}
 
 /// Label prefix of every web view (205 D3).
 const PREFIX: &str = "web-";
@@ -248,13 +276,25 @@ fn builder<R: Runtime>(
 ) -> Result<WebviewBuilder<R>, String> {
     let fence = app_url(app);
     let opener = app.clone();
+    let last_open = Mutex::new(None::<Instant>);
     let builder = WebviewBuilder::new(label, WebviewUrl::External(url))
+        .initialization_script(LINKS_SCRIPT)
         .on_navigation(move |url| navigation_allowed(url, fence.as_ref()))
         // `target=_blank` / `window.open`: the system browser, never a window of ours.
         .on_new_window(move |url, _features| {
-            if matches!(url.scheme(), "http" | "https")
-                && let Err(e) = opener.opener().open_url(url.as_str(), None::<&str>)
+            if !matches!(url.scheme(), "http" | "https") {
+                return NewWindowResponse::Deny;
+            }
+            let now = Instant::now();
             {
+                let mut last = last_open.lock().unwrap_or_else(|e| e.into_inner());
+                if !may_open(*last, now) {
+                    tracing::warn!("web view new-window request throttled: {url}");
+                    return NewWindowResponse::Deny;
+                }
+                *last = Some(now);
+            }
+            if let Err(e) = opener.opener().open_url(url.as_str(), None::<&str>) {
                 tracing::warn!("open {url} in the browser: {e}");
             }
             NewWindowResponse::Deny
@@ -425,6 +465,17 @@ mod tests {
         assert!(!valid_label("popout-0123456789abcdef"));
         assert!(!valid_label("main"));
         assert!(!valid_label(""));
+    }
+
+    #[test]
+    fn webview_new_window_throttle() {
+        let t0 = Instant::now();
+        assert!(may_open(None, t0));
+        assert!(!may_open(Some(t0), t0));
+        assert!(!may_open(Some(t0), t0 + Duration::from_millis(999)));
+        assert!(may_open(Some(t0), t0 + OPEN_INTERVAL));
+        // A clock that did not advance never panics and stays closed.
+        assert!(!may_open(Some(t0 + OPEN_INTERVAL), t0));
     }
 
     #[test]
