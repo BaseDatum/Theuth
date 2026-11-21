@@ -108,7 +108,7 @@ Other tests: `documents_js_serves_requests_directly`, `round_trip_open_import_ma
 - `cargo clippy --offline -p document-js --all-targets` (18:04, workspace `clippy::all = deny`): no warnings. Then `rustfmt --edition 2024` on the crate's files only (formatting only, not rebuilt).
 - `cargo tree --offline -i v8`: one `v8 v150.4.0` ← `deno_v8 v0.4.0` ← `deno_core v0.412.0` ← {`document-js`, `obscura-js`}.
 - `bun test` in packages/documents: 83 pass, 1 fail (`markdown round trip per block type > code: link`, the known stale test).
-- `just documents-bundle` reproduces the committed bundle (same hash); `just documents-bundle-check` passes, and fails after appending a line to `src/yaml.ts` (reverted).
+- The committed bundle and `BUNDLE.sha256` were written by `just documents-bundle` itself; `just documents-bundle-check` passes, and fails after appending a line to `src/yaml.ts` (reverted). Bit-for-bit reproducibility of the bun build across two runs was not checked.
 
 ## Not built in phase 1
 
