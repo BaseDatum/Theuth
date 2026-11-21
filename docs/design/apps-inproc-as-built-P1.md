@@ -380,8 +380,10 @@ tests. Mermaid's needs: `TextEncoder`/`TextDecoder`, `structuredClone`, `URL`; t
   blocked 3 s with a full lane → next mermaid request `Busy`, five `check`s answered < 1.5 s),
   `mermaid_failures_are_contained_on_their_own_isolate` (runaway → Timeout at 5 s; heap bomb → OutOfMemory at
   256 MB; hostile diagrams from the spike: `%%{init}%%` nested 200k, YAML front matter nested 100k,
-  `flowchart LR A((((…1M`, sequence 100k messages, pie + 1M `"`; each ends as an answer or `Timeout`, and
-  each is followed by a successful parse AND a successful `check`; the OpenUI isolate stays generation 1).
+  `flowchart LR A((((…1M`, sequence 100k messages, pie + 1M `"`; each ends as an answer, `Timeout`, or the
+  heap ceiling — pie + 1M `"` reached 256 MB under the 5 s deadline here (the spike's 2 s deadline stopped it
+  first) — and each is followed by a successful parse AND a successful `check`; the OpenUI
+  isolate stays generation 1).
 - `crates/app/src/fence.rs`: `mermaid_fences_are_checked_by_the_in_process_bundle` (the `Mermaid` fence checker
   over a real `Core`).
 - `packages/apps/test/inproc-mermaid.test.ts`: the committed bundle + polyfill in a bare `node:vm` context,

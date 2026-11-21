@@ -643,7 +643,8 @@ mod tests {
             Err(app_js::Error::OutOfMemory)
         );
         both_serve(&h, "heap").await;
-        // Hostile diagrams from the spike: each ends as an answer or a contained error.
+        // Hostile diagrams from the spike: each ends as an answer, a deadline or the heap ceiling
+        // (`Crashed` names it; pie with 1M quotes reaches 256 MB under V8), never a process abort.
         let nest =
             |open: &str, close: &str, n: usize| format!("{}{}", open.repeat(n), close.repeat(n));
         let mut sequence = String::from("sequenceDiagram\n");
@@ -675,7 +676,8 @@ mod tests {
         for (name, source) in hostile {
             let out = h.check_mermaid(&source).await;
             assert!(
-                matches!(&out, Ok(_) | Err(Error::Timeout)),
+                matches!(&out, Ok(_) | Err(Error::Timeout))
+                    || matches!(&out, Err(Error::Crashed(m)) if m.contains("heap limit")),
                 "{name}: {out:?}"
             );
             both_serve(&h, name).await;
