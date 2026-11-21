@@ -65,9 +65,10 @@ load 4.8 s cold (f32) / 0.14 s warm-cache (bf16); three private dictation clips 
 576 / 205 / 291 ms (f32, first includes kernel warm-up); f32 and bf16 transcripts identical. The synthetic-tone mel
 values used by `mel::tests` come from the same run.
 
-Not yet measured for the Rust port (status 2026-11-21, first session): the crate has **not been compiled yet** —
-the machine-wide build lock was held by another session for the whole window. Cold mlx-sys build time, binary
-size delta, Rust load/per-clip time and peak RSS are still open.
+Rust port status (2026-11-21, first session): `cargo check -p voice-mlx` passes (cold build incl. mlx-sys's CMake
+build of MLX: 2 min 10 s of cargo time at `CARGO_BUILD_JOBS=4`/`CMAKE_BUILD_PARALLEL_LEVEL=4`, after ~13 min
+waiting for the build lock). Unit tests and the real-clip comparison had not reported back when the session ended;
+binary size delta, Rust load/per-clip time and peak RSS are still open.
 
 ## Next steps for whoever continues
 
