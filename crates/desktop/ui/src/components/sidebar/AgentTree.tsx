@@ -10,6 +10,7 @@ import { costShort, costTitle } from '@/lib/money'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { modelLabel } from '@/components/agents/sessions'
 import { cappedTree, childrenOf, live, observedLabel, withAncestors } from '@/lib/session-tree'
+import { backgroundColors } from '@/lib/background-colors'
 import { cn } from '@/lib/utils'
 import type { CostBucket } from "@/rpc/bindings/method.agent.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
@@ -17,6 +18,7 @@ import type { AgentInfo } from '@/store/ui-events'
 import type { AgentState } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 import { SidebarPopoutButton } from './SidebarPopoutButton'
+import { HarnessGlyph, shortModel } from './harnessGlyph'
 
 export const GLYPH: Record<AgentState['state'], ReactNode> = {
   running: '●',
@@ -37,7 +39,10 @@ export function ago(iso: string | null, now = Date.now()): string {
   return `${Math.floor(s / 86400)}d`
 }
 
-/** One subtree row: glyph · name · cap badge · cost · jobs · age, a link to the session's chat. Shared with the Agents page (100).
+/** One subtree row: harness glyph · name · cap badge · cost · jobs · model · age, a link to the session's chat. Shared with
+ * the Agents page (100). The glyph says which harness runs the child (`harnessGlyph`; theuth's own is the bot), tinted
+ * while it runs, warns on approval and errors, muted otherwise; its title is `<harness> · <model>`. The short model sits
+ * right, muted, and is the first thing to give way: it truncates before the name and hides under the hover pop-out button.
  * A watch-only child (141 §9.2a) leads with its harness-state dot and an eye, carries its source tag after the name, and
  * greys out while resting (`idle`, `pending`, `unknown` — Q1: idle is not done); its cost cell follows the cost rule. */
 export const SubagentRow = memo(function SubagentRow({
@@ -86,9 +91,23 @@ export const SubagentRow = memo(function SubagentRow({
           <EyeMark />
         </>
       ) : (
-        <span className={cn('w-4 text-center', row.state.state === 'running' && 'animate-pulse')}>{GLYPH[row.state.state]}</span>
+        <span
+          className={cn(
+            'flex w-4 shrink-0 justify-center',
+            row.state.state === 'running'
+              ? cn(backgroundColors.subagents.text, 'animate-pulse')
+              : row.state.state === 'approval' || row.state.state === 'awaiting'
+                ? backgroundColors.approval.text
+                : row.state.state === 'error'
+                  ? 'text-danger'
+                  : 'text-fg-tertiary',
+          )}
+          title={`${row.agent || 'theuth'} · ${row.model || 'model unknown'}`}
+        >
+          <HarnessGlyph agent={row.agent} className="size-3.5" />
+        </span>
       )}
-      <span className="flex-1 truncate">{row.name}</span>
+      <span className="min-w-0 flex-1 truncate">{row.name}</span>
       {observed && <SourceTag observed={observed} />}
       {row.cap && (
         <span className="rounded-sm bg-sidebar-accent px-1 text-[10px] text-fg-tertiary" title={`tools capped at ${row.cap}`}>
@@ -111,7 +130,12 @@ export const SubagentRow = memo(function SubagentRow({
           {counts(row.activity)}
         </span>
       )}
-      <span className="tabular-nums text-fg-tertiary">{ago(row.activity?.last_active ?? row.started_at ?? row.finished_at, now)}</span>
+      {row.model && (
+        <span className={cn('min-w-0 max-w-28 shrink truncate text-[11px] text-fg-tertiary', popout && 'pointer-fine:group-hover/popout-row:hidden')}>
+          {shortModel(row.model)}
+        </span>
+      )}
+      <span className="shrink-0 tabular-nums text-fg-tertiary">{ago(row.activity?.last_active ?? row.started_at ?? row.finished_at, now)}</span>
     </Link>
   )
   return popout ? (

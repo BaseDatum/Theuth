@@ -651,7 +651,7 @@
       "digest": "a9a571420619ba44fd9de4d52b9e587b6628790fbec09e4c7ffad8a79d37eaa8"
     },
     {
-      "name": "blank-line-ends-header",
+      "name": "blank-line-between-header-lines-stays-header",
       "lang": "bash",
       "body": "#| cwd: ~/x\n\n#| name: x\necho a\n",
       "cell": {
@@ -660,11 +660,15 @@
           {
             "key": "cwd",
             "value": "~/x"
+          },
+          {
+            "key": "name",
+            "value": "x"
           }
         ],
         "options": {
           "cwd": "~/x",
-          "name": null,
+          "name": "x",
           "label": null,
           "danger": false,
           "after": null,
@@ -677,8 +681,8 @@
           "on": null,
           "unknown": []
         },
-        "code": "\n#| name: x\necho a",
-        "header_lines": 1
+        "code": "echo a",
+        "header_lines": 3
       },
       "problems": [],
       "chips": [],
@@ -1006,7 +1010,7 @@
     {
       "name": "bad-bool",
       "lang": "bash",
-      "body": "#| cwd: ~/x\n#| danger: yes\nls\n",
+      "body": "#| cwd: ~/x\n#| danger: maybe\nls\n",
       "cell": {
         "lang": "bash",
         "header": [
@@ -1016,7 +1020,7 @@
           },
           {
             "key": "danger",
-            "value": "yes"
+            "value": "maybe"
           }
         ],
         "options": {
@@ -1041,7 +1045,7 @@
         "bad_option"
       ],
       "chips": [],
-      "digest": "4145ae75da5ce933f3d3131b5d1767e30b3d97b71135f3e2625f12ec2ba4d6b2"
+      "digest": "f3049f8d0edac73f478e2322df5778e4e8df4babd423f08126226ea878783a0c"
     },
     {
       "name": "timeout-seconds",
@@ -1256,7 +1260,7 @@
         "options": {
           "cwd": "~/x",
           "name": null,
-          "label": null,
+          "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "danger": false,
           "after": null,
           "expect": [],
@@ -1272,7 +1276,7 @@
         "header_lines": 2
       },
       "problems": [
-        "bad_option"
+        "label_long"
       ],
       "chips": [],
       "digest": "d028a23d5799859a21b35fbdf81bc8bc67dab8adbd5d3aa5a1296dd5ab71128f"
@@ -2864,12 +2868,306 @@
       },
       "problems": [
         "cwd_missing",
-        "bad_option",
         "empty",
+        "bad_option",
         "unknown_option"
       ],
       "chips": [],
       "digest": "a51faf7896cf71f550ef48babad1def3a383a5f01c082f9dd6aaf714e8653439"
+    },
+    {
+      "name": "bools-yes-no",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n#| danger: yes\n#| review: no\n#| private: on\nls\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "danger",
+            "value": "yes"
+          },
+          {
+            "key": "review",
+            "value": "no"
+          },
+          {
+            "key": "private",
+            "value": "on"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": true,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": true,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ls",
+        "header_lines": 4
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "45a5fb0709fa3ecbab92202b5215db6ba06c98ac379a62a725e67181d8562cf2"
+    },
+    {
+      "name": "long-label-real",
+      "lang": "zsh",
+      "body": "#| name: west-return-route\n#| label: Add 10.203 return route to west PostInspect in cent-net\n#| cwd: ~/net\nip route add 10.203.0.0/16 via 10.0.0.1\n",
+      "cell": {
+        "lang": "zsh",
+        "header": [
+          {
+            "key": "name",
+            "value": "west-return-route"
+          },
+          {
+            "key": "label",
+            "value": "Add 10.203 return route to west PostInspect in cent-net"
+          },
+          {
+            "key": "cwd",
+            "value": "~/net"
+          }
+        ],
+        "options": {
+          "cwd": "~/net",
+          "name": "west-return-route",
+          "label": "Add 10.203 return route to west PostInspect in cent-net",
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "ip route add 10.203.0.0/16 via 10.0.0.1",
+        "header_lines": 3
+      },
+      "problems": [
+        "label_long"
+      ],
+      "chips": [],
+      "digest": "5aed7a01b4f90e2c7817036ec506aa50c06724f2f156ab43668243ec796d3086"
+    },
+    {
+      "name": "leading-blank-lines",
+      "lang": "bash",
+      "body": "\n\n#| cwd: ~/x\necho hi\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo hi",
+        "header_lines": 3
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "5a65fdee1de5803980447634d46a99de95ad8d21d5ed592d42cf8d02caba062f"
+    },
+    {
+      "name": "leading-shebang",
+      "lang": "bash",
+      "body": "#!/usr/bin/env bash\n#| cwd: ~/x\necho hi\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo hi",
+        "header_lines": 2
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "5a516978af2f43bf3c379e8e8ba740ddd5445f10e7a9c171482f382bb88d9b53"
+    },
+    {
+      "name": "shebang-after-blank",
+      "lang": "bash",
+      "body": "\n#!/bin/sh\n\n#| cwd: ~/x\necho hi\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": null,
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo hi",
+        "header_lines": 4
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "f7b01b49ef6fe31756d8312d8d7e43c68126a101d627774de080964d8301f648"
+    },
+    {
+      "name": "blank-lines-between-header",
+      "lang": "bash",
+      "body": "#| cwd: ~/x\n\n#| name: a\n   \n#| label: A\n\necho a\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "name",
+            "value": "a"
+          },
+          {
+            "key": "label",
+            "value": "A"
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": "a",
+          "label": "A",
+          "danger": false,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "\necho a",
+        "header_lines": 5
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "01ba950b39efa227e7e52ea7058c171b3df300d581116d1c5e8f6611c34b37a6"
+    },
+    {
+      "name": "uppercase-keys",
+      "lang": "bash",
+      "body": "#| CWD: ~/x\n#| Label: Run It\n#| Danger\necho a\n",
+      "cell": {
+        "lang": "bash",
+        "header": [
+          {
+            "key": "cwd",
+            "value": "~/x"
+          },
+          {
+            "key": "label",
+            "value": "Run It"
+          },
+          {
+            "key": "danger",
+            "value": null
+          }
+        ],
+        "options": {
+          "cwd": "~/x",
+          "name": null,
+          "label": "Run It",
+          "danger": true,
+          "after": null,
+          "expect": [],
+          "env": [],
+          "python": null,
+          "review": false,
+          "private": false,
+          "timeout_secs": null,
+          "on": null,
+          "unknown": []
+        },
+        "code": "echo a",
+        "header_lines": 3
+      },
+      "problems": [],
+      "chips": [],
+      "digest": "888399be2a68e3b706302ff20d4b0b684836ce5b8c651d0c641c58f229707f9f"
+    },
+    {
+      "name": "two-shebangs-not-a-cell",
+      "lang": "bash",
+      "body": "#!/bin/sh\n#!/bin/sh\n#| cwd: ~/x\necho hi\n",
+      "cell": null,
+      "problems": [],
+      "chips": [],
+      "digest": "50caa961ad00ab882173762c80993efccf4ef5b11365411fd70c51d15ac2eb51"
+    },
+    {
+      "name": "code-before-header-not-a-cell",
+      "lang": "bash",
+      "body": "echo a\n#| cwd: ~/x\n",
+      "cell": null,
+      "problems": [],
+      "chips": [],
+      "digest": "43c2b5e1b434c8e3bcf6dec29726be704f77291e8ef35b0885c0dc650d14767d"
     },
     {
       "name": "changing-pulumi-up-without-label",

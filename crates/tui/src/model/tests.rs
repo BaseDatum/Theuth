@@ -3362,6 +3362,34 @@
         ));
     }
 
+    /// 201 R3-2: `<ledger>`, `<recall>` and `<tools>` harness notes are
+    /// collapsed labelled cards; with attributes (or as prose) the user's.
+    #[test]
+    fn harness_notes_are_labelled_cards_not_user_rows() {
+        for (tag, label) in [
+            ("ledger", "Ledger updated"),
+            ("recall", "Recalled from earlier"),
+            ("tools", "Tools changed"),
+        ] {
+            let entries = user_entries(format!("<{tag}>\n{tag} body\n</{tag}>"), None);
+            assert!(
+                matches!(
+                    entries.as_slice(),
+                    [Entry::Card { kind: CardKind::Memory, title, expanded: false, .. }] if title == label
+                ),
+                "{tag}"
+            );
+            assert!(matches!(
+                user_entries(format!("<{tag} kind=\"x\">mine</{tag}>"), Some(1)).as_slice(),
+                [Entry::User { .. }]
+            ));
+        }
+        assert!(matches!(
+            user_entries("<tools> are what?".into(), Some(1)).as_slice(),
+            [Entry::User { .. }]
+        ));
+    }
+
     /// 61 §2.3: a quiet PTY job cards as `j4 idle 63s · name`; body is the screen.
     #[test]
     fn injected_parses_job_idle() {
@@ -7545,6 +7573,7 @@
             id,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            finished_at: None,
             title: String::new(),
             tags: Vec::new(),
             model: "m".into(),

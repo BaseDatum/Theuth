@@ -33,7 +33,7 @@ import { headerFolded, lineDiff, lineStart, memberName, modeOf, pythonValue, wit
 import { NoteHost } from './note-context'
 import { clock, errorText, lastPass, mintId, press, refKey, refresh, register, scopeKey, scopeOf, setNotice, useCellRecord, useCells, useLatestRow } from './store'
 import { commandUnits, unitLabel, unitMode, unitOf } from './units'
-import { disarmedReason, interpreterText, labelOf, RUN_ANYWAY, titleOf, viewOf } from './view'
+import { disarmedReason, interpreterText, labelOf, titleOf, viewOf } from './view'
 import './note-cells.css'
 
 export type NoteCellProps = {
@@ -296,8 +296,8 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   const member = pub8 ? memberName(pub8, host?.provider.meta?.members) : null
   const view = viewOf(record, cell, false)
   const danger = cell.options.danger
-  // CELLAFTER (§7.1, §7.6): the gate's reason while it is not armed. The button runs anyway; a line/selection ► of a
-  // disarmed or danger cell warns first and runs on its second press. Only those presses reach `run` (keys hint).
+  // CELLAFTER (§7.1, §7.6), #1: the gate's reason while it is not armed. The button asks once, then runs anyway; a
+  // line/selection ► of a disarmed or danger cell warns first and runs on its second press. Keys hint at the button.
   const gate = disarmedReason(record, cell)
   const [hint, setHint] = useState<string | null>(null)
   const [review, setReview] = useDisclosure(disclosureKey(key, 'review'))
@@ -383,9 +383,10 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   // document (capture: before BlockNote's own code-block keys).
   // `editor` is null in a server render (BlockNote's snapshot before mount).
   const sel = useEditorState({ editor: blocknote, selector: ({ editor: e }) => (e ? selectionIn(e.prosemirrorState.selection, block) : null) })
-  const anyway = member ? `Run ${member}'s edit anyway` : RUN_ANYWAY
-  const keys = useRef({ code, cell, run, runAt, units, view, gate, latest, label, anyway, stop: callbacks.onStop })
-  keys.current = { code, cell, run, runAt, units, view, gate, latest, label, anyway, stop: callbacks.onStop }
+  // The button's text: a member's edit names whose text runs (171F "Run Alice's edit").
+  const button = member ? `Run ${member}'s edit` : label
+  const keys = useRef({ code, cell, run, runAt, units, view, gate, latest, button, stop: callbacks.onStop })
+  keys.current = { code, cell, run, runAt, units, view, gate, latest, button, stop: callbacks.onStop }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = isApple() ? e.metaKey : e.ctrlKey
@@ -402,7 +403,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
       e.preventDefault()
       e.stopPropagation()
       if (k.cell.options.danger || k.gate !== null || k.view === 'invalid')
-        return setHint(`press ${k.gate !== null && k.view !== 'invalid' ? k.anyway : k.label} to run this`)
+        return setHint(`press ${k.button} to run this`)
       if (e.shiftKey) {
         k.run({ type: 'cell' })
         const cells = [...document.querySelectorAll<HTMLElement>('[data-note-cell][data-block]')]

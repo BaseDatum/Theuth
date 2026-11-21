@@ -154,7 +154,7 @@ struct Live {
     done: oneshot::Sender<CellRun>,
 }
 
-/// One kernel slot (§5.1 key `(Scope, Spec)`).
+/// One kernel slot (§5.1 key `(Scope, Spec, instance)`).
 struct Slot {
     id: KernelId,
     label: String,
@@ -166,6 +166,21 @@ struct Slot {
     busy: bool,
     /// §5.4 capture failure, shown on the strip.
     env_warning: Option<String>,
+    /// #6: presses that picked this slot and have not handed it their run yet (a reserved
+    /// slot is busy, so a concurrent press picks another).
+    pending: u32,
+    /// #6: a new instance's seed (the busy kernel it clones), applied before its first run.
+    seed: Option<Seed>,
+    /// #6: when its last run ended (its snapshot's age); the freshest seeds a new instance.
+    snap_at: Option<Instant>,
+}
+
+/// #6: what a new kernel instance starts from: the snapshot file of the busy instance it
+/// clones (its cwd and exported environment after its last completed cell) and that
+/// kernel's previous cell (the CWD rule's input, so a line run continues as it would there).
+struct Seed {
+    from: PathBuf,
+    prev: Option<CellRef>,
 }
 
 #[derive(Default)]
@@ -272,6 +287,62 @@ fn apply_env_rules(vars: &mut BTreeMap<String, String>) {
     vars.insert("TERM".into(), "xterm-256color".into());
     vars.insert("COLORTERM".into(), "truecolor".into());
     vars.insert("THEUTH_CELL".into(), "1".into());
+}
+
+/// #6: the hidden first run of a new kernel instance from the snapshot of the one it
+/// clones: its cwd (the prologue's `cd`, `HOME` when the folder is gone), every exported
+/// variable whose value differs from the login environment every kernel starts with
+/// (exported by the prologue), and an `unset` for each login variable it had dropped.
+/// Shell-owned and theuth's own variables (§5.4's drop list, `THEUTH_*`) and names no
+/// shell can export are left alone.
+fn seed_request(
+    kind: ShellKind,
+    run: RunId,
+    snap: &crate::shell::Snapshot,
+    login: &BTreeMap<String, String>,
+) -> ExecuteRequest {
+    let exportable = |k: &str| {
+        !DROP.contains(&k)
+            && !k.starts_with("THEUTH_")
+            && k.chars()
+                .next()
+                .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+            && k.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
+    };
+    let env = snap
+        .env
+        .iter()
+        .filter(|(k, v)| exportable(k) && login.get(*k) != Some(*v))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let unset: Vec<String> = login
+        .keys()
+        .filter(|k| exportable(k) && !snap.env.contains_key(*k))
+        .map(|k| match kind {
+            ShellKind::Pwsh => {
+                format!("Remove-Item -LiteralPath Env:{k} -ErrorAction SilentlyContinue")
+            }
+            _ => format!("unset {k}"),
+        })
+        .collect();
+    let code = match (unset.is_empty(), kind) {
+        (false, _) => unset.join("\n"),
+        (true, ShellKind::Pwsh) => "$null = $null".to_owned(),
+        (true, _) => ":".to_owned(),
+    };
+    let cwd = snap
+        .cwd
+        .clone()
+        .filter(|c| c.is_dir())
+        .or_else(|| login.get("HOME").map(PathBuf::from));
+    ExecuteRequest {
+        run,
+        code,
+        mode: RunMode::Cell,
+        cwd,
+        env,
+        timeout: None,
+    }
 }
 
 /// `~` / `~/x` against `home`.
@@ -915,11 +986,6 @@ impl Cells {
         p: Prepared,
     ) -> Result<(CellRun, oneshot::Receiver<CellRun>)> {
         let scope = cell.scope();
-        let kid = KernelId {
-            scope: scope.clone(),
-            spec: p.spec.clone(),
-        };
-        let key = json(&kid);
         let c = &p.inspected.presented.cell;
         let env = self.login_env().await;
         let label = crate::interp::chip(&p.interpreter, &env.vars);
@@ -928,6 +994,29 @@ impl Cells {
             None => label.clone(),
         };
         let cwd = p.inspected.cwd.clone().unwrap_or_default();
+        let meta = Meta {
+            name: c.options.name.clone(),
+            label: c.options.label.clone(),
+            private: c.options.private,
+            review: c.options.review,
+            edited_code: edited.clone(),
+            expect: c.options.expect.clone(),
+        };
+        // Files first: `code` keeps placeholders (they only ever live in `env`).
+        let dir = self.inner.paths.run_dir(&id);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("code"), &p.code)?;
+        std::fs::write(dir.join("meta.json"), json(&meta))?;
+        // #6: a single press of a shell cell never waits behind a busy kernel; a pass stays
+        // on instance 0 and keeps its order.
+        let base = KernelId {
+            scope: scope.clone(),
+            spec: p.spec.clone(),
+            instance: 0,
+        };
+        let may_fork = pass.is_none() && matches!(p.spec, KernelSpec::Shell { .. });
+        let (kid, spawn_worker) = self.reserve(&base, may_fork, &label, env.warning.clone())?;
+        let key = json(&kid);
         let record = CellRun {
             id: id.clone(),
             cell: cell.clone(),
@@ -956,44 +1045,32 @@ impl Cells {
             input: None,
             ran_past: p.ran_past.clone(),
         };
-        let meta = Meta {
-            name: c.options.name.clone(),
-            label: c.options.label.clone(),
-            private: c.options.private,
-            review: c.options.review,
-            edited_code: edited,
-            expect: c.options.expect.clone(),
+        if let Some(rx) = spawn_worker {
+            let me = self.clone();
+            let k = key.clone();
+            tokio::spawn(async move { me.worker(k, rx).await });
+        }
+        let inserted = match self.store() {
+            Ok(store) => {
+                store
+                    .insert(&record, &scope.key(), p.inspected.lineage.as_deref())
+                    .await
+            }
+            Err(e) => Err(e),
         };
-        // Files first: `code` keeps placeholders (they only ever live in `env`).
-        let dir = self.inner.paths.run_dir(&id);
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join("code"), &p.code)?;
-        std::fs::write(dir.join("meta.json"), json(&meta))?;
-        self.make_room(&key)?;
-        self.store()?
-            .insert(&record, &scope.key(), p.inspected.lineage.as_deref())
-            .await?;
+        if let Err(e) = inserted {
+            if let Some(slot) = self.inner.state.lock().kernels.get_mut(&key) {
+                slot.pending = slot.pending.saturating_sub(1);
+            }
+            return Err(e);
+        }
         let cell_key = json(&cell);
-        let (spawn_worker, finished) = {
+        let finished = {
             let mut s = self.inner.state.lock();
-            let mut new_rx = None;
-            let slot = s.kernels.entry(key.clone()).or_insert_with(|| {
-                let (tx, rx) = mpsc::unbounded_channel();
-                new_rx = Some(rx);
-                Slot {
-                    id: kid.clone(),
-                    label: label.clone(),
-                    kernel: None,
-                    log: None,
-                    tx,
-                    prev_cell: None,
-                    last_used: Instant::now(),
-                    busy: false,
-                    env_warning: env.warning.clone(),
-                }
-            });
-            slot.label = label;
-            slot.env_warning = env.warning.clone();
+            let Some(slot) = s.kernels.get_mut(&key) else {
+                return Err(CellsError::Failed("the kernel closed".into()));
+            };
+            slot.pending = slot.pending.saturating_sub(1);
             let tx = slot.tx.clone();
             let (done, finished) = oneshot::channel();
             s.runs.insert(
@@ -1015,13 +1092,8 @@ impl Cells {
             );
             s.by_cell.insert(cell_key, id.clone());
             let _ = tx.send(id.clone());
-            (new_rx, finished)
+            finished
         };
-        if let Some(rx) = spawn_worker {
-            let me = self.clone();
-            let k = key.clone();
-            tokio::spawn(async move { me.worker(k, rx).await });
-        }
         self.publish(CellEvent::RunQueued {
             run: id,
             scope: scope.clone(),
@@ -1031,38 +1103,126 @@ impl Cells {
         Ok((record, finished))
     }
 
-    /// §5.10 budget: a new kernel over `max_kernels` closes the oldest idle one, else refuses.
-    fn make_room(&self, key: &str) -> Result<()> {
-        let victim = {
-            let s = self.inner.state.lock();
-            if s.kernels.contains_key(key) {
-                return Ok(());
-            }
-            let live = s.kernels.values().filter(|k| k.kernel.is_some()).count();
-            if live < self.inner.config.max_kernels as usize {
-                return Ok(());
-            }
-            let busy = |k: &Slot| k.busy || s.runs.values().any(|l| l.key == json(&k.id));
-            s.kernels
+    /// Pick (and reserve, `Slot::pending`) the kernel slot a run of `(scope, spec)` goes to.
+    ///
+    /// #6: instance 0 while it is idle; when it is busy and `may_fork`, the lowest idle
+    /// instance, else a new one seeded from the busy instance with the freshest snapshot —
+    /// as long as the §5.10 budget (`max_kernels`, instances included) has room or an idle
+    /// kernel to close. Otherwise (a pass, python, or no room) the run queues on instance 0
+    /// (FIFO). A new slot over budget closes the oldest idle kernel, else `KernelBusy`.
+    /// Returns the slot's id and, for a new slot, its worker's receiver.
+    fn reserve(
+        &self,
+        base: &KernelId,
+        may_fork: bool,
+        label: &str,
+        env_warning: Option<String>,
+    ) -> Result<(KernelId, Option<mpsc::UnboundedReceiver<RunId>>)> {
+        let max = self.inner.config.max_kernels as usize;
+        let mut s = self.inner.state.lock();
+        let (live, instance, seed) = {
+            let st: &State = &s;
+            let live = st
+                .kernels
                 .iter()
-                .filter(|(_, k)| k.kernel.is_some() && !busy(k))
-                .min_by_key(|(_, k)| k.last_used)
-                .map(|(key, _)| key.clone())
+                .filter(|(key, k)| k.kernel.is_some() || slot_busy(st, key.as_str(), k))
+                .count();
+            let mut mine: Vec<(&String, &Slot)> = st
+                .kernels
+                .iter()
+                .filter(|(_, k)| k.id.scope == base.scope && k.id.spec == base.spec)
+                .collect();
+            mine.sort_by_key(|(_, k)| k.id.instance);
+            let base_busy = mine
+                .iter()
+                .find(|(_, k)| k.id.instance == 0)
+                .is_some_and(|(key, k)| slot_busy(st, key.as_str(), k));
+            let idle = mine
+                .iter()
+                .find(|(key, k)| !slot_busy(st, key.as_str(), k))
+                .map(|(_, k)| k.id.instance);
+            let mut seed = None;
+            let instance = match idle {
+                _ if !may_fork || !base_busy => 0,
+                Some(i) => i,
+                None if live < max || idle_victim(st).is_some() => {
+                    // Every instance is busy: clone the one whose snapshot is freshest.
+                    seed = mine
+                        .iter()
+                        .filter(|(_, k)| k.snap_at.is_some())
+                        .max_by_key(|(_, k)| k.snap_at)
+                        .map(|(_, k)| Seed {
+                            from: crate::shell::snapshot_path(&self.inner.paths, &k.id),
+                            prev: k.prev_cell.clone(),
+                        });
+                    (1..)
+                        .find(|i| !mine.iter().any(|(_, k)| k.id.instance == *i))
+                        .unwrap_or(1)
+                }
+                None => 0,
+            };
+            (live, instance, seed)
         };
-        match victim {
-            Some(v) => {
-                let slot = self.inner.state.lock().kernels.remove(&v);
-                if let Some(k) = slot.and_then(|s| s.kernel) {
+        let kid = KernelId {
+            instance,
+            ..base.clone()
+        };
+        let key = json(&kid);
+        let mut new_rx = None;
+        if !s.kernels.contains_key(&key) {
+            if live >= max {
+                let Some(v) = idle_victim(&s) else {
+                    return Err(CellsError::KernelBusy(self.inner.config.max_kernels));
+                };
+                if let Some(k) = s.kernels.remove(&v).and_then(|slot| slot.kernel) {
                     tokio::spawn(async move {
                         let _ = k.shutdown().await;
                     });
                 }
-                Ok(())
             }
-            None => Err(CellsError::KernelBusy(self.inner.config.max_kernels)),
+            let (tx, rx) = mpsc::unbounded_channel();
+            new_rx = Some(rx);
+            s.kernels.insert(
+                key.clone(),
+                Slot {
+                    id: kid.clone(),
+                    label: label.to_owned(),
+                    kernel: None,
+                    log: None,
+                    tx,
+                    prev_cell: None,
+                    last_used: Instant::now(),
+                    busy: false,
+                    env_warning: None,
+                    pending: 0,
+                    seed,
+                    snap_at: None,
+                },
+            );
         }
+        let slot = s.kernels.get_mut(&key).expect("slot just ensured");
+        slot.label = label.to_owned();
+        slot.env_warning = env_warning;
+        slot.pending += 1;
+        Ok((kid, new_rx))
     }
+}
 
+/// A slot with a run in flight, queued, or reserved by a press (#6).
+fn slot_busy(s: &State, key: &str, k: &Slot) -> bool {
+    k.busy || k.pending > 0 || s.runs.values().any(|l| l.key == key)
+}
+
+/// §5.10: the idle kernel a new one over `max_kernels` closes — the least recently used.
+fn idle_victim(s: &State) -> Option<String> {
+    s.kernels
+        .iter()
+        .filter(|(key, k)| k.kernel.is_some() && !slot_busy(s, key.as_str(), k))
+        .min_by_key(|(_, k)| k.last_used)
+        .map(|(key, _)| key.clone())
+}
+
+impl Cells {
     /// One FIFO per kernel, one run at a time (§5.10).
     async fn worker(self, key: String, mut rx: mpsc::UnboundedReceiver<RunId>) {
         while let Some(id) = rx.recv().await {
@@ -1091,7 +1251,7 @@ impl Cells {
             job
         };
         let (cell, mode, code, cwd, env, timeout) = job;
-        let (kernel, prev) = match self.ensure_kernel(key).await {
+        let (kernel, mut prev) = match self.ensure_kernel(key).await {
             Ok(k) => k,
             Err(e) => {
                 self.idle(key, None, false).await;
@@ -1100,6 +1260,27 @@ impl Cells {
                 return;
             }
         };
+        // #6: a new instance first takes the cwd and exported environment of the kernel
+        // it clones; then it continues from that kernel's previous cell.
+        let seed = prev
+            .is_none()
+            .then(|| {
+                self.inner
+                    .state
+                    .lock()
+                    .kernels
+                    .get_mut(key)
+                    .and_then(|k| k.seed.take())
+            })
+            .flatten();
+        if let Some(seed) = seed
+            && self.apply_seed(&kernel, &seed, &id).await
+        {
+            prev = seed.prev;
+            if let Some(slot) = self.inner.state.lock().kernels.get_mut(key) {
+                slot.prev_cell = prev.clone();
+            }
+        }
         let prologue = crate::kernel::needs_prologue(&mode, &cell, prev.as_ref());
         let env = if prologue {
             match env
@@ -1246,6 +1427,35 @@ impl Cells {
         Ok((kernel, None))
     }
 
+    /// #6: a new instance's hidden first run (its own sink, no record): `cd` to the cloned
+    /// kernel's cwd, export what its environment held beyond the login one and unset what
+    /// it had dropped — as of the end of its last completed cell. Shell functions, aliases
+    /// and unexported variables are not cloned. `true` once the seed ran to its end.
+    async fn apply_seed(&self, kernel: &Arc<dyn Kernel>, seed: &Seed, run: &RunId) -> bool {
+        let KernelSpec::Shell { kind, .. } = kernel.spec() else {
+            return false;
+        };
+        let Some(snap) = crate::shell::read_snapshot(&seed.from) else {
+            return false;
+        };
+        let env = self.login_env().await;
+        let req = seed_request(*kind, RunId(format!("{run}-seed")), &snap, &env.vars);
+        let (sink, mut events) = mpsc::channel(64);
+        if kernel.execute(req, sink).await.is_err() {
+            return false;
+        }
+        let ended = tokio::time::timeout(Duration::from_secs(30), async {
+            while let Some(e) = events.recv().await {
+                if matches!(e, KernelEvent::Finished { .. }) {
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        matches!(ended, Ok(true))
+    }
+
     /// The run left the kernel: remember its cell for the CWD rule; a dead kernel restarts
     /// on the next run ("kernel exited — the next run starts a new one").
     async fn idle(&self, key: &str, cell: Option<CellRef>, died: bool) {
@@ -1258,10 +1468,12 @@ impl Cells {
             slot.last_used = Instant::now();
             if cell.is_some() {
                 slot.prev_cell = cell;
+                slot.snap_at = Some(slot.last_used);
             }
             if died {
                 slot.kernel = None;
                 slot.prev_cell = None;
+                slot.snap_at = None;
             }
             slot.id.clone()
         };
@@ -1637,38 +1849,57 @@ impl Cells {
         }
     }
 
-    /// Idle kernels close after `kernel_idle_hours`; old runs go per §8.4.
+    /// Idle kernels close after `kernel_idle_hours`, extra instances (#6) after
+    /// `instance_idle_mins`; old runs go per §8.4.
     async fn sweeps(self) {
-        let mut tick = tokio::time::interval(Duration::from_secs(600));
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
         let mut n: u64 = 0;
         loop {
             tokio::select! {
                 _ = tick.tick() => {}
                 () = self.inner.rt.shutdown.cancelled() => return,
             }
-            let idle = Duration::from_secs(self.inner.config.kernel_idle_hours.max(1) * 3600);
-            let closing: Vec<(KernelId, Arc<dyn Kernel>)> = {
-                let mut s = self.inner.state.lock();
-                let ids: Vec<String> = s
-                    .kernels
-                    .iter()
-                    .filter(|(_, k)| !k.busy && k.kernel.is_some() && k.last_used.elapsed() > idle)
-                    .map(|(key, _)| key.clone())
-                    .filter(|key| !s.runs.values().any(|l| &l.key == key))
-                    .collect();
-                ids.iter()
-                    .filter_map(|key| s.kernels.remove(key))
-                    .filter_map(|k| k.kernel.map(|kernel| (k.id, kernel)))
-                    .collect()
-            };
-            for (id, k) in closing {
-                let _ = k.shutdown().await;
-                self.publish(CellEvent::KernelChanged { kernel: id }).await;
-            }
-            if n.is_multiple_of(6) {
+            self.close_idle().await;
+            if n.is_multiple_of(60) {
                 self.retention().await;
             }
             n += 1;
+        }
+    }
+
+    /// Close the kernels idle past their limit: `kernel_idle_hours` for instance 0, and
+    /// `instance_idle_mins` for an extra instance (#6), whose slot goes even without a
+    /// running kernel.
+    async fn close_idle(&self) {
+        let cfg = &self.inner.config;
+        let idle = Duration::from_secs(cfg.kernel_idle_hours.max(1) * 3600);
+        let extra = Duration::from_secs(cfg.shell.instance_idle_mins * 60);
+        let closing: Vec<(KernelId, Option<Arc<dyn Kernel>>)> = {
+            let mut s = self.inner.state.lock();
+            let ids: Vec<String> = s
+                .kernels
+                .iter()
+                .filter(|(_, k)| !k.busy && k.pending == 0)
+                .filter(|(_, k)| {
+                    if k.id.instance > 0 {
+                        k.last_used.elapsed() >= extra
+                    } else {
+                        k.kernel.is_some() && k.last_used.elapsed() > idle
+                    }
+                })
+                .map(|(key, _)| key.clone())
+                .filter(|key| !s.runs.values().any(|l| &l.key == key))
+                .collect();
+            ids.iter()
+                .filter_map(|key| s.kernels.remove(key))
+                .map(|k| (k.id, k.kernel))
+                .collect()
+        };
+        for (id, k) in closing {
+            if let Some(k) = k {
+                let _ = k.shutdown().await;
+            }
+            self.publish(CellEvent::KernelChanged { kernel: id }).await;
         }
     }
 
@@ -1709,8 +1940,9 @@ impl Cells {
     }
 
     /// The pass: cells in order as `cell` runs; stops BEFORE danger, a blocking lint chip,
-    /// an invalid cell, a missing cwd or an unarmed `after`; stops AT anything but success;
-    /// skips superseded cells (§7.2, inv. 7, 12). Survives the client going away.
+    /// an invalid cell or a missing cwd; stops AT anything but success; skips superseded
+    /// cells (§7.2, inv. 7, 12). An unarmed `after` is advisory (#1): the pass runs the cell
+    /// past it (the run records `ran_past`). Survives the client going away.
     async fn drive_pass(self, req: RunAllRequest) {
         let scope = json(&req.scope);
         if self.inner.state.lock().last_pass.remove(&scope).is_some() {
@@ -1745,9 +1977,10 @@ impl Cells {
                     continue;
                 }
             }
-            // No batch override: an unarmed `after` stops the pass (§7.2).
+            // `after` is advisory (#1): the pass runs past an unarmed gate. `confirmed` waives
+            // only that here — a pass runs whole cells, and danger stops it just below.
             let p = match self
-                .prepare(cell, seen, &RunMode::Cell, None, None, false)
+                .prepare(cell, seen, &RunMode::Cell, None, None, true)
                 .await
             {
                 Ok(p) => p,
@@ -2137,6 +2370,8 @@ impl Cells {
             } else {
                 s.kernels.get_mut(&key).and_then(|k| {
                     k.prev_cell = None;
+                    k.snap_at = None;
+                    k.seed = None;
                     k.kernel.take()
                 })
             };

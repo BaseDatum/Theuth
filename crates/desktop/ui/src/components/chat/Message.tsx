@@ -114,7 +114,7 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
     case 'vision':
       return <MessageVision entry={entry} />
     case 'info':
-      return <MessageInfo text={entry.text} />
+      return <MessageInfo text={entry.text} label={entry.label} />
     case 'error':
       return <ErrorRow text={entry.text} session={session} at={entry.at} />
     case 'compacted':

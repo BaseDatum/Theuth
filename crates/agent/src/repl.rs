@@ -1939,7 +1939,7 @@ impl Repl {
                                 let mut out = match (done, &cx.endless) {
                                     (Some(out), _) => out,
                                     (None, Some(e)) if c.local => {
-                                        endless_tools::run(e, cx.session, &c.name, &c.args).await
+                                        endless_tools::run(e, cx.session, &c.name, &c.args, &cx.spill_dir.with_file_name("zoom")).await
                                     }
                                     (None, None) if c.local => ToolOutput::err(format!(
                                         "{}: not available in this process",
@@ -1973,7 +1973,10 @@ impl Repl {
                                         }
                                     }
                                 }
+                                let originals = out.files.clone();
                                 snapshot_files(&mut out, spill);
+                                // R3-1: the sandbox keeps its own copy; zoom's scratch goes.
+                                endless_tools::discard(&c.name, &originals).await;
                                 out
                             },
                         ))
@@ -2331,9 +2334,8 @@ mod tests {
             );
         }
         let scratch = crate::TestDir::new("image-guidance");
-        let prompt = crate::frame::baseline(
-            &scratch.0, None, "", "", None, None, false, false, false,
-        );
+        let prompt =
+            crate::frame::baseline(&scratch.0, None, "", "", None, None, false, false, false);
         let guidance = prompt.split("## Guidance").nth(1).unwrap_or_default();
         assert!(
             guidance.contains("To look at an image") && guidance.contains("`read_file(path)`"),
@@ -2770,6 +2772,129 @@ mod tests {
                 out.content
             );
             assert!(!prompt_block(&specs(&cx).await, true).contains("async def live_echo("));
+            repl.close().await;
+        });
+    }
+
+    /// `set_mcp_hidden` on a chat reaches its subagent's live runtime at once: the next
+    /// cell's function set (type-check stubs) and the `## Runtime` index lose the tool and a
+    /// call of it is refused; showing it again brings it back. The runtime is never
+    /// restarted by hand and keeps its globals throughout.
+    #[test]
+    fn hidden_tool_leaves_and_rejoins_the_live_runtime() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = run_cx(&dir.0).await;
+            let parent = SessionId::new();
+            cx.registry
+                .tell(tools::SetParent {
+                    session: cx.session,
+                    parent,
+                })
+                .await
+                .unwrap();
+            std::fs::write(dir.0.join("seen.txt"), "x").unwrap();
+            let listing = format!(
+                "reply = await list_dir(path={:?})\nprint(marker, reply)",
+                dir.0.to_string_lossy()
+            );
+            let hide = |hidden: bool| tools::SetHidden {
+                session: parent,
+                tools: vec!["list_dir".into()],
+                hidden,
+            };
+            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let out = repl
+                .run("before", &format!("marker = 'kept'\n{listing}"))
+                .await;
+            assert!(
+                !out.is_error && out.content.contains("seen.txt"),
+                "{}",
+                out.content
+            );
+
+            cx.registry.ask(hide(true)).await.unwrap();
+            assert!(!prompt_block(&specs(&cx).await, true).contains("async def list_dir("));
+            let out = repl.run("hidden", &listing).await;
+            assert!(
+                out.is_error && out.content.contains("list_dir"),
+                "a hidden tool must be gone from the runtime: {}",
+                out.content
+            );
+            assert!(find_tool(&cx, "list_dir").await.is_none());
+
+            cx.registry.ask(hide(false)).await.unwrap();
+            assert!(prompt_block(&specs(&cx).await, true).contains("async def list_dir("));
+            let out = repl.run("shown", &listing).await;
+            assert!(
+                !out.is_error && out.content.contains("kept") && out.content.contains("seen.txt"),
+                "a shown tool must be back, globals intact: {}",
+                out.content
+            );
+            repl.close().await;
+        });
+    }
+
+    /// A whole MCP server hidden for a chat (`mcp:<server>`) before its tools register stays
+    /// hidden from a subagent's live runtime once they do, and showing it again brings
+    /// them back at the next cell.
+    #[test]
+    fn hidden_server_stays_out_of_the_runtime_when_its_tools_register_later() {
+        crate::with_test_registry(async {
+            let Some(pool) = monty_pool().await else {
+                return;
+            };
+            let dir = tempdir();
+            let cx = mcp_live_cx(&dir.0).await;
+            let parent = SessionId::new();
+            cx.registry
+                .tell(tools::SetParent {
+                    session: cx.session,
+                    parent,
+                })
+                .await
+                .unwrap();
+            let hide = |hidden: bool| tools::SetHidden {
+                session: parent,
+                tools: vec![tools::mcp_server_key("live")],
+                hidden,
+            };
+            cx.registry.ask(hide(true)).await.unwrap();
+            ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)
+                .unwrap()
+                .unwrap()
+                .ask(tools::AddServer {
+                    name: "live".into(),
+                    entry: mcp_live_entry(),
+                })
+                .await
+                .unwrap();
+            let all = cx.registry.ask(ListTools(None)).await.unwrap();
+            assert!(all.iter().any(|s| s.name == "live_echo"), "registered");
+            assert!(!prompt_block(&specs(&cx).await, true).contains("async def live_echo("));
+            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let out = repl.run("hidden", "await live_echo(value='x')").await;
+            assert!(
+                out.is_error && out.content.contains("live_echo"),
+                "{}",
+                out.content
+            );
+
+            cx.registry.ask(hide(false)).await.unwrap();
+            let out = repl
+                .run(
+                    "shown",
+                    "reply = await live_echo(value='back')\nprint(reply)",
+                )
+                .await;
+            assert!(
+                !out.is_error && out.content.contains("live:back:"),
+                "{}",
+                out.content
+            );
             repl.close().await;
         });
     }

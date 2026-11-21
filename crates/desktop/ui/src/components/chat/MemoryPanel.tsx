@@ -14,7 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { ago } from '@/lib/costs/format'
 import { fmtBytes } from '@/lib/files'
-import { ENDLESS_DEFAULTS, EARLIER_HISTORY, isFoldedNote, tokenEstimate } from '@/lib/endless'
+import { ENDLESS_DEFAULTS, EARLIER_HISTORY, isFoldedNote, tailMark, tokenEstimate } from '@/lib/endless'
 import { routed } from '@/lib/owner'
 import { useDrafts } from '@/lib/drafts'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -26,6 +26,7 @@ import type { GuardTrips } from "@/rpc/bindings/method.agent.output"
 import type { SessionMemory } from "@/rpc/bindings/method.agent.output"
 import type { Stalled } from "@/rpc/bindings/method.agent.output"
 import type { ViewLine } from "@/rpc/bindings/method.agent.output"
+import type { LedgerStatus, TailMode, TailOverride } from "@/rpc/bindings/method.agent.output"
 import { MenuRow } from './HeaderMenu'
 import { ModelCombobox } from './ModelCombobox'
 import { settings } from './slash'
@@ -192,6 +193,8 @@ export const pauseMutation = (api: Api, qc: QueryClient, session: string) => mem
 export const modelMutation = (api: Api, qc: QueryClient, session: string) => memoryMutation(qc, session, (model: string | null) => api.set_session_compactor_model(session, model))
 /** 194: this chat's own summary effort; the reply (the fresh memory) also carries the effort a model change dropped. */
 export const effortMutation = (api: Api, qc: QueryClient, session: string) => memoryMutation(qc, session, (effort: string | null) => api.set_session_compactor_effort(session, effort))
+/** 201 §4.2: this chat's own tail sizing (mode and its two marks); `null` = use the default again. */
+export const tailMutation = (api: Api, qc: QueryClient, session: string) => memoryMutation(qc, session, (tail: TailOverride | null) => api.set_session_tail(session, tail))
 
 /** 137G: this chat's summary model on the regular picker (124 §5); "Use default" clears the chat's own pick. 194: the chips belong to the chat's own pick — shown only beside it, at its own stored effort (the Default chip clears it). */
 export function SummaryModel({ session, m }: { session: string; m: Pick<SessionMemory, 'model' | 'model_override' | 'model_source' | 'effort_override'> }) {
@@ -240,6 +243,133 @@ function ViewSize({ bytes, busy, onChange }: { bytes: number; busy?: boolean; on
   )
 }
 
+/** 201 §4.2: the per-session tail sizes the compact control offers, in each mode's wire unit; a stored override outside the list is shown as its own row. */
+export const TAIL_PRESETS: readonly TailOverride[] = [
+  { mode: 'fixed', low: 16_000, high: 48_000 },
+  { mode: 'fixed', low: 24_000, high: 64_000 },
+  { mode: 'fixed', low: 48_000, high: 128_000 },
+  { mode: 'fixed', low: 96_000, high: 256_000 },
+  { mode: 'scaled', low: 0.05, high: 0.15 },
+  { mode: 'scaled', low: 0.1, high: 0.25 },
+  { mode: 'scaled', low: 0.2, high: 0.5 },
+]
+const tailKey = (t: TailOverride) => `${t.mode}:${t.low}:${t.high}`
+/** `24–64 KB` / `10–25 %`: a tail pair in its mode's unit. */
+export const tailRange = (mode: TailMode, low: number, high: number): string => `${tailMark(mode, low).split(' ')[0]}–${tailMark(mode, high)}`
+const DEFAULT_TAIL = 'default'
+
+/** 201 §4.2: this chat's tail sizing beside its view size. "Use the default" clears the chat's own pick; the trigger names the marks in force. */
+export function TailSize({ m, busy, onChange }: { m: Pick<SessionMemory, 'tail_mode' | 'tail_low' | 'tail_high' | 'tail_override'>; busy?: boolean; onChange(tail: TailOverride | null): void }) {
+  const own = m.tail_override ?? null
+  const options = own && !TAIL_PRESETS.some((p) => tailKey(p) === tailKey(own)) ? [...TAIL_PRESETS, own] : TAIL_PRESETS
+  const mode = m.tail_mode ?? ENDLESS_DEFAULTS.tail_mode
+  const inForce = own ? tailRange(own.mode, own.low, own.high) : m.tail_high > 0 ? tailRange('fixed', m.tail_low, m.tail_high) : mode
+  return (
+    <Select value={own ? tailKey(own) : DEFAULT_TAIL} disabled={busy} onValueChange={(v) => onChange(v === DEFAULT_TAIL ? null : (options.find((o) => tailKey(o) === v) ?? null))}>
+      <SelectTrigger size="sm" className="h-6 gap-1 px-2 text-xs text-fg-secondary" aria-label="Tail size setting" title="Kept after a trim – trim at">
+        <SelectValue>
+          tail {inForce}
+          {!own && <span className="text-fg-tertiary"> · default</span>}
+        </SelectValue>
+      </SelectTrigger>
+      <SelectContent align="start">
+        <SelectItem value={DEFAULT_TAIL} className="text-xs">
+          Use the default
+        </SelectItem>
+        {options.map((t) => (
+          <SelectItem key={tailKey(t)} value={tailKey(t)} className="text-xs">
+            tail {tailRange(t.mode, t.low, t.high)} <span className="text-fg-tertiary">{t.mode === 'fixed' ? 'fixed' : 'of the model'}</span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+/** 201: the tail against its two marks, as a small bar with a tick at the low mark; text only while the marks are unknown (scaled, before P2). */
+function TailBar({ m }: { m: SessionMemory }) {
+  const kb = (b: number) => `${Math.round(b / 1000)} KB`
+  if (!(m.tail_high > 0)) return <span className="tabular-nums">tail {kb(m.tail_bytes ?? 0)}</span>
+  const fill = Math.min(100, ((m.tail_bytes ?? 0) / m.tail_high) * 100)
+  return (
+    <span className="flex items-center gap-1.5 tabular-nums" title={`Trimmed back to ${kb(m.tail_low)} once it passes ${kb(m.tail_high)}`}>
+      tail {kb(m.tail_bytes ?? 0)}
+      <span role="meter" aria-label="Tail fill" aria-valuemin={0} aria-valuemax={m.tail_high} aria-valuenow={m.tail_bytes ?? 0} className="relative h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+        <span className="absolute inset-y-0 left-0 bg-primary/70" style={{ width: `${fill}%` }} />
+        <span className="absolute inset-y-0 w-px bg-fg-tertiary" style={{ left: `${(m.tail_low / m.tail_high) * 100}%` }} />
+      </span>
+      <span className="text-fg-tertiary">{tailRange('fixed', m.tail_low, m.tail_high)}</span>
+    </span>
+  )
+}
+
+/** 201 §9: the ledger's open entries per section, the unconfirmed suggestions and the frozen snapshot against `ledger_bytes`. */
+function Ledger({ l, limit }: { l: LedgerStatus; limit: number }) {
+  const kb = (b: number) => (b >= 10_000 ? `${Math.round(b / 1000)}` : `${(b / 1000).toFixed(1)}`)
+  const sections: [number, string, string][] = [
+    [l.goals, 'goal', 'goals'],
+    [l.decisions, 'decision', 'decisions'],
+    [l.constraints, 'constraint', 'constraints'],
+    [l.open_tasks, 'open task', 'open tasks'],
+    [l.artefacts, 'artefact', 'artefacts'],
+  ]
+  return (
+    <span className="tabular-nums" title="The state ledger's open entries, frozen with the generation in force">
+      ledger {sections.map(([n, one, many]) => `${n} ${n === 1 ? one : many}`).join(' · ')}
+      {l.suggested > 0 && <span className="text-fg-primary"> · {l.suggested} to confirm</span>}
+      <span className="text-fg-tertiary">
+        {' '}
+        · {kb(l.bytes)}/{kb(limit)} KB
+      </span>
+    </span>
+  )
+}
+
+/** What the live renderers read besides the status itself. */
+export type LiveConfig = { ledgerBytes: number }
+
+/**
+ * 201: the live numbers of the session-memory status, one renderer per entry (`null` = nothing to show). A field an
+ * older engine does not send renders nothing.
+ */
+export const LIVE: readonly ((m: SessionMemory, cfg: LiveConfig) => ReactNode)[] = [
+  (m) => <TailBar m={m} />,
+  (m) => (
+    <span className="tabular-nums" title="Trims taken so far">
+      generation {m.generation ?? 0}
+    </span>
+  ),
+  (m) => (
+    <span className="tabular-nums" title="Lines still on their quick draft, waiting for the summary model">
+      {(m.drafts ?? 0).toLocaleString('en-US')} on a draft
+    </span>
+  ),
+  (m) => (
+    <span title="The summariser's profile in force">
+      {m.profile ?? 'standard'} profile{m.profile_reason ? ` · ${m.profile_reason}` : ''}
+    </span>
+  ),
+  (m, cfg) => (m.ledger ? <Ledger l={m.ledger} limit={cfg.ledgerBytes} /> : null),
+  (m) =>
+    typeof m.zooms === 'number' ? (
+      <span className="tabular-nums" title="Zooms this generation; a high count means the view is folded too tightly">
+        {m.zooms} {m.zooms === 1 ? 'zoom' : 'zooms'} this generation
+      </span>
+    ) : null,
+  (m) => (m.tools_pending === true ? <span className="basis-full text-fg-tertiary">A tool-list change is waiting for the next trim</span> : null),
+]
+
+export function Live({ m, ledgerBytes = ENDLESS_DEFAULTS.ledger_bytes }: { m: SessionMemory; ledgerBytes?: number }) {
+  const cfg: LiveConfig = { ledgerBytes }
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-secondary">
+      {LIVE.map((render, i) => (
+        <Fragment key={i}>{render(m, cfg)}</Fragment>
+      ))}
+    </div>
+  )
+}
+
 /** The same memory choices, held on the draft until its first action creates the chat. */
 export function DraftMemory({ open, onOpenChange }: { open: boolean; onOpenChange(o: boolean): void }) {
   const api = useApi()
@@ -275,6 +405,7 @@ function Stats({ session, m }: { session: string; m: SessionMemory }) {
   const api = useApi()
   const qc = useQueryClient()
   const setViewBytes = useMutation(memoryMutation(qc, session, (bytes: number) => api.set_session_view_bytes(session, bytes)))
+  const setTail = useMutation(tailMutation(api, qc, session))
   const g = m.stats.guard_trips
   const trips = guardTotal(g)
   const usd = m.stats.usd_estimate
@@ -285,6 +416,7 @@ function Stats({ session, m }: { session: string; m: SessionMemory }) {
       </Badge>
       <SummaryModel session={session} m={m} />
       <ViewSize bytes={m.view_bytes} busy={setViewBytes.isPending} onChange={(bytes) => setViewBytes.mutate(bytes)} />
+      <TailSize m={m} busy={setTail.isPending} onChange={(tail) => setTail.mutate(tail)} />
       <span className="tabular-nums">{m.stats.calls.toLocaleString('en-US')} calls</span>
       <Tooltip>
         <TooltipTrigger asChild>
@@ -382,14 +514,17 @@ export function nextTry(s: Stalled, now: number): string {
   return `Next try ${at - now >= 5_000 ? ago(at, now) : 'in a moment'}`
 }
 
-/** 137G Fold now, shared by the failing block and the backlog row; the footer owns the mutation. */
+/** 201 Trim now (`endless_fold`; 137G's Fold now), shared by the failing block and the backlog row; the footer owns the mutation. */
 type Fold = { run(): void; pending: boolean }
+
+/** R3-13: what Trim now does where there is no tail to cut (`endless_fold` folds the view there). */
+const TRIM_INSTEAD = 'In meetings and while history is still being summarised this folds the view instead.'
 
 function FoldButton({ fold }: { fold: Fold }) {
   return (
-    <Button size="xs" variant="outline" disabled={fold.pending} onClick={fold.run}>
+    <Button size="xs" variant="outline" disabled={fold.pending} onClick={fold.run} title={TRIM_INSTEAD}>
       {fold.pending && <LoaderCircle className="animate-spin" />}
-      Fold now
+      Trim now
     </Button>
   )
 }
@@ -542,7 +677,7 @@ function BacklogRow({ session, m, b, fold }: { session: string; m: SessionMemory
         {toggle(true, 'Pause settling')}
         <ChangeModel />
       </div>
-      <p className={help}>Fold now: turns every waiting line into a short excerpt at once, at no cost. Recall still finds the originals.</p>
+      <p className={help}>Trim now: cuts this chat's verbatim tail back to its low mark and starts a new generation, at no cost. {TRIM_INSTEAD} Recall still finds the originals.</p>
     </>
   )
 }
@@ -597,6 +732,8 @@ export function ViewNote({ line, className }: { line: ViewLine; className?: stri
 export function MemoryPanel({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
   const api = useApi()
   const memory = useSessionMemory(session, open)
+  const canSettings = useQuerySupport(['endless_settings_get'])
+  const ledgerBytes = useQuery({ enabled: canSettings && open && !!memory.data?.ledger, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data?.ledger_bytes
   const [tree, dispatch] = useReducer(reduce, INITIAL)
   const { kids, open: opened, hits } = tree
   const [query, setQuery] = useState('')
@@ -705,6 +842,7 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
           <SheetTitle>Context</SheetTitle>
           <SheetDescription className="sr-only">The session's view by band; open a line to see what it summarises.</SheetDescription>
           {m && m.mode === 'endless' && <Stats session={session} m={m} />}
+          {m && m.mode === 'endless' && <Live m={m} ledgerBytes={ledgerBytes} />}
         </SheetHeader>
         <div className="px-4 pb-3">
           <Input

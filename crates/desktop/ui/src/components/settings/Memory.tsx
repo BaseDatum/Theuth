@@ -3,18 +3,24 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronRight } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
-import { Count, Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
+import { Count, Range, Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
 import { SummaryTestCall } from '@/components/settings/SummaryTestCall'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { ENDLESS_DEFAULTS, tokenEstimate, useCompactorLabel } from '@/lib/endless'
+import { ENDLESS_DEFAULTS, autoProfile, scaledMarks, tailPairError, tokenEstimate, useCompactorLabel } from '@/lib/endless'
 import { queryKeys, useApi } from '@/lib/rpc'
-import type { CompactStyle } from "@/rpc/bindings/method.agent.output"
-import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
+import type { CompactStyle, CompactorProfile, EndlessConfig, TailMode } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 
-type Key = keyof typeof ENDLESS_DEFAULTS
+/** The numeric keys of `ENDLESS_DEFAULTS`: the Advanced rows' fields. */
+type Key = { [K in keyof typeof ENDLESS_DEFAULTS]: (typeof ENDLESS_DEFAULTS)[K] extends number ? K : never }[keyof typeof ENDLESS_DEFAULTS]
+
+const PROFILES: [CompactorProfile, string][] = [
+  ['auto', 'Automatic'],
+  ['standard', 'Standard'],
+  ['small', 'Small'],
+]
 
 const COMPACT: [CompactStyle, string][] = [
   ['summary', 'Summary'],
@@ -37,41 +43,22 @@ export const ADVANCED: readonly (readonly [string | null, readonly (readonly [Ke
     'Request size',
     [
       ['raw_bytes', 'Unsummarized lines in full', 'Newest waiting lines sent verbatim, in bytes; older ones fold to one line. 4000–128000, default 32000.', 4_000, 128_000, 1],
-      ['compactor_ctx_bytes', 'Summary context', 'Chat history sent with each summary call, in bytes, any model. 8000–256000, default 48000.', 8_000, 256_000, 1],
+      ['compactor_ctx_bytes', 'Summary context', 'Chat history sent with each summary call, in bytes, any model. Standard profile only. 8000–256000, default 48000.', 8_000, 256_000, 1],
     ],
   ],
   [
     'Speed & spend',
     [
-      ['batch_units', 'Lines per summary call', 'Waiting lines summarized together in one call. 1–64, default 16.', 1, 64, 1],
-      ['jobs', 'Summaries at once (cloud)', 'Parallel summary calls per chat. 1–32, default 8.', 1, 32, 1],
+      ['batch_units', 'Lines per summary call', 'Waiting lines summarized together in one call. Standard profile only. 1–64, default 16.', 1, 64, 1],
+      ['jobs', 'Summaries at once (cloud)', 'Parallel summary calls per chat. Standard profile only. 1–32, default 8.', 1, 32, 1],
       ['max_usd_per_call', 'Spend per call (USD)', 'The most one summary call may cost. 0.001–10, default 0.10.', 0.001, 10, 0.001],
       ['max_usd_per_session_day', 'Daily spend per chat (USD)', "Settling pauses for the rest of the UTC day once a chat's summaries cost this much; 0 = no cap. 0–1000, default 5.", 0, 1000, 0.01],
     ],
   ],
 ]
 
-/** A native range: `onChange` follows the pointer (the label beside it previews), `onCommit` fires on release so a drag is one write. */
-function Range({ value, min, max, step, onChange, onCommit, disabled, 'aria-label': ariaLabel }: { value: number; min: number; max: number; step: number; onChange(v: number): void; onCommit(v: number): void; disabled: boolean; 'aria-label': string }) {
-  return (
-    <input
-      type="range"
-      aria-label={ariaLabel}
-      className="w-48 accent-primary disabled:opacity-50 max-md:w-full"
-      min={min}
-      max={max}
-      step={step}
-      value={value}
-      disabled={disabled}
-      onChange={(e) => onChange(Number(e.target.value))}
-      onPointerUp={(e) => onCommit(Number(e.currentTarget.value))}
-      onKeyUp={(e) => onCommit(Number(e.currentTarget.value))}
-    />
-  )
-}
-
 /**
- * Settings › Agent › Context (tab id `memory`; 137 §11.3): the endless defaults, view size, slack, settle wait and the compactor model (`agent.endless`),
+ * Settings › Agent › Context (tab id `memory`; 137 §11.3, 201 §12.2): the endless defaults, view size, slack, the verbatim tail, the compactor, the ledger and recall (`agent.endless`),
  * and the compact style of chats that are not endless (188 A9, from the old Agent loop tab).
  * `focus`: `model` focuses the compactor model (the Memory panel's "Change model", 137F); `spend` opens Advanced on the
  * daily spend cap (the paused-by-spend row's link, 137G).
@@ -94,6 +81,35 @@ export function Memory({ focus = null }: { focus?: string | null }) {
   const [slackPct, setSlackPct] = useState<number | null>(null)
   const kb = viewKb ?? (s ? s.view_bytes / 1000 : 128)
   const pct = slackPct ?? (s ? s.slack * 100 : 12.5)
+  const [mergePct, setMergePct] = useState<number | null>(null)
+  const merge = mergePct ?? Math.round((s?.merge_at ?? ENDLESS_DEFAULTS.merge_at) * 100)
+  // 201 §4.2: the tail pair in the UI's unit (KB in fixed mode, percent in scaled), previewed while a thumb moves.
+  const mode: TailMode = s?.tail_mode ?? ENDLESS_DEFAULTS.tail_mode
+  const fixed = mode === 'fixed'
+  const toUi = (v: number) => (fixed ? v / 1000 : Math.round(v * 100))
+  const toWire = (v: number) => (fixed ? v * 1000 : v / 100)
+  const [tailLow, setTailLow] = useState<number | null>(null)
+  const [tailHigh, setTailHigh] = useState<number | null>(null)
+  const [tailRefused, setTailRefused] = useState<string | null>(null)
+  const lowUi = tailLow ?? toUi(fixed ? (s?.tail_low_bytes ?? ENDLESS_DEFAULTS.tail_low_bytes) : (s?.tail_low_share ?? ENDLESS_DEFAULTS.tail_low_share))
+  const highUi = tailHigh ?? toUi(fixed ? (s?.tail_high_bytes ?? ENDLESS_DEFAULTS.tail_high_bytes) : (s?.tail_high_share ?? ENDLESS_DEFAULTS.tail_high_share))
+  // The high mark must stay above the low one: checked in place while dragging, and again before the write.
+  const tailLive = tailLow !== null || tailHigh !== null ? tailPairError(mode, toWire(lowUi), toWire(highUi)) : null
+  const commitTail = (low: number, high: number) => {
+    setTailLow(null)
+    setTailHigh(null)
+    const err = tailPairError(mode, toWire(low), toWire(high))
+    setTailRefused(err)
+    if (err) return
+    patch(fixed ? { tail_low_bytes: toWire(low), tail_high_bytes: toWire(high) } : { tail_low_share: toWire(low), tail_high_share: toWire(high) })
+  }
+  // The engine's refusal (`validate_201` names both values) when it still refuses a pair.
+  const tailServer = save.error && /tail_/.test(save.error.message) ? save.error.message : null
+  const tailProblem = tailLive ?? tailRefused ?? tailServer
+  // Scaled marks resolved for the default model, estimated from its window.
+  const defaultModel = models.data?.find((m) => m.id === info?.default_model)
+  const resolvedTail = fixed ? null : scaledMarks(toWire(lowUi), toWire(highUi), defaultModel?.context ?? 0)
+  const onModel = resolvedTail ? ` on ${defaultModel?.name ?? info?.default_model}` : ''
   // 177 U5: the model a summary call would use now — the compactor model, else the title model; else each chat's own.
   const title = useQuery({ queryKey: queryKeys.titleModel, queryFn: () => api.title_model(), enabled: canQuery1_3 && (!!s && !s.model) })
   const testModel = s?.model ?? title.data?.id
@@ -101,6 +117,9 @@ export function Memory({ focus = null }: { focus?: string | null }) {
   const resolved = useCompactorLabel(null)
   // 194: the picked compactor model's effort chips (none while unset: the fallback chain has no effort).
   const compactor = models.data?.find((m) => m.id === s?.model)
+  // 201 §7.1: what Automatic resolves to for the model a summary call would use now.
+  const profile = s?.profile ?? ENDLESS_DEFAULTS.profile
+  const resolvedProfile = autoProfile(models.data?.find((m) => m.id === testModel))
   // The control is disabled until the settings load, and a disabled control takes no focus.
   useEffect(() => {
     if (busy) return
@@ -186,8 +205,107 @@ export function Memory({ focus = null }: { focus?: string | null }) {
             }}
           />
         </Row>
-        <Row label="Settle seconds" description="How long a turn waits for the summariser to finish the previous turn's lines before it starts; past it, short unbuilt messages go in verbatim. 5–180.">
-          <Count value={s?.settle_secs} min={5} max={180} action={{ mutate: (n) => patch({ settle_secs: n }), isPending: save.isPending }} />
+        <Row
+          stack
+          label={
+            <>
+              Start merging at · <span className="tabular-nums">{merge} %</span>
+            </>
+          }
+          description="Summary lines start merging into coarser ones once the view reaches this share of its size, so the merges are ready before they are needed. 50–100 %, default 75 %."
+        >
+          <Range
+            aria-label="Start merging at in percent"
+            value={merge}
+            min={50}
+            max={100}
+            step={5}
+            disabled={busy}
+            onChange={setMergePct}
+            onCommit={(v) => {
+              setMergePct(null)
+              patch({ merge_at: v / 100 })
+            }}
+          />
+        </Row>
+      </Section>
+      <Section title="Tail">
+        <Row label="Tail sizing" description="How much of the newest chat the model reads word for word. Fixed size keeps the same bytes on every model; Scaled to the model takes a share of each model's window. Default Fixed size.">
+          <Select
+            name="tail_mode"
+            value={mode}
+            disabled={busy}
+            onValueChange={(v) => {
+              setTailRefused(null)
+              patch({ tail_mode: v as TailMode })
+            }}
+          >
+            <SelectTrigger className="w-48" aria-label="Tail sizing">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="fixed">Fixed size</SelectItem>
+              <SelectItem value="scaled">Scaled to the model</SelectItem>
+            </SelectContent>
+          </Select>
+        </Row>
+        <Row
+          stack
+          label={
+            <>
+              Kept after a trim · <span className="tabular-nums">{fixed ? `${lowUi} KB` : `${lowUi} %`}</span>
+              {resolvedTail && <span className="text-fg-tertiary tabular-nums">{` · about ${Math.round(resolvedTail.low / 1000)} KB`}</span>}
+            </>
+          }
+          description={
+            fixed
+              ? `${tokenEstimate(lowUi * 1000)} of the newest messages stay word for word after a trim. 8–256 KB, default 24 KB.`
+              : `The share of the model's turn allowance that stays word for word after a trim${onModel}${resolvedTail ? '' : '; resolved per chat from its model'}. 2–40 %, default 10 %.`
+          }
+        >
+          <Range
+            aria-label={fixed ? 'Kept after a trim in KB' : 'Kept after a trim in percent'}
+            value={lowUi}
+            min={fixed ? 8 : 2}
+            max={fixed ? 256 : 40}
+            step={fixed ? 4 : 1}
+            disabled={busy}
+            onChange={setTailLow}
+            onCommit={(v) => commitTail(v, highUi)}
+          />
+        </Row>
+        <Row
+          stack
+          label={
+            <>
+              Trim at · <span className="tabular-nums">{fixed ? `${highUi} KB` : `${highUi} %`}</span>
+              {resolvedTail && <span className="text-fg-tertiary tabular-nums">{` · about ${Math.round(resolvedTail.high / 1000)} KB`}</span>}
+            </>
+          }
+          description={
+            fixed
+              ? `${tokenEstimate(highUi * 1000)}: once the word-for-word part grows past this, its oldest turns move into the summaries in one cache rewrite. Above Kept after a trim. 16–512 KB, default 64 KB.`
+              : `The share at which a trim is due${onModel}; above Kept after a trim. 5–60 %, default 25 %.`
+          }
+        >
+          <Range
+            aria-label={fixed ? 'Trim at in KB' : 'Trim at in percent'}
+            value={highUi}
+            min={fixed ? 16 : 5}
+            max={fixed ? 512 : 60}
+            step={fixed ? 8 : 1}
+            disabled={busy}
+            onChange={setTailHigh}
+            onCommit={(v) => commitTail(lowUi, v)}
+          />
+        </Row>
+        {tailProblem && (
+          <p role="alert" className="pt-2 text-xs text-danger">
+            {tailProblem}
+          </p>
+        )}
+        <Row label="Trim early when idle" description="After this many idle seconds the provider's cache has expired anyway, so the next turn trims down to Kept after a trim at no extra cost. Empty = automatic: the provider's cache lifetime (300 s on Anthropic). 0–86400 seconds.">
+          <Count aria-label="Trim early when idle in seconds" value={s ? s.cold_after_secs || undefined : undefined} placeholder={s ? 'automatic' : undefined} blank={0} min={0} max={86_400} action={{ mutate: (n) => patch({ cold_after_secs: n }), isPending: save.isPending }} />
         </Row>
       </Section>
       <Section title="Compactor">
@@ -215,6 +333,31 @@ export function Memory({ focus = null }: { focus?: string | null }) {
         >
           <SummaryTestCall model={testModel} />
         </Row>
+        <Row
+          label="Profile"
+          description={
+            <>
+              How the summariser works. Standard batches lines with a long chat context; Small sends one message per call with a short prompt, for tiny or local models. Automatic picks Small for a local model or one that reads 32 k tokens or less. Default Automatic.
+              {profile === 'auto' && <span className="block pt-1 text-fg-tertiary">{resolvedProfile ? `Automatic · ${resolvedProfile.profile}, because ${resolvedProfile.reason}` : 'Automatic · decided per chat from its summary model'}</span>}
+            </>
+          }
+        >
+          <Select name="profile" value={profile} disabled={busy} onValueChange={(v) => patch({ profile: v as CompactorProfile })}>
+            <SelectTrigger className="w-40" aria-label="Compactor profile">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PROFILES.map(([id, label]) => (
+                <SelectItem key={id} value={id}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Row>
+        <Row label="Describe images" description="When an image leaves the word-for-word part, the summariser writes a one-line description of it; zoom brings the original back. Default on.">
+          <Switch aria-label="Describe images" checked={(s?.describe_images ?? ENDLESS_DEFAULTS.describe_images) !== 'off'} disabled={busy} onCheckedChange={(v) => patch({ describe_images: v ? 'auto' : 'off' })} />
+        </Row>
         <Row stack label="Guards" description="Every summary line is checked before it is kept: no copied text, nothing the message does not say, no status words, one line in the format. Failures retry with the correction named.">
           <span className="text-sm text-fg-secondary">copy · grounding · status · format — always on</span>
         </Row>
@@ -236,6 +379,25 @@ export function Memory({ focus = null }: { focus?: string | null }) {
             ))}
           </CollapsibleContent>
         </Collapsible>
+      </Section>
+      <Section title="Ledger">
+        <Row label="Keep a state ledger" description="A short record of what is true now (goals, decisions, constraints, open tasks, files touched) that the model keeps current through a ledger tool and reads every turn. Default on.">
+          <Switch aria-label="Keep a state ledger" checked={s?.ledger ?? ENDLESS_DEFAULTS.ledger} disabled={busy} onCheckedChange={(v) => patch({ ledger: v })} />
+        </Row>
+        <Row label="Ledger size" description="How much the ledger may take in each turn, in KB. 1–16, default 4.">
+          <Count aria-label="Ledger size in KB" value={s ? (s.ledger_bytes ?? ENDLESS_DEFAULTS.ledger_bytes) / 1000 : undefined} min={1} max={16} action={{ mutate: (n) => patch({ ledger_bytes: n * 1000 }), isPending: save.isPending }} />
+        </Row>
+        <Row label="Show summary-model suggestions" description="Phrases in your own messages that read as a decision or a constraint are offered in the ledger as unconfirmed suggestions, for the model to confirm or drop. Needs the ledger. Default on.">
+          <Switch aria-label="Show summary-model suggestions" checked={s?.ledger_suggestions ?? ENDLESS_DEFAULTS.ledger_suggestions} disabled={busy || !(s?.ledger ?? ENDLESS_DEFAULTS.ledger)} onCheckedChange={(v) => patch({ ledger_suggestions: v })} />
+        </Row>
+      </Section>
+      <Section title="Recall">
+        <Row label="Prefetch size" description="Recall hits for the new message, in bytes, added after the newest messages so the model sees relevant older detail without asking; 0 turns it off. 0–8000, default 2000.">
+          <Count aria-label="Prefetch size in bytes" value={s?.prefetch_bytes} placeholder={s && ENDLESS_DEFAULTS.prefetch_bytes} min={0} max={8_000} action={{ mutate: (n) => patch({ prefetch_bytes: n }), isPending: save.isPending }} />
+        </Row>
+        <Row label="Keep zoomed lines unmerged" description="A summary line the model zoomed into keeps its detail through the next trim instead of merging into a coarser one. Default on.">
+          <Switch aria-label="Keep zoomed lines unmerged" checked={s?.age_by_use ?? ENDLESS_DEFAULTS.age_by_use} disabled={busy} onCheckedChange={(v) => patch({ age_by_use: v })} />
+        </Row>
       </Section>
     </>
   )

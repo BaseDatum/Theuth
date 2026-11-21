@@ -571,6 +571,7 @@ mod tests {
             kernel: KernelId {
                 scope: Scope::Session(session),
                 spec: KernelSpec::Monty,
+                instance: 0,
             },
             interpreter: "bash 5.2 (Homebrew) /opt/homebrew/bin/bash".into(),
             cwd: "/tmp".into(),

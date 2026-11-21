@@ -231,8 +231,12 @@ fn quoted(s: &str) -> Option<(String, &str)> {
 /// when the input is markers only, the first attachment's title. Never a
 /// marker's syntax, nor Slack's leading `[slack dm]` / `[slack channel]`
 /// line for the model (110 §7.1, 172), nor a peer message's wrapper (183 R2:
-/// [`peer_message_title`]). `None` when there is nothing to name by.
+/// [`peer_message_title`]), nor a schedule fire's wrapper (named for its
+/// schedule, [`schedule_name`]). `None` when there is nothing to name by.
 pub fn first_line(text: &str) -> Option<String> {
+    if let Some(name) = schedule_name(text) {
+        return Some(name.to_owned());
+    }
     if let Some(t) = peer_message_title(text, None) {
         return Some(t);
     }
@@ -259,6 +263,18 @@ pub fn peer_message_from(text: &str) -> Option<&str> {
     let rest = t.strip_prefix("<message from=\"")?;
     // A stored seed may be cut inside the attribute.
     Some(rest.split_once('"').map_or(rest, |(from, _)| from))
+}
+
+/// The schedule a fire's input is from (`<schedule name="…" at="…" …>`, after any
+/// `<time/>` line): a run is named after its schedule, never its wrapper. A stored
+/// seed may be cut inside the attribute. `None` for any other text or an empty name.
+pub fn schedule_name(text: &str) -> Option<&str> {
+    let rest = crate::clock::strip(text)
+        .trim_start()
+        .strip_prefix("<schedule name=\"")?;
+    let name = rest.split_once('"').map_or(rest, |(name, _)| name);
+    let name = name.trim().trim_end_matches('…').trim_end();
+    (!name.is_empty()).then_some(name)
 }
 
 /// 183 R2: a peer message names its chat `Message from <who>: <first body line>`, never by
@@ -303,7 +319,11 @@ pub fn session_title(
 ) -> String {
     let title = title.trim();
     if !title.is_empty() {
-        // A title seeded from a peer message's wrapper before 183 R2.
+        // A title seeded from a schedule fire's or a peer message's wrapper
+        // (before those were named for their schedule / 183 R2).
+        if let Some(name) = schedule_name(title) {
+            return name.to_owned();
+        }
         return peer_message_title(title, None)
             .map_or_else(|| title.to_owned(), |t| seed_title(&t));
     }
@@ -490,6 +510,29 @@ mod tests {
         assert_eq!(
             first_line("plain question").as_deref(),
             Some("plain question")
+        );
+    }
+
+    /// A schedule fire's first input names its session after the schedule, never the
+    /// `<schedule name=… at=…>` wrapper; a title already seeded from the wrapper (cut
+    /// at 60 chars, possibly inside the `at` attribute or the name) reads the same.
+    #[test]
+    fn a_schedule_fire_is_named_for_its_schedule() {
+        let fire = "<time now=\"2026-11-03 02:00 +00:00 (Tue)\"/>\n<schedule name=\"dreaming\" at=\"2026-11-03T02:00:00+00:00\" quiet=\"true\">\nLoad the `dreaming` skill.\n</schedule>";
+        assert_eq!(schedule_name(fire), Some("dreaming"));
+        assert_eq!(first_line(fire).as_deref(), Some("dreaming"));
+        let old = seed_title(fire.split_once('\n').unwrap().1);
+        assert!(old.starts_with("<schedule name=\"dreaming\" at=\"2026-11-0"));
+        assert_eq!(session_title(&old, None, None), "dreaming");
+        assert_eq!(
+            session_title(&seed_title("<schedule name=\"morning-brief"), None, None),
+            "morning-brief"
+        );
+        assert_eq!(schedule_name("<schedule name=\"\">"), None);
+        assert_eq!(schedule_name("about <schedule name=\"x\">"), None);
+        assert_eq!(
+            session_title("dreaming · inbox", None, None),
+            "dreaming · inbox"
         );
     }
 }

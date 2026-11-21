@@ -113,7 +113,8 @@ use crate::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 use crate::{
     EndlessConfigChanged, EndlessFold, EndlessPause, EndlessRecall, EndlessRetry, EndlessZoom,
     GetEndlessSettings, RenderMemoryView, SessionMemoryQuery, SetAgentCompactorModel,
-    SetEndlessSettings, SetSessionCompactorModel, SetSessionMemory, SetSessionViewBytes,
+    SetEndlessSettings, SetSessionAgentTail, SetSessionCompactorModel, SetSessionMemory,
+    SetSessionTail, SetSessionViewBytes,
 };
 use crate::{GetFavoriteModels, SetModelFavorite};
 use crate::{GetSubagentEffort, SetDeskEffort, SetSubagentEffort, ValidateEffort};
@@ -9292,15 +9293,57 @@ impl Message<EndlessRetry> for Agents {
 }
 
 impl Message<EndlessFold> for Agents {
-    type Reply = Result<SessionMemory, String>;
+    type Reply = kameo::reply::DelegatedReply<Result<SessionMemory, String>>;
 
-    /// 137G: any session this engine knows, like [`EndlessRetry`].
-    async fn handle(&mut self, m: EndlessFold, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.stored(m.session).await?;
-        self.endless
-            .fold(m.session)
-            .await
-            .map_err(|e| format!("{e:#}"))
+    /// 137G: any session this engine knows, like [`EndlessRetry`]. 201 (P5):
+    /// a chat on the endless frame takes a trim now through its actor
+    /// ([`CompactNow`]: at once when idle, at the next turn boundary when a
+    /// turn runs); a meeting-filtered tree keeps the 137G fold.
+    async fn handle(
+        &mut self,
+        m: EndlessFold,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        if let Err(e) = self.stored(m.session).await {
+            tx.send(Err(e));
+            return reply;
+        }
+        let endless = self.endless.clone();
+        if endless.active(m.session) && !endless.meeting(m.session) {
+            let actor = match self
+                .actor(m.session)
+                .await
+                .and_then(|a| a.native().cloned())
+            {
+                Ok(actor) => actor,
+                Err(e) => {
+                    tx.send(Err(e));
+                    return reply;
+                }
+            };
+            // Off the mailbox, as [`Compact`]: the actor may ask us back.
+            tokio::spawn(async move {
+                let r = match actor
+                    .ask(CompactNow {
+                        style: None,
+                        head: None,
+                    })
+                    .await
+                {
+                    Ok(_) => endless
+                        .memory(m.session)
+                        .await
+                        .map_err(|e| format!("{e:#}")),
+                    Err(e) => Err(e.to_string()),
+                };
+                tx.send(r);
+            });
+            return reply;
+        }
+        tx.send(endless.fold(m.session).await.map_err(|e| format!("{e:#}")));
+        reply
     }
 }
 
@@ -9469,6 +9512,33 @@ impl Message<SetSessionViewBytes> for Agents {
     }
 }
 
+impl Message<SetSessionAgentTail> for Agents {
+    type Reply = ();
+
+    /// 201 §4.2: the desk agent's tail keys, read at the session's next trim.
+    async fn handle(
+        &mut self,
+        m: SetSessionAgentTail,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.endless.set_agent_tail(m.session, m.tail);
+    }
+}
+
+impl Message<SetSessionTail> for Agents {
+    type Reply = Result<SessionMemory, String>;
+
+    /// 201 §4.2: idle or running — phase P2 reads it at the next trim.
+    async fn handle(
+        &mut self,
+        m: SetSessionTail,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        crate::endless_ext::set_tail(&self.endless, m.session, m.tail).await
+    }
+}
+
 impl Message<GetEndlessSettings> for Agents {
     type Reply = Result<EndlessConfig, String>;
 
@@ -9495,6 +9565,8 @@ impl Message<SetEndlessSettings> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let mut c = m.config;
+        // 201 §12.1: the new keys' ranges and the two high-above-low pairs.
+        c.validate_201()?;
         if !(16_000..=256_000).contains(&c.view_bytes) {
             return Err(format!(
                 "view_bytes {} out of range 16000..=256000",
@@ -9570,7 +9642,7 @@ impl Message<SetEndlessSettings> for Agents {
                 c.max_usd_per_session_day
             ));
         }
-        let keys: [(&str, String); 24] = [
+        let keys: [(&str, String); 38] = [
             ("default_chat", c.default_chat.to_string()),
             ("default_desk", c.default_desk.to_string()),
             ("default_meeting", c.default_meeting.to_string()),
@@ -9596,6 +9668,21 @@ impl Message<SetEndlessSettings> for Agents {
                 "max_usd_per_session_day",
                 c.max_usd_per_session_day.to_string(),
             ),
+            // 201 §12.1.
+            ("tail_mode", c.tail_mode.as_str().to_owned()),
+            ("tail_low_bytes", c.tail_low_bytes.to_string()),
+            ("tail_high_bytes", c.tail_high_bytes.to_string()),
+            ("tail_low_share", c.tail_low_share.to_string()),
+            ("tail_high_share", c.tail_high_share.to_string()),
+            ("cold_after_secs", c.cold_after_secs.to_string()),
+            ("profile", c.profile.as_str().to_owned()),
+            ("merge_at", c.merge_at.to_string()),
+            ("ledger", c.ledger.to_string()),
+            ("ledger_bytes", c.ledger_bytes.to_string()),
+            ("ledger_suggestions", c.ledger_suggestions.to_string()),
+            ("prefetch_bytes", c.prefetch_bytes.to_string()),
+            ("age_by_use", c.age_by_use.to_string()),
+            ("describe_images", c.describe_images.as_str().to_owned()),
             (
                 "model",
                 c.model.clone().unwrap_or_else(|| "null".to_owned()),
@@ -9957,6 +10044,9 @@ impl Message<DeleteSession> for Agents {
                 live.actor.kill().await;
             }
             self.endless.detach(*id);
+            // R3-1: a durable session's zoom scratch (a private one's goes
+            // with its tree's scratch root).
+            crate::loop_::endless_tools::forget(&self.rt.data_dir.join("zoom"), *id);
         }
         self.communication_changed(Some(m.session)).await;
         let removed = self
@@ -18301,15 +18391,9 @@ pub(crate) mod tests {
             raw += crate::compact::est(&m);
             store.append(session, &m).await.unwrap();
         }
-        // Mechanical lines for every unit, as `/compact` makes them (no model).
-        agents
-            .ask(Compact {
-                session,
-                style: None,
-                head: None,
-            })
-            .await
-            .unwrap();
+        // Mechanical lines for every unit, as the service's fold makes them
+        // (no model; 201 P5: `/compact` in a chat is a trim now).
+        endless.fold(session).await.unwrap();
         let view = endless_view_tokens(&endless, session).await.unwrap();
         assert!(view > 0 && view < raw / 2, "view {view} vs raw {raw}");
         let loaded = agents
@@ -18329,11 +18413,11 @@ pub(crate) mod tests {
         assert_eq!(b.total_estimate, view);
     }
 
-    /// 137G G9: `/compact` in an endless session is `endless_fold` — every
-    /// unbuilt line folds into a mechanical node, the epoch stays, no
-    /// summariser or compactor runs (settling is paused, so nothing else calls).
+    /// 137G G9 → 201 P5: `/compact` in an endless chat is "take a trim now";
+    /// with no tail to cut it answers one plain line, the epoch stays, and
+    /// no summariser or compactor runs (settling is paused).
     #[tokio::test]
-    async fn compact_in_an_endless_session_folds_without_a_model_call() {
+    async fn compact_in_an_endless_session_trims_without_a_model_call() {
         let (_scratch, a) = agents_with(false).await;
         let store = a.store.clone();
         let agents = Agents::spawn(a);
@@ -18360,23 +18444,25 @@ pub(crate) mod tests {
             store
                 .append(
                     session,
-                    &ChatMessage::user(format!("long message {k}: {}", "x ".repeat(400))),
+                    // 201 P3: talk units (a long user message needs no model).
+                    &ChatMessage::assistant(format!("long message {k}: {}", "x ".repeat(400))),
                 )
                 .await
                 .unwrap();
         }
-        let epoch = agents
+        let err = agents
             .ask(Compact {
                 session,
                 style: None,
                 head: None,
             })
             .await
-            .unwrap();
+            .expect_err("nothing to cut")
+            .to_string();
+        assert!(err.contains("Nothing to cut"), "{err}");
+        let (epoch, _, _) = store.frame(session).await.unwrap();
         assert_eq!(epoch, 0, "no epoch: nothing was summarised");
         let nodes = store.endless_nodes(session).await.unwrap();
-        let mechanical: Vec<_> = nodes.iter().filter(|n| n.l == 0 && n.mechanical).collect();
-        assert_eq!(mechanical.len(), 3, "{nodes:?}");
         assert!(
             nodes.iter().all(|n| n.model.is_none()),
             "no model built a line"

@@ -68,7 +68,7 @@ function run(ref: CellRef, name: string, over: Partial<CellRun> = {}): CellRun {
     cell: ref,
     mode: { type: 'cell' },
     pass: null,
-    kernel: { scope: { type: 'doc', id: DOC }, spec: { type: 'shell', kind: 'bash', path: '/opt/homebrew/bin/bash' } },
+    kernel: { scope: { type: 'doc', id: DOC }, spec: { type: 'shell', kind: 'bash', path: '/opt/homebrew/bin/bash' }, instance: 0 },
     interpreter: 'bash 5.2 (Homebrew) /opt/homebrew/bin/bash',
     cwd: '/Users/sky/Develop/costs',
     env_names: [],
@@ -107,7 +107,7 @@ function stateOf(ref: CellRef): Partial<CellState> {
       return { latest: run(ref, name), interpreter: { kind: 'bash', source: 'homebrew', path: '/opt/homebrew/bin/bash', version: '5.2', why: '', auto: true } }
     case 'top-projects':
       return {
-        latest: run(ref, name, { kernel: { scope: { type: 'doc', id: DOC }, spec: { type: 'python', path: python.path } }, interpreter: 'Python 3.12.4 (.venv)', ended_ms: now - 4 * MIN }),
+        latest: run(ref, name, { kernel: { scope: { type: 'doc', id: DOC }, spec: { type: 'python', path: python.path }, instance: 0 }, interpreter: 'Python 3.12.4 (.venv)', ended_ms: now - 4 * MIN }),
         interpreter: { ...python, version: '3.12' },
       }
     case 'sum-check':
@@ -117,7 +117,7 @@ function stateOf(ref: CellRef): Partial<CellState> {
   }
   return {}
 }
-const kernels: KernelState[] = [{ id: { scope: { type: 'doc', id: DOC }, spec: { type: 'python', path: python.path } }, phase: 'ready', label: '.venv 3.12', cwd: '/Users/sky/Develop/costs', env_warning: null }]
+const kernels: KernelState[] = [{ id: { scope: { type: 'doc', id: DOC }, spec: { type: 'python', path: python.path }, instance: 0 }, phase: 'ready', label: '.venv 3.12', cwd: '/Users/sky/Develop/costs', env_warning: null }]
 
 const api = new Proxy({} as Api, {
   get: (_t, name: string) =>

@@ -19,10 +19,10 @@ use tokio_util::sync::CancellationToken;
 use super::compactor::{self, Compactor, ModelCompactor, Step};
 use super::fold::ViewBlock;
 use super::fold::{self, Fold, FoldCfg, Part, ViewRender};
-use super::tree::{self, Node, Tree, Unit, exists, id_n};
+use super::tree::{self, Node, Quality, Tree, Unit, exists, id_n};
 use super::{
-    Attached, Backfill, Backlog, EndlessProgress, Inner, MemoryMode, SessionMemory, SetMode,
-    Stalled, UnitFilter, ViewLine, units,
+    Attached, Backfill, Backlog, DescribeImages, EndlessConfig, EndlessProgress, Inner, MemoryMode,
+    Profile, SessionMemory, SetMode, Stalled, TailMode, TailOverride, UnitFilter, ViewLine, units,
 };
 use crate::backend::Backend;
 use crate::cost::{CallKind, CallStatus};
@@ -123,11 +123,21 @@ impl Handle {
             && live.backfill().is_none()
     }
 
+    /// 201 §4.2: the session's tail override (persisted on the row).
+    pub(crate) fn tail(&self) -> Option<TailOverride> {
+        self.state.live.lock().tail
+    }
+
     /// §9: the tree answers `zoom` / `recall` / `date` — attached ∧ `endless`,
     /// whatever the filter or the backfill state (a meeting session and a
     /// backfilling chat have a tree to search even though `active()` is false).
     pub(crate) fn served(&self) -> bool {
         self.state.live.lock().mode == MemoryMode::Endless
+    }
+
+    /// R1-D6: the tree is meeting-filtered.
+    pub(crate) fn meeting(&self) -> bool {
+        self.state.live.lock().filter == UnitFilter::Meeting
     }
 }
 
@@ -170,6 +180,13 @@ pub(crate) struct Gate {
 
 /// One grant in this many serves the oldest waiter (R2-2).
 const AGE_EVERY: u64 = 4;
+/// 201 §6 (P3): a local endpoint keeps serving the session it served last
+/// for up to this many grants in a row (its prompt prefix stays warm on a
+/// single-slot server), then yields to another session's waiter.
+const RUN_MAX: u32 = 8;
+
+/// A waiter's key: `(priority, arrival)`.
+type WaitKey = (Reverse<u8>, u64);
 
 struct GateState {
     free: usize,
@@ -177,17 +194,40 @@ struct GateState {
     /// Permits handed out so far (the aging turn).
     grants: u64,
     /// `(priority, arrival)`; ordered highest priority first.
-    waiting: BTreeSet<(Reverse<u8>, u64)>,
+    waiting: BTreeSet<WaitKey>,
+    /// 201 P3: arrival → the session waiting.
+    owner: HashMap<u64, SessionId>,
+    /// 201 P3: the session served last and how many grants in a row it had.
+    last: Option<SessionId>,
+    run: u32,
 }
 
 impl GateState {
-    /// The waiter the next permit goes to.
-    fn head(&self) -> Option<(Reverse<u8>, u64)> {
-        if self.grants % AGE_EVERY == AGE_EVERY - 1 {
-            self.waiting.iter().min_by_key(|k| k.1).copied()
-        } else {
-            self.waiting.first().copied()
+    /// The waiter the next permit goes to. R2-2's aging turn first when the
+    /// oldest waiter is below the top priority (no starvation); then, 201
+    /// P3, the last-served session's best waiter at the top priority while
+    /// its run is under [`RUN_MAX`], or another session's best waiter once
+    /// the run is spent; else the top waiter.
+    fn head(&self) -> Option<WaitKey> {
+        let first = *self.waiting.first()?;
+        if self.grants % AGE_EVERY == AGE_EVERY - 1
+            && let Some(oldest) = self.waiting.iter().min_by_key(|k| k.1)
+            && oldest.0 != first.0
+        {
+            return Some(*oldest);
         }
+        // R2-5: while a meeting's call (no owner) waits, the line is the
+        // pre-201 one — no session run reorders it.
+        if self.waiting.iter().any(|k| !self.owner.contains_key(&k.1)) {
+            return Some(first);
+        }
+        let same = |k: &WaitKey| self.last.is_some() && self.owner.get(&k.1) == self.last.as_ref();
+        let pick = if self.run < RUN_MAX {
+            self.waiting.iter().find(|k| k.0 == first.0 && same(k))
+        } else {
+            self.waiting.iter().find(|k| !same(k))
+        };
+        Some(pick.copied().unwrap_or(first))
     }
 }
 
@@ -209,7 +249,9 @@ struct Ticket<'a> {
 
 impl Drop for Ticket<'_> {
     fn drop(&mut self) {
-        if self.gate.state.lock().waiting.remove(&self.key) {
+        let mut s = self.gate.state.lock();
+        s.owner.remove(&self.key.1);
+        if s.waiting.remove(&self.key) {
             self.gate.freed.notify_waiters();
         }
     }
@@ -223,19 +265,31 @@ impl Gate {
                 next: 0,
                 grants: 0,
                 waiting: BTreeSet::new(),
+                owner: HashMap::new(),
+                last: None,
+                run: 0,
             }),
             freed: Notify::new(),
         })
     }
 
     /// Wait for a permit; higher `priority` is served first, the oldest
-    /// waiter every [`AGE_EVERY`]th grant. Cancel-safe.
-    pub(crate) async fn acquire(self: &Arc<Self>, priority: u8) -> Permit {
+    /// waiter every [`AGE_EVERY`]th grant, `owner`'s run kept (201 P3).
+    /// Cancel-safe.
+    /// R2-5: `owner` is `None` for a meeting session (no run rule).
+    pub(crate) async fn acquire(
+        self: &Arc<Self>,
+        priority: u8,
+        owner: Option<SessionId>,
+    ) -> Permit {
         let key = {
             let mut s = self.state.lock();
             let key = (Reverse(priority), s.next);
             s.next += 1;
             s.waiting.insert(key);
+            if let Some(o) = owner {
+                s.owner.insert(key.1, o);
+            }
             key
         };
         let _ticket = Ticket { gate: self, key };
@@ -247,8 +301,15 @@ impl Gate {
                 let mut s = self.state.lock();
                 if s.free > 0 && s.head() == Some(key) {
                     s.waiting.remove(&key);
+                    s.owner.remove(&key.1);
                     s.free -= 1;
                     s.grants += 1;
+                    if owner.is_some() && s.last == owner {
+                        s.run += 1;
+                    } else {
+                        s.last = owner;
+                        s.run = u32::from(owner.is_some());
+                    }
                     if s.free > 0 && !s.waiting.is_empty() {
                         self.freed.notify_waiters();
                     }
@@ -347,6 +408,7 @@ impl State {
             let mut live = self.live.lock();
             live.failed.clear();
             live.reported.clear();
+            live.tripped.clear();
             live.dirty = true;
         }
         self.wake.notify_one();
@@ -369,6 +431,8 @@ struct Live {
     base: u64,
     /// R1-D2: per-session view budget override.
     view_bytes: Option<u32>,
+    /// 201 §4.2: per-session tail override (persisted); read by phase P2.
+    tail: Option<TailOverride>,
     /// 137G `endless_pause`: `user` | `spend`; no compactor calls while set (persisted).
     paused_by: Option<String>,
     /// 137G: the compactor chain's first two links — this chat's pick, the desk agent's default.
@@ -417,9 +481,47 @@ struct Live {
     pending_error: Option<String>,
     /// `unit.i → turn` (a unit is pure §4 data; the turn is pump bookkeeping).
     turns: HashMap<u64, u32>,
+    /// 201 P1: level-0 units whose node is a draft — the refinement queue,
+    /// oldest first.
+    drafts: BTreeSet<u64>,
+    /// 201 P1: draft merges to rebuild (a child changed, or the model merge
+    /// failed and is retried after its backoff).
+    stale: HashSet<(u8, u64)>,
+    /// 201 P1: merges whose child changed while they were being built; the
+    /// node that lands from the old inputs stays stale.
+    redo: HashSet<(u8, u64)>,
+    /// 201 R1-3b: merges running over a unit removed from the context; the
+    /// node that lands from the old inputs is dropped (it would carry the
+    /// removed text) and the merge is rebuilt.
+    discard: HashSet<(u8, u64)>,
+    /// 201 §3 (P2): the generation in force — its frozen view (cache of the
+    /// newest `endless_generations` row; `None` until loaded or started).
+    current_gen: Option<Generation>,
+    /// 201 §10 (P6b): every `zoom` since the generation before the one in
+    /// force — `(generation zoomed in, part)`; process-local (a restart
+    /// forgets the grace, the cache is cold then anyway).
+    zooms: Vec<(u32, Part)>,
+    /// 201 §4 (P2): the tail bytes the last turn opened with (status).
+    tail_bytes: u32,
+    /// 201 §4.2 (P2): the session model's turn allowance in bytes, as the
+    /// last turn measured it (`scaled` marks in the status).
+    allowance: Option<u64>,
+    /// 201 §7.1 (P3): the desk agent's `profile:` key (the config's
+    /// `profile` when unset).
+    agent_profile: Option<Profile>,
+    /// 201 §7.2 (P3): `small`-profile guard trips per level-0 unit: one
+    /// trip waits for an idle queue, two keep the draft until `endless_retry`.
+    tripped: HashMap<u64, u8>,
 }
 
 impl Live {
+    /// 201 §10 (P6b): `zoom` calls during the generation in force.
+    fn zoom_count(&self) -> u32 {
+        let n = self.current_gen.as_ref().map_or(0, |g| g.n);
+        let c = self.zooms.iter().filter(|(g, _)| *g == n).count();
+        u32::try_from(c).unwrap_or(u32::MAX)
+    }
+
     fn t(&self) -> u64 {
         self.units.len() as u64
     }
@@ -452,7 +554,10 @@ impl Live {
         self.fold = None;
     }
 
-    /// D14 progress; `None` once every history unit has its line.
+    /// D14 progress; `None` once every history unit has its line. 201 P1
+    /// (D5): a draft is a line, so a drafting session's backfill ends at
+    /// ingest and the endless frame never waits on refinement (the backlog
+    /// still counts drafts); a meeting tree counts built units as before.
     fn backfill(&self) -> Option<Backfill> {
         let total = self.backfill_total;
         if total <= self.base {
@@ -484,11 +589,101 @@ impl Live {
         per / f64::from(self.parallel.max(1))
     }
 
-    /// Level-0 units in `[base, T)` without a line.
+    /// Level-0 units in `[base, T)` without a line (201 P1: or with a draft).
     fn unbuilt_level0(&self) -> u64 {
         (self.base.min(self.t())..self.t())
-            .filter(|i| !self.tree.built(0, *i))
+            .filter(|i| !self.lined(*i))
             .count() as u64
+    }
+
+    /// 201 P1: unit `i` has its final line — built, and not a draft that
+    /// this session refines.
+    fn lined(&self, i: u64) -> bool {
+        self.tree
+            .get(0, i)
+            .is_some_and(|n| !(self.drafting() && n.quality() == Quality::Draft))
+    }
+
+    /// 201 P1: drafts are made at ingest and refined, merges are built from
+    /// drafts, and no frontier gates anything — every session but a
+    /// meeting's, whose tree enriches its head exactly as before.
+    fn drafting(&self) -> bool {
+        self.filter != UnitFilter::Meeting
+    }
+
+    /// Insert `node`, keeping the draft queue and the stale marks (201 P1):
+    /// a node that replaces another marks its draft ancestors for rebuilding.
+    fn put(&mut self, node: Node) {
+        let (l, i) = (node.l, node.i);
+        let replaced = self.tree.built(l, i);
+        if l == 0 {
+            if node.quality() == Quality::Draft {
+                self.drafts.insert(i);
+            } else {
+                self.drafts.remove(&i);
+            }
+        } else {
+            self.stale.remove(&(l, i));
+            if self.redo.remove(&(l, i)) {
+                self.stale.insert((l, i));
+            }
+        }
+        self.tree.insert(node);
+        if replaced && self.drafting() {
+            // A draft ancestor is rebuilt; one being built right now was
+            // built from the old child, so it is rebuilt again when it lands.
+            let (mut pl, mut pi) = (l + 1, i / 2);
+            loop {
+                let key = (pl, pi);
+                let running = self.running.contains(&key);
+                let draft = self
+                    .tree
+                    .get(pl, pi)
+                    .is_some_and(|p| p.quality() == Quality::Draft);
+                if running {
+                    self.redo.insert(key);
+                }
+                if draft {
+                    self.stale.insert(key);
+                }
+                if !(running || draft) {
+                    break;
+                }
+                pl += 1;
+                pi /= 2;
+            }
+        }
+        self.invalidate();
+    }
+
+    /// 201 P1: rebuild the draft queue and the stale marks from the tree (load).
+    fn index_drafts(&mut self) {
+        self.drafts = self
+            .tree
+            .iter()
+            .filter(|n| n.l == 0 && n.quality() == Quality::Draft)
+            // R2-8: a migrated 137G mechanical node of a kind that never
+            // needs the model (tool, user, note, short echo) is not refined.
+            .filter(|n| {
+                !self.drafting()
+                    || self
+                        .units
+                        .get(n.i as usize)
+                        .is_none_or(super::lines::needs_model)
+            })
+            .map(|n| n.i)
+            .collect();
+        let q = |l: u8, i: u64| self.tree.get(l, i).map(Node::quality);
+        self.stale = self
+            .tree
+            .iter()
+            .filter(|n| n.l > 0 && n.quality() == Quality::Draft)
+            .filter(|n| {
+                let (a, b) = (q(n.l - 1, 2 * n.i), q(n.l - 1, 2 * n.i + 1));
+                a != Some(Quality::Draft) && b != Some(Quality::Draft)
+            })
+            .map(|n| (n.l, n.i))
+            .collect();
     }
 
     /// Nodes that exist over `[0, T)` (every level), and how many are built.
@@ -525,7 +720,7 @@ impl Live {
     fn history_unbuilt(&self) -> u64 {
         self.units
             .iter()
-            .filter(|u| u.i >= self.base && self.unit_turn(u.i) == 0 && !self.tree.built(0, u.i))
+            .filter(|u| u.i >= self.base && self.unit_turn(u.i) == 0 && !self.lined(u.i))
             .map(|u| u.i + 1)
             .max()
             .unwrap_or(0)
@@ -613,6 +808,7 @@ impl Live {
             filter: meta.filter,
             base: meta.base,
             view_bytes: meta.view_bytes,
+            tail: meta.tail,
             paused_by: meta.paused_by,
             picks,
             units: Vec::new(),
@@ -637,6 +833,16 @@ impl Live {
             dirty: false,
             pending_error: None,
             turns: HashMap::new(),
+            drafts: BTreeSet::new(),
+            stale: HashSet::new(),
+            redo: HashSet::new(),
+            discard: HashSet::new(),
+            current_gen: None,
+            zooms: Vec::new(),
+            tail_bytes: 0,
+            allowance: None,
+            agent_profile: None,
+            tripped: HashMap::new(),
         }
     }
 }
@@ -1014,6 +1220,7 @@ pub(crate) async fn attach(
             live.filter = meta.filter;
             live.base = meta.base;
             live.view_bytes = meta.view_bytes;
+            live.tail = meta.tail;
             live.paused_by = meta.paused_by.clone();
             live.picks = Picks::of(&meta);
             live.invalidate();
@@ -1028,6 +1235,11 @@ pub(crate) async fn attach(
             state
         }
     };
+    state.live.lock().agent_profile = inner
+        .agent_tails
+        .lock()
+        .get(&session)
+        .and_then(|a| a.profile);
     let cancel = CancellationToken::new();
     let handle = Handle {
         attached: attached.clone(),
@@ -1063,9 +1275,12 @@ async fn load(state: &State) -> anyhow::Result<()> {
     let mut turns = HashMap::new();
     let mut last_seq = -1;
     let mut max_turn = 0;
+    // 201 R1-3b: a row removed from the context after ingest keeps its unit
+    // (indices never shift) but not its text — in a drafting session.
+    let drafting = state.live.lock().drafting();
     for r in &rows {
         let text = by_seq.get(&r.seq).and_then(|m| {
-            units::derive(m.seq, m.at, &m.message, state.cfg.read().cap_chars, 0)
+            units::derive_row(m, state.cfg.read().cap_chars, 0)
                 .into_iter()
                 .find(|u| u.part == r.part)
         });
@@ -1075,7 +1290,10 @@ async fn load(state: &State) -> anyhow::Result<()> {
             seq: r.seq,
             part: r.part,
             kind: r.kind,
-            text: text.map(|u| u.text).unwrap_or_default(),
+            text: match by_seq.get(&r.seq) {
+                Some(m) if drafting && m.excluded => REMOVED.to_owned(),
+                _ => text.map(|u| u.text).unwrap_or_default(),
+            },
             size: r.size,
             at,
         });
@@ -1083,6 +1301,8 @@ async fn load(state: &State) -> anyhow::Result<()> {
         last_seq = last_seq.max(r.seq);
         max_turn = max_turn.max(r.turn);
     }
+    // 201 §8 (P4): a vision note names the image units it describes.
+    link_notes(&mut units, |_, _| None);
     let nodes = state.store.endless_nodes(state.session).await?;
     {
         let mut live = state.live.lock();
@@ -1091,11 +1311,74 @@ async fn load(state: &State) -> anyhow::Result<()> {
         live.last_seq = last_seq;
         live.turn = max_turn;
         live.tree = Tree::from_nodes(nodes);
+        live.index_drafts();
         live.backfill_total = live.history_unbuilt();
         live.invalidate();
     }
-    // Rows that landed after the cache (or a cache that never existed).
-    ingest(state).await
+    // Rows that landed after the cache (or a cache that never existed); then
+    // 201 P1: every unit without a node (an older session) gets its draft.
+    ingest(state).await?;
+    fill_drafts(state, 0).await?;
+    let mut live = state.live.lock();
+    live.backfill_total = live.history_unbuilt();
+    Ok(())
+}
+
+/// 201 P1: the stored node of a new level-0 unit, no model call: its own
+/// tagged text when it fits (free), else its per-kind draft line (P3,
+/// §7.3) — final (free) for a kind that never needs a model.
+fn draft_node(u: &Unit, node_bytes: u32) -> Node {
+    let (text, quality) = match tree::free_unit(u, node_bytes) {
+        Some(text) => (text, Quality::Free),
+        None if !super::lines::needs_model(u) => {
+            (super::lines::draft_line(u, node_bytes), Quality::Free)
+        }
+        None => (super::lines::draft_line(u, node_bytes), Quality::Draft),
+    };
+    let mut node = Node {
+        l: 0,
+        i: u.i,
+        size: text.len() as u32,
+        text,
+        free: false,
+        model: None,
+        tries: 0,
+        mechanical: false,
+    };
+    node.set_quality(quality);
+    node
+}
+
+/// 201 P1: give every level-0 unit in `[max(base, from), T)` without a node
+/// its [`draft_node`] (stored only where none exists yet). An epochs session
+/// and a meeting tree get none.
+async fn fill_drafts(state: &State, from: u64) -> anyhow::Result<()> {
+    let nodes: Vec<Node> = {
+        let live = state.live.lock();
+        if live.mode != MemoryMode::Endless || !live.drafting() {
+            return Ok(());
+        }
+        let node_bytes = state.cfg.read().node_bytes;
+        (live.base.max(from).min(live.t())..live.t())
+            .filter(|i| !live.tree.built(0, *i))
+            .map(|i| draft_node(&live.units[i as usize], node_bytes))
+            .collect()
+    };
+    if nodes.is_empty() {
+        return Ok(());
+    }
+    state
+        .store
+        .endless_nodes_put_new(state.session, &nodes)
+        .await?;
+    let mut live = state.live.lock();
+    for node in nodes {
+        if !live.tree.built(0, node.i) {
+            live.put(node);
+        }
+    }
+    live.dirty = true;
+    Ok(())
 }
 
 /// Derive units from `messages` rows beyond `last_seq` and cache them.
@@ -1114,19 +1397,30 @@ async fn ingest(state: &State) -> anyhow::Result<()> {
         let live = state.live.lock();
         (live.t(), live.turn, live.last_seq, live.filter)
     };
+    let first = next_i;
     for m in &rows {
         last_seq = last_seq.max(m.seq);
         if m.excluded {
             continue;
         }
         let cap_chars = state.cfg.read().cap_chars;
-        let mut units = units::derive(m.seq, m.at, &m.message, cap_chars, next_i);
+        let mut units = units::derive_row(m, cap_chars, next_i);
         units.retain(|u| filter.keeps(u));
         for (k, u) in units.iter_mut().enumerate() {
             u.i = next_i + k as u64;
         }
         next_i += units.len() as u64;
         new_units.extend(units);
+    }
+    {
+        let live = state.live.lock();
+        link_notes(&mut new_units, |seq, part| {
+            live.units
+                .iter()
+                .rev()
+                .find(|x| x.seq == seq && x.part == part)
+                .map(|x| x.i)
+        });
     }
     let unit_rows: Vec<UnitRow> = new_units
         .iter()
@@ -1143,15 +1437,319 @@ async fn ingest(state: &State) -> anyhow::Result<()> {
         .store
         .endless_units_put(state.session, &unit_rows)
         .await?;
-    let mut live = state.live.lock();
-    for u in new_units {
-        live.turns.insert(u.i, turn);
-        live.units.push(u);
+    {
+        let mut live = state.live.lock();
+        for u in new_units {
+            live.turns.insert(u.i, turn);
+            live.units.push(u);
+        }
+        live.last_seq = last_seq;
+        live.invalidate();
+        live.dirty = true;
     }
-    live.last_seq = last_seq;
-    live.invalidate();
-    live.dirty = true;
-    Ok(())
+    fill_drafts(state, first).await
+}
+
+/// 201 §8 (P4): link every vision note of `units` to the image units it
+/// describes: earlier units of `units` first, then `outer`.
+fn link_notes(units: &mut [Unit], outer: impl Fn(i64, u16) -> Option<u64>) {
+    for k in 0..units.len() {
+        if units[k].kind != tree::Kind::Note {
+            continue;
+        }
+        let (before, rest) = units.split_at_mut(k);
+        units::link_note(&mut rest[0], |seq, part| {
+            before
+                .iter()
+                .rev()
+                .find(|x| x.seq == seq && x.part == part)
+                .map(|x| x.i)
+                .or_else(|| outer(seq, part))
+        });
+    }
+}
+
+/// 201 §8 (P4): the `endless_nodes.model` prefix of a described image line:
+/// `described:note`, `described:compactor:<id>`, `described:vision:<id>`.
+pub(crate) const DESCRIBED: &str = "described:";
+
+/// 201 §8 (P4): the binary of an artefact unit, read back from its row;
+/// `None` when the row or the part is no longer stored.
+async fn artefact_binary(
+    store: &Store,
+    session: SessionId,
+    seq: i64,
+    part: u16,
+) -> Option<genai::chat::Binary> {
+    use genai::chat::ContentPart;
+    let m = store.endless_message(session, seq).await.ok().flatten()?;
+    let (p, image) = units::locate(part);
+    match (m.content.parts().get(p)?, image) {
+        (ContentPart::Binary(b), None) => Some(b.clone()),
+        (ContentPart::ToolResponse(r), Some(k)) => r.images.get(k).cloned(),
+        _ => None,
+    }
+}
+
+/// 201 §8 (P4): `line` with `desc` appended, the whole within `node_bytes`;
+/// `None` when the description is empty or no room is left for it.
+fn described(line: &str, desc: &str, node_bytes: u32) -> Option<String> {
+    let desc = desc
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?
+        .trim_matches('"');
+    if desc.is_empty() || line.len() + 4 >= node_bytes as usize {
+        return None;
+    }
+    let text = format!("{line} — {desc}");
+    Some(super::guards::cut_utf8(&text, node_bytes as usize).to_owned())
+}
+
+/// 201 §8 (P4): the image units of rows `[from_seq, to_seq)` — the rows a
+/// trim just moved out of the tail — gain a one-line description on their
+/// line, in the background (the turn never waits): a vision note about the
+/// image when there is one, else the compactor when the catalog says it
+/// accepts images, else `vision` (design 52's fallback model), else none.
+/// `describe_images: off`, a meeting tree and an epochs session skip it.
+/// The generation frozen at this trim shows the line as it was; the next
+/// one shows the description.
+pub(crate) fn describe_left(
+    inner: &Inner,
+    session: SessionId,
+    from_seq: i64,
+    to_seq: i64,
+    vision: Option<models::Resolved>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let state = state_of(inner, session)?;
+    let node_bytes = {
+        let cfg = state.cfg.read();
+        if cfg.describe_images == DescribeImages::Off {
+            return None;
+        }
+        cfg.node_bytes
+    };
+    // (unit, seq, part, the vision note's answer for it)
+    let targets: Vec<(u64, i64, u16, Option<String>)> = {
+        let live = state.live.lock();
+        if live.mode != MemoryMode::Endless || !live.drafting() {
+            return None;
+        }
+        live.units
+            .iter()
+            .filter(|u| u.seq >= from_seq && u.seq < to_seq && u.text.starts_with("[image: "))
+            .filter(|u| {
+                live.tree
+                    .get(0, u.i)
+                    .is_some_and(|n| !n.model.as_deref().is_some_and(|m| m.starts_with(DESCRIBED)))
+            })
+            .map(|u| {
+                let (p, k) = units::locate(u.part);
+                let note = live.units[u.i as usize..]
+                    .iter()
+                    .filter(|n| n.kind == tree::Kind::Note)
+                    .find_map(|n| units::note_answer(&n.text, u.seq, p, k));
+                (u.i, u.seq, u.part, note)
+            })
+            .collect()
+    };
+    if targets.is_empty() {
+        return None;
+    }
+    let compactor = state.compactor();
+    let describer: Option<(Arc<dyn Compactor>, String)> = if compactor.accepts_images() {
+        let by = format!("{DESCRIBED}compactor:{}", compactor.model_id());
+        Some((compactor, by))
+    } else {
+        vision.map(|v| {
+            let c: Arc<dyn Compactor> = match &inner.compactor_for_tests {
+                Some(f) => f(&v.id),
+                None => Arc::new(model_compactor(inner, session, v.clone(), "theuth", None)),
+            };
+            (c, format!("{DESCRIBED}vision:{}", v.id))
+        })
+    };
+    // R3-5: the calls' cancel token at the start (a detach, switch or retry
+    // cancels it): the job stops at once rather than describing the rest.
+    let cancel = state.current.read().cancel.clone();
+    Some(tokio::spawn(async move {
+        for (i, seq, part, note) in targets {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let (desc, by) = match note {
+                Some(a) => (a, format!("{DESCRIBED}note")),
+                None => {
+                    let Some((c, by)) = &describer else { continue };
+                    let Some(b) = artefact_binary(&state.store, state.session, seq, part).await
+                    else {
+                        continue;
+                    };
+                    let Some(r) = describe_call(&state, c, i, &b, &cancel).await else {
+                        tracing::info!(session = %state.session, unit = i, "endless: image description skipped; settling paused by spend");
+                        continue;
+                    };
+                    match r {
+                        Ok(r) => (r.text, by.clone()),
+                        Err(e) => {
+                            tracing::warn!(session = %state.session, unit = i, error = %e, "endless: image description");
+                            continue;
+                        }
+                    }
+                }
+            };
+            let node = {
+                let live = state.live.lock();
+                let Some(n) = live.tree.get(0, i) else {
+                    continue;
+                };
+                let Some(text) = described(&n.text, &desc, node_bytes) else {
+                    continue;
+                };
+                let mut n = n.clone();
+                n.size = text.len() as u32;
+                n.text = text;
+                n.model = Some(by);
+                n
+            };
+            if let Err(e) = state
+                .store
+                .endless_nodes_put(state.session, std::slice::from_ref(&node))
+                .await
+            {
+                tracing::warn!(session = %state.session, error = %e, "endless: image description");
+                continue;
+            }
+            let mut live = state.live.lock();
+            live.put(node);
+            live.invalidate();
+            live.dirty = true;
+        }
+        state.wake.notify_one();
+    }))
+}
+
+/// 201 P6c (carried from P4): one image description, run like a compactor
+/// job: a local describer waits for its endpoint's [`Gate`] at the lowest
+/// priority (0), and the call is a `model_calls` row of kind `endless`, so
+/// it counts toward `max_usd_per_session_day`. `None`: settling is paused by
+/// spend (or the G11 cap is reached now) — nothing is sent.
+async fn describe_call(
+    state: &State,
+    c: &Arc<dyn Compactor>,
+    i: u64,
+    image: &genai::chat::Binary,
+    cancel: &CancellationToken,
+) -> Option<Result<compactor::Reply, String>> {
+    let cfg = state.cfg.read().clone();
+    let owner = state.live.lock().drafting().then_some(state.session);
+    // R3-5: the wait for the gate and the call both end with the cancel
+    // token; the permit is a local, released on every return.
+    let _permit = match c.local() {
+        Some(endpoint) => {
+            let gate = state.queues.get(&endpoint, cfg.local_jobs);
+            tokio::select! {
+                p = gate.acquire(0, owner) => Some(p),
+                () = cancel.cancelled() => return Some(Err("cancelled".to_owned())),
+            }
+        }
+        None => None,
+    };
+    if state.live.lock().paused_by.as_deref() == Some("spend") || spend_capped(state, &cfg).await {
+        return None;
+    }
+    let model = c.model();
+    let request_id = format!("endless:describe:{i}:{}", uuid::Uuid::now_v7());
+    let reserved = match state
+        .store
+        .reserve_call(
+            state.session,
+            &request_id,
+            0,
+            None,
+            CallKind::Endless,
+            model.provider.as_deref(),
+            Some(&model.id),
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return Some(Err(format!("reserve: {e}"))),
+    };
+    if let Err(e) = state.store.mark_dispatched(&reserved).await {
+        tracing::warn!(error = %e, "endless: mark_dispatched");
+    }
+    // R3-5: bounded like a compactor job's attempt (E6: after the permit).
+    let attempt = Duration::from_secs(u64::from(if c.local().is_some() {
+        cfg.local_attempt_secs.clamp(30, 7_200)
+    } else {
+        cfg.attempt_secs.clamp(10, 3_600)
+    }));
+    let r = tokio::select! {
+        r = tokio::time::timeout(attempt, c.describe_image(image)) => {
+            r.unwrap_or_else(|_| Err(format!("timed out after {}s", attempt.as_secs())))
+        }
+        () = cancel.cancelled() => Err("cancelled".to_owned()),
+    };
+    let (status, usage) = match &r {
+        Ok(reply) => (CallStatus::Settled, reply.usage.clone()),
+        Err(_) => (CallStatus::Failed, None),
+    };
+    let obs = compactor::observation(usage.as_ref(), model);
+    if let Err(e) = state.store.settle_call(&reserved, status, obs).await {
+        tracing::warn!(error = %e, "endless: settle_call");
+    }
+    Some(r)
+}
+
+/// 201 §8 (P4): `zoom(id, 1)` on an artefact unit: its line and the binary
+/// read back from the row (`Err` with the line when it is no longer
+/// stored); `None` for any other unit.
+pub(crate) async fn artefact(
+    inner: &Inner,
+    session: SessionId,
+    id: u64,
+) -> Option<Result<(String, genai::chat::Binary), String>> {
+    let state = state_of(inner, session)?;
+    let (seq, part, line) = {
+        let live = state.live.lock();
+        let u = live.units.get(id as usize)?;
+        if !units::is_artefact(&u.text) {
+            return None;
+        }
+        let line = live
+            .tree
+            .get(0, id)
+            .map_or_else(|| u.tagged(), |n| n.text.clone());
+        (u.seq, u.part, line)
+    };
+    // R3-8: the row's part decides — a text that merely reads `[image: …`
+    // is no artefact (and zooms as text); a row or part gone is "no longer
+    // stored".
+    use genai::chat::ContentPart;
+    let m = state
+        .store
+        .endless_message(state.session, seq)
+        .await
+        .ok()
+        .flatten();
+    let (p, image) = units::locate(part);
+    let b = match (m.as_ref().and_then(|m| m.content.parts().get(p)), image) {
+        (Some(ContentPart::Binary(b)), None) => Some(b.clone()),
+        (Some(ContentPart::ToolResponse(r)), Some(k)) => r.images.get(k).cloned(),
+        (Some(_), _) => return None,
+        (None, _) => None,
+    };
+    // R3-15: an artefact zoom counts for `age_by_use` like any zoom.
+    {
+        let mut live = state.live.lock();
+        let generation = live.current_gen.as_ref().map_or(0, |g| g.n);
+        live.zooms.push((generation, Part { l: 0, i: id }));
+    }
+    Some(match b {
+        Some(b) => Ok((line, b)),
+        None => Err(line),
+    })
 }
 
 fn start_pump(state: Arc<State>, cancel: CancellationToken) {
@@ -1186,6 +1784,8 @@ const EARLIER_MAX: usize = 24;
 /// 137G G11: the error of a call whose prompt alone would cost over
 /// `max_usd_per_call` — never sent.
 const OVER_COST: &str = "over max_usd_per_call";
+/// 201 P1 (F9): the error of a build whose every candidate failed a guard.
+const NO_PASSING_LINE: &str = "no line passed the guards";
 /// R1-3: the notice when a unit's own call is over `max_usd_per_call`.
 const COST_NOTICE: &str =
     "summary model too expensive for max_usd_per_call; lines folded as excerpts";
@@ -1207,16 +1807,26 @@ fn close(batch: &mut Vec<u64>) -> Option<Work> {
     }
 }
 
-/// Start every eligible node (§5.2 rules 1–3). 137G G6: level 0 runs from
-/// the frontier on in batches of up to `batch_units` consecutive unbuilt
-/// units (≤ 24 KB of text); a unit that failed, or whose batch line failed
-/// its guard, runs alone; free and mechanical (G7) lines need no call. A
-/// cloud compactor runs up to `jobs` calls at once, level-0 batches
-/// included (level-0 nodes are independent; only merges wait for the
-/// frontier, rule 3); a local one one level-0 job and one merge (E9).
+/// Start every eligible node. 201 P1: every level-0 unit already has a
+/// line, so level 0 is "the next draft to refine", oldest first, and merges
+/// are "the next merge whose inputs changed" (missing, or a stale draft);
+/// nothing waits behind a failing unit (137 rule 3 is gone). 137G G6:
+/// level 0 runs in batches of up to `batch_units` consecutive drafts
+/// (≤ 24 KB of text); a unit whose batch line failed its guard runs alone.
+/// A merge with a draft child, or whose children fit, is built with no call.
+/// A cloud compactor runs up to `jobs` calls at once; a local one one
+/// level-0 job and one merge (E9). A meeting tree (no drafts) keeps the 137
+/// rules: unbuilt units from the frontier on, mechanical folds, merges only
+/// behind the frontier.
 fn schedule(state: &Arc<State>) {
     let mut live = state.live.lock();
-    if live.mode != MemoryMode::Endless || live.paused_by.is_some() {
+    if live.mode != MemoryMode::Endless {
+        return;
+    }
+    // 201 P3: a paused drafting session still builds its deterministic
+    // merges (no model call); a meeting tree starts nothing (137 G8).
+    let paused = live.paused_by.is_some();
+    if paused && !live.drafting() {
         return;
     }
     let (jobs, batch_units, node_bytes) = {
@@ -1227,13 +1837,27 @@ fn schedule(state: &Arc<State>) {
             c.node_bytes,
         )
     };
+    // 201 §7.2 (P3): the small profile sends one unit per call.
+    let small = profile_of(state, &live).0 == Profile::Small;
+    // R2-2: the small chunk (as `call` sizes it), to leave a unit over
+    // `SMALL_MAX_CHUNKS` on its draft without sending or retrying it.
+    let small_chunk = small.then(|| {
+        let c = state.compactor();
+        let m = c.model();
+        compactor::small_chunk_bytes(crate::tokens::bytes_of(
+            &m.id,
+            crate::tokens::memory_window(m),
+        ))
+    });
+    let batch_units = if small { 1 } else { batch_units };
     let local = state.compactor().local().is_some();
     live.parallel = if local { 1 } else { jobs as u32 };
     let cfg = live.fold_cfg(&state.cfg.read());
     let t = live.t();
     let base = live.base;
     let now = Instant::now();
-    let frontier = live.frontier(cfg);
+    let drafting = live.drafting();
+    let frontier = if drafting { t } else { live.frontier(cfg) };
     let due = |live: &Live, key: &(u8, u64)| {
         !live.running.contains(key) && live.failed.get(key).is_none_or(|r| r.at <= now)
     };
@@ -1251,71 +1875,201 @@ fn schedule(state: &Arc<State>) {
     if live.near_cap && !local {
         slots = slots.min(usize::from(live.jobs == 0));
     }
+    if paused {
+        slots = 0;
+    }
+    // 201 §6 (P3): measured once, and only when a model merge is a candidate
+    // (the fold rebuild is O(T); instant merges land one by one).
+    let mut merge_due: Option<bool> = None;
     let mut work: Vec<Work> = Vec::new();
     let mut instant: Vec<(u8, u64)> = Vec::new();
     let mut batch: Vec<u64> = Vec::new();
     let mut bytes = 0usize;
-    let mut i = frontier;
-    while i < t && (slots > 0 || !batch.is_empty()) {
-        let key = (0u8, i);
-        i += 1;
-        if live.tree.built(0, key.1) || !due(&live, &key) {
-            continue;
-        }
-        let u = &live.units[key.1 as usize];
-        let mech = live
-            .failed
-            .get(&key)
-            .is_some_and(|r| r.mechanical(live.last_ok));
-        let fails = live.failed.get(&key).map_or(0, |r| r.failures);
-        if mech || tree::free_unit(u, node_bytes).is_some() {
-            instant.push(key);
-            continue;
-        }
-        if fails > 0
-            || live.solo.contains(&key.1)
-            || batch_units == 1
-            || u.size as usize > BATCH_BYTES
-        {
-            if slots > 0 {
-                slots -= 1;
-                work.push(Work::Node(key));
+    // 201 §7.2 (P3): a small-profile unit that tripped a guard once, retried
+    // only when nothing else is due.
+    let mut deferred: Option<u64> = None;
+    {
+        let live: &Live = &live;
+        // 201 §6 (P3): the oldest draft still in the tail first (it leaves
+        // the tail first), then the drafts already under the view.
+        let todo: Box<dyn Iterator<Item = u64> + '_> = if drafting {
+            let cut = live
+                .current_gen
+                .as_ref()
+                .map_or(base, |g| g.t_cut)
+                .clamp(base, t);
+            Box::new(
+                live.drafts
+                    .range(cut..t)
+                    .chain(live.drafts.range(base..cut))
+                    .copied(),
+            )
+        } else {
+            Box::new(frontier..t)
+        };
+        for i in todo {
+            if slots == 0 && batch.is_empty() {
+                break;
             }
-            continue;
-        }
-        if batch.is_empty() {
-            if slots == 0 {
+            let key = (0u8, i);
+            if (!drafting && live.tree.built(0, i)) || !due(live, &key) {
                 continue;
             }
-            slots -= 1;
-        }
-        batch.push(key.1);
-        bytes += u.size as usize;
-        if batch.len() >= batch_units || bytes >= BATCH_BYTES {
-            work.extend(close(&mut batch));
-            bytes = 0;
+            match live.tripped.get(&i) {
+                Some(n) if small && *n >= 2 => continue,
+                Some(_) if small => {
+                    deferred = deferred.or(Some(i));
+                    continue;
+                }
+                _ => {}
+            }
+            let u = &live.units[i as usize];
+            if let Some(chunk) = small_chunk
+                && u.text.len() > chunk * compactor::SMALL_MAX_CHUNKS / 2
+                && compactor::chunks(&u.text, chunk).len() > compactor::SMALL_MAX_CHUNKS
+            {
+                continue;
+            }
+            let mech = live
+                .failed
+                .get(&key)
+                .is_some_and(|r| r.mechanical(live.last_ok));
+            if drafting && mech {
+                // 201 P1: the unit's own call is over cost, or it keeps
+                // failing hard: its draft stays until `endless_retry`.
+                continue;
+            }
+            let fails = live.failed.get(&key).map_or(0, |r| r.failures);
+            if !drafting && (mech || tree::free_unit(u, node_bytes).is_some()) {
+                instant.push(key);
+                continue;
+            }
+            // 201 P1: a draft that failed in a batch rejoins one (F8); only
+            // a guard trip of its own batch line sends it alone.
+            if (fails > 0 && !drafting)
+                || live.solo.contains(&i)
+                || batch_units == 1
+                || u.size as usize > BATCH_BYTES
+            {
+                if slots > 0 {
+                    slots -= 1;
+                    work.push(Work::Node(key));
+                }
+                continue;
+            }
+            if batch.is_empty() {
+                if slots == 0 {
+                    continue;
+                }
+                slots -= 1;
+            }
+            batch.push(i);
+            bytes += u.size as usize;
+            if batch.len() >= batch_units || bytes >= BATCH_BYTES {
+                work.extend(close(&mut batch));
+                bytes = 0;
+            }
         }
     }
     work.extend(close(&mut batch));
-    // Merges (rule 3: only behind the frontier).
-    let mut merges = if local { usize::from(!merging) } else { slots };
+    if let Some(i) = deferred
+        && work.is_empty()
+        && !level0_busy
+        && slots > 0
+    {
+        slots -= 1;
+        work.push(Work::Node((0, i)));
+    }
+    // Merges: missing ones, and stale drafts (201 P1); a meeting tree's only
+    // behind the frontier (137 rule 3).
+    let mut merges = if paused {
+        0
+    } else if local {
+        usize::from(!merging)
+    } else {
+        slots
+    };
+    let mut inline: Vec<Node> = Vec::new();
     let mut l = 1u8;
-    while (1u64 << l) <= t && merges > 0 {
+    while (1u64 << l) <= t && (drafting || merges > 0) {
         let n = 1u64 << l;
         for i in 0..(t / n) {
-            if merges == 0 {
+            if merges == 0 && !drafting {
                 break;
             }
             let key = (l, i);
-            if i * n < base || live.tree.built(l, i) || !exists(l, i, t) || (i + 1) * n > frontier {
+            if i * n < base || !exists(l, i, t) || (!drafting && (i + 1) * n > frontier) {
                 continue;
             }
-            if !live.tree.built(l - 1, 2 * i) || !live.tree.built(l - 1, 2 * i + 1) {
+            if live.tree.built(l, i) && !live.stale.contains(&key) {
                 continue;
             }
-            if due(&live, &key) {
+            let (Some(a), Some(b)) = (live.tree.get(l - 1, 2 * i), live.tree.get(l - 1, 2 * i + 1))
+            else {
+                continue;
+            };
+            if !due(&live, &key) {
+                continue;
+            }
+            let cheap = drafting
+                && (a.quality() == Quality::Draft
+                    || b.quality() == Quality::Draft
+                    || tree::free_merge(&a.text, &b.text, node_bytes).is_some());
+            if cheap {
+                // 201 P3: a deterministic merge is built here, in the same
+                // pass (its parent can follow at once), and persisted in one
+                // write below — no task, no slot, independent of the pause.
+                let draft = a.quality() == Quality::Draft || b.quality() == Quality::Draft;
+                let text = if draft {
+                    tree::draft_merge(&a.text, &b.text, node_bytes)
+                } else {
+                    tree::free_merge(&a.text, &b.text, node_bytes).unwrap_or_default()
+                };
+                let node = Node {
+                    l,
+                    i,
+                    size: text.len() as u32,
+                    text,
+                    free: !draft,
+                    model: None,
+                    tries: 0,
+                    mechanical: draft,
+                };
+                live.failed.remove(&key);
+                live.put(node.clone());
+                inline.push(node);
+            } else if merges > 0
+                && *merge_due.get_or_insert_with(|| merges_due(state, &mut live, cfg))
+            {
                 merges -= 1;
                 work.push(Work::Node(key));
+            } else if drafting {
+                // R2-1: no model merge now (paused, spend-capped, under
+                // `merge_at`, no slot): a deterministic draft merge, marked
+                // for refinement, so the view never falls to the folded
+                // prefix while lines exist. Written only when its text
+                // changes (no rewrite per pass).
+                let (Some(a), Some(b)) =
+                    (live.tree.get(l - 1, 2 * i), live.tree.get(l - 1, 2 * i + 1))
+                else {
+                    continue;
+                };
+                let text = tree::draft_merge(&a.text, &b.text, node_bytes);
+                if live.tree.get(l, i).is_none_or(|p| p.text != text) {
+                    let node = Node {
+                        l,
+                        i,
+                        size: text.len() as u32,
+                        text,
+                        free: false,
+                        model: None,
+                        tries: 0,
+                        mechanical: true,
+                    };
+                    live.put(node.clone());
+                    inline.push(node);
+                }
+                live.stale.insert(key);
             }
         }
         l += 1;
@@ -1323,6 +2077,16 @@ fn schedule(state: &Arc<State>) {
     for key in instant {
         live.running.insert(key);
         spawn_build(state.clone(), key, &mut live, false);
+    }
+    if !inline.is_empty() {
+        live.dirty = true;
+        let state = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = state.store.endless_nodes_put(state.session, &inline).await {
+                tracing::warn!(session = %state.session, error = %e, "endless: draft merges");
+            }
+            state.built_tx.send_modify(|v| *v += 1);
+        });
     }
     for w in work {
         live.jobs += 1;
@@ -1389,6 +2153,130 @@ impl Drop for JobGuard {
     }
 }
 
+/// 201 §6 (P3): whether model merges are due: always for a meeting tree;
+/// for a drafting session only once the view, as the fold renders it now,
+/// is over `merge_at` × `view_bytes`.
+fn merges_due(state: &State, live: &mut Live, cfg: FoldCfg) -> bool {
+    if !live.drafting() {
+        return true;
+    }
+    let merge_at = state.cfg.read().merge_at.clamp(0.5, 1.0);
+    live.fold(cfg).size() as f64 > merge_at * f64::from(cfg.view_bytes)
+}
+
+/// 201 §7.1 (P3): the compactor profile `want` resolves to for `model`, and
+/// why. `auto` is `small` for a local model or a known window of at most
+/// [`SMALL_WINDOW`] tokens, else `standard`.
+pub(crate) fn resolve_profile(
+    want: Profile,
+    model: &models::Resolved,
+    local: bool,
+) -> (Profile, &'static str) {
+    let known = model
+        .model
+        .as_ref()
+        .map(|m| {
+            if m.limit.context > 0 {
+                m.limit.context
+            } else {
+                m.limit.assumed
+            }
+        })
+        .filter(|w| *w > 0);
+    match want {
+        Profile::Standard => (Profile::Standard, "set to standard"),
+        Profile::Small => (Profile::Small, "set to small"),
+        Profile::Auto if local => (Profile::Small, "auto: the summary model is local"),
+        Profile::Auto if known.is_some_and(|w| u64::from(w) <= SMALL_WINDOW) => (
+            Profile::Small,
+            "auto: the summary model's window is at most 32k tokens",
+        ),
+        Profile::Auto => (
+            Profile::Standard,
+            "auto: a cloud summary model with a large window",
+        ),
+    }
+}
+
+/// 201 §7.1: `auto` picks `small` at or below this known window (tokens).
+const SMALL_WINDOW: u64 = 32_000;
+
+/// The profile in force for `state`'s session: the desk agent's key over the
+/// config's, resolved against the compactor in force. A meeting tree keeps
+/// 137 behaviour (`standard`).
+fn profile_of(state: &State, live: &Live) -> (Profile, &'static str) {
+    if !live.drafting() {
+        return (
+            Profile::Standard,
+            "meeting memory keeps the standard profile",
+        );
+    }
+    let want = live.agent_profile.unwrap_or(state.cfg.read().profile);
+    let c = state.compactor();
+    resolve_profile(want, c.model(), c.local().is_some())
+}
+
+/// 201 §7.1 (P3): the desk agent's `profile:` key for `session` (live).
+pub(crate) fn set_agent_profile(inner: &Inner, session: SessionId, profile: Option<Profile>) {
+    if let Some(state) = state_of(inner, session) {
+        state.live.lock().agent_profile = profile;
+        state.wake.notify_one();
+    }
+}
+
+/// 201 §7.2 (P3): the `small` profile's context for a job whose first unit
+/// is `first`: the user's most recent message before it and the last few
+/// lines of the same turn, at most [`compactor::SMALL_CTX_BYTES`]; never
+/// the `<chat>` view.
+fn small_ctx(live: &Live, first: u64) -> String {
+    const NEARBY: usize = 4;
+    const USER_BYTES: u32 = 700;
+    let turn = live.unit_turn(first);
+    let mut nearby: Vec<String> = Vec::new();
+    let mut j = first;
+    while j > live.base && nearby.len() < NEARBY {
+        j -= 1;
+        if live.unit_turn(j) != turn {
+            break;
+        }
+        if let Some(n) = live.tree.get(0, j) {
+            nearby.push(n.text.replace('\n', " "));
+        }
+    }
+    nearby.reverse();
+    let user = (live.base..first)
+        .rev()
+        .take(256)
+        .map(|j| &live.units[j as usize])
+        .find(|u| u.kind == tree::Kind::User)
+        .map(|u| match tree::free_unit(u, USER_BYTES) {
+            Some(t) => t,
+            None => super::lines::draft_line(u, USER_BYTES),
+        });
+    let render = |nearby: &[String]| {
+        let mut s = String::from("Context:\n");
+        if let Some(u) = &user {
+            s.push_str(u);
+            s.push('\n');
+        }
+        for l in nearby {
+            s.push_str(l);
+            s.push('\n');
+        }
+        s
+    };
+    let mut from = 0;
+    let mut s = render(&nearby);
+    while s.len() > compactor::SMALL_CTX_BYTES && from < nearby.len() {
+        from += 1;
+        s = render(&nearby[from..]);
+    }
+    if user.is_none() && from == nearby.len() {
+        return "Context: none.".to_owned();
+    }
+    super::guards::cut_utf8(&s, compactor::SMALL_CTX_BYTES).to_owned()
+}
+
 /// The `<chat>` context of a job whose last unit committed in `turn`: that
 /// turn's frozen view (D6), else the live one — both under the G2 raw budget.
 fn ctx_for(state: &State, live: &mut Live, turn: u32) -> String {
@@ -1402,8 +2290,8 @@ fn ctx_for(state: &State, live: &mut Live, turn: u32) -> String {
 }
 
 /// Assemble the step for `(l, i)` under the lock and run it on its own task.
-/// `counted`: the job holds a call slot. A level-0 unit that failed
-/// [`MECH_AFTER`] times folds mechanically (G7) instead.
+/// `counted`: the job holds a call slot. A meeting tree's level-0 unit that
+/// failed [`MECH_AFTER`] times folds mechanically (G7) instead.
 fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool) {
     let (l, i) = key;
     let node_bytes = state.cfg.read().node_bytes;
@@ -1419,6 +2307,18 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
         tries: 0,
         mechanical: false,
     };
+    let draft = |text: String| Node {
+        l,
+        i,
+        size: text.len() as u32,
+        text,
+        free: false,
+        model: None,
+        tries: 0,
+        mechanical: true,
+    };
+    // 201 P1: the deterministic merge stored when the model merge fails.
+    let mut fallback: Option<Node> = None;
     let (ready, step) = if l == 0 {
         let u = &live.units[i as usize];
         if live
@@ -1445,32 +2345,42 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
             }
         }
     } else {
-        let a = live
-            .tree
-            .get(l - 1, 2 * i)
-            .map(|n| n.text.clone())
-            .unwrap_or_default();
-        let b = live
-            .tree
-            .get(l - 1, 2 * i + 1)
-            .map(|n| n.text.clone())
-            .unwrap_or_default();
-        match tree::free_merge(&a, &b, node_bytes) {
-            Some(text) => (Some(free(text)), None),
-            None => (
-                None,
-                Some(Step::Merge {
-                    a,
-                    b,
-                    earlier: live.earlier(last_turn, id),
-                }),
-            ),
+        let child = |i: u64| live.tree.get(l - 1, i);
+        let draft_child = live.drafting()
+            && [child(2 * i), child(2 * i + 1)]
+                .iter()
+                .any(|c| c.is_some_and(|c| c.quality() == Quality::Draft));
+        let a = child(2 * i).map(|n| n.text.clone()).unwrap_or_default();
+        let b = child(2 * i + 1).map(|n| n.text.clone()).unwrap_or_default();
+        if draft_child {
+            // 201 P1: a merge over a draft is itself a deterministic draft.
+            (Some(draft(tree::draft_merge(&a, &b, node_bytes))), None)
+        } else {
+            match tree::free_merge(&a, &b, node_bytes) {
+                Some(text) => (Some(free(text)), None),
+                None => {
+                    if live.drafting() {
+                        fallback = Some(draft(tree::draft_merge(&a, &b, node_bytes)));
+                    }
+                    (
+                        None,
+                        Some(Step::Merge {
+                            a,
+                            b,
+                            earlier: live.earlier(last_turn, id),
+                        }),
+                    )
+                }
+            }
         }
     };
-    let ctx = if step.is_some() {
-        ctx_for(&state, live, last_turn)
-    } else {
-        String::new()
+    let drafting = live.drafting();
+    // 201 §7.2 (P3): the small profile's own short context.
+    let small = drafting && profile_of(&state, live).0 == Profile::Small;
+    let ctx = match (&step, small) {
+        (None, _) => String::new(),
+        (Some(_), true) => small_ctx(live, id),
+        (Some(_), false) => ctx_for(&state, live, last_turn),
     };
     let (compactor, cancel) = {
         let cur = state.current.read();
@@ -1497,22 +2407,36 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
                     priority,
                     cancel: &cancel,
                     lines: 1,
+                    small,
                 };
-                call(&state, &compactor, job, &ctx, &step).await.map(|b| {
-                    b.map(|b| Node {
-                        l,
-                        i,
-                        size: b.text.len() as u32,
-                        text: b.text,
-                        free: false,
-                        model: Some(compactor.model_id().to_owned()),
-                        tries: b.tries,
-                        mechanical: false,
+                call(&state, &compactor, job, &ctx, &step)
+                    .await
+                    .and_then(|b| match b {
+                        // 201 P1 (F9): a line that failed its guards is never
+                        // stored; the draft stays (a meeting keeps 137's
+                        // shortest failing candidate).
+                        Some(b) if b.tries < 0 && drafting => {
+                            Err(format!("{NO_PASSING_LINE} after {} attempts", -b.tries))
+                        }
+                        b => Ok(b.map(|b| Node {
+                            l,
+                            i,
+                            size: b.text.len() as u32,
+                            text: b.text,
+                            free: false,
+                            model: Some(compactor.model_id().to_owned()),
+                            tries: b.tries,
+                            mechanical: false,
+                        })),
                     })
-                })
             }
             (None, None) => Err("no step".to_owned()),
         };
+        // 201 §7.2 (P3): a small-profile guard trip keeps the draft and
+        // earns one later retry when the queue is idle (`schedule`).
+        if small && l == 0 && matches!(&outcome, Err(e) if e.starts_with(NO_PASSING_LINE)) {
+            *state.live.lock().tripped.entry(i).or_default() += 1;
+        }
         guard.armed = false;
         finish(
             &state,
@@ -1522,6 +2446,7 @@ fn spawn_build(state: Arc<State>, key: (u8, u64), live: &mut Live, counted: bool
             compactor.model_id(),
             &cancel,
             counted,
+            fallback,
         )
         .await;
     });
@@ -1542,6 +2467,7 @@ fn spawn_batch(state: Arc<State>, units: Vec<u64>, live: &mut Live) {
             })
             .collect(),
         earlier: live.earlier(live.unit_turn(first), first),
+        drafting: live.drafting(),
     };
     let ctx = ctx_for(&state, live, last_turn);
     let (compactor, cancel) = {
@@ -1566,6 +2492,7 @@ fn spawn_batch(state: Arc<State>, units: Vec<u64>, live: &mut Live) {
             priority,
             cancel: &cancel,
             lines: units.len() as u32,
+            small: false,
         };
         let outcome = call(&state, &compactor, job, &ctx, &step).await;
         guard.armed = false;
@@ -1591,6 +2518,8 @@ struct Job<'a> {
     cancel: &'a CancellationToken,
     /// Reply lines (G6: a batch's unit count, else 1).
     lines: u32,
+    /// 201 §7.2 (P3): the `small` profile's build (one attempt, short prompt).
+    small: bool,
 }
 
 /// Prompt bytes one more try adds (the refused reply + the correction).
@@ -1722,15 +2651,18 @@ async fn call(
         priority,
         cancel,
         lines,
+        small,
     } = job;
     let local = c.local();
     let cfg = state.cfg.read().clone();
+    // R2-5: a meeting's calls keep the pre-201 queue order (no run rule).
+    let owner = state.live.lock().drafting().then_some(state.session);
     // E9: a local endpoint's engine-wide queue; the wait is never timed.
     let _permit = match &local {
         Some(endpoint) => {
             let gate = state.queues.get(endpoint, cfg.local_jobs);
             tokio::select! {
-                p = gate.acquire(priority) => Some(p),
+                p = gate.acquire(priority, owner) => Some(p),
                 _ = cancel.cancelled() => return Ok(None),
             }
         }
@@ -1741,7 +2673,13 @@ async fn call(
     }
     let model = c.model();
     let price = c.rates().map(|r| r.input);
-    let largest = compactor::largest_call_bytes(step, cfg.node_bytes);
+    // 201 §7.2: a small chunk follows the window.
+    let chunk = compactor::small_chunk_bytes(crate::tokens::bytes_of(
+        &model.id,
+        crate::tokens::memory_window(model),
+    ));
+    // R2-9: a small-profile call is sized with the small prompt and chunk.
+    let largest = compactor::largest_call_bytes(step, cfg.node_bytes, small.then_some(chunk));
     if let Some(price) = price
         && crate::tokens::tokens_of(&model.id, largest) as f64 * price / 1e6 > cfg.max_usd_per_call
     {
@@ -1758,10 +2696,15 @@ async fn call(
         cfg.attempt_secs.clamp(10, 3_600)
     }));
     let reply = c.out_tokens(lines);
-    let ctx = fit_ctx(
-        ctx,
-        ctx_budget(c.as_ref(), step, &cfg, local.is_some(), reply),
-    );
+    // 201 §7.2 (P3): a small context is already at most 2 KB.
+    let ctx = if small {
+        std::borrow::Cow::Borrowed(ctx)
+    } else {
+        fit_ctx(
+            ctx,
+            ctx_budget(c.as_ref(), step, &cfg, local.is_some(), reply),
+        )
+    };
     let request_id = format!("endless:{l}:{i}:{}", uuid::Uuid::now_v7());
     let reserved = state
         .store
@@ -1783,7 +2726,10 @@ async fn call(
     // and the reduce; G5: the one retry); a panic is a failure whose ledger
     // row still settles (R1-4).
     let parts = match step {
-        Step::Unit { text, .. } if text.len() > compactor::MAP_REDUCE_OVER => {
+        Step::Unit { text, .. } if small && text.len() > chunk => {
+            compactor::chunks(text, chunk).len() as u32 + 1
+        }
+        Step::Unit { text, .. } if !small && text.len() > compactor::MAP_REDUCE_OVER => {
             compactor::chunks(text, compactor::CHUNK_BYTES).len() as u32 + 1
         }
         _ => 1,
@@ -1792,6 +2738,10 @@ async fn call(
     // R2-11: the answered attempts, kept even if the outer bound drops the build.
     let tally = compactor::Tally::new(c.as_ref());
     let run = async {
+        if small {
+            return compactor::build_small(&tally, &ctx, step, cfg.node_bytes, attempt, chunk)
+                .await;
+        }
         let first = compactor::build(&tally, &ctx, step, cfg.node_bytes, cfg.tries, attempt).await;
         let Err(f) = &first else { return first };
         // G5: the provider's (or preflight's) counts; a shape without numbers
@@ -1846,8 +2796,12 @@ async fn call(
         Some(Err(f)) => {
             let mut u = compactor::sum_usage(&f.calls);
             if billed_drop(&f.error) {
-                let prompt =
-                    compactor::COMPACT.len() + ctx.len() + step.render(cfg.node_bytes).len();
+                // R2-9: a small call is one chunk under the small prompt.
+                let prompt = if small {
+                    ctx.len() + compactor::largest_call_bytes(step, cfg.node_bytes, Some(chunk))
+                } else {
+                    compactor::COMPACT.len() + ctx.len() + step.render(cfg.node_bytes).len()
+                };
                 let est = crate::tokens::tokens_of(&model.id, prompt);
                 let u = u.get_or_insert_default();
                 u.prompt_tokens = Some(
@@ -1941,7 +2895,10 @@ fn record_failure(state: &State, live: &mut Live, key: (u8, u64), e: &str, model
 /// Persist and publish one job's outcome (`Ok(None)`: its calls were
 /// cancelled). A failure of a job whose `cancel` fired is the old
 /// compactor's (or a retried / detached call's) and is dropped under the
-/// `live` lock, so no stale backoff outlives a switch (R1-3).
+/// `live` lock, so no stale backoff outlives a switch (R1-3). 201 P1: a
+/// failed model merge stores its deterministic `fallback` as a draft and
+/// stays marked for rebuilding after its backoff.
+#[allow(clippy::too_many_arguments)]
 async fn finish(
     state: &State,
     key: (u8, u64),
@@ -1950,13 +2907,46 @@ async fn finish(
     model: &str,
     cancel: &CancellationToken,
     counted: bool,
+    fallback: Option<Node>,
 ) {
+    // 201 R1-3b: a unit removed from the context while its call ran keeps
+    // its removed line; a merge built over it from the old text is dropped.
+    let removed = {
+        let mut live = state.live.lock();
+        if key.0 == 0 {
+            live.units
+                .get(key.1 as usize)
+                .is_some_and(|u| u.text == REMOVED)
+        } else if live.discard.remove(&key) {
+            live.redo.remove(&key);
+            if live.tree.built(key.0, key.1) {
+                live.stale.insert(key);
+            }
+            true
+        } else {
+            false
+        }
+    };
     let outcome = match outcome {
+        Ok(Some(_)) if removed => Ok(None),
+        Err(_) if removed && key.0 > 0 => Ok(None),
         Ok(Some(node)) => match state.store.endless_node_put(state.session, &node).await {
             Ok(()) => Ok(Some(node)),
             Err(e) => Err(format!("store: {e}")),
         },
         other => other,
+    };
+    let fallback = match (&outcome, fallback) {
+        (Err(_), Some(node)) if !cancel.is_cancelled() => {
+            match state.store.endless_node_put(state.session, &node).await {
+                Ok(()) => Some(node),
+                Err(e) => {
+                    tracing::warn!(session = %state.session, error = %e, "endless: draft merge");
+                    None
+                }
+            }
+        }
+        _ => None,
     };
     let mut live = state.live.lock();
     release(&mut live, &[key], counted);
@@ -1971,16 +2961,20 @@ async fn finish(
             }
             live.failed.remove(&key);
             live.solo.remove(&key.1);
-            live.tree.insert(node);
-            live.invalidate();
+            live.put(node);
         }
         Ok(None) => {}
         Err(_) if cancel.is_cancelled() => {}
-        Err(e) => record_failure(state, &mut live, key, &e, model),
+        Err(e) => {
+            record_failure(state, &mut live, key, &e, model);
+            if let Some(node) = fallback {
+                live.put(node);
+                live.stale.insert(key);
+            }
+        }
     }
     live.dirty = true;
     drop(live);
-    // `settle` re-checks on every outcome (a failure may stall the frontier, E4).
     state.built_tx.send_modify(|v| *v += 1);
     state.wake.notify_one();
 }
@@ -2001,7 +2995,23 @@ async fn finish_batch(
         Ok(Some(b)) => {
             let mut nodes = Vec::new();
             let mut solo = Vec::new();
+            // 201 R1-3b: a unit removed while the batch ran keeps its line.
+            let removed: HashSet<u64> = {
+                let live = state.live.lock();
+                units
+                    .iter()
+                    .copied()
+                    .filter(|i| {
+                        live.units
+                            .get(*i as usize)
+                            .is_some_and(|u| u.text == REMOVED)
+                    })
+                    .collect()
+            };
             for (i, line) in units.iter().zip(b.lines) {
+                if removed.contains(i) {
+                    continue;
+                }
                 match line {
                     Ok(text) => nodes.push(Node {
                         l: 0,
@@ -2024,7 +3034,8 @@ async fn finish_batch(
         Ok(None) => (Vec::new(), Vec::new(), Ok(false)),
         Err(e) => (Vec::new(), Vec::new(), Err(e)),
     };
-    tracing::info!(session = %state.session, from = units[0], units = units.len(), built = nodes.len(), solo = solo.len(), secs = took.as_secs_f64(), "endless: batch");
+    let drafts = state.live.lock().drafts.len();
+    tracing::info!(session = %state.session, from = units[0], units = units.len(), built = nodes.len(), solo = solo.len(), drafts, secs = took.as_secs_f64(), "endless: batch");
     let mut live = state.live.lock();
     release(&mut live, &keys, true);
     match outcome {
@@ -2036,7 +3047,7 @@ async fn finish_batch(
             }
             for node in nodes {
                 live.failed.remove(&(0, node.i));
-                live.tree.insert(node);
+                live.put(node);
             }
             for (i, trip) in solo {
                 tracing::debug!(session = %state.session, i, guard = trip, "endless: batch line refused; the unit runs alone");
@@ -2054,8 +3065,20 @@ async fn finish_batch(
             }
         }
         Err(e) => {
+            // R2-3: a drafting batch that failed hard again for another
+            // reason than thinking or an empty reply (one unit's content
+            // may be refused) sends its units alone next time, so one bad
+            // unit cannot hold the others on their drafts.
+            let alone = live.drafting()
+                && keys.len() > 1
+                && hard_failure(&e)
+                && !e.contains("reply on thinking")
+                && !e.contains("compactor returned nothing");
             for key in &keys {
                 record_failure(state, &mut live, *key, &e, model);
+                if alone && live.failed.get(key).is_some_and(|r| r.failures >= 2) {
+                    live.solo.insert(key.1);
+                }
             }
         }
     }
@@ -2123,30 +3146,61 @@ fn one_line(s: &str, max: usize) -> String {
         .collect()
 }
 
-pub(crate) async fn settle(inner: &Inner, session: SessionId, max: Duration) -> bool {
+/// 201 P1 (D5): no turn waits on the summary model — every unit has a line
+/// from its ingest on. Ingests (no model call: new units get their drafts),
+/// wakes the pump and returns `true`; `_max` (the old `settle_secs`) is
+/// accepted and ignored.
+pub(crate) async fn settle(inner: &Inner, session: SessionId, _max: Duration) -> bool {
+    if let Some(state) = state_of(inner, session) {
+        if let Err(e) = ingest(&state).await {
+            tracing::warn!(%session, error = %e, "endless: ingest before a turn");
+        }
+        state.wake.notify_one();
+    }
+    true
+}
+
+/// Test seam (the 137 `settle` wait, for tests that need model lines):
+/// wait, at most `max`, until every view part is built and, in a drafting
+/// session, every draft refined (or given up) and no draft merge stale.
+/// `false` when a node keeps failing (≥ 2 in a row), when paused, or at `max`.
+#[cfg(test)]
+pub(crate) async fn quiet_for_tests(inner: &Inner, session: SessionId, max: Duration) -> bool {
     let Some(state) = state_of(inner, session) else {
         return true;
     };
     if let Err(e) = ingest(&state).await {
-        tracing::warn!(%session, error = %e, "endless: ingest before settle");
+        tracing::warn!(%session, error = %e, "endless: ingest before quiet");
     }
     state.wake.notify_one();
     let mut rx = state.built_tx.subscribe();
     let deadline = Instant::now() + max;
     loop {
-        let (unbuilt, stalled) = {
+        let (done, stalled) = {
             let mut live = state.live.lock();
             let cfg = live.fold_cfg(&state.cfg.read());
+            let unbuilt = live.fold(cfg).unbuilt(&live.tree);
+            let last_ok = live.last_ok;
+            let given_up = |i: &u64| {
+                live.failed
+                    .get(&(0, *i))
+                    .is_some_and(|r| r.mechanical(last_ok))
+                    || live.tripped.get(i).is_some_and(|n| *n >= 2)
+            };
+            let drafts = live.drafts.iter().filter(|i| !given_up(i)).count();
+            let failing = live.failed.iter().any(|(k, r)| {
+                r.failures >= 2 && (k.0 > 0 || (live.drafts.contains(&k.1) && !given_up(&k.1)))
+            });
             (
-                live.fold(cfg).unbuilt(&live.tree),
-                live.frontier_stalled(cfg),
+                unbuilt == 0
+                    && drafts == 0
+                    && (live.stale.is_empty() || !merges_due(&state, &mut live, cfg)),
+                live.frontier_stalled(cfg) || (live.drafting() && failing),
             )
         };
-        if unbuilt == 0 {
+        if done {
             return true;
         }
-        // E4: a frontier that keeps failing will not land within this turn's
-        // wait; 137G: nor will anything while settling is paused.
         if stalled || state.live.lock().paused_by.is_some() {
             return false;
         }
@@ -2190,38 +3244,475 @@ pub(crate) async fn render_for_turn(
 }
 
 /// The view under `cfg`, scaled down (view and raw budgets by one factor)
-/// when `view_bytes + raw_bytes` exceed `max_bytes` — a scaled fold is
-/// rebuilt for that render, the live fold is untouched (G1, R1-7).
+/// when its hard cap `high() + raw_bytes` exceeds `max_bytes` — a scaled
+/// fold is rebuilt for that render, the live fold is untouched (G1, R1-7).
+/// 201 P1: drafts are built lines, so a view whose merges are not built
+/// yet folds to that cap (not to `raw_bytes`); the slack is budgeted too.
 fn render_within(
     live: &mut Live,
     cfg: FoldCfg,
     max_bytes: Option<usize>,
     session: SessionId,
 ) -> ViewRender {
-    let want = (cfg.view_bytes + cfg.raw_bytes) as usize;
-    match max_bytes.filter(|m| *m < want) {
-        Some(m) => {
-            let scale = m as f64 / want as f64;
-            let small = FoldCfg {
-                view_bytes: ((f64::from(cfg.view_bytes) * scale) as u32).max(2_000),
-                raw_bytes: ((f64::from(cfg.raw_bytes) * scale) as u32).max(1_000),
-                slack: cfg.slack,
-            };
-            let f = Fold::rebuild(
-                &live.tree,
-                live.base.min(live.t()),
-                live.t(),
-                small,
-                &live.units,
+    let want = cfg.high() + cfg.raw_bytes as usize;
+    let Some(m) = max_bytes.filter(|m| *m < want) else {
+        let f = live.fold(cfg);
+        return fold::render(&live.tree, &f, &live.units);
+    };
+    // The fold sizes lines without their `id+n|` prefix and newline, so a
+    // render can overshoot `m` by that overhead: shrink by the overshoot and
+    // render again (at most twice more).
+    let mut scale = m as f64 / want as f64;
+    let mut attempt = 0;
+    loop {
+        let small = FoldCfg {
+            view_bytes: ((f64::from(cfg.view_bytes) * scale) as u32).max(2_000),
+            raw_bytes: ((f64::from(cfg.raw_bytes) * scale) as u32).max(1_000),
+            slack: cfg.slack,
+        };
+        let f = Fold::rebuild(
+            &live.tree,
+            live.base.min(live.t()),
+            live.t(),
+            small,
+            &live.units,
+        );
+        let r = fold::render(&live.tree, &f, &live.units);
+        let bytes = r.text().len();
+        attempt += 1;
+        if bytes <= m || attempt == 3 {
+            tracing::info!(%session, max_bytes = m, view_bytes = small.view_bytes, raw_bytes = small.raw_bytes, bytes, folded = r.folded, "endless: view scaled down to the budget");
+            return r;
+        }
+        scale *= m as f64 / bytes as f64 * 0.98;
+    }
+}
+
+/// 201 §3 (P2): one generation — the view rendered once at a trim over the
+/// units before the tail (`[base, t_cut)`) and reused byte for byte by every
+/// turn until the next trim, and after a restart (persisted).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Generation {
+    /// 1 = the session's first.
+    pub n: u32,
+    /// First unit the view does not cover.
+    pub t_cut: u64,
+    /// First `messages.seq` still in the tail.
+    pub first_seq: i64,
+    /// The frozen view.
+    pub render: ViewRender,
+    /// 201 §9 (P6a): the ledger snapshot frozen with the view, its own
+    /// block between the system prompt and the view; `None` when the ledger
+    /// was off at this trim (or in a meeting).
+    pub ledger: Option<String>,
+    /// 201 §10 (P6b): zooms taken during the generation this one ended (the
+    /// page-fault count of the `endless: trim` line); not persisted, 0 when
+    /// read back from the store.
+    pub zooms: u32,
+    /// 201 R1-2: when the generation started (stored with it).
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl Generation {
+    fn of_row(r: crate::store::endless::GenerationRow) -> Self {
+        Self {
+            n: r.n,
+            t_cut: r.t_cut,
+            first_seq: r.first_seq,
+            render: ViewRender {
+                blocks: r
+                    .blocks
+                    .into_iter()
+                    .map(|(text, mark)| ViewBlock { text, mark })
+                    .collect(),
+                settled: true,
+                unbuilt: 0,
+                folded: 0,
+            },
+            ledger: r.ledger,
+            zooms: 0,
+            created_at: r.created_at.unwrap_or_else(chrono::Utc::now),
+        }
+    }
+
+    fn row(&self) -> crate::store::endless::GenerationRow {
+        crate::store::endless::GenerationRow {
+            n: self.n,
+            t_cut: self.t_cut,
+            first_seq: self.first_seq,
+            blocks: self
+                .render
+                .blocks
+                .iter()
+                .map(|b| (b.text.clone(), b.mark))
+                .collect(),
+            ledger: self.ledger.clone(),
+            created_at: Some(self.created_at),
+        }
+    }
+
+    /// 201 §3/§9 (P6a): the blocks a turn of this generation sends — the
+    /// frozen ledger snapshot (unmarked: it takes none of the four cache
+    /// marks) before the frozen view blocks. Byte-stable within a generation.
+    pub fn framed(&self) -> ViewRender {
+        let mut r = self.render.clone();
+        if let Some(l) = &self.ledger {
+            r.blocks.insert(
+                0,
+                ViewBlock {
+                    text: l.clone(),
+                    mark: false,
+                },
             );
-            let r = fold::render(&live.tree, &f, &live.units);
-            tracing::info!(%session, max_bytes = m, view_bytes = small.view_bytes, raw_bytes = small.raw_bytes, bytes = r.text().len(), folded = r.folded, "endless: view scaled down to the budget");
-            r
         }
-        None => {
-            let f = live.fold(cfg);
-            fold::render(&live.tree, &f, &live.units)
+        r
+    }
+}
+
+/// 201 §3 (P2): the generation in force (the cached one, else the stored
+/// row); `None` for a session that never started one.
+pub(crate) async fn generation(
+    inner: &Inner,
+    session: SessionId,
+) -> anyhow::Result<Option<Generation>> {
+    let Some(state) = state_of(inner, session) else {
+        anyhow::bail!("session {session} does not use fractal context");
+    };
+    if let Some(g) = state.live.lock().current_gen.clone() {
+        return Ok(Some(g));
+    }
+    let Some(row) = state.store.endless_generation(session).await? else {
+        return Ok(None);
+    };
+    let g = Generation::of_row(row);
+    Ok(Some(fill_gen_cache(&mut state.live.lock().current_gen, g)))
+}
+
+/// 201 R1-7: a generation read from the store fills the cache only while it
+/// is still empty — a `start_generation` that landed meanwhile set a newer
+/// one, which wins. Returns the generation in force.
+fn fill_gen_cache(slot: &mut Option<Generation>, g: Generation) -> Generation {
+    slot.get_or_insert(g).clone()
+}
+
+/// 201 §4.3 (P2): start a generation whose tail begins at message
+/// `first_seq` (`None`: after every row ingested so far — an empty tail).
+/// The fold runs here and only here: the view is rendered over the units
+/// before the tail, fitted to `max_bytes`, persisted and frozen. `again`
+/// (137G G5, a refused request) re-renders the current generation smaller
+/// under the same number instead of opening the next one.
+pub(crate) async fn start_generation(
+    inner: &Inner,
+    session: SessionId,
+    first_seq: Option<i64>,
+    max_bytes: usize,
+    again: bool,
+) -> anyhow::Result<Generation> {
+    let Some(state) = state_of(inner, session) else {
+        anyhow::bail!("session {session} does not use fractal context");
+    };
+    ingest(&state).await?;
+    let prev_gen = generation(inner, session).await?;
+    let prev = prev_gen.as_ref().map_or(0, |g| g.n);
+    let mut g = {
+        let mut live = state.live.lock();
+        let first_seq = first_seq.unwrap_or(live.last_seq + 1);
+        let t_cut = live.units.partition_point(|u| u.seq < first_seq) as u64;
+        let cfg = live.fold_cfg(&state.cfg.read());
+        // 201 §10 (P6b): the lines zoomed during the generation just ended
+        // stay unmerged in this render (one generation of grace).
+        let ended = if again { prev.saturating_sub(1) } else { prev };
+        let zoomed: Vec<Part> = live
+            .zooms
+            .iter()
+            .filter(|(n, _)| *n == ended)
+            .map(|(_, p)| *p)
+            .collect();
+        let zooms = u32::try_from(zoomed.len()).unwrap_or(u32::MAX);
+        let pinned = if state.cfg.read().age_by_use {
+            zoomed
+        } else {
+            Vec::new()
+        };
+        live.zooms.retain(|(n, _)| *n >= ended);
+        let render = render_upto(&mut live, cfg, t_cut, Some(max_bytes), session, &pinned);
+        Generation {
+            n: if again { prev.max(1) } else { prev + 1 },
+            t_cut,
+            first_seq,
+            render,
+            ledger: None,
+            zooms,
+            created_at: chrono::Utc::now(),
         }
+    };
+    // 201 §9 (P6a): a re-render under the same number keeps its snapshot.
+    g.ledger = if again {
+        if let Some(p) = &prev_gen {
+            g.created_at = p.created_at;
+        }
+        prev_gen.and_then(|p| p.ledger)
+    } else {
+        ledger_at_trim(&state, session, g.n).await?
+    };
+    state
+        .store
+        .endless_generation_put(session, &g.row())
+        .await?;
+    state.live.lock().current_gen = Some(g.clone());
+    Ok(g)
+}
+
+/// One writer at a time for every session's ledger (read-modify-write).
+static LEDGER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn load_ledger(store: &Store, session: SessionId) -> anyhow::Result<super::ledger::Ledger> {
+    Ok(store
+        .endless_ledger(session)
+        .await?
+        .map(|b| super::ledger::Ledger::from_json(&b))
+        .unwrap_or_default())
+}
+
+/// R3-7 / R1-13: [`load_ledger`] for the two writers (a trim, a tool op).
+/// With no `endless_ledger` row (the table is node-local: a session taken
+/// over by another node has none) the ledger is rebuilt by replaying the
+/// `ledger` tool calls of the replicated `messages` rows that were answered
+/// without an error, in order (a call still in flight has no answer); the
+/// caller persists it. Their notes were sent already and are dropped.
+async fn load_or_rebuild_ledger(
+    store: &Store,
+    session: SessionId,
+) -> anyhow::Result<super::ledger::Ledger> {
+    use genai::chat::ContentPart;
+    if let Some(b) = store.endless_ledger(session).await? {
+        return Ok(super::ledger::Ledger::from_json(&b));
+    }
+    let rows = store.messages(session).await?;
+    let answered: HashSet<&str> = rows
+        .iter()
+        .flat_map(|(_, m)| m.content.iter())
+        .filter_map(|p| match p {
+            ContentPart::ToolResponse(r) if !r.content.starts_with("ERROR:") => {
+                Some(r.call_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut ledger = super::ledger::Ledger::default();
+    for p in rows.iter().flat_map(|(_, m)| m.content.iter()) {
+        if let ContentPart::ToolCall(c) = p
+            && c.fn_name == crate::loop_::endless_tools::LEDGER
+            && answered.contains(c.call_id.as_str())
+            && let Ok(op) = serde_json::from_value::<super::ledger::Op>(c.fn_arguments.clone())
+        {
+            let _ = ledger.apply(&op, 0);
+        }
+    }
+    ledger.notes.clear();
+    Ok(ledger)
+}
+
+/// 201 §9 (P6a): the ledger's part of a trim into generation `n` — scan the
+/// units ingested since the last trim (artefacts, suggestions), mirror the
+/// `todo` list into Open tasks, lapse old suggestions, drop the pending
+/// notes, persist, and render the snapshot within `ledger_bytes`. `None`
+/// (nothing read or stored) when the ledger is off or the tree is a meeting's.
+async fn ledger_at_trim(
+    state: &State,
+    session: SessionId,
+    n: u32,
+) -> anyhow::Result<Option<String>> {
+    let cfg = state.cfg.read().clone().clamped();
+    if !cfg.ledger || state.live.lock().filter == UnitFilter::Meeting {
+        return Ok(None);
+    }
+    let _w = LEDGER_LOCK.lock().await;
+    let mut ledger = load_or_rebuild_ledger(&state.store, session).await?;
+    let todos: Vec<(String, bool)> = state
+        .store
+        .todos(session)
+        .await?
+        .items
+        .into_iter()
+        .map(|t| {
+            let done = matches!(
+                t.status,
+                crate::todo::Status::Done | crate::todo::Status::Dropped
+            );
+            (t.text, done)
+        })
+        .collect();
+    let scanned: Vec<(u64, super::tree::Kind, String)> = {
+        let live = state.live.lock();
+        live.units
+            .iter()
+            .filter(|u| u.i >= ledger.scanned)
+            .filter(|u| matches!(u.kind, super::tree::Kind::Tool | super::tree::Kind::User))
+            .map(|u| (u.i, u.kind, u.text.clone()))
+            .collect()
+    };
+    let scans: Vec<super::ledger::Scan<'_>> = scanned
+        .iter()
+        .map(|(i, kind, text)| super::ledger::Scan {
+            i: *i,
+            kind: *kind,
+            text,
+        })
+        .collect();
+    ledger.trim(&scans, n, cfg.ledger_suggestions);
+    if let Some(last) = state.live.lock().units.last() {
+        ledger.scanned = ledger.scanned.max(last.i + 1);
+    }
+    ledger.mirror_todos(&todos, n);
+    state
+        .store
+        .endless_ledger_put(session, &ledger.to_json())
+        .await?;
+    Ok(Some(ledger.render(cfg.ledger_bytes as usize)))
+}
+
+/// 201 §9 (P6a): [`super::Endless::ledger_listed`].
+pub(crate) async fn ledger_listed(inner: &Inner, session: SessionId) -> bool {
+    match state_of(inner, session) {
+        Some(state) if state.live.lock().filter == UnitFilter::Meeting => false,
+        Some(_) => match generation(inner, session).await {
+            Ok(Some(g)) => g.ledger.is_some(),
+            _ => inner.cfg.read().ledger,
+        },
+        None => match inner.store_for(session).endless_generation(session).await {
+            Ok(Some(g)) => g.ledger.is_some(),
+            _ => inner.cfg.read().ledger,
+        },
+    }
+}
+
+/// 201 §9 (P6a): [`super::Endless::ledger_op`] — refused while the
+/// generation in force runs without a ledger.
+pub(crate) async fn ledger_op(
+    inner: &Inner,
+    session: SessionId,
+    op: &super::ledger::Op,
+) -> Result<String, String> {
+    let g = generation(inner, session)
+        .await
+        .map_err(|e| format!("ledger: {e:#}"))?;
+    let n = match g {
+        Some(g) if g.ledger.is_some() => g.n,
+        Some(_) => return Err("ledger: the state ledger is off in this session".to_owned()),
+        None => return Err("ledger: this session's memory has no generation yet".to_owned()),
+    };
+    let store = inner.store_for(session);
+    let _w = LEDGER_LOCK.lock().await;
+    let mut ledger = load_or_rebuild_ledger(&store, session)
+        .await
+        .map_err(|e| format!("ledger: {e:#}"))?;
+    let note = ledger.apply(op, n)?;
+    store
+        .endless_ledger_put(session, &ledger.to_json())
+        .await
+        .map_err(|e| format!("ledger: {e:#}"))?;
+    Ok(note)
+}
+
+/// 201 §9 (P6a): [`super::Endless::ledger_notes`].
+pub(crate) async fn ledger_notes(inner: &Inner, session: SessionId) -> Option<String> {
+    let store = inner.store_for(session);
+    let _w = LEDGER_LOCK.lock().await;
+    let mut ledger = load_ledger(&store, session).await.ok()?;
+    let notes = ledger.take_notes()?;
+    if let Err(e) = store.endless_ledger_put(session, &ledger.to_json()).await {
+        tracing::warn!(%session, "ledger notes: {e:#}");
+    }
+    Some(notes)
+}
+
+/// 201 §9 (P6a): the status numbers (counts from the store, bytes from the
+/// frozen snapshot); `None` when the generation in force has no ledger.
+async fn ledger_status(
+    inner: &Inner,
+    session: SessionId,
+) -> anyhow::Result<Option<super::LedgerStatus>> {
+    let snapshot = match generation(inner, session).await? {
+        Some(g) => g.ledger,
+        None => return Ok(None),
+    };
+    let Some(snapshot) = snapshot else {
+        return Ok(None);
+    };
+    let l = load_ledger(&inner.store_for(session), session).await?;
+    let c = l.counts();
+    Ok(Some(super::LedgerStatus {
+        goals: c[0],
+        decisions: c[1],
+        constraints: c[2],
+        open_tasks: c[3],
+        artefacts: c[4],
+        suggested: c[5],
+        bytes: u32::try_from(snapshot.len()).unwrap_or(u32::MAX),
+    }))
+}
+
+/// 201 §6 (P2): a turn of the current generation opens — the compactor
+/// jobs of its units get the generation's frozen view as `<chat>` context
+/// (the `frozen` cache stays keyed by turn; every turn of a generation
+/// carries the same bytes). Records the status numbers.
+pub(crate) fn turn_opened(inner: &Inner, session: SessionId, tail_bytes: u32, allowance: u64) {
+    let Some(state) = state_of(inner, session) else {
+        return;
+    };
+    let mut live = state.live.lock();
+    let text = live
+        .current_gen
+        .as_ref()
+        .map(|g| g.render.text())
+        .unwrap_or_default();
+    live.turn += 1;
+    let turn = live.turn;
+    live.frozen.push_back((turn, text));
+    while live.frozen.len() > FROZEN_KEEP {
+        live.frozen.pop_front();
+    }
+    live.tail_bytes = tail_bytes;
+    live.allowance = Some(allowance);
+}
+
+/// 201 §4.3: the generation's view — the fold over `[base, t_cut)` only (the
+/// view stops where the tail starts), fitted to `max_bytes` (at most three
+/// renders). 201 §5/§12: no `raw_bytes` window and no verbatim unbuilt
+/// units for a chat: every unit has a line, and the tail carries the newest
+/// messages word for word (the config key stays accepted; meeting trees,
+/// which never render a generation, keep it).
+fn render_upto(
+    live: &mut Live,
+    cfg: FoldCfg,
+    t_cut: u64,
+    max_bytes: Option<usize>,
+    session: SessionId,
+    pinned: &[Part],
+) -> ViewRender {
+    let t = t_cut.min(live.t());
+    let want = cfg.high();
+    let m = max_bytes.unwrap_or(usize::MAX);
+    let mut scale = (m as f64 / want as f64).min(1.0);
+    let mut attempt = 0;
+    loop {
+        let c = FoldCfg {
+            view_bytes: ((f64::from(cfg.view_bytes) * scale) as u32).max(2_000),
+            raw_bytes: 0,
+            slack: cfg.slack,
+        };
+        let f = Fold::rebuild_pinned(&live.tree, live.base.min(t), t, c, &live.units, pinned);
+        let r = fold::render(&live.tree, &f, &live.units);
+        let bytes = r.text().len();
+        attempt += 1;
+        if bytes <= m || attempt == 3 {
+            if scale < 1.0 {
+                tracing::info!(%session, max_bytes = m, view_bytes = c.view_bytes, bytes, "endless: view scaled down to the budget");
+            }
+            return r;
+        }
+        scale *= m as f64 / bytes as f64 * 0.98;
     }
 }
 
@@ -2246,6 +3737,63 @@ pub(crate) async fn set_view_bytes(
         live.invalidate();
     }
     Ok(())
+}
+
+/// 201 §4.2: persist the session's tail override (`None` clears it) and
+/// carry it on the live state. Takes effect when phase P2 reads it.
+pub(crate) async fn set_tail(
+    inner: &Inner,
+    session: SessionId,
+    tail: Option<TailOverride>,
+) -> anyhow::Result<()> {
+    inner
+        .store_for(session)
+        .set_endless_tail(session, tail)
+        .await?;
+    if let Some(state) = state_of(inner, session) {
+        state.live.lock().tail = tail;
+    }
+    Ok(())
+}
+
+/// 201 §4.2: the session model's turn allowance in bytes, which sizes a
+/// `scaled` tail — as the session's last turn measured it (`None` before one).
+fn turn_allowance_bytes(inner: &Inner, session: SessionId) -> Option<u64> {
+    state_of(inner, session).and_then(|s| s.live.lock().allowance)
+}
+
+/// 201 §12.2: the tail and profile fields of [`SessionMemory`] — the mode
+/// and marks in force after the session's override. `tail_bytes`,
+/// `generation` (P2), `drafts` (P1) stay 0 and `profile` `standard` (P3)
+/// until those phases fill them.
+fn tail_status(
+    m: SessionMemory,
+    cfg: &EndlessConfig,
+    tail: Option<TailOverride>,
+    allowance: Option<u64>,
+) -> SessionMemory {
+    let c = cfg.with_tail(tail.as_ref());
+    let (tail_low, tail_high) = match (c.tail_mode, allowance) {
+        (TailMode::Fixed, a) => c.tail_marks(a.unwrap_or(u64::MAX)),
+        (TailMode::Scaled, Some(a)) => c.tail_marks(a),
+        (TailMode::Scaled, None) => (0, 0),
+    };
+    SessionMemory {
+        tail_mode: c.tail_mode,
+        tail_low,
+        tail_high,
+        tail_override: tail,
+        profile: match c.profile {
+            Profile::Auto => Profile::Standard,
+            p => p,
+        },
+        profile_reason: match c.profile {
+            Profile::Auto => "auto: resolved when the summary model runs",
+            _ => "set in settings",
+        }
+        .to_owned(),
+        ..m
+    }
 }
 
 /// R1-D1: the view rendered now under the session's budget, without
@@ -2300,7 +3848,7 @@ async fn count_units(
         .iter()
         .filter(|m| !m.excluded)
         .map(|m| {
-            units::derive(m.seq, m.at, &m.message, cap_chars, 0)
+            units::derive_row(m, cap_chars, 0)
                 .iter()
                 .filter(|u| filter.keeps(u))
                 .count() as u64
@@ -2394,6 +3942,12 @@ pub(crate) async fn zoom(
     else {
         return Err(format!("No line {id}+{n}."));
     };
+    // 201 §10 (P6b): a zoom is a page fault — the line stays unmerged at
+    // the next trim (`start_generation`), and the count is the fault rate.
+    let generation = live.current_gen.as_ref().map_or(0, |g| g.n);
+    live.zooms.push((generation, Part { l, i }));
+    let faults = live.zooms.iter().filter(|(g, _)| *g == generation).count();
+    tracing::info!(%session, level = l, id, n, generation, zooms = faults, "endless: zoom");
     if l == 0 {
         let u = &live.units[i as usize];
         return Ok(vec![ViewLine {
@@ -2414,6 +3968,117 @@ pub(crate) async fn zoom(
             view_line(part, text, built, &live)
         })
         .collect())
+}
+
+/// 201 R1-3b: what a unit removed from the context reads as (its line is
+/// `<kind>: (removed from context)`; `zoom` answers the same).
+pub(crate) const REMOVED: &str = "(removed from context)";
+
+/// 201 R1-3b: [`super::Endless::rows_excluded`] — units of rows now removed
+/// whole from the context lose their text: each level-0 node becomes the
+/// free line `<kind>: (removed from context)` (the FTS mirror follows), and
+/// every merge above is rebuilt at once as a draft merge marked for
+/// refinement. Unit indices do not shift. Returns whether anything changed
+/// (the caller then asks for a new generation). A meeting tree is untouched.
+pub(crate) async fn rows_excluded(inner: &Inner, session: SessionId) -> anyhow::Result<bool> {
+    let Some(state) = state_of(inner, session) else {
+        return Ok(false);
+    };
+    {
+        let live = state.live.lock();
+        if live.mode != MemoryMode::Endless || !live.drafting() {
+            return Ok(false);
+        }
+    }
+    let seqs: HashSet<i64> = state
+        .store
+        .endless_excluded_seqs(session)
+        .await?
+        .into_iter()
+        .collect();
+    let nodes = {
+        let mut live = state.live.lock();
+        let hit: Vec<u64> = live
+            .units
+            .iter()
+            .filter(|u| seqs.contains(&u.seq) && u.text != REMOVED)
+            .map(|u| u.i)
+            .collect();
+        if hit.is_empty() {
+            return Ok(false);
+        }
+        let node_bytes = state.cfg.read().node_bytes;
+        let t = live.t();
+        let mut out = Vec::new();
+        for &i in &hit {
+            let u = &mut live.units[i as usize];
+            u.text = REMOVED.to_owned();
+            let text = format!("{}: {REMOVED}", u.kind.as_str());
+            live.failed.remove(&(0, i));
+            live.tripped.remove(&i);
+            live.solo.remove(&i);
+            let node = Node {
+                l: 0,
+                i,
+                size: text.len() as u32,
+                text,
+                free: true,
+                model: None,
+                tries: 0,
+                mechanical: false,
+            };
+            live.put(node.clone());
+            out.push(node);
+        }
+        // A merge being built over a removed unit lands its old inputs:
+        // `finish` drops it and the merge is rebuilt.
+        for &i in &hit {
+            for l in 1..=u8::try_from(t.max(1).ilog2()).unwrap_or(u8::MAX) {
+                let key = (l, i >> l);
+                if live.running.contains(&key) {
+                    live.discard.insert(key);
+                }
+            }
+        }
+        // Every built merge above, level by level, as a draft merge now.
+        let mut level: BTreeSet<u64> = hit.iter().copied().collect();
+        let mut l = 1u8;
+        while (1u64 << l) <= t && !level.is_empty() {
+            level = level.into_iter().map(|i| i / 2).collect();
+            for &i in &level {
+                if !live.tree.built(l, i) {
+                    continue;
+                }
+                let (Some(a), Some(b)) =
+                    (live.tree.get(l - 1, 2 * i), live.tree.get(l - 1, 2 * i + 1))
+                else {
+                    continue;
+                };
+                let text = tree::draft_merge(&a.text, &b.text, node_bytes);
+                let node = Node {
+                    l,
+                    i,
+                    size: text.len() as u32,
+                    text,
+                    free: false,
+                    model: None,
+                    tries: 0,
+                    mechanical: true,
+                };
+                live.failed.remove(&(l, i));
+                live.put(node.clone());
+                live.stale.insert((l, i));
+                out.push(node);
+            }
+            l += 1;
+        }
+        live.dirty = true;
+        out
+    };
+    state.store.endless_nodes_put(session, &nodes).await?;
+    state.built_tx.send_modify(|v| *v += 1);
+    state.wake.notify_one();
+    Ok(true)
 }
 
 pub(crate) async fn recall(
@@ -2450,7 +4115,7 @@ pub(crate) async fn recall(
                 if out.iter().any(|v| v.id == i) || out.len() >= limit as usize {
                     continue;
                 }
-                let Some(u) = live.units.get(i as usize) else {
+                let Some(u) = live.units.get(i as usize).filter(|u| u.text != REMOVED) else {
                     continue;
                 };
                 let text = format!(
@@ -2462,6 +4127,59 @@ pub(crate) async fn recall(
         }
     }
     Ok(out)
+}
+
+/// 201 §10 (P6b): [`super::Endless::prefetch`] — the same search `recall`
+/// runs (FTS over the level-0 lines), over `input`'s rare words, any of them;
+/// hits whose unit is in the tail (at or after the generation's `t_cut`)
+/// are skipped, the rest taken best first while they fit `bytes`.
+pub(crate) async fn prefetch(
+    inner: &Inner,
+    session: SessionId,
+    input: &str,
+    bytes: usize,
+) -> Option<String> {
+    if bytes == 0 {
+        return None;
+    }
+    let state = state_of(inner, session)?;
+    let t_cut = {
+        let live = state.live.lock();
+        if live.filter == UnitFilter::Meeting {
+            return None;
+        }
+        live.current_gen.as_ref()?.t_cut
+    };
+    let words = super::guards::rare_words(input);
+    if words.is_empty() {
+        return None;
+    }
+    let hits = match state.store.endless_recall_any(session, &words, 16).await {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(%session, "prefetch: {e:#}");
+            return None;
+        }
+    };
+    let mut out = String::new();
+    let mut taken = 0;
+    for (i, text) in hits {
+        if i >= t_cut {
+            continue;
+        }
+        let line = format!("{i}+1|{}\n", text.replace('\n', " "));
+        if out.len() + line.len() > bytes {
+            continue;
+        }
+        out.push_str(&line);
+        taken += 1;
+    }
+    if out.is_empty() {
+        return None;
+    }
+    tracing::info!(%session, words = words.len(), lines = taken, bytes = out.len(), "endless: prefetch");
+    out.pop();
+    Some(out)
 }
 
 pub(crate) async fn date(
@@ -2497,6 +4215,13 @@ pub(crate) async fn set_mode(
         MemoryMode::Endless => {
             // R1-D4 / R1-D6: filter and base are fixed when the tree is first started.
             let meta = store.endless_meta(session).await?;
+            // 201 §12: switching on starts generation 1 again (empty tail).
+            if meta.mode != MemoryMode::Endless {
+                store.endless_generations_clear(session).await?;
+                if let Some(state) = state_of(inner, session) {
+                    state.live.lock().current_gen = None;
+                }
+            }
             let has_tree = !store.endless_nodes(session).await?.is_empty();
             if !has_tree {
                 let (cap_chars, max_units) = {
@@ -2555,6 +4280,8 @@ pub(crate) async fn set_mode(
             attach(inner, session, attached).await?;
             if let Some(state) = state_of(inner, session) {
                 ingest(&state).await?;
+                // 201 P1: a session switched (back) on gets its drafts now.
+                fill_drafts(&state, 0).await?;
                 {
                     let mut live = state.live.lock();
                     live.backfill_total = live.history_unbuilt();
@@ -2598,53 +4325,106 @@ pub(crate) async fn memory(inner: &Inner, session: SessionId) -> anyhow::Result<
     let store = inner.store_for(session);
     let mode = store.session_memory(session).await?;
     let Some(state) = state_of(inner, session) else {
-        return Ok(SessionMemory {
-            mode,
-            view_bytes: inner.cfg.read().view_bytes,
-            ..Default::default()
-        });
+        let tail = store.endless_meta(session).await?.tail;
+        let cfg = with_agent_tail(inner, session, &inner.cfg.read());
+        return Ok(tail_status(
+            SessionMemory {
+                mode,
+                view_bytes: cfg.view_bytes,
+                ..Default::default()
+            },
+            &cfg,
+            tail,
+            turn_allowance_bytes(inner, session),
+        ));
     };
     let stats = store.endless_stats(session).await?;
     let spend_today_usd = store.endless_spend_since(session, &utc_day_start()).await?;
-    let mut live = state.live.lock();
-    let cfg = live.fold_cfg(&state.cfg.read());
-    let f = live.fold(cfg);
-    let view = if mode == MemoryMode::Endless {
-        fold::render_lines(&live.tree, &f, &live.units)
-    } else {
-        Vec::new()
+    // The `live` guard ends with this block: `ledger_status` awaits below.
+    let (m, full_cfg, tail, profile, reason) = {
+        let mut live = state.live.lock();
+        let cfg = live.fold_cfg(&state.cfg.read());
+        let f = live.fold(cfg);
+        let view = if mode == MemoryMode::Endless {
+            fold::render_lines(&live.tree, &f, &live.units)
+        } else {
+            Vec::new()
+        };
+        let unbuilt = f.unbuilt(&live.tree);
+        let full_cfg = state.cfg.read().clone();
+        let m = SessionMemory {
+            mode,
+            view,
+            settling: unbuilt > 0,
+            unbuilt,
+            units: live.t(),
+            stats,
+            model: state.compactor().model_id().to_owned(),
+            view_bytes: cfg.view_bytes,
+            backfill: live.backfill(),
+            stalled: if mode == MemoryMode::Endless {
+                live.stalled(cfg)
+            } else {
+                None
+            },
+            backlog: if mode == MemoryMode::Endless {
+                live.backlog(cfg)
+            } else {
+                None
+            },
+            model_override: live.picks.chat.clone(),
+            model_source: if mode == MemoryMode::Endless {
+                chosen(inner, &live.picks).1.to_owned()
+            } else {
+                String::new()
+            },
+            effort: usable_effort(state.compactor().model(), chosen(inner, &live.picks).2),
+            effort_override: live.picks.chat_effort.clone(),
+            spend_today_usd,
+            drafts: u32::try_from(live.drafts.len()).unwrap_or(u32::MAX),
+            tail_bytes: live.tail_bytes,
+            generation: live.current_gen.as_ref().map_or(0, |g| g.n),
+            zooms: live.zoom_count(),
+            ..Default::default()
+        };
+        let tail = live.tail;
+        let (profile, reason) = profile_of(&state, &live);
+        (m, full_cfg, tail, profile, reason)
     };
-    let unbuilt = f.unbuilt(&live.tree);
-    Ok(SessionMemory {
-        mode,
-        view,
-        settling: unbuilt > 0,
-        unbuilt,
-        units: live.t(),
-        stats,
-        model: state.compactor().model_id().to_owned(),
-        view_bytes: cfg.view_bytes,
-        backfill: live.backfill(),
-        stalled: if mode == MemoryMode::Endless {
-            live.stalled(cfg)
-        } else {
+    let mut out = tail_status(
+        m,
+        &with_agent_tail(inner, session, &full_cfg),
+        tail,
+        turn_allowance_bytes(inner, session),
+    );
+    out.profile = profile;
+    out.profile_reason = reason.to_owned();
+    if mode == MemoryMode::Endless {
+        out.ledger = ledger_status(inner, session).await.unwrap_or_else(|e| {
+            tracing::warn!(%session, "ledger status: {e:#}");
             None
-        },
-        backlog: if mode == MemoryMode::Endless {
-            live.backlog(cfg)
-        } else {
-            None
-        },
-        model_override: live.picks.chat.clone(),
-        model_source: if mode == MemoryMode::Endless {
-            chosen(inner, &live.picks).1.to_owned()
-        } else {
-            String::new()
-        },
-        effort: usable_effort(state.compactor().model(), chosen(inner, &live.picks).2),
-        effort_override: live.picks.chat_effort.clone(),
-        spend_today_usd,
-    })
+        });
+    }
+    out.tools_pending = inner
+        .tool_pins
+        .lock()
+        .get(&session)
+        .is_some_and(|p| p.pending);
+    Ok(out)
+}
+
+/// 201 §4.2: `cfg` with the desk agent's `tail_*:` keys for `session`
+/// applied (below the session's own override, which `tail_status` and
+/// `Endless::tail_marks` apply on top).
+pub(crate) fn with_agent_tail(
+    inner: &Inner,
+    session: SessionId,
+    cfg: &EndlessConfig,
+) -> EndlessConfig {
+    match inner.agent_tails.lock().get(&session) {
+        Some(a) => cfg.with_agent_tail(a),
+        None => cfg.clone(),
+    }
 }
 
 /// RFC 3339 start of the current UTC day (`model_calls.created_at` is UTC RFC 3339).
@@ -2685,13 +4465,16 @@ pub(crate) async fn fold_all(inner: &Inner, session: SessionId) -> anyhow::Resul
     let node_bytes = state.cfg.read().node_bytes;
     let nodes: Vec<Node> = {
         let live = state.live.lock();
-        if live.running.iter().any(|k| k.0 == 0) {
-            state.cancel_calls();
-        }
-        (live.base.min(live.t())..live.t())
+        let nodes: Vec<Node> = (live.base.min(live.t())..live.t())
             .filter(|i| !live.tree.built(0, *i))
             .map(|i| mechanical_node(&live.units[i as usize], node_bytes))
-            .collect()
+            .collect();
+        // 201 P1: a drafting session has nothing to fold (every unit has
+        // its draft); its refinement calls go on.
+        if !nodes.is_empty() && live.running.iter().any(|k| k.0 == 0) {
+            state.cancel_calls();
+        }
+        nodes
     };
     // R1-8: a model line that landed since the snapshot is kept, never overwritten.
     state.store.endless_nodes_put_new(session, &nodes).await?;
@@ -2702,7 +4485,7 @@ pub(crate) async fn fold_all(inner: &Inner, session: SessionId) -> anyhow::Resul
             if !live.tree.built(0, node.i) {
                 live.failed.remove(&(0, node.i));
                 live.reported.remove(&(0, node.i));
-                live.tree.insert(node);
+                live.put(node);
             }
         }
         live.invalidate();
@@ -2989,6 +4772,7 @@ pub(crate) async fn finish_for_tests(
         &model,
         &cancel,
         false,
+        None,
     )
     .await;
 }
@@ -3012,6 +4796,14 @@ pub(crate) fn running_for_tests(inner: &Inner, session: SessionId) -> Vec<(u8, u
     let mut v: Vec<_> = state.live.lock().running.iter().copied().collect();
     v.sort();
     v
+}
+
+/// Test seam: mark `key` as a job in flight (its result comes through
+/// [`finish_for_tests`]); the pump does not schedule it meanwhile.
+#[cfg(test)]
+pub(crate) fn mark_running_for_tests(inner: &Inner, session: SessionId, key: (u8, u64)) {
+    let state = state_of(inner, session).expect("attached");
+    state.live.lock().running.insert(key);
 }
 
 #[cfg(test)]
@@ -3187,12 +4979,12 @@ mod tests {
     #[tokio::test]
     async fn local_gate_serves_the_frontier_first() {
         let gate = Gate::new(1);
-        let held = gate.acquire(0).await;
+        let held = gate.acquire(0, Some(ME)).await;
         let order = Arc::new(Mutex::new(Vec::new()));
         let waiter = |name: &'static str, priority: u8| {
             let (gate, order) = (gate.clone(), order.clone());
             tokio::spawn(async move {
-                let _p = gate.acquire(priority).await;
+                let _p = gate.acquire(priority, Some(ME)).await;
                 order.lock().push(name);
                 tokio::task::yield_now().await;
             })
@@ -3200,7 +4992,7 @@ mod tests {
         let gone = {
             let gate = gate.clone();
             tokio::spawn(async move {
-                let _p = gate.acquire(1).await;
+                let _p = gate.acquire(1, Some(ME)).await;
                 unreachable!("aborted before the permit");
             })
         };
@@ -3229,12 +5021,12 @@ mod tests {
     #[tokio::test]
     async fn local_gate_ages_the_oldest_waiter_in() {
         let gate = Gate::new(1);
-        let held = gate.acquire(1).await; // grant 1
+        let held = gate.acquire(1, Some(ME)).await; // grant 1
         let order = Arc::new(Mutex::new(Vec::new()));
         let waiter = |name: &'static str, priority: u8| {
             let (gate, order) = (gate.clone(), order.clone());
             tokio::spawn(async move {
-                let _p = gate.acquire(priority).await;
+                let _p = gate.acquire(priority, Some(ME)).await;
                 order.lock().push(name);
                 tokio::task::yield_now().await;
             })
@@ -3251,5 +5043,155 @@ mod tests {
         }
         // Grants 2 and 3 by priority, grant 4 to the oldest, then priority again.
         assert_eq!(*order.lock(), ["f1", "f2", "merge", "f3", "f4"]);
+    }
+
+    /// One session for the gate tests that predate 201 P3's run rule.
+    const ME: SessionId = SessionId(uuid::Uuid::nil());
+
+    /// 201 §6 (P3): a local gate keeps serving the session it served last
+    /// for up to `RUN_MAX` grants (its prompt prefix), then yields to the
+    /// other session's waiter even though that one queued first.
+    #[tokio::test]
+    async fn local_gate_keeps_the_last_session_for_a_run() {
+        let gate = Gate::new(1);
+        let (a, b) = (
+            SessionId(uuid::Uuid::from_u128(1)),
+            SessionId(uuid::Uuid::from_u128(2)),
+        );
+        let held = gate.acquire(1, Some(a)).await; // a's run: 1
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let waiter = |name: String, s: Option<SessionId>| {
+            let (gate, order) = (gate.clone(), order.clone());
+            tokio::spawn(async move {
+                let _p = gate.acquire(1, s).await;
+                order.lock().push(name);
+                tokio::task::yield_now().await;
+            })
+        };
+        let mut tasks = vec![waiter("b0".into(), Some(b))];
+        tokio::task::yield_now().await;
+        for k in 0..10 {
+            tasks.push(waiter(format!("a{k}"), Some(a)));
+            tokio::task::yield_now().await;
+        }
+        drop(held);
+        for t in tasks {
+            t.await.unwrap();
+        }
+        // a's run reaches RUN_MAX (8) with a6, then b0, then the rest of a.
+        let want: Vec<String> = [
+            "a0", "a1", "a2", "a3", "a4", "a5", "a6", "b0", "a7", "a8", "a9",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(*order.lock(), want);
+    }
+
+    /// R2-5: a meeting's waiter (no owner) is served in the pre-201 order —
+    /// a drafting session's run does not overtake it.
+    #[tokio::test]
+    async fn local_gate_keeps_meeting_calls_in_order() {
+        let gate = Gate::new(1);
+        let a = SessionId(uuid::Uuid::from_u128(1));
+        let held = gate.acquire(1, Some(a)).await;
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let waiter = |name: String, s: Option<SessionId>| {
+            let (gate, order) = (gate.clone(), order.clone());
+            tokio::spawn(async move {
+                let _p = gate.acquire(1, s).await;
+                order.lock().push(name);
+                tokio::task::yield_now().await;
+            })
+        };
+        let mut tasks = vec![waiter("m0".into(), None)];
+        tokio::task::yield_now().await;
+        for k in 0..3 {
+            tasks.push(waiter(format!("a{k}"), Some(a)));
+            tokio::task::yield_now().await;
+        }
+        drop(held);
+        for t in tasks {
+            t.await.unwrap();
+        }
+        let want: Vec<String> = ["m0", "a0", "a1", "a2"].map(String::from).to_vec();
+        assert_eq!(*order.lock(), want);
+    }
+
+    fn with_window(id: &str, context: u32) -> models::Resolved {
+        let mut r = resolved_for_tests(id);
+        let limit = models::Limit {
+            context,
+            ..Default::default()
+        };
+        r.model = Some(models::Model {
+            id: "m".into(),
+            name: "m".into(),
+            limit,
+            cost: None,
+            reasoning: false,
+            tool_call: true,
+            image: false,
+            reasoning_options: vec![],
+            protocol: None,
+            canonical: None,
+        });
+        r
+    }
+
+    /// 201 §7.1 (P3): `auto` is small for a local model and a 16k window,
+    /// standard for a large or unknown cloud window; explicit picks hold.
+    #[test]
+    fn auto_profile_follows_locality_and_window() {
+        let big = with_window("cloud/big", 200_000);
+        let small = with_window("cloud/small", 16_000);
+        let unknown = resolved_for_tests("cloud/unknown");
+        assert_eq!(resolve_profile(Profile::Auto, &big, true).0, Profile::Small);
+        assert_eq!(
+            resolve_profile(Profile::Auto, &small, false).0,
+            Profile::Small
+        );
+        assert_eq!(
+            resolve_profile(Profile::Auto, &big, false).0,
+            Profile::Standard
+        );
+        assert_eq!(
+            resolve_profile(Profile::Auto, &unknown, false).0,
+            Profile::Standard
+        );
+        assert_eq!(
+            resolve_profile(Profile::Small, &big, false).0,
+            Profile::Small
+        );
+        assert_eq!(
+            resolve_profile(Profile::Standard, &small, true).0,
+            Profile::Standard
+        );
+    }
+
+    /// 201 R1-7: a store read racing `start_generation` never writes the
+    /// older generation back over the newer cached one.
+    #[test]
+    fn a_stored_generation_fills_only_an_empty_cache() {
+        let gen_of = |n: u32| Generation {
+            n,
+            t_cut: 0,
+            first_seq: 0,
+            render: ViewRender {
+                blocks: Vec::new(),
+                settled: true,
+                unbuilt: 0,
+                folded: 0,
+            },
+            ledger: None,
+            zooms: 0,
+            created_at: chrono::Utc::now(),
+        };
+        let mut slot = None;
+        assert_eq!(fill_gen_cache(&mut slot, gen_of(1)).n, 1);
+        assert_eq!(slot.as_ref().map(|g| g.n), Some(1));
+        // `start_generation` set 3 while the read of 2 was in flight.
+        let mut slot = Some(gen_of(3));
+        assert_eq!(fill_gen_cache(&mut slot, gen_of(2)).n, 3);
+        assert_eq!(slot.as_ref().map(|g| g.n), Some(3));
     }
 }

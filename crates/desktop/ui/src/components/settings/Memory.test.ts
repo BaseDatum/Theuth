@@ -6,6 +6,11 @@ import { expect, test, vi } from 'vitest'
 import type * as Combobox from '@/components/chat/ModelCombobox'
 import type { Effort } from '@/components/chat/ModelPicker'
 import type * as Rpc from '@/lib/rpc'
+import type * as SelectUi from '@/components/ui/select'
+import type * as SwitchUi from '@/components/ui/switch'
+import type * as Shared from './shared'
+import type * as Connection from '@/store/connection'
+import { tailPairError } from '@/lib/endless'
 import type { EndlessConfig } from "@/rpc/bindings/method.agent.output"
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { tokenEstimate } from '@/lib/endless'
@@ -20,13 +25,43 @@ vi.mock('@/components/chat/ModelCombobox', async (original) => {
   return { ...m, ModelCombobox: (p: Parameters<typeof m.ModelCombobox>[0]) => (pickers.push(p), createElement(m.ModelCombobox, p)) }
 })
 
+// 201: what each control was given, by its aria-label (selects by `name`), so a test can fire it without a DOM.
+type Fire = { onCommit?(v: number): void; onCheckedChange?(v: boolean): void; onValueChange?(v: string): void; action?: { mutate(n: number): void } }
+const controls = vi.hoisted(() => ({}) as Record<string, Fire>)
+vi.mock('./shared', async (original) => {
+  const m = await original<typeof Shared>()
+  return {
+    ...m,
+    Count: (p: Parameters<typeof m.Count>[0]) => ((controls[p['aria-label'] ?? ''] = p), createElement(m.Count, p)),
+    Range: (p: Parameters<typeof m.Range>[0]) => ((controls[p['aria-label']] = p), createElement(m.Range, p)),
+  }
+})
+vi.mock('@/components/ui/switch', async (original) => {
+  const m = await original<typeof SwitchUi>()
+  return { ...m, Switch: (p: Parameters<typeof m.Switch>[0]) => ((controls[p['aria-label'] ?? ''] = p as Fire), createElement(m.Switch, p)) }
+})
+vi.mock('@/components/ui/select', async (original) => {
+  const m = await original<typeof SelectUi>()
+  return { ...m, Select: (p: Parameters<typeof m.Select>[0]) => (p.name && (controls[`select:${p.name}`] = p as Fire), createElement(m.Select, p)) }
+})
+const saved = vi.fn(async (next: EndlessConfig) => next)
+
 const config: EndlessConfig = receiveComponent("method.agent.output.EndlessConfig", { default_chat: true, default_desk: true, default_meeting: false, view_bytes: 128_000, meeting_view_bytes: 32_000, node_bytes: 512, slack: 0.25, settle_secs: 60, jobs: 8, tries: 5, retry_secs: 10, cap_chars: 30_000, backfill_max_units: 2_000, model: null })
 let served: EndlessConfig = config
 let listed: ModelInfo[] = []
 
+// The connection info the page reads (a server render only sees zustand's initial state, so the test overrides `info` here).
+const conn = vi.hoisted(() => ({ info: null as object | null }))
+vi.mock('@/store/connection', async (original) => {
+  const m = await original<typeof Connection>()
+  const live = m.useConnection
+  const hook = (selector: (s: object) => unknown = (s) => s) => selector(conn.info ? { ...live.getState(), info: conn.info } : live.getState())
+  for (const k of ['getState', 'getInitialState', 'setState', 'subscribe'] as const) Object.defineProperty(hook, k, { get: () => live[k] })
+  return { ...m, useConnection: hook }
+})
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
-  useApi: () => ({ endless_settings_get: async () => served, list_models: async () => listed, title_model: async () => ({ id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5' }) }),
+  useApi: () => ({ endless_settings_get: async () => served, endless_settings_set: saved, list_models: async () => listed, title_model: async () => ({ id: 'anthropic/claude-haiku-4-5', name: 'Claude Haiku 4.5' }) }),
 }))
 
 async function render(): Promise<string> {
@@ -38,10 +73,10 @@ async function render(): Promise<string> {
 }
 
 test('token estimate: bytes ÷ 3, in thousands', () => {
-  expect([tokenEstimate(64_000), tokenEstimate(16_000), tokenEstimate(256_000)]).toEqual(['≈ 21 k tokens', '≈ 5 k tokens', '≈ 85 k tokens'])
+  expect([tokenEstimate(64_000), tokenEstimate(16_000), tokenEstimate(256_000)]).toEqual(['about 21 k tokens', 'about 5 k tokens', 'about 85 k tokens'])
 })
 
-test('the page reads agent.endless: switches, sliders and the settle count show the stored values; the compactor row offers "Same as the session"', async () => {
+test('the page reads agent.endless: switches and sliders show the stored values; the settle row is gone (201); the compactor row offers "Same as the session"', async () => {
   const html = await render()
   expect(html).toMatch(/aria-checked="true"[^>]*aria-label="New chats use fractal context"/)
   expect(html).toMatch(/aria-checked="true"[^>]*aria-label="Desks use fractal context"/)
@@ -51,11 +86,11 @@ test('the page reads agent.endless: switches, sliders and the settle count show 
   // The tab is labelled Context; its id and URL stay `memory` so links keep working.
   expect(agent.tabs.find((t) => t.id === 'memory')?.label).toBe('Context')
   expect(html).toContain('View size · <span class="tabular-nums">128 KB</span>')
-  expect(html).toContain('≈ 43 k tokens')
+  expect(html).toContain('about 43 k tokens')
   expect(html).toMatch(/<input type="range" aria-label="View size in KB"[^>]*min="16" max="256" step="8" value="128"/)
   expect(html).toContain('Slack · <span class="tabular-nums">25 %</span>')
   expect(html).toMatch(/<input type="range" aria-label="Slack in percent"[^>]*min="0" max="50" step="2.5" value="25"/)
-  expect(html).toMatch(/<input[^>]*type="number"[^>]*min="5" max="180" value="60"/)
+  expect(html).not.toContain('Settle seconds')
   expect(html).toContain('Same as title model · anthropic/claude-haiku-4-5')
   expect(html).not.toContain('Same as the session')
   expect(html).toContain('copy · grounding · status · format — always on')
@@ -140,4 +175,103 @@ test('194: the compactor picker carries the picked model’s effort chips at age
   expect(compactor()?.effort?.levels).toEqual(['low', 'high'])
   expect(compactor()?.effort?.current).toBe('high')
   expect(html).toContain('Claude Haiku 5.5 · high')
+})
+
+/** Fires `fire` and returns the config the page wrote. */
+async function written(fire: () => void): Promise<EndlessConfig> {
+  saved.mockClear()
+  fire()
+  await vi.waitFor(() => expect(saved).toHaveBeenCalledTimes(1))
+  return saved.mock.calls[0]![0]
+}
+
+test('201 §12.1: every new key has a control on the page, and each control patches its own field', async () => {
+  await render()
+  const c = (label: string) => controls[label] ?? expect.fail(`no control "${label}"`)
+  const fixed: [keyof EndlessConfig, () => void, unknown][] = [
+    ['tail_mode', () => c('select:tail_mode').onValueChange?.('scaled'), 'scaled'],
+    ['tail_low_bytes', () => c('Kept after a trim in KB').onCommit?.(32), 32_000],
+    ['tail_high_bytes', () => c('Trim at in KB').onCommit?.(96), 96_000],
+    ['cold_after_secs', () => c('Trim early when idle in seconds').action?.mutate(600), 600],
+    ['merge_at', () => c('Start merging at in percent').onCommit?.(80), 0.8],
+    ['profile', () => c('select:profile').onValueChange?.('small'), 'small'],
+    ['describe_images', () => c('Describe images').onCheckedChange?.(false), 'off'],
+    ['ledger', () => c('Keep a state ledger').onCheckedChange?.(false), false],
+    ['ledger_bytes', () => c('Ledger size in KB').action?.mutate(8), 8_000],
+    ['ledger_suggestions', () => c('Show summary-model suggestions').onCheckedChange?.(false), false],
+    ['prefetch_bytes', () => c('Prefetch size in bytes').action?.mutate(0), 0],
+    ['age_by_use', () => c('Keep zoomed lines unmerged').onCheckedChange?.(false), false],
+  ]
+  for (const [key, fire, value] of fixed) expect((await written(fire))[key], key).toBe(value)
+  served = { ...config, tail_mode: 'scaled' }
+  await render()
+  served = config
+  const scaled: [keyof EndlessConfig, () => void, unknown][] = [
+    ['tail_low_share', () => c('Kept after a trim in percent').onCommit?.(15), 0.15],
+    ['tail_high_share', () => c('Trim at in percent').onCommit?.(40), 0.4],
+  ]
+  for (const [key, fire, value] of scaled) expect((await written(fire))[key], key).toBe(value)
+  const covered = new Set([...fixed, ...scaled].map(([k]) => k))
+  for (const key of ['tail_mode', 'tail_low_bytes', 'tail_high_bytes', 'tail_low_share', 'tail_high_share', 'cold_after_secs', 'profile', 'merge_at', 'ledger', 'ledger_bytes', 'ledger_suggestions', 'prefetch_bytes', 'age_by_use', 'describe_images'] as const) expect(covered.has(key), key).toBe(true)
+})
+
+test('201: the tail pair is checked in place — a high mark at or below the low one, or out of range, is named and never written', async () => {
+  expect(tailPairError('fixed', 24_000, 64_000)).toBeNull()
+  expect(tailPairError('fixed', 64_000, 64_000)).toBe('Trim at (64 KB) must be above Kept after a trim (64 KB).')
+  expect(tailPairError('fixed', 4_000, 64_000)).toBe('Kept after a trim must be 8 KB–256 KB.')
+  expect(tailPairError('scaled', 0.3, 0.2)).toBe('Trim at (20 %) must be above Kept after a trim (30 %).')
+  expect(tailPairError('scaled', 0.1, 0.7)).toBe('Trim at must be 5 %–60 %.')
+  await render()
+  // Two refused commits, then a valid one: only the valid pair reaches the engine.
+  const sent = await written(() => {
+    controls['Trim at in KB']?.onCommit?.(16)
+    controls['Kept after a trim in KB']?.onCommit?.(64)
+    controls['Trim at in KB']?.onCommit?.(128)
+  })
+  expect([sent.tail_low_bytes, sent.tail_high_bytes]).toEqual([24_000, 128_000])
+})
+
+test('201: the sizing mode shows its own pair — KB with token estimates when fixed, percent with the resolved KB for the default model when scaled; empty idle field = automatic', async () => {
+  const fixed = await render()
+  expect(fixed).toMatch(/<input type="range" aria-label="Kept after a trim in KB"[^>]*min="8" max="256" step="4" value="24"/)
+  expect(fixed).toMatch(/<input type="range" aria-label="Trim at in KB"[^>]*min="16" max="512" step="8" value="64"/)
+  expect(fixed).toContain('about 8 k tokens of the newest messages')
+  // Slack and Start merging at are percentages in every mode; only the tail pair must be absent.
+  expect(fixed).not.toContain('aria-label="Kept after a trim in percent"')
+  expect(fixed).not.toContain('aria-label="Trim at in percent"')
+  expect(fixed).toMatch(/<input[^>]*aria-label="Trim early when idle in seconds"[^>]*placeholder="automatic"/)
+  conn.info = { default_model: 'anthropic/big' }
+  listed = [{ ...lfm, id: 'anthropic/big', name: 'Big', provider: 'anthropic', context: 200_000, local: false }]
+  served = { ...config, tail_mode: 'scaled', tail_low_share: 0.1, tail_high_share: 0.25 }
+  const scaled = await render()
+  served = config
+  listed = []
+  conn.info = null
+  expect(scaled).toMatch(/<input type="range" aria-label="Kept after a trim in percent"[^>]*min="2" max="40" step="1" value="10"/)
+  expect(scaled).toMatch(/<input type="range" aria-label="Trim at in percent"[^>]*min="5" max="60" step="1" value="25"/)
+  expect(scaled).toContain('· about 60 KB')
+  expect(scaled).toContain('· about 150 KB')
+  // R3-13: no PDF promise; the suggestions text describes the cue list on the user's own messages.
+  expect(scaled).not.toContain('PDF')
+  expect(scaled).toContain('Phrases in your own messages that read as a decision or a constraint are offered')
+  expect(scaled).toContain(' on Big')
+  expect(scaled).not.toContain('aria-label="Kept after a trim in KB"')
+  expect(scaled).not.toContain('aria-label="Trim at in KB"')
+})
+
+test('201: Automatic names what it resolves to for the summary model; the ledger switch gates its suggestions', async () => {
+  // The suggestions switch, whatever order the server renderer puts its attributes in.
+  const suggestions = (html: string) => html.match(/<button[^>]*aria-label="Show summary-model suggestions"[^>]*>/)?.[0] ?? ''
+  served = { ...config, model: lfm.id, ledger: false }
+  listed = [lfm]
+  const html = await render()
+  served = { ...config, ledger: true }
+  listed = []
+  const on = await render()
+  served = config
+  expect(html).toContain('Automatic · small, because the model is local')
+  expect(suggestions(html)).toMatch(/role="switch"/)
+  expect(suggestions(html)).toMatch(/ disabled=""/)
+  expect(suggestions(on)).toMatch(/role="switch"/)
+  expect(suggestions(on)).not.toMatch(/ disabled=""/)
 })

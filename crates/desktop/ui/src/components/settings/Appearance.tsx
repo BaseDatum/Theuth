@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { Row, Section } from '@/components/settings/shared'
+import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { useBoards } from '@/lib/boards'
 import { useNudges } from '@/lib/nudges'
+import { LINGER_MAX_HOURS, useLinger } from '@/lib/sidebar-linger'
 import { type Theme, currentTheme, setTheme } from '@/lib/theme'
 import { useToolRuns } from '@/lib/tool-runs'
 
@@ -60,6 +62,42 @@ export function Appearance() {
           <Switch checked={showNudges} onCheckedChange={useNudges.getState().setShow} />
         </Row>
       </Section>
+      <Section title="Sidebar">
+        <Row
+          label="Keep recently active sessions in Active for"
+          description="A chat that stops working stays at the bottom of Active this long, then files back under its project. 0 turns this off."
+        >
+          <LingerHours />
+        </Row>
+      </Section>
     </>
+  )
+}
+
+/** Hours field: a draft while typing, saved on every valid number (whole or fractional, 0 – one week). */
+function LingerHours() {
+  const hours = useLinger((s) => s.hours)
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <div className="flex items-center gap-2">
+      <Input
+        type="number"
+        inputMode="decimal"
+        min={0}
+        max={LINGER_MAX_HOURS}
+        step={1}
+        className="w-20"
+        aria-label="Hours to keep recently active sessions in Active"
+        value={draft ?? String(hours)}
+        onChange={(e) => {
+          const v = e.target.value
+          setDraft(v)
+          const n = Number(v)
+          if (v.trim() !== '' && Number.isFinite(n) && n >= 0) useLinger.getState().setHours(n)
+        }}
+        onBlur={() => setDraft(null)}
+      />
+      <span className="text-sm text-fg-secondary">hours</span>
+    </div>
   )
 }

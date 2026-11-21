@@ -28,13 +28,22 @@ struct FrontMatter {
     memory: Option<String>,
     isolated_memory: Option<bool>,
     view_bytes: Option<u32>,
+    tail_mode: Option<String>,
+    /// R3-12: read as a number and refused unless whole (a clear reason, not
+    /// a front-matter type error).
+    tail_low_bytes: Option<f64>,
+    tail_high_bytes: Option<f64>,
+    tail_low_share: Option<f64>,
+    tail_high_share: Option<f64>,
+    profile: Option<String>,
     memory_model: Option<String>,
     memory_effort: Option<String>,
 }
 
 /// Parse one file's text as the agent `name`. `Err` is the user-facing reason
 /// (`agent name …`, `front matter: …`, `budget: …`, `tools: …`, `runs_in: …`,
-/// `memory: …`, `view_bytes: …`, `empty charter`, `theuth is reserved`).
+/// `memory: …`, `view_bytes: …`, `tail_…: …`, `profile: …`, `empty charter`,
+/// `theuth is reserved`).
 pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
     let name = AgentName::new(name)?;
     if name.as_str() == AgentName::DEFAULT {
@@ -77,6 +86,56 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
     {
         return Err(format!("view_bytes: expected 16000..=256000, got {b}"));
     }
+    // 201 §4.2 / §7.1: the tail keys within the `agent.endless` ranges; a pair
+    // given in full must have its high mark above its low one.
+    let tail_mode = trimmed(fm.tail_mode)
+        .map(|m| {
+            m.parse::<agent::TailMode>()
+                .map_err(|_| format!("tail_mode: expected fixed|scaled, got {m:?}"))
+        })
+        .transpose()?;
+    let profile = trimmed(fm.profile)
+        .map(|p| {
+            p.parse::<agent::Profile>()
+                .map_err(|_| format!("profile: expected auto|standard|small, got {p:?}"))
+        })
+        .transpose()?;
+    let whole = |key: &str, v: Option<f64>, lo: u32, hi: u32| -> Result<Option<u32>, String> {
+        let Some(v) = v else { return Ok(None) };
+        if v.fract() != 0.0 || !v.is_finite() {
+            return Err(format!("{key}: expected a whole number of bytes, got {v}"));
+        }
+        if !(f64::from(lo)..=f64::from(hi)).contains(&v) {
+            return Err(format!("{key}: expected {lo}..={hi}, got {v}"));
+        }
+        Ok(Some(v as u32))
+    };
+    let tail_low_bytes = whole("tail_low_bytes", fm.tail_low_bytes, 8_000, 256_000)?;
+    let tail_high_bytes = whole("tail_high_bytes", fm.tail_high_bytes, 16_000, 512_000)?;
+    for (key, v, lo, hi) in [
+        ("tail_low_share", fm.tail_low_share, 0.02, 0.40),
+        ("tail_high_share", fm.tail_high_share, 0.05, 0.60),
+    ] {
+        if let Some(v) = v
+            && !(lo..=hi).contains(&v)
+        {
+            return Err(format!("{key}: expected {lo}..={hi}, got {v}"));
+        }
+    }
+    if let (Some(lo), Some(hi)) = (tail_low_bytes, tail_high_bytes)
+        && hi <= lo
+    {
+        return Err(format!(
+            "tail_high_bytes: {hi} must be above tail_low_bytes {lo}"
+        ));
+    }
+    if let (Some(lo), Some(hi)) = (fm.tail_low_share, fm.tail_high_share)
+        && hi <= lo
+    {
+        return Err(format!(
+            "tail_high_share: {hi} must be above tail_low_share {lo}"
+        ));
+    }
     Ok(AgentFile {
         title: trimmed(fm.title).unwrap_or_else(|| name.as_str().to_owned()),
         name,
@@ -98,6 +157,12 @@ pub fn parse(name: &str, text: &str) -> Result<AgentFile, String> {
         memory,
         isolated_memory: fm.isolated_memory.unwrap_or(false),
         view_bytes: fm.view_bytes,
+        tail_mode,
+        tail_low_bytes,
+        tail_high_bytes,
+        tail_low_share: fm.tail_low_share,
+        tail_high_share: fm.tail_high_share,
+        profile,
         memory_model: trimmed(fm.memory_model),
         memory_effort: trimmed(fm.memory_effort),
         body: body.to_owned(),
@@ -155,6 +220,24 @@ pub fn render(f: &AgentFile) -> String {
     }
     if let Some(b) = f.view_bytes {
         s.push_str(&format!("view_bytes: {b}\n"));
+    }
+    if let Some(m) = f.tail_mode {
+        s.push_str(&format!("tail_mode: {m}\n"));
+    }
+    if let Some(b) = f.tail_low_bytes {
+        s.push_str(&format!("tail_low_bytes: {b}\n"));
+    }
+    if let Some(b) = f.tail_high_bytes {
+        s.push_str(&format!("tail_high_bytes: {b}\n"));
+    }
+    if let Some(v) = f.tail_low_share {
+        s.push_str(&format!("tail_low_share: {v}\n"));
+    }
+    if let Some(v) = f.tail_high_share {
+        s.push_str(&format!("tail_high_share: {v}\n"));
+    }
+    if let Some(p) = f.profile {
+        s.push_str(&format!("profile: {p}\n"));
     }
     if let Some(m) = &f.memory_model {
         s.push_str(&format!("memory_model: {}\n", m.trim()));
@@ -256,6 +339,12 @@ pub fn default_agent(data_dir: &Path, model: Option<String>) -> AgentFile {
         memory: None,
         isolated_memory: false,
         view_bytes: None,
+        tail_mode: None,
+        tail_low_bytes: None,
+        tail_high_bytes: None,
+        tail_low_share: None,
+        tail_high_share: None,
+        profile: None,
         memory_model: None,
         memory_effort: None,
         body: body.to_owned(),
@@ -432,6 +521,59 @@ mod tests {
     }
 
     #[test]
+    fn tail_keys() {
+        // 201 §4.2 / §7.1: absent → inherit; every key parsed and round-tripped.
+        let none = parse("ops", "Ops.").unwrap();
+        assert_eq!((none.tail_mode, none.profile), (None, None));
+        let f = parse(
+            "ops",
+            "---\ntail_mode: scaled\ntail_low_bytes: 20000\ntail_high_bytes: 80000\n\
+             tail_low_share: 0.05\ntail_high_share: 0.3\nprofile: small\n---\nOps.",
+        )
+        .unwrap();
+        assert_eq!(f.tail_mode, Some(agent::TailMode::Scaled));
+        assert_eq!(
+            (f.tail_low_bytes, f.tail_high_bytes),
+            (Some(20_000), Some(80_000))
+        );
+        assert_eq!(
+            (f.tail_low_share, f.tail_high_share),
+            (Some(0.05), Some(0.3))
+        );
+        assert_eq!(f.profile, Some(agent::Profile::Small));
+        assert_eq!(parse("ops", &render(&f)).unwrap(), f);
+        // Refusals: an unknown value, a range, and a pair whose high is not above its low.
+        for (text, key) in [
+            ("tail_mode: wide", "tail_mode: "),
+            ("profile: tiny", "profile: "),
+            ("tail_low_bytes: 1000", "tail_low_bytes: "),
+            ("tail_high_share: 0.9", "tail_high_share: "),
+            // R3-12: a byte mark that is not a whole number.
+            (
+                "tail_low_bytes: 24000.5",
+                "tail_low_bytes: expected a whole number",
+            ),
+            (
+                "tail_low_bytes: 64000\ntail_high_bytes: 64000",
+                "tail_high_bytes: ",
+            ),
+            (
+                "tail_low_share: 0.3\ntail_high_share: 0.2",
+                "tail_high_share: ",
+            ),
+        ] {
+            let e = parse("ops", &format!("---\n{text}\n---\nOps.")).unwrap_err();
+            assert!(e.starts_with(key), "{text}: {e}");
+        }
+        let e = parse(
+            "ops",
+            "---\ntail_low_bytes: 64000\ntail_high_bytes: 32000\n---\nOps.",
+        )
+        .unwrap_err();
+        assert!(e.contains("32000") && e.contains("64000"), "{e}");
+    }
+
+    #[test]
     fn render_parse_round_trip() {
         let f = AgentFile {
             name: AgentName::new("ops").unwrap(),
@@ -455,6 +597,12 @@ mod tests {
             memory: Some(agent::MemoryMode::Endless),
             isolated_memory: true,
             view_bytes: Some(96_000),
+            tail_mode: Some(agent::TailMode::Fixed),
+            tail_low_bytes: Some(16_000),
+            tail_high_bytes: Some(48_000),
+            tail_low_share: Some(0.1),
+            tail_high_share: Some(0.25),
+            profile: Some(agent::Profile::Standard),
             memory_model: Some("anthropic/claude-haiku-5-5".into()),
             memory_effort: Some("8000".into()),
             body: "You are Ops.\n\nYour charter is production.".into(),

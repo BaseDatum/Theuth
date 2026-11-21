@@ -8,8 +8,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
-import { useHarnesses, useMcpServers, useModels } from './queries'
-import { type Draft, EFFORTS, TOOLS } from './wizard'
+import type { CompactorProfile, TailMode } from '@/rpc/bindings/method.roster.input'
+import { useEndlessSettings, useHarnesses, useMcpServers, useModels } from './queries'
+import { type Draft, EFFORTS, TOOLS, tailError } from './wizard'
 
 // Radix Select refuses '' as a value.
 const NONE = '__none'
@@ -70,6 +71,20 @@ export function RuntimeFields({ d, set, memoryError }: { d: Draft; set: Setter; 
           effort={memory && memory.efforts.length > 0 ? { levels: memory.efforts, current: d.memory_effort, onSelect: (level) => set('memory_effort', level ?? undefined) } : undefined}
         />
       </Field>
+      <TailFields d={d} set={set} />
+      <Field label="Compactor profile" id="rt-profile" hint="How its desk's summaries are written: Small for tiny or local models, Standard otherwise, Automatic picks by model. Default = Settings › Context.">
+        <Select value={d.profile ?? NONE} onValueChange={(v) => set('profile', v === NONE ? undefined : (v as CompactorProfile))}>
+          <SelectTrigger id="rt-profile" size="sm" className="w-full" aria-label="Compactor profile">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NONE}>Use default</SelectItem>
+            <SelectItem value="auto">Automatic</SelectItem>
+            <SelectItem value="standard">Standard</SelectItem>
+            <SelectItem value="small">Small</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
       <Field label="Tools ceiling" id="rt-tools" hint="The riskiest tool class it and its children may call; inherited downwards.">
         <Select value={d.tools ?? NONE} onValueChange={(v) => set('tools', v === NONE ? null : v)}>
           <SelectTrigger id="rt-tools" size="sm" className="w-full">
@@ -123,6 +138,60 @@ export function RuntimeFields({ d, set, memoryError }: { d: Draft; set: Setter; 
         </p>
       </div>
     </div>
+  )
+}
+
+/** A tail mark field's text on the wire: KB as whole bytes (R3-12: a fraction makes the agent file unparsable), a
+ * percent as a share; `undefined` when empty or not a number. */
+export const tailWire = (raw: string, fixed: boolean): number | undefined =>
+  raw.trim() === '' || !Number.isFinite(Number(raw)) ? undefined : fixed ? Math.round(Number(raw) * 1000) : Number(raw) / 100
+
+/** 201 §12.1: the agent's own tail sizing — the mode, then that mode's two marks (KB or percent); empty = the default. Only the chosen mode's marks stay on file. */
+function TailFields({ d, set }: { d: Draft; set: Setter }) {
+  const mode = d.tail_mode ?? null
+  const fixed = mode === 'fixed'
+  const [lowKey, highKey] = fixed ? (['tail_low_bytes', 'tail_high_bytes'] as const) : (['tail_low_share', 'tail_high_share'] as const)
+  const toUi = (v: number | null | undefined) => (v == null ? '' : fixed ? String(v / 1000) : String(Math.round(v * 100)))
+  const error = tailError(d, useEndlessSettings().data) ?? undefined
+  const unit = fixed ? 'KB' : '%'
+  return (
+    <>
+      <Field label="Context tail" id="rt-tail-mode" hint="How much of its newest chat its desk reads word for word: a fixed size, or a share of the model's window. Default = Settings › Context.">
+        <Select
+          value={mode ?? NONE}
+          onValueChange={(v) => {
+            const next = v === NONE ? undefined : (v as TailMode)
+            set('tail_mode', next)
+            if (next !== 'fixed') {
+              set('tail_low_bytes', undefined)
+              set('tail_high_bytes', undefined)
+            }
+            if (next !== 'scaled') {
+              set('tail_low_share', undefined)
+              set('tail_high_share', undefined)
+            }
+          }}
+        >
+          <SelectTrigger id="rt-tail-mode" size="sm" className="w-full" aria-label="Context tail">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NONE}>Use default</SelectItem>
+            <SelectItem value="fixed">Fixed size</SelectItem>
+            <SelectItem value="scaled">Scaled to the model</SelectItem>
+          </SelectContent>
+        </Select>
+      </Field>
+      {mode && (
+        <Field label={`Kept after a trim · Trim at (${unit})`} id="rt-tail-low" hint={fixed ? 'Word for word after a trim, and where a trim is due. 8–256 and 16–512 KB; empty = default.' : "Shares of the model's turn allowance. 2–40 and 5–60 %; empty = default."} error={error}>
+          <div className="flex items-center gap-2">
+            <Input id="rt-tail-low" type="number" aria-label={`Kept after a trim in ${unit}`} className="h-8" value={toUi(d[lowKey])} onChange={(e) => set(lowKey, tailWire(e.target.value, fixed))} aria-invalid={!!error} />
+            <span className="text-fg-tertiary">–</span>
+            <Input type="number" aria-label={`Trim at in ${unit}`} className="h-8" value={toUi(d[highKey])} onChange={(e) => set(highKey, tailWire(e.target.value, fixed))} aria-invalid={!!error} />
+          </div>
+        </Field>
+      )}
+    </>
   )
 }
 

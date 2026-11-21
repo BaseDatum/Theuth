@@ -286,7 +286,10 @@ async fn pump_builds_tree_and_tools_answer() {
         endless.active(id),
         "no history before the mode: no backfill"
     );
-    assert!(endless.settle(id, Duration::from_secs(10)).await, "settled");
+    assert!(
+        endless.quiet_for_tests(id, Duration::from_secs(10)).await,
+        "settled"
+    );
 
     let render = endless.render_for_turn(id).await.unwrap();
     assert!(render.settled && render.unbuilt == 0);
@@ -301,8 +304,9 @@ async fn pump_builds_tree_and_tools_answer() {
         6 + 2,
         "six units, one line each under budget"
     );
+    // 201 P3: the two long units refine in one batch; merges are lazy.
     assert!(
-        *echo.calls.lock() >= 2,
+        *echo.calls.lock() >= 1,
         "the two long units needed the model"
     );
 
@@ -312,9 +316,9 @@ async fn pump_builds_tree_and_tools_answer() {
     assert!(mem.view.iter().all(|l| l.built));
     assert_eq!(mem.model, "fake/compactor");
     assert!(
-        mem.stats.calls >= 2
-            && mem.stats.input_tokens >= 2000
-            && mem.stats.cache_read_tokens >= 1800
+        mem.stats.calls >= 1
+            && mem.stats.input_tokens >= 1000
+            && mem.stats.cache_read_tokens >= 900
     );
     assert!(mem.backfill.is_none());
 
@@ -396,11 +400,10 @@ async fn history_backfills_then_activates_and_resumes_from_rows() {
         .await
         .unwrap();
     let mem = on.memory;
-    assert!(
-        mem.backfill.is_some_and(|b| b.total == 6) || endless.active(id),
-        "{mem:?}"
-    );
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    // 201 P1 (D5): every unit's draft is a line at ingest, so the backfill
+    // ends at once and the session is active right away.
+    assert!(mem.backfill.is_none() && endless.active(id), "{mem:?}");
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     assert!(endless.active(id), "covered → active");
     // Settle waits for the view only; let the merges above finish (6 + 3 + 1 nodes).
     for _ in 0..200 {
@@ -423,7 +426,7 @@ async fn history_backfills_then_activates_and_resumes_from_rows() {
     );
     endless.attach(id, attached()).await.unwrap();
     assert!(endless.active(id));
-    assert!(endless.settle(id, Duration::from_secs(5)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(5)).await);
     assert_eq!(store.endless_nodes(id).await.unwrap().len(), built_before);
     assert_eq!(*echo.calls.lock(), calls_before, "nothing rebuilt");
     assert_eq!(endless.resume_all().await.unwrap(), 1);
@@ -514,7 +517,7 @@ async fn backfill_cap_sets_base_and_keeps_raw_history_reachable() {
         "{:?}",
         on.memory.view
     );
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     assert!(endless.active(id));
     let r = endless.render_for_turn(id).await.unwrap();
     assert!(
@@ -668,7 +671,7 @@ async fn meeting_filter_session_is_served_but_never_active() {
         store.endless_meta(id).await.unwrap().filter,
         UnitFilter::Meeting
     );
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     assert!(!endless.active(id), "meetings never take the endless frame");
     let mem = endless.memory(id).await.unwrap();
     assert_eq!(
@@ -830,6 +833,8 @@ fn cfg_137f(model: Option<&str>) -> EndlessConfig {
         view_bytes: 16_000,
         retry_secs: 600,
         model: model.map(str::to_owned),
+        // 137F behaviour under test: a local compactor keeps `standard`.
+        profile: super::Profile::Standard,
         ..EndlessConfig::default()
     }
 }
@@ -866,7 +871,8 @@ async fn built_by(store: &Store, id: SessionId) -> Vec<Option<String>> {
         .await
         .unwrap()
         .into_iter()
-        .filter(|n| !n.free)
+        // 201 P3: a draft merge waits for `merge_at` (lazy); not a model's line.
+        .filter(|n| !n.free && !(n.l > 0 && n.mechanical))
         .map(|n| n.model)
         .collect()
 }
@@ -895,7 +901,7 @@ async fn settings_model_switch_is_live_and_resets_backoff() {
     );
     // The old failure backs off 600 s: a call to the new model is the reset's.
     until("a call to the new model", || b.calls() > 0).await;
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     let models = built_by(&store, id).await;
     assert!(
         !models.is_empty() && models.iter().all(|m| m.as_deref() == Some("fake/b")),
@@ -949,7 +955,7 @@ async fn switch_cancels_the_hung_call_and_rebuilds_on_the_new_model() {
     until("the hung call", || a.calls() == 1).await;
     endless.set_config(cfg_137f(Some("fake/b")));
     until("the drop", || a.dropped.load(Ordering::SeqCst) == 1).await;
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     assert!(
         built_by(&store, id)
             .await
@@ -968,8 +974,9 @@ async fn switch_cancels_the_hung_call_and_rebuilds_on_the_new_model() {
     assert_eq!(rows, ["cancelled"]);
 }
 
-/// E4: two failures of the frontier ⇒ `stalled` (blocking, next retry
-/// time), `settle` returns at once; a success clears it.
+/// E4 / 201 D5: two failures ⇒ `stalled` (failures, next retry time, not
+/// blocking: drafts leave no frontier); production `settle` never waits on
+/// the failing compactor; a success clears `stalled`.
 #[tokio::test]
 async fn repeated_frontier_failure_is_stalled_and_settle_stops_waiting() {
     let p = Probe::new("fake/a", Act::Fail);
@@ -981,19 +988,20 @@ async fn repeated_frontier_failure_is_stalled_and_settle_stops_waiting() {
     .await;
     let (key, ..) = super::pump::failed_for_tests(&endless.inner, id)[0];
     let one = endless.memory(id).await.unwrap().stalled.unwrap();
-    assert_eq!((one.failures, one.blocking), (1, true));
+    // 201 P1: drafts leave no frontier for a failure to block.
+    assert_eq!((one.failures, one.blocking), (1, false));
     assert_eq!(one.error, "400: model not loaded");
     assert_eq!(one.model, "fake/a");
     let t0 = Instant::now();
     assert!(
-        !endless.settle(id, Duration::from_millis(300)).await,
-        "one failure: settle still waits its time"
+        endless.settle(id, Duration::from_secs(45)).await,
+        "one failure: settle does not wait"
     );
-    assert!(t0.elapsed() >= Duration::from_millis(300));
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
 
     super::pump::finish_for_tests(&endless.inner, id, key, Err("400: again".into())).await;
     let s = endless.memory(id).await.unwrap().stalled.unwrap();
-    assert_eq!((s.failures, s.blocking), (2, true), "{s:?}");
+    assert_eq!((s.failures, s.blocking), (2, false), "{s:?}");
     assert_eq!(s.error, "400: again");
     let at = chrono::DateTime::parse_from_rfc3339(s.next_retry_at.as_deref().unwrap()).unwrap();
     assert!(
@@ -1001,8 +1009,10 @@ async fn repeated_frontier_failure_is_stalled_and_settle_stops_waiting() {
         "{at}"
     );
     let t0 = Instant::now();
-    assert!(!endless.settle(id, Duration::from_secs(45)).await);
+    assert!(endless.settle(id, Duration::from_secs(45)).await);
     assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    let s = endless.memory(id).await.unwrap().stalled.unwrap();
+    assert_eq!(s.failures, 2, "settle leaves the stall visible: {s:?}");
 
     p.set(Act::Echo);
     // 137G G6: the two long units failed together in one batch; both land.
@@ -1094,7 +1104,7 @@ async fn local_endpoint_is_one_queue_engine_wide() {
         }
         if local.is_some() {
             for id in &ids {
-                assert!(endless.settle(*id, Duration::from_secs(30)).await);
+                assert!(endless.quiet_for_tests(*id, Duration::from_secs(30)).await);
             }
             assert_eq!(p.max_inflight.load(Ordering::SeqCst), 1, "local");
         } else {
@@ -1132,7 +1142,7 @@ async fn panicking_job_releases_its_node_and_retries() {
     // Backoff 600 s: the retry is the RPC's.
     endless.retry(id).await.unwrap();
     assert!(
-        endless.settle(id, Duration::from_secs(10)).await,
+        endless.quiet_for_tests(id, Duration::from_secs(10)).await,
         "retried and built"
     );
     assert!(endless.memory(id).await.unwrap().stalled.is_none());
@@ -1160,10 +1170,14 @@ async fn local_compactor_receives_the_capped_view() {
             "note {k}: {}",
             "rotate the nginx worker and check error_log ".repeat(15)
         );
-        store.append(id, &ChatMessage::user(text)).await.unwrap();
+        // 201 P3: talk units (a long user message needs no model, D8).
+        store
+            .append(id, &ChatMessage::assistant(text))
+            .await
+            .unwrap();
     }
     endless.attach(id, attached()).await.unwrap();
-    assert!(endless.settle(id, Duration::from_secs(20)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(20)).await);
     let full = endless.render_for_turn(id).await.unwrap().text().len();
     assert!(full > 8_000, "the view outgrew the cap: {full}");
     let sent = p.ctx_lens.lock().clone();
@@ -1180,18 +1194,25 @@ async fn local_compactor_receives_the_capped_view() {
 #[tokio::test]
 async fn queued_merge_does_not_hold_back_the_frontier() {
     let p = Probe::with("fake/a", Act::Echo, Some("ep"), Duration::ZERO);
-    let (_dir, endless, store, id) = harness_for(cfg_137f(None), p.clone()).await;
+    let cfg = EndlessConfig {
+        merge_at: 0.5,
+        ..cfg_137f(None)
+    };
+    let (_dir, endless, store, id) = harness_for(cfg, p.clone()).await;
     let gate = super::pump::gate_for_tests(&endless.inner, "ep");
-    let held = gate.acquire(1).await;
+    let held = gate
+        .acquire(1, Some(runtime::SessionId(uuid::Uuid::nil())))
+        .await;
     store
         .set_session_memory(id, MemoryMode::Endless)
         .await
         .unwrap();
-    // Two free level-0 lines (≤ 512 B each) whose merge needs the model.
-    for tag in ["alpha", "beta"] {
+    // 24 free level-0 lines (≤ 512 B each) whose merges need the model; 201
+    // P3: together over `merge_at` × `view_bytes`, so merges are due.
+    for k in 0..24 {
         let text = format!(
-            "{tag}: {}",
-            "keep the nginx worker_processes line ".repeat(7)
+            "tag{k}: {}",
+            "keep the nginx worker_processes line ".repeat(11)
         );
         store.append(id, &ChatMessage::user(text)).await.unwrap();
     }
@@ -1204,10 +1225,14 @@ async fn queued_merge_does_not_hold_back_the_frontier() {
         "UNIT2 {}",
         "rotate the error_log and reload nginx now ".repeat(20)
     );
-    store.append(id, &ChatMessage::user(unit)).await.unwrap();
+    // A talk unit: a long user message needs no model (201 P3, D8).
+    store
+        .append(id, &ChatMessage::assistant(unit))
+        .await
+        .unwrap();
     endless.on_rows_committed(id);
     until("the frontier spawned beside the merge", || {
-        super::pump::running_for_tests(&endless.inner, id) == [(0, 2), (1, 0)]
+        super::pump::running_for_tests(&endless.inner, id) == [(0, 24), (1, 0)]
     })
     .await;
     assert_eq!(p.calls(), 0, "both wait at the held gate");
@@ -1218,27 +1243,26 @@ async fn queued_merge_does_not_hold_back_the_frontier() {
         inputs[0].contains("UNIT2"),
         "the frontier first: {inputs:?}"
     );
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
 }
 
-/// 137G G7 `endless_fold`: every unbuilt level-0 unit becomes a node at once
-/// with no model call — long units a flagged excerpt ≤ `node_bytes` (head
-/// and tail kept), short ones their free line; the hung level-0 call is
-/// cancelled (no failure); the view settles; recall still finds the rows;
-/// an epochs session is unchanged.
+/// 137G G7 `endless_fold`, 201 P1: every level-0 unit already has its line
+/// from ingest — long units a draft excerpt ≤ `node_bytes` (head and tail
+/// kept), short ones their free line — so the view is built before any
+/// model call; folding adds nothing and leaves the drafts to refinement;
+/// recall still finds the rows; an epochs session is unchanged.
 #[tokio::test]
-async fn fold_turns_the_backlog_into_mechanical_nodes_at_once() {
+async fn fold_adds_nothing_when_every_unit_already_has_its_draft_line() {
     let p = Probe::new("fake/a", Act::Hang);
     let (_dir, endless, store, id) = harness_for(cfg_137f(None), p.clone()).await;
     endless_session(&endless, &store, id).await;
     until("a call in flight", || p.calls() >= 1).await;
     let before = endless.memory(id).await.unwrap();
     let backlog = before.backlog.expect("a backlog");
-    // The two long units wait in the hung batch; the short ones are free lines.
+    // The two long drafts wait for refinement; the short ones are free lines.
     assert_eq!((backlog.lines, backlog.paused), (2, false), "{backlog:?}");
 
     let mem = endless.fold(id).await.unwrap();
-    assert!(mem.backlog.is_none(), "{:?}", mem.backlog);
     assert!(!mem.settling, "every part is a built line");
     let mech: Vec<_> = mem.view.iter().filter(|l| l.mechanical).collect();
     assert_eq!(mech.len(), 2, "{:?}", mem.view);
@@ -1246,7 +1270,9 @@ async fn fold_turns_the_backlog_into_mechanical_nodes_at_once() {
     for l in &mech {
         assert!(l.built && l.text.len() <= node_bytes, "{}", l.text.len());
         assert!(
-            l.text.contains(" … ") && l.text.contains("line 59"),
+            // 201 P3: the talk unit's mechanical cut, the echo's per-kind line.
+            (l.text.contains(" … ") || l.text.contains("(60 lines, 0 errors)"))
+                && l.text.contains("line 59"),
             "{}",
             l.text
         );
@@ -1258,17 +1284,12 @@ async fn fold_turns_the_backlog_into_mechanical_nodes_at_once() {
             .all(|l| l.built && !l.text.contains(" … ")),
         "short units stay verbatim free lines"
     );
-    until("the hung call cancelled", || {
-        p.dropped.load(Ordering::SeqCst) == 1
-    })
-    .await;
     assert!(super::pump::failed_for_tests(&endless.inner, id).is_empty());
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
     let stored = store.endless_nodes(id).await.unwrap();
     assert_eq!(
         stored
             .iter()
-            .filter(|n| n.mechanical && n.tries == 0)
+            .filter(|n| n.l == 0 && n.mechanical && n.tries == 0)
             .count(),
         2
     );
@@ -1309,7 +1330,7 @@ async fn pause_stops_calls_survives_reattach_and_resume_restarts() {
     assert_eq!(p.calls(), calls, "no call while paused");
     assert!(super::pump::failed_for_tests(&endless.inner, id).is_empty());
     let t0 = Instant::now();
-    assert!(!endless.settle(id, Duration::from_secs(30)).await);
+    assert!(!endless.quiet_for_tests(id, Duration::from_secs(30)).await);
     assert!(
         t0.elapsed() < Duration::from_secs(5),
         "settle does not wait"
@@ -1541,7 +1562,11 @@ async fn seed_many(store: &Store, id: SessionId, n: usize, bad: &[usize]) {
             "{mark}message {k}: deploy step {k} touched /srv/app/config_{k}.yaml and {}",
             "the rollout notes repeat here ".repeat(19)
         );
-        store.append(id, &ChatMessage::user(text)).await.unwrap();
+        // 201 P3: a talk unit (a long user message is final at ingest, D8).
+        store
+            .append(id, &ChatMessage::assistant(text))
+            .await
+            .unwrap();
     }
 }
 
@@ -1585,31 +1610,28 @@ async fn batches_settle_200_units_in_parallel_and_retry_a_bad_line_alone() {
     endless.attach(id, attached()).await.unwrap();
     let m = endless.memory(id).await.unwrap();
     let b = m.backlog.expect("a backlog");
-    let shown = m.view.iter().filter(|l| !l.built && l.n == 1).count() as u32;
     assert_eq!((b.lines, b.paused, b.eta_secs), (200, true, 0), "{b:?}");
-    assert!(shown > 0 && b.folded == 200 - shown, "{b:?} shown {shown}");
-    let folded_line = m
-        .view
-        .iter()
-        .find(|l| l.n > 1 && !l.built)
-        .expect("one folded line");
-    assert!(
-        folded_line
-            .text
-            .contains(&format!("({} lines not yet summarized", b.folded))
-    );
-    // R1-5: a folded run is no tree node — zoom refuses it, its text names recall only.
-    assert!(
-        endless
-            .zoom(id, folded_line.id, folded_line.n)
-            .await
-            .is_err()
-    );
-    assert!(folded_line.text.contains("recall") && !folded_line.text.contains("zoom"));
+    // 201 P1: every unit has its draft at ingest — no unsummarized run.
+    // 201 P3: a paused session still builds its draft merges, so the view
+    // folds with them instead of the hard-cap prefix line.
+    eventually("the paused view folds with draft merges", || async {
+        let m = endless.memory(id).await.unwrap();
+        m.view.iter().all(|l| l.built) && m.view.iter().any(|l| l.n > 1)
+    })
+    .await;
+    let m = endless.memory(id).await.unwrap();
+    let bytes: usize = m.view.iter().map(|l| l.text.len()).sum();
+    // The fold fits the 16 KB view budget (plus one line of slack).
+    assert!(bytes <= 16_000 + 1_024, "bounded view: {bytes} B");
 
     endless.pause(id, false).await.unwrap();
-    eventually("200 level-0 nodes", || async {
-        level0(&store, id).await.len() == 200
+    eventually("200 refined level-0 nodes", || async {
+        level0(&store, id)
+            .await
+            .iter()
+            .filter(|n| n.model.is_some())
+            .count()
+            == 200
     })
     .await;
     let batches = s.count("batch");
@@ -1642,6 +1664,8 @@ struct Picky {
     model: models::Resolved,
     error: &'static str,
     all: bool,
+    /// Calls whose step held `BAD`.
+    bad_calls: AtomicU32,
 }
 
 impl Picky {
@@ -1650,6 +1674,7 @@ impl Picky {
             model: super::pump::resolved_for_tests("fake/picky"),
             error,
             all,
+            bad_calls: AtomicU32::new(0),
         })
     }
 }
@@ -1661,6 +1686,9 @@ impl Compactor for Picky {
         convo: &'a [ChatMessage],
     ) -> BoxFuture<'a, Result<Reply, String>> {
         let step = step_text(convo);
+        if step.contains("BAD") && !step.contains("Merge these two lines") {
+            self.bad_calls.fetch_add(1, Ordering::SeqCst);
+        }
         let fail = !step.contains("Merge these two lines") && (self.all || step.contains("BAD"));
         let line = echo_line(convo);
         Box::pin(async move {
@@ -1716,46 +1744,69 @@ async fn mechanical(store: &Store, id: SessionId) -> Vec<u64> {
         .collect()
 }
 
-/// 137G G7 + R1-2 + R2-2: a unit folds mechanically only after three hard
-/// failures in a row (R2-2 a: an empty reply counts, whatever `classify`
-/// says), 10 minutes since the first, and another unit built since; before
-/// that it keeps retrying; then the frontier moves on, nothing stays failed.
+/// 137G G7 + R1-2 + R2-2, 201 P1: a unit that fails keeps its draft from
+/// ingest and never blocks another unit; after three hard failures in a row
+/// (R2-2 a: an empty reply counts), 10 minutes since the first and another
+/// unit built since, it is given up — its draft stays, no model line.
 #[tokio::test]
 async fn three_hard_failures_over_ten_minutes_fold_the_unit() {
-    let (_dir, endless, store, id) =
-        picky_session(Picky::new("compactor returned nothing", false), 2, &[1]).await;
+    let c = Picky::new("compactor returned nothing", false);
+    let (_dir, endless, store, id) = picky_session(c.clone(), 2, &[1]).await;
     until("three failures", || {
         super::pump::failed_for_tests(&endless.inner, id)
             .iter()
             .any(|(k, _, n)| *k == (0, 1) && *n >= 3)
     })
     .await;
-    eventually("the good unit built", || async {
-        level0(&store, id).await.iter().any(|n| n.i == 0)
+    eventually("the good unit refined", || async {
+        level0(&store, id)
+            .await
+            .iter()
+            .any(|n| n.i == 0 && n.model.is_some())
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        mechanical(&store, id).await,
+        [1],
+        "the bad unit keeps its draft"
+    );
     assert!(
-        mechanical(&store, id).await.is_empty(),
-        "under 10 minutes: no fold yet"
+        !endless
+            .quiet_for_tests(id, Duration::from_millis(200))
+            .await,
+        "under 10 minutes: still being refined"
     );
     super::pump::age_failures_for_tests(&endless.inner, id, Duration::from_secs(601));
-    eventually("the bad unit folds", || async {
-        mechanical(&store, id).await == [1]
+    assert!(
+        endless.quiet_for_tests(id, Duration::from_secs(10)).await,
+        "given up: nothing left to refine"
+    );
+    // Given up: no further call for the unit (retry_secs is 0 here). A call
+    // dispatched before the give-up may still reach the compactor; count
+    // only calls started once the unit is no longer running.
+    until("the last pre-give-up call finished", || {
+        !super::pump::running_for_tests(&endless.inner, id).contains(&(0, 1))
     })
     .await;
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
-    assert!(
-        super::pump::failed_for_tests(&endless.inner, id)
-            .iter()
-            .all(|(k, ..)| k.0 > 0),
-        "no level-0 failure left"
+    let calls = c.bad_calls.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        c.bad_calls.load(Ordering::SeqCst),
+        calls,
+        "no call after giving up"
     );
+    let bad = level0(&store, id)
+        .await
+        .into_iter()
+        .find(|n| n.i == 1)
+        .unwrap();
+    assert!(bad.mechanical && bad.model.is_none(), "{bad:?}");
 }
 
-/// R2-2 (b): an error that fails every unit (a revoked key, no credit, an
-/// unknown model) folds nothing however old — the session stays stalled,
-/// visibly, for Retry or a model switch.
+/// R2-2 (b), 201 P1: an error that fails every unit (a revoked key, no
+/// credit, an unknown model) never gives a unit up however old — every
+/// unit keeps its draft and the session stays stalled, visibly, for Retry
+/// or a model switch.
 #[tokio::test]
 async fn an_error_failing_every_unit_stalls_and_folds_nothing() {
     let (_dir, endless, store, id) = picky_session(
@@ -1771,12 +1822,23 @@ async fn an_error_failing_every_unit_stalls_and_folds_nothing() {
     .await;
     super::pump::age_failures_for_tests(&endless.inner, id, Duration::from_secs(3_600));
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(mechanical(&store, id).await.is_empty());
+    let nodes = level0(&store, id).await;
+    assert!(
+        nodes.len() == 3 && nodes.iter().all(|n| n.mechanical && n.model.is_none()),
+        "every unit keeps its draft: {nodes:?}"
+    );
+    assert!(
+        !endless
+            .quiet_for_tests(id, Duration::from_millis(200))
+            .await,
+        "not given up"
+    );
     assert!(endless.memory(id).await.unwrap().stalled.is_some());
 }
 
-/// R1-2: transient failures (429/529, network) never fold a unit, however
-/// many and however old — even beside units that build.
+/// R1-2, 201 P1: transient failures (429/529, network) never give a unit
+/// up, however many and however old — even beside units that build; the
+/// unit keeps its draft and keeps being retried.
 #[tokio::test]
 async fn transient_failures_never_fold_a_unit() {
     let overloaded = "529 Overloaded: overloaded_error, try again later";
@@ -1791,18 +1853,28 @@ async fn transient_failures_never_fold_a_unit() {
             .any(|(k, _, n)| *k == (0, 1) && *n >= 5)
     })
     .await;
-    eventually("the good unit built", || async {
-        level0(&store, id).await.iter().any(|n| n.i == 0)
+    eventually("the good unit refined", || async {
+        level0(&store, id)
+            .await
+            .iter()
+            .any(|n| n.i == 0 && n.model.is_some())
     })
     .await;
     super::pump::age_failures_for_tests(&endless.inner, id, Duration::from_secs(3_600));
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(mechanical(&store, id).await.is_empty());
+    assert_eq!(mechanical(&store, id).await, [1], "the draft stays");
+    assert!(
+        !endless
+            .quiet_for_tests(id, Duration::from_millis(200))
+            .await,
+        "not given up"
+    );
 }
 
-/// A paused endless session holding the same-size units `message k` for
-/// `ks` (three-digit `k`: every unit the same size), attached, none built.
-async fn unbuilt_session(
+/// A paused meeting-filtered endless session holding the same-size units
+/// `message k` for `ks`, attached, none built (no drafts at ingest, no
+/// merges): the state where a folded run still occurs.
+async fn unbuilt_meeting(
     ks: std::ops::Range<usize>,
 ) -> (crate::TestDir, Endless, Store, SessionId) {
     let (dir, endless, store, id) = harness_for(cfg_137f(None), Script::new(Duration::ZERO)).await;
@@ -1814,9 +1886,13 @@ async fn unbuilt_session(
         .set_endless_paused(id, Some("user"), None)
         .await
         .unwrap();
+    store
+        .set_endless_meta(id, UnitFilter::Meeting, 0)
+        .await
+        .unwrap();
     for k in ks {
         let text = format!(
-            "message {k}: deploy step {k} touched /srv/app/config_{k}.yaml and {}",
+            "[meeting batch {k}] alice: message {k}: deploy step {k} touched /srv/app/config_{k}.yaml and {}",
             "the rollout notes repeat here ".repeat(19)
         );
         store.append(id, &ChatMessage::user(text)).await.unwrap();
@@ -1828,33 +1904,32 @@ async fn unbuilt_session(
 /// R2-6: a folded-run line whose range happens to be a tree address
 /// (`0+512`: id % n == 0, n = 2^k) refuses zoom like an unaligned one.
 /// R2-10: a run of one unit (`0+1`) still zooms to the unit's raw text.
+/// 201-FIX R2-1: a drafting session never shows a folded run while lines
+/// exist (`paused_long_user_messages_render_merged_lines`); a paused
+/// meeting tree (unchanged by 201) still does, so the zoom rules are
+/// proved there.
 #[tokio::test]
 async fn zoom_refuses_an_aligned_folded_run_but_opens_a_lone_unit() {
-    let (_d, endless, _s, id) = unbuilt_session(100..400).await;
+    let (_d, endless, _s, id) = unbuilt_meeting(100..400).await;
     let shown = 300 - endless.memory(id).await.unwrap().view[0].n as usize;
 
-    let (_d, endless, _s, id) = unbuilt_session(100..100 + 512 + shown).await;
+    let (_d, endless, _s, id) = unbuilt_meeting(100..100 + 512 + shown).await;
     let run = endless.memory(id).await.unwrap().view[0].clone();
     assert_eq!((run.id, run.n, run.built), (0, 512, false), "{}", run.text);
     assert!(super::tree::addr(0, 512).is_some(), "aligned");
     let e = endless.zoom(id, 0, 512).await.unwrap_err();
     assert!(e.contains("recall"), "{e}");
 
-    let (_d, endless, _s, id) = unbuilt_session(100..100 + 1 + shown).await;
+    let (_d, endless, _s, id) = unbuilt_meeting(100..100 + 1 + shown).await;
     let run = endless.memory(id).await.unwrap().view[0].clone();
     assert_eq!((run.id, run.n, run.built), (0, 1, false), "{}", run.text);
-    assert!(
-        run.text.contains("lines not yet summarized"),
-        "a folded run: {}",
-        run.text
-    );
     let lines = endless.zoom(id, 0, 1).await.unwrap();
     assert!(lines[0].text.contains("message 100:"), "{}", lines[0].text);
 }
 
 /// R1-3: at $10/M input a batch over `max_usd_per_call` splits into solo
-/// calls (no failure, no fold); only a unit whose own call is over the cap
-/// folds mechanically, with one notice.
+/// calls (no failure); only a unit whose own call is over the cap is given
+/// up (201 P1: it keeps its draft), with one notice.
 #[tokio::test]
 async fn over_cost_batch_splits_and_only_an_over_cost_unit_folds() {
     let s = Script::priced(Duration::ZERO, Some(10.0), 1_000);
@@ -1877,15 +1952,24 @@ async fn over_cost_batch_splits_and_only_an_over_cost_unit_folds() {
         "message huge: {}",
         "the rollout notes repeat here ".repeat(400)
     );
-    store.append(id, &ChatMessage::user(big)).await.unwrap();
+    store
+        .append(id, &ChatMessage::assistant(big))
+        .await
+        .unwrap();
     endless.attach(id, attached()).await.unwrap();
-    eventually("every unit built", || async {
-        level0(&store, id).await.len() == 5
+    eventually("four units refined", || async {
+        level0(&store, id)
+            .await
+            .iter()
+            .filter(|n| n.model.is_some())
+            .count()
+            == 4
     })
     .await;
     let nodes = level0(&store, id).await;
+    assert_eq!(nodes.len(), 5);
     let mechanical: Vec<u64> = nodes.iter().filter(|n| n.mechanical).map(|n| n.i).collect();
-    assert_eq!(mechanical, [4], "only the big unit folds");
+    assert_eq!(mechanical, [4], "only the big unit keeps its draft");
     assert!(
         nodes[..4]
             .iter()
@@ -1904,8 +1988,10 @@ async fn context_length_refusal_retries_once_smaller() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let (_dir, endless, store, id) = harness_for(cfg_137f(None), s.clone()).await;
     endless_session(&endless, &store, id).await;
-    eventually("every unit built", || async {
-        level0(&store, id).await.len() == 6
+    // 201 P1: every unit has a line at ingest; wait for the drafts' refinement.
+    eventually("every unit refined", || async {
+        let nodes = level0(&store, id).await;
+        nodes.len() == 6 && nodes.iter().all(|n| !n.mechanical)
     })
     .await;
     let calls = s.calls.lock().clone();
@@ -1939,11 +2025,11 @@ async fn long_unit_is_map_reduced_into_one_node() {
     let long: String = (0..10_000).map(|k| format!("w{k:04}_x ")).collect();
     assert!(long.len() >= 80_000);
     store
-        .append(id, &ChatMessage::user(long.clone()))
+        .append(id, &ChatMessage::assistant(long.clone()))
         .await
         .unwrap();
     endless.attach(id, attached()).await.unwrap();
-    assert!(endless.settle(id, Duration::from_secs(10)).await);
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
     let chunks = super::compactor::chunks(&long, super::compactor::CHUNK_BYTES).len();
     assert!(chunks >= 5, "{chunks}");
     let calls = s.calls.lock().clone();
@@ -2055,6 +2141,7 @@ async fn spend_after_failing_with(error: &'static str) -> (f64, Vec<String>) {
         },
         error,
         all: true,
+        bad_calls: AtomicU32::new(0),
     });
     let (_dir, endless, store, id) = harness_for(
         EndlessConfig {
@@ -2137,8 +2224,10 @@ async fn endless_off_with_5000_unbuilt_writes_a_bounded_head() {
         "unscaled it would not fit"
     );
     assert!(head.len() <= 25_000 + 4_096, "{} bytes", head.len());
+    // 201 P1: the units are drafts, the merges paused: the oldest fold into
+    // the hard-cap prefix line.
     assert!(
-        head.contains("lines not yet summarized"),
+        head.contains("older lines folded to fit the view"),
         "{}",
         &head[..300]
     );
@@ -2391,4 +2480,1766 @@ async fn the_chats_own_compactor_effort_is_checked_kept_and_dropped() {
 fn an_endless_section_without_effort_loads() {
     let c: EndlessConfig = serde_json::from_value(serde_json::json!({ "model": "p/m" })).unwrap();
     assert_eq!((c.model.as_deref(), c.effort), (Some("p/m"), None));
+}
+
+/// 201 §12.1: the defaults are the table's.
+#[test]
+fn the_201_defaults_are_the_table() {
+    use super::{DescribeImages, Profile, TailMode};
+    let c = EndlessConfig::default();
+    assert_eq!(c.tail_mode, TailMode::Fixed);
+    assert_eq!((c.tail_low_bytes, c.tail_high_bytes), (24_000, 64_000));
+    assert_eq!((c.tail_low_share, c.tail_high_share), (0.10, 0.25));
+    assert_eq!(c.cold_after_secs, 0);
+    assert_eq!(c.profile, Profile::Auto);
+    assert_eq!(c.merge_at, 0.75);
+    assert_eq!(
+        (c.ledger, c.ledger_bytes, c.ledger_suggestions),
+        (true, 4_000, true)
+    );
+    assert_eq!((c.prefetch_bytes, c.age_by_use), (2_000, true));
+    assert_eq!(c.describe_images, DescribeImages::Auto);
+    assert!(!c.default_chat, "201 PC does not change default_chat");
+    assert_eq!(c.validate_201(), Ok(()));
+    // Lowercase on the wire.
+    let v = serde_json::to_value(&c).unwrap();
+    assert_eq!(
+        (&v["tail_mode"], &v["profile"], &v["describe_images"]),
+        (
+            &serde_json::json!("fixed"),
+            &serde_json::json!("auto"),
+            &serde_json::json!("auto")
+        )
+    );
+}
+
+/// 201 §12.1: a section written before 201 (with the retired 137 keys) loads with the new defaults.
+#[test]
+fn a_pre_201_section_loads_with_the_new_defaults() {
+    let c: EndlessConfig =
+        serde_yaml::from_str("view_bytes: 96000\nsettle_secs: 30\nraw_bytes: 16000\njobs: 4\n")
+            .unwrap();
+    assert_eq!(
+        (c.view_bytes, c.settle_secs, c.raw_bytes),
+        (96_000, 30, 16_000)
+    );
+    let d = EndlessConfig::default();
+    assert_eq!(
+        EndlessConfig {
+            view_bytes: d.view_bytes,
+            settle_secs: d.settle_secs,
+            raw_bytes: d.raw_bytes,
+            jobs: d.jobs,
+            ..c
+        },
+        d
+    );
+    let c: EndlessConfig =
+        serde_yaml::from_str("tail_mode: scaled\nprofile: small\ndescribe_images: off\n").unwrap();
+    assert_eq!(
+        (c.tail_mode, c.profile, c.describe_images),
+        (
+            super::TailMode::Scaled,
+            super::Profile::Small,
+            super::DescribeImages::Off
+        )
+    );
+}
+
+/// 201 §12.1: out-of-range values clamp at use.
+#[test]
+fn the_201_keys_clamp_at_use() {
+    let c = EndlessConfig {
+        tail_low_bytes: 1,
+        tail_high_bytes: 9_000_000,
+        tail_low_share: 0.0,
+        tail_high_share: 5.0,
+        cold_after_secs: 1_000_000,
+        merge_at: 0.1,
+        ledger_bytes: 99_999,
+        prefetch_bytes: 99_999,
+        ..EndlessConfig::default()
+    }
+    .clamped();
+    assert_eq!((c.tail_low_bytes, c.tail_high_bytes), (8_000, 512_000));
+    assert_eq!((c.tail_low_share, c.tail_high_share), (0.02, 0.60));
+    assert_eq!((c.cold_after_secs, c.merge_at), (86_400, 0.50));
+    assert_eq!((c.ledger_bytes, c.prefetch_bytes), (16_000, 8_000));
+}
+
+/// 201 §12.1: `endless_settings_set` refuses a pair whose high is not above its low, naming both.
+#[test]
+fn a_tail_pair_with_high_not_above_low_is_refused() {
+    let bytes = EndlessConfig {
+        tail_low_bytes: 64_000,
+        tail_high_bytes: 64_000,
+        ..EndlessConfig::default()
+    };
+    let e = bytes.validate_201().unwrap_err();
+    assert!(
+        e.contains("tail_high_bytes 64000") && e.contains("tail_low_bytes 64000"),
+        "{e}"
+    );
+    let shares = EndlessConfig {
+        tail_low_share: 0.3,
+        tail_high_share: 0.2,
+        ..EndlessConfig::default()
+    };
+    let e = shares.validate_201().unwrap_err();
+    assert!(
+        e.contains("tail_high_share 0.2") && e.contains("tail_low_share 0.3"),
+        "{e}"
+    );
+    let range = EndlessConfig {
+        ledger_bytes: 100,
+        ..EndlessConfig::default()
+    };
+    assert!(
+        range
+            .validate_201()
+            .unwrap_err()
+            .starts_with("ledger_bytes 100")
+    );
+    // The per-session override refuses the same way.
+    let o = super::TailOverride {
+        mode: super::TailMode::Fixed,
+        low: 40_000.0,
+        high: 30_000.0,
+    };
+    assert!(o.validate().unwrap_err().contains("must be above"));
+}
+
+/// R3-12: one agent mark is checked against the config's other one: a low
+/// mark at or above the config's high leaves the config pair in force.
+#[test]
+fn a_single_agent_mark_is_checked_against_the_config_pair() {
+    let cfg = EndlessConfig::default();
+    let bad = super::AgentTail {
+        low_bytes: Some(100_000),
+        ..Default::default()
+    };
+    let c = cfg.with_agent_tail(&bad);
+    assert_eq!(
+        (c.tail_low_bytes, c.tail_high_bytes),
+        (cfg.tail_low_bytes, cfg.tail_high_bytes)
+    );
+    let ok = super::AgentTail {
+        low_bytes: Some(32_000),
+        ..Default::default()
+    };
+    let c = cfg.with_agent_tail(&ok);
+    assert_eq!(
+        (c.tail_low_bytes, c.tail_high_bytes),
+        (32_000, cfg.tail_high_bytes)
+    );
+    let bad = super::AgentTail {
+        high_share: Some(0.01),
+        ..Default::default()
+    };
+    let c = cfg.with_agent_tail(&bad);
+    assert_eq!(c.tail_high_share, cfg.tail_high_share);
+}
+
+/// 201 §4.2: `tail_marks` for both modes and the allowance scale-down.
+#[test]
+fn tail_marks_fixed_scaled_and_scaled_down() {
+    let fixed = EndlessConfig::default();
+    assert_eq!(fixed.tail_marks(1_000_000), (24_000, 64_000));
+    let scaled = EndlessConfig {
+        tail_mode: super::TailMode::Scaled,
+        ..EndlessConfig::default()
+    };
+    assert_eq!(scaled.tail_marks(800_000), (80_000, 200_000));
+    // Clamped to 8_000..=512_000: a huge allowance caps high, a small one lifts low.
+    assert_eq!(scaled.tail_marks(4_000_000).1, 512_000);
+    assert_eq!(scaled.tail_marks(60_000), (8_000, 15_000));
+    // High above half the allowance: both scale down, keeping their ratio.
+    assert_eq!(fixed.tail_marks(64_000), (12_000, 32_000));
+    let (lo, hi) = fixed.tail_marks(10_000);
+    assert_eq!((lo, hi), (1_875, 5_000));
+    // An override replaces the mode and both marks.
+    let o = super::TailOverride {
+        mode: super::TailMode::Fixed,
+        low: 16_000.0,
+        high: 32_000.0,
+    };
+    assert_eq!(
+        fixed.with_tail(Some(&o)).tail_marks(1_000_000),
+        (16_000, 32_000)
+    );
+}
+
+/// 201 §4.2: the per-session tail override persists, shows in `SessionMemory`, survives a restart and clears.
+#[tokio::test]
+async fn session_tail_override_round_trips_and_clears() {
+    let (_dir, endless, store, _echo, id) = harness().await;
+    let m = endless.memory(id).await.unwrap();
+    assert_eq!(
+        (m.tail_mode, m.tail_low, m.tail_high, m.tail_override),
+        (super::TailMode::Fixed, 24_000, 64_000, None)
+    );
+    assert_eq!(
+        (m.tail_bytes, m.generation, m.drafts, m.profile),
+        (0, 0, 0, super::Profile::Standard)
+    );
+    let o = super::TailOverride {
+        mode: super::TailMode::Fixed,
+        low: 16_000.0,
+        high: 48_000.0,
+    };
+    endless.set_tail(id, Some(o)).await.unwrap();
+    assert_eq!(store.endless_meta(id).await.unwrap().tail, Some(o));
+    let m = endless.memory(id).await.unwrap();
+    assert_eq!(
+        (m.tail_low, m.tail_high, m.tail_override),
+        (16_000, 48_000, Some(o))
+    );
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    assert_eq!(
+        endless.memory(id).await.unwrap().tail_override,
+        Some(o),
+        "survives a restart"
+    );
+    endless.set_tail(id, None).await.unwrap();
+    let m = endless.memory(id).await.unwrap();
+    assert_eq!(
+        (m.tail_low, m.tail_high, m.tail_override),
+        (24_000, 64_000, None)
+    );
+    assert_eq!(store.endless_meta(id).await.unwrap().tail, None);
+}
+
+/// 201 P1: a compactor whose reply is `reply(step input)`; counts calls.
+struct Scripted {
+    model: models::Resolved,
+    reply: fn(&str) -> Reply,
+    calls: AtomicU32,
+}
+
+impl Scripted {
+    fn new(reply: fn(&str) -> Reply) -> Arc<Self> {
+        Arc::new(Self {
+            model: super::pump::resolved_for_tests("fake/scripted"),
+            reply,
+            calls: AtomicU32::new(0),
+        })
+    }
+}
+
+impl Compactor for Scripted {
+    fn compress<'a>(
+        &'a self,
+        _ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let r = (self.reply)(&echo_line(convo));
+        Box::pin(async move { Ok(r) })
+    }
+
+    fn model(&self) -> &models::Resolved {
+        &self.model
+    }
+}
+
+fn ungrounded(_: &str) -> Reply {
+    Reply {
+        text: "zebra crossing painted blue".into(),
+        ..Default::default()
+    }
+}
+
+fn cfg_p1(batch_units: u8) -> EndlessConfig {
+    EndlessConfig {
+        view_bytes: 16_000,
+        retry_secs: 600,
+        batch_units,
+        ..EndlessConfig::default()
+    }
+}
+
+fn quality(n: &super::tree::Node) -> super::tree::Quality {
+    n.quality()
+}
+
+/// 201 P1 (D5): with a compactor that always errors, every unit has a line
+/// right after ingest, and a turn start does not wait.
+#[tokio::test]
+async fn every_unit_has_a_line_at_ingest_and_no_turn_waits() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 10, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    let nodes = level0(&store, id).await;
+    assert_eq!(nodes.len(), 10, "a line for every unit at once");
+    assert!(
+        nodes
+            .iter()
+            .all(|n| quality(n) == super::tree::Quality::Draft)
+    );
+    let t0 = Instant::now();
+    assert!(endless.settle(id, Duration::from_secs(45)).await);
+    let r = endless.render_for_turn(id).await.unwrap();
+    assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    assert_eq!(r.unbuilt, 0, "no placeholder");
+    assert_eq!(endless.memory(id).await.unwrap().drafts, 10);
+    // A unit appended later gets its draft on ingest, too.
+    seed_many(&store, id, 1, &[]).await;
+    endless.render_for_turn(id).await.unwrap();
+    assert_eq!(level0(&store, id).await.len(), 11);
+}
+
+/// 201 P1 (F9): a reply that fails its guards never becomes a stored line;
+/// the draft stays and the unit backs off.
+#[tokio::test]
+async fn guard_failing_reply_keeps_the_draft() {
+    let c = Scripted::new(ungrounded);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(1), c.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 3, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    until("every unit failed once", || {
+        super::pump::failed_for_tests(&endless.inner, id)
+            .iter()
+            .filter(|(k, ..)| k.0 == 0)
+            .count()
+            == 3
+    })
+    .await;
+    for n in level0(&store, id).await {
+        assert_eq!(quality(&n), super::tree::Quality::Draft);
+        assert!(!n.text.contains("zebra"), "{}", n.text);
+    }
+}
+
+/// 201 P1 (F8): a batch reply spent on thinking fails the batch once; its
+/// units keep their drafts and do not fan out into solo calls.
+#[tokio::test]
+async fn batch_spent_on_thinking_does_not_fan_out() {
+    fn thinking(_: &str) -> Reply {
+        Reply {
+            reasoning: true,
+            truncated: true,
+            ..Default::default()
+        }
+    }
+    let c = Scripted::new(thinking);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), c.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 4, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    until("the batch failed", || {
+        super::pump::failed_for_tests(&endless.inner, id).len() == 4
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(c.calls.load(Ordering::SeqCst), 1, "one batch call, no solo");
+    let s = endless.memory(id).await.unwrap().stalled.unwrap();
+    assert!(s.error.contains("thinking"), "{}", s.error);
+    assert!(
+        level0(&store, id)
+            .await
+            .iter()
+            .all(|n| quality(n) == super::tree::Quality::Draft)
+    );
+}
+
+/// 201 P1: refining a child marks its draft parent for rebuilding, and the
+/// rebuilt parent carries the model lines.
+#[tokio::test]
+async fn refined_child_rebuilds_its_draft_parent() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 2, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    let parent = || async {
+        store
+            .endless_nodes(id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|n| (n.l, n.i) == (1, 0))
+    };
+    eventually("a draft parent", || async {
+        parent()
+            .await
+            .is_some_and(|n| quality(&n) == super::tree::Quality::Draft)
+    })
+    .await;
+    for (i, text) in [(0u64, "model line zero"), (1, "model line one")] {
+        super::pump::finish_for_tests(
+            &endless.inner,
+            id,
+            (0, i),
+            Ok(super::tree::Node {
+                l: 0,
+                i,
+                text: text.into(),
+                size: text.len() as u32,
+                free: false,
+                model: Some("fake/a".into()),
+                tries: 1,
+                mechanical: false,
+            }),
+        )
+        .await;
+    }
+    eventually("the parent rebuilt from the model lines", || async {
+        parent().await.is_some_and(|n| {
+            n.text.contains("model line zero")
+                && n.text.contains("model line one")
+                && quality(&n) != super::tree::Quality::Draft
+        })
+    })
+    .await;
+}
+
+/// 201 P1: loading a session whose units have no nodes gives them drafts.
+#[tokio::test]
+async fn load_drafts_node_less_units() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    let mut rows = Vec::new();
+    for k in 0..3u64 {
+        let text = format!(
+            "user note {k}: {}",
+            "the cache keeps these rows ".repeat(30)
+        );
+        let seq = store
+            .append(id, &ChatMessage::assistant(text.clone()))
+            .await
+            .unwrap();
+        rows.push(crate::store::endless::UnitRow {
+            i: k,
+            seq,
+            part: 0,
+            kind: super::tree::Kind::Talk,
+            size: (text.len() + "talk: ".len()) as u32,
+            turn: 0,
+        });
+    }
+    store.endless_units_put(id, &rows).await.unwrap();
+    assert!(store.endless_nodes(id).await.unwrap().is_empty());
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    let nodes = level0(&store, id).await;
+    assert_eq!(nodes.len(), 3);
+    assert!(
+        nodes
+            .iter()
+            .all(|n| quality(n) == super::tree::Quality::Draft)
+    );
+}
+
+/// 201 P1 (F10): one unit that keeps failing stops neither later units nor
+/// the model merges over its neighbours (40 units: the fold is over
+/// `merge_at` × `view_bytes`, so merges are due).
+#[tokio::test]
+async fn failing_unit_blocks_nothing() {
+    fn bad_fails(input: &str) -> Reply {
+        let text = if input.contains("BAD") {
+            "zebra crossing painted blue".to_owned()
+        } else {
+            input.to_owned()
+        };
+        Reply {
+            text,
+            ..Default::default()
+        }
+    }
+    let c = Scripted::new(bad_fails);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(1), c.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 40, &[0]).await;
+    endless.attach(id, attached()).await.unwrap();
+    eventually(
+        "units 1..40 refined and (1, 1) merged by the model",
+        || async {
+            let nodes = store.endless_nodes(id).await.unwrap();
+            let q = |l: u8, i: u64| nodes.iter().find(|n| (n.l, n.i) == (l, i)).map(quality);
+            (1..40).all(|i| q(0, i) == Some(super::tree::Quality::Model))
+                && q(1, 1) == Some(super::tree::Quality::Model)
+        },
+    )
+    .await;
+    let nodes = level0(&store, id).await;
+    assert_eq!(quality(&nodes[0]), super::tree::Quality::Draft);
+}
+
+/// 201 §3/§4.3 (P2): a generation's view covers only the units before the
+/// tail, is persisted, and a restart reads back the same bytes; the next
+/// trim opens the next generation. Generation 1 of an endless session with
+/// history covers it all (an empty tail).
+#[tokio::test]
+async fn generation_view_is_frozen_and_survives_a_restart() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    let mut seqs = Vec::new();
+    for k in 0..4 {
+        seqs.push(
+            store
+                .append(id, &ChatMessage::user(format!("note {k}: the plan")))
+                .await
+                .unwrap(),
+        );
+    }
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    assert_eq!(endless.generation(id).await.unwrap(), None);
+    let g1 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!((g1.n, g1.t_cut, g1.first_seq), (1, 4, seqs[3] + 1));
+    assert!(g1.render.text().contains("note 3"), "{}", g1.render.text());
+
+    // Two more rows; a trim keeps them as the tail: the view stops before them.
+    let s5 = store
+        .append(id, &ChatMessage::user("note 4: tail".to_owned()))
+        .await
+        .unwrap();
+    store
+        .append(id, &ChatMessage::user("note 5: tail".to_owned()))
+        .await
+        .unwrap();
+    let g2 = endless
+        .start_generation(id, Some(s5), 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!((g2.n, g2.t_cut, g2.first_seq), (2, 4, s5));
+    assert!(!g2.render.text().contains("note 4"), "{}", g2.render.text());
+    assert_eq!(endless.memory(id).await.unwrap().generation, 2);
+
+    // A restart reproduces the frozen view byte for byte.
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    let back = endless.generation(id).await.unwrap().expect("persisted");
+    assert_eq!(back.n, 2);
+    assert_eq!(back.render.text(), g2.render.text());
+    assert_eq!(back.render.blocks, g2.render.blocks);
+}
+
+/// 201 §4.2 (P2): the per-session override wins over the config; `scaled`
+/// takes its marks as shares of the turn allowance.
+#[tokio::test]
+async fn tail_marks_follow_the_override_and_scaled_shares() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    assert_eq!(endless.tail_marks(id, 1_000_000), (24_000, 64_000));
+    let fixed = super::TailOverride {
+        mode: super::TailMode::Fixed,
+        low: 10_000.0,
+        high: 30_000.0,
+    };
+    endless.set_tail(id, Some(fixed)).await.unwrap();
+    assert_eq!(endless.tail_marks(id, 1_000_000), (10_000, 30_000));
+    let scaled = super::TailOverride {
+        mode: super::TailMode::Scaled,
+        low: 0.10,
+        high: 0.25,
+    };
+    endless.set_tail(id, Some(scaled)).await.unwrap();
+    assert_eq!(endless.tail_marks(id, 400_000), (40_000, 100_000));
+}
+
+/// 201 §3 (P2): a line refined mid-generation does not touch the frozen
+/// view; it shows from the next generation's render on.
+#[tokio::test]
+async fn refined_line_waits_for_the_next_generation() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 2, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    let g1 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert!(!g1.render.text().contains("model line zero"));
+    for (i, text) in [(0u64, "model line zero"), (1, "model line one")] {
+        super::pump::finish_for_tests(
+            &endless.inner,
+            id,
+            (0, i),
+            Ok(super::tree::Node {
+                l: 0,
+                i,
+                text: text.into(),
+                size: text.len() as u32,
+                free: false,
+                model: Some("fake/a".into()),
+                tries: 1,
+                mechanical: false,
+            }),
+        )
+        .await;
+    }
+    eventually("the parent rebuilt from the model lines", || async {
+        store
+            .endless_nodes(id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|n| quality(n) != super::tree::Quality::Draft)
+    })
+    .await;
+    // Same generation: byte for byte the frozen view.
+    let same = endless.generation(id).await.unwrap().unwrap();
+    assert_eq!((same.n, same.render.text()), (1, g1.render.text()));
+    // The next trim renders the refined lines.
+    let g2 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!(g2.n, 2);
+    assert!(
+        g2.render.text().contains("model line zero"),
+        "{}",
+        g2.render.text()
+    );
+}
+
+/// 201 §7.3 (P3, D8): a long user message, a tool call and an error echo
+/// get final (free) lines at ingest and are never sent to the model; only
+/// the long talk unit is refined.
+#[tokio::test]
+async fn kinds_that_need_no_model_are_never_sent() {
+    let p = Probe::new("fake/a", Act::Echo);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(1), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    let long = "please look at the deploy notes again. ".repeat(40);
+    store
+        .append(id, &ChatMessage::user(long.clone()))
+        .await
+        .unwrap();
+    store
+        .append(
+            id,
+            &ChatMessage::assistant(MessageContent::from_parts(vec![ContentPart::ToolCall(
+                ToolCall {
+                    call_id: "c1".into(),
+                    fn_name: "write".into(),
+                    fn_arguments: serde_json::json!({"path": "/srv/a.txt", "content": long}),
+                    thought_signatures: None,
+                },
+            )])),
+        )
+        .await
+        .unwrap();
+    let echo = format!("error: disk full\n{}", "wrote block\n".repeat(400));
+    store
+        .append(id, &ChatMessage::from(vec![ToolResponse::new("c1", echo)]))
+        .await
+        .unwrap();
+    store
+        .append(
+            id,
+            &ChatMessage::assistant("the deploy failed because the disk is full. ".repeat(30)),
+        )
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
+    let inputs = p.inputs.lock().clone();
+    assert_eq!(inputs.len(), 1, "{inputs:?}");
+    assert!(inputs[0].starts_with("talk: "), "{inputs:?}");
+    let nodes = level0(&store, id).await;
+    assert_eq!(nodes.len(), 4);
+    assert!(
+        nodes[1].text.starts_with("tool: write path=/srv/a.txt"),
+        "{}",
+        nodes[1].text
+    );
+    assert!(nodes[2].text.contains("1 errors"), "{}", nodes[2].text);
+}
+
+/// Model-built merges in the store.
+async fn model_merges(store: &Store, id: SessionId) -> usize {
+    store
+        .endless_nodes(id)
+        .await
+        .unwrap()
+        .iter()
+        .filter(|n| n.l > 0 && n.model.is_some())
+        .count()
+}
+
+/// 201 §6 (P3): lazy merges — no model merge while the view is under
+/// `merge_at` × `view_bytes`; over it, model merges are built.
+#[tokio::test]
+async fn model_merges_wait_for_merge_at() {
+    let p = Probe::new("fake/a", Act::Echo);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(1), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_many(&store, id, 4, &[]).await;
+    endless.attach(id, attached()).await.unwrap();
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(10)).await);
+    assert_eq!(p.calls(), 4, "the four units only");
+    assert_eq!(model_merges(&store, id).await, 0, "under merge_at");
+    // ~60 refined lines of ~400 bytes: the view passes 0.75 × 16 KB.
+    seed_many(&store, id, 60, &[]).await;
+    endless.on_rows_committed(id);
+    let t0 = Instant::now();
+    while model_merges(&store, id).await == 0 {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "no merge over merge_at"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// 201 §8 (P4): a compactor that may accept images; counts descriptions and
+/// records whether any request ever carried image bytes.
+struct Seer {
+    model: models::Resolved,
+    vision: bool,
+    described: AtomicU32,
+    saw_bytes: std::sync::atomic::AtomicBool,
+    /// 201 P6c: the local endpoint, when the describer is local.
+    local: Option<String>,
+    /// R3-5: `describe_image` never answers.
+    hang: std::sync::atomic::AtomicBool,
+}
+
+impl Seer {
+    fn new(vision: bool) -> Arc<Self> {
+        Self::at(vision, None)
+    }
+
+    fn at(vision: bool, local: Option<&str>) -> Arc<Self> {
+        Arc::new(Self {
+            model: super::pump::resolved_for_tests("fake/seer"),
+            vision,
+            described: AtomicU32::new(0),
+            saw_bytes: std::sync::atomic::AtomicBool::new(false),
+            local: local.map(str::to_owned),
+            hang: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+}
+
+impl Compactor for Seer {
+    fn compress<'a>(
+        &'a self,
+        _ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        let bytes = convo.iter().any(|m| {
+            m.content.iter().any(|p| match p {
+                ContentPart::Binary(_) => true,
+                ContentPart::ToolResponse(r) => !r.images.is_empty(),
+                _ => false,
+            })
+        });
+        if bytes {
+            self.saw_bytes.store(true, Ordering::SeqCst);
+        }
+        Box::pin(async { Err("scripted failure".to_owned()) })
+    }
+    fn model(&self) -> &models::Resolved {
+        &self.model
+    }
+    fn accepts_images(&self) -> bool {
+        self.vision
+    }
+    fn local(&self) -> Option<String> {
+        self.local.clone()
+    }
+    fn describe_image<'a>(
+        &'a self,
+        _image: &'a genai::chat::Binary,
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        self.saw_bytes.store(true, Ordering::SeqCst);
+        self.described.fetch_add(1, Ordering::SeqCst);
+        if self.hang.load(Ordering::SeqCst) {
+            return Box::pin(std::future::pending());
+        }
+        Box::pin(async {
+            Ok(Reply {
+                text: "a red square on white\n".into(),
+                usage: Some(genai::chat::Usage {
+                    prompt_tokens: Some(1_000),
+                    completion_tokens: Some(12),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        })
+    }
+}
+
+/// A session with one screenshot (tool picture) and one user image.
+async fn seed_images(store: &Store, id: SessionId) {
+    let png = |n: &str| genai::chat::Binary::from_base64("image/png", "iVBORw0K", Some(n.into()));
+    store
+        .append(
+            id,
+            &ChatMessage::user(MessageContent::from_parts(vec![ContentPart::Binary(png(
+                "photo.png",
+            ))])),
+        )
+        .await
+        .unwrap();
+    store
+        .append(
+            id,
+            &ChatMessage::from(vec![
+                ToolResponse::new("c1", "shot taken").with_images(vec![png("/tmp/screen.png")]),
+            ]),
+        )
+        .await
+        .unwrap();
+}
+
+async fn l0(store: &Store, id: SessionId, i: u64) -> super::tree::Node {
+    store
+        .endless_nodes(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|n| n.l == 0 && n.i == i)
+        .unwrap()
+}
+
+/// 201 §8 (P4): units 0 (`[image: photo.png]`), 1 (echo), 2 (tool picture);
+/// at a trim with `auto` an image-capable compactor describes both images,
+/// the line records the source, and the next generation shows it.
+#[tokio::test]
+async fn trim_describes_images_leaving_the_tail() {
+    let seer = Seer::new(true);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), seer.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    let g1 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert!(g1.render.text().contains("[image: photo.png]"));
+    assert!(g1.render.text().contains("echo: [image: screen.png]"));
+    endless
+        .describe_left(id, 0, i64::MAX, None)
+        .expect("a description job")
+        .await
+        .unwrap();
+    assert_eq!(seer.described.load(Ordering::SeqCst), 2);
+    for i in [0, 2] {
+        let n = l0(&store, id, i).await;
+        assert!(n.text.ends_with(" — a red square on white"), "{}", n.text);
+        assert_eq!(n.model.as_deref(), Some("described:compactor:fake/seer"));
+    }
+    // Already described: nothing to do at the next trim.
+    assert!(endless.describe_left(id, 0, i64::MAX, None).is_none());
+    let g2 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert!(
+        g2.render.text().contains("a red square"),
+        "{}",
+        g2.render.text()
+    );
+}
+
+/// 201 §8 (P4): `describe_images: off` skips descriptions; a text-only
+/// compactor with no vision model is never sent image bytes.
+#[tokio::test]
+async fn no_description_when_off_or_text_only() {
+    let seer = Seer::new(true);
+    let cfg = EndlessConfig {
+        describe_images: super::DescribeImages::Off,
+        ..cfg_p1(16)
+    };
+    let (_dir, endless, store, id) = harness_for(cfg, seer.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    assert!(endless.describe_left(id, 0, i64::MAX, None).is_none());
+    assert_eq!(seer.described.load(Ordering::SeqCst), 0);
+
+    let text_only = Seer::new(false);
+    let (_dir2, endless, store, id) = harness_for(cfg_p1(16), text_only.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    if let Some(h) = endless.describe_left(id, 0, i64::MAX, None) {
+        h.await.unwrap();
+    }
+    assert!(!text_only.saw_bytes.load(Ordering::SeqCst));
+    assert_eq!(l0(&store, id, 0).await.text, "user: [image: photo.png]");
+}
+
+/// The `model_calls` statuses of `id`'s image-description rows (kind `endless`).
+async fn endless_call_rows(store: &Store, id: SessionId) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT status FROM model_calls WHERE owner_id = ? AND kind = 'endless' \
+         AND request_id LIKE 'endless:describe:%'",
+    )
+    .bind(id.to_string())
+    .fetch_all(store.pool())
+    .await
+    .unwrap()
+}
+
+/// 201 P6c: each image description is a `model_calls` row of kind
+/// `endless`, so it counts toward the day's spend.
+#[tokio::test]
+async fn image_descriptions_are_charged_as_endless_calls() {
+    let seer = Seer::new(true);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), seer.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    endless
+        .describe_left(id, 0, i64::MAX, None)
+        .expect("a description job")
+        .await
+        .unwrap();
+    assert_eq!(seer.described.load(Ordering::SeqCst), 2);
+    assert_eq!(endless_call_rows(&store, id).await, ["settled", "settled"]);
+}
+
+/// 201 P6c: a local describer takes its endpoint's gate — nothing is sent
+/// while every permit is held, and it is served once one is free.
+#[tokio::test]
+async fn a_local_describer_waits_for_the_gate() {
+    let seer = Seer::at(true, Some("ep"));
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), seer.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    let gate = super::pump::gate_for_tests(&endless.inner, "ep");
+    let held = gate
+        .acquire(1, Some(runtime::SessionId(uuid::Uuid::nil())))
+        .await;
+    let job = endless
+        .describe_left(id, 0, i64::MAX, None)
+        .expect("a description job");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        seer.described.load(Ordering::SeqCst),
+        0,
+        "waits at the held gate"
+    );
+    drop(held);
+    job.await.unwrap();
+    assert_eq!(seer.described.load(Ordering::SeqCst), 2);
+}
+
+/// R3-5: a stuck local description ends with the session's cancel token
+/// (a detach), the job stops, and the endpoint's permit is free again.
+#[tokio::test]
+async fn a_stuck_description_is_cancelled_and_frees_the_gate() {
+    let seer = Seer::at(true, Some("ep"));
+    seer.hang.store(true, Ordering::SeqCst);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), seer.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    let gate = super::pump::gate_for_tests(&endless.inner, "ep");
+    let job = endless
+        .describe_left(id, 0, i64::MAX, None)
+        .expect("a description job");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        seer.described.load(Ordering::SeqCst),
+        1,
+        "stuck on the first"
+    );
+    endless.detach(id);
+    tokio::time::timeout(Duration::from_secs(5), job)
+        .await
+        .expect("the job ends with the cancel token")
+        .unwrap();
+    assert_eq!(
+        seer.described.load(Ordering::SeqCst),
+        1,
+        "the rest are not tried"
+    );
+    let free = tokio::time::timeout(
+        Duration::from_secs(5),
+        gate.acquire(1, Some(runtime::SessionId(uuid::Uuid::nil()))),
+    )
+    .await;
+    assert!(free.is_ok(), "the permit was released");
+}
+
+/// 201 P6c: while settling is paused by spend no image is described (and no
+/// call row is written); the line stays as it was.
+#[tokio::test]
+async fn no_description_while_paused_by_spend() {
+    let seer = Seer::new(true);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), seer.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    store
+        .set_endless_paused(id, Some("spend"), None)
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    if let Some(h) = endless.describe_left(id, 0, i64::MAX, None) {
+        h.await.unwrap();
+    }
+    assert_eq!(seer.described.load(Ordering::SeqCst), 0);
+    assert!(endless_call_rows(&store, id).await.is_empty());
+    assert_eq!(l0(&store, id, 0).await.text, "user: [image: photo.png]");
+}
+
+/// 201 §8 (P4): `zoom(id, 1)` on an artefact unit returns the stored
+/// binary with its line; other units are no artefacts.
+#[tokio::test]
+async fn zoom_on_an_image_unit_returns_the_binary() {
+    let (dir, endless, store, id) = harness_for(cfg_p1(16), Seer::new(false)).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_images(&store, id).await;
+    // R3-8: a user text that merely reads like an artefact line.
+    store
+        .append(id, &ChatMessage::user("[image: fake.png] is what I typed"))
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    let (line, b) = endless.artefact(id, 2).await.unwrap().unwrap();
+    assert_eq!(line, "echo: [image: screen.png]");
+    assert_eq!(b.name.as_deref(), Some("/tmp/screen.png"));
+    let (_, b) = endless.artefact(id, 0).await.unwrap().unwrap();
+    assert_eq!(b.name.as_deref(), Some("photo.png"));
+    assert!(
+        endless.artefact(id, 1).await.is_none(),
+        "an echo is no artefact"
+    );
+    // R3-1: written under the given tree root, 0700/0600, never the shared
+    // temp dir, and gone once discarded (the loop discards after reading).
+    let zoom_root = dir.0.join("zoom");
+    let out = crate::loop_::endless_tools::run(
+        &endless,
+        id,
+        crate::loop_::endless_tools::ZOOM,
+        &serde_json::json!({"id": 2, "n": 1}),
+        &zoom_root,
+    )
+    .await;
+    assert_eq!(out.files.len(), 1, "{}", out.content);
+    assert!(out.content.starts_with("2+1|echo: [image: screen.png]"));
+    let f = out.files[0].clone();
+    assert!(
+        f.starts_with(zoom_root.join(id.to_string())),
+        "{}",
+        f.display()
+    );
+    assert!(!f.starts_with(std::env::temp_dir().join("theuth-zoom")));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&f), 0o600);
+        assert_eq!(mode(f.parent().unwrap()), 0o700);
+    }
+    crate::loop_::endless_tools::discard(crate::loop_::endless_tools::RECALL, &out.files).await;
+    assert!(f.exists(), "another tool's files are not touched");
+    crate::loop_::endless_tools::discard(crate::loop_::endless_tools::ZOOM, &out.files).await;
+    assert!(!f.exists());
+    crate::loop_::endless_tools::forget(&zoom_root, id);
+    assert!(!zoom_root.join(id.to_string()).exists());
+    assert!(
+        endless.artefact(id, 3).await.is_none(),
+        "a typed `[image: ` text is no artefact (R3-8)"
+    );
+    // R3-15: the three artefact zooms above count like any zoom.
+    assert_eq!(endless.memory(id).await.unwrap().zooms, 3);
+}
+
+/// 201 §9 (P6a): appends a user line with a constraint cue and a tool call
+/// naming a file.
+async fn seed_ledger(store: &Store, id: SessionId) {
+    store
+        .append(
+            id,
+            &ChatMessage::user("you must never touch the prod database"),
+        )
+        .await
+        .unwrap();
+    store
+        .append(
+            id,
+            &ChatMessage::assistant(MessageContent::from_parts(vec![ContentPart::ToolCall(
+                ToolCall {
+                    call_id: "c1".into(),
+                    fn_name: "write_file".into(),
+                    fn_arguments: serde_json::json!({"path": "/srv/app/main.rs", "content": "x"}),
+                    thought_signatures: None,
+                },
+            )])),
+        )
+        .await
+        .unwrap();
+}
+
+/// R3-7: with no `endless_ledger` row (a session taken over from another
+/// node) the first trim rebuilds the ledger from the answered, error-free
+/// `ledger` tool calls of the message rows, and stores it.
+#[tokio::test]
+async fn a_missing_ledger_row_is_rebuilt_from_the_tool_calls() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    let call = |cid: &str, text: &str| {
+        ContentPart::ToolCall(ToolCall {
+            call_id: cid.into(),
+            fn_name: crate::loop_::endless_tools::LEDGER.into(),
+            fn_arguments: serde_json::json!({"section": "goals", "op": "add", "text": text}),
+            thought_signatures: None,
+        })
+    };
+    store
+        .append(
+            id,
+            &ChatMessage::assistant(MessageContent::from_parts(vec![
+                call("a", "ship v2 by friday"),
+                call("b", "refused one"),
+                call("c", "still in flight"),
+            ])),
+        )
+        .await
+        .unwrap();
+    store
+        .append(
+            id,
+            &ChatMessage::from(vec![
+                ToolResponse::new("a", "L1 added to Goals: ship v2 by friday"),
+                ToolResponse::new("b", "ERROR: refused"),
+            ]),
+        )
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    let g = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    let s = g.ledger.expect("ledger on");
+    assert!(s.contains("- [L1] ship v2 by friday"), "{s}");
+    assert!(
+        !s.contains("refused one") && !s.contains("still in flight"),
+        "{s}"
+    );
+    assert!(store.endless_ledger(id).await.unwrap().is_some(), "stored");
+}
+
+/// 201 §9 (P6a): the snapshot is frozen with its generation (byte-identical
+/// while tool ops arrive as notes), the changes fold in at the next trim,
+/// todo items and artefacts are mirrored, a suggestion is accepted, the
+/// status counts follow, and everything survives a restart.
+#[tokio::test]
+async fn the_ledger_freezes_per_generation_folds_at_a_trim_and_survives_a_restart() {
+    use super::ledger::Op;
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_ledger(&store, id).await;
+    store
+        .save_todos(
+            id,
+            crate::todo::TodoSource::Native,
+            &[crate::todo::Todo {
+                text: "migrate the schema".into(),
+                status: crate::todo::Status::Pending,
+                reason: None,
+            }],
+        )
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    assert!(endless.ledger_listed(id).await);
+    let g1 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    let s1 = g1.ledger.clone().expect("ledger on");
+    assert!(s1.contains("Open tasks\n- [L1] migrate the schema"), "{s1}");
+    assert!(
+        s1.contains("/srv/app/main.rs (write_file, generation 1)"),
+        "{s1}"
+    );
+    assert!(s1.contains("Suggested (unconfirmed)\n- [0+1] constraint? \"you must never touch the prod database\""), "{s1}");
+    // The frame: ledger block first, unmarked, then the view.
+    let framed = g1.framed();
+    assert_eq!(framed.blocks[0].text, s1);
+    assert!(!framed.blocks[0].mark);
+    assert_eq!(framed.blocks.len(), g1.render.blocks.len() + 1);
+    let op = |section: &str, op: &str, text: Option<&str>, id: Option<&str>| Op {
+        section: section.into(),
+        op: op.into(),
+        text: text.map(Into::into),
+        id: id.map(Into::into),
+    };
+    endless
+        .ledger_op(id, &op("goals", "add", Some("ship the ledger"), None))
+        .await
+        .unwrap();
+    endless
+        .ledger_op(id, &op("constraints", "accept", None, Some("0+1")))
+        .await
+        .unwrap();
+    // Same generation: the snapshot is byte-identical; the changes are notes.
+    let same = endless.generation(id).await.unwrap().unwrap();
+    assert_eq!(same.ledger.as_deref(), Some(s1.as_str()));
+    let notes = endless.ledger_notes(id).await.expect("notes");
+    assert!(notes.contains("added to Goals: ship the ledger"), "{notes}");
+    assert!(
+        notes.contains("accepted from 0+1 into Constraints"),
+        "{notes}"
+    );
+    assert_eq!(
+        endless.ledger_notes(id).await,
+        None,
+        "each note is sent once"
+    );
+    // The todo is done; a note queued now is folded by the trim instead.
+    store
+        .save_todos(
+            id,
+            crate::todo::TodoSource::Native,
+            &[crate::todo::Todo {
+                text: "migrate the schema".into(),
+                status: crate::todo::Status::Done,
+                reason: None,
+            }],
+        )
+        .await
+        .unwrap();
+    endless
+        .ledger_op(id, &op("decisions", "add", Some("use sqlite"), None))
+        .await
+        .unwrap();
+    let g2 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    let s2 = g2.ledger.clone().unwrap();
+    assert!(s2.contains("Goals\n- [L2] ship the ledger"), "{s2}");
+    assert!(
+        s2.contains("Constraints\n- [L3] you must never touch the prod database"),
+        "{s2}"
+    );
+    assert!(s2.contains("Decisions\n- [L4] use sqlite"), "{s2}");
+    assert!(s2.contains("- [L1] (closed) migrate the schema"), "{s2}");
+    assert!(!s2.contains("Suggested"), "{s2}");
+    assert_eq!(
+        endless.ledger_notes(id).await,
+        None,
+        "the trim folded the notes"
+    );
+    let m = endless.memory(id).await.unwrap();
+    let l = m.ledger.expect("status");
+    assert_eq!(
+        (
+            l.goals,
+            l.decisions,
+            l.constraints,
+            l.open_tasks,
+            l.artefacts,
+            l.suggested
+        ),
+        (1, 1, 1, 0, 1, 0)
+    );
+    assert_eq!(l.bytes as usize, s2.len());
+    // A restart: the state reloads from the store.
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    let back = endless.generation(id).await.unwrap().unwrap();
+    assert_eq!((back.n, back.ledger.as_deref()), (2, Some(s2.as_str())));
+    let g3 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert!(g3.ledger.unwrap().contains("use sqlite"));
+    endless.detach(id);
+}
+
+/// 201 §9 (P6a): with `ledger` off nothing is stored, no block, the tool
+/// is not listed and refuses; switching it on takes effect at the next trim.
+#[tokio::test]
+async fn ledger_off_means_absent_until_the_next_trim() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let cfg = EndlessConfig {
+        ledger: false,
+        ..cfg_p1(16)
+    };
+    let (_dir, endless, store, id) = harness_for(cfg.clone(), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    seed_ledger(&store, id).await;
+    endless.attach(id, attached()).await.unwrap();
+    assert!(!endless.ledger_listed(id).await);
+    let g1 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!(g1.ledger, None);
+    assert_eq!(g1.framed(), g1.render);
+    assert_eq!(
+        store.endless_ledger(id).await.unwrap(),
+        None,
+        "nothing stored"
+    );
+    let op = super::ledger::Op {
+        section: "goals".into(),
+        op: "add".into(),
+        text: Some("x".into()),
+        id: None,
+    };
+    assert!(endless.ledger_op(id, &op).await.is_err());
+    assert_eq!(endless.memory(id).await.unwrap().ledger, None);
+    // On: the generation in force keeps its switch until the trim.
+    endless.set_config(EndlessConfig {
+        ledger: true,
+        ..cfg
+    });
+    assert!(!endless.ledger_listed(id).await);
+    let g2 = endless
+        .start_generation(id, None, 1_000_000, false)
+        .await
+        .unwrap();
+    assert!(g2.ledger.is_some());
+    assert!(endless.ledger_listed(id).await);
+    endless.detach(id);
+}
+
+/// 201 §10 (P6b): the prefetch finds lines before the tail over the input's
+/// rare words, skips the tail's own, respects the byte cap, and adds nothing
+/// with a 0 cap or no hit. Zooms are counted per generation and reach the
+/// next generation's trim figure.
+#[tokio::test]
+async fn prefetch_skips_the_tail_and_zooms_are_counted_per_generation() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    for text in [
+        "the zebra gateway listens on port 8443",
+        "lunch was fine",
+        "zebra credentials rotate weekly",
+    ] {
+        store.append(id, &ChatMessage::user(text)).await.unwrap();
+    }
+    let tail = store
+        .append(id, &ChatMessage::user("zebra tail mention"))
+        .await
+        .unwrap();
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    endless.attach(id, attached()).await.unwrap();
+    let g1 = endless
+        .start_generation(id, Some(tail), 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!(g1.t_cut, 3);
+    let got = endless
+        .prefetch(id, "which port does the zebra gateway use?")
+        .await
+        .expect("hits before the tail");
+    assert!(got.contains("0+1|"), "{got}");
+    assert!(!got.contains("3+1|"), "the tail's own line: {got}");
+    assert!(got.len() <= 2_000);
+    let one = super::pump::prefetch(&endless.inner, id, "zebra", 50)
+        .await
+        .expect("one line fits");
+    assert!(one.len() <= 50 && !one.contains('\n'), "{one}");
+    assert_eq!(
+        super::pump::prefetch(&endless.inner, id, "zebra", 0).await,
+        None
+    );
+    assert_eq!(endless.prefetch(id, "quantum marmalade").await, None);
+
+    // Zooms in generation 1: counted, and the trim into 2 reports them.
+    endless.zoom(id, 0, 1).await.unwrap();
+    endless.zoom(id, 2, 1).await.unwrap();
+    assert_eq!(endless.memory(id).await.unwrap().zooms, 2);
+    let g2 = endless
+        .start_generation(id, Some(tail), 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!((g2.n, g2.zooms), (2, 2));
+    assert_eq!(endless.memory(id).await.unwrap().zooms, 0);
+    let g3 = endless
+        .start_generation(id, Some(tail), 1_000_000, false)
+        .await
+        .unwrap();
+    assert_eq!(g3.zooms, 0, "one generation of grace only");
+}
+
+/// R2-1: a paused session whose long user messages (final, free lines)
+/// overflow the view gets deterministic draft merges — merged lines, never
+/// the "older lines folded to fit the view" prefix.
+#[tokio::test]
+async fn paused_long_user_messages_render_merged_lines() {
+    let p = Probe::new("fake/a", Act::Hang);
+    let (_dir, endless, store, id) = harness_for(
+        EndlessConfig {
+            view_bytes: 4_000,
+            ..cfg_p1(16)
+        },
+        p.clone(),
+    )
+    .await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    for k in 0..64 {
+        let text = format!(
+            "user note {k}: please check /srv/app/config_{k}.yaml {}",
+            "and keep the rollout notes in order ".repeat(16)
+        );
+        store.append(id, &ChatMessage::user(text)).await.unwrap();
+    }
+    endless.attach(id, attached()).await.unwrap();
+    endless.pause(id, true).await.unwrap();
+    eventually("merged lines and no folded prefix", || async {
+        let view = endless.memory(id).await.unwrap().view;
+        view.iter().any(|l| l.n > 1 && l.built)
+            && view
+                .iter()
+                .all(|l| !l.text.contains("older lines folded to fit the view"))
+    })
+    .await;
+    let drafts = store
+        .endless_nodes(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|n| n.l > 0)
+        .any(|n| quality(&n) == super::tree::Quality::Draft);
+    assert!(drafts, "draft merges, refined later");
+}
+
+/// R2-3: a drafting batch refused for one unit's content (a hard 400) sends
+/// its units alone next time; the good units get their model lines.
+#[tokio::test]
+async fn a_batch_refused_for_one_unit_runs_its_units_alone() {
+    let (_dir, endless, store, id) = harness_for(
+        EndlessConfig {
+            view_bytes: 16_000,
+            retry_secs: 0,
+            batch_units: 16,
+            ..EndlessConfig::default()
+        },
+        Picky::new("400 Bad Request: content filter refused the input", false),
+    )
+    .await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    // The bad unit is last: an earlier unit's draft is in a later call's
+    // context, so `BAD` there would fail its neighbours too.
+    seed_many(&store, id, 4, &[3]).await;
+    endless.attach(id, attached()).await.unwrap();
+    eventually("units 0..3 refined alone", || async {
+        let nodes = level0(&store, id).await;
+        (0..3).all(|i| nodes.iter().any(|n| n.i == i && n.model.is_some()))
+    })
+    .await;
+    let bad = level0(&store, id)
+        .await
+        .into_iter()
+        .find(|n| n.i == 3)
+        .unwrap();
+    assert!(bad.model.is_none(), "{bad:?}");
+}
+
+/// 201 R1-3b: rows removed from the context after ingest leave memory —
+/// no view line, node, zoom or recall result shows their text; the other
+/// units keep their indices; the next turn boundary opens a new generation.
+#[tokio::test]
+async fn removed_rows_leave_memory_and_indices_stay() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    let mut seqs = Vec::new();
+    for k in 0..6 {
+        let secret = if k == 2 { " zebrafish42" } else { "" };
+        let q = format!("question {k}: where is config_{k}.yaml{secret}?");
+        let a = format!(
+            "answer {k}: it is under /srv/app{secret} and {}",
+            "the rollout notes repeat here ".repeat(10)
+        );
+        let qs = store.append(id, &ChatMessage::user(q)).await.unwrap();
+        let as_ = store.append(id, &ChatMessage::assistant(a)).await.unwrap();
+        seqs.push((qs, as_));
+    }
+    endless.attach(id, attached()).await.unwrap();
+    let units = endless.memory(id).await.unwrap().units;
+    let before: Vec<String> = {
+        let mut v = Vec::new();
+        for i in 0..units as u64 {
+            v.push(endless.zoom(id, i, 1).await.unwrap()[0].text.clone());
+        }
+        v
+    };
+    let removed: Vec<u64> = (0..units as u64)
+        .filter(|i| before[*i as usize].contains("zebrafish42"))
+        .collect();
+    assert!(!removed.is_empty());
+    eventually("a merge shows the secret", || async {
+        store
+            .endless_nodes(id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|n| n.l > 0 && n.text.contains("zebrafish42"))
+    })
+    .await;
+
+    let rev = store.context_revision(id).await.unwrap();
+    let (q, a) = seqs[2];
+    store
+        .remove_context(
+            id,
+            &rev,
+            &[
+                crate::context::ContextTarget::Message { seq: q },
+                crate::context::ContextTarget::Message { seq: a },
+            ],
+        )
+        .await
+        .unwrap();
+    endless.rows_excluded(id).await.unwrap();
+    assert!(endless.take_regen_request(id), "a new generation is due");
+
+    for n in store.endless_nodes(id).await.unwrap() {
+        assert!(
+            !n.text.contains("zebrafish42"),
+            "node {:?}: {}",
+            (n.l, n.i),
+            n.text
+        );
+    }
+    let view = endless.memory(id).await.unwrap().view;
+    assert!(view.iter().all(|l| !l.text.contains("zebrafish42")));
+    let hits = endless.recall(id, "zebrafish42", 8).await.unwrap();
+    assert!(
+        hits.iter().all(|l| !l.text.contains("zebrafish42")),
+        "{hits:?}"
+    );
+    assert_eq!(endless.memory(id).await.unwrap().units, units, "no shift");
+    for i in 0..units as u64 {
+        let text = endless.zoom(id, i, 1).await.unwrap()[0].text.clone();
+        if removed.contains(&i) {
+            assert!(text.ends_with("(removed from context)"), "{text}");
+        } else {
+            assert_eq!(text, before[i as usize], "unit {i} unchanged");
+        }
+    }
+    // A restart reads the removal back from the rows.
+    endless.detach(id);
+    endless.attach(id, attached()).await.unwrap();
+    for &i in &removed {
+        let text = endless.zoom(id, i, 1).await.unwrap()[0].text.clone();
+        assert!(text.ends_with("(removed from context)"), "{text}");
+    }
+}
+
+/// 201 R1-3b: a model merge running over a unit when its row is removed
+/// from the context lands its old inputs afterwards; that result is dropped
+/// (no node shows the removed text) and the merge is rebuilt.
+#[tokio::test]
+async fn a_merge_running_over_a_removed_row_is_dropped_when_it_lands() {
+    let p = Probe::new("fake/a", Act::Fail);
+    let (_dir, endless, store, id) = harness_for(cfg_p1(16), p.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    let mut seqs = Vec::new();
+    for k in 0..4 {
+        let secret = if k == 1 { " zebrafish42" } else { "" };
+        let q = format!("question {k}: where is config_{k}.yaml{secret}?");
+        let a = format!("answer {k}: it is under /srv/app{secret}");
+        let qs = store.append(id, &ChatMessage::user(q)).await.unwrap();
+        let as_ = store.append(id, &ChatMessage::assistant(a)).await.unwrap();
+        seqs.push((qs, as_));
+    }
+    endless.attach(id, attached()).await.unwrap();
+    let units = endless.memory(id).await.unwrap().units as u64;
+    let mut removed = None;
+    for i in 0..units {
+        if endless.zoom(id, i, 1).await.unwrap()[0]
+            .text
+            .contains("zebrafish42")
+        {
+            removed = Some(i);
+            break;
+        }
+    }
+    let i = removed.expect("a unit carries the secret");
+    let key = (1u8, i / 2);
+    super::pump::mark_running_for_tests(&endless.inner, id, key);
+
+    let rev = store.context_revision(id).await.unwrap();
+    let (q, a) = seqs[1];
+    store
+        .remove_context(
+            id,
+            &rev,
+            &[
+                crate::context::ContextTarget::Message { seq: q },
+                crate::context::ContextTarget::Message { seq: a },
+            ],
+        )
+        .await
+        .unwrap();
+    endless.rows_excluded(id).await.unwrap();
+    // The running merge lands, built from the old children.
+    let text = "merged: config_1.yaml zebrafish42".to_owned();
+    super::pump::finish_for_tests(
+        &endless.inner,
+        id,
+        key,
+        Ok(super::tree::Node {
+            l: key.0,
+            i: key.1,
+            size: text.len() as u32,
+            text,
+            free: false,
+            model: Some("fake/a".into()),
+            tries: 0,
+            mechanical: false,
+        }),
+    )
+    .await;
+    for n in store.endless_nodes(id).await.unwrap() {
+        assert!(
+            !n.text.contains("zebrafish42"),
+            "node {:?}: {}",
+            (n.l, n.i),
+            n.text
+        );
+    }
+    let view = endless.memory(id).await.unwrap().view;
+    assert!(view.iter().all(|l| !l.text.contains("zebrafish42")));
+}
+
+/// R2-5 / R2-12: a meeting-filtered tree sends its long units through the
+/// batch path as before 201 — no drafts at ingest, no unit sent alone for
+/// its length: every unit is built by the model from batch calls.
+#[tokio::test]
+async fn meeting_long_units_run_through_the_batch_path() {
+    let s = Script::new(Duration::ZERO);
+    let (_dir, endless, store, id) = harness_for(cfg_137f(None), s.clone()).await;
+    store
+        .set_session_memory(id, MemoryMode::Endless)
+        .await
+        .unwrap();
+    store
+        .set_endless_meta(id, UnitFilter::Meeting, 0)
+        .await
+        .unwrap();
+    for k in 0..6 {
+        let text = format!(
+            "[meeting batch {k}] alice: message {k}: deploy step {k} touched /srv/app/config_{k}.yaml and {}",
+            "the rollout notes repeat here ".repeat(19)
+        );
+        store.append(id, &ChatMessage::user(text)).await.unwrap();
+    }
+    endless.attach(id, attached()).await.unwrap();
+    assert!(endless.quiet_for_tests(id, Duration::from_secs(20)).await);
+    assert!(s.count("batch") >= 1, "{:?}", s.calls.lock());
+    assert_eq!(s.count("unit"), 0, "{:?}", s.calls.lock());
+    let nodes = level0(&store, id).await;
+    assert_eq!(nodes.len(), 6);
+    assert!(
+        nodes.iter().all(|n| n.model.is_some() && !n.mechanical),
+        "{nodes:?}"
+    );
 }

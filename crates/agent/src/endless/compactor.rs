@@ -28,6 +28,44 @@ pub fn prompt(agent: &str) -> String {
     COMPACT.replace("{agent}", agent)
 }
 
+/// 201 §7.2 (P3): the `small` profile's system prompt (≤ 700 bytes, no ruler).
+pub const SMALL: &str = include_str!("small_prompt.txt");
+/// 201 §7.2: the `small` profile's reply cap in tokens (it also stops at the first newline).
+pub const SMALL_REPLY_TOKENS: u32 = 160;
+/// 201 §7.2: the `small` profile's context (nearby lines + the user's last message) in bytes at most.
+pub const SMALL_CTX_BYTES: usize = 2_000;
+/// 201 §7.2: a `small` chunk is never above this many bytes.
+pub const SMALL_CHUNK_MAX: usize = 4_096;
+
+/// 201 §7.2: the `small` profile's chunk for an oversized unit:
+/// `(window − prompt − reply) × 0.5`, never above [`SMALL_CHUNK_MAX`]
+/// (the prompt counted as the system prompt plus the context budget; at
+/// least 512 bytes so a tiny window still makes progress).
+pub fn small_chunk_bytes(window_bytes: usize) -> usize {
+    let fixed = SMALL.len() + SMALL_CTX_BYTES + SMALL_REPLY_TOKENS as usize * 4;
+    (window_bytes.saturating_sub(fixed) / 2).clamp(512, SMALL_CHUNK_MAX)
+}
+
+/// 201 §7.2: the `small` profile's user block for `step`: one short
+/// imperative and the input; no earlier lines, no ruler.
+pub fn small_render(step: &Step, node_bytes: u32) -> String {
+    // R2-10: a word count a 1–4 B model can follow (about 6 bytes a word).
+    let words = (node_bytes / 6).max(8);
+    match step {
+        Step::Unit { kind, text, .. } => format!(
+            "Write one line about this message: one plain sentence of at most {words} words.\n{}: {text}",
+            kind.as_str()
+        ),
+        Step::Merge { a, b, .. } => format!(
+            "Join these two lines into one plain sentence of at most {words} words; keep names, paths and numbers; user items first.\n{a}\n{b}"
+        ),
+        Step::Batch { .. } => format!(
+            "Write one line about these messages: one plain sentence of at most {words} words.\n{}",
+            step.input()
+        ),
+    }
+}
+
 /// Reply ceiling without thinking (§5.3).
 pub const MAX_TOKENS: u32 = 600;
 /// 137F E6: a local stream's between-chunk idle bound (its header bound is the attempt's).
@@ -208,6 +246,9 @@ pub enum Step {
         units: Vec<(Kind, String)>,
         /// Lines already written for earlier units of this stretch (text only).
         earlier: Vec<String>,
+        /// R2-5: a drafting (non-meeting) session's batch; a meeting's
+        /// keeps the pre-201 failure path.
+        drafting: bool,
     },
 }
 
@@ -423,7 +464,33 @@ pub trait Compactor: Send + Sync {
         let _ = (ctx, convo);
         true
     }
+    /// 201 §7.2 (P3): one `small`-profile attempt: the [`SMALL`] system
+    /// prompt and a [`SMALL_REPLY_TOKENS`] cap (R2-7: no stop sequence; the
+    /// first non-empty line of the reply is taken).
+    fn compress_small<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        self.compress(ctx, convo)
+    }
+    /// 201 §8 (P4): the catalog says this model accepts images.
+    fn accepts_images(&self) -> bool {
+        crate::backend::supports_images(self.model())
+    }
+    /// 201 §8 (P4): a one-line description of `image` ([`DESCRIBE`]); asked
+    /// only of a model that accepts images. The default sends nothing.
+    fn describe_image<'a>(
+        &'a self,
+        image: &'a genai::chat::Binary,
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        let _ = image;
+        Box::pin(async { Err("this compactor does not describe images".to_owned()) })
+    }
 }
+
+/// 201 §8 (P4): the system prompt of an image description.
+pub const DESCRIBE: &str = "Describe the image in one line of at most 30 words: what it shows, and any visible text that matters. Reply with that line only.";
 
 /// R2-11: `inner`, recording every answered attempt as it lands — so a job
 /// dropped by its outer bound (or a panic) still settles the usage of the
@@ -522,6 +589,17 @@ impl Compactor for Tally<'_> {
     ) -> BoxFuture<'a, Result<Reply, String>> {
         Box::pin(async move {
             let r = self.inner.compress_thinking_off(ctx, convo).await;
+            self.record(&r);
+            r
+        })
+    }
+    fn compress_small<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(async move {
+            let r = self.inner.compress_small(ctx, convo).await;
             self.record(&r);
             r
         })
@@ -644,7 +722,9 @@ pub async fn build(
     attempt: Duration,
 ) -> Result<Built, Failed> {
     match step {
-        Step::Batch { units, .. } => build_batch(c, ctx, step, units, node_bytes, attempt).await,
+        Step::Batch {
+            units, drafting, ..
+        } => build_batch(c, ctx, step, units, *drafting, node_bytes, attempt).await,
         Step::Unit {
             kind,
             text,
@@ -675,6 +755,11 @@ pub async fn build(
                         failed_guard |= b.tries < 0;
                         calls.extend(b.calls);
                         lines.push(b.text);
+                        // R2-11: a chunk that failed its guards fails the
+                        // build; the remaining chunks are not called.
+                        if failed_guard {
+                            break;
+                        }
                     }
                     Err(mut f) => {
                         calls.append(&mut f.calls);
@@ -700,30 +785,227 @@ pub async fn build(
     }
 }
 
+/// 201 §7.2 (P3) seam: constrained output (a JSON schema or grammar) for a
+/// `small` request where the server supports it. Nothing in the backend
+/// plumbs a response format today, so this returns `opts` unchanged; the
+/// phase that adds per-server capability detection fills it.
+fn small_output_format(opts: ChatOptions) -> ChatOptions {
+    opts
+}
+
+/// R2-2: at most this many chunk calls for one `small`-profile unit; a
+/// larger unit keeps its draft (head and tail), never a line of its head.
+pub const SMALL_MAX_CHUNKS: usize = 16;
+
+/// 201 §7.2 (P3): a `small`-profile build — one attempt per call, no
+/// correction dialogue; a unit over `chunk` bytes is summarised chunk by
+/// chunk, then (R2-2) reduced in stages: the lines are joined in groups of
+/// at least two that fit `chunk`, each group summarised, until one line
+/// covers the whole unit. Over [`SMALL_MAX_CHUNKS`] chunks nothing is sent.
+/// A guard trip (any part) is a [`Built`] with negative `tries`, which the
+/// pump never stores: the draft stays and the unit is retried once later.
+pub async fn build_small(
+    c: &dyn Compactor,
+    ctx: &str,
+    step: &Step,
+    node_bytes: u32,
+    attempt: Duration,
+    chunk: usize,
+) -> Result<Built, Failed> {
+    let Step::Unit { kind, text, .. } = step else {
+        return small_once(c, ctx, step, node_bytes, attempt).await;
+    };
+    if text.len() <= chunk {
+        return small_once(c, ctx, step, node_bytes, attempt).await;
+    }
+    let parts = chunks(text, chunk);
+    if parts.len() > SMALL_MAX_CHUNKS {
+        return Ok(Built {
+            text: String::new(),
+            tries: -1,
+            calls: Vec::new(),
+            lines: Vec::new(),
+        });
+    }
+    let unit = |text: String| Step::Unit {
+        kind: *kind,
+        text,
+        earlier: Vec::new(),
+        aim: None,
+    };
+    let mut calls = Vec::new();
+    let mut used = 0i32;
+    // Each entry: the input of one call, or `None` for a line that passes
+    // to the next stage as it is (an odd one out).
+    let mut stage: Vec<(Option<String>, String)> = parts
+        .into_iter()
+        .map(|p| (Some(p.to_owned()), String::new()))
+        .collect();
+    loop {
+        let mut lines = Vec::with_capacity(stage.len());
+        for (input, kept) in stage {
+            let Some(input) = input else {
+                lines.push(kept);
+                continue;
+            };
+            match small_once(c, ctx, &unit(input), node_bytes, attempt).await {
+                Ok(b) if b.tries > 0 => {
+                    used += b.tries;
+                    calls.extend(b.calls);
+                    lines.push(b.text);
+                }
+                Ok(mut b) => {
+                    b.calls.splice(0..0, calls);
+                    b.tries -= used;
+                    return Ok(b);
+                }
+                Err(mut f) => {
+                    f.calls.splice(0..0, calls);
+                    return Err(f);
+                }
+            }
+        }
+        if lines.len() == 1 {
+            return Ok(Built {
+                text: lines.pop().unwrap_or_default(),
+                tries: used,
+                calls,
+                lines: Vec::new(),
+            });
+        }
+        stage = small_groups(lines, chunk);
+    }
+}
+
+/// R2-2: the next reduce stage — `lines` joined greedily into groups of at
+/// least two that fit `chunk` (a pair over it is cut), so every stage at
+/// least halves the lines; a last lone line passes through.
+fn small_groups(lines: Vec<String>, chunk: usize) -> Vec<(Option<String>, String)> {
+    let mut out = Vec::new();
+    let mut group: Vec<String> = Vec::new();
+    let mut bytes = 0usize;
+    for line in lines {
+        if group.len() >= 2 && bytes + 1 + line.len() > chunk {
+            let joined = group.join("\n");
+            out.push((
+                Some(guards::cut_utf8(&joined, chunk).to_owned()),
+                String::new(),
+            ));
+            group.clear();
+            bytes = 0;
+        }
+        bytes += line.len() + usize::from(!group.is_empty());
+        group.push(line);
+    }
+    match group.len() {
+        0 => {}
+        1 => out.push((None, group.pop().unwrap_or_default())),
+        _ => {
+            let joined = group.join("\n");
+            out.push((
+                Some(guards::cut_utf8(&joined, chunk).to_owned()),
+                String::new(),
+            ));
+        }
+    }
+    out
+}
+
+/// One `small` call: [`small_render`] as the only user turn after `ctx`,
+/// the reply's first non-empty line checked by the unchanged guards.
+async fn small_once(
+    c: &dyn Compactor,
+    ctx: &str,
+    step: &Step,
+    node_bytes: u32,
+    attempt: Duration,
+) -> Result<Built, Failed> {
+    let input = step.input();
+    let ruler = guards::ruler(node_bytes);
+    let convo = [ChatMessage::user(small_render(step, node_bytes))];
+    let reply = match bounded(c.compress_small(ctx, &convo), attempt, false).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return Err("compactor returned nothing".to_owned().into()),
+        Err(error) => {
+            return Err(Failed {
+                error,
+                calls: Vec::new(),
+            });
+        }
+    };
+    let row = |raw: &str, guard: Option<&'static str>| CallRow {
+        try_no: 0,
+        bytes: Some(raw.len() as u32),
+        guard,
+        usage: reply.usage.clone(),
+        usd_estimate: reply
+            .usage
+            .as_ref()
+            .and_then(|u| c.rates().map(|r| estimate_usd(u, &r))),
+        latency_ms: reply.latency.as_millis() as u64,
+    };
+    if reply.spent_on_thinking() {
+        return Err(Failed {
+            error: thinking_error(c.model_id(), &reply),
+            calls: vec![row("", Some(guards::Trip::Empty.as_str()))],
+        });
+    }
+    let raw = reply
+        .text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+        .to_owned();
+    let check = accept(&raw, &input, &ruler, node_bytes);
+    let calls = vec![row(&raw, check.as_ref().err().map(|t| t.as_str()))];
+    Ok(match check {
+        Ok(text) => Built {
+            text,
+            tries: 1,
+            calls,
+            lines: Vec::new(),
+        },
+        Err(_) => Built {
+            text: guards::cut_utf8(&raw, node_bytes as usize).to_owned(),
+            tries: -1,
+            calls,
+            lines: Vec::new(),
+        },
+    })
+}
+
 /// R1-3 / G11: the prompt bytes of the largest single call `step` makes,
-/// without its context (a map-reduce unit: one chunk's call).
-pub fn largest_call_bytes(step: &Step, node_bytes: u32) -> usize {
+/// without its context (a map-reduce unit: one chunk's call). R2-9:
+/// `small` = the small profile's chunk: its prompt and its chunk size.
+pub fn largest_call_bytes(step: &Step, node_bytes: u32, small: Option<usize>) -> usize {
+    let (over, chunk, prompt) = match small {
+        Some(chunk) => (chunk, chunk, SMALL.len()),
+        None => (MAP_REDUCE_OVER, CHUNK_BYTES, COMPACT.len()),
+    };
+    let render = |s: &Step| match small {
+        Some(_) => small_render(s, node_bytes).len(),
+        None => s.render(node_bytes).len(),
+    };
     let one = match step {
         Step::Unit {
             kind,
             text,
             earlier,
             aim,
-        } if text.len() > MAP_REDUCE_OVER => Step::Unit {
+        } if text.len() > over => render(&Step::Unit {
             kind: *kind,
-            text: chunks(text, CHUNK_BYTES)
+            text: chunks(text, chunk)
                 .first()
                 .copied()
                 .unwrap_or_default()
                 .to_owned(),
             earlier: earlier.clone(),
             aim: *aim,
-        }
-        .render(node_bytes)
-        .len(),
-        _ => step.render(node_bytes).len(),
+        }),
+        _ => render(step),
     };
-    COMPACT.len() + one
+    prompt + one
 }
 
 /// `text` cut into pieces of at most `max` bytes, at a line end when one
@@ -750,25 +1032,70 @@ pub fn chunks(text: &str, max: usize) -> Vec<&str> {
 /// guards as a single build (a size-only trip is cut, Q2), or names the
 /// guard it tripped. No in-call retries: a failing unit is retried alone
 /// with the single-unit prompt.
+/// 201 P1 (F8): a reply spent on thinking gets one retry with thinking off
+/// forced for a local compactor (as [`build_one`]); otherwise, or again,
+/// the whole batch fails with [`thinking_error`], and an empty reply fails
+/// it as "returned nothing": its units keep their drafts and backoff
+/// instead of each going solo. R2-4: every reply is a [`CallRow`] of the
+/// result, failed or not, so its usage is charged. R2-5: a meeting batch
+/// (`!drafting`) keeps the pre-201 path — one call, an empty or
+/// thinking-spent reply trips every line, and its units run solo at once.
 async fn build_batch(
     c: &dyn Compactor,
     ctx: &str,
     step: &Step,
     units: &[(Kind, String)],
+    drafting: bool,
     node_bytes: u32,
     attempt: Duration,
 ) -> Result<Built, Failed> {
-    let convo = vec![ChatMessage::user(step.render(node_bytes))];
-    let reply = match tokio::time::timeout(
-        attempt,
-        c.compress_lines(ctx, &convo, units.len() as u32),
-    )
-    .await
-    {
-        Ok(Ok(reply)) => reply,
-        Ok(Err(e)) => return Err(e.into()),
-        Err(_) => return Err(format!("timed out after {}s", attempt.as_secs()).into()),
+    let convo = &[ChatMessage::user(step.render(node_bytes))];
+    let lines_n = units.len() as u32;
+    let send = |forced: bool| async move {
+        let fut = if forced {
+            c.compress_thinking_off(ctx, convo)
+        } else {
+            c.compress_lines(ctx, convo, lines_n)
+        };
+        match tokio::time::timeout(attempt, fut).await {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(e)) => Err(Failed::from(e)),
+            Err(_) => Err(format!("timed out after {}s", attempt.as_secs()).into()),
+        }
     };
+    let row = |reply: &Reply, try_no: u32| CallRow {
+        try_no,
+        bytes: Some(reply.text.trim().len() as u32),
+        guard: None,
+        usage: reply.usage.clone(),
+        usd_estimate: reply
+            .usage
+            .as_ref()
+            .and_then(|u| c.rates().map(|r| estimate_usd(u, &r))),
+        latency_ms: reply.latency.as_millis() as u64,
+    };
+    let fail = |error: String, calls: Vec<CallRow>| Failed { error, calls };
+    let mut calls = Vec::new();
+    let mut reply = send(false).await?;
+    if drafting && reply.spent_on_thinking() {
+        calls.push(row(&reply, 0));
+        if c.local().is_none() || !c.can_grow(ctx, convo) {
+            return Err(fail(thinking_error(c.model_id(), &reply), calls));
+        }
+        reply = match send(true).await {
+            Ok(r) => r,
+            Err(f) => return Err(fail(f.error, calls)),
+        };
+        if reply.spent_on_thinking() {
+            calls.push(row(&reply, 1));
+            return Err(fail(thinking_error(c.model_id(), &reply), calls));
+        }
+    }
+    if drafting && reply.text.trim().is_empty() {
+        calls.push(row(&reply, calls.len() as u32));
+        return Err(fail("compactor returned nothing".to_owned(), calls));
+    }
+    calls.push(row(&reply, calls.len() as u32));
     let raw = reply.text.trim();
     let ruler = guards::ruler(node_bytes);
     let lines = units
@@ -785,21 +1112,10 @@ async fn build_batch(
             .map_err(guards::Trip::as_str),
         })
         .collect();
-    let usd = reply
-        .usage
-        .as_ref()
-        .and_then(|u| c.rates().map(|r| estimate_usd(u, &r)));
     Ok(Built {
         text: String::new(),
         tries: 1,
-        calls: vec![CallRow {
-            try_no: 0,
-            bytes: Some(raw.len() as u32),
-            guard: None,
-            usage: reply.usage,
-            usd_estimate: usd,
-            latency_ms: reply.latency.as_millis() as u64,
-        }],
+        calls,
         lines,
     })
 }
@@ -1147,11 +1463,43 @@ impl ModelCompactor {
         lines: u32,
         forced: bool,
     ) -> (ChatRequest, ChatOptions) {
+        self.request_with(&self.system, t, ctx, convo, lines, forced)
+    }
+
+    /// 201 §7.2 (P3): a `small`-profile request: the [`SMALL`] system
+    /// prompt, a [`SMALL_REPLY_TOKENS`] cap (plus a chosen thinking budget,
+    /// within [`Self::carry`]); R2-7: no stop sequence (a reply opening
+    /// with a newline would be empty; some providers refuse it). Thinking off
+    /// and the transport options as [`Self::request_opts`].
+    pub fn request_small(
+        &self,
+        t: Transport,
+        ctx: &str,
+        convo: &[ChatMessage],
+    ) -> (ChatRequest, ChatOptions) {
+        let (req, opts) = self.request_with(SMALL, t, ctx, convo, 1, false);
+        let thinking = if self.chosen { self.budget() } else { 0 };
+        let cap = SMALL_REPLY_TOKENS
+            .saturating_add(thinking)
+            .min(self.carry());
+        let opts = small_output_format(opts.with_max_tokens(cap));
+        (req, opts)
+    }
+
+    fn request_with(
+        &self,
+        system: &str,
+        t: Transport,
+        ctx: &str,
+        convo: &[ChatMessage],
+        lines: u32,
+        forced: bool,
+    ) -> (ChatRequest, ChatOptions) {
         let anthropic = t == Transport::Anthropic;
         let mut messages = Vec::with_capacity(convo.len() + 2);
         if t == Transport::Anthropic {
             messages.push(
-                ChatMessage::system(self.system.clone()).with_options(CacheControl::Ephemeral1h),
+                ChatMessage::system(system.to_owned()).with_options(CacheControl::Ephemeral1h),
             );
             messages.push(ChatMessage::user(ctx.to_owned()).with_options(CacheControl::Ephemeral));
         } else {
@@ -1163,7 +1511,7 @@ impl ModelCompactor {
             .for_each(crate::diff_output::strip_message);
         let mut req = ChatRequest::new(messages);
         if t != Transport::Anthropic {
-            req = req.with_system(self.system.clone());
+            req = req.with_system(system.to_owned());
         }
         let ant_off = anthropic && !self.chosen;
         let cap = self.cap(ant_off, lines);
@@ -1252,7 +1600,7 @@ impl Compactor for ModelCompactor {
         ctx: &'a str,
         convo: &'a [ChatMessage],
     ) -> BoxFuture<'a, Result<Reply, String>> {
-        Box::pin(self.compress_inner(ctx, convo, 1, false))
+        Box::pin(self.compress_inner(ctx, convo, 1, false, false))
     }
 
     fn compress_lines<'a>(
@@ -1261,7 +1609,7 @@ impl Compactor for ModelCompactor {
         convo: &'a [ChatMessage],
         lines: u32,
     ) -> BoxFuture<'a, Result<Reply, String>> {
-        Box::pin(self.compress_inner(ctx, convo, lines, false))
+        Box::pin(self.compress_inner(ctx, convo, lines, false, false))
     }
 
     fn compress_thinking_off<'a>(
@@ -1269,7 +1617,22 @@ impl Compactor for ModelCompactor {
         ctx: &'a str,
         convo: &'a [ChatMessage],
     ) -> BoxFuture<'a, Result<Reply, String>> {
-        Box::pin(self.compress_inner(ctx, convo, 1, true))
+        Box::pin(self.compress_inner(ctx, convo, 1, true, false))
+    }
+
+    fn compress_small<'a>(
+        &'a self,
+        ctx: &'a str,
+        convo: &'a [ChatMessage],
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(self.compress_inner(ctx, convo, 1, false, true))
+    }
+
+    fn describe_image<'a>(
+        &'a self,
+        image: &'a genai::chat::Binary,
+    ) -> BoxFuture<'a, Result<Reply, String>> {
+        Box::pin(self.describe_inner(image))
     }
 
     fn model(&self) -> &Resolved {
@@ -1298,9 +1661,33 @@ impl ModelCompactor {
         convo: &[ChatMessage],
         lines: u32,
         forced: bool,
+        small: bool,
     ) -> Result<Reply, String> {
         let transport = self.backend.transport(&self.model).await?;
-        let (req, opts) = self.request_opts(transport, ctx, convo, lines, forced);
+        let (req, opts) = if small {
+            self.request_small(transport, ctx, convo)
+        } else {
+            self.request_opts(transport, ctx, convo, lines, forced)
+        };
+        self.send(req, opts).await
+    }
+
+    /// 201 §8 (P4): one [`DESCRIBE`] request carrying `image`, capped like a
+    /// small-profile reply.
+    async fn describe_inner(&self, image: &genai::chat::Binary) -> Result<Reply, String> {
+        let transport = self.backend.transport(&self.model).await?;
+        use genai::chat::{ContentPart, MessageContent};
+        let convo = [ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::Text("Describe this image in one line.".to_owned()),
+            ContentPart::Binary(image.clone()),
+        ]))];
+        let ctx = "An image from the conversation follows.";
+        let (req, opts) = self.request_with(DESCRIBE, transport, ctx, &convo, 1, false);
+        let opts = opts.with_max_tokens(SMALL_REPLY_TOKENS.min(self.carry()));
+        self.send(req, opts).await
+    }
+
+    async fn send(&self, req: ChatRequest, opts: ChatOptions) -> Result<Reply, String> {
         let cap = opts.max_tokens.unwrap_or(0);
         let thinking_off = opts.extra_body.is_some() || opts.reasoning_effort.is_some();
         let started = Instant::now();
@@ -1857,5 +2244,270 @@ mod tests {
                 assert_eq!(message.content.first_text(), Some("receipt"));
             }
         }
+    }
+
+    fn talk(text: String) -> Step {
+        Step::Unit {
+            kind: Kind::Talk,
+            text,
+            earlier: vec![],
+            aim: None,
+        }
+    }
+
+    /// 201 §7.2 (P3): a small request (system prompt + ≤ 2 KB context +
+    /// one user block) stays under a fixed bound for any unit size, carries
+    /// no `<chat>` view, no ruler, and sends one unit per call.
+    #[tokio::test]
+    async fn small_request_is_bounded_and_has_no_chat_view() {
+        assert!(SMALL.len() <= 700, "small prompt is {} bytes", SMALL.len());
+        let ctx = format!("Context:\n{}", "user: fix it. ".repeat(140));
+        let ctx = guards::cut_utf8(&ctx, SMALL_CTX_BYTES);
+        let big = "the agent edited pump.rs and ran the tests again; ".repeat(600);
+        let chunk = small_chunk_bytes(400_000);
+        let n = chunks(&big, chunk).len();
+        let replies: Vec<&str> = vec!["The agent edited pump.rs and ran the tests."; n + 1];
+        let fake = Fake::new(&replies);
+        let b = build_small(&fake, ctx, &talk(big), 240, Duration::from_secs(5), chunk)
+            .await
+            .unwrap();
+        assert!(b.tries > 0, "tries {}", b.tries);
+        let sent = fake.sent.lock();
+        assert_eq!(sent.len(), n + 1, "one call per chunk plus the join");
+        for convo in sent.iter() {
+            assert_eq!(convo.len(), 1, "one user block per call");
+            let body = serde_json::to_string(&convo[0]).unwrap();
+            assert!(!body.contains("<chat>"), "no chat view");
+            assert!(!body.contains("|0123456789abcdef"), "no ruler");
+            let total = SMALL.len() + ctx.len() + body.len();
+            assert!(total < 8_000, "small request {total} bytes");
+        }
+    }
+
+    /// 201 §7.2: the small chunk follows the window, never above 4 KB.
+    #[test]
+    fn small_chunk_follows_the_window() {
+        let fixed = SMALL.len() + SMALL_CTX_BYTES + SMALL_REPLY_TOKENS as usize * 4;
+        assert_eq!(small_chunk_bytes(fixed + 4_000), 2_000);
+        assert_eq!(small_chunk_bytes(fixed + 6_000), 3_000);
+        assert_eq!(small_chunk_bytes(1_000_000), SMALL_CHUNK_MAX);
+        assert_eq!(
+            small_chunk_bytes(1_000),
+            512,
+            "a tiny window still progresses"
+        );
+    }
+
+    /// 201 §7.2: a guard trip in small is one call and no correction: the
+    /// build comes back with negative tries (the pump keeps the draft).
+    #[tokio::test]
+    async fn small_guard_trip_sends_no_second_message() {
+        let fake = Fake::new(&["", "never sent"]);
+        let b = build_small(
+            &fake,
+            "Context: none.",
+            &unit_step(),
+            240,
+            Duration::from_secs(5),
+            4_096,
+        )
+        .await
+        .unwrap();
+        assert!(b.tries < 0, "tries {}", b.tries);
+        let sent = fake.sent.lock();
+        assert_eq!(sent.len(), 1, "no retry inside the build");
+        assert_eq!(sent[0].len(), 1, "no correction turn");
+    }
+
+    fn batch_step(drafting: bool) -> Step {
+        Step::Batch {
+            units: vec![
+                (
+                    Kind::Talk,
+                    "the agent ran cargo test in crates/agent".into(),
+                ),
+                (
+                    Kind::Talk,
+                    "the agent edited pump.rs and the retry delay".into(),
+                ),
+            ],
+            earlier: vec![],
+            drafting,
+        }
+    }
+
+    /// A local compactor whose plain replies are spent on thinking and
+    /// whose thinking-off retry answers `forced_reply`.
+    struct Thinker {
+        model: Resolved,
+        plain: std::sync::atomic::AtomicU32,
+        forced: std::sync::atomic::AtomicU32,
+        forced_reply: &'static str,
+    }
+
+    impl Compactor for Thinker {
+        fn compress<'a>(
+            &'a self,
+            _ctx: &'a str,
+            _convo: &'a [ChatMessage],
+        ) -> BoxFuture<'a, Result<Reply, String>> {
+            self.plain.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Ok(Reply {
+                    reasoning: true,
+                    ..Default::default()
+                })
+            })
+        }
+        fn compress_thinking_off<'a>(
+            &'a self,
+            _ctx: &'a str,
+            _convo: &'a [ChatMessage],
+        ) -> BoxFuture<'a, Result<Reply, String>> {
+            self.forced
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let text = self.forced_reply.to_owned();
+            Box::pin(async move {
+                Ok(Reply {
+                    text,
+                    ..Default::default()
+                })
+            })
+        }
+        fn model(&self) -> &Resolved {
+            &self.model
+        }
+        fn local(&self) -> Option<String> {
+            Some("ep".into())
+        }
+    }
+
+    /// 201 P1 (F8) / R2-12: a local drafting batch whose reply is spent on
+    /// thinking is retried once with thinking off; the retry's lines land
+    /// and both replies are call rows. A meeting batch takes no retry.
+    #[tokio::test]
+    async fn a_local_batch_spent_on_thinking_retries_once_with_thinking_off() {
+        use std::sync::atomic::Ordering;
+        let thinker = || Thinker {
+            model: super::super::pump::resolved_for_tests("local/thinker"),
+            plain: Default::default(),
+            forced: Default::default(),
+            forced_reply: "1| the agent ran cargo test in crates/agent\n2| the agent edited pump.rs and the retry delay",
+        };
+        let c = thinker();
+        let b = build(&c, "ctx", &batch_step(true), 240, 2, SECS)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                c.plain.load(Ordering::SeqCst),
+                c.forced.load(Ordering::SeqCst)
+            ),
+            (1, 1)
+        );
+        assert!(b.lines.iter().all(Result::is_ok), "{:?}", b.lines);
+        assert_eq!(b.calls.len(), 2, "the thinking reply is charged too");
+        let c = thinker();
+        let b = build(&c, "ctx", &batch_step(false), 240, 2, SECS)
+            .await
+            .unwrap();
+        assert_eq!(
+            c.forced.load(Ordering::SeqCst),
+            0,
+            "a meeting batch: no retry"
+        );
+        assert!(b.lines.iter().all(Result::is_err));
+    }
+
+    /// R2-9: on the small profile the over-cost check sizes one chunk's
+    /// call under the small prompt, not the whole unit under the standard one.
+    #[test]
+    fn small_profile_sizes_the_largest_call_by_its_chunk() {
+        let big = "the agent edited pump.rs and ran the tests again; ".repeat(260);
+        let standard = largest_call_bytes(&talk(big.clone()), 240, None);
+        let small = largest_call_bytes(&talk(big.clone()), 240, Some(735));
+        assert!(standard > big.len(), "{standard}");
+        assert!(small <= SMALL.len() + 735 + 300, "{small}");
+    }
+
+    /// R2-11: a standard map-reduce stops at the first chunk whose line
+    /// fails its guards: no later chunk and no reduce call is made.
+    #[tokio::test]
+    async fn map_reduce_stops_at_the_first_tripped_chunk() {
+        let big = "the agent edited pump.rs and ran the tests again; ".repeat(900);
+        assert!(chunks(&big, CHUNK_BYTES).len() >= 3);
+        let fake = Fake::new(&[
+            "zebra crossing painted blue",
+            "the agent edited pump.rs",
+            "the agent edited pump.rs",
+            "the agent edited pump.rs",
+        ]);
+        let b = build(&fake, "", &talk(big), 512, 1, SECS).await.unwrap();
+        assert!(b.tries < 0, "tries {}", b.tries);
+        assert_eq!(fake.sent.lock().len(), 1, "only the tripped chunk was sent");
+    }
+
+    /// R2-4: an empty batch reply in a drafting session fails the batch
+    /// with its call row (charged). R2-5: a meeting's empty batch reply is
+    /// the pre-201 outcome — one call, every line tripped (its units run
+    /// solo), no failure.
+    #[tokio::test]
+    async fn empty_batch_reply_is_charged_and_a_meeting_runs_solo() {
+        let fake = Fake::new(&["", "never sent"]);
+        let f = build(
+            &fake,
+            "ctx",
+            &batch_step(true),
+            240,
+            2,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(f.error.contains("returned nothing"), "{}", f.error);
+        assert_eq!(f.calls.len(), 1, "the empty reply is a call row");
+        let fake = Fake::new(&["", "never sent"]);
+        let b = build(
+            &fake,
+            "ctx",
+            &batch_step(false),
+            240,
+            2,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(b.lines.len(), 2);
+        assert!(b.lines.iter().all(Result::is_err), "every line trips");
+        assert_eq!(b.calls.len(), 1);
+        assert_eq!(fake.sent.lock().len(), 1, "no retry");
+    }
+
+    /// R2-2: each reduce stage at least halves the lines and every group
+    /// fits the chunk; a unit over the chunk cap sends nothing (its draft,
+    /// head and tail, stays).
+    #[tokio::test]
+    async fn small_reduce_halves_by_stage_and_caps_the_chunks() {
+        let lines: Vec<String> = (0..10)
+            .map(|k| format!("{k} {}", "x".repeat(200)))
+            .collect();
+        let g = small_groups(lines, 512);
+        assert_eq!(g.len(), 5, "{g:?}");
+        assert!(
+            g.iter()
+                .all(|(s, _)| s.as_ref().is_some_and(|s| s.len() <= 512))
+        );
+        let g = small_groups(vec!["a".into(), "b".into(), "c".into()], 3);
+        assert_eq!(g.len(), 2);
+        assert!(g[1].0.is_none() && g[1].1 == "c", "a lone last line passes");
+
+        let big = "the agent edited pump.rs and ran the tests again; ".repeat(400);
+        assert!(chunks(&big, 512).len() > SMALL_MAX_CHUNKS);
+        let fake = Fake::new(&["never sent"]);
+        let b = build_small(&fake, "ctx", &talk(big), 240, Duration::from_secs(5), 512)
+            .await
+            .unwrap();
+        assert!(b.tries < 0 && b.calls.is_empty());
+        assert!(fake.sent.lock().is_empty(), "no call over the cap");
     }
 }

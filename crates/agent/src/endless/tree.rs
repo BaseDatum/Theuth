@@ -102,6 +102,58 @@ pub struct Node {
     pub mechanical: bool,
 }
 
+/// 201 §5: how final a node's line is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Quality {
+    /// Final with no model: a unit that fits, or a free merge of final lines.
+    Free,
+    /// Deterministic (no model); the pump may refine it into a model line.
+    Draft,
+    /// A model line that passed the guards.
+    Model,
+}
+
+impl Quality {
+    /// The `endless_nodes.quality` value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::Draft => "draft",
+            Self::Model => "model",
+        }
+    }
+
+    /// From the column; anything unknown reads as `model`.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "free" => Self::Free,
+            "draft" => Self::Draft,
+            _ => Self::Model,
+        }
+    }
+}
+
+impl Node {
+    /// 201 §5: the node's quality. A draft is a deterministic line
+    /// (`mechanical`, not `free`): the same flags the 137G excerpt used, so
+    /// every constructor keeps its meaning; the store persists the value.
+    pub fn quality(&self) -> Quality {
+        if self.free {
+            Quality::Free
+        } else if self.mechanical {
+            Quality::Draft
+        } else {
+            Quality::Model
+        }
+    }
+
+    /// Set the flags for `q` (the inverse of [`Node::quality`]).
+    pub fn set_quality(&mut self, q: Quality) {
+        self.free = q == Quality::Free;
+        self.mechanical = q == Quality::Draft;
+    }
+}
+
 /// `(id, n)` of `(l, i)`.
 pub fn id_n(l: u8, i: u64) -> (u64, u64) {
     let n = 1u64 << l;
@@ -183,6 +235,20 @@ pub fn free_unit(unit: &Unit, node_bytes: u32) -> Option<String> {
 /// Two children whose `a + "\n" + b` fits merge for free (§5.1).
 pub fn free_merge(a: &str, b: &str, node_bytes: u32) -> Option<String> {
     (a.len() + 1 + b.len() <= node_bytes as usize).then(|| format!("{a}\n{b}"))
+}
+
+/// 201 §5: the deterministic merge of two children, at least one a draft:
+/// the free merge when it fits, else each child cut to half of
+/// `node_bytes` at a word boundary, joined by a newline.
+pub fn draft_merge(a: &str, b: &str, node_bytes: u32) -> String {
+    free_merge(a, b, node_bytes).unwrap_or_else(|| {
+        let half = (node_bytes as usize).saturating_sub(1) / 2;
+        format!(
+            "{}\n{}",
+            super::guards::cut_words(a, half),
+            super::guards::cut_words(b, half)
+        )
+    })
 }
 
 /// 137G mechanical fold: the unit's tagged text, whitespace collapsed, cut to

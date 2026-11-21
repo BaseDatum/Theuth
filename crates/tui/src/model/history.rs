@@ -42,6 +42,19 @@ pub(super) fn user_entries(text: String, turn: Option<i64>, registry: &Registry)
     if let Some(body) = agent::endless_ext::memory_note(&text) {
         return vec![Entry::Info(body.to_owned())];
     }
+    // 201 R3-2: a bare `<ledger>` / `<recall>` / `<tools>` harness note is a
+    // collapsed card under a short label, never the user's message.
+    if let Some(body) = agent::endless_ext::ledger_note(&text) {
+        return vec![card(CardKind::Memory, "Ledger updated".to_owned(), body)];
+    }
+    if let Some(body) = agent::endless_ext::input_note(&text) {
+        let title = if text.trim_start().starts_with("<recall>") {
+            "Recalled from earlier"
+        } else {
+            "Tools changed"
+        };
+        return vec![card(CardKind::Memory, title.to_owned(), body)];
+    }
     if let Some((name, body, rest)) = agent::skills::injected(&text) {
         let mut out = vec![card(CardKind::Skill, name.to_owned(), body)];
         if !rest.is_empty() {

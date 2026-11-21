@@ -17,7 +17,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useIsMobile } from '@/hooks/use-mobile'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { groupOf } from '@/lib/nav'
-import { isPopout } from '@/lib/popout'
+import { isSoloPopout } from '@/lib/popout'
 import type { DocKind } from "@/rpc/bindings/method.agent.output"
 import type { ItemKind } from "@/rpc/bindings/method.agent.output"
 import { cn } from 'cn'
@@ -72,7 +72,7 @@ export function Frame({
   const backClass = backAlways ? undefined : 'md:hidden'
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {isPopout() ? (
+      {isSoloPopout() ? (
         <header
           data-tauri-drag-region={isMacDesktop() || undefined}
           className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3"
@@ -125,7 +125,7 @@ export function useNotebookBack(kind: ItemKind, item: string, nb: string | undef
   const member = useItemNotebooks(kind, item)
   const target = nb ?? member?.[0]?.doc.id
   const row = useNotebook(target ?? '', target !== undefined).data
-  if (isPopout() || target === undefined) return { back: undefined, chip: null }
+  if (isSoloPopout() || target === undefined) return { back: undefined, chip: null }
   const title = row?.doc.title
   const back: NotebookBack = { to: '/notebooks/$id', params: { id: target }, search: { tab }, label: title ? `Back to ${title}` : 'Back to notebook', always: true }
   const chip =

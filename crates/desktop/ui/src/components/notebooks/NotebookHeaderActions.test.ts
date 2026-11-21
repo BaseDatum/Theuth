@@ -17,7 +17,7 @@ vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => env.mobile }))
 vi.mock('@/lib/popout', async (original) => ({
   ...(await original<typeof Popout>()),
-  isPopout: () => env.popped,
+  isSoloPopout: () => env.popped,
   canPopout: () => env.canPopout,
   openPopout: env.openPopout,
 }))

@@ -378,6 +378,7 @@ mod tests {
             id: SessionId::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            finished_at: None,
             title: title.into(),
             tags: vec![],
             model: "m".into(),

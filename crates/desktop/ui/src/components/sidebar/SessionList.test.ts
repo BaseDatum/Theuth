@@ -4,7 +4,7 @@ import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { createSessions, type SessionSlice } from '@/store/sessions'
 import { empty } from '@/store/reduce'
 import { activeRoots, rowActivity, runningSubagents } from './SessionItem'
-import { buildRows, listOffset, newChatLabel, type Row, watchListOffset } from './SessionList'
+import { buildRows, lingerExpiry, lingeringRoots, listOffset, newChatLabel, type Row, watchListOffset } from './SessionList'
 
 const s = (id: string, project: string | null, updated_at: string, pinned = false, archived = false): SessionSummary => (receiveComponent("method.agent.output.SessionSummary", {
   id,
@@ -231,4 +231,54 @@ test('activeRoots over the store: a snapshot-seeded quiet PTY keeps its root (or
   expect(active()).toEqual(['parent'])
   store.getState().applyEvents([finished('kid', 'p2')])
   expect(active()).toEqual([])
+})
+
+// LINGER: a root that stopped working stays in Active, below the working ones, for the linger window.
+const HOUR = 3_600_000
+const NOW = Date.parse('2026-01-10T12:00:00Z')
+const ago = (h: number) => new Date(NOW - h * HOUR).toISOString()
+
+test('lingeringRoots: the newest persisted turn end in the tree (or a watched exit) within the window, most recent first; active and old ones are not', () => {
+  const root = (id: string, finished_at?: string) => ({ ...s(id, null, '2026-01-01T00:00:00Z'), ...(finished_at ? { finished_at } : {}) })
+  const roots = [root('old', ago(5)), root('fresh', ago(0.5)), root('kidonly', ago(10)), root('hot', ago(0.1)), root('never'), root('watched', ago(9))]
+  // A descendant's later turn end counts for its root; so does a client-watched exit (`seen`) when it is later.
+  const subs = new Map([['kidonly', [{ ...root('k1', ago(2)), parent: 'kidonly' }]]])
+  const seen = new Map([['watched', NOW - 3 * HOUR]])
+  const recent = lingeringRoots(roots, subs, new Set(['hot']), seen, NOW, 4 * HOUR)
+  expect([...recent.keys()]).toEqual(['fresh', 'kidonly', 'watched'])
+  expect(recent.get('kidonly')).toBe(NOW - 2 * HOUR)
+  // Expiry: the oldest one leaves first, at its last activity plus the window; a tick past it drops just that one.
+  expect(lingerExpiry(recent, 4 * HOUR)).toBe(NOW + HOUR)
+  expect([...lingeringRoots(roots, subs, new Set(['hot']), seen, NOW + HOUR + 1, 4 * HOUR).keys()]).toEqual(['fresh', 'kidonly'])
+  expect([...lingeringRoots(roots, subs, new Set(['hot']), seen, NOW + 4 * HOUR, 4 * HOUR).keys()]).toEqual([])
+  // 0 hours is off; nothing lingering has no expiry.
+  expect(lingeringRoots(roots, subs, new Set(), seen, NOW, 0).size).toBe(0)
+  expect(lingerExpiry(new Map(), 4 * HOUR)).toBeNull()
+})
+
+test('lingering roots stay in the one Active section below the active ones, most recently active first, out of pinned, projects and Archived, never twice', () => {
+  const sessions = [
+    s('hot', null, '2026-01-01T00:00:00Z'),
+    s('pin', 'beta', '2026-01-09T00:00:00Z', true),
+    s('proj', 'beta', '2026-01-08T00:00:00Z'),
+    s('arc', 'alpha', '2026-01-07T00:00:00Z', false, true),
+    s('rest', 'alpha', '2026-01-06T00:00:00Z'),
+  ]
+  // Ordered by last activity, not by `updated_at`: `arc` finished last though `pin` was updated latest.
+  const recent = new Map([['pin', NOW - 3 * HOUR], ['arc', NOW - HOUR], ['proj', NOW - 2 * HOUR]])
+  const rows = buildRows(sessions, ['proj'], new Set(['beta']), false, new Set(['hot']), recent)
+  expect(keys(rows).slice(0, 6)).toEqual(['h:active', 'hot', 'arc', 'proj', 't:proj', 'pin'])
+  expect(keys(rows).filter((k) => k === 'h:active')).toHaveLength(1)
+  for (const id of ['pin', 'proj', 'arc']) expect(keys(rows).filter((k) => k === id)).toHaveLength(1)
+  expect(keys(rows)).not.toContain('h:pinned')
+  expect(keys(rows)).not.toContain('p:archived')
+  // Lingering rows are marked; the active one is not.
+  const marked = rows.flatMap((r) => ('session' in r && r.recent ? [r.session.id] : []))
+  expect(marked).toEqual(['arc', 'proj', 'pin'])
+  // Lingering alone still opens the section; a root both active and lingering is active.
+  expect(keys(buildRows(sessions, [], new Set(), false, new Set(), new Map([['rest', NOW]]))).slice(0, 2)).toEqual(['h:active', 'rest'])
+  const both = buildRows(sessions, [], new Set(), false, new Set(['rest']), new Map([['rest', NOW]]))
+  expect(both.filter((r) => 'session' in r && r.session.id === 'rest')).toEqual([{ key: 'rest', session: sessions[4] }])
+  // Expired (gone from `recent`): every root back in its place, as with no linger at all.
+  expect(keys(buildRows(sessions, [], new Set(), false, new Set(), new Map()))).toEqual(keys(buildRows(sessions, [])))
 })

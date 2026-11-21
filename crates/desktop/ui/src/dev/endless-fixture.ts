@@ -75,6 +75,20 @@ const memory: SessionMemory = receiveComponent("method.agent.output.SessionMemor
   model_override: null,
   model_source: 'settings',
   spend_today_usd: 0.42,
+  // 201: the tail and its marks, the generation, lines on a draft, the resolved profile.
+  tail_mode: 'fixed',
+  tail_low: 24_000,
+  tail_high: 64_000,
+  tail_override: null,
+  tail_bytes: 41_200,
+  generation: 3,
+  drafts: 2,
+  profile: 'standard',
+  profile_reason: 'the model reads more than 32 k tokens',
+  // 201 §9–§11: the ledger's open entries, zooms this generation, a tool-list change waiting for the next trim.
+  ledger: { goals: 1, decisions: 4, constraints: 2, open_tasks: 3, artefacts: 5, suggested: 2, bytes: 2_300 },
+  zooms: 7,
+  tools_pending: true,
 })
 
 /** `"backlog"` (137G): a long-stuck chat — 4,812 lines wait, the oldest 4,512 folded into one placeholder line, the newest shown raw. */
@@ -166,6 +180,20 @@ let settings: EndlessConfig = receiveComponent("method.agent.output.EndlessConfi
   cap_chars: 30_000,
   backfill_max_units: 2_000,
   model: null,
+  tail_mode: 'fixed',
+  tail_low_bytes: 24_000,
+  tail_high_bytes: 64_000,
+  tail_low_share: 0.1,
+  tail_high_share: 0.25,
+  cold_after_secs: 0,
+  profile: 'auto',
+  merge_at: 0.75,
+  ledger: true,
+  ledger_bytes: 4_000,
+  ledger_suggestions: true,
+  prefetch_bytes: 2_000,
+  age_by_use: true,
+  describe_images: 'auto',
 })
 
 const wrapped = new WeakMap<Api, Api>()
@@ -219,6 +247,11 @@ export function endlessFixture(api: Api): Api {
     set_session_view_bytes: (_s, bytes) => {
       memory.view_bytes = bytes
       return Promise.resolve(memory)
+    },
+    set_session_tail: (_s, tail = null) => {
+      const marks = tail ?? { mode: 'fixed' as const, low: 24_000, high: 64_000 }
+      changed = { ...current(), tail_override: tail, tail_mode: marks.mode, tail_low: marks.mode === 'fixed' ? marks.low : 0, tail_high: marks.mode === 'fixed' ? marks.high : 0 }
+      return Promise.resolve(changed)
     },
     endless_settings_get: () => Promise.resolve(settings),
     endless_settings_set: (next) => {

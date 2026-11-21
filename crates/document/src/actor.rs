@@ -2147,6 +2147,52 @@ pub(crate) async fn retitle_heading(
     .map_err(|e| e.to_string())
 }
 
+/// `ask` → `Result<DocSummary, String>`: file a note or board under a project (`None` = ungrouped) —
+/// the `docs.project` column. Written on any engine that has the row: the replica merges it per
+/// column (LWW) like `notebooks.project`, so no hub or home is needed. Other kinds:
+/// `project_owned_by_binding`. The label arrives normalized.
+#[derive(Clone, Debug)]
+pub struct SetProject {
+    /// Document.
+    pub doc: DocId,
+    /// Project label; `None` clears it.
+    pub project: Option<String>,
+}
+
+impl Message<SetProject> for DocumentActor {
+    type Reply = Result<DocSummary, String>;
+
+    async fn handle(&mut self, m: SetProject, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let err = |e: anyhow::Error| format!("{e:#}");
+        let Some(row) = self.store.summary(&m.doc).await.map_err(err)? else {
+            return Err(format!("no document {}", m.doc));
+        };
+        if !row.kind.free_standing() {
+            return Err("project_owned_by_binding".into());
+        }
+        if row.project == m.project {
+            return Ok(row);
+        }
+        self.store
+            .set_project(&m.doc, m.project.as_deref())
+            .await
+            .map_err(err)?;
+        // The notes list refreshes on `DocumentChanged`; nothing in the document itself changed.
+        let changed = DocumentChanged {
+            doc: row.id.clone(),
+            kind: row.kind,
+            title: row.title.clone(),
+            updated_ms: row.updated_ms,
+            deleted: false,
+        };
+        self.rt.publish(changed).await;
+        Ok(DocSummary {
+            project: m.project,
+            ..row
+        })
+    }
+}
+
 /// `ask` → `Result<(), String>`: delete a note (§7.3 UI). Other kinds answer `delete_via_owner`
 /// (`knowledge_delete`, the artifact store); their owners use [`Delete`].
 #[derive(Clone, Debug)]

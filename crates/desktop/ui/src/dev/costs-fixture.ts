@@ -251,7 +251,7 @@ export function limitsFixture(now: number): UsageLimits {
     ],
     budgets: [
       { id: 'agent:theuth', label: 'theuth desk', period: 'month', cap_usd: 2000, spent_usd: 1336.4, resets_at_ms: at(20 * 1440) },
-      { id: 'session:sim-root-14', label: 'dreaming', period: 'night', cap_usd: 25, spent_usd: 23.1, resets_at_ms: at(600) },
+      { id: 'routine:dreaming', label: 'dreaming', period: 'night', cap_usd: 25, spent_usd: 23.1, resets_at_ms: null },
     ],
   }
 }

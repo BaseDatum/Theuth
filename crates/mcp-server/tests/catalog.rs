@@ -138,7 +138,7 @@ fn catalogue_snapshot() {
         want.trim(),
         "catalogue changed: review, then MCP_SNAPSHOT=1"
     );
-    assert_eq!(tools.len(), 43);
+    assert_eq!(tools.len(), 44);
     assert_eq!(
         tools
             .iter()
@@ -432,7 +432,7 @@ async fn http_rejections_and_round_trip() {
     );
 
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 43);
+    assert_eq!(tools.len(), 44);
     assert_eq!(tools[0].name, "meeting_list");
 
     let l = json(
@@ -507,7 +507,7 @@ async fn stdio_bridge_forwards_to_the_engine() {
             .name,
         "theuth"
     );
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 43);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 44);
 
     let s = client
         .call_tool(req("meeting_summary", json!({"id": "m1"})))

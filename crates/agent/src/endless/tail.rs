@@ -1,0 +1,359 @@
+//! 201 §4 (P2): the verbatim tail — the messages since the last trim,
+//! carried as sent — and the trim rule. Pure: the loop hands in its carried
+//! history, this module says where to cut.
+
+use genai::chat::{ChatMessage, ChatRole, ContentPart};
+
+/// Tail bytes, measured as the request size is (`compact::est`: text by
+/// chars/4, a binary by its flat estimate), in bytes (× 4).
+pub fn bytes(history: &[(i64, ChatMessage)]) -> u64 {
+    history
+        .iter()
+        .map(|(_, m)| u64::from(crate::compact::est(m)) * 4)
+        .sum()
+}
+
+/// A message that asks for tool results (they must stay with it).
+fn calls_tools(m: &ChatMessage) -> bool {
+    m.content
+        .iter()
+        .any(|p| matches!(p, ContentPart::ToolCall(_)))
+}
+
+/// Indices where a turn starts: a user message (not a tool result) right
+/// after an assistant reply that called no tool. Index 0 is a start when it
+/// is a user message. A cut there never separates a tool call from its
+/// results. (A salvage note after a partial reply also matches; it is the
+/// only mid-turn position that does, and it splits no tool call either.)
+pub fn turn_starts(history: &[(i64, ChatMessage)]) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (i, (_, m)) in history.iter().enumerate() {
+        if m.role != ChatRole::User {
+            continue;
+        }
+        let start = match i.checked_sub(1).map(|p| &history[p].1) {
+            None => true,
+            Some(prev) => prev.role == ChatRole::Assistant && !calls_tools(prev),
+        };
+        if start {
+            out.push(i);
+        }
+    }
+    out
+}
+
+/// What the trim decided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Trim {
+    /// First history index kept (`> 0`).
+    pub keep_from: usize,
+    /// 201 R1-6: `[start, end)` before `keep_from` also kept, in front of the
+    /// kept rounds — the current turn's opening user message(s) an in-turn
+    /// trim must not cut. `None` for a turn-boundary trim.
+    pub opener: Option<(usize, usize)>,
+    /// Bytes cut.
+    pub cut: u64,
+    /// Bytes kept.
+    pub kept: u64,
+}
+
+/// §4.3: trim when the tail is over `high`, or over `low` with a cold cache:
+/// cut the oldest whole turns until the tail is ≤ `low`, never the last
+/// turn. `None`: no trim (under the marks, or nothing cuttable).
+pub fn trim(history: &[(i64, ChatMessage)], low: u64, high: u64, cold: bool) -> Option<Trim> {
+    let total = bytes(history);
+    if !(total > high || (cold && total > low)) {
+        return None;
+    }
+    let starts = turn_starts(history);
+    let last = *starts.last()?;
+    // Suffix sizes from each start; the first start whose suffix fits `low`,
+    // else the last turn alone.
+    let keep_from = starts
+        .iter()
+        .copied()
+        .find(|&s| s > 0 && bytes(&history[s..]) <= low)
+        .unwrap_or(last);
+    if keep_from == 0 {
+        return None;
+    }
+    let kept = bytes(&history[keep_from..]);
+    Some(Trim {
+        keep_from,
+        opener: None,
+        cut: total - kept,
+        kept,
+    })
+}
+
+/// 201 §4.3 "In turn" (P5): the positions an in-turn trim may cut at, in
+/// order — every turn start and every assistant message that opens a round
+/// (one not preceded by another assistant message), at most the current
+/// round's start: the last assistant message (else the last turn start).
+/// A tool result is never a position, so a call stays with its results;
+/// the current round is not found by [`turn_starts`]' inference alone (a
+/// recovery note after a partial reply reads as a turn start).
+pub fn round_starts(history: &[(i64, ChatMessage)]) -> Vec<usize> {
+    let mut out = turn_starts(history);
+    for (i, (_, m)) in history.iter().enumerate() {
+        let after_assistant = i
+            .checked_sub(1)
+            .is_some_and(|p| history[p].1.role == ChatRole::Assistant);
+        if m.role == ChatRole::Assistant && !after_assistant {
+            out.push(i);
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    let current = history
+        .iter()
+        .rposition(|(_, m)| m.role == ChatRole::Assistant)
+        .or_else(|| out.last().copied());
+    out.retain(|&s| current.is_some_and(|c| s <= c));
+    out
+}
+
+/// 201 §4.3 "In turn" (P5): cut the oldest whole rounds until the rest is
+/// at most `low` bytes ([`round_starts`]: never index 0, never past the
+/// current round's start, so the last round is always kept). The current
+/// turn's opening user message(s) stay in front of the kept rounds (R1-6)
+/// and count toward `low`. `None` when there is nothing before the current
+/// round to cut.
+pub fn trim_rounds(history: &[(i64, ChatMessage)], low: u64) -> Option<Trim> {
+    let starts = round_starts(history);
+    let last = *starts.last()?;
+    let opener = turn_starts(history).last().map(|&s| {
+        let n = history[s..]
+            .iter()
+            .take_while(|(_, m)| m.role == ChatRole::User)
+            .count();
+        (s, s + n)
+    });
+    // The opener counts only when a cut lands after it; one at index 0 that
+    // reaches the cut leaves nothing to cut.
+    let opener_at = |k: usize| opener.filter(|&(_, e)| e <= k);
+    let floor = opener.filter(|&(s, _)| s == 0).map_or(0, |(_, e)| e);
+    let head = |k: usize| opener_at(k).map_or(0, |(s, e)| bytes(&history[s..e]));
+    let keep_from = starts
+        .iter()
+        .copied()
+        .find(|&s| s > floor && head(s) + bytes(&history[s..]) <= low)
+        .unwrap_or(last);
+    if keep_from == 0 || keep_from <= floor {
+        return None;
+    }
+    let total = bytes(history);
+    let kept = head(keep_from) + bytes(&history[keep_from..]);
+    Some(Trim {
+        keep_from,
+        opener: opener_at(keep_from),
+        cut: total - kept,
+        kept,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use genai::chat::{ToolCall, ToolResponse};
+
+    fn user(s: &str) -> ChatMessage {
+        ChatMessage::user(s.to_owned())
+    }
+    fn reply(s: &str) -> ChatMessage {
+        ChatMessage::assistant(s.to_owned())
+    }
+    fn call(id: &str) -> ChatMessage {
+        ChatMessage::from(vec![ToolCall {
+            call_id: id.into(),
+            fn_name: "bash".into(),
+            fn_arguments: serde_json::json!({"command": "ls"}),
+            thought_signatures: None,
+        }])
+    }
+    fn result(id: &str, s: &str) -> ChatMessage {
+        ChatMessage::from(vec![ToolResponse::new(id, s)])
+    }
+    fn script() -> Vec<(i64, ChatMessage)> {
+        let big = "x".repeat(4_000);
+        let mut v = vec![
+            user("t0"),
+            reply(&big),
+            user("t1"),
+            call("c1"),
+            result("c1", &big),
+            reply("done"),
+            user("t2"),
+            reply(&big),
+            user("t3"),
+            reply(&big),
+            user("t4"),
+            reply(&big),
+        ];
+        v.drain(..)
+            .enumerate()
+            .map(|(i, m)| (i as i64, m))
+            .collect()
+    }
+
+    #[test]
+    fn a_trim_cuts_whole_turns_and_keeps_tool_calls_with_results() {
+        let h = script();
+        assert_eq!(turn_starts(&h), [0, 2, 6, 8, 10]);
+        // Over high: cut to ≤ low on a turn start.
+        let t = trim(&h, 9_000, 15_000, false).expect("over high");
+        assert!(turn_starts(&h).contains(&t.keep_from));
+        assert!(t.kept <= 9_000, "{t:?}");
+        assert_eq!(t.cut + t.kept, bytes(&h));
+        assert_eq!(t.keep_from, 8);
+        // Never between a tool call and its result.
+        for low in [1_000, 5_000, 9_000, 13_000] {
+            let t = trim(&h, low, 15_000, false).unwrap();
+            assert!(![4, 5].contains(&t.keep_from));
+        }
+    }
+
+    /// A steering message (user text that arrives while tools run) and a
+    /// subagent report (`<message from="session:…`) land after a tool result,
+    /// so neither is a turn start: no trim keeps a tool result without its
+    /// call, and the turn they belong to is cut whole or kept whole.
+    #[test]
+    fn steering_and_subagent_reports_are_not_turn_starts() {
+        let big = "x".repeat(4_000);
+        let h: Vec<(i64, ChatMessage)> = vec![
+            user("t0"),
+            reply(&big),
+            user("t1"),
+            call("c1"),
+            result("c1", &big),
+            user("<message from=\"user\">also check y</message>"),
+            call("c2"),
+            result("c2", &big),
+            user("<message from=\"session:01ab\">report: done</message>"),
+            reply(&big),
+            user("t2"),
+            reply(&big),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| (i as i64, m))
+        .collect();
+        assert_eq!(turn_starts(&h), [0, 2, 10]);
+        for low in [500, 3_000, 6_000, 9_000, 14_000] {
+            if let Some(t) = trim(&h, low, low + 1, false) {
+                assert!([2, 10].contains(&t.keep_from), "low {low}: {t:?}");
+                assert_ne!(h[t.keep_from].1.role, ChatRole::Tool);
+            }
+        }
+    }
+
+    #[test]
+    fn the_last_turn_is_always_kept() {
+        let h = script();
+        let t = trim(&h, 100, 200, false).unwrap();
+        assert_eq!(t.keep_from, 10, "the last turn stays even past the marks");
+        // One turn only: nothing to cut.
+        assert_eq!(trim(&h[10..], 100, 200, false), None);
+    }
+
+    #[test]
+    fn a_cold_cache_trims_early_and_nothing_trims_otherwise() {
+        let h = script();
+        let total = bytes(&h);
+        assert_eq!(
+            trim(&h, total - 1, total + 1, false),
+            None,
+            "under high, warm"
+        );
+        let t = trim(&h, total - 1, total + 1, true).expect("cold over low");
+        assert!(t.kept < total);
+        assert_eq!(trim(&h, total, total + 1, true), None, "cold but under low");
+    }
+
+    #[test]
+    fn a_round_trim_keeps_calls_with_results_and_the_current_round() {
+        let big = "x".repeat(4_000);
+        // One long turn: input, five rounds of call + result, the current
+        // round last (its results not yet answered).
+        let mut v = vec![user("t0"), reply(&big), user("t1")];
+        for k in 0..5 {
+            let id = format!("c{k}");
+            v.push(call(&id));
+            v.push(result(&id, &big));
+        }
+        let h: Vec<(i64, ChatMessage)> = v
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| (i as i64, m))
+            .collect();
+        let current = h.len() - 2;
+        assert_eq!(round_starts(&h), [0, 1, 2, 3, 5, 7, 9, current]);
+        for low in [0, 1_000, 5_000, 9_000, 13_000, 30_000] {
+            let t = trim_rounds(&h, low).expect("rounds to cut");
+            assert_ne!(h[t.keep_from].1.role, ChatRole::Tool, "low {low}");
+            assert!(
+                t.keep_from <= current,
+                "low {low}: the current round is kept"
+            );
+            assert!(t.kept <= low || t.keep_from == current, "low {low}: {t:?}");
+            assert_eq!(t.cut + t.kept, bytes(&h));
+        }
+        assert_eq!(trim_rounds(&h, 0).unwrap().keep_from, current);
+        // A recovery note after a partial reply in the current turn is no
+        // place to cut: the partial reply's round is the current one.
+        let mut r = h.clone();
+        r.push((99, reply("partial")));
+        r.push((100, user("recovery: continue")));
+        assert_eq!(*round_starts(&r).last().unwrap(), r.len() - 2);
+        // Only the opening input before the current round: cutting it is
+        // not allowed (R1-6), so nothing is cut.
+        let one: Vec<(i64, ChatMessage)> =
+            vec![(0, user("t0")), (1, call("c")), (2, result("c", &big))];
+        assert_eq!(trim_rounds(&one, 0), None);
+        assert_eq!(trim_rounds(&one[1..], 0), None);
+    }
+
+    /// 201 R1-6: an in-turn trim keeps the current turn's opening user
+    /// message(s) in front of the kept rounds; the earlier turns and the
+    /// cut rounds behind the opener go.
+    #[test]
+    fn a_round_trim_keeps_the_turns_opening_input() {
+        let big = "x".repeat(4_000);
+        let mut v = vec![
+            user("t0"),
+            reply(&big),
+            user("t1: the request"),
+            user("<ledger>notes</ledger>"),
+        ];
+        for k in 0..5 {
+            let id = format!("c{k}");
+            v.push(call(&id));
+            v.push(result(&id, &big));
+        }
+        let h: Vec<(i64, ChatMessage)> = v
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| (i as i64, m))
+            .collect();
+        let current = h.len() - 2;
+        for low in [0, 5_000, 9_000, 13_000] {
+            let t = trim_rounds(&h, low).expect("rounds to cut");
+            assert!(t.keep_from > 4, "low {low}: {t:?}");
+            assert_eq!(t.opener, Some((2, 4)), "low {low}");
+            assert_eq!(t.cut + t.kept, bytes(&h));
+            assert!(t.kept <= low || t.keep_from == current, "low {low}: {t:?}");
+        }
+        // A second in-turn trim after the first: the opener now at index 0
+        // stays again.
+        let t = trim_rounds(&h, 0).unwrap();
+        let mut again: Vec<(i64, ChatMessage)> = h[2..4].to_vec();
+        again.extend_from_slice(&h[t.keep_from..]);
+        again.push((90, call("c9")));
+        again.push((91, result("c9", &big)));
+        let t2 = trim_rounds(&again, 0).unwrap();
+        assert_eq!(t2.opener, Some((0, 2)));
+        assert_eq!(t2.keep_from, again.len() - 2);
+        // Only the opener before the current round: nothing to cut.
+        assert_eq!(trim_rounds(&again[..4], 0), None);
+    }
+}

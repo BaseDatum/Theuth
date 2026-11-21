@@ -3,21 +3,26 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { createContext, useContext, useEffect, useId, useMemo, useState } from 'react'
 import { CodeBlock, CodeBlockCopyButton, CodeBlockDownloadButton, type CustomRendererProps, StreamdownContext } from 'streamdown'
+import { useShallow } from 'zustand/react/shallow'
+import { useTranscriptJump } from '@/components/chat/jump'
 import { FenceContext } from '@/components/chat/surface/JsonRenderFence'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey } from '@/lib/tool-runs'
 import type { CellRef } from "@/rpc/bindings/method.cells.output"
 import type { RunMode as CellRunMode } from "@/rpc/bindings/method.cells.output"
-import { Cell, CellExtras } from './Cell'
+import { type Entry, useSessions } from '@/store/sessions'
+import { Cell, CellExtras, cellDomId } from './Cell'
 import { CellEditor } from './CellEditor'
 import { setEdit, useEdit } from './edits'
-import { bodyKey, type ReplyCell, replyCells } from './fences'
+import { bodyKey, cellAt, firstOfName, type ReplyCell, replyCells, restated } from './fences'
 import { cellOf, digest } from './grammar'
 import { openAsNote } from './open-as-note'
 import { cellIdentity } from './line-run'
-import { followSuperseded, RunbookBar, runAllPairs } from './RunbookBar'
-import { errorText, lastPass, mintId, press, refKey, refresh, register, registeredCells, scopeKey, scopeOf, setNotice, useCellRecord, useScope, useStates } from './store'
-import { chatEditable, disarmedReason, labelOf, RUN_ANYWAY, titleOf, viewOf } from './view'
+import { followSuperseded, newestOf, replacementOf, RunbookBar, runAllPairs } from './RunbookBar'
+import { errorText, lastPass, mintId, press, refKey, refresh, register, registeredCells, scopeKey, scopeOf, setNotice, useCellRecord, useScope } from './store'
+import { chatEditable, disarmedReason, labelOf, titleOf, viewOf } from './view'
+
+const NO_ENTRIES: Entry[] = []
 
 /** 171 §4.1: the fence languages `CellFence` registers for. */
 export const CELL_LANGUAGES = ['bash', 'zsh', 'sh', 'pwsh', 'powershell', 'python', 'py']
@@ -82,13 +87,34 @@ function Snippet({ code, language, isIncomplete, meta }: CustomRendererProps) {
   )
 }
 
-/** A cell of a reply: binds the shared `Cell` to the chat RPCs (§15.2). */
+/**
+ * Item (c): a later reply's cell that re-presents a name an earlier reply presented. One line; the original position
+ * shows this newest version, and a press scrolls there (the transcript's jump when the original is not mounted).
+ */
+function Restated({ name, target, session, entry }: { name: string; target: CellRef | null; session: string | undefined; entry: string }) {
+  const go = () => {
+    const el = (target && document.getElementById(cellDomId(target))) ?? document.querySelector(`[data-cell][data-cell-name="${CSS.escape(name)}"]`)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    else if (session) useTranscriptJump.getState().request(session, entry)
+  }
+  return (
+    <button type="button" data-cell-restated={name} className="my-2 block text-left text-sm text-fg-secondary underline-offset-2 hover:underline pointer-coarse:min-h-12" onClick={go}>
+      ↑ updated cell <code className="font-mono">{name}</code> above
+    </button>
+  )
+}
+
+/**
+ * A cell of a reply: binds the shared `Cell` to the chat RPCs (§15.2). Item (c): a cell a later reply replaced (same
+ * `name`) shows the newest version in its place — its ref, spec, record, and presses with the engine's digest — and the
+ * later reply shows `Restated` for it.
+ */
 function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRendererProps & { ordinals: CellOrdinals; ordinal: number }) {
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
   const fence = useContext(FenceContext)
-  const spec = useMemo(() => cellOf(language, code), [language, code])
+  const ownSpec = useMemo(() => cellOf(language, code), [language, code])
   const session = fence.session
   const cellRef = useMemo<CellRef | null>(
     () => (session && ordinals.entry ? { type: 'chat', session, entry: ordinals.entry, ordinal } : null),
@@ -96,43 +122,57 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
   )
   // cells-midturn D1: closed fence + stored reply; whether the turn still runs does not matter.
   const pending = !!session && (isIncomplete || !ordinals.entry)
+  const ownTitle = ownSpec ? titleOf(ownSpec, ordinal) : ''
+  const scope = useScope(cellRef ? scopeOf(cellRef) : { type: 'session', id: '' })
+  const replyRefs = useMemo(() => (session && ordinals.entry ? ordinals.cells.map((c): CellRef => ({ type: 'chat', session, entry: ordinals.entry as string, ordinal: c.ordinal })) : []), [session, ordinals])
+  const replyStates = replyRefs.map((r) => scope.states[refKey(r)] ?? null)
+  // Item (c): this reply's cells whose name an earlier reply of the loaded transcript presented (ordinal → that reply's id).
+  const restatedKey = useSessions((s) => (session && fence.entry ? JSON.stringify(restated(s.sessions[session]?.entries ?? NO_ENTRIES, fence.entry, ordinals.cells)) : '[]'))
+  const stubs = useMemo(() => new Map(JSON.parse(restatedKey) as [number, string][]), [restatedKey])
+  // Each shown cell a later reply replaced stands for its newest version, once read; its fence in the transcript gives the spec.
+  const replacements = replyRefs.map((r, i) => (!stubs.has(i + 1) && firstOfName(ordinals.cells, i + 1) ? replacementOf(scope.states, r) : null))
+  const newer = useSessions(useShallow((s) => replacements.map((n) => (n && session ? cellAt(s.sessions[session]?.entries ?? NO_ENTRIES, n.cell) : null))))
+  const specOf = (r: CellRef) =>
+    newer[replacements.findIndex((n) => n !== null && refKey(n.cell) === refKey(r))]?.spec ?? registeredCells(scopeOf(r)).find((c) => refKey(c.ref) === refKey(r))?.spec ?? null
+  const replacement = replacements[ordinal - 1] ?? null
+  const liveRef = replacement?.cell ?? cellRef
+  const spec = replacement ? (specOf(replacement.cell) ?? ownSpec) : ownSpec
   // F4: the user's edit outlives a remount (`edits`, by `refKey`); a cell without a ref cannot be edited.
-  const editKey = cellRef ? refKey(cellRef) : ''
+  const editKey = liveRef ? refKey(liveRef) : ''
   const edited = useEdit(editKey)
   const [hint, setHint] = useState<string | null>(null)
   const label = spec ? labelOf(spec) : 'Run'
   const title = spec ? titleOf(spec, ordinal) : ''
-  useEffect(() => (cellRef && spec && !pending ? register(api, scopeOf(cellRef), { ref: cellRef, spec, label: title }) : undefined), [api, cellRef, spec, title, pending])
+  useEffect(() => (cellRef && ownSpec && !pending ? register(api, scopeOf(cellRef), { ref: cellRef, spec: ownSpec, label: ownTitle }) : undefined), [api, cellRef, ownSpec, ownTitle, pending])
+  // The versions past this one: watched, so the record brings them when no mounted reply registers them.
+  const chain = newestOf(scope.states, cellRef)
+  const chainKey = chain.chain.map(refKey).join(' ')
+  useEffect(() => {
+    if (pending) return
+    const offs = chain.chain.map((r) => register(api, scopeOf(r), { ref: r, spec: null, label: ownTitle }))
+    return () => offs.forEach((off) => off())
+    // `chainKey` names the refs; the ref objects are new on every read.
+  }, [api, chainKey, pending])
   useEffect(() => {
     if (!hint) return
     const t = setTimeout(() => setHint(null), 4000)
     return () => clearTimeout(t)
   }, [hint])
 
-  const { state, notice } = useCellRecord(cellRef)
-  const scope = useScope(cellRef ? scopeOf(cellRef) : { type: 'session', id: '' })
-  const replyRefs = useMemo(() => (session && ordinals.entry ? ordinals.cells.map((c): CellRef => ({ type: 'chat', session, entry: ordinals.entry as string, ordinal: c.ordinal })) : []), [session, ordinals])
-  const replyStates = useStates(replyRefs)
-  // 171F B1: the bar sits after the reply's last cell; B8: it follows replacements, watching them when nothing mounts them.
-  const barCell = ordinal === ordinals.cells.length && ordinals.cells.length >= 2 && !!cellRef
-  const nextRefs = useMemo(() => (barCell ? replyStates.map((s) => s?.superseded_by ?? null) : []), [barCell, replyStates])
-  const nextStates = useStates(nextRefs)
-  const nextKey = nextRefs.map((r) => (r ? refKey(r) : '')).join(' ')
-  useEffect(() => {
-    const offs = nextRefs.flatMap((r, i) => (r ? [register(api, scopeOf(r), { ref: r, spec: null, label: titleOf((ordinals.cells[i] as ReplyCell).spec, i + 1) })] : []))
-    return () => offs.forEach((off) => off())
-    // `nextKey` names the refs; the ref objects are new on every read.
-  }, [api, nextKey])
-  if (!spec) return null
+  const { state, notice } = useCellRecord(liveRef)
+  if (!spec || !ownSpec) return null
+  const earlier = stubs.get(ordinal)
+  if (earlier !== undefined && ownSpec.options.name)
+    return <Restated name={ownSpec.options.name} target={chain.state?.cell ?? cellRef} session={session} entry={earlier} />
   const latest = state?.latest ?? null
   const host = state?.host ?? null
   const view = viewOf(state, spec, edited !== null)
   const runnable = !!cellRef && !pending
-  // CELLAFTER (§7.6): the unarmed gate's reason; the button and a second ► run anyway, the keys hint.
+  // CELLAFTER (§7.6): the unarmed gate's reason; a press asks once (advisory `after`), the keys hint names the button.
   const gate = disarmedReason(state, spec)
 
-  // §11.1 fold: the latest cell of the reply that has run stays open.
-  const lastRun = replyStates.reduce((best, s, i) => (s?.latest ? i + 1 : best), 0)
+  // §11.1 fold: the latest shown cell of the reply that has run (its newest version's run) stays open.
+  const lastRun = replyStates.reduce((best, s, i) => (!stubs.has(i + 1) && (replacements[i] ?? s)?.latest ? i + 1 : best), 0)
   const after = spec.options.after
   const afterLabel = after
     ? (ordinals.cells.find((c) => c.spec.options.name === after)?.spec.options.label ??
@@ -146,25 +186,26 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
   const queuePos = latest?.state === 'queued' ? queued.findIndex((r) => r?.id === latest.id) + 1 : undefined
 
   const act = (f: () => Promise<unknown>) => {
-    if (!cellRef) return
-    setNotice(cellRef, null)
+    if (!liveRef) return
+    setNotice(liveRef, null)
     f().then(
-      () => refresh(scopeOf(cellRef)),
+      () => refresh(scopeOf(liveRef)),
       (e: unknown) => {
-        setNotice(cellRef, errorText(e))
-        void refresh(scopeOf(cellRef))
+        setNotice(liveRef, errorText(e))
+        void refresh(scopeOf(liveRef))
       },
     )
   }
   // `confirmed` only from the presses past a warning: Run anyway, the second ►, the danger confirm (or its "Don't ask again").
   // `at`: the code the press was made on (a danger ask's press-time code, M1), so what was confirmed is what runs.
   const run = (mode: CellRunMode, next?: boolean, confirmed = false, at?: string) => {
-    if (!cellRef) return
+    if (!liveRef) return
     const text = at === undefined ? edited : at === spec.code ? null : at
-    // `seen` (§3.4, D3): the digest of the text on screen; the engine refuses a mismatch with "this cell changed".
+    // `seen` (§3.4, D3): the digest of the text on screen; the engine refuses a mismatch with "this cell changed". A
+    // replacement shown here is pressed as the engine presented it (its `digest`), at its own ref.
     const pressed = (async () => {
-      const seen = await digest(code)
-      return press(mintId('r_'), (id) => api.cell_run(cellRef, seen, mode, id, text, null, confirmed))
+      const seen = replacement ? replacement.digest : await digest(code)
+      return press(mintId('r_'), (id) => api.cell_run(liveRef, seen, mode, id, text, null, confirmed))
     })()
     act(() => pressed)
     if (next) {
@@ -188,7 +229,7 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
     onAsk: () => {
       if (latest) act(() => api.cell_ask(latest.id))
     },
-    onEdit: (next: string) => cellRef && setEdit(editKey, next, spec.code),
+    onEdit: (next: string) => liveRef && setEdit(editKey, next, spec.code),
     // `Terminal`'s cell source attaches itself (one attach path for chat and notes); kept for the frozen `CellCallbacks`.
     onAttach: () => () => undefined,
   }
@@ -201,11 +242,15 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
     hint,
     pending,
   }
+  // 171F B1: the bar sits after the reply's last shown cell (a restated one belongs to the original reply's runbook);
+  // B8: it follows replacements.
+  const shown = ordinals.cells.filter((c) => !stubs.has(c.ordinal))
+  const barCell = !!cellRef && shown.length >= 2 && shown.at(-1)?.ordinal === ordinal
   const steps = barCell
     ? followSuperseded(
-        ordinals.cells.map((c, i) => ({ ref: replyRefs[i] as CellRef, state: replyStates[i] ?? null, spec: c.spec })),
-        nextStates,
-        (r) => registeredCells(scopeOf(r)).find((c) => refKey(c.ref) === refKey(r))?.spec ?? null,
+        shown.map((c) => ({ ref: replyRefs[c.ordinal - 1] as CellRef, state: replyStates[c.ordinal - 1] ?? null, spec: c.spec })),
+        shown.map((c) => replacements[c.ordinal - 1] ?? null),
+        specOf,
       )
     : []
   const bar =
@@ -220,7 +265,7 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
           const ref = cellRef
           // W-r: one engine pass over the reply's cells in order; the engine stops before its boundaries (§7.2).
           void (async () => {
-            const pairs = await runAllPairs(steps, ordinals.cells.map((c) => c.body))
+            const pairs = await runAllPairs(steps, shown.map((c) => c.body))
             await press(mintId('p_'), (id) => api.cell_run_all(scopeOf(ref), pairs, id))
           })().then(
             () => refresh(scopeOf(ref)),
@@ -234,9 +279,9 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
     <>
       <CellExtras value={extras}>
         <Cell
-          cellRef={cellRef ?? { type: 'chat', session: session ?? '', entry: ordinals.entry ?? '', ordinal }}
+          cellRef={liveRef ?? { type: 'chat', session: session ?? '', entry: ordinals.entry ?? '', ordinal }}
           cell={spec}
-          code={code}
+          code={(replacement && newer[ordinal - 1]?.body) || code}
           runnable={runnable}
           view={view}
           state={state}
@@ -251,13 +296,13 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
               runnable={runnable}
               disarmed={gate}
               title={title}
-              identity={cellRef ? cellIdentity(cellRef, spec) : ''}
+              identity={liveRef ? cellIdentity(liveRef, spec) : ''}
               latest={latest}
               danger={spec.options.danger}
               locked={locked}
               onChange={callbacks.onEdit}
               onRun={run}
-              onRefused={() => setHint(`press ${gate !== null ? RUN_ANYWAY : label} to run this`)}
+              onRefused={() => setHint(`press ${label} to run this`)}
             />
           }
         />

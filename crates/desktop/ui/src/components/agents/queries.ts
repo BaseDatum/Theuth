@@ -69,3 +69,10 @@ export function useHarnesses() {
   const api = useApi()
   return useQuery({ enabled: canQuery4, queryKey: queryKeys.acp, queryFn: () => api.list_acp(false) })
 }
+
+/** 201 R3-12: Settings › Context (`endless_settings_get`): the tail marks a lone per-agent mark pairs with. */
+export function useEndlessSettings() {
+  const canQuery5 = useQuerySupport(['endless_settings_get'])
+  const api = useApi()
+  return useQuery({ enabled: canQuery5, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() })
+}

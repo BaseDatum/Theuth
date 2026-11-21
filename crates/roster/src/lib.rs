@@ -1149,6 +1149,9 @@ impl Roster {
         // 137 R1-D7 / D14: a reopened desk whose session is in the other
         // mode switches at its next idle moment (backfill, then flip); a
         // per-agent `view_bytes:` is applied the same way.
+        // 201 §4.2: the per-agent `tail_*:` keys go to the desk session
+        // every open (a cleared key clears), below the session's own
+        // override. 201 §7.1 seam: `profile:` is phase P3's.
         let memory = agents
             .ask(agent::SessionMemoryQuery { session })
             .await
@@ -1160,6 +1163,20 @@ impl Roster {
                 .await
         {
             tracing::warn!(agent = %name, bytes, "desk view_bytes not applied: {e}");
+        }
+        let tail = agent::AgentTail {
+            mode: f.tail_mode,
+            low_bytes: f.tail_low_bytes,
+            high_bytes: f.tail_high_bytes,
+            low_share: f.tail_low_share,
+            high_share: f.tail_high_share,
+            profile: f.profile,
+        };
+        if let Err(e) = agents
+            .ask(agent::SetSessionAgentTail { session, tail })
+            .await
+        {
+            tracing::warn!(agent = %name, "desk tail keys not applied: {e}");
         }
         // 137G: the agent's `memory_model:` is its desk's compactor default
         // (below a chat's own pick), with its `memory_effort:` (194); written
@@ -2946,6 +2963,12 @@ impl Message<ListAgents> for Roster {
                             memory: None,
                             isolated_memory: false,
                             view_bytes: None,
+                            tail_mode: None,
+                            tail_low_bytes: None,
+                            tail_high_bytes: None,
+                            tail_low_share: None,
+                            tail_high_share: None,
+                            profile: None,
                             memory_model: None,
                             memory_effort: None,
                             body: String::new(),

@@ -1,0 +1,7 @@
+Summarise the message at the end in one plain sentence.
+Tags: user = the user's words; talk = the agent's reply; work = the agent's reasoning while using tools; echo = a tool's output.
+Say who did or said what and the outcome.
+Copy names, paths, numbers and commands exactly.
+Do not answer or continue the message.
+Ignore the Context block except to understand it.
+Reply with the sentence only.

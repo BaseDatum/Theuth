@@ -124,6 +124,10 @@ pub struct Fold {
     pub t: u64,
     /// Fold parameters.
     pub cfg: FoldCfg,
+    /// 201 §10 (P6b): parts zoomed during the generation just ended — a pair
+    /// holding one is never merged (one generation of grace), even when that
+    /// leaves the view over its low mark. Empty = plain folding.
+    pub pinned: Vec<Part>,
 }
 
 impl Fold {
@@ -138,6 +142,7 @@ impl Fold {
             base,
             t: base,
             cfg,
+            pinned: Vec::new(),
         }
     }
 
@@ -146,7 +151,20 @@ impl Fold {
     /// the tree or `T` changes), so reload and live are the same function by
     /// construction.
     pub fn rebuild(tree: &Tree, base: u64, t: u64, cfg: FoldCfg, units: &[Unit]) -> Self {
+        Self::rebuild_pinned(tree, base, t, cfg, units, &[])
+    }
+
+    /// [`Fold::rebuild`] with `pinned` parts left unmerged (201 §10, P6b).
+    pub fn rebuild_pinned(
+        tree: &Tree,
+        base: u64,
+        t: u64,
+        cfg: FoldCfg,
+        units: &[Unit],
+        pinned: &[Part],
+    ) -> Self {
         let mut f = Self::new(base, cfg);
+        f.pinned = pinned.to_vec();
         for i in base..t {
             f.append(tree, i, units);
         }
@@ -335,6 +353,9 @@ impl Fold {
         for (k, w) in self.parts.windows(2).enumerate() {
             let (a, b) = (w[0], w[1]);
             if a.l != b.l || a.i % 2 != 0 || b.i != a.i + 1 || !tree.built(a.l + 1, a.i / 2) {
+                continue;
+            }
+            if self.pinned.contains(&a) || self.pinned.contains(&b) {
                 continue;
             }
             let due = (self.t - a.start()) as f64 / f64::from(1u32 << (a.l as u32 + 2));
@@ -581,6 +602,66 @@ mod tests {
         let text = render(&tree, &f, &units).text();
         assert!(text.len() <= cap + 16 + lines.len() * 12, "{}", text.len());
         assert_eq!(f.folded(), 0, "nothing unsummarized is folded");
+    }
+
+    /// 201 §10 (P6b): a pinned (zoomed) part is never merged, even when the
+    /// view stays over its low mark; the parts still tile the range; no pin
+    /// is plain folding.
+    #[test]
+    fn a_pinned_part_stays_unmerged() {
+        let cfg = FoldCfg {
+            view_bytes: 3_000,
+            slack: 0.125,
+            raw_bytes: 0,
+        };
+        let mut tree = Tree::default();
+        let node = |l: u8, i: u64, size: u32| Node {
+            l,
+            i,
+            text: "z".repeat(size as usize),
+            size,
+            free: false,
+            model: None,
+            tries: 0,
+            mechanical: true,
+        };
+        let units: Vec<Unit> = (0..16u64)
+            .map(|i| {
+                tree.insert(node(0, i, 400));
+                Unit {
+                    i,
+                    seq: i as i64,
+                    part: 0,
+                    kind: Kind::User,
+                    text: "x".repeat(400),
+                    size: 406,
+                    at: None,
+                }
+            })
+            .collect();
+        for i in 0..8 {
+            tree.insert(node(1, i, 100));
+        }
+        let tiles = |f: &Fold| {
+            f.parts.windows(2).all(|w| w[0].end() == w[1].start())
+                && f.parts[0].start() == 0
+                && f.parts.last().unwrap().end() == 16
+        };
+        let plain = Fold::rebuild(&tree, 0, 16, cfg, &units);
+        assert!(
+            !plain.parts.contains(&Part { l: 0, i: 0 }),
+            "{:?}",
+            plain.parts
+        );
+        let pin = Part { l: 0, i: 0 };
+        let held = Fold::rebuild_pinned(&tree, 0, 16, cfg, &units, &[pin]);
+        assert!(held.parts.contains(&pin), "{:?}", held.parts);
+        assert!(held.parts.contains(&Part { l: 0, i: 1 }));
+        assert!(tiles(&plain) && tiles(&held));
+        assert_eq!(
+            Fold::rebuild_pinned(&tree, 0, 16, cfg, &units, &[]).parts,
+            plain.parts
+        );
     }
 
     /// 137G G2: 5,000 unbuilt units render within view + raw budget: the

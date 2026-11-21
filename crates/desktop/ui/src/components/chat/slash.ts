@@ -136,7 +136,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   {
     name: '/compact',
     hint: '[summary|cut|snap|style …]',
-    desc: 'fold context; style sets the default',
+    desc: 'fold context (endless chat: trim the tail now); style sets the default',
   },
   { name: '/undo', hint: '', desc: 'drop the last turn (redo restores)' },
   { name: '/redo', hint: '', desc: 'restore the last undone turn' },

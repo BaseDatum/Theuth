@@ -23,6 +23,8 @@ import { openNewChat } from '@/components/chat/NewChatPane'
 import { leaves, usePanes } from '@/lib/panes'
 import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { useLinger } from '@/lib/sidebar-linger'
+import { cn } from '@/lib/utils'
 import { notAdvisor, notStudy, rootOf, subtrees } from '@/lib/session-tree'
 import { nextSelection, type SelectMode } from '@/lib/selection'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
@@ -36,8 +38,40 @@ export type Row =
   | { key: string; label: string }
   | { key: string; project: string | null; collapsed: boolean }
   | { key: string; archived: number; collapsed: boolean }
-  | { key: string; session: SessionSummary }
+  | { key: string; session: SessionSummary; recent?: true }
   | { key: string; tree: string }
+
+const HOUR = 3_600_000
+const NO_RECENT: ReadonlyMap<string, number> = new Map()
+
+/**
+ * LINGER: the roots that stopped being `active` less than `windowMs` ago, id → when they were last active (epoch
+ * ms), most recent first. "Last active" is the newest persisted turn end in the root's tree (`finished_at`, so it
+ * survives a reload and never moves on an edit or rename), or `seen` — when this client watched the root leave
+ * `active` (a job or terminal ending has no turn end) — whichever is later. `windowMs <= 0` is off.
+ */
+export function lingeringRoots(
+  roots: readonly SessionSummary[],
+  subs: ReadonlyMap<string, readonly SessionSummary[]>,
+  active: ReadonlySet<string>,
+  seen: ReadonlyMap<string, number>,
+  now: number,
+  windowMs: number,
+): ReadonlyMap<string, number> {
+  if (windowMs <= 0) return NO_RECENT
+  const out: [string, number][] = []
+  for (const r of roots) {
+    if (active.has(r.id)) continue
+    const finished = [r, ...(subs.get(r.id) ?? [])].reduce((max, d) => (d.finished_at ? Math.max(max, Date.parse(d.finished_at)) : max), 0)
+    const last = Math.max(finished, seen.get(r.id) ?? 0)
+    if (last > 0 && now - last < windowMs) out.push([r.id, last])
+  }
+  return out.length ? new Map(out.sort((a, b) => b[1] - a[1])) : NO_RECENT
+}
+
+/** When the first of `recent` leaves its linger window (epoch ms), `null` when none lingers. */
+export const lingerExpiry = (recent: ReadonlyMap<string, number>, windowMs: number): number | null =>
+  recent.size ? Math.min(...recent.values()) + windowMs : null
 
 /** Sidebar name of the `null` project bucket (51 §3). */
 export const UNGROUPED = 'Ungrouped'
@@ -50,12 +84,24 @@ export const newChatLabel = (project: string | null) => (project === null ? 'New
  * right-click or the hover `…` (both always shown where the pointer is a finger — phones and iPads — like
  * `SessionItem`'s) opens a menu whose "New chat in <project>" does the same (`openNewChat`: the focused pane when
  * split, else `/?project=`) and whose "Icon & colour…" opens the style dialog (not for Ungrouped). The project's glyph
- * sits left of the name.
+ * sits left of the name. `create` replaces the new-chat action (the notes list: "New note in <project>").
  */
-export function ProjectHeader({ project, collapsed, toggle }: { project: string | null; collapsed: boolean; toggle(): void }) {
+export function ProjectHeader({
+  project,
+  collapsed,
+  toggle,
+  create,
+}: {
+  project: string | null
+  collapsed: boolean
+  toggle(): void
+  create?: { label: string; run(): void }
+}) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [styling, setStyling] = useState(false)
+  const newLabel = create?.label ?? newChatLabel(project)
+  const onNew = () => (create ? create.run() : openNewChat(navigate, project))
   return (
     <div className="group/menu-item relative">
       <button
@@ -76,11 +122,11 @@ export function ProjectHeader({ project, collapsed, toggle }: { project: string 
         showOnHover
         // A finger's hit area (`after:-inset-2`) is wider: keep the two targets from overlapping.
         className="top-3.5 right-8 pointer-coarse:right-11"
-        aria-label={newChatLabel(project)}
-        title={newChatLabel(project)}
+        aria-label={newLabel}
+        title={newLabel}
         onClick={(e) => {
           e.stopPropagation()
-          openNewChat(navigate, project)
+          onNew()
         }}
       >
         <Plus />
@@ -92,9 +138,7 @@ export function ProjectHeader({ project, collapsed, toggle }: { project: string 
           </SidebarMenuAction>
         </DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="start" className="w-48">
-          <DropdownMenuItem onSelect={() => openNewChat(navigate, project)}>
-            {newChatLabel(project)}
-          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={onNew}>{newLabel}</DropdownMenuItem>
           {project !== null && <DropdownMenuItem onSelect={() => setStyling(true)}>Icon &amp; colour…</DropdownMenuItem>}
           <DropdownMenuItem onSelect={toggle}>{collapsed ? 'Expand' : 'Collapse'}</DropdownMenuItem>
         </DropdownMenuContent>
@@ -124,6 +168,9 @@ function group(iso: string, now: number): string {
  * ordering, `Ungrouped` last, under collapsible project headers (`collapsed` holds project labels, `''` = ungrouped).
  * Archived roots (51 §3) leave all of that for one `Archived (N)` header at the very bottom, collapsed unless
  * `archivedOpen`; their children only ever render under them (as the tree of an open chat), never as orphans above.
+ * LINGER: `recent` (id → last active, from `lingeringRoots`) roots that are no longer active stay in the same `Active`
+ * section below the active ones, most recently active first and marked `recent`, and likewise only there; the
+ * section's header shows when either set has a row.
  */
 export function buildRows(
   sessions: SessionSummary[],
@@ -131,28 +178,31 @@ export function buildRows(
   collapsed: ReadonlySet<string> = new Set(),
   archivedOpen = false,
   active: ReadonlySet<string> = new Set(),
+  recent: ReadonlyMap<string, number> = NO_RECENT,
 ): Row[] {
   const now = Date.now()
   const roots = new Set(open.map((id) => rootOf(sessions, id)))
   const rows: Row[] = []
-  const push = (s: SessionSummary) => {
-    rows.push({ key: s.id, session: s })
+  const push = (s: SessionSummary, lingering = false) => {
+    rows.push(lingering ? { key: s.id, session: s, recent: true } : { key: s.id, session: s })
     if (roots.has(s.id)) rows.push({ key: `t:${s.id}`, tree: s.id })
   }
   // A roster desk (`desk` set) is never a chat row — pinned, archived or in a project; the Desks group is its place. Nor is an
   // advisor (125 §8.5), nor an autoresearch study session (140 §13 Revision 2: the Study view is its place).
   const all = sessions.filter((s) => s.parent === null && s.desk == null && notAdvisor(s) && notStudy(s)).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
   const hot = all.filter((s) => active.has(s.id))
-  if (hot.length) {
+  const warm = all.filter((s) => !active.has(s.id) && recent.has(s.id)).sort((a, b) => recent.get(b.id)! - recent.get(a.id)!)
+  if (hot.length || warm.length) {
     rows.push({ key: 'h:active', label: 'Active' })
-    hot.forEach(push)
+    hot.forEach((s) => push(s))
+    warm.forEach((s) => push(s, true))
   }
-  const rest = all.filter((s) => !active.has(s.id))
+  const rest = all.filter((s) => !active.has(s.id) && !recent.has(s.id))
   const top = rest.filter((s) => !s.archived)
   const pinned = top.filter((s) => s.pinned)
   if (pinned.length) {
     rows.push({ key: 'h:pinned', label: 'Pinned' })
-    pinned.forEach(push)
+    pinned.forEach((s) => push(s))
   }
   const buckets = new Map<string | null, SessionSummary[]>()
   for (const s of top) {
@@ -181,7 +231,7 @@ export function buildRows(
   const archived = rest.filter((s) => s.archived)
   if (archived.length) {
     rows.push({ key: 'p:archived', archived: archived.length, collapsed: !archivedOpen })
-    if (archivedOpen) archived.forEach(push)
+    if (archivedOpen) archived.forEach((s) => push(s))
   }
   return rows
 }
@@ -252,7 +302,39 @@ export function SessionList({
   // Joined, so the selector's result is a stable string while every streamed delta re-runs it.
   const hot = useSessions((s) => activeRoots(roots, subs, s.sessions, prompting).join('\n'))
   const activeSet = useMemo(() => new Set(hot ? hot.split('\n') : []), [hot])
-  const rows = useMemo(() => buildRows(sessions, open, collapsed, archivedOpen, activeSet), [sessions, open, collapsed, archivedOpen, activeSet])
+  // LINGER: when this client watched each root leave `active` (a job or terminal ends with no persisted turn end).
+  const [seen, setSeen] = useState<ReadonlyMap<string, number>>(() => new Map())
+  const [now, setNow] = useState(() => Date.now())
+  const wasActive = useRef(activeSet)
+  useEffect(() => {
+    const left = [...wasActive.current].filter((id) => !activeSet.has(id))
+    wasActive.current = activeSet
+    if (!left.length) return
+    const t = Date.now()
+    setSeen((prev) => new Map([...prev, ...left.map((id): [string, number] => [id, t])]))
+    setNow(t)
+  }, [activeSet])
+  const windowMs = useLinger((s) => s.hours) * HOUR
+  // Keyed by a joined string like `hot`, so the map (and the rows) stay the same object until a root enters or leaves.
+  const recentKey = useMemo(
+    () => [...lingeringRoots(roots, subs, activeSet, seen, now, windowMs)].map(([id, t]) => `${id} ${t}`).join('\n'),
+    [roots, subs, activeSet, seen, now, windowMs],
+  )
+  const recent = useMemo(
+    (): ReadonlyMap<string, number> => new Map(recentKey ? recentKey.split('\n').map((l): [string, number] => { const [id = '', t = '0'] = l.split(' '); return [id, Number(t)] }) : []),
+    [recentKey],
+  )
+  // Re-evaluate when the first lingering root's window ends, so it files back into its place on time.
+  useEffect(() => {
+    const at = lingerExpiry(recent, windowMs)
+    if (at === null) return
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, at - Date.now()) + 250)
+    return () => clearTimeout(timer)
+  }, [recent, windowMs])
+  const rows = useMemo(
+    () => buildRows(sessions, open, collapsed, archivedOpen, activeSet, recent),
+    [sessions, open, collapsed, archivedOpen, activeSet, recent],
+  )
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set())
   const [confirming, setConfirming] = useState(false)
   // Every selected row is archived: the bar offers Unarchive instead of Archive.
@@ -336,7 +418,8 @@ export function SessionList({
               key={item.key}
               data-index={item.index}
               ref={v.measureElement}
-              className="absolute top-0 left-0 w-full"
+              // A lingering root (no longer active) sits a little quieter below the working ones.
+              className={cn('absolute top-0 left-0 w-full', 'recent' in row && row.recent && 'opacity-70')}
               style={{ transform: `translateY(${item.start - offset}px)` }}
             >
               {'project' in row ? (

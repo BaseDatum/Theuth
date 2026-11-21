@@ -12,10 +12,10 @@ use super::Store;
 use crate::context::Mask;
 use crate::endless::compactor::CallRow;
 use crate::endless::tree::{Kind, Node};
-use crate::endless::{EndlessStats, GuardTrips, MemoryMode, UnitFilter};
+use crate::endless::{EndlessStats, GuardTrips, MemoryMode, TailOverride, UnitFilter};
 
 /// The session's endless columns (R1-D4 base, R1-D6 filter, 137G pause and models).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct EndlessMeta {
     /// `sessions.memory`.
     pub mode: MemoryMode,
@@ -37,6 +37,28 @@ pub struct EndlessMeta {
     pub effort_override: Option<String>,
     /// `sessions.endless_agent_effort` (194): the desk agent's `memory_effort`.
     pub agent_effort: Option<String>,
+    /// `sessions.endless_tail_mode/low/high` (201 §4.2): the user's
+    /// per-session tail override; `None` = inherit.
+    pub tail: Option<TailOverride>,
+}
+
+/// 201 §4.3 (P2): one `endless_generations` row — a generation's frozen view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GenerationRow {
+    /// Generation number (1 = the session's first).
+    pub n: u32,
+    /// First unit the view does not cover (the tail's first unit).
+    pub t_cut: u64,
+    /// First `messages.seq` still in the tail.
+    pub first_seq: i64,
+    /// The rendered view blocks, `(text, mark)`.
+    pub blocks: Vec<(String, bool)>,
+    /// 201 §9 (P6a): the ledger snapshot frozen with this generation
+    /// (`None`: the ledger was off at its trim).
+    pub ledger: Option<String>,
+    /// 201 R1-2: when the generation started (the cold rule after a
+    /// restart); `None` on write = now.
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 /// One `endless_units` row (the unit without its text).
@@ -79,6 +101,9 @@ pub struct EndlessMessage {
     pub excluded: bool,
     /// `messages.at`, when recorded.
     pub at: Option<DateTime<Utc>>,
+    /// R3-9: the row carries typed vision-note metadata (`messages.vision`,
+    /// 52 §6) — the only mark of a real `<vision_observation>` note.
+    pub vision: bool,
 }
 
 /// Delete every endless row of `sid` (session deletion).
@@ -90,6 +115,10 @@ pub(crate) async fn delete_endless_in(
         "DELETE FROM endless_calls WHERE session_id = ?",
         "DELETE FROM endless_nodes WHERE session_id = ?",
         "DELETE FROM endless_units WHERE session_id = ?",
+        // 201 R1-1: the frozen views and the state ledger hold the
+        // conversation's substance; they go with the session.
+        "DELETE FROM endless_generations WHERE session_id = ?",
+        "DELETE FROM endless_ledger WHERE session_id = ?",
     ] {
         sqlx::query(sql).bind(sid).execute(&mut *conn).await?;
     }
@@ -129,28 +158,40 @@ impl Store {
             Option<String>,
             Option<String>,
             Option<String>,
+            Option<String>,
+            Option<f64>,
+            Option<f64>,
         );
         let row: Option<Row> = sqlx::query_as(
             "SELECT memory, endless_filter, endless_base, endless_view_bytes, endless_paused, \
              endless_spend_override, endless_model, endless_agent_model, endless_effort, \
-             endless_agent_effort FROM sessions WHERE id = ?",
+             endless_agent_effort, endless_tail_mode, endless_tail_low, endless_tail_high \
+             FROM sessions WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.read)
         .await?;
         Ok(row
-            .map(|(m, f, b, v, p, o, cm, am, ce, ae)| EndlessMeta {
-                mode: m.parse().unwrap_or_default(),
-                filter: f.parse().unwrap_or_default(),
-                base: u64::try_from(b).unwrap_or(0),
-                view_bytes: v.and_then(|v| u32::try_from(v).ok()),
-                paused_by: p.filter(|p| !p.is_empty()),
-                spend_override: o,
-                model_override: cm.filter(|m| !m.is_empty()),
-                agent_model: am.filter(|m| !m.is_empty()),
-                effort_override: ce.filter(|e| !e.is_empty()),
-                agent_effort: ae.filter(|e| !e.is_empty()),
-            })
+            .map(
+                |(m, f, b, v, p, o, cm, am, ce, ae, tm, tl, th)| EndlessMeta {
+                    mode: m.parse().unwrap_or_default(),
+                    filter: f.parse().unwrap_or_default(),
+                    base: u64::try_from(b).unwrap_or(0),
+                    view_bytes: v.and_then(|v| u32::try_from(v).ok()),
+                    paused_by: p.filter(|p| !p.is_empty()),
+                    spend_override: o,
+                    model_override: cm.filter(|m| !m.is_empty()),
+                    agent_model: am.filter(|m| !m.is_empty()),
+                    effort_override: ce.filter(|e| !e.is_empty()),
+                    agent_effort: ae.filter(|e| !e.is_empty()),
+                    tail: match (tm.and_then(|m| m.parse().ok()), tl, th) {
+                        (Some(mode), Some(low), Some(high)) => {
+                            Some(TailOverride { mode, low, high })
+                        }
+                        _ => None,
+                    },
+                },
+            )
             .unwrap_or_default())
     }
 
@@ -271,6 +312,117 @@ impl Store {
         tx.commit().await
     }
 
+    /// 201 §4.2: the per-session tail override (mode and both marks); `None` clears it.
+    pub async fn set_endless_tail(
+        &self,
+        id: SessionId,
+        tail: Option<TailOverride>,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "UPDATE sessions SET endless_tail_mode = ?, endless_tail_low = ?, \
+             endless_tail_high = ? WHERE id = ?",
+        )
+        .bind(tail.map(|t| t.mode.as_str()))
+        .bind(tail.map(|t| t.low))
+        .bind(tail.map(|t| t.high))
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+
+    /// 201 §4.3 (P2): the session's newest generation row, if any.
+    pub async fn endless_generation(&self, id: SessionId) -> anyhow::Result<Option<GenerationRow>> {
+        let mut conn = self.read.acquire().await?;
+        let row: Option<(i64, i64, i64, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT n, t_cut, first_seq, blocks, ledger, created_at FROM endless_generations \
+             WHERE session_id = ? ORDER BY n DESC LIMIT 1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some((n, t_cut, first_seq, blocks, ledger, created_at)) = row else {
+            return Ok(None);
+        };
+        let blocks: Vec<(String, bool)> = serde_json::from_str(&blocks)?;
+        Ok(Some(GenerationRow {
+            n: n as u32,
+            t_cut: t_cut as u64,
+            first_seq,
+            blocks,
+            ledger,
+            created_at: DateTime::parse_from_rfc3339(&created_at)
+                .ok()
+                .map(|t| t.with_timezone(&Utc)),
+        }))
+    }
+
+    /// 201 §9 (P6a): the session's ledger body (JSON), `None` before one.
+    pub async fn endless_ledger(&self, id: SessionId) -> anyhow::Result<Option<String>> {
+        let mut conn = self.read.acquire().await?;
+        Ok(
+            sqlx::query_scalar("SELECT body FROM endless_ledger WHERE session_id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *conn)
+                .await?,
+        )
+    }
+
+    /// 201 §9 (P6a): store (or replace) the session's ledger body.
+    pub async fn endless_ledger_put(&self, id: SessionId, body: &str) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO endless_ledger (session_id, body, updated_at) VALUES (?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(body)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+
+    /// 201 §4.3 (P2): store (or replace) one generation's frozen view.
+    pub async fn endless_generation_put(
+        &self,
+        id: SessionId,
+        g: &GenerationRow,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO endless_generations \
+             (session_id, n, t_cut, first_seq, blocks, created_at, ledger) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(i64::from(g.n))
+        .bind(g.t_cut as i64)
+        .bind(g.first_seq)
+        .bind(serde_json::to_string(&g.blocks)?)
+        .bind(g.created_at.unwrap_or_else(Utc::now).to_rfc3339())
+        .bind(g.ledger.as_deref())
+        .execute(&mut *tx)
+        .await?;
+        // 201 R1-8: only the newest generation is ever read; older frozen
+        // views (up to 256 KB each) go in the same transaction.
+        sqlx::query("DELETE FROM endless_generations WHERE session_id = ? AND n < ?")
+            .bind(id.to_string())
+            .bind(i64::from(g.n))
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
+    /// 201 (P2): forget the session's generations (`/endless on` starts at 1 again).
+    pub async fn endless_generations_clear(&self, id: SessionId) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM endless_generations WHERE session_id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
     /// Set `sessions.memory` (8.6, create_session).
     pub async fn set_session_memory(&self, id: SessionId, mode: MemoryMode) -> anyhow::Result<()> {
         let mut tx = self.begin_write().await?;
@@ -350,11 +502,22 @@ impl Store {
         tx.commit().await
     }
 
-    /// Every built node of the session.
+    /// Every built node of the session. 201 P1: `quality` is the truth for
+    /// the node's flags ([`Node::set_quality`]).
     pub async fn endless_nodes(&self, id: SessionId) -> anyhow::Result<Vec<Node>> {
-        type Row = (i64, i64, String, i64, bool, Option<String>, i64, bool);
+        type Row = (
+            i64,
+            i64,
+            String,
+            i64,
+            bool,
+            Option<String>,
+            i64,
+            bool,
+            String,
+        );
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT l, i, text, size, free, model, tries, mechanical FROM endless_nodes \
+            "SELECT l, i, text, size, free, model, tries, mechanical, quality FROM endless_nodes \
              WHERE session_id = ? ORDER BY l, i",
         )
         .bind(id.to_string())
@@ -362,16 +525,22 @@ impl Store {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(l, i, text, size, free, model, tries, mechanical)| Node {
-                l: l as u8,
-                i: i as u64,
-                text,
-                size: size as u32,
-                free,
-                model,
-                tries: tries as i32,
-                mechanical,
-            })
+            .map(
+                |(l, i, text, size, free, model, tries, mechanical, quality)| {
+                    let mut node = Node {
+                        l: l as u8,
+                        i: i as u64,
+                        text,
+                        size: size as u32,
+                        free,
+                        model,
+                        tries: tries as i32,
+                        mechanical,
+                    };
+                    node.set_quality(crate::endless::tree::Quality::parse(&quality));
+                    node
+                },
+            )
             .collect())
     }
 
@@ -397,14 +566,14 @@ impl Store {
         let sid = id.to_string();
         let now = Utc::now().to_rfc3339();
         let sql = if replace {
-            "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, mechanical, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, mechanical, quality, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
              ON CONFLICT(session_id, l, i) DO UPDATE SET text = excluded.text, size = excluded.size, \
              free = excluded.free, model = excluded.model, tries = excluded.tries, \
-             mechanical = excluded.mechanical, created_at = excluded.created_at"
+             mechanical = excluded.mechanical, quality = excluded.quality, created_at = excluded.created_at"
         } else {
-            "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, mechanical, created_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, l, i) DO NOTHING"
+            "INSERT INTO endless_nodes (session_id, l, i, text, size, free, model, tries, mechanical, quality, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_id, l, i) DO NOTHING"
         };
         let mut tx = self.begin_write().await?;
         for node in nodes {
@@ -418,6 +587,7 @@ impl Store {
                 .bind(&node.model)
                 .bind(i64::from(node.tries))
                 .bind(node.mechanical)
+                .bind(node.quality().as_str())
                 .bind(&now)
                 .execute(&mut *tx)
                 .await?;
@@ -525,6 +695,33 @@ impl Store {
         let Some(q) = fts_query(query) else {
             return Ok(Vec::new());
         };
+        self.endless_fts(id, &q, limit).await
+    }
+
+    /// 201 §10 (P6b): [`Store::endless_recall`] matching ANY of `words`
+    /// (the prefetch over a new input's rare words), best rank first.
+    pub async fn endless_recall_any(
+        &self,
+        id: SessionId,
+        words: &[String],
+        limit: u32,
+    ) -> anyhow::Result<Vec<(u64, String)>> {
+        let q: Vec<String> = words
+            .iter()
+            .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
+            .collect();
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.endless_fts(id, &q.join(" OR "), limit).await
+    }
+
+    async fn endless_fts(
+        &self,
+        id: SessionId,
+        q: &str,
+        limit: u32,
+    ) -> anyhow::Result<Vec<(u64, String)>> {
         let rows: Vec<(i64, String)> = sqlx::query_as(
             "SELECT i, text FROM endless_lines_fts WHERE session_id = ? AND endless_lines_fts MATCH ? \
              ORDER BY rank, i DESC LIMIT ?",
@@ -564,14 +761,33 @@ impl Store {
         Ok(rows.into_iter().map(|i| i as u64).collect())
     }
 
+    /// 201 §8 (P4): the one `messages` row `seq` (an artefact unit's binary).
+    pub async fn endless_message(
+        &self,
+        id: SessionId,
+        seq: i64,
+    ) -> anyhow::Result<Option<ChatMessage>> {
+        let body: Option<String> =
+            sqlx::query_scalar("SELECT body FROM messages WHERE session_id = ?1 AND seq = ?2")
+                .bind(id.to_string())
+                .bind(seq)
+                .fetch_optional(&self.read)
+                .await?;
+        Ok(match body {
+            Some(b) => Some(serde_json::from_str(&b)?),
+            None => None,
+        })
+    }
+
     /// `messages` rows from `seq` on (cut_at respected), for unit derivation.
     pub async fn endless_messages_from(
         &self,
         id: SessionId,
         seq: i64,
     ) -> anyhow::Result<Vec<EndlessMessage>> {
-        let rows: Vec<(i64, String, Option<String>, Option<String>)> = sqlx::query_as(
-            "SELECT seq, body, excluded, at FROM messages WHERE session_id = ?1 AND seq >= ?2 \
+        type Row = (i64, String, Option<String>, Option<String>, bool);
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT seq, body, excluded, at, vision IS NOT NULL FROM messages WHERE session_id = ?1 AND seq >= ?2 \
              AND seq < COALESCE((SELECT cut_at FROM sessions WHERE id = ?1), 9223372036854775807) \
              ORDER BY seq",
         )
@@ -580,7 +796,7 @@ impl Store {
         .fetch_all(&self.read)
         .await?;
         rows.into_iter()
-            .map(|(seq, body, excluded, at)| {
+            .map(|(seq, body, excluded, at, vision)| {
                 Ok(EndlessMessage {
                     seq,
                     message: serde_json::from_str(&body)?,
@@ -589,9 +805,28 @@ impl Store {
                         .as_deref()
                         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                         .map(|d| d.with_timezone(&Utc)),
+                    vision,
                 })
             })
             .collect()
+    }
+
+    /// 201 R1-3b: the seqs of `messages` rows removed whole from the context
+    /// (the pump replaces their units' lines).
+    pub async fn endless_excluded_seqs(&self, id: SessionId) -> anyhow::Result<Vec<i64>> {
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT seq, excluded FROM messages WHERE session_id = ? AND excluded IS NOT NULL",
+        )
+        .bind(id.to_string())
+        .fetch_all(&self.read)
+        .await?;
+        let mut out = Vec::new();
+        for (seq, mask) in rows {
+            if Mask::decode(Some(&mask))?.whole {
+                out.push(seq);
+            }
+        }
+        Ok(out)
     }
 
     /// Rebuild the FTS mirror when it drifted from level 0 (a replica applied
@@ -708,6 +943,12 @@ mod tests {
             .set_endless_model(id, Some("p/desk"), Some("low"), true)
             .await
             .unwrap();
+        let tail = TailOverride {
+            mode: crate::endless::TailMode::Scaled,
+            low: 0.08,
+            high: 0.3,
+        };
+        store.set_endless_tail(id, Some(tail)).await.unwrap();
         assert_eq!(
             store.endless_meta(id).await.unwrap(),
             EndlessMeta {
@@ -721,6 +962,7 @@ mod tests {
                 agent_model: Some("p/desk".into()),
                 effort_override: Some("high".into()),
                 agent_effort: Some("low".into()),
+                tail: Some(tail),
             }
         );
         store
@@ -729,6 +971,9 @@ mod tests {
             .unwrap();
         let meta = store.endless_meta(id).await.unwrap();
         assert_eq!((meta.model_override, meta.effort_override), (None, None));
+        // 201 §4.2: clearing the tail override reads back as inherit.
+        store.set_endless_tail(id, None).await.unwrap();
+        assert_eq!(store.endless_meta(id).await.unwrap().tail, None);
         assert_eq!(meta.agent_effort.as_deref(), Some("low"));
         store
             .set_endless_effort(id, Some("high"), false)
@@ -865,5 +1110,85 @@ mod tests {
                 .is_empty(),
             "delete trigger"
         );
+    }
+
+    async fn rows(store: &Store, table: &str, id: SessionId) -> i64 {
+        let mut conn = store.read.acquire().await.unwrap();
+        // Table names are this test's literals.
+        let sql = format!("SELECT COUNT(*) FROM {table} WHERE session_id = ?");
+        sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            .bind(id.to_string())
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap()
+    }
+
+    fn gen_row(n: u32) -> GenerationRow {
+        GenerationRow {
+            n,
+            t_cut: u64::from(n) * 10,
+            first_seq: i64::from(n) * 10,
+            blocks: vec![(format!("view {n}"), true)],
+            ledger: Some("{}".into()),
+            created_at: None,
+        }
+    }
+
+    /// 201 R1-8: a new generation row replaces the older ones of the session.
+    #[tokio::test]
+    async fn generation_put_keeps_only_the_newest() {
+        let (store, _dir) = fresh().await;
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        store.endless_generation_put(id, &gen_row(1)).await.unwrap();
+        store.endless_generation_put(id, &gen_row(2)).await.unwrap();
+        assert_eq!(rows(&store, "endless_generations", id).await, 1);
+        assert_eq!(store.endless_generation(id).await.unwrap().unwrap().n, 2);
+    }
+
+    /// 201 R1-1: deleting a session leaves no row of it in any endless table.
+    #[tokio::test]
+    async fn delete_session_removes_every_endless_row() {
+        let (store, _dir) = fresh().await;
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        store
+            .endless_units_put(
+                id,
+                &[UnitRow {
+                    i: 0,
+                    seq: 1,
+                    part: 0,
+                    kind: Kind::User,
+                    size: 10,
+                    turn: 0,
+                }],
+            )
+            .await
+            .unwrap();
+        store.endless_generation_put(id, &gen_row(1)).await.unwrap();
+        store
+            .endless_ledger_put(id, "{\"goals\":[]}")
+            .await
+            .unwrap();
+        assert_eq!(rows(&store, "endless_generations", id).await, 1);
+        assert_eq!(rows(&store, "endless_ledger", id).await, 1);
+        store.delete_session(id).await.unwrap();
+        for table in [
+            "endless_units",
+            "endless_nodes",
+            "endless_calls",
+            "endless_generations",
+            "endless_ledger",
+            "endless_lines_fts",
+        ] {
+            assert_eq!(rows(&store, table, id).await, 0, "{table}");
+        }
     }
 }

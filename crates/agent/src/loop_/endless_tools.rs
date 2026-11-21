@@ -12,10 +12,13 @@ use crate::endless::{Endless, ViewLine};
 pub const ZOOM: &str = "zoom";
 pub const RECALL: &str = "recall";
 pub const DATE: &str = "date";
+/// 201 §9 (P6a): the state ledger's tool; listed only while the
+/// generation in force has a ledger (the turn loop filters it).
+pub const LEDGER: &str = "ledger";
 
 /// Whether `name` is one of the endless tools.
 pub fn is_local(name: &str) -> bool {
-    matches!(name, ZOOM | RECALL | DATE)
+    matches!(name, ZOOM | RECALL | DATE | LEDGER)
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -67,18 +70,34 @@ pub fn specs() -> Vec<ToolSpec> {
             "The date and time of message id.",
             serde_json::to_value(schemars::schema_for!(DateArgs)).unwrap_or_default(),
         ),
+        spec(
+            LEDGER,
+            "Record goals, decisions and constraints in the user's own words when they are stated or change; close or replace them when they no longer hold; accept or drop the suggested ones (by their id).",
+            serde_json::to_value(schemars::schema_for!(crate::endless::ledger::Op))
+                .unwrap_or_default(),
+        ),
     ]
 }
 
-/// Run one endless tool call. `name` is one of [`is_local`]'s.
+/// Run one endless tool call. `name` is one of [`is_local`]'s. `zoom_root`
+/// is the session tree's own `zoom` directory (`<data dir>/zoom` durable,
+/// `<scratch>/zoom` private; R3-1): an artefact's binary is written there
+/// for the caller to read and then [`discard`] at once.
 pub async fn run(
     endless: &Endless,
     session: SessionId,
     name: &str,
     args: &serde_json::Value,
+    zoom_root: &std::path::Path,
 ) -> ToolOutput {
     match name {
         ZOOM => match serde_json::from_value::<ZoomArgs>(args.clone()) {
+            Ok(a)
+                if a.n == 1
+                    && let Some(art) = endless.artefact(session, a.id).await =>
+            {
+                artefact_output(zoom_root, session, a.id, art).await
+            }
             Ok(a) => match endless.zoom(session, a.id, a.n).await {
                 Ok(lines) => ToolOutput::ok(render(&lines)),
                 Err(e) => ToolOutput::err(e),
@@ -107,8 +126,108 @@ pub async fn run(
             },
             Err(e) => ToolOutput::err(format!("date: bad arguments: {e}")),
         },
+        LEDGER => match serde_json::from_value::<crate::endless::ledger::Op>(args.clone()) {
+            Ok(op) => match endless.ledger_op(session, &op).await {
+                Ok(note) => ToolOutput::ok(note),
+                Err(e) => ToolOutput::err(e),
+            },
+            Err(e) => ToolOutput::err(format!("ledger: bad arguments: {e}")),
+        },
         other => ToolOutput::err(format!("{other} is not a fractal context tool")),
     }
+}
+
+/// 201 §8 (P4): `zoom(id, 1)` on an artefact unit: the line, and the binary
+/// written to a scratch file the loop attaches as a tool image (`files`, as
+/// every picture-returning tool does). A binary no longer stored, or one
+/// that cannot be written, leaves the line with a note saying so.
+async fn artefact_output(
+    zoom_root: &std::path::Path,
+    session: SessionId,
+    id: u64,
+    art: Result<(String, genai::chat::Binary), String>,
+) -> ToolOutput {
+    let (line, b) = match art {
+        Ok(x) => x,
+        Err(line) => {
+            return ToolOutput::ok(format!(
+                "{id}+1|{line}\n(the file itself is no longer stored)"
+            ));
+        }
+    };
+    match write_binary(zoom_root, session, id, &b).await {
+        Ok(path) => ToolOutput {
+            files: vec![path],
+            ..ToolOutput::ok(format!("{id}+1|{line}\n(attached below)"))
+        },
+        Err(e) => ToolOutput::ok(format!(
+            "{id}+1|{line}\n(the file could not be attached: {e})"
+        )),
+    }
+}
+
+/// R3-1: the decoded bytes of `b` in `<zoom_root>/<session>/<id>-<rand>-<name>`,
+/// directories 0700, the file created new with mode 0600. The caller reads
+/// it into a message part and then [`discard`]s it.
+async fn write_binary(
+    zoom_root: &std::path::Path,
+    session: SessionId,
+    id: u64,
+    b: &genai::chat::Binary,
+) -> Result<std::path::PathBuf, String> {
+    use base64::Engine as _;
+    let genai::chat::BinarySource::Base64(data) = &b.source else {
+        return Err("the stored part is a URL, not bytes".to_owned());
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let name = b
+        .name
+        .as_deref()
+        .and_then(|n| std::path::Path::new(n).file_name())
+        .and_then(|n| n.to_str())
+        .map_or_else(|| "file".to_owned(), str::to_owned);
+    let dir = zoom_root.join(session.to_string());
+    let path = dir.join(format!(
+        "{id}-{}-{name}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    let p = path.clone();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        use std::io::Write as _;
+        platform::files::private_dir(&dir)?;
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        o.open(&p)?.write_all(&bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// R3-1: remove the scratch files a `zoom` result carried, once they have
+/// been read into message parts (or copied by the sandbox). Other tools'
+/// files are theirs and are left alone.
+pub async fn discard(name: &str, files: &[std::path::PathBuf]) {
+    if name != ZOOM {
+        return;
+    }
+    for f in files {
+        if let Err(e) = tokio::fs::remove_file(f).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = %f.display(), "zoom scratch: {e}");
+        }
+    }
+}
+
+/// R3-1: the session's zoom directory, removed when the session is deleted.
+pub fn forget(zoom_root: &std::path::Path, session: SessionId) {
+    let _ = std::fs::remove_dir_all(zoom_root.join(session.to_string()));
 }
 
 /// `id+n|text` per line, newlines of a whole unit (`n == 1`) kept.
@@ -125,10 +244,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn specs_are_the_three_tools_with_verbatim_descriptions() {
+    fn specs_are_the_endless_tools_with_verbatim_descriptions() {
         let s = specs();
         let names: Vec<&str> = s.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, [ZOOM, RECALL, DATE]);
+        assert_eq!(names, [ZOOM, RECALL, DATE, LEDGER]);
+        assert!(s[3].schema["properties"]["op"].is_object());
         assert!(s.iter().all(|t| t.direct && t.risk == Risk::ReadOnly));
         assert!(
             s[0].description

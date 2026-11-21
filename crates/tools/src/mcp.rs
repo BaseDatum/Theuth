@@ -1137,6 +1137,8 @@ impl Mcp {
     ) -> McpServer {
         let state = &self.state;
         let running = state.running.get(&name);
+        // A whole-server hide covers every tool, registered now or later.
+        let server_hidden = hidden.contains(&crate::registry::mcp_server_key(&name));
         let mut tools: Vec<McpToolInfo> = running
             .map(|r| {
                 r.remote
@@ -1148,7 +1150,8 @@ impl Mcp {
                             gate: state.gates.own(&name, &tool),
                             risk,
                             action: self.policy.action(risk),
-                            hidden: r.tools.get(&tool).is_some_and(|n| hidden.contains(n)),
+                            hidden: server_hidden
+                                || r.tools.get(&tool).is_some_and(|n| hidden.contains(n)),
                             registered: r.tools.get(&tool).cloned(),
                             description: t.description.as_deref().unwrap_or_default().to_owned(),
                             name: tool,

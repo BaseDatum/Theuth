@@ -39,7 +39,10 @@ pub trait AgentToolingApi {
     ) -> RpcResult<tools::ToolOutput>;
     /// Hide (or show again) registered tools for one session and its
     /// subagents, in memory: absent from the model's tool list, `unknown tool`
-    /// when called. The persistent form is `set_mcp_gate(.., Some(Off))`.
+    /// when called. An `mcp:<server>` entry hides every tool of that MCP server,
+    /// including tools it registers after a reconnect or restart. A running turn
+    /// picks the change up before its next model call (prompt index, python
+    /// runtime functions, direct tools). The persistent form is `set_mcp_gate(.., Some(Off))`.
     #[method(name = "set_mcp_hidden", with_extensions)]
     async fn set_mcp_hidden(
         &self,

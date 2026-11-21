@@ -16,7 +16,7 @@ import { deleteMeeting } from '@/components/meeting/MeetingList'
 import { useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { closePopout, isPopout } from '@/lib/popout'
+import { closePopout, isSoloPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { MeetingState } from "@/rpc/bindings/method.meeting.output"
 
@@ -80,7 +80,7 @@ export function MeetingActions({ id, state, cycle, compact, children }: { id: st
   const rerun = useAction(() => api.meeting_post_retry(id), { keys: [queryKeys.meeting(id)] })
   const del = useAction(() => deleteMeeting(api, id), {
     keys: [queryKeys.meetings],
-    onSuccess: (done) => done && (isPopout() ? closePopout() : void navigate({ to: '/meetings' })),
+    onSuccess: (done) => done && (isSoloPopout() ? closePopout() : void navigate({ to: '/meetings' })),
   })
   const busy = reviewed.isPending || summarize.isPending || rerun.isPending
   const run = (a: RowAction) => {

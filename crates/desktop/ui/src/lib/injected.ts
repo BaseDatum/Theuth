@@ -56,6 +56,9 @@ export type Injected =
   | { kind: 'cell_result'; run: string; name?: string; label?: string; cell?: string; message?: string; exit: string; secs: string; text: string }
   /** 137G G10: `<memory>` — the endless view was shrunk to fit this turn; rendered as a muted info line. */
   | { kind: 'memory'; text: string }
+  /** 201 R3-2: a bare `<ledger>` / `<recall>` / `<tools>` harness note after a turn's input — a muted info line,
+   * collapsed under its `HARNESS_NOTES` label; never a `you` bubble. */
+  | { kind: 'note'; note: keyof typeof HARNESS_NOTES; text: string }
   /** 183 §11.1: `<session_moved …/>` — the session changed machines. `text` is the note the model read (rebuilt from
    * `messages.moved` for a typed row); the card renders the fields, never the tag. */
   | ({ kind: 'moved'; text: string } & MovedNote)
@@ -134,9 +137,13 @@ HIDDEN.notebook_changes = true
 CARD.child_stalled = 'child="'
 CARD.peer_state = 'child="'
 
+/** 201 R3-2: the bare harness notes an endless chat appends after a turn's input (`endless_ext::ledger_note` /
+ * `input_note`), with the label their collapsed info line shows. With attributes the tag stays the user's text. */
+export const HARNESS_NOTES = { ledger: 'Ledger updated', recall: 'Recalled from earlier', tools: 'Tools changed' } as const
+
 /** The wrapper names `classify` turns into a card or hides (the transcript never shows them as tags). */
 export const isClassified = (name: string): boolean =>
-  Object.hasOwn(CARD, name) || Object.hasOwn(HIDDEN, name) || Object.hasOwn(ENGINE_NOTICES, name) || Object.hasOwn(SELF, name) || name === 'budget' || name === 'resume_handoff' || name === 'skill' || name === 'memory' || name === 'contact_message'
+  Object.hasOwn(CARD, name) || Object.hasOwn(HIDDEN, name) || Object.hasOwn(ENGINE_NOTICES, name) || Object.hasOwn(SELF, name) || Object.hasOwn(HARNESS_NOTES, name) || name === 'budget' || name === 'resume_handoff' || name === 'skill' || name === 'memory' || name === 'contact_message'
 
 /** Value of `key` (`name="`) in an open tag, up to the closing quote. */
 const attr = (open: string, key: string) => open.split(key, 2)[1]?.split('"', 1)[0]
@@ -502,7 +509,8 @@ export function classify(text: string): Injected[] | null {
     // 137G G10: `<memory>` (bare) is the note a turn gets when its endless view was shrunk to fit — a muted line, shown
     // whatever the nudge setting, since it tells the reader what the model could not see.
     const memory = open === 'memory'
-    if (key === undefined && !HIDDEN[name] && notice === undefined && name !== 'resume_handoff' && !memory) return null
+    const note = Object.hasOwn(HARNESS_NOTES, open) ? open as keyof typeof HARNESS_NOTES : undefined
+    if (key === undefined && !HIDDEN[name] && notice === undefined && name !== 'resume_handoff' && !memory && note === undefined) return null
     const close = `</${name}>`
     const end = rest.indexOf(close, gt)
     if (end < 0) return null
@@ -518,6 +526,8 @@ export function classify(text: string): Injected[] | null {
       out.push({ kind: 'engine', notice, text: body })
     } else if (memory) {
       out.push({ kind: 'memory', text: rest.slice(gt + 1, end).trim() })
+    } else if (note !== undefined) {
+      out.push({ kind: 'note', note, text: rest.slice(gt + 1, end).trim() })
     } else if (name === 'resume_handoff') {
       out.push(resume(rest.slice(gt + 1, end).trim()))
     } else if (key !== undefined) {

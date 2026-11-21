@@ -96,7 +96,12 @@ input or another external prerequisite, block those items with a reason; do not 
 `ask_user` when a decision is needed.\n\
 To look at an image (a screenshot, a chart, a photo, a PNG a worker made), `read_file(path)` or \
 `read_url(url)` puts the picture in your context; on a text-only model you get the vision fallback's \
-description or a note that nobody has looked at it instead.";
+description or a note that nobody has looked at it instead.\n\
+Link what you name. Whenever your output mentions something that has a URL you know or can derive with \
+confidence - a Jira issue, a pull request, a commit, a git repository, a file on GitHub, a website, a doc, a \
+dashboard - write it as a markdown link `[name](url)`, every time, without being asked: the user should never \
+have to ask for the link to something you named. When you do not know the URL, write the name without a link \
+and say nothing about it; never invent a URL.";
 
 /// The line an unattended session gets where the surface block would have been.
 pub const UNATTENDED_LINE: &str = "Nobody reads this session directly: write results as plain, terse text for the agent or channel that receives them; do not draw diagrams or cards.";
@@ -287,24 +292,28 @@ impl Frame<'_> {
     }
 }
 
-/// 137 §7.2 / D4: the rendered view as the user messages that precede the
-/// turn's input — one per block so each can carry its own cache mark. On
-/// [`Transport::Anthropic`] at most [`VIEW_MARKS`] of the marked blocks get
-/// `cache_control: ephemeral` — the system block (1 h) and the tail (5 min)
-/// take two of the provider's four breakpoints — chosen as the latest marked
-/// blocks that are not the final one (the newest band grows every turn, so
-/// a mark on it is never read back). Other transports cache implicitly on
-/// the stable prefix and get no message marks. Pure.
+/// 137 §7.2 / 201 §3: the rendered view as the user messages that precede
+/// the tail — one per block so each can carry its own cache mark. On
+/// [`Transport::Anthropic`] the view gets [`VIEW_MARKS`] marks — the system
+/// block (1 h) and the newest tail message (5 min) take the other two of the
+/// provider's four breakpoints: the view's end (frozen for a generation, so
+/// the most valuable mark) and the latest marked deep band before it. Other
+/// transports cache implicitly on the stable prefix and get no message
+/// marks. Pure.
 pub fn view_messages(blocks: &[ViewBlock], t: Transport) -> Vec<ChatMessage> {
-    let mut marks: Vec<usize> = blocks
+    let last = blocks.len().checked_sub(1);
+    let deep = blocks
         .iter()
         .enumerate()
         .take(blocks.len().saturating_sub(1))
-        .filter(|(_, b)| b.mark && t == Transport::Anthropic)
-        .map(|(i, _)| i)
-        .collect();
-    let keep = marks.len().saturating_sub(VIEW_MARKS);
-    marks.drain(..keep);
+        .rev()
+        .find(|(_, b)| b.mark)
+        .map(|(i, _)| i);
+    let marks: Vec<usize> = if t == Transport::Anthropic {
+        deep.into_iter().chain(last).collect()
+    } else {
+        Vec::new()
+    };
     blocks
         .iter()
         .enumerate()
@@ -864,10 +873,10 @@ mod tests {
         );
     }
 
-    /// 137 §7.2: one user message per view block; on Anthropic at most
-    /// `VIEW_MARKS` marks, on the latest marked blocks before the final one
-    /// (system 1 h + tail 5 min take the other two breakpoints); other
-    /// transports get no message marks. The final block never carries one.
+    /// 201 §3: one user message per view block; on Anthropic two marks —
+    /// the view's end (frozen for a generation) and the latest marked deep
+    /// band before it (system 1 h + the newest tail message 5 min take the
+    /// other two breakpoints); other transports get no message marks.
     #[test]
     fn view_blocks_become_marked_user_messages() {
         let block = |t: &str, mark| ViewBlock {
@@ -890,7 +899,7 @@ mod tests {
                 })
                 .collect()
         };
-        assert_eq!(marks(Transport::Anthropic), [false, true, true, false]);
+        assert_eq!(marks(Transport::Anthropic), [false, false, true, true]);
         assert_eq!(marks(Transport::OpenAiLike), [false; 4]);
         assert_eq!(marks(Transport::Plain), [false; 4]);
         let msgs = view_messages(&blocks, Transport::Anthropic);
@@ -899,11 +908,11 @@ mod tests {
             msgs[0].content.joined_texts().as_deref(),
             Some("<chat>\na\n")
         );
-        // A single block is the final block: no mark; an unmarked block is skipped.
-        assert_eq!(marks_of(&[block("x", true)]), [false]);
+        // A single block is the view's end: marked; an unmarked deep block is skipped.
+        assert_eq!(marks_of(&[block("x", false)]), [true]);
         assert_eq!(
-            marks_of(&[block("a", false), block("b", true), block("c", true)]),
-            [false, true, false]
+            marks_of(&[block("a", true), block("b", false), block("c", false)]),
+            [true, false, true]
         );
         // With the view in front, the Anthropic frame keeps system (1 h) first and the tail (5 min) last.
         let mut history = view_messages(&blocks, Transport::Anthropic);
@@ -928,9 +937,9 @@ mod tests {
             [
                 Some(CacheControl::Ephemeral1h),
                 None,
-                Some(CacheControl::Ephemeral),
-                Some(CacheControl::Ephemeral),
                 None,
+                Some(CacheControl::Ephemeral),
+                Some(CacheControl::Ephemeral),
                 Some(CacheControl::Ephemeral)
             ]
         );
@@ -1151,6 +1160,13 @@ mod tests {
         assert!(unattended.contains("Shared rule.\n\n## Tools\nT"));
         assert!(unattended.contains(&format!("## Tools\nT\n\n{UNATTENDED_LINE}\n\n## Guidance")));
         assert!(!unattended.contains(REPORT_VISUALLY));
+        for prompt in [&attended, &unattended] {
+            assert!(prompt.contains("Link what you name."));
+            assert!(prompt.contains(
+                "write it as a markdown link `[name](url)`, every time, without being asked"
+            ));
+            assert!(prompt.contains("never invent a URL."));
+        }
     }
 
     /// Shared-hardware guidance (heavy work is coordinated with peers) is

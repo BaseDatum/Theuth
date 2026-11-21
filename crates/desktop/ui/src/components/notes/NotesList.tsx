@@ -1,15 +1,19 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, LayoutPanelTop, MoreHorizontal, Pencil, Plus, StickyNote, Trash2 } from 'lucide-react'
-import { type KeyboardEvent, useRef, useState } from 'react'
+import { AppWindow, FolderInput, LayoutPanelTop, MoreHorizontal, Pencil, Plus, StickyNote, Trash2 } from 'lucide-react'
+import { type KeyboardEvent, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { dragSource } from '@/components/chat/AttachChip'
+import { ProjectPicker } from '@/components/chat/ProjectPicker'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { createNote } from '@/components/notes/create'
+import { groupNotes, newNoteProject } from '@/components/notes/groups'
 import { useNotes } from '@/components/notes/useNotes'
 import { ago } from '@/components/sidebar/AgentTree'
+import { ProjectHeader } from '@/components/sidebar/SessionList'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DictationButton } from '@/components/ui/dictation'
 import {
   DropdownMenu,
@@ -23,15 +27,27 @@ import { canPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 
-/** `/notes` (59 §7.3): every note, newest update first; New note; per-row Rename (inline) and Delete (one click). */
+/** Header and menu label of a project's new-note action; `null` is the ungrouped bucket. */
+const newNoteLabel = (project: string | null) => (project === null ? 'New note (no project)' : `New note in “${project}”`)
+
+/**
+ * `/notes` (59 §7.3): every note, newest update first, under collapsible project headers (the chats' projects and
+ * styles, `Ungrouped` last; no headers while no note has a project); New note; per-row Rename (inline), Move to
+ * project… and Delete (one click). A header's `+` starts a note in its project, and so does New note while that is
+ * the only group left open (`newNoteProject`).
+ */
 export function NotesList() {
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
   const notes = useNotes()
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
+  const rows = useMemo(() => groupNotes(notes.data ?? [], collapsed), [notes.data, collapsed])
+  const projects = useMemo(() => [...new Set((notes.data ?? []).flatMap((n) => (n.project ? [n.project] : [])))], [notes.data])
+  const here = newNoteProject(rows)
   // The note opens with its title focused (`?new`) as soon as it exists (`create.ts`); a create that fails before that toasts and stays.
   const create = useMutation({
-    mutationFn: () => createNote(api, qc, notes.data ?? []),
+    mutationFn: (project: string | null) => createNote(api, qc, notes.data ?? [], project),
     onSuccess: (n) => void navigate({ to: '/notes/$id', params: { id: n.id }, search: { new: true } }),
     onError: (e) => toast.error(e.message),
   })
@@ -39,8 +55,8 @@ export function NotesList() {
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
       <SectionBand group="library" />
       <SectionRow>
-        <Button variant="ghost" size="sm" className="ml-auto" disabled={create.isPending} onClick={() => create.mutate()}>
-          <Plus /> New note
+        <Button variant="ghost" size="sm" className="ml-auto" disabled={create.isPending} onClick={() => create.mutate(here)}>
+          <Plus /> {here === null ? 'New note' : newNoteLabel(here)}
         </Button>
       </SectionRow>
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -57,17 +73,75 @@ export function NotesList() {
               No notes yet. New note starts one; the agent's <code>doc_create</code> lands here too.
             </p>
           )}
-          <ul>{notes.data?.map((n) => <Row key={n.id} note={n} />)}</ul>
+          <ul>
+            {rows.map((r) =>
+              'note' in r ? (
+                <Row key={r.key} note={r.note} projects={projects} />
+              ) : (
+                <li key={r.key}>
+                  <ProjectHeader
+                    project={r.project}
+                    collapsed={r.collapsed}
+                    toggle={() =>
+                      setCollapsed((prev) => {
+                        const next = new Set(prev)
+                        const k = r.project ?? ''
+                        if (!next.delete(k)) next.add(k)
+                        return next
+                      })
+                    }
+                    create={{ label: newNoteLabel(r.project), run: () => create.mutate(r.project) }}
+                  />
+                </li>
+              ),
+            )}
+          </ul>
         </div>
       </div>
     </article>
   )
 }
 
-function Row({ note }: { note: DocSummary }) {
+/** Row menu's Move to project…: an existing project (the chats' and the notes'), a new one typed inline, or none. Mounted while open. */
+function MoveToProject({ note, projects, onClose }: { note: DocSummary; projects: readonly string[]; onClose(): void }) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const [value, setValue] = useState<string | null>(note.project ?? null)
+  const move = useMutation({
+    mutationFn: (project: string | null) => api.doc_set_project(note.id, project),
+    onSuccess: (row) => {
+      qc.setQueryData<DocSummary[]>(queryKeys.notes, (rows = []) => rows.map((r) => (r.id === row.id ? { ...r, project: row.project ?? null } : r)))
+      void qc.invalidateQueries({ queryKey: queryKeys.notes })
+      onClose()
+    },
+    onError: (e) => toast.error(e.message),
+  })
+  const target = value?.trim() || null
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-sm gap-3 p-4">
+        <DialogHeader>
+          <DialogTitle className="truncate text-sm">Move “{note.title || 'Untitled'}” to project</DialogTitle>
+        </DialogHeader>
+        <ProjectPicker value={value} onChange={setValue} extra={projects} />
+        <DialogFooter>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button size="sm" disabled={move.isPending || target === (note.project ?? null)} onClick={() => move.mutate(target)}>
+            {target === null ? 'Remove from project' : 'Move'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function Row({ note, projects }: { note: DocSummary; projects: readonly string[] }) {
   const api = useApi()
   const qc = useQueryClient()
   const [renaming, setRenaming] = useState<string | null>(null)
+  const [moving, setMoving] = useState(false)
   const rename = useMutation({
     mutationFn: (t: string) => api.doc_rename(note.id, t),
     onSuccess: () => void qc.invalidateQueries({ queryKey: queryKeys.notes }),
@@ -144,6 +218,9 @@ function Row({ note }: { note: DocSummary }) {
           <DropdownMenuItem onSelect={() => setRenaming(note.title)}>
             <Pencil /> Rename
           </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setMoving(true)}>
+            <FolderInput /> Move to project…
+          </DropdownMenuItem>
           {canPopout() && (
             <DropdownMenuItem onSelect={() => void openPopout({ kind: 'note', doc: note.id })}>
               <AppWindow /> Open in new window
@@ -154,6 +231,7 @@ function Row({ note }: { note: DocSummary }) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      {moving && <MoveToProject note={note} projects={projects} onClose={() => setMoving(false)} />}
     </li>
   )
 }

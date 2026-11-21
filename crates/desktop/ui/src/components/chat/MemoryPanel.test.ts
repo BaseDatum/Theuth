@@ -13,7 +13,7 @@ import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { SessionMemory } from "@/rpc/bindings/method.agent.output"
 import type { Stalled } from "@/rpc/bindings/method.agent.output"
 import type { ViewLine } from "@/rpc/bindings/method.agent.output"
-import { INITIAL, LineNode, MemoryBadge, MemoryFooter, SummaryModel, ViewNote, badgeTip, effortMutation, flatten, foldMutation, highlight, modelMutation, nextTry, pauseMutation, reduce, retryMutation } from './MemoryPanel'
+import { INITIAL, LineNode, Live, MemoryBadge, MemoryFooter, SummaryModel, TailSize, ViewNote, badgeTip, effortMutation, flatten, foldMutation, highlight, modelMutation, nextTry, pauseMutation, reduce, retryMutation, tailMutation } from './MemoryPanel'
 import { isFoldedNote } from '@/lib/endless'
 import type { Backlog as EndlessBacklog } from "@/rpc/bindings/method.agent.output"
 import type * as Combobox from './ModelCombobox'
@@ -199,23 +199,23 @@ const footerWith = (data: SessionMemory, settings?: object) => {
   return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc, children: createElement(TooltipProvider, null, createElement(MemoryFooter, { session: 's1', m: data })) as ReactNode }))
 }
 
-test('backlog row: count, ETA, batch size, the share of lines summarized, what the view shows, Fold now and Pause settling; it replaces the settle bar', () => {
+test('backlog row: count, ETA, batch size, the share of lines summarized, what the view shows, Trim now and Pause settling; it replaces the settle bar', () => {
   const html = footerWith(backlogged)
   expect(html).toContain('Settling 4,812 lines')
   expect(html).toContain('~11 min · batches of 16')
   expect(html).toContain('aria-valuenow="18"')
   expect(html).toContain('Newest 300 lines shown in full; older ones are folded until summarized. Model anthropic/claude-haiku-4-5.')
-  expect(html).toContain('>Fold now</button>')
+  expect(html).toContain('>Trim now</button>')
   expect(html).toContain('>Pause settling</button>')
-  expect(html).toContain('Fold now: turns every waiting line into a short excerpt at once, at no cost. Recall still finds the originals.')
+  expect(html).toContain('Trim now: cuts this chat&#x27;s verbatim tail back to its low mark and starts a new generation, at no cost. In meetings and while history is still being summarised this folds the view instead. Recall still finds the originals.')
   expect(html).not.toContain('Settling 4812 lines')
   expect(html).not.toContain('%</span>')
   // The batch size is the setting's; no ETA while unknown.
   expect(footerWith({ ...backlogged, backlog: { ...waiting, eta_secs: 0 } }, { batch_units: 8 })).toContain('>batches of 8</span>')
-  // Failing and waiting: the failing block keeps its place above, now with Fold now too.
+  // Failing and waiting: the failing block keeps its place above, now with Trim now too.
   const both = footerWith({ ...backlogged, stalled: failing })
   expect(both.indexOf('Summaries are failing')).toBeLessThan(both.indexOf('Settling 4,812 lines'))
-  expect(both.match(/>Fold now<\/button>/g)).toHaveLength(2)
+  expect(both.match(/>Trim now<\/button>/g)).toHaveLength(2)
   expect(both).toContain('Lines that fail 3 times are folded as excerpts automatically.')
 })
 
@@ -226,7 +226,7 @@ test('paused by the user: "Settling paused", the waiting count, Resume settling;
   expect(html).toContain('4,812 lines waiting')
   expect(html).toContain('No summary calls run for this chat. Turns still fit: older waiting lines stay folded.')
   expect(html).toContain('>Resume settling</button>')
-  expect(html).toContain('>Fold now</button>')
+  expect(html).toContain('>Trim now</button>')
   expect(html).not.toContain('Pause settling')
   expect(badgeTip(m)).toMatch(/· settling paused$/)
   expect(render(summary('endless'), { ...m, settling: true })).not.toContain('animate-pulse')
@@ -243,7 +243,7 @@ test("paused by spend: the day's limit (the setting, else $5) and today's spend,
   expect(footerWith(m, { max_usd_per_session_day: 2.5 })).toContain('($2.50) reached')
 })
 
-test('Fold now, Pause/Resume and the summary model call their RPC and write the reply into the cache ("Use default" sends null)', async () => {
+test('Trim now, Pause/Resume and the summary model call their RPC and write the reply into the cache ("Use default" sends null)', async () => {
   const qc = new QueryClient()
   const key = queryKeys.sessionMemory('s1')
   const reply = (patch: Partial<SessionMemory>) => vi.fn(async () => ({ ...backlogged, ...patch }))
@@ -354,4 +354,76 @@ test('the draft summary picker keeps model and effort pending, and a new model d
   picker.onChange(null)
   expect(useDrafts.getState().settings.compactorModel).toBeNull()
   useDrafts.setState({ settings: {} })
+})
+
+test('201: the live numbers — the tail as a bar against its two marks, the generation, lines on a draft, the resolved profile and why', () => {
+  const paint = (m: SessionMemory) => renderToStaticMarkup(createElement(Live, { m }))
+  const html = paint({ ...memory, tail_mode: 'fixed', tail_low: 24_000, tail_high: 64_000, tail_bytes: 41_000, generation: 3, drafts: 2, profile: 'small', profile_reason: 'the model is local' })
+  expect(html).toContain('tail 41 KB')
+  expect(html).toMatch(/role="meter" aria-label="Tail fill" aria-valuemin="0" aria-valuemax="64000" aria-valuenow="41000"/)
+  expect(html).not.toContain('aria-label="Tail size setting"')
+  expect(html).toContain('24–64 KB')
+  expect(html).toContain('generation 3')
+  expect(html).toContain('2 on a draft')
+  expect(html).toContain('small profile · the model is local')
+  // Scaled before the engine knows the allowance: marks 0, the size alone, no bar.
+  const scaled = paint({ ...memory, tail_mode: 'scaled', tail_low: 0, tail_high: 0, tail_bytes: 9_000, generation: 0, drafts: 0, profile: 'standard', profile_reason: '' })
+  expect(scaled).toContain('tail 9 KB')
+  expect(scaled).not.toContain('role="meter"')
+  expect(scaled).toContain('standard profile<')
+})
+
+test("201: the chat's tail override — the trigger names the chat's own pick or the default in force; clearing sends null and the reply replaces the cache", async () => {
+  const paint = (m: SessionMemory) => renderToStaticMarkup(createElement(TailSize, { m, onChange: () => {} }))
+  const inherited = paint({ ...memory, tail_mode: 'fixed', tail_low: 24_000, tail_high: 64_000, tail_override: null })
+  expect(inherited).toMatch(/aria-label="Tail size setting"/)
+  expect(inherited).not.toMatch(/aria-label="Tail fill"/)
+  expect(inherited).toContain('tail 24–64 KB')
+  expect(inherited).toContain(' · default')
+  const own = paint({ ...memory, tail_mode: 'scaled', tail_low: 0, tail_high: 0, tail_override: { mode: 'scaled', low: 0.1, high: 0.25 } })
+  expect(own).toContain('tail 10–25 %')
+  expect(own).not.toContain(' · default')
+  const qc = new QueryClient()
+  const key = queryKeys.sessionMemory('s1')
+  const set_session_tail = vi.fn(async (_s: string, tail: SessionMemory['tail_override']) => ({ ...memory, tail_override: tail }))
+  qc.setQueryData(key, { ...memory, tail_override: { mode: 'fixed', low: 48_000, high: 128_000 } })
+  await new MutationObserver(qc, tailMutation({ set_session_tail } as unknown as Api, qc, 's1')).mutate(null)
+  expect(set_session_tail).toHaveBeenCalledWith('s1', null)
+  expect(qc.getQueryData<SessionMemory>(key)?.tail_override).toBeNull()
+  await new MutationObserver(qc, tailMutation({ set_session_tail } as unknown as Api, qc, 's1')).mutate({ mode: 'fixed', low: 16_000, high: 48_000 })
+  expect(set_session_tail).toHaveBeenLastCalledWith('s1', { mode: 'fixed', low: 16_000, high: 48_000 })
+  expect(qc.getQueryData<SessionMemory>(key)?.tail_override).toEqual({ mode: 'fixed', low: 16_000, high: 48_000 })
+})
+
+test('201: the ledger entry — five section counts, suggestions to confirm only when some wait, its size against ledger_bytes; absent when null', () => {
+  const paint = (m: SessionMemory, ledgerBytes?: number) => renderToStaticMarkup(createElement(Live, { m, ledgerBytes }))
+  const ledger = { goals: 1, decisions: 4, constraints: 2, open_tasks: 3, artefacts: 0, suggested: 2, bytes: 2_300 }
+  const html = paint({ ...memory, ledger }, 6_000)
+  expect(html).toContain('ledger 1 goal · 4 decisions · 2 constraints · 3 open tasks · 0 artefacts')
+  expect(html).toContain(' · 2 to confirm')
+  expect(html).toContain('2.3/6.0 KB')
+  // No suggestions waiting: no count; no setting known: the default limit.
+  const quiet = paint({ ...memory, ledger: { ...ledger, suggested: 0 } })
+  expect(quiet).not.toContain('to confirm')
+  expect(quiet).toContain('2.3/4.0 KB')
+  expect(paint({ ...memory, ledger: null })).not.toContain('ledger')
+})
+
+test('201: zooms this generation, and the pending tool-list notice only when true', () => {
+  const paint = (m: SessionMemory) => renderToStaticMarkup(createElement(Live, { m }))
+  const html = paint({ ...memory, zooms: 12, tools_pending: true })
+  expect(html).toContain('12 zooms this generation')
+  expect(html).toContain('a high count means the view is folded too tightly')
+  expect(html).toContain('A tool-list change is waiting for the next trim')
+  expect(paint({ ...memory, zooms: 1, tools_pending: false })).toContain('1 zoom this generation')
+  expect(paint({ ...memory, zooms: 0, tools_pending: false })).not.toContain('tool-list change')
+})
+
+test('201: an older engine without ledger, zooms or tools_pending renders none of them', () => {
+  // `receiveComponent` fills the defaults; an older engine's reply simply lacks the keys.
+  const { ledger: _l, zooms: _z, tools_pending: _t, ...older } = memory
+  const html = renderToStaticMarkup(createElement(Live, { m: older as SessionMemory }))
+  expect(html).not.toContain('ledger')
+  expect(html).not.toContain('zoom')
+  expect(html).not.toContain('tool-list change')
 })

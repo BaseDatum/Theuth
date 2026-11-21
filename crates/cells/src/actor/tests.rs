@@ -262,6 +262,7 @@ fn finished(id: &str, cell: CellRef, code_sha: &str, ended_ms: i64, state: RunSt
         kernel: KernelId {
             scope: cell.scope(),
             spec: KernelSpec::Monty,
+            instance: 0,
         },
         cell,
         mode: RunMode::Cell,
@@ -422,7 +423,12 @@ async fn run_anyway_skips_only_the_after_gate() {
             &["cwd: /definitely/not/here", "name: away", "after: prepare"],
             "ls",
         ),
-        fence("bash", &[&cwd, "name: orphan", "after: nothing"], "ls"),
+        // #1: `after: nothing` is only a warning now; a bad `env` still makes the cell invalid.
+        fence(
+            "bash",
+            &[&cwd, "name: orphan", "after: nothing", "env: NOEQUALS"],
+            "ls",
+        ),
         fence(
             "bash",
             &[
@@ -587,6 +593,9 @@ async fn input_prompt_is_shown_until_answered() {
                 last_used: Instant::now(),
                 busy: true,
                 env_warning: None,
+                pending: 0,
+                seed: None,
+                snap_at: None,
             },
         );
         st.runs.insert(
@@ -881,11 +890,7 @@ async fn e2e_real_shells() {
     std::fs::write(dir.join("top.txt"), "").unwrap();
     std::fs::write(dir.join("sub").join("inner.txt"), "").unwrap();
     let rt = Runtime::new(figment::Figment::new(), dir.join("data"));
-    let jobs = tools::Jobs::spawn_with_mailbox(
-        tools::Jobs::new(rt.clone(), Duration::from_secs(1), Duration::from_secs(600)),
-        runtime::subscriber_mailbox(),
-    );
-    let _ = jobs.register(tools::JOBS_ACTOR);
+    let _jobs = jobs_actor(&rt);
     let cells = start(&rt, CellsConfig::default()).await;
     *cells.inner.env.lock().await = Some(env_with(&dir));
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -982,12 +987,13 @@ async fn e2e_real_shells() {
     );
     assert_eq!(r.state, RunState::Done);
 
-    // FIFO per kernel: 7 starts after 6 ended.
+    // #6: a press while the kernel is busy runs at once on a second instance.
     b.press(6, RunMode::Cell, "r_6").await.unwrap();
     b.press(7, RunMode::Cell, "r_7").await.unwrap();
     let r6 = b.done("r_6").await;
     let r7 = b.done("r_7").await;
-    assert!(r6.ended_ms.unwrap() <= r7.started_ms.unwrap());
+    assert!(r7.started_ms.unwrap() < r6.ended_ms.unwrap());
+    assert_eq!((r6.kernel.instance, r7.kernel.instance), (0, 1));
     assert!(b.out("r_7").contains("two"));
     // A second press on a queued/running cell attaches to the same run.
     b.press(8, RunMode::Cell, "r_8").await.unwrap();
@@ -995,12 +1001,11 @@ async fn e2e_real_shells() {
         .live_of_cell(&json(&chat(b.session, 1, 8)))
         .map(|r| r.id);
     assert_eq!(twice, Some(RunId("r_8".into())));
-    // Stop on a queued run cancels it; it never runs.
+    // Another cell meanwhile takes the idle second instance (no new one).
     b.press(9, RunMode::Cell, "r_9").await.unwrap();
-    cells.stop(RunId("r_9".into()), false).await.unwrap();
     let r9 = b.done("r_9").await;
-    assert_eq!(r9.state, RunState::Cancelled);
-    assert!(r9.started_ms.is_none());
+    assert_eq!((r9.state, r9.kernel.instance), (RunState::Done, 1));
+    assert!(b.out("r_9").contains("nine"));
     b.until("r_8", |r| r.state == RunState::Running).await;
     let mut live8 = cells.attach(RunId("r_8".into())).await.unwrap();
     cells.stop(RunId("r_8".into()), false).await.unwrap();
@@ -1167,6 +1172,132 @@ async fn e2e_real_shells() {
     let kernels = cells.kernels_of(&Scope::Session(b.session));
     assert!(!kernels.is_empty());
     for k in kernels {
+        cells.kernel_close(k.id).await.unwrap();
+    }
+    let _ = b.dir;
+}
+
+/// The jobs actor shell kernels start their PTY with, registered under `JOBS_ACTOR` in place
+/// of one an earlier test left behind (its runtime is gone; its ref would be dead).
+fn jobs_actor(rt: &Runtime) -> ActorRef<tools::Jobs> {
+    let jobs = tools::Jobs::spawn_with_mailbox(
+        tools::Jobs::new(rt.clone(), Duration::from_secs(1), Duration::from_secs(600)),
+        runtime::subscriber_mailbox(),
+    );
+    kameo::registry::ACTOR_REGISTRY
+        .lock()
+        .unwrap()
+        .remove(tools::JOBS_ACTOR);
+    jobs.register(tools::JOBS_ACTOR).expect("register jobs");
+    jobs
+}
+
+/// #6: a press while its zsh kernel is busy runs at once on a new instance, seeded with the
+/// busy kernel's exported environment and cwd as of its last completed cell (a line run of
+/// that cell continues there without a prologue); instances count toward `max_kernels` —
+/// with none left a press queues on instance 0 (where Stop cancels it); an idle extra
+/// instance is reaped, instance 0 stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_runs_fork_a_seeded_kernel_instance() {
+    if !Path::new("/bin/zsh").is_file() {
+        return;
+    }
+    let _one = note::DOCS_TEST.lock().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    let rt = Runtime::new(figment::Figment::new(), dir.join("data"));
+    let _jobs = jobs_actor(&rt);
+    let cells = start(
+        &rt,
+        CellsConfig {
+            max_kernels: 2,
+            ..CellsConfig::default()
+        },
+    )
+    .await;
+    *cells.inner.env.lock().await = Some(env_with(&dir));
+    let cwd = format!("cwd: {}", dir.display());
+    let text = [
+        fence(
+            "zsh",
+            &[&cwd],
+            "cd sub\nexport FORK_MARK=from-first\necho \"seen=$FORK_MARK:$PWD\"",
+        ), // 1
+        fence("zsh", &[&cwd], "sleep 6; echo slept"), // 2
+        fence("zsh", &[&cwd], "echo \"whole=${FORK_MARK:-unset}\""), // 3
+        fence("zsh", &[&cwd], "sleep 3"),             // 4
+        fence("zsh", &[&cwd], "echo queued"),         // 5
+    ]
+    .concat();
+    let b = Bench {
+        cells: cells.clone(),
+        session: SessionId(uuid::Uuid::new_v4()),
+        text,
+        dir: dir.clone(),
+    };
+    let (r, out) = b.run(1, RunMode::Cell, "f_first").await;
+    assert_eq!(r.state, RunState::Done, "{out}");
+    assert_eq!(r.kernel.instance, 0);
+    // Instance 0 busy: a line run of cell 1 forks instance 1, which continues from cell 1
+    // (no prologue): the exported variable and the `cd sub` hold there.
+    b.press(2, RunMode::Cell, "f_busy").await.unwrap();
+    b.until("f_busy", |r| r.state == RunState::Running).await;
+    let (line, out) = b.run(1, RunMode::Line { line: 3 }, "f_line").await;
+    assert_eq!(line.kernel.instance, 1);
+    assert!(
+        out.contains(&format!("seen=from-first:{}", dir.join("sub").display())),
+        "{out:?}"
+    );
+    // A whole cell on the (now idle) instance 1 sees the variable too.
+    let (whole, out) = b.run(3, RunMode::Cell, "f_whole").await;
+    assert_eq!(whole.kernel.instance, 1);
+    assert!(out.contains("whole=from-first"), "{out:?}");
+    let busy = b.done("f_busy").await;
+    assert!(
+        line.started_ms.unwrap() < busy.ended_ms.unwrap(),
+        "ran in parallel"
+    );
+    assert!(b.out("f_busy").contains("slept"));
+
+    // Both instances busy and max_kernels 2: the next press queues on instance 0; Stop on
+    // the queued run cancels it, it never runs.
+    b.press(2, RunMode::Cell, "f_busy2").await.unwrap();
+    b.press(4, RunMode::Cell, "f_busy3").await.unwrap();
+    b.until("f_busy2", |r| r.state == RunState::Running).await;
+    b.until("f_busy3", |r| r.state == RunState::Running).await;
+    let q = b.press(5, RunMode::Cell, "f_queued").await.unwrap();
+    assert_eq!((q.state, q.kernel.instance), (RunState::Queued, 0));
+    cells.stop(RunId("f_queued".into()), false).await.unwrap();
+    let q = b.done("f_queued").await;
+    assert_eq!(q.state, RunState::Cancelled);
+    assert!(q.started_ms.is_none());
+    b.done("f_busy2").await;
+    b.done("f_busy3").await;
+
+    // Idle past `instance_idle_mins`: the extra instance is reaped, instance 0 stays.
+    let scope = Scope::Session(b.session);
+    let mut instances: Vec<u32> = cells
+        .kernels_of(&scope)
+        .iter()
+        .map(|k| k.id.instance)
+        .collect();
+    instances.sort_unstable();
+    assert_eq!(instances, [0, 1]);
+    for k in cells.inner.state.lock().kernels.values_mut() {
+        k.last_used = k
+            .last_used
+            .checked_sub(Duration::from_secs(11 * 60))
+            .unwrap();
+    }
+    cells.close_idle().await;
+    let left: Vec<u32> = cells
+        .kernels_of(&scope)
+        .iter()
+        .map(|k| k.id.instance)
+        .collect();
+    assert_eq!(left, [0]);
+    for k in cells.kernels_of(&scope) {
         cells.kernel_close(k.id).await.unwrap();
     }
     let _ = b.dir;
@@ -1432,11 +1563,11 @@ async fn note_pass_end_carries_the_pass_attributes() {
     py_passes(&cells, &list[..3], &doc, 1).await;
 }
 
-/// CELLAFTER: Run all has no override — a pass stops before an unarmed `after` cell with the
-/// gate's reason (which `cell_state` shows too); a pass from the top runs the gate first,
-/// which arms the cell on the way.
+/// #1: `after` is advisory — a pass runs an unarmed `after` cell (no hard stop; the run
+/// records that it ran past the gate, whose reason `cell_state` still shows); a pass from
+/// the top runs the gate first, which arms the cell on the way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn run_all_still_stops_before_an_unarmed_after() {
+async fn run_all_runs_past_an_unarmed_after() {
     let _one = note::DOCS_TEST.lock().await;
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().canonicalize().unwrap();
@@ -1485,8 +1616,11 @@ async fn run_all_still_stops_before_an_unarmed_after() {
     assert_eq!(disarmed().await.as_deref(), Some(why));
 
     let p = pass_end(cells.clone(), pass("p_alone", &["py-commands"])).await;
-    let stop = p.stopped.expect("stopped");
-    assert_eq!((stop.before, stop.why.as_str(), p.ran), (true, why, 0));
+    assert_eq!((p.stopped, p.ran), (None, 1));
+    let runs = cells.runs(scope.clone(), 10).await.unwrap();
+    assert_eq!(runs[0].state, RunState::Done);
+    assert!(runs[0].ran_past.is_some(), "{:?}", runs[0].ran_past);
+    assert_eq!(disarmed().await.as_deref(), Some(why));
 
     let p = pass_end(cells.clone(), pass("p_top", &["py-prepare", "py-commands"])).await;
     assert_eq!((p.stopped, p.ran), (None, 2));

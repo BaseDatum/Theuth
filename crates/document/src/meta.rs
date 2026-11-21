@@ -462,6 +462,9 @@ pub struct DocSummary {
     pub updated_ms: i64,
     /// Approximate Yjs state size.
     pub bytes: i64,
+    /// Project label the note or board is filed under (the sessions' vocabulary, one level); `None` = ungrouped.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 impl From<&DocMeta> for DocSummary {
@@ -474,6 +477,7 @@ impl From<&DocMeta> for DocSummary {
             created_ms: m.created_ms,
             updated_ms: m.updated_ms,
             bytes: 0,
+            project: None,
         }
     }
 }

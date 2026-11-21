@@ -909,6 +909,9 @@ pub struct CreateArgs {
     /// 144 §13.2: file the new note in this notebook (a `DocId`) as a `note` item.
     #[serde(default)]
     pub notebook: Option<String>,
+    /// File the new note or board under this project (the sessions' project label); omitted = ungrouped.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// `doc_create`: a new note (§5.3) or board (71 §2.1).
@@ -1027,9 +1030,33 @@ impl Tool for CreateTool {
                 }
             }
         }
+        let project = a
+            .project
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_owned);
+        if let Some(p) = &project {
+            let r = self
+                .0
+                .actor
+                .ask(crate::actor::SetProject {
+                    doc: id.clone(),
+                    project: Some(p.clone()),
+                })
+                .await;
+            match r {
+                Ok(_) => text.push_str(&format!("filed under project {p}\n")),
+                Err(e) => {
+                    return Ok(ToolOutput::err(format!(
+                        "created {kind} {id} ({url}) but could not file it under project {p}: {e}"
+                    )));
+                }
+            }
+        }
         Ok(structured(
             text,
-            serde_json::json!({ "doc": id, "url": url, "kind": kind, "notebook": a.notebook }),
+            serde_json::json!({ "doc": id, "url": url, "kind": kind, "notebook": a.notebook, "project": project }),
         ))
     }
 }

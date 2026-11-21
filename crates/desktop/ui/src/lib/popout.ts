@@ -109,6 +109,22 @@ export const POPOUT: PopoutTarget | null = typeof location === 'undefined' ? nul
 
 export const isPopout = (): boolean => POPOUT !== null
 
+/**
+ * A window that shows one thing alone (a chat, artifact, note, notebook, meeting, …): its own title bar, no section band,
+ * closed when its subject is deleted. A sidebar page window (`page`, e.g. Library) is not one — it is the shell's column
+ * without the rail, navigable between pages, so the pages render there exactly as in the main window.
+ */
+export const soloPopout = (t: PopoutTarget | null): boolean => t !== null && t.kind !== 'page'
+
+export const isSoloPopout = (): boolean => soloPopout(POPOUT)
+
+/**
+ * Whether `/artifacts` renders its Explorer (rail + viewer outlet) in window `t`: everywhere but an artifact window,
+ * which shows its viewer alone. The Library page window lands on `/artifacts` with no `$callId`, so a bare outlet
+ * there renders nothing at all (the black Library window).
+ */
+export const artifactsRail = (t: PopoutTarget | null): boolean => t?.kind !== 'artifact'
+
 /** The meeting a popped window is about (`meeting` or `meeting-note`), else `null`: a `Deleted` event for it closes the window. */
 export const popoutMeeting = (t: PopoutTarget | null): string | null =>
   t !== null && (t.kind === 'meeting' || t.kind === 'meeting-note') ? t.meeting : null

@@ -11756,8 +11756,15 @@
         "type": "string"
       },
       "event.cells_2eevents.output.KernelId": {
-        "description": "Kernel key (§5.1): `(Scope, Spec)`.",
+        "description": "Kernel key (§5.1): `(Scope, Spec, instance)`.",
         "properties": {
+          "instance": {
+            "default": 0,
+            "description": "Which instance of `(scope, spec)` (issue 6): 0 is the kernel every run uses; a\npress while every instance is busy starts the next one (shells only), seeded with\nthe busy kernel's cwd and exported environment. The strip shows instance `n > 0`\nas \"zsh #n+1\".",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "scope": {
             "allOf": [
               {
@@ -11777,7 +11784,8 @@
         },
         "required": [
           "scope",
-          "spec"
+          "spec",
+          "instance"
         ],
         "type": "object"
       },
@@ -12064,8 +12072,15 @@
         "type": "string"
       },
       "event.cells_2eevents.receiver.KernelId": {
-        "description": "Kernel key (§5.1): `(Scope, Spec)`.",
+        "description": "Kernel key (§5.1): `(Scope, Spec, instance)`.",
         "properties": {
+          "instance": {
+            "default": 0,
+            "description": "Which instance of `(scope, spec)` (issue 6): 0 is the kernel every run uses; a\npress while every instance is busy starts the next one (shells only), seeded with\nthe busy kernel's cwd and exported environment. The strip shows instance `n > 0`\nas \"zsh #n+1\".",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "scope": {
             "allOf": [
               {
@@ -36214,6 +36229,14 @@
             ],
             "description": "What it is."
           },
+          "project": {
+            "default": null,
+            "description": "Project label the note or board is filed under (the sessions' vocabulary, one level); `None` = ungrouped.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "title": {
             "description": "Title.",
             "type": "string"
@@ -36231,7 +36254,8 @@
           "binding",
           "created_ms",
           "updated_ms",
-          "bytes"
+          "bytes",
+          "project"
         ],
         "type": "object"
       },
@@ -40938,6 +40962,15 @@
             "minimum": 0,
             "type": "integer"
           },
+          "finished_at": {
+            "default": null,
+            "description": "When this session's last turn finished (`sessions.finished_at`, persisted by `turn_finished`);\n`None` before its first. Unlike `updated_at`, never moved by an edit, rename or move: clients use it\nas \"last active\" (the sidebar keeps a recently active root in `Active` for a while).",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "harness_model": {
             "default": null,
             "description": "Model the external harness reports for its session (design doc 06 §8.2).",
@@ -41073,6 +41106,7 @@
           "id",
           "created_at",
           "updated_at",
+          "finished_at",
           "title",
           "tags",
           "model",
@@ -46082,6 +46116,14 @@
             ],
             "description": "What it is."
           },
+          "project": {
+            "default": null,
+            "description": "Project label the note or board is filed under (the sessions' vocabulary, one level); `None` = ungrouped.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "title": {
             "description": "Title.",
             "type": "string"
@@ -50648,6 +50690,15 @@
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "finished_at": {
+            "default": null,
+            "description": "When this session's last turn finished (`sessions.finished_at`, persisted by `turn_finished`);\n`None` before its first. Unlike `updated_at`, never moved by an edit, rename or move: clients use it\nas \"last active\" (the sidebar keeps a recently active root in `Active` for a while).",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "harness_model": {
             "default": null,
@@ -66873,8 +66924,15 @@
         "type": "string"
       },
       "method.cells.input.KernelId": {
-        "description": "Kernel key (§5.1): `(Scope, Spec)`.",
+        "description": "Kernel key (§5.1): `(Scope, Spec, instance)`.",
         "properties": {
+          "instance": {
+            "default": 0,
+            "description": "Which instance of `(scope, spec)` (issue 6): 0 is the kernel every run uses; a\npress while every instance is busy starts the next one (shells only), seeded with\nthe busy kernel's cwd and exported environment. The strip shows instance `n > 0`\nas \"zsh #n+1\".",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "scope": {
             "allOf": [
               {
@@ -68116,8 +68174,15 @@
         ]
       },
       "method.cells.output.KernelId": {
-        "description": "Kernel key (§5.1): `(Scope, Spec)`.",
+        "description": "Kernel key (§5.1): `(Scope, Spec, instance)`.",
         "properties": {
+          "instance": {
+            "default": 0,
+            "description": "Which instance of `(scope, spec)` (issue 6): 0 is the kernel every run uses; a\npress while every instance is busy starts the next one (shells only), seeded with\nthe busy kernel's cwd and exported environment. The strip shows instance `n > 0`\nas \"zsh #n+1\".",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "scope": {
             "allOf": [
               {
@@ -68137,7 +68202,8 @@
         },
         "required": [
           "scope",
-          "spec"
+          "spec",
+          "instance"
         ],
         "type": "object"
       },
@@ -69744,8 +69810,15 @@
         ]
       },
       "method.cells.receiver.KernelId": {
-        "description": "Kernel key (§5.1): `(Scope, Spec)`.",
+        "description": "Kernel key (§5.1): `(Scope, Spec, instance)`.",
         "properties": {
+          "instance": {
+            "default": 0,
+            "description": "Which instance of `(scope, spec)` (issue 6): 0 is the kernel every run uses; a\npress while every instance is busy starts the next one (shells only), seeded with\nthe busy kernel's cwd and exported environment. The strip shows instance `n > 0`\nas \"zsh #n+1\".",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "scope": {
             "allOf": [
               {
@@ -76670,6 +76743,14 @@
             ],
             "description": "What it is."
           },
+          "project": {
+            "default": null,
+            "description": "Project label the note or board is filed under (the sessions' vocabulary, one level); `None` = ungrouped.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "title": {
             "description": "Title.",
             "type": "string"
@@ -76687,7 +76768,8 @@
           "binding",
           "created_ms",
           "updated_ms",
-          "bytes"
+          "bytes",
+          "project"
         ],
         "type": "object"
       },
@@ -78404,6 +78486,14 @@
               }
             ],
             "description": "What it is."
+          },
+          "project": {
+            "default": null,
+            "description": "Project label the note or board is filed under (the sessions' vocabulary, one level); `None` = ungrouped.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "title": {
             "description": "Title.",
@@ -100816,6 +100906,14 @@
             ],
             "description": "What it is."
           },
+          "project": {
+            "default": null,
+            "description": "Project label the note or board is filed under (the sessions' vocabulary, one level); `None` = ungrouped.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "title": {
             "description": "Title.",
             "type": "string"
@@ -100833,7 +100931,8 @@
           "binding",
           "created_ms",
           "updated_ms",
-          "bytes"
+          "bytes",
+          "project"
         ],
         "type": "object"
       },
@@ -103159,6 +103258,14 @@
               }
             ],
             "description": "What it is."
+          },
+          "project": {
+            "default": null,
+            "description": "Project label the note or board is filed under (the sessions' vocabulary, one level); `None` = ungrouped.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "title": {
             "description": "Title.",
@@ -122063,6 +122170,17 @@
             ]
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "project",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
         }
       ],
       "result": {
@@ -122742,6 +122860,43 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "document"
+    },
+    {
+      "name": "doc_set_project",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "doc",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.DocId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "project",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.DocSummary"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.DocSummary"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
     },
     {
       "name": "doc_snapshots",

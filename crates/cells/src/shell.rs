@@ -28,11 +28,22 @@ use crate::types::{
     SessionId, ShellKind,
 };
 
-/// E1's keys of the `cells:` section (flattened into [`crate::CellsConfig`]). None yet: every
-/// shell knob of §15.4 lives in the frozen section.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// E1's keys of the `cells:` section (flattened into [`crate::CellsConfig`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ShellConfig {}
+pub struct ShellConfig {
+    /// #6: an extra kernel instance (one started for a concurrent run) closes after this
+    /// many idle minutes; instance 0 follows `kernel_idle_hours`.
+    pub instance_idle_mins: u64,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            instance_idle_mins: 10,
+        }
+    }
+}
 
 /// How long a fresh shell may take to source the user's rc and print its ready mark.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -72,6 +83,11 @@ pub(crate) async fn launch(
     let (args, extra) = invocation(*kind, &rc);
     let mut env: BTreeMap<String, String> = (*ctx.login_env).clone();
     env.extend(extra);
+    // #6: the run line snapshots cwd + exported env here after every completed cell; a
+    // fresh kernel starts with none (an empty file, `0600`: it holds the environment).
+    let snap = snapshot_path(&ctx.paths, &ctx.id);
+    write_private(&snap, "")?;
+    env.insert(SNAP_VAR.into(), snap.to_string_lossy().into_owned());
     let cwd = env
         .get("HOME")
         .map(PathBuf::from)
@@ -342,20 +358,78 @@ fn run_file_text(kind: ShellKind, req: &ExecuteRequest) -> String {
     out
 }
 
-/// The one run line (§5.5).
+/// The kernel's environment variable naming its snapshot file (#6): the run line writes the
+/// shell's cwd and exported environment there after every cell that ran to its end.
+pub(crate) const SNAP_VAR: &str = "THEUTH_CELL_SNAP";
+
+/// The one run line (§5.5). After the sourced run file, before the `D` mark (so the file is
+/// complete once the run is over), it snapshots the cwd and the exported environment into
+/// `$THEUTH_CELL_SNAP` (#6): sh-family as `cwd NUL (KEY=value NUL)*` (`env -0`), pwsh as
+/// JSON `{"cwd": …, "env": {…}}`. A failed snapshot is silent and keeps the exit status.
 pub(crate) fn run_line(kind: ShellKind, file: &Path) -> String {
     let f = file.to_string_lossy();
     if kind == ShellKind::Pwsh {
         format!(
-            "[Console]::Write(\"`e]133;C`a\"); . {}; $c = if ($?) {{ 0 }} elseif ($LASTEXITCODE) {{ $LASTEXITCODE }} else {{ 1 }}; [Console]::Write(\"`e]133;D;$c`a`e]7;file://localhost/$($PWD.Path)`a\")",
+            "[Console]::Write(\"`e]133;C`a\"); . {}; $c = if ($?) {{ 0 }} elseif ($LASTEXITCODE) {{ $LASTEXITCODE }} else {{ 1 }}; try {{ if ($env:{SNAP_VAR}) {{ @{{ cwd = $PWD.Path; env = [Environment]::GetEnvironmentVariables() }} | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:{SNAP_VAR} }} }} catch {{ }}; [Console]::Write(\"`e]133;D;$c`a`e]7;file://localhost/$($PWD.Path)`a\")",
             pwsh_quote(&f)
         )
     } else {
         format!(
-            r#"printf '\033]133;C\007'; . {}; printf '\033]133;D;%s\007\033]7;file://%s%s\007' "$?" "$(hostname)" "$PWD""#,
+            r#"printf '\033]133;C\007'; . {}; __theuth_x=$?; (umask 077; {{ printf '%s\0' "$PWD"; env -0; }} >"${SNAP_VAR}") 2>/dev/null; printf '\033]133;D;%s\007\033]7;file://%s%s\007' "$__theuth_x" "$(hostname)" "$PWD""#,
             sh_quote(&f)
         )
     }
+}
+
+/// What a kernel's snapshot file holds: its cwd and exported environment as of the end of
+/// its last completed cell (#6).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Snapshot {
+    pub cwd: Option<PathBuf>,
+    pub env: BTreeMap<String, String>,
+}
+
+/// The snapshot file of a kernel (beside its run file, `kernels/<id>/env.snap`).
+pub(crate) fn snapshot_path(
+    paths: &crate::kernel::CellsPaths,
+    id: &crate::types::KernelId,
+) -> PathBuf {
+    paths.kernel_dir(&kernel_dir_name(id)).join("env.snap")
+}
+
+/// Read a snapshot file; `None` when it is absent or empty (no cell completed yet).
+pub(crate) fn read_snapshot(path: &Path) -> Option<Snapshot> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return None;
+    }
+    if bytes.first() == Some(&b'{') {
+        #[derive(Deserialize)]
+        struct Json {
+            cwd: Option<PathBuf>,
+            #[serde(default)]
+            env: BTreeMap<String, Option<String>>,
+        }
+        let j: Json = serde_json::from_slice(&bytes).ok()?;
+        return Some(Snapshot {
+            cwd: j.cwd,
+            env: j
+                .env
+                .into_iter()
+                .filter_map(|(k, v)| Some((k, v?)))
+                .collect(),
+        });
+    }
+    let mut records = bytes.split(|b| *b == 0).map(String::from_utf8_lossy);
+    let cwd = records
+        .next()
+        .filter(|c| !c.is_empty())
+        .map(|c| PathBuf::from(c.into_owned()));
+    let env = records
+        .filter_map(|r| r.split_once('=').map(|(k, v)| (k.to_owned(), v.to_owned())))
+        .filter(|(k, _)| !k.is_empty())
+        .collect();
+    Some(Snapshot { cwd, env })
 }
 
 /// After a Stop/Kill, a line that prints the `D` mark the aborted run line never reached.
@@ -514,6 +588,8 @@ impl Kernel for ShellKernel {
     async fn shutdown(&self) -> Result<()> {
         *self.shared.phase.lock() = KernelPhase::Closed;
         close_job(&self.jobs, self.session, &self.job).await;
+        // The snapshot holds the shell's environment; a closed kernel keeps none.
+        let _ = std::fs::remove_file(self.run_file.with_file_name("env.snap"));
         Ok(())
     }
 
@@ -941,8 +1017,28 @@ mod tests {
     fn run_line_is_the_design_line() {
         assert_eq!(
             run_line(ShellKind::Bash, Path::new("/k/run.sh")),
-            r#"printf '\033]133;C\007'; . '/k/run.sh'; printf '\033]133;D;%s\007\033]7;file://%s%s\007' "$?" "$(hostname)" "$PWD""#
+            r#"printf '\033]133;C\007'; . '/k/run.sh'; __theuth_x=$?; (umask 077; { printf '%s\0' "$PWD"; env -0; } >"$THEUTH_CELL_SNAP") 2>/dev/null; printf '\033]133;D;%s\007\033]7;file://%s%s\007' "$__theuth_x" "$(hostname)" "$PWD""#
         );
+    }
+
+    /// #6: both snapshot shapes read back (sh `env -0` with the cwd first, pwsh JSON);
+    /// an empty file (a fresh kernel) is no snapshot.
+    #[test]
+    fn snapshots_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("env.snap");
+        std::fs::write(&p, b"/w/sub\0A=1\0B=x=y\nz\0").unwrap();
+        let s = read_snapshot(&p).unwrap();
+        assert_eq!(s.cwd.as_deref(), Some(Path::new("/w/sub")));
+        assert_eq!(s.env["A"], "1");
+        assert_eq!(s.env["B"], "x=y\nz");
+        std::fs::write(&p, br#"{"cwd":"C:\\w","env":{"A":"1","N":null}}"#).unwrap();
+        let s = read_snapshot(&p).unwrap();
+        assert_eq!(s.cwd.as_deref(), Some(Path::new("C:\\w")));
+        assert_eq!(s.env.len(), 1);
+        std::fs::write(&p, b"").unwrap();
+        assert_eq!(read_snapshot(&p), None);
+        assert_eq!(read_snapshot(&dir.path().join("none")), None);
     }
 
     #[test]

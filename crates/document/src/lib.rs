@@ -59,8 +59,8 @@ pub use actor::{
     ApplyUpdate, AwarenessUpdateMsg, Bind, Create, CreateBoard, CreateNote, Delete, DeleteNote,
     DocHeadings, DocumentActor, Edit, EditOutcome, Ensure, Flush, Headings, Homing, ImportMarkdown,
     ImportOutcome, ListDocs, Lookup, Markdown, MetaOf, OpenDoc, Outline, Rename, Restore,
-    SetDerived, Snapshot, Snapshots, Stats, Subscribe, Tick, UndoLastAgentEdit, board_frontmatter,
-    with_heading,
+    SetDerived, SetProject, Snapshot, Snapshots, Stats, Subscribe, Tick, UndoLastAgentEdit,
+    board_frontmatter, with_heading,
 };
 pub use cells::{
     CellAnnotation, CellLatest, CodeBlockText, CodeBlockTextReply, NoteKey, RunAnnotations,
