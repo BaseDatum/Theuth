@@ -43,7 +43,10 @@ pub use dictation::{
     DictationState, DictationStatus, DictionaryOp, DictionaryReply, HistoryStore, InputDevicePrefs,
     Lease, Prewarm, PushAudio, Return, Setting, StartDictation, StopDictation,
 };
-pub use dictionary::{Dictionary, Entry, EntryId, Kind, Match, Negative, Scope, Source, Variant};
+pub use dictionary::{
+    Dictionary, DictionaryCounts, DictionarySearch, Entry, EntryId, Kind, Match, Negative, Scope,
+    Source, Variant,
+};
 pub use history::{Correction, HistoryRow, Store, SuggestionAnswer, SuggestionId};
 use kameo::reply::ReplySender;
 pub use shape::{
@@ -679,6 +682,10 @@ pub struct VoiceConfig {
     pub standby_secs: u64,
     /// What the companion does to media while dictating (153 §8.6).
     pub duck_media: Duck,
+    /// Global polish switch (153 §9, 204): `false` = the engine never runs polish, whatever a
+    /// client asks (the `polish` RPC answers `refused: "polish off"`). `rewrite` is an explicit
+    /// user command and is not affected.
+    pub polish_enabled: bool,
     /// Polish model id; `None` = title model, then the session's model (153 §9.2).
     pub polish_model: Option<String>,
     /// 194: the polish call's reasoning effort when `polish_model` answers; `None` = no setting.
@@ -709,6 +716,7 @@ impl Default for VoiceConfig {
             input_devices: Vec::new(),
             standby_secs: 8,
             duck_media: Duck::Off,
+            polish_enabled: true,
             polish_model: None,
             polish_effort: None,
             polish_profiles: BTreeMap::new(),
@@ -735,6 +743,8 @@ pub struct VoiceSettings {
     pub standby_secs: u64,
     /// `voice.duck_media` (§8.6).
     pub duck_media: Duck,
+    /// `voice.polish_enabled` (§9, 204).
+    pub polish_enabled: bool,
     /// `voice.polish_model` (§9.2).
     pub polish_model: Option<String>,
     /// `voice.polish_profiles` (§9.1).
@@ -751,6 +761,7 @@ impl From<&VoiceConfig> for VoiceSettings {
             input_devices: c.input_devices.clone(),
             standby_secs: c.standby_secs,
             duck_media: c.duck_media,
+            polish_enabled: c.polish_enabled,
             polish_model: c.polish_model.clone(),
             polish_profiles: c.polish_profiles.clone(),
             history: c.history.clone(),

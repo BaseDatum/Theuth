@@ -49,6 +49,7 @@ vi.mock('@/lib/rpc', async (original) => ({
       input_devices: ['Shure MV7'],
       standby_secs: 8,
       duck_media: 'off',
+      polish_enabled: true,
       polish_model: null,
       polish_profiles: {},
       history: { enabled: true, rows: 200, audio_mib: 64, learn: true },
@@ -63,6 +64,7 @@ vi.mock('@/lib/rpc', async (original) => ({
       input_device: 'Shure MV7',
       last: { surface: 'composer', press_to_first_pcm_ms: 42, press_to_first_partial_ms: 310, press_to_first_final_ms: 890, stop_to_final_ms: 420, polish_ms: null, device: 'Shure MV7' },
     }),
+    set_polish_enabled: record('set_polish_enabled', null),
     voice_mlx_status: record('voice_mlx_status', { engine: 'mlx', available: true, state: { state: 'downloading', done_bytes: 1_250, total_bytes: 2_500 } }),
     set_input_devices: record('set_input_devices', null),
   }),
@@ -100,6 +102,9 @@ test('Dictation: the shaping switch and the speech model row come from the engin
   expect(html).toMatch(/<button(?![^>]*\sdisabled(?:=""|\s|>))[^>]*aria-label="Speech model"/)
   expect(html).toContain('Downloading 50%. ONNX is used until the MLX model is ready.')
   expect(html).toContain('the live preview still comes from the streaming model')
+  // 204: the polish switch reads `voice_settings.polish_enabled` (on) and is enabled once settings land.
+  expect(html).toMatch(/<button(?![^>]*\sdisabled(?:=""|\s|>))[^>]*aria-checked="true"[^>]*aria-label="Polish dictated text"|<button(?![^>]*\sdisabled(?:=""|\s|>))[^>]*aria-label="Polish dictated text"[^>]*aria-checked="true"/)
+  expect(html).toContain('Off: dictation is never sent to a model for correction.')
 })
 
 test('mlxStatusText: every state, and the ONNX note only while MLX is chosen and not ready', () => {

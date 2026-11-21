@@ -26,7 +26,9 @@ use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::dictionary::{Dictionary, Entry, EntryId, Negative, Scope};
+use crate::dictionary::{
+    Dictionary, DictionaryCounts, DictionarySearch, Entry, EntryId, Negative, Scope, Source,
+};
 use crate::history::{HistoryRow, Store, SuggestionAnswer as Answer, SuggestionId};
 use crate::live::{MODEL_RATE, Text, Utterer};
 use crate::mic::{Capture, Chunk, RATE};
@@ -188,6 +190,17 @@ pub enum DictionaryOp {
     Put(Entry),
     /// Delete by id.
     Delete(EntryId),
+    /// 204: every layer (or one `source`) by normalised substring; the first `limit`.
+    Search {
+        /// The search text.
+        query: String,
+        /// One layer, or all.
+        source: Option<Source>,
+        /// At most this many entries in the reply.
+        limit: usize,
+    },
+    /// 204: entries per layer.
+    Counts,
     /// Record a veto.
     Negative(Negative),
 }
@@ -201,6 +214,10 @@ pub enum DictionaryReply {
     Entry(Entry),
     /// `Delete`: whether an entry went.
     Deleted(bool),
+    /// `Search`.
+    Found(DictionarySearch),
+    /// `Counts`.
+    Counts(DictionaryCounts),
     /// `Negative`.
     Done,
     /// The packaged index is still building; retry.
@@ -987,6 +1004,14 @@ impl Message<DictionaryOp> for Dictation {
             DictionaryOp::List(scope) => {
                 return DictionaryReply::Entries(dict.list(scope.as_ref()));
             }
+            DictionaryOp::Search {
+                query,
+                source,
+                limit,
+            } => {
+                return DictionaryReply::Found(dict.search(&query, source, limit));
+            }
+            DictionaryOp::Counts => return DictionaryReply::Counts(dict.counts()),
             DictionaryOp::Put(entry) => DictionaryReply::Entry(dict.put(entry)),
             DictionaryOp::Delete(id) => DictionaryReply::Deleted(dict.delete(&id)),
             DictionaryOp::Negative(n) => {

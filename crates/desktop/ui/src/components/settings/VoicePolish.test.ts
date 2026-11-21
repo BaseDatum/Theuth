@@ -8,7 +8,7 @@ import { Dictation } from './Voice'
 
 // What the Polish row hands the picker (the picker itself is ModelCombobox's own suite).
 type Effort = { levels: string[]; current?: string | null; onSelect: (level: string | null) => void }
-type Props = { 'aria-label': string; effort?: Effort; onChange: (v: string | null) => void }
+type Props = { 'aria-label': string; effort?: Effort; disabled?: boolean; onChange: (v: string | null) => void }
 const pickers: Record<string, Props> = {}
 vi.mock('@/components/chat/ModelCombobox', () => ({
   ModelCombobox: (p: Props) => {
@@ -16,17 +16,28 @@ vi.mock('@/components/chat/ModelCombobox', () => ({
     return null
   },
 }))
+// The switches register their handler by label (static markup cannot click).
+type SwitchProps = { 'aria-label': string; checked: boolean; disabled?: boolean; onCheckedChange: (v: boolean) => void }
+const switches: Record<string, SwitchProps> = {}
+vi.mock('@/components/ui/switch', () => ({
+  Switch: (p: SwitchProps) => {
+    switches[p['aria-label']] = p
+    return null
+  },
+}))
 
 const think = { id: 'p/think', name: 'Think', efforts: ['off', 'low', 'high'] } as ModelInfo
 const plain = { id: 'p/plain', name: 'Plain', efforts: [] as string[] } as ModelInfo
 let polish: ModelInfo | null = think
+let polishEnabled = true
 const api = {
-  voice_settings: vi.fn(async () => ({ shape: {}, end_commands: { send: [], scratch: [], literal: 'literal' } })),
+  voice_settings: vi.fn(async () => ({ shape: {}, end_commands: { send: [], scratch: [], literal: 'literal' }, polish_enabled: polishEnabled })),
   list_models: vi.fn(async () => [think, plain]),
   polish_model: vi.fn(async () => polish),
   polish_effort: vi.fn(async (): Promise<string | null> => 'low'),
   set_polish_model: vi.fn(async () => null),
   set_polish_effort: vi.fn(async (e: string | null) => e),
+  set_polish_enabled: vi.fn(async () => null),
   voice_mlx_status: vi.fn(async () => ({ engine: 'onnx', available: false, state: { state: 'unavailable', reason: 'test' } })),
 }
 vi.mock('@/lib/rpc', async (original) => ({
@@ -58,6 +69,7 @@ function settled(qc: QueryClient): Promise<void> {
 beforeEach(() => {
   for (const k of Object.keys(pickers)) delete pickers[k]
   polish = think
+  polishEnabled = true
 })
 
 test('194: the Polish row carries the polish model’s levels and `polish_effort`; a model without levels gets none', async () => {
@@ -81,4 +93,22 @@ test('194: a chip calls set_polish_effort (Default = null); a model change or th
   await done
   expect(api.set_polish_model).toHaveBeenLastCalledWith(null)
   expect(qc.getQueryState(['polish-effort'])?.isInvalidated).toBe(true)
+})
+
+test('204: the polish switch renders `voice_settings.polish_enabled`, calls set_polish_enabled and refetches the settings', async () => {
+  const qc = await render()
+  expect(switches['Polish dictated text']).toMatchObject({ checked: true, disabled: false })
+  expect(pickers['Polish model']?.disabled).toBe(false)
+  const done = settled(qc)
+  switches['Polish dictated text']?.onCheckedChange(false)
+  await done
+  expect(api.set_polish_enabled).toHaveBeenLastCalledWith(false)
+  expect(qc.getQueryState(['voice', 'settings'])?.isInvalidated).toBe(true)
+})
+
+test('204: polish off greys the polish model picker (and with it the effort chips)', async () => {
+  polishEnabled = false
+  await render()
+  expect(switches['Polish dictated text']?.checked).toBe(false)
+  expect(pickers['Polish model']?.disabled).toBe(true)
 })

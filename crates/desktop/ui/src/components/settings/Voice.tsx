@@ -177,11 +177,14 @@ export function Dictation() {
   const setEnd = useAction((p: EndPhrases) => api.set_end_phrases(p), { keys: [keys.settings] })
   const setPolishModel = useAction((id: string | null) => api.set_polish_model(id), { keys: [keys.polishModel, keys.polishEffort, keys.settings] })
   const setPolishEffort = useAction((level: string | null) => api.set_polish_effort(level), { keys: [keys.polishEffort] })
+  const setPolishEnabled = useAction((enabled: boolean) => api.set_polish_enabled(enabled), { keys: [keys.settings] })
   const polish = models.data?.find((m) => m.id === polishModel.data?.id)
 
   const shape = settings.data?.shape
   const shaping = shape?.enabled ?? true
   const end = settings.data?.end_commands ?? END_DEFAULTS
+  // 204: `voice.polish_enabled`; off greys the model picker like the shape switch greys the presets.
+  const polishing = settings.data?.polish_enabled ?? true
 
   return (
     <>
@@ -261,6 +264,12 @@ export function Dictation() {
       </Section>
       <Section title="Polish">
         <Row
+          label="Polish dictated text"
+          description="Off: dictation is never sent to a model for correction. On: dictation meant for people (documents, notes, message replies) is corrected by the model below; what you dictate to the agent is never polished."
+        >
+          <Switch aria-label="Polish dictated text" checked={polishing} disabled={!settings.isSuccess || setPolishEnabled.isPending} onCheckedChange={(v) => setPolishEnabled.mutate(v)} />
+        </Row>
+        <Row
           stack
           label="Polish model"
           description="Corrects dictation meant for people — documents, notes and message replies — for a human reader. What you dictate to the agent is never polished; it reads the shaped words as spoken."
@@ -272,7 +281,7 @@ export function Dictation() {
             value={polishModel.data?.id}
             none={{ label: 'Chain (title model, then session)' }}
             effort={polish && polish.efforts.length > 0 ? { levels: polish.efforts, current: polishEffort.data, onSelect: (level) => setPolishEffort.mutate(level) } : undefined}
-            disabled={polishModel.isPending || setPolishModel.isPending || setPolishEffort.isPending}
+            disabled={!polishing || polishModel.isPending || setPolishModel.isPending || setPolishEffort.isPending}
             onChange={(v) => setPolishModel.mutate(v)}
           />
         </Row>

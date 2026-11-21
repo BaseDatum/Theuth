@@ -852,6 +852,18 @@ pub struct SetPolishEffort {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetPolishEffort;
 
+/// `ask` → `Result<(), String>`: persist `voice.polish_enabled` (153 §9, 204) and apply it
+/// to the next `Polish`; `false` = no polish model call ever (`Rewrite` is not affected).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetPolishEnabled {
+    /// The new value.
+    pub enabled: bool,
+}
+
+/// `ask` → `bool`: the live `voice.polish_enabled`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetPolishEnabled;
+
 /// `ask` → `Result<PolishReply, String>`: polish a dictation transcript for a human reader
 /// (153 §9) on `ModelRole::Polish`, charged to `session` when given.
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -112061,6 +112061,58 @@
         ],
         "type": "object"
       },
+      "method.talk.output.DictionaryCounts": {
+        "description": "`dictionary_counts` reply (204): entries per layer.",
+        "properties": {
+          "learned": {
+            "description": "`Source::Learned`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "packaged": {
+            "description": "`Source::Packaged` (the built-in list).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user": {
+            "description": "`Source::User`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "user",
+          "learned",
+          "packaged"
+        ],
+        "type": "object"
+      },
+      "method.talk.output.DictionarySearch": {
+        "description": "`dictionary_search` reply (204): the first `limit` matches and how many there are.",
+        "properties": {
+          "entries": {
+            "description": "Matches in layer order (user, learned, packaged), at most `limit`.",
+            "items": {
+              "$ref": "#/components/schemas/method.talk.output.Entry"
+            },
+            "type": "array"
+          },
+          "total": {
+            "description": "Every match, beyond `limit` too.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entries",
+          "total"
+        ],
+        "type": "object"
+      },
       "method.talk.output.Duck": {
         "description": "`voice.duck_media` (153 §8.6): what the companion does to media while dictating.",
         "oneOf": [
@@ -113040,6 +113092,10 @@
             },
             "type": "array"
           },
+          "polish_enabled": {
+            "description": "`voice.polish_enabled` (§9, 204).",
+            "type": "boolean"
+          },
           "polish_model": {
             "description": "`voice.polish_model` (§9.2).",
             "type": [
@@ -113075,6 +113131,7 @@
           "input_devices",
           "standby_secs",
           "duck_media",
+          "polish_enabled",
           "polish_model",
           "polish_profiles",
           "history"
@@ -113325,6 +113382,58 @@
         },
         "required": [
           "surface"
+        ],
+        "type": "object"
+      },
+      "method.talk.receiver.DictionaryCounts": {
+        "description": "`dictionary_counts` reply (204): entries per layer.",
+        "properties": {
+          "learned": {
+            "description": "`Source::Learned`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "packaged": {
+            "description": "`Source::Packaged` (the built-in list).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "user": {
+            "description": "`Source::User`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "user",
+          "learned",
+          "packaged"
+        ],
+        "type": "object"
+      },
+      "method.talk.receiver.DictionarySearch": {
+        "description": "`dictionary_search` reply (204): the first `limit` matches and how many there are.",
+        "properties": {
+          "entries": {
+            "description": "Matches in layer order (user, learned, packaged), at most `limit`.",
+            "items": {
+              "$ref": "#/components/schemas/method.talk.receiver.Entry"
+            },
+            "type": "array"
+          },
+          "total": {
+            "description": "Every match, beyond `limit` too.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entries",
+          "total"
         ],
         "type": "object"
       },
@@ -114276,6 +114385,10 @@
             },
             "type": "array"
           },
+          "polish_enabled": {
+            "description": "`voice.polish_enabled` (§9, 204).",
+            "type": "boolean"
+          },
           "polish_model": {
             "description": "`voice.polish_model` (§9.2).",
             "type": [
@@ -114311,6 +114424,7 @@
           "input_devices",
           "standby_secs",
           "duck_media",
+          "polish_enabled",
           "polish_profiles",
           "history"
         ],
@@ -121990,6 +122104,23 @@
       "x-theuth-owner": "talk"
     },
     {
+      "name": "dictionary_counts",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.talk.output.DictionaryCounts"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.talk.receiver.DictionaryCounts"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "talk"
+    },
+    {
       "name": "dictionary_delete",
       "paramStructure": "by-position",
       "params": [
@@ -122074,6 +122205,57 @@
         },
         "x-theuth-receiverSchema": {
           "$ref": "#/components/schemas/method.talk.receiver.Entry"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "talk"
+    },
+    {
+      "name": "dictionary_search",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "query",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "source",
+          "required": true,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.talk.input.Source"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "limit",
+          "required": true,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.talk.output.DictionarySearch"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.talk.receiver.DictionarySearch"
         }
       },
       "x-theuth-audience": "owner",
@@ -133141,6 +133323,32 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_polish_enabled",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "enabled",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "talk"
     },
     {
       "name": "set_polish_model",

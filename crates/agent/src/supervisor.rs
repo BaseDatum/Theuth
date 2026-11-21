@@ -168,6 +168,8 @@ pub struct Agents {
     /// Live polish model (153 §9.2, `voice.polish_model`); `None` = the title model, then
     /// each session's own model. Shared with every session once A5 wires `ModelRole::Polish`.
     polish_model: Arc<RwLock<Option<Resolved>>>,
+    /// Live `voice.polish_enabled` (153 §9, 204); `false` = `Polish` never calls a model.
+    polish_enabled: bool,
     /// Live subagent default model (`agent.subagents.model`); `None` = `agent.model`.
     /// Children spawned without `model` use it; the system prompt names it. Shared with every session.
     subagent_model: Arc<RwLock<Option<Resolved>>>,
@@ -4810,6 +4812,31 @@ impl Message<GetPolishModel> for Agents {
     }
 }
 
+impl Message<crate::SetPolishEnabled> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SetPolishEnabled,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        let path = self.rt.data_dir.join("config.yaml");
+        let value = if m.enabled { "true" } else { "false" };
+        runtime::write_config_value(&path, "voice", "polish_enabled", value)
+            .map_err(|e| format!("config.yaml: {e}"))?;
+        self.polish_enabled = m.enabled;
+        Ok(())
+    }
+}
+
+impl Message<crate::GetPolishEnabled> for Agents {
+    type Reply = bool;
+
+    async fn handle(&mut self, _: crate::GetPolishEnabled, _: &mut Context<Self, bool>) -> bool {
+        self.polish_enabled
+    }
+}
+
 impl Message<crate::SetPolishEffort> for Agents {
     type Reply = Result<Option<String>, String>;
 
@@ -4845,6 +4872,13 @@ impl Message<Polish> for Agents {
 
     async fn handle(&mut self, m: Polish, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
+        // 204: the global switch is off → never a model call; the caller keeps its text.
+        if !self.polish_enabled {
+            if let Some(tx) = tx {
+                tx.send(Ok(refused("polish off")));
+            }
+            return reply;
+        }
         // §9.1: the agent reads raw text fine; never a model call.
         let target = if m.destination == voice::Destination::AgentPrompt {
             Err("agent prompt".to_owned())
@@ -12418,6 +12452,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             compact_style: Arc::new(RwLock::new(cfg.compact_style)),
             title_model: Arc::new(RwLock::new(title_model)),
             polish_model: Arc::new(RwLock::new(polish_model)),
+            // 204: `voice.polish_enabled`, default on; unreadable section → on.
+            polish_enabled: rt
+                .section::<voice::VoiceConfig>("voice")
+                .map_or(true, |v| v.polish_enabled),
             subagent_model: Arc::new(RwLock::new(subagent_model)),
             subagent_effort: Arc::new(RwLock::new(cfg.subagents.effort.clone())),
             desk_models: HashMap::new(),
@@ -13553,6 +13591,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         compact_style: Arc::default(),
         title_model: Arc::default(),
         polish_model: Arc::default(),
+        polish_enabled: true,
         subagent_model: Arc::default(),
         subagent_effort: Arc::default(),
         vision_model: Arc::default(),
@@ -15359,6 +15398,50 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(r.refused.as_deref(), Some("no session"));
         assert!(r.text.is_none());
+    }
+
+    /// 204: with `voice.polish_enabled: false` a human destination is refused `polish off`
+    /// before any target lookup or model call (no `model`, `ms` 0); the switch persists to
+    /// config.yaml and turning it back on restores the chain. Old configs default to on.
+    #[tokio::test]
+    async fn polish_switch_off_never_calls_a_model() {
+        let v: voice::VoiceConfig = serde_yaml::from_str("polish_model: a/p\n").unwrap();
+        assert!(v.polish_enabled);
+        assert!(voice::VoiceConfig::default().polish_enabled);
+        let (_scratch, a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        let agents = Agents::spawn(a);
+        assert!(agents.ask(crate::GetPolishEnabled).await.unwrap());
+        agents
+            .ask(crate::SetPolishEnabled { enabled: false })
+            .await
+            .unwrap();
+        assert!(!agents.ask(crate::GetPolishEnabled).await.unwrap());
+        let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        let back: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            back["voice"]["polish_enabled"],
+            serde_yaml::Value::Bool(false)
+        );
+        let polish = || Polish {
+            text: "hello there".into(),
+            destination: voice::Destination::Document,
+            session: None,
+        };
+        let r = agents.ask(polish()).await.unwrap();
+        assert_eq!(
+            r,
+            PolishReply {
+                refused: Some("polish off".into()),
+                ..PolishReply::default()
+            }
+        );
+        agents
+            .ask(crate::SetPolishEnabled { enabled: true })
+            .await
+            .unwrap();
+        let r = agents.ask(polish()).await.unwrap();
+        assert_eq!(r.refused.as_deref(), Some("no session"));
     }
 
     /// 137F R1-17: a session's model pick and `SetTitleModel` reach the

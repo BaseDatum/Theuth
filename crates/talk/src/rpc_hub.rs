@@ -33,6 +33,8 @@ impl TalkHubApiServer for Server {
         settings.polish_model = ask::<Agents, _>(agent::AGENT_ACTOR, GetPolishModel)
             .await?
             .map(|m| m.id);
+        settings.polish_enabled =
+            ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetPolishEnabled).await?;
         Ok(settings)
     }
 

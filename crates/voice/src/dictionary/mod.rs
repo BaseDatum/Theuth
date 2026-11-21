@@ -129,6 +129,30 @@ pub struct Negative {
     pub canonical: String,
 }
 
+/// `dictionary_search` reply (204): the first `limit` matches and how many there are.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct DictionarySearch {
+    /// Matches in layer order (user, learned, packaged), at most `limit`.
+    pub entries: Vec<Entry>,
+    /// Every match, beyond `limit` too.
+    pub total: u32,
+}
+
+/// `dictionary_counts` reply (204): entries per layer.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct DictionaryCounts {
+    /// `Source::User`.
+    pub user: u32,
+    /// `Source::Learned`.
+    pub learned: u32,
+    /// `Source::Packaged` (the built-in list).
+    pub packaged: u32,
+}
+
 /// One accepted match of a token window (§5.4).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Match {
@@ -365,14 +389,54 @@ impl Dictionary {
         &self.packaged.version
     }
 
-    /// Counts for the Settings header line: (packaged, user, learned).
-    pub fn counts(&self) -> (u32, u32, u32) {
+    /// Entries per layer, for Settings › Voice › Dictionary's source chips (204).
+    pub fn counts(&self) -> DictionaryCounts {
         let count = |s: Source| self.entries.iter().filter(|e| e.source == s).count() as u32;
-        (
-            self.packaged.entries.len() as u32,
-            count(Source::User),
-            count(Source::Learned),
-        )
+        DictionaryCounts {
+            user: count(Source::User),
+            learned: count(Source::Learned),
+            packaged: self.packaged.entries.len() as u32,
+        }
+    }
+
+    /// 204: entries of every layer (or one `source`) whose normalised canonical, spoken or
+    /// heard form contains the normalised `query` (so "git hub" finds GitHub); the first
+    /// `limit` in layer order (user, learned, then packaged) and the total match count.
+    /// An empty normalised query matches nothing.
+    pub fn search(&self, query: &str, source: Option<Source>, limit: usize) -> DictionarySearch {
+        let q = matcher::norm(query);
+        let mut entries = Vec::new();
+        let mut total = 0u32;
+        if q.is_empty() {
+            return DictionarySearch { entries, total };
+        }
+        let hit = |e: &Entry| {
+            matcher::norm(&e.canonical).contains(&q)
+                || e.spoken.iter().any(|s| matcher::norm(s).contains(&q))
+                || e.variants
+                    .iter()
+                    .any(|v| matcher::norm(&v.heard).contains(&q))
+        };
+        let mut layer = |s: Source| {
+            let all: &[Entry] = if s == Source::Packaged {
+                &self.packaged.entries
+            } else {
+                &self.entries
+            };
+            for e in all.iter().filter(|e| e.source == s && hit(e)) {
+                total += 1;
+                if entries.len() < limit {
+                    entries.push(e.clone());
+                }
+            }
+        };
+        match source {
+            Some(s) => layer(s),
+            None => [Source::User, Source::Learned, Source::Packaged]
+                .into_iter()
+                .for_each(layer),
+        }
+        DictionarySearch { entries, total }
     }
 
     /// One entry by id, any layer (the shaper reads `kind` / `tags` of a [`Match`]).

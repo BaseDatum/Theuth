@@ -50,7 +50,16 @@ fn packaged_loads_and_hashes() {
     assert_eq!(rec.file, "dictionary.v1.json.gz");
     assert_eq!(rec.sha256, packaged::sha256(), "data file vs record sha256");
     let d = with_packaged();
-    assert_eq!(d.counts().0 as usize, rec.terms);
+    assert_eq!(d.counts().packaged as usize, rec.terms);
+    // 204: server-side search over the packaged layer, normalised ("git hub" finds GitHub), capped.
+    let s = d.search("git hub", Some(Source::Packaged), usize::MAX);
+    assert!(s.entries.iter().any(|e| e.canonical == "GitHub"), "{:?}", s.entries);
+    assert_eq!(s.total as usize, s.entries.len());
+    assert!(d.search("git hub", Some(Source::User), 10).entries.is_empty());
+    let s = d.search("e", None, 100);
+    assert_eq!(s.entries.len(), 100);
+    assert!(s.total > 100);
+    assert_eq!(d.search(" - ", None, 100).total, 0);
     assert!(d.packaged_version().starts_with("v1 "));
     assert!(rec.terms >= 30_000 && rec.pairs >= 400, "{rec:?}");
     assert_eq!(canon(&d, "git hub").as_deref(), Some("GitHub"));
@@ -303,7 +312,7 @@ fn user_entries_round_trip() {
         d
     };
     let mut d = open();
-    assert_eq!(d.counts().1, 0);
+    assert_eq!(d.counts().user, 0);
     let a = d.put(entry("Theuth", Source::User, &["tooth"], &[]));
     let mut b = entry("Parakeet", Source::Learned, &[], &[]);
     b.id = EntryId(String::new());
@@ -319,8 +328,8 @@ fn user_entries_round_trip() {
     let d2 = open();
     assert_eq!(d2.list(None), d.list(None));
     assert_eq!(d2.negatives, d.negatives);
-    assert_eq!(d2.counts().1, 1);
-    assert_eq!(d2.counts().2, 1);
+    assert_eq!(d2.counts().user, 1);
+    assert_eq!(d2.counts().learned, 1);
     assert_eq!(canon(&d2, "tooth").as_deref(), Some("Theuth"));
     assert_eq!(canon(&d2, "pair of keet").as_deref(), Some("Parakeet"));
 

@@ -100,6 +100,19 @@ pub trait SpeechApi {
     /// 153 §5.6: delete one entry; `false` when unknown.
     #[method(name = "dictionary_delete")]
     async fn dictionary_delete(&self, id: voice::EntryId) -> RpcResult<bool>;
+    /// 204: every layer (built-in included, or one `source`) whose normalised canonical,
+    /// spoken or heard form contains the normalised `query`; at most `limit` (≤ 500) entries,
+    /// with the total match count. Settings searches the 40k built-in terms through this.
+    #[method(name = "dictionary_search")]
+    async fn dictionary_search(
+        &self,
+        query: String,
+        source: Option<voice::Source>,
+        limit: u32,
+    ) -> RpcResult<voice::DictionarySearch>;
+    /// 204: entries per layer (user, learned, packaged).
+    #[method(name = "dictionary_counts")]
+    async fn dictionary_counts(&self) -> RpcResult<voice::DictionaryCounts>;
     /// 153 §6.3 step 4: answer a `DictionarySuggestion` event.
     #[method(name = "dictionary_suggestion_answer")]
     async fn dictionary_suggestion_answer(
@@ -119,6 +132,10 @@ pub trait SpeechApi {
     /// 203: persist `voice.shape.enabled`; `false` bypasses the shaper on every surface.
     #[method(name = "set_shape_enabled")]
     async fn set_shape_enabled(&self, enabled: bool) -> RpcResult<()>;
+    /// 204: persist `voice.polish_enabled` and apply it at once; `false` = the engine never
+    /// polishes (`polish` answers `refused: "polish off"`). `rewrite` is not affected.
+    #[method(name = "set_polish_enabled")]
+    async fn set_polish_enabled(&self, enabled: bool) -> RpcResult<()>;
     /// 202 §5: persist `voice.stt_engine` and apply it at once; utterances already running keep
     /// the engine they started with.
     #[method(name = "set_stt_engine")]
@@ -369,6 +386,32 @@ impl SpeechApiServer for Server {
         }
     }
 
+    async fn dictionary_search(
+        &self,
+        query: String,
+        source: Option<voice::Source>,
+        limit: u32,
+    ) -> RpcResult<voice::DictionarySearch> {
+        let op = voice::DictionaryOp::Search {
+            query,
+            source,
+            limit: limit.min(500) as usize,
+        };
+        match send(&dictation()?, op).await? {
+            voice::DictionaryReply::Found(s) => Ok(s),
+            voice::DictionaryReply::Loading => Err(failed("dictionary loading")),
+            other => Err(failed(format!("unexpected dictionary reply {other:?}"))),
+        }
+    }
+
+    async fn dictionary_counts(&self) -> RpcResult<voice::DictionaryCounts> {
+        match send(&dictation()?, voice::DictionaryOp::Counts).await? {
+            voice::DictionaryReply::Counts(c) => Ok(c),
+            voice::DictionaryReply::Loading => Err(failed("dictionary loading")),
+            other => Err(failed(format!("unexpected dictionary reply {other:?}"))),
+        }
+    }
+
     async fn dictionary_suggestion_answer(
         &self,
         id: voice::SuggestionId,
@@ -406,6 +449,10 @@ impl SpeechApiServer for Server {
     async fn set_shape_enabled(&self, enabled: bool) -> RpcResult<()> {
         self.write_voice_config(&["shape", "enabled"], if enabled { "true" } else { "false" })?;
         send(&dictation()?, voice::Setting::ShapeEnabled(enabled)).await
+    }
+
+    async fn set_polish_enabled(&self, enabled: bool) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetPolishEnabled { enabled }).await
     }
 
     async fn set_stt_engine(&self, engine: voice::mlx::SttEngine) -> RpcResult<()> {
