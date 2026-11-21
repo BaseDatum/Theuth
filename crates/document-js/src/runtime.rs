@@ -263,14 +263,15 @@ impl DocumentsJs {
         started: Instant,
     ) -> Result<Option<String>, Error> {
         self.exchange(|x| x.reply = None);
-        self.js
-            .execute_script(name, source)
-            .map_err(|e| Error::Js(e.to_string()))?;
         let state = self.js.op_state();
         let take_reply = || state.borrow_mut().borrow_mut::<Exchange>().reply.take();
-        let remaining = self.limits.deadline.saturating_sub(started.elapsed());
+        let deadline = started + self.limits.deadline;
         let js = &mut self.js;
+        // The script runs inside the tokio context too: a script that arms a timer reaches deno_core's tokio
+        // reactor from a builtin op, and without a runtime that op panics inside V8 (= process abort).
         self.tokio.block_on(async {
+            js.execute_script(name, source)
+                .map_err(|e| Error::Js(e.to_string()))?;
             let driven = poll_fn(|cx| {
                 if until_reply && let Some(reply) = take_reply() {
                     return Poll::Ready(Ok(Some(reply)));
@@ -281,7 +282,7 @@ impl DocumentsJs {
                     Poll::Pending => Poll::Pending,
                 }
             });
-            tokio::time::timeout(remaining, driven)
+            tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), driven)
                 .await
                 .unwrap_or(Err(Error::Timeout))
         })

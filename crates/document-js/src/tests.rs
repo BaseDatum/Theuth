@@ -104,7 +104,7 @@ async fn round_trip_open_import_markdown_outline_edit_close() {
         .iter()
         .find(|b| b["type"] == "heading")
         .expect("heading block");
-    assert_eq!(heading["text"], "Heading");
+    assert_eq!(heading["text"], "[h1] Heading");
     let edit = req(
         &t,
         5,
@@ -316,8 +316,14 @@ async fn oversized_line_is_rejected_before_js() {
     assert_eq!(t.generation(), 1);
     round_trip(&t, "d2").await;
     // The runtime enforces the same cap when called directly.
-    let mut js = DocumentsJs::new(Limits { max_line: 16, ..limits() }).expect("runtime");
-    assert!(matches!(js.call(&"y".repeat(17)), Err(Error::TooLarge { len: 17, max: 16 })));
+    // `DocumentsJs` drives its own tokio runtime, so it runs off this async test's runtime.
+    let direct = std::thread::spawn(|| {
+        let mut js = DocumentsJs::new(Limits { max_line: 16, ..limits() }).expect("runtime");
+        js.call(&"y".repeat(17))
+    })
+    .join()
+    .expect("direct call");
+    assert_eq!(direct, Err(Error::TooLarge { len: 17, max: 16 }));
 }
 
 #[tokio::test]
