@@ -5,7 +5,8 @@
 //! hidden window, `dock.rs`), the local daemon on a pty.
 //! Mobile: the same webview as a link device (QR scanner + universal link), no
 //! local daemon; the window is built here (not from `tauri.ios.conf.json`) so the
-//! iOS keyboard's accessory bar can be dropped, and backgrounding holds a
+//! iOS keyboard's accessory bar can be dropped (plus the iPad assistant bar,
+//! `ios_keyboard.rs`), and backgrounding holds a
 //! `UIBackgroundTask` so the relay socket survives the grace period. `main.rs`
 //! and the generated iOS bridge both enter at [`run`].
 
@@ -20,6 +21,8 @@ mod commands;
 mod companion;
 #[cfg(target_os = "macos")]
 mod dock;
+#[cfg(target_os = "ios")]
+mod ios_keyboard;
 #[cfg(target_os = "ios")]
 mod ios_webview;
 #[cfg(target_os = "ios")]
@@ -161,11 +164,17 @@ mod mobile {
                     WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                         .background_color(crate::page_background(system_dark()));
                 // WKWebView paints a native "‹ › Done" bar above the keyboard for every
-                // focused input (and paints it light under a dark page); a chat composer
-                // has no use for it.
+                // focused input (and paints it light under a dark page), and on iPad a
+                // shortcut bar / floating-keyboard pill with form chevrons; a chat composer
+                // has no use for either. The builder covers the web view, `ios_keyboard`
+                // the WKContentView that is actually first responder.
                 #[cfg(target_os = "ios")]
                 let builder = builder.with_input_accessory_view_builder(|_| None);
-                builder.build()?;
+                let window = builder.build()?;
+                #[cfg(target_os = "ios")]
+                window.with_webview(|webview| crate::ios_keyboard::strip(webview.inner()))?;
+                #[cfg(not(target_os = "ios"))]
+                let _ = window;
                 Ok(())
             })
     }
