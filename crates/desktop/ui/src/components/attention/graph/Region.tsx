@@ -2,7 +2,7 @@
 // Follow, Full screen and TTL; full screen over the app. Owns the data hook, the TTL clock and the list ↔ graph wiring;
 // the canvas itself (and `@xyflow/react`) loads lazily on first expand.
 import { ChevronLeft, Crosshair, Maximize2, Minimize2, Scan } from 'lucide-react'
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { CONTROL } from '@/components/attention/Page'
 import type { SubtreeFilter } from '@/components/attention/model'
 import { Button } from '@/components/ui/button'
@@ -13,7 +13,8 @@ import type { AttentionItem } from '@/rpc/bindings/method.roster.output'
 import { EdgePopover } from './EdgePopover'
 import { NodeBar } from './NodeBar'
 import { defaultGraphHeight, useGraphPrefs } from './prefs'
-import { graphNow, useAgentGraph } from './queries'
+import { graphNow } from './clock'
+import { useAgentGraph } from './queries'
 import { attentionBySession, includeSessions, nodeLabel, stripCounts, stripText, subtreeIds } from './selectors'
 import { Strip } from './Strip'
 import { TtlPopover } from './TtlPopover'
@@ -67,6 +68,7 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree 
 
   // Keep the list's subtree filter in step with the graph: its ids follow spawns and deletions.
   const sent = useRef<ReadonlySet<string> | null>(null)
+  const labelOf = useRef<{ id: string; label: string } | null>(null)
   useEffect(() => {
     if (!state || subtree === null) {
       sent.current = null
@@ -101,7 +103,8 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree 
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || editable(e.target)) return
       const l = latest.current
-      if (e.key === 'g' && !e.shiftKey) {
+      // `g` would toggle the region hidden under full screen (review U5).
+      if (e.key === 'g' && !e.shiftKey && !l.full) {
         e.preventDefault()
         l.toggle()
       } else if (e.key === 'G' && e.shiftKey) {
@@ -110,10 +113,10 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree 
       }
     }
     // Esc leaves full screen before anything below sees it (the page's own handlers swallow a bare Escape), unless a
-    // popover or menu is open — that one closes first.
+    // popover, menu or dialog (command palette, confirm) is open — that one closes first (review U5).
     const onEsc = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.shiftKey || !latest.current.full || editable(e.target)) return
-      if (document.querySelector('[data-radix-popper-content-wrapper]')) return
+      if (document.querySelector('[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"]')) return
       e.preventDefault()
       e.stopPropagation()
       latest.current.setFull(false)
@@ -141,7 +144,11 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree 
   const selectedNode = selected && state ? state.nodes.get(selected) : undefined
   const edge = edgeAt && state ? state.edges.get(edgeAt.id) : undefined
   const subtreeNode = subtree !== null ? state?.nodes.get(subtree) : undefined
-  const subtreeLabel = subtreeNode ? nodeLabel(subtreeNode) : subtree
+  if (subtree !== null && subtreeNode) labelOf.current = { id: subtree, label: nodeLabel(subtreeNode) }
+  // Review U6: a filtered tree that left the graph keeps its filter (its items may still be listed) under its last
+  // known name, never a raw session id.
+  const lastLabel = labelOf.current?.id === subtree ? labelOf.current.label : 'A session'
+  const subtreeLabel = subtree === null ? null : subtreeNode ? nodeLabel(subtreeNode) : state ? `${lastLabel} (left the graph)` : lastLabel
 
   const nodeClick = (id: string) => {
     setEdgeAt(null)
@@ -201,10 +208,19 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree 
     </div>
   )
 
-  if (full)
-    return (
-      <div className="fixed inset-0 z-40 flex flex-col bg-background" role="region" aria-label="Agent graph, full screen">
-        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-2 text-xs">
+  // Review U2: one element tree for inline and full screen (only the wrapper's class and the header change), so the
+  // canvas keeps its viewport, LOD and open folds across Shift+G and Esc.
+  const shown = open || full
+  return (
+    <div
+      ref={regionRef}
+      className={full ? 'fixed inset-0 z-40 flex flex-col bg-background' : 'relative flex shrink-0 flex-col border-b border-border-subtle'}
+      style={!full && open ? { height } : undefined}
+      role="region"
+      aria-label={full ? 'Agent graph, full screen' : 'Agent graph'}
+    >
+      {full ? (
+        <div key="head-full" className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-2 text-xs">
           <Button size="icon-xs" variant="ghost" aria-label="Leave full screen" title="Back (Esc)" onClick={() => setFull(false)}>
             <ChevronLeft />
           </Button>
@@ -212,18 +228,15 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree 
           <span className={cn('min-w-0 truncate text-fg-secondary tabular-nums', counts.needYou > 0 && 'text-danger')}>{stripText(counts)}</span>
           <div className="ml-auto flex items-center gap-0.5">{controls}</div>
         </div>
-        {canvas}
-      </div>
-    )
-
-  return (
-    <div ref={regionRef} className="relative flex shrink-0 flex-col border-b border-border-subtle" style={open ? { height } : undefined} role="region" aria-label="Agent graph">
-      <Strip counts={counts} older={state?.older ?? null} subtree={subtreeLabel} expanded={open} onToggle={toggle} onClearSubtree={() => onSubtree(null)}>
-        {open && controls}
-      </Strip>
-      {open && canvas}
-      {open && (
+      ) : (
+        <Strip key="head-strip" counts={counts} older={state?.older ?? null} subtree={subtreeLabel} expanded={open} onToggle={toggle} onClearSubtree={() => onSubtree(null)}>
+          {open && controls}
+        </Strip>
+      )}
+      {shown && canvas && <Fragment key="canvas">{canvas}</Fragment>}
+      {open && !full && (
         <ResizeHandle
+          key="resize"
           orientation="horizontal"
           placement="center"
           className="absolute right-0 bottom-0 left-0 z-10"

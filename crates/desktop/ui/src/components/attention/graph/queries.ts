@@ -1,6 +1,6 @@
 // 208 §8.5: the graph's data — one `agent_graph` snapshot, then `agent.graph@1` deltas through the pure reducer.
 // Re-snapshots only on a gap, a new epoch, a resync or a reconnect; a cursor renewal every 120 s keeps the engine's
-// lease alive. The dev fixture page swaps the source and the clock (`setGraphSource`, `setGraphClock`).
+// lease alive. The dev fixture page swaps the source (`setGraphSource`) and the clock (`clock.ts` `setGraphClock`).
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentGraphChanged } from '@/rpc/bindings/event.agent_2egraph.output'
 import type { GraphCursor } from '@/rpc/bindings/method.agent.input'
@@ -9,7 +9,8 @@ import { useSupported } from '@/rpc/capabilities'
 import { graphRequirements } from '../requirements'
 import { useConnection } from '@/store/connection'
 import { onTopic } from '@/store/sessions'
-import { applyDelta, cursorOf, type GraphState, mergeSnapshot } from './reducer'
+import { noteEngineTime } from './clock'
+import { applyDelta, cursorOf, type GraphState, mergeSnapshot, settleSnapshot } from './reducer'
 import { type TtlPrefs, windowMs } from './ttl'
 
 export type GraphSource = {
@@ -19,21 +20,14 @@ export type GraphSource = {
 
 const RENEW_MS = 120_000
 const INCLUDE_DEBOUNCE_MS = 1000
+/** Deltas held while a snapshot is in flight; past it the next snapshot is a full one. */
+const BUFFER_CAP = 500
 
 let override: GraphSource | null = null
-let clock: () => number = Date.now
 
 /** Dev fixture only: replace the RPC source (null restores it). */
 export function setGraphSource(s: GraphSource | null): void {
   override = s
-}
-/** Dev fixture only: the clock the region's TTL reads (null restores `Date.now`). */
-export function setGraphClock(fn: (() => number) | null): void {
-  clock = fn ?? Date.now
-}
-/** The region's `now`. */
-export function graphNow(): number {
-  return clock()
 }
 
 /**
@@ -66,7 +60,8 @@ export function useAgentGraph(ttl: TtlPrefs, include: readonly string[], active:
   args.current = { window, include }
   // The 207 `patchEvent` rule: one call in flight; asks meanwhile collapse into one follow-up (full wins over cursor).
   // `gen` counts activations: a reply to a call from an earlier one is dropped, and no call starts while inactive.
-  const run = useRef({ state: null as GraphState | null, pending: false, again: null as null | 'full' | 'cursor', on: false, gen: 0 })
+  // `buffer` holds deltas that arrived while a call was in flight (review U3).
+  const run = useRef({ state: null as GraphState | null, pending: false, again: null as null | 'full' | 'cursor', on: false, gen: 0, buffer: [] as AgentGraphChanged[] })
   const snapshot = useRef<(full: boolean) => void>(() => undefined)
   snapshot.current = (full: boolean) => {
     const r = run.current
@@ -82,13 +77,28 @@ export function useAgentGraph(ttl: TtlPrefs, include: readonly string[], active:
       .snapshot(args.current.window, args.current.include, cursor)
       .then((s) => {
         if (gen !== r.gen) return
-        const next = mergeSnapshot(cursor ? r.state : null, s)
-        r.state = next
-        setState(next)
+        noteEngineTime(s.at_ms)
+        const merged = mergeSnapshot(cursor ? r.state : null, s)
+        // A replaced state may serve a narrower window than was asked: ask again if still needed (review U7).
+        if (merged !== r.state && !s.unchanged) asked.current.window = 0
+        const out = settleSnapshot(merged, r.buffer)
+        r.buffer = []
+        r.state = out.state
+        setState(out.state)
         setError(null)
+        if (out.resnapshot) r.again = 'full'
       })
       .catch((e: unknown) => {
-        if (gen === r.gen) setError(e instanceof Error ? e.message : String(e))
+        if (gen !== r.gen) return
+        setError(e instanceof Error ? e.message : String(e))
+        // The base did not change: the deltas buffered meanwhile apply to the state as it is.
+        if (r.state) {
+          const out = settleSnapshot(r.state, r.buffer)
+          r.state = out.state
+          setState(out.state)
+          if (out.resnapshot) r.again = 'full'
+        }
+        r.buffer = []
       })
       .finally(() => {
         r.pending = false
@@ -110,6 +120,13 @@ export function useAgentGraph(ttl: TtlPrefs, include: readonly string[], active:
     if (r.pending) r.again = 'full'
     else snapshot.current(true)
     const off = source.subscribe((ev) => {
+      noteEngineTime(ev.at_ms)
+      // Review U3: while a snapshot is in flight its reply decides the base; the delta is applied after it.
+      if (r.pending) {
+        if (r.buffer.length < BUFFER_CAP) r.buffer.push(ev)
+        else r.again = 'full'
+        return
+      }
       const out = applyDelta(r.state, ev)
       if (out.state !== r.state) {
         r.state = out.state
@@ -127,6 +144,7 @@ export function useAgentGraph(ttl: TtlPrefs, include: readonly string[], active:
       r.on = false
       r.gen += 1
       r.again = null
+      r.buffer = []
     }
   }, [enabled, source])
 

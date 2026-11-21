@@ -31,10 +31,32 @@ export function fromSnapshot(s: AgentGraph): GraphState {
   }
 }
 
-/** A reply to a renewal: `unchanged` → `state` itself; else fromSnapshot(s). */
+/**
+ * A snapshot reply. `unchanged` → `state` (with the reply's window, review U7); a reply older than `state` (earlier
+ * epoch, or same epoch and lower seq: deltas applied while it was in flight) → `state` (review U3); else fromSnapshot(s).
+ */
 export function mergeSnapshot(state: GraphState | null, s: AgentGraph): GraphState {
-  if (s.unchanged && state) return state
+  if (state && (s.unchanged || s.epoch_ms < state.epoch || (s.epoch_ms === state.epoch && s.seq < state.seq)))
+    return state.window === s.window_ms || !s.unchanged ? state : { ...state, window: s.window_ms }
   return fromSnapshot(s)
+}
+
+/**
+ * Review U3: deltas that arrived while a snapshot was in flight, applied after it. Those of the snapshot's epoch with a
+ * higher seq go through applyDelta (a gap still asks for a re-snapshot); one of a later epoch asks for a re-snapshot;
+ * older epochs are dropped.
+ */
+export function settleSnapshot(state: GraphState, buffered: readonly AgentGraphChanged[]): { state: GraphState; resnapshot: boolean } {
+  let cur = state
+  let resnapshot = false
+  for (const ev of buffered) {
+    if (ev.epoch_ms > cur.epoch) resnapshot = true
+    if (ev.epoch_ms !== cur.epoch || ev.seq <= cur.seq) continue
+    const out = applyDelta(cur, ev)
+    if (out.state) cur = out.state
+    resnapshot ||= out.resnapshot
+  }
+  return { state: cur, resnapshot }
 }
 
 /** One delta in order; `resnapshot` asks the caller for a full `agent_graph` (no state, new epoch, gap or resync). */

@@ -2,7 +2,7 @@
 import { expect, test } from 'vitest'
 import type { AgentGraphChanged } from '@/rpc/bindings/event.agent_2egraph.output'
 import { GRAPH_FIXTURE, GRAPH_FIXTURE_DELTAS as D } from './fixture'
-import { applyDelta, cursorOf, fromSnapshot, type GraphState, mergeSnapshot } from './reducer'
+import { applyDelta, cursorOf, fromSnapshot, type GraphState, mergeSnapshot, settleSnapshot } from './reducer'
 
 const d = (i: number): AgentGraphChanged => D[i] as AgentGraphChanged
 const step = (s: GraphState, i: number): GraphState => {
@@ -73,6 +73,32 @@ test('no state → re-snapshot; an unchanged renewal keeps the state itself; a f
   expect(full.nodes.size).toBe(40)
   expect(mergeSnapshot(null, GRAPH_FIXTURE).seq).toBe(7)
   expect(cursorOf(null)).toBeNull()
+})
+
+test('review U3/U7: a reply older than the state is dropped; an unchanged one carries its window', () => {
+  const s0 = fromSnapshot(GRAPH_FIXTURE)
+  const s2 = step(step(s0, 0), 1)
+  // A renewal answered at seq 7 while deltas 8 and 9 were applied: no rollback.
+  expect(mergeSnapshot(s2, GRAPH_FIXTURE)).toBe(s2)
+  // An earlier epoch is dropped too; a later one replaces.
+  expect(mergeSnapshot(s2, { ...GRAPH_FIXTURE, epoch_ms: GRAPH_FIXTURE.epoch_ms - 1, seq: 99 })).toBe(s2)
+  expect(mergeSnapshot(s2, { ...GRAPH_FIXTURE, epoch_ms: GRAPH_FIXTURE.epoch_ms + 1, seq: 0 }).seq).toBe(0)
+  const wider = mergeSnapshot(s2, { ...GRAPH_FIXTURE, unchanged: true, nodes: [], edges: [], window_ms: s2.window + 1 })
+  expect([wider.window, wider.nodes]).toEqual([s2.window + 1, s2.nodes])
+})
+
+test('review U3: deltas buffered while a snapshot was in flight apply after it, older ones skipped', () => {
+  const snap = fromSnapshot(GRAPH_FIXTURE)
+  const s1 = step(snap, 0)
+  // Delta 0 is already in the snapshot (seq 8 reply); 1 and 2 arrived during the call.
+  const atEight = mergeSnapshot(null, { ...GRAPH_FIXTURE, seq: 8, nodes: [...s1.nodes.values()], edges: [...s1.edges.values()] })
+  const out = settleSnapshot(atEight, [d(0), d(1), d(2)])
+  expect([out.state.seq, out.resnapshot]).toEqual([10, false])
+  // A gap among them still asks for a re-snapshot; a later epoch does too.
+  expect(settleSnapshot(atEight, [d(2)]).resnapshot).toBe(true)
+  expect(settleSnapshot(atEight, [{ ...d(1), epoch_ms: GRAPH_FIXTURE.epoch_ms + 1 }]).resnapshot).toBe(true)
+  // An older epoch is ignored.
+  expect(settleSnapshot(atEight, [{ ...d(1), epoch_ms: GRAPH_FIXTURE.epoch_ms - 1 }])).toEqual({ state: atEight, resnapshot: false })
 })
 
 test('pulses are capped at PULSE_KEEP, newest kept', () => {
