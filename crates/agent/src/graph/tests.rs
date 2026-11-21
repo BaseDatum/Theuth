@@ -516,24 +516,14 @@ fn reply_cursor_children_lease_and_prune() {
 #[test]
 fn observed_state_is_the_harness_view_unless_approval() {
     let o = observed_meta(ObservedState::Running);
-    assert_eq!(
-        observed_row_state(Some(&o), AgentState::Idle),
-        AgentState::Running
-    );
+    assert_eq!(observed_state(&o, &AgentState::Idle), AgentState::Running);
     let a = AgentState::Approval {
         tool: "bash".into(),
     };
-    assert_eq!(observed_row_state(Some(&o), a.clone()), a);
+    assert_eq!(observed_state(&o, &a), a);
     assert_eq!(
-        observed_row_state(
-            Some(&observed_meta(ObservedState::Failed)),
-            AgentState::Idle
-        ),
+        observed_state(&observed_meta(ObservedState::Failed), &AgentState::Idle),
         AgentState::Error
-    );
-    assert_eq!(
-        observed_row_state(None, AgentState::Running),
-        AgentState::Running
     );
 }
 
@@ -694,54 +684,139 @@ async fn engine(name: &str) -> (crate::TestDir, Runtime, Store, ActorRef<Agents>
     (scratch, rt, store, Agents::spawn(a))
 }
 
-/// Review 1: a later call with a wider window than the seed's re-seeds (a new epoch) and serves the older trees;
-/// a narrower call is then answered from the wider model.
+/// A later `agent_graph` asking a wider window than the seed read re-seeds: the older tree appears, in a new epoch.
 #[tokio::test]
-async fn a_wider_window_reseeds_with_the_older_trees() {
-    let (_scratch, rt, store, agents) = engine("graph-wider").await;
-    let (recent, old) = (SessionId::new(), SessionId::new());
-    for s in [recent, old] {
+async fn wider_window_reads_older_trees() {
+    let scratch = crate::TestDir::new("graph-wider");
+    let rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let a = crate::supervisor::bare_agents(rt.clone(), None, false).await;
+    let store = a.store.clone();
+    let agents = Agents::spawn(a);
+    let (fresh, old) = (SessionId::new(), SessionId::new());
+    for s in [fresh, old] {
         store
             .create_session(s, "m", None, None, None)
             .await
             .unwrap();
     }
     store
-        .upsert_last_events(&[(old, now_ms() - 3 * 24 * H)])
+        .upsert_last_events(&[(old, now_ms() - 3 * H)])
         .await
         .unwrap();
     let graph = Graph::spawn_with_mailbox(
         Graph::new(rt.clone(), store.clone(), agents),
         runtime::subscriber_mailbox(),
     );
-    let snap = |window_ms, cursor| Snapshot {
-        window_ms,
+    let ask = |window_ms: u64, cursor: Option<GraphCursor>| Snapshot {
+        window_ms: Some(window_ms),
         include: vec![],
         cursor,
     };
     let ids =
         |g: &AgentGraph| -> HashSet<String> { g.nodes.iter().map(|n| n.id.clone()).collect() };
-    let day = graph.ask(snap(None, None)).await.unwrap();
-    assert!(ids(&day).contains(&recent.to_string()));
-    assert!(!ids(&day).contains(&old.to_string()));
-    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    let week = graph.ask(snap(Some(7 * 24 * H), None)).await.unwrap();
-    assert!(ids(&week).contains(&old.to_string()), "the wider read");
-    assert_eq!(week.window_ms, 7 * 24 * H);
-    assert!(week.epoch_ms > day.epoch_ms, "a new activation");
-    let narrow = graph
-        .ask(snap(
-            None,
-            Some(GraphCursor {
-                epoch_ms: week.epoch_ms,
-                seq: week.seq,
-            }),
-        ))
-        .await
-        .unwrap();
-    assert!(narrow.unchanged && narrow.epoch_ms == week.epoch_ms);
+
+    let first = graph.ask(ask(H, None)).await.unwrap();
+    assert!(ids(&first).contains(&fresh.to_string()));
+    assert!(
+        !ids(&first).contains(&old.to_string()),
+        "outside the 1 h window"
+    );
+    let cursor = GraphCursor {
+        epoch_ms: first.epoch_ms,
+        seq: first.seq,
+    };
+    // Same or narrower window with a current cursor: unchanged, no re-read.
+    let same = graph.ask(ask(H / 2, Some(cursor))).await.unwrap();
+    assert!(same.unchanged);
+
+    let wide = graph.ask(ask(4 * H, Some(cursor))).await.unwrap();
+    assert!(!wide.unchanged);
+    assert!(wide.epoch_ms > first.epoch_ms, "a new epoch");
+    assert_eq!(wide.window_ms, 4 * H);
+    assert!(
+        ids(&wide).contains(&old.to_string()),
+        "the older tree is read"
+    );
+    assert!(ids(&wide).contains(&fresh.to_string()));
 }
 
+/// `Agents::peer_changed` (the publisher every send / delivery / reply path calls) fills `from`, `to` and `result`
+/// from the stored exchange, for a normal message and a child's final result, to both local parties.
+#[tokio::test]
+async fn peer_changed_fills_ends_and_result() {
+    use crate::store::communication::AcceptExchange;
+    let scratch = crate::TestDir::new("graph-peer-changed");
+    let rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let a = crate::supervisor::bare_agents(rt.clone(), None, false).await;
+    let (p, c) = (SessionId::new(), SessionId::new());
+    a.store
+        .create_session(p, "m", None, None, None)
+        .await
+        .unwrap();
+    a.store
+        .create_session(c, "m", Some(p), Some("kid"), None)
+        .await
+        .unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sub = PeerSeen::spawn(PeerSeen(seen.clone()));
+    rt.subscribe::<PeerSeen, PeerMessageChanged>(&sub).await;
+    let (sp, sc) = (format!("session:{p}"), format!("session:{c}"));
+    let accept = |sender: &str,
+                  recipient: &str,
+                  from: SessionId,
+                  to: SessionId,
+                  request_id: Option<&str>| {
+        let store = a.store.clone();
+        let (sender, recipient, request_id) = (
+            sender.to_owned(),
+            recipient.to_owned(),
+            request_id.map(str::to_owned),
+        );
+        async move {
+            store
+                .accept_exchange(&AcceptExchange {
+                    sender: &sender,
+                    recipient: &recipient,
+                    sender_session: Some(from),
+                    recipient_session: Some(to),
+                    request_id: request_id.as_deref(),
+                    reply_to: None,
+                    request_scope: None,
+                    generation: 1,
+                    body: "hi",
+                })
+                .await
+                .unwrap()
+        }
+    };
+    let message = accept(&sp, &sc, p, c, Some("r1")).await;
+    let result = accept(&sc, &sp, c, p, Some("result:t1")).await;
+    a.peer_changed(&message).await;
+    a.peer_changed(&result).await;
+    let got = settle(&seen, 4).await;
+    let of = |id: Uuid| -> Vec<&PeerMessageChanged> { got.iter().filter(|e| e.id == id).collect() };
+
+    let m = of(message.id);
+    assert_eq!(
+        m.iter().map(|e| e.session).collect::<HashSet<_>>(),
+        HashSet::from([p, c]),
+        "both local parties"
+    );
+    for e in &m {
+        assert_eq!(
+            (e.from.as_str(), e.to.as_str(), e.result),
+            (sp.as_str(), sc.as_str(), false)
+        );
+    }
+    let r = of(result.id);
+    assert_eq!(r.len(), 2);
+    for e in &r {
+        assert_eq!(
+            (e.from.as_str(), e.to.as_str(), e.result),
+            (sc.as_str(), sp.as_str(), true)
+        );
+    }
+}
 /// Review 2: only real activity moves the clock; renames, model and owner changes and deletion do not.
 #[test]
 fn metadata_events_do_not_move_the_clock() {

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::store::Store;
-use crate::supervisor::observed_row_state;
+use crate::supervisor::observed_state;
 use crate::{
     ActivityOf, AgentEvent, AgentInfo, AgentState, Agents, ListActivity, ListSessions,
     ObservedMeta, ObservedState, PeerDelivered, PeerMessageChanged, PeerMessageState,
@@ -694,7 +694,7 @@ fn node_of(
     };
     let outcome = match &s.observed {
         Some(o) => {
-            activity.state = observed_row_state(Some(o), activity.state.clone());
+            activity.state = observed_state(o, &activity.state);
             observed_outcome(o)
         }
         None if s.running => None,
@@ -1016,7 +1016,7 @@ impl Model {
         }
         if let Some(o) = observed {
             n.kind = GraphNodeKind::Observed;
-            n.activity.state = observed_row_state(Some(o), n.activity.state.clone());
+            n.activity.state = observed_state(o, &n.activity.state);
             n.outcome = observed_outcome(o);
             n.observed = Some(o.clone());
         }
@@ -1254,7 +1254,7 @@ impl Model {
             if let Some(a) = activity.get(&sid) {
                 let mut a = a.clone();
                 if let Some(o) = &n.observed {
-                    a.state = observed_row_state(Some(o), a.state.clone());
+                    a.state = observed_state(o, &a.state);
                 }
                 if matches!(a.state, AgentState::Running) && n.observed.is_none() {
                     n.outcome = None;
@@ -1603,6 +1603,10 @@ pub struct Graph {
     seed_generation: u64,
     adoptions: Adoptions,
     flushing: bool,
+    /// The model epoch the flush in flight began on.
+    flush_epoch: u64,
+    /// The epoch of the last model built: the next one must be later.
+    last_epoch: u64,
     again: bool,
 }
 
@@ -1623,6 +1627,8 @@ impl Graph {
             seed_generation: 0,
             adoptions: Adoptions::default(),
             flushing: false,
+            flush_epoch: 0,
+            last_epoch: 0,
             again: false,
         }
     }
@@ -2175,7 +2181,10 @@ impl Message<Seeded> for Graph {
                     self.start_seed(window, include, seeding.waiters, &me, now);
                     return;
                 }
-                self.model = Some(Model::build(seed, m.now, m.window, &m.include));
+                let mut model = Model::build(seed, m.now, m.window, &m.include);
+                model.epoch_ms = model.epoch_ms.max(self.last_epoch + 1);
+                self.last_epoch = model.epoch_ms;
+                self.model = Some(model);
                 for b in seeding.buffered {
                     match b {
                         Buffered::Agent(ev) => self.apply_agent(*ev, &me, now),
@@ -2220,6 +2229,7 @@ impl Message<FlushTick> for Graph {
         let batch = model.begin_flush(now);
         let ids = batch.sessions(model);
         self.flushing = true;
+        self.flush_epoch = model.epoch_ms;
         let (store, agents, me) = (
             self.store.clone(),
             self.agents.clone(),
@@ -2265,7 +2275,12 @@ impl Message<Flushed> for Graph {
         let Some(model) = self.model.as_mut() else {
             return;
         };
-        let ev = model.finish_flush(m.batch, &m.activity, &m.waits, &self.last_event, now);
+        // A flush begun on a model a wider-window re-seed replaced: its batch names the old model's state.
+        let ev = if model.epoch_ms == self.flush_epoch {
+            model.finish_flush(m.batch, &m.activity, &m.waits, &self.last_event, now)
+        } else {
+            None
+        };
         let again = std::mem::take(&mut self.again).then(|| {
             model.flush_at = None;
             model.schedule(now)

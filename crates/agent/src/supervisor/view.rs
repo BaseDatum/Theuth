@@ -15,7 +15,7 @@ use tools::{Retention, Risk};
 use super::{Agents, first_line};
 use crate::communication::PeerAddress;
 use crate::store::Store;
-use crate::{AgentInfo, AgentState, ObservedState, SessionActivity, SessionSummary};
+use crate::{AgentInfo, AgentState, ObservedMeta, ObservedState, SessionActivity, SessionSummary};
 
 /// What roster and activity replies read from [`Agents`].
 pub(super) struct View {
@@ -117,6 +117,26 @@ pub(super) fn effective_model(row: &SessionSummary, requested: Option<&String>) 
     }
 }
 
+/// 141 §5.2: a watch-only child's state from the harness, unless an
+/// unanswered permission ask keyed to it makes it `Approval` (`live`).
+pub(crate) fn observed_state(o: &ObservedMeta, live: &AgentState) -> AgentState {
+    if matches!(live, AgentState::Approval { .. }) {
+        return live.clone();
+    }
+    match o.state {
+        ObservedState::Running => AgentState::Running,
+        ObservedState::RequiresAction => AgentState::Approval {
+            tool: o.description.clone().unwrap_or_default(),
+        },
+        ObservedState::Failed => AgentState::Error,
+        ObservedState::Cancelled => AgentState::Cancelled,
+        ObservedState::Pending
+        | ObservedState::Idle
+        | ObservedState::Completed
+        | ObservedState::Unknown => AgentState::Idle,
+    }
+}
+
 impl View {
     /// The store `id`'s tree lives in (as [`Agents::store_for`]).
     fn store_for(&self, id: SessionId) -> &Store {
@@ -189,37 +209,13 @@ impl View {
         parent: Option<SessionId>,
         names: &HashMap<SessionId, &str>,
     ) -> AgentState {
-        observed_row_state(
-            row.observed.as_ref(),
-            self.state_of(row.id, parent, names),
-        )
+        let live = self.state_of(row.id, parent, names);
+        match &row.observed {
+            Some(o) => observed_state(o, &live),
+            None => live,
+        }
     }
-}
 
-/// 141 §5.2 table: a watch-only child's state from the harness, unless `live` is an unanswered permission ask
-/// (`Approval`, like anyone's); a row without harness facts keeps `live`. Also the graph's (208).
-pub(crate) fn observed_row_state(
-    observed: Option<&crate::ObservedMeta>,
-    live: AgentState,
-) -> AgentState {
-    match observed {
-        Some(o) if !matches!(live, AgentState::Approval { .. }) => match o.state {
-            ObservedState::Running => AgentState::Running,
-            ObservedState::RequiresAction => AgentState::Approval {
-                tool: o.description.clone().unwrap_or_default(),
-            },
-            ObservedState::Failed => AgentState::Error,
-            ObservedState::Cancelled => AgentState::Cancelled,
-            ObservedState::Pending
-            | ObservedState::Idle
-            | ObservedState::Completed
-            | ObservedState::Unknown => AgentState::Idle,
-        },
-        _ => live,
-    }
-}
-
-impl View {
     /// The latest of `id`'s last input, last stop and turn start.
     fn last_active(&self, id: SessionId) -> Option<DateTime<Utc>> {
         [

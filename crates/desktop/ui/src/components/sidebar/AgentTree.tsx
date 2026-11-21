@@ -39,6 +39,18 @@ export function ago(iso: string | null, now = Date.now()): string {
   return `${Math.floor(s / 86400)}d`
 }
 
+/** The sidebar's state colour (shared with the Attention graph, 208 §8.5): running tinted and pulsing, approval and
+ * awaiting in the approval tone, errors in danger, everything else muted. */
+export function stateTone(state: AgentState): string {
+  return state.state === 'running'
+    ? cn(backgroundColors.subagents.text, 'animate-pulse')
+    : state.state === 'approval' || state.state === 'awaiting'
+      ? backgroundColors.approval.text
+      : state.state === 'error'
+        ? 'text-danger'
+        : 'text-fg-tertiary'
+}
+
 /** One subtree row: harness glyph · name · cap badge · cost · jobs · model · age, a link to the session's chat. Shared with
  * the Agents page (100). The glyph says which harness runs the child (`harnessGlyph`; theuth's own is the bot), tinted
  * while it runs, warns on approval and errors, muted otherwise; its title is `<harness> · <model>`. The short model sits
@@ -92,16 +104,7 @@ export const SubagentRow = memo(function SubagentRow({
         </>
       ) : (
         <span
-          className={cn(
-            'flex w-4 shrink-0 justify-center',
-            row.state.state === 'running'
-              ? cn(backgroundColors.subagents.text, 'animate-pulse')
-              : row.state.state === 'approval' || row.state.state === 'awaiting'
-                ? backgroundColors.approval.text
-                : row.state.state === 'error'
-                  ? 'text-danger'
-                  : 'text-fg-tertiary',
-          )}
+          className={cn('flex w-4 shrink-0 justify-center', stateTone(row.state))}
           title={`${row.agent || 'theuth'} · ${row.model || 'model unknown'}`}
         >
           <HarnessGlyph agent={row.agent} className="size-3.5" />
