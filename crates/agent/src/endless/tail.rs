@@ -47,6 +47,10 @@ pub fn turn_starts(history: &[(i64, ChatMessage)]) -> Vec<usize> {
 pub struct Trim {
     /// First history index kept (`> 0`).
     pub keep_from: usize,
+    /// 201 R1-6: `[start, end)` before `keep_from` also kept, in front of the
+    /// kept rounds — the current turn's opening user message(s) an in-turn
+    /// trim must not cut. `None` for a turn-boundary trim.
+    pub opener: Option<(usize, usize)>,
     /// Bytes cut.
     pub cut: u64,
     /// Bytes kept.
@@ -76,6 +80,7 @@ pub fn trim(history: &[(i64, ChatMessage)], low: u64, high: u64, cold: bool) -> 
     let kept = bytes(&history[keep_from..]);
     Some(Trim {
         keep_from,
+        opener: None,
         cut: total - kept,
         kept,
     })
@@ -110,23 +115,38 @@ pub fn round_starts(history: &[(i64, ChatMessage)]) -> Vec<usize> {
 
 /// 201 §4.3 "In turn" (P5): cut the oldest whole rounds until the rest is
 /// at most `low` bytes ([`round_starts`]: never index 0, never past the
-/// current round's start, so the last round is always kept). `None` when
-/// there is nothing before the current round to cut.
+/// current round's start, so the last round is always kept). The current
+/// turn's opening user message(s) stay in front of the kept rounds (R1-6)
+/// and count toward `low`. `None` when there is nothing before the current
+/// round to cut.
 pub fn trim_rounds(history: &[(i64, ChatMessage)], low: u64) -> Option<Trim> {
     let starts = round_starts(history);
     let last = *starts.last()?;
+    let opener = turn_starts(history).last().map(|&s| {
+        let n = history[s..]
+            .iter()
+            .take_while(|(_, m)| m.role == ChatRole::User)
+            .count();
+        (s, s + n)
+    });
+    // The opener counts only when a cut lands after it; one at index 0 that
+    // reaches the cut leaves nothing to cut.
+    let opener_at = |k: usize| opener.filter(|&(_, e)| e <= k);
+    let floor = opener.filter(|&(s, _)| s == 0).map_or(0, |(_, e)| e);
+    let head = |k: usize| opener_at(k).map_or(0, |(s, e)| bytes(&history[s..e]));
     let keep_from = starts
         .iter()
         .copied()
-        .find(|&s| s > 0 && bytes(&history[s..]) <= low)
+        .find(|&s| s > floor && head(s) + bytes(&history[s..]) <= low)
         .unwrap_or(last);
-    if keep_from == 0 {
+    if keep_from == 0 || keep_from <= floor {
         return None;
     }
     let total = bytes(history);
-    let kept = bytes(&history[keep_from..]);
+    let kept = head(keep_from) + bytes(&history[keep_from..]);
     Some(Trim {
         keep_from,
+        opener: opener_at(keep_from),
         cut: total - kept,
         kept,
     })
@@ -285,10 +305,55 @@ mod tests {
         r.push((99, reply("partial")));
         r.push((100, user("recovery: continue")));
         assert_eq!(*round_starts(&r).last().unwrap(), r.len() - 2);
-        // Only the current round: nothing before it to cut.
+        // Only the opening input before the current round: cutting it is
+        // not allowed (R1-6), so nothing is cut.
         let one: Vec<(i64, ChatMessage)> =
             vec![(0, user("t0")), (1, call("c")), (2, result("c", &big))];
-        assert_eq!(trim_rounds(&one, 0).map(|t| t.keep_from), Some(1));
+        assert_eq!(trim_rounds(&one, 0), None);
         assert_eq!(trim_rounds(&one[1..], 0), None);
+    }
+
+    /// 201 R1-6: an in-turn trim keeps the current turn's opening user
+    /// message(s) in front of the kept rounds; the earlier turns and the
+    /// cut rounds behind the opener go.
+    #[test]
+    fn a_round_trim_keeps_the_turns_opening_input() {
+        let big = "x".repeat(4_000);
+        let mut v = vec![
+            user("t0"),
+            reply(&big),
+            user("t1: the request"),
+            user("<ledger>notes</ledger>"),
+        ];
+        for k in 0..5 {
+            let id = format!("c{k}");
+            v.push(call(&id));
+            v.push(result(&id, &big));
+        }
+        let h: Vec<(i64, ChatMessage)> = v
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| (i as i64, m))
+            .collect();
+        let current = h.len() - 2;
+        for low in [0, 5_000, 9_000, 13_000] {
+            let t = trim_rounds(&h, low).expect("rounds to cut");
+            assert!(t.keep_from > 4, "low {low}: {t:?}");
+            assert_eq!(t.opener, Some((2, 4)), "low {low}");
+            assert_eq!(t.cut + t.kept, bytes(&h));
+            assert!(t.kept <= low || t.keep_from == current, "low {low}: {t:?}");
+        }
+        // A second in-turn trim after the first: the opener now at index 0
+        // stays again.
+        let t = trim_rounds(&h, 0).unwrap();
+        let mut again: Vec<(i64, ChatMessage)> = h[2..4].to_vec();
+        again.extend_from_slice(&h[t.keep_from..]);
+        again.push((90, call("c9")));
+        again.push((91, result("c9", &big)));
+        let t2 = trim_rounds(&again, 0).unwrap();
+        assert_eq!(t2.opener, Some((0, 2)));
+        assert_eq!(t2.keep_from, again.len() - 2);
+        // Only the opener before the current round: nothing to cut.
+        assert_eq!(trim_rounds(&again[..4], 0), None);
     }
 }

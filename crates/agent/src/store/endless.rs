@@ -56,6 +56,9 @@ pub struct GenerationRow {
     /// 201 §9 (P6a): the ledger snapshot frozen with this generation
     /// (`None`: the ledger was off at its trim).
     pub ledger: Option<String>,
+    /// 201 R1-2: when the generation started (the cold rule after a
+    /// restart); `None` on write = now.
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 /// One `endless_units` row (the unit without its text).
@@ -109,6 +112,10 @@ pub(crate) async fn delete_endless_in(
         "DELETE FROM endless_calls WHERE session_id = ?",
         "DELETE FROM endless_nodes WHERE session_id = ?",
         "DELETE FROM endless_units WHERE session_id = ?",
+        // 201 R1-1: the frozen views and the state ledger hold the
+        // conversation's substance; they go with the session.
+        "DELETE FROM endless_generations WHERE session_id = ?",
+        "DELETE FROM endless_ledger WHERE session_id = ?",
     ] {
         sqlx::query(sql).bind(sid).execute(&mut *conn).await?;
     }
@@ -325,14 +332,14 @@ impl Store {
     /// 201 §4.3 (P2): the session's newest generation row, if any.
     pub async fn endless_generation(&self, id: SessionId) -> anyhow::Result<Option<GenerationRow>> {
         let mut conn = self.read.acquire().await?;
-        let row: Option<(i64, i64, i64, String, Option<String>)> = sqlx::query_as(
-            "SELECT n, t_cut, first_seq, blocks, ledger FROM endless_generations \
+        let row: Option<(i64, i64, i64, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT n, t_cut, first_seq, blocks, ledger, created_at FROM endless_generations \
              WHERE session_id = ? ORDER BY n DESC LIMIT 1",
         )
         .bind(id.to_string())
         .fetch_optional(&mut *conn)
         .await?;
-        let Some((n, t_cut, first_seq, blocks, ledger)) = row else {
+        let Some((n, t_cut, first_seq, blocks, ledger, created_at)) = row else {
             return Ok(None);
         };
         let blocks: Vec<(String, bool)> = serde_json::from_str(&blocks)?;
@@ -342,6 +349,9 @@ impl Store {
             first_seq,
             blocks,
             ledger,
+            created_at: DateTime::parse_from_rfc3339(&created_at)
+                .ok()
+                .map(|t| t.with_timezone(&Utc)),
         }))
     }
 
@@ -386,10 +396,17 @@ impl Store {
         .bind(g.t_cut as i64)
         .bind(g.first_seq)
         .bind(serde_json::to_string(&g.blocks)?)
-        .bind(Utc::now().to_rfc3339())
+        .bind(g.created_at.unwrap_or_else(Utc::now).to_rfc3339())
         .bind(g.ledger.as_deref())
         .execute(&mut *tx)
         .await?;
+        // 201 R1-8: only the newest generation is ever read; older frozen
+        // views (up to 256 KB each) go in the same transaction.
+        sqlx::query("DELETE FROM endless_generations WHERE session_id = ? AND n < ?")
+            .bind(id.to_string())
+            .bind(i64::from(g.n))
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await
     }
 
@@ -1070,5 +1087,85 @@ mod tests {
                 .is_empty(),
             "delete trigger"
         );
+    }
+
+    async fn rows(store: &Store, table: &str, id: SessionId) -> i64 {
+        let mut conn = store.read.acquire().await.unwrap();
+        // Table names are this test's literals.
+        let sql = format!("SELECT COUNT(*) FROM {table} WHERE session_id = ?");
+        sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+            .bind(id.to_string())
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap()
+    }
+
+    fn gen_row(n: u32) -> GenerationRow {
+        GenerationRow {
+            n,
+            t_cut: u64::from(n) * 10,
+            first_seq: i64::from(n) * 10,
+            blocks: vec![(format!("view {n}"), true)],
+            ledger: Some("{}".into()),
+            created_at: None,
+        }
+    }
+
+    /// 201 R1-8: a new generation row replaces the older ones of the session.
+    #[tokio::test]
+    async fn generation_put_keeps_only_the_newest() {
+        let (store, _dir) = fresh().await;
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        store.endless_generation_put(id, &gen_row(1)).await.unwrap();
+        store.endless_generation_put(id, &gen_row(2)).await.unwrap();
+        assert_eq!(rows(&store, "endless_generations", id).await, 1);
+        assert_eq!(store.endless_generation(id).await.unwrap().unwrap().n, 2);
+    }
+
+    /// 201 R1-1: deleting a session leaves no row of it in any endless table.
+    #[tokio::test]
+    async fn delete_session_removes_every_endless_row() {
+        let (store, _dir) = fresh().await;
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        store
+            .endless_units_put(
+                id,
+                &[UnitRow {
+                    i: 0,
+                    seq: 1,
+                    part: 0,
+                    kind: Kind::User,
+                    size: 10,
+                    turn: 0,
+                }],
+            )
+            .await
+            .unwrap();
+        store.endless_generation_put(id, &gen_row(1)).await.unwrap();
+        store
+            .endless_ledger_put(id, "{\"goals\":[]}")
+            .await
+            .unwrap();
+        assert_eq!(rows(&store, "endless_generations", id).await, 1);
+        assert_eq!(rows(&store, "endless_ledger", id).await, 1);
+        store.delete_session(id).await.unwrap();
+        for table in [
+            "endless_units",
+            "endless_nodes",
+            "endless_calls",
+            "endless_generations",
+            "endless_ledger",
+            "endless_lines_fts",
+        ] {
+            assert_eq!(rows(&store, table, id).await, 0, "{table}");
+        }
     }
 }

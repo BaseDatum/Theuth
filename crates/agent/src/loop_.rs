@@ -526,6 +526,55 @@ impl Message<Draining> for Session {
     }
 }
 
+/// 201 R1-2: the last successful main model call of the session — when it
+/// returned, on which transport, and whether its endpoint is local —
+/// recorded whether or not the provider reported usage.
+#[derive(Clone, Copy, Debug)]
+pub struct LastRequest {
+    /// When the call returned.
+    pub at: Instant,
+    /// Its transport (the cache lifetime follows it).
+    pub transport: Transport,
+    /// Served from a local endpoint ([`crate::endless::compactor::is_local`]).
+    pub local: bool,
+}
+
+/// 201 R1-2: how long a prompt cache stays warm after a call — the setting
+/// when non-zero; else 300 s on Anthropic, 3,600 s on other transports, and
+/// never cold on time alone on a local endpoint (`None`).
+pub fn cache_lifetime(cold_after_secs: u32, transport: Transport, local: bool) -> Option<Duration> {
+    match cold_after_secs {
+        0 if local => None,
+        0 if transport == Transport::Anthropic => Some(Duration::from_secs(300)),
+        0 => Some(Duration::from_secs(3_600)),
+        s => Some(Duration::from_secs(u64::from(s))),
+    }
+}
+
+/// 201 R1-2: the cache counts as cold — the last call is older than its
+/// lifetime. With no known call (a new session, the first turn after a
+/// restart) it is warm unless the generation in force started (`gen_at`)
+/// longer ago than the lifetime on `here` (the session model's transport
+/// and locality).
+pub fn cache_cold(
+    cold_after_secs: u32,
+    last: Option<LastRequest>,
+    gen_at: Option<chrono::DateTime<chrono::Utc>>,
+    here: (Transport, bool),
+) -> bool {
+    match last {
+        Some(l) => cache_lifetime(cold_after_secs, l.transport, l.local)
+            .is_some_and(|life| l.at.elapsed() > life),
+        None => gen_at.is_some_and(|at| {
+            cache_lifetime(cold_after_secs, here.0, here.1).is_some_and(|life| {
+                (chrono::Utc::now() - at)
+                    .to_std()
+                    .is_ok_and(|age| age > life)
+            })
+        }),
+    }
+}
+
 /// Per-session state that crosses turns (07 §11). Moved into the running
 /// turn and handed back in [`TurnDone`]; rebuilt from the store after an
 /// undo/redo or a [`RestartTurn`] cut (design doc 29 §4.2).
@@ -544,6 +593,9 @@ pub struct SessionState {
     pub pressure_sent: bool,
     /// When the last call returned and its prompt size, for miss detection (07 §7).
     pub prev_call: Option<(Instant, u32)>,
+    /// 201 R1-2: the last successful main call (the cold-cache rule); kept
+    /// across [`SessionState::install`], `None` on a fresh actor.
+    pub last_request: Option<LastRequest>,
     /// The committed plan (07 §9, 47 §5.1): the store's latest visible
     /// snapshot, mutated only through an atomic append with a tool batch.
     pub todos: Vec<todo::Todo>,
@@ -642,6 +694,7 @@ impl SessionState {
             baseline: String::new(),
             pressure_sent: false,
             prev_call: None,
+            last_request: None,
             todos: Vec::new(),
             todo_version: 0,
             todo_touched_round: 0,
@@ -698,6 +751,9 @@ impl SessionState {
         self.skills = skills;
         self.used = used;
         self.prev_call = None;
+        // R1-3: the installed frame is the store's (every row since the last
+        // epoch): the next endless turn re-derives the generation's tail.
+        self.tail_gen = None;
         self.pressure_sent = false;
         (used, skills_changed)
     }
@@ -4388,20 +4444,36 @@ impl Turn {
     }
 
     /// 201 §11 (P6b): the cache counts as cold — the same rule as the
-    /// turn-boundary trim (`cold_after_secs`, 0 = the transport's 300 s).
+    /// turn-boundary trim ([`cache_cold`]); no generation age here, so with
+    /// no known call it is warm.
     fn cache_cold(&self) -> bool {
         let secs = self
             .shared
             .endless
             .as_ref()
             .map_or(0, |e| e.config().cold_after_secs);
-        let after = match secs {
-            0 => Duration::from_secs(300),
-            s => Duration::from_secs(u64::from(s)),
-        };
-        self.state
-            .prev_call
-            .is_none_or(|(at, _)| at.elapsed() > after)
+        let anywhere = (Transport::Plain, false);
+        cache_cold(secs, self.state.last_request, None, anywhere)
+    }
+
+    /// 201 R1-2: `current` is served from a local endpoint — the
+    /// compactor's locality test ([`crate::endless::compactor::is_local`]).
+    fn model_local(&self, current: &Current) -> bool {
+        let base = crate::backend::target_for(&current.model, &self.shared.auth)
+            .map(|t| t.endpoint.base_url().to_owned());
+        crate::endless::compactor::is_local(&current.model, base.as_deref())
+    }
+
+    /// 201 R1-2: the session model's transport and locality, for the cold
+    /// rule when no call is known yet (an unresolvable transport counts as
+    /// Anthropic's, the shortest lifetime).
+    async fn cache_here(&mut self) -> (Transport, bool) {
+        let current = self.model();
+        let transport = self
+            .transport(&current)
+            .await
+            .unwrap_or(Transport::Anthropic);
+        (transport, self.model_local(&current))
     }
 
     /// 201 §11 (P6b): this turn keeps `pin`'s tool part — the endless frame
@@ -4938,8 +5010,9 @@ impl Turn {
             tail_bytes,
             trimmed,
         } = start;
-        let note =
-            (render.folded > 0 && max_bytes < self.view_wanted()).then(|| view_note(render.folded));
+        // R1-9: the G10 note once, at the trim that rendered the view small.
+        let note = (trimmed && render.folded > 0 && max_bytes < self.view_wanted())
+            .then(|| view_note(render.folded));
         let blocks: Vec<String> = render.blocks.iter().map(|b| b.text.clone()).collect();
         let (changed_from_byte, blocks_hit) = match &self.state.last_view {
             Some(prev) => (
@@ -5083,6 +5156,18 @@ impl Turn {
                 endless.start_generation(id, None, view_max, false).await?
             }
         };
+        // R1-4: D11 put a head in place mid-generation (this process, or
+        // before a restart: the tail then lacks the generation's rows up to
+        // the cut): the next turn starts a new one. Decided before the head
+        // is cleared.
+        let forced = !fresh
+            && self.state.head.is_some()
+            && (self.state.tail_gen == Some(g.n)
+                || self
+                    .state
+                    .history
+                    .first()
+                    .is_none_or(|(seq, _)| *seq > g.first_seq));
         if self.state.tail_gen != Some(g.n) {
             // A fresh process or a state rebuilt from the store: the tail is
             // the generation's rows, read back as they were sent.
@@ -5090,17 +5175,16 @@ impl Turn {
             self.state.history.retain(|(seq, _)| *seq >= g.first_seq);
         }
         let cfg = endless.config();
-        let cold_after = match cfg.cold_after_secs {
-            // The transport's cache lifetime: 5 min on Anthropic, the same elsewhere.
-            0 => Duration::from_secs(300),
-            s => Duration::from_secs(u64::from(s)),
+        let here = match self.state.last_request {
+            Some(_) => (Transport::Plain, false),
+            None => self.cache_here().await,
         };
-        let cold = self
-            .state
-            .prev_call
-            .is_none_or(|(at, _)| at.elapsed() > cold_after);
-        // D11 put a head in place mid-generation: the next turn starts a new one.
-        let forced = self.state.head.is_some();
+        let cold = cache_cold(
+            cfg.cold_after_secs,
+            self.state.last_request,
+            Some(g.created_at),
+            here,
+        );
         // 201 (P5): `endless_fold` / `/compact` asked for a trim now (or
         // while a turn ran): down to the low mark even under the high mark.
         let asked = asked || endless.take_trim_request(id);
@@ -5272,10 +5356,21 @@ impl Turn {
             }
         };
         endless.describe_left(id, left_from, g.first_seq, self.vision_model());
-        self.state.history.drain(..cut.keep_from);
+        // R1-6: the turn's opening input stays in front of the kept rounds.
+        let removed = match cut.opener {
+            Some((s, e)) => {
+                self.state.history.drain(e..cut.keep_from);
+                self.state.history.drain(..s);
+                cut.keep_from - (e - s)
+            }
+            None => {
+                self.state.history.drain(..cut.keep_from);
+                cut.keep_from
+            }
+        };
         self.state.tail_gen = Some(g.n);
         self.since = self.state.history.len();
-        self.hint_since = self.hint_since.saturating_sub(cut.keep_from);
+        self.hint_since = self.hint_since.saturating_sub(removed);
         self.generation_reset().await;
         let tail_bytes = u32::try_from(cut.kept).unwrap_or(u32::MAX);
         endless.turn_opened(id, tail_bytes, allowance as u64);
@@ -6403,6 +6498,9 @@ impl Turn {
         if let Some(w) = self.peer_work.as_mut() {
             w.deadline = tokio::time::Instant::now() + w.within;
         }
+        // R1-5: a resumed chat runs on the endless frame as a fresh turn
+        // does (a no-op for epochs and meeting sessions).
+        self.endless_start().await;
         self.drive(turn, Some(plan)).await
     }
 
@@ -7271,6 +7369,12 @@ impl Turn {
             .as_ref()
             .filter(|u| u.prompt_tokens.is_some_and(|p| p > 0));
         self.state.system_tokens = self.system_tokens();
+        // R1-2: the cold-cache clock runs on every successful main call.
+        self.state.last_request = Some(LastRequest {
+            at: Instant::now(),
+            transport,
+            local: self.model_local(&current),
+        });
         if reported.is_none() {
             self.state.used = self.est_frame().saturating_add(est_reply(&end));
         }
@@ -8163,7 +8267,7 @@ impl Turn {
         let endless = self
             .shared
             .endless
-            .as_ref()
+            .clone()
             .ok_or("fractal context is not available in this process")?;
         let current = endless.mode(session).await.map_err(|e| format!("{e:#}"))?;
         if current == mode {
@@ -8180,29 +8284,38 @@ impl Turn {
             MemoryMode::Epochs => endless.generation(session).await.ok().flatten(),
             MemoryMode::Endless => None,
         };
+        // R1-14: the head is written before `set_mode_within` saves the
+        // `epochs` mode (a crash between leaves no headless classic session);
+        // R1-12: from `framed()`, so the ledger snapshot stays in it.
+        let mut early = None;
+        if let Some(g) = &frozen {
+            let text = crate::endless::pump::off_head(n, &g.framed().text());
+            let folded = self.install_view_head(n, &text, Some(g.first_seq)).await?;
+            early = Some((text, folded));
+        }
         // R1-7: the `/endless off` head fits the session model's turn budget.
         let allowance = self.view_allowance();
         let mut r = endless
             .set_mode_within(session, mode, n, filter, allowance)
             .await
             .map_err(|e| format!("{e:#}"))?;
-        if let Some(g) = &frozen
-            && r.head.is_some()
-        {
-            r.head = Some(crate::endless::pump::off_head(n, &g.render.text()));
-        }
+        let folded = match early {
+            Some((text, folded)) => {
+                r.head = Some(text);
+                Some(folded)
+            }
+            None => None,
+        };
         match mode {
             MemoryMode::Endless => {
                 let est = crate::endless_ext::backfill_estimate(&r.memory);
                 tracing::info!(session = %session, ?filter, units = est.units, eta_secs = est.eta_secs, usd = est.usd, model = %est.model, "context_edit: endless on");
             }
             MemoryMode::Epochs => {
-                let folded = match &r.head {
-                    Some(text) => {
-                        self.install_view_head(n, text, frozen.map(|g| g.first_seq))
-                            .await?
-                    }
-                    None => 0,
+                let folded = match (folded, &r.head) {
+                    (Some(folded), _) => folded,
+                    (None, Some(text)) => self.install_view_head(n, text, None).await?,
+                    (None, None) => 0,
                 };
                 self.state.last_view = None;
                 tracing::info!(session = %session, epoch = n, folded, head = r.head.is_some(), "context_edit: endless off");
@@ -10451,6 +10564,57 @@ mod tests {
             assert!(msg.contains(line), "{msg}");
         }
         assert!(!msg.contains("\"ok\""), "{msg}");
+    }
+
+    /// 201 R1-2: the cache lifetime follows the transport of the last call
+    /// (300 s Anthropic, 3,600 s elsewhere, never on time alone when local);
+    /// a set value holds everywhere; with no known call the cache is warm
+    /// unless the generation in force is older than the lifetime.
+    #[test]
+    fn the_cold_rule_follows_transport_locality_and_known_calls() {
+        let ago = |secs: u64| Instant::now() - Duration::from_secs(secs);
+        let call = |secs, transport, local| {
+            Some(LastRequest {
+                at: ago(secs),
+                transport,
+                local,
+            })
+        };
+        let (a, o) = (Transport::Anthropic, Transport::OpenAiLike);
+        let here = (a, false);
+        assert!(!cache_cold(0, call(299, a, false), None, here));
+        assert!(cache_cold(0, call(301, a, false), None, here));
+        assert!(!cache_cold(0, call(600, o, false), None, here));
+        assert!(cache_cold(0, call(3_601, o, false), None, here));
+        assert!(!cache_cold(0, call(7_200, o, true), None, here));
+        assert!(cache_cold(60, call(61, o, true), None, here));
+        // No call known: a brand-new session or the first turn after a restart.
+        let old = chrono::Utc::now() - chrono::Duration::seconds(600);
+        let new = chrono::Utc::now() - chrono::Duration::seconds(10);
+        assert!(!cache_cold(0, None, None, here));
+        assert!(!cache_cold(0, None, Some(new), here));
+        assert!(cache_cold(0, None, Some(old), here));
+        assert!(!cache_cold(0, None, Some(old), (o, false)));
+        assert!(!cache_cold(0, None, Some(old), (a, true)));
+    }
+
+    /// 201 R1-3: an installed frame (TrimTurn, remove_context) is the
+    /// store's, every row since the last epoch: the generation's tail is
+    /// re-derived at the next endless turn (rows under the frozen view are
+    /// not carried verbatim as well). The cold clock is kept.
+    #[test]
+    fn install_drops_the_tail_generation() {
+        let mut state = SessionState::resume(0, None, vec![(1, ChatMessage::user("a"))]);
+        state.tail_gen = Some(4);
+        let last = LastRequest {
+            at: Instant::now(),
+            transport: Transport::Anthropic,
+            local: false,
+        };
+        state.last_request = Some(last);
+        state.install(0, None, vec![(1, ChatMessage::user("a"))]);
+        assert_eq!(state.tail_gen, None);
+        assert!(state.last_request.is_some());
     }
 
     /// 48 §4.3: a context edit swaps the frame but not the run-local state,

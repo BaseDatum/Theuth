@@ -3136,6 +3136,8 @@ pub struct Generation {
     /// page-fault count of the `endless: trim` line); not persisted, 0 when
     /// read back from the store.
     pub zooms: u32,
+    /// 201 R1-2: when the generation started (stored with it).
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl Generation {
@@ -3156,6 +3158,7 @@ impl Generation {
             },
             ledger: r.ledger,
             zooms: 0,
+            created_at: r.created_at.unwrap_or_else(chrono::Utc::now),
         }
     }
 
@@ -3171,6 +3174,7 @@ impl Generation {
                 .map(|b| (b.text.clone(), b.mark))
                 .collect(),
             ledger: self.ledger.clone(),
+            created_at: Some(self.created_at),
         }
     }
 
@@ -3208,8 +3212,14 @@ pub(crate) async fn generation(
         return Ok(None);
     };
     let g = Generation::of_row(row);
-    state.live.lock().current_gen = Some(g.clone());
-    Ok(Some(g))
+    Ok(Some(fill_gen_cache(&mut state.live.lock().current_gen, g)))
+}
+
+/// 201 R1-7: a generation read from the store fills the cache only while it
+/// is still empty — a `start_generation` that landed meanwhile set a newer
+/// one, which wins. Returns the generation in force.
+fn fill_gen_cache(slot: &mut Option<Generation>, g: Generation) -> Generation {
+    slot.get_or_insert(g).clone()
 }
 
 /// 201 §4.3 (P2): start a generation whose tail begins at message
@@ -3260,10 +3270,14 @@ pub(crate) async fn start_generation(
             render,
             ledger: None,
             zooms,
+            created_at: chrono::Utc::now(),
         }
     };
     // 201 §9 (P6a): a re-render under the same number keeps its snapshot.
     g.ledger = if again {
+        if let Some(p) = &prev_gen {
+            g.created_at = p.created_at;
+        }
         prev_gen.and_then(|p| p.ledger)
     } else {
         ledger_at_trim(&state, session, g.n).await?
@@ -4786,5 +4800,32 @@ mod tests {
             resolve_profile(Profile::Standard, &small, true).0,
             Profile::Standard
         );
+    }
+
+    /// 201 R1-7: a store read racing `start_generation` never writes the
+    /// older generation back over the newer cached one.
+    #[test]
+    fn a_stored_generation_fills_only_an_empty_cache() {
+        let gen_of = |n: u32| Generation {
+            n,
+            t_cut: 0,
+            first_seq: 0,
+            render: ViewRender {
+                blocks: Vec::new(),
+                settled: true,
+                unbuilt: 0,
+                folded: 0,
+            },
+            ledger: None,
+            zooms: 0,
+            created_at: chrono::Utc::now(),
+        };
+        let mut slot = None;
+        assert_eq!(fill_gen_cache(&mut slot, gen_of(1)).n, 1);
+        assert_eq!(slot.as_ref().map(|g| g.n), Some(1));
+        // `start_generation` set 3 while the read of 2 was in flight.
+        let mut slot = Some(gen_of(3));
+        assert_eq!(fill_gen_cache(&mut slot, gen_of(2)).n, 3);
+        assert_eq!(slot.as_ref().map(|g| g.n), Some(3));
     }
 }
