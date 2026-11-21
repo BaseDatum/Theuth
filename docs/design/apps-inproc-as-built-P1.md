@@ -498,3 +498,15 @@ Commit `cacd530b7` unless noted. Results of the verification commands are at the
 
 ## Review fixes: verification
 
+- `bun test` (packages/apps): 233 pass / 0 fail, 26 files (+ `select-at.test.ts`, + the stub test).
+  `tsc --noEmit`: exit 0. `just apps-bundle-check`: ok; `check_apps_bundle` from `app-parser-env.sh`: ok.
+  `bash -n` on app-parser-env.sh, release-s3.sh, install-macos.sh, package-linux.sh, package-macos.sh,
+  apps-bundle-hash.sh: ok; `just --list`: ok. package-windows.ps1: read only, unverified.
+- `cargo test -p app-js`: unit `23 passed; 0 failed`, golden `1 passed`, mermaid_golden `1 passed` (corpus
+  147 exact + 1 engine wording with the rebuilt mermaid bundle). The first run after the m1 change failed 5
+  tests: a re-run queued job was still judged by its *enqueue* epoch and had its output replaced by the
+  offender's error; fixed in `95f7518a8` (judge by the epoch the job started in), and the `restart` test now
+  restarts while the busy job is provably running.
+- `cargo test -p app -p update`: app unit `54 passed; 0 failed` (incl. `the_bundle_embeds_this_binarys_library_hash`,
+  `timeout_text_names_the_isolates_own_deadline`; `build.rs` ran), publish `1 passed`, update `5 passed`.
+- `cargo check -p theuth` and `cargo clippy …`: see the final report (lock contention at the time of writing).
