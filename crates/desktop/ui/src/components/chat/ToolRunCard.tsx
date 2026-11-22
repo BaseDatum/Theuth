@@ -1,12 +1,14 @@
 import { ChevronRight, Wrench } from 'lucide-react'
-import { resultLine } from '@/lib/describe'
+import { codeDetails, resultLine } from '@/lib/describe'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import { ToolSpinner } from './Indicators'
 import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
 import { isBoardCreate } from './BoardCard'
+import { Attachments } from './Attachments'
 import { Message, PromptCard } from './Message'
+import { Source } from './MessageTool'
 import { PeerGroup } from './PeerGroup'
 import { toolKey, useDisclosed } from './disclosure'
 import { labelKind } from './peer-identity'
@@ -34,7 +36,28 @@ const foldsPeer = (e: Entry | undefined): e is Peer => e?.kind === 'peer' && !e.
 /** A job's result (`job j4`, `j4 · cmd · exit 0`): read from the sender, like `MessagePeer` does, never from the body. */
 const isJob = (e: Entry | undefined): e is Peer => foldsPeer(e) && labelKind(e.origin?.from ?? e.from) === 'job'
 /** A row a tool run is made of: a tool call that is no deliverable and carries no restart note, or a job result. */
-const foldsTool = (e: Entry | undefined): boolean => isJob(e) || (e?.kind === 'tool' && !isDeliverable(e) && !e.restart)
+const foldsTool = (e: Entry | undefined): boolean => isJob(e) || (e?.kind === 'tool' && !isDeliverable(e) && !e.restart && !isPythonCall(e))
+
+/** A `python` call (without a restart note) heads its own group: the call, then the runtime calls its cell made (call ids `<id>.<n>`). */
+const isPythonCall = (e: Entry | undefined): e is Tool => e?.kind === 'tool' && e.name === 'python' && !e.restart
+/** A group is a `Run` that starts with a python call; the first entry of any other run is a job result or a tool that is not `python`. */
+export const isPythonGroup = (run: Run): boolean => isPythonCall(run[0])
+
+/** The python call at `at` with the calls its cell made, which directly follow it. Deliverables the cell made (`show`, `ask_user`, …) are not
+ * in the group: they stay plain entries after it, never folded. `end` is the index after the last call consumed. */
+function pythonGroup(entries: Entry[], at: number): { group: Run; after: Entry[]; end: number } {
+  const call = entries[at] as Tool
+  const group: Run = [call]
+  const after: Entry[] = []
+  let end = at + 1
+  while (end < entries.length) {
+    const e = entries[end]
+    if (e?.kind !== 'tool' || !e.callId.startsWith(`${call.callId}.`)) break
+    ;(isDeliverable(e) ? after : group).push(e)
+    end++
+  }
+  return { group, after, end }
+}
 
 const NONE: ReadonlySet<string> = new Set()
 
@@ -45,12 +68,25 @@ const NONE: ReadonlySet<string> = new Set()
  * fold the block the reader is watching into a collapsed card. 183 §12.4: a call carrying a restart note splits one too,
  * so its EngineRestartCard stays in view. Sky 2026-11-10: two or more adjacent peer cards from one sender fold into one
  * run too (`PeerGroup`); a row removed from context stays its own tombstone. Sky 2026-11-10: a job result (`isJob`) is a
- * tool card here: it folds into the tool run around it and never into a `PeerGroup`. */
-export function foldRuns(entries: Entry[], pinned: ReadonlySet<string> = NONE): (Entry | Run)[] {
+ * tool card here: it folds into the tool run around it and never into a `PeerGroup`.
+ * A `python` call is never part of such a run: it and the calls its cell made are one group (`PythonGroup`), whether or not
+ * `fold` is on (the preference only governs the generic runs). */
+export function foldRuns(entries: Entry[], pinned: ReadonlySet<string> = NONE, fold = true): (Entry | Run)[] {
   const out: (Entry | Run)[] = []
   let i = 0
   while (i < entries.length) {
     const e = entries[i] as Entry
+    if (isPythonCall(e)) {
+      const { group, after, end } = pythonGroup(entries, i)
+      out.push(group, ...after)
+      i = end
+      continue
+    }
+    if (!fold) {
+      out.push(e)
+      i++
+      continue
+    }
     if (foldsTool(e)) {
       let end = i + 1
       let last = i
@@ -108,8 +144,34 @@ export function summarize(run: Run): Summary {
   return { text: parts.join(' · '), running: false, failed: mostlyFailed, hint }
 }
 
-/** A folded run: consecutive peer cards from one sender (`PeerGroup`) or tool calls and job results (`ToolRun`). */
+export type GroupSummary = Summary & { /** Calls the cell made: the cards under the header. */ calls: number }
+
+/** Header of a python group: `3 tools` (the calls its cell made, deliverables shown beside the group not counted), `running · 3 tools` while the cell runs,
+ * then the duration and the failed calls. The word "python" never appears. A cell that errors itself is red and shows its first error line (`hint`). */
+export function summarizeGroup(group: Run): GroupSummary {
+  const call = group[0] as Tool
+  const calls = group.slice(1).filter((e): e is Tool => e.kind === 'tool')
+  const done = calls.filter((t) => t.result)
+  const failed = done.filter((t) => t.result?.isError)
+  const running = !call.interrupted && (call.pending || !call.result)
+  const last = done[done.length - 1]
+  const lastLine = last?.result ? `${last.result.isError ? '✗' : '✓'} ${resultLine(last.result.output)}` : null
+  const crashed = call.result?.isError === true
+  const hint = crashed && call.result ? `✗ ${resultLine(call.result.output)}` : lastLine
+  const count = calls.length ? `${calls.length} tool${calls.length === 1 ? '' : 's'}` : running ? '' : 'no tools'
+  const parts = [running ? ['running', count].filter(Boolean).join(' · ') : count]
+  if (!running && call.startedAt !== undefined && call.finishedAt !== undefined) {
+    const ms = call.finishedAt - call.startedAt
+    parts.push(ms < 60_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 60_000)} min`)
+  }
+  if (failed.length) parts.push(`${failed.length} failed (${failed.map((t) => t.name).join(', ')})`)
+  if (crashed) parts.push('code failed')
+  return { text: parts.join(' · '), running, failed: crashed || failed.length > done.length - failed.length, hint, calls: calls.length }
+}
+
+/** A folded run: consecutive peer cards from one sender (`PeerGroup`), a python call with its runtime calls (`PythonGroup`), or tool calls and job results (`ToolRun`). */
 export function ToolRunCard({ run, prompts, session }: { run: Run; prompts: Prompt[] | null; session: string }) {
+  if (isPythonGroup(run)) return <PythonGroup group={run} prompts={prompts} session={session} />
   return run[0]?.kind === 'peer' && !isJob(run[0]) ? <PeerGroup run={run as Peer[]} session={session} /> : <ToolRun run={run} prompts={prompts} session={session} />
 }
 
@@ -143,6 +205,56 @@ function ToolRun({ run, prompts, session }: { run: Run; prompts: Prompt[] | null
         </button>
       </div>
       {open && run.map((e) => <Message key={e.id} entry={e} prompts={null} session={session} />)}
+      {prompts?.map((p) => <PromptCard key={p.id} prompt={p} />)}
+    </>
+  )
+}
+
+/** One card for a `python` call and the runtime calls its cell made, in three modes: collapsed (`> N tools`), expanded
+ * (`v N tools`: a collapsed `> code` row, then the calls' own cards below), code expanded (`v code`: the source, the
+ * cell's output when it failed or the source is open). Open state is in the disclosure store (`run|<call id>`, `code|<call id>`).
+ * Until the user toggles the group it is open whenever a member's own card is, like `ToolRun`. A failed call or a cell that errors keeps the
+ * header red and, collapsed, its first line visible; prompts waiting on a call render under the header either way. */
+function PythonGroup({ group, prompts, session }: { group: Run; prompts: Prompt[] | null; session: string }) {
+  const call = group[0] as Tool
+  const calls = group.slice(1)
+  const member = useDisclosed((open) => calls.some((e) => e.kind === 'tool' && open[toolKey(e.callId)] === true))
+  const [open, setOpen] = useDisclosure(disclosureKey('run', call.callId), member)
+  const [codeOpen, setCodeOpen] = useDisclosure(disclosureKey('code', call.callId))
+  const { text, running, failed, hint } = summarizeGroup(group)
+  const source = codeDetails(call.name, call.args)
+  const { result } = call
+  return (
+    <>
+      <div className={cn('my-2 min-w-0 rounded-xl border bg-layer-1 px-4 py-3 text-sm', failed ? 'border-danger-border' : 'border-border-subtle')}>
+        <button type="button" className="flex w-full min-w-0 flex-col gap-1 text-left" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <div className={cn('flex items-center gap-2 font-medium', failed && 'text-danger')}>
+            <ChevronRight className={cn('size-4 shrink-0 transition-transform', open && 'rotate-90')} />
+            <Wrench className="size-3.5 shrink-0 text-fg-secondary" />
+            <span className="min-w-0 truncate">{text}</span>
+            {running && <ToolSpinner />}
+          </div>
+          {hint && !open && (
+            <div className={cn('w-full truncate pl-6 font-mono text-xs', hint.startsWith('✗') ? 'text-danger' : 'text-success')}>{hint}</div>
+          )}
+        </button>
+        {open && source && (
+          <div className="mt-2 pl-6">
+            <button type="button" className="flex w-full items-center gap-2 text-left font-medium" aria-expanded={codeOpen} onClick={() => setCodeOpen(!codeOpen)}>
+              <ChevronRight className={cn('size-4 shrink-0 transition-transform', codeOpen && 'rotate-90')} />
+              <span>code</span>
+            </button>
+            {codeOpen && <Source code={source.code} language={source.language} />}
+          </div>
+        )}
+        {open && result && (result.isError || codeOpen) && result.output && (
+          <pre className={cn('mt-2 ml-6 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap', result.isError && 'text-danger')}>
+            {result.output}
+          </pre>
+        )}
+        {result && <Attachments files={result.files} occurrences={call.context?.attachments} session={session} active={call.context?.active} className="mt-2" />}
+      </div>
+      {open && calls.map((e) => <Message key={e.id} entry={e} prompts={null} session={session} />)}
       {prompts?.map((p) => <PromptCard key={p.id} prompt={p} />)}
     </>
   )

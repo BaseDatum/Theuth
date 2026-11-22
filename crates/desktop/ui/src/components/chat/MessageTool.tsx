@@ -26,7 +26,7 @@ type Tool = Extract<Entry, { kind: 'tool' }>
 
 
 /** Source shown only inside an expanded tool card. */
-function Source({ code, language }: { code: string; language: string }) {
+export function Source({ code, language }: { code: string; language: string }) {
   return (
     <Streamdown
       mode="static"
