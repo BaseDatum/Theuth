@@ -153,6 +153,7 @@ pub(crate) const PROFILE_UNSUPPORTED: &str =
 /// [`PROFILE_UNSUPPORTED`], with the same declared types.
 #[cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
 pub(crate) mod profile {
+    use std::collections::{BTreeMap, HashSet};
     use std::fmt;
     use std::time::{Duration, Instant};
 
@@ -466,20 +467,83 @@ pub(crate) mod profile {
             .map(|u| u.origin().ascii_serialization())
     }
 
-    /// `web_profile_write`'s result (209 §4.5): counts only. `skipped` counts the cookies of `set` that
-    /// were not set ([`Unsettable`], or `NSHTTPCookie` refused the properties).
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+    /// `web_profile_write`'s result (209 §4.5): counts only, never a value.
+    /// - `set`, `removed`: cookies WebKit reported set and store cookies it reported deleted.
+    /// - `skipped`: cookies of `set` not set ([`Unsettable`], or `NSHTTPCookie` refused the properties).
+    /// - `storage_applied`: per snapshot origin (as [`web_origin`] spells it), the number of open tiles of
+    ///   that origin whose localStorage took it; `0` when no tile of the origin was open or it left it.
+    /// - `timed_out`: WebKit had not reported everything by the deadline; the counts are what it had
+    ///   reported until then, and the store may hold a part of the write: read it again.
+    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
     pub(crate) struct Written {
         pub(crate) set: usize,
         pub(crate) removed: usize,
         pub(crate) skipped: usize,
+        pub(crate) storage_applied: BTreeMap<String, usize>,
+        pub(crate) timed_out: bool,
+    }
+
+    /// Which store cookies a write deletes (209 §4.5).
+    /// - A cookie of `set` replaces the store cookie of the same key **and the same scope** only: a
+    ///   host-only `sid` on `example.com` and a domain-wide `sid` on `.example.com` are two cookies, and
+    ///   setting one leaves the other. Deleting it first also removes a same-scope copy WebKit spells
+    ///   differently (a domain-wide cookie it holds without the dot).
+    /// - A key of `remove` has no scope: it deletes the key in every scope. A key that `set` also carries
+    ///   is a replacement, so only that scope goes.
+    #[derive(Debug, Default)]
+    pub(crate) struct Doom {
+        replaced_host_only: HashSet<CookieKey>,
+        replaced_wide: HashSet<CookieKey>,
+        removed: HashSet<CookieKey>,
+    }
+
+    impl Doom {
+        /// `set` already mapped by [`native_set`] (its dot is the scope); `remove` as the UI sent it.
+        pub(crate) fn new(set: &[NativeSet], remove: &[CookieKey]) -> Self {
+            let mut doom = Doom::default();
+            for n in set {
+                let key = jar_key(&n.name, &n.domain, &n.path);
+                if n.domain.starts_with('.') {
+                    doom.replaced_wide.insert(key);
+                } else {
+                    doom.replaced_host_only.insert(key);
+                }
+            }
+            doom.removed = remove
+                .iter()
+                .map(|k| jar_key(&k.name, &k.domain, &k.path))
+                .filter(|k| !doom.replaced_host_only.contains(k) && !doom.replaced_wide.contains(k))
+                .collect();
+            doom
+        }
+
+        /// Whether the store cookie of `NSHTTPCookie` `name`, `domain`, `path` and the [`PROPERTIES`] of
+        /// its `properties` goes: its key by [`jar_key`], its scope by [`scope`], as `web_profile_read`
+        /// reports them.
+        pub(crate) fn dooms(
+            &self,
+            name: &str,
+            domain: &str,
+            path: &str,
+            properties: &[(String, String)],
+        ) -> bool {
+            let key = jar_key(name, domain, path);
+            if self.removed.contains(&key) {
+                return true;
+            }
+            let (_, host_only, _) = scope(name, domain, properties);
+            if host_only {
+                self.replaced_host_only.contains(&key)
+            } else {
+                self.replaced_wide.contains(&key)
+            }
+        }
     }
 
     /// The cookie half of a [`WritePlan`], applied on the main thread by `apple_cookies::write`.
     pub(crate) struct CookieWrite {
         pub(crate) set: Vec<NativeSet>,
-        /// Normalised by [`jar_key`]'s rule; every cookie of the store with one of these keys is deleted.
-        pub(crate) remove: std::collections::HashSet<CookieKey>,
+        pub(crate) doom: Doom,
         /// Cookies of `set` already refused by [`native_set`].
         pub(crate) skipped: usize,
     }
@@ -494,21 +558,38 @@ pub(crate) mod profile {
         pub(crate) entries: String,
     }
 
+    impl StorageApply {
+        /// The named arguments of [`APPLY_STORAGE_SCRIPT`], in the order the script names them.
+        pub(crate) fn arguments(&self) -> [(&'static str, &str); 2] {
+            [("origin", &self.origin), ("entries", &self.entries)]
+        }
+    }
+
+    /// The snapshots of `storage` for a tile whose top-level page is at `url`: those of its origin
+    /// ([`web_origin`]); none for a page that is not http(s).
+    pub(crate) fn storage_for<'a>(storage: &'a [StorageApply], url: &str) -> Vec<&'a StorageApply> {
+        let Some(origin) = web_origin(url) else {
+            return Vec::new();
+        };
+        storage.iter().filter(|s| s.origin == origin).collect()
+    }
+
     /// What `web_profile_write` does, worked out off the main thread (209 §4.5).
     pub(crate) struct WritePlan {
         pub(crate) cookies: CookieWrite,
         pub(crate) storage: Vec<StorageApply>,
     }
 
-    /// Map `set` with [`native_set`] (a refusal is counted, logged by reason, never by value), normalise
-    /// `remove`, and keep the snapshots whose origin is http(s), keyed by [`web_origin`].
+    /// Map `set` with [`native_set`] (a refusal is counted, logged by reason, never by value), work out
+    /// what goes ([`Doom`]), and keep the snapshots whose origin is http(s), keyed by [`web_origin`]; a
+    /// second snapshot of one origin replaces the first.
     pub(crate) fn plan_write(
         set: Vec<Cookie>,
         remove: Vec<CookieKey>,
         storage: Vec<Storage>,
     ) -> WritePlan {
         let mut skipped = 0;
-        let set = set
+        let set: Vec<NativeSet> = set
             .into_iter()
             .filter_map(|c| {
                 native_set(c)
@@ -519,31 +600,106 @@ pub(crate) mod profile {
                     .ok()
             })
             .collect();
-        let remove = remove
-            .iter()
-            .map(|k| jar_key(&k.name, &k.domain, &k.path))
-            .collect();
-        let storage = storage
-            .into_iter()
-            .filter_map(|s| {
-                let Some(origin) = web_origin(&s.origin) else {
-                    tracing::debug!(origin = %s.origin, "web profile write: storage origin skipped");
-                    return None;
-                };
-                Some(StorageApply {
-                    origin,
-                    entries: serde_json::to_string(&s.local_storage).ok()?,
-                })
-            })
-            .collect();
-        WritePlan {
-            cookies: CookieWrite {
-                set,
-                remove,
-                skipped,
-            },
-            storage,
+        let doom = Doom::new(&set, &remove);
+        let mut by_origin = BTreeMap::new();
+        for s in storage {
+            let Some(origin) = web_origin(&s.origin) else {
+                tracing::debug!(origin = %s.origin, "web profile write: storage origin skipped");
+                continue;
+            };
+            if let Ok(entries) = serde_json::to_string(&s.local_storage) {
+                by_origin.insert(origin, entries);
+            }
         }
+        WritePlan {
+            cookies: CookieWrite { set, doom, skipped },
+            storage: by_origin
+                .into_iter()
+                .map(|(origin, entries)| StorageApply { origin, entries })
+                .collect(),
+        }
+    }
+
+    /// The completion count of one cookie write (209 §4.5): WebKit answers each `deleteCookie:` and
+    /// `setCookie:` by a completion handler, and the write is done once every request was made
+    /// ([`issued`](Self::issued)) and every handler ran. Each event returns `true` exactly once, when
+    /// it completes the write; a handler beyond the expected count is ignored. At the deadline the
+    /// counts reached so far are the answer ([`written`](Self::written) with `timed_out`).
+    #[derive(Debug, Default)]
+    pub(crate) struct Completion {
+        removes: usize,
+        sets: usize,
+        removed: usize,
+        set: usize,
+        skipped: usize,
+        issued: bool,
+        answered: bool,
+    }
+
+    impl Completion {
+        /// A write whose plan already refused `skipped` cookies.
+        pub(crate) fn new(skipped: usize) -> Self {
+            Completion {
+                skipped,
+                ..Completion::default()
+            }
+        }
+
+        /// The store was listed: `removes` deletions and `sets` sets will be requested, `refused`
+        /// cookies of the plan were refused by `NSHTTPCookie`.
+        pub(crate) fn start(&mut self, removes: usize, sets: usize, refused: usize) {
+            self.removes = removes;
+            self.sets = sets;
+            self.skipped += refused;
+        }
+
+        /// A deletion's handler ran.
+        pub(crate) fn removed(&mut self) -> bool {
+            self.removed = (self.removed + 1).min(self.removes);
+            self.due()
+        }
+
+        /// A set's handler ran.
+        pub(crate) fn set(&mut self) -> bool {
+            self.set = (self.set + 1).min(self.sets);
+            self.due()
+        }
+
+        /// Every request was made.
+        pub(crate) fn issued(&mut self) -> bool {
+            self.issued = true;
+            self.due()
+        }
+
+        fn due(&mut self) -> bool {
+            let due = self.issued
+                && !self.answered
+                && self.removed == self.removes
+                && self.set == self.sets;
+            self.answered |= due;
+            due
+        }
+
+        /// The counts so far; no storage.
+        pub(crate) fn written(&self, timed_out: bool) -> Written {
+            Written {
+                set: self.set,
+                removed: self.removed,
+                skipped: self.skipped,
+                storage_applied: BTreeMap::new(),
+                timed_out,
+            }
+        }
+    }
+
+    /// The error of a main-thread call that did not answer within `budget`, the time it was given.
+    pub(crate) fn timeout_message(budget: Duration) -> String {
+        let budget = if budget.subsec_millis() == 0 {
+            format!("{} s", budget.as_secs())
+        } else {
+            format!("{} ms", budget.as_millis())
+        };
+        format!("the main thread did not run the web view call within {budget}")
     }
 
     /// Body of the `callAsyncJavaScript` that applies a [`StorageApply`] in [`AGENT_WORLD`], in the main
@@ -1171,52 +1327,251 @@ pub(crate) mod profile {
                     contract("__Host-x", "a.test", false),
                     contract("", "a.test", true),
                 ],
-                vec![CookieKey {
-                    name: "old".into(),
-                    domain: ".A.test".into(),
-                    path: String::new(),
-                }],
+                vec![],
                 vec![
                     Storage {
                         origin: "https://App.Example.com:443/ignored".into(),
-                        local_storage: vec![("k".into(), "v\"".into())],
+                        local_storage: vec![("k".into(), "old".into())],
                     },
                     Storage {
                         origin: "file:///x".into(),
                         local_storage: vec![],
                     },
+                    Storage {
+                        origin: "http://mac.lan:3000".into(),
+                        local_storage: vec![],
+                    },
+                    // A second snapshot of one origin replaces the first.
+                    Storage {
+                        origin: "https://app.example.com".into(),
+                        local_storage: vec![("k".into(), "v\"".into())],
+                    },
                 ],
             );
             assert_eq!(plan.cookies.set.len(), 1);
             assert_eq!(plan.cookies.skipped, 2);
-            // A removal key matches the store's cookie whatever its dot, case or empty path.
-            assert!(plan.cookies.remove.contains(&jar_key("old", ".a.test", "")));
-            assert!(plan.cookies.remove.contains(&jar_key("old", "a.test", "/")));
-            assert!(
-                !plan
-                    .cookies
-                    .remove
-                    .contains(&jar_key("old", "a.test", "/x"))
-            );
-            assert_eq!(plan.storage.len(), 1);
-            assert_eq!(plan.storage[0].origin, "https://app.example.com");
+            let origins: Vec<&str> = plan.storage.iter().map(|s| s.origin.as_str()).collect();
+            assert_eq!(origins, ["http://mac.lan:3000", "https://app.example.com"]);
             assert_eq!(
-                serde_json::from_str::<Vec<(String, String)>>(&plan.storage[0].entries).unwrap(),
+                serde_json::from_str::<Vec<(String, String)>>(&plan.storage[1].entries).unwrap(),
                 vec![("k".to_owned(), "v\"".to_owned())]
             );
-            assert_eq!(
-                web_origin("http://mac.lan:3000/a?b").as_deref(),
-                Some("http://mac.lan:3000")
-            );
-            assert_eq!(web_origin("about:blank"), None);
+            assert_eq!(plan.storage[0].entries, "[]");
             assert_eq!(
                 serde_json::to_value(Written {
                     set: 1,
                     removed: 2,
-                    skipped: 3
+                    skipped: 3,
+                    storage_applied: [("https://a.test".to_owned(), 2)].into(),
+                    timed_out: true,
                 })
                 .unwrap(),
-                serde_json::json!({"set": 1, "removed": 2, "skipped": 3})
+                serde_json::json!({
+                    "set": 1, "removed": 2, "skipped": 3,
+                    "storage_applied": {"https://a.test": 2}, "timed_out": true
+                })
+            );
+        }
+
+        fn key(name: &str, domain: &str, path: &str) -> CookieKey {
+            CookieKey {
+                name: name.into(),
+                domain: domain.into(),
+                path: path.into(),
+            }
+        }
+
+        #[test]
+        fn profile_write_doom() {
+            let origin = |host: &str| vec![("OriginURL".to_owned(), format!("https://{host}/"))];
+            let at = |name: &str, path: &str| Cookie {
+                path: path.into(),
+                ..contract(name, "example.com", true)
+            };
+            let plan = plan_write(
+                vec![
+                    // Host-only `sid` on example.com, path `/`.
+                    contract("sid", "Example.com", true),
+                    // Domain-wide `wide` on example.com.
+                    contract("wide", "example.com", false),
+                    // `deep` on `/app` only.
+                    at("deep", "/app"),
+                    // An IP host is host-only whatever the flag says.
+                    contract("ip", "10.0.0.1", false),
+                    // Also named in `remove`: a replacement, its own scope only.
+                    contract("both", "example.com", true),
+                ],
+                vec![
+                    key("gone", ".Example.com", ""),
+                    key("both", "example.com", "/"),
+                ],
+                vec![],
+            );
+            let doom = &plan.cookies.doom;
+            // (name, NSHTTPCookie.domain, path, properties) of a store cookie → deleted?
+            let none = Vec::new();
+            for (name, domain, path, properties, want) in [
+                ("sid", "example.com", "/", &none, true),
+                ("sid", "EXAMPLE.com", "", &none, true),
+                ("sid", ".example.com", "/", &none, false),
+                ("sid", "example.com", "/", &origin("www.example.com"), false),
+                ("sid", "www.example.com", "/", &none, false),
+                ("sid", "example.com", "/x", &none, false),
+                ("wide", ".example.com", "/", &none, true),
+                ("wide", "example.com", "/", &origin("www.example.com"), true),
+                ("wide", "example.com", "/", &none, false),
+                ("deep", "example.com", "/app", &none, true),
+                ("deep", "example.com", "/", &none, false),
+                ("deep", "example.com", "/app/x", &none, false),
+                ("ip", "10.0.0.1", "/", &none, true),
+                ("ip", ".10.0.0.1", "/", &none, true),
+                ("ip", "10.0.0.2", "/", &none, false),
+                ("gone", "example.com", "/", &none, true),
+                ("gone", ".example.com", "/", &none, true),
+                ("gone", "example.com", "/app", &none, false),
+                ("gone", "a.example.com", "/", &none, false),
+                ("both", "example.com", "/", &none, true),
+                ("both", ".example.com", "/", &none, false),
+                ("other", "example.com", "/", &none, false),
+            ] {
+                assert_eq!(
+                    doom.dooms(name, domain, path, properties),
+                    want,
+                    "{name} {domain} {path} {properties:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn profile_write_completion() {
+            // Nothing to do: done once the (empty) requests are made, once.
+            let mut c = Completion::new(2);
+            c.start(0, 0, 0);
+            assert!(c.issued());
+            assert!(!c.issued());
+            assert_eq!(
+                c.written(false),
+                Written {
+                    skipped: 2,
+                    ..Written::default()
+                }
+            );
+            // One deletion: not done before the requests are all made, done at its handler.
+            let mut c = Completion::new(0);
+            c.start(1, 0, 0);
+            assert!(!c.issued());
+            assert!(c.removed());
+            assert!(!c.removed());
+            assert_eq!((c.written(false).removed, c.written(false).set), (1, 0));
+            // A handler WebKit runs before the last request is made does not finish the write.
+            let mut c = Completion::new(0);
+            c.start(0, 1, 0);
+            assert!(!c.set());
+            assert!(c.issued());
+            // n: only the last handler answers; one more is ignored.
+            let mut c = Completion::new(1);
+            c.start(2, 3, 1);
+            assert!(!c.issued());
+            let events = [c.set(), c.removed(), c.set(), c.removed(), c.set()];
+            assert_eq!(events, [false, false, false, false, true]);
+            assert!(!c.set());
+            assert_eq!(
+                c.written(false),
+                Written {
+                    set: 3,
+                    removed: 2,
+                    skipped: 2,
+                    ..Written::default()
+                }
+            );
+            // A handler never called: never done; the deadline answers what was reached.
+            let mut c = Completion::new(0);
+            c.start(1, 2, 0);
+            assert!(!c.issued());
+            assert!(!c.removed());
+            assert!(!c.set());
+            assert_eq!(
+                c.written(true),
+                Written {
+                    set: 1,
+                    removed: 1,
+                    timed_out: true,
+                    ..Written::default()
+                }
+            );
+            // The main thread never listed the store: the plan's refusals only.
+            assert_eq!(
+                Completion::new(3).written(true),
+                Written {
+                    skipped: 3,
+                    timed_out: true,
+                    ..Written::default()
+                }
+            );
+        }
+
+        #[test]
+        fn profile_write_storage_targets() {
+            let plan = plan_write(
+                vec![],
+                vec![],
+                vec![
+                    Storage {
+                        origin: "https://app.example.com".into(),
+                        local_storage: vec![("k".into(), "v".into())],
+                    },
+                    Storage {
+                        origin: "http://mac.lan:3000".into(),
+                        local_storage: vec![],
+                    },
+                ],
+            );
+            let to = |url: &str| -> Vec<&str> {
+                storage_for(&plan.storage, url)
+                    .into_iter()
+                    .map(|s| s.origin.as_str())
+                    .collect()
+            };
+            assert_eq!(
+                to("https://APP.example.com/a?b#c"),
+                ["https://app.example.com"]
+            );
+            assert_eq!(
+                to("https://app.example.com:443/"),
+                ["https://app.example.com"]
+            );
+            assert_eq!(to("http://mac.lan:3000/x"), ["http://mac.lan:3000"]);
+            for url in [
+                "https://app.example.com:8443/",
+                "http://app.example.com/",
+                "https://example.com/",
+                "http://mac.lan/",
+                "about:blank",
+                "",
+            ] {
+                assert!(to(url).is_empty(), "{url}");
+            }
+            // The script reads exactly the arguments passed, `entries` as JSON pairs.
+            let args = plan.storage[1].arguments();
+            assert_eq!(args.map(|(name, _)| name), ["origin", "entries"]);
+            assert_eq!(args[0].1, "https://app.example.com");
+            assert_eq!(
+                serde_json::from_str::<Vec<(String, String)>>(args[1].1).unwrap(),
+                vec![("k".to_owned(), "v".to_owned())]
+            );
+            assert!(APPLY_STORAGE_SCRIPT.contains("location.origin!==origin"));
+            assert!(APPLY_STORAGE_SCRIPT.contains("JSON.parse(entries)"));
+        }
+
+        #[test]
+        fn profile_timeout_names_the_budget() {
+            assert_eq!(
+                timeout_message(Duration::from_secs(5)),
+                "the main thread did not run the web view call within 5 s"
+            );
+            assert_eq!(
+                timeout_message(Duration::from_millis(200)),
+                "the main thread did not run the web view call within 200 ms"
             );
         }
     }

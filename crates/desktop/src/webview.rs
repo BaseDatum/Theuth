@@ -372,9 +372,11 @@ pub async fn web_profile_clear<R: Runtime>(caller: Webview<R>) -> Result<(), Str
     Err(PROFILE_UNSUPPORTED.to_owned())
 }
 
-/// Set `set` and delete the cookies of `remove` in the tiles' store, and apply each localStorage snapshot of
-/// `storage` to the open web views of its origin (209 §4.5, D5). Counts only; values are never logged. A
-/// loaded page keeps the cookies it has until it loads again: no view is reloaded. Never for a tile.
+/// Write into the tiles' store (209 §4.5, D5): each cookie of `set` replaces the store cookie of its key
+/// and scope, each key of `remove` goes in every scope; each localStorage snapshot of `storage` goes to
+/// the open web views of its origin. Counts only, values are never logged; when WebKit has not reported
+/// everything within `MAIN_TIMEOUT` the answer is the counts reached with `timed_out`. A loaded page
+/// keeps the cookies it has until it loads again: no view is reloaded. Never for a tile.
 #[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn web_profile_write<R: Runtime>(
@@ -388,22 +390,20 @@ pub async fn web_profile_write<R: Runtime>(
     use objc2::MainThreadMarker;
     use objc2_web_kit::WKWebView;
 
-    use crate::apple_cookies::{MAIN_TIMEOUT, apply_storage, available, write, written};
-    use crate::web_rules::profile::{plan_write, web_origin};
+    use crate::apple_cookies::{MAIN_TIMEOUT, apply_storage, available, write, writer, written};
+    use crate::web_rules::profile::{plan_write, storage_for};
     use crate::web_rules::valid_label;
 
     check_caller(caller.label(), false)?;
     available()?;
     let deadline = Instant::now() + MAIN_TIMEOUT;
     let plan = plan_write(set, remove, storage.unwrap_or_default());
+    let origins = plan.storage.iter().map(|s| s.origin.clone()).collect();
     let app = caller.app_handle().clone();
-    let (tx, rx) = sync_channel(1);
-    let cookies = plan.cookies;
+    let (cookies, wait_cookies) = writer(plan.cookies);
     app.run_on_main_thread(move || match MainThreadMarker::new() {
-        Some(mtm) => write(mtm, cookies, tx),
-        None => {
-            let _ = tx.try_send(Err("run_on_main_thread ran off the main thread".to_owned()));
-        }
+        Some(mtm) => write(mtm, cookies),
+        None => cookies.fail("run_on_main_thread ran off the main thread".to_owned()),
     })
     .map_err(|e| e.to_string())?;
     let mut pending = Vec::new();
@@ -411,11 +411,12 @@ pub async fn web_profile_write<R: Runtime>(
         if !valid_label(view.label()) {
             continue;
         }
-        let Some(origin) = view.url().ok().and_then(|u| web_origin(u.as_str())) else {
+        let Ok(url) = view.url() else {
             continue;
         };
-        for snapshot in plan.storage.iter().filter(|s| s.origin == origin) {
+        for snapshot in storage_for(&plan.storage, url.as_str()) {
             let (tx, rx) = sync_channel(1);
+            let origin = snapshot.origin.clone();
             let snapshot = snapshot.clone();
             let res = view.with_webview(move |platform| {
                 let Some(mtm) = MainThreadMarker::new() else {
@@ -428,12 +429,12 @@ pub async fn web_profile_write<R: Runtime>(
                 apply_storage(mtm, view, &snapshot, tx);
             });
             match res {
-                Ok(()) => pending.push((origin.clone(), rx)),
+                Ok(()) => pending.push((origin, rx)),
                 Err(e) => tracing::warn!(%origin, "web profile write: localStorage: {e}"),
             }
         }
     }
-    written(rx, pending, deadline).await
+    written(wait_cookies, pending, origins, deadline).await
 }
 
 /// Windows and Linux: [`PROFILE_UNSUPPORTED`], same types as on macOS.

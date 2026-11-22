@@ -63,10 +63,10 @@ use tauri::{AppHandle, Emitter, Manager, Url, Webview};
 
 use crate::apple_cookies::{
     MAIN_TIMEOUT, apply_storage, available, capture, captured, clear, data_store, read, wait,
-    watch, write, written,
+    watch, write, writer, written,
 };
 use crate::web_rules::profile::{
-    Cookie, CookieKey, Storage, Written, check_caller, plan_write, web_origin,
+    Cookie, CookieKey, Storage, Written, check_caller, plan_write, storage_for,
 };
 use crate::web_rules::{
     CLOSED_EVENT, Closed, STATE_EVENT, allowed, app_url, check_label, check_url, may_open,
@@ -884,9 +884,11 @@ pub async fn web_profile_clear(webview: Webview) -> Result<(), String> {
     clear(webview.app_handle().clone()).await
 }
 
-/// Set `set` and delete the cookies of `remove` in the tiles' store, and apply each localStorage snapshot of
-/// `storage` to the open views of its origin (209 §4.5, D5). Counts only; values are never logged. A
-/// loaded page keeps the cookies it has until it loads again: no view is reloaded. Main webview only.
+/// Write into the tiles' store (209 §4.5, D5): each cookie of `set` replaces the store cookie of its key
+/// and scope, each key of `remove` goes in every scope; each localStorage snapshot of `storage` goes to
+/// the open views of its origin. Counts only, values are never logged; when WebKit has not reported
+/// everything within [`MAIN_TIMEOUT`] the answer is the counts reached with `timed_out`. A loaded page
+/// keeps the cookies it has until it loads again: no view is reloaded. Main webview only.
 #[tauri::command]
 pub async fn web_profile_write(
     webview: Webview,
@@ -898,22 +900,18 @@ pub async fn web_profile_write(
     available()?;
     let deadline = Instant::now() + MAIN_TIMEOUT;
     let plan = plan_write(set, remove, storage.unwrap_or_default());
-    let (tx, rx) = sync_channel(1);
+    let origins = plan.storage.iter().map(|s| s.origin.clone()).collect();
+    let (cookies, wait_cookies) = writer(plan.cookies);
+    let storage = plan.storage;
     let pending = on_main(&webview, move |mtm, _| {
-        write(mtm, plan.cookies, tx);
+        write(mtm, cookies);
         let mut pending = Vec::new();
         VIEWS.with_borrow(|views| {
             for entry in views.values() {
-                let origin = entry
-                    .view
-                    .url()
-                    .and_then(|u| u.absoluteString())
-                    .and_then(|s| web_origin(&s.to_string()));
-                for snapshot in plan
-                    .storage
-                    .iter()
-                    .filter(|s| Some(&s.origin) == origin.as_ref())
-                {
+                let Some(url) = entry.view.url().and_then(|u| u.absoluteString()) else {
+                    continue;
+                };
+                for snapshot in storage_for(&storage, &url.to_string()) {
                     let (tx, rx) = sync_channel(1);
                     apply_storage(mtm, &entry.view, snapshot, tx);
                     pending.push((snapshot.origin.clone(), rx));
@@ -923,7 +921,7 @@ pub async fn web_profile_write(
         Ok(pending)
     })
     .await?;
-    written(rx, pending, deadline).await
+    written(wait_cookies, pending, origins, deadline).await
 }
 
 /// The top-level origin's localStorage of `label`, read in the isolated world (209 §4.5). Main webview

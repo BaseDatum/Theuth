@@ -7,9 +7,10 @@
 //!   is never exported: every profile command answers [`PROFILE_UNSUPPORTED`] and nothing is observed.
 //! - [`read`]: `WKHTTPCookieStore.getAllCookies` in the contract's [`Cookie`] shape, sorted by key
 //!   (`web_profile_read`).
-//! - [`write`]: delete the cookies of the given keys and set the given ones (`web_profile_write`), and
-//!   [`apply_storage`]: a localStorage snapshot into a tile of its origin, by `callAsyncJavaScript` in
-//!   [`AGENT_WORLD`]; [`written`] awaits both.
+//! - [`write`]: delete the store cookies a write replaces (same key and scope) or removes (the key in
+//!   every scope) and set the given ones (`web_profile_write`), and [`apply_storage`]: a localStorage
+//!   snapshot into a tile of its origin, by `callAsyncJavaScript` in [`AGENT_WORLD`]; [`written`] awaits
+//!   both until the deadline and answers the counts reached, with `timed_out` when WebKit fell short.
 //! - [`clear`]: every cookie of the store, and its localStorage, sessionStorage and IndexedDB data
 //!   (`web_profile_clear`).
 //! - [`watch`]: one `WKHTTPCookieStoreObserver` on the store, kept alive in a main-thread registry until
@@ -55,9 +56,9 @@ use tauri::{AppHandle, Emitter, Runtime};
 #[cfg(target_os = "ios")]
 use crate::ios_webview::WKWebView;
 use crate::web_rules::profile::{
-    AGENT_WORLD, APPLY_STORAGE_SCRIPT, CAPTURE_SCRIPT, CHANGED_EVENT, Changed, Cookie, CookieWrite,
-    Debounce, Due, NativeCookie, NativeSet, PROPERTIES, QUIET, SameSitePolicy, Storage,
-    StorageApply, Written, diff, jar_key, parse_capture,
+    AGENT_WORLD, APPLY_STORAGE_SCRIPT, CAPTURE_SCRIPT, CHANGED_EVENT, Changed, Completion, Cookie,
+    CookieWrite, Debounce, Due, NativeCookie, NativeSet, PROPERTIES, QUIET, SameSitePolicy,
+    Storage, StorageApply, Written, diff, parse_capture, timeout_message,
 };
 use crate::web_rules::{DATA_STORE, PROFILE_UNSUPPORTED};
 
@@ -72,15 +73,28 @@ fn recv<T>(rx: &Receiver<Result<T, String>>) -> Result<T, String> {
     recv_until(rx, Instant::now() + MAIN_TIMEOUT)
 }
 
-/// A main-thread reply, at most until `deadline`.
-fn recv_until<T>(rx: &Receiver<Result<T, String>>, deadline: Instant) -> Result<T, String> {
+/// Why a main-thread reply did not come: the time ran out (the budget it had), or the sender is gone.
+enum Late {
+    Timeout(Duration),
+    Dropped,
+}
+
+const DROPPED: &str = "the main thread dropped the web view call";
+
+/// A main-thread reply, or why there is none by `deadline`.
+fn recv_by<T>(rx: &Receiver<T>, deadline: Instant) -> Result<T, Late> {
     let left = deadline.saturating_duration_since(Instant::now());
     rx.recv_timeout(left).map_err(|e| match e {
-        RecvTimeoutError::Timeout => format!(
-            "the main thread did not run the web view call within {} s",
-            MAIN_TIMEOUT.as_secs()
-        ),
-        RecvTimeoutError::Disconnected => "the main thread dropped the web view call".to_owned(),
+        RecvTimeoutError::Timeout => Late::Timeout(left),
+        RecvTimeoutError::Disconnected => Late::Dropped,
+    })
+}
+
+/// A main-thread reply, at most until `deadline`; a timeout names the time that was left.
+fn recv_until<T>(rx: &Receiver<Result<T, String>>, deadline: Instant) -> Result<T, String> {
+    recv_by(rx, deadline).map_err(|late| match late {
+        Late::Timeout(left) => timeout_message(left),
+        Late::Dropped => DROPPED.to_owned(),
     })?
 }
 
@@ -157,9 +171,9 @@ fn property_string(value: &AnyObject) -> Option<String> {
     }
 }
 
-/// An `NSHTTPCookie`'s attributes as plain values; of `properties`, only the keys the mapping reads.
-fn native(cookie: &NSHTTPCookie) -> NativeCookie {
-    let properties = cookie
+/// The entries of `cookie.properties` named in [`PROPERTIES`], values as strings.
+fn properties(cookie: &NSHTTPCookie) -> Vec<(String, String)> {
+    cookie
         .properties()
         .map(|props| {
             let (keys, values) = props.to_vecs();
@@ -172,7 +186,12 @@ fn native(cookie: &NSHTTPCookie) -> NativeCookie {
                 .filter_map(|(k, v)| Some((k.to_string(), property_string(&v)?)))
                 .collect()
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// An `NSHTTPCookie`'s attributes as plain values; of `properties`, only the keys the mapping reads.
+fn native(cookie: &NSHTTPCookie) -> NativeCookie {
+    let properties = properties(cookie);
     NativeCookie {
         name: cookie.name().to_string(),
         value: cookie.value().to_string(),
@@ -290,70 +309,99 @@ fn ns_cookie(cookie: &NativeSet) -> Option<Retained<NSHTTPCookie>> {
     unsafe { NSHTTPCookie::cookieWithProperties(&properties) }
 }
 
+/// A cookie write for the main thread ([`write`]): the plan, its [`Completion`] shared with the waiting
+/// side, and the signal that WebKit reported everything.
+pub(crate) struct CookieWriter {
+    cookies: CookieWrite,
+    progress: Arc<Mutex<Completion>>,
+    done: SyncSender<Result<(), String>>,
+}
+
+impl CookieWriter {
+    /// The main thread could not start the write.
+    pub(crate) fn fail(self, error: String) {
+        let _ = self.done.try_send(Err(error));
+    }
+}
+
+/// The waiting side of a [`CookieWriter`], for [`written`].
+pub(crate) struct CookieWait {
+    progress: Arc<Mutex<Completion>>,
+    done: Receiver<Result<(), String>>,
+}
+
+/// The two sides of one cookie write.
+pub(crate) fn writer(cookies: CookieWrite) -> (CookieWriter, CookieWait) {
+    let progress = Arc::new(Mutex::new(Completion::new(cookies.skipped)));
+    let (done, rx) = sync_channel(1);
+    (
+        CookieWriter {
+            cookies,
+            progress: progress.clone(),
+            done,
+        },
+        CookieWait { progress, done: rx },
+    )
+}
+
 /// Write the cookie half of `web_profile_write` into the tiles' store (209 §4.5), on the main thread: list
-/// the store, delete every cookie whose [`jar_key`] is in `remove`, then set each of `set`. `tx` gets the
-/// counts once WebKit has reported every deletion and every set done. Main-thread work is copying keys
+/// the store, delete every cookie the plan's [`Doom`] names (a replaced cookie in its own scope, a removed
+/// key in every scope), then set each of `set`. Every WebKit completion handler counts in the
+/// [`Completion`]; the one that completes it signals the waiting side. Main-thread work is copying keys
 /// and building `NSHTTPCookie`s; the mapping was done before ([`plan_write`]). Values are never logged.
 ///
+/// [`Doom`]: crate::web_rules::profile::Doom
 /// [`plan_write`]: crate::web_rules::profile::plan_write
-pub(crate) fn write(
-    mtm: MainThreadMarker,
-    cookies: CookieWrite,
-    tx: SyncSender<Result<Written, String>>,
-) {
+pub(crate) fn write(mtm: MainThreadMarker, writer: CookieWriter) {
     let store = match cookie_store(mtm) {
         Ok(store) => store,
-        Err(e) => {
-            let _ = tx.try_send(Err(e));
-            return;
-        }
+        Err(e) => return writer.fail(e),
     };
     let jar = store.clone();
+    let CookieWriter {
+        cookies,
+        progress,
+        done,
+    } = writer;
     let listed = RcBlock::new(move |all: NonNull<NSArray<NSHTTPCookie>>| {
         // SAFETY: WebKit passes a live array for the duration of the call.
         let all = unsafe { all.as_ref() };
         let doomed: Vec<Retained<NSHTTPCookie>> = all
             .iter()
             .filter(|c| {
-                cookies.remove.contains(&jar_key(
+                cookies.doom.dooms(
                     &c.name().to_string(),
                     &c.domain().to_string(),
                     &c.path().to_string(),
-                ))
+                    &properties(c),
+                )
             })
             .collect();
         let fresh: Vec<Retained<NSHTTPCookie>> = cookies.set.iter().filter_map(ns_cookie).collect();
-        let written = Written {
-            set: fresh.len(),
-            removed: doomed.len(),
-            skipped: cookies.skipped + (cookies.set.len() - fresh.len()),
-        };
-        // One tick per WebKit reply plus one for the loop itself; the answer goes at zero.
-        let left = Rc::new(Cell::new(doomed.len() + fresh.len() + 1));
-        let tick = {
-            let tx = tx.clone();
-            Rc::new(move |left: &Cell<usize>| match left.get() {
-                0 => {}
-                1 => {
-                    left.set(0);
-                    let _ = tx.try_send(Ok(written));
-                }
-                n => left.set(n - 1),
-            })
-        };
+        lock(&progress).start(doomed.len(), fresh.len(), cookies.set.len() - fresh.len());
         for cookie in &doomed {
-            let (left, tick) = (left.clone(), tick.clone());
-            let done = RcBlock::new(move || tick(&left));
+            let (progress, done) = (progress.clone(), done.clone());
+            let handler = RcBlock::new(move || {
+                if lock(&progress).removed() {
+                    let _ = done.try_send(Ok(()));
+                }
+            });
             // SAFETY: a cookie of this store; the handler is called on the main thread.
-            unsafe { jar.deleteCookie_completionHandler(cookie, Some(&*done)) };
+            unsafe { jar.deleteCookie_completionHandler(cookie, Some(&*handler)) };
         }
         for cookie in &fresh {
-            let (left, tick) = (left.clone(), tick.clone());
-            let done = RcBlock::new(move || tick(&left));
+            let (progress, done) = (progress.clone(), done.clone());
+            let handler = RcBlock::new(move || {
+                if lock(&progress).set() {
+                    let _ = done.try_send(Ok(()));
+                }
+            });
             // SAFETY: a valid cookie; the handler is called on the main thread.
-            unsafe { jar.setCookie_completionHandler(cookie, Some(&*done)) };
+            unsafe { jar.setCookie_completionHandler(cookie, Some(&*handler)) };
         }
-        tick(&left);
+        if lock(&progress).issued() {
+            let _ = done.try_send(Ok(()));
+        }
     });
     // SAFETY: the handler is called once, on the main thread, with the store's cookies.
     unsafe { store.getAllCookies(&listed) };
@@ -370,16 +418,18 @@ pub(crate) fn apply_storage(
 ) {
     // SAFETY: a named world for this app's scripts; WebKit keeps one instance per name while it lives.
     let world = unsafe { WKContentWorld::worldWithName(&NSString::from_str(AGENT_WORLD), mtm) };
-    let arguments = NSDictionary::<NSString, AnyObject>::from_retained_objects(
-        &[
-            &*NSString::from_str("origin"),
-            &*NSString::from_str("entries"),
-        ],
-        &[
-            Retained::into_super(Retained::into_super(NSString::from_str(&snapshot.origin))),
-            Retained::into_super(Retained::into_super(NSString::from_str(&snapshot.entries))),
-        ],
-    );
+    let (names, values): (Vec<_>, Vec<_>) = snapshot
+        .arguments()
+        .into_iter()
+        .map(|(name, value)| {
+            (
+                NSString::from_str(name),
+                Retained::into_super(Retained::into_super(NSString::from_str(value))),
+            )
+        })
+        .unzip();
+    let names: Vec<&NSString> = names.iter().map(|n| &**n).collect();
+    let arguments = NSDictionary::<NSString, AnyObject>::from_retained_objects(&names, &values);
     let done = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
         // SAFETY: WebKit passes live (or nil) objects for the duration of the call.
         let reply = match unsafe { error.as_ref() } {
@@ -407,24 +457,51 @@ pub(crate) fn apply_storage(
     };
 }
 
-/// Await [`write`]'s counts and every [`apply_storage`] (each with the tile's origin) until `deadline`,
-/// off the async workers. A storage apply that fails or times out is logged by origin and does not fail
-/// the write: the snapshot is applied again on the next change.
+/// Await [`write`] and every [`apply_storage`] (each with the tile's origin) until `deadline`, off the
+/// async workers. `origins` are the plan's snapshot origins: each is in `storage_applied`, with the
+/// number of tiles that took it. At the deadline the answer is `Ok` with `timed_out` and the counts
+/// reached so far, so the caller reads the store again. A storage apply that fails is logged by origin
+/// and does not fail the write. Refused cookies and a timeout are logged by count only.
 pub(crate) async fn written(
-    cookies: Receiver<Result<Written, String>>,
+    cookies: CookieWait,
     storage: Vec<(String, Receiver<Result<bool, String>>)>,
+    origins: Vec<String>,
     deadline: Instant,
 ) -> Result<Written, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let written = recv_until(&cookies, deadline)?;
+        let timed_out = match recv_by(&cookies.done, deadline) {
+            Ok(reply) => {
+                reply?;
+                false
+            }
+            Err(Late::Timeout(_)) => true,
+            Err(Late::Dropped) => return Err(DROPPED.to_owned()),
+        };
+        let mut written = lock(&cookies.progress).written(timed_out);
+        written.storage_applied = origins.into_iter().map(|o| (o, 0)).collect();
         for (origin, rx) in storage {
-            match recv_until(&rx, deadline) {
-                Ok(true) => {}
-                Ok(false) => {
+            match recv_by(&rx, deadline) {
+                Ok(Ok(true)) => *written.storage_applied.entry(origin).or_default() += 1,
+                Ok(Ok(false)) => {
                     tracing::debug!(%origin, "web profile write: the tile left the origin")
                 }
-                Err(e) => tracing::warn!(%origin, "web profile write: localStorage: {e}"),
+                Ok(Err(e)) => tracing::warn!(%origin, "web profile write: localStorage: {e}"),
+                Err(Late::Timeout(_)) => {
+                    written.timed_out = true;
+                    tracing::warn!(%origin, "web profile write: localStorage did not answer in time");
+                }
+                Err(Late::Dropped) => tracing::warn!(%origin, "web profile write: localStorage: {DROPPED}"),
             }
+        }
+        if written.skipped > 0 {
+            tracing::warn!(skipped = written.skipped, "web profile write: cookies not set");
+        }
+        if written.timed_out {
+            tracing::warn!(
+                set = written.set,
+                removed = written.removed,
+                "web profile write: WebKit did not report everything in time"
+            );
         }
         Ok(written)
     })
@@ -557,8 +634,8 @@ struct Pending {
     last: Option<Vec<Cookie>>,
 }
 
-fn lock(pending: &Mutex<Pending>) -> MutexGuard<'_, Pending> {
-    pending.lock().unwrap_or_else(|e| e.into_inner())
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 struct ObserverIvars {
