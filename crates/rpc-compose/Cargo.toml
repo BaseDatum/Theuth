@@ -32,6 +32,7 @@ mesh = { workspace = true }
 sessionsync = { workspace = true }
 replica = { workspace = true }
 roster = { workspace = true }
+webprofile = { workspace = true }
 tasks = { workspace = true }
 sandbox = { workspace = true }
 artifact = { workspace = true }

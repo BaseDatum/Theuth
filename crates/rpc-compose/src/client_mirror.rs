@@ -95,6 +95,7 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         double::DoublePredicted,
         double::DoubleAnswered,
         roster::attention::AttentionChanged,
+        webprofile::WebProfileChanged,
         dreaming::DreamNightStarted,
         dreaming::DreamNightFinished,
         dreaming::DreamUndone,

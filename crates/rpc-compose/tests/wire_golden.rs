@@ -155,6 +155,7 @@ async fn legacy_event_families() {
     family::<double::DoubleTrainingState>(&rt, &mut stream, "double.training").await;
     family::<double::DoubleVersionActivated>(&rt, &mut stream, "double.version").await;
     family::<roster::attention::AttentionChanged>(&rt, &mut stream, "roster.attention").await;
+    family::<webprofile::WebProfileChanged>(&rt, &mut stream, "browser.web-profile-changed").await;
     family::<tools::ReminderEvent>(&rt, &mut stream, "tools.reminders").await;
     family::<dreaming::DreamNightStarted>(&rt, &mut stream, "dreaming.started").await;
     family::<dreaming::DreamNightFinished>(&rt, &mut stream, "dreaming.finished").await;
