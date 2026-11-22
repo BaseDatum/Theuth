@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type { Entry } from '@/store/sessions'
-import { foldRuns, isDeliverable, summarize, summarizeGroup, ToolRunCard } from './ToolRunCard'
+import { foldRuns, isDeliverable, summarize, summarizeCells, summarizeGroup, ToolRunCard } from './ToolRunCard'
 
 vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: unknown }) => children }))
 
@@ -230,6 +230,32 @@ test('foldRuns: parallel cells (two python calls in one message) each get their 
   // A call whose cell is not on screen stays where it is.
   const stray = tool(72, { callId: 'gone.1', child: true })
   expect(foldRuns([p1, p2, stray, a1])).toEqual([[p1, a1], [p2], stray])
+})
+
+test('foldRuns: consecutive cells that called nothing fold into one `ran code × N` card', () => {
+  const cell = (n: number, extra: Partial<Tool> = {}): Tool => tool(80 + n, { name: 'python', callId: `q${n}`, args: { code: 'x = 1' }, startedAt: 0, finishedAt: 300, ...extra })
+  const [q1, q2, q3] = [cell(1), cell(2), cell(3)]
+  const think = (id: string): Entry => ({ id, kind: 'reasoning', text: 'hm', done: true })
+  const [t1, t2] = [think('t1'), think('t2')]
+  // Reasoning between two cells rides along; a trailing one stays outside.
+  expect(foldRuns([q1, t1, q2, t2, q3])).toEqual([[q1, t1, q2, t2, q3]])
+  expect(foldRuns([q1, q2, t1])).toEqual([[q1, q2], t1])
+  expect(summarizeCells([q1, t1, q2, t2, q3]).text).toBe('ran code × 3 · 0.9 s')
+  // A lone one stays its own group; a pinned thinking block splits the run.
+  expect(foldRuns([q1, t1])).toEqual([[q1], t1])
+  expect(foldRuns([q1, t1, q2], new Set(['t1']))).toEqual([[q1], t1, [q2]])
+  // A cell with calls, a failed cell or a running cell ends the run.
+  expect(foldRuns([q1, q2, py(), kid(1), q3])).toEqual([[q1, q2], [py(), kid(1)], [q3]])
+  const failed = cell(4, { result: { output: 'NameError', isError: true, files: [] } })
+  expect(foldRuns([q1, failed, q2])).toEqual([[q1], [failed], [q2]])
+  const running = cell(5, { result: undefined, pending: false })
+  expect(foldRuns([q1, q2, running])).toEqual([[q1, q2], [running]])
+  // With folding off each cell keeps its own card.
+  expect(foldRuns([q1, q2], undefined, false)).toEqual([[q1], [q2]])
+  // The card: one header, collapsed.
+  const html = renderToStaticMarkup(createElement(ToolRunCard, { run: [q1, t1, q2], prompts: null, session: 's' }))
+  expect(html).toContain('ran code × 2')
+  expect(html).not.toContain('>code<')
 })
 
 test('summarizeGroup: counts the cell\'s calls, never says python, shows a failure', () => {
