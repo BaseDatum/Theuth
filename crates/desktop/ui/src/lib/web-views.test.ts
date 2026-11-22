@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { chatLeaves, closeWeb, leaves, placeWeb, shown, usePanes } from './panes'
-import { httpUrl, isLoopback, isWeb, useWebViews, webId, webLeaf } from './web-views'
+import { STATE_EVERY_MS, type WebViewStateReport, httpUrl, isLoopback, isWeb, stateForwarder, useWebViews, webId, webLeaf } from './web-views'
 
 const native = vi.hoisted(() => ({ close: vi.fn(async () => {}) }))
 vi.mock('@/lib/web-view-native', async (original) => ({ ...(await original<object>()), close: native.close }))
@@ -95,4 +95,44 @@ test('the address field and every external link take http(s) only: a bare host g
   expect(isLoopback('http://[::1]:3000/')).toBe(true)
   expect(isLoopback('http://192.168.1.4/')).toBe(false)
   expect(isLoopback('https://example.com/')).toBe(false)
+})
+
+test('tile state goes to the engine only on change, at most once per view per STATE_EVERY_MS, the last of a burst included (209 D9)', () => {
+  vi.useFakeTimers()
+  const sent: WebViewStateReport[] = []
+  let up = true
+  const f = stateForwarder((r) => up && sent.push(r) > 0)
+  const st = (view: string, url: string, loading: boolean): WebViewStateReport => ({ session: 's1', view, url, title: 't', loading })
+  try {
+    f.push(st('web:a', 'https://a.example/', true))
+    expect(sent).toHaveLength(1)
+    // A burst inside the window: only its last state goes, when the window ends.
+    f.push(st('web:a', 'https://a.example/x', true))
+    f.push(st('web:a', 'https://a.example/x', false))
+    // Another view has its own window.
+    f.push(st('web:b', 'https://b.example/', false))
+    expect(sent.map((r) => r.view)).toEqual(['web:a', 'web:b'])
+    vi.advanceTimersByTime(STATE_EVERY_MS - 1)
+    expect(sent).toHaveLength(2)
+    vi.advanceTimersByTime(1)
+    expect(sent.at(-1)).toEqual(st('web:a', 'https://a.example/x', false))
+    // The same state again is no call, even after the window.
+    vi.advanceTimersByTime(STATE_EVERY_MS)
+    f.push(st('web:a', 'https://a.example/x', false))
+    expect(sent).toHaveLength(3)
+    // Not delivered (no engine): the next change goes at once.
+    up = false
+    f.push(st('web:b', 'https://b.example/y', true))
+    up = true
+    f.push(st('web:b', 'https://b.example/y', false))
+    expect(sent.at(-1)).toEqual(st('web:b', 'https://b.example/y', false))
+    // A closed view's waiting state is dropped.
+    f.push(st('web:b', 'https://b.example/z', true))
+    f.drop('web:b')
+    vi.advanceTimersByTime(STATE_EVERY_MS)
+    expect(sent).toHaveLength(4)
+  } finally {
+    f.stop()
+    vi.useRealTimers()
+  }
 })

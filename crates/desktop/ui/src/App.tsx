@@ -29,6 +29,7 @@ import * as webNative from '@/lib/web-view-native'
 import { isMobileLayout } from '@/hooks/use-mobile'
 import { installFenceSnapshot } from '@/lib/fence-snapshot'
 import { installPagePreview } from '@/lib/page-preview'
+import { startWebProfileSync } from '@/lib/web-profile'
 import { container, isDesktop } from '@/lib/platform'
 import { POPOUT, closePopout, popoutMeeting, popoutSession } from '@/lib/popout'
 import { onOwnerChanged, onPeerChange, remoteAmong, settleAfterFollowLoss, withdrawRelayed } from '@/lib/owner'
@@ -738,6 +739,8 @@ function Main() {
   // 120 §11.3: only the main window renders `page_preview` requests; a popout or the island would race it.
   useEffect(() => (AUX ? undefined : installPagePreview()), [])
   useEffect(() => (AUX ? undefined : installFenceSnapshot()), [])
+  // 209 §4.5: the device's tile store is one for every window; only the main window pushes it.
+  useEffect(() => (AUX ? undefined : startWebProfileSync()), [])
   // The shell flips both windows; each webview mirrors the value into its own settings copy.
   useEffect(() => {
     const off = onCaptureHidden((h) => useMeetingSettings.getState().setHidden(h))

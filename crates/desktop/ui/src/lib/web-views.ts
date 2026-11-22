@@ -4,6 +4,8 @@
 import { create } from 'zustand'
 import { openExternal } from '@/lib/platform'
 import * as native from '@/lib/web-view-native'
+import { ready, supports } from '@/rpc/discovery'
+import { useConnection } from '@/store/connection'
 
 export type WebView = {
   id: string
@@ -76,25 +78,95 @@ export function openInBrowser(url: string): void {
   if (href) openExternal(href)
 }
 
+/** One tile's state for the engine (209 D9): the params of `web_view_state`, `view` as `web:<id>`. */
+export type WebViewStateReport = { session: string; view: string; url: string; title: string; loading: boolean }
+
+/** 209 D9: at most one `web_view_state` per view in this many ms (209 §4.5). */
+export const STATE_EVERY_MS = 500
+
+/**
+ * 209 D9: a view's state goes out only when it differs from what was last delivered, at most once per
+ * `STATE_EVERY_MS` per view; a state arriving inside the window waits for its end, replaced by any newer one, so the
+ * last state of a burst (`loading: false`) always goes. `send` answers whether it delivered (else the next change retries).
+ */
+export function stateForwarder(send: (r: WebViewStateReport) => boolean) {
+  type Slot = { sent: string; at: number; next: WebViewStateReport | null; timer?: ReturnType<typeof setTimeout> }
+  const slots = new Map<string, Slot>()
+  const deliver = (s: Slot, r: WebViewStateReport) => {
+    const key = JSON.stringify([r.session, r.url, r.title, r.loading])
+    if (key === s.sent || !send(r)) return
+    s.sent = key
+    s.at = Date.now()
+  }
+  return {
+    push(r: WebViewStateReport) {
+      const s = slots.get(r.view) ?? { sent: '', at: Number.NEGATIVE_INFINITY, next: null }
+      slots.set(r.view, s)
+      if (s.timer !== undefined) {
+        s.next = r
+        return
+      }
+      const wait = s.at + STATE_EVERY_MS - Date.now()
+      if (wait <= 0) return deliver(s, r)
+      s.next = r
+      s.timer = setTimeout(() => {
+        s.timer = undefined
+        const next = s.next
+        s.next = null
+        if (next) deliver(s, next)
+      }, wait)
+    },
+    /** The view is gone: forget its slot, drop a waiting state. */
+    drop(view: string) {
+      clearTimeout(slots.get(view)?.timer)
+      slots.delete(view)
+    },
+    stop() {
+      for (const s of slots.values()) clearTimeout(s.timer)
+      slots.clear()
+    },
+  }
+}
+
+/** `web_view_state` to the connected engine when it has the method; `false` when not sent. */
+function sendState(r: WebViewStateReport): boolean {
+  const { api, state, discovery } = useConnection.getState()
+  if (!api || state !== 'open' || !ready(discovery) || (discovery.phase !== 'legacy' && !supports(discovery, { methods: ['web_view_state'] }))) return false
+  void api.web_view_state(r.session, r.view, r.url, r.title, r.loading).catch(() => undefined)
+  return true
+}
+
 /**
  * 205 §4.4, the main window's one listener set: `web-view://state` keeps a frame's address, title and spinner current
- * wherever it is shown (a tile, a pop-out, nowhere on screen); `web-view://closed` (the view destroyed, its pop-out
- * window closed) clears `popped`, so the card places a tile again. No tile opens by itself.
+ * wherever it is shown (a tile, a pop-out, nowhere on screen) and reports it to the engine for the session that opened
+ * it (209 D9, `stateForwarder`); `web-view://closed` (the view destroyed, its pop-out window closed) clears `popped`,
+ * so the card places a tile again. No tile opens by itself.
  */
 export function installWebViewEvents(): () => void {
   let gone = false
   const offs: (() => void)[] = []
   const keep = (p: Promise<() => void>) => void p.then((off) => (gone ? off() : offs.push(off)))
+  const forward = stateForwarder(sendState)
   keep(
     native.onState((s) => {
       const id = native.labelId(s.label)
       const old = useWebViews.getState().views[id]
-      if (old) useWebViews.getState().patch(id, { current: s.url, title: s.title || old.title, loading: s.loading })
+      if (!old) return
+      const title = s.title || old.title
+      useWebViews.getState().patch(id, { current: s.url, title, loading: s.loading })
+      if (old.session) forward.push({ session: old.session, view: webLeaf(id), url: s.url, title, loading: s.loading })
     }),
   )
-  keep(native.onClosed((s) => useWebViews.getState().patch(native.labelId(s.label), { popped: false, loading: false })))
+  keep(
+    native.onClosed((s) => {
+      const id = native.labelId(s.label)
+      forward.drop(webLeaf(id))
+      useWebViews.getState().patch(id, { popped: false, loading: false })
+    }),
+  )
   return () => {
     gone = true
+    forward.stop()
     for (const off of offs) off()
   }
 }
