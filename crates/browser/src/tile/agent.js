@@ -161,8 +161,9 @@ if (!agent || agent.version !== VERSION) {
       if ((tag === 'input' || tag === 'textarea') && !secret(el) && !['checkbox', 'radio', 'submit', 'button', 'reset', 'image', 'file'].includes(kind) && el.value) {
         s += ' value=' + JSON.stringify(clip(el.value, 80));
       }
-      if (tag === 'select' && el.selectedOptions && el.selectedOptions.length) {
-        s += ' value=' + JSON.stringify(clip(el.selectedOptions[0].text, 80));
+      const chosen = tag === 'select' ? (el.selectedOptions ? el.selectedOptions[0] : el.options[el.selectedIndex]) : null;
+      if (chosen) {
+        s += ' value=' + JSON.stringify(clip(chosen.text, 80));
       }
       if (kind === 'checkbox' || kind === 'radio') s += ' checked=' + !!el.checked;
       if (el.disabled) s += ' disabled=true';

@@ -88,15 +88,20 @@ impl Ctx {
         }
     }
 
-    /// `out` with the tile prefix in front, when `on` names the tile the call ran on.
-    fn prefixed(&self, session: SessionId, on: Option<&str>, mut out: ToolOutput) -> ToolOutput {
-        if let Some(view) = on {
+    /// `out` with the tile prefix in front, when `on` names the tile (and the address known then)
+    /// the call started on; the address the call itself reached wins while still on that tile.
+    fn prefixed(
+        &self,
+        session: SessionId,
+        on: Option<(String, String)>,
+        mut out: ToolOutput,
+    ) -> ToolOutput {
+        if let Some((view, before)) = on {
             let url = self
                 .tile(session)
-                .filter(|(v, _)| v == view)
-                .map(|(_, u)| u)
-                .unwrap_or_default();
-            out.content = format!("{}\n{}", tile::prefix(view, &url), out.content);
+                .filter(|(v, _)| *v == view)
+                .map_or(before, |(_, u)| u);
+            out.content = format!("{}\n{}", tile::prefix(&view, &url), out.content);
         }
         out
     }
@@ -548,12 +553,12 @@ macro_rules! browser_tool {
                     return Ok(ToolOutput::err(NO_BROWSER));
                 }
                 let session = $cx.session;
-                let on = self.0.tile(session).map(|(view, _)| view);
+                let on = self.0.tile(session);
                 let $ctx = &self.0;
                 let out: anyhow::Result<ToolOutput> = async move { $body }.await;
                 let mut out = out?;
                 profile::scrub(session, &mut out.content);
-                Ok(self.0.prefixed(session, on.as_deref(), out))
+                Ok(self.0.prefixed(session, on, out))
             }
         }
     };
@@ -1092,12 +1097,12 @@ impl Tool for AttachTool {
         if !tools::egress::lan() {
             return Ok(ToolOutput::err(NO_BROWSER));
         }
-        let on = self.0.tile(cx.session).map(|(view, _)| view);
+        let on = self.0.tile(cx.session);
         let mut out = self.0.attach(cx.session, a.view).await;
         profile::scrub(cx.session, &mut out.content);
         // Detaching reports from the tile it left; an attach names its new tile itself.
         Ok(if self.0.tile(cx.session).is_none() {
-            self.0.prefixed(cx.session, on.as_deref(), out)
+            self.0.prefixed(cx.session, on, out)
         } else {
             out
         })

@@ -1,0 +1,66 @@
+[
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "view": "0123456789abcdef",
+      "op": "script",
+      "args": {
+        "world": "isolated",
+        "source": "return 1;",
+        "arguments": {
+          "cmd": "location",
+          "params": {}
+        },
+        "timeout_ms": 15000
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "WebViewCallRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "view": "0123456789abcdef",
+          "op": "script",
+          "args": {
+            "world": "isolated",
+            "source": "return 1;",
+            "arguments": {
+              "cmd": "location",
+              "params": {}
+            },
+            "timeout_ms": 15000
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000003",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "view": "0123456789abcdef",
+      "op": "snapshot",
+      "args": {}
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "WebViewCallRequested",
+          "id": "00000000-0000-0000-0000-000000000003",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "view": "0123456789abcdef",
+          "op": "snapshot",
+          "args": {}
+        }
+      }
+    }
+  }
+]

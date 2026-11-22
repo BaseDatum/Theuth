@@ -125,6 +125,14 @@ async fn legacy_event_families() {
         "artifact.page-preview-resolved",
     )
     .await;
+    family::<artifact::WebViewCallRequested>(
+        &rt,
+        &mut stream,
+        "artifact.web-view-call-requested",
+    )
+    .await;
+    family::<artifact::WebViewCallResolved>(&rt, &mut stream, "artifact.web-view-call-resolved")
+        .await;
     family::<artifact::snapshot::FenceSnapshotRequested>(
         &rt,
         &mut stream,
