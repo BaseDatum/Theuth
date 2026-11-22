@@ -672,6 +672,8 @@ impl Message<agent::AgentEvent> for ArtifactActor {
         let agent::AgentEvent::SessionDeleted { session } = ev else {
             return;
         };
+        // 209 D9: what clients reported of the session's web view tiles goes with it.
+        webview::forget(&[session]);
         // A member of a closed private tree has nothing left; `state_for`
         // says so. Unknown ids are durable no-ops: the delete matches no rows.
         let Ok(state) = self.stores.state_for(session) else {
@@ -751,6 +753,7 @@ impl Message<::tools::CloseTree> for ArtifactActor {
         m: ::tools::CloseTree,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        webview::forget(&m.subtree);
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let stores = self.stores.clone();

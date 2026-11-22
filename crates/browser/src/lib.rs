@@ -211,7 +211,8 @@ impl Browsers {
 
     /// Drop `session`'s isolate (if any) and its System-1 claim. A session with the shared
     /// profile loaded saves its delta first (209 D4): the export runs on a clone of the handle,
-    /// so the thread ends once that call is done.
+    /// bounded by [`profile::DROP_EXPORT_WAIT`], and the clone goes right after it, so the thread
+    /// ends (and a `CloseTree` ack comes) at most that much later; the push runs after.
     fn drop_session(&mut self, session: SessionId) -> Option<session::Handle> {
         self.systemone_done(session, "browser session closed");
         let handle = self.sessions.remove(&session).map(|(h, _)| h);
@@ -307,9 +308,10 @@ pub(crate) fn image_data(result: &Value) -> Option<&str> {
 #[derive(Clone, Copy, Debug)]
 pub struct Sweep;
 
-/// Internal: `rt.shutdown` fired, drop every isolate.
+/// `tell`: drop every isolate (the plugin sends it when `rt.shutdown` fires); a session with the
+/// shared profile saves first (209 D4).
 #[derive(Clone, Copy, Debug)]
-struct CloseAll;
+pub struct CloseAll;
 
 impl Message<Tracked<Call>> for Browsers {
     type Reply = DelegatedReply<Result<Value, String>>;

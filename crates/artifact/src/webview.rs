@@ -193,6 +193,14 @@ fn opened(session: SessionId, id: &str, url: &str, title: &str) {
     );
 }
 
+/// The sessions ended (deleted, or their tree closed): what was known of their tiles goes.
+pub fn forget(sessions: &[SessionId]) {
+    let mut all = TILES.lock();
+    for s in sessions {
+        all.remove(s);
+    }
+}
+
 fn put(session: SessionId, id: String, tile: Tile) {
     let mut all = TILES.lock();
     all.entry(session).or_default().insert(id, tile);

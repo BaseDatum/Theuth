@@ -3705,6 +3705,7 @@ pub(crate) mod tests {
     impl Tool for SignedIn {
         const NAME: &'static str = "signed_in";
         const RISK: Risk = Risk::ReadOnly;
+        const CREDENTIALED: bool = true;
         type Args = serde_json::Value;
         fn description(&self) -> String {
             String::new()

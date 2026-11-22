@@ -387,13 +387,18 @@ pub trait Tool: Send + Sync + 'static {
         true
     }
 
+    /// Whether [`Tool::credentialed`] can ever answer `true` for this tool
+    /// (209 D14): only then are a call's arguments deserialised to ask it, so
+    /// every other tool's call costs nothing. Default `false`.
+    const CREDENTIALED: bool = false;
+
     /// Whether this call acts with the user's credentials: the browser
     /// tools answer `true` for an acting call on a site whose sign-in came
     /// from the shared browser profile, or on the user's own tile (209 D14,
     /// §9). The registry then gates the call as at least
     /// [`Risk::Mutating`], so a session capped at `read_only` is refused and
     /// the policy for mutating calls applies. Must be cheap and synchronous;
-    /// default `false`.
+    /// default `false`. Asked only when [`Tool::CREDENTIALED`] is set.
     fn credentialed(&self, session: SessionId, args: &Self::Args) -> bool {
         let _ = (session, args);
         false
@@ -468,8 +473,9 @@ impl<T: Tool> ErasedTool for T {
     }
 
     fn credentialed(&self, session: SessionId, args: &serde_json::Value) -> bool {
-        <T::Args as serde::Deserialize>::deserialize(args)
-            .is_ok_and(|a| Tool::credentialed(self, session, &a))
+        T::CREDENTIALED
+            && <T::Args as serde::Deserialize>::deserialize(args)
+                .is_ok_and(|a| Tool::credentialed(self, session, &a))
     }
 
     fn call(
