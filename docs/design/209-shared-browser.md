@@ -231,12 +231,18 @@ As built in P1 (the shell and UI review fixes):
   value.
 - **UI sync.** At start and after an engine switch, the first `web_profile_read` seeds the baseline and is not
   pushed (cookies already in the store reach the profile when they next change). A cookie change pushes the cookie
-  diff only; storage is no longer captured on cookie changes, but on `web-view://state` with `loading: false` and
+  diff only. A `web-view://state` with `loading: false` also re-reads the store and pushes its diff (added by the P1
+  simulator proof: there the `WKHTTPCookieStoreObserver` never fired, so a cookie set without a page load, by
+  script or `fetch`, reaches the profile only with a tile's next finished load). Storage is no longer captured on
+  cookie changes, but on `web-view://state` with `loading: false` and
   before `web_view_close`, pushed 2 s after the last capture, and what is still captured is pushed best-effort on
   `pagehide` / `beforeunload`. One push in flight; a failed read or push keeps its delta and retries after 10 s,
   doubling to at most 60 s. `profile: "off"` stops pushing to that connection, re-probed by the next change after
   60 s. On `stale-epoch` the UI calls `web_profile_clear`; a client whose clear fails keeps its old epoch and stops
   pushing on that connection, so its cookies never sign the profile back in.
+- **One data store instance.** The shell keeps the `DATA_STORE` `WKWebsiteDataStore` it first gets for the life of
+  the process: `dataStoreForIdentifier:` answers a new instance once the last one is released, and the cookie store
+  refers to its data store only weakly, so the observer had been on a store the tile did not use.
 
 ### 4.6 Seam and target (crates/browser)
 
