@@ -1,7 +1,10 @@
 import { beforeEach, expect, test, vi } from 'vitest'
-import { activeSuffix as resolve, load, useSuffixes, withSuffix } from './suffixes'
+import { activeFor, activeSuffix as resolve, load, type Suffix, type SuffixEngine, useSuffixes, withSuffix } from './suffixes'
 
-const activeSuffix = (chat: string) => resolve(useSuffixes.getState().list, useSuffixes.getState().active[chat])
+const activeSuffix = (chat: string) => {
+  const s = useSuffixes.getState()
+  return resolve(s.list, activeFor(s.active[chat], s.always[chat]))
+}
 
 // No DOM in the test runner: the smallest `Storage` the store needs.
 const mem = new Map<string, string>()
@@ -13,7 +16,107 @@ vi.stubGlobal('localStorage', {
 
 beforeEach(() => {
   localStorage.clear()
-  useSuffixes.setState({ list: [], active: {} })
+  useSuffixes.setState({ list: [], active: {}, engine: null, always: {} })
+})
+
+/** An engine keeping suffixes in memory, as `list_suffixes`/`put_suffix`/… do: a deleted id never comes back. */
+function fakeEngine(seed: Suffix[] = []) {
+  const list = new Map(seed.map((s) => [s.id, s]))
+  const deleted = new Set<string>()
+  const always = new Map<string, string | null>()
+  const calls: string[] = []
+  const engine: SuffixEngine = {
+    list_suffixes: async () => (calls.push('list'), [...list.values()]),
+    put_suffix: async (s) => {
+      calls.push(`put ${s.id}`)
+      if (deleted.has(s.id)) return false
+      list.set(s.id, s)
+      return true
+    },
+    delete_suffix: async (id) => (calls.push(`delete ${id}`), deleted.add(id), list.delete(id)),
+    session_suffix: async (session) => {
+      const id = always.get(session)
+      return id && list.has(id) ? id : null
+    },
+    set_session_suffix: async (session, id) => void always.set(session, id),
+  }
+  return { engine, list, always, calls }
+}
+
+const SESSION = '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b'
+// The fake's async bodies take effect synchronously at the call, so the store's fire-and-forget writes are visible at once.
+
+test('with a supporting engine the store shows the engine’s list, not this device’s; without one, localStorage', async () => {
+  localStorage.setItem('prompt-suffixes-migrated', '1')
+  localStorage.setItem('prompt-suffixes', JSON.stringify({ list: [{ id: 'local', name: 'Local', text: 'here' }], active: {} }))
+  useSuffixes.setState(load())
+  const { engine, list } = fakeEngine([{ id: 'mesh', name: 'Mesh', text: 'everywhere' }])
+  await useSuffixes.getState().connect(engine)
+  expect(useSuffixes.getState().list.map((s) => s.id)).toEqual(['mesh'])
+  // Edits go to the engine; this device's stored list is left as it was for an older engine.
+  const id = useSuffixes.getState().add('New', 'text')
+  expect(list.get(id)).toEqual({ id, name: 'New', text: 'text' })
+  expect(load().list.map((s) => s.id)).toEqual(['local'])
+  // Back on an engine without the methods: this device's list again.
+  await useSuffixes.getState().connect(null)
+  expect(useSuffixes.getState().list.map((s) => s.id)).toEqual(['local'])
+})
+
+test('an engine that cannot answer (a legacy probe) leaves the store on this device’s list', async () => {
+  useSuffixes.getState().add('Local', 'here')
+  const { engine } = fakeEngine()
+  engine.list_suffixes = async () => {
+    throw new Error('method not found')
+  }
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  await useSuffixes.getState().connect(engine)
+  warn.mockRestore()
+  expect(useSuffixes.getState().engine).toBeNull()
+  expect(useSuffixes.getState().list.map((s) => s.name)).toEqual(['Local'])
+})
+
+test('the local list is uploaded to the first supporting engine once, by id', async () => {
+  const s = useSuffixes.getState()
+  const a = s.add('Links', 'Link everything.')
+  const b = s.add('Terse', 'Be terse.')
+  const first = fakeEngine([{ id: a, name: 'Links', text: 'Link everything.' }])
+  await useSuffixes.getState().connect(first.engine)
+  expect(first.calls).toEqual([`put ${a}`, `put ${b}`, 'list'])
+  expect([...first.list.keys()]).toEqual([a, b])
+  expect(useSuffixes.getState().list.map((x) => x.id)).toEqual([a, b])
+  // Another connection (a reconnect, a restart): nothing goes up again, so a suffix deleted meanwhile stays deleted.
+  await useSuffixes.getState().connect(null)
+  const again = fakeEngine()
+  await useSuffixes.getState().connect(again.engine)
+  expect(again.calls).toEqual(['list'])
+})
+
+test('an "every message" suffix lives with the session on the engine; the composer appends the engine’s', async () => {
+  const { engine, always } = fakeEngine([{ id: 'x', name: 'Terse', text: 'Be terse.' }])
+  localStorage.setItem('prompt-suffixes-migrated', '1')
+  await useSuffixes.getState().connect(engine)
+  // Turned on from another device: this one reads it from the engine.
+  always.set(SESSION, 'x')
+  await useSuffixes.getState().watch(SESSION)
+  expect(activeSuffix(SESSION)).toEqual({ id: 'x', name: 'Terse', text: 'Be terse.', scope: 'always' })
+  expect(withSuffix('fix it', activeSuffix(SESSION)?.text)).toBe('fix it\n\nBe terse.')
+  // Sends do not spend it; the chip's × turns it off on the engine.
+  useSuffixes.getState().sent(SESSION)
+  expect(activeSuffix(SESSION)?.scope).toBe('always')
+  useSuffixes.getState().clear(SESSION)
+  expect(always.get(SESSION)).toBeNull()
+  expect(activeSuffix(SESSION)).toBeNull()
+  // A new chat's draft activation stays here until `carry` hands it to the created session's engine.
+  useSuffixes.getState().activate('', 'x', 'always')
+  expect(always.has('')).toBe(false)
+  useSuffixes.getState().carry('', SESSION)
+  expect(always.get(SESSION)).toBe('x')
+  expect(useSuffixes.getState().active['']).toBeUndefined()
+  expect(activeSuffix(SESSION)?.scope).toBe('always')
+  // "This message" stays on this device and replaces the engine's "every message".
+  useSuffixes.getState().activate(SESSION, 'x', 'once')
+  expect(always.get(SESSION)).toBeNull()
+  expect(useSuffixes.getState().active[SESSION]).toEqual({ id: 'x', scope: 'once' })
 })
 
 test('the suffix follows the message after a blank line; a blank suffix or none changes nothing', () => {

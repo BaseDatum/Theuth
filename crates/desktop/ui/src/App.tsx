@@ -34,6 +34,7 @@ import { POPOUT, closePopout, popoutMeeting, popoutSession } from '@/lib/popout'
 import { onOwnerChanged, onPeerChange, remoteAmong, settleAfterFollowLoss, withdrawRelayed } from '@/lib/owner'
 import { usePrivateOwner } from '@/lib/private'
 import { queryKeys, useInvalidateOn } from '@/lib/rpc'
+import { useSuffixSync } from '@/lib/suffix-sync'
 import { installSpeechListeners } from '@/lib/speech'
 import * as talk from '@/lib/talk'
 import {
@@ -686,6 +687,7 @@ function Shell({ engine, onRelaunch }: { engine: string; onRelaunch(): void }) {
   const refused = useEngines((s) => s.presence[engine] === 'refused')
   const ready = useConnection((s) => routerMounted(s, engine === LOCAL, refused))
   useInvalidateOn()
+  useSuffixSync()
   useEventSideEffects(scope(engine))
   useEventFocus(scope(engine))
   useForegroundReseed(scope(engine))
