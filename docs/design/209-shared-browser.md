@@ -1,6 +1,6 @@
 # 209 — One browser profile for the user's web view and the agent's browser
 
-Status: design 2026-11-22, approved to build (three builders per phase in one worktree, as 205); this is the build contract · extends 205 (web view tile, incl. §9 iOS shell on `feat/205-ios-web-view`), 23
+Status: design 2026-11-22, approved to build (three builders per phase in one worktree, as 205); this is the build contract; P1–P4 built, P5 (D13, form in the chat) dropped on 2026-11-22 and kept as a follow-up · extends 205 (web view tile, incl. §9 iOS shell on `feat/205-ios-web-view`), 23
 (obscura browser), 122 §5 (cookie rule), 67 §5.1 (replica), 37/67 §5.4 (vault), 68/183 (front door, event relay)
 
 Evidence: two reports, both read in full. Code recon, session `01a2007d-94f1-7532-add0-2b2aab26d032` (cited
@@ -57,7 +57,7 @@ The owner's requirements (2026-11-21):
 | D10 | The agent's own browser shown to the user stays what `browser_show` does today: a 500 ms screenshot poll, watch-only (`crates/desktop/ui/src/components/chat/BrowserLive.tsx:14`; tool text `tools.rs:691`). Out of scope. |
 | D11 | iOS: iPad keeps the tile beside the chat (205 §9) and collapses the sidebar when the tile would be narrower than 420 px. iPhone gets a full-screen page with a toolbar and a minimise control that leaves a pill above the composer (§7). |
 | D12 | The prompt's "The two share nothing" sentence is replaced when P1 lands (§4.9). |
-| D13 | `browser_show_element { ref?, selector?, title? }` (crates/browser, either backend of D8) lifts one element of the page — typically a sign-in form — into a transcript card rendered in the sandboxed inline-page frame of 120 (`crates/desktop/src/pages.rs:1-8`, `components/chat/HtmlPage.tsx:1-6`). The app draws the origin, the source browser and Submit/Cancel around the frame. Submit sends the values with the RPC `answer_element_form`; the engine fills the real controls by field index and submits the real form; the agent gets a receipt without values (§4.10). |
+| D13 | **Follow-up, not built (P5 dropped 2026-11-22).** `browser_show_element { ref?, selector?, title? }` (crates/browser, either backend of D8) lifts one element of the page — typically a sign-in form — into a transcript card rendered in the sandboxed inline-page frame of 120 (`crates/desktop/src/pages.rs:1-8`, `components/chat/HtmlPage.tsx:1-6`). The app draws the origin, the source browser and Submit/Cancel around the frame. Submit sends the values with the RPC `answer_element_form`; the engine fills the real controls by field index and submits the real form; the agent gets a receipt without values (§4.10). |
 | D14 | Acting `browser_*` calls are raised to `Mutating` for the approval gate when they act on a site that has profile cookies, and always on a tile. Tool risk is a per-type constant today (`crates/tools/src/lib.rs:356-357`, every browser tool `Risk::ReadOnly` at `tools.rs:226`) and the registry's only per-call input is the secret-placeholder flag (`crates/tools/src/registry.rs:1484-1485`), so this needs a new per-call hook (§9). |
 
 ## 4. The contract
@@ -490,7 +490,7 @@ In `crates/artifact/src/tools.rs:60`, replace from "The two share nothing:" to "
 The clause "and a site you sign into works in their tile" lands with P2, `browser_attach` with P3, the last sentence
 with P5; each phase ships the text its tools support.
 
-### 4.10 `browser_show_element` (D13)
+### 4.10 `browser_show_element` (D13) · follow-up, not built (see P5)
 
 ```
 browser_show_element { ref?: String, selector?: String, title?: String }   // DIRECT, Risk::Mutating, APPROVED_BY_CARD, not promotable
@@ -830,7 +830,18 @@ What the P3 engine differs in from the text above or adds to it; §4.4, §4.6 an
 - Tests: minimise/restore keeps the view (no `web_view_close`); a `show_web` while the composer has focus becomes the
   pill. iPhone simulator: minimise, send a message, restore: same scroll position and history.
 
-### P5 — a form of the page in the chat (D13)
+### P5 — a form of the page in the chat (D13) · FOLLOW-UP, not built
+
+**Dropped from this build by the owner on 2026-11-22 (10:25) and kept as a follow-up.** P1–P4 ship without it; no
+code of D13 exists on the branch (no `browser_show_element`, no `ElementForm*` events, no `answer_element_form` /
+`element_forms_pending`, no `APPROVED_BY_CARD`; the relay does not list the `ElementForm*` topics, P3 review finding
+20). Sections 3 (D13), 4.4 (its rows), 4.10 and 9 (D13 bullet) stay as the design for that follow-up. What P3 left
+that it can build on: the tile op `script` in the isolated world, `agent.js` (one source, obscura and tile), the
+claim-bound answer pattern of `answer_web_view_call` (owner-only, bound to the claiming connection, `session` in the
+params), and the inline-page frame of design 120. Before building it, settle Q6 (sanitiser) and Q7
+(`APPROVED_BY_CARD`, accepted in principle on 2026-11-22) again against the code as it is then.
+
+The original P5 plan follows unchanged.
 
 | Engine | Shell | UI |
 |---|---|---|
