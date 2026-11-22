@@ -65,43 +65,61 @@ The owner's requirements (2026-11-21):
 ### 4.1 Table and row (crates/webprofile)
 
 `<data_dir>/webprofile.sqlite`, migration `migrations/0001_web_sites.sql`, attached with
-`replica::attach(&pool, &["web_sites"])` (single-column primary key and `hlc TEXT`, `replica/src/lib.rs:105-107`):
+`replica::attach(&pool, &["web_sites"])` (single-column primary key and `hlc TEXT`, `replica/src/lib.rs:105-107`).
+**One row per cookie and one per origin's localStorage snapshot** (changed after the P1 review, finding 2): replica
+merges last-writer-wins under an HLC (`replica/src/lib.rs:1-4`), so per-cookie rows make the merge per cookie, two
+engines writing different cookies of one site both keep theirs, and a change replicates as itself.
 
 ```sql
 CREATE TABLE web_sites (
-  id          TEXT PRIMARY KEY,   -- first 32 hex of sha256(salt ‖ "\n" ‖ site); site = lower-case eTLD+1
-  sealed      TEXT,               -- base64url(nonce ‖ XChaCha20-Poly1305(mesh key, aad = "web_sites\n" ‖ id, SiteJar JSON)); NULL = forgotten
-  epoch       INTEGER NOT NULL,   -- profile epoch the write was made under (sign out everywhere bumps it)
-  bytes       INTEGER,            -- plaintext length, for the caps
-  updated_ms  INTEGER,
-  writer      TEXT,               -- "tile:<device name>" | "obscura:<engine name>"; shown in Settings
-  hlc         TEXT
+  id       TEXT PRIMARY KEY,  -- first 32 hex of HMAC-SHA256(id key, JSON ["cookie", site, name, domain, path])
+                              --   or ["storage", site, origin]; "epoch" for the epoch row
+  site_id  TEXT,              -- first 32 hex of HMAC-SHA256(id key, JSON ["site", site]); NULL on the epoch row
+  sealed   TEXT,              -- base64url(nonce ‖ XChaCha20-Poly1305(mesh key, aad = "web_sites\n" ‖ id, entry JSON));
+                              --   NULL = removed (a tombstone)
+  hlc      TEXT
 );
 ```
 
-- `salt`: 32 random bytes stored once as the vault secret `webprofile/salt`, created with the lost-the-race
-  pattern of `mesh/device_key` (`vault.rs:470-476`), so the file at rest does not name the sites (it is plaintext at
-  rest like link's, `0001_link.sql:9`). The site name is inside `sealed`.
-- `epoch`: one more row, `id = "epoch"`, `sealed = NULL`, `epoch = n`. "Sign out everywhere" writes `n+1`.
-- Forget is a column write (`sealed = NULL`), never a `DELETE`: a delete loses to a newer column write
-  (`0001_link.sql:5-7`).
-- `SiteJar` (plaintext, JSON):
+- **Id key** (changed after the P1 review, finding 1; there is no salt secret): `HMAC-SHA256(current mesh key,
+  "theuth/webprofile/id/v1")`. Every engine holding the mesh keyring (`Vault::mesh_key`, distributed by pairing and
+  the key frames, `crates/mesh/src/keys.rs`) computes the same ids with nothing created per engine, so there is no
+  creation race; the file at rest names no site, and `site_id` groups, lists and forgets a site without opening a row.
+  `site` is the lower-case registrable domain of §4.2.
+- **Mesh key rotation** (183 §6.9): the ids change with the key. The first store operation that sees a new current
+  key, or the plugin's one-minute maintenance tick, moves every row to its new id — re-sealed under the new key, the
+  old id tombstoned — well inside the vault's 10-minute retire grace (`RETIRE_GRACE_MS`; the vault's retire counts only
+  its own rows). Every later full read (a session's first load, the Settings list) also folds rows a lagging engine
+  still wrote under the old ids, while the old key is retained. Every engine computes the same new ids, so concurrent
+  moves converge; a newer tombstone at the new id keeps a removal. A row sealed under a key already retired is lost.
+- **Entry** (the sealed plaintext, JSON) — the site, the epoch, the writer and the time travel inside, and the aad binds
+  the row id, so a row is one atomic value:
 
 ```json
-{ "v": 1, "site": "example.com",
-  "cookies": [ { "name": "__Host-sid", "value": "…", "domain": "app.example.com", "host_only": true,
-                 "path": "/", "expires": 1795000000, "secure": true, "http_only": true,
-                 "same_site": "Lax", "partitioned": false } ],
-  "origins": [ { "origin": "https://app.example.com", "local_storage": [["k","v"]], "captured_ms": 0 } ] }
+{ "v": 1, "site": "example.com", "epoch": 0, "writer": "tile:iPad", "updated_ms": 1795000000000,
+  "item": { "cookie": { "name": "__Host-sid", "value": "…", "domain": "app.example.com", "host_only": true,
+                        "path": "/", "expires": 1795000000, "secure": true, "http_only": true,
+                        "same_site": "Lax", "partitioned": false } } }
 ```
 
-  `expires` is Unix seconds or `null` (a session cookie, kept; §11 Q1). `same_site` is `"Strict" | "Lax" | "None" | ""`.
-- Caps: a row's plaintext at most 128 KiB; cookies of one site at most 300 (browsers cap far lower per domain);
-  one origin's localStorage snapshot at most 96 KiB, and over that the snapshot is dropped whole, never cut; at most
-  500 live sites and 8 MiB of plaintext per profile, refusing new sites beyond that with `profile full`. Whether the
-  replica feed has its own record limit was not found (§12).
-- One row per site keeps a change to one site from rewriting the jar, and keeps LWW conflicts per site: replica is
-  per-column LWW under an HLC (`replica/src/lib.rs:1-4`); a write sets every column, so the newest write wins the row.
+  `item` is `{ "cookie": … }`, `{ "storage": { "origin", "local_storage": [[k, v]], "captured_ms" } }` or, on the
+  epoch row, `{ "epoch": {} }`. `expires` is Unix seconds or `null` (a session cookie, kept until the site goes 30 days
+  without a write; §11 Q1). `same_site` is `"Strict" | "Lax" | "None" | ""`. A row of another `v` is skipped (and
+  counted in a log line), never misread. `SiteJar { v, site, cookies, origins }` remains the per-site shape a load
+  answers, gathered from the site's rows.
+- **Epoch**: the row `id = "epoch"` seals `{ "epoch": n, "item": { "epoch": {} } }`. "Sign out everywhere" writes
+  `n+1` and tombstones every row; an entry written under an older epoch is dead.
+- **Removal** is a column write (`sealed = NULL`), never a `DELETE`: a delete loses to a newer column write
+  (`0001_link.sql:5-7`). A remove writes its tombstone even for a row this engine has not seen, so it wins over an older
+  set elsewhere. Tombstones are deleted at open 30 days after their write (their `hlc`).
+- **Caps**: per site at most 300 cookies and 128 KiB of cookie and snapshot JSON (over it the oldest snapshots go
+  first, then the site's push is refused); one origin's snapshot at most 96 KiB, over that dropped whole, never cut;
+  at most 500 live sites and 8 MiB per profile, refusing new sites with `profile full`. The profile caps read a local,
+  non-replicated table `web_site_stats` (live rows and sealed bytes per `site_id`, kept by triggers on every write,
+  own or replicated), never the sealed rows. Per push, before any work: at most 2000 changes and 64 snapshots, the
+  device name cut to 64 characters; every cookie needs a name, a path from `/`, a value of at most 4096 bytes and a
+  domain that is not a bare public suffix; its domain is stored lower case, and a leading `.` becomes
+  `host_only: false`. Whether the replica feed has its own record limit was not found (§12).
 
 ### 4.2 Merge: deltas, not snapshots
 
@@ -110,12 +128,19 @@ cannot delete what another wrote:
 
 - The client keeps, in memory, the last cookie list it pushed or applied; on a store change it diffs
   `getAllCookies` against it, keyed `(name, domain, path)` (obscura's identity too, `obscura-net/src/cookies.rs:27-33`).
-- `Ctx` keeps, per session, the cookies it loaded (per site and the row's `updated_ms`); at save it diffs the
+- `Ctx` keeps, per session, the cookies it loaded (per site and the newest row's `updated_ms`); at save it diffs the
   isolate's export against that.
-- The webprofile actor groups changes by site (eTLD+1 with the public suffix list) and applies them to the current
-  row: set replaces the key, remove deletes it, an `expires` in the past deletes it.
+- The webprofile actor groups changes by site (the registrable domain by the public suffix list, its private section
+  included, so `user.github.io` is its own site; an IP address, a single-label host such as `localhost` and a bare
+  suffix are their own site) and writes each change as its own row: set seals the cookie, remove or an `expires` in
+  the past writes a tombstone, a set equal to the stored cookie writes nothing. A localStorage capture newer than the
+  stored one replaces it; an emptied localStorage is a capture too.
+- An agent session only updates sites the profile already holds (sites its load gave it, or sites the engine knows
+  the profile holds): cookies of any other site stay in that session. New sites enter the profile through the user's
+  web view (P1 rule, review finding 20).
 - A cookie imported by `browser_import_cookies` (`tools.rs:835-841`) is remembered by `Ctx` and never saved back:
-  that tool grants one session a local browser's cookies, not the mesh (§11 Q2).
+  that tool grants one session a local browser's cookies, not the mesh (§11 Q2). Its value is scrubbed from replies
+  like a profile cookie's.
 
 ### 4.3 obscura change (skymoore/obscura, branch `theuth/sync-2026-11-02`, `Cargo.toml:315-316`)
 
@@ -132,9 +157,9 @@ Change: export `host_only` from the entry, read an optional `host_only` on impor
 
 | Method | Params | Result | Notes |
 |---|---|---|---|
-| `web_profile_push` | `{ device, epoch, changes: [{op:"set", cookie} \| {op:"remove", name, domain, path}], storage: [{origin, local_storage, captured_ms}] }` | `{ applied, sites: [String], epoch }` | Refused with error `stale-epoch` and the current epoch when `epoch` is older; the client then clears its store (sign out everywhere happened elsewhere). Not forwarded: any engine writes the replicated table. |
+| `web_profile_push` | `{ device, epoch, changes: [{op:"set", cookie} \| {op:"remove", name, domain, path}], storage: [{origin, local_storage, captured_ms}] }` | `{ applied, sites: [String], epoch, profile: "shared" \| "off" }` | Refused with error `stale-epoch` and data `{ epoch }` (the current one) when `epoch` is older; the client then clears its store (sign out everywhere happened elsewhere). Refused with `unknown-epoch` and the same data when `epoch` is newer than the current one. Refused before any work with `invalid push: …` beyond 2000 changes or 64 snapshots or for a malformed cookie (§4.1 caps; the device name is cut to 64 characters), and with `profile full`. With `browser.profile: off` nothing is written and the result says `profile: "off"`; an error then means only "starting/unavailable" or a refusal. Not forwarded: any engine writes the replicated table. |
 | `web_profile_pull` | `{ sites?: [String] }` | `{ epoch, cookies: [Cookie], storage: [...] }` | P2, for D5. The only method that returns values; the app only. |
-| `web_profile_sites` | `{}` | `[{ site, cookies, origins, updated_ms, writer }]` | Settings list. Counts, never values. |
+| `web_profile_sites` | `{}` | `[{ site, cookies, origins, updated_ms, writer }]` | Settings list. Counts, never values; `origins` counts non-empty snapshots; `updated_ms` and `writer` are the site's newest row's. `[]` with `browser.profile: off`. |
 | `web_profile_forget` | `{ site }` | `{}` | P2. Writes `sealed = NULL`, publishes `WebProfileChanged`. |
 | `web_profile_clear` | `{}` | `{ epoch }` | P2. Bumps the epoch and nulls every row. |
 | `web_view_state` | `{ session, view, url, title, loading }` | `{}` | D9. Forwarded to the session's owner by `rpc_forward::route` (`crates/agent/src/rpc_forward.rs:1-10`). |
@@ -147,7 +172,9 @@ Every method is declared with `audience = "owner"` as the credentials API is (`c
 Events (`wire::WireEvent`, registered in `declare_wire`, mirrored like 205 §4.2):
 
 - `WebProfileChanged { sites: [String], epoch }`, topic `browser.web-profile-changed`. Site names, never values;
-  not session-scoped, so it is not stored with any session.
+  not session-scoped, so it is not stored with any session. Published for a local write and for rows replicated from
+  another engine (the sites read from those rows; a tombstone names its site through a live row of the same
+  `site_id`; the epoch row alone gives `sites: []`), so every engine's D14 gate learns a sign-in made elsewhere.
 - `WebViewCallRequested { id: Uuid, session, view, op, args }`, topic `artifact.web-view-call-requested`, and
   `WebViewCallResolved { id }`, topic `artifact.web-view-call-resolved`.
 - `WebViewCallAnswer` = `Claimed { client }` | `Done { result: Value, png?: String }` | `Failed { reason }`.
@@ -203,6 +230,11 @@ passed to `obscura_mcp::call_tool` (`session.rs:24-31`, `:147`). There is no `Pa
   the read-then-act loop and the System-1 shadow ledger (`tools.rs:33-36`) per session as they are. Its cost, a hidden
   mode, is paid by prefixing every reply on a tile with `[tile web:<id> · <host>]`.
 - `browser_run` (System-1), `browser_import_cookies` and `browser_list_profiles` stay obscura-only.
+- D14 timing: the gate decides before a call, on the site of the page the session starts from (`browser_open`: the
+  requested URL's site; `browser_eval`: any page once the session holds profile cookies, since a script can reach any
+  signed-in origin). After a call that may navigate, `Ctx` records the page it reached (`browser_navigate`'s reply names
+  it; other calls read `location.href`), so the next acting call is gated. The navigation that first reaches a
+  signed-in page (a redirect, a click, `browser_back`) is therefore not gated itself; it is logged.
 
 ### 4.7 Tile operations
 
@@ -445,6 +477,28 @@ Every phase is built by three builders in one worktree on disjoint paths (205 §
 - iPad simulator, engine on 333 plus a second engine: sign in to a local HTTPS test site in the tile;
   `web_profile_sites` lists it on both within 5 s; an agent on the second engine opens the protected page signed in;
   the test site logs one session id from both browsers.
+
+#### P1 as built (after the engine review)
+
+What the P1 engine differs in from the text above, decided by the orchestrator after the review; §4.1, §4.2, §4.4
+and §4.6 already say it:
+
+- No secret `webprofile/salt` (nor the interim `mesh/webprofile-salt`): row ids are keyed by an id key derived from
+  the mesh key (§4.1), so D2's "salted hash of the site" is a keyed hash of each cookie's identity, and the P1 "new
+  names" lose the secret. A mesh key rotation moves the rows to the new ids.
+- One row per cookie and per origin's snapshot, not per site (D2, §4.1): the table is `id, site_id, sealed, hlc`
+  plus a local `web_site_stats`; epoch, writer and time are inside the sealed entry. The migration was rewritten in
+  place (never shipped); a development database created by the first P1 build fails its checksum and needs
+  `webprofile.sqlite` removed.
+- `web_profile_push`'s result has `profile: "shared" | "off"`; `unknown-epoch` and `invalid push: …` join
+  `stale-epoch` and `profile full`; `browser.profile: off` answers empty instead of an error.
+- An agent session never adds a site to the profile (§4.2); `browser_open`'s tool text says so.
+- `WebProfileChanged` is also published for replicated rows (§4.4). The browser's D14 gate answers from the sites
+  the profile is known to hold and from the session's own loaded cookies; a failed load is retried with a backoff
+  per session; a save refused as `stale-epoch` clears the isolate's profile cookies and loads again; the last save of
+  a dropped isolate waits at most 2 s for its export.
+- `Tool::CREDENTIALED` (a const, default `false`) gates `Tool::credentialed`, so no other tool's arguments are
+  deserialised for it (§9).
 
 ### P2 — profile into the tile, settings (D5, D6)
 
