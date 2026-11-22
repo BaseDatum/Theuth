@@ -466,14 +466,15 @@ pub(crate) mod profile {
     /// Body of the `callAsyncJavaScript` that `web_storage_capture` runs in [`AGENT_WORLD`], in the main
     /// frame: the top-level origin and its localStorage as JSON. The size is counted while the list is built
     /// (exactly the UTF-8 length of `JSON.stringify(local_storage)`); past [`STORAGE_MAX_BYTES`] the snapshot
-    /// is dropped whole in the page (209 §4.1) and an empty `local_storage` crosses the bridge instead.
+    /// is dropped whole in the page (209 §4.1) and only `{origin, over: true}` crosses the bridge, which
+    /// [`parse_capture`] turns into the [`TOO_LARGE`] error: never an empty list, which means "cleared".
     pub(crate) const CAPTURE_SCRIPT: &str = concat!(
         "const max=",
         98304,
         ",e=new TextEncoder(),s=[];let n=1;",
         "for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k===null)continue;",
         "const p=[k,localStorage.getItem(k)??\"\"];n+=e.encode(JSON.stringify(p)).length+1;",
-        "if(n>max)return JSON.stringify({origin:location.origin,local_storage:[]});s.push(p);}",
+        "if(n>max)return JSON.stringify({origin:location.origin,over:true});s.push(p);}",
         "return JSON.stringify({origin:location.origin,local_storage:s});"
     );
 
@@ -496,26 +497,47 @@ pub(crate) mod profile {
         }
     }
 
+    /// What [`CAPTURE_SCRIPT`] returns: a snapshot, or the over-cap marker.
+    #[derive(Deserialize)]
+    struct Captured {
+        origin: String,
+        local_storage: Option<Vec<(String, String)>>,
+        #[serde(default)]
+        over: bool,
+    }
+
     /// The capture script's JSON, refused unless the origin is http(s) (an `about:blank` or opaque page
-    /// has no origin to store under).
+    /// has no origin to store under), and refused with [`TOO_LARGE`] when the snapshot passed
+    /// [`STORAGE_MAX_BYTES`].
     pub(crate) fn parse_capture(json: &str) -> Result<Storage, String> {
         // The error names the position only: serde's message can quote a storage value.
-        let storage: Storage = serde_json::from_str(json).map_err(|e| {
-            format!(
-                "storage capture returned an unexpected shape (at column {})",
-                e.column()
-            )
-        })?;
-        let web = tauri::Url::parse(&storage.origin)
+        let shape = |column: usize| {
+            format!("storage capture returned an unexpected shape (at column {column})")
+        };
+        let captured: Captured = serde_json::from_str(json).map_err(|e| shape(e.column()))?;
+        let web = tauri::Url::parse(&captured.origin)
             .is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
         if !web {
-            return Err(format!("{NO_ORIGIN} `{}`", storage.origin));
+            return Err(format!("{NO_ORIGIN} `{}`", captured.origin));
         }
-        Ok(storage)
+        if captured.over {
+            return Err(format!(
+                "{TOO_LARGE}: the localStorage of `{}` is over {} KiB",
+                captured.origin,
+                STORAGE_MAX_BYTES / 1024
+            ));
+        }
+        Ok(Storage {
+            origin: captured.origin,
+            local_storage: captured.local_storage.ok_or_else(|| shape(0))?,
+        })
     }
 
     /// Prefix of `web_storage_capture`'s refusal for a page without an http(s) origin.
     const NO_ORIGIN: &str = "no web origin";
+
+    /// Prefix of `web_storage_capture`'s refusal for a snapshot over [`STORAGE_MAX_BYTES`] (209 §4.1).
+    pub(crate) const TOO_LARGE: &str = "storage too large";
 
     #[cfg(test)]
     mod tests {
@@ -688,6 +710,33 @@ pub(crate) mod profile {
                 );
             }
             assert!(parse_capture("[]").is_err());
+            // Neither a snapshot nor the marker.
+            assert!(
+                parse_capture(r#"{"origin":"https://a.test"}"#)
+                    .unwrap_err()
+                    .starts_with("storage capture returned an unexpected shape")
+            );
+        }
+
+        #[test]
+        fn profile_storage_over_cap_is_an_error_not_empty() {
+            // A genuinely empty localStorage is a snapshot: the site cleared its storage.
+            let empty = parse_capture(r#"{"origin":"https://a.test","local_storage":[]}"#).unwrap();
+            assert_eq!(empty.origin, "https://a.test");
+            assert!(empty.local_storage.is_empty());
+            // Past the cap the script sends only the marker: an error, never an empty list.
+            let e = parse_capture(r#"{"origin":"https://a.test","over":true}"#).unwrap_err();
+            assert!(e.starts_with("storage too large"), "{e}");
+            assert!(e.contains("96 KiB"), "{e}");
+            // The marker wins over any list that came with it.
+            let e = parse_capture(
+                r#"{"origin":"https://a.test","over":true,"local_storage":[["k","s3cr3t"]]}"#,
+            )
+            .unwrap_err();
+            assert!(
+                e.starts_with("storage too large") && !e.contains("s3cr3t"),
+                "{e}"
+            );
         }
 
         #[test]
