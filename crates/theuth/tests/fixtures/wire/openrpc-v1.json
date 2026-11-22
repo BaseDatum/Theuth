@@ -11672,10 +11672,15 @@
         "type": "string"
       },
       "event.artifact_2eweb_2dview_2dcall_2drequested.output.WebViewCallRequested": {
-        "description": "Event: an agent session wants one operation run in a web view tile (209 D8, §4.4, §4.7).\nA client claims it only when its window holds the shell label `web-<view>`.",
+        "description": "Event: an agent session wants one operation run in a web view tile (209 D8, §4.4, §4.7).\nA client claims it only when its window holds the shell label `web-<view>` and the tile was\nopened by `session`, or `delegated` is set.",
         "properties": {
           "args": {
             "description": "The op's arguments (209 §4.7)."
+          },
+          "delegated": {
+            "default": false,
+            "description": "`true` when `session` is not the session that opened the tile: a session of the opener's\ntree attached to it (209 §9).",
+            "type": "boolean"
           },
           "id": {
             "allOf": [
@@ -11686,8 +11691,12 @@
             "description": "Use in `answer_web_view_call`."
           },
           "op": {
-            "description": "`script`, `navigate`, `back`, `forward`, `reload` or `snapshot` (209 §4.7).",
-            "type": "string"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2drequested.output.WebViewOp"
+              }
+            ],
+            "description": "The op (209 §4.7)."
           },
           "session": {
             "allOf": [
@@ -11710,11 +11719,52 @@
           "id",
           "session",
           "view",
+          "delegated",
           "op",
           "args",
           "type"
         ],
         "type": "object"
+      },
+      "event.artifact_2eweb_2dview_2dcall_2drequested.output.WebViewOp": {
+        "description": "The op of a [`WebViewCallRequested`] (209 §4.7).",
+        "oneOf": [
+          {
+            "const": "script",
+            "description": "Run `args.source` in the isolated or the page world.",
+            "type": "string"
+          },
+          {
+            "const": "navigate",
+            "description": "Load `args.url`.",
+            "type": "string"
+          },
+          {
+            "const": "back",
+            "description": "History back.",
+            "type": "string"
+          },
+          {
+            "const": "forward",
+            "description": "History forward.",
+            "type": "string"
+          },
+          {
+            "const": "reload",
+            "description": "Reload the page.",
+            "type": "string"
+          },
+          {
+            "const": "snapshot",
+            "description": "The visible viewport as a PNG.",
+            "type": "string"
+          },
+          {
+            "const": "stop",
+            "description": "The client's own op (the user pressed Stop): abandons the tile's waits. The engine never\nsends it.",
+            "type": "string"
+          }
+        ]
       },
       "event.artifact_2eweb_2dview_2dcall_2drequested.receiver.SessionId": {
         "description": "Identifies a conversation; every event carries one.",
@@ -11727,10 +11777,15 @@
         "type": "string"
       },
       "event.artifact_2eweb_2dview_2dcall_2drequested.receiver.WebViewCallRequested": {
-        "description": "Event: an agent session wants one operation run in a web view tile (209 D8, §4.4, §4.7).\nA client claims it only when its window holds the shell label `web-<view>`.",
+        "description": "Event: an agent session wants one operation run in a web view tile (209 D8, §4.4, §4.7).\nA client claims it only when its window holds the shell label `web-<view>` and the tile was\nopened by `session`, or `delegated` is set.",
         "properties": {
           "args": {
             "description": "The op's arguments (209 §4.7)."
+          },
+          "delegated": {
+            "default": false,
+            "description": "`true` when `session` is not the session that opened the tile: a session of the opener's\ntree attached to it (209 §9).",
+            "type": "boolean"
           },
           "id": {
             "allOf": [
@@ -11741,8 +11796,12 @@
             "description": "Use in `answer_web_view_call`."
           },
           "op": {
-            "description": "`script`, `navigate`, `back`, `forward`, `reload` or `snapshot` (209 §4.7).",
-            "type": "string"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2drequested.receiver.WebViewOp"
+              }
+            ],
+            "description": "The op (209 §4.7)."
           },
           "session": {
             "allOf": [
@@ -11770,6 +11829,46 @@
           "type"
         ],
         "type": "object"
+      },
+      "event.artifact_2eweb_2dview_2dcall_2drequested.receiver.WebViewOp": {
+        "description": "The op of a [`WebViewCallRequested`] (209 §4.7).",
+        "oneOf": [
+          {
+            "const": "script",
+            "description": "Run `args.source` in the isolated or the page world.",
+            "type": "string"
+          },
+          {
+            "const": "navigate",
+            "description": "Load `args.url`.",
+            "type": "string"
+          },
+          {
+            "const": "back",
+            "description": "History back.",
+            "type": "string"
+          },
+          {
+            "const": "forward",
+            "description": "History forward.",
+            "type": "string"
+          },
+          {
+            "const": "reload",
+            "description": "Reload the page.",
+            "type": "string"
+          },
+          {
+            "const": "snapshot",
+            "description": "The visible viewport as a PNG.",
+            "type": "string"
+          },
+          {
+            "const": "stop",
+            "description": "The client's own op (the user pressed Stop): abandons the tile's waits. The engine never\nsends it.",
+            "type": "string"
+          }
+        ]
       },
       "event.artifact_2eweb_2dview_2dcall_2dresolved.output.WebViewCallId": {
         "description": "Correlates a [`WebViewCallRequested`] with its answers (209 D8).",
@@ -59113,7 +59212,7 @@
             "description": "\"This window holds the tile and runs the op\": the first one wins, later ones are refused.",
             "properties": {
               "client": {
-                "description": "Who runs it (free text, e.g. the client's install id).",
+                "description": "Who runs it (free text, e.g. the client's install id; logs only).",
                 "type": "string"
               },
               "kind": {
@@ -59128,7 +59227,7 @@
             "type": "object"
           },
           {
-            "description": "The op ran; first `Done`/`Failed` wins.",
+            "description": "The op ran. Taken only from the connection that claimed the call.",
             "properties": {
               "kind": {
                 "const": "done",
@@ -59153,7 +59252,7 @@
             "type": "object"
           },
           {
-            "description": "The op could not run.",
+            "description": "The op could not run. Taken only from the claimer; before any claim only with a\n[`STOP_REASONS`] reason.",
             "properties": {
               "kind": {
                 "const": "failed",
@@ -125446,6 +125545,21 @@
             "$ref": "#/components/schemas/method.artifact.input.PagePreviewAnswer"
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.artifact.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
         }
       ],
       "result": {
@@ -125603,6 +125717,21 @@
           "required": true,
           "schema": {
             "$ref": "#/components/schemas/method.artifact.input.WebViewCallAnswer"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.artifact.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "x-theuth-aliases": []
         }
@@ -144876,6 +145005,17 @@
           "required": true,
           "schema": {
             "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "closed",
+          "required": false,
+          "schema": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "x-theuth-aliases": []
         }
