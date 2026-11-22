@@ -32,14 +32,27 @@ type WebViewsStore = {
   /** Forget the frame and destroy its native web view. */
   close(id: string): void
   patch(id: string, p: Partial<Omit<WebView, 'id'>>): void
-  /** 209 §7: frame `id` full screen on the phone; one that was there goes to the pill. */
+  /** 209 §7: frame `id` full screen on the phone; one that was there goes to the pill (`MAX_MINIMISED` holds). */
   show(id: string): void
-  /** 209 §7: frame `id` into the pill: its native view is hidden (`web_view_visible(false)`), never destroyed. */
+  /** 209 §7: frame `id` into the pill: its native view is hidden (`web_view_visible(false)`), never destroyed; past
+   * `MAX_MINIMISED` the oldest-seen minimised frame is closed. */
   minimise(id: string): void
 }
 
 /** Orders `seen`. */
 let tick = 0
+
+/** 209 §7: at most this many minimised frames; each keeps a live native web view (a WebContent process on iOS), so
+ * one more closes the oldest seen (`web_view_close`, `closed` to the engine). */
+export const MAX_MINIMISED = 6
+
+/** The minimised frames past `MAX_MINIMISED`, oldest seen first: the ones to close. */
+function evicted(views: Record<string, WebView>): string[] {
+  const pill = Object.values(views)
+    .filter((v) => v.minimised && !v.popped)
+    .sort((a, b) => (a.seen ?? 0) - (b.seen ?? 0))
+  return pill.slice(0, Math.max(0, pill.length - MAX_MINIMISED)).map((v) => v.id)
+}
 
 const WEB = 'web:'
 export const webLeaf = (id: string): string => `${WEB}${id}`
@@ -61,6 +74,8 @@ export const useWebViews = create<WebViewsStore>()((set, get) => ({
     if (!old) return
     const { [id]: _, ...rest } = get().views
     set({ views: rest })
+    // A state still waiting in the forwarder's window would reach the engine after `closed` and bring the tile back.
+    forwarding?.drop(webLeaf(id))
     // 209 P3: the engine forgets the tile (no longer listed or attachable). A pop-out window knows no session.
     if (old.session) sendState({ session: old.session, view: webLeaf(id), url: old.current, title: old.title, loading: false, closed: true })
     void native.close(id).catch((e: unknown) => console.warn('web_view_close', e))
@@ -77,6 +92,7 @@ export const useWebViews = create<WebViewsStore>()((set, get) => ({
     const prev = front !== null && front !== id ? views[front] : undefined
     if (prev) next[prev.id] = { ...prev, minimised: true, seen: ++tick }
     set({ views: next, front: id })
+    for (const old of evicted(next)) get().close(old)
   },
   minimise(id) {
     const { views, front } = get()
@@ -84,14 +100,23 @@ export const useWebViews = create<WebViewsStore>()((set, get) => ({
     if (!old) return
     set({ views: { ...views, [id]: { ...old, minimised: true, seen: ++tick } }, front: front === id ? null : front })
     void native.visible(id, false).catch((e: unknown) => console.warn('web_view_visible', e))
+    for (const old of evicted(get().views)) get().close(old)
   },
 }))
 
-/** 209 §7: what the pill above the composer shows: the latest minimised frame, how many there are, and all of them,
- * latest first; `null` when none is minimised. A popped-out frame lives in its window, never in the pill. */
-export function pillOf(views: Record<string, WebView>): { latest: WebView; count: number; list: WebView[] } | null {
+/** 209 §7: frame `id` back full screen on the phone (the pill, the card's Open); a keyboard left up by the composer goes
+ * down first, so the page opens into the full band. */
+export function restoreWeb(id: string): void {
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+  useWebViews.getState().show(id)
+}
+
+/** 209 §7: what the pill above `session`'s composer shows: the latest of its minimised frames, how many there are, and
+ * all of them, latest first; `null` when none is minimised. Only that chat's pages: another chat's page is reached from
+ * its own chat (its pill, its card). A popped-out frame lives in its window, never in the pill. */
+export function pillOf(views: Record<string, WebView>, session: string): { latest: WebView; count: number; list: WebView[] } | null {
   const list = Object.values(views)
-    .filter((v) => v.minimised && !v.popped)
+    .filter((v) => v.minimised && !v.popped && v.session === session)
     .sort((a, b) => (b.seen ?? 0) - (a.seen ?? 0))
   const latest = list[0]
   return latest ? { latest, count: list.length, list } : null
@@ -100,11 +125,12 @@ export function pillOf(views: Record<string, WebView>): { latest: WebView; count
 /** How a `show_web` (or a card's Open) reaches the screen (209 D11, §7). A tablet or desktop tiles it beside its chat
  * when that chat is on screen (205 D5), else it waits for its card. A phone with native views opens it full screen,
  * except while the user is writing (the composer has focus or holds a draft) or is looking at another chat: then it
- * arrives as the pill, never over the screen. A phone without native views (a browser) keeps the card. */
+ * arrives as the pill, never over the screen. A phone without native views (a browser), or an address on a remote
+ * engine's loopback (`remote`: the device cannot load it, 205 §4.4), keeps the card. */
 export type Arrival = 'tile' | 'full' | 'pill' | 'card'
-export function arrival(o: { phone: boolean; native: boolean; visible: boolean; writing: boolean }): Arrival {
+export function arrival(o: { phone: boolean; native: boolean; visible: boolean; writing: boolean; remote: boolean }): Arrival {
   if (!o.phone) return o.visible ? 'tile' : 'card'
-  if (!o.native) return 'card'
+  if (!o.native || o.remote) return 'card'
   return o.visible && !o.writing ? 'full' : 'pill'
 }
 
@@ -168,12 +194,20 @@ export type WebViewStateReport = { session: string; view: string; url: string; t
 /** 209 D9: at most one `web_view_state` per view in this many ms (209 §4.5). */
 export const STATE_EVERY_MS = 500
 
+/** Per-view throttle of `web_view_state` reports (`stateForwarder`). */
+export type StateForwarder = {
+  push(r: WebViewStateReport): void
+  /** The view is gone: forget its slot, drop a waiting state. */
+  drop(view: string): void
+  stop(): void
+}
+
 /**
  * 209 D9: a view's state goes out only when it differs from what was last delivered, at most once per
  * `STATE_EVERY_MS` per view; a state arriving inside the window waits for its end, replaced by any newer one, so the
  * last state of a burst (`loading: false`) always goes. `send` answers whether it delivered (else the next change retries).
  */
-export function stateForwarder(send: (r: WebViewStateReport) => boolean) {
+export function stateForwarder(send: (r: WebViewStateReport) => boolean): StateForwarder {
   type Slot = { sent: string; at: number; next: WebViewStateReport | null; timer?: ReturnType<typeof setTimeout> }
   const slots = new Map<string, Slot>()
   const deliver = (s: Slot, r: WebViewStateReport) => {
@@ -200,7 +234,6 @@ export function stateForwarder(send: (r: WebViewStateReport) => boolean) {
         if (next) deliver(s, next)
       }, wait)
     },
-    /** The view is gone: forget its slot, drop a waiting state. */
     drop(view: string) {
       clearTimeout(slots.get(view)?.timer)
       slots.delete(view)
@@ -223,6 +256,9 @@ function sendState(r: WebViewStateReport): boolean {
   return true
 }
 
+/** The forwarder of the installed listener set, so `close` can drop a state still waiting for its window. */
+let forwarding: StateForwarder | null = null
+
 /**
  * 205 §4.4, the main window's one listener set: `web-view://state` keeps a frame's address, title and spinner current
  * wherever it is shown (a tile, a pop-out, nowhere on screen) and reports it to the engine for the session that opened
@@ -234,6 +270,7 @@ export function installWebViewEvents(): () => void {
   const offs: (() => void)[] = []
   const keep = (p: Promise<() => void>) => void p.then((off) => (gone ? off() : offs.push(off)))
   const forward = stateForwarder(sendState)
+  forwarding = forward
   keep(
     native.onState((s) => {
       const id = native.labelId(s.label)
@@ -256,6 +293,7 @@ export function installWebViewEvents(): () => void {
   )
   return () => {
     gone = true
+    if (forwarding === forward) forwarding = null
     forward.stop()
     for (const off of offs) off()
   }

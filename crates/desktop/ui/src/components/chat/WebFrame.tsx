@@ -8,15 +8,15 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { usePaneDrag } from '@/hooks/use-pane-drag'
 import { useEngines } from '@/link/engines'
-import { isLocal } from '@/lib/files'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { container } from '@/lib/platform'
 import { popOutWeb } from '@/lib/panes'
 import { canPopout, closePopout, isPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
+import { remoteLoopback } from '@/lib/web-arrival'
 import { showFrame, stopAgent, useAgentActing, useTileAgent } from '@/lib/web-view-agent'
 import * as native from '@/lib/web-view-native'
-import { httpUrl, isLoopback, openInBrowser, placeTile, useWebViews } from '@/lib/web-views'
+import { httpUrl, openInBrowser, placeTile, useWebViews } from '@/lib/web-views'
 
 /** Toolbar tooltips open sideways, over the toolbar's DOM: below it the native view would cover them. */
 function Tip({ label, children }: { label: string; children: ReactNode }) {
@@ -164,7 +164,7 @@ export function useLiveFrame(id: string) {
   const [forced, setForced] = useState(false)
   const hasNative = native.nativeWebViews()
   const current = view?.current ?? ''
-  const remote = hasNative && !isLocal(active) && isLoopback(current)
+  const remote = hasNative && remoteLoopback(active, current)
   const live = view !== undefined && hasNative && (!remote || forced)
   return { view, current, live, remote, engine, force: () => setForced(true) }
 }

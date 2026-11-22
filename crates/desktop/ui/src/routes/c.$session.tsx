@@ -202,7 +202,7 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
       {lost && <UnreachableCard session={session} machine={lost} />}
       <SubagentStrip session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
       <BackgroundArea key={`d:${session}`} session={session} />
-      <WebPill />
+      <WebPill session={session} />
       {aboveComposer}
       {watching ? (
         <>

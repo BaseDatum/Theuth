@@ -2,10 +2,16 @@
 // above the composer. Apart from `web-views.ts` because it places tiles (`lib/panes` imports `web-views`).
 
 import { isMobileLayout } from '@/hooks/use-mobile'
+import { useEngines } from '@/link/engines'
 import { useDrafts } from '@/lib/drafts'
+import { isLocal } from '@/lib/files'
 import { leaves, placeWeb, usePanes } from '@/lib/panes'
 import * as native from '@/lib/web-view-native'
-import { arrival, isWeb, useWebViews, webId, webLeaf } from '@/lib/web-views'
+import { arrival, isLoopback, isWeb, useWebViews, webId, webLeaf } from '@/lib/web-views'
+
+/** `url` names the machine of a remote engine (`active` is not this desktop's own engine): this device cannot load it
+ * (205 §4.4, last bullet). The frame offers **Open in browser** and **Load anyway** instead. */
+export const remoteLoopback = (active: string, url: string): boolean => !isLocal(active) && isLoopback(url)
 
 /** 209 §7: the user is writing: focus is in a composer (`data-composer`), or `session`'s composer holds a draft (text
  * or a held chip). */
@@ -28,7 +34,8 @@ export function webViewOpened(e: { id: string; session: string; url: string; tit
   const old = store.views[e.id]
   store.open({ id: e.id, session: e.session, url: e.url, title: e.title })
   const phone = isMobileLayout()
-  const how = arrival({ phone, native: native.nativeWebViews(), visible, writing: phone && writing(e.session) })
+  const remote = remoteLoopback(useEngines.getState().active, e.url)
+  const how = arrival({ phone, native: native.nativeWebViews(), visible, writing: phone && writing(e.session), remote })
   if (phone) {
     if (how === 'card') return
     // A view never attached answers `no web view`: its attach loads the new address.
@@ -52,8 +59,8 @@ export function webViewOpened(e: { id: string; session: string; url: string; tit
 /**
  * 209 §7: the layout crossed into a phone (`phone`) or out of it (a rotation past 768 px, a wider window). Into it:
  * each web tile of the tree goes into the pill (its leaf stays, so widening again shows the tile). Out of it: the page
- * shown full screen becomes its tile beside its chat when that chat is the route's (`route`) or in the tree, else it
- * goes into the pill until its card opens it.
+ * shown full screen becomes its tile beside its chat when that chat is the route's (`route`) or in the tree; else it
+ * is left as it is, not minimised (no pill shows off a phone), and its card places it.
  */
 export function crossLayout(phone: boolean, route: string): void {
   const web = useWebViews.getState()
@@ -68,5 +75,5 @@ export function crossLayout(phone: boolean, route: string): void {
   useWebViews.setState({ front: null })
   if (!view) return
   const here = view.session === route || (root !== null && leaves(root).includes(view.session))
-  if (!(here && placeWeb(view.session, front))) web.minimise(front)
+  if (here) placeWeb(view.session, front)
 }

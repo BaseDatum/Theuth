@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { chatLeaves, closeWeb, leaves, placeWeb, shown, usePanes } from './panes'
 import {
+  MAX_MINIMISED,
   STATE_EVERY_MS,
   arrival,
   pillOf,
@@ -8,6 +9,7 @@ import {
   type WebViewStateReport,
   collapseSidebarFor,
   httpUrl,
+  installWebViewEvents,
   isLoopback,
   isWeb,
   placeTile,
@@ -17,8 +19,18 @@ import {
   webLeaf,
 } from './web-views'
 
-const native = vi.hoisted(() => ({ close: vi.fn(async () => {}) }))
-vi.mock('@/lib/web-view-native', async (original) => ({ ...(await original<object>()), close: native.close }))
+type ShellState = { label: string; url: string; title: string; loading: boolean }
+const native = vi.hoisted(() => ({ close: vi.fn(async () => {}), state: null as null | ((s: ShellState) => void) }))
+vi.mock('@/lib/web-view-native', async (original) => ({
+  ...(await original<object>()),
+  close: native.close,
+  onState: async (cb: (s: ShellState) => void) => {
+    native.state = cb
+    return () => {
+      native.state = null
+    }
+  },
+}))
 const engine = vi.hoisted(() => ({ web_view_state: vi.fn(async (..._params: unknown[]) => ({})) }))
 vi.mock('@/store/connection', () => ({ useConnection: { getState: () => ({ api: engine, state: 'open', discovery: { phase: 'ready' } }) } }))
 vi.mock('@/rpc/discovery', () => ({ supports: () => true }))
@@ -194,36 +206,85 @@ test('209 D11: a frame decides on its first measured width, once; a width of 0 d
 test('209 §7: a phone shows one page full screen; showing another puts the first in the pill; the pill names the latest first and counts all', () => {
   const s = useWebViews.getState()
   for (const id of ['a', 'b', 'c']) s.open({ id, session: 's1', url: `https://${id}.example/`, title: id.toUpperCase() })
-  expect(pillOf(useWebViews.getState().views)).toBeNull()
+  expect(pillOf(useWebViews.getState().views, 's1')).toBeNull()
   s.show('a')
   expect(useWebViews.getState().front).toBe('a')
   s.show('b')
   expect(useWebViews.getState().front).toBe('b')
-  expect(pillOf(useWebViews.getState().views)).toMatchObject({ latest: { id: 'a' }, count: 1 })
+  expect(pillOf(useWebViews.getState().views, 's1')).toMatchObject({ latest: { id: 'a' }, count: 1 })
   s.minimise('b')
   expect(useWebViews.getState().front).toBeNull()
   s.minimise('c')
-  const pill = pillOf(useWebViews.getState().views)!
+  const pill = pillOf(useWebViews.getState().views, 's1')!
   expect(pill.latest.id).toBe('c')
   expect(pill.count).toBe(3)
   expect(pill.list.map((v) => v.id)).toEqual(['c', 'b', 'a'])
   // Restoring one takes it out of the pill; a popped-out frame is never in it; closing one forgets it.
   s.show('a')
   s.patch('b', { popped: true })
-  expect(pillOf(useWebViews.getState().views)).toMatchObject({ latest: { id: 'c' }, count: 1 })
+  expect(pillOf(useWebViews.getState().views, 's1')).toMatchObject({ latest: { id: 'c' }, count: 1 })
   s.close('a')
   expect(useWebViews.getState().front).toBeNull()
   expect(native.close).toHaveBeenCalledWith('a')
 })
 
-test('209 D11: a tablet or desktop tiles a page beside its chat on screen; a phone opens it full screen unless the user writes or looks elsewhere; a phone without native views keeps the card', () => {
-  const tablet = { phone: false, native: true, visible: true, writing: false }
+test('209 §7: at most MAX_MINIMISED pages wait minimised; one more closes the oldest seen (web_view_close, `closed` to the engine)', () => {
+  expect(MAX_MINIMISED).toBe(6)
+  const s = useWebViews.getState()
+  const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']
+  for (const id of ids) s.open({ id, session: id === 'b' ? 's2' : 's1', url: `https://${id}.example/`, title: id })
+  for (const id of ids.slice(0, MAX_MINIMISED)) s.minimise(id)
+  expect(native.close).not.toHaveBeenCalled()
+  // A seventh minimised: the oldest seen goes, whichever chat it belongs to (the device's views are what is capped).
+  s.minimise('g')
+  expect(native.close.mock.calls).toEqual([['a']])
+  expect(engine.web_view_state.mock.calls).toEqual([['s1', webLeaf('a'), 'https://a.example/', 'a', false, true]])
+  expect(Object.keys(useWebViews.getState().views)).not.toContain('a')
+  // Restoring one and minimising it again makes it the latest seen: `c` is now the oldest.
+  s.show('b')
+  s.minimise('b')
+  expect(native.close).toHaveBeenCalledTimes(1)
+  // A page shown full screen pushes the one there into the pill: a seventh again.
+  s.show('h')
+  s.show('i')
+  expect(native.close.mock.calls).toEqual([['a'], ['c']])
+  expect(Object.values(useWebViews.getState().views).filter((v) => v.minimised)).toHaveLength(MAX_MINIMISED)
+  expect(useWebViews.getState().front).toBe('i')
+})
+
+test('209 D9: closing a page drops its state still waiting in the window, so nothing reaches the engine after `closed`', async () => {
+  vi.useFakeTimers()
+  const off = installWebViewEvents()
+  try {
+    await vi.waitFor(() => expect(native.state).not.toBeNull())
+    useWebViews.getState().open({ id: ID, session: 's1', url: 'https://example.com/', title: 'x' })
+    native.state!({ label: `web-${ID}`, url: 'https://example.com/a', title: 'x', loading: true })
+    // Mid-load: the next state waits for the window's end.
+    native.state!({ label: `web-${ID}`, url: 'https://example.com/a', title: 'x', loading: false })
+    useWebViews.getState().close(ID)
+    vi.advanceTimersByTime(STATE_EVERY_MS)
+    expect(engine.web_view_state.mock.calls).toEqual([
+      ['s1', W, 'https://example.com/a', 'x', true],
+      ['s1', W, 'https://example.com/a', 'x', false, true],
+    ])
+  } finally {
+    off()
+    vi.useRealTimers()
+  }
+})
+
+test('209 D11: a tablet or desktop tiles a page beside its chat on screen; a phone opens it full screen unless the user writes or looks elsewhere; a phone without native views, or a remote engine loopback address, keeps the card', () => {
+  const tablet = { phone: false, native: true, visible: true, writing: false, remote: false }
   expect(arrival(tablet)).toBe('tile')
   expect(arrival({ ...tablet, writing: true })).toBe('tile')
   expect(arrival({ ...tablet, visible: false })).toBe('card')
+  // The tile shows **Load anyway** itself.
+  expect(arrival({ ...tablet, remote: true })).toBe('tile')
   const phone = { ...tablet, phone: true }
   expect(arrival(phone)).toBe('full')
   expect(arrival({ ...phone, writing: true })).toBe('pill')
   expect(arrival({ ...phone, visible: false })).toBe('pill')
   expect(arrival({ ...phone, native: false })).toBe('card')
+  expect(arrival({ ...phone, remote: true })).toBe('card')
+  expect(arrival({ ...phone, remote: true, writing: true })).toBe('card')
 })

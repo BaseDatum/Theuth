@@ -10,7 +10,7 @@ import { IDLE, REFUSE_MS, started, useTileAgent } from '@/lib/web-view-agent'
 import { AgentTileBanner } from './AgentTileBanner'
 import type { Entry } from '@/store/sessions'
 import { WebFrame } from './WebFrame'
-import { WebViewCard, webCall } from './WebViewCard'
+import { openWebView, WebViewCard, webCall } from './WebViewCard'
 
 /** Settles the last `viewCall` (Stop's shell `stop`). */
 const shellStop = vi.hoisted(() => ({ settle: null as null | ((v: unknown) => void) }))
@@ -249,6 +249,11 @@ test('after a restart (empty store) the card pop-out records the frame as popped
   await act(async () => open.click())
   expect(usePanes.getState().root).toBeNull()
   expect(openPopout).toHaveBeenCalledTimes(2)
+  // A desktop window narrower than 768 px opens pages full screen (`full`): a popped page still focuses its window,
+  // never an empty full-screen frame whose attach the shell refuses.
+  openWebView('s1', { id: ID, url: 'http://localhost:3000/', title: 'Dev server' }, true)
+  expect(openPopout).toHaveBeenCalledTimes(3)
+  expect(useWebViews.getState().front).toBeNull()
   await act(async () => root.unmount())
 })
 

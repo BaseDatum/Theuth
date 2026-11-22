@@ -5,7 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { placeWeb, popOutWeb } from '@/lib/panes'
 import { canPopout } from '@/lib/popout'
 import { nativeWebViews } from '@/lib/web-view-native'
-import { openInBrowser, useWebViews } from '@/lib/web-views'
+import { openInBrowser, restoreWeb, useWebViews } from '@/lib/web-views'
 import type { Entry } from '@/store/sessions'
 import { ToolSpinner } from './Indicators'
 
@@ -24,20 +24,19 @@ export function webCall(tool: Pick<Tool, 'args' | 'result'>): WebCall {
   return { id: null, url, title: typeof args.title === 'string' && args.title ? args.title : url }
 }
 
-/** **Open**: the frame's tile right of `session`'s pane (an open one stays), or its popped-out window, focused; on a
- * phone (`full`) the page full screen (209 §7), as it was when it had been shown before. */
+/** **Open**: the frame's popped-out window, focused, when one holds it; else the frame's tile right of `session`'s pane
+ * (an open one stays), or on a phone (`full`) the page full screen (209 §7), as it was when it had been shown before,
+ * the keyboard down first (`restoreWeb`). */
 export function openWebView(session: string, { id, url, title }: { id: string; url: string; title: string }, full = false): void {
   const store = useWebViews.getState()
   const view = store.views[id]
   if (!view) store.open({ id, session, url, title })
-  if (full) {
-    useWebViews.getState().show(id)
-    return
-  }
+  // Before `full`: a narrow desktop window is a "phone" too, and its attach would be refused (`in-popout:`).
   if (view?.popped && canPopout()) {
     void popOutWeb({ id, session: view.session, url: view.current, title: view.title }).catch((e: unknown) => console.warn('open_window', e))
     return
   }
+  if (full) return restoreWeb(id)
   placeWeb(session, id)
 }
 
