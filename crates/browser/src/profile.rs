@@ -1006,13 +1006,15 @@ mod tests {
         take(session);
     }
 
-    /// A cookie the profile holds without SameSite comes back from obscura as `Lax`: no change,
-    /// so the session's loaded value never overwrites a newer one the tile wrote since.
+    /// A cookie the profile holds without SameSite and without `Secure` goes into obscura as
+    /// `Lax` and comes back so: no change, so the session's loaded value never overwrites a newer
+    /// one the tile wrote since; a lower-case `strict` comes back title-cased, no change either.
     #[test]
     fn plan_ignores_obscuras_same_site_spelling() {
         let session = SessionId::new();
         let mut pref = cookie("pref", "loaded-value", "same-site-test.example", false);
         pref.same_site = String::new();
+        pref.secure = false;
         let mut strict = cookie("st", "v", "same-site-test.example", false);
         strict.same_site = "strict".into();
         load(
@@ -1024,7 +1026,7 @@ mod tests {
         let text = export(
             json!([
                 { "name": "pref", "value": "loaded-value", "domain": "same-site-test.example", "path": "/",
-                  "secure": true, "http_only": true, "same_site": "Lax", "expires": 4_000_000_000i64 },
+                  "secure": false, "http_only": true, "same_site": "Lax", "expires": 4_000_000_000i64 },
                 { "name": "st", "value": "v", "domain": "same-site-test.example", "path": "/",
                   "secure": true, "http_only": true, "same_site": "Strict", "expires": 4_000_000_000i64 },
             ]),

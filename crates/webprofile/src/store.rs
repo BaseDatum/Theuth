@@ -746,7 +746,7 @@ impl Profile {
                 snaps.clear();
                 if before > changes.len() {
                     tracing::info!(
-                        "webprofile: {site} was forgotten since {} read it: {} sets and snapshots refused",
+                        "webprofile: {site} was forgotten since {} read it: {} sets and snapshots dropped",
                         msg.writer,
                         before - changes.len()
                     );

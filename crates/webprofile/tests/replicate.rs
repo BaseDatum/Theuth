@@ -446,17 +446,14 @@ async fn the_epoch_never_goes_down_when_two_engines_clear_apart() {
 
     connect(&Arc::new(Switch::default()), [&a, &b]);
     until("A received B's epoch row", async || {
-        let sealed: Option<String> =
-            sqlx::query_scalar("SELECT hlc FROM web_sites WHERE id = 'epoch'")
-                .fetch_one(a.profile.pool())
+        let row = async |n: &Node| -> Option<String> {
+            sqlx::query_scalar("SELECT sealed FROM web_sites WHERE id = 'epoch'")
+                .fetch_one(n.profile.pool())
                 .await
-                .unwrap();
-        let b_hlc: Option<String> =
-            sqlx::query_scalar("SELECT hlc FROM web_sites WHERE id = 'epoch'")
-                .fetch_one(b.profile.pool())
-                .await
-                .unwrap();
-        sealed.is_some() && sealed == b_hlc
+                .unwrap()
+        };
+        let (on_a, on_b) = (row(&a).await, row(&b).await);
+        on_a.is_some() && on_a == on_b
     })
     .await;
     assert_eq!(a.profile.epoch().await.unwrap(), 2, "A never answers less");

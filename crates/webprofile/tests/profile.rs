@@ -686,7 +686,7 @@ async fn a_forgotten_site_does_not_come_back_from_stale_writers() {
                     basis,
                     vec![
                         set(cookie("sid", "refreshed-in-tile", "example.com")),
-                        set(cookie("k2", "2", "other.org")),
+                        set(cookie("k2", &format!("{basis:?}"), "other.org")),
                     ],
                 ),
                 forgot + hour,
