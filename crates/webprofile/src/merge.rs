@@ -162,7 +162,7 @@ mod tests {
                 },
             ]
         );
-        assert!(diff(&[a.clone()], &[a]).is_empty());
+        assert!(diff(std::slice::from_ref(&a), std::slice::from_ref(&a)).is_empty());
     }
 
     #[test]
