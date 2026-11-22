@@ -11136,6 +11136,115 @@
         ],
         "type": "object"
       },
+      "event.artifact_2enote_2dview_2dopened.output.NoteViewOpened": {
+        "description": "Event: a `show_note` call opened a note tile (211 §1).\nWire shape `{ \"type\": \"NoteViewOpened\", \"session\", \"call_id\", \"doc\", \"kind\", \"title\", \"block\" }`.",
+        "properties": {
+          "block": {
+            "description": "Block to scroll to.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "doc": {
+            "description": "The resolved 26-char document id.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`note` | `board` | `knowledge` | `meeting_note` (the `DocKind` serde name).",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2enote_2dview_2dopened.output.SessionId"
+              }
+            ],
+            "description": "Calling session."
+          },
+          "title": {
+            "description": "Tile and card title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "NoteViewOpened",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "doc",
+          "kind",
+          "title",
+          "block",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2enote_2dview_2dopened.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2enote_2dview_2dopened.receiver.NoteViewOpened": {
+        "description": "Event: a `show_note` call opened a note tile (211 §1).\nWire shape `{ \"type\": \"NoteViewOpened\", \"session\", \"call_id\", \"doc\", \"kind\", \"title\", \"block\" }`.",
+        "properties": {
+          "block": {
+            "description": "Block to scroll to.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "doc": {
+            "description": "The resolved 26-char document id.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`note` | `board` | `knowledge` | `meeting_note` (the `DocKind` serde name).",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2enote_2dview_2dopened.receiver.SessionId"
+              }
+            ],
+            "description": "Calling session."
+          },
+          "title": {
+            "description": "Tile and card title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "NoteViewOpened",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "doc",
+          "kind",
+          "title",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2enote_2dview_2dopened.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
       "event.artifact_2epage_2dpreview_2drequested.output.Appearance": {
         "description": "The appearance the page is rendered under.",
         "oneOf": [
@@ -11346,6 +11455,135 @@
       },
       "event.artifact_2epage_2dpreview_2dresolved.receiver.PreviewId": {
         "description": "Correlates a request with its answers.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2epty_2dview_2dopened.output.PtyViewOpened": {
+        "description": "Event: a `show_pty` call opened a job tile (211 §1, §5).\nWire shape `{ \"type\": \"PtyViewOpened\", \"session\", \"call_id\", \"job\", \"name\", \"title\",\n\"running\", \"pty\", \"spawned\" }`.",
+        "properties": {
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "job": {
+            "description": "The resolved job id (`j3`).",
+            "type": "string"
+          },
+          "name": {
+            "description": "`start`'s label, when it had one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pty": {
+            "description": "`true`: an interactive terminal; `false`: a background job's read-only log.",
+            "type": "boolean"
+          },
+          "running": {
+            "description": "The job still runs; `false`: the tile shows its final screen or log.",
+            "type": "boolean"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2epty_2dview_2dopened.output.SessionId"
+              }
+            ],
+            "description": "Calling session (the job's owner)."
+          },
+          "spawned": {
+            "description": "This call started the job.",
+            "type": "boolean"
+          },
+          "title": {
+            "description": "Tile and card title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "PtyViewOpened",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "job",
+          "name",
+          "title",
+          "running",
+          "pty",
+          "spawned",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2epty_2dview_2dopened.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2epty_2dview_2dopened.receiver.PtyViewOpened": {
+        "description": "Event: a `show_pty` call opened a job tile (211 §1, §5).\nWire shape `{ \"type\": \"PtyViewOpened\", \"session\", \"call_id\", \"job\", \"name\", \"title\",\n\"running\", \"pty\", \"spawned\" }`.",
+        "properties": {
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "job": {
+            "description": "The resolved job id (`j3`).",
+            "type": "string"
+          },
+          "name": {
+            "description": "`start`'s label, when it had one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pty": {
+            "description": "`true`: an interactive terminal; `false`: a background job's read-only log.",
+            "type": "boolean"
+          },
+          "running": {
+            "description": "The job still runs; `false`: the tile shows its final screen or log.",
+            "type": "boolean"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2epty_2dview_2dopened.receiver.SessionId"
+              }
+            ],
+            "description": "Calling session (the job's owner)."
+          },
+          "spawned": {
+            "description": "This call started the job.",
+            "type": "boolean"
+          },
+          "title": {
+            "description": "Tile and card title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "PtyViewOpened",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "job",
+          "title",
+          "running",
+          "pty",
+          "spawned",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2epty_2dview_2dopened.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
         "type": "string"
       },
@@ -145628,6 +145866,16 @@
       },
       {
         "receiverSchema": {
+          "$ref": "#/components/schemas/event.artifact_2enote_2dview_2dopened.receiver.NoteViewOpened"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.artifact_2enote_2dview_2dopened.output.NoteViewOpened"
+        },
+        "topic": "artifact.note-view-opened",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2epage_2dpreview_2drequested.receiver.PagePreviewRequested"
         },
         "schema": {
@@ -145644,6 +145892,16 @@
           "$ref": "#/components/schemas/event.artifact_2epage_2dpreview_2dresolved.output.PagePreviewResolved"
         },
         "topic": "artifact.page-preview-resolved",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.artifact_2epty_2dview_2dopened.receiver.PtyViewOpened"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.artifact_2epty_2dview_2dopened.output.PtyViewOpened"
+        },
+        "topic": "artifact.pty-view-opened",
         "version": 1
       },
       {
