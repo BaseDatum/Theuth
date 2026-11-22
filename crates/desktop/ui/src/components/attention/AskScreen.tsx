@@ -96,11 +96,13 @@ export function AskScreen({ item }: { item: AttentionItem }) {
         <Button size="sm" className={TONE_ACCENT} disabled={busy || !ask || !answered} onClick={() => send(draft.picks.map(toAnswer))}>
           Send
         </Button>
-        <Button size="sm" variant="outline" className={TONE_DANGER} disabled={busy} title={leaves ? DISMISS_HINT : 'Hide this question; the agent keeps waiting for it'} onClick={leave}>
-          {dismissLabel(item, leaves)}
-        </Button>
-        <SnoozeButton item={item} onResolved={onResolved} />
         {ask && !answered && <span className="text-xs text-fg-tertiary">answer or skip every question</span>}
+        <span className="ml-auto flex items-center gap-1.5">
+          <SnoozeButton item={item} onResolved={onResolved} />
+          <Button size="sm" variant="outline" className={TONE_DANGER} disabled={busy} title={leaves ? DISMISS_HINT : 'Hide this question; the agent keeps waiting for it'} onClick={leave}>
+            {dismissLabel(item, leaves)}
+          </Button>
+        </span>
       </ActionBar>
     </>
   )

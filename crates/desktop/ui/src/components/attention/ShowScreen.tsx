@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
+import { TONE_DANGER } from './actions'
 import { Body, useResolved } from './shared'
 import { ActionBar, ContextLine, SnoozeButton, Source } from './source'
 
@@ -64,10 +65,12 @@ export function ShowScreen({ item }: { item: AttentionItem }) {
             Open in Library
           </Link>
         </Button>
-        <Button size="sm" variant="outline" disabled={act.dismiss.isPending} onClick={() => void act.dismiss.mutateAsync(item.id).then(onResolved, () => undefined)}>
-          Mark seen
-        </Button>
-        <SnoozeButton item={item} onResolved={onResolved} />
+        <span className="ml-auto flex items-center gap-1.5">
+          <SnoozeButton item={item} onResolved={onResolved} />
+          <Button size="sm" variant="outline" className={TONE_DANGER} disabled={act.dismiss.isPending} onClick={() => void act.dismiss.mutateAsync(item.id).then(onResolved, () => undefined)}>
+            Mark seen
+          </Button>
+        </span>
       </ActionBar>
     </>
   )

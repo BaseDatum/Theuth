@@ -142,7 +142,8 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
   // `useAction` already toasts the failure; the swallowed rejection only keeps the screen where it is.
   const then = (p: Promise<unknown>) => void p.then(() => onResolved?.(), () => undefined)
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+    // In the pane the row fills the bar, so Snooze · Dismiss (`ml-auto`) sit at its right end.
+    <div className={cn('flex shrink-0 flex-wrap items-center gap-1.5', size !== 'xs' && 'min-w-0 flex-1')}>
       {/* 126 §10: "answered for you" — undo while the grace runs (`double_take_over`); the digest row only dismisses. */}
       {item.kind === 'double' && <DoubleUndo ids={doubleIds(item)} size={size} />}
       {(item.kind === 'ask' || item.kind === 'show') && (
