@@ -72,14 +72,15 @@ objc2 = "0.6"
 block2 = "0.6"
 # 130 D10 (`companion/macos.rs`): `NSWorkspace` launch and `NSRunningApplication` queries on top of the
 # workspace feature set; `libc` for `kill(pid, 0)` in the quit handshake.
-objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "block2", "libc", "NSImage", "NSImageRep", "NSGraphicsContext", "objc2-core-graphics"] }
-objc2-foundation = { workspace = true, features = ["NSURL", "NSError", "NSUUID", "NSDictionary", "NSHTTPCookie", "NSDate", "NSValue", "NSEnumerator", "NSProcessInfo", "NSSet"] }
+objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "block2", "libc", "NSImage", "NSImageRep", "NSGraphicsContext", "NSResponder", "NSView", "objc2-core-graphics"] }
+objc2-foundation = { workspace = true, features = ["NSURL", "NSURLRequest", "NSError", "NSUUID", "NSDictionary", "NSHTTPCookie", "NSDate", "NSValue", "NSEnumerator", "NSProcessInfo", "NSSet"] }
 # 209 §4.5 (`apple_cookies.rs`): the web view tiles' cookie store and page storage through WebKit directly,
 # at the version wry resolves; `WKWebView` (with `objc2-app-kit`) for the typed `callAsyncJavaScript…`,
 # `WKWebsiteDataRecord` for the data type names `web_profile_clear` removes.
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKFrameInfo", "WKWebsiteDataStore", "WKWebsiteDataRecord", "WKHTTPCookieStore", "WKContentWorld", "WKNavigation", "WKSnapshotConfiguration"] }
 # 209 §4.7 (`apple_tile.rs`): `web_view_call`'s snapshot, a `takeSnapshot` image drawn into a bitmap and encoded
-# as base64 PNG off the main thread; `WKNavigation` for `goBack`/`goForward`, `NSImage` for its `CGImage`.
+# as base64 PNG off the main thread; `WKNavigation` for the history calls, `NSImage` for its `CGImage`,
+# `NSView` for the viewport, `NSURLRequest` for `navigate`.
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CGImage", "CGContext", "CGBitmapContext", "CGColorSpace"] }
 png = { workspace = true }
 base64 = { workspace = true }

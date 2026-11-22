@@ -1,7 +1,6 @@
-//! The agent's tile operations on macOS and iOS (209 §4.7, D8): the WebKit half of `web_view_call`'s `script`
-//! and `snapshot` ops, shared by the desktop's child webviews (`webview.rs`) and the iOS shell's raw views
-//! (`ios_webview.rs`). The arguments, the script wrapper, the reply and the size arithmetic are pure rules
-//! in `web_rules::call`.
+//! The agent's tile operations on macOS and iOS (209 §4.7, D8): the WebKit half of `web_view_call`'s ops,
+//! shared by the desktop's child webviews (`webview.rs`) and the iOS shell's raw views (`ios_webview.rs`).
+//! The arguments, the script wrapper, the reply and the size arithmetic are pure rules in `web_rules::call`.
 //!
 //! - [`script`]: `callAsyncJavaScript` of the wrapped body in the main frame, in the isolated
 //!   [`AGENT_WORLD`] content world or in `WKContentWorld.page`, with one string argument (the caller's
@@ -11,6 +10,9 @@
 //! - [`snapshot`]: `takeSnapshot` of the visible view; the main thread only takes the image's `CGImage`
 //!   (thread-safe) and [`snapshot_done`] draws it into a bitmap of at most `SNAPSHOT_MAX_SIDE` pixels on the
 //!   long side and encodes it as base64 PNG, off the main thread.
+//! - [`settle`]: after `navigate`, `back`, `forward` or `reload`, the main frame's state every
+//!   `SETTLE_POLL` until it stopped loading or the deadline passed. WebKit's `loading` is set when the
+//!   load is requested, so the first look already sees a load that was started.
 //!
 //! Script results, arguments and thrown messages can carry page data: they go to the caller only, never to
 //! `tracing`.
@@ -43,7 +45,8 @@ use crate::apple_cookies::{DROPPED, Late, recv_by};
 #[cfg(target_os = "ios")]
 use crate::ios_webview::WKWebView;
 use crate::web_rules::call::{
-    ARGS_NAME, SNAPSHOT_TIMEOUT, Script, World, failed, fit, reply, straighten, timed_out,
+    ARGS_NAME, Loaded, SETTLE_POLL, SNAPSHOT_TIMEOUT, Script, World, failed, fit, reply,
+    straighten, timed_out,
 };
 use crate::web_rules::profile::AGENT_WORLD;
 
@@ -54,8 +57,11 @@ const EXCEPTION_MESSAGE: &str = "WKJavaScriptExceptionMessage";
 /// leave the main thread; `None` when WebKit answered no string), or WebKit's failure of the whole body.
 pub(crate) type ScriptReply = Result<Option<String>, String>;
 
-/// What [`snapshot`] hands over: the snapshot's bitmap.
-pub(crate) type SnapshotReply = Result<Retained<CGImage>, String>;
+/// A snapshot's viewport in CSS px (`web_rules::call::css_size`), as the caller read it with the image.
+pub(crate) type Viewport = (u32, u32);
+
+/// What [`snapshot`] hands over: the snapshot's bitmap and the viewport it shows.
+pub(crate) type SnapshotReply = Result<(Retained<CGImage>, Viewport), String>;
 
 /// Start `script` in `view`'s main frame (209 §4.7); its answer goes to `tx` as WebKit gives it.
 pub(crate) fn script(
@@ -124,9 +130,29 @@ pub(crate) async fn script_done(
     .map_err(|e| e.to_string())?
 }
 
-/// Start a snapshot of `view`'s visible area; its `CGImage` goes to `tx`.
+/// Look at the main frame's state with `read` every [`SETTLE_POLL`] until it stopped loading or `deadline`
+/// passed, and answer it (209 §4.7): `{ url, title, loading }`, `loading: true` at the deadline.
+pub(crate) async fn settle<F, Fut>(mut read: F, deadline: Instant) -> Result<Value, String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<Loaded, String>>,
+{
+    loop {
+        let state = read().await?;
+        let left = deadline.saturating_duration_since(Instant::now());
+        if !state.loading || left.is_zero() {
+            return serde_json::to_value(state).map_err(|e| e.to_string());
+        }
+        let nap = SETTLE_POLL.min(left);
+        tauri::async_runtime::spawn_blocking(move || std::thread::sleep(nap))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+}
+
+/// Start a snapshot of `view`'s visible area, which shows `viewport`; its `CGImage` goes to `tx`.
 #[cfg(target_os = "macos")]
-pub(crate) fn snapshot(view: &WKWebView, tx: SyncSender<SnapshotReply>) {
+pub(crate) fn snapshot(view: &WKWebView, viewport: Viewport, tx: SyncSender<SnapshotReply>) {
     let done = RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
         // SAFETY: WebKit passes live (or nil) objects for the duration of the call; a null proposed rect
         // asks for the image's own size.
@@ -134,6 +160,7 @@ pub(crate) fn snapshot(view: &WKWebView, tx: SyncSender<SnapshotReply>) {
             (_, Some(error)) => Err(snapshot_failed(error)),
             (Some(image), None) => {
                 unsafe { image.CGImageForProposedRect_context_hints(null_mut(), None, None) }
+                    .map(|image| (image, viewport))
                     .ok_or_else(|| "snapshot has no bitmap".to_owned())
             }
             (None, None) => Err("snapshot returned no image".to_owned()),
@@ -144,16 +171,16 @@ pub(crate) fn snapshot(view: &WKWebView, tx: SyncSender<SnapshotReply>) {
     unsafe { view.takeSnapshotWithConfiguration_completionHandler(None, &done) };
 }
 
-/// Start a snapshot of `view`'s visible area; its `CGImage` goes to `tx`.
+/// Start a snapshot of `view`'s visible area, which shows `viewport`; its `CGImage` goes to `tx`.
 #[cfg(target_os = "ios")]
-pub(crate) fn snapshot(view: &WKWebView, tx: SyncSender<SnapshotReply>) {
+pub(crate) fn snapshot(view: &WKWebView, viewport: Viewport, tx: SyncSender<SnapshotReply>) {
     let done = RcBlock::new(move |image: *mut UIImage, error: *mut NSError| {
         // SAFETY: WebKit passes live (or nil) objects for the duration of the call.
         let reply = match unsafe { (image.as_ref(), error.as_ref()) } {
             (_, Some(error)) => Err(snapshot_failed(error)),
-            (Some(image), None) => {
-                unsafe { image.CGImage() }.ok_or_else(|| "snapshot has no bitmap".to_owned())
-            }
+            (Some(image), None) => unsafe { image.CGImage() }
+                .map(|image| (image, viewport))
+                .ok_or_else(|| "snapshot has no bitmap".to_owned()),
             (None, None) => Err("snapshot returned no image".to_owned()),
         };
         let _ = tx.try_send(reply);
@@ -167,14 +194,14 @@ fn snapshot_failed(error: &NSError) -> String {
 }
 
 /// Wait for [`snapshot`]'s image until `deadline`, then scale and encode it, off the async workers:
-/// `{ png, width, height }` (209 §4.7).
+/// `{ png, width, height }` (209 §4.7), the size being the viewport's in CSS px.
 pub(crate) async fn snapshot_done(
     rx: Receiver<SnapshotReply>,
     deadline: Instant,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let image = match recv_by(&rx, deadline) {
-            Ok(image) => image?,
+        let (image, viewport) = match recv_by(&rx, deadline) {
+            Ok(reply) => reply?,
             Err(Late::Timeout(_)) => {
                 return Err(format!(
                     "snapshot timed out after {} ms",
@@ -183,22 +210,22 @@ pub(crate) async fn snapshot_done(
             }
             Err(Late::Dropped) => return Err(DROPPED.to_owned()),
         };
-        encode(&image)
+        encode(&image, viewport)
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-/// `image` drawn into an RGBA bitmap of the [`fit`] size, as base64 PNG with its pixel size.
-fn encode(image: &CGImage) -> Result<Value, String> {
+/// `image` drawn into an RGBA bitmap of the [`fit`] size, as base64 PNG with the `viewport` it shows.
+fn encode(image: &CGImage, viewport: Viewport) -> Result<Value, String> {
     let (width, height) = fit(CGImage::width(Some(image)), CGImage::height(Some(image)))
         .ok_or_else(|| "the snapshot is empty".to_owned())?;
     let rgba = draw(image, width, height)?;
     let png = png(width, height, &rgba)?;
     Ok(json!({
         "png": base64::engine::general_purpose::STANDARD.encode(png),
-        "width": width,
-        "height": height,
+        "width": viewport.0,
+        "height": viewport.1,
     }))
 }
 
@@ -291,11 +318,8 @@ mod tests {
         CGBitmapContextCreateImage(Some(&context)).unwrap()
     }
 
-    #[test]
-    fn tile_snapshot_scales_and_keeps_orientation() {
-        let out = encode(&halves(3200, 400)).unwrap();
-        assert_eq!(out["width"], 1600);
-        assert_eq!(out["height"], 200);
+    /// The PNG of an `encode` answer: its size and RGBA rows.
+    fn decoded(out: &Value) -> (u32, u32, Vec<u8>) {
         let png = base64::engine::general_purpose::STANDARD
             .decode(out["png"].as_str().unwrap())
             .unwrap();
@@ -304,8 +328,17 @@ mod tests {
             .unwrap();
         let mut buf = vec![0; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut buf).unwrap();
-        assert_eq!((info.width, info.height), (1600, 200));
         assert_eq!(info.color_type, png::ColorType::Rgba);
+        (info.width, info.height, buf)
+    }
+
+    #[test]
+    fn tile_snapshot_scales_and_keeps_orientation() {
+        // A 2x screen's 1600 × 200 pt viewport.
+        let out = encode(&halves(3200, 400), (1600, 200)).unwrap();
+        assert_eq!((&out["width"], &out["height"]), (&json!(1600), &json!(200)));
+        let (width, height, buf) = decoded(&out);
+        assert_eq!((width, height), (1600, 200));
         let at = |x: usize, y: usize| {
             let i = (y * 1600 + x) * 4;
             [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
@@ -316,10 +349,9 @@ mod tests {
 
     #[test]
     fn tile_snapshot_small_image_keeps_its_size() {
-        let out = encode(&halves(10, 4)).unwrap();
-        assert_eq!(
-            (out["width"].as_u64(), out["height"].as_u64()),
-            (Some(10), Some(4))
-        );
+        let out = encode(&halves(10, 4), (5, 2)).unwrap();
+        assert_eq!((&out["width"], &out["height"]), (&json!(5), &json!(2)));
+        let (width, height, _) = decoded(&out);
+        assert_eq!((width, height), (10, 4));
     }
 }

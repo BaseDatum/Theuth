@@ -526,10 +526,11 @@ async fn run_call<R: Runtime>(
     use std::sync::mpsc::sync_channel;
 
     use objc2::MainThreadMarker;
+    use objc2_foundation::{NSString, NSURL, NSURLRequest};
     use objc2_web_kit::WKWebView;
-    use serde_json::json;
 
-    use crate::web_rules::call::SNAPSHOT_TIMEOUT;
+    use crate::apple_tile::{script, script_done, settle, snapshot, snapshot_done};
+    use crate::web_rules::call::{Loaded, SNAPSHOT_TIMEOUT, css_size, no_history};
 
     /// `f` with the tile's `WKWebView` on the main thread; when it cannot run there, `f` is dropped with
     /// its sender and the waiting side reads `DROPPED`.
@@ -547,6 +548,34 @@ async fn run_call<R: Runtime>(
         .map_err(|e| e.to_string())
     }
 
+    /// [`on_tile`] and its answer, at most `MAIN_TIMEOUT` away.
+    async fn hop<R: Runtime, T: Send + 'static>(
+        view: &Webview<R>,
+        f: impl FnOnce(&WKWebView) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let (tx, rx) = sync_channel(1);
+        on_tile(view, move |_, wk| {
+            let _ = tx.try_send(f(wk));
+        })?;
+        crate::apple_cookies::wait(rx).await
+    }
+
+    /// The main frame's URL, title and loading state.
+    fn loaded(wk: &WKWebView) -> Result<Loaded, String> {
+        // SAFETY: plain property reads of a live view, on the main thread.
+        unsafe {
+            Ok(Loaded {
+                url: wk
+                    .URL()
+                    .and_then(|u| u.absoluteString())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
+                title: wk.title().map(|s| s.to_string()).unwrap_or_default(),
+                loading: wk.isLoading(),
+            })
+        }
+    }
+
     let started = Instant::now();
     let op = Op::parse(op, args)?;
     let app = caller.app_handle();
@@ -557,46 +586,72 @@ async fn run_call<R: Runtime>(
         caller.window().label(),
         view.window().label(),
     )?;
+    let state = || hop(&view, loaded);
     match op {
-        Op::Navigate(url) => {
-            view.navigate(check_url(app, &url)?)
-                .map_err(|e| e.to_string())?;
-            Ok(json!({}))
+        // Through `WKWebView` rather than `Webview::navigate`, so the load is requested before the first
+        // look at the state; the policy (`navigation_allowed`) still applies to it.
+        Op::Navigate { url, timeout } => {
+            let url = check_url(app, &url)?;
+            hop(&view, move |wk| {
+                let ns = NSURL::URLWithString(&NSString::from_str(url.as_str()))
+                    .ok_or_else(|| format!("invalid url `{url}`"))?;
+                // SAFETY: a plain load request on a live view, on the main thread.
+                unsafe { wk.loadRequest(&NSURLRequest::requestWithURL(&ns)) };
+                Ok(())
+            })
+            .await?;
+            settle(state, started + timeout).await
         }
-        Op::Reload => {
-            view.reload().map_err(|e| e.to_string())?;
-            Ok(json!({}))
+        Op::Reload(timeout) => {
+            hop(&view, |wk| {
+                // SAFETY: a plain reload of a live view, on the main thread.
+                unsafe { wk.reload() };
+                Ok(())
+            })
+            .await?;
+            settle(state, started + timeout).await
         }
-        Op::Back | Op::Forward => {
-            let forward = op == Op::Forward;
-            let (tx, rx) = sync_channel(1);
-            on_tile(&view, move |_, wk| {
+        Op::History { forward, timeout } => {
+            hop(&view, move |wk| {
                 // SAFETY: plain history calls on a live view, on the main thread.
-                let moved = unsafe {
-                    match (forward, wk.canGoForward(), wk.canGoBack()) {
-                        (true, true, _) => wk.goForward().is_some(),
-                        (false, _, true) => wk.goBack().is_some(),
-                        _ => false,
+                let can = unsafe {
+                    if forward {
+                        wk.canGoForward()
+                    } else {
+                        wk.canGoBack()
                     }
                 };
-                let _ = tx.try_send(Ok(moved));
-            })?;
-            let moved = crate::apple_cookies::wait(rx).await?;
-            Ok(json!({ "moved": moved }))
+                if !can {
+                    return Err(no_history(forward));
+                }
+                // SAFETY: as above; a same-document entry answers no navigation object, and moves too.
+                unsafe {
+                    if forward {
+                        wk.goForward();
+                    } else {
+                        wk.goBack();
+                    }
+                }
+                Ok(())
+            })
+            .await?;
+            settle(state, started + timeout).await
         }
-        Op::Script(script) => {
-            let (deadline, timeout) = (started + script.timeout, script.timeout);
+        Op::Script(body) => {
+            let (deadline, timeout) = (started + body.timeout, body.timeout);
             let (tx, rx) = sync_channel(1);
-            on_tile(&view, move |mtm, wk| {
-                crate::apple_tile::script(mtm, wk, &script, tx)
-            })?;
-            crate::apple_tile::script_done(rx, deadline, timeout).await
+            on_tile(&view, move |mtm, wk| script(mtm, wk, &body, tx))?;
+            script_done(rx, deadline, timeout).await
         }
         Op::Snapshot => {
-            let deadline = started + SNAPSHOT_TIMEOUT;
             let (tx, rx) = sync_channel(1);
-            on_tile(&view, move |_, wk| crate::apple_tile::snapshot(wk, tx))?;
-            crate::apple_tile::snapshot_done(rx, deadline).await
+            on_tile(&view, move |_, wk| {
+                // SAFETY: plain geometry reads of a live view, on the main thread.
+                let (size, scale) =
+                    unsafe { (wk.bounds().size, wk.magnification() * wk.pageZoom()) };
+                snapshot(wk, css_size(size.width, size.height, scale), tx)
+            })?;
+            snapshot_done(rx, started + SNAPSHOT_TIMEOUT).await
         }
     }
 }

@@ -1584,7 +1584,7 @@ pub(crate) mod profile {
 pub(crate) mod call {
     use std::time::{Duration, Instant};
 
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
     use serde_json::{Map, Value};
 
     /// Error of `web_view_call` on Windows and Linux (209 §4.7: the CDP route is not built).
@@ -1608,6 +1608,8 @@ pub(crate) mod call {
     pub(crate) const SNAPSHOT_MAX_SIDE: usize = 1600;
     /// How long WebKit has to take a snapshot (the main-thread hop included; encoding is not counted).
     pub(crate) const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
+    /// How often `navigate`, `back`, `forward` and `reload` look whether the load finished.
+    pub(crate) const SETTLE_POLL: Duration = Duration::from_millis(100);
 
     /// Name of the one argument the wrapped body gets: the JSON array of the caller's argument values.
     pub(crate) const ARGS_NAME: &str = "__theuth_args";
@@ -1638,6 +1640,13 @@ pub(crate) mod call {
     #[serde(deny_unknown_fields)]
     struct NavigateArgs {
         url: String,
+        timeout_ms: Option<u64>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LoadArgs {
+        timeout_ms: Option<u64>,
     }
 
     #[derive(Deserialize)]
@@ -1670,15 +1679,21 @@ pub(crate) mod call {
         }
     }
 
-    /// One checked tile op (209 §4.7).
+    /// One checked tile op (209 §4.7). The load ops wait until the main frame finished loading, at most
+    /// their `timeout`.
     #[derive(Debug, PartialEq)]
     pub(crate) enum Op {
         Script(Script),
-        /// Not yet checked against the allowlist: that needs the app (`check_url`).
-        Navigate(String),
-        Back,
-        Forward,
-        Reload,
+        /// `url` is not yet checked against the allowlist: that needs the app (`check_url`).
+        Navigate {
+            url: String,
+            timeout: Duration,
+        },
+        History {
+            forward: bool,
+            timeout: Duration,
+        },
+        Reload(Duration),
         Snapshot,
     }
 
@@ -1719,16 +1734,25 @@ pub(crate) mod call {
                 }
                 "navigate" => {
                     let a: NavigateArgs = serde_json::from_value(args).map_err(de)?;
-                    Ok(Op::Navigate(a.url))
-                }
-                "back" | "forward" | "reload" | "snapshot" => {
-                    let NoArgs {} = serde_json::from_value(args).map_err(de)?;
-                    Ok(match op {
-                        "back" => Op::Back,
-                        "forward" => Op::Forward,
-                        "reload" => Op::Reload,
-                        _ => Op::Snapshot,
+                    Ok(Op::Navigate {
+                        url: a.url,
+                        timeout: timeout(a.timeout_ms).map_err(invalid)?,
                     })
+                }
+                "back" | "forward" | "reload" => {
+                    let a: LoadArgs = serde_json::from_value(args).map_err(de)?;
+                    let timeout = timeout(a.timeout_ms).map_err(invalid)?;
+                    Ok(match op {
+                        "reload" => Op::Reload(timeout),
+                        _ => Op::History {
+                            forward: op == "forward",
+                            timeout,
+                        },
+                    })
+                }
+                "snapshot" => {
+                    let NoArgs {} = serde_json::from_value(args).map_err(de)?;
+                    Ok(Op::Snapshot)
                 }
                 _ => Err(format!("unknown web view op `{op}`")),
             }
@@ -1745,6 +1769,32 @@ pub(crate) mod call {
             return Err(format!("timeout_ms must be 1..={max}, got {ms}"));
         }
         Ok(Duration::from_millis(ms))
+    }
+
+    /// What `navigate`, `back`, `forward` and `reload` answer (209 §4.7): the main frame's URL and title once
+    /// the load finished (or failed), or as they are at the timeout, with `loading: true`.
+    #[derive(Debug, PartialEq, Serialize)]
+    pub(crate) struct Loaded {
+        pub(crate) url: String,
+        pub(crate) title: String,
+        pub(crate) loading: bool,
+    }
+
+    /// `back` / `forward` with no history entry that way: nothing happens.
+    pub(crate) fn no_history(forward: bool) -> String {
+        format!(
+            "no page to go {} to",
+            if forward { "forward" } else { "back" }
+        )
+    }
+
+    /// A snapshot's `width` and `height` (209 §4.7): the visible viewport in CSS px, the view's size in points
+    /// over the page's scale (iOS pinch zoom; macOS magnification times page zoom), rounded. A scale that
+    /// is not positive counts as 1.
+    pub(crate) fn css_size(width: f64, height: f64, scale: f64) -> (u32, u32) {
+        let scale = if scale > 0.0 { scale } else { 1.0 };
+        let px = |points: f64| (points / scale).round().clamp(0.0, f64::from(u32::MAX)) as u32;
+        (px(width), px(height))
     }
 
     /// An ASCII JavaScript identifier (no reserved-word check: one would fail the script with a syntax error).
@@ -1900,30 +1950,99 @@ pub(crate) mod call {
         }
 
         #[test]
-        fn call_ops_without_args() {
-            for (op, want) in [
-                ("back", Op::Back),
-                ("forward", Op::Forward),
-                ("reload", Op::Reload),
-                ("snapshot", Op::Snapshot),
+        fn call_load_and_snapshot_args() {
+            let t = Duration::from_millis(2500);
+            for (op, want, default) in [
+                (
+                    "back",
+                    Op::History {
+                        forward: false,
+                        timeout: t,
+                    },
+                    Op::History {
+                        forward: false,
+                        timeout: DEFAULT_TIMEOUT,
+                    },
+                ),
+                (
+                    "forward",
+                    Op::History {
+                        forward: true,
+                        timeout: t,
+                    },
+                    Op::History {
+                        forward: true,
+                        timeout: DEFAULT_TIMEOUT,
+                    },
+                ),
+                ("reload", Op::Reload(t), Op::Reload(DEFAULT_TIMEOUT)),
             ] {
-                assert_eq!(Op::parse(op, None).unwrap(), want);
-                assert_eq!(Op::parse(op, Some(json!({}))).unwrap(), want);
-                let err = Op::parse(op, Some(json!({ "full_page": true }))).unwrap_err();
+                assert_eq!(Op::parse(op, None).unwrap(), default);
+                assert_eq!(Op::parse(op, Some(json!({}))).unwrap(), default);
+                assert_eq!(
+                    Op::parse(op, Some(json!({ "timeout_ms": 2500 }))).unwrap(),
+                    want
+                );
+                let err = Op::parse(op, Some(json!({ "timeout_ms": 0 }))).unwrap_err();
+                assert!(err.contains("timeout_ms must be"), "{err}");
+            }
+            assert_eq!(
+                Op::parse(
+                    "navigate",
+                    Some(json!({ "url": "https://example.com/", "timeout_ms": 2500 }))
+                )
+                .unwrap(),
+                Op::Navigate {
+                    url: "https://example.com/".into(),
+                    timeout: t
+                }
+            );
+            assert!(Op::parse("navigate", None).unwrap_err().contains("url"));
+            assert_eq!(Op::parse("snapshot", None).unwrap(), Op::Snapshot);
+            assert_eq!(
+                Op::parse("snapshot", Some(json!({}))).unwrap(),
+                Op::Snapshot
+            );
+            for op in ["back", "forward", "reload", "snapshot", "navigate"] {
+                let err = Op::parse(
+                    op,
+                    Some(json!({ "url": "https://a.b/", "full_page": true })),
+                )
+                .unwrap_err();
                 assert!(
                     err.starts_with(&format!("invalid args for `{op}`")),
                     "{err}"
                 );
             }
             assert_eq!(
-                Op::parse("navigate", Some(json!({ "url": "https://example.com/" }))).unwrap(),
-                Op::Navigate("https://example.com/".into())
-            );
-            assert!(Op::parse("navigate", None).unwrap_err().contains("url"));
-            assert_eq!(
                 Op::parse("click", None).unwrap_err(),
                 "unknown web view op `click`"
             );
+        }
+
+        #[test]
+        fn call_load_answer_shapes() {
+            let loaded = Loaded {
+                url: "https://example.com/".into(),
+                title: "Example".into(),
+                loading: false,
+            };
+            assert_eq!(
+                serde_json::to_value(&loaded).unwrap(),
+                json!({ "url": "https://example.com/", "title": "Example", "loading": false })
+            );
+            assert_eq!(no_history(false), "no page to go back to");
+            assert_eq!(no_history(true), "no page to go forward to");
+        }
+
+        #[test]
+        fn call_snapshot_css_size() {
+            assert_eq!(css_size(1024.0, 768.0, 1.0), (1024, 768));
+            assert_eq!(css_size(820.0, 1180.0, 2.0), (410, 590));
+            assert_eq!(css_size(375.5, 667.4, 1.0), (376, 667));
+            assert_eq!(css_size(800.0, 600.0, 0.0), (800, 600));
+            assert_eq!(css_size(800.0, 600.0, f64::NAN), (800, 600));
+            assert_eq!(css_size(800.0, 600.0, -2.0), (800, 600));
         }
 
         #[test]

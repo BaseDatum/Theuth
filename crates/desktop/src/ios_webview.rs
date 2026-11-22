@@ -62,14 +62,15 @@ use objc2_web_kit::{
     WKWebViewConfiguration, WKWebsiteDataStore,
 };
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, Url, Webview};
 
 use crate::apple_cookies::{
     MAIN_TIMEOUT, apply_storage, available, capture, captured, clear, data_store, read, wait,
     watch, write, writer, written,
 };
-use crate::web_rules::call::{Op, SNAPSHOT_TIMEOUT, check_holder};
+use crate::apple_tile::{script, script_done, settle, snapshot, snapshot_done};
+use crate::web_rules::call::{Loaded, Op, SNAPSHOT_TIMEOUT, check_holder, css_size, no_history};
 use crate::web_rules::profile::{
     Cookie, CookieKey, Storage, Written, check_caller, plan_write, storage_for,
 };
@@ -988,64 +989,78 @@ async fn run_call(
     let op = Op::parse(op, args)?;
     check_label(label)?;
     check_holder(label, webview.label(), webview.window().label(), "main")?;
+    let state = || {
+        let label = label.to_owned();
+        on_main(webview, move |_, _| with_view(&label, |e| loaded(&e.view)))
+    };
     let label = label.to_owned();
     match op {
-        Op::Navigate(url) => {
+        Op::Navigate { url, timeout } => {
             let parsed = check_url(app, &url)?;
             on_main(webview, move |_, _| {
                 with_view(&label, |e| load(&e.view, &parsed))?
             })
             .await?;
-            Ok(json!({}))
+            settle(state, started + timeout).await
         }
-        Op::Reload => {
+        Op::Reload(timeout) => {
             on_main(webview, move |_, _| {
                 with_view(&label, |e| {
                     e.view.reload();
                 })
             })
             .await?;
-            Ok(json!({}))
+            settle(state, started + timeout).await
         }
-        Op::Back | Op::Forward => {
-            let forward = op == Op::Forward;
-            let moved = on_main(webview, move |_, _| {
+        Op::History { forward, timeout } => {
+            on_main(webview, move |_, _| {
                 with_view(&label, |e| {
-                    let can = if forward {
-                        e.view.can_go_forward()
-                    } else {
-                        e.view.can_go_back()
-                    };
-                    if can && forward {
+                    if forward && e.view.can_go_forward() {
                         e.view.go_forward();
-                    } else if can {
+                    } else if !forward && e.view.can_go_back() {
                         e.view.go_back();
+                    } else {
+                        return Err(no_history(forward));
                     }
-                    can
-                })
+                    Ok(())
+                })?
             })
             .await?;
-            Ok(json!({ "moved": moved }))
+            settle(state, started + timeout).await
         }
-        Op::Script(script) => {
-            let (deadline, timeout) = (started + script.timeout, script.timeout);
+        Op::Script(body) => {
+            let (deadline, timeout) = (started + body.timeout, body.timeout);
             let (tx, rx) = sync_channel(1);
             on_main(webview, move |mtm, _| {
+                with_view(&label, |e| script(mtm, &e.view, &body, tx))
+            })
+            .await?;
+            script_done(rx, deadline, timeout).await
+        }
+        Op::Snapshot => {
+            let (tx, rx) = sync_channel(1);
+            on_main(webview, move |_, _| {
                 with_view(&label, |e| {
-                    crate::apple_tile::script(mtm, &e.view, &script, tx)
+                    let size = e.view.bounds().size;
+                    let zoom = e.view.scroll_view().zoomScale();
+                    snapshot(&e.view, css_size(size.width, size.height, zoom), tx)
                 })
             })
             .await?;
-            crate::apple_tile::script_done(rx, deadline, timeout).await
+            snapshot_done(rx, started + SNAPSHOT_TIMEOUT).await
         }
-        Op::Snapshot => {
-            let deadline = started + SNAPSHOT_TIMEOUT;
-            let (tx, rx) = sync_channel(1);
-            on_main(webview, move |_, _| {
-                with_view(&label, |e| crate::apple_tile::snapshot(&e.view, tx))
-            })
-            .await?;
-            crate::apple_tile::snapshot_done(rx, deadline).await
-        }
+    }
+}
+
+/// The main frame's URL, title and loading state of `view`.
+fn loaded(view: &WKWebView) -> Loaded {
+    Loaded {
+        url: view
+            .url()
+            .and_then(|u| u.absoluteString())
+            .map(|s| s.to_string())
+            .unwrap_or_default(),
+        title: view.title().map(|s| s.to_string()).unwrap_or_default(),
+        loading: view.is_loading(),
     }
 }
