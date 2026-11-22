@@ -217,8 +217,8 @@ Change: export `host_only` from the entry, read an optional `host_only` on impor
 | `web_profile_status` | `{}` | `{ profile: "shared" \| "off", epoch, sites: u32, now_ms }` | P2 review, new. The mode, the current epoch, the number of sites with live rows (from the local stats, no row opened; also counted while off) and the engine's clock, so Settings shows the mode without pushing or pulling. Owner connections only. Works with `browser.profile: off`. |
 | `web_profile_forget` | `{ site }` (a host or registrable domain) | `{ site, epoch }` (the registrable domain forgotten, the current epoch) | P2. Tombstones every row of the site and writes its forget marker (§4.1), publishes `WebProfileChanged { sites: [site] }`; every engine's agent browsers drop the site's cookies before their next call (§4.6). Owner connections only. Works with `browser.profile: off`. An empty site: `invalid forget: no site`. |
 | `web_profile_clear` | `{}` | `{ epoch }` (the new one) | P2. Bumps the epoch (the highest seen plus one, §4.1) and tombstones every row; publishes `WebProfileChanged` with the sites that were live and the new epoch. Owner connections only. Works with `browser.profile: off`. |
-| `web_view_state` | `{ session, view, url, title, loading }` | `{}` | D9. Forwarded to the session's owner by `rpc_forward::route` (`crates/agent/src/rpc_forward.rs:1-10`). |
-| `answer_web_view_call` | `(id, answer)` | `bool` (still pending) | D8. Forwarded to the owner like `web_view_state`. |
+| `web_view_state` | `(session, view, url, title, loading, closed?)` | `{}` | D9. Forwarded to the session's owner by `rpc_forward::route` (`crates/agent/src/rpc_forward.rs:1-10`). `closed: true` (P3 review): the user closed the tile; the engine forgets it (`web_views`, the reply prefix, `browser_attach`). |
+| `answer_web_view_call` | `(id, answer, session?)` | `bool` (still pending and taken) | D8. `session` is the request's: an id this engine did not issue is forwarded to that session's owner like `web_view_state` (without it, the session the engine's feed carried for the id). The first `claimed` binds the call to the claiming RPC connection (a forwarded answer: to the forwarding engine, which binds it to its own connection); `done` / `failed` are taken only from it. Before any claim only `failed` with reason `"stopped by the user"` or `"window closed"` is taken, from any owner connection. |
 | `answer_element_form` | `(id, answer)`; `answer` = `{ submit: { values: { "<index>": String } } }` \| `{ cancel: {} }` | `bool` (still pending) | D13, P5. Forwarded to the owner. Values handled as in §4.10. |
 | `element_forms_pending` | `{}` | `ElementFormRequested[]` | D13, P5. Pending cards for a client that attached late (like `secret_requests_list`, `crates/secrets/src/rpc.rs:41-45`). |
 
@@ -230,9 +230,13 @@ Events (`wire::WireEvent`, registered in `declare_wire`, mirrored like 205 §4.2
   not session-scoped, so it is not stored with any session. Published for a local write and for rows replicated from
   another engine (the sites read from those rows; a tombstone names its site through a live row of the same
   `site_id`; the epoch row alone gives `sites: []`), so every engine's D14 gate learns a sign-in made elsewhere.
-- `WebViewCallRequested { id: Uuid, session, view, op, args }`, topic `artifact.web-view-call-requested`, and
-  `WebViewCallResolved { id }`, topic `artifact.web-view-call-resolved`.
-- `WebViewCallAnswer` = `Claimed { client }` | `Done { result: Value, png?: String }` | `Failed { reason }`.
+- `WebViewCallRequested { id: Uuid, session, view, delegated, op, args }`, topic `artifact.web-view-call-requested`, and
+  `WebViewCallResolved { id }`, topic `artifact.web-view-call-resolved`. `op` is the string enum `script` |
+  `navigate` | `back` | `forward` | `reload` | `snapshot` | `stop` (`stop` is the client's own op, never sent by the
+  engine). `delegated` is `true` when `session` is not the session that opened the tile (§9); a client claims only
+  for a tile it holds that `session` opened, or when `delegated` is set.
+- `WebViewCallAnswer` = `Claimed { client }` | `Done { result: Value, png?: String }` | `Failed { reason }`
+  (`client` is free text for logs; the binding is the connection).
 - `ElementFormRequested { id: Uuid, session, call_id, origin, url, source, title, html, width, height, fields: [{ index, kind, name, label, masked }] }`,
   topic `browser.element-form-requested`, and `ElementFormResolved { id, outcome: "submitted" | "cancelled" | "stale" | "timeout" }`,
   topic `browser.element-form-resolved`. `source` is `"obscura:<engine>"` or `"web:<id>"`. No field values, ever.
@@ -242,15 +246,14 @@ A session owned by another engine reaches a front-door client only through the e
 `JobEvent` and `CellEvent` (`crates/sessionsync/src/events.rs:1-34`, `:90`). `WebViewCallRequested`,
 `WebViewCallResolved`, `ElementFormRequested` and `ElementFormResolved` join that list. As read, `WebViewOpened` (205) and `PagePreviewRequested` are not on it,
 so `show_web` from a remote-owned session does not open a tile on a front-door client today (§11 Q4).
-As built in P3 (§11 Q4): the owner's relay also forwards `WebViewOpened`, `PagePreviewRequested`,
-`PagePreviewResolved`, `WebViewCallRequested`, `WebViewCallResolved`, `ElementFormRequested` and
-`ElementFormResolved` (`sessionsync::events::WIRE_RELAYED`). It reads them from its own wire feed by topic, not as
-bus types, so `sessionsync` gains no dependency on `artifact` or the P5 types; a `*Resolved` (no `session`) follows
-its request's id. The front door re-publishes each under its declared topic (`sessionsync` `declare_wire`). An
-`answer_web_view_call` reaching a front door is forwarded to the session's owner: `artifact` remembers the session
-of every call its feed carried (local or relayed). `answer_page_preview` is not forwarded, so a preview requested
-by a remote-owned session is relayed but its answer from a front-door client is not taken (the owner's preview
-already answers "no renderer" when no client is connected to it).
+As built in P3 (§11 Q4, after the review): the owner's relay also forwards `WebViewOpened`, `PagePreviewRequested`,
+`PagePreviewResolved`, `WebViewCallRequested` and `WebViewCallResolved` (`sessionsync::events::WIRE_RELAYED`;
+P5 adds `ElementFormRequested` / `ElementFormResolved` together with their declaration, since a front door drops a
+relayed frame whose topic it has not declared). It reads them from its own wire feed by topic, not as bus types, so
+`sessionsync` gains no dependency on `artifact`; a `*Resolved` (no `session`) follows its request's id. The front
+door re-publishes each under its declared topic (`sessionsync` `declare_wire`). An `answer_web_view_call` reaching
+a front door is forwarded to the owner of the `session` it names; `answer_page_preview(id, answer, session?)` is
+forwarded the same way when the client names the request's `session`.
 
 ### 4.5 Client side: shell commands and events (crates/desktop/src)
 
@@ -372,19 +375,25 @@ passed to `obscura_mcp::call_tool` (`session.rs:24-31`, `:147`). There is no `Pa
   `browser_open` also drops its site when the profile no longer has it (the event missed, a lagged feed). A save that
   races the event is refused by the store (its `basis_ms`). `browser::subscribe` is the plugin's bus subscription
   (`AgentEvent`, `WebProfileChanged`).
-- As built in P3: `Target::Tile { view, url }` (`url`, the address the tile's last answer named, feeds the reply
-  prefix; before any answer the prefix uses what `web_view_state` last reported, else `page not reported`).
-  `view` is the bare tile id (`browser_attach` takes `web:<id>`, `web-<id>` or `<id>`). `browser_attach` probes the
-  tile with the agent command `location` (one `script` op); its reply names the page. A call on a tile never
-  touches the session's obscura isolate: no profile load, no `browser_open` refresh, no D14 tracking (the obscura
-  session's current site stays as it was). D14 on a tile differs from obscura's: every acting call (`browser_open`,
-  `browser_click`, `browser_fill`, `browser_type`, `browser_press`, `browser_select`, `browser_eval`,
-  `browser_back`) is credentialed whatever the site and whatever `browser.profile` says (the tile carries the user's
-  own cookies, which the profile may not hold); reads (`browser_read`, `browser_elements`, `browser_scroll`,
-  `browser_wait`, `browser_screenshot`) are not, so a `read_only` subagent may attach and read. `browser_run` and
+- As built in P3 (after the review): `Target::Tile { view, url, delegated, leaving }` in a process-wide map
+  (`browser::tile`, not a `Ctx` field) that the `Browsers` actor clears on `SessionDeleted` and `CloseTree`. `url`,
+  the address the tile's last answer named, feeds the reply prefix (before any answer, what `web_view_state` last
+  reported, else `page not reported`); `leaving` is the page an action started leaving (§4.7). `view` is the bare
+  tile id (`browser_attach` takes `web:<id>`, `web-<id>` or `<id>`). `browser_attach` refuses a tile no session of
+  the caller's tree opened (`tile web:<id> was not opened by this session or its tree`; the opener is the session
+  `show_web` ran in or a client reported the tile for, compared by `Store::root_of`), then probes it with the agent
+  command `location` (one `script` op); its reply names the page. `delegated` is set when the opener is another
+  session of the tree. A call on a tile never touches the session's obscura isolate: no profile load, no
+  `browser_open` refresh, no D14 tracking (the obscura session's current site stays as it was). D14 on a tile
+  differs from obscura's: every acting call (`browser_open`, `browser_click`, `browser_fill`, `browser_type`,
+  `browser_press`, `browser_select`, `browser_eval`, `browser_back`) is credentialed whatever the site and whatever
+  `browser.profile` says (the tile carries the user's own cookies, which the profile may not hold); reads
+  (`browser_read`, `browser_elements`, `browser_scroll`, `browser_wait`, `browser_screenshot`) are credentialed when
+  the tile's current site is in the profile or the tile has not said where it is, so a `read_only` subagent reads
+  only a tile on a site the user is not signed into through the profile. `browser_run` and
   `browser_import_cookies` on a tile answer an error naming `browser_attach {}` instead of acting on obscura unseen;
-  `browser_list_profiles` is unchanged (it touches no browser). The target map is not cleared when a session ends
-  (one small entry per attached session, like the System-1 `pending` map).
+  `browser_list_profiles` is unchanged (it touches no browser). `no client holds tile web:<id>` says the user may
+  have closed it and that `browser_attach {}` returns to the session's own browser.
 
 ### 4.7 Tile operations
 
@@ -422,30 +431,50 @@ There is no public API for trusted input into a `WKWebView`, and the Web Inspect
 (web §3). This holds for the iPad and for the desktop app on the engine's machine alike: both are clients and the
 code path is the same. An engine with no client app has no tile and the agent uses obscura.
 
-As built in P3 (the exact shapes are in the handoff the shell and UI built against): `WebViewCallRequested.view` is
-the bare tile id. The agent script is the **body** of an async function with `cmd` and `params` in scope; the
-engine sends it as `source` with `arguments: { cmd, params }`, world `isolated`, and it never throws (an expected
-failure is `done` with `{ error }`). Commands: `location`, `read { format: "text" | "markdown", max_chars }` (refs
-and states first, then the body text, within `max_chars`), `elements`, `click`, `fill`, `type`, `press` (Enter in a
-form: `requestSubmit()`; Tab moves focus), `select` (by value, then by visible text), `scroll`, `wait { selector |
-text, timeout_ms }`; `helpers` keeps the building blocks for P5. Refs `e<n>` live in a `Map` of `WeakRef`s with a
-`WeakMap` back, so an element keeps its ref across listings; a ref of a previous document is `unknown ref`, a
-detached element `stale ref`. Values of password and credential (`autocomplete` `*password`, `one-time-code`, `cc-*`)
-fields are never listed; other text fields show `value=` as obscura's snapshot does. `browser_eval` is `script` in
-the page world with `source: "return (<expression>\n);"`. `navigate` / `back` / `forward` / `reload` take
-`{ url?, timeout_ms }` and answer `{ url, title, loading }` once the load finished (or failed, or ran out:
-`loading: true`); `snapshot` takes `{}` and answers `png`. A tile op's budget after the claim is
+As built in P3 (the exact shapes are in the handoff the shell and UI built against; revised after the review):
+`WebViewCallRequested.view` is the bare tile id. The agent script is the **body** of an async function with `cmd`
+and `params` in scope; the engine sends it as `source` with `arguments: { cmd, params }`, world `isolated`, and it
+never throws (an expected failure is `done` with `{ error }`). Its `VERSION`, which decides whether a world keeps the
+agent it built, is the hash of the script's own text (the engine writes it in), so an edited script always replaces
+the old one. Commands: `location`, `read { format: "text" | "markdown", max_chars }` (refs and states first, then the
+body text, within `max_chars`, at most 40000 whatever the model asks; a body under 200 characters ends with how
+many frames and open shadow roots were not read), `elements`, `click` (the `click` event dispatched at the
+element's centre, as `el.click()` only where `MouseEvent` cannot be built; when another element is on top there the
+reply names it), `fill`, `type`, `press` (Enter in a form: `requestSubmit()`, and the reply says the form was
+submitted; Tab moves focus), `select` (by value, then by visible text), `scroll`, `wait { selector | text,
+timeout_ms }` (polled every 250 ms; a text is looked for in `textContent` first); `helpers` keeps the building
+blocks for P5. Every command answers the document's token `doc`; `click` and `press` also `navigating` (the
+address changed, or `beforeunload` / `pagehide` fired within 50 ms) and `from` (the address before). After a
+`navigating` action the session's next read waits for another document or address, up to ten reads 500 ms apart,
+and otherwise ends with `(still on <from>: …)`. Refs `e<n>` live in a `Map` of `WeakRef`s with a `WeakMap` back, so
+an element keeps its ref across listings; a ref of a previous document is `unknown ref`, a detached element (also
+one a later listing dropped) `stale ref`. What the user typed is not read: values of password and credential
+(`autocomplete` `*password`, `one-time-code`, `cc-*`) fields are never listed; another text field, textarea or
+editable region shows `value="…"` only when the agent filled, typed into or selected it in this document and
+`value=[set]` when it holds anything else; a `<select>` shows its option when that is the page's default or the
+agent's choice, else `value=[set]`; the body text and the markdown skip form controls and editable regions (a walk
+of the text nodes, no `innerText`, no clone), and an editable region's text never names it. `visible()` is one
+`checkVisibility()` where the engine has it. `browser_eval` is `script` in the page world with
+`source: "return (<expression>\n);"`, trailing semicolons and whitespace cut first. `navigate` / `back` / `forward`
+/ `reload` take `{ url?, timeout_ms }` and answer `{ url, title, loading }` once the load finished (or failed, or
+ran out: `loading: true`); `snapshot` takes `{}` and answers `png`. A tile op's budget after the claim is
 `max(30 s, timeout_ms + 5 s)`: 15 s scripts, 25 s navigations, `browser_wait`'s own seconds plus 1 s in the client.
 After `browser_click` / `browser_open` the engine waits 300 ms before the read that follows, and a read that fails
-(the old document going away) is retried once after 500 ms. `browser_screenshot`'s `width` / `height` are ignored
-on a tile (viewport only). `browser_open` on a tile takes http(s) only.
+(the old document going away) is retried after 500 ms. `browser_screenshot`'s `width` / `height` are ignored on a
+tile (viewport only) and the reply says so. `browser_open` on a tile takes http(s) only. A call the user stopped
+(`failed` `"stopped by the user"`, §4.4) makes the tile refuse every call for 60 s without asking a client; the
+model reads "the user stopped the agent on this page".
 
 ### 4.8 Tool text
 
 `browser_open` gains: "When the user has signed into a site in their web view (on any of their devices), this
 browser is signed in too. Passkeys, device-bound sessions, service workers and Cloudflare clearance do not carry
 over, and a site that ties a login to the device, network or browser may ask to sign in again: then use
-`browser_attach` with the user's tile and act there." `browser_attach` carries the trusted-input limit verbatim.
+`browser_attach` with the user's tile and act there." `browser_attach` carries the trusted-input limit verbatim,
+and also says which tiles it takes, that frames, shadow roots and the user's typing are not read, that a read of a
+signed-in page asks for approval, that Enter in a form submits it, and that a click has no real hit test.
+`browser_click`, `browser_fill` and `browser_press` say that in the session's own browser Enter does not submit a
+form and that on a tile Enter in a form submits it, so the model presses Enter or clicks submit, never both.
 
 ### 4.9 Prompt (D12)
 
@@ -606,8 +635,16 @@ dialog; **Sign out everywhere** asks in an alert dialog, then clears this device
   that header was not checked (§12).
 - **Transport.** Pushes travel client → relay → hub engine; the relay is stateless (recon §7c). Whether it can read
   payloads was not checked (§12); the values ride the app's authenticated RPC connection either way.
-- **Tile control** is the user's live session on the user's screen: always credentialed (D14), every reply prefixed
-  with the tile, and the tile shows a thin "agent is acting" bar while a call is pending (`Claimed` to `Done`).
+- **Tile control** is the user's live session on the user's screen: acting calls always credentialed (D14), every
+  reply prefixed with the tile, and the tile shows a thin "agent is acting" bar while a call is pending (`Claimed` to
+  `Done`). As built in P3 (after the review): only the session that opened a tile, or a session of its tree (the same
+  `Store::root_of`), may `browser_attach` to it (`tile web:<id> was not opened by this session or its tree`); a
+  request from another session of the tree carries `delegated: true`. A read of a tile is credentialed when the
+  tile's current site is in the profile (or unknown), and `browser_eval` on a tile always, so a `read_only` subagent
+  cannot read a page the user is signed into through the profile. A tile call's result is taken only from the RPC
+  connection that claimed it (§4.4), so another window, device or front-door client cannot put its page text in
+  front of the model; before a claim only the user's Stop or a closed window fails a call, and Stop holds the tile
+  for 60 s. What the user typed into the page (field values, textareas, editable regions) is not read (§4.7).
 - **D13, phishing and injection.** A page the agent reads (or an injected instruction) may ask it to "show the login
   form" of another site, or a hostile page may draw a fake sign-in. The origin in the card is the app's, read from
   the browser at serialise time, not from the snapshot; values go only to the element stamped `data-theuth-form` on
@@ -746,26 +783,43 @@ What the P2 engine differs in from the text above or adds to it; §4.1, §4.2, �
 
 What the P3 engine differs in from the text above or adds to it; §4.4, §4.6 and §4.7 already say it:
 
-- **Shapes.** `WebViewCallRequested { id, session, view, op, args }` (`view` the bare tile id),
-  `WebViewCallResolved { id }`, `WebViewCallAnswer` tagged `kind` (`claimed` / `done` / `failed`, snake case),
-  `answer_web_view_call(id, answer) -> bool`, owner connections only (`rpc_core::owner`). The event types live in
-  `artifact::webview` with the round trip (`webview::call`, `webview::answer`); `browser` depends on `artifact` for
-  it. A call dropped before it resolves (the registry's timeout) still publishes `WebViewCallResolved`.
-- **Claims.** The first `claimed` is taken (`true`), every later one answers `false`; `done` / `failed` are taken
-  from whoever sends them first, claimed or not.
-- **Relay and routing**: §4.4 above. `rpc_forward.rs` needed no change (`forward::route` serves the answer).
+- **Shapes.** `WebViewCallRequested { id, session, view, delegated, op, args }` (`view` the bare tile id, `op` the
+  enum `artifact::webview::WebViewOp`), `WebViewCallResolved { id }`, `WebViewCallAnswer` tagged `kind`
+  (`claimed` / `done` / `failed`, snake case), `answer_web_view_call(id, answer, session?) -> bool`, owner
+  connections only (`rpc_core::owner`); `web_view_state(…, closed?)`; `answer_page_preview(id, answer, session?)`.
+  The event types live in `artifact::webview` with the round trip (`webview::call`, `webview::answer`); `browser`
+  depends on `artifact` for it. Waiting calls are a `Runtime` extension (one map per engine, also two engines in one
+  process). A call dropped before it resolves (the registry's timeout) still publishes `WebViewCallResolved`, with
+  a non-blocking send to the bus that needs no async context.
+- **Claims** (after the review). The first `claimed` is taken (`true`) and binds the call to the RPC connection that
+  sent it (`RpcPeer::id`; a forwarded answer: the forwarding engine, `Forwarded`, and that front door binds it to its
+  own client connection); every later claim answers `false`; `done` / `failed` are taken only from the claimer.
+  Before any claim only `failed` `"stopped by the user"` / `"window closed"` is taken (§4.4).
+- **Relay and routing**: §4.4 above. `answer_web_view_call` routes by the `session` it names (the id→session map of
+  the engine's feed is the fallback when a client sends none). `rpc_forward.rs` needed no change (`forward::route`
+  serves the answer).
 - **Prompt and tool text**: §4.9's P3 clause ("unless you `browser_attach` to it", "attach to the user's tile and act
-  there"), §4.8's `browser_open` sentence, `browser_attach`'s text with the trusted-input limit, and `show_web`'s
-  description and receipt pointing at `browser_attach {"view": "web:<id>"}`.
+  there"), §4.8's sentences, `browser_attach`'s text with the trusted-input limit, and `show_web`'s description and
+  receipt pointing at `browser_attach {"view": "web:<id>"}`.
 - **Not done**: no file inputs on a tile (`browser_fill` has no file argument; a file input answers an error), no
-  `forward` / `reload` tool (the ops exist for the client, no tool sends them), no frame other than the main one.
+  `forward` / `reload` tool (the ops exist for the client, no tool sends them), no frame other than the main one, no
+  shadow root. The opener check reads the engine's in-memory tile record (`show_web`, `web_view_state`): after an
+  engine restart a tile is attachable once its app reported it again. The script still rides in every `script`
+  request (about 30 KB); only its version is derived from its hash.
 - **Tests**: the round trip against the real `answer_web_view_call` with a fake client (claim, done, second claim
   refused, late answer refused, `failed`, the script's `{ error }`, no claim, claimed and never answered, snapshot,
-  a guest refused) in `rpc-compose`; the op mapping, request shapes, answer shapes and prefix in `browser::tile`;
-  every op end to end in `crates/browser/tests/tile.rs`, where a fake client runs the ops, `agent.js` included, on
-  its own obscura page of a loopback fixture site (read, elements, fill, select, click, eval in the page, Enter
-  submitting a form, wait, a stale ref, open, back, screenshot, close); the relay of a tile call and its resolution
-  in `sessionsync`. The shell's WebKit and CDP executors are not exercised by these.
+  a guest refused, a second owner connection refused before and after the claim, Stop before a claim and its 60 s
+  hold, attach outside the opener's tree, a closed tile) in `rpc-compose`; two engines in one process
+  (`rpc-compose/tests/tile_relay.rs`): a session owned by one engine attaches and reads, each call is relayed to the
+  front door, claimed and answered there through its `answer_web_view_call`, forwarded over `theuth/rpc/1`, and a
+  second client of the front door cannot answer; the binding rules in `artifact::webview`; the op mapping, request
+  shapes, answer shapes, prefix, script version and target lifetime in `browser::tile`; every op end to end in
+  `crates/browser/tests/tile.rs`, where a fake client answers over the artifact RPC dispatch and runs the ops,
+  `agent.js` included, on its own obscura page of a loopback fixture site (attach refused to another session, read,
+  elements, fill, the user's typing in a textarea and an editable region not read back, select, click, eval in the
+  page, Enter submitting a form, wait, a stale ref, open, back, screenshot, close); the relay of a tile call and its
+  resolution in `sessionsync`. obscura has no isolated world, so `agent.js` runs in the page world there; the
+  shell's WebKit and CDP executors (and the `theuth-agent` content world) are not exercised by these.
 
 ### P4 — iPhone surface (D11)
 

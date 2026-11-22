@@ -4,6 +4,7 @@
       "id": "00000000-0000-0000-0000-000000000001",
       "session": "00000000-0000-0000-0000-000000000002",
       "view": "0123456789abcdef",
+      "delegated": false,
       "op": "script",
       "args": {
         "world": "isolated",
@@ -25,6 +26,7 @@
           "id": "00000000-0000-0000-0000-000000000001",
           "session": "00000000-0000-0000-0000-000000000002",
           "view": "0123456789abcdef",
+          "delegated": false,
           "op": "script",
           "args": {
             "world": "isolated",
@@ -44,6 +46,7 @@
       "id": "00000000-0000-0000-0000-000000000003",
       "session": "00000000-0000-0000-0000-000000000002",
       "view": "0123456789abcdef",
+      "delegated": false,
       "op": "snapshot",
       "args": {}
     },
@@ -57,7 +60,138 @@
           "id": "00000000-0000-0000-0000-000000000003",
           "session": "00000000-0000-0000-0000-000000000002",
           "view": "0123456789abcdef",
+          "delegated": false,
           "op": "snapshot",
+          "args": {}
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000004",
+      "session": "00000000-0000-0000-0000-000000000005",
+      "view": "0123456789abcdef",
+      "delegated": true,
+      "op": "navigate",
+      "args": { "url": "https://a.test/", "timeout_ms": 25000 }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "WebViewCallRequested",
+          "id": "00000000-0000-0000-0000-000000000004",
+          "session": "00000000-0000-0000-0000-000000000005",
+          "view": "0123456789abcdef",
+          "delegated": true,
+          "op": "navigate",
+          "args": { "url": "https://a.test/", "timeout_ms": 25000 }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000006",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "view": "0123456789abcdef",
+      "delegated": false,
+      "op": "back",
+      "args": { "timeout_ms": 25000 }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "WebViewCallRequested",
+          "id": "00000000-0000-0000-0000-000000000006",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "view": "0123456789abcdef",
+          "delegated": false,
+          "op": "back",
+          "args": { "timeout_ms": 25000 }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000007",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "view": "0123456789abcdef",
+      "delegated": false,
+      "op": "forward",
+      "args": { "timeout_ms": 25000 }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "WebViewCallRequested",
+          "id": "00000000-0000-0000-0000-000000000007",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "view": "0123456789abcdef",
+          "delegated": false,
+          "op": "forward",
+          "args": { "timeout_ms": 25000 }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000008",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "view": "0123456789abcdef",
+      "delegated": false,
+      "op": "reload",
+      "args": { "timeout_ms": 25000 }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "WebViewCallRequested",
+          "id": "00000000-0000-0000-0000-000000000008",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "view": "0123456789abcdef",
+          "delegated": false,
+          "op": "reload",
+          "args": { "timeout_ms": 25000 }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000009",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "view": "0123456789abcdef",
+      "delegated": false,
+      "op": "stop",
+      "args": {}
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "WebViewCallRequested",
+          "id": "00000000-0000-0000-0000-000000000009",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "view": "0123456789abcdef",
+          "delegated": false,
+          "op": "stop",
           "args": {}
         }
       }

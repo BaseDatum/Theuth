@@ -34,8 +34,8 @@
 //! of the stream.
 //!
 //! 209 §4.4: the owner also relays the [`WIRE_RELAYED`] topics of its own wire feed (`show_web`
-//! tiles, page previews, tile calls, element forms) as `Bus` frames of the event's `type`, so a
-//! client on a front door can open a remote-owned session's tile and answer its tile calls.
+//! tiles, page previews, tile calls) as `Bus` frames of the event's `type`, so a client on a front
+//! door can open a remote-owned session's tile and answer its tile calls.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
@@ -115,18 +115,17 @@ impl wire::WireEvent for FollowState {
 }
 
 /// 209 §4.4: wire events of a session that the owner relays from its own wire feed by topic,
-/// as `(kind, topic)`: `show_web` tiles, page previews, tile calls and element forms raised on
-/// the owner reach a client attached to a front door. Their owners declare them (`artifact`;
-/// `ElementForm*` with 209 P5), so the relay needs no dependency on them. A frame without a
-/// `session` (the `*Resolved` events) goes to the session its request named.
+/// as `(kind, topic)`: `show_web` tiles, page previews and tile calls raised on the owner reach a
+/// client attached to a front door. Their owner (`artifact`) declares them, so the relay needs no
+/// dependency on it. A frame without a `session` (the `*Resolved` events) goes to the session its
+/// request named. Only topics every engine declares belong here: a front door drops a relayed
+/// frame whose topic it has not declared (P5 adds its element-form pair with its declaration).
 pub const WIRE_RELAYED: &[(&str, &str)] = &[
     ("WebViewOpened", "artifact.web-view-opened"),
     ("PagePreviewRequested", "artifact.page-preview-requested"),
     ("PagePreviewResolved", "artifact.page-preview-resolved"),
     ("WebViewCallRequested", "artifact.web-view-call-requested"),
     ("WebViewCallResolved", "artifact.web-view-call-resolved"),
-    ("ElementFormRequested", "browser.element-form-requested"),
-    ("ElementFormResolved", "browser.element-form-resolved"),
 ];
 
 /// The topic a [`WIRE_RELAYED`] kind is declared under, for the front door's re-publication.
@@ -1358,15 +1357,13 @@ mod tests {
         t.stores.1.close().await;
     }
 
-    /// 209 §4.4: the forward list names the tile-call pair, the element-form pair, `show_web`'s
-    /// event and the page-preview pair, each under its declared topic.
+    /// 209 §4.4: the forward list names the tile-call pair, `show_web`'s event and the
+    /// page-preview pair, each under its declared topic; nothing undeclared (P5's forms).
     #[test]
-    fn the_relay_forwards_tile_calls_tiles_forms_and_previews() {
+    fn the_relay_forwards_tile_calls_tiles_and_previews() {
         for (kind, topic) in [
             ("WebViewCallRequested", "artifact.web-view-call-requested"),
             ("WebViewCallResolved", "artifact.web-view-call-resolved"),
-            ("ElementFormRequested", "browser.element-form-requested"),
-            ("ElementFormResolved", "browser.element-form-resolved"),
             ("WebViewOpened", "artifact.web-view-opened"),
             ("PagePreviewRequested", "artifact.page-preview-requested"),
             ("PagePreviewResolved", "artifact.page-preview-resolved"),
@@ -1374,6 +1371,7 @@ mod tests {
             assert_eq!(wire_topic(kind), Some(topic), "{kind}");
         }
         assert_eq!(wire_topic("ApprovalRequested"), None);
+        assert_eq!(wire_topic("ElementFormRequested"), None);
     }
 
     /// A tile call's request (as `artifact` declares it) for the wire-relay test.
