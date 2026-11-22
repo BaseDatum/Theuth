@@ -4,8 +4,6 @@ import { useQuerySupport } from '@/rpc/capabilities'
  * `instance_id`; each committed record it shows is a `generation`. A draft previews with the runtime inert and
  * no tool RPC; `ArtifactShown` turns the same mounted renderer into the committed, interactive generation.
  */
-import "@openuidev/react-ui/layered/styles/index.css";
-import { ThemeProvider } from "@openuidev/react-ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { library, libraryHash } from "@theuth/apps";
 import { AppRenderer, type AppRendererProps } from "@theuth/apps/renderer";
@@ -41,6 +39,7 @@ import {
   createProvider,
   previewPatch,
 } from "./lifecycle";
+import { OpenUITheme } from "./openui-theme";
 import { useDark } from "./theme";
 
 // 65 §3.5 / 123 §6: the apps diagrams draw with the chat's renderers — one renderer, two registrations.
@@ -516,7 +515,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
             </Notice>
           )}
           <div ref={frame} className="min-h-0 flex-1 px-4 py-3 [&_a]:underline">
-            <ThemeProvider mode={dark ? "dark" : "light"}>
+            <OpenUITheme mode={dark ? "dark" : "light"}>
               <AppRenderer
                 response={view.response}
                 library={library}
@@ -547,7 +546,7 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
                 runtimeRef={runtimeRef}
                 onError={setErrors}
               />
-            </ThemeProvider>
+            </OpenUITheme>
           </div>
           {empty && view.response.trim() !== "" && (
             <Notice tone={view.kind === "run" ? "error" : "info"}>

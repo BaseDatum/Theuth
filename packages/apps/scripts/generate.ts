@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ACTION_STEPS, BUILTINS, LIMITS } from "@openuidev/lang-core";
+import { ACTION_STEPS, BUILTIN_SPECS, LIMITS } from "@openuidev/lang-core";
 import {
   CURATED_COMPONENTS,
   LIBRARY_ROOT,
@@ -143,7 +143,7 @@ lines.push(
     " — @Run(mutationOrQuery), @Set($var, value), @Reset($var...), @OpenUrl(url), @ToAssistant(message, context?)",
 );
 lines.push("@Each(array, item, template) — repeat a component per item");
-for (const b of Object.values(BUILTINS))
+for (const b of Object.values(BUILTIN_SPECS))
   lines.push(`@${b.signature} — ${b.description}`);
 lines.push("");
 lines.push(

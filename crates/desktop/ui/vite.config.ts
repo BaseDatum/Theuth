@@ -79,6 +79,13 @@ export default defineConfig({
       { find: /^@theuth\/apps\/renderer$/, replacement: `${apps}/src/renderer.tsx` },
       { find: /^@theuth\/documents\/schema$/, replacement: `${documents}/src/schema.ts` },
       { find: /^@theuth\/documents\/yaml$/, replacement: `${documents}/src/yaml.ts` },
+      /** The layered OpenUI stylesheet that `src/styles.css` imports: Tailwind's CSS resolver honors `resolve.alias`
+       * (not the `openui()` plugin's `resolveId`, which only sees JS imports), and `@openuidev/*` is installed only
+       * under packages/apps — so this resolves to the same pinned copy every JS import resolves to. */
+      {
+        find: /^@openuidev\/react-ui\/layered\/styles\/index\.css$/,
+        replacement: `${apps}/node_modules/@openuidev/react-ui/dist/layered/styles/index.css`,
+      },
     ],
     // The packages' `node_modules` carry their own React/zod/zustand and (documents) a headless BlockNote with the
     // whole ProseMirror/Yjs family; one copy each, ours — two `prosemirror-view`s break every editor.

@@ -23,7 +23,7 @@ import {
   type ASTNode,
   type ParseResult,
 } from "@openuidev/lang-core";
-import generated from "../generated/library.json";
+import generated from "../generated/library.json" with { type: "json" };
 import { DIAGRAMS } from "./diagrams.ts";
 import type { GeneratedLibrary } from "./generated-types.ts";
 import type {
@@ -220,7 +220,9 @@ function analyze(source: string, tools: ToolSnapshot[]): CheckResult {
     return exceptionResult(source, e);
   }
 
-  for (const err of result.meta.errors)
+  // upstream 1.x also reports entry fallbacks as `no-root`; this adapter owns that diagnostic
+  const metaErrors = result.meta.errors.filter((e) => e.code !== "no-root");
+  for (const err of metaErrors)
     push(err.code, err.message, err.statementId ?? "");
   if (result.meta.incomplete)
     push(
@@ -252,7 +254,7 @@ function analyze(source: string, tools: ToolSnapshot[]): CheckResult {
       "no-root",
       `no root statement: define root = ${generatedLibrary.root}([...]) as the first line`,
     );
-  else if (!result.root && !result.meta.errors.length)
+  else if (!result.root && !result.rootExpression && !metaErrors.length)
     push("no-root", "root did not produce a renderable component", ROOT_ID);
 
   const locate = (pred: (n: ASTNode) => boolean): string => {
