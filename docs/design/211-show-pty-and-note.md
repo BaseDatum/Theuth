@@ -58,3 +58,32 @@ Also one sentence in each tool description saying what it is for and that `show_
 ## 4. Tests
 - Rust (inline `#[cfg(test)]` in tileview.rs, modelled on webview.rs tests): receipt first-line pins for both tools, event wire shape (type + keys), name→id resolution, refusals (unknown job, non-PTY job, wrong doc kind).
 - UI: `lib/tile-arrival.test.ts` (visible→tile opened with right kind/key; same event twice → one tile; not visible → no tile), receipt-parser tests for both cards, opener tests in `lib/tiles.test.ts` if touched.
+
+
+## 5. Amendment (owner, 2026-11-22 19:20) — show_pty covers background jobs AND spawns PTYs
+
+Owner: "there's the background job thing and then there's the PTY thing where the user can actually interact with the terminal and I want both supported, the existing spawn tool stays, but this one gets the ability to spawn ptys and show them in a tile as well." Cell kernels: out of scope.
+
+This REPLACES the show_pty part of §1 where it conflicts:
+
+**Args:** `show_pty{job?, command?, cwd?, name?, title?}`
+- `job` given → show an existing job of this session (id or start-name, resolution as §1). Now ANY job, not only PTYs:
+  - PTY job (from `start()`, or spawned by show_pty) → interactive terminal tile (as before).
+  - Non-PTY background job (from `shell()`) → read-only live log tile. Use `ListJobs(session)` / `JobView` (`crates/tools/src/jobs.rs`) to find it.
+- `command` given (no `job`) → SPAWN a new PTY job exactly the way `start()` does (reuse the Jobs actor / pty.rs start path — do not duplicate process code; `name` and `cwd` mean what they mean for `start`, cwd default = the session cwd), then show it. It is a normal job afterwards: `screen`/`send`/`cancel_job` work on it.
+- neither → spawn the user's login shell (`$SHELL -l`, fallback `/bin/zsh -l`) as a PTY job, name default `shell`, then show it — a real terminal for the user.
+- both → error `show_pty: give job or command, not both`.
+- Risk: spawning runs a process, so it must not be ReadOnly. If the `Tool` trait supports a per-call risk (check `crates/tools/src/lib.rs`), use ReadOnly when only `job` is given and Mutating when spawning; otherwise `RISK = Risk::Mutating` for the whole tool (same as `start`). Say which in your final report.
+
+**Events:** keep `PtyViewOpened` (topic `artifact.pty-view-opened`) and ADD a field `pty: bool` (false = log-only background job), and `spawned: bool`.
+
+**Receipt first line EXACT, two forms:**
+- PTY: `pty view opened · {title} · tile pty:{session}/{job}`
+- background job: `job view opened · {title} · tile job:{session}/{job}`
+When spawned, line 2: `started {job} ({name}) in {cwd}: {command}` and a sentence that it is a normal job (screen/send/cancel_job work).
+
+**UI:**
+- `pty:true` → `job-terminal` tile as before.
+- `pty:false` → a read-only log tile: reuse whatever the jobs tile / JobCard already uses to show a job's live output (`job_log` RPC / the `jobs` tile kind in components/tiles/kinds); key `${session}/${job}`. If there is a log view component, mount it; add a kind `job-log` only if needed.
+- Card regex for the second form: `/^job view opened · (.*) · tile job:([^/\s]+)\/(\S+)$/m`; same card component (PtyViewCard) handles both forms.
+- Prompt paragraph (§1) becomes: "`show_pty{job?, command?, cwd?, name?, title?}` and `show_note{doc, block?, title?}` open a tile beside the chat: `show_pty` shows a job you started (a `start()` terminal the user can type into, or a `shell()` job's live log) or starts a new terminal — a command, or with no arguments the user's own shell — and shows it; `show_note` shows a note, board or knowledge page for the user to read or edit alongside the chat. The same job or document again reuses its tile. Use them when the user should see it now; `start()` stays the way to run a terminal nobody needs to watch."
