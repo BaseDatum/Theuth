@@ -61,6 +61,32 @@ function pythonGroup(entries: Entry[], at: number): { group: Run; after: Entry[]
 
 const NONE: ReadonlySet<string> = new Set()
 
+/** Parallel cells (two `python` calls in one message) interleave their calls: `[py1, py2, py1.1, py2.1]`. Move every
+ * call a cell made to just after that cell, wherever it arrived, so `pythonGroup` finds it; a call whose cell is not in
+ * `entries` stays where it is. Order within a cell is kept. */
+function adoptCellCalls(entries: Entry[]): Entry[] {
+  const cells = new Set<string>()
+  for (const e of entries) if (isPythonCall(e)) cells.add(e.callId)
+  if (cells.size < 2) return entries
+  const calls = new Map<string, Entry[]>()
+  const rest: Entry[] = []
+  for (const e of entries) {
+    const dot = e.kind === 'tool' ? e.callId.lastIndexOf('.') : -1
+    const cell = dot > 0 ? (e as Tool).callId.slice(0, dot) : ''
+    if (cell && cells.has(cell)) {
+      const list = calls.get(cell)
+      if (list) list.push(e)
+      else calls.set(cell, [e])
+    } else rest.push(e)
+  }
+  const out: Entry[] = []
+  for (const e of rest) {
+    out.push(e)
+    if (isPythonCall(e)) out.push(...(calls.get(e.callId) ?? []))
+  }
+  return out
+}
+
 /** Entries with every maximal run of two or more tool cards (reasoning between them rides along; any other row,
  * including assistant text, ends the run) folded into one `Run`. A lone tool call stays a plain entry. A deliverable
  * (`isDeliverable`) is never in a run: it splits one, `[a, b] show [c, d]` → `[[a, b], show, [c, d]]`. So does a
@@ -71,7 +97,8 @@ const NONE: ReadonlySet<string> = new Set()
  * tool card here: it folds into the tool run around it and never into a `PeerGroup`.
  * A `python` call is never part of such a run: it and the calls its cell made are one group (`PythonGroup`), whether or not
  * `fold` is on (the preference only governs the generic runs). */
-export function foldRuns(entries: Entry[], pinned: ReadonlySet<string> = NONE, fold = true): (Entry | Run)[] {
+export function foldRuns(given: Entry[], pinned: ReadonlySet<string> = NONE, fold = true): (Entry | Run)[] {
+  const entries = adoptCellCalls(given)
   const out: (Entry | Run)[] = []
   let i = 0
   while (i < entries.length) {
@@ -146,7 +173,7 @@ export function summarize(run: Run): Summary {
 
 export type GroupSummary = Summary & { /** Calls the cell made: the cards under the header. */ calls: number }
 
-/** Header of a python group: `3 tools` (the calls its cell made, deliverables shown beside the group not counted), `running · 3 tools` while the cell runs,
+/** Header of a python group: `3 tools` (the calls its cell made, deliverables shown beside the group not counted), `running · 3 tools` while the cell runs, `ran code` for a cell that called nothing,
  * then the duration and the failed calls. The word "python" never appears. A cell that errors itself is red and shows its first error line (`hint`). */
 export function summarizeGroup(group: Run): GroupSummary {
   const call = group[0] as Tool
@@ -158,7 +185,7 @@ export function summarizeGroup(group: Run): GroupSummary {
   const lastLine = last?.result ? `${last.result.isError ? '✗' : '✓'} ${resultLine(last.result.output)}` : null
   const crashed = call.result?.isError === true
   const hint = crashed && call.result ? `✗ ${resultLine(call.result.output)}` : lastLine
-  const count = calls.length ? `${calls.length} tool${calls.length === 1 ? '' : 's'}` : running ? '' : 'no tools'
+  const count = calls.length ? `${calls.length} tool${calls.length === 1 ? '' : 's'}` : running ? '' : 'ran code'
   const parts = [running ? ['running', count].filter(Boolean).join(' · ') : count]
   if (!running && call.startedAt !== undefined && call.finishedAt !== undefined) {
     const ms = call.finishedAt - call.startedAt

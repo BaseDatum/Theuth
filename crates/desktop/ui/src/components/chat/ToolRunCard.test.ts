@@ -219,10 +219,24 @@ test('foldRuns: a python call and the calls its cell made are one group, apart f
   expect(foldRuns([a, b, py(), k1], undefined, false)).toEqual([a, b, [py(), k1]])
 })
 
+test('foldRuns: parallel cells (two python calls in one message) each get their own calls, wherever they arrived', () => {
+  const p1 = py()
+  const p2 = tool(51, { name: 'python', callId: 'p2', args: { code: 'y = grep("b")' } })
+  const [a1, b1] = [kid(1), tool(71, { callId: 'p2.1', child: true, name: 'g1' })]
+  const a2 = kid(2)
+  expect(foldRuns([p1, p2, a1, b1, a2])).toEqual([[p1, a1, a2], [p2, b1]])
+  expect(summarizeGroup([p1, a1, a2]).text).toBe('2 tools')
+  expect(summarizeGroup([p2, b1]).text).toBe('1 tool')
+  // A call whose cell is not on screen stays where it is.
+  const stray = tool(72, { callId: 'gone.1', child: true })
+  expect(foldRuns([p1, p2, stray, a1])).toEqual([[p1, a1], [p2], stray])
+})
+
 test('summarizeGroup: counts the cell\'s calls, never says python, shows a failure', () => {
   expect(summarizeGroup([py(), kid(1), kid(2), kid(3)]).text).toBe('3 tools')
   expect(summarizeGroup([py(), kid(1)]).text).toBe('1 tool')
-  expect(summarizeGroup([py()]).text).toBe('no tools')
+  // A cell that called nothing ran code; it never claims "no tools".
+  expect(summarizeGroup([py()]).text).toBe('ran code')
   expect(summarizeGroup([py({ result: undefined }), kid(1), kid(2, { result: undefined })])).toMatchObject({ text: 'running · 2 tools', running: true })
   expect(summarizeGroup([py({ result: undefined })]).text).toBe('running')
   expect(summarizeGroup([py(), kid(1), fail(2)])).toMatchObject({ failed: false })
