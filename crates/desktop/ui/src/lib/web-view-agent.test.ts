@@ -1,7 +1,22 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { WebViewCallAnswer, WebViewCallRequested, WebViewCallResolved } from '@/lib/web-view-call-wire'
 import { useWebViews } from '@/lib/web-views'
-import { IDLE, LINGER_MS, REFUSE_MS, STOPPED, acting, ended, startWebViewAgent, started, stopAgent, stopped, useTileAgent } from './web-view-agent'
+import {
+  IDLE,
+  LINGER_MS,
+  REFUSED_KEY,
+  REFUSE_MS,
+  STOPPED,
+  WINDOW_CLOSED,
+  acting,
+  ended,
+  hiddenAgents,
+  startWebViewAgent,
+  started,
+  stopAgent,
+  stopped,
+  useTileAgent,
+} from './web-view-agent'
 
 const shell = vi.hoisted(() => ({
   held: new Set<string>(),
@@ -78,6 +93,19 @@ const flush = async () => {
 }
 let stop: () => void = () => {}
 
+// No DOM in this runner: the smallest `Storage` (shared by "every window" of the app) and window listeners.
+const storage = new Map<string, string>()
+vi.stubGlobal('localStorage', {
+  getItem: (k: string) => storage.get(k) ?? null,
+  setItem: (k: string, v: string) => void storage.set(k, v),
+  removeItem: (k: string) => void storage.delete(k),
+})
+const win = { listeners: new Map<string, () => void>() }
+vi.stubGlobal('addEventListener', (type: string, cb: () => void) => void win.listeners.set(type, cb))
+vi.stubGlobal('removeEventListener', (type: string, cb: () => void) => {
+  if (win.listeners.get(type) === cb) win.listeners.delete(type)
+})
+
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(1_000_000)
@@ -87,7 +115,8 @@ beforeEach(() => {
   engine.answers = []
   engine.supports = true
   engine.wins = true
-  useTileAgent.setState({ tiles: {} })
+  storage.clear()
+  useTileAgent.setState({ tiles: {}, shown: {} })
   useWebViews.setState({ views: {} })
   stop = startWebViewAgent()
 })
@@ -150,12 +179,14 @@ test('a window claims only tiles it holds: not another tile, not one popped out 
   // The main window still knows the view, but a pop-out window holds it now.
   useWebViews.getState().open({ id: TILE, session: 's1', url: 'https://example.com/', title: 'Example' })
   useWebViews.getState().patch(TILE, { popped: true })
-  events.requested!(request())
+  const popped = request()
+  events.requested!(popped)
   useWebViews.getState().patch(TILE, { popped: false })
   shell.closed!({ label: `web-${TILE}` })
   events.requested!(request())
   await flush()
-  expect(engine.answers).toEqual([])
+  // Nothing claimed or run; only the call the pop-out held fails, once its view is gone.
+  expect(engine.answers).toEqual([[popped.id, { kind: 'failed', reason: WINDOW_CLOSED }]])
   expect(shell.calls).toEqual([])
 })
 
@@ -172,39 +203,108 @@ test('a window without native web views, or on an engine without the events, nev
   expect(shell.calls).toEqual([])
 })
 
-test('Stop fails the call in flight, drops its late result, and refuses the tile for 60 s without running anything', async () => {
+test('Stop fails the call in flight, stops the page in the shell (Stopping until it settles), and refuses the tile for 60 s in every window', async () => {
   const e = request()
   events.requested!(e)
   await flush()
   stopAgent(TILE)
   expect(engine.answers.at(-1)).toEqual([e.id, { kind: 'failed', reason: STOPPED }])
+  expect(shell.calls.map((c) => [c.id, c.op, c.args])).toEqual([
+    [TILE, 'script', e.args],
+    [TILE, 'stop', {}],
+  ])
+  expect(useTileAgent.getState().tiles[TILE]).toMatchObject({ calls: [], stopping: true })
+  expect(acting(useTileAgent.getState().tiles[TILE], Date.now())).toBe(true)
+  shell.calls[1]!.resolve(null)
+  await flush()
   expect(acting(useTileAgent.getState().tiles[TILE], Date.now())).toBe(false)
   shell.calls[0]!.resolve({ value: 'late' })
   await flush()
   expect(engine.answers.filter(([id]) => id === e.id).map(([, a]) => a.kind)).toEqual(['claimed', 'failed'])
+  expect(storage.get(REFUSED_KEY + TILE)).toBe(String(1_000_000 + REFUSE_MS))
 
+  // Another window of the app, or this one reloaded: no state of its own, and the stored refusal still holds.
+  useTileAgent.setState({ tiles: {}, shown: {} })
   vi.setSystemTime(1_000_000 + REFUSE_MS - 1)
   const refused = request()
   events.requested!(refused)
   await flush()
   expect(engine.answers.filter(([id]) => id === refused.id)).toEqual([[refused.id, { kind: 'failed', reason: STOPPED }]])
-  expect(shell.calls).toHaveLength(1)
+  expect(shell.calls).toHaveLength(2)
 
   vi.setSystemTime(1_000_000 + REFUSE_MS)
   const again = request()
   events.requested!(again)
   await flush()
   expect(engine.answers.at(-1)).toEqual([again.id, { kind: 'claimed', client: 'iPad-abc123' }])
-  expect(shell.calls).toHaveLength(2)
+  expect(shell.calls).toHaveLength(3)
+  expect(storage.has(REFUSED_KEY + TILE)).toBe(false)
 })
 
-test('Stop while the claim is out: the call never runs', async () => {
+test('Stop while the claim is out: the call never runs; a failed shell stop still ends Stopping', async () => {
   const e = request()
   events.requested!(e)
   stopAgent(TILE)
   await flush()
   expect(engine.answers.map(([, a]) => a.kind)).toEqual(['claimed', 'failed'])
-  expect(shell.calls).toEqual([])
+  expect(shell.calls.map((c) => c.op)).toEqual(['stop'])
+  shell.calls[0]!.reject('no web view `web-0123456789abcdef`')
+  await flush()
+  expect(useTileAgent.getState().tiles[TILE]?.stopping).toBe(false)
+})
+
+test('a window claims only for the session that opened the tile, unless the engine marks the call delegated', async () => {
+  useWebViews.getState().open({ id: TILE, session: 's1', url: 'https://example.com/', title: 'Example' })
+  const other = request({ session: 's2' })
+  events.requested!(other)
+  await flush()
+  expect(engine.answers).toEqual([])
+  const delegated = { ...request({ session: 's2' }), delegated: true }
+  events.requested!(delegated)
+  await flush()
+  expect(engine.answers[0]).toEqual([delegated.id, { kind: 'claimed', client: 'iPad-abc123' }])
+  // A pop-out window's store knows no session for its tile: it claims.
+  useWebViews.setState({ views: {} })
+  useWebViews.getState().open({ id: TILE, session: '', url: 'https://example.com/', title: 'Example' })
+  const popped = request({ session: 's9' })
+  events.requested!(popped)
+  await flush()
+  expect(engine.answers.filter(([id]) => id === popped.id).map(([, a]) => a.kind)).toEqual(['claimed'])
+})
+
+test('a window going away fails the calls it still runs; the main window fails those of a closed pop-out', async () => {
+  const e = request()
+  events.requested!(e)
+  await flush()
+  win.listeners.get('pagehide')!()
+  expect(engine.answers.at(-1)).toEqual([e.id, { kind: 'failed', reason: WINDOW_CLOSED }])
+  shell.calls[0]!.resolve({ value: 1 })
+  await flush()
+  expect(engine.answers.filter(([id]) => id === e.id).map(([, a]) => a.kind)).toEqual(['claimed', 'failed'])
+
+  // The agent's own stop (the app unmounting) does the same.
+  const f = request()
+  events.requested!(f)
+  await flush()
+  stop()
+  expect(engine.answers.at(-1)).toEqual([f.id, { kind: 'failed', reason: WINDOW_CLOSED }])
+  stop = startWebViewAgent()
+
+  // The main window: a pop-out held the tile when the call came; its window closing destroys the view.
+  shell.held.clear()
+  useWebViews.getState().open({ id: TILE, session: 's1', url: 'https://example.com/', title: 'Example' })
+  useWebViews.getState().patch(TILE, { popped: true })
+  const g = request()
+  events.requested!(g)
+  const resolved = request()
+  events.requested!(resolved)
+  await flush()
+  events.resolved!({ type: 'WebViewCallResolved', id: resolved.id })
+  expect(engine.answers.filter(([id]) => id === g.id || id === resolved.id)).toEqual([])
+  shell.closed!({ label: 'web-fedcba9876543210' })
+  expect(engine.answers.filter(([id]) => id === g.id)).toEqual([])
+  shell.closed!({ label: `web-${TILE}` })
+  expect(engine.answers.filter(([id]) => id === g.id || id === resolved.id)).toEqual([[g.id, { kind: 'failed', reason: WINDOW_CLOSED }]])
 })
 
 test('the engine resolving a call ends it here; its late result is not answered', async () => {
@@ -218,7 +318,7 @@ test('the engine resolving a call ends it here; its late result is not answered'
   expect(engine.answers.map(([, a]) => a.kind)).toEqual(['claimed'])
 })
 
-test('the bar shows while a call is in flight and 3 s after the last, and goes at once on Stop', () => {
+test('the bar shows while a call is in flight, 3 s after the last, and while Stop settles', () => {
   let a = started(started(IDLE, 'c1'), 'c2')
   expect(acting(undefined, 0)).toBe(false)
   expect(acting(IDLE, 0)).toBe(false)
@@ -229,7 +329,20 @@ test('the bar shows while a call is in flight and 3 s after the last, and goes a
   expect(acting(a, 200 + LINGER_MS - 1)).toBe(true)
   expect(acting(a, 200 + LINGER_MS)).toBe(false)
   expect(ended(a, 'c2', 900)).toBe(a)
-  expect(acting(stopped(300), 300)).toBe(false)
+  expect(acting(stopped(300), 300)).toBe(true)
+  expect(acting({ ...stopped(300), stopping: false }, 300)).toBe(false)
+})
+
+test('a tile the agent acts on that no frame shows is named for the window banner, with its host', () => {
+  const busy = started(IDLE, 'c1')
+  const tiles = { a: busy, b: busy, c: ended(busy, 'c1', 10), d: stopped(5) }
+  const urls = { a: 'https://mail.example.com/inbox', b: 'https://shown.example/', c: 'https://c.example/', d: 'not a url' }
+  expect(hiddenAgents(tiles, { b: 1 }, urls)).toEqual([
+    { id: 'a', host: 'mail.example.com', stopping: false },
+    { id: 'd', host: 'a page', stopping: true },
+  ])
+  // A frame showing it (unoccluded, mounted) takes it off the banner.
+  expect(hiddenAgents(tiles, { a: 1, b: 2, d: 1 }, urls)).toEqual([])
 })
 
 test('arguments, results and failures never reach the console', async () => {

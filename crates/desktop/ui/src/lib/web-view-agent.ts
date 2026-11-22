@@ -1,11 +1,13 @@
 // 209 §4.7, D8: the client side of an agent driving a web view tile. On `WebViewCallRequested` for a tile this window
-// holds (its last `web_view_attach` landed here and no pop-out window took it, `web-view-native.holds`), answer
-// `Claimed` at once; once the engine accepts the claim (the first one wins: another device may show the same tile),
-// run the op through the shell's `web_view_call`, then answer `Done` or `Failed`. A window that does not hold the tile
-// stays silent, so the holder (a pop-out window, the iPad, the desktop app) is the one that claims. A tile hidden
-// behind another pane is still driven; nothing here shows a hidden tile. Stop (the bar in `WebFrame`) fails the tile's
-// calls in flight and refuses its next ones for 60 s. Arguments and results are never logged: they carry page text and
-// form values.
+// holds (its last `web_view_attach` landed here and no pop-out window took it, `web-view-native.holds`) and that belongs
+// to the asking session (or the engine marks the request `delegated`), answer `Claimed` at once; once the engine accepts
+// the claim (the first one wins: another device may show the same tile), run the op through the shell's
+// `web_view_call`, then answer `Done` or `Failed`. A window that does not hold the tile stays silent, so the holder (a
+// pop-out window, the iPad, the desktop app) is the one that claims. A tile whose frame is not on screen (unmounted, or
+// under an overlay) is still driven: `useHiddenAgents` names it, for the window-level banner. Stop (the bar in
+// `WebFrame`, or the banner) fails the tile's calls in flight, sends the shell's `stop` op (the page stops loading, its
+// waits end), and refuses its next calls for 60 s in every window of this app (localStorage). Arguments and results
+// are never logged: they carry page text and form values.
 
 import { useEffect, useState } from 'react'
 import { create } from 'zustand'
@@ -24,34 +26,108 @@ export const LINGER_MS = 3_000
 export const REFUSE_MS = 60_000
 /** `Failed` reason for a call the user stopped or a call refused after Stop. */
 export const STOPPED = 'stopped by the user'
+/** `Failed` reason for a call whose window went away (closed, reloaded) before it answered. */
+export const WINDOW_CLOSED = 'window closed'
+/** localStorage key prefix of a tile's Stop refusal: `<prefix><tile id>` → the time it ends (ms since the epoch). */
+export const REFUSED_KEY = 'theuth.web-view-agent.refused.'
 
-/** One tile's agent activity: the calls in flight, when the last one ended, and until when Stop refuses calls. */
-export type Activity = { calls: string[]; endedAt: number | null; refusedUntil: number }
-export const IDLE: Activity = { calls: [], endedAt: null, refusedUntil: 0 }
+/** One tile's agent activity: the calls in flight, when the last one ended, until when Stop refuses calls, and
+ * whether the shell's `stop` is still running. */
+export type Activity = { calls: string[]; endedAt: number | null; refusedUntil: number; stopping: boolean }
+export const IDLE: Activity = { calls: [], endedAt: null, refusedUntil: 0, stopping: false }
 
 export const started = (a: Activity, call: string): Activity => ({ ...a, calls: [...a.calls, call] })
 /** `call` is over; the same object when it was not in flight (stopped or resolved before). */
 export const ended = (a: Activity, call: string, now: number): Activity =>
   a.calls.includes(call) ? { ...a, calls: a.calls.filter((c) => c !== call), endedAt: now } : a
-/** Stop: nothing in flight, no linger, refuse until `now + REFUSE_MS`. */
-export const stopped = (now: number): Activity => ({ calls: [], endedAt: null, refusedUntil: now + REFUSE_MS })
-/** The bar shows: a call in flight, or the last one ended less than `LINGER_MS` ago. */
+/** Stop: nothing in flight, no linger, the shell's `stop` running, refuse until `now + REFUSE_MS`. */
+export const stopped = (now: number): Activity => ({ calls: [], endedAt: null, refusedUntil: now + REFUSE_MS, stopping: true })
+/** The bar shows: a call in flight, Stop still settling, or the last call ended less than `LINGER_MS` ago. */
 export const acting = (a: Activity | undefined, now: number): boolean =>
-  a !== undefined && (a.calls.length > 0 || (a.endedAt !== null && now - a.endedAt < LINGER_MS))
-export const refusing = (a: Activity | undefined, now: number): boolean => a !== undefined && now < a.refusedUntil
+  a !== undefined && (a.calls.length > 0 || a.stopping || (a.endedAt !== null && now - a.endedAt < LINGER_MS))
 
-/** Per tile id, this window's agent activity. */
-export const useTileAgent = create<{ tiles: Record<string, Activity> }>()(() => ({ tiles: {} }))
+/** The end of tile `id`'s Stop refusal kept in localStorage (0: none); an expired one is removed. */
+export function persistedRefusal(id: string, now: number): number {
+  try {
+    const until = Number(globalThis.localStorage?.getItem(REFUSED_KEY + id) ?? 0)
+    if (Number.isFinite(until) && until > now) return until
+    globalThis.localStorage?.removeItem(REFUSED_KEY + id)
+  } catch {
+    // No storage: this window's own refusal still holds.
+  }
+  return 0
+}
+function persistRefusal(id: string, until: number): void {
+  try {
+    globalThis.localStorage?.setItem(REFUSED_KEY + id, String(until))
+  } catch {
+    // No storage: this window's own refusal still holds.
+  }
+}
+/** Stop refuses tile `id` now: in this window's state, or in any window's (or an earlier page load's) through localStorage. */
+export const refusing = (id: string, a: Activity | undefined, now: number): boolean =>
+  (a !== undefined && now < a.refusedUntil) || persistedRefusal(id, now) > now
+
+/** Per tile id, this window's agent activity; `shown`: per tile id, how many of this window's frames show its page
+ * (mounted, native view live and not under an overlay). */
+export const useTileAgent = create<{ tiles: Record<string, Activity>; shown: Record<string, number> }>()(() => ({ tiles: {}, shown: {} }))
 const update = (id: string, f: (a: Activity) => Activity) => {
   const tiles = useTileAgent.getState().tiles
   const next = f(tiles[id] ?? IDLE)
   if (next !== tiles[id]) useTileAgent.setState({ tiles: { ...tiles, [id]: next } })
 }
 
+/** A frame of tile `id` shows its page in this window; returns the undo (unmount, overlay, not live). */
+export function showFrame(id: string): () => void {
+  const bump = (n: number) => {
+    const shown = useTileAgent.getState().shown
+    const count = (shown[id] ?? 0) + n
+    const { [id]: _, ...rest } = shown
+    useTileAgent.setState({ shown: count > 0 ? { ...rest, [id]: count } : rest })
+  }
+  bump(1)
+  return () => bump(-1)
+}
+
+/** A tile the agent acts on that no frame of this window shows: its id, the page's host, and whether Stop is settling. */
+export type HiddenAgent = { id: string; host: string; stopping: boolean }
+/** Tiles with a call in flight (or Stop settling) and no frame showing them, in id order. */
+export function hiddenAgents(tiles: Record<string, Activity>, shown: Record<string, number>, urls: Record<string, string>): HiddenAgent[] {
+  return Object.entries(tiles)
+    .filter(([id, a]) => (a.calls.length > 0 || a.stopping) && !((shown[id] ?? 0) > 0))
+    .map(([id, a]) => ({ id, host: hostOf(urls[id] ?? ''), stopping: a.stopping }))
+    .sort((a, b) => a.id.localeCompare(b.id))
+}
+const hostOf = (url: string): string => {
+  try {
+    return new URL(url).host || 'a page'
+  } catch {
+    return 'a page'
+  }
+}
+/** `hiddenAgents` of this window, live: the window-level banner (and the phone's pill, 209 P4) read it. */
+export function useHiddenAgents(): HiddenAgent[] {
+  const tiles = useTileAgent((s) => s.tiles)
+  const shown = useTileAgent((s) => s.shown)
+  const views = useWebViews((s) => s.views)
+  const urls: Record<string, string> = {}
+  for (const id of Object.keys(tiles)) urls[id] = views[id]?.current || views[id]?.url || ''
+  return hiddenAgents(tiles, shown, urls)
+}
+
 /** The tile id of a request's `view`: the bare id the engine sends, also `web:<id>` or the shell label `web-<id>`. */
 export const tileOf = (view: string): string | null => {
   const id = view.replace(/^web[:-]/, '')
   return /^[\w-]+$/.test(id) ? id : null
+}
+
+/** 209 §9: this window may act for `e` on tile `id` only for the session that opened the tile: the tile's session is
+ * unknown here (a pop-out window's store has none) or is `e.session`, or the engine marks the request `delegated` (the
+ * asking session descends from the tile's). */
+export function mayClaim(e: WebViewCallRequested, id: string): boolean {
+  const owner = useWebViews.getState().views[id]?.session ?? ''
+  // `delegated` is the engine's addition (209 P3 review); bindings generated before it lack the field.
+  return owner === '' || owner === e.session || ('delegated' in e && e.delegated === true)
 }
 
 /** The `Done` answer of the shell's reply: `snapshot`'s `{ png }` moves to `png`. */
@@ -65,15 +141,24 @@ export function doneOf(op: string, value: unknown): WebViewCallAnswer {
 
 /** Calls this window claimed and has not answered yet: call id → tile id and the connection that asked. */
 const running = new Map<string, { id: string; api: Api }>()
+/** Every call this window saw and the engine has not resolved, for a tile a pop-out window of this app held when it
+ * came (`popped`): call id → tile id and connection. When that view is destroyed (its window closed), no one else
+ * answers it. */
+const away = new Map<string, { id: string; api: Api }>()
 
 const answer = (api: Api, call: string, a: WebViewCallAnswer) => void api.answer_web_view_call(call, a).catch(() => undefined)
 
 async function run(e: WebViewCallRequested): Promise<void> {
   const id = tileOf(e.view)
-  if (id === null || !native.holds(id) || useWebViews.getState().views[id]?.popped || running.has(e.id)) return
+  if (id === null || running.has(e.id)) return
   const { api, discovery } = useConnection.getState()
   if (!api || !supports(discovery, { methods: ['answer_web_view_call'], topics: ['artifact.web-view-call-requested@1'] })) return
-  if (refusing(useTileAgent.getState().tiles[id], Date.now())) return answer(api, e.id, { kind: 'failed', reason: STOPPED })
+  if (useWebViews.getState().views[id]?.popped) {
+    away.set(e.id, { id, api })
+    return
+  }
+  if (!native.holds(id) || !mayClaim(e, id)) return
+  if (refusing(id, useTileAgent.getState().tiles[id], Date.now())) return answer(api, e.id, { kind: 'failed', reason: STOPPED })
   running.set(e.id, { id, api })
   const won = await api.answer_web_view_call(e.id, { kind: 'claimed', client: profileDevice() }).catch(() => false)
   // Another client claimed first, the engine gave up, or Stop came while the claim was out.
@@ -95,14 +180,26 @@ async function run(e: WebViewCallRequested): Promise<void> {
   answer(api, e.id, out)
 }
 
-/** Stop the agent on tile `id`: its calls in flight fail with `STOPPED`, its next calls are refused for `REFUSE_MS`. */
-export function stopAgent(id: string): void {
-  for (const [call, r] of running) {
-    if (r.id !== id) continue
-    running.delete(call)
-    answer(r.api, call, { kind: 'failed', reason: STOPPED })
+/** Fail with `reason` each call of `calls` for which `pick` holds, and forget it. */
+function failAll(calls: Map<string, { id: string; api: Api }>, reason: string, pick: (id: string) => boolean = () => true): void {
+  for (const [call, r] of calls) {
+    if (!pick(r.id)) continue
+    calls.delete(call)
+    answer(r.api, call, { kind: 'failed', reason })
   }
-  update(id, () => stopped(Date.now()))
+}
+
+/** Stop the agent on tile `id`: its calls in flight fail with `STOPPED`, the shell's `stop` ends the page's loading
+ * and the tile's waits ("Stopping…" until it settles), and its next calls are refused for `REFUSE_MS` in every window. */
+export function stopAgent(id: string): void {
+  failAll(running, STOPPED, (t) => t === id)
+  const now = Date.now()
+  persistRefusal(id, now + REFUSE_MS)
+  update(id, () => stopped(now))
+  void native
+    .viewCall(id, 'stop', {})
+    .catch(() => undefined)
+    .then(() => update(id, (a) => (a.stopping ? { ...a, stopping: false } : a)))
 }
 
 /** Whether the "Agent is using this page" bar shows for tile `id`; re-renders when the linger runs out. */
@@ -119,22 +216,39 @@ export function useAgentActing(id: string): boolean {
   return acting(a, Date.now())
 }
 
-/** Listen for tile calls in this window (main and pop-out windows: each claims only what it holds). Returns the stop. */
+/** Listen for tile calls in this window (main and pop-out windows: each claims only what it holds). Returns the stop,
+ * which, like the window going away (`pagehide`), fails the calls this window still runs: nobody else would. */
 export function startWebViewAgent(): () => void {
   if (!native.nativeWebViews()) return () => {}
   let gone = false
+  const leave = () => failAll(running, WINDOW_CLOSED)
   const offs = [
     on('artifact.web-view-call-requested@1', 'WebViewCallRequested', (e) => void run(e)),
     on('artifact.web-view-call-resolved@1', 'WebViewCallResolved', (e) => {
+      away.delete(e.id)
       const r = running.get(e.id)
       if (!r) return
       running.delete(e.id)
       update(r.id, (a) => ended(a, e.id, Date.now()))
     }),
   ]
-  void native.onClosed((s) => native.release(s.label)).then((off) => (gone ? off() : offs.push(off)))
+  globalThis.addEventListener?.('pagehide', leave)
+  globalThis.addEventListener?.('beforeunload', leave)
+  offs.push(() => {
+    globalThis.removeEventListener?.('pagehide', leave)
+    globalThis.removeEventListener?.('beforeunload', leave)
+  })
+  void native
+    .onClosed((s) => {
+      native.release(s.label)
+      // The pop-out window that held the view closed: its calls in flight end here.
+      const id = s.label.replace(/^web-/, '')
+      failAll(away, WINDOW_CLOSED, (t) => t === id)
+    })
+    .then((off) => (gone ? off() : offs.push(off)))
   return () => {
     gone = true
     for (const off of offs) off()
+    leave()
   }
 }

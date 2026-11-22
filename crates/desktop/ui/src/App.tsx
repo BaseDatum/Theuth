@@ -24,6 +24,7 @@ import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { chatLeaves, closeWeb, leaves, placeWeb, usePanes } from '@/lib/panes'
 import { closeAllWebViews, installWebViewEvents, useWebViews, webLeaf } from '@/lib/web-views'
 import { closeAllTiles, closeSessionTiles } from '@/lib/tiles'
+import { AgentTileBanner } from '@/components/chat/AgentTileBanner'
 import { forgetArtifact } from '@/components/chat/ArtifactPanel'
 import * as webNative from '@/lib/web-view-native'
 import { isMobileLayout } from '@/hooks/use-mobile'
@@ -828,6 +829,8 @@ function Main() {
         </EngineProvider>
       )}
       <Toaster />
+      {/* 209 §9: an agent acting on a tile no frame of this window shows, in the windows `startWebViewAgent` runs in. */}
+      {!ISLAND && !OVERLAY && <AgentTileBanner />}
       {/* 163 D5: portalled to <body>; it makes everything else there inert while it is up. */}
       {!AUX && <QuitOverlay />}
       {!AUX && <PreQuit />}
