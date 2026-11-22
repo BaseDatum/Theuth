@@ -1,9 +1,12 @@
-import { Outlet, useNavigate, useParams } from '@tanstack/react-router'
+import { Outlet, useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { createContext, type FocusEvent, type KeyboardEvent, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { snoozeUntil } from '@/components/hud/model'
 import { SEEN_ON_SCREEN, useAttention } from '@/components/hud/queries'
 import { SidebarLead } from '@/components/nav/SectionBand'
+import { ChevronLeft, Plus } from 'lucide-react'
+import { NewChat } from '@/components/chat/NewChatPane'
+import { LiveSession } from '@/routes/c.$session'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -91,6 +94,18 @@ const COARSE_MS = 15_000
  * Keys on the list (not on a control or while typing): J/K move · Enter opens · A/D allow/deny (a collapsed stack opens
  * first) · S snooze · E dismiss · X select · Shift+X range · / search · Esc clears the search, then the selection.
  */
+/** A slim bar over a pinned chat or draft: back to the item the pane was opened from. */
+function PaneBar({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="flex h-9 shrink-0 items-center border-b border-border-subtle px-2">
+      <Button size="xs" variant="ghost" onClick={onBack}>
+        <ChevronLeft />
+        Inbox
+      </Button>
+    </div>
+  )
+}
+
 export function Page() {
   const sidebar = useSidebar()
   const mac = isMacDesktop()
@@ -98,6 +113,7 @@ export function Page() {
   const bulk = useAttentionBulk()
   const navigate = useNavigate()
   const { id: active } = useParams({ strict: false })
+  const search = useSearch({ strict: false }) as { chat?: string; new?: true }
   const items = attention.data
   const [view, setViewState] = useState(readView)
   const { filter, sort } = view
@@ -194,7 +210,8 @@ export function Page() {
     const e = entries.find((x) => x.key === key)
     if (!e) return
     setFocus(key)
-    void navigate({ to: '/attention/$id', params: { id: entryHead(e).id }, search: true })
+    // Tapping an item returns the pane to that item (a pinned chat or draft is left behind deliberately).
+    void navigate({ to: '/attention/$id', params: { id: entryHead(e).id }, search: {} })
   }
   const expand = (key: string, on: boolean) =>
     setExpanded((prev) => {
@@ -207,6 +224,12 @@ export function Page() {
   const [graphFocus, setGraphFocus] = useState<{ session: string; nonce: number } | null>(null)
   const showInGraph = (session: string) => setGraphFocus((f) => ({ session, nonce: (f?.nonce ?? 0) + 1 }))
   const setSubtree = (subtree: SubtreeFilter | null) => setView({ filter: { ...filter, subtree }, sort })
+  // The detail pane's three modes: the selected item, a live session (graph tap), a new-session draft.
+  const pane = search.new ? 'new' : search.chat ? 'chat' : 'attention'
+  const paneSearch = (s: { chat: string } | { new: true } | Record<string, never>) => void navigate({ to: active ? '/attention/$id' : '/attention', params: active ? { id: active } : undefined, search: s })
+  const openChat = (session: string) => paneSearch({ chat: session })
+  const openNew = () => paneSearch({ new: true })
+  const closePane = () => paneSearch({})
   // Stable callbacks for the memoised cards (review 14): they read the latest closures through a ref.
   const latest = useRef({ select, open, expand, showInGraph, setSubtree })
   latest.current = { select, open, expand, showInGraph, setSubtree }
@@ -316,12 +339,16 @@ export function Page() {
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">
             Inbox {items && <span className="font-normal text-fg-tertiary tabular-nums">{live.length}</span>}
           </h2>
+          <Button size="xs" variant="outline" onClick={openNew} title="Start a new session in the detail pane">
+            <Plus />
+            New session
+          </Button>
         </header>
         <div className={cn(active ? 'hidden md:contents' : 'contents')}>
-          <GraphRegion items={items} live={live.length} highlight={graphHighlight} focus={graphFocus} subtree={filter.subtree?.session ?? null} onSubtree={onSubtree} />
+          <GraphRegion items={items} live={live.length} highlight={graphHighlight} focus={graphFocus} subtree={filter.subtree?.session ?? null} onSubtree={onSubtree} onOpenSession={openChat} />
         </div>
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          <aside className={cn('w-full shrink-0 flex-col border-r border-border-subtle md:flex md:w-[440px]', active ? 'hidden' : 'flex')}>
+          <aside className={cn('w-full shrink-0 flex-col border-r border-border-subtle md:flex md:w-[440px]', active || pane !== 'attention' ? 'hidden' : 'flex')}>
             {attention.isPending ? (
               <div className="flex flex-col gap-3 p-3">
                 <Skeleton className="h-24 w-full" />
@@ -414,8 +441,20 @@ export function Page() {
               </>
             )}
           </aside>
-          <main className={cn('min-h-0 min-w-0 flex-1 flex-col md:flex', active ? 'flex' : 'hidden')}>
-            <Outlet />
+          <main className={cn('min-h-0 min-w-0 flex-1 flex-col md:flex', active || pane !== 'attention' ? 'flex' : 'hidden')}>
+            {pane === 'chat' && search.chat ? (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <PaneBar onBack={closePane} />
+                <LiveSession key={search.chat} session={search.chat} first={false} />
+              </div>
+            ) : pane === 'new' ? (
+              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+                <PaneBar onBack={closePane} />
+                <NewChat first={false} onCreated={openChat} />
+              </div>
+            ) : (
+              <Outlet />
+            )}
           </main>
         </div>
       </article>

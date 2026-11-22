@@ -37,13 +37,15 @@ export type GraphRegionProps = {
   subtree: string | null
   /** Node click; re-sent when the subtree's ids change. */
   onSubtree: (f: SubtreeFilter | null) => void
+  /** A tapped node also opens its session in the page's detail pane. */
+  onOpenSession: (session: string) => void
 }
 
 const MIN_H = 160
 const sameIds = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every((x) => b.has(x))
 const editable = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || t.closest(CONTROL) !== null)
 
-export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree }: GraphRegionProps) {
+export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree, onOpenSession }: GraphRegionProps) {
   const prefs = useGraphPrefs()
   const mobile = useIsMobile()
   // Under md the region starts collapsed and opens as a full-screen pane; full screen is never stored.
@@ -165,6 +167,8 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree 
     }
     setSelected(id)
     if (node.kind !== 'peer') onSubtree({ session: id, label: nodeLabel(node), ids: subtreeIds(state.nodes, id) })
+    // The tap opens the session itself beside the list; the inspector stays for the item and the filter.
+    onOpenSession(id)
   }
   const controls = (
     <>
