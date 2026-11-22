@@ -81,6 +81,24 @@ pub(crate) enum Late {
 
 pub(crate) const DROPPED: &str = "the main thread dropped the web view call";
 
+thread_local! {
+    /// The [`AGENT_WORLD`] content world, kept for the app's life (209 §4.7): WebKit discards a named
+    /// world, and the globals scripts left in it, once no `WKContentWorld` of that name is alive, so a
+    /// world taken per call would lose the tile agent's refs and the fields it set between calls.
+    static AGENT_WORLD_KEPT: OnceCell<Retained<WKContentWorld>> = const { OnceCell::new() };
+}
+
+/// The one [`AGENT_WORLD`] content world of this app (main thread only, as every WebKit call here).
+pub(crate) fn agent_world(mtm: MainThreadMarker) -> Retained<WKContentWorld> {
+    AGENT_WORLD_KEPT.with(|kept| {
+        kept.get_or_init(|| {
+            // SAFETY: a named world for this app's scripts; this cell keeps it alive.
+            unsafe { WKContentWorld::worldWithName(&NSString::from_str(AGENT_WORLD), mtm) }
+        })
+        .clone()
+    })
+}
+
 /// A main-thread reply, or why there is none by `deadline`.
 pub(crate) fn recv_by<T>(rx: &Receiver<T>, deadline: Instant) -> Result<T, Late> {
     let left = deadline.saturating_duration_since(Instant::now());
@@ -431,8 +449,7 @@ pub(crate) fn apply_storage(
     snapshot: &StorageApply,
     tx: SyncSender<Result<bool, String>>,
 ) {
-    // SAFETY: a named world for this app's scripts; WebKit keeps one instance per name while it lives.
-    let world = unsafe { WKContentWorld::worldWithName(&NSString::from_str(AGENT_WORLD), mtm) };
+    let world = agent_world(mtm);
     let (names, values): (Vec<_>, Vec<_>) = snapshot
         .arguments()
         .into_iter()
@@ -608,8 +625,7 @@ pub(crate) fn capture(
     view: &WKWebView,
     tx: SyncSender<Result<String, String>>,
 ) {
-    // SAFETY: a named world for this app's scripts; WebKit keeps one instance per name while it lives.
-    let world = unsafe { WKContentWorld::worldWithName(&NSString::from_str(AGENT_WORLD), mtm) };
+    let world = agent_world(mtm);
     let done = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
         // SAFETY: WebKit passes live (or nil) objects for the duration of the call.
         let reply = match unsafe { error.as_ref() } {

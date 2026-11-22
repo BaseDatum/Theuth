@@ -3,11 +3,12 @@
 //! The arguments, the script wrapper, the reply and the size arithmetic are pure rules in `web_rules::call`.
 //!
 //! - [`script`]: `callAsyncJavaScript` of the wrapped body in the main frame, in the isolated
-//!   [`AGENT_WORLD`] content world or in `WKContentWorld.page`, with one string argument (the caller's
-//!   argument values as JSON). The body answers one JSON string; [`script_done`] waits for it until the
-//!   caller's deadline and reads it off the main thread. WebKit cannot cancel a running script: past the
-//!   deadline, or once the user's Stop ran ([`stop`]), the caller gets its error and the script's late
-//!   answer is dropped.
+//!   [`AGENT_WORLD`](crate::web_rules::profile::AGENT_WORLD) content world (one instance kept for the
+//!   app's life, `apple_cookies::agent_world`) or in `WKContentWorld.page`, with one string argument
+//!   (the caller's argument values as JSON). The body answers one JSON string; [`script_done`] waits
+//!   for it until the caller's deadline and reads it off the main thread. WebKit cannot cancel a
+//!   running script: past the deadline, or once the user's Stop ran ([`stop`]), the caller gets its
+//!   error and the script's late answer is dropped.
 //! - [`snapshot`]: `takeSnapshot` of the visible view; the main thread only takes the image's `CGImage`
 //!   (thread-safe) and [`snapshot_done`] draws it into a bitmap of at most `SNAPSHOT_MAX_SIDE` pixels on the
 //!   long side and encodes it as base64 PNG, off the main thread.
@@ -54,7 +55,6 @@ use crate::web_rules::call::{
     ARGS_NAME, Loaded, Look, SETTLE_POLL, SNAPSHOT_TIMEOUT, STOP_POLL, STOPPED, Script, Watch,
     World, failed, fit, reply, straighten, timed_out,
 };
-use crate::web_rules::profile::AGENT_WORLD;
 
 /// The `userInfo` key under which WebKit puts a script exception's message.
 const EXCEPTION_MESSAGE: &str = "WKJavaScriptExceptionMessage";
@@ -76,12 +76,10 @@ pub(crate) fn script(
     script: &Script,
     tx: SyncSender<ScriptReply>,
 ) {
-    // SAFETY: the page world, or a named world for this app's scripts (WebKit keeps one per name).
-    let world = unsafe {
-        match script.world {
-            World::Isolated => WKContentWorld::worldWithName(&NSString::from_str(AGENT_WORLD), mtm),
-            World::Page => WKContentWorld::pageWorld(mtm),
-        }
+    let world = match script.world {
+        World::Isolated => crate::apple_cookies::agent_world(mtm),
+        // SAFETY: the page world.
+        World::Page => unsafe { WKContentWorld::pageWorld(mtm) },
     };
     let name = NSString::from_str(ARGS_NAME);
     let value: Retained<AnyObject> =
