@@ -11661,6 +11661,170 @@
         "format": "uuid",
         "type": "string"
       },
+      "event.artifact_2eweb_2dview_2dcall_2drequested.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2eweb_2dview_2dcall_2drequested.output.WebViewCallId": {
+        "description": "Correlates a [`WebViewCallRequested`] with its answers (209 D8).",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2eweb_2dview_2dcall_2drequested.output.WebViewCallRequested": {
+        "description": "Event: an agent session wants one operation run in a web view tile (209 D8, §4.4, §4.7).\nA client claims it only when its window holds the shell label `web-<view>`.",
+        "properties": {
+          "args": {
+            "description": "The op's arguments (209 §4.7)."
+          },
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2drequested.output.WebViewCallId"
+              }
+            ],
+            "description": "Use in `answer_web_view_call`."
+          },
+          "op": {
+            "description": "`script`, `navigate`, `back`, `forward`, `reload` or `snapshot` (209 §4.7).",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2drequested.output.SessionId"
+              }
+            ],
+            "description": "The agent session acting."
+          },
+          "type": {
+            "const": "WebViewCallRequested",
+            "type": "string"
+          },
+          "view": {
+            "description": "The bare tile id (the shell label is `web-<view>`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session",
+          "view",
+          "op",
+          "args",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2eweb_2dview_2dcall_2drequested.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2eweb_2dview_2dcall_2drequested.receiver.WebViewCallId": {
+        "description": "Correlates a [`WebViewCallRequested`] with its answers (209 D8).",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2eweb_2dview_2dcall_2drequested.receiver.WebViewCallRequested": {
+        "description": "Event: an agent session wants one operation run in a web view tile (209 D8, §4.4, §4.7).\nA client claims it only when its window holds the shell label `web-<view>`.",
+        "properties": {
+          "args": {
+            "description": "The op's arguments (209 §4.7)."
+          },
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2drequested.receiver.WebViewCallId"
+              }
+            ],
+            "description": "Use in `answer_web_view_call`."
+          },
+          "op": {
+            "description": "`script`, `navigate`, `back`, `forward`, `reload` or `snapshot` (209 §4.7).",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2drequested.receiver.SessionId"
+              }
+            ],
+            "description": "The agent session acting."
+          },
+          "type": {
+            "const": "WebViewCallRequested",
+            "type": "string"
+          },
+          "view": {
+            "description": "The bare tile id (the shell label is `web-<view>`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session",
+          "view",
+          "op",
+          "args",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2eweb_2dview_2dcall_2dresolved.output.WebViewCallId": {
+        "description": "Correlates a [`WebViewCallRequested`] with its answers (209 D8).",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2eweb_2dview_2dcall_2dresolved.output.WebViewCallResolved": {
+        "description": "Event: the call was answered, failed, timed out or nobody claimed it; the tile's \"agent is\nacting\" bar for it goes (209 §9).",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2dresolved.output.WebViewCallId"
+              }
+            ],
+            "description": "The request."
+          },
+          "type": {
+            "const": "WebViewCallResolved",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2eweb_2dview_2dcall_2dresolved.receiver.WebViewCallId": {
+        "description": "Correlates a [`WebViewCallRequested`] with its answers (209 D8).",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2eweb_2dview_2dcall_2dresolved.receiver.WebViewCallResolved": {
+        "description": "Event: the call was answered, failed, timed out or nobody claimed it; the tile's \"agent is\nacting\" bar for it goes (209 §9).",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2dresolved.receiver.WebViewCallId"
+              }
+            ],
+            "description": "The request."
+          },
+          "type": {
+            "const": "WebViewCallResolved",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type"
+        ],
+        "type": "object"
+      },
       "event.artifact_2eweb_2dview_2dopened.output.SessionId": {
         "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
@@ -58939,6 +59103,77 @@
       },
       "method.artifact.input.SessionId": {
         "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "method.artifact.input.WebViewCallAnswer": {
+        "description": "A client's answer to a [`WebViewCallRequested`] (209 §4.4).",
+        "oneOf": [
+          {
+            "description": "\"This window holds the tile and runs the op\": the first one wins, later ones are refused.",
+            "properties": {
+              "client": {
+                "description": "Who runs it (free text, e.g. the client's install id).",
+                "type": "string"
+              },
+              "kind": {
+                "const": "claimed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "client"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The op ran; first `Done`/`Failed` wins.",
+            "properties": {
+              "kind": {
+                "const": "done",
+                "type": "string"
+              },
+              "png": {
+                "default": null,
+                "description": "`snapshot`: the viewport as a base64 PNG.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result": {
+                "description": "The op's JSON result."
+              }
+            },
+            "required": [
+              "kind",
+              "result"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The op could not run.",
+            "properties": {
+              "kind": {
+                "const": "failed",
+                "type": "string"
+              },
+              "reason": {
+                "description": "Why, for the model.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "method.artifact.input.WebViewCallId": {
+        "description": "Correlates a [`WebViewCallRequested`] with its answers (209 D8).",
         "format": "uuid",
         "type": "string"
       },
@@ -125352,6 +125587,40 @@
       "x-theuth-owner": "secrets"
     },
     {
+      "name": "answer_web_view_call",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.artifact.input.WebViewCallId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "answer",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.artifact.input.WebViewCallAnswer"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "artifact"
+    },
+    {
       "name": "app_call_status",
       "paramStructure": "by-position",
       "params": [
@@ -144864,6 +145133,26 @@
           "$ref": "#/components/schemas/event.artifact_2eshown.output.ArtifactShown"
         },
         "topic": "artifact.shown",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2drequested.receiver.WebViewCallRequested"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2drequested.output.WebViewCallRequested"
+        },
+        "topic": "artifact.web-view-call-requested",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2dresolved.receiver.WebViewCallResolved"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.artifact_2eweb_2dview_2dcall_2dresolved.output.WebViewCallResolved"
+        },
+        "topic": "artifact.web-view-call-resolved",
         "version": 1
       },
       {
