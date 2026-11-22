@@ -1,7 +1,20 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { Cookie, CookieChange, OriginStorage } from '@/lib/web-profile-wire'
 import { RpcError } from '@/rpc/client'
-import { OFF_REPROBE_MS, PUSH_DEBOUNCE_MS, RETRY_MS, STORAGE_MAX_BYTES, cookieKey, diffCookies, refusal, startWebProfileSync } from './web-profile'
+import {
+  OFF_REPROBE_MS,
+  PUSH_DEBOUNCE_MS,
+  RETRY_MS,
+  STORAGE_MAX_BYTES,
+  cookieKey,
+  diffCookies,
+  planApply,
+  refusal,
+  signedOutEverywhere,
+  siteOf,
+  startWebProfileSync,
+  useWebProfileMode,
+} from './web-profile'
 
 /** One `web_profile_push` as the engine got it (its positional params by name). */
 type Pushed = { device: string; epoch: number; changes: CookieChange[]; storage: OriginStorage[] }
@@ -19,6 +32,9 @@ const shell = vi.hoisted(() => ({
   readProfile: vi.fn(),
   captureStorage: vi.fn(),
   clearProfile: vi.fn(),
+  writeProfile: vi.fn(),
+  /** What the store reads back for a written cookie: WebKit spells a default `Lax` as `""` (209 §4.5). */
+  normalise: (c: Cookie): Cookie => c,
 }))
 vi.mock('@/lib/web-view-native', () => ({
   nativeWebViews: () => shell.has,
@@ -26,6 +42,7 @@ vi.mock('@/lib/web-view-native', () => ({
   readProfile: shell.readProfile,
   captureStorage: shell.captureStorage,
   clearProfile: shell.clearProfile,
+  writeProfile: shell.writeProfile,
   onProfileChanged: async (cb: () => void) => {
     shell.changed = cb
     return () => (shell.changed = null)
@@ -41,14 +58,47 @@ vi.mock('@/lib/web-view-native', () => ({
 }))
 const engine = vi.hoisted(() => {
   const push = vi.fn()
-  return { pushes: [] as Pushed[], push, api: { web_profile_push: push } as object, discovery: {} as object, active: 'e1', supports: true }
+  const pull = vi.fn()
+  return {
+    pushes: [] as Pushed[],
+    push,
+    pull,
+    api: { web_profile_push: push, web_profile_pull: pull } as object,
+    discovery: {} as object,
+    active: 'e1',
+    supports: true,
+    /** `web_profile_pull` advertised: off for the P1 cases, which predate it. */
+    pulls: false,
+    /** The profile's cookies and epoch as `web_profile_pull` answers them. */
+    profile: [] as Cookie[],
+    epoch: 1,
+    connection: new Set<() => void>(),
+  }
 })
 vi.mock('@/store/connection', () => ({
-  useConnection: { getState: () => ({ api: engine.api, state: 'open', discovery: engine.discovery }) },
+  useConnection: {
+    getState: () => ({ api: engine.api, state: 'open', discovery: engine.discovery }),
+    subscribe: (cb: () => void) => {
+      engine.connection.add(cb)
+      return () => engine.connection.delete(cb)
+    },
+  },
 }))
-vi.mock('@/rpc/discovery', async (original) => ({ ...(await original<object>()), ready: () => true, supports: () => engine.supports }))
-vi.mock('@/link/engines', () => ({ useEngines: { getState: () => ({ active: engine.active }) } }))
+vi.mock('@/rpc/discovery', async (original) => ({
+  ...(await original<object>()),
+  ready: () => true,
+  supports: (_d: unknown, r: { methods?: string[] }) => engine.supports && (engine.pulls || !r.methods?.includes('web_profile_pull')),
+}))
+vi.mock('@/link/engines', () => ({ useEngines: { getState: () => ({ active: engine.active }), subscribe: () => () => {} } }))
 vi.mock('@/lib/platform', () => ({ deviceName: () => 'iPad' }))
+const events = vi.hoisted(() => ({ changed: null as null | ((e: { type: 'WebProfileChanged'; sites: string[]; epoch: number }) => void) }))
+vi.mock('@/store/sessions', () => ({
+  on: (topic: string, type: string, cb: NonNullable<typeof events.changed>) => {
+    if (topic !== 'browser.web-profile-changed@1' || type !== 'WebProfileChanged') throw new Error(`unexpected ${topic} ${type}`)
+    events.changed = cb
+    return () => (events.changed = null)
+  },
+}))
 
 const cookie = (name: string, value: string, over: Partial<Cookie> = {}): Cookie => ({
   name,
@@ -82,15 +132,31 @@ beforeEach(() => {
   shell.clearProfile.mockReset().mockImplementation(async () => {
     shell.store = []
   })
+  shell.normalise = (c) => c
+  shell.writeProfile.mockReset().mockImplementation(async (set: Cookie[], remove: Pick<Cookie, 'name' | 'domain' | 'path'>[]) => {
+    const gone = new Set([...set, ...remove].map(cookieKey))
+    shell.store = [...shell.store.filter((c) => !gone.has(cookieKey(c))), ...set.map((c) => shell.normalise({ ...c }))]
+  })
   engine.pushes = []
   engine.active = 'e1'
   engine.supports = true
-  engine.api = { web_profile_push: engine.push }
+  engine.pulls = false
+  engine.profile = []
+  engine.epoch = 1
+  engine.connection.clear()
+  engine.api = { web_profile_push: engine.push, web_profile_pull: engine.pull }
   engine.discovery = {}
   engine.push.mockReset().mockImplementation(async (device: string, epoch: number, changes: CookieChange[], storage: OriginStorage[]) => {
     engine.pushes.push(structuredClone({ device, epoch, changes, storage }))
     return { applied: changes.length, sites: [], epoch: Math.max(epoch, 1), profile: 'shared' }
   })
+  engine.pull.mockReset().mockImplementation(async (sites?: string[]) => ({
+    epoch: engine.epoch,
+    cookies: engine.profile.filter((c) => !sites || siteOf(c.domain, sites) !== null).map((c) => ({ ...c })),
+    storage: [],
+  }))
+  events.changed = null
+  useWebProfileMode.setState({ engine: null, mode: null })
   local.clear()
   leave.clear()
   vi.stubGlobal('localStorage', {
@@ -281,7 +347,10 @@ test('a failed read keeps the delta and is retried after RETRY_MS, then with a g
 test('a failed seed is retried before anything is pushed, and its store is still not pushed', async () => {
   shell.store = [cookie('old', 'x')]
   shell.readProfile.mockRejectedValueOnce(new Error('web_profile_read: store unavailable'))
+  // Not connected at start, so the connect pull does not retry the seed before the first change.
+  engine.supports = false
   await started()
+  engine.supports = true
   shell.store = [cookie('old', 'x'), cookie('new', 'y')]
   await changed()
   // The seed read the store with `new` already in it: nothing is pushed.
@@ -432,4 +501,177 @@ test('cookie and storage values never reach the console, on any failure path', a
   expect(spies.some((s) => s.mock.calls.length > 0)).toBe(true)
   expect(logged).not.toContain(SECRET)
   expect(logged).not.toContain(STORE_SECRET)
+})
+
+// 209 D5 (P2): the profile into the tile store.
+
+const other = (name: string, value: string) => cookie(name, value, { domain: 'other.org' })
+const keys = (cs: readonly Cookie[]) => new Map(cs.map((c) => [cookieKey(c), c]))
+/** Fire `WebProfileChanged` and let the pull it starts (and any write) land. */
+async function profileChanged(sites: string[], epoch = engine.epoch): Promise<void> {
+  const n = engine.pull.mock.calls.length + shell.clearProfile.mock.calls.length
+  events.changed!({ type: 'WebProfileChanged', sites, epoch })
+  await vi.waitFor(() => expect(engine.pull.mock.calls.length + shell.clearProfile.mock.calls.length).toBeGreaterThan(n))
+  await settle()
+}
+/** Start with `web_profile_pull` advertised and let the connect pull land. */
+async function startedPulling(): Promise<void> {
+  engine.pulls = true
+  await started()
+  await vi.waitFor(() => expect(engine.pull).toHaveBeenCalled())
+  await settle()
+}
+
+test('the plan writes only real differences: same cookies (as WebKit spells them), expired ones and other sites stay', () => {
+  const a = cookie('a', '1')
+  const b = cookie('b', '1')
+  const o = other('o', '1')
+  const jar = [a, b, o]
+  const plan = planApply(
+    jar,
+    [{ ...a, same_site: '' }, cookie('b', '2'), cookie('c', '1'), cookie('d', '1', { expires: 1 })],
+    null,
+    new Set(),
+    keys(jar),
+  )
+  expect(plan).toEqual({ set: [cookie('b', '2'), cookie('c', '1')], remove: [], localChanges: false })
+  // A site the pull holds nothing of is forgotten: all of its cookies go, no other site's.
+  expect(planApply(jar, [], ['example.com'], new Set(), keys(jar)).remove).toEqual([
+    { name: 'a', domain: 'app.example.com', path: '/' },
+    { name: 'b', domain: 'app.example.com', path: '/' },
+  ])
+  // Within a live site only a cookie the profile was seen to hold, and no longer does, goes.
+  expect(planApply(jar, [a], ['example.com'], new Set([cookieKey(a), cookieKey(b)]), keys(jar)).remove).toEqual([{ name: 'b', domain: 'app.example.com', path: '/' }])
+  expect(planApply(jar, [a], ['example.com'], new Set([cookieKey(a)]), keys(jar)).remove).toEqual([])
+  // A change of this device not pushed yet wins over the profile: neither overwritten nor removed.
+  const mine = [cookie('a', 'typed-here'), b]
+  expect(planApply(mine, [cookie('a', '2')], ['example.com'], new Set(), keys(jar))).toEqual({ set: [], remove: [], localChanges: true })
+  // The longest named site owns a cookie.
+  expect(siteOf('x.user.github.io', ['github.io', 'user.github.io'])).toBe('user.github.io')
+  expect(siteOf('.Example.com', ['example.com'])).toBe('example.com')
+  expect(siteOf('notexample.com', ['example.com'])).toBeNull()
+})
+
+test('on connect the profile is pulled after the seed and only its differences written; a load-finished then pushes nothing back', async () => {
+  shell.store = [cookie('a', '1'), cookie('b', '1')]
+  engine.profile = [cookie('a', '1'), cookie('b', `${SECRET}-agent`), cookie('c', '1')]
+  // WebKit reads a written default `Lax` back as `""`: the fold takes what the store reads, not what was sent.
+  shell.normalise = (c) => ({ ...c, same_site: c.same_site === 'Lax' ? '' : c.same_site })
+  await startedPulling()
+  expect(engine.pull).toHaveBeenCalledTimes(1)
+  expect(engine.pull.mock.calls[0]).toEqual([undefined])
+  expect(shell.writeProfile).toHaveBeenCalledTimes(1)
+  expect(shell.writeProfile.mock.calls[0]).toEqual([[cookie('b', `${SECRET}-agent`), cookie('c', '1')], []])
+  expect(engine.push).not.toHaveBeenCalled()
+
+  vi.useFakeTimers()
+  shell.storage.t1 = { origin: 'https://app.example.com', local_storage: [] }
+  shell.state!({ label: 'web-t1', url: 'https://app.example.com/', title: 'App', loading: false })
+  await vi.advanceTimersByTimeAsync(PUSH_DEBOUNCE_MS)
+  expect(shell.readProfile.mock.calls.length).toBeGreaterThan(3)
+  // The load's storage capture goes; no cookie does.
+  expect(engine.pushes.flatMap((p) => p.changes)).toEqual([])
+})
+
+test('a push followed by its own WebProfileChanged writes nothing back into the store', async () => {
+  await startedPulling()
+  engine.push.mockImplementationOnce(async (device: string, epoch: number, changes: CookieChange[], storage: OriginStorage[]) => {
+    engine.pushes.push(structuredClone({ device, epoch, changes, storage }))
+    for (const c of changes) if (c.op === 'set') engine.profile.push(c.cookie)
+    return { applied: changes.length, sites: ['example.com'], epoch: 1, profile: 'shared' }
+  })
+  shell.store = [cookie('sid', SECRET)]
+  await changed()
+  expect(engine.pushes).toHaveLength(1)
+  await profileChanged(['example.com'])
+  expect(engine.pull).toHaveBeenLastCalledWith(['example.com'])
+  expect(shell.writeProfile).not.toHaveBeenCalled()
+  expect(useWebProfileMode.getState()).toEqual({ engine: 'e1', mode: 'shared' })
+})
+
+test('a forgotten site leaves the store, other sites stay, and the removal is not pushed back', async () => {
+  shell.store = [cookie('a', '1'), cookie('b', '1'), other('o', '1')]
+  engine.profile = [cookie('a', '1'), cookie('b', '1'), other('o', '1')]
+  await startedPulling()
+  expect(shell.writeProfile).not.toHaveBeenCalled()
+
+  engine.profile = [other('o', '1')]
+  await profileChanged(['example.com'])
+  expect(shell.writeProfile).toHaveBeenCalledTimes(1)
+  expect(shell.writeProfile.mock.calls[0]).toEqual([
+    [],
+    [
+      { name: 'a', domain: 'app.example.com', path: '/' },
+      { name: 'b', domain: 'app.example.com', path: '/' },
+    ],
+  ])
+  expect(shell.store).toEqual([other('o', '1')])
+  await changed()
+  expect(engine.push).not.toHaveBeenCalled()
+})
+
+test('a newer epoch in WebProfileChanged clears the store first, then adopts the epoch and writes the new profile', async () => {
+  local.set('theuth.web-profile.epoch.e1', '1')
+  shell.store = [cookie('old', SECRET)]
+  await startedPulling()
+  expect(shell.clearProfile).not.toHaveBeenCalled()
+
+  engine.epoch = 2
+  engine.profile = [cookie('fresh', '1')]
+  await profileChanged([], 2)
+  await vi.waitFor(() => expect(shell.writeProfile).toHaveBeenCalledTimes(1))
+  expect(shell.clearProfile).toHaveBeenCalledTimes(1)
+  expect(shell.clearProfile.mock.invocationCallOrder[0]).toBeLessThan(shell.writeProfile.mock.invocationCallOrder[0]!)
+  expect(shell.writeProfile.mock.calls[0]).toEqual([[cookie('fresh', '1')], []])
+  expect(local.get('theuth.web-profile.epoch.e1')).toBe('2')
+  expect(shell.store).toEqual([cookie('fresh', '1')])
+  // The same epoch again clears nothing more, and nothing of the old store was pushed.
+  events.changed!({ type: 'WebProfileChanged', sites: [], epoch: 2 })
+  await settle()
+  expect(shell.clearProfile).toHaveBeenCalledTimes(1)
+  expect(engine.push).not.toHaveBeenCalled()
+})
+
+test('this device\'s own sign out everywhere clears its store even without a saved epoch', async () => {
+  shell.store = [cookie('sid', SECRET)]
+  await started()
+  expect(local.get('theuth.web-profile.epoch.e1')).toBeUndefined()
+  signedOutEverywhere(3)
+  await vi.waitFor(() => expect(shell.clearProfile).toHaveBeenCalledTimes(1))
+  await settle()
+  expect(local.get('theuth.web-profile.epoch.e1')).toBe('3')
+  await changed()
+  expect(engine.push).not.toHaveBeenCalled()
+})
+
+test('a pull refused as `browser profile is off` writes nothing; without the native layer nothing is pulled at all', async () => {
+  engine.pull.mockRejectedValueOnce(new RpcError(-32000, 'browser profile is off'))
+  engine.profile = [cookie('a', '1')]
+  await startedPulling()
+  expect(shell.writeProfile).not.toHaveBeenCalled()
+  expect(useWebProfileMode.getState()).toEqual({ engine: 'e1', mode: 'off' })
+  stop()
+
+  shell.has = false
+  engine.pull.mockClear()
+  stop = startWebProfileSync()
+  await settle()
+  expect(events.changed).toBeNull()
+  expect(engine.pull).not.toHaveBeenCalled()
+})
+
+test('a failed write keeps the pull for a retry and logs no value', async () => {
+  const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}))
+  shell.writeProfile.mockRejectedValueOnce(new Error(`web_profile_write: bad cookie ${SECRET}`))
+  engine.profile = [cookie('sid', SECRET)]
+  engine.pulls = true
+  vi.useFakeTimers()
+  stop = startWebProfileSync()
+  await vi.waitFor(() => expect(shell.writeProfile).toHaveBeenCalledTimes(1))
+  await settle()
+  await vi.advanceTimersByTimeAsync(RETRY_MS)
+  await vi.waitFor(() => expect(shell.writeProfile).toHaveBeenCalledTimes(2))
+  await settle()
+  expect(shell.store).toEqual([cookie('sid', SECRET)])
+  expect(JSON.stringify(spies.flatMap((s) => s.mock.calls))).not.toContain(SECRET)
 })

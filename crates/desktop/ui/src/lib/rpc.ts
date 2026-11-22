@@ -117,6 +117,8 @@ export const queryKeys = {
   slackManifest: ['slack-manifest'] as const,
   telegram: ['telegram'] as const,
   computer: ['computer'] as const,
+  /** `web_profile_sites()` (209 §6): Settings › Browser; refreshed on `WebProfileChanged`. */
+  webProfileSites: ['web-profile-sites'] as const,
   secrets: ['secrets'] as const,
   updateStatus: ['update-status'] as const,
   voice: ['voice'] as const,

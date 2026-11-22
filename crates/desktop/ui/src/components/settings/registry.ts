@@ -41,7 +41,7 @@ export const TAB_IDS = [
   'calendar', 'briefs', 'upcoming',
   'machine', 'machines', 'devices', 'contacts', 'messaging', 'vms',
   'signal', 'slack', 'telegram',
-  'tools', 'builtins', 'search', 'mcp', 'computer',
+  'tools', 'builtins', 'search', 'mcp', 'computer', 'browser',
 ] as const
 
 export type SettingsTabId = (typeof TAB_IDS)[number]

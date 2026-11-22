@@ -9,11 +9,12 @@ import { usePaneDrag } from '@/hooks/use-pane-drag'
 import { useEngines } from '@/link/engines'
 import { isLocal } from '@/lib/files'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { container } from '@/lib/platform'
 import { popOutWeb, usePanes } from '@/lib/panes'
 import { canPopout, closePopout, isPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 import * as native from '@/lib/web-view-native'
-import { httpUrl, isLoopback, openInBrowser, useWebViews } from '@/lib/web-views'
+import { collapseSidebarFor, httpUrl, isLoopback, openInBrowser, useWebViews } from '@/lib/web-views'
 
 /** Open things a native web view would draw over (it sits above all DOM): radix dialogs, sheets, menus, popovers,
  * selects, the modal backdrops and toasts. Tooltips are not among them: they come and go with the pointer. */
@@ -31,6 +32,10 @@ const OVERLAYS = [
 const isTooltip = (el: Element) => el.querySelector('[role="tooltip"],[data-slot="tooltip-content"]') !== null
 
 const intersects = (a: DOMRect, b: DOMRect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+
+/** Frames whose placement already had its sidebar decision (209 D11): one per tile, so a sidebar the user reopens
+ * stays open across remounts. */
+const placed = new Set<string>()
 
 /** A mutation inside the transcript's virtual rows (streaming text, cards) never opens an overlay. */
 const inTranscript = (n: Node) => (n instanceof Element ? n : n.parentElement)?.closest('[data-index]') != null
@@ -102,7 +107,7 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
   const view = useWebViews((s) => s.views[id])
   const active = useEngines((s) => s.active)
   const engine = useEngines((s) => s.engines.find((e) => e.id === s.active)?.name ?? s.active)
-  const { open, isMobile } = useSidebar()
+  const { open, isMobile, setOpen } = useSidebar()
   const [forced, setForced] = useState(false)
   const [draft, setDraft] = useState<string | null>(null)
   const [invalid, setInvalid] = useState(false)
@@ -132,6 +137,15 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
     })
     return () => void native.detach(id).catch(warn('web_view_visible'))
   }, [id, live, popped])
+
+  // 209 D11: a tile placed too narrow for its address field on the iPad folds the inline sidebar away, once.
+  const shown = view !== undefined
+  useEffect(() => {
+    const el = ref.current
+    if (!shown || popped || !el || placed.has(id)) return
+    placed.add(id)
+    if (collapseSidebarFor({ width: el.getBoundingClientRect().width, sidebarOpen: open, phone: isMobile, ios: container() === 'ios' })) setOpen(false)
+  }, [id, shown, popped, open, isMobile, setOpen])
 
   // Hide under an overlay or a drag, show again once it is gone; the module sends only what changed.
   useEffect(() => {

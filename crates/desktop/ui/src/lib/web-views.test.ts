@@ -1,6 +1,18 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { chatLeaves, closeWeb, leaves, placeWeb, shown, usePanes } from './panes'
-import { STATE_EVERY_MS, type WebViewStateReport, httpUrl, isLoopback, isWeb, stateForwarder, useWebViews, webId, webLeaf } from './web-views'
+import {
+  STATE_EVERY_MS,
+  WEB_TILE_MIN_WIDTH,
+  type WebViewStateReport,
+  collapseSidebarFor,
+  httpUrl,
+  isLoopback,
+  isWeb,
+  stateForwarder,
+  useWebViews,
+  webId,
+  webLeaf,
+} from './web-views'
 
 const native = vi.hoisted(() => ({ close: vi.fn(async () => {}) }))
 vi.mock('@/lib/web-view-native', async (original) => ({ ...(await original<object>()), close: native.close }))
@@ -135,4 +147,16 @@ test('tile state goes to the engine only on change, at most once per view per ST
     f.stop()
     vi.useRealTimers()
   }
+})
+
+test('209 D11: an iPad tile placed narrower than WEB_TILE_MIN_WIDTH with the sidebar open inline collapses it; nothing else does', () => {
+  const ipad = { width: WEB_TILE_MIN_WIDTH - 1, sidebarOpen: true, phone: false, ios: true }
+  expect(collapseSidebarFor(ipad)).toBe(true)
+  expect(collapseSidebarFor({ ...ipad, width: 300 })).toBe(true)
+  expect(collapseSidebarFor({ ...ipad, width: WEB_TILE_MIN_WIDTH })).toBe(false)
+  // Already collapsed, a phone (one pane, the sidebar a sheet), the desktop, or a tile not laid out yet.
+  expect(collapseSidebarFor({ ...ipad, sidebarOpen: false })).toBe(false)
+  expect(collapseSidebarFor({ ...ipad, phone: true })).toBe(false)
+  expect(collapseSidebarFor({ ...ipad, ios: false })).toBe(false)
+  expect(collapseSidebarFor({ ...ipad, width: 0 })).toBe(false)
 })

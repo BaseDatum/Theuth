@@ -2,4 +2,11 @@
 // generated file is a one-line change here.
 
 export type { Cookie, CookieChange, OriginStorage } from '@/rpc/bindings/method.webprofile.input'
-export type { WebProfilePushResult } from '@/rpc/bindings/method.webprofile.output'
+export type {
+  ProfileMode,
+  SiteSummary as WebProfileSite,
+  WebProfileClearResult,
+  WebProfilePullResult,
+  WebProfilePushResult,
+} from '@/rpc/bindings/method.webprofile.output'
+export type { WebProfileChanged } from '@/rpc/bindings/event.browser_2eweb_2dprofile_2dchanged.output'

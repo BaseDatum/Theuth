@@ -78,6 +78,19 @@ export function openInBrowser(url: string): void {
   if (href) openExternal(href)
 }
 
+/** 209 D11, §7: below this tile width (logical px) the toolbar squeezes the address field to a few characters (about
+ * 440 px on an iPad in portrait with the sidebar open). The contract's figure; §11 Q5 asks for a measurement. */
+export const WEB_TILE_MIN_WIDTH = 420
+
+/**
+ * 209 D11, §7: collapse the sidebar as a web tile is placed? Only on iOS (the iPad: a phone is one pane at a time and
+ * its sidebar is a sheet), only while the sidebar is open inline, and only when the tile came out narrower than
+ * `WEB_TILE_MIN_WIDTH`. Nothing reopens it.
+ */
+export function collapseSidebarFor(tile: { width: number; sidebarOpen: boolean; phone: boolean; ios: boolean }): boolean {
+  return tile.ios && !tile.phone && tile.sidebarOpen && tile.width > 0 && tile.width < WEB_TILE_MIN_WIDTH
+}
+
 /** One tile's state for the engine (209 D9): the params of `web_view_state`, `view` as `web:<id>`. */
 export type WebViewStateReport = { session: string; view: string; url: string; title: string; loading: boolean }
 
