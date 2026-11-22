@@ -5,9 +5,10 @@ import { artifactTile } from './kinds/artifact'
 import { browserTile } from './kinds/browser'
 import { codemapTile } from './kinds/codemap'
 import { diagramTile } from './kinds/diagram'
-import { jobsTile } from './kinds/jobs'
+import { jobLogTile, jobsTile } from './kinds/jobs'
 import { mediaTile } from './kinds/media'
 import { memoryTile } from './kinds/memory'
+import { noteTile } from './kinds/note'
 import { promptTile } from './kinds/prompt'
 import { skillTile } from './kinds/skill'
 import { jobTerminalTile, terminalsTile } from './kinds/terminals'
@@ -20,9 +21,11 @@ export const TILE_KINDS: Record<string, TileKind> = {
   codemap: codemapTile,
   diagram: diagramTile,
   jobs: jobsTile,
+  'job-log': jobLogTile,
   'job-terminal': jobTerminalTile,
   media: mediaTile,
   memory: memoryTile,
+  note: noteTile,
   prompt: promptTile,
   skill: skillTile,
   terminals: terminalsTile,

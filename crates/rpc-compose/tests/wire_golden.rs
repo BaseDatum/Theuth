@@ -113,6 +113,8 @@ async fn legacy_event_families() {
     family::<schedule::ScheduleEvent>(&rt, &mut stream, "schedule.events").await;
     family::<artifact::ArtifactShown>(&rt, &mut stream, "artifact.shown").await;
     family::<artifact::WebViewOpened>(&rt, &mut stream, "artifact.web-view-opened").await;
+    family::<artifact::PtyViewOpened>(&rt, &mut stream, "artifact.pty-view-opened").await;
+    family::<artifact::NoteViewOpened>(&rt, &mut stream, "artifact.note-view-opened").await;
     family::<artifact::preview::PagePreviewRequested>(
         &rt,
         &mut stream,

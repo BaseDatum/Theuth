@@ -1,0 +1,54 @@
+[
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "doc": "01jabcdefghjkmnpqrstvwxyz0",
+      "kind": "note",
+      "title": "Plan",
+      "block": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NoteViewOpened",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "doc": "01jabcdefghjkmnpqrstvwxyz0",
+          "kind": "note",
+          "title": "Plan",
+          "block": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "doc": "01jabcdefghjkmnpqrstvwxyz0",
+      "kind": "meeting_note",
+      "title": "Standup",
+      "block": "5f0c2a1e-8d3b-4f7a-9c61-2b4e8a7d9f10"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "NoteViewOpened",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "doc": "01jabcdefghjkmnpqrstvwxyz0",
+          "kind": "meeting_note",
+          "title": "Standup",
+          "block": "5f0c2a1e-8d3b-4f7a-9c61-2b4e8a7d9f10"
+        }
+      }
+    }
+  }
+]

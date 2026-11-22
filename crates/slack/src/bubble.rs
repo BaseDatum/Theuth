@@ -628,7 +628,14 @@ fn blocks_in(chunks: &[Chunk]) -> usize {
 fn is_deliverable(name: &str, args: &serde_json::Value) -> bool {
     matches!(
         name,
-        "show" | "show_web" | "app" | "agent_draft" | "task_draft" | "routine_draft"
+        "show"
+            | "show_web"
+            | "show_pty"
+            | "show_note"
+            | "app"
+            | "agent_draft"
+            | "task_draft"
+            | "routine_draft"
     ) || (name == "doc_create" && args.get("kind").and_then(|k| k.as_str()) == Some("board"))
 }
 

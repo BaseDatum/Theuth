@@ -83,6 +83,8 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         schedule::ScheduleEvent,
         artifact::ArtifactShown,
         artifact::WebViewOpened,
+        artifact::PtyViewOpened,
+        artifact::NoteViewOpened,
         artifact::WebViewCallRequested,
         artifact::WebViewCallResolved,
         secrets::SecretsEvent,

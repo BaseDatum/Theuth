@@ -1,0 +1,92 @@
+[
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "job": "j3",
+      "name": "dev",
+      "title": "dev",
+      "running": true,
+      "pty": true,
+      "spawned": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PtyViewOpened",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "job": "j3",
+          "name": "dev",
+          "title": "dev",
+          "running": true,
+          "pty": true,
+          "spawned": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "job": "j4",
+      "name": null,
+      "title": "cargo build",
+      "running": false,
+      "pty": false,
+      "spawned": false
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PtyViewOpened",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "job": "j4",
+          "name": null,
+          "title": "cargo build",
+          "running": false,
+          "pty": false,
+          "spawned": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "job": "j5",
+      "name": "shell",
+      "title": "shell",
+      "running": true,
+      "pty": true,
+      "spawned": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "PtyViewOpened",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "job": "j5",
+          "name": "shell",
+          "title": "shell",
+          "running": true,
+          "pty": true,
+          "spawned": true
+        }
+      }
+    }
+  }
+]

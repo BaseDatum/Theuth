@@ -1,4 +1,5 @@
-import { JobFilters, JobList, useJobs } from '@/components/chat/JobsSheet'
+import { JobFilters, JobList, LiveJob, useJobs } from '@/components/chat/JobsSheet'
+import type { JobLogProps } from '@/components/tiles/open'
 import { TileFrame } from '@/components/tiles/TileFrame'
 import type { TileKind, TileRender } from '@/components/tiles/types'
 
@@ -16,4 +17,17 @@ function Jobs({ tile, first, close }: TileRender) {
 export const jobsTile: TileKind = {
   title: () => 'Jobs',
   render: (p) => <Jobs {...p} />,
+}
+
+/** A `show_pty` background job (211 §5): its live, read-only log beside the chat; the terminal tile is for PTY jobs. */
+export const jobLogTile: TileKind = {
+  title: (tile) => `Job · ${(tile.props as JobLogProps).job}`,
+  render: ({ tile, first, close }) => {
+    const { session, job, label } = tile.props as JobLogProps
+    return (
+      <TileFrame first={first} onClose={close} title={`Job · ${job}`} meta={label}>
+        <LiveJob session={session} job={job} className="flex-1 px-3 pb-3" />
+      </TileFrame>
+    )
+  },
 }
