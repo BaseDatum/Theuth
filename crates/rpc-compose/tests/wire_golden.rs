@@ -90,6 +90,7 @@ async fn legacy_event_families() {
     family::<agent::CommunicationChanged>(&rt, &mut stream, "agent.communication").await;
     family::<agent::PeerMessageChanged>(&rt, &mut stream, "agent.peer-message").await;
     family::<agent::PeerDelivered>(&rt, &mut stream, "agent.peer-delivered").await;
+    family::<agent::AgentGraphChanged>(&rt, &mut stream, "agent.graph").await;
     family::<a2a::A2aChanged>(&rt, &mut stream, "a2a.changed").await;
     family::<a2a::contacts::ContactEvent>(&rt, &mut stream, "a2a.contacts").await;
     family::<tools::ApprovalRequested>(&rt, &mut stream, "tools.approval-requested").await;

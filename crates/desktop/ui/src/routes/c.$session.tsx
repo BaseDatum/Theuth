@@ -7,7 +7,6 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { AdvisorPill } from '@/components/chat/AdvisorPill'
 import { useAdvisor } from '@/components/chat/advisor'
-import { CodeMapPane } from '@/components/codemap/CodeMapHost'
 import { Composer } from '@/components/chat/Composer'
 import { messagingSearch, type MessagingSearch, useMessagingSheet, withoutMessaging } from '@/components/chat/messaging-sheet'
 import { Header } from '@/components/chat/Header'
@@ -26,9 +25,10 @@ import { relistReminders, relistTerminals } from '@/components/chat/background'
 import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { chatName } from '@/lib/attach'
-import { chatLeaves, closeWeb, isDraft, usePanes, useRoutedPane } from '@/lib/panes'
+import { chatLeaves, closeWeb, isDraft, isTile, tileOf, usePanes, useRoutedPane } from '@/lib/panes'
 import { isWeb, webId } from '@/lib/web-views'
 import { WebFrame } from '@/components/chat/WebFrame'
+import { TileLeaf } from '@/components/tiles/registry'
 import { reportLoadError, useRemoteStart } from '@/lib/remote-start'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
 import { ownedElsewhere } from '@/lib/owner'
@@ -88,12 +88,12 @@ function SessionRoute() {
       render={(id, first) =>
         isWeb(id) ? (
           <WebFrame id={webId(id)} first={first} onClose={() => closeWeb(webId(id))} />
+        ) : isTile(id) ? (
+          <TileLeaf id={tileOf(id)} first={first} />
         ) : isDraft(id) ? (
           <NewChatPane id={id} first={first} />
         ) : (
-          <CodeMapPane session={id}>
-            <LiveSession session={id} first={first} />
-          </CodeMapPane>
+          <LiveSession session={id} first={first} />
         )
       }
     />

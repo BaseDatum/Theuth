@@ -91,7 +91,28 @@ const hhmm = (at: number) => new Date(at).toLocaleTimeString([], { hour: '2-digi
 
 export type PanelRoute = { tab: Tab; nav: MapNav; onRoute(tab: Tab, nav: MapNav, push: boolean): void }
 
-export function CodeMapPanel({ session, root, onClose, popped = false, route }: { session: string; root: string; onClose?(): void; popped?: boolean; route?: PanelRoute }) {
+/** The header handed to an outer frame (the desktop tile's `TileFrame`) instead of drawn inline: the status line as
+ * `meta`, the root picker and lens controls as `controls`, Open in new window as `popOut`; `body` is the rest. */
+export type PanelChrome = (p: { meta: string; controls: ReactNode; popOut?: () => void; body: ReactNode }) => ReactNode
+
+/** `onRoot` switches the shown root (default: the session's docked/sheet panel); `chrome` takes the header (see `PanelChrome`). */
+export function CodeMapPanel({
+  session,
+  root,
+  onClose,
+  popped = false,
+  route,
+  onRoot,
+  chrome,
+}: {
+  session: string
+  root: string
+  onClose?(): void
+  popped?: boolean
+  route?: PanelRoute
+  onRoot?(root: string): void
+  chrome?: PanelChrome
+}) {
   const canQuery1 = useQuerySupport(["codeindex_stats"])
   const api = useCodemapApi()
   const map = useMapApi()
@@ -362,61 +383,44 @@ export function CodeMapPanel({ session, root, onClose, popped = false, route }: 
   } else if (lens.lens === 'fit' && !lens.params.fit) body = <p className="p-3 font-mono text-[11px] text-fg-secondary">no symbol yet — run code_refs or code_symbol, or pick “How it fits” on a row</p>
   else body = <p className="p-3 font-mono text-[11px] text-fg-secondary">{busy ? 'loading…' : realRoot ? '' : 'resolving root…'}</p>
 
-  return (
+  const lensControls = (
+    <>
+      {TABS.map((t) => {
+        // 147 §11.7: on Map the lens a call would show gets the dot; on a lens tab 73's pinned rule stands
+        const dot = t !== 'map' && (tab === 'map' ? agentSeq !== null && lens.auto === t : lens.mode === 'pinned' && lens.auto === t && lens.lens !== t)
+        return (
+          <button
+            key={t}
+            type="button"
+            aria-pressed={tab === t}
+            onClick={() => (t === 'map' ? setTab('map') : showLens(t))}
+            className={cn('relative rounded px-1.5 py-0.5 hover:bg-layer-2', tab === t && 'bg-layer-3 font-semibold')}
+            title={`${t} (${TABS.indexOf(t) + 1})`}
+          >
+            {t}
+            {dot && <span aria-label="agent is here" className="ml-0.5 inline-block size-1.5 rounded-full bg-fg-accent align-middle" />}
+          </button>
+        )
+      })}
+      {(tab === 'map' ? agentSeq !== null : lens.mode === 'pinned') && (
+        <button type="button" className="rounded px-1.5 py-0.5 text-fg-secondary hover:bg-layer-2" onClick={followAgent} title="Follow the agent (p)">
+          follow
+        </button>
+      )}
+      {tab !== 'map' && (
+        <button type="button" className="rounded px-1.5 py-0.5 hover:bg-layer-2" title="Snapshot to board" aria-label="Snapshot to board" onClick={() => setSnap((v) => !v)}>
+          ⊡
+        </button>
+      )}
+    </>
+  )
+  const roots = codemap?.roots ?? []
+  const counts = stats.data && `${Number(stats.data.files).toLocaleString()} files · ${Number(stats.data.symbols).toLocaleString()} symbols`
+  const computing = busy && tab === 'change' && !!data.change
+
+  const panel = (head: ReactNode) => (
     <div className="flex h-full min-h-0 flex-col font-mono text-[11px]" onKeyDown={keys} data-codemap-panel data-tab={tab} data-lens={lens.lens} data-mode={lens.mode}>
-      <header className="flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b border-border-subtle px-2 whitespace-nowrap">
-        <span className="font-semibold">CodeMap</span>
-        <RootPicker session={session} root={root} roots={codemap?.roots ?? []} popped={popped} />
-        {/* §6.9 phones: the lens tabs and actions win the row; counts return above 520 px */}
-        {width >= 520 && stats.data && (
-          <span className="text-fg-secondary">
-            {Number(stats.data.files).toLocaleString()} files · {Number(stats.data.symbols).toLocaleString()} symbols
-          </span>
-        )}
-        {fresh && <Chip>{fresh}</Chip>}
-        {meta?.truncated_walk && <Chip>walk capped</Chip>}
-        {busy && tab === 'change' && data.change && <Chip>computing…</Chip>}
-        {width >= 520 && <span className="text-fg-secondary">{calls} calls</span>}
-        <nav className="ml-auto flex items-center gap-1" aria-label="Lens">
-          {TABS.map((t) => {
-            // 147 §11.7: on Map the lens a call would show gets the dot; on a lens tab 73's pinned rule stands
-            const dot = t !== 'map' && (tab === 'map' ? agentSeq !== null && lens.auto === t : lens.mode === 'pinned' && lens.auto === t && lens.lens !== t)
-            return (
-              <button
-                key={t}
-                type="button"
-                aria-pressed={tab === t}
-                onClick={() => (t === 'map' ? setTab('map') : showLens(t))}
-                className={cn('relative rounded px-1.5 py-0.5 hover:bg-layer-2', tab === t && 'bg-layer-3 font-semibold')}
-                title={`${t} (${TABS.indexOf(t) + 1})`}
-              >
-                {t}
-                {dot && <span aria-label="agent is here" className="ml-0.5 inline-block size-1.5 rounded-full bg-fg-accent align-middle" />}
-              </button>
-            )
-          })}
-          {(tab === 'map' ? agentSeq !== null : lens.mode === 'pinned') && (
-            <button type="button" className="rounded px-1.5 py-0.5 text-fg-secondary hover:bg-layer-2" onClick={followAgent} title="Follow the agent (p)">
-              follow
-            </button>
-          )}
-          {tab !== 'map' && (
-            <button type="button" className="rounded px-1.5 py-0.5 hover:bg-layer-2" title="Snapshot to board" aria-label="Snapshot to board" onClick={() => setSnap((v) => !v)}>
-              ⊡
-            </button>
-          )}
-          {!popped && !mobile && !isPopout() && canPopout() && realRoot && (
-            <button type="button" className="inline-flex items-center rounded px-1.5 py-0.5 hover:bg-layer-2" title="Open in new window" aria-label="Open in new window" onClick={openPopped}>
-              <AppWindow className="size-3" />
-            </button>
-          )}
-          {onClose && (
-            <button type="button" className="rounded px-1.5 py-0.5 hover:bg-layer-2" aria-label="Close CodeMap" onClick={onClose}>
-              ✕
-            </button>
-          )}
-        </nav>
-      </header>
+      {head}
       {frozen && (
         <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-border-subtle bg-layer-2 px-2 py-1">
           <span className="flex-1">{meta?.hint ?? 'suspect root'}</span>
@@ -485,6 +489,45 @@ export function CodeMapPanel({ session, root, onClose, popped = false, route }: 
       </footer>
     </div>
   )
+  const pick = onRoot ?? ((r: string) => useSessions.getState().setCodemapPanel(session, r))
+
+  if (chrome)
+    return chrome({
+      meta: [root === '?' ? 'default root' : basename(root), counts, fresh, meta?.truncated_walk && 'walk capped', computing && 'computing…', `${calls} calls`].filter(Boolean).join(' · '),
+      controls: (
+        <nav className="flex items-center gap-1 font-mono text-[11px] whitespace-nowrap" aria-label="Lens">
+          {roots.length > 1 && <RootPicker root={root} roots={roots} popped={popped} onPick={pick} />}
+          {lensControls}
+        </nav>
+      ),
+      popOut: realRoot && !isPopout() ? openPopped : undefined,
+      body: panel(null),
+    })
+  return panel(
+    <header className="flex h-8 shrink-0 items-center gap-2 overflow-hidden border-b border-border-subtle px-2 whitespace-nowrap">
+      <span className="font-semibold">CodeMap</span>
+      <RootPicker root={root} roots={roots} popped={popped} onPick={pick} />
+      {/* §6.9 phones: the lens tabs and actions win the row; counts return above 520 px */}
+      {width >= 520 && counts && <span className="text-fg-secondary">{counts}</span>}
+      {fresh && <Chip>{fresh}</Chip>}
+      {meta?.truncated_walk && <Chip>walk capped</Chip>}
+      {computing && <Chip>computing…</Chip>}
+      {width >= 520 && <span className="text-fg-secondary">{calls} calls</span>}
+      <nav className="ml-auto flex items-center gap-1" aria-label="Lens">
+        {lensControls}
+        {!popped && !mobile && !isPopout() && canPopout() && realRoot && (
+          <button type="button" className="inline-flex items-center rounded px-1.5 py-0.5 hover:bg-layer-2" title="Open in new window" aria-label="Open in new window" onClick={openPopped}>
+            <AppWindow className="size-3" />
+          </button>
+        )}
+        {onClose && (
+          <button type="button" className="rounded px-1.5 py-0.5 hover:bg-layer-2" aria-label="Close CodeMap" onClick={onClose}>
+            ✕
+          </button>
+        )}
+      </nav>
+    </header>,
+  )
 }
 
 /** §6.5: `path:a-b · kind · name · #rank · →N ↑N · provenance confidence` — the one place rank and confidence numbers appear. */
@@ -519,8 +562,8 @@ function Chip({ children }: { children: ReactNode }) {
   return <span className="rounded border border-border-subtle px-1 text-fg-secondary">{children}</span>
 }
 
-/** Root name; a `▾` menu when the session touched more than one root (§6.7). */
-function RootPicker({ session, root, roots, popped }: { session: string; root: string; roots: string[]; popped: boolean }) {
+/** Root name; a `▾` menu when the session touched more than one root (§6.7); `onPick` shows another root. */
+function RootPicker({ root, roots, popped, onPick }: { root: string; roots: string[]; popped: boolean; onPick(root: string): void }) {
   const [open, setOpen] = useState(false)
   const label = root === '?' ? 'default root' : basename(root)
   if (roots.length < 2 || popped) return <span title={root}>{label}</span>
@@ -536,7 +579,7 @@ function RootPicker({ session, root, roots, popped }: { session: string; root: s
               key={r}
               onClick={() => {
                 setOpen(false)
-                useSessions.getState().setCodemapPanel(session, r)
+                onPick(r)
               }}
             >
               {r === '?' ? 'default root' : basename(r)} <span className="text-fg-secondary">{r}</span>

@@ -39,6 +39,8 @@ import { useAgents, useMesh } from '@/components/tasks/queries'
 import { openMeeting, useMeetingForSession } from '@/lib/meeting-link'
 import { useDrafts } from '@/lib/drafts'
 import { usePanes } from '@/lib/panes'
+import { tileable } from '@/lib/tiles'
+import { openJobsTile, openPromptTile } from '@/components/tiles/open'
 import { canPopout, openPopout } from '@/lib/popout'
 import { engineLabel, ownerUnreachable, parkIfOffline, routed, useOwnerOffline } from '@/lib/owner'
 import { RpcError } from '@/rpc/client'
@@ -211,25 +213,34 @@ function PromptSheet({
   open: boolean
   onOpenChange(o: boolean): void
 }) {
-  const canQuery1 = useQuerySupport(["get_prompt"])
-  const api = useApi()
-  const { data, error } = useQuery({
-    queryKey: queryKeys.prompt(session),
-    queryFn: () => api.get_prompt(session),
-    enabled: canQuery1 && (open),
-  })
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full sm:w-[640px] sm:max-w-[640px]">
         <SheetHeader>
           <SheetTitle>System prompt</SheetTitle>
-          <SheetDescription>What the model sees at the top of this session.</SheetDescription>
+          <SheetDescription>{PROMPT_NOTE}</SheetDescription>
         </SheetHeader>
-        <pre className="mx-4 mb-4 min-h-0 flex-1 overflow-auto rounded-xl bg-layer-2 p-4 font-mono text-xs leading-5 whitespace-pre-wrap">
-          {error ? (error instanceof Error ? error.message : String(error)) : (data ?? 'Loading…')}
-        </pre>
+        <PromptBody session={session} />
       </SheetContent>
     </Sheet>
+  )
+}
+
+export const PROMPT_NOTE = 'What the model sees at the top of this session.'
+
+/** The session's system prompt, in `PromptSheet` or a `prompt` tile; read while mounted. */
+export function PromptBody({ session, className }: { session: string; className?: string }) {
+  const canQuery1 = useQuerySupport(["get_prompt"])
+  const api = useApi()
+  const { data, error } = useQuery({
+    queryKey: queryKeys.prompt(session),
+    queryFn: () => api.get_prompt(session),
+    enabled: canQuery1,
+  })
+  return (
+    <pre className={cn('mx-4 mb-4 min-h-0 flex-1 overflow-auto rounded-xl bg-layer-2 p-4 font-mono text-xs leading-5 whitespace-pre-wrap', className)}>
+      {error ? (error instanceof Error ? error.message : String(error)) : (data ?? 'Loading…')}
+    </pre>
   )
 }
 
@@ -317,15 +328,21 @@ export function SessionMenu({ session }: { session: string }) {
   }
 
   const focused = usePanes((s) => s.focused === session)
+  /** Desktop: beside the chat as a tile; the sheet stays for phones and chats outside the pane tree. */
+  const show = (s: 'prompt' | 'jobs') => {
+    if (!tileable(session)) setSheet(s)
+    else if (s === 'prompt') openPromptTile(session)
+    else openJobsTile(session)
+  }
   useEffect(() => {
     if (!focused) return
     const on = (e: Event) => {
       const s = surfaceOf(e)
-      if (s === 'prompt' || s === 'jobs') setSheet(s)
+      if (s === 'prompt' || s === 'jobs') show(s)
     }
     window.addEventListener('theuth:open', on)
     return () => window.removeEventListener('theuth:open', on)
-  }, [focused])
+  }, [focused, session])
 
   const ctx: Ctx = {
     api,
@@ -476,8 +493,8 @@ export function SessionMenu({ session }: { session: string }) {
           <DropdownMenuItem onSelect={cmd('/knowledge harvest')}>
             Harvest knowledge
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => openSurface('prompt')}>Show prompt</DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => openSurface('jobs')}>Jobs</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => show('prompt')}>Show prompt</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => show('jobs')}>Jobs</DropdownMenuItem>
           </> : <DropdownMenuItem onSelect={() => openSurface('memory')}>Memory…</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => useMessagingSheet.getState().show(session)}>Messaging…</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => useToolsSheet.getState().show(session)}>Tools…</DropdownMenuItem>

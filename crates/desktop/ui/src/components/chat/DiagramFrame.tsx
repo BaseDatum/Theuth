@@ -1,6 +1,8 @@
 import { Copy, FileDown, ImageDown, type LucideIcon, Maximize2, RotateCcw, X } from 'lucide-react'
 import { type PointerEvent as ReactPointerEvent, type ReactNode, useContext, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { useTileHost } from '@/components/tiles/host'
+import { openDiagramTile } from '@/components/tiles/open'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -9,6 +11,7 @@ import { isLocal, saveBlob } from '@/lib/files'
 import { container } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
 import { useSnapshot } from '@/lib/snapshot-mode'
+import { openTileOf } from '@/lib/tiles'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
 import { Reserve } from './Reserve'
@@ -16,11 +19,12 @@ import { useScopedDisclosure } from './disclosure'
 import { FenceContext } from './surface/JsonRenderFence'
 
 // Design 30 §8.3, 65 §3.4: the frame every diagram card shares — pan/zoom surface, hover toolbar (Copy PNG · Save PNG… ·
-// Save SVG… · Fullscreen) and the fullscreen dialog. The content is either an svg markup string (mermaid, injected
-// as HTML) or React children that render an `<svg>` (Graph); export reads whichever is mounted.
+// Save SVG… · Fullscreen) and the fullscreen dialog (a `diagram` tile in a tiling chat pane, `kinds/diagram`). The content
+// is either an svg markup string (mermaid, injected as HTML) or React children that render an `<svg>` (Graph); export
+// reads whichever is mounted.
 
-type View = { x: number; y: number; s: number }
-const HOME: View = { x: 0, y: 0, s: 1 }
+export type View = { x: number; y: number; s: number }
+export const HOME: View = { x: 0, y: 0, s: 1 }
 const MIN = 0.25
 const MAX = 8
 
@@ -40,7 +44,7 @@ type Content = { svg: string; children?: undefined } | { svg?: undefined; childr
  * The content box is the surface's own box with `transform-origin: 0 0`, so surface coordinates are content
  * coordinates at `HOME`. `fill` sizes the svg to the surface (fullscreen); inline it keeps its natural height.
  */
-function Surface({
+export function Surface({
   content,
   view,
   onView,
@@ -136,7 +140,7 @@ function Surface({
   )
 }
 
-function Tool({ icon: Icon, label, onClick, size = 'icon-sm' }: { icon: LucideIcon; label: string; onClick: () => void; size?: 'icon-sm' | 'icon' }) {
+export function Tool({ icon: Icon, label, onClick, size = 'icon-sm' }: { icon: LucideIcon; label: string; onClick: () => void; size?: 'icon-sm' | 'icon' }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -152,7 +156,7 @@ function Tool({ icon: Icon, label, onClick, size = 'icon-sm' }: { icon: LucideIc
 const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
 
 /** Copy PNG · Save PNG… · Save SVG… (the latter two only where `saveBlob` has a sink), then `extra`. */
-function Tools({ markup, name, size, extra }: { markup: () => string; name: string; size?: 'icon-sm' | 'icon'; extra?: ReactNode }) {
+export function Tools({ markup, name, size, extra }: { markup: () => string; name: string; size?: 'icon-sm' | 'icon'; extra?: ReactNode }) {
   const api = useApi()
   const active = useEngines((s) => s.active)
   const png = () => rasterize(standalone(markup()))
@@ -218,7 +222,8 @@ function Fullscreen({ content, markup, name, onClose }: { content: Content; mark
 }
 
 /**
- * The diagram card: `label` in the header, the content behind pan/zoom, the toolbar on hover, fullscreen on demand.
+ * The diagram card: `label` in the header, the content behind pan/zoom, the toolbar on hover, fullscreen on demand (a
+ * tile beside the chat where the layout tiles, which takes the markup as it is now and follows a re-render of it).
  * `svg` is mermaid's markup (`null` while the first render is pending); `children` is a React-rendered `<svg>`
  * (Graph). `name` is the export file stem — a content hash in every caller, so with the fence's entry id it is also the
  * card's remembered-height key (135 §2): the placeholder takes the last measured height while the content renders.
@@ -252,12 +257,21 @@ export function DiagramFrame({
   const content: Content | null = svg ? { svg } : children ? { children } : null
   /** The markup to export: mermaid's string, or the mounted `<svg>` of the React content. */
   const markup = () => svg ?? inline.current?.querySelector('svg')?.outerHTML ?? ''
+  const host = useTileHost()
+  // An open tile follows a re-render of the same diagram (a theme switch redraws mermaid under the same name).
+  useEffect(() => {
+    if (host && content && openTileOf('diagram', host, name)) openDiagramTile(host, { svg: markup(), name, label })
+  }, [host, svg, name, label])
   return (
     <div className={cn('group relative rounded-xl border bg-layer-1 p-2', fill ? 'flex h-full flex-col' : 'my-4')} data-streamdown={kind} title={title}>
       <div className="flex h-8 items-center px-1 font-mono text-xs text-fg-tertiary">{label}</div>
       {content && !snap && (
         <div className="absolute top-2 right-2 flex items-center gap-0.5 rounded-md bg-layer-1/80 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
-          <Tools markup={markup} name={name} extra={<Tool icon={Maximize2} label="Fullscreen" onClick={() => setFull(true)} />} />
+          <Tools
+            markup={markup}
+            name={name}
+            extra={<Tool icon={Maximize2} label="Fullscreen" onClick={() => (host ? openDiagramTile(host, { svg: markup(), name, label }) : setFull(true))} />}
+          />
         </div>
       )}
       <Reserve id={entry && !fill ? `${entry}/${name}` : null} ready={content !== null} className={cn('rounded-md border bg-background', fill && 'min-h-0 flex-1')}>
