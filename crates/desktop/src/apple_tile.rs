@@ -6,20 +6,26 @@
 //!   [`AGENT_WORLD`] content world or in `WKContentWorld.page`, with one string argument (the caller's
 //!   argument values as JSON). The body answers one JSON string; [`script_done`] waits for it until the
 //!   caller's deadline and reads it off the main thread. WebKit cannot cancel a running script: past the
-//!   deadline the caller gets the timeout and the script's late answer is dropped.
+//!   deadline, or once the user's Stop ran ([`stop`]), the caller gets its error and the script's late
+//!   answer is dropped.
 //! - [`snapshot`]: `takeSnapshot` of the visible view; the main thread only takes the image's `CGImage`
 //!   (thread-safe) and [`snapshot_done`] draws it into a bitmap of at most `SNAPSHOT_MAX_SIDE` pixels on the
 //!   long side and encodes it as base64 PNG, off the main thread.
-//! - [`settle`]: after `navigate`, `back`, `forward` or `reload`, the main frame's state every
-//!   `SETTLE_POLL` until it stopped loading or the deadline passed. WebKit's `loading` is set when the
-//!   load is requested, so the first look already sees a load that was started.
+//! - Load ops: on iOS the shell owns the navigation delegate and [`navigation_done`] waits for the
+//!   `WKNavigation` the op started. Where it cannot (macOS, where wry owns the delegate; an iOS history move
+//!   within the document, which has no navigation), [`settle`] looks at the main frame every `SETTLE_POLL`
+//!   and answers by `web_rules::call::Watch`, never the page from before the op.
+//! - [`stop`] (the user's Stop, 209 §9): every wait of the tile's calls in flight ends with `STOPPED`
+//!   within `STOP_POLL`; the caller also stops the view's loading.
 //!
 //! Script results, arguments and thrown messages can carry page data: they go to the caller only, never to
 //! `tracing`.
 
+use std::collections::BTreeMap;
 #[cfg(target_os = "macos")]
 use std::ptr::null_mut;
-use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::Mutex;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -41,12 +47,12 @@ use objc2_web_kit::WKContentWorld;
 use objc2_web_kit::WKWebView;
 use serde_json::{Value, json};
 
-use crate::apple_cookies::{DROPPED, Late, recv_by};
+use crate::apple_cookies::{DROPPED, Late};
 #[cfg(target_os = "ios")]
 use crate::ios_webview::WKWebView;
 use crate::web_rules::call::{
-    ARGS_NAME, Loaded, SETTLE_POLL, SNAPSHOT_TIMEOUT, Script, World, failed, fit, reply,
-    straighten, timed_out,
+    ARGS_NAME, Loaded, Look, SETTLE_POLL, SNAPSHOT_TIMEOUT, STOP_POLL, STOPPED, Script, Watch,
+    World, failed, fit, reply, straighten, timed_out,
 };
 use crate::web_rules::profile::AGENT_WORLD;
 
@@ -113,41 +119,154 @@ fn message(error: &NSError) -> String {
         .unwrap_or_else(|| error.localizedDescription().to_string())
 }
 
-/// Wait for [`script`]'s answer until `deadline` (the caller's `timeout` from the call's start) and read it,
-/// off the async workers.
+/// Per tile label, how many times [`stop`] ran for it.
+static STOPS: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
+
+fn stops() -> std::sync::MutexGuard<'static, BTreeMap<String, u64>> {
+    STOPS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The user's Stop on `label` (209 §9): every [`Ticket`] taken before it reads stopped.
+pub(crate) fn stop(label: &str) {
+    *stops().entry(label.to_owned()).or_default() += 1;
+}
+
+/// Taken when a call starts: whether [`stop`] ran for its tile since.
+pub(crate) struct Ticket {
+    label: String,
+    at: u64,
+}
+
+impl Ticket {
+    pub(crate) fn new(label: &str) -> Self {
+        let at = stops().get(label).copied().unwrap_or(0);
+        Self {
+            label: label.to_owned(),
+            at,
+        }
+    }
+
+    pub(crate) fn stopped(&self) -> bool {
+        stops().get(&self.label).copied().unwrap_or(0) != self.at
+    }
+}
+
+/// Why a wait ended without an answer.
+enum Ended {
+    Late(Late),
+    Stopped,
+}
+
+/// `rx`'s answer until `deadline`, looking every [`STOP_POLL`] whether `ticket` was stopped.
+fn recv_or_stop<T>(rx: &Receiver<T>, deadline: Instant, ticket: &Ticket) -> Result<T, Ended> {
+    let budget = deadline.saturating_duration_since(Instant::now());
+    loop {
+        if ticket.stopped() {
+            return Err(Ended::Stopped);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left.min(STOP_POLL)) {
+            Ok(answer) => return Ok(answer),
+            Err(RecvTimeoutError::Disconnected) => return Err(Ended::Late(Late::Dropped)),
+            Err(RecvTimeoutError::Timeout) if left <= STOP_POLL => {
+                return Err(Ended::Late(Late::Timeout(budget)));
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+/// Wait for [`script`]'s answer until `deadline` (the caller's `timeout` from the call's start) or the
+/// tile's Stop, and read it, off the async workers.
 pub(crate) async fn script_done(
     rx: Receiver<ScriptReply>,
     deadline: Instant,
     timeout: Duration,
+    ticket: Ticket,
 ) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || match recv_by(&rx, deadline) {
+    tauri::async_runtime::spawn_blocking(move || match recv_or_stop(&rx, deadline, &ticket) {
         Ok(Ok(json)) => reply(json.as_deref()),
         Ok(Err(e)) => Err(e),
-        Err(Late::Timeout(_)) => Err(timed_out(timeout)),
-        Err(Late::Dropped) => Err(DROPPED.to_owned()),
+        Err(Ended::Late(Late::Timeout(_))) => Err(timed_out(timeout)),
+        Err(Ended::Late(Late::Dropped)) => Err(DROPPED.to_owned()),
+        Err(Ended::Stopped) => Err(STOPPED.to_owned()),
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
-/// Look at the main frame's state with `read` every [`SETTLE_POLL`] until it stopped loading or `deadline`
-/// passed, and answer it (209 §4.7): `{ url, title, loading }`, `loading: true` at the deadline.
-pub(crate) async fn settle<F, Fut>(mut read: F, deadline: Instant) -> Result<Value, String>
+/// How the navigation a load op started ended (iOS, where the shell's delegate sees it).
+#[cfg(target_os = "ios")]
+pub(crate) enum Navigated {
+    /// `didFinishNavigation`.
+    Finished,
+    /// `didFailNavigation` / `didFailProvisionalNavigation`: `web_rules::call::load_error`.
+    Failed(String),
+    /// The call's time ran out first.
+    TimedOut,
+}
+
+/// Wait for the delegate's word on the op's navigation (`None` finished, `Some(error)` failed) until
+/// `deadline` or the tile's Stop, off the async workers. The sender gone means the view was destroyed.
+#[cfg(target_os = "ios")]
+pub(crate) async fn navigation_done(
+    rx: Receiver<Option<String>>,
+    deadline: Instant,
+    ticket: Ticket,
+) -> Result<Navigated, String> {
+    tauri::async_runtime::spawn_blocking(move || match recv_or_stop(&rx, deadline, &ticket) {
+        Ok(None) => Ok(Navigated::Finished),
+        Ok(Some(error)) => Ok(Navigated::Failed(error)),
+        Err(Ended::Late(Late::Timeout(_))) => Ok(Navigated::TimedOut),
+        Err(Ended::Late(Late::Dropped)) => Err("the web view closed during the load".to_owned()),
+        Err(Ended::Stopped) => Err(STOPPED.to_owned()),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// After a load op that cannot wait for its navigation: `look` at the main frame (each look bounded by the
+/// call's `deadline`; `None` when the main thread did not answer by then) every [`SETTLE_POLL`] until
+/// [`Watch`] says it is done, and answer it (209 §4.7): `{ url, title, loading, error? }`, `loading: true`
+/// at the deadline. `before` is the look taken with the op; `counts`: `Look::finished` is kept.
+pub(crate) async fn settle<F, Fut>(
+    mut look: F,
+    before: Look,
+    counts: bool,
+    deadline: Instant,
+    ticket: &Ticket,
+) -> Result<Value, String>
 where
     F: FnMut() -> Fut,
-    Fut: Future<Output = Result<Loaded, String>>,
+    Fut: Future<Output = Result<Option<Look>, String>>,
 {
+    let mut watch = Watch::new(&before, counts);
+    let mut last = before.state;
     loop {
-        let state = read().await?;
-        let left = deadline.saturating_duration_since(Instant::now());
-        if !state.loading || left.is_zero() {
-            return serde_json::to_value(state).map_err(|e| e.to_string());
+        if ticket.stopped() {
+            return Err(STOPPED.to_owned());
         }
-        let nap = SETTLE_POLL.min(left);
+        let Some(now) = look().await? else {
+            // A main thread busy past the budget: as at any timeout, the page as last seen, still loading.
+            return answer(Loaded {
+                loading: true,
+                ..last
+            });
+        };
+        last = now.state.clone();
+        if let Some(done) = watch.step(now, Instant::now() >= deadline) {
+            return answer(done);
+        }
+        let nap = SETTLE_POLL.min(deadline.saturating_duration_since(Instant::now()));
         tauri::async_runtime::spawn_blocking(move || std::thread::sleep(nap))
             .await
             .map_err(|e| e.to_string())?;
     }
+}
+
+/// A load op's answer as JSON.
+pub(crate) fn answer(loaded: Loaded) -> Result<Value, String> {
+    serde_json::to_value(loaded).map_err(|e| e.to_string())
 }
 
 /// Start a snapshot of `view`'s visible area, which shows `viewport`; its `CGImage` goes to `tx`.
@@ -193,22 +312,24 @@ fn snapshot_failed(error: &NSError) -> String {
     format!("snapshot failed: {}", error.localizedDescription())
 }
 
-/// Wait for [`snapshot`]'s image until `deadline`, then scale and encode it, off the async workers:
-/// `{ png, width, height }` (209 §4.7), the size being the viewport's in CSS px.
+/// Wait for [`snapshot`]'s image until `deadline` or the tile's Stop, then scale and encode it, off the
+/// async workers: `{ png, width, height }` (209 §4.7), the size being the viewport's in CSS px.
 pub(crate) async fn snapshot_done(
     rx: Receiver<SnapshotReply>,
     deadline: Instant,
+    ticket: Ticket,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let (image, viewport) = match recv_by(&rx, deadline) {
+        let (image, viewport) = match recv_or_stop(&rx, deadline, &ticket) {
             Ok(reply) => reply?,
-            Err(Late::Timeout(_)) => {
+            Err(Ended::Late(Late::Timeout(_))) => {
                 return Err(format!(
                     "snapshot timed out after {} ms",
                     SNAPSHOT_TIMEOUT.as_millis()
                 ));
             }
-            Err(Late::Dropped) => return Err(DROPPED.to_owned()),
+            Err(Ended::Late(Late::Dropped)) => return Err(DROPPED.to_owned()),
+            Err(Ended::Stopped) => return Err(STOPPED.to_owned()),
         };
         encode(&image, viewport)
     })
@@ -353,5 +474,102 @@ mod tests {
         assert_eq!((&out["width"], &out["height"]), (&json!(5), &json!(2)));
         let (width, height, _) = decoded(&out);
         assert_eq!((width, height), (10, 4));
+    }
+
+    fn look(url: &str, loading: bool, finished: u64) -> Look {
+        Look {
+            state: Loaded {
+                url: url.into(),
+                title: String::new(),
+                loading,
+                error: None,
+            },
+            finished,
+        }
+    }
+
+    /// `settle` over scripted looks (the last one repeats), with the time it took.
+    fn settle_over(
+        looks: Vec<Result<Option<Look>, String>>,
+        budget: Duration,
+    ) -> (Result<Value, String>, Duration) {
+        let mut looks = std::collections::VecDeque::from(looks);
+        let ticket = Ticket::new("web-settle-test");
+        let started = Instant::now();
+        let out = tauri::async_runtime::block_on(settle(
+            || {
+                let next = if looks.len() > 1 {
+                    looks.pop_front().unwrap()
+                } else {
+                    looks[0].clone()
+                };
+                std::future::ready(next)
+            },
+            look("https://old.example/", false, 5),
+            true,
+            started + budget,
+            &ticket,
+        ));
+        (out, started.elapsed())
+    }
+
+    #[test]
+    fn tile_settle_answers_the_new_page_not_the_old_one() {
+        let (out, _) = settle_over(
+            vec![
+                Ok(Some(look("https://old.example/", false, 5))),
+                Ok(Some(look("https://new.example/", true, 5))),
+                Ok(Some(look("https://new.example/", false, 6))),
+            ],
+            Duration::from_secs(5),
+        );
+        assert_eq!(
+            out.unwrap(),
+            json!({ "url": "https://new.example/", "title": "", "loading": false })
+        );
+    }
+
+    #[test]
+    fn tile_settle_old_page_until_the_deadline_is_still_loading() {
+        let (out, took) = settle_over(
+            vec![Ok(Some(look("https://old.example/", false, 5)))],
+            Duration::from_millis(350),
+        );
+        assert_eq!(out.unwrap()["loading"], json!(true));
+        assert!(took >= Duration::from_millis(350), "{took:?}");
+    }
+
+    #[test]
+    fn tile_settle_main_thread_stall_is_a_timeout_not_an_error() {
+        let (out, _) = settle_over(
+            vec![Ok(Some(look("https://new.example/", true, 5))), Ok(None)],
+            Duration::from_secs(5),
+        );
+        assert_eq!(
+            out.unwrap(),
+            json!({ "url": "https://new.example/", "title": "", "loading": true })
+        );
+    }
+
+    #[test]
+    fn tile_stop_abandons_a_running_script_and_spares_later_calls() {
+        const LABEL: &str = "web-stop-test-0001";
+        let (_tx, rx) = std::sync::mpsc::sync_channel::<ScriptReply>(1);
+        let ticket = Ticket::new(LABEL);
+        let started = Instant::now();
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            stop(LABEL);
+        });
+        let out = tauri::async_runtime::block_on(script_done(
+            rx,
+            started + Duration::from_secs(30),
+            Duration::from_secs(30),
+            ticket,
+        ));
+        assert_eq!(out.unwrap_err(), STOPPED);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!Ticket::new(LABEL).stopped());
+        assert!(!Ticket::new("web-stop-test-0002").stopped());
     }
 }

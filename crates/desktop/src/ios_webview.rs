@@ -37,8 +37,8 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::{NonNull, null_mut};
 use std::rc::Rc;
-use std::sync::mpsc::sync_channel;
-use std::time::Instant;
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::time::{Duration, Instant};
 
 use block2::{DynBlock, RcBlock};
 use objc2::rc::{Allocated, Retained, Weak};
@@ -67,12 +67,17 @@ use tauri::{AppHandle, Emitter, Manager, Url, Webview};
 
 use crate::apple_cookies::{
     MAIN_TIMEOUT, apply_storage, available, capture, captured, clear, data_store, read, wait,
-    watch, write, writer, written,
+    wait_by, watch, write, writer, written,
 };
-use crate::apple_tile::{script, script_done, settle, snapshot, snapshot_done};
-use crate::web_rules::call::{Loaded, Op, SNAPSHOT_TIMEOUT, check_holder, css_size, no_history};
+use crate::apple_tile::{
+    Navigated, Ticket, answer, navigation_done, script, script_done, settle, snapshot,
+    snapshot_done, stop,
+};
+use crate::web_rules::call::{
+    LOAD_FAILED, Loaded, Look, Op, SNAPSHOT_TIMEOUT, check_holder, css_size, load_error, no_history,
+};
 use crate::web_rules::profile::{
-    Cookie, CookieKey, Storage, Written, check_caller, plan_write, storage_for,
+    Cookie, CookieKey, Storage, Written, check_caller, plan_write, storage_for, timeout_message,
 };
 use crate::web_rules::{
     CLOSED_EVENT, Closed, STATE_EVENT, allowed, app_url, check_label, check_url, may_open,
@@ -203,6 +208,9 @@ struct DelegateIvars {
     /// The main-frame URL the policy last allowed and that has not committed: what the state reports while
     /// it loads, and after it fails, until the view's own URL changes (205 §9).
     target: RefCell<Option<String>>,
+    /// Tile ops waiting for the `WKNavigation` they started (209 §4.7): told `None` when it finished,
+    /// `Some(error)` when it failed. Dropped with the delegate when the view goes.
+    waits: RefCell<Vec<(Retained<AnyObject>, SyncSender<Option<String>>)>>,
 }
 
 define_class!(
@@ -269,15 +277,17 @@ define_class!(
         }
 
         #[unsafe(method(webView:didFinishNavigation:))]
-        fn did_finish(&self, view: &WKWebView, _navigation: Option<&AnyObject>) {
+        fn did_finish(&self, view: &WKWebView, navigation: Option<&AnyObject>) {
             self.ivars().target.replace(None);
             self.publish(view, false);
+            self.navigated(navigation, None);
         }
 
         #[unsafe(method(webView:didFailNavigation:withError:))]
-        fn did_fail(&self, view: &WKWebView, _navigation: Option<&AnyObject>, _error: &AnyObject) {
+        fn did_fail(&self, view: &WKWebView, navigation: Option<&AnyObject>, error: &AnyObject) {
             self.ivars().target.replace(None);
             self.publish(view, false);
+            self.navigated(navigation, Some(error));
         }
 
         /// Keeps [`DelegateIvars::target`]: the address field shows the address that failed, as on the desktop.
@@ -285,10 +295,11 @@ define_class!(
         fn did_fail_provisional(
             &self,
             view: &WKWebView,
-            _navigation: Option<&AnyObject>,
-            _error: &AnyObject,
+            navigation: Option<&AnyObject>,
+            error: &AnyObject,
         ) {
             self.publish(view, false);
+            self.navigated(navigation, Some(error));
         }
 
         /// iOS killed the page's content process (memory pressure, a crash): reload, or the tile stays blank.
@@ -429,6 +440,39 @@ impl Delegate {
         let this = Self::alloc(mtm).set_ivars(ivars);
         // SAFETY: `NSObject`'s `init` on a freshly allocated instance.
         unsafe { msg_send![super(this), init] }
+    }
+
+    /// At most this many tile ops wait on one view's navigations; a newer one drops the oldest (whose op then
+    /// reads the view as closed: superseded navigations fail anyway).
+    const WAITS: usize = 8;
+
+    /// A tile op waits for `navigation` (209 §4.7).
+    fn wait_for(&self, navigation: Retained<AnyObject>, tx: SyncSender<Option<String>>) {
+        let mut waits = self.ivars().waits.borrow_mut();
+        if waits.len() >= Self::WAITS {
+            waits.remove(0);
+        }
+        waits.push((navigation, tx));
+    }
+
+    /// `navigation` finished (`error` `None`) or failed: tell the op that started it, if one waits.
+    fn navigated(&self, navigation: Option<&AnyObject>, error: Option<&AnyObject>) {
+        let Some(navigation) = navigation else {
+            return;
+        };
+        let mut waits = self.ivars().waits.borrow_mut();
+        let Some(at) = waits
+            .iter()
+            .position(|(n, _)| std::ptr::eq(&**n, navigation))
+        else {
+            return;
+        };
+        let (_, tx) = waits.remove(at);
+        let outcome = error.map(|e| match e.downcast_ref::<NSError>() {
+            Some(e) => load_error(&e.domain().to_string(), e.code()),
+            None => LOAD_FAILED.to_owned(),
+        });
+        let _ = tx.try_send(outcome);
     }
 
     /// The navigation policy (205 §4.3, §5). A navigation with no target frame is allowed: WebKit then asks
@@ -627,12 +671,12 @@ thread_local! {
     static VIEWS: RefCell<HashMap<String, Entry>> = RefCell::new(HashMap::new());
 }
 
-/// Run `f` on the main thread with Tauri's `WKWebView` of the calling webview, and wait for its result, at most
-/// [`crate::apple_cookies::MAIN_TIMEOUT`].
-async fn on_main<T: Send + 'static>(
+/// Start `f` on the main thread with Tauri's `WKWebView` of the calling webview; its result comes on the
+/// receiver, from the main thread's next turn.
+fn on_main_start<T: Send + 'static>(
     caller: &Webview,
     f: impl FnOnce(MainThreadMarker, &WKWebView) -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
+) -> Result<Receiver<Result<T, String>>, String> {
     let (tx, rx) = sync_channel(1);
     caller
         .with_webview(move |platform| {
@@ -642,8 +686,24 @@ async fn on_main<T: Send + 'static>(
             let _ = tx.send(f(mtm, main));
         })
         .map_err(|e| e.to_string())?;
-    // The reply comes from the main thread's next turn.
-    wait(rx).await
+    Ok(rx)
+}
+
+/// [`on_main_start`] and its result, at most [`crate::apple_cookies::MAIN_TIMEOUT`] away.
+async fn on_main<T: Send + 'static>(
+    caller: &Webview,
+    f: impl FnOnce(MainThreadMarker, &WKWebView) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    wait(on_main_start(caller, f)?).await
+}
+
+/// [`on_main_start`] and its result by `deadline` (a tile call's budget); `None` when it had not come.
+async fn on_main_by<T: Send + 'static>(
+    caller: &Webview,
+    deadline: Instant,
+    f: impl FnOnce(MainThreadMarker, &WKWebView) -> Result<T, String> + Send + 'static,
+) -> Result<Option<T>, String> {
+    wait_by(on_main_start(caller, f)?, deadline).await
 }
 
 /// The UI's rectangle (CSS px of the main webview's layout viewport) in `parent`'s coordinates: CSS px scale
@@ -668,11 +728,15 @@ fn with_view<T>(label: &str, f: impl FnOnce(&Entry) -> T) -> Result<T, String> {
     VIEWS.with_borrow(|views| views.get(label).map(f).ok_or_else(|| no_view(label)))
 }
 
-fn load(view: &WKWebView, url: &Url) -> Result<(), String> {
+/// Request `url` in `view`; the navigation it started, if WebKit answered one.
+fn request(view: &WKWebView, url: &Url) -> Result<Option<Retained<AnyObject>>, String> {
     let ns = NSURL::URLWithString(&NSString::from_str(url.as_str()))
         .ok_or_else(|| format!("invalid url `{url}`"))?;
-    view.load_request(&NSURLRequest::requestWithURL(&ns));
-    Ok(())
+    Ok(view.load_request(&NSURLRequest::requestWithURL(&ns)))
+}
+
+fn load(view: &WKWebView, url: &Url) -> Result<(), String> {
+    request(view, url).map(drop)
 }
 
 fn create(
@@ -710,6 +774,7 @@ fn create(
             app,
             last_open: Cell::new(None),
             target: RefCell::new(None),
+            waits: RefCell::new(Vec::new()),
         },
     );
     for selector in delegate_selectors() {
@@ -961,9 +1026,10 @@ pub async fn web_storage_capture(webview: Webview, label: String) -> Result<Stor
     captured(rx).await
 }
 
-/// Run one tile op for the agent (209 §4.7, D8): `script`, `navigate`, `back`, `forward`, `reload` or
-/// `snapshot` on `label`, with `args` as `web_rules::call::Op::parse` checks them. Main webview only. One
-/// log line per call: op, label, duration, ok or error; never a value.
+/// Run one tile op for the agent (209 §4.7, D8): `script`, `navigate`, `back`, `forward`, `reload`,
+/// `snapshot`, or the user's `stop` on `label`, with `args` as `web_rules::call::Op::parse` checks them. Main
+/// webview only, checked before the arguments are read. One log line per call: op, label, duration, ok or
+/// error; never a value.
 #[tauri::command]
 pub async fn web_view_call(
     app: AppHandle,
@@ -986,59 +1052,49 @@ async fn run_call(
     args: Option<Value>,
 ) -> Result<Value, String> {
     let started = Instant::now();
-    let op = Op::parse(op, args)?;
-    check_label(label)?;
     check_holder(label, webview.label(), webview.window().label(), "main")?;
-    let state = || {
-        let label = label.to_owned();
-        on_main(webview, move |_, _| with_view(&label, |e| loaded(&e.view)))
-    };
-    let label = label.to_owned();
+    check_label(label)?;
+    let op = Op::parse(op, args)?;
+    let ticket = Ticket::new(label);
     match op {
         Op::Navigate { url, timeout } => {
             let parsed = check_url(app, &url)?;
-            on_main(webview, move |_, _| {
-                with_view(&label, |e| load(&e.view, &parsed))?
+            load_op(webview, label, started, timeout, ticket, move |view| {
+                request(view, &parsed)
             })
-            .await?;
-            settle(state, started + timeout).await
+            .await
         }
         Op::Reload(timeout) => {
-            on_main(webview, move |_, _| {
-                with_view(&label, |e| {
-                    e.view.reload();
-                })
+            load_op(webview, label, started, timeout, ticket, |view| {
+                Ok(view.reload())
             })
-            .await?;
-            settle(state, started + timeout).await
+            .await
         }
         Op::History { forward, timeout } => {
-            on_main(webview, move |_, _| {
-                with_view(&label, |e| {
-                    if forward && e.view.can_go_forward() {
-                        e.view.go_forward();
-                    } else if !forward && e.view.can_go_back() {
-                        e.view.go_back();
-                    } else {
-                        return Err(no_history(forward));
-                    }
-                    Ok(())
-                })?
+            load_op(webview, label, started, timeout, ticket, move |view| {
+                if forward && view.can_go_forward() {
+                    Ok(view.go_forward())
+                } else if !forward && view.can_go_back() {
+                    Ok(view.go_back())
+                } else {
+                    Err(no_history(forward))
+                }
             })
-            .await?;
-            settle(state, started + timeout).await
+            .await
         }
         Op::Script(body) => {
             let (deadline, timeout) = (started + body.timeout, body.timeout);
             let (tx, rx) = sync_channel(1);
+            let label = label.to_owned();
             on_main(webview, move |mtm, _| {
                 with_view(&label, |e| script(mtm, &e.view, &body, tx))
             })
             .await?;
-            script_done(rx, deadline, timeout).await
+            script_done(rx, deadline, timeout, ticket).await
         }
         Op::Snapshot => {
             let (tx, rx) = sync_channel(1);
+            let label = label.to_owned();
             on_main(webview, move |_, _| {
                 with_view(&label, |e| {
                     let size = e.view.bounds().size;
@@ -1047,9 +1103,98 @@ async fn run_call(
                 })
             })
             .await?;
-            snapshot_done(rx, started + SNAPSHOT_TIMEOUT).await
+            snapshot_done(rx, started + SNAPSHOT_TIMEOUT, ticket).await
+        }
+        // The user's Stop (209 §9): every wait of the tile's calls in flight ends now; the page stops loading.
+        Op::Stop => {
+            stop(label);
+            let label = label.to_owned();
+            on_main(webview, move |_, _| {
+                with_view(&label, |e| e.view.stop_loading())
+            })
+            .await?;
+            Ok(Value::Null)
         }
     }
+}
+
+/// How long the look after a load op's navigation ended may wait for the main thread.
+const LAST_LOOK: Duration = Duration::from_secs(1);
+
+/// A load op (209 §4.7): the state before it and `start` on one main-thread turn; then the wait for the
+/// `WKNavigation` `start` answered (this module's delegate reports it), or, when WebKit answered none (a
+/// history move within the document), `settle` until `started + timeout`. A failed navigation answers
+/// `error` (`NSURLErrorDomain/-1003`).
+async fn load_op(
+    webview: &Webview,
+    label: &str,
+    started: Instant,
+    timeout: Duration,
+    ticket: Ticket,
+    start: impl FnOnce(&WKWebView) -> Result<Option<Retained<AnyObject>>, String> + Send + 'static,
+) -> Result<Value, String> {
+    let deadline = started + timeout;
+    let (tx, rx) = sync_channel(1);
+    let l = label.to_owned();
+    let (before, waits) = on_main_by(webview, deadline, move |_, _| {
+        with_view(&l, |e| {
+            let before = loaded(&e.view);
+            let navigation = start(&e.view)?;
+            let waits = navigation.is_some();
+            if let Some(navigation) = navigation {
+                e.delegate.wait_for(navigation, tx);
+            }
+            Ok((before, waits))
+        })?
+    })
+    .await?
+    .ok_or_else(|| timeout_message(timeout))?;
+    if !waits {
+        let before = Look {
+            state: before,
+            finished: 0,
+        };
+        return settle(
+            || look(webview, label, deadline),
+            before,
+            false,
+            deadline,
+            &ticket,
+        )
+        .await;
+    }
+    let outcome = navigation_done(rx, deadline, ticket).await?;
+    let now = look(webview, label, Instant::now() + LAST_LOOK)
+        .await?
+        .map(|l| l.state);
+    answer(match (outcome, now) {
+        (Navigated::Finished, Some(now)) => Loaded {
+            loading: false,
+            ..now
+        },
+        (Navigated::Failed(error), Some(now)) => Loaded {
+            loading: false,
+            error: Some(error),
+            ..now
+        },
+        (Navigated::TimedOut, now) => Loaded {
+            loading: true,
+            ..now.unwrap_or(before)
+        },
+        (_, None) => return Err(timeout_message(LAST_LOOK)),
+    })
+}
+
+/// One look at `label` for a load op's wait, by `by`; `None` when the main thread had not answered.
+async fn look(webview: &Webview, label: &str, by: Instant) -> Result<Option<Look>, String> {
+    let label = label.to_owned();
+    on_main_by(webview, by, move |_, _| {
+        with_view(&label, |e| Look {
+            state: loaded(&e.view),
+            finished: 0,
+        })
+    })
+    .await
 }
 
 /// The main frame's URL, title and loading state of `view`.
@@ -1062,5 +1207,6 @@ fn loaded(view: &WKWebView) -> Loaded {
             .unwrap_or_default(),
         title: view.title().map(|s| s.to_string()).unwrap_or_default(),
         loading: view.is_loading(),
+        error: None,
     }
 }

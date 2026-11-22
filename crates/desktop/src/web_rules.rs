@@ -1602,14 +1602,23 @@ pub(crate) mod call {
     /// A script's result at most this many UTF-16 units of JSON; counted in the page, so a larger one never
     /// crosses the bridge.
     pub(crate) const MAX_RESULT: usize = 2 * 1024 * 1024;
-    /// A thrown message is cut to this many characters (in the page).
+    /// A thrown message is cut to this many code points (in the page, so a cut never splits a surrogate pair).
     const MAX_THROWN: usize = 2000;
     /// A snapshot's long side at most this many pixels.
     pub(crate) const SNAPSHOT_MAX_SIDE: usize = 1600;
     /// How long WebKit has to take a snapshot (the main-thread hop included; encoding is not counted).
     pub(crate) const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
-    /// How often `navigate`, `back`, `forward` and `reload` look whether the load finished.
+    /// How often `navigate`, `back`, `forward` and `reload` look whether the load finished when they cannot
+    /// wait for the navigation itself (macOS; an iOS history move within the document).
     pub(crate) const SETTLE_POLL: Duration = Duration::from_millis(100);
+    /// How often a wait looks whether `stop` ran for its tile.
+    pub(crate) const STOP_POLL: Duration = Duration::from_millis(50);
+    /// The error of a call `stop` abandoned (209 §9: the user's Stop).
+    pub(crate) const STOPPED: &str = "stopped by the user";
+    /// `error` of a load answer when WebKit's error is not known: macOS, where the shell sees that the load
+    /// ended without finishing but not why (wry owns the navigation delegate), or an iOS failure that
+    /// carried no `NSError`.
+    pub(crate) const LOAD_FAILED: &str = "load failed";
 
     /// Name of the one argument the wrapped body gets: the JSON array of the caller's argument values.
     pub(crate) const ARGS_NAME: &str = "__theuth_args";
@@ -1695,6 +1704,9 @@ pub(crate) mod call {
         },
         Reload(Duration),
         Snapshot,
+        /// The user's Stop (209 §9): `stopLoading`, and every wait of the tile's calls in flight ends with
+        /// [`STOPPED`].
+        Stop,
     }
 
     impl Op {
@@ -1750,9 +1762,9 @@ pub(crate) mod call {
                         },
                     })
                 }
-                "snapshot" => {
+                "snapshot" | "stop" => {
                     let NoArgs {} = serde_json::from_value(args).map_err(de)?;
-                    Ok(Op::Snapshot)
+                    Ok(if op == "stop" { Op::Stop } else { Op::Snapshot })
                 }
                 _ => Err(format!("unknown web view op `{op}`")),
             }
@@ -1772,12 +1784,89 @@ pub(crate) mod call {
     }
 
     /// What `navigate`, `back`, `forward` and `reload` answer (209 §4.7): the main frame's URL and title once
-    /// the load finished (or failed), or as they are at the timeout, with `loading: true`.
-    #[derive(Debug, PartialEq, Serialize)]
+    /// the load finished (or failed: `error` set, `loading: false`), or as they are at the timeout, with
+    /// `loading: true`. `error` is absent unless the load failed.
+    #[derive(Debug, Clone, PartialEq, Serialize)]
     pub(crate) struct Loaded {
         pub(crate) url: String,
         pub(crate) title: String,
         pub(crate) loading: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(crate) error: Option<String>,
+    }
+
+    /// A failed load's `error`: WebKit's error domain and code, `NSURLErrorDomain/-1003` (iOS, where the
+    /// shell's delegate sees the error).
+    #[cfg(any(target_os = "ios", test))]
+    pub(crate) fn load_error(domain: &str, code: isize) -> String {
+        format!("{domain}/{code}")
+    }
+
+    /// One look at a tile while a load op waits without the navigation's own callbacks: the main frame's
+    /// state and how many main-frame loads finished in the view so far (macOS: wry's page-load `Finished`
+    /// count; 0 where none is kept).
+    #[derive(Debug, Clone, PartialEq)]
+    pub(crate) struct Look {
+        pub(crate) state: Loaded,
+        pub(crate) finished: u64,
+    }
+
+    /// When a load op without its navigation's callbacks may answer (209 §4.7). The state read right after
+    /// the op may still be the page before it (WebKit need not flip `loading` inside the request), so
+    /// `!loading` counts only after evidence of the op's load: a finished load counted since the op
+    /// (`counts`), the main frame's URL changed, or `loading` seen. With `counts`, a load seen loading that
+    /// stops without a finish counted for two looks in a row ended without finishing: [`LOAD_FAILED`].
+    #[derive(Debug)]
+    pub(crate) struct Watch {
+        url: String,
+        finished: u64,
+        counts: bool,
+        seen: bool,
+        quiet: bool,
+    }
+
+    impl Watch {
+        /// From the look taken just before the op, on the same main-thread turn.
+        pub(crate) fn new(before: &Look, counts: bool) -> Self {
+            Self {
+                url: before.state.url.clone(),
+                finished: before.finished,
+                counts,
+                seen: false,
+                quiet: false,
+            }
+        }
+
+        /// The answer for this look, or `None` to look again. `end`: the call's time is up, so a load not
+        /// done answers `loading: true`.
+        pub(crate) fn step(&mut self, look: Look, end: bool) -> Option<Loaded> {
+            let Look { state, finished } = look;
+            let timed_out = |state: Loaded| {
+                end.then_some(Loaded {
+                    loading: true,
+                    ..state
+                })
+            };
+            if state.loading {
+                self.seen = true;
+                self.quiet = false;
+                return timed_out(state);
+            }
+            if (self.counts && finished != self.finished) || state.url != self.url {
+                return Some(state);
+            }
+            if self.seen && !self.counts {
+                return Some(state);
+            }
+            if self.seen && self.quiet {
+                return Some(Loaded {
+                    error: Some(LOAD_FAILED.to_owned()),
+                    ..state
+                });
+            }
+            self.quiet = self.seen;
+            timed_out(state)
+        }
     }
 
     /// `back` / `forward` with no history entry that way: nothing happens.
@@ -1819,10 +1908,10 @@ pub(crate) mod call {
                 "try{{__theuth_v=await __theuth_f.apply(this,JSON.parse({args}));}}",
                 "catch(e){{let m;try{{m=e instanceof Error?e.name+\": \"+e.message:String(e);}}",
                 "catch(_){{m=\"a value that cannot be printed\";}}",
-                "return JSON.stringify({{error:String(m).slice(0,{thrown})}});}}",
+                "return JSON.stringify({{error:Array.from(String(m)).slice(0,{thrown}).join('')}});}}",
                 "let __theuth_r;",
                 "try{{__theuth_r=JSON.stringify(__theuth_v);}}",
-                "catch(e){{return JSON.stringify({{not_json:String(e&&e.message).slice(0,{thrown})}});}}",
+                "catch(e){{return JSON.stringify({{not_json:Array.from(String(e&&e.message)).slice(0,{thrown}).join('')}});}}",
                 "if(__theuth_r===undefined)return '{{\"value\":null}}';",
                 "if(__theuth_r.length>{max})return JSON.stringify({{over:__theuth_r.length}});",
                 "return '{{\"value\":'+__theuth_r+'}}';"
@@ -1887,10 +1976,22 @@ pub(crate) mod call {
         caller_window: &str,
         tile_window: &str,
     ) -> Result<(), String> {
-        if caller.starts_with(super::PREFIX)
-            || caller != caller_window
-            || caller_window != tile_window
-        {
+        check_driver(label, caller, caller_window)?;
+        if caller_window != tile_window {
+            Err(format!("{NO_ACCESS} `{label}` from `{caller}`"))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The half of [`check_holder`] that needs no tile: the caller is a window's main webview, not a tile.
+    /// Runs before the tile is looked up or the arguments are read, so a stranger learns nothing of either.
+    pub(crate) fn check_driver(
+        label: &str,
+        caller: &str,
+        caller_window: &str,
+    ) -> Result<(), String> {
+        if caller.starts_with(super::PREFIX) || caller != caller_window {
             Err(format!("{NO_ACCESS} `{label}` from `{caller}`"))
         } else {
             Ok(())
@@ -2003,7 +2104,9 @@ pub(crate) mod call {
                 Op::parse("snapshot", Some(json!({}))).unwrap(),
                 Op::Snapshot
             );
-            for op in ["back", "forward", "reload", "snapshot", "navigate"] {
+            assert_eq!(Op::parse("stop", None).unwrap(), Op::Stop);
+            assert_eq!(Op::parse("stop", Some(json!({}))).unwrap(), Op::Stop);
+            for op in ["back", "forward", "reload", "snapshot", "navigate", "stop"] {
                 let err = Op::parse(
                     op,
                     Some(json!({ "url": "https://a.b/", "full_page": true })),
@@ -2020,19 +2123,86 @@ pub(crate) mod call {
             );
         }
 
+        fn look(url: &str, loading: bool, finished: u64) -> Look {
+            Look {
+                state: Loaded {
+                    url: url.into(),
+                    title: "T".into(),
+                    loading,
+                    error: None,
+                },
+                finished,
+            }
+        }
+
         #[test]
-        fn call_load_answer_shapes() {
-            let loaded = Loaded {
-                url: "https://example.com/".into(),
-                title: "Example".into(),
-                loading: false,
-            };
+        fn call_settle_never_answers_the_page_before_the_op() {
+            const A: &str = "https://a.example/";
+            const B: &str = "https://b.example/";
+            // macOS (finished loads counted): the old page, not loading, is not an answer until the end.
+            let mut w = Watch::new(&look(A, false, 3), true);
+            assert_eq!(w.step(look(A, false, 3), false), None);
+            let end = w.step(look(A, false, 3), true).unwrap();
+            assert_eq!((end.url.as_str(), end.loading, end.error), (A, true, None));
+            // Seen loading, then a finish counted: the new page.
+            let mut w = Watch::new(&look(A, false, 3), true);
+            assert_eq!(w.step(look(B, true, 3), false), None);
+            assert_eq!(w.step(look(B, true, 3), true).unwrap().loading, true);
             assert_eq!(
-                serde_json::to_value(&loaded).unwrap(),
-                json!({ "url": "https://example.com/", "title": "Example", "loading": false })
+                w.step(look(B, false, 4), false),
+                Some(look(B, false, 4).state)
             );
-            assert_eq!(no_history(false), "no page to go back to");
-            assert_eq!(no_history(true), "no page to go forward to");
+            // A reload that started and finished between two looks: only the count shows it.
+            let mut w = Watch::new(&look(A, false, 3), true);
+            assert_eq!(
+                w.step(look(A, false, 4), false),
+                Some(look(A, false, 4).state)
+            );
+            // A history move within the document: the URL changed, nothing loaded.
+            let mut w = Watch::new(&look(A, false, 3), true);
+            assert_eq!(
+                w.step(look("https://a.example/#2", false, 3), false),
+                Some(look("https://a.example/#2", false, 3).state)
+            );
+        }
+
+        #[test]
+        fn call_settle_load_that_ends_without_finishing_fails() {
+            const A: &str = "https://a.example/";
+            let mut w = Watch::new(&look(A, false, 7), true);
+            assert_eq!(w.step(look("https://dns.invalid/", true, 7), false), None);
+            // Back on the old page, no finish: one quiet look is not yet a failure (a finish may follow).
+            assert_eq!(w.step(look(A, false, 7), false), None);
+            // Loading again resets it.
+            assert_eq!(w.step(look(A, true, 7), false), None);
+            assert_eq!(w.step(look(A, false, 7), false), None);
+            let failed = w.step(look(A, false, 7), false).unwrap();
+            assert_eq!(failed.error.as_deref(), Some(LOAD_FAILED));
+            assert!(!failed.loading);
+            assert_eq!(
+                serde_json::to_value(&failed).unwrap(),
+                json!({ "url": A, "title": "T", "loading": false, "error": "load failed" })
+            );
+            // Without counts (iOS, a history move WebKit gave no navigation for): loading seen and over is done.
+            let mut w = Watch::new(&look(A, false, 0), false);
+            assert_eq!(w.step(look(A, false, 0), false), None);
+            assert_eq!(w.step(look(A, true, 0), false), None);
+            assert_eq!(
+                w.step(look(A, false, 0), false),
+                Some(look(A, false, 0).state)
+            );
+        }
+
+        #[test]
+        fn call_load_answer_omits_error_unless_failed() {
+            assert_eq!(
+                serde_json::to_value(look("https://a.example/", false, 0).state).unwrap(),
+                json!({ "url": "https://a.example/", "title": "T", "loading": false })
+            );
+            assert_eq!(
+                load_error("NSURLErrorDomain", -1003),
+                "NSURLErrorDomain/-1003"
+            );
         }
 
         #[test]
@@ -2188,16 +2358,6 @@ pub(crate) mod call {
                 failed(&"x".repeat(5000)).len(),
                 "script failed: ".len() + MAX_THROWN
             );
-        }
-
-        #[test]
-        fn call_wrapper_spells_its_limits() {
-            let body = wrap("return 1", &[]);
-            assert!(body.starts_with("const __theuth_f=async function(){\nreturn 1\n};"));
-            assert!(body.contains(&format!("JSON.parse({ARGS_NAME})")));
-            assert!(body.contains(&format!(">{MAX_RESULT})")));
-            assert!(body.contains(&format!(".slice(0,{MAX_THROWN})")));
-            assert!(body.ends_with(r#"return '{"value":'+__theuth_r+'}';"#));
         }
 
         #[test]

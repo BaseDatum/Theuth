@@ -105,6 +105,21 @@ pub(crate) async fn wait<T: Send + 'static>(rx: Receiver<Result<T, String>>) -> 
         .map_err(|e| e.to_string())?
 }
 
+/// A main-thread reply until `deadline` (a tile call's own budget, 209 §4.7), off the async workers; `None`
+/// when the time ran out first.
+pub(crate) async fn wait_by<T: Send + 'static>(
+    rx: Receiver<Result<T, String>>,
+    deadline: Instant,
+) -> Result<Option<T>, String> {
+    tauri::async_runtime::spawn_blocking(move || match recv_by(&rx, deadline) {
+        Ok(reply) => reply.map(Some),
+        Err(Late::Timeout(_)) => Ok(None),
+        Err(Late::Dropped) => Err(DROPPED.to_owned()),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Whether this system has named data stores, so the tiles use [`DATA_STORE`]: macOS 14 / iOS 17, as wry
 /// decides it (`wry-0.57.1/src/wkwebview/mod.rs:264-268`).
 fn named_stores() -> bool {
