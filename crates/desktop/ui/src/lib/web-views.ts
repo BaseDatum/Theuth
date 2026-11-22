@@ -4,7 +4,7 @@
 import { create } from 'zustand'
 import { openExternal } from '@/lib/platform'
 import * as native from '@/lib/web-view-native'
-import { ready, supports } from '@/rpc/discovery'
+import { supports } from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'
 
 export type WebView = {
@@ -128,10 +128,10 @@ export function stateForwarder(send: (r: WebViewStateReport) => boolean) {
   }
 }
 
-/** `web_view_state` to the connected engine when it has the method; `false` when not sent. */
+/** `web_view_state` to the connected engine when it has the method (never a legacy engine); `false` when not sent. */
 function sendState(r: WebViewStateReport): boolean {
   const { api, state, discovery } = useConnection.getState()
-  if (!api || state !== 'open' || !ready(discovery) || (discovery.phase !== 'legacy' && !supports(discovery, { methods: ['web_view_state'] }))) return false
+  if (!api || state !== 'open' || discovery.phase === 'legacy' || !supports(discovery, { methods: ['web_view_state'] })) return false
   void api.web_view_state(r.session, r.view, r.url, r.title, r.loading).catch(() => undefined)
   return true
 }

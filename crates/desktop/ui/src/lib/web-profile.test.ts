@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { Cookie, CookieChange, OriginStorage } from '@/lib/web-profile-wire'
 import { RpcError } from '@/rpc/client'
-import { PUSH_DEBOUNCE_MS, STORAGE_MAX_BYTES, cookieKey, diffCookies, refusal, startWebProfileSync } from './web-profile'
+import { OFF_REPROBE_MS, PUSH_DEBOUNCE_MS, RETRY_MS, STORAGE_MAX_BYTES, cookieKey, diffCookies, refusal, startWebProfileSync } from './web-profile'
 
 /** One `web_profile_push` as the engine got it (its positional params by name). */
 type Pushed = { device: string; epoch: number; changes: CookieChange[]; storage: OriginStorage[] }
@@ -41,15 +41,14 @@ vi.mock('@/lib/web-view-native', () => ({
 }))
 const engine = vi.hoisted(() => {
   const push = vi.fn()
-  return { pushes: [] as Pushed[], push, api: { web_profile_push: push }, active: 'e1', supports: true }
+  return { pushes: [] as Pushed[], push, api: { web_profile_push: push } as object, discovery: {} as object, active: 'e1', supports: true }
 })
 vi.mock('@/store/connection', () => ({
-  useConnection: { getState: () => ({ api: engine.api, state: 'open', discovery: {} }) },
+  useConnection: { getState: () => ({ api: engine.api, state: 'open', discovery: engine.discovery }) },
 }))
 vi.mock('@/rpc/discovery', async (original) => ({ ...(await original<object>()), ready: () => true, supports: () => engine.supports }))
 vi.mock('@/link/engines', () => ({ useEngines: { getState: () => ({ active: engine.active }) } }))
 vi.mock('@/lib/platform', () => ({ deviceName: () => 'iPad' }))
-vi.mock('@/lib/web-views', () => ({ useWebViews: { getState: () => ({ views: { a1: {}, b2: {} } }) } }))
 
 const cookie = (name: string, value: string, over: Partial<Cookie> = {}): Cookie => ({
   name,
@@ -66,12 +65,14 @@ const cookie = (name: string, value: string, over: Partial<Cookie> = {}): Cookie
 })
 
 const local = new Map<string, string>()
+const leave = new Map<string, () => void>()
 let stop: () => void = () => {}
 
 beforeEach(() => {
   shell.has = true
   shell.store = []
   shell.storage = {}
+  shell.changed = null
   shell.readProfile.mockReset().mockImplementation(async () => shell.store.map((c) => ({ ...c })))
   shell.captureStorage.mockReset().mockImplementation(async (id: string) => {
     const s = shell.storage[id]
@@ -84,15 +85,20 @@ beforeEach(() => {
   engine.pushes = []
   engine.active = 'e1'
   engine.supports = true
+  engine.api = { web_profile_push: engine.push }
+  engine.discovery = {}
   engine.push.mockReset().mockImplementation(async (device: string, epoch: number, changes: CookieChange[], storage: OriginStorage[]) => {
     engine.pushes.push(structuredClone({ device, epoch, changes, storage }))
-    return { applied: changes.length, sites: [], epoch }
+    return { applied: changes.length, sites: [], epoch: Math.max(epoch, 1), profile: 'shared' }
   })
   local.clear()
+  leave.clear()
   vi.stubGlobal('localStorage', {
     getItem: (k: string) => local.get(k) ?? null,
     setItem: (k: string, v: string) => void local.set(k, v),
   })
+  vi.stubGlobal('addEventListener', (type: string, cb: () => void) => leave.set(type, cb))
+  vi.stubGlobal('removeEventListener', (type: string) => leave.delete(type))
 })
 afterEach(() => {
   stop()
@@ -110,9 +116,12 @@ async function changed(): Promise<void> {
   await vi.waitFor(() => expect(engine.push.mock.calls.length + shell.readProfile.mock.calls.length).toBeGreaterThan(n))
   await settle()
 }
+/** Start the sync and let its seed read land. */
 const started = async () => {
   stop = startWebProfileSync()
   await vi.waitFor(() => expect(shell.changed).not.toBeNull())
+  await vi.waitFor(() => expect(shell.readProfile).toHaveBeenCalled())
+  await settle()
 }
 
 test('the diff keys cookies by (name, domain, path): new and changed ones are sets, gone ones removes', () => {
@@ -131,28 +140,46 @@ test('the diff keys cookies by (name, domain, path): new and changed ones are se
   expect(diffCookies(last, [a, { ...b, http_only: false }])).toHaveLength(1)
 })
 
-test('a store change pushes the delta against what was last pushed, with each live tile\'s storage', async () => {
+test('the store at start is the baseline and is not pushed; only later changes are, against what was last pushed', async () => {
+  shell.store = [cookie('__Host-sid', SECRET), cookie('old', 'x')]
   await started()
-  shell.store = [cookie('__Host-sid', SECRET), cookie('theme', 'dark', { http_only: false })]
-  shell.storage.a1 = { origin: 'https://app.example.com', local_storage: [['token', STORE_SECRET]] }
+  expect(engine.push).not.toHaveBeenCalled()
+  // A change event without a change: nothing to push.
+  await changed()
+  expect(engine.push).not.toHaveBeenCalled()
+
+  shell.store = [cookie('__Host-sid', `${SECRET}-2`), cookie('old', 'x'), cookie('theme', 'dark', { http_only: false })]
   await changed()
   expect(engine.pushes).toHaveLength(1)
-  expect(engine.pushes[0]).toMatchObject({ device: 'iPad', epoch: 0, storage: [{ origin: 'https://app.example.com', local_storage: [['token', STORE_SECRET]] }] })
-  expect(engine.pushes[0]!.changes.map((c) => c.op)).toEqual(['set', 'set'])
-
-  // One cookie refreshed, one gone; the storage is unchanged and not sent again.
-  shell.store = [cookie('__Host-sid', `${SECRET}-2`)]
-  await changed()
-  expect(engine.pushes).toHaveLength(2)
-  expect(engine.pushes[1]!.changes).toEqual([
+  expect(engine.pushes[0]).toMatchObject({ device: 'iPad', epoch: 0, storage: [] })
+  expect(engine.pushes[0]!.changes).toEqual([
     { op: 'set', cookie: cookie('__Host-sid', `${SECRET}-2`) },
-    { op: 'remove', name: 'theme', domain: 'app.example.com', path: '/' },
+    { op: 'set', cookie: cookie('theme', 'dark', { http_only: false }) },
   ])
-  expect(engine.pushes[1]!.storage).toEqual([])
 
-  // Nothing changed: no push.
+  shell.store = [cookie('__Host-sid', `${SECRET}-2`), cookie('theme', 'dark', { http_only: false })]
   await changed()
   expect(engine.pushes).toHaveLength(2)
+  expect(engine.pushes[1]!.changes).toEqual([{ op: 'remove', name: 'old', domain: 'app.example.com', path: '/' }])
+  expect(local.get('theuth.web-profile.epoch.e1')).toBe('1')
+  // A cookie change captures no tile storage (only load-finished and close do).
+  expect(shell.captureStorage).not.toHaveBeenCalled()
+})
+
+test('an engine switch re-seeds: the store as it is then is not pushed to the new engine', async () => {
+  await started()
+  shell.store = [cookie('sid', SECRET)]
+  await changed()
+  expect(engine.pushes).toHaveLength(1)
+
+  engine.active = 'e2'
+  shell.store = [cookie('sid', SECRET), cookie('more', 'y')]
+  await changed()
+  expect(engine.pushes).toHaveLength(1)
+  shell.store = [cookie('sid', SECRET), cookie('more', 'y'), cookie('new', 'z')]
+  await changed()
+  expect(engine.pushes).toHaveLength(2)
+  expect(engine.pushes[1]!.changes).toEqual([{ op: 'set', cookie: cookie('new', 'z') }])
 })
 
 test('storage captured on load-finished and before close is pushed once, PUSH_DEBOUNCE_MS after the last capture', async () => {
@@ -176,24 +203,89 @@ test('storage captured on load-finished and before close is pushed once, PUSH_DE
   expect(shell.captureStorage).toHaveBeenCalledTimes(2)
 })
 
-test('without the native layer nothing listens and nothing is sent', async () => {
-  shell.has = false
-  stop = startWebProfileSync()
-  await settle()
-  expect(shell.changed).toBeNull()
-  expect(shell.state).toBeNull()
-  expect(shell.beforeClose).toBeNull()
-  expect(shell.readProfile).not.toHaveBeenCalled()
-  expect(engine.push).not.toHaveBeenCalled()
+test('what is still captured when the page goes away is pushed at once, without waiting for the debounce', async () => {
+  await started()
+  shell.beforeClose!({ origin: 'https://c.example', local_storage: [['k', 'v3']] })
+  leave.get('pagehide')!()
+  leave.get('beforeunload')!()
+  expect(engine.push).toHaveBeenCalledTimes(1)
+  expect(engine.push.mock.calls[0]![3]).toMatchObject([{ origin: 'https://c.example', local_storage: [['k', 'v3']] }])
+  stop()
+  expect(leave.size).toBe(0)
 })
 
-test('an engine without web_profile_push gets nothing; once it answers `profile off` the store is not even read', async () => {
+test('one push in flight: changes arriving meanwhile go in exactly one follow-up push, in order, nothing dropped', async () => {
+  await started()
+  const first = Promise.withResolvers<{ applied: number; sites: string[]; epoch: number }>()
+  engine.push.mockImplementationOnce(async (device: string, epoch: number, changes: CookieChange[], storage: OriginStorage[]) => {
+    engine.pushes.push(structuredClone({ device, epoch, changes, storage }))
+    return first.promise
+  })
+  shell.store = [cookie('a', '1')]
+  await changed()
+  expect(engine.push).toHaveBeenCalledTimes(1)
+
+  // While the first push is out: two store changes and a closed tile's storage.
+  shell.store = [cookie('a', '2')]
+  shell.changed!()
+  shell.store = [cookie('a', '2'), cookie('b', '1')]
+  shell.changed!()
+  shell.beforeClose!({ origin: 'https://c.example', local_storage: [['k', 'v']] })
+  await settle()
+  expect(engine.push).toHaveBeenCalledTimes(1)
+
+  first.resolve({ applied: 1, sites: [], epoch: 1 })
+  await vi.waitFor(() => expect(engine.push).toHaveBeenCalledTimes(2))
+  await settle()
+  expect(engine.push).toHaveBeenCalledTimes(2)
+  expect(engine.pushes[0]!.changes).toEqual([{ op: 'set', cookie: cookie('a', '1') }])
+  expect(engine.pushes[1]!.changes).toEqual([
+    { op: 'set', cookie: cookie('a', '2') },
+    { op: 'set', cookie: cookie('b', '1') },
+  ])
+  expect(engine.pushes[1]!.storage.map((s) => s.origin)).toEqual(['https://c.example'])
+})
+
+test('a failed read keeps the delta and is retried after RETRY_MS, then with a growing backoff', async () => {
+  await started()
+  vi.useFakeTimers()
+  shell.store = [cookie('sid', SECRET)]
+  shell.readProfile.mockRejectedValueOnce(new Error('web_profile_read: store unavailable'))
+  shell.readProfile.mockRejectedValueOnce(new Error('web_profile_read: store unavailable'))
+  shell.changed!()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(engine.push).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(RETRY_MS)
+  expect(shell.readProfile).toHaveBeenCalledTimes(3)
+  expect(engine.push).not.toHaveBeenCalled()
+  // The second retry waits twice as long.
+  await vi.advanceTimersByTimeAsync(RETRY_MS * 2 - 1)
+  expect(engine.push).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1)
+  expect(engine.pushes).toHaveLength(1)
+  expect(engine.pushes[0]!.changes).toEqual([{ op: 'set', cookie: cookie('sid', SECRET) }])
+})
+
+test('a failed seed is retried before anything is pushed, and its store is still not pushed', async () => {
+  shell.store = [cookie('old', 'x')]
+  shell.readProfile.mockRejectedValueOnce(new Error('web_profile_read: store unavailable'))
+  await started()
+  shell.store = [cookie('old', 'x'), cookie('new', 'y')]
+  await changed()
+  // The seed read the store with `new` already in it: nothing is pushed.
+  expect(engine.push).not.toHaveBeenCalled()
+  shell.store = [cookie('new', 'y')]
+  await changed()
+  expect(engine.pushes[0]!.changes).toEqual([{ op: 'remove', name: 'old', domain: 'app.example.com', path: '/' }])
+})
+
+test('an engine without web_profile_push gets nothing; once it answers `browser profile is off` the store is not even read', async () => {
   engine.supports = false
   await started()
   shell.store = [cookie('sid', SECRET)]
   shell.changed!()
   await settle()
-  expect(shell.readProfile).not.toHaveBeenCalled()
+  expect(shell.readProfile).toHaveBeenCalledTimes(1)
   expect(engine.push).not.toHaveBeenCalled()
 
   engine.supports = true
@@ -203,13 +295,51 @@ test('an engine without web_profile_push gets nothing; once it answers `profile 
   shell.store = [cookie('sid', `${SECRET}-2`)]
   shell.changed!()
   await settle()
-  expect(shell.readProfile).toHaveBeenCalledTimes(1)
+  expect(shell.readProfile).toHaveBeenCalledTimes(2)
   expect(engine.push).toHaveBeenCalledTimes(1)
+
+  // Only the exact wording means off; any other error is a failure, retried.
+  expect(refusal(new RpcError(-32000, 'browser.profile is off'))).toEqual({ kind: 'off' })
+  expect(refusal(new RpcError(-32000, 'browser profile unavailable: browser.profile is off'))).toEqual({ kind: 'off' })
+  expect(refusal(new RpcError(-32000, 'the profile is off by one'))).toBeNull()
+  expect(refusal(new RpcError(-32000, 'browser profile unavailable: store locked'))).toBeNull()
+})
+
+test('`profile: "off"` in the result stops the sync for that connection until it changes or OFF_REPROBE_MS passed', async () => {
+  await started()
+  engine.push.mockResolvedValueOnce({ applied: 0, sites: [], epoch: 1, profile: 'off' })
+  shell.store = [cookie('a', '1')]
+  await changed()
+  expect(engine.push).toHaveBeenCalledTimes(1)
+  expect(local.get('theuth.web-profile.epoch.e1')).toBeUndefined()
+
+  shell.store = [cookie('a', '1'), cookie('b', '1')]
+  shell.changed!()
+  await settle()
+  expect(engine.push).toHaveBeenCalledTimes(1)
+
+  // A new connection (the user turned the profile on, the engine restarted): the next change pushes everything kept.
+  engine.api = { web_profile_push: engine.push }
+  await changed()
+  expect(engine.push).toHaveBeenCalledTimes(2)
+  expect(engine.pushes[0]!.changes.map((c) => c.op === 'set' && c.cookie.name)).toEqual(['a', 'b'])
+
+  // Off again on this connection: a real change after OFF_REPROBE_MS probes it again.
+  engine.push.mockResolvedValueOnce({ applied: 0, sites: [], epoch: 1, profile: 'off' })
+  shell.store = [cookie('c', '1')]
+  await changed()
+  expect(engine.push).toHaveBeenCalledTimes(3)
+  vi.useFakeTimers({ now: Date.now() + OFF_REPROBE_MS })
+  shell.changed!()
+  await vi.advanceTimersByTimeAsync(0)
+  await settle()
+  expect(engine.push).toHaveBeenCalledTimes(4)
 })
 
 test('stale-epoch: a device that pushed under an older epoch clears its store; a new one adopts the epoch', async () => {
   expect(refusal(new RpcError(-32000, 'stale-epoch', { epoch: 4 }))).toEqual({ kind: 'stale-epoch', epoch: 4 })
   expect(refusal(new RpcError(-32000, 'stale-epoch: 7'))).toEqual({ kind: 'stale-epoch', epoch: 7 })
+  expect(refusal(new RpcError(-32000, 'stale-epoch'))).toBeNull()
   expect(refusal(new RpcError(-32000, 'boom'))).toBeNull()
 
   await started()
@@ -228,13 +358,53 @@ test('stale-epoch: a device that pushed under an older epoch clears its store; a
   await vi.waitFor(() => expect(shell.clearProfile).toHaveBeenCalledTimes(1))
   expect(engine.pushes).toHaveLength(1)
   expect(local.get('theuth.web-profile.epoch.e1')).toBe('3')
+  await changed()
+  expect(engine.pushes).toHaveLength(1)
+})
+
+test('unknown-epoch: the engine\'s epoch is adopted and the same delta goes again, the store kept', async () => {
+  expect(refusal(new RpcError(-32000, 'unknown-epoch', { epoch: 9 }))).toEqual({ kind: 'unknown-epoch', epoch: 9 })
+  local.set('theuth.web-profile.epoch.e1', '40')
+  await started()
+  shell.store = [cookie('sid', SECRET)]
+  engine.push.mockRejectedValueOnce(new RpcError(-32000, 'unknown-epoch', { epoch: 9 }))
+  await changed()
+  await vi.waitFor(() => expect(engine.pushes).toHaveLength(1))
+  expect(engine.pushes[0]).toMatchObject({ epoch: 9, changes: [{ op: 'set', cookie: { name: 'sid' } }] })
+  expect(shell.clearProfile).not.toHaveBeenCalled()
+})
+
+test('a shell that cannot clear keeps its epoch and pushes nothing more to that connection', async () => {
+  local.set('theuth.web-profile.epoch.e1', '1')
+  await started()
+  shell.clearProfile.mockRejectedValue('unknown command web_profile_clear')
+  shell.store = [cookie('sid', SECRET)]
+  engine.push.mockRejectedValueOnce(new RpcError(-32000, 'stale-epoch', { epoch: 5 }))
+  await changed()
+  expect(shell.clearProfile).toHaveBeenCalledTimes(1)
+  expect(local.get('theuth.web-profile.epoch.e1')).toBe('1')
+
+  shell.store = [cookie('sid', SECRET), cookie('more', 'x')]
+  shell.changed!()
+  shell.beforeClose!({ origin: 'https://c.example', local_storage: [['k', 'v']] })
+  leave.get('pagehide')!()
+  await settle()
+  expect(engine.push).toHaveBeenCalledTimes(1)
+
+  // A new connection tries again: refused again, the clear is tried again, still nothing of the store is pushed.
+  engine.api = { web_profile_push: engine.push }
+  engine.push.mockRejectedValueOnce(new RpcError(-32000, 'stale-epoch', { epoch: 5 }))
+  await changed()
+  expect(engine.push).toHaveBeenCalledTimes(2)
+  expect(engine.pushes).toHaveLength(0)
+  expect(shell.clearProfile).toHaveBeenCalledTimes(2)
 })
 
 test('cookie and storage values never reach the console, on any failure path', async () => {
   const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}))
   await started()
   shell.store = [cookie('sid', SECRET)]
-  shell.storage.a1 = { origin: 'https://app.example.com', local_storage: [['t', STORE_SECRET]] }
+  shell.beforeClose!({ origin: 'https://app.example.com', local_storage: [['t', STORE_SECRET]] })
   engine.push.mockRejectedValueOnce(new RpcError(-32603, `internal: ${SECRET}`))
   await changed()
   shell.readProfile.mockRejectedValueOnce(new Error('web_profile_read: store unavailable'))
@@ -242,6 +412,8 @@ test('cookie and storage values never reach the console, on any failure path', a
   engine.push.mockRejectedValueOnce(new RpcError(-32000, 'stale-epoch', { epoch: 5 }))
   local.set('theuth.web-profile.epoch.e1', '1')
   shell.clearProfile.mockRejectedValueOnce('unknown command web_profile_clear')
+  shell.store = [cookie('sid', `${SECRET}-2`)]
+  engine.api = { web_profile_push: engine.push }
   await changed()
   await settle()
   const logged = JSON.stringify(spies.flatMap((s) => s.mock.calls))
