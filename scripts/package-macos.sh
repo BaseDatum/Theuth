@@ -4,7 +4,7 @@
 #   1. cargo build --release -p theuth  (daemon sidecar, host arch)
 #      + crates/app-parser-stub: cargo build → theuth-app-parser compatibility stub (46 §2.1; the parser
 #        runs in-process, apps-inproc-as-built-P1.md; scripts/app-parser-env.sh); the documents helper is
-#        compiled into `t` (crates/document-js)
+#        compiled into `t` (crates/js-runtime)
 #   2. check_sidecar (LC_RPATH /usr/lib/swift + `t --version`; 27 Revision 2026-10-07) and
 #      stage sidecar as binaries/t-<host-triple>
 #   3. cargo tauri build --config tauri.bundle.conf.json  (app bundle only)

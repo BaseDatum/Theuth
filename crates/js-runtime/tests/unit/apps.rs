@@ -7,12 +7,12 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::{APPS, BundleJs, BundleThread, Error, Limits, MERMAID, Reply};
+use crate::{APPS, Error, JsRuntime, JsThread, Limits, MERMAID, Reply};
 
 const PROTOTYPE: &str = "root = Stack([title, status, controls])\n$stage = \"idle\"\ntitle = TextContent(\"## Drill\")\nstatus = TextContent(\"Stage: \" + $stage)\ncontrols = Stack([begin, reset], \"row\")\nbegin = Button(\"Begin\", Action([@Set($stage, \"cutover\")]))\nreset = Button(\"Reset\", Action([@Reset($stage)]))";
 
 /// A short request deadline, so the runaway tests end quickly. Building a runtime (bundle load) is not under
-/// it (`BundleJs::new` loads under at least `LOAD_DEADLINE`), so a slow debug build under load only stretches
+/// it (`JsRuntime::new` loads under at least `LOAD_DEADLINE`), so a slow debug build under load only stretches
 /// the normal requests, which take milliseconds.
 fn limits() -> Limits {
     Limits {
@@ -21,8 +21,8 @@ fn limits() -> Limits {
     }
 }
 
-fn thread(limits: Limits) -> BundleThread {
-    BundleThread::new(&APPS, limits, CancellationToken::new())
+fn thread(limits: Limits) -> JsThread {
+    JsThread::new(&APPS, limits, CancellationToken::new())
 }
 
 fn parse(line: &str) -> Value {
@@ -42,7 +42,7 @@ fn ok(reply: &Reply, id: &str) -> Value {
 }
 
 /// check → merge_check on the prototype; panics unless both validate.
-async fn round_trip(t: &BundleThread, tag: &str) {
+async fn round_trip(t: &JsThread, tag: &str) {
     let c = t
         .request(check_line(&format!("{tag}-c"), PROTOTYPE))
         .await
@@ -77,7 +77,7 @@ async fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
 
 #[test]
 fn bundle_js_serves_requests_directly() {
-    let mut js = BundleJs::new(&APPS, Limits::default()).expect("runtime");
+    let mut js = JsRuntime::new(&APPS, Limits::default()).expect("runtime");
     let version = js.version().expect("version");
     assert!(version.starts_with("theuth-app-parser "), "{version}");
     assert_eq!(version.len(), "theuth-app-parser ".len() + 64);
@@ -256,10 +256,10 @@ async fn panic_in_an_op_is_contained() {
     let t = thread(limits());
     round_trip(&t, "before").await;
     let r = t
-        .eval_raw("Deno.core.ops.op_appjs_test_panic(); for (;;) {}".into())
+        .eval_raw("Deno.core.ops.op_jsrt_test_panic(); for (;;) {}".into())
         .await;
     assert!(
-        matches!(&r, Err(Error::Crashed(m)) if m.contains("panic inside an app-js op")),
+        matches!(&r, Err(Error::Crashed(m)) if m.contains("panic inside a js-runtime op")),
         "{r:?}"
     );
     wait_until("rebuild", || t.generation() == 2).await;
@@ -311,10 +311,10 @@ async fn oversized_line_is_rejected_before_js() {
     );
     assert_eq!(t.generation(), 1);
     round_trip(&t, "b").await;
-    // The runtime enforces the same cap when called directly. `BundleJs` drives its own tokio runtime, so it
+    // The runtime enforces the same cap when called directly. `JsRuntime` drives its own tokio runtime, so it
     // runs off this async test's runtime.
     let direct = std::thread::spawn(|| {
-        let mut js = BundleJs::new(
+        let mut js = JsRuntime::new(
             &APPS,
             Limits {
                 max_line: 16,
@@ -356,7 +356,7 @@ async fn dropping_the_last_handle_ends_the_thread() {
 #[tokio::test]
 async fn cancelling_the_token_ends_the_thread() {
     let token = CancellationToken::new();
-    let t = BundleThread::new(&APPS, limits(), token.clone());
+    let t = JsThread::new(&APPS, limits(), token.clone());
     round_trip(&t, "d").await;
     token.cancel();
     wait_until("thread exit", || !t.is_running()).await;
@@ -567,7 +567,7 @@ fn mermaid_line(id: &str, source: &str) -> String {
 /// The mermaid bundle answers through a promise; the runtime drives the event loop until the reply op fires.
 #[tokio::test]
 async fn mermaid_bundle_answers_asynchronously_on_its_own_lazy_thread() {
-    let m = BundleThread::new(
+    let m = JsThread::new(
         &MERMAID,
         Limits {
             deadline: Duration::from_secs(5),
@@ -596,7 +596,7 @@ async fn mermaid_bundle_answers_asynchronously_on_its_own_lazy_thread() {
     assert_eq!(bad["ok"], false);
     assert_eq!(bad["errors"][0]["line"], 3, "{bad}");
     let v = std::thread::spawn(|| {
-        BundleJs::new(&MERMAID, Limits::default())
+        JsRuntime::new(&MERMAID, Limits::default())
             .and_then(|mut js| js.version())
             .expect("version")
     })

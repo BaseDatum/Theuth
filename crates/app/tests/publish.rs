@@ -1,7 +1,7 @@
 //! Publish → open → call, end to end through the real tool registry and
 //! artifact store, with a canned parser verdict (`helper::install_canned`;
 //! the real validator's contract is exercised in `packages/apps` and in
-//! `app-js`/`helper.rs` tests). One test: the kameo registry names and the
+//! `js-runtime`/`helper.rs` tests). One test: the kameo registry names and the
 //! canned responder are process-global.
 
 use std::borrow::Cow;

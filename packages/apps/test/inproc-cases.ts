@@ -2,7 +2,7 @@
  * Request cases for the in-process bundle: ported from check.test.ts (same sources, tools and bases) plus the
  * scripts/apps/fixtures.json program and its two edit patches, plus protocol-error lines. Used by
  * inproc.test.ts (bundle in a bare node:vm context vs direct `call()`) and by scripts/record-inproc-golden.ts
- * (crates/app-js/tests/golden.json, replayed in deno_core by the Rust tests).
+ * (crates/js-runtime/tests/apps_golden.json, replayed in deno_core by the Rust tests).
  */
 import { LIMITS } from "@openuidev/lang-core";
 import fixtures from "../../../scripts/apps/fixtures.json";

@@ -1,6 +1,6 @@
 /**
  * Record the reference answers (jsdom-check.ts: jsdom + mermaid.parse, as the former stdio
- * helper runs it) for the corpus into golden.json:
+ * helper runs it) for the corpus into crates/js-runtime/tests/mermaid_golden.json:
  *
  *   bun run test-inproc/mermaid-corpus/reference.ts
  */
@@ -15,7 +15,7 @@ const out: Record<string, { type: string; source: string; reply: Answer }> = {};
 for (const c of cases) {
   out[c.name] = { type: c.type, source: c.source, reply: await checkMermaid(c.source) };
 }
-const path = join(import.meta.dir, "golden.json");
+const path = join(import.meta.dir, "..", "..", "..", "..", "crates", "js-runtime", "tests", "mermaid_golden.json");
 await Bun.write(path, `${JSON.stringify(out, null, 1)}\n`);
 const bad = Object.entries(out).filter(([n, v]) => n.endsWith("/valid") && !v.reply.ok);
 console.error(`${cases.length} cases → ${path}`);

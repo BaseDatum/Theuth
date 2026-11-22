@@ -296,7 +296,7 @@ async fn main() -> anyhow::Result<()> {
     s.step(
         "app tool registered",
         app_tool,
-        serde_json::json!({ "parser": "in-process (app-js)", "library_hash": app::hash() }),
+        serde_json::json!({ "parser": "in-process (js-runtime)", "library_hash": app::hash() }),
     );
     let apps = ActorRef::<Apps>::lookup(app::APP_ACTOR)?
         .ok_or_else(|| anyhow::anyhow!("app actor not registered (app disabled?)"))?;

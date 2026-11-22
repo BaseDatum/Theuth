@@ -1,8 +1,8 @@
 //! Regression coverage without the old binary: the synthetic parity corpus replayed in-process against
 //! transcripts recorded from the shipped jsdom helper (`bun run scripts/golden-inproc.ts` in
-//! packages/documents writes tests/golden.json). Keep `run_script` in step with that script's `script`.
+//! packages/documents writes tests/documents_golden.json). Keep `run_script` in step with that script's `script`.
 
-use document_js::{DocumentsJs, Limits};
+use js_runtime::{DOCUMENTS, JsRuntime};
 use serde_json::{Map, Value, json};
 
 const EMPTY_STATE: &str = "AAA=";
@@ -62,7 +62,7 @@ fn normalise(s: &str, ids: &mut Vec<String>) -> String {
 }
 
 struct Run<'a> {
-    js: &'a mut DocumentsJs,
+    js: &'a mut JsRuntime,
     id: u64,
     ids: Vec<String>,
     transcript: Vec<String>,
@@ -93,7 +93,7 @@ impl Run<'_> {
     }
 }
 
-fn run_script(js: &mut DocumentsJs, text: &str, frontmatter: bool) -> Vec<String> {
+fn run_script(js: &mut JsRuntime, text: &str, frontmatter: bool) -> Vec<String> {
     let mut run = Run {
         js,
         id: 0,
@@ -138,10 +138,11 @@ fn run_script(js: &mut DocumentsJs, text: &str, frontmatter: bool) -> Vec<String
 
 #[test]
 fn golden_transcripts_match_the_jsdom_helper() {
-    let golden: Value = serde_json::from_str(include_str!("golden.json")).expect("golden.json");
+    let golden: Value =
+        serde_json::from_str(include_str!("documents_golden.json")).expect("golden.json");
     let cases = golden["cases"].as_array().expect("cases");
     assert!(cases.len() >= 10, "{} cases", cases.len());
-    let mut js = DocumentsJs::new(Limits::default()).expect("runtime");
+    let mut js = JsRuntime::new(&DOCUMENTS, DOCUMENTS.limits).expect("runtime");
     let mut failures = Vec::new();
     for case in cases {
         let name = case["name"].as_str().expect("name");

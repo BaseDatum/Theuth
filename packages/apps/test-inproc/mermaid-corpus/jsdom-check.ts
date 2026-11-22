@@ -1,7 +1,7 @@
 /**
  * The former stdio helper's mermaid check (jsdom window on `globalThis`, then `mermaid.parse`), kept ONLY as the
- * reference that `reference.ts` records golden.json from. Production runs the DOM-free bundle
- * (`src/inproc-mermaid.ts` in crates/app-js); both format errors with `src/mermaid-core.ts`.
+ * reference that `reference.ts` records crates/js-runtime/tests/mermaid_golden.json from. Production runs the DOM-free bundle
+ * (`src/inproc-mermaid.ts` in crates/js-runtime); both format errors with `src/mermaid-core.ts`.
  * Only `mermaid.parse` runs: nothing is rendered, no SVG, no user content reaches a DOM.
  */
 import { answer, MERMAID_CONFIG, type MermaidAnswer, type MermaidParser } from "../../src/mermaid-core.ts";

@@ -1,8 +1,8 @@
 //! The headless parser (46 §2.1), in-process: two bundles in two deno_core
-//! isolates, each on its own lazily started thread ([`app_js::BundleThread`]):
+//! isolates, each on its own lazily started thread ([`js_runtime::JsThread`]):
 //! the OpenUI check/merge validator (`packages/apps/src/inproc.ts`,
-//! [`app_js::APPS`]) and the parse-only mermaid check
-//! (`packages/apps/src/inproc-mermaid.ts`, [`app_js::MERMAID`]); no
+//! [`js_runtime::APPS`]) and the parse-only mermaid check
+//! (`packages/apps/src/inproc-mermaid.ts`, [`js_runtime::MERMAID`]); no
 //! executable, no child process (apps-inproc-as-built-P1.md). This side owns
 //! admission — each isolate has its own lane of one request being served plus
 //! [`PENDING`] queued, more → [`Error::Busy`], so queued mermaid work never
@@ -25,21 +25,20 @@ use crate::{AppBinding, AppDiagnostic};
 pub const PENDING: usize = 8;
 /// Per OpenUI request: how long the validator may run (event loop included)
 /// before it is terminated and rebuilt. Building the isolate (bundle load,
-/// after start or a rebuild) is not counted (`app_js::LOAD_DEADLINE`).
-pub const DEADLINE: Duration = Duration::from_secs(2);
+/// after start or a rebuild) is not counted (`js_runtime::LOAD_DEADLINE`).
+/// The limits are [`js_runtime::APPS`]' and [`js_runtime::MERMAID`]'.
+pub const DEADLINE: Duration = js_runtime::APPS.limits.deadline;
 /// Per warm `check_mermaid`: V8 runs mermaid's super-linear class-diagram
 /// parser ~1.6× slower than the old helper's JSC, so a 32 KB fence needs ~3 s
 /// (docs/design/apps-mermaid-inproc-spike.md §4). Own thread: it never delays
 /// `check`.
-pub const MERMAID_DEADLINE: Duration = Duration::from_secs(5);
+pub const MERMAID_DEADLINE: Duration = js_runtime::MERMAID.limits.deadline;
 /// The first `check_mermaid` on each mermaid runtime (its first diagram
 /// chunk evaluates; measured ≤ 35 ms, the rest is headroom for a loaded box).
-pub const MERMAID_FIRST_DEADLINE: Duration = Duration::from_secs(10);
+pub const MERMAID_FIRST_DEADLINE: Duration = js_runtime::MERMAID.limits.first_deadline;
 /// Largest request line accepted; the bundles refuse longer lines too
 /// (`inproc.ts` `MAX_LINE_BYTES`).
-pub const MAX_LINE: usize = 4 * 1024 * 1024;
-/// V8 heap ceiling of each isolate (OpenUI and mermaid).
-const HEAP_LIMIT: usize = 256 * 1024 * 1024;
+pub const MAX_LINE: usize = js_runtime::APPS.limits.max_line;
 
 /// One visible tool as the validator binds it (`protocol.ts` `ToolSnapshot`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -158,7 +157,7 @@ struct MermaidError {
 pub type Responder = Arc<dyn Fn(&str) -> String + Send + Sync>;
 
 enum Backend {
-    Js(app_js::BundleThread),
+    Js(js_runtime::JsThread),
     Canned(Responder),
 }
 
@@ -200,27 +199,15 @@ pub struct Helper {
 impl Helper {
     /// The in-process parsers; `shutdown` stops their threads.
     pub fn new(shutdown: CancellationToken) -> Self {
-        let openui = app_js::Limits {
-            deadline: DEADLINE,
-            first_deadline: DEADLINE,
-            heap_limit: HEAP_LIMIT,
-            max_line: MAX_LINE,
-        };
-        let mermaid = app_js::Limits {
-            deadline: MERMAID_DEADLINE,
-            first_deadline: MERMAID_FIRST_DEADLINE,
-            heap_limit: HEAP_LIMIT,
-            max_line: MAX_LINE,
-        };
         Self::with(
-            Backend::Js(app_js::BundleThread::new(
-                &app_js::APPS,
-                openui,
+            Backend::Js(js_runtime::JsThread::new(
+                &js_runtime::APPS,
+                js_runtime::APPS.limits,
                 shutdown.clone(),
             )),
-            Backend::Js(app_js::BundleThread::new(
-                &app_js::MERMAID,
-                mermaid,
+            Backend::Js(js_runtime::JsThread::new(
+                &js_runtime::MERMAID,
+                js_runtime::MERMAID.limits,
                 shutdown,
             )),
         )
@@ -335,8 +322,8 @@ async fn send(lane: &Lane, line: String, id: &str) -> Result<serde_json::Value, 
         Backend::Canned(respond) => respond(&line),
         Backend::Js(js) => match js.enqueue(line).await {
             Ok(r) => r.reply,
-            Err(app_js::Error::Timeout) => return Err(Error::Timeout(js.limits().deadline)),
-            Err(app_js::Error::TooLarge { len, max }) => {
+            Err(js_runtime::Error::Timeout) => return Err(Error::Timeout(js.limits().deadline)),
+            Err(js_runtime::Error::TooLarge { len, max }) => {
                 return Err(Error::Protocol(format!(
                     "request is {len} bytes; the helper accepts {max}"
                 )));
@@ -543,7 +530,7 @@ mod tests {
         assert!(matches!(h.check("x", &[]).await, Err(Error::Crashed(_))));
     }
 
-    fn js(lane: &Lane) -> &app_js::BundleThread {
+    fn js(lane: &Lane) -> &js_runtime::JsThread {
         match &lane.backend {
             Backend::Js(js) => js,
             Backend::Canned(_) => unreachable!("real helper"),
@@ -634,14 +621,14 @@ mod tests {
         // Runaway script: terminated at the 5 s mermaid deadline.
         assert_eq!(
             m.eval_raw("for (;;) {}".into()).await,
-            Err(app_js::Error::Timeout)
+            Err(js_runtime::Error::Timeout)
         );
         both_serve(&h, "runaway").await;
         // Heap growth: stopped at the 256 MB ceiling.
         assert_eq!(
             m.eval_raw("const keep = []; for (;;) keep.push(new Array(100000).fill(0.5));".into())
                 .await,
-            Err(app_js::Error::OutOfMemory)
+            Err(js_runtime::Error::OutOfMemory)
         );
         both_serve(&h, "heap").await;
         // Hostile diagrams from the spike: each ends as an answer, a deadline or the heap ceiling
@@ -696,7 +683,7 @@ mod tests {
     #[test]
     fn the_bundle_embeds_this_binarys_library_hash() {
         let version = std::thread::spawn(|| {
-            app_js::BundleJs::new(&app_js::APPS, app_js::Limits::default())
+            js_runtime::JsRuntime::new(&js_runtime::APPS, js_runtime::Limits::default())
                 .and_then(|mut js| js.version())
                 .expect("version")
         })

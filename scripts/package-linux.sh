@@ -4,7 +4,7 @@
 #   1. cargo build --release -p theuth  (daemon sidecar, host arch)
 #      + crates/app-parser-stub: cargo build → theuth-app-parser compatibility stub (46 §2.1; the parser
 #        runs in-process, apps-inproc-as-built-P1.md; scripts/app-parser-env.sh); the documents helper is
-#        compiled into `t` (crates/document-js)
+#        compiled into `t` (crates/js-runtime)
 #   2. stage both as externalBin: binaries/t-<triple>, binaries/theuth-app-parser-<hash>-<triple>
 #      (the stub must sit beside `t`, so it rides the same mechanism)
 #   3. cargo tauri build --config <inline json>  (targets from tauri.linux.conf.json: deb, rpm, appimage)

@@ -2,7 +2,7 @@
 //!
 //! One `app` tool ([`AppTool`]) publishes validated `.openui` source as a
 //! [`artifact::Kind::App`] record; the in-process headless validator
-//! ([`helper::Helper`], crate `app-js`) checks it; the [`Apps`] actor serves committed
+//! ([`helper::Helper`], crate `js-runtime`) checks it; the [`Apps`] actor serves committed
 //! apps to clients and runs their Query/Mutation tool calls through the
 //! registry's [`tools::AppInvoke`] under §7's bounds.
 //!

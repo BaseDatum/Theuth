@@ -1,5 +1,5 @@
 /**
- * The synthetic corpus (no files read) that `golden-inproc.ts` replays against crates/document-js/tests/golden.json.
+ * The synthetic corpus (no files read) that `golden-inproc.ts` replays against crates/js-runtime/tests/documents_golden.json.
  */
 export type Input = { name: string; text: string; frontmatter: boolean };
 

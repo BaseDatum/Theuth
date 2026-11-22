@@ -260,6 +260,9 @@ fail-open) and one canned responder (error lines).
 
 ## Duplication with document-js and how to unify
 
+2026-11-22: done — both crates are now `crates/js-runtime` (bundles `DOCUMENTS`, `APPS`, `MERMAID`); see
+[js-runtime-unified-as-built.md](js-runtime-unified-as-built.md). The plan below is kept as written.
+
 `crates/app-js/src/{runtime,thread,watchdog}.rs` and `js/polyfill.js` are copies of
 `crates/document-js` at feat/documents-inproc **0ca80bbf3** (the tip when this work started, including the
 `init_platform(None)` fix, reply/request matching, fatal request-without-reply, epochs/restart and respawn of a

@@ -93,8 +93,8 @@ if ($HelperHash -notmatch '^[0-9a-f]{64}$') { Fail "packages/apps/generated/libr
 # Review M1: the committed OpenUI bundle (compiled into t) must embed this library hash. A plain text
 # search, not the full input hash of scripts/apps-bundle-hash.sh (TODO: port that to PowerShell; the cargo
 # build.rs in crates/app enforces the same text check at build time anyway).
-$AppsBundle = Get-Content crates/app-js/js/theuth-apps-inproc.js -Raw
-if (-not $AppsBundle.Contains($HelperHash)) { Fail "crates/app-js/js/theuth-apps-inproc.js does not embed library hash $HelperHash (run just apps-bundle and commit)" }
+$AppsBundle = Get-Content crates/js-runtime/js/theuth-apps-inproc.js -Raw
+if (-not $AppsBundle.Contains($HelperHash)) { Fail "crates/js-runtime/js/theuth-apps-inproc.js does not embed library hash $HelperHash (run just apps-bundle and commit)" }
 $Helper = "theuth-app-parser-$HelperHash"
 
 # scripts/ort-version.env: the one ORT pin.
