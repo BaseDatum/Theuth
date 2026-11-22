@@ -3,14 +3,19 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { toast } from 'sonner'
 import { expect, test, vi } from 'vitest'
 import type { AppDoc } from "@/rpc/bindings/method.app.output"
+import type * as Rpc from '@/lib/rpc'
+import type * as Tiles from '@/lib/tiles'
 import { useSessions } from '@/store/sessions'
 import { FenceContext } from './JsonRenderFence'
 import { INERT, OpenUIFence, appName, openAsApp, staticProvider } from './OpenUIFence'
 
 // `useDark` reads `document`, `useApi` the connection store, `toast` the DOM: none exist in a node test.
 vi.mock('@/components/apps/theme', () => ({ useDark: () => false }))
-vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
+// The rest of `@/lib/rpc` stays real: `showArtifact`'s module graph (the artifact tile, the chat header) reads it.
+vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }))
+// No panes in a node test: a published app opens in the panel (the phone path), never a tile.
+vi.mock('@/lib/tiles', async (original) => ({ ...(await original<typeof Tiles>()), tileable: () => false }))
 
 const SRC = 'root = Stack([t])\nt = TextContent("hi")'
 const fence = (code: string, isIncomplete: boolean) => createElement(OpenUIFence, { code, isIncomplete, language: 'openui' })

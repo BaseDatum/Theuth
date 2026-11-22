@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils'
 import { fromHistoryPage } from '@/store/reduce'
 import { type Entry, useSessionField } from '@/store/sessions'
 import { ArtifactPanel } from './ArtifactPanel'
-import { SidebarToggle } from './Header'
+import { SidebarToggle } from './SidebarToggle'
 import { Message } from './Message'
 
 const PAGE = 60

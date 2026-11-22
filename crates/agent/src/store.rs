@@ -67,6 +67,7 @@ pub mod durability;
 pub mod endless;
 pub mod harness;
 mod moved;
+pub mod suffixes;
 pub mod turn_usage;
 pub use capture::ATTACHED;
 pub use durability::Scope;
@@ -995,18 +996,21 @@ impl Store {
     /// session rows — they join the stage-1 record replica (per-column LWW)
     /// on the write connection, so a replica that takes a session already
     /// holds the accounting owner its `model_calls` rows reference. 191 (D2): so
-    /// do the mesh-wide contact records ([`contacts::RECORD_TABLES`]). None of
+    /// do the mesh-wide contact records ([`contacts::RECORD_TABLES`]), and the
+    /// prompt suffixes ([`suffixes::SUFFIX_TABLES`]). None of
     /// these tables is in the capture session, so replicated rows never echo into
     /// the session log. Rows the replica has not stamped yet (every row of a
     /// pre-68 store; rows written since the last start — the accounting
     /// writers never stamp) are announced and stamped once. Returns how many
-    /// were. Errors on a private store or without the replica plugin.
-    pub async fn replicate_records(&self) -> anyhow::Result<u64> {
+    /// were, and the handle (its feed carries local and applied peer batches).
+    /// Errors on a private store or without the replica plugin.
+    pub async fn replicate_records(&self) -> anyhow::Result<(u64, replica::ReplicaHandle)> {
         anyhow::ensure!(!self.private, "a private store never replicates");
         let mut tables = vec!["projects", "cost_owners"];
         tables.extend(contacts::RECORD_TABLES);
+        tables.extend(suffixes::SUFFIX_TABLES);
         let handle = replica::attach(&self.write, &tables).await?;
-        handle.announce_unstamped().await
+        Ok((handle.announce_unstamped().await?, handle))
     }
 
     /// Log rows above `seq` that are not orphaned, in seq order: what a peer

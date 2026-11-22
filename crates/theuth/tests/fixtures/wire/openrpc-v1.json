@@ -10410,6 +10410,32 @@
         "format": "uuid",
         "type": "string"
       },
+      "event.agent_2esuffixes.output.SuffixesChanged": {
+        "description": "Event: the saved suffixes or a chat's \"every message\" suffix changed, here or on another\nmachine of the mesh. No body: reload with `list_suffixes` / `session_suffix`.",
+        "properties": {
+          "type": {
+            "const": "SuffixesChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.agent_2esuffixes.receiver.SuffixesChanged": {
+        "description": "Event: the saved suffixes or a chat's \"every message\" suffix changed, here or on another\nmachine of the mesh. No body: reload with `list_suffixes` / `session_suffix`.",
+        "properties": {
+          "type": {
+            "const": "SuffixesChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
       "event.app_2ecalls.output.AppCallChanged": {
         "description": "Event: an app tool call changed status (46 §6.4). Wire shape\n`{ \"type\": \"AppCallChanged\", … }`. Not a model turn.",
         "properties": {
@@ -36029,6 +36055,29 @@
           }
         ]
       },
+      "method.agent.input.PromptSuffix": {
+        "description": "One saved prompt suffix.",
+        "properties": {
+          "id": {
+            "description": "Client-chosen id (a uuid); stable across machines.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Shown in the `+` menu and the chip.",
+            "type": "string"
+          },
+          "text": {
+            "description": "Appended to a message after a blank line.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "text"
+        ],
+        "type": "object"
+      },
       "method.agent.input.PtyViewport": {
         "description": "Which rows of the retained terminal a [`PtyScreen`] asks for.",
         "oneOf": [
@@ -43621,6 +43670,29 @@
           "name",
           "icon",
           "color"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.PromptSuffix": {
+        "description": "One saved prompt suffix.",
+        "properties": {
+          "id": {
+            "description": "Client-chosen id (a uuid); stable across machines.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Shown in the `+` menu and the chip.",
+            "type": "string"
+          },
+          "text": {
+            "description": "Appended to a message after a blank line.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "text"
         ],
         "type": "object"
       },
@@ -54211,6 +54283,29 @@
         },
         "required": [
           "name"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.PromptSuffix": {
+        "description": "One saved prompt suffix.",
+        "properties": {
+          "id": {
+            "description": "Client-chosen id (a uuid); stable across machines.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Shown in the `+` menu and the chip.",
+            "type": "string"
+          },
+          "text": {
+            "description": "Appended to a message after a blank line.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "text"
         ],
         "type": "object"
       },
@@ -128261,6 +128356,32 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "delete_suffix",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "desk_open",
       "paramStructure": "by-position",
       "params": [
@@ -133117,6 +133238,29 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "list_suffixes",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.PromptSuffix"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.PromptSuffix"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "list_terminals",
       "paramStructure": "by-position",
       "params": [
@@ -136708,6 +136852,32 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "put_suffix",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "suffix",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.PromptSuffix"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "redo",
       "paramStructure": "by-position",
       "params": [
@@ -138697,6 +138867,38 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "session_suffix",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "session_take",
       "paramStructure": "by-position",
       "params": [
@@ -140363,6 +140565,43 @@
         },
         {
           "name": "project",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_session_suffix",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "suffix",
           "required": false,
           "schema": {
             "type": [
@@ -143265,6 +143504,16 @@
           "$ref": "#/components/schemas/event.agent_2epeer_2dmessage.output.PeerMessageChanged"
         },
         "topic": "agent.peer-message",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.agent_2esuffixes.receiver.SuffixesChanged"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.agent_2esuffixes.output.SuffixesChanged"
+        },
+        "topic": "agent.suffixes",
         "version": 1
       },
       {

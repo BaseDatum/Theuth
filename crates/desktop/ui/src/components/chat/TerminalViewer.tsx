@@ -7,6 +7,7 @@ import { AppWindow, Keyboard } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { openTerminalsTile } from '@/components/tiles/open'
 import { PtyIcon } from './Indicators'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -18,6 +19,7 @@ import { canPopout, openPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { macKeyBytes } from '@/lib/terminal-keys'
 import { swallowEngineQueries } from '@/lib/terminal-replies'
+import { tileable } from '@/lib/tiles'
 import { cn } from '@/lib/utils'
 import type { Api } from '@/rpc/bindings/client'
 import type { JobExit } from "@/rpc/bindings/method.agent.output"
@@ -172,7 +174,7 @@ const onStorage = (cb: () => void) => {
   return () => window.removeEventListener('storage', cb)
 }
 /** Whether `job` is showing in its own window right now (the panel then defers to it). */
-const usePoppedElsewhere = (job: JobRef | null) => useSyncExternalStore(onStorage, () => job !== null && marked(job))
+export const usePoppedElsewhere = (job: JobRef | null) => useSyncExternalStore(onStorage, () => job !== null && marked(job))
 
 /** "Open in new window" for one terminal; nothing where no second window exists. */
 export function PopoutTerminalButton({ session, job, className }: JobRef & { className?: string }) {
@@ -427,69 +429,114 @@ export function PoppedTerminal({ session, job }: JobRef) {
   )
 }
 
-function Body({ session }: { session: string }) {
+/** The session's terminals and its subagents' (`terminalsQuery`), polled while the caller is mounted. */
+export function useTerminals(session: string): TerminalSummary[] {
   const api = useApi()
+  const { data = [] } = useQuery(terminalsQuery(api, session))
+  return data
+}
+
+/** Picks one of `session`'s `terminals`; `job` is the picked one. */
+export function TerminalSelect({
+  session,
+  terminals,
+  job,
+  onPick,
+  className,
+}: {
+  session: string
+  terminals: TerminalSummary[]
+  job: JobRef | null
+  onPick(job: JobRef): void
+  className?: string
+}) {
+  return (
+    <select
+      aria-label="Terminal"
+      className={cn('h-9 min-w-0 rounded-md border border-border-subtle bg-background px-2 text-sm pointer-coarse:h-11', className)}
+      value={job ? `${job.session}/${job.job}` : ''}
+      onChange={(e) => {
+        const t = terminals.find((x) => `${x.session}/${x.id}` === e.target.value)
+        if (t) onPick({ session: t.session, job: t.id })
+      }}
+    >
+      {terminals.length === 0 && <option value="">No terminals in this session</option>}
+      {terminals.map((t) => (
+        <option key={`${t.session}/${t.id}`} value={`${t.session}/${t.id}`}>
+          {t.name ?? t.command}
+          {t.session !== session ? ' (subagent)' : ''} · {t.state}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+/** Brings `job`'s own window forward (it is showing there, `usePoppedElsewhere`). */
+export function FocusWindowButton({ session, job }: JobRef) {
+  return (
+    <Button variant="outline" size="sm" onClick={() => void openPopout({ kind: 'pty', session, job })}>
+      Focus window
+    </Button>
+  )
+}
+
+/**
+ * The picked terminal: a placeholder when none, a stub while it shows in its own window (with Focus window unless the
+ * caller shows it elsewhere: `focus={false}`), else the xterm.
+ */
+export function TerminalScreen({ terminals, job, focus = true }: { terminals: TerminalSummary[]; job: JobRef | null; focus?: boolean }) {
+  const elsewhere = usePoppedElsewhere(job)
+  const current = terminals.find((t) => t.id === job?.job && t.session === job?.session)
+  if (!job)
+    return (
+      <>
+        <div className="flex min-h-0 flex-1 rounded-md p-4 text-sm" style={{ backgroundColor: BG, color: FG }}>
+          Pick a terminal.
+        </div>
+        <p className="truncate text-xs text-fg-secondary">No terminals</p>
+      </>
+    )
+  if (elsewhere)
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-md p-4 text-sm" style={{ backgroundColor: BG, color: FG }}>
+        <p>{labelOf(current, job)} · opened in its own window</p>
+        {focus && <FocusWindowButton {...job} />}
+      </div>
+    )
+  return <Terminal key={`${job.session}/${job.job}`} session={job.session} job={job.job} label={labelOf(current, job)} />
+}
+
+/** The dialog / sheet body: the picker and pop-out over the picked terminal (the first until one is picked). */
+function Body({ session }: { session: string }) {
   const [job, setJob] = useState<JobRef | null>(null)
-  const { data: terminals = [] } = useQuery(terminalsQuery(api, session))
+  const terminals = useTerminals(session)
   const first = terminals[0]
   useEffect(() => {
     if (!job && first) setJob({ session: first.session, job: first.id })
   }, [job, first])
-  const elsewhere = usePoppedElsewhere(job)
-  const current = terminals.find((t) => t.id === job?.job && t.session === job?.session)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 p-2">
       <div className="flex gap-2">
-        <select
-          aria-label="Terminal"
-          className="h-9 min-w-0 flex-1 rounded-md border border-border-subtle bg-background px-2 text-sm pointer-coarse:h-11"
-          value={job ? `${job.session}/${job.job}` : ''}
-          onChange={(e) => {
-            const t = terminals.find((x) => `${x.session}/${x.id}` === e.target.value)
-            if (t) setJob({ session: t.session, job: t.id })
-          }}
-        >
-          {terminals.length === 0 && <option value="">No terminals in this session</option>}
-          {terminals.map((t) => (
-            <option key={`${t.session}/${t.id}`} value={`${t.session}/${t.id}`}>
-              {t.name ?? t.command}
-              {t.session !== session ? ' (subagent)' : ''} · {t.state}
-            </option>
-          ))}
-        </select>
+        <TerminalSelect session={session} terminals={terminals} job={job} onPick={setJob} className="flex-1" />
         {job && <PopoutTerminalButton {...job} />}
       </div>
-      {!job ? (
-        <>
-          <div className="flex min-h-0 flex-1 rounded-md p-4 text-sm" style={{ backgroundColor: BG, color: FG }}>
-            Pick a terminal.
-          </div>
-          <p className="truncate text-xs text-fg-secondary">No terminals</p>
-        </>
-      ) : elsewhere ? (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 rounded-md p-4 text-sm" style={{ backgroundColor: BG, color: FG }}>
-          <p>{labelOf(current, job)} · opened in its own window</p>
-          <Button variant="outline" size="sm" onClick={() => void openPopout({ kind: 'pty', ...job })}>
-            Focus window
-          </Button>
-        </div>
-      ) : (
-        <Terminal key={`${job.session}/${job.job}`} session={job.session} job={job.job} label={labelOf(current, job)} />
-      )}
+      <TerminalScreen terminals={terminals} job={job} />
     </div>
   )
 }
 
 /**
- * The session's PTY jobs (51 §7.3, 55 §4) in a real terminal. Dialog on desktop, full-height sheet on mobile. Streams
- * only while open. `/terminals` reaches it through the `theuth:terminals` window event.
+ * The session's PTY jobs (51 §7.3, 55 §4) in a real terminal. Dialog on desktop, full-height sheet on mobile; beside the
+ * chat as the `terminals` tile where the layout tiles (`openTerminalsTile`). Streams only while open. `/terminals`
+ * reaches it through the `theuth:terminals` window event.
  */
 export function TerminalViewer({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
   const mobile = useIsMobile()
   useEffect(() => {
     const h = (e: Event) => {
-      if ((e as CustomEvent<{ session?: string }>).detail?.session === session) onOpenChange(true)
+      if ((e as CustomEvent<{ session?: string }>).detail?.session !== session) return
+      if (!tileable(session) || openTerminalsTile(session) === null) onOpenChange(true)
     }
     window.addEventListener('theuth:terminals', h)
     return () => window.removeEventListener('theuth:terminals', h)

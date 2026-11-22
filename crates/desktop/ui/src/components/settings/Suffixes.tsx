@@ -1,6 +1,7 @@
-// #3 Settings › Prompt suffixes: the named suffixes the composer's `+` › Add prompt suffix lists. Local to this
-// device (`lib/suffixes`, localStorage); New / Edit open an inline form (name + multiline text), Delete removes the
-// suffix and turns it off in every chat that had it on.
+// #3 Settings › Prompt suffixes: the named suffixes the composer's `+` › Add prompt suffix lists. On an engine that
+// keeps them, shared by every machine of the mesh and every device connected to it; else local to this device
+// (`lib/suffixes`). New / Edit open an inline form (name + multiline text), Delete removes the suffix and turns it
+// off in every chat that had it on. Same page on desktop, iPad and phone (the settings page lays it out).
 
 import { useState } from 'react'
 import { Empty, Row, Section } from '@/components/settings/shared'

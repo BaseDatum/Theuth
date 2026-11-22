@@ -3,6 +3,8 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
+import { usePanes } from '@/lib/panes'
+import * as Tiles from '@/lib/tiles'
 import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import { type Entry, createSessions, useSessions } from '@/store/sessions'
 import { ArtifactCard, openShow, relistArtifacts } from './ArtifactCard'
@@ -12,6 +14,9 @@ const api = vi.hoisted(() => ({ get_artifact: vi.fn<(id: string) => Promise<Arti
 const toast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }))
 vi.mock('sonner', () => ({ toast }))
 vi.mock('@/components/hud/queries', () => ({ useMarkShown: () => {} }))
+// The layout tiles only where a test says so (`tileable` reads the DOM: none here).
+const tiling = vi.hoisted(() => ({ on: false }))
+vi.mock('@/lib/tiles', async (original) => ({ ...(await original<typeof Tiles>()), tileable: () => tiling.on }))
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 
 afterEach(() => vi.clearAllMocks())
@@ -91,6 +96,25 @@ test('openShow: a failed get_artifact toasts "could not open <name>" and leaves 
   const s = useSessions.getState().sessions[S]
   expect(s?.artifacts.has('c1')).toBe(false)
   expect(s?.artifactPanel).toBeNull()
+})
+
+test('openShow where the layout tiles: one artifact tile per chat, retargeted on the next open; the panel stays shut', async () => {
+  fresh()
+  tiling.on = true
+  try {
+    useSessions.getState().applyEvents([{ type: 'ArtifactShown', session: S, call_id: 'c1', artifact }])
+    await openShow(api, S, 'c1', artifact.name)
+    expect(Tiles.openTileOf('artifact', S)?.props).toEqual({ callId: 'c1' })
+    useSessions.getState().applyEvents([{ type: 'ArtifactShown', session: S, call_id: 'c2', artifact: { ...artifact, call_id: 'c2' } }])
+    await openShow(api, S, 'c2', artifact.name)
+    expect(Tiles.openTileOf('artifact', S)?.props).toEqual({ callId: 'c2' })
+    expect(Object.values(Tiles.useTiles.getState().tiles).filter((t) => t.kind === 'artifact')).toHaveLength(1)
+    expect(useSessions.getState().sessions[S]?.artifactPanel ?? null).toBeNull()
+  } finally {
+    tiling.on = false
+    Tiles.closeAllTiles()
+    usePanes.setState({ root: null })
+  }
 })
 
 test('relistArtifacts installs the list; a rejected list leaves the existing map intact, never []', async () => {

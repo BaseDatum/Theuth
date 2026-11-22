@@ -12246,9 +12246,12 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
                 return;
             }
             match store.replicate_records().await {
-                Ok(n) => tracing::info!(
-                    "accounting: projects/cost_owners replicated ({n} row(s) announced)"
-                ),
+                Ok((n, handle)) => {
+                    tracing::info!(
+                        "accounting: projects/cost_owners replicated ({n} row(s) announced)"
+                    );
+                    crate::rpc_suffixes::watch(rt2, handle);
+                }
                 Err(e) => tracing::info!("accounting: replication unavailable ({e}); local only"),
             }
         });

@@ -372,31 +372,40 @@ export function Live({ m, ledgerBytes = ENDLESS_DEFAULTS.ledger_bytes }: { m: Se
 
 /** The same memory choices, held on the draft until its first action creates the chat. */
 export function DraftMemory({ open, onOpenChange }: { open: boolean; onOpenChange(o: boolean): void }) {
-  const api = useApi()
-  const supported = useQuerySupport(['endless_settings_get'])
-  const defaults = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get(), enabled: supported && open })
-  const pending = useDrafts((s) => s.settings)
-  const set = useDrafts((s) => s.setSettings)
-  const mode = pending.create?.memory ?? (defaults.data?.default_chat ? 'endless' : 'epochs')
-  const bytes = pending.viewBytes ?? defaults.data?.view_bytes
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full sm:w-[560px] sm:max-w-[560px]">
         <SheetHeader>
           <SheetTitle>Context</SheetTitle>
-          <SheetDescription>These choices apply before the first message.</SheetDescription>
+          <SheetDescription>{DRAFT_NOTE}</SheetDescription>
         </SheetHeader>
-        <div className="flex flex-col items-start gap-4 px-4">
-          <Select value={mode} onValueChange={(memory) => useDrafts.getState().setCreate({ memory: memory as 'endless' | 'epochs' })}>
-            <SelectTrigger aria-label="Context mode"><SelectValue /></SelectTrigger>
-            <SelectContent><SelectItem value="epochs">Epochs</SelectItem><SelectItem value="endless">Fractal context</SelectItem></SelectContent>
-          </Select>
-          <SummaryModel session="" m={{ model: pending.compactorModel ?? defaults.data?.model ?? '', model_override: pending.compactorModel ?? null, model_source: pending.compactorModel ? 'chat' : 'settings', effort_override: pending.compactorEffort ?? null }} />
-          {bytes !== undefined && <ViewSize bytes={bytes} onChange={(viewBytes) => set({ viewBytes })} />}
-          {defaults.error && <p className="text-sm text-destructive">{defaults.error.message}</p>}
-        </div>
+        <DraftMemoryBody />
       </SheetContent>
     </Sheet>
+  )
+}
+
+export const DRAFT_NOTE = 'These choices apply before the first message.'
+
+/** `DraftMemory`'s choices, in its sheet or in a `memory` tile beside the draft; reads the defaults while mounted. */
+export function DraftMemoryBody({ className }: { className?: string }) {
+  const api = useApi()
+  const supported = useQuerySupport(['endless_settings_get'])
+  const defaults = useQuery({ queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get(), enabled: supported })
+  const pending = useDrafts((s) => s.settings)
+  const set = useDrafts((s) => s.setSettings)
+  const mode = pending.create?.memory ?? (defaults.data?.default_chat ? 'endless' : 'epochs')
+  const bytes = pending.viewBytes ?? defaults.data?.view_bytes
+  return (
+    <div className={cn('flex flex-col items-start gap-4 px-4', className)}>
+      <Select value={mode} onValueChange={(memory) => useDrafts.getState().setCreate({ memory: memory as 'endless' | 'epochs' })}>
+        <SelectTrigger aria-label="Context mode"><SelectValue /></SelectTrigger>
+        <SelectContent><SelectItem value="epochs">Epochs</SelectItem><SelectItem value="endless">Fractal context</SelectItem></SelectContent>
+      </Select>
+      <SummaryModel session="" m={{ model: pending.compactorModel ?? defaults.data?.model ?? '', model_override: pending.compactorModel ?? null, model_source: pending.compactorModel ? 'chat' : 'settings', effort_override: pending.compactorEffort ?? null }} />
+      {bytes !== undefined && <ViewSize bytes={bytes} onChange={(viewBytes) => set({ viewBytes })} />}
+      {defaults.error && <p className="text-sm text-destructive">{defaults.error.message}</p>}
+    </div>
   )
 }
 
@@ -725,15 +734,37 @@ export function ViewNote({ line, className }: { line: ViewLine; className?: stri
 }
 
 /**
- * Right-side sheet over an endless session's memory (137 §11.3): stats, recall search, the view grouped by band with
- * each line zoomable down to the message, and the compactor's progress. Keyboard on the tree: ↑/↓ move, → expand,
- * ← collapse (or up to the parent), Enter toggles, `/` focuses search, Esc closes (the sheet's own).
+ * Right-side sheet over an endless session's memory (137 §11.3); its body is `MemoryBody`. Esc closes (the sheet's own).
  */
 export function MemoryPanel({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(o: boolean): void }) {
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full gap-0 sm:w-[560px] sm:max-w-[560px]" onOpenAutoFocus={(e) => e.preventDefault()}>
+        <MemoryBody
+          session={session}
+          head={
+            <>
+              <SheetTitle>Context</SheetTitle>
+              <SheetDescription className="sr-only">The session's view by band; open a line to see what it summarises.</SheetDescription>
+            </>
+          }
+        />
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+/**
+ * An endless session's memory, in `MemoryPanel`'s sheet or a `memory` tile: stats, recall search, the view grouped by
+ * band with each line zoomable down to the message, and the compactor's progress; reads while mounted and focuses the
+ * tree on mount. Keyboard on the tree: ↑/↓ move, → expand, ← collapse (or up to the parent), Enter toggles, `/`
+ * focuses search. `head`: the sheet's title above the stats.
+ */
+export function MemoryBody({ session, head }: { session: string; head?: ReactNode }) {
   const api = useApi()
-  const memory = useSessionMemory(session, open)
+  const memory = useSessionMemory(session, true)
   const canSettings = useQuerySupport(['endless_settings_get'])
-  const ledgerBytes = useQuery({ enabled: canSettings && open && !!memory.data?.ledger, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data?.ledger_bytes
+  const ledgerBytes = useQuery({ enabled: canSettings && !!memory.data?.ledger, queryKey: queryKeys.endlessSettings, queryFn: () => api.endless_settings_get() }).data?.ledger_bytes
   const [tree, dispatch] = useReducer(reduce, INITIAL)
   const { kids, open: opened, hits } = tree
   const [query, setQuery] = useState('')
@@ -748,6 +779,8 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
   // 137G: the view's folded placeholder is a note too; neither is in the keyboard order.
   const rows = useMemo(() => [...(hits ? flatten(hits.lines, kids, opened, HIT) : []), ...(view ? flatten(view.filter((l) => !isFoldedNote(l.text)), kids, opened) : [])], [hits, view, kids, opened])
   const cursorKey = rows[cursor]?.key
+
+  useEffect(() => treeEl.current?.focus(), [])
 
   useEffect(() => {
     treeEl.current?.querySelector(`[data-key="${CSS.escape(cursorKey ?? '')}"]`)?.scrollIntoView({ block: 'nearest' })
@@ -828,77 +861,71 @@ export function MemoryPanel({ session, open, onOpenChange }: { session: string; 
     <LineNode key={lineKey(line, prefix)} line={line} prefix={prefix} depth={0} kids={kids} open={opened} cursorKey={cursorKey} query={hits?.query ?? ''} onToggle={toggle} />
   )
 
+  const stats = m && m.mode === 'endless'
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        className="w-full gap-0 sm:w-[560px] sm:max-w-[560px]"
-        onKeyDown={onSheetKey}
-        onOpenAutoFocus={(e) => {
-          e.preventDefault()
-          treeEl.current?.focus()
-        }}
-      >
-        <SheetHeader className="pb-3">
-          <SheetTitle>Context</SheetTitle>
-          <SheetDescription className="sr-only">The session's view by band; open a line to see what it summarises.</SheetDescription>
-          {m && m.mode === 'endless' && <Stats session={session} m={m} />}
-          {m && m.mode === 'endless' && <Live m={m} ledgerBytes={ledgerBytes} />}
-        </SheetHeader>
-        <div className="px-4 pb-3">
-          <Input
-            ref={search}
-            type="text"
-            placeholder="Recall: a word, an error, a path…"
-            aria-label="Recall"
-            value={query}
-            disabled={!m || m.mode !== 'endless'}
-            onChange={(e) => {
-              setQuery(e.target.value)
-              if (!e.target.value.trim()) dispatch({ type: 'hits', hits: null })
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') recall(query)
-            }}
-          />
+    <div className="flex min-h-0 flex-1 flex-col" onKeyDown={onSheetKey}>
+      {(head || stats) && (
+        <div className="flex flex-col gap-1.5 p-4 pb-3">
+          {head}
+          {m && stats && <Stats session={session} m={m} />}
+          {m && stats && <Live m={m} ledgerBytes={ledgerBytes} />}
         </div>
-        <div ref={treeEl} role="tree" aria-label="Context view" tabIndex={0} className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 outline-none focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:ring-inset" onKeyDown={onTreeKey}>
-          {memory.isPending && (
-            <div className="flex flex-col gap-2 px-2 pt-1">
-              {[0, 1, 2, 3, 4, 5].map((i) => (
-                <Skeleton key={i} className="h-5 w-full" />
-              ))}
+      )}
+      {!head && !stats && <div className="h-4 shrink-0" />}
+      <div className="px-4 pb-3">
+        <Input
+          ref={search}
+          type="text"
+          placeholder="Recall: a word, an error, a path…"
+          aria-label="Recall"
+          value={query}
+          disabled={!m || m.mode !== 'endless'}
+          onChange={(e) => {
+            setQuery(e.target.value)
+            if (!e.target.value.trim()) dispatch({ type: 'hits', hits: null })
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') recall(query)
+          }}
+        />
+      </div>
+      <div ref={treeEl} role="tree" aria-label="Context view" tabIndex={0} className="min-h-0 flex-1 overflow-y-auto px-2 pb-3 outline-none focus-visible:ring-1 focus-visible:ring-ring/40 focus-visible:ring-inset" onKeyDown={onTreeKey}>
+        {memory.isPending && (
+          <div className="flex flex-col gap-2 px-2 pt-1">
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <Skeleton key={i} className="h-5 w-full" />
+            ))}
+          </div>
+        )}
+        {memory.isError && <p className="px-2 py-4 text-sm text-fg-tertiary">Context details unavailable: {memory.error.message}</p>}
+        {m && m.mode !== 'endless' && <p className="px-2 py-4 text-sm text-fg-tertiary">This session keeps its context in epochs; `/fractal on` switches it when idle.</p>}
+        {hits && (
+          <section aria-label="Recall hits" className="mb-3">
+            <div className="mt-1 mb-0.5 px-2 text-[10px] font-medium tracking-wide text-fg-tertiary uppercase">
+              {searching ? 'searching…' : `${hits.lines.length} hit${hits.lines.length === 1 ? '' : 's'} for “${hits.query}”`}
             </div>
-          )}
-          {memory.isError && <p className="px-2 py-4 text-sm text-fg-tertiary">Context details unavailable: {memory.error.message}</p>}
-          {m && m.mode !== 'endless' && <p className="px-2 py-4 text-sm text-fg-tertiary">This session keeps its context in epochs; `/fractal on` switches it when idle.</p>}
-          {hits && (
-            <section aria-label="Recall hits" className="mb-3">
-              <div className="mt-1 mb-0.5 px-2 text-[10px] font-medium tracking-wide text-fg-tertiary uppercase">
-                {searching ? 'searching…' : `${hits.lines.length} hit${hits.lines.length === 1 ? '' : 's'} for “${hits.query}”`}
-              </div>
-              {hits.lines.length === 0 && !searching && <p className="px-2 py-1 text-sm text-fg-tertiary">Nothing matched.</p>}
-              {hits.lines.map((l) => node(l, HIT))}
-            </section>
-          )}
-          {earlier && <ViewNote line={earlier} />}
-          {view?.map((line, i) =>
-            isFoldedNote(line.text) ? (
-              <ViewNote key={lineKey(line)} line={line} className="my-1 rounded-md bg-muted/50" />
-            ) : (
-              <Fragment key={lineKey(line)}>
-                {(i === 0 || view[i - 1]?.n !== line.n) && (
-                  <div role="presentation" className={cn('mb-0.5 px-2 text-[10px] font-medium tracking-wide text-fg-tertiary uppercase tabular-nums', i > 0 && 'mt-2')}>
-                    ×{line.n}
-                  </div>
-                )}
-                {node(line, '')}
-              </Fragment>
-            ),
-          )}
-          {m && m.mode === 'endless' && m.view.length === 0 && <p className="px-2 py-4 text-sm text-fg-tertiary">Nothing in the view yet: it fills as the chat goes.</p>}
-        </div>
-        {m && <MemoryFooter session={session} m={m} />}
-      </SheetContent>
-    </Sheet>
+            {hits.lines.length === 0 && !searching && <p className="px-2 py-1 text-sm text-fg-tertiary">Nothing matched.</p>}
+            {hits.lines.map((l) => node(l, HIT))}
+          </section>
+        )}
+        {earlier && <ViewNote line={earlier} />}
+        {view?.map((line, i) =>
+          isFoldedNote(line.text) ? (
+            <ViewNote key={lineKey(line)} line={line} className="my-1 rounded-md bg-muted/50" />
+          ) : (
+            <Fragment key={lineKey(line)}>
+              {(i === 0 || view[i - 1]?.n !== line.n) && (
+                <div role="presentation" className={cn('mb-0.5 px-2 text-[10px] font-medium tracking-wide text-fg-tertiary uppercase tabular-nums', i > 0 && 'mt-2')}>
+                  ×{line.n}
+                </div>
+              )}
+              {node(line, '')}
+            </Fragment>
+          ),
+        )}
+        {m && m.mode === 'endless' && m.view.length === 0 && <p className="px-2 py-4 text-sm text-fg-tertiary">Nothing in the view yet: it fills as the chat goes.</p>}
+      </div>
+      {m && <MemoryFooter session={session} m={m} />}
+    </div>
   )
 }
