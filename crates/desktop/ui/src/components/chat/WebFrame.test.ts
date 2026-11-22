@@ -6,6 +6,7 @@ import { SidebarProvider } from '@/components/ui/sidebar'
 import { leaves, usePanes, useRoutedPane } from '@/lib/panes'
 import { openPopout } from '@/lib/popout'
 import { installWebViewEvents, useWebViews, webLeaf } from '@/lib/web-views'
+import { IDLE, REFUSE_MS, started, useTileAgent } from '@/lib/web-view-agent'
 import type { Entry } from '@/store/sessions'
 import { WebFrame } from './WebFrame'
 import { WebViewCard, webCall } from './WebViewCard'
@@ -236,5 +237,23 @@ test('after a restart (empty store) the card pop-out records the frame as popped
   await act(async () => open.click())
   expect(usePanes.getState().root).toBeNull()
   expect(openPopout).toHaveBeenCalledTimes(2)
+  await act(async () => root.unmount())
+})
+
+test('an agent call on the tile shows the bar under the toolbar; Stop hides it and refuses the tile for a minute', async () => {
+  frame()
+  useTileAgent.setState({ tiles: {} })
+  const { host, root } = await mount(h(WebFrame, { id: ID }))
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  await act(async () => useTileAgent.setState({ tiles: { [ID]: started(IDLE, 'c1') } }))
+  const bar = host.querySelector('[role="status"][aria-label="Agent is using this page"]')!
+  expect(bar.textContent).toContain('Agent is using this page')
+  // Between the toolbar and the placeholder the native view is laid over.
+  expect(bar.previousElementSibling?.tagName).toBe('HEADER')
+  expect(bar.nextElementSibling?.hasAttribute('data-web-frame')).toBe(true)
+  const before = Date.now()
+  await act(async () => button(host, 'Stop the agent on this page').click())
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  expect(useTileAgent.getState().tiles[ID]?.refusedUntil).toBeGreaterThanOrEqual(before + REFUSE_MS)
   await act(async () => root.unmount())
 })

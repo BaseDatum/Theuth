@@ -1,14 +1,15 @@
 // 209 §4.7, D8: the client side of an agent driving a web view tile. On `WebViewCallRequested` for a tile this window
 // holds (its last `web_view_attach` landed here and no pop-out window took it, `web-view-native.holds`), answer
-// `Claimed` at once, run the op through the shell's `web_view_call`, then answer `Done` or `Failed`. A window that does
-// not hold the tile stays silent, so the holder (a pop-out window, the iPad, the desktop app) is the one that claims.
-// A tile hidden behind another pane is still driven; nothing here shows a hidden tile. Stop (the bar in `WebFrame`)
-// fails the tile's calls in flight and refuses its next ones for 60 s. Arguments and results are never logged: they
-// carry page text and form values.
+// `Claimed` at once; once the engine accepts the claim (the first one wins: another device may show the same tile),
+// run the op through the shell's `web_view_call`, then answer `Done` or `Failed`. A window that does not hold the tile
+// stays silent, so the holder (a pop-out window, the iPad, the desktop app) is the one that claims. A tile hidden
+// behind another pane is still driven; nothing here shows a hidden tile. Stop (the bar in `WebFrame`) fails the tile's
+// calls in flight and refuses its next ones for 60 s. Arguments and results are never logged: they carry page text and
+// form values.
 
 import { useEffect, useState } from 'react'
 import { create } from 'zustand'
-import { clientKind } from '@/lib/page-preview'
+import { profileDevice } from '@/lib/web-profile'
 import * as native from '@/lib/web-view-native'
 import type { WebViewCallAnswer, WebViewCallRequested } from '@/lib/web-view-call-wire'
 import { useWebViews } from '@/lib/web-views'
@@ -47,8 +48,11 @@ const update = (id: string, f: (a: Activity) => Activity) => {
   if (next !== tiles[id]) useTileAgent.setState({ tiles: { ...tiles, [id]: next } })
 }
 
-/** The tile id of a request's `view` (`web:<id>`, also a shell label `web-<id>`), else `null`. */
-export const tileOf = (view: string): string | null => /^web[:-](.+)$/.exec(view)?.[1] ?? null
+/** The tile id of a request's `view`: the bare id the engine sends, also `web:<id>` or the shell label `web-<id>`. */
+export const tileOf = (view: string): string | null => {
+  const id = view.replace(/^web[:-]/, '')
+  return /^[\w-]+$/.test(id) ? id : null
+}
 
 /** The `Done` answer of the shell's reply: `snapshot`'s `{ png }` moves to `png`. */
 export function doneOf(op: string, value: unknown): WebViewCallAnswer {
@@ -71,8 +75,13 @@ async function run(e: WebViewCallRequested): Promise<void> {
   if (!api || !supports(discovery, { methods: ['answer_web_view_call'], topics: ['artifact.web-view-call-requested@1'] })) return
   if (refusing(useTileAgent.getState().tiles[id], Date.now())) return answer(api, e.id, { kind: 'failed', reason: STOPPED })
   running.set(e.id, { id, api })
+  const won = await api.answer_web_view_call(e.id, { kind: 'claimed', client: profileDevice() }).catch(() => false)
+  // Another client claimed first, the engine gave up, or Stop came while the claim was out.
+  if (!won || running.get(e.id)?.id !== id) {
+    running.delete(e.id)
+    return
+  }
   update(id, (a) => started(a, e.id))
-  answer(api, e.id, { kind: 'claimed', client: clientKind() })
   let out: WebViewCallAnswer
   try {
     out = doneOf(e.op, await native.viewCall(id, e.op, e.args))

@@ -82,3 +82,35 @@ test('a rejected call does not break the chain; a refused attach leaves the view
   await native.close('a3')
   expect(shell.log).toEqual(['web_view_attach', 'web_view_navigate', 'web_view_close'])
 })
+
+test('this window holds a view once its attach landed here, still after the frame unmounted, until it is closed, gone or taken', async () => {
+  const first = native.attach('a4', 'https://example.com/', R)
+  await attaching()
+  expect(native.holds('a4')).toBe(false)
+  shell.attach!.resolve()
+  await first
+  expect(native.holds('a4')).toBe(true)
+  await native.detach('a4')
+  expect(native.holds('a4')).toBe(true)
+  native.release('web-a4')
+  expect(native.holds('a4')).toBe(false)
+
+  for (const end of ['taken', 'closed'] as const) {
+    shell.attach = null
+    const again = native.attach('a4', 'https://example.com/', R)
+    await attaching()
+    shell.attach!.resolve()
+    await again
+    expect(native.holds('a4')).toBe(true)
+    if (end === 'closed') await native.close('a4')
+    else {
+      // A pop-out window holds it now: this window's next attach is refused.
+      shell.attach = null
+      const taken = native.attach('a4', 'https://example.com/', R)
+      await attaching()
+      shell.attach!.reject('in-popout: popout-web-a4')
+      await expect(taken).rejects.toBe('in-popout: popout-web-a4')
+    }
+    expect(native.holds('a4')).toBe(false)
+  }
+})
