@@ -272,9 +272,10 @@ Every `show_web` page is also an Inbox item (207's list), kind `web_view`, label
 - **Lifetime.** Dismiss and snooze are 207's hidden kinds (versioned): a later `show_web` for the same origin moves
   `opened_ms` and the item is back. It leaves when the tile closes (`web_view_state{closed}`), its session is
   deleted, or the engine restarts (tiles are memory-only on both sides).
-- **Wire.** `AttentionKind` gains `web_view` (an output enum member: the classifier rates it `ReviewRequired`; the
-  consumers' fallback is documented — the desktop UI renders unknown kinds with the plain screen, the companions
-  decode them to `.other`). No new field: the address rides in `detail`.
+- **Wire.** `AttentionKind` gains `web_view` (a new `oneOf` member in `attention_list`, `roster.attention@1` and the
+  bulk filter's `kinds`: the classifier says `ReviewRequired`, "union extension is not a proven tagged variant", the
+  only finding besides doc text; accepted, because every consumer has a fallback — the desktop UI renders an unknown
+  kind with the plain screen, the companions decode it to `.other`). No new field: the address rides in `detail`.
 - **Detail pane.** `components/attention/WebViewScreen.tsx`: Source, title and address, then the page — the frame's
   own native view `web-<id>` laid over the pane through `useNativeLayer` (the tile's machinery), so leaving the item
   or the page hides it and the chat's tile takes it back when shown — and a footer: Open in chat (the session's
