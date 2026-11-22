@@ -5,7 +5,10 @@
 //! rendered: true` works keyless. [`warmup`] runs on the main thread before
 //! plugins start (23 §3.1). Frontends poll [`Screenshot`] for a live view of
 //! a session's page; [`BrowserEvent::ShowLive`] asks the desktop to open it.
+//! [`profile`] carries the shared browser profile (209): `tools::Ctx` loads
+//! it into a session's isolate, and every isolate drop saves its delta first.
 
+pub mod profile;
 pub mod render;
 pub mod session;
 pub mod systemone;
@@ -179,6 +182,8 @@ impl Browsers {
         if handle.is_closed() {
             tracing::warn!(%session, "browser thread gone, spawning a fresh one");
             *handle = session::spawn(cfg);
+            // The new isolate holds nothing: the next tool call loads the profile again.
+            profile::take(session);
         }
         *last_used = Instant::now();
         handle.clone()
@@ -204,10 +209,18 @@ impl Browsers {
         }
     }
 
-    /// Drop `session`'s isolate (if any) and its System-1 claim.
+    /// Drop `session`'s isolate (if any) and its System-1 claim. A session with the shared
+    /// profile loaded saves its delta first (209 D4): the export runs on a clone of the handle,
+    /// so the thread ends once that call is done.
     fn drop_session(&mut self, session: SessionId) -> Option<session::Handle> {
         self.systemone_done(session, "browser session closed");
-        self.sessions.remove(&session).map(|(h, _)| h)
+        let handle = self.sessions.remove(&session).map(|(h, _)| h);
+        if let Some(loaded) = profile::take(session)
+            && let Some(h) = handle.as_ref().filter(|h| !h.is_closed())
+        {
+            tokio::spawn(profile::save_dropped(session, h.clone(), loaded));
+        }
+        handle
     }
 }
 
@@ -289,9 +302,10 @@ pub(crate) fn image_data(result: &Value) -> Option<&str> {
         .as_str()
 }
 
-/// Internal tick: drop handles idle longer than `idle_secs`.
+/// `tell`: drop handles idle longer than `idle_secs` (the plugin sends it every
+/// 30 s); a session with the shared profile saves first (209 D4).
 #[derive(Clone, Copy, Debug)]
-struct Sweep;
+pub struct Sweep;
 
 /// Internal: `rt.shutdown` fired, drop every isolate.
 #[derive(Clone, Copy, Debug)]
@@ -395,6 +409,15 @@ impl Message<agent::AgentEvent> for Browsers {
     }
 }
 
+impl Message<webprofile::WebProfileChanged> for Browsers {
+    type Reply = ();
+
+    /// 209 D14: a site written to the profile makes acting calls on it credentialed.
+    async fn handle(&mut self, e: webprofile::WebProfileChanged, _: &mut Context<Self, Self::Reply>) {
+        profile::know(e.sites);
+    }
+}
+
 impl Message<Sweep> for Browsers {
     type Reply = ();
 
@@ -494,6 +517,8 @@ impl runtime::Plugin for BrowserPlugin {
         actor.register(BROWSER_ACTOR)?;
         // 57 §2.1: a turn ending releases the browser checkpoint its `browser_run` loaded.
         rt.subscribe::<Browsers, agent::AgentEvent>(&actor).await;
+        rt.subscribe::<Browsers, webprofile::WebProfileChanged>(&actor).await;
+        tokio::spawn(profile::learn_sites());
 
         let sweeper = actor.clone();
         tokio::spawn(async move {
