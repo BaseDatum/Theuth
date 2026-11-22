@@ -18,7 +18,7 @@ notes and are not published here.
 | `justfile` | every build, test, packaging and release recipe |
 | `scripts/` | packaging and release scripts, model fetching (`fetch-models.sh`), remote builds, smoke drivers under `scripts/apps/` and `scripts/tests/` |
 | `bindings/` | generated TypeScript wire types, `methods.json` (every RPC method name), `surface-catalog.json` |
-| `packages/apps`, `packages/documents` | TypeScript sources of the in-process bundles `t` embeds: the app parser (`crates/app-js/js`, `just apps-bundle`) and documents (`crates/document-js/js`, `just documents-bundle`) |
+| `packages/apps`, `packages/documents` | TypeScript sources of the in-process bundles `t` embeds: the app parser (`crates/js-runtime/js`, `just apps-bundle`) and documents (`crates/js-runtime/js`, `just documents-bundle`) |
 | `deploy/relay`, `deploy/vm`, `deploy/update` | relay container and Kubernetes manifests; sandbox VM image; Linux CLI tarball builder |
 | `vendor/` | patched `libsqlite3-sys`, `pbjson-types`, `a2a-client` |
 | `site/` | this website: Vite + React marketing page and the docs under `site/content/docs/` |
@@ -106,8 +106,8 @@ just run -- --data-dir /tmp/theuth-dev   # a scratch data dir
 just ts                         # TypeScript bindings → bindings/ (cargo test -p rpc --features ts --lib export_bindings)
 just ts-desktop                 # the same plus a copy into crates/desktop/ui/src/rpc/bindings
 just helper                     # cargo → the theuth-app-parser-<hash> compatibility stub (updaters only)
-just apps-bundle                # bun → rebuild the in-process app parser bundles in crates/app-js/js
-just documents-bundle           # bun → rebuild the in-process documents bundle in crates/document-js/js
+just apps-bundle                # bun → rebuild the in-process app parser bundles in crates/js-runtime/js
+just documents-bundle           # bun → rebuild the in-process documents bundle in crates/js-runtime/js
 just install                    # release t + the app-parser stub into ~/.cargo/bin (or $THEUTH_INSTALL_BIN)
 just models                     # refresh crates/models/data/models.json from models.dev
 just models-check               # fail when the committed catalog drifted
@@ -122,7 +122,7 @@ THEUTH_RPC__LISTEN=127.0.0.1:7791 ./target/debug/t --headless --data-dir /tmp/th
 ```
 
 The app parser and the documents helper run inside `t`. Their bundles are
-committed under `crates/app-js/js` and `crates/document-js/js`; only a
+committed under `crates/js-runtime/js`; only a
 TypeScript change in `packages/apps` or `packages/documents` needs
 `just apps-bundle` / `just documents-bundle` (`just check` runs both
 `*-bundle-check` recipes). Release layouts still carry the

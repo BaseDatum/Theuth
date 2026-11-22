@@ -29,8 +29,8 @@ just run -- --telegram-setup   # BotFather token → vault, command menus, pairi
 just run -- --acp          # Agent Client Protocol on stdio: use theuth from Zed/editors (agent_servers: {"theuth": {"command": "t", "args": ["--acp"]}})
 just ts                    # TypeScript bindings for the wire types → bindings/
 just helper                # theuth-app-parser compatibility stub (cargo) → target/release/theuth-app-parser-stub; shipped only for installed updaters
-just apps-bundle           # rebuild the in-process OpenUI validator bundle (bun) → crates/app-js/js; `just apps-bundle-check` says when it is stale
-just documents-bundle      # rebuild the in-process documents bundle (bun) → crates/document-js/js; `just documents-bundle-check` says when it is stale
+just apps-bundle           # rebuild the in-process OpenUI validator bundle (bun) → crates/js-runtime/js; `just apps-bundle-check` says when it is stale
+just documents-bundle      # rebuild the in-process documents bundle (bun) → crates/js-runtime/js; `just documents-bundle-check` says when it is stale
 just install               # release `t` + the `theuth-app-parser-<hash>` stub into ~/.cargo/bin; older helpers stay for any still-running t (app parser and documents run inside `t`)
 just desktop               # macOS menubar app in dev mode (Tauri + Vite); starts the daemon itself
 just package-macos         # theuth.app + dmg; ad-hoc unless THEUTH_SIGN_IDENTITY / .env.signing
@@ -450,7 +450,7 @@ server shows as unavailable rather than silently rebinding. Where an app
 cannot run — the TUI, Slack, Signal — its card is a receipt plus read-only
 source (`/apps`). Validation runs in-process: the OpenUI check/merge TypeScript
 is bundled into `t` and runs in an embedded V8 isolate on its own thread
-(crate `app-js`; `t --app-parser-hash` prints the library hash this build
+(crate `js-runtime`; `t --app-parser-hash` prints the library hash this build
 embeds); a validator that hangs or crashes is rebuilt and that one `app`
 call fails, and nothing else stops working. Turn off with `app.enabled: false`: no `app`
 tool, prompt block, helper or `/apps`; the bundled `apps` skill is still

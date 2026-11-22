@@ -53,7 +53,7 @@ Android (58 decides the client).
    > **2026-11-21:** the helper no longer runs as a separate process. The same TypeScript
    > (`packages/documents/src/inproc.ts`, on linkedom instead of `@blocknote/server-util`)
    > is bundled into `t` and runs in a deno_core runtime on a dedicated thread (crate
-   > `document-js`); the wire below is unchanged. See
+   > `js-runtime`); the wire below is unchanged. See
    > [documents-inproc-spike.md](documents-inproc-spike.md) and the as-built notes
    > [P1](documents-inproc-as-built-P1.md), [P2](documents-inproc-as-built-P2.md),
    > [P3](documents-inproc-as-built-P3.md).
@@ -365,7 +365,7 @@ It is a Yjs client with `Principal::Helper` over its stdio: newline-
 delimited JSON, binary fields base64.
 
 > **2026-11-21:** no longer a process. `t` embeds the bundle of `src/inproc.ts` and runs it
-> in-process (crate `document-js`, a `documents-js` thread owning a deno_core runtime, with
+> in-process (crate `js-runtime`, a `documents-js` thread owning a deno_core runtime, with
 > deadline, heap-limit and panic containment); `crates/document/src/helper.rs` speaks the same
 > request/reply/`ev:update` lines to it. Nothing below about spawning, `--version`, stdio or
 > backoff applies any more. See [documents-inproc-as-built-P2.md](documents-inproc-as-built-P2.md)

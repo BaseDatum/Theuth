@@ -254,7 +254,7 @@ prints the expected hash for packaging and the updater (39).
 process are gone for OpenUI validation: `packages/apps/src/inproc.ts` (same
 `protocol.ts` wire, same `check.ts`) is bundled by `scripts/build-inproc.ts`
 into one 131 KB runtime-neutral script, committed as
-`crates/app-js/js/theuth-apps-inproc.js`, and run by the new crate `app-js` in a
+`crates/js-runtime/js/theuth-apps-inproc.js`, and run by the crate `js-runtime` in a
 bare deno_core isolate (the V8 `t` already links through obscura-js) on a
 lazily started `app-js` thread. `app::helper::Helper` keeps its
 `check`/`merge_check`/`check_mermaid` surface, `PENDING = 8`, `DEADLINE = 2 s`

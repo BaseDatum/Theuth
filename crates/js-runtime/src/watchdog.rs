@@ -33,9 +33,9 @@ static SHARED: LazyLock<Arc<Shared>> = LazyLock::new(|| {
     });
     let worker = s.clone();
     std::thread::Builder::new()
-        .name("app-js-watchdog".into())
+        .name("js-runtime-watchdog".into())
         .spawn(move || watch(&worker))
-        .expect("spawn app-js watchdog");
+        .expect("spawn js-runtime watchdog");
     s
 });
 

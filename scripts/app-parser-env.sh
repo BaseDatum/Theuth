@@ -2,10 +2,10 @@
 # Source from packaging scripts after `cd "$ROOT"`:  source "$ROOT/scripts/app-parser-env.sh"
 #
 # The file that ships beside `theuth` (the documents helper is compiled into `theuth` itself:
-# crates/document-js):
+# crates/js-runtime):
 #
 # The app parser entry (design doc 46 §2.1; apps-inproc-as-built-P1.md) ships beside `theuth` as
-# `theuth-app-parser-<library sha256>`. `theuth` validates apps in-process (crate app-js) and never
+# `theuth-app-parser-<library sha256>`. `theuth` validates apps in-process (crate js-runtime) and never
 # runs it: since the in-process parser it is a tiny compatibility stub (crates/app-parser-stub,
 # `cargo build`, no Bun) that prints the hash for `--version`, kept only because installed
 # updaters refuse a payload without exactly one `theuth-app-parser-[0-9a-f]{64}` entry. The hash is
@@ -21,13 +21,13 @@ HELPER_HASH="$(tr -d '[:space:]' <packages/apps/generated/library-hash.txt)"
 HELPER="theuth-app-parser-$HELPER_HASH"
 HELPER_SRC="${CARGO_TARGET_DIR:-target}/release/theuth-app-parser-stub"
 
-# check_apps_bundle: the committed in-process bundles (crates/app-js/js) match their inputs and the library
+# check_apps_bundle: the committed in-process bundles (crates/js-runtime/js) match their inputs and the library
 # hash `t` embeds (review M1). shasum only, no bun; `just apps-bundle` fixes a failure.
 check_apps_bundle() {
-  diff <(scripts/apps-bundle-hash.sh) crates/app-js/js/BUNDLE.sha256 >/dev/null \
-    || { echo "error: crates/app-js/js is stale against packages/apps (run just apps-bundle and commit)" >&2; exit 1; }
-  grep -q "$HELPER_HASH" crates/app-js/js/theuth-apps-inproc.js \
-    || { echo "error: crates/app-js/js/theuth-apps-inproc.js does not embed library hash $HELPER_HASH (run just apps-bundle)" >&2; exit 1; }
+  diff <(scripts/apps-bundle-hash.sh) crates/js-runtime/js/apps.sha256 >/dev/null \
+    || { echo "error: crates/js-runtime/js (app bundles) is stale against packages/apps (run just apps-bundle and commit)" >&2; exit 1; }
+  grep -q "$HELPER_HASH" crates/js-runtime/js/theuth-apps-inproc.js \
+    || { echo "error: crates/js-runtime/js/theuth-apps-inproc.js does not embed library hash $HELPER_HASH (run just apps-bundle)" >&2; exit 1; }
 }
 
 # build_helper: check the bundles, then build the compatibility stub for the host (cargo, no Bun) into

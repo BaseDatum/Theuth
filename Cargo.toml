@@ -20,7 +20,7 @@ markdown = { path = "crates/markdown" }
 oauth = { path = "crates/oauth" }
 tools = { path = "crates/tools" }
 document = { path = "crates/document" }  # Yjs authority + derived markdown for knowledge/artifacts/notes (design doc 59)
-document-js = { path = "crates/document-js" }  # the documents helper's TypeScript in-process in deno_core (docs/design/documents-inproc-as-built-P1.md)
+js-runtime = { path = "crates/js-runtime" }  # the in-process JS runtime: documents helper + app bundles in deno_core (docs/design/js-runtime-unified-as-built.md)
 knowledge = { path = "crates/knowledge" }
 search = { path = "crates/search" }  # shared fuzzy matching/snippet/page envelope (design doc 49 §4.1)
 agent = { path = "crates/agent" }
@@ -62,7 +62,6 @@ data-encoding = "2"  # 67
 sandbox = { path = "crates/sandbox" }  # make an engine: ssh installer / docker container → mesh peer (67 §13, 64 §4)
 artifact = { path = "crates/artifact" }
 app = { path = "crates/app" }  # interactive OpenUI apps: publish, app RPC, one-press tool bridge (46)
-app-js = { path = "crates/app-js" }  # the OpenUI check/merge validator's TypeScript in-process in deno_core (docs/design/apps-inproc-as-built-P1.md)
 secrets = { path = "crates/secrets" }  # secrets vault (37)
 update = { path = "crates/update" }  # self-update from the release bucket (39)
 voice = { path = "crates/voice" }  # read replies aloud: Pocket TTS in-process (43)

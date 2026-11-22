@@ -1,21 +1,21 @@
 /**
- * Golden transcripts for crates/document-js (tests/golden.rs): the synthetic parity corpus run through the
+ * Golden transcripts for crates/js-runtime (tests/documents_golden.rs): the synthetic parity corpus run through the
  * documents helper (`src/inproc.ts`, in this process) with a fixed request script. Each output line is
  * canonicalised (the `update` bytes of `ev:update` lines dropped, object keys sorted, block ids renamed
  * ID0, ID1, … in order of appearance per input).
  *
- *   bun run scripts/golden-inproc.ts            verify: replay and compare with tests/golden.json (exit 1 on a diff)
- *   bun run scripts/golden-inproc.ts --write    re-record tests/golden.json from the current helper
+ *   bun run scripts/golden-inproc.ts            verify: replay and compare with tests/documents_golden.json (exit 1 on a diff)
+ *   bun run scripts/golden-inproc.ts --write    re-record tests/documents_golden.json from the current helper
  *
  * The committed file was recorded from the earlier standalone helper and is the regression baseline:
  * re-record only for an intended output change. Keep `script` in step with `run_script` in
- * crates/document-js/tests/golden.rs.
+ * crates/js-runtime/tests/documents_golden.rs.
  */
 import { join } from "node:path";
 import { call } from "../src/inproc.ts";
 import { syntheticCorpus, type Input } from "./parity-corpus.ts";
 
-const goldenFile = join(import.meta.dir, "..", "..", "..", "crates", "document-js", "tests", "golden.json");
+const goldenFile = join(import.meta.dir, "..", "..", "..", "crates", "js-runtime", "tests", "documents_golden.json");
 const write = process.argv.includes("--write");
 
 /** `Y.encodeStateAsUpdate(new Y.Doc())`. */

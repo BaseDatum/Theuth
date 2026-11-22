@@ -42,7 +42,7 @@ a2a = { workspace = true }
 update = { workspace = true }
 artifact = { workspace = true }
 app = { workspace = true }
-app-js = { workspace = true }  # V8 platform init on the main thread for the in-process app parser
+js-runtime = { workspace = true }  # V8 platform init on the main thread for the in-process JS bundles
 voice = { workspace = true }
 talk = { workspace = true }
 decision = { workspace = true }
