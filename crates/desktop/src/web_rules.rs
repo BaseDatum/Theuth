@@ -1,6 +1,7 @@
 //! The web view tile's pure rules (205 §4.3, §5, §9), shared by the desktop child webviews (`webview.rs`) and the
 //! iOS shell's raw `WKWebView`s (`ios_webview.rs`): labels, events, error prefixes, the load / navigation
-//! allowlist, the browser-open throttle and the data store identifier.
+//! allowlist, the browser-open throttle and the data store identifier; and, in [`profile`], the browser
+//! profile's cookie shape, jar diff, change debounce and storage-capture parsing (209 §4.1, §4.2, §4.5).
 
 use std::time::{Duration, Instant};
 
@@ -137,6 +138,417 @@ pub(crate) fn check_url<R: Runtime>(app: &AppHandle<R>, url: &str) -> Result<Url
         ));
     }
     Ok(parsed)
+}
+
+/// `web_profile_read` / `web_storage_capture` on Windows and Linux: the store is not read there yet
+/// (209 §4.5 allows Tauri's `Webview::cookies()`; it has no host-only flag and no script result).
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub(crate) const PROFILE_UNSUPPORTED: &str =
+    "unsupported: the browser profile is read on macOS and iOS only";
+
+/// The browser profile's client-side rules (209 §4.5): what `web_profile_read` returns, what
+/// `web_storage_capture` returns, and when `web-profile://changed` fires. Apple platforms only: Windows and
+/// Linux answer both commands with [`PROFILE_UNSUPPORTED`].
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub(crate) mod profile {
+    use std::time::{Duration, Instant};
+
+    use serde::{Deserialize, Serialize};
+
+    /// Event to every window when the tile store's cookies changed, payload `{}` (209 §4.5).
+    pub(crate) const CHANGED_EVENT: &str = "web-profile://changed";
+
+    /// A change is reported once the store has been quiet this long (209 §4.5, D3).
+    pub(crate) const QUIET: Duration = Duration::from_secs(2);
+
+    /// …or at the latest this long after the first unreported change, so a page that sets a cookie every
+    /// second is still reported.
+    pub(crate) const MAX_WAIT: Duration = Duration::from_secs(10);
+
+    /// `web-profile://changed` payload: empty, the UI reads the store itself (209 §4.5).
+    #[derive(Clone, Serialize)]
+    pub(crate) struct Changed {}
+
+    /// One cookie in the contract's shape (209 §4.1). `domain` has no leading dot; `host_only` says whether
+    /// it was set without a `Domain` attribute. `expires` is Unix seconds, `None` for a session cookie.
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub(crate) struct Cookie {
+        pub(crate) name: String,
+        pub(crate) value: String,
+        pub(crate) domain: String,
+        pub(crate) host_only: bool,
+        pub(crate) path: String,
+        pub(crate) expires: Option<i64>,
+        pub(crate) secure: bool,
+        pub(crate) http_only: bool,
+        /// `"Strict" | "Lax" | "None" | ""`.
+        pub(crate) same_site: String,
+        pub(crate) partitioned: bool,
+    }
+
+    /// The identity of a cookie, `(name, domain, path)` (209 §4.2).
+    #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+    pub(crate) struct CookieKey {
+        pub(crate) name: String,
+        pub(crate) domain: String,
+        pub(crate) path: String,
+    }
+
+    impl Cookie {
+        pub(crate) fn key(&self) -> CookieKey {
+            CookieKey {
+                name: self.name.clone(),
+                domain: self.domain.clone(),
+                path: self.path.clone(),
+            }
+        }
+    }
+
+    /// An `NSHTTPCookie`'s attributes as plain values, read by `apple_cookies`.
+    pub(crate) struct NativeCookie {
+        pub(crate) name: String,
+        pub(crate) value: String,
+        /// As `NSHTTPCookie.domain` gives it: a leading dot for a `Domain` cookie.
+        pub(crate) domain: String,
+        pub(crate) path: String,
+        /// `expiresDate.timeIntervalSince1970`; ignored when `session_only`.
+        pub(crate) expires: Option<f64>,
+        pub(crate) session_only: bool,
+        pub(crate) secure: bool,
+        pub(crate) http_only: bool,
+        /// `sameSitePolicy`: `"lax"`, `"strict"`, or absent.
+        pub(crate) same_site: Option<String>,
+        /// Every entry of `properties`, values as their description.
+        pub(crate) properties: Vec<(String, String)>,
+    }
+
+    impl From<NativeCookie> for Cookie {
+        fn from(n: NativeCookie) -> Self {
+            let (domain, host_only) = match n.domain.strip_prefix('.') {
+                Some(rest) => (rest.to_owned(), false),
+                None => (n.domain, true),
+            };
+            Cookie {
+                name: n.name,
+                value: n.value,
+                domain: domain.to_ascii_lowercase(),
+                host_only,
+                path: if n.path.is_empty() {
+                    "/".to_owned()
+                } else {
+                    n.path
+                },
+                expires: if n.session_only {
+                    None
+                } else {
+                    n.expires.map(|s| s.floor() as i64)
+                },
+                secure: n.secure,
+                http_only: n.http_only,
+                same_site: same_site(n.same_site.as_deref()).to_owned(),
+                partitioned: partitioned(&n.properties),
+            }
+        }
+    }
+
+    /// `sameSitePolicy` → the contract's spelling; anything unknown is `""` (unspecified).
+    fn same_site(policy: Option<&str>) -> &'static str {
+        match policy.map(str::to_ascii_lowercase).as_deref() {
+            Some("strict") => "Strict",
+            Some("lax") => "Lax",
+            Some("none") => "None",
+            _ => "",
+        }
+    }
+
+    /// `NSHTTPCookie` has no partition attribute (209 D1); a `Partitioned` property that WebKit may carry
+    /// is honoured when it is truthy, else the cookie is unpartitioned.
+    fn partitioned(properties: &[(String, String)]) -> bool {
+        properties.iter().any(|(k, v)| {
+            k.eq_ignore_ascii_case("partitioned")
+                && matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+        })
+    }
+
+    /// Cookies set (new or any attribute changed) and removed between two reads of the store (209 §4.2).
+    #[derive(Debug, Default, PartialEq, Eq)]
+    pub(crate) struct Delta {
+        pub(crate) set: Vec<Cookie>,
+        pub(crate) removed: Vec<CookieKey>,
+    }
+
+    impl Delta {
+        pub(crate) fn is_empty(&self) -> bool {
+            self.set.is_empty() && self.removed.is_empty()
+        }
+    }
+
+    /// `new` against `old`, keyed `(name, domain, path)`; for a key present twice in one list the last wins.
+    pub(crate) fn diff(old: &[Cookie], new: &[Cookie]) -> Delta {
+        use std::collections::BTreeMap;
+        let old: BTreeMap<CookieKey, &Cookie> = old.iter().map(|c| (c.key(), c)).collect();
+        let new: BTreeMap<CookieKey, &Cookie> = new.iter().map(|c| (c.key(), c)).collect();
+        Delta {
+            set: new
+                .iter()
+                .filter(|(k, c)| old.get(*k) != Some(*c))
+                .map(|(_, c)| (*c).clone())
+                .collect(),
+            removed: old
+                .keys()
+                .filter(|k| !new.contains_key(*k))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Trailing debounce of store changes: due [`QUIET`] after the last change, or [`MAX_WAIT`] after the
+    /// first unreported one, whichever comes first.
+    #[derive(Debug, Default)]
+    pub(crate) struct Debounce {
+        first: Option<Instant>,
+        last: Option<Instant>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum Due {
+        /// Nothing unreported.
+        Idle,
+        /// Report now; the debounce is reset.
+        Fire,
+        /// Ask again after this long.
+        Wait(Duration),
+    }
+
+    impl Debounce {
+        /// Record a change at `now`. `true` when nothing was pending: the caller starts the timer.
+        pub(crate) fn change(&mut self, now: Instant) -> bool {
+            let idle = self.first.is_none();
+            self.first.get_or_insert(now);
+            self.last = Some(now);
+            idle
+        }
+
+        pub(crate) fn poll(&mut self, now: Instant) -> Due {
+            let (Some(first), Some(last)) = (self.first, self.last) else {
+                return Due::Idle;
+            };
+            let quiet = QUIET.saturating_sub(now.saturating_duration_since(last));
+            let max = MAX_WAIT.saturating_sub(now.saturating_duration_since(first));
+            let wait = quiet.min(max);
+            if wait.is_zero() {
+                *self = Debounce::default();
+                Due::Fire
+            } else {
+                Due::Wait(wait)
+            }
+        }
+    }
+
+    /// Name of the isolated `WKContentWorld` the shell's scripts run in (209 §4.7).
+    pub(crate) const AGENT_WORLD: &str = "theuth-agent";
+
+    /// Body of the `callAsyncJavaScript` that `web_storage_capture` runs in [`AGENT_WORLD`], in the main
+    /// frame: the top-level origin and its localStorage as JSON.
+    pub(crate) const CAPTURE_SCRIPT: &str = "const s=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k!==null){s.push([k,localStorage.getItem(k)??\"\"]);}}return JSON.stringify({origin:location.origin,local_storage:s});";
+
+    /// `web_storage_capture` result (209 §4.5).
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub(crate) struct Storage {
+        pub(crate) origin: String,
+        pub(crate) local_storage: Vec<(String, String)>,
+    }
+
+    /// The capture script's JSON, refused unless the origin is http(s) (an `about:blank` or opaque page
+    /// has no origin to store under).
+    pub(crate) fn parse_capture(json: &str) -> Result<Storage, String> {
+        // The error names the position only: serde's message can quote a storage value.
+        let storage: Storage = serde_json::from_str(json).map_err(|e| {
+            format!(
+                "storage capture returned an unexpected shape (at column {})",
+                e.column()
+            )
+        })?;
+        let web = tauri::Url::parse(&storage.origin)
+            .is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
+        if !web {
+            return Err(format!("{NO_ORIGIN} `{}`", storage.origin));
+        }
+        Ok(storage)
+    }
+
+    /// Prefix of `web_storage_capture`'s refusal for a page without an http(s) origin.
+    const NO_ORIGIN: &str = "no web origin";
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn native(domain: &str) -> NativeCookie {
+            NativeCookie {
+                name: "__Host-sid".into(),
+                value: "v".into(),
+                domain: domain.into(),
+                path: "/".into(),
+                expires: Some(1_795_000_000.75),
+                session_only: false,
+                secure: true,
+                http_only: true,
+                same_site: Some("lax".into()),
+                properties: vec![],
+            }
+        }
+
+        fn cookie(name: &str, value: &str) -> Cookie {
+            Cookie::from(NativeCookie {
+                name: name.into(),
+                value: value.into(),
+                ..native("app.example.com")
+            })
+        }
+
+        #[test]
+        fn profile_cookie_mapping() {
+            let c = Cookie::from(native("App.Example.com"));
+            assert_eq!(
+                c,
+                Cookie {
+                    name: "__Host-sid".into(),
+                    value: "v".into(),
+                    domain: "app.example.com".into(),
+                    host_only: true,
+                    path: "/".into(),
+                    expires: Some(1_795_000_000),
+                    secure: true,
+                    http_only: true,
+                    same_site: "Lax".into(),
+                    partitioned: false,
+                }
+            );
+            let d = Cookie::from(NativeCookie {
+                session_only: true,
+                same_site: None,
+                path: String::new(),
+                properties: vec![("Partitioned".into(), "TRUE".into())],
+                ..native(".example.com")
+            });
+            assert_eq!((d.domain.as_str(), d.host_only), ("example.com", false));
+            assert_eq!(d.expires, None);
+            assert_eq!(d.same_site, "");
+            assert_eq!(d.path, "/");
+            assert!(d.partitioned);
+            for (policy, want) in [("strict", "Strict"), ("None", "None"), ("bogus", "")] {
+                let c = Cookie::from(NativeCookie {
+                    same_site: Some(policy.into()),
+                    ..native("a.test")
+                });
+                assert_eq!(c.same_site, want, "{policy}");
+            }
+            let json = serde_json::to_value(&c).unwrap();
+            let keys: Vec<&str> = json
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            for key in [
+                "name",
+                "value",
+                "domain",
+                "host_only",
+                "path",
+                "expires",
+                "secure",
+                "http_only",
+                "same_site",
+                "partitioned",
+            ] {
+                assert!(keys.contains(&key), "{key}");
+            }
+            assert_eq!(keys.len(), 10);
+        }
+
+        #[test]
+        fn profile_jar_diff() {
+            let a = cookie("a", "1");
+            let b = cookie("b", "2");
+            let b2 = cookie("b", "3");
+            let c = cookie("c", "4");
+            assert!(diff(&[a.clone(), b.clone()], &[b.clone(), a.clone()]).is_empty());
+            let d = diff(&[a.clone(), b], &[b2.clone(), c.clone()]);
+            assert_eq!(d.set, vec![b2, c]);
+            assert_eq!(d.removed, vec![a.key()]);
+            // An attribute other than the value is a change too.
+            let mut a_strict = a.clone();
+            a_strict.same_site = "Strict".into();
+            assert_eq!(diff(&[a.clone()], &[a_strict.clone()]).set, vec![a_strict]);
+            // The same name under another path is another cookie.
+            let mut a_sub = a.clone();
+            a_sub.path = "/sub".into();
+            let d = diff(&[a.clone()], &[a.clone(), a_sub.clone()]);
+            assert_eq!(d.set, vec![a_sub]);
+            assert!(d.removed.is_empty());
+            assert_eq!(diff(&[a.clone()], &[]).removed, vec![a.key()]);
+        }
+
+        #[test]
+        fn profile_change_debounce() {
+            let t0 = Instant::now();
+            let mut d = Debounce::default();
+            assert_eq!(d.poll(t0), Due::Idle);
+            assert!(d.change(t0));
+            assert!(!d.change(t0 + Duration::from_millis(500)));
+            assert_eq!(
+                d.poll(t0 + Duration::from_millis(1500)),
+                Due::Wait(Duration::from_secs(1))
+            );
+            assert_eq!(d.poll(t0 + Duration::from_millis(2500)), Due::Fire);
+            assert_eq!(d.poll(t0 + Duration::from_secs(3)), Due::Idle);
+            // A change every second never goes quiet: due MAX_WAIT after the first.
+            let mut d = Debounce::default();
+            assert!(d.change(t0));
+            for s in 1..=9 {
+                d.change(t0 + Duration::from_secs(s));
+                assert!(matches!(d.poll(t0 + Duration::from_secs(s)), Due::Wait(_)));
+            }
+            assert_eq!(
+                d.poll(t0 + Duration::from_millis(9500)),
+                Due::Wait(Duration::from_millis(500))
+            );
+            assert_eq!(d.poll(t0 + MAX_WAIT), Due::Fire);
+            // A clock that did not advance never panics.
+            let mut d = Debounce::default();
+            d.change(t0 + QUIET);
+            assert_eq!(d.poll(t0), Due::Wait(QUIET));
+        }
+
+        #[test]
+        fn profile_storage_capture() {
+            let s = parse_capture(
+                r#"{"origin":"https://app.example.com","local_storage":[["k","v"],["e",""]]}"#,
+            )
+            .unwrap();
+            assert_eq!(s.origin, "https://app.example.com");
+            assert_eq!(
+                s.local_storage,
+                vec![("k".into(), "v".into()), ("e".into(), String::new())]
+            );
+            assert_eq!(
+                serde_json::to_value(&s).unwrap(),
+                serde_json::json!({"origin": "https://app.example.com", "local_storage": [["k", "v"], ["e", ""]]})
+            );
+            for origin in ["null", "file://", "about:blank"] {
+                let json = format!(r#"{{"origin":"{origin}","local_storage":[]}}"#);
+                assert!(
+                    parse_capture(&json)
+                        .unwrap_err()
+                        .starts_with("no web origin"),
+                    "{origin}"
+                );
+            }
+            assert!(parse_capture("[]").is_err());
+        }
+    }
 }
 
 #[cfg(test)]

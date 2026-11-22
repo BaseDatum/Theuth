@@ -22,14 +22,18 @@
 //! `objc2-web-kit` 0.3 declares the delegate protocols' methods for macOS only, so the compiler does not check
 //! the selectors or signatures below against the protocols on iOS; [`create`] asserts in debug builds that
 //! every one of [`DELEGATE_SELECTORS`] is registered.
+//!
+//! The browser profile (209 §4.5): `web_profile_read` and `web_storage_capture` read the [`DATA_STORE`]
+//! store's cookies and a view's localStorage through `apple_cookies`, which [`create`] also starts watching
+//! for `web-profile://changed`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::{NonNull, null_mut};
 use std::rc::Rc;
-use std::sync::mpsc::RecvTimeoutError;
-use std::time::{Duration, Instant};
+use std::sync::mpsc::sync_channel;
+use std::time::Instant;
 
 use block2::{DynBlock, RcBlock};
 use objc2::rc::{Allocated, Retained, Weak};
@@ -55,6 +59,8 @@ use objc2_web_kit::{
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Url, Webview};
 
+use crate::apple_cookies::{capture, read, wait, watch};
+use crate::web_rules::profile::{Cookie, Storage};
 use crate::web_rules::{
     CLOSED_EVENT, Closed, DATA_STORE, STATE_EVENT, allowed, app_url, check_label, check_url,
     may_open, navigation_allowed, no_view,
@@ -579,16 +585,13 @@ thread_local! {
     static VIEWS: RefCell<HashMap<String, Entry>> = RefCell::new(HashMap::new());
 }
 
-/// How long a command waits for the main thread before giving up.
-const MAIN_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Run `f` on the main thread with Tauri's `WKWebView` of the calling webview, and wait for its result, at most
-/// [`MAIN_TIMEOUT`].
+/// [`crate::apple_cookies::MAIN_TIMEOUT`].
 async fn on_main<T: Send + 'static>(
     caller: &Webview,
     f: impl FnOnce(MainThreadMarker, &WKWebView) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let (tx, rx) = sync_channel(1);
     caller
         .with_webview(move |platform| {
             let mtm = MainThreadMarker::new().expect("with_webview runs on the main thread");
@@ -597,19 +600,8 @@ async fn on_main<T: Send + 'static>(
             let _ = tx.send(f(mtm, main));
         })
         .map_err(|e| e.to_string())?;
-    // The reply comes from the main thread's next turn; wait for it off the async workers.
-    tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(MAIN_TIMEOUT))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| match e {
-            RecvTimeoutError::Timeout => format!(
-                "the main thread did not run the web view call within {} s",
-                MAIN_TIMEOUT.as_secs()
-            ),
-            RecvTimeoutError::Disconnected => {
-                "the main thread dropped the web view call".to_owned()
-            }
-        })?
+    // The reply comes from the main thread's next turn.
+    wait(rx).await
 }
 
 /// The UI's rectangle (CSS px of the main webview's layout viewport) in `parent`'s coordinates: CSS px scale
@@ -665,6 +657,8 @@ fn create(
         config
     };
     let view = WKWebView::init_with_frame(WKWebView::alloc(mtm), frame, &config);
+    // 209 §4.5: from the first tile on, store changes reach the UI as `web-profile://changed`.
+    watch(mtm, &app);
     view.setClipsToBounds(true);
     let delegate = Delegate::new(
         mtm,
@@ -853,4 +847,22 @@ pub async fn web_view_close(app: AppHandle, webview: Webview, label: String) -> 
         tracing::warn!("emit {CLOSED_EVENT}: {e}");
     }
     Ok(())
+}
+
+/// Every cookie of the tiles' store, through WebKit on the named store (209 §4.5).
+#[tauri::command]
+pub async fn web_profile_read(app: AppHandle) -> Result<Vec<Cookie>, String> {
+    read(app).await
+}
+
+/// The top-level origin's localStorage of `label`, read in the isolated world (209 §4.5).
+#[tauri::command]
+pub async fn web_storage_capture(webview: Webview, label: String) -> Result<Storage, String> {
+    check_label(&label)?;
+    let (tx, rx) = sync_channel(1);
+    on_main(&webview, move |mtm, _| {
+        with_view(&label, |e| capture(mtm, &e.view, tx))
+    })
+    .await?;
+    wait(rx).await
 }

@@ -9,6 +9,8 @@
 //! `UIBackgroundTask` so the relay socket survives the grace period. `main.rs`
 //! and the generated iOS bridge both enter at [`run`].
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod apple_cookies;
 #[cfg(desktop)]
 mod asset;
 mod commands;
@@ -65,7 +67,12 @@ pub fn run() {
     ios_windowing::install();
     #[cfg(desktop)]
     app.run(|app, event| match event {
-        tauri::RunEvent::Exit => quit::on_exit(app),
+        tauri::RunEvent::Exit => {
+            // 209 §4.5: the tile store's cookie observer goes before WebKit does.
+            #[cfg(target_os = "macos")]
+            apple_cookies::unwatch();
+            quit::on_exit(app)
+        }
         // 166 D2: a Dock click.
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => dock::reopen(app),
@@ -116,7 +123,12 @@ mod mobile {
                 #[cfg(target_os = "ios")]
                 crate::ios_webview::web_view_history,
                 #[cfg(target_os = "ios")]
-                crate::ios_webview::web_view_close
+                crate::ios_webview::web_view_close,
+                // 209 §4.5: the tile store's cookies and a tile's localStorage.
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_profile_read,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_storage_capture
             ])
             .setup(|app| {
                 let builder =
@@ -167,6 +179,7 @@ mod mobile {
                 event: WindowEvent::Resumed | WindowEvent::Focused(true),
                 ..
             } => background::release(),
+            RunEvent::Exit => crate::apple_cookies::unwatch(),
             _ => {}
         }
     }
@@ -346,6 +359,8 @@ mod desktop {
             crate::webview::web_view_reload,
             crate::webview::web_view_history,
             crate::webview::web_view_close,
+            crate::webview::web_profile_read,
+            crate::webview::web_storage_capture,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V reach the webview through it); GTK would paint it inside the window.
         #[cfg(target_os = "macos")]

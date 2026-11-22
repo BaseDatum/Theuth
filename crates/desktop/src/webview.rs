@@ -17,6 +17,10 @@
 //! The one `initialization_script` is the constant [`LINKS_SCRIPT`]. The macOS data store identifier needs
 //! macOS 14+; older systems silently use the default store, shared with the app (wry `wkwebview/mod.rs:276-287`).
 //! The `asset` scheme refuses `web-*` webviews (`crate::asset`).
+//!
+//! The browser profile (209 §4.5): on macOS `web_profile_read` and `web_storage_capture` go to WebKit
+//! directly through `apple_cookies` (the store watch starts with the first web view); Windows and Linux
+//! answer both with `PROFILE_UNSUPPORTED`.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -32,6 +36,10 @@ use tauri_plugin_opener::OpenerExt;
 
 #[cfg(target_os = "macos")]
 use crate::web_rules::DATA_STORE;
+#[cfg(not(target_os = "macos"))]
+use crate::web_rules::PROFILE_UNSUPPORTED;
+#[cfg(target_os = "macos")]
+use crate::web_rules::profile::{Cookie, Storage};
 use crate::web_rules::{
     CLOSED_EVENT, Closed, STATE_EVENT, app_url, check_label, check_url, in_popout, may_open,
     navigation_allowed, no_view,
@@ -243,7 +251,12 @@ pub async fn web_view_attach<R: Runtime>(
         LogicalSize::new(width, height),
     );
     match res {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            // 209 §4.5: from the first tile on, store changes reach the UI as `web-profile://changed`.
+            #[cfg(target_os = "macos")]
+            crate::apple_cookies::start(&app);
+            Ok(())
+        }
         Err(e) => {
             lock(&app.state::<Views>()).remove(&label);
             Err(e.to_string())
@@ -324,6 +337,57 @@ pub async fn web_view_close<R: Runtime>(
     view.close().map_err(|e| e.to_string())?;
     emit_closed(&app, label);
     Ok(())
+}
+
+/// Every cookie of the tiles' store, through WebKit on the named store (209 §4.5, D3).
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn web_profile_read<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Cookie>, String> {
+    crate::apple_cookies::read(app).await
+}
+
+/// Windows and Linux: [`PROFILE_UNSUPPORTED`] (209 §4.5 fallback not built).
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn web_profile_read() -> Result<(), String> {
+    Err(PROFILE_UNSUPPORTED.to_owned())
+}
+
+/// The top-level origin's localStorage of `label`, read in the isolated world (209 §4.5).
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn web_storage_capture<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+) -> Result<Storage, String> {
+    use objc2::MainThreadMarker;
+    use objc2::runtime::AnyObject;
+
+    let view = webview(&app, &label)?;
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    view.with_webview(move |platform| {
+        let Some(mtm) = MainThreadMarker::new() else {
+            let _ = tx.send(Err("with_webview ran off the main thread".to_owned()));
+            return;
+        };
+        // SAFETY: on macOS `inner()` is the webview's live `WKWebView`, and `with_webview` runs on the main
+        // thread.
+        let view = unsafe { &*platform.inner().cast::<AnyObject>() };
+        crate::apple_cookies::capture(mtm, view, tx);
+    })
+    .map_err(|e| e.to_string())?;
+    crate::apple_cookies::wait(rx).await
+}
+
+/// Windows and Linux: [`PROFILE_UNSUPPORTED`] (209 §4.5 fallback not built).
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn web_storage_capture<R: Runtime>(
+    app: AppHandle<R>,
+    label: String,
+) -> Result<(), String> {
+    webview(&app, &label)?;
+    Err(PROFILE_UNSUPPORTED.to_owned())
 }
 
 #[cfg(test)]
