@@ -73,7 +73,7 @@ pub async fn local(
     let stop = rt.shutdown.clone();
     let store = crate::store::Store::open(&root).await?;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let helper = crate::helper::Helper::new(crate::helper_path(), tx, stop.clone());
+    let helper = crate::helper::Helper::new(tx, stop.clone());
     let mut cfg = rt
         .section::<crate::DocumentsConfig>("documents")
         .unwrap_or_default();

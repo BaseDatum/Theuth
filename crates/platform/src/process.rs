@@ -105,7 +105,7 @@ pub fn own_session(cmd: &mut tokio::process::Command) {
 /// Give a console-subsystem child no console. Windows allocates a fresh, visible
 /// console for a console child whose parent has none — `t.exe --headless` under
 /// the desktop app is such a parent, so a plain `Command::new` there put a blank
-/// window on the desktop for every helper (`theuth-documents-*.exe`, git, tar,
+/// window on the desktop for every helper (`theuth-app-parser-*.exe`, git, tar,
 /// hostname) and kept it there for as long as the helper lived. `CREATE_NO_WINDOW`
 /// (0x08000000) skips the allocation; pipes still work. A no-op elsewhere. Not for
 /// PTY children (ConPTY brings its own console) or a child meant to show a window.

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "OpenUI Lang adapter for theuth apps: curated library, generated catalog/hash, headless check/merge helper (design 46).",
+  "description": "OpenUI Lang adapter for theuth apps: curated library, generated catalog/hash, headless check/merge validator bundled for t's in-process runtime (design 46; apps-inproc-as-built-P1.md).",
   "exports": {
     ".": "./src/index.ts",
     "./check": "./src/check.ts",
@@ -20,8 +20,9 @@
   ],
   "scripts": {
     "generate": "bun run scripts/generate.ts",
-    "build:helper": "bun run scripts/build-helper.ts",
     "check": "tsc --noEmit",
+    "build:inproc": "bun run scripts/build-inproc.ts",
+    "record:golden": "bun run scripts/record-inproc-golden.ts",
     "test": "bun test"
   },
   "dependencies": {
@@ -30,7 +31,6 @@
     "@openuidev/react-headless": "0.16.1",
     "@openuidev/react-lang": "0.3.0",
     "@openuidev/react-ui": "0.16.1",
-    "jsdom": "26.1.0",
     "mermaid": "^12.0.0",
     "react": "19",
     "react-dom": "19",
@@ -41,6 +41,7 @@
     "@types/bun": "^1.3.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "jsdom": "26.1.0",
     "typescript": "^7.0.2"
   },
   "trustedDependencies": [],

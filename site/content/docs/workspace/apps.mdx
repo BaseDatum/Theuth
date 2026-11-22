@@ -104,17 +104,17 @@ app:
 
 With `app.enabled: false` the agent has no `app` tool and the TUI hides `/apps` (typing it says `apps are off (app.enabled); /artifacts lists their sources`). Existing apps stay readable as source in `/artifacts`, the desktop explorer and `Ctrl+O`. See [Configuration](/docs/reference/configuration).
 
-## The parser helper
+## The parser
 
-Validation runs in a separate executable, `theuth-app-parser-<hash>`, installed beside the `t` binary (one immutable file per library hash). It is built from the same OpenUI library the desktop renders with, so source and renderer always agree. `t --app-parser-hash` prints the hash this build expects; `THEUTH_APP_PARSER=<path>` points the engine at another executable for development. The helper is started lazily on the first `app` call and restarted if it crashes or stops answering.
+Validation runs inside `t`: the same OpenUI library the desktop renders with is bundled into the binary and runs in an embedded JavaScript engine on its own thread, so source and renderer always agree and there is no separate executable to install. It starts on the first `app` call; a validation that hangs (2 s) or crashes fails that one call and the parser is rebuilt for the next. `t --app-parser-hash` prints the library hash this build embeds.
 
 ## Troubleshooting
 
-**`apps are unavailable on this harness: parser helper missing at <path>`** — the helper is not beside the binary. Nothing else is affected: existing apps stay readable, and the agent is told to use `show` for a static file instead. Reinstall or update theuth (`t --update`; see [Installation](/docs/getting-started/installation)) or run `just install` from a source checkout; both place `theuth-app-parser-<hash>` next to `t`. For a custom build, `t --app-parser-hash` tells you which file name the engine is looking for.
+**`app parser failed: …`** — that one validation was stopped and the parser rebuilt; call `app` again. Nothing else is affected: existing apps stay readable.
 
-**`app parser helper is library <found>, this build needs <expected>`** or **`parser helper validated against library <h1>, this harness is <h2>`** — a helper from another build is on the path. The engine refuses to trust a helper whose library differs from its own; install the matching one (same release) or unset `THEUTH_APP_PARSER`.
+**`parser helper validated against library <h1>, this harness is <h2>`** — should not happen with the in-process parser (it is the binary's own library); report it.
 
-**`app parser busy: 8 validations pending; try again`** / **`app parser did not answer within 2s`** — transient; the engine kills a stuck helper and respawns it on the next request.
+**`app parser busy: 8 validations pending; try again`** / **`app parser did not answer within 2s`** — transient; a stuck validation is terminated and the parser rebuilt for the next request.
 
 **The panel says `Apps are disabled on this node; the source stays readable.`** — `app.enabled` is `false` on that engine. **`This node predates apps: update it to run this app.`** — the engine you are connected to is an older release; update it with `t --update`.
 

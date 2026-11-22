@@ -1,7 +1,8 @@
 //! Publish → open → call, end to end through the real tool registry and
-//! artifact store, with a canned parser helper (the real one is a compiled
-//! Bun binary; its contract is exercised in `packages/apps`). One test: the
-//! kameo registry names and `THEUTH_APP_PARSER` are process-global.
+//! artifact store, with a canned parser verdict (`helper::install_canned`;
+//! the real validator's contract is exercised in `packages/apps` and in
+//! `app-js`/`helper.rs` tests). One test: the kameo registry names and the
+//! canned responder are process-global.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -129,33 +130,17 @@ impl Tool for Wipe {
 /// not a credential use; only a call that passes it to a tool is.
 const SOURCE: &str = "root = Stack([status, controls])\n$app = \"db\"\n$key = \"{{secret:APP_SMOKE}}\"\nhealth = Query(\"echo_tool\", {name: $app}, {ok: false}, 30)\nrisky = Query(\"wipe_tool\", {target: $app}, {}, 60)\nstatus = TextContent(\"\" + health.ok)\nsync = Mutation(\"wipe_tool\", {target: $app})\ncontrols = Button(\"Wipe\", Action([@Run(sync)]), null, \"destructive\")\n";
 
-/// A `sh` helper answering every request with `body` (a JSON object without
-/// its braces, `__SRC__` replaced by the request's own `source`) under the
-/// request's id, and our hash for `--version`. Echoing the source is what
-/// lets the test see the bytes the `app` tool actually received.
-fn fake_helper(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
-    assert!(!body.contains('\''), "fixture must be single-quote free");
-    let p = dir.join("fake-parser");
-    std::fs::write(
-        &p,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo \"theuth-app-parser {}\"; exit 0; fi\n\
-             body='{body}'\n\
-             while IFS= read -r line; do\n\
-             id=$(printf '%s' \"$line\" | sed -E 's/^\\{{\"id\":\"([^\"]*)\".*/\\1/')\n\
-             src=$(printf '%s' \"$line\" | sed -E 's/^\\{{\"id\":\"[^\"]*\",\"op\":\"[^\"]*\",\"source\":\"((\\\\.|[^\"\\\\])*)\".*/\\1/')\n\
-             printf '{{\"id\":\"%s\",%s%s%s}}\\n' \"$id\" \"${{body%%__SRC__*}}\" \"$src\" \"${{body#*__SRC__}}\"\n\
-             done\n",
-            app::hash()
-        ),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    p
+/// A responder answering every request with `body` under the request's id,
+/// its `source` replaced by the request's own `source`. Echoing the source is
+/// what lets the test see the bytes the `app` tool actually received.
+fn canned(body: serde_json::Value) -> app::helper::Responder {
+    Arc::new(move |line: &str| {
+        let req: serde_json::Value = serde_json::from_str(line).unwrap();
+        let mut out = body.clone();
+        out["id"] = req["id"].clone();
+        out["source"] = req["source"].clone();
+        out.to_string()
+    })
 }
 
 async fn identity(reg: &ActorRef<ToolRegistry>, session: SessionId, name: &str) -> String {
@@ -228,7 +213,7 @@ async fn publish_open_call_edit_end_to_end() {
     let echo_id = identity(&reg, session, "echo_tool").await;
     let wipe_id = identity(&reg, session, "wipe_tool").await;
     let body = serde_json::json!({
-        "source": "__SRC__",
+        "source": "",
         "library_hash": app::hash(),
         "statements": [
             {"id": "root", "kind": "value"}, {"id": "$app", "kind": "state"}, {"id": "$key", "kind": "state"},
@@ -244,11 +229,8 @@ async fn publish_open_call_edit_end_to_end() {
         "diagnostics": [],
         "state": {"$app": "db", "$key": PLACEHOLDER},
         "orphaned": []
-    })
-    .to_string();
-    let body = &body[1..body.len() - 1];
-    // SAFETY: one test in this binary; nothing else reads the environment concurrently.
-    unsafe { std::env::set_var("THEUTH_APP_PARSER", fake_helper(dir.path(), body)) };
+    });
+    assert!(app::helper::install_canned(canned(body)));
     Box::new(AppPlugin).start(&rt).await.unwrap();
     for _ in 0..200 {
         let specs = reg.ask(tools::ListTools(None)).await.unwrap();

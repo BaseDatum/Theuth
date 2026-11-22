@@ -2,11 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- theuth-app-parser-<hash> (design doc 46 §2.1) is a compiled Bun executable (bun build, compile flag).
+  <!-- The documents helper theuth-documents-<version> (design doc 59 §3.2) is a compiled Bun executable
+       (bun build, compile flag). The theuth-app-parser-<hash> entry is no longer Bun (the parser runs in-process,
+       docs/design/apps-inproc-as-built-P1.md): its compatibility stub is plain Mach-O, signed WITHOUT this file.
        JavaScriptCore JITs through MAP_JIT, which allow-jit covers on arm64. Bun's signing
        guide also lists allow-unsigned-executable-memory, disable-executable-page-protection,
        allow-dyld-environment-variables and disable-library-validation; none is granted until
-       the hardened-runtime smoke (package-macos.sh: check_helper after codesign) shows a need.
+       the hardened-runtime smoke (package-macos.sh: check_doc_helper after codesign) shows a need.
        If it ever crashes, add allow-unsigned-executable-memory first, nothing broader.
        Note: XML comments must not contain a double hyphen; codesign rejects the whole plist. -->
   <key>com.apple.security.cs.allow-jit</key>

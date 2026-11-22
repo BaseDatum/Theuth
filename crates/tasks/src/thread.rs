@@ -188,37 +188,27 @@ mod tests {
 
     /// 101 R2, the actor hop: `DocThread::headings` reaches the registered document actor,
     /// which answers the kind from its store and the headings from the helper's outline
-    /// (a `sh` helper with one canned tree); an unknown or malformed id is `None`.
+    /// (a canned helper with one tree); an unknown or malformed id is `None`.
     #[tokio::test]
     async fn headings_reach_the_document_actor() {
         let dir = tempfile::tempdir().unwrap();
-        let script = dir.path().join("helper.sh");
-        std::fs::write(
-            &script,
-            format!(
-                r#"#!/bin/sh
-if [ "$1" = --version ]; then echo "theuth-documents {}"; exit 0; fi
-while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
-  case "$line" in
-    *'"op":"outline"'*) printf '{{"id":%s,"ok":true,"result":{{"outline":"","blocks":[{{"id":"t","type":"heading","text":"[h1] T","children":[]}},{{"id":"a","type":"heading","text":"[h2] What was done","children":[]}},{{"id":"p","type":"paragraph","text":"x","children":[]}}]}}}}\n' "$id" ;;
-    *) printf '{{"id":%s,"ok":true,"result":{{}}}}\n' "$id" ;;
-  esac
-done
-"#,
-                document::protocol_version()
-            ),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
         let store = document::store::Store::open(dir.path()).await.unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let helper = document::helper::Helper::new(script, tx, rt.shutdown.clone());
+        let helper = document::helper::Helper::fake(tx, |line| {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            let id = v["id"].as_u64().unwrap_or_default();
+            let result = if v["op"] == "outline" {
+                serde_json::json!({ "outline": "", "blocks": [
+                    { "id": "t", "type": "heading", "text": "[h1] T", "children": [] },
+                    { "id": "a", "type": "heading", "text": "[h2] What was done", "children": [] },
+                    { "id": "p", "type": "paragraph", "text": "x", "children": [] },
+                ] })
+            } else {
+                serde_json::json!({})
+            };
+            vec![serde_json::json!({ "id": id, "ok": true, "result": result }).to_string()]
+        });
         let actor = DocumentActor::spawn(DocumentActor::new(
             store.clone(),
             helper,

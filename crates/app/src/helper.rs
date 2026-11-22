@@ -1,37 +1,47 @@
-//! The headless parser helper (46 §2.1): one lazy, long-lived
-//! `theuth-app-parser` child per harness, JSON lines over stdio, served strictly
-//! in order. This side owns admission ([`PENDING`] queued requests, more →
-//! [`Error::Busy`]), the [`DEADLINE`] covering write and response read, and
-//! the kill/replace policy: a timeout, a crash, an oversized or malformed
-//! response line kills the child and fails that one request; the next
-//! request starts a fresh child. The executable's `--version` hash must
-//! equal ours before it serves anything, whatever its file name says.
-//! Shutdown kills the child; `kill_on_drop` covers everything else.
+//! The headless parser (46 §2.1), in-process: two bundles in two deno_core
+//! isolates, each on its own lazily started thread ([`app_js::BundleThread`]):
+//! the OpenUI check/merge validator (`packages/apps/src/inproc.ts`,
+//! [`app_js::APPS`]) and the parse-only mermaid check
+//! (`packages/apps/src/inproc-mermaid.ts`, [`app_js::MERMAID`]); no
+//! executable, no child process (apps-inproc-as-built-P1.md). This side owns
+//! admission — each isolate has its own lane of one request being served plus
+//! [`PENDING`] queued, more → [`Error::Busy`], so queued mermaid work never
+//! takes a `check` slot — and the wire (`protocol.ts`, unchanged); the runtime
+//! owns the deadlines (a watchdog terminates the script), the heap ceiling
+//! and panic containment, and rebuilds itself after any of them: the request
+//! fails, the next one runs on a fresh isolate. A reply whose id is not the
+//! request's is treated the same way. Shutdown stops both threads.
 
-use std::path::PathBuf;
-use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::{AppBinding, AppDiagnostic};
 
 /// Requests queued behind the one being served (46 §7 "parser admission").
 pub const PENDING: usize = 8;
-/// Per request: from writing the line to having read the whole response.
+/// Per OpenUI request: how long the validator may run (event loop included)
+/// before it is terminated and rebuilt. Building the isolate (bundle load,
+/// after start or a rebuild) is not counted (`app_js::LOAD_DEADLINE`).
 pub const DEADLINE: Duration = Duration::from_secs(2);
-/// The first `check_mermaid` on a child: mermaid + jsdom load lazily and
-/// take seconds under load (30 §5); later ones get [`DEADLINE`].
-pub const MERMAID_FIRST_DEADLINE: Duration = Duration::from_secs(15);
-/// Largest response line accepted; the helper refuses request lines above
-/// the same size, so a longer response is a broken helper.
+/// Per warm `check_mermaid`: V8 runs mermaid's super-linear class-diagram
+/// parser ~1.6× slower than the old helper's JSC, so a 32 KB fence needs ~3 s
+/// (docs/design/apps-mermaid-inproc-spike.md §4). Own thread: it never delays
+/// `check`.
+pub const MERMAID_DEADLINE: Duration = Duration::from_secs(5);
+/// The first `check_mermaid` on each mermaid runtime (its first diagram
+/// chunk evaluates; measured ≤ 35 ms, the rest is headroom for a loaded box).
+pub const MERMAID_FIRST_DEADLINE: Duration = Duration::from_secs(10);
+/// Largest request line accepted; the bundles refuse longer lines too
+/// (`inproc.ts` `MAX_LINE_BYTES`).
 pub const MAX_LINE: usize = 4 * 1024 * 1024;
+/// V8 heap ceiling of each isolate (OpenUI and mermaid).
+const HEAP_LIMIT: usize = 256 * 1024 * 1024;
 
-/// One visible tool as the helper binds it (`protocol.ts` `ToolSnapshot`).
+/// One visible tool as the validator binds it (`protocol.ts` `ToolSnapshot`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ToolSnapshot {
     /// Registry name.
@@ -55,28 +65,6 @@ struct Request<'a> {
     tools: &'a [ToolSnapshot],
 }
 
-/// `check_mermaid` request line (`protocol.ts` `MermaidRequest`).
-#[derive(Serialize)]
-struct MermaidRequest<'a> {
-    id: String,
-    op: &'static str,
-    source: &'a str,
-}
-
-/// `check_mermaid` response body (`protocol.ts` `MermaidResponse`).
-#[derive(Deserialize)]
-struct MermaidResponse {
-    ok: bool,
-    #[serde(default)]
-    errors: Vec<MermaidError>,
-}
-
-#[derive(Deserialize)]
-struct MermaidError {
-    line: Option<u32>,
-    message: String,
-}
-
 /// One statement of a checked program.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatementInfo {
@@ -91,7 +79,7 @@ pub struct StatementInfo {
 pub struct CheckResult {
     /// Canonical validated source (merge output for `merge_check`).
     pub source: String,
-    /// The helper's library hash.
+    /// The validator's library hash.
     pub library_hash: String,
     /// Every statement.
     #[serde(default)]
@@ -114,39 +102,28 @@ pub struct CheckResult {
 /// "app unavailable / try again" the model or user may read; none commits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// No executable at the expected path.
-    Missing(PathBuf),
-    /// The executable is another library version.
-    Hash {
-        /// Ours.
-        expected: String,
-        /// The executable's `--version`.
-        found: String,
-    },
     /// [`PENDING`] requests already queued.
     Busy,
-    /// [`DEADLINE`] passed; the child was killed.
-    Timeout,
-    /// The child exited or its pipes broke; killed and reaped.
+    /// The isolate's deadline ([`DEADLINE`] for OpenUI, [`MERMAID_DEADLINE`]
+    /// for mermaid; carried here) passed; it was terminated and is rebuilt.
+    Timeout(Duration),
+    /// The validator's runtime failed (heap limit, panic, a reply for
+    /// another request, stopped); it is rebuilt for the next request.
     Crashed(String),
-    /// The helper answered with an error line or an unparseable response.
+    /// The validator answered with an error line or an unparseable response,
+    /// or the request could not be sent.
     Protocol(String),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Missing(p) => write!(f, "app parser helper not found at {}", p.display()),
-            Self::Hash { expected, found } => write!(
-                f,
-                "app parser helper is library {found}, this build needs {expected}"
-            ),
             Self::Busy => write!(
                 f,
                 "app parser busy: {PENDING} validations pending; try again"
             ),
-            Self::Timeout => write!(f, "app parser did not answer within {DEADLINE:?}"),
-            Self::Crashed(e) => write!(f, "app parser helper failed: {e}"),
+            Self::Timeout(d) => write!(f, "app parser did not answer within {d:?}"),
+            Self::Crashed(e) => write!(f, "app parser failed: {e}"),
             Self::Protocol(e) => write!(f, "app parser protocol error: {e}"),
         }
     }
@@ -154,38 +131,123 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-struct Job {
-    line: Vec<u8>,
-    id: String,
-    /// Needs the mermaid parser: the first on a child gets [`MERMAID_FIRST_DEADLINE`].
-    mermaid: bool,
-    reply: oneshot::Sender<Result<serde_json::Value, Error>>,
+/// `check_mermaid` request line (`protocol.ts` `MermaidRequest`).
+#[derive(Serialize)]
+struct MermaidRequest<'a> {
+    id: &'a str,
+    op: &'static str,
+    source: &'a str,
 }
 
-/// Handle to the helper. Cheap to share behind an `Arc`; the worker task
-/// and child process start on the first request.
+/// `check_mermaid` response body (`protocol.ts` `MermaidResponse`).
+#[derive(Deserialize)]
+struct MermaidResponse {
+    ok: bool,
+    #[serde(default)]
+    errors: Vec<MermaidError>,
+}
+
+#[derive(Deserialize)]
+struct MermaidError {
+    line: Option<u32>,
+    message: String,
+}
+
+/// A canned responder for other crates' tests: request line → response line.
+#[doc(hidden)]
+pub type Responder = Arc<dyn Fn(&str) -> String + Send + Sync>;
+
+enum Backend {
+    Js(app_js::BundleThread),
+    Canned(Responder),
+}
+
+/// One isolate (or canned responder) and its admission: the request being
+/// served plus [`PENDING`] queued.
+struct Lane {
+    backend: Backend,
+    admission: Arc<Semaphore>,
+}
+
+impl Lane {
+    fn new(backend: Backend) -> Self {
+        Self {
+            backend,
+            admission: Arc::new(Semaphore::new(PENDING + 1)),
+        }
+    }
+}
+
+/// Runtime input (a test's closure), so `OnceLock`, not `LazyLock`.
+static CANNED: std::sync::OnceLock<Responder> = std::sync::OnceLock::new();
+
+/// Make every later [`crate::AppPlugin`] start use `respond` instead of the
+/// validator (process-global; for integration tests of the plugin whose
+/// verdict must be scripted). Returns false when one is already installed.
+#[doc(hidden)]
+pub fn install_canned(respond: Responder) -> bool {
+    CANNED.set(respond).is_ok()
+}
+
+/// Handle to the parsers. Cheap to share behind an `Arc`; each thread and
+/// isolate starts on its first request (no mermaid fence → no mermaid isolate).
 pub struct Helper {
-    path: PathBuf,
-    tx: mpsc::Sender<Job>,
+    openui: Lane,
+    mermaid: Lane,
     next: std::sync::atomic::AtomicU64,
 }
 
 impl Helper {
-    /// `path` is the executable; `hash` the library hash its `--version`
-    /// must print; `shutdown` kills the child.
-    pub fn new(path: PathBuf, hash: &'static str, shutdown: CancellationToken) -> Self {
-        let (tx, rx) = mpsc::channel(PENDING);
-        tokio::spawn(worker(path.clone(), hash, rx, shutdown));
-        Self {
-            path,
-            tx,
-            next: std::sync::atomic::AtomicU64::new(1),
+    /// The in-process parsers; `shutdown` stops their threads.
+    pub fn new(shutdown: CancellationToken) -> Self {
+        let openui = app_js::Limits {
+            deadline: DEADLINE,
+            first_deadline: DEADLINE,
+            heap_limit: HEAP_LIMIT,
+            max_line: MAX_LINE,
+        };
+        let mermaid = app_js::Limits {
+            deadline: MERMAID_DEADLINE,
+            first_deadline: MERMAID_FIRST_DEADLINE,
+            heap_limit: HEAP_LIMIT,
+            max_line: MAX_LINE,
+        };
+        Self::with(
+            Backend::Js(app_js::BundleThread::new(
+                &app_js::APPS,
+                openui,
+                shutdown.clone(),
+            )),
+            Backend::Js(app_js::BundleThread::new(
+                &app_js::MERMAID,
+                mermaid,
+                shutdown,
+            )),
+        )
+    }
+
+    /// A helper answering every request line (both ops) with `respond`'s
+    /// line (tests of crates that need a parser verdict without the real one).
+    #[doc(hidden)]
+    pub fn canned(respond: Responder) -> Self {
+        Self::with(Backend::Canned(respond.clone()), Backend::Canned(respond))
+    }
+
+    /// What [`crate::AppPlugin`] starts: the in-process parsers, or the
+    /// responder a test installed with [`install_canned`].
+    pub(crate) fn for_plugin(shutdown: CancellationToken) -> Self {
+        match CANNED.get() {
+            Some(respond) => Self::canned(respond.clone()),
+            None => Self::new(shutdown),
         }
     }
 
-    /// The executable path this helper runs.
-    pub fn path(&self) -> &std::path::Path {
-        &self.path
+    fn with(openui: Backend, mermaid: Backend) -> Self {
+        Self {
+            openui: Lane::new(openui),
+            mermaid: Lane::new(mermaid),
+            next: std::sync::atomic::AtomicU64::new(1),
+        }
     }
 
     /// Validate complete `source`.
@@ -203,21 +265,17 @@ impl Helper {
         self.request("merge_check", patch, Some(base), tools).await
     }
 
-    /// Syntax-check one mermaid diagram (30 §5): `path` is `line:N` when the
-    /// parser located the error, else `""`.
+    /// Syntax-check one mermaid diagram (30 §5) on the mermaid isolate: `path`
+    /// is `line:N` when the parser located the error, else `""`.
     pub async fn check_mermaid(&self, source: &str) -> Result<Vec<tools::FenceError>, Error> {
         let id = self.next_id();
-        let v = self
-            .send(
-                serde_json::to_vec(&MermaidRequest {
-                    id: id.clone(),
-                    op: "check_mermaid",
-                    source,
-                }),
-                id,
-                true,
-            )
-            .await?;
+        let line = serde_json::to_string(&MermaidRequest {
+            id: &id,
+            op: "check_mermaid",
+            source,
+        })
+        .map_err(|e| Error::Protocol(format!("serialize request: {e}")))?;
+        let v = send(&self.mermaid, line, &id).await?;
         let r: MermaidResponse = serde_json::from_value(v)
             .map_err(|e| Error::Protocol(format!("response body: {e}")))?;
         Ok(if r.ok {
@@ -233,6 +291,12 @@ impl Helper {
         })
     }
 
+    fn next_id(&self) -> String {
+        self.next
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .to_string()
+    }
+
     async fn request(
         &self,
         op: &'static str,
@@ -241,230 +305,56 @@ impl Helper {
         tools: &[ToolSnapshot],
     ) -> Result<CheckResult, Error> {
         let id = self.next_id();
-        let v = self
-            .send(
-                serde_json::to_vec(&Request {
-                    id: id.clone(),
-                    op,
-                    source,
-                    base,
-                    tools,
-                }),
-                id,
-                false,
-            )
-            .await?;
+        let line = serde_json::to_string(&Request {
+            id: id.clone(),
+            op,
+            source,
+            base,
+            tools,
+        })
+        .map_err(|e| Error::Protocol(format!("serialize request: {e}")))?;
+        let v = send(&self.openui, line, &id).await?;
         serde_json::from_value(v).map_err(|e| Error::Protocol(format!("response body: {e}")))
     }
-
-    fn next_id(&self) -> String {
-        self.next
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            .to_string()
-    }
-
-    async fn send(
-        &self,
-        line: serde_json::Result<Vec<u8>>,
-        id: String,
-        mermaid: bool,
-    ) -> Result<serde_json::Value, Error> {
-        let mut line = line.map_err(|e| Error::Protocol(format!("serialize request: {e}")))?;
-        if line.len() > MAX_LINE {
-            return Err(Error::Protocol(format!(
-                "request is {} bytes; the helper accepts {MAX_LINE}",
-                line.len()
-            )));
-        }
-        line.push(b'\n');
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .try_send(Job {
-                line,
-                id,
-                mermaid,
-                reply,
-            })
-            .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(_) => Error::Busy,
-                mpsc::error::TrySendError::Closed(_) => {
-                    Error::Crashed("helper worker stopped (shutdown)".into())
-                }
-            })?;
-        rx.await
-            .unwrap_or_else(|_| Err(Error::Crashed("helper worker stopped".into())))
-    }
 }
 
-struct Proc {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-    /// This child has answered one `check_mermaid`: its parser is loaded.
-    mermaid_warm: bool,
-}
-
-impl Proc {
-    async fn kill(mut self) {
-        // `kill` also reaps; `kill_on_drop` is the net under a cancelled await.
-        let _ = self.child.kill().await;
-    }
-}
-
-/// Serves jobs in order on one child at a time.
-async fn worker(
-    path: PathBuf,
-    hash: &'static str,
-    mut rx: mpsc::Receiver<Job>,
-    shutdown: CancellationToken,
-) {
-    let mut proc: Option<Proc> = None;
-    loop {
-        let job = tokio::select! {
-            _ = shutdown.cancelled() => break,
-            j = rx.recv() => match j { Some(j) => j, None => break },
-        };
-        let mut p = match proc.take() {
-            Some(p) => p,
-            None => match tokio::time::timeout(DEADLINE, spawn(&path, hash)).await {
-                Ok(Ok(p)) => p,
-                Ok(Err(e)) => {
-                    let _ = job.reply.send(Err(e));
-                    continue;
-                }
-                Err(_) => {
-                    let _ = job.reply.send(Err(Error::Timeout));
-                    continue;
-                }
-            },
-        };
-        let deadline = if job.mermaid && !p.mermaid_warm {
-            MERMAID_FIRST_DEADLINE
-        } else {
-            DEADLINE
-        };
-        let served = tokio::select! {
-            _ = shutdown.cancelled() => None,
-            r = tokio::time::timeout(deadline, serve(&mut p, &job)) => Some(r),
-        };
-        let Some(served) = served else {
-            p.kill().await;
-            let _ = job.reply.send(Err(Error::Crashed("shutdown".into())));
-            break;
-        };
-        match served {
-            Ok(Ok(result)) => {
-                p.mermaid_warm |= job.mermaid;
-                let _ = job.reply.send(Ok(result));
-                proc = Some(p);
-            }
-            Ok(Err(e)) => {
-                tracing::warn!("app parser helper replaced: {e}");
-                p.kill().await;
-                let _ = job.reply.send(Err(e));
-            }
-            Err(_) => {
-                tracing::warn!("app parser helper killed after {deadline:?}");
-                p.kill().await;
-                let _ = job.reply.send(Err(Error::Timeout));
-            }
-        }
-    }
-    if let Some(p) = proc {
-        p.kill().await;
-    }
-}
-
-fn command(path: &std::path::Path) -> Command {
-    let mut cmd = Command::new(path);
-    cmd.env("OPENUI_TELEMETRY_DISABLED", "1")
-        .env("DO_NOT_TRACK", "1")
-        .kill_on_drop(true);
-    platform::process::hide_console(cmd.as_std_mut());
-    cmd
-}
-
-/// `--version` must print our hash; then start the line server.
-async fn spawn(path: &std::path::Path, hash: &str) -> Result<Proc, Error> {
-    if !path.is_file() {
-        return Err(Error::Missing(path.to_path_buf()));
-    }
-    let out = command(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .await
-        .map_err(|e| Error::Crashed(format!("{}: {e}", path.display())))?;
-    let found = String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .last()
-        .unwrap_or_default()
-        .to_owned();
-    if !out.status.success() || found != hash {
-        return Err(Error::Hash {
-            expected: hash.to_owned(),
-            found: if found.is_empty() {
-                format!("exit {}", out.status)
-            } else {
-                found
-            },
-        });
-    }
-    let mut child = command(path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| Error::Crashed(format!("{}: {e}", path.display())))?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| Error::Crashed("no stdin".into()))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| Error::Crashed("no stdout".into()))?;
-    Ok(Proc {
-        child,
-        stdin,
-        stdout: BufReader::new(stdout),
-        mermaid_warm: false,
-    })
-}
-
-/// Write one request line, read one bounded response line, check its id.
-async fn serve(p: &mut Proc, job: &Job) -> Result<serde_json::Value, Error> {
-    p.stdin
-        .write_all(&job.line)
-        .await
-        .map_err(|e| Error::Crashed(format!("write: {e}")))?;
-    p.stdin
-        .flush()
-        .await
-        .map_err(|e| Error::Crashed(format!("flush: {e}")))?;
-    let mut buf = Vec::new();
-    let n = (&mut p.stdout)
-        .take(MAX_LINE as u64 + 1)
-        .read_until(b'\n', &mut buf)
-        .await
-        .map_err(|e| Error::Crashed(format!("read: {e}")))?;
-    if n == 0 {
-        return Err(Error::Crashed("exited without answering".into()));
-    }
-    if buf.len() > MAX_LINE {
+/// Admit on `lane`, run, match the reply to `id`.
+async fn send(lane: &Lane, line: String, id: &str) -> Result<serde_json::Value, Error> {
+    if line.len() > MAX_LINE {
         return Err(Error::Protocol(format!(
-            "response line above {MAX_LINE} bytes"
+            "request is {} bytes; the helper accepts {MAX_LINE}",
+            line.len()
         )));
     }
+    let _permit = lane
+        .admission
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| Error::Busy)?;
+    let reply = match &lane.backend {
+        Backend::Canned(respond) => respond(&line),
+        Backend::Js(js) => match js.enqueue(line).await {
+            Ok(r) => r.reply,
+            Err(app_js::Error::Timeout) => return Err(Error::Timeout(js.limits().deadline)),
+            Err(app_js::Error::TooLarge { len, max }) => {
+                return Err(Error::Protocol(format!(
+                    "request is {len} bytes; the helper accepts {max}"
+                )));
+            }
+            Err(e) => return Err(Error::Crashed(e.to_string())),
+        },
+    };
     let v: serde_json::Value =
-        serde_json::from_slice(&buf).map_err(|e| Error::Protocol(format!("response: {e}")))?;
-    if v.get("id").and_then(|i| i.as_str()) != Some(job.id.as_str()) {
-        return Err(Error::Protocol(format!(
-            "response id {} for request {}",
-            v.get("id").unwrap_or(&serde_json::Value::Null),
-            job.id
+        serde_json::from_str(&reply).map_err(|e| Error::Protocol(format!("response: {e}")))?;
+    if v.get("id").and_then(|i| i.as_str()) != Some(id) {
+        // Output that answers another request cannot be trusted, nor can the
+        // runtime that produced it: give it up; the next request runs fresh.
+        if let Backend::Js(js) = &lane.backend {
+            js.restart();
+        }
+        return Err(Error::Crashed(format!(
+            "response id {} for request {id}; the parser runtime is rebuilt",
+            v.get("id").unwrap_or(&serde_json::Value::Null)
         )));
     }
     if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
@@ -477,176 +367,353 @@ async fn serve(p: &mut Proc, job: &Job) -> Result<serde_json::Value, Error> {
 mod tests {
     use super::*;
 
-    const HASH: &str = "abc123";
-
-    /// A `sh` helper: `--version` prints `HASH`; then `body` runs with the
-    /// request stream on stdin. `$COUNT` is a file `body` may append to.
-    fn script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
-        let p = dir.join(name);
-        std::fs::write(
-            &p,
-            format!(
-                "#!/bin/sh\nif [ \"$1\" = --version ]; then echo \"theuth-app-parser {HASH}\"; exit 0; fi\n{body}\n"
-            ),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        p
+    fn helper() -> Helper {
+        Helper::new(CancellationToken::new())
     }
 
-    /// Answers every line with an empty valid `CheckResult` carrying its id.
-    const ECHO: &str = r#"while IFS= read -r line; do
-id=$(printf '%s' "$line" | sed -E 's/^\{"id":"([^"]*)".*/\1/')
-printf '{"id":"%s","source":"root = Stack([])","library_hash":"abc123","statements":[{"id":"root","kind":"value"}],"bindings":[],"diagnostics":[],"state":{},"orphaned":[]}\n' "$id"
-done"#;
-
-    fn helper(path: PathBuf) -> Helper {
-        Helper::new(path, HASH, CancellationToken::new())
-    }
-
-    #[tokio::test]
-    async fn serves_in_order_on_one_child_and_matches_ids() {
-        let dir = tempfile::tempdir().unwrap();
-        let h = helper(script(dir.path(), "ok.sh", ECHO));
-        for _ in 0..3 {
-            let r = h.check("root = Stack([])", &[]).await.unwrap();
-            assert_eq!(r.statements[0].id, "root");
-            assert_eq!(r.library_hash, HASH);
+    fn sync_tool() -> ToolSnapshot {
+        ToolSnapshot {
+            name: "argo_sync".into(),
+            schema: serde_json::json!({ "type": "object", "properties": { "name": { "type": "string" } }, "required": ["name"] }),
+            risk: tools::Risk::Mutating,
+            identity: "mcp:argo/argo_sync#1".into(),
         }
     }
 
+    const SOURCE: &str = "root = Stack([b])\nsync = Mutation(\"argo_sync\", {name: \"web\"})\nb = Button(\"Sync\", Action([@Run(sync)]))";
+
     #[tokio::test]
-    async fn wrong_hash_or_missing_binary_never_serves() {
-        let dir = tempfile::tempdir().unwrap();
-        // `script` always prints HASH for `--version`; this one lies about its library.
-        let other = script(dir.path(), "other.sh", ECHO);
-        std::fs::write(&other, "#!/bin/sh\necho 'theuth-app-parser deadbeef'\n").unwrap();
-        let h = helper(other);
-        assert_eq!(
-            h.check("x", &[]).await.unwrap_err(),
-            Error::Hash {
-                expected: HASH.into(),
-                found: "deadbeef".into()
-            }
-        );
-        let missing = dir.path().join("nope");
-        let h = helper(missing.clone());
-        assert_eq!(
-            h.check("x", &[]).await.unwrap_err(),
-            Error::Missing(missing)
-        );
+    async fn check_and_merge_check_against_the_real_validator() {
+        let h = helper();
+        let r = h.check(SOURCE, &[sync_tool()]).await.unwrap();
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        assert_eq!(r.library_hash, crate::hash());
+        assert_eq!(r.bindings.len(), 1);
+        assert_eq!(r.bindings[0].statement_id, "sync");
+        assert_eq!(r.bindings[0].identity, "mcp:argo/argo_sync#1");
+        assert_eq!(r.statements.len(), 3);
+        // Without the tool: a located diagnostic, still a result.
+        let r = h.check(SOURCE, &[]).await.unwrap();
+        assert_eq!(r.diagnostics.len(), 1);
+        assert_eq!(r.diagnostics[0].at, "sync");
+        // A patch onto the base; the merged program is what is validated.
+        let r = h
+            .merge_check(
+                "b = Button(\"Go\", Action([@Run(sync)]))",
+                SOURCE,
+                &[sync_tool()],
+            )
+            .await
+            .unwrap();
+        assert!(r.diagnostics.is_empty(), "{:?}", r.diagnostics);
+        assert!(r.source.contains("Button(\"Go\""), "{}", r.source);
+        // Many requests, in order, one runtime.
+        for _ in 0..5 {
+            assert!(
+                h.check("root = Stack([])", &[])
+                    .await
+                    .unwrap()
+                    .diagnostics
+                    .is_empty()
+            );
+        }
     }
 
     #[tokio::test]
-    async fn crash_fails_that_request_and_the_next_one_respawns() {
-        let dir = tempfile::tempdir().unwrap();
-        let count = dir.path().join("count");
-        let body = format!("echo x >> {}\nIFS= read -r line\nexit 3", count.display());
-        let h = helper(script(dir.path(), "crash.sh", &body));
-        assert!(matches!(h.check("x", &[]).await, Err(Error::Crashed(_))));
-        assert!(matches!(h.check("x", &[]).await, Err(Error::Crashed(_))));
-        assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 2);
+    async fn oversized_requests_are_refused_before_the_runtime() {
+        let h = helper();
+        let big = "x".repeat(MAX_LINE);
+        assert!(
+            matches!(h.check(&big, &[]).await, Err(Error::Protocol(m)) if m.contains("the helper accepts"))
+        );
+        assert!(h.check("root = Stack([])", &[]).await.is_ok());
     }
 
     #[tokio::test]
-    async fn hang_is_killed_at_the_deadline_and_replaced() {
-        let dir = tempfile::tempdir().unwrap();
-        let count = dir.path().join("count");
-        let body = format!(
-            "echo x >> {}\nif [ ! -f {} ]; then touch {}; IFS= read -r line; exec sleep 30; fi\n{ECHO}",
-            count.display(),
-            dir.path().join("hung").display(),
-            dir.path().join("hung").display(),
-        );
-        let h = helper(script(dir.path(), "hang.sh", &body));
+    async fn a_hang_is_terminated_at_the_deadline_and_the_next_request_is_served() {
+        let h = helper();
+        assert!(h.check("root = Stack([])", &[]).await.is_ok());
+        let Backend::Js(js) = &h.openui.backend else {
+            unreachable!()
+        };
+        js.eval_raw("globalThis.theuthApps.call = () => { for (;;) {} };".into())
+            .await
+            .unwrap();
         let t = std::time::Instant::now();
-        assert_eq!(h.check("x", &[]).await.unwrap_err(), Error::Timeout);
-        assert!(t.elapsed() >= DEADLINE && t.elapsed() < DEADLINE * 3);
-        // Second child is the echo server.
-        assert!(h.check("x", &[]).await.is_ok());
-        assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 2);
+        assert_eq!(
+            h.check("root = Stack([])", &[]).await.unwrap_err(),
+            Error::Timeout(DEADLINE)
+        );
+        assert!(
+            t.elapsed() >= DEADLINE && t.elapsed() < DEADLINE * 5,
+            "{:?}",
+            t.elapsed()
+        );
+        assert!(
+            h.check("root = Stack([])", &[]).await.is_ok(),
+            "fresh runtime serves"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_for_another_request_fails_it_and_the_runtime_is_rebuilt() {
+        let h = helper();
+        assert!(h.check("root = Stack([])", &[]).await.is_ok());
+        let Backend::Js(js) = &h.openui.backend else {
+            unreachable!()
+        };
+        js.eval_raw(
+            "const orig = globalThis.theuthApps.call;
+             globalThis.theuthApps.call = (line) => { globalThis.theuthApps.call = orig; return orig(line).replace(/^\\{\"id\":\"[^\"]*\"/, '{\"id\":\"999\"'); };"
+                .into(),
+        )
+        .await
+        .unwrap();
+        let generation = js.generation();
+        assert!(
+            matches!(h.check("root = Stack([])", &[]).await, Err(Error::Crashed(m)) if m.contains("999"))
+        );
+        assert!(h.check("root = Stack([])", &[]).await.is_ok());
+        assert_eq!(js.generation(), generation + 1);
+    }
+
+    #[tokio::test]
+    async fn error_lines_are_protocol_errors() {
+        let h = Helper::canned(Arc::new(|line: &str| {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            serde_json::json!({ "id": v["id"], "error": "bad" }).to_string()
+        }));
+        assert_eq!(
+            h.check("x", &[]).await.unwrap_err(),
+            Error::Protocol("bad".into())
+        );
+        let h = Helper::canned(Arc::new(|_: &str| "not json".to_owned()));
+        assert!(matches!(h.check("x", &[]).await, Err(Error::Protocol(_))));
     }
 
     #[tokio::test]
     async fn more_than_pending_queued_requests_are_busy_not_queued() {
-        let dir = tempfile::tempdir().unwrap();
-        // The child marks that it has taken a request, then hangs on it.
-        let taken = dir.path().join("taken");
-        let body = format!(
-            "IFS= read -r line; touch {}; exec sleep 30",
-            taken.display()
-        );
-        let h = std::sync::Arc::new(helper(script(dir.path(), "slow.sh", &body)));
+        let h = Arc::new(helper());
+        assert!(h.check("root = Stack([])", &[]).await.is_ok());
+        let Backend::Js(js) = &h.openui.backend else {
+            unreachable!()
+        };
+        // Occupy the runtime thread (no admission permit), then admit PENDING + 1.
+        let busy =
+            js.eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 1000) {} }".into());
+        let waiting: Vec<_> = (0..=PENDING)
+            .map(|_| {
+                let h = h.clone();
+                tokio::spawn(async move { h.check("root = Stack([])", &[]).await })
+            })
+            .collect();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        // One request occupies the worker: wait until the child has read it.
-        let mut waiting = vec![tokio::spawn({
-            let h = h.clone();
-            async move { h.check("x", &[]).await }
-        })];
-        while !taken.exists() {
+        while h.openui.admission.available_permits() > 0 {
             assert!(
                 std::time::Instant::now() < deadline,
-                "worker never took the first request"
+                "admission never filled"
             );
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        // Then exactly PENDING more fill the queue; wait until it is full.
-        for _ in 0..PENDING {
-            let h = h.clone();
-            waiting.push(tokio::spawn(async move { h.check("x", &[]).await }));
-        }
-        while h.tx.capacity() > 0 {
-            assert!(std::time::Instant::now() < deadline, "queue never filled");
             tokio::task::yield_now().await;
         }
-        assert_eq!(h.check("x", &[]).await.unwrap_err(), Error::Busy);
+        assert_eq!(
+            h.check("root = Stack([])", &[]).await.unwrap_err(),
+            Error::Busy
+        );
+        busy.await.unwrap();
         for w in waiting {
-            w.abort();
+            assert!(w.await.unwrap().is_ok(), "admitted requests are served");
         }
-    }
-
-    #[tokio::test]
-    async fn malformed_and_mismatched_responses_are_protocol_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        let body = r#"IFS= read -r line; echo '{"id":"999","error":"bad"}'
-IFS= read -r line; echo 'not json'"#;
-        let h = helper(script(dir.path(), "bad.sh", body));
-        assert!(matches!(h.check("x", &[]).await, Err(Error::Protocol(_))));
-        // The child was replaced; a fresh one answers the id mismatch again.
-        assert!(matches!(h.check("x", &[]).await, Err(Error::Protocol(_))));
+        assert!(h.check("root = Stack([])", &[]).await.is_ok());
     }
 
     #[tokio::test]
     async fn shutdown_stops_serving() {
-        let dir = tempfile::tempdir().unwrap();
         let token = CancellationToken::new();
-        let h = Helper::new(script(dir.path(), "ok.sh", ECHO), HASH, token.clone());
-        assert!(h.check("x", &[]).await.is_ok());
+        let h = Helper::new(token.clone());
+        assert!(h.check("root = Stack([])", &[]).await.is_ok());
         token.cancel();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let Backend::Js(js) = &h.openui.backend else {
+            unreachable!()
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while js.is_running() {
+            assert!(std::time::Instant::now() < deadline, "thread never stopped");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(matches!(h.check("x", &[]).await, Err(Error::Crashed(_))));
     }
 
+    fn js(lane: &Lane) -> &app_js::BundleThread {
+        match &lane.backend {
+            Backend::Js(js) => js,
+            Backend::Canned(_) => unreachable!("real helper"),
+        }
+    }
+
+    const FLOW: &str = "flowchart TD\n  A --> B";
+    const FLOW_BAD: &str = "flowchart TD\n  A --> B\n}}} ]]] ((( @@@ !!! <<<";
+
+    /// A valid diagram passes, an invalid one is located, and `check` still serves.
+    async fn both_serve(h: &Helper, what: &str) {
+        assert_eq!(
+            h.check_mermaid(FLOW).await,
+            Ok(vec![]),
+            "mermaid after {what}"
+        );
+        assert!(
+            h.check("root = Stack([])", &[]).await.is_ok(),
+            "check after {what}"
+        );
+    }
+
     #[tokio::test]
-    async fn check_mermaid_maps_lines_and_gets_the_long_first_deadline() {
-        let dir = tempfile::tempdir().unwrap();
-        // First answer arrives after DEADLINE (cold parser), located; second is ok.
-        let body = r#"IFS= read -r line; sleep 3
-id=$(printf '%s' "$line" | sed -E 's/^\{"id":"([^"]*)".*/\1/')
-printf '{"id":"%s","ok":false,"errors":[{"line":4,"message":"Parse error on line 4"},{"line":null,"message":"whole"}]}\n' "$id"
-IFS= read -r line
-id=$(printf '%s' "$line" | sed -E 's/^\{"id":"([^"]*)".*/\1/')
-printf '{"id":"%s","ok":true}\n' "$id""#;
-        let h = helper(script(dir.path(), "mm.sh", body));
-        let errs = h.check_mermaid("graph TD\nA-->B[").await.unwrap();
-        assert_eq!(errs.len(), 2);
-        assert_eq!(errs[0].path, "line:4");
-        assert_eq!(errs[0].message, "Parse error on line 4");
-        assert_eq!(errs[1].path, "");
-        assert_eq!(h.check_mermaid("graph TD\nA-->B").await.unwrap(), vec![]);
+    async fn check_mermaid_runs_on_its_own_lazily_started_isolate() {
+        let h = helper();
+        assert!(h.check("root = Stack([])", &[]).await.is_ok());
+        assert!(js(&h.openui).is_running());
+        assert!(
+            !js(&h.mermaid).is_running(),
+            "no mermaid fence, no mermaid isolate"
+        );
+        assert_eq!(h.check_mermaid(FLOW).await, Ok(vec![]));
+        assert!(js(&h.mermaid).is_running());
+        let errs = h.check_mermaid(FLOW_BAD).await.unwrap();
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].path, "line:3");
+        assert!(errs[0].message.contains("line 3"), "{}", errs[0].message);
+        assert_eq!(js(&h.openui).generation(), 1);
+        assert_eq!(js(&h.mermaid).generation(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_busy_mermaid_isolate_never_delays_check() {
+        let h = Arc::new(helper());
+        assert!(h.check("root = Stack([])", &[]).await.is_ok());
+        assert_eq!(h.check_mermaid(FLOW).await, Ok(vec![]));
+        // Block the mermaid thread for 3 s (under its 5 s deadline) and fill its lane.
+        let blocked = js(&h.mermaid)
+            .eval_raw("{ const t0 = Date.now(); while (Date.now() - t0 < 3000) {} }".into());
+        let queued: Vec<_> = (0..=PENDING)
+            .map(|_| {
+                let h = h.clone();
+                tokio::spawn(async move { h.check_mermaid(FLOW).await })
+            })
+            .collect();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while h.mermaid.admission.available_permits() > 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "mermaid lane never filled"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(h.check_mermaid(FLOW).await, Err(Error::Busy));
+        // Meanwhile `check` has its own lane and isolate: answered at once, several times.
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            assert!(h.check("root = Stack([])", &[]).await.is_ok());
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "check waited on mermaid: {:?}",
+            started.elapsed()
+        );
+        blocked.await.unwrap();
+        for q in queued {
+            assert_eq!(q.await.unwrap(), Ok(vec![]));
+        }
+    }
+
+    /// Containment on the mermaid isolate; after each, a parse AND a `check`
+    /// on the other isolate succeed, and the OpenUI isolate was never rebuilt.
+    #[tokio::test]
+    async fn mermaid_failures_are_contained_on_their_own_isolate() {
+        let h = helper();
+        both_serve(&h, "start").await;
+        let m = js(&h.mermaid);
+        // Runaway script: terminated at the 5 s mermaid deadline.
+        assert_eq!(
+            m.eval_raw("for (;;) {}".into()).await,
+            Err(app_js::Error::Timeout)
+        );
+        both_serve(&h, "runaway").await;
+        // Heap growth: stopped at the 256 MB ceiling.
+        assert_eq!(
+            m.eval_raw("const keep = []; for (;;) keep.push(new Array(100000).fill(0.5));".into())
+                .await,
+            Err(app_js::Error::OutOfMemory)
+        );
+        both_serve(&h, "heap").await;
+        // Hostile diagrams from the spike: each ends as an answer, a deadline or the heap ceiling
+        // (`Crashed` names it; pie with 1M quotes reaches 256 MB under V8), never a process abort.
+        let nest =
+            |open: &str, close: &str, n: usize| format!("{}{}", open.repeat(n), close.repeat(n));
+        let mut sequence = String::from("sequenceDiagram\n");
+        for i in 0..100_000 {
+            sequence.push_str(&format!("  A{} ->> B: m\n", i % 50));
+        }
+        let hostile = [
+            (
+                "init-json-nested-200k",
+                format!(
+                    "%%{{init: {}}}%%\nflowchart LR\n A-->B",
+                    nest("[", "]", 200_000)
+                ),
+            ),
+            (
+                "frontmatter-yaml-nested-100k",
+                format!(
+                    "---\nconfig: {}\n---\nflowchart LR\n A-->B",
+                    nest("[", "]", 100_000)
+                ),
+            ),
+            (
+                "flowchart-parens-1M",
+                format!("flowchart LR\n A{}", "(".repeat(1_000_000)),
+            ),
+            ("sequence-100k-messages", sequence),
+            ("pie-1M-quotes", format!("pie\n{}", "\"".repeat(1_000_000))),
+        ];
+        for (name, source) in hostile {
+            let out = h.check_mermaid(&source).await;
+            assert!(
+                matches!(&out, Ok(_) | Err(Error::Timeout(MERMAID_DEADLINE)))
+                    || matches!(&out, Err(Error::Crashed(m)) if m.contains("heap limit")),
+                "{name}: {out:?}"
+            );
+            both_serve(&h, name).await;
+        }
+        assert_eq!(
+            js(&h.openui).generation(),
+            1,
+            "the OpenUI isolate never noticed"
+        );
+        assert!(js(&h.mermaid).generation() >= 3);
+    }
+
+    /// Review M1: the committed OpenUI bundle validates against exactly the
+    /// library `app::HASH` advertises (also enforced at build time by build.rs).
+    #[test]
+    fn the_bundle_embeds_this_binarys_library_hash() {
+        let version = std::thread::spawn(|| {
+            app_js::BundleJs::new(&app_js::APPS, app_js::Limits::default())
+                .and_then(|mut js| js.version())
+                .expect("version")
+        })
+        .join()
+        .expect("version thread");
+        assert_eq!(version, format!("theuth-app-parser {}", crate::hash()));
+    }
+
+    #[test]
+    fn timeout_text_names_the_isolates_own_deadline() {
+        assert_eq!(
+            Error::Timeout(MERMAID_DEADLINE).to_string(),
+            "app parser did not answer within 5s"
+        );
+        assert_eq!(
+            Error::Timeout(DEADLINE).to_string(),
+            "app parser did not answer within 2s"
+        );
     }
 }

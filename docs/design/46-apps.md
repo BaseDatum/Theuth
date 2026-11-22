@@ -232,6 +232,9 @@ on shutdown; crash/2 s validation deadline kills and replaces the helper on
 next request, with the current request failed and nothing committed. Start
 lazily, so sessions without apps pay neither process nor parser startup cost.
 
+*(2026-11-21: the helper process described in this subsection and the next paragraph no longer exists —
+validation runs in-process; see the two dated notes after it. Kept as history.)*
+
 **As built.** The executable is `theuth-app-parser-<library-hash>` beside the
 `theuth` binary (`THEUTH_APP_PARSER` overrides the path for tests), built by
 `packages/apps/scripts/build-helper.ts` with `bun build --compile --minify`
@@ -246,6 +249,34 @@ orphaned}`) with `OPENUI_TELEMETRY_DISABLED=1 DO_NOT_TRACK=1`. Constants:
 request, `MAX_LINE = 4 MiB`; a timeout, malformed reply or crash kills the
 child and the next request spawns a replacement. `t --app-parser-hash`
 prints the expected hash for packaging and the updater (39).
+
+**2026-11-21: in-process (phase 1, check/merge).** The separate executable and
+process are gone for OpenUI validation: `packages/apps/src/inproc.ts` (same
+`protocol.ts` wire, same `check.ts`) is bundled by `scripts/build-inproc.ts`
+into one 131 KB runtime-neutral script, committed as
+`crates/app-js/js/theuth-apps-inproc.js`, and run by the new crate `app-js` in a
+bare deno_core isolate (the V8 `t` already links through obscura-js) on a
+lazily started `app-js` thread. `app::helper::Helper` keeps its
+`check`/`merge_check`/`check_mermaid` surface, `PENDING = 8`, `DEADLINE = 2 s`
+(now a watchdog `terminate_execution`; bundle load is not counted) and
+`MAX_LINE = 4 MiB`; crash/timeout/heap-limit rebuild the isolate instead of
+killing a child; a reply naming another request rebuilds it too. No
+`--version` probe, no `THEUTH_APP_PARSER`, no `helper_path`. `check_mermaid`
+answers "no errors" (fail-open) until the mermaid phase plugs into the
+`MermaidBackend` seam. Installed updaters still demand a
+`theuth-app-parser-<hash>` payload entry, so releases ship a tiny cargo-built
+stub under that name (`crates/app-parser-stub`) and the updater now treats
+the entry as optional. As built: `apps-inproc-as-built-P1.md`. The text above
+describes the pre-2026-11-21 helper and is kept as history.
+
+**2026-11-21, phase 2: mermaid in-process.** `check_mermaid` (30 §5 reply
+fences) now runs the parse-only mermaid bundle (`packages/apps/src/inproc-mermaid.ts`,
+DOMPurify aliased to an identity shim, render-only layout engines stubbed;
+2,860,387 bytes) in a second deno_core isolate on its own lazily started
+`mermaid-js` thread, with its own admission lane (one served + 8 queued),
+10 s first-request / 5 s warm deadline, 256 MB heap; the "no errors" stub
+described above is gone. No jsdom at runtime. Spike: `apps-mermaid-inproc-spike.md`;
+as built: `apps-inproc-as-built-P1.md` § Phase 2.
 
 ## 3. Publishing, identity and edits
 

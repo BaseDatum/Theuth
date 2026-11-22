@@ -3,7 +3,8 @@
  *
  * Frontend entry: curated `library`, compatibility `libraryHash`, and the shared `check`/`mergeCheck`
  * validator. Pulls the react-ui component graph; load it lazily on first app preview/open.
- * The renderer wrapper lives at `@theuth/apps/renderer`; the headless helper imports `./check.ts` only.
+ * The renderer wrapper lives at `@theuth/apps/renderer`; the in-process bundles import `./check.ts` (inproc.ts) and
+ * `./mermaid-core.ts` (inproc-mermaid.ts) only.
  */
 export {
   CURATED_COMPONENTS,

@@ -20,7 +20,7 @@ setup:
 build *ARGS:
     cargo build {{ARGS}}
 
-check *ARGS:
+check *ARGS: apps-bundle-check documents-bundle-check
     CARGO_INCREMENTAL={{incremental}} cargo check --workspace --all-targets {{ARGS}}
 
 test *ARGS:
@@ -78,21 +78,21 @@ run *ARGS:
 
 # Release build of `t` + its helpers copied into ~/.cargo/bin (or $THEUTH_INSTALL_BIN). Not `cargo install`:
 # that re-resolves (index + git fetch every time) and rebuilds in a scratch dir.
-# The helpers land as theuth-app-parser-<hash> (46 §2.1) and theuth-documents-<version>
-# (59 §3.2) beside `t`; older names are left in place for any still-running `t`.
-install: helper documents-helper
+# The app parser helper lands as theuth-app-parser-<hash> (46 §2.1) beside `t`; older names are left in
+# place for any still-running `t`. The documents helper is compiled into `t` (crates/document-js).
+install: helper
     #!/usr/bin/env bash
     set -euo pipefail
     source scripts/app-parser-env.sh
     cargo build --release -p theuth
     bin="${THEUTH_INSTALL_BIN:-${CARGO_HOME:-$HOME/.cargo}/bin}"
     install -m 755 "$HELPER_SRC" "$bin/$HELPER.new" && mv -f "$bin/$HELPER.new" "$bin/$HELPER"
-    install -m 755 "$DOC_HELPER_SRC" "$bin/$DOC_HELPER.new" && mv -f "$bin/$DOC_HELPER.new" "$bin/$DOC_HELPER"
     install -m 755 target/release/t "$bin/t.new" && mv -f "$bin/t.new" "$bin/t"
-    echo "installed $(command -v t) + $bin/$HELPER + $bin/$DOC_HELPER"
+    echo "installed $(command -v t) + $bin/$HELPER"
 
-# Standalone app parser helper (bun build --compile) → packages/apps/dist/theuth-app-parser,
-# checked against packages/apps/generated/library-hash.txt. THEUTH_SKIP_BUN_INSTALL=1 skips bun install.
+# The theuth-app-parser-<hash> compatibility stub (crates/app-parser-stub, cargo; `t` validates apps
+# in-process, docs/design/apps-inproc-as-built-P1.md) → target/release/theuth-app-parser-stub, checked
+# against packages/apps/generated/library-hash.txt. Shipped only for installed updaters (46 §2.1).
 helper:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -100,15 +100,65 @@ helper:
     build_helper
     echo "built $HELPER_SRC ($HELPER)"
 
-# Standalone documents helper (bun build --compile) → packages/documents/dist/theuth-documents (59 §3.2);
-# `--version` must print the PROTOCOL_VERSION of packages/documents/src/protocol.ts. Debug builds of `t`
-# find it there; `install` and the package recipes copy it beside `t` as theuth-documents-<version>.
-documents-helper:
+# The in-process bundles (crates/app-js): the OpenUI check/merge validator (packages/apps/src/inproc.ts →
+# js/theuth-apps-inproc.js, scripts/build-inproc.ts, golden transcript scripts/record-inproc-golden.ts) and the
+# parse-only mermaid check (src/inproc-mermaid.ts → js/theuth-mermaid-inproc.js, scripts/build-inproc-mermaid.ts),
+# with their inputs' hashes in crates/app-js/js/BUNDLE.sha256. Needs bun; a cargo build never does (both are
+# committed). The mermaid parity golden file is recorded separately from the jsdom reference
+# (`bun run test-inproc/mermaid-corpus/reference.ts`).
+apps-bundle:
     #!/usr/bin/env bash
     set -euo pipefail
-    source scripts/app-parser-env.sh
-    build_doc_helper
-    echo "built $DOC_HELPER_SRC ($DOC_HELPER)"
+    (cd packages/apps && bun install --frozen-lockfile && bun run scripts/build-inproc.ts && bun run scripts/record-inproc-golden.ts && bun run scripts/build-inproc-mermaid.ts)
+    for b in theuth-apps-inproc theuth-mermaid-inproc; do
+        cp "packages/apps/dist/$b.js" "crates/app-js/js/$b.js"
+        cp "packages/apps/dist/$b.inputs" "crates/app-js/js/$b.inputs"
+    done
+    scripts/apps-bundle-hash.sh > crates/app-js/js/BUNDLE.sha256
+    cat crates/app-js/js/BUNDLE.sha256
+
+# Fails when a bundle's inputs changed since the committed bundles were built (run `just apps-bundle`),
+# or when a committed bundle is not the one recorded. shasum only (scripts/apps-bundle-hash.sh: each bundle's
+# real inputs as listed in crates/app-js/js/*.inputs, plus lockfile, patches, tsconfig and build scripts).
+apps-bundle-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! diff <(scripts/apps-bundle-hash.sh) crates/app-js/js/BUNDLE.sha256; then
+        echo "crates/app-js/js is stale: run \`just apps-bundle\` and commit the result" >&2
+        exit 1
+    fi
+
+# In-process documents bundle (crates/document-js, docs/design/documents-inproc-as-built-P1.md): rebuild
+# packages/documents/dist/theuth-documents-inproc.js, commit it as crates/document-js/js/theuth-documents-inproc.js
+# (cargo embeds it; no bun at build time) and record the hash of its inputs in js/BUNDLE.sha256.
+documents-bundle:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    (cd packages/documents && bun install --frozen-lockfile && bun run scripts/build-inproc.ts)
+    cp packages/documents/dist/theuth-documents-inproc.js crates/document-js/js/theuth-documents-inproc.js
+    {{just_executable()}} _documents-bundle-hash > crates/document-js/js/BUNDLE.sha256
+    cat crates/document-js/js/BUNDLE.sha256
+
+# Fails when packages/documents changed since the committed bundle was built (run `just documents-bundle`),
+# or when the committed bundle is not the one recorded.
+documents-bundle-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! diff <({{just_executable()}} _documents-bundle-hash) crates/document-js/js/BUNDLE.sha256; then
+        echo "crates/document-js/js is stale: run \`just documents-bundle\` and commit the result" >&2
+        exit 1
+    fi
+
+# `inputs <sha256>`: over packages/documents/src/**, package.json, bun.lock, tsconfig.json, scripts/build-inproc.ts
+# (sorted per-file sha256 lines, hashed); `bundle <sha256>`: the committed bundle. Shared by `documents-bundle`
+# and `documents-bundle-check`.
+_documents-bundle-hash:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd packages/documents
+    inputs=$({ find src -type f | LC_ALL=C sort; printf '%s\n' package.json bun.lock tsconfig.json scripts/build-inproc.ts; } | while read -r f; do shasum -a 256 "$f"; done | shasum -a 256 | cut -d' ' -f1)
+    bundle=$(shasum -a 256 ../../crates/document-js/js/theuth-documents-inproc.js | cut -d' ' -f1)
+    printf 'inputs %s\nbundle %s\n' "$inputs" "$bundle"
 
 # Export the real production contract and compile the shared desktop/iOS client.
 ts: wire-schema
@@ -132,7 +182,7 @@ wire-schema-accept: wire-schema
 # Desktop app in dev mode against `target/debug/t` (or `$THEUTH_BIN`); `THEUTH_DATA_DIR` overrides ~/.theuth.
 # `TAURI_FRONTEND_PATH`: the UI lives inside the crate (not beside it as Tauri assumes), so the
 # before*Command cwd must be pinned.
-desktop: ts-desktop documents-helper
+desktop: ts-desktop
     cargo build -p theuth
     cd crates/desktop/ui && bun install
     cd crates/desktop && TAURI_FRONTEND_PATH=ui THEUTH_BIN="${THEUTH_BIN:-$PWD/../../target/debug/t}" cargo tauri dev

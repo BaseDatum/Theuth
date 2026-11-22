@@ -285,8 +285,7 @@ mod tests {
             store.create(m).await.unwrap();
         }
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let helper =
-            document::helper::Helper::new(dir.path().join("no-helper"), tx, rt.shutdown.clone());
+        let helper = document::helper::Helper::new(tx, rt.shutdown.clone());
         let actor = document::DocumentActor::spawn(document::DocumentActor::new(
             store,
             helper,

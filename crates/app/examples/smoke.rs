@@ -1,17 +1,14 @@
 //! Headless app smoke (46 §10 steps 3–4): real tool registry, artifact store
 //! and app plugin on one data dir; publish through the registry's `Invoke`
-//! of the `app` tool with the real parser helper, then open and call the app
+//! of the `app` tool with the real (in-process) parser, then open and call the app
 //! through the live actor — reads, a mutating press, a destructive press, a
 //! secret-bearing press (no approval dialog, placeholder preserved in the
 //! result), duplicate ids, status, an atomic edit and its conflict.
 //!
-//!   THEUTH_APP_PARSER=packages/apps/dist/theuth-app-parser \
-//!     cargo run -p app --example smoke -- <data_dir> [record_call_id]
+//!   cargo run -p app --example smoke -- <data_dir> [record_call_id]
 //!
-//! Without `THEUTH_APP_PARSER` the helper is looked up beside this executable as
-//! `theuth-app-parser-<hash>` (the production rule). With `record_call_id`, the
-//! run skips publishing and reopens that record: a restart check. Each step
-//! prints one JSON line; a failed check exits 1.
+//! With `record_call_id`, the run skips publishing and reopens that record: a
+//! restart check. Each step prints one JSON line; a failed check exits 1.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -299,7 +296,7 @@ async fn main() -> anyhow::Result<()> {
     s.step(
         "app tool registered",
         app_tool,
-        serde_json::json!({ "helper": app::helper_path() }),
+        serde_json::json!({ "parser": "in-process (app-js)", "library_hash": app::hash() }),
     );
     let apps = ActorRef::<Apps>::lookup(app::APP_ACTOR)?
         .ok_or_else(|| anyhow::anyhow!("app actor not registered (app disabled?)"))?;

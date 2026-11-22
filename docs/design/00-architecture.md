@@ -95,6 +95,19 @@ heap). No custom Rust grammar, no Monty app backend, no generic JS plugin
 runtime. `t --app-parser-hash` lets packaging and the updater (39) check the
 helper against the binary.
 
+**2026-11-21 (apps in-process, phase 1):** the exception above no longer holds
+for OpenUI check/merge. The same TypeScript runs as a committed bundle in a bare
+deno_core isolate inside `t` (crate `app-js`, its own lazily started thread,
+watchdog deadline, heap cap, panic containment, rebuild on failure); no child
+process, no `--version` handshake. Mermaid fence checks fail open until their
+own in-process phase. `theuth-app-parser-<hash>` survives only as a tiny
+compatibility stub in release payloads for installed updaters; `t
+--app-parser-hash` stays. See `apps-inproc-as-built-P1.md`.
+
+**2026-11-21 (apps in-process, phase 2):** mermaid fence checks run in-process
+too, in their own deno_core isolate and thread (no jsdom, no child); nothing
+of the Bun helper runs any more. See `apps-inproc-as-built-P1.md` § Phase 2.
+
 ## 3. Message bus: kameo
 
 Library: `kameo` 0.22 + `kameo_actors` 0.8 (`MessageBus`, `PubSub`, `Broker`).
@@ -1188,7 +1201,7 @@ crates/
   tools/              plugin: registry, approval, shell (brush), fs, mcp (rmcp) (§6, 01)
   secrets/            plugin: encrypted versioned vault (provider keys included), keychain key, {{secret:NAME[:-N]}} expansion + output scrub hook, secret_* tools, masked request, --secret-* CLI (37)
   document/           plugin: Yjs documents — `yrs` authority, snapshot + update log store, derived-markdown export/import by block diff, `doc_*` wire types, headless helper client (59; step 1 2026-09-21)
-  packages/documents/ TS: shared BlockNote block schema (frontmatter block) + YAML header helper, headless markdown ⇄ blocks ⇄ Yjs helper (`bun build --compile`) the `document` crate drives over stdio (59 §3.2, §9.2)
+  packages/documents/ TS: shared BlockNote block schema (frontmatter block) + YAML header helper, headless markdown ⇄ blocks ⇄ Yjs helper bundled into `t` and run in-process by `document-js` (59 §3.2, §9.2; in-process since 2026-11-21, documents-inproc-as-built-P3.md)
   knowledge/          plugin: OKF bundle, FTS index, gix history, knowledge_* tools, human concept/history search + read-at-commit (added in 10; extracted from agent in 12 §9; 49 §3.3–3.4)
   search/             library: nucleo query policy, prepared candidate text, snippets with scalar highlight ranges, SearchCategory/SearchPage envelope — no plugin, actor or store (49 §4.1)
   agent/              plugin: genai loop, session store, frame/compaction, context edits (`context.rs`), skills, subagents, repl, session search (§5, 07, 08, 26, 48, 49)

@@ -2,10 +2,10 @@
 # Build the Linux CLI tarball natively in Docker and stage it in the bucket (39 §5.1).
 #
 # Pipeline (run once per arch, on a box of that arch — never QEMU):
-#   1. docker build -f deploy/update/Dockerfile --output type=local  → target/linux-out/{t,theuth-app-parser-<hash>,theuth-documents-<ver>}
-#      THEUTH_LINUX_NATIVE=1: no Docker — cargo build --release -p theuth + both bun helpers on this
-#      Linux host (scripts/build-remote.sh on the Ubuntu 24.04 build host), same three files in target/linux-out
-#   2. tar → target/release/dist/theuth_<ver>_linux-<arch>.tar.gz  (entries `t` + both helpers, unsigned)
+#   1. docker build -f deploy/update/Dockerfile --output type=local  → target/linux-out/{t,theuth-app-parser-<hash>}
+#      THEUTH_LINUX_NATIVE=1: no Docker — cargo build --release -p theuth + the bun app parser helper on this
+#      Linux host (scripts/build-remote.sh on the Ubuntu 24.04 build host), same two files in target/linux-out
+#   2. tar → target/release/dist/theuth_<ver>_linux-<arch>.tar.gz  (entries `t` + the helper, unsigned)
 #   3. aws s3 cp → s3://$THEUTH_S3_BUCKET/staging/<ver>/  (private; release-s3.sh signs, publishes, deletes)
 #
 # Env (defaults for rustfs @ s3.rwx.dev; repo-root .env.signing is loaded):
@@ -62,28 +62,25 @@ DEST="s3://${BUCKET}/staging/${VERSION}/"
 
 rm -rf "$OUT"
 if [[ "$NATIVE" == "1" ]]; then
-  echo "==> [1/3] native build (linux-$ARCH): cargo build --release -p theuth, $HELPER, $DOC_HELPER"
+  echo "==> [1/3] native build (linux-$ARCH): cargo build --release -p theuth, $HELPER"
   cargo build --release -p theuth
   [[ "$(target/release/t --version 2>&1)" == *"$VERSION"* ]] || { echo "error: target/release/t --version did not print $VERSION" >&2; exit 1; }
   build_helper
-  build_doc_helper
   mkdir -p "$OUT"
   install -m 755 target/release/t "$OUT/t"
   install -m 755 "$HELPER_SRC" "$OUT/$HELPER"
-  install -m 755 "$DOC_HELPER_SRC" "$OUT/$DOC_HELPER"
 else
   echo "==> [1/3] docker build (native, linux-$ARCH)"
   docker build -f deploy/update/Dockerfile --output "type=local,dest=$OUT" .
 fi
 [[ -f "$OUT/t" ]] || { echo "error: $OUT/t not produced" >&2; exit 1; }
 [[ -f "$OUT/$HELPER" ]] || { echo "error: $OUT/$HELPER not produced (image built from another library hash?)" >&2; exit 1; }
-[[ -f "$OUT/$DOC_HELPER" ]] || { echo "error: $OUT/$DOC_HELPER not produced (image built from another protocol version?)" >&2; exit 1; }
-chmod 755 "$OUT/t" "$OUT/$HELPER" "$OUT/$DOC_HELPER"
+chmod 755 "$OUT/t" "$OUT/$HELPER"
 
 echo "==> [2/3] $TGZ"
 mkdir -p "$DIST"
 rm -f "$TGZ"
-COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TGZ" -C "$OUT" t "$HELPER" "$DOC_HELPER"
+COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TGZ" -C "$OUT" t "$HELPER"
 
 echo "==> [3/3] upload → $DEST"
 if [[ "${THEUTH_SKIP_UPLOAD:-0}" == "1" ]]; then
