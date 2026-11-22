@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type { Entry } from '@/store/sessions'
-import { foldRuns, isDeliverable, summarize, ToolRunCard } from './ToolRunCard'
+import { foldRuns, isDeliverable, summarize, summarizeGroup, ToolRunCard } from './ToolRunCard'
 
 vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: unknown }) => children }))
 
@@ -202,4 +202,60 @@ test('ToolRunCard: a run that starts with a job is a tool run; expanded, the job
   const expanded = render()
   expect(expanded).toContain('raw *output*')
   expect(expanded).toContain('>t1<')
+})
+
+const py = (extra: Partial<Tool> = {}): Tool => tool(50, { name: 'python', callId: 'p1', args: { code: 'x = read_file("a")\nprint(x)' }, ...extra })
+const kid = (n: number, extra: Partial<Tool> = {}): Tool => tool(60 + n, { callId: `p1.${n}`, child: true, name: `k${n}`, ...extra })
+
+test('foldRuns: a python call and the calls its cell made are one group, apart from neighbouring runs; deliverables it made stay plain after it', () => {
+  const [a, b, k1, k2] = [tool(1), tool(2), kid(1), kid(2)]
+  const shown = kid(3, { name: 'show' })
+  expect(foldRuns([a, b, py(), k1, shown, k2, tool(3), tool(4)])).toEqual([[a, b], [py(), k1, k2], shown, [tool(3), tool(4)]])
+  // A cell that made no calls is still a group; a restart note keeps it a plain entry.
+  expect(foldRuns([py()])).toEqual([[py()]])
+  const restarted = py({ restart: { clock: '09:00:00', after: 9, cause: 'restart', replayed: 1, interrupted: 0, text: '' } })
+  expect(foldRuns([restarted])).toEqual([restarted])
+  // With folding off only the group forms.
+  expect(foldRuns([a, b, py(), k1], undefined, false)).toEqual([a, b, [py(), k1]])
+})
+
+test('summarizeGroup: counts the cell\'s calls, never says python, shows a failure', () => {
+  expect(summarizeGroup([py(), kid(1), kid(2), kid(3)]).text).toBe('3 tools')
+  expect(summarizeGroup([py(), kid(1)]).text).toBe('1 tool')
+  expect(summarizeGroup([py()]).text).toBe('no tools')
+  expect(summarizeGroup([py({ result: undefined }), kid(1), kid(2, { result: undefined })])).toMatchObject({ text: 'running · 2 tools', running: true })
+  expect(summarizeGroup([py({ result: undefined })]).text).toBe('running')
+  expect(summarizeGroup([py(), kid(1), fail(2)])).toMatchObject({ failed: false })
+  const crashed = summarizeGroup([py({ result: { output: 'NameError: x', isError: true, files: [] } }), kid(1)])
+  expect(crashed).toMatchObject({ failed: true, hint: '✗ NameError: x' })
+  expect(crashed.text).toContain('code failed')
+  expect(crashed.text).not.toContain('python')
+})
+
+test('PythonGroup: collapsed `N tools`; expanded a collapsed `code` row and the cards; code expanded shows the source', () => {
+  useToolRuns.setState({ disclosed: {} })
+  const group = [py(), kid(1), kid(2)]
+  const render = () => renderToStaticMarkup(createElement(ToolRunCard, { run: group, prompts: null, session: 's' }))
+  const collapsed = render()
+  expect(collapsed).toContain('2 tools')
+  expect(collapsed).not.toContain('>code<')
+  expect(collapsed).not.toContain('>k1<')
+  useToolRuns.setState({ disclosed: { [disclosureKey('run', 'p1')]: true } })
+  const expanded = render()
+  expect(expanded).toContain('>code<')
+  expect(expanded).toContain('>k1<')
+  expect(expanded).toContain('>k2<')
+  expect(expanded).not.toContain('read_file(')
+  useToolRuns.setState({ disclosed: { [disclosureKey('run', 'p1')]: true, [disclosureKey('code', 'p1')]: true } })
+  const code = render()
+  expect(code).toContain('read_file')
+  // The highlighted source may carry its language as an attribute; the headers never name it.
+  for (const html of [collapsed, expanded]) expect(html).not.toMatch(/python/i)
+})
+
+test('PythonGroup: a cell error stays visible collapsed', () => {
+  useToolRuns.setState({ disclosed: {} })
+  const html = renderToStaticMarkup(createElement(ToolRunCard, { run: [py({ result: { output: 'NameError: x', isError: true, files: [] } })], prompts: null, session: 's' }))
+  expect(html).toContain('✗ NameError: x')
+  expect(html).toContain('border-danger-border')
 })
