@@ -1,9 +1,9 @@
 [package]
-name = "app-js"
+name = "js-runtime"
 version = "2.24.0"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
-description = "In-process JS bundles for the app plugin (packages/apps OpenUI check/merge) in a deno_core JsRuntime on its own thread, with deadline, heap and panic containment (docs/design/apps-inproc-as-built-P1.md)"
+description = "The in-process JS runtime: the documents helper (packages/documents) and the app bundles (packages/apps OpenUI check/merge, mermaid parse) in deno_core runtimes, one isolate and thread per bundle, with deadline, heap and panic containment (docs/design/js-runtime-unified-as-built.md)"
 
 [dependencies]
 # Same version and (default) features as obscura-js, so the one V8 build is shared (`cargo tree -i v8`).

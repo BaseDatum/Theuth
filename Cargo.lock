@@ -692,12 +692,12 @@ version = "2.22.2"
 dependencies = [
  "agent",
  "anyhow",
- "app-js",
  "artifact",
  "async-trait",
  "autoresearch",
  "figment",
  "futures",
+ "js-runtime",
  "jsonrpsee",
  "kameo",
  "parking_lot",
@@ -718,20 +718,6 @@ dependencies = [
  "ts-rs",
  "uuid",
  "wire",
-]
-
-[[package]]
-name = "app-js"
-version = "2.24.0"
-dependencies = [
- "deno_core",
- "getrandom 0.2.17",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tracing",
 ]
 
 [[package]]
@@ -5322,11 +5308,11 @@ dependencies = [
  "chrono",
  "codeindex",
  "decision",
- "document-js",
  "figment",
  "futures",
  "hmac 0.13.0",
  "html-to-markdown-rs",
+ "js-runtime",
  "jsonrpsee",
  "kameo",
  "libsqlite3-sys",
@@ -5372,19 +5358,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
 dependencies = [
  "litrs",
-]
-
-[[package]]
-name = "document-js"
-version = "2.22.2"
-dependencies = [
- "deno_core",
- "getrandom 0.2.17",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "tracing",
 ]
 
 [[package]]
@@ -10352,6 +10325,20 @@ checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
 dependencies = [
  "getrandom 0.4.3",
  "libc",
+]
+
+[[package]]
+name = "js-runtime"
+version = "2.24.0"
+dependencies = [
+ "deno_core",
+ "getrandom 0.2.17",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -22249,7 +22236,6 @@ dependencies = [
  "agent",
  "anyhow",
  "app",
- "app-js",
  "artifact",
  "async-trait",
  "autoresearch",
@@ -22265,6 +22251,7 @@ dependencies = [
  "double",
  "dreaming",
  "figment",
+ "js-runtime",
  "jsonrpsee",
  "knowledge",
  "link",

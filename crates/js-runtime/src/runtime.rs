@@ -1,8 +1,5 @@
-//! [`BundleJs`]: one deno_core `JsRuntime` with the polyfill and one [`Bundle`] loaded, and the guards that
-//! keep a JS failure inside it (deadline watchdog, heap ceiling, panic-catching ops).
-//!
-//! Copied from `crates/document-js/src/runtime.rs` (feat/documents-inproc 0ca80bbf3) with the bundle, its
-//! global and the load deadline made parameters; keep the two in step until they are unified.
+//! [`JsRuntime`]: one deno_core runtime with the polyfill and one [`Bundle`] loaded, and the guards that keep a
+//! JS failure inside it (deadline watchdog, heap ceiling, panic-catching ops); [`init_platform`].
 
 use std::borrow::Cow;
 use std::future::poll_fn;
@@ -13,29 +10,36 @@ use std::task::Poll;
 use std::time::Instant;
 
 use deno_core::{
-    Extension, JsRuntime, ModuleCodeString, OpState, PollEventLoopOptions, RuntimeOptions, op2, v8,
+    Extension, ModuleCodeString, OpState, PollEventLoopOptions, RuntimeOptions, op2, v8,
 };
 
 use crate::{Bundle, Error, LOAD_DEADLINE, Limits, watchdog};
 
+/// Web globals every bundle needs (crypto, atob/btoa, timers).
 const POLYFILL: &str = include_str!("../js/polyfill.js");
+/// Extra web globals for bundles with [`Bundle::web_polyfill`] (TextEncoder/TextDecoder, structuredClone, URL,
+/// console).
+const POLYFILL_WEB: &str = include_str!("../js/polyfill-web.js");
 /// Hands the pending request to the bundle's `call` and its output (or an `{id, ok:false, error}` line naming
-/// the request's id when the bundle itself throws) back through `op_appjs_reply`. `call` may return the
-/// output or a promise of it. `__ENTRY__` is the bundle's global, substituted per [`Bundle`].
+/// the request's id when the bundle itself throws or rejects) back through `op_jsrt_reply`. `call` may return
+/// the output ([`crate::APPS`]) or a promise of it ([`crate::DOCUMENTS`], [`crate::MERMAID`]); both go through
+/// `Promise.resolve`, so one pump serves every bundle and the event loop is driven until the reply (a
+/// per-bundle sync/promise switch was left out: it could only turn a promise answer into a wrong reply).
+/// `__ENTRY__` is the bundle's global, substituted per [`Bundle`].
 const PUMP: &str = r#"globalThis.__theuthPump = () => {
   const ops = Deno.core.ops;
   const entry = globalThis[__ENTRY__];
-  const line = ops.op_appjs_take_request();
+  const line = ops.op_jsrt_take_request();
   const fail = (e) => {
     let id = null;
     try {
       const r = JSON.parse(line);
       if (r && (typeof r.id === "number" || typeof r.id === "string")) id = r.id;
     } catch {}
-    ops.op_appjs_reply(JSON.stringify({ id, ok: false, error: String((e && e.stack) || e) }));
+    ops.op_jsrt_reply(JSON.stringify({ id, ok: false, error: String((e && e.stack) || e) }));
   };
   try {
-    Promise.resolve(entry.call(line)).then((out) => ops.op_appjs_reply(String(out)), fail);
+    Promise.resolve(entry.call(line)).then((out) => ops.op_jsrt_reply(String(out)), fail);
   } catch (e) {
     fail(e);
   }
@@ -43,7 +47,7 @@ const PUMP: &str = r#"globalThis.__theuthPump = () => {
 globalThis.__theuthVersion = () => {
   const entry = globalThis[__ENTRY__];
   const v = entry.version;
-  Deno.core.ops.op_appjs_reply(String(typeof v === "function" ? v.call(entry) : v));
+  Deno.core.ops.op_jsrt_reply(String(typeof v === "function" ? v.call(entry) : v));
 };"#;
 /// What the near-heap-limit callback grants so V8 can unwind the terminated script instead of aborting.
 const HEAP_HEADROOM: usize = 64 * 1024 * 1024;
@@ -56,6 +60,9 @@ struct Exchange {
     crashed: Option<String>,
 }
 
+/// The bundle's thread name, for the panic guard's message.
+struct ThreadName(&'static str);
+
 /// Run an op body; a panic must not unwind into V8 (the op callbacks are `extern "C"`, so it would abort the
 /// process): record it, terminate the script, return a default.
 fn guarded<R: Default>(state: &mut OpState, f: impl FnOnce(&mut OpState) -> R) -> R {
@@ -63,10 +70,11 @@ fn guarded<R: Default>(state: &mut OpState, f: impl FnOnce(&mut OpState) -> R) -
         Ok(r) => r,
         Err(payload) => {
             let message = crate::panic_message(&*payload);
+            let thread = state.borrow::<ThreadName>().0;
             state
                 .borrow_mut::<Exchange>()
                 .crashed
-                .get_or_insert_with(|| format!("panic in an app-js op: {message}"));
+                .get_or_insert_with(|| format!("panic in a {thread} op: {message}"));
             state.borrow::<v8::IsolateHandle>().terminate_execution();
             R::default()
         }
@@ -75,7 +83,7 @@ fn guarded<R: Default>(state: &mut OpState, f: impl FnOnce(&mut OpState) -> R) -
 
 #[op2]
 #[string]
-fn op_appjs_take_request(state: &mut OpState) -> String {
+fn op_jsrt_take_request(state: &mut OpState) -> String {
     guarded(state, |s| {
         s.borrow_mut::<Exchange>()
             .request
@@ -85,58 +93,60 @@ fn op_appjs_take_request(state: &mut OpState) -> String {
 }
 
 #[op2(fast)]
-fn op_appjs_reply(state: &mut OpState, #[string] out: String) {
+fn op_jsrt_reply(state: &mut OpState, #[string] out: String) {
     guarded(state, |s| s.borrow_mut::<Exchange>().reply = Some(out));
 }
 
 #[op2(fast)]
-fn op_appjs_random_fill(state: &mut OpState, #[buffer] buf: &mut [u8]) {
+fn op_jsrt_random_fill(state: &mut OpState, #[buffer] buf: &mut [u8]) {
     guarded(state, |_| getrandom::getrandom(buf).expect("OS randomness"));
 }
 
 /// Test hook for the panic guard: registered only in this crate's unit tests.
 #[cfg(test)]
 #[op2(fast)]
-fn op_appjs_test_panic(state: &mut OpState) {
-    guarded::<()>(state, |_| panic!("test: panic inside an app-js op"));
+fn op_jsrt_test_panic(state: &mut OpState) {
+    guarded::<()>(state, |_| panic!("test: panic inside a js-runtime op"));
 }
 
 fn extension() -> Extension {
     #[allow(unused_mut)]
     let mut ops = vec![
-        op_appjs_take_request(),
-        op_appjs_reply(),
-        op_appjs_random_fill(),
+        op_jsrt_take_request(),
+        op_jsrt_reply(),
+        op_jsrt_random_fill(),
     ];
     #[cfg(test)]
-    ops.push(op_appjs_test_panic());
+    ops.push(op_jsrt_test_panic());
     Extension {
-        name: "theuth_app_js",
+        name: "theuth_js_runtime",
         ops: Cow::Owned(ops),
         ..Default::default()
     }
 }
 
-/// Process-wide lock held only while a `JsRuntime` (isolate) of this crate is being created: isolate
-/// creation is serialised across the `app-js` / `mermaid-js` threads and [`init_platform`]. obscura-js
-/// serialises its own isolate creation with a private lock this crate cannot reach, so the two locks are
-/// independent; [`init_platform`] building the first isolate on the main thread before any plugin starts is
-/// what orders them in `t`.
+/// Process-wide lock held only while an isolate of this crate is being created: isolate creation is
+/// serialised across every bundle's thread and [`init_platform`]. obscura-js serialises its own isolate
+/// creation with a private lock this crate cannot reach, so the two locks are independent; [`init_platform`]
+/// building the first isolate on the main thread before any plugin starts is what orders them in `t`.
 fn isolate_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Initialise the V8 platform (deno_core's `init_v8`, behind a process-wide `Once`) AND build and drop one bare
-/// `JsRuntime` on the calling thread, once per process. `t` calls it on the main thread right after
-/// `browser::warmup`: with the browser disabled the warmup builds no isolate, and the first isolate built off
-/// the main thread once segfaulted in `InitializeBuiltinJSDispatchTable` (crates/browser/src/lib.rs `warmup`).
-/// Idempotent; a second call (e.g. document-js's after both branches merge) is a no-op here, and after
-/// `browser::warmup` the extra isolate costs a few ms.
+/// isolate on the calling thread under the isolate-creation lock, once per process. `t` calls it exactly once,
+/// on the main thread right after `browser::warmup` and before `Runtime::new` starts any plugin: with the
+/// browser disabled the warmup builds no isolate, and the first isolate built off the main thread once
+/// segfaulted in `InitializeBuiltinJSDispatchTable` (crates/browser/src/lib.rs `warmup`; review M2).
+/// Idempotent: later calls (any thread, any caller) are no-ops, and after `browser::warmup` the extra isolate
+/// costs a few ms.
 ///
-/// Safe in an async context (where `t` calls it: inside `main`'s `block_on`): there the isolate is built under
-/// the current tokio handle, as `browser::warmup` does with obscura's; outside one a throwaway current-thread
-/// runtime provides the context and is disposed with `shutdown_background`, which never blocks.
+/// Call it synchronously in the main future, not from a spawned task (which gives no ordering against the
+/// plugin threads). Safe in an async context (where `t` calls it: inside `main`'s `block_on`): there the
+/// isolate is built under the current tokio handle, as `browser::warmup` does with obscura's; outside one a
+/// throwaway current-thread runtime provides the context and is disposed with `shutdown_background`, which
+/// never blocks (tokio refuses to drop a runtime inside an async context).
 pub fn init_platform() {
     static FIRST: std::sync::Once = std::sync::Once::new();
     FIRST.call_once(first_isolate);
@@ -144,9 +154,9 @@ pub fn init_platform() {
 
 /// [`init_platform`]'s body without the `Once` (tests exercise both contexts in one process).
 pub(crate) fn first_isolate() {
-    JsRuntime::init_platform(None);
+    deno_core::JsRuntime::init_platform(None);
     let _creating = isolate_lock();
-    let build = || drop(JsRuntime::new(RuntimeOptions::default()));
+    let build = || drop(deno_core::JsRuntime::new(RuntimeOptions::default()));
     if tokio::runtime::Handle::try_current().is_ok() {
         build();
         return;
@@ -166,15 +176,15 @@ pub(crate) fn first_isolate() {
     }
 }
 
-/// One in-process bundle: a `JsRuntime` with the polyfill and the bundle loaded. `!Send`, and it drives its own
-/// current-thread tokio runtime, so it must not be called from inside an async context: use
-/// [`crate::BundleThread`] there.
+/// One in-process bundle: a deno_core runtime with the polyfill(s) and the bundle loaded. `!Send`, and it
+/// drives its own current-thread tokio runtime, so it must not be called from inside an async context: use
+/// [`crate::JsThread`] there.
 ///
 /// After [`Error::Timeout`], [`Error::OutOfMemory`] or [`Error::Crashed`] the runtime refuses further work
 /// ([`Self::failure`]); drop it and build a new one.
-pub struct BundleJs {
+pub struct JsRuntime {
     // Field order is drop order: the isolate goes before the tokio runtime it is bound to.
-    js: JsRuntime,
+    js: deno_core::JsRuntime,
     tokio: tokio::runtime::Runtime,
     bundle: &'static Bundle,
     isolate: v8::IsolateHandle,
@@ -186,12 +196,12 @@ pub struct BundleJs {
     warm: bool,
 }
 
-impl BundleJs {
-    /// Build the isolate (heap-capped), load the polyfill and `bundle` under the same guards as a request
+impl JsRuntime {
+    /// Build the isolate (heap-capped), load the polyfill(s) and `bundle` under the same guards as a request
     /// (but under at least [`LOAD_DEADLINE`]).
     ///
-    /// V8's platform is initialised by deno_core behind a process-wide `Once` on the first `JsRuntime::new`:
-    /// in `t` that already happened on the main thread ([`crate::init_platform`]); standalone it happens here.
+    /// V8's platform is initialised by deno_core behind a process-wide `Once` on the first runtime: in `t`
+    /// that already happened on the main thread ([`crate::init_platform`]); standalone it happens here.
     pub fn new(bundle: &'static Bundle, limits: Limits) -> Result<Self, Error> {
         let tokio = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -201,7 +211,7 @@ impl BundleJs {
         let mut js = {
             let _guard = tokio.enter();
             let _creating = isolate_lock();
-            JsRuntime::new(RuntimeOptions {
+            deno_core::JsRuntime::new(RuntimeOptions {
                 extensions: vec![extension()],
                 create_params: Some(v8::CreateParams::default().heap_limits(0, limits.heap_limit)),
                 ..Default::default()
@@ -224,6 +234,7 @@ impl BundleJs {
             let state = js.op_state();
             let mut state = state.borrow_mut();
             state.put(Exchange::default());
+            state.put(ThreadName(bundle.thread));
             state.put(isolate.clone());
         }
         // Loading the bundle is construction, not a request: it runs under at least LOAD_DEADLINE, so a short
@@ -247,6 +258,13 @@ impl BundleJs {
             ModuleCodeString::from_static(POLYFILL),
             false,
         )?;
+        if bundle.web_polyfill {
+            this.run(
+                "<theuth:polyfill-web>",
+                ModuleCodeString::from_static(POLYFILL_WEB),
+                false,
+            )?;
+        }
         this.run(
             bundle.name,
             ModuleCodeString::from_static(bundle.source),
@@ -278,7 +296,7 @@ impl BundleJs {
         self.failure.as_ref()
     }
 
-    /// One request line → the helper's output lines for it: `ev:update` lines first, the reply last.
+    /// One request line → the bundle's output lines for it: event lines first, the reply last.
     /// A JS exception is an `ok:false` reply line, not an `Err`.
     pub fn call(&mut self, line: &str) -> Result<Vec<String>, Error> {
         self.serve(line.to_owned())

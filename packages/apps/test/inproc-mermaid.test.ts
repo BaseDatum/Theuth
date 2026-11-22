@@ -1,8 +1,9 @@
 /**
- * The committed in-process mermaid bundle (crates/app-js/js/theuth-mermaid-inproc.js) in a bare node:vm context
- * (ECMAScript built-ins + crates/app-js/js/polyfill.js only) against the parity corpus recorded from the jsdom
- * reference path (test-inproc/mermaid-corpus/golden.json; `bun run test-inproc/mermaid-corpus/reference.ts`).
- * The Rust side replays the same golden file in deno_core (crates/app-js/tests/mermaid_golden.rs).
+ * The committed in-process mermaid bundle (crates/js-runtime/js/theuth-mermaid-inproc.js) in a bare node:vm
+ * context (ECMAScript built-ins + crates/js-runtime/js/polyfill.js and polyfill-web.js only) against the parity
+ * corpus recorded from the jsdom reference path (crates/js-runtime/tests/mermaid_golden.json;
+ * `bun run test-inproc/mermaid-corpus/reference.ts`). The Rust side replays the same golden file in deno_core
+ * (crates/js-runtime/tests/mermaid_golden.rs).
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -12,17 +13,21 @@ import stub from "../src/inproc/stub.ts";
 import { answer } from "../src/mermaid-core.ts";
 
 const root = join(import.meta.dir, "..", "..", "..");
-const bundle = readFileSync(join(root, "crates/app-js/js/theuth-mermaid-inproc.js"), "utf8");
-const polyfill = readFileSync(join(root, "crates/app-js/js/polyfill.js"), "utf8");
+const bundle = readFileSync(join(root, "crates/js-runtime/js/theuth-mermaid-inproc.js"), "utf8");
+/** What the runtime loads before an app bundle: the shared base, then the app bundles' web supplement. */
+const polyfill = ["polyfill.js", "polyfill-web.js"]
+  .map((f) => readFileSync(join(root, "crates/js-runtime/js", f), "utf8"))
+  .join("\n");
 type Reply = { ok: boolean; errors?: { line: number | null; message: string }[] };
-const golden = JSON.parse(
-  readFileSync(join(import.meta.dir, "..", "test-inproc", "mermaid-corpus", "golden.json"), "utf8"),
-) as Record<string, { type: string; source: string; reply: Reply }>;
+const golden = JSON.parse(readFileSync(join(root, "crates/js-runtime/tests/mermaid_golden.json"), "utf8")) as Record<
+  string,
+  { type: string; source: string; reply: Reply }
+>;
 /** The message is the JS engine's own TypeError text (and minified identifiers); ok and line must match. */
 const ENGINE_WORDING = new Set(["edge/timeline-typeerror"]);
 
 const fakeCore = {
-  ops: { op_appjs_random_fill: (b: Uint8Array) => crypto.getRandomValues(b) },
+  ops: { op_jsrt_random_fill: (b: Uint8Array) => crypto.getRandomValues(b) },
   createTimer: () => 0,
   cancelTimer: () => {},
   print: () => {},

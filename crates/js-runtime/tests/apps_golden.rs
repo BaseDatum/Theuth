@@ -1,10 +1,10 @@
-//! Replays `golden.json` (recorded from the current TypeScript by
+//! Replays `apps_golden.json` (recorded from the current TypeScript by
 //! `packages/apps/scripts/record-inproc-golden.ts`: check.test.ts cases, the scripts/apps/fixtures.json
 //! program and edits, protocol errors) through the committed bundle in deno_core: every response line must
 //! equal the recorded one byte for byte — except the text after `invalid JSON: `, which is the JS engine's
 //! own `JSON.parse` message (recorded under Bun/JavaScriptCore, replayed under V8).
 
-use app_js::{APPS, BundleThread, Limits};
+use js_runtime::{APPS, JsRuntime, JsThread, Limits};
 use tokio_util::sync::CancellationToken;
 
 #[derive(serde::Deserialize)]
@@ -23,9 +23,9 @@ struct Case {
 #[tokio::test]
 async fn golden_transcript_replays_byte_for_byte() {
     let golden: Golden =
-        serde_json::from_str(include_str!("golden.json")).expect("golden.json parses");
+        serde_json::from_str(include_str!("apps_golden.json")).expect("golden.json parses");
     assert!(golden.cases.len() >= 30, "{} cases", golden.cases.len());
-    let t = BundleThread::new(&APPS, Limits::default(), CancellationToken::new());
+    let t = JsThread::new(&APPS, Limits::default(), CancellationToken::new());
     // Enqueue everything first: one runtime serves the transcript in order.
     let tickets: Vec<_> = golden
         .cases
@@ -51,7 +51,7 @@ async fn golden_transcript_replays_byte_for_byte() {
     }
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
     let version = std::thread::spawn(|| {
-        app_js::BundleJs::new(&APPS, Limits::default())
+        JsRuntime::new(&APPS, Limits::default())
             .and_then(|mut js| js.version())
             .expect("version")
     })

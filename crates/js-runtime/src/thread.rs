@@ -1,13 +1,19 @@
-//! [`DocumentsThread`]: the `Send + Clone` face of [`DocumentsJs`]. One `documents-js` OS thread (16 MB stack,
-//! started on the first request) owns a current-thread tokio runtime for waiting on jobs and the `JsRuntime`;
-//! jobs run to completion in enqueue order; a fatal failure fails the job and every job queued behind it,
-//! then the runtime is dropped and rebuilt and [`DocumentsThread::generation`] bumps.
+//! [`JsThread`]: the `Send + Clone` face of [`JsRuntime`]. One OS thread per handle family (named after
+//! [`Bundle::thread`], 16 MB stack, started on the first request) owns a current-thread tokio runtime for
+//! waiting on jobs and the deno_core runtime; jobs run to completion in enqueue order; a fatal failure fails
+//! the job that was running, the runtime is dropped and rebuilt and [`JsThread::generation`] bumps. The jobs
+//! queued behind it then fail with the same error ([`AfterFatal::FailQueued`], [`crate::DOCUMENTS`]: its
+//! runtime held per-document mirrors) or run on the fresh runtime ([`AfterFatal::RerunQueued`], the
+//! stateless app bundles: one runaway request must not fail up to 8 other sessions' queued checks). Each
+//! handle family (each [`Bundle`] in `t`) gets its own thread and isolate, and its own limits.
 //!
 //! Every job carries the *epoch* it was enqueued under. The epoch moves on when the runtime it served is
 //! given up: a job failed fatally (bumped by the thread before that job's reply is sent), or the client
-//! called [`DocumentsThread::restart`]. A job from an older epoch never runs on a newer runtime: it fails
-//! with the error that ended its epoch. So whatever a client enqueues after it has seen a fatal failure runs
-//! on the fresh runtime, and nothing enqueued before it does.
+//! called [`JsThread::restart`]. A runtime built in an older epoch never serves a job again: the next job runs
+//! on a fresh one (under [`AfterFatal::FailQueued`] a job from an older epoch does not run at all: it fails
+//! with the error that ended its epoch), and a job whose runtime was given up while it ran has its output
+//! discarded. So no reply produced by an abandoned runtime ever reaches a client, and whatever a client
+//! enqueues after it has seen a fatal failure runs on the fresh runtime.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
@@ -18,9 +24,9 @@ use std::task::{Context, Poll};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::{DocumentsJs, Error, Limits, Reply, panic_message};
+use crate::{AfterFatal, Bundle, Error, JsRuntime, Limits, Reply, panic_message};
 
-/// Stack of the runtime thread: V8 and BlockNote's recursive converters on deeply nested documents.
+/// Stack of the runtime thread: V8 plus recursive parsers/converters on deeply nested input (BlockNote's).
 const STACK: usize = 16 * 1024 * 1024;
 
 enum Work {
@@ -48,8 +54,9 @@ pub struct Settled {
     pub result: Result<Reply, Error>,
     /// The runtime that served the jobs before this one is gone, with every mirror it held: this job's own
     /// failure gave it up, or the thread had died and this job respawned it. True for exactly one job per
-    /// lost runtime (the jobs queued behind a failure fail with the same error but `false`); a runtime given
-    /// up through [`DocumentsThread::restart`] is reported by the caller of `restart`.
+    /// lost runtime (under [`AfterFatal::FailQueued`] the jobs queued behind a failure fail with the same
+    /// error but `false`); a runtime given up through [`JsThread::restart`] is reported by the caller of
+    /// `restart`.
     pub rebuilt: bool,
 }
 
@@ -62,6 +69,7 @@ struct Shared {
 }
 
 struct Inner {
+    bundle: &'static Bundle,
     limits: Limits,
     shutdown: CancellationToken,
     /// `None` until the first request starts the thread.
@@ -69,10 +77,10 @@ struct Inner {
     shared: Arc<Shared>,
 }
 
-/// Handle to the in-process documents runtime; cheap to clone, `Send + Sync`. The thread starts on the first
-/// request and ends when the last handle is dropped or `shutdown` is cancelled.
+/// Handle to one bundle's in-process JS runtime; cheap to clone, `Send + Sync`. The thread starts on the
+/// first request and ends when the last handle is dropped or `shutdown` is cancelled.
 #[derive(Clone)]
-pub struct DocumentsThread {
+pub struct JsThread {
     inner: Arc<Inner>,
 }
 
@@ -110,7 +118,7 @@ impl Ticket {
         Self { epoch, rx }
     }
 
-    /// The epoch the request was enqueued under; compare with what [`DocumentsThread::restart`] returned.
+    /// The epoch the request was enqueued under; compare with what [`JsThread::restart`] returned.
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
@@ -124,11 +132,13 @@ impl Ticket {
     }
 }
 
-impl DocumentsThread {
-    /// A handle; no thread and no isolate until the first request.
-    pub fn new(limits: Limits, shutdown: CancellationToken) -> Self {
+impl JsThread {
+    /// A handle serving `bundle` under `limits` (normally `bundle.limits`); no thread and no isolate until
+    /// the first request.
+    pub fn new(bundle: &'static Bundle, limits: Limits, shutdown: CancellationToken) -> Self {
         Self {
             inner: Arc::new(Inner {
+                bundle,
                 limits,
                 shutdown,
                 tx: Mutex::new(None),
@@ -139,6 +149,11 @@ impl DocumentsThread {
                 }),
             }),
         }
+    }
+
+    /// The bundle this handle serves.
+    pub fn bundle(&self) -> &'static Bundle {
+        self.inner.bundle
     }
 
     /// The guards every runtime of this thread enforces.
@@ -178,11 +193,11 @@ impl DocumentsThread {
     }
 
     /// Give up the current runtime although no request failed fatally: the client saw output it cannot
-    /// trust (a reply naming another request). Every request already enqueued fails with
-    /// [`Error::Crashed`] instead of running (one that is running now has its result replaced), and the next
-    /// one runs on a fresh runtime. Returns the new epoch: tickets with a lower [`Ticket::epoch`] belong to
-    /// the abandoned runtime. Reporting the lost mirrors is the caller's job ([`Settled::rebuilt`] stays
-    /// false for these requests).
+    /// trust (a reply naming another request). A request running now has its result replaced by
+    /// [`Error::Crashed`]; requests still queued fail the same way ([`AfterFatal::FailQueued`]) or run on a
+    /// fresh runtime ([`AfterFatal::RerunQueued`]). Returns the new epoch: tickets with a lower
+    /// [`Ticket::epoch`] belong to the abandoned runtime. Reporting the lost mirrors is the caller's job
+    /// ([`Settled::rebuilt`] stays false for these requests).
     pub fn restart(&self) -> u64 {
         // Under the queue lock: no enqueue interleaves with the bump.
         let _tx = self.inner.tx.lock().unwrap_or_else(|e| e.into_inner());
@@ -267,19 +282,20 @@ impl DocumentsThread {
 
     fn spawn(&self) -> Result<mpsc::UnboundedSender<Job>, Error> {
         let (tx, rx) = mpsc::unbounded_channel();
-        let limits = self.inner.limits.clone();
+        let limits = self.inner.limits;
+        let bundle = self.inner.bundle;
         let shutdown = self.inner.shutdown.clone();
         let shared = self.inner.shared.clone();
         shared.alive.fetch_add(1, Ordering::SeqCst);
         let alive = Alive(shared.clone());
         std::thread::Builder::new()
-            .name("documents-js".into())
+            .name(bundle.thread.into())
             .stack_size(STACK)
             .spawn(move || {
                 let alive = alive;
-                serve(rx, &limits, &shutdown, &alive.0);
+                serve(rx, bundle, &limits, &shutdown, &alive.0);
             })
-            .map_err(|e| Error::Crashed(format!("spawn the documents-js thread: {e}")))?;
+            .map_err(|e| Error::Crashed(format!("spawn the {} thread: {e}", bundle.thread)))?;
         Ok(tx)
     }
 }
@@ -293,8 +309,8 @@ impl Drop for Alive {
     }
 }
 
-fn build(limits: &Limits) -> Result<DocumentsJs, Error> {
-    catch_unwind(AssertUnwindSafe(|| DocumentsJs::new(limits.clone()))).unwrap_or_else(|p| {
+fn build(bundle: &'static Bundle, limits: &Limits) -> Result<JsRuntime, Error> {
+    catch_unwind(AssertUnwindSafe(|| JsRuntime::new(bundle, *limits))).unwrap_or_else(|p| {
         Err(Error::Crashed(format!(
             "panic while building the runtime: {}",
             panic_message(&*p)
@@ -303,31 +319,32 @@ fn build(limits: &Limits) -> Result<DocumentsJs, Error> {
 }
 
 /// Drop a runtime that may be in a bad state; a panic while dropping it must not end the thread.
-fn discard(js: DocumentsJs) {
+fn discard(js: JsRuntime) {
     if let Err(p) = catch_unwind(AssertUnwindSafe(move || drop(js))) {
-        tracing::error!(panic = %panic_message(&*p), "documents runtime panicked while being dropped");
+        tracing::error!(panic = %panic_message(&*p), "JS runtime panicked while being dropped");
     }
 }
 
-fn run(js: &mut DocumentsJs, work: Work) -> Result<Reply, Error> {
+fn run(js: &mut JsRuntime, work: Work) -> Result<Reply, Error> {
     match work {
         Work::Call(line) => js.serve(line).and_then(Reply::from_lines),
         Work::Eval(script) => js.eval_raw(&script).map(|()| Reply {
             events: Vec::new(),
             reply: String::new(),
         }),
-        Work::Panic => panic!("test: panic on the documents-js thread"),
+        Work::Panic => panic!("test: panic on the {} thread", js.bundle().thread),
         #[cfg(test)]
         Work::Exit => unreachable!("handled by serve"),
     }
 }
 
-/// The thread body: wait for a job (or shutdown); fail a job from an older epoch with the error that ended
-/// it; drop a runtime the epoch has moved past; build the runtime if there is none; run the job with panics
-/// caught. A fatal failure moves the epoch on *before* its reply is sent, then the runtime is dropped and a
-/// fresh one built.
+/// The thread body: wait for a job (or shutdown); under [`AfterFatal::FailQueued`] fail a job from an older
+/// epoch with the error that ended it; drop a runtime the epoch has moved past; build the runtime if there is
+/// none; run the job with panics caught. A fatal failure moves the epoch on *before* its reply is sent, then
+/// the runtime is dropped and a fresh one built.
 fn serve(
     mut rx: mpsc::UnboundedReceiver<Job>,
+    bundle: &'static Bundle,
     limits: &Limits,
     shutdown: &CancellationToken,
     shared: &Shared,
@@ -335,27 +352,27 @@ fn serve(
     let waiter = match tokio::runtime::Builder::new_current_thread().build() {
         Ok(rt) => rt,
         Err(e) => {
-            tracing::error!(error = %e, "documents-js: no tokio runtime");
+            tracing::error!(error = %e, thread = bundle.thread, "JS runtime thread: no tokio runtime");
             return;
         }
     };
     // The runtime and the epoch it was built in.
-    let mut js: Option<(DocumentsJs, u64)> = None;
+    let mut js: Option<(JsRuntime, u64)> = None;
     // The last epoch the thread ended itself, and why: the error its queued jobs fail with.
     let mut ended: Option<(u64, Error)> = None;
-    let build_now = |js: &mut Option<(DocumentsJs, u64)>| -> Result<(), Error> {
+    let build_now = |js: &mut Option<(JsRuntime, u64)>| -> Result<(), Error> {
         let epoch = shared.epoch.load(Ordering::SeqCst);
-        let fresh = build(limits)?;
+        let fresh = build(bundle, limits)?;
         *js = Some((fresh, epoch));
         shared.generation.fetch_add(1, Ordering::SeqCst);
         Ok(())
     };
     let stale = |job_epoch: u64, ended: &Option<(u64, Error)>| match ended {
         Some((epoch, e)) if *epoch == job_epoch => e.clone(),
-        _ => Error::Crashed(
-            "the documents runtime was given up before this request was answered; it is rebuilt"
-                .into(),
-        ),
+        _ => Error::Crashed(format!(
+            "the {} runtime was given up before this request was answered; it is rebuilt",
+            bundle.thread
+        )),
     };
     loop {
         let job = waiter.block_on(async {
@@ -376,7 +393,7 @@ fn serve(
             }
         }
         let now = shared.epoch.load(Ordering::SeqCst);
-        if job.epoch < now {
+        if bundle.after_fatal == AfterFatal::FailQueued && job.epoch < now {
             let _ = job.reply.send(Settled {
                 result: Err(stale(job.epoch, &ended)),
                 rebuilt: false,
@@ -391,7 +408,7 @@ fn serve(
         if js.is_none()
             && let Err(e) = build_now(&mut js)
         {
-            tracing::warn!(error = %e, "documents runtime could not be built");
+            tracing::warn!(error = %e, thread = bundle.thread, "JS runtime could not be built");
             let _ = job.reply.send(Settled {
                 result: Err(e),
                 rebuilt: job.lost,
@@ -405,7 +422,8 @@ fn serve(
         let mut result =
             catch_unwind(AssertUnwindSafe(|| run(runtime, job.work))).unwrap_or_else(|p| {
                 Err(Error::Crashed(format!(
-                    "panic on the documents-js thread: {}",
+                    "panic on the {} thread: {}",
+                    bundle.thread,
                     panic_message(&*p)
                 )))
             });
@@ -415,9 +433,10 @@ fn serve(
             // Before the reply: whoever reacts to this failure enqueues into the new epoch.
             let epoch = shared.epoch.fetch_add(1, Ordering::SeqCst);
             ended = Some((epoch, e.clone()));
-        } else if shared.epoch.load(Ordering::SeqCst) > job.epoch {
-            // `restart` while this job ran: its output came from the runtime the client gave up.
-            result = Err(stale(job.epoch, &ended));
+        } else if shared.epoch.load(Ordering::SeqCst) > now {
+            // `restart` while this job ran (`now` = the epoch it started in, on a runtime of that epoch):
+            // its output came from the runtime the client gave up.
+            result = Err(stale(now, &ended));
         }
         let _ = job.reply.send(Settled { result, rebuilt });
         if js
@@ -425,13 +444,13 @@ fn serve(
             .is_some_and(|(_, built)| *built < shared.epoch.load(Ordering::SeqCst))
         {
             if let Some(e) = &fatal {
-                tracing::warn!(error = %e, "documents runtime failed; failing queued requests and rebuilding");
+                tracing::warn!(error = %e, thread = bundle.thread, after_fatal = ?bundle.after_fatal, "JS runtime failed; rebuilding it");
             }
             if let Some((dead, _)) = js.take() {
                 discard(dead);
             }
             if let Err(e) = build_now(&mut js) {
-                tracing::warn!(error = %e, "documents runtime could not be rebuilt; retrying on the next request");
+                tracing::warn!(error = %e, thread = bundle.thread, "JS runtime could not be rebuilt; retrying on the next request");
             }
         }
     }

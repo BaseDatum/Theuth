@@ -2,6 +2,8 @@
 
 Branch `feat/documents-inproc`. Phase 3 of 3. Earlier phases: [P1](documents-inproc-as-built-P1.md) built the `document-js` crate, and [P2](documents-inproc-as-built-P2.md) put `Helper` on it. This phase deletes the stdio helper `theuth-documents`, its build, packaging and shipping, and the jsdom/React dependency tree. The only documents helper left is the bundle `t` embeds.
 
+2026-11-22: `crates/document-js` has since been merged with `crates/app-js` into `crates/js-runtime` (bundle `DOCUMENTS`); see [js-runtime-unified-as-built.md](js-runtime-unified-as-built.md). Paths below are as of this phase.
+
 ## Deleted
 
 ### `packages/documents`

@@ -1,5 +1,5 @@
 //! Client of the documents helper (design 59 §3.2): the TypeScript in `packages/documents` (BlockNote +
-//! yjs + linkedom), run in-process by [`document_js::DocumentsThread`] — one `documents-js` thread owning a
+//! yjs + linkedom), run in-process by [`js_runtime::JsThread`] serving [`js_runtime::DOCUMENTS`] — one `documents-js` thread owning a
 //! deno_core runtime, started on the first request (docs/design/documents-inproc-as-built-P2.md). The wire is
 //! unchanged: one JSON request line per call, binary fields base64, `{"ev":"update"}` lines pushed before
 //! the reply of the `import`/`edit` that caused them; those reach the actor as [`HelperEvent`]s, in request
@@ -15,7 +15,7 @@
 //!
 //! Not closed: a request enqueued after the failure but before the actor has handled `Restarted` runs on
 //! the fresh runtime before the reopen and fails with "document X is not open" ([`Error::Protocol`]).
-//! Requests enqueued before the failure fail with it instead (document-js epochs).
+//! Requests enqueued before the failure fail with it instead (js-runtime epochs, `AfterFatal::FailQueued`).
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,7 +24,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use base64::Engine as _;
-use document_js::{DocumentsThread, Limits, Ticket};
+use js_runtime::{DOCUMENTS, JsThread as DocumentsThread, Ticket};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
@@ -32,10 +32,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::meta::DocId;
 
-/// Per request: from enqueueing the line to its reply (the runtime's watchdog deadline).
-pub const DEADLINE: Duration = Duration::from_secs(30);
+/// Per request: from enqueueing the line to its reply (the runtime's watchdog deadline; [`DOCUMENTS`]' limits).
+pub const DEADLINE: Duration = DOCUMENTS.limits.deadline;
 /// Largest request line; longer ones never reach the runtime.
-pub const MAX_LINE: usize = 16 * 1024 * 1024;
+pub const MAX_LINE: usize = DOCUMENTS.limits.max_line;
 
 const PROTOCOL_TS: &str = include_str!("../../../packages/documents/src/protocol.ts");
 
@@ -49,13 +49,6 @@ pub fn protocol_version() -> &'static str {
         tail.split_once('"').map(|(v, _)| v).expect("closing quote")
     });
     &V
-}
-
-/// Initialise the V8 platform (idempotent: deno_core's `init_v8` sits behind a process-wide `Once`; see
-/// [`document_js::init_platform`] for why `t` calls it synchronously at startup, right after
-/// `browser::warmup`, before any plugin starts).
-pub fn init_js_platform() {
-    document_js::init_platform();
 }
 
 // The doc comments of `HelperStatus`/`HelperProcess` are part of the OpenRPC wire snapshot
@@ -320,18 +313,19 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-impl From<document_js::Error> for Error {
-    fn from(e: document_js::Error) -> Self {
+impl From<js_runtime::Error> for Error {
+    fn from(e: js_runtime::Error) -> Self {
         match e {
-            document_js::Error::Timeout => Self::Timeout,
-            document_js::Error::OutOfMemory | document_js::Error::Crashed(_) => {
-                Self::Crashed(e.to_string())
-            }
-            document_js::Error::TooLarge { len, max } => {
+            js_runtime::Error::Timeout => Self::Timeout,
+            js_runtime::Error::OutOfMemory => Self::Crashed(
+                "documents runtime reached its heap limit; it was terminated and is rebuilt".into(),
+            ),
+            js_runtime::Error::Crashed(m) => Self::Crashed(format!("documents runtime failed: {m}")),
+            js_runtime::Error::TooLarge { len, max } => {
                 Self::Protocol(format!("request is {len} bytes; the helper accepts {max}"))
             }
-            document_js::Error::Js(m) => Self::Protocol(m),
-            document_js::Error::Stopped => Self::Crashed("helper worker stopped".into()),
+            js_runtime::Error::Js(m) => Self::Protocol(m),
+            js_runtime::Error::Stopped => Self::Crashed("helper worker stopped".into()),
         }
     }
 }
@@ -363,14 +357,7 @@ pub struct Helper {
 impl Helper {
     /// `events` receives pushed updates and restarts; `shutdown` stops the runtime thread.
     pub fn new(events: mpsc::UnboundedSender<HelperEvent>, shutdown: CancellationToken) -> Self {
-        let docs = DocumentsThread::new(
-            Limits {
-                deadline: DEADLINE,
-                max_line: MAX_LINE,
-                ..Limits::default()
-            },
-            shutdown,
-        );
+        let docs = DocumentsThread::new(&DOCUMENTS, DOCUMENTS.limits, shutdown);
         Self::with_backend(Backend::Js(docs), events)
     }
 
@@ -681,11 +668,11 @@ fn parse_reply(line: &str, id: u64) -> Result<Result<Value, Error>, Value> {
     })
 }
 
-fn fake_reply(mut lines: Vec<String>) -> Result<document_js::Reply, document_js::Error> {
+fn fake_reply(mut lines: Vec<String>) -> Result<js_runtime::Reply, js_runtime::Error> {
     let reply = lines
         .pop()
-        .ok_or_else(|| document_js::Error::Js("the fake produced no output".into()))?;
-    Ok(document_js::Reply {
+        .ok_or_else(|| js_runtime::Error::Js("the fake produced no output".into()))?;
+    Ok(js_runtime::Reply {
         events: lines,
         reply,
     })
@@ -720,7 +707,7 @@ mod tests {
     /// The bundle compiled into `t` speaks the protocol `protocol.ts` declares (the old `--version` check).
     #[test]
     fn the_embedded_bundle_speaks_our_protocol_version() {
-        let mut js = document_js::DocumentsJs::new(Limits::default()).unwrap();
+        let mut js = js_runtime::JsRuntime::new(&DOCUMENTS, DOCUMENTS.limits).unwrap();
         assert_eq!(
             js.version().unwrap(),
             format!("theuth-documents {}", protocol_version())
@@ -782,9 +769,11 @@ mod tests {
     ) {
         let (tx, ev) = mpsc::unbounded_channel();
         let docs = DocumentsThread::new(
-            Limits {
+            &DOCUMENTS,
+            js_runtime::Limits {
                 deadline: Duration::from_millis(1500),
-                ..Limits::default()
+                first_deadline: Duration::from_millis(1500),
+                ..DOCUMENTS.limits
             },
             CancellationToken::new(),
         );

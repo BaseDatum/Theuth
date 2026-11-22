@@ -8,23 +8,24 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::{DocumentsJs, DocumentsThread, Error, Limits, Reply};
+use crate::{DOCUMENTS, Error, JsRuntime, JsThread, Limits, Reply};
 
 /// `Y.encodeStateAsUpdate(new Y.Doc())`.
 const EMPTY_STATE: &str = "AAA=";
 
 /// A short request deadline, so the runaway tests end quickly. Building a runtime (bundle load) is not under
-/// it (`DocumentsJs::new` loads under at least `DEFAULT_DEADLINE`), so a slow debug build under load only
-/// stretches the normal requests, which take milliseconds.
+/// it (`JsRuntime::new` loads under at least `LOAD_DEADLINE`), so a slow debug build under load only
+/// stretches the normal requests, which take milliseconds. DOCUMENTS has no longer first deadline.
 fn limits() -> Limits {
     Limits {
         deadline: Duration::from_millis(1500),
-        ..Limits::default()
+        first_deadline: Duration::from_millis(1500),
+        ..DOCUMENTS.limits
     }
 }
 
-fn thread(limits: Limits) -> DocumentsThread {
-    DocumentsThread::new(limits, CancellationToken::new())
+fn thread(limits: Limits) -> JsThread {
+    JsThread::new(&DOCUMENTS, limits, CancellationToken::new())
 }
 
 fn parse(line: &str) -> Value {
@@ -37,7 +38,7 @@ fn ok(reply: &Reply) -> Value {
     v
 }
 
-async fn req(t: &DocumentsThread, id: u64, op: &str, doc: &str, extra: Value) -> Reply {
+async fn req(t: &JsThread, id: u64, op: &str, doc: &str, extra: Value) -> Reply {
     let mut body = json!({ "id": id, "op": op, "doc": doc });
     for (k, v) in extra.as_object().expect("object") {
         body[k] = v.clone();
@@ -48,7 +49,7 @@ async fn req(t: &DocumentsThread, id: u64, op: &str, doc: &str, extra: Value) ->
 }
 
 /// open → import → markdown → close on a fresh document; panics unless every step succeeds.
-async fn round_trip(t: &DocumentsThread, doc: &str) {
+async fn round_trip(t: &JsThread, doc: &str) {
     ok(&req(t, 1, "open", doc, json!({ "state": EMPTY_STATE })).await);
     let import = req(
         t,
@@ -75,7 +76,7 @@ async fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
 
 #[test]
 fn documents_js_serves_requests_directly() {
-    let mut js = DocumentsJs::new(Limits::default()).expect("runtime");
+    let mut js = JsRuntime::new(&DOCUMENTS, DOCUMENTS.limits).expect("runtime");
     assert!(
         js.version()
             .expect("version")
@@ -307,8 +308,9 @@ async fn deadline_terminates_a_runaway_script_and_rebuilds() {
 async fn heap_limit_terminates_and_rebuilds() {
     let t = thread(Limits {
         deadline: Duration::from_secs(20),
+        first_deadline: Duration::from_secs(20),
         heap_limit: 128 * 1024 * 1024,
-        ..Limits::default()
+        ..DOCUMENTS.limits
     });
     round_trip(&t, "before").await;
     let grow = t
@@ -325,10 +327,10 @@ async fn panic_in_an_op_is_contained() {
     let t = thread(limits());
     round_trip(&t, "before").await;
     let r = t
-        .eval_raw("Deno.core.ops.op_documents_test_panic(); for (;;) {}".into())
+        .eval_raw("Deno.core.ops.op_jsrt_test_panic(); for (;;) {}".into())
         .await;
     assert!(
-        matches!(&r, Err(Error::Crashed(m)) if m.contains("panic inside a documents op")),
+        matches!(&r, Err(Error::Crashed(m)) if m.contains("panic inside a js-runtime op")),
         "{r:?}"
     );
     wait_until("rebuild", || t.generation() == 2).await;
@@ -382,12 +384,15 @@ async fn oversized_line_is_rejected_before_js() {
     assert_eq!(t.generation(), 1);
     round_trip(&t, "d2").await;
     // The runtime enforces the same cap when called directly.
-    // `DocumentsJs` drives its own tokio runtime, so it runs off this async test's runtime.
+    // `JsRuntime` drives its own tokio runtime, so it runs off this async test's runtime.
     let direct = std::thread::spawn(|| {
-        let mut js = DocumentsJs::new(Limits {
-            max_line: 16,
-            ..limits()
-        })
+        let mut js = JsRuntime::new(
+            &DOCUMENTS,
+            Limits {
+                max_line: 16,
+                ..limits()
+            },
+        )
         .expect("runtime");
         js.call(&"y".repeat(17))
     })
@@ -423,7 +428,7 @@ async fn dropping_the_last_handle_ends_the_thread() {
 #[tokio::test]
 async fn cancelling_the_token_ends_the_thread() {
     let token = CancellationToken::new();
-    let t = DocumentsThread::new(limits(), token.clone());
+    let t = JsThread::new(&DOCUMENTS, limits(), token.clone());
     round_trip(&t, "d").await;
     token.cancel();
     wait_until("thread exit", || !t.is_running()).await;

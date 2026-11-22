@@ -1,7 +1,7 @@
 /**
- * The in-process entry (`src/inproc.ts`) and its committed bundle (crates/app-js/js/theuth-apps-inproc.js):
+ * The in-process entry (`src/inproc.ts`) and its committed bundle (crates/js-runtime/js/theuth-apps-inproc.js):
  * protocol behaviour of `call(line)`, parity of the bundle run in a bare node:vm context (ECMAScript built-ins
- * + crates/app-js/js/polyfill.js only) with direct `call()`, the global set it needs, and the golden
+ * + crates/js-runtime/js/polyfill.js and polyfill-web.js only) with direct `call()`, the global set it needs, and the golden
  * transcript the Rust tests replay.
  */
 import { describe, expect, test } from "bun:test";
@@ -13,9 +13,12 @@ import { MAX_LINE_BYTES, call, version } from "../src/inproc.ts";
 import { CASES, livePanel, prototype, tools } from "./inproc-cases.ts";
 
 const root = join(import.meta.dir, "..", "..", "..");
-const bundle = readFileSync(join(root, "crates/app-js/js/theuth-apps-inproc.js"), "utf8");
-const polyfill = readFileSync(join(root, "crates/app-js/js/polyfill.js"), "utf8");
-const golden = JSON.parse(readFileSync(join(root, "crates/app-js/tests/golden.json"), "utf8")) as {
+const bundle = readFileSync(join(root, "crates/js-runtime/js/theuth-apps-inproc.js"), "utf8");
+/** What the runtime loads before an app bundle: the shared base, then the app bundles' web supplement. */
+const polyfill = ["polyfill.js", "polyfill-web.js"]
+  .map((f) => readFileSync(join(root, "crates/js-runtime/js", f), "utf8"))
+  .join("\n");
+const golden = JSON.parse(readFileSync(join(root, "crates/js-runtime/tests/apps_golden.json"), "utf8")) as {
   version: string;
   cases: { name: string; request: string; response: string }[];
 };
@@ -23,7 +26,7 @@ const golden = JSON.parse(readFileSync(join(root, "crates/app-js/tests/golden.js
 /** A stand-in for the `Deno.core` the polyfill reads (deno_core's ops are not available under bun). */
 const fakeCore = {
   ops: {
-    op_appjs_random_fill: (b: Uint8Array) => crypto.getRandomValues(b),
+    op_jsrt_random_fill: (b: Uint8Array) => crypto.getRandomValues(b),
   },
   createTimer: () => 0,
   cancelTimer: () => {},
@@ -112,7 +115,7 @@ describe("committed bundle in a bare JS context", () => {
   });
 });
 
-describe("golden transcript (crates/app-js/tests/golden.json)", () => {
+describe("golden transcript (crates/js-runtime/tests/apps_golden.json)", () => {
   test("is current: recorded from this TypeScript (run scripts/record-inproc-golden.ts after a change)", () => {
     expect(golden.version).toBe(version());
     expect(golden.cases.map((c) => c.name)).toEqual(CASES.map((c) => c.name));

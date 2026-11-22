@@ -1,6 +1,6 @@
 //! The authority end to end against the documents helper (design 59 §14 step 1
 //! checks 2, 3, 6): create from a file, edit → export within 3 s, file edit →
-//! diff import, restart → identical export. The helper runs in-process (document-js),
+//! diff import, restart → identical export. The helper runs in-process (js-runtime),
 //! so nothing is skipped.
 
 use std::path::Path;

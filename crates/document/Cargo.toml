@@ -7,7 +7,7 @@ description = "Documents: the Yjs authority (yrs) behind every BlockNote editor,
 
 [dependencies]
 okf = { workspace = true }
-document-js = { workspace = true }
+js-runtime = { workspace = true }
 rpc-core = { workspace = true }
 rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }

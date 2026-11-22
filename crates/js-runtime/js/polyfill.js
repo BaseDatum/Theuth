@@ -1,5 +1,6 @@
-// The web globals the documents bundle needs that a bare deno_core runtime does not have (crates/document-js).
-// Measured (packages/documents: vm probe + parity run): `crypto.getRandomValues`/`randomUUID` (Y.Doc client
+// The web globals every in-process bundle needs that a bare deno_core runtime does not have (crates/js-runtime;
+// the app bundles also load polyfill-web.js after it). Measured for DOCUMENTS
+// (packages/documents: vm probe + parity run): `crypto.getRandomValues`/`randomUUID` (Y.Doc client
 // ids, block ids), `atob` (htmlparser2's entity tables, at load), and `setTimeout`/`clearTimeout`/
 // `setInterval`/`clearInterval` (referenced at load by lib0's eventloop; never called on the helper's paths).
 // Everything else the bundle touches is ECMAScript or `typeof`-probed with a fallback.
@@ -7,7 +8,7 @@
   const ops = core.ops;
 
   function getRandomValues(view) {
-    ops.op_documents_random_fill(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+    ops.op_jsrt_random_fill(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
     return view;
   }
   const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
