@@ -53,7 +53,7 @@ export function SectionTitle({ children }: { children: ReactNode }) {
 /** Open task · Snooze ▾ · Dismiss — the footer of the decision and review screens (`onResolved` after either). */
 export function Footer({ item, onResolved, children }: { item: AttentionItem; onResolved: () => void; children?: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
       {children}
       {item.task && (
         <Button asChild variant="ghost" size="sm" className={TONE_NEUTRAL}>
