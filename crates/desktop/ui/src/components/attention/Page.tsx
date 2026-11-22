@@ -2,11 +2,12 @@ import { Outlet, useNavigate, useParams } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { createContext, type FocusEvent, type KeyboardEvent, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { snoozeUntil } from '@/components/hud/model'
-import { useAttention } from '@/components/hud/queries'
+import { SEEN_ON_SCREEN, useAttention } from '@/components/hud/queries'
 import { SidebarLead } from '@/components/nav/SectionBand'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useIsMobile } from '@/hooks/use-mobile'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { cn } from '@/lib/utils'
 import type { AttentionItem } from '@/rpc/bindings/method.roster.output'
@@ -31,6 +32,7 @@ import {
   moveFocus,
   nextTick,
   opensFirst,
+  paneAfter,
   projectsOf,
   pruneFilter,
   selectEntries,
@@ -139,6 +141,20 @@ export function Page() {
       return kept.length === prev.size ? prev : new Set(kept)
     })
   }, [shownIds])
+  // The open item left the list — dismissed, snoozed or resolved from its card, the bulk bar or the keyboard, answered
+  // elsewhere, expired: the pane moves on as the screen's own footer would (the next item, else the one before, else
+  // the index). Phones show one pane at a time and keep the screen up. A show marked seen by being on screen stays up
+  // until the user moves (104 A2), and an item merely filtered out of view stays open.
+  const mobile = useIsMobile()
+  const prevEntries = useRef(entries)
+  useEffect(() => {
+    const prev = prevEntries.current
+    prevEntries.current = entries
+    if (!active || !items || mobile || SEEN_ON_SCREEN.has(active)) return
+    if (items.some((i) => i.id === active) || !prev.some((e) => entryIds(e).includes(active))) return
+    const next = paneAfter(prev, entries, active)
+    void (next ? navigate({ to: '/attention/$id', params: { id: next }, search: true }) : navigate({ to: '/attention', search: true }))
+  }, [entries, items, active, mobile, navigate])
 
   const v = useVirtualizer({
     count: entries.length,
