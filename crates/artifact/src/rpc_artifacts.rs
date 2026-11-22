@@ -34,6 +34,17 @@ pub trait ArtifactArtifactsApi {
         id: artifact::snapshot::FenceSnapshotId,
         answer: artifact::snapshot::FenceSnapshotAnswer,
     ) -> RpcResult<bool>;
+    /// 209 D9: a client's report of one web view tile (address, title, loading), recorded for
+    /// the `web_views` tool. Forwarded to the session's owner when another engine owns it.
+    #[method(name = "web_view_state", with_extensions)]
+    async fn web_view_state(
+        &self,
+        session: SessionId,
+        view: String,
+        url: String,
+        title: String,
+        loading: bool,
+    ) -> RpcResult<artifact::webview::WebViewStateReply>;
     /// 192: draw one fence through the 164 renderer (a connected desktop/web client) and
     /// return the PNG — the native companions' pictures. `width` is clamped to 240..=1200
     /// CSS px, `scale` to 1..=3. Read-only; guest peers are refused.
@@ -122,6 +133,35 @@ impl ArtifactArtifactsApiServer for Server {
         answer: artifact::snapshot::FenceSnapshotAnswer,
     ) -> RpcResult<bool> {
         Ok(artifact::snapshot::answer(id, answer))
+    }
+
+    async fn web_view_state(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        view: String,
+        url: String,
+        title: String,
+        loading: bool,
+    ) -> RpcResult<artifact::webview::WebViewStateReply> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(r) = forward::route(
+            ext,
+            session,
+            "web_view_state",
+            (session, &view, &url, &title, loading),
+        )
+        .await?
+        {
+            return Ok(r);
+        }
+        Ok(artifact::webview::record_state(artifact::webview::WebViewState {
+            session,
+            view,
+            url,
+            title,
+            loading,
+        }))
     }
 
     async fn fence_snapshot(

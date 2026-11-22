@@ -58,7 +58,9 @@ pub use store::{
 };
 pub use svg::Raster;
 pub use tools::ShowArgs;
-pub use webview::{ShowWebArgs, ShowWebTool, WebViewOpened};
+pub use webview::{
+    ShowWebArgs, ShowWebTool, WebViewOpened, WebViewState, WebViewStateReply, WebViewsTool,
+};
 
 /// Registry name of the [`ArtifactActor`].
 pub const ARTIFACT_ACTOR: &str = "artifact";
@@ -867,6 +869,9 @@ impl runtime::Plugin for ArtifactPlugin {
                     .ask(::tools::RegisterTool(Arc::new(webview::ShowWebTool {
                         rt: rt.clone(),
                     })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(webview::WebViewsTool)))
                     .await;
                 let _ = reg
                     .ask(::tools::RegisterTool(Arc::new(preview::PagePreviewTool {
