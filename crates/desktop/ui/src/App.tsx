@@ -24,6 +24,7 @@ import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { chatLeaves, closeWeb, leaves, usePanes } from '@/lib/panes'
 import { closeAllWebViews, installWebViewEvents, useWebViews } from '@/lib/web-views'
 import { webViewOpened } from '@/lib/web-arrival'
+import { noteViewOpened, ptyViewOpened } from '@/lib/tile-arrival'
 import { closeAllTiles, closeSessionTiles } from '@/lib/tiles'
 import { AgentTileBanner } from '@/components/chat/AgentTileBanner'
 import { forgetArtifact } from '@/components/chat/ArtifactPanel'
@@ -581,6 +582,10 @@ function useEventSideEffects(st: Stores): void {
       // 205 §4.4, 209 §7: the frame is recorded for its card, then tiled beside its chat, opened full screen on a phone
       // or put in the pill there (`webViewOpened`); popouts never get here (`AUX`).
       on("artifact.web-view-opened@1", 'WebViewOpened', (e) => webViewOpened(e, visible(e.session))),
+      // 211 §3: a `show_pty` terminal or a `show_note` document opens as a tile beside its chat when that chat is on
+      // screen and the layout tiles; elsewhere (a phone, a hidden chat) its transcript card is the way in.
+      on("artifact.pty-view-opened@1", 'PtyViewOpened', (e) => ptyViewOpened(e, visible(e.session))),
+      on("artifact.note-view-opened@1", 'NoteViewOpened', (e) => noteViewOpened(e, visible(e.session))),
       // The session's frames and tiles go with it: tiles, store entries, native views; a pop-out window holding one
       // closes on `web-view://closed` (`WebFrame`).
       on("agent.events@1", 'SessionDeleted', (e) => {

@@ -3,7 +3,6 @@
 
 import type { Item } from '@/components/chat/Attachments'
 import { openTile, openTileOf, tileable } from '@/lib/tiles'
-import type { JobView } from '@/rpc/bindings/method.agent.output'
 import { useSessions } from '@/store/sessions'
 
 /** The artifact (or app draft) the session's one artifact tile shows. */
@@ -67,16 +66,29 @@ export type TerminalsProps = { job?: JobRef }
 /** The terminals beside the chat in leaf `host`; one per chat. */
 export const openTerminalsTile = (host: string): string | null => openTile({ kind: 'terminals', host, props: {} satisfies TerminalsProps })
 
-/** A `job-terminal` tile: one job's PTY (`JobCard`'s Open terminal) and its status label. */
+/** A `job-terminal` tile: one job's PTY (`JobCard`'s Open terminal, a `show_pty` call) and its label. */
 export type JobTerminalProps = JobRef & { label: string }
-/** `job`'s terminal beside the chat in leaf `host`; each job its own tile. */
-export const openJobTerminalTile = (host: string, job: JobView): string | null =>
+/** `job`'s terminal beside the chat in leaf `host`, labelled `label` (its name, command or `show_pty` title); each
+ * job its own tile, so the same job again retargets the open one. */
+export const openJobTerminalTile = (host: string, job: JobRef, label: string): string | null =>
   openTile({
     kind: 'job-terminal',
     host,
-    key: `${job.session}/${job.id}`,
-    props: { session: job.session, job: job.id, label: job.name ?? job.command } satisfies JobTerminalProps,
+    key: `${job.session}/${job.job}`,
+    props: { session: job.session, job: job.job, label } satisfies JobTerminalProps,
   })
+
+/** A `job-log` tile (211 §5): a background (`shell()`) job's live output, read-only, and its label. */
+export type JobLogProps = JobRef & { label: string }
+/** `job`'s live log beside the chat in leaf `host`; each job its own tile. */
+export const openJobLogTile = (host: string, job: JobRef, label: string): string | null =>
+  openTile({ kind: 'job-log', host, key: `${job.session}/${job.job}`, props: { session: job.session, job: job.job, label } satisfies JobLogProps })
+
+/** A `note` tile (211 §3): document `doc` (a note, board, knowledge page or meeting note) live in its editor; `block`
+ * is scrolled into view, `title` (the `show_note` title) names the tile where its body is not drawn. */
+export type NoteProps = { doc: string; block?: string; title?: string }
+/** Document `doc` beside the chat in leaf `host`; one tile per document, so the same one again retargets it. */
+export const openNoteTile = (host: string, note: NoteProps): string | null => openTile({ kind: 'note', host, key: note.doc, props: note })
 
 /** A sandbox VM's live desktop; one tile per VM name. */
 export type VmProps = { name: string }

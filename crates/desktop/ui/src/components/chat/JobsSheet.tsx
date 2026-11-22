@@ -66,6 +66,18 @@ export function JobList({ jobs, onJump, className }: { jobs: Jobs; onJump?(): vo
   </div>
 }
 
+/** One job of `session`, live: its `JobCard` body (state, Kill, command, the output following the log), the history
+ * polled every 2 s while mounted. A `show_pty` background job's tile and its card's inline log (211 §5). */
+export function LiveJob({ session, job, className }: { session: string; job: string; className?: string }) {
+  const jobs = useJobs(session, true)
+  const view = jobs.jobs.find((j) => j.id === job)
+  return <div className={cn('min-h-0 overflow-auto', className)}>
+    {!jobs.supported && <p className="text-sm text-fg-secondary">This engine needs an update to show job history.</p>}
+    {jobs.query.error && <p role="alert" className="text-sm text-danger">{jobs.query.error.message}</p>}
+    {view ? <JobCard job={view} bodyOnly /> : jobs.query.isLoading ? <p className="text-sm text-fg-tertiary">Loading {job}…</p> : jobs.supported && <p className="text-sm text-fg-tertiary">Job {job} is not in this session's recent history.</p>}
+  </div>
+}
+
 export function JobsSheet({ session, open, onOpenChange }: { session: string; open: boolean; onOpenChange(open: boolean): void }) {
   const jobs = useJobs(session, open)
   return <Sheet open={open} onOpenChange={onOpenChange}>
