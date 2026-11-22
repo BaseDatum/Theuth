@@ -278,7 +278,8 @@ parent or resolves an `await_reply` waiter. What differs:
   prompt is in flight the input is queued and sent when the response arrives
   (ACP has no mid-turn steering: a turn is one `session/prompt` request and
   its response). `MessageDelivered` is published when it is actually sent,
-  so the transcript shows the real order.
+  so the transcript shows the real order. Since 2026-11-22 a peer message
+  for a busy child interrupts the turn instead of waiting for it (§8.6).
 - **Child → parent.** The harness has no `send_message` tool, so an ACP child
   cannot ask the parent; its turn either finishes or times out. Upgrade
   (§3.8): pass a theuth MCP server in `session/new.mcpServers` that exposes
@@ -982,3 +983,67 @@ Sky, 2026-10-08: harness-internal subagents were invisible. As built
 - **Not built (D12).** theuth-as-harness emitting `subagent_update` over
   `t --acp`; claude/codex draft names; opencode HTTP route; per-child stop
   for omp/opencode (no protocol surface).
+
+### 8.6 Steer on message (2026-11-22)
+
+A parent's `send_message` to an ACP child mid-turn waited in the actor's
+queue until the `session/prompt` resolved — up to an hour for a worker
+blocked in a build-lock wait loop. Native children fold peer messages in
+mid-turn; the only way to reach a busy harness was the user's Stop
+(desktop `api.cancel(id, null, 'stop')` → rpc `cancel` → `Agents::cancel`
+→ ledger bump, `LiveActor::tell_cancel` → `AcpChild` `CancelTurn` →
+`session/cancel`, kill grace; the response finishes the turn `cancelled`
+and `next()` prompts the queue). Steer reuses the actor half of that path
+and none of the supervisor half (no ledger bump, no expired waits):
+
+- **Trigger.** A `PeerInput` (not `UserInput`, not a continuation or
+  harness bookkeeping) queued while a turn is open arms one `SteerNow`
+  timer (`steer_window_ms`, default 1500); messages arriving inside it join
+  the same interrupt. When it fires and the queue is headed by peer
+  messages of the turn's request scope: `AcpChild::cancel_prompt` — the
+  same `session/cancel` (and turn-token cancel, answering its permission
+  asks) the Stop sends, without the kill timer — and the turn is marked
+  `interrupt: Steer`.
+- **Same turn, re-prompted.** The cancelled response does not finish the
+  turn: `reprompt` closes the segment (open calls `ERROR: not finished`,
+  text flushed — partial output stays), persists each queued message as the
+  turn's input (peer consumption, `InputConsumed`, `PeerConsumed` under the
+  open turn id, as a native mid-turn fold), gives the turn a fresh cancel
+  token and sends one `session/prompt`:
+  `<runtime>your previous turn was interrupted to deliver the message(s)
+  below; handle them, then resume the work you were doing</runtime>` + the
+  messages. No `TurnFinished`, no `PeerTurnFinished`, no `cancelled`
+  stop: the parent gets one result when the turn really ends, the ledger and
+  board see one running turn. A user Stop during any of this wins (clears
+  the interrupt; the turn ends `cancelled` as before).
+- **Busy-refused / continuation.** A turn waiting out a busy refusal (§8.3)
+  gets `session/cancel` (the harness's own work) and is re-sent at once
+  with its input plus the messages. An open continuation turn is the
+  harness's own work: `session/cancel`, the continuation closes
+  (`harness_continued`), and a new turn opened by the first message
+  carries the batch under the same note. A busy refusal of any steer prompt
+  goes through `retry_busy` unchanged.
+- **Nudge.** Every prompt that carries a peer message (steer, batch, or a
+  plain idle `start`) arms a `NudgeCheck` (`nudge_after_secs`, default 20;
+  0 = off). The first `agent_thought_chunk`, `agent_message_chunk`,
+  `tool_call` or `tool_call_update` (`continues()`: what the board shows as
+  thinking/working, 155) disarms it and resets the count. On expiry, up to
+  `max_nudges` (default 1): a prompt in flight is cancelled and the same
+  turn re-prompted with `<runtime>you have a new message above;
+  continue</runtime>`; a busy wait is re-sent at once; an unanswered cancel
+  is sent again. After the cap one `AgentEvent::Error` on the turn, nothing
+  more. Under `steer: queue` a nudge cannot cancel: a second prompt with the
+  note supersedes the first (prompt ids: only the turn's newest prompt's
+  response ends it; superseded responses add their usage).
+- **Config** (`agents.yaml`, per entry, all optional): `steer: interrupt |
+  queue` (default `interrupt` — `session/cancel` is baseline ACP, there is
+  no capability to probe), `steer_window_ms`, `nudge_after_secs`,
+  `max_nudges`. Nodes (dialled) use the defaults.
+- **Watch-only children** take no messages (`OBSERVED_PEER`), so a steer
+  is always on the harness's own session; their `cancel_session` (the
+  child's Stop, §8.5) is not sent by a steer.
+- **Not verified live.** omp, claude-agent-acp and opencode on a steer
+  cancel were not exercised; the fake in `acp_child::tests` pins the wire
+  sequence (`peer_message_mid_turn_cancels_and_reprompts_the_same_turn`
+  and neighbours). §8.3's probe saw omp queue cancelled tool work into the
+  next prompt; the steer note tells it to resume, which matches.

@@ -84,6 +84,10 @@ pub const HARNESS_CONTINUED: &str = "harness_continued";
 /// `TurnStarted.text` of a continuation turn: a harness wrapper, so no UI
 /// renders it as a user message.
 const CONTINUED_NOTE: &str = "<runtime>harness still working after its turn ended</runtime>";
+/// 06 §8.6: the `<runtime>` note ahead of the message(s) a steer delivers.
+const STEER_NOTE: &str = "your previous turn was interrupted to deliver the message(s) below; handle them, then resume the work you were doing";
+/// 06 §8.6: the `<runtime>` note of a nudge after a message drew no activity.
+const NUDGE_NOTE: &str = "you have a new message above; continue";
 
 /// The actor. Spawn with `AcpChild::spawn(AcpChild::new(..))`; the process
 /// starts in `on_start` and dies with the actor.
@@ -164,6 +168,32 @@ pub struct AcpChild {
     /// 176 A1: the last ACP traffic in either direction (connect, an
     /// update, a turn's end, an option change) — the idle clock.
     quiet_since: Instant,
+    /// 06 §8.6: the entry's steering keys.
+    steer: acp::Steer,
+    /// 06 §8.6: the armed batching window of the next interrupt.
+    steer_timer: Option<AbortHandle>,
+    /// `session/prompt`s sent on this connection; [`Turn::prompt`] names
+    /// the one whose response ends the turn.
+    prompts: u64,
+}
+
+/// Why theuth itself cancelled the prompt in flight (06 §8.6): not a stop —
+/// the response re-prompts the same turn under [`Self::note`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Interrupt {
+    /// Peer message(s) are queued behind the turn.
+    Steer,
+    /// The prompt carrying a message drew no activity.
+    Nudge,
+}
+
+impl Interrupt {
+    fn note(self) -> &'static str {
+        match self {
+            Self::Steer => STEER_NOTE,
+            Self::Nudge => NUDGE_NOTE,
+        }
+    }
 }
 
 /// One input waiting its turn: the caller's [`InputId`], the supervisor's
@@ -233,6 +263,18 @@ pub(crate) struct Turn {
     /// 91: when the first `agent_thought_chunk` of the current thinking
     /// arrived; taken by the first message chunk or new tool call after it.
     thinking: Option<Instant>,
+    /// Id of the `session/prompt` whose response ends this turn; an older
+    /// prompt's response (superseded by a queue-mode nudge, 06 §8.6) does not.
+    prompt: u64,
+    /// Id of this turn's first `session/prompt`; 0 before it (and for a
+    /// continuation turn).
+    first: u64,
+    /// 06 §8.6: theuth sent `session/cancel` for its own reason.
+    interrupt: Option<Interrupt>,
+    /// 06 §8.6: the no-activity watch after a prompt that carries a message.
+    watch: Option<AbortHandle>,
+    /// Nudges sent since the harness last streamed.
+    nudges: u32,
 }
 
 impl Turn {
@@ -257,14 +299,24 @@ impl Turn {
             thinking: None,
             continuation: false,
             quiet: None,
+            prompt: 0,
+            first: 0,
+            interrupt: None,
+            watch: None,
+            nudges: 0,
         }
     }
 
     /// Abort every timer armed on this turn.
     fn disarm(&mut self) {
-        for t in [self.kill.take(), self.retry.take(), self.quiet.take()]
-            .into_iter()
-            .flatten()
+        for t in [
+            self.kill.take(),
+            self.retry.take(),
+            self.quiet.take(),
+            self.watch.take(),
+        ]
+        .into_iter()
+        .flatten()
         {
             t.abort();
         }
@@ -353,14 +405,49 @@ impl Turn {
             self.assistant("");
         }
     }
+
+    /// 06 §8.6: the turn goes on past an interrupt. Open calls are answered
+    /// [`NOT_FINISHED`], the text so far is flushed and the segment ends on
+    /// an assistant row, so the rows of the message delivered next follow a
+    /// closed segment; unlike [`Self::close`] nothing stands in for text
+    /// that never came.
+    fn cut(&mut self) {
+        while let Some(id) = self.open.first().cloned() {
+            self.call_finished(&id, NOT_FINISHED, true);
+        }
+        self.flush_text();
+        if self.tool_last {
+            self.assistant("");
+        }
+    }
+
+    /// Add one prompt response's usage (a turn re-prompted after an
+    /// interrupt sums its prompts).
+    fn add_tokens(&mut self, usage: Option<&AcpUsage>) {
+        let Some(n) = usage.map(tokens_of) else {
+            return;
+        };
+        match &mut self.tokens {
+            Some(t) => {
+                t.input += n.input;
+                t.output += n.output;
+                t.cache_read += n.cache_read;
+                t.cache_write += n.cache_write;
+            }
+            None => self.tokens = Some(n),
+        }
+    }
 }
 
 /// `tell` (internal): `Harness::connect` returned.
 struct Connected(Result<Harness, String>);
 
-/// `tell` (internal): `session/prompt` returned with its stop reason and the
-/// response's token usage, or failed.
-struct PromptDone(Result<(String, Option<AcpUsage>), String>);
+/// `tell` (internal): `session/prompt` number `id` returned with its stop
+/// reason and the response's token usage, or failed.
+struct PromptDone {
+    id: u64,
+    r: Result<(String, Option<AcpUsage>), String>,
+}
 
 /// `tell` (internal): the cancel grace for turn `.0` elapsed.
 struct KillTimer(TurnId);
@@ -373,6 +460,14 @@ struct Quiet(TurnId);
 
 /// `tell` (internal, 155 §3.3): the stall deadline passed — `activity.fire`.
 struct StallCheck;
+
+/// `tell` (internal, 06 §8.6): the batching window armed while turn `.0`
+/// was open elapsed; interrupt it for the queued peer message(s).
+struct SteerNow(TurnId);
+
+/// `tell` (internal, 06 §8.6): turn `.0`'s message prompt drew no activity
+/// within `nudge_after`.
+struct NudgeCheck(TurnId);
 
 /// `ask` → `Result<acp::SetOptionResult, String>` (75 §8): set the harness's
 /// config option `config_id` (an id, or the alias `model` / `effort`) to
@@ -520,6 +615,9 @@ impl AcpChild {
             activity: ChildActivity::new(ActivityConfig::default()),
             stall: None,
             quiet_since: Instant::now(),
+            steer: acp::Steer::default(),
+            steer_timer: None,
+            prompts: 0,
         }
     }
 
@@ -527,6 +625,13 @@ impl AcpChild {
     #[must_use]
     pub fn with_activity(mut self, cfg: ActivityConfig) -> Self {
         self.activity = ChildActivity::new(cfg);
+        self
+    }
+
+    /// 06 §8.6: the entry's steering keys.
+    #[must_use]
+    pub fn with_steer(mut self, steer: acp::Steer) -> Self {
+        self.steer = steer;
         self
     }
 
@@ -964,6 +1069,7 @@ impl AcpChild {
     /// Send one `session/prompt`; its result arrives as [`PromptDone`]. Pending
     /// [`Note`]s go ahead of the text on the wire only — the persisted user
     /// message is the text alone — and stay with the turn for a busy retry.
+    /// A peer message is watched for activity (06 §8.6).
     async fn start(&mut self, q: Queued, me: &ActorRef<Self>) {
         if self.harness.is_none() {
             return;
@@ -971,33 +1077,185 @@ impl AcpChild {
         if self.open(&q).await.is_err() {
             return;
         }
-        let mut text = q.text;
-        if !self.notes.is_empty() {
-            let notes: String = self
-                .notes
-                .drain(..)
-                .map(|n| format!("<runtime>{n}</runtime>\n"))
-                .collect();
-            text.insert_str(0, &notes);
-            if let Some(t) = &mut self.turn {
-                t.input = Some((text.clone(), q.admitted));
-            }
+        let peer = q.peer.is_some();
+        let text = self.noted(q.text);
+        if let Some(t) = &mut self.turn {
+            t.input = Some((text.clone(), q.admitted));
         }
         self.prompt(&text, me);
+        if peer {
+            self.arm_watch(me);
+        }
     }
 
-    /// Send `text` as `session/prompt`; its result arrives as [`PromptDone`].
+    /// `text` behind the pending [`Note`]s, each as a `<runtime>` line.
+    fn noted(&mut self, text: String) -> String {
+        let mut out: String = self
+            .notes
+            .drain(..)
+            .map(|n| format!("<runtime>{n}</runtime>\n"))
+            .collect();
+        out.push_str(&text);
+        out
+    }
+
+    /// Send `text` as `session/prompt`; its result arrives as [`PromptDone`]
+    /// under the id the open turn now waits for.
     fn prompt(&mut self, text: &str, me: &ActorRef<Self>) {
         let Some(harness) = &self.harness else { return };
         let fut = harness.prompt(crate::diff_output::strip(text).into_owned());
+        self.prompts += 1;
+        let id = self.prompts;
+        if let Some(t) = &mut self.turn {
+            t.prompt = id;
+            if t.first == 0 {
+                t.first = id;
+            }
+        }
         self.worked = true;
         // 155 §3.1: delivered = the `session/prompt` call (busy retries included).
         self.activity.delivered(Instant::now());
         self.arm_stall(me);
         let me = me.clone();
         tokio::spawn(async move {
-            let _ = me.tell(PromptDone(fut.await)).await;
+            let _ = me.tell(PromptDone { id, r: fut.await }).await;
         });
+    }
+
+    /// `session/cancel` for the prompt in flight (06 §3.5): the turn's
+    /// pending permission asks answer `cancelled`, then the prompt resolves.
+    /// The user's Stop ([`CancelTurn`]) and theuth's own interrupts (06
+    /// §8.6) both send it here. `Err` = the connection is gone.
+    fn cancel_prompt(&self) -> Result<(), String> {
+        let Some(h) = &self.harness else {
+            return Ok(());
+        };
+        if let Some(t) = &self.turn {
+            t.cancel.cancel();
+        }
+        h.cancel()
+    }
+
+    /// The front of the queue is a peer message that may join a turn of
+    /// request scope `scope` (50 §6.3).
+    fn peer_front(&self, scope: Option<Uuid>) -> bool {
+        self.queue
+            .front()
+            .is_some_and(|q| q.peer.is_some() && q.scope == scope)
+    }
+
+    /// 06 §8.6: a peer message waits behind the open turn. Arm the batching
+    /// window of an interrupt once; messages arriving inside it join it.
+    fn arm_steer(&mut self, me: &ActorRef<Self>) {
+        if self.steer.mode != acp::SteerMode::Interrupt
+            || self.steer_timer.is_some()
+            || self.harness.is_none()
+            || !self.queue.iter().any(|q| q.peer.is_some())
+        {
+            return;
+        }
+        let Some(t) = &self.turn else { return };
+        self.steer_timer = Some(Self::timer(me, self.steer.window, SteerNow(t.id)));
+    }
+
+    /// 06 §8.6: (re)arm the open turn's no-activity watch.
+    fn arm_watch(&mut self, me: &ActorRef<Self>) {
+        let Some(after) = self.steer.nudge_after else {
+            return;
+        };
+        let Some(t) = &mut self.turn else { return };
+        if let Some(w) = t.watch.take() {
+            w.abort();
+        }
+        t.watch = Some(Self::timer(me, after, NudgeCheck(t.id)));
+    }
+
+    /// 06 §8.6: persist the peer messages at the front of the queue that
+    /// may share turn `turn` (request scope `scope`) as its input, as
+    /// [`Self::open`] does for an opener; their texts in order. A message
+    /// the store could not write goes back to the front for a turn of its
+    /// own, which fails it visibly; a refused exchange is already reported.
+    async fn take_peers(&mut self, turn: TurnId, scope: Option<Uuid>) -> Vec<String> {
+        let mut texts = Vec::new();
+        while self.peer_front(scope) {
+            let Some(q) = self.queue.pop_front() else {
+                break;
+            };
+            match self.persist_input(&q, turn).await {
+                Ok(_) => texts.push(q.text),
+                Err(None) => {}
+                Err(Some(why)) => {
+                    tracing::error!(session = %self.id, "append: {why}");
+                    self.queue.push_front(q);
+                    break;
+                }
+            }
+        }
+        texts
+    }
+
+    /// 06 §8.6: the open turn goes on after theuth's own interrupt `why`.
+    /// The segment so far is closed and persisted, the queued peer
+    /// messages become the turn's input, and one `session/prompt` carries
+    /// them under the interrupt's note — behind the turn's own input when
+    /// the harness never accepted it (a busy refusal was being waited
+    /// out). No `TurnFinished`: the parent, ledger and board see one turn.
+    async fn reprompt(&mut self, why: Interrupt, me: &ActorRef<Self>) {
+        let Some(turn) = &mut self.turn else { return };
+        turn.cut();
+        let (id, scope) = (turn.id, turn.scope);
+        let refused = match turn.retry.take() {
+            Some(r) => {
+                r.abort();
+                turn.input.as_ref().map(|(t, _)| t.clone())
+            }
+            None => None,
+        };
+        let messages = std::mem::take(&mut turn.messages);
+        self.persist_all(messages).await;
+        let mut parts = Vec::new();
+        parts.extend(refused);
+        parts.extend(self.take_peers(id, scope).await);
+        let text = self.noted(format!(
+            "<runtime>{}</runtime>\n{}",
+            why.note(),
+            parts.join("\n\n")
+        ));
+        let Some(turn) = &mut self.turn else { return };
+        turn.interrupt = None;
+        // The cancelled prompt's token answered its asks; the new prompt's
+        // asks and busy retries need a live one.
+        turn.cancel = CancellationToken::new();
+        turn.input = Some((text.clone(), Instant::now()));
+        turn.retries = 0;
+        self.prompt(&text, me);
+        self.arm_watch(me);
+    }
+
+    /// 06 §8.6: the harness's own work (a continuation turn) was cancelled
+    /// for the queued peer messages: one new turn, opened by the first and
+    /// joined by the rest, prompted under [`STEER_NOTE`].
+    async fn start_steer(&mut self, me: &ActorRef<Self>) {
+        if self.turn.is_some() || !self.queue.front().is_some_and(|q| q.peer.is_some()) {
+            return self.next(me).await;
+        }
+        let Some(q) = self.queue.pop_front() else {
+            return;
+        };
+        let Ok(id) = self.open(&q).await else {
+            return self.next(me).await;
+        };
+        let mut texts = vec![q.text];
+        texts.extend(self.take_peers(id, q.scope).await);
+        let text = self.noted(format!(
+            "<runtime>{STEER_NOTE}</runtime>\n{}",
+            texts.join("\n\n")
+        ));
+        if let Some(t) = &mut self.turn {
+            t.input = Some((text.clone(), Instant::now()));
+        }
+        self.prompt(&text, me);
+        self.arm_watch(me);
     }
 
     /// `me.tell(msg)` after `after`; the handle to abort it.
@@ -1905,8 +2163,10 @@ impl Message<UserInput> for AcpChild {
     }
 }
 
-/// 50 §6.4: an ACP child receives enabled peer messages like any session,
-/// queued behind the prompt in flight, and consumes them durably. It is not
+/// 50 §6.4: an ACP child receives enabled peer messages like any session
+/// and consumes them durably. One that arrives while a turn is open
+/// interrupts it after the batching window (06 §8.6, `steer: interrupt`)
+/// or waits for the turn to end (`steer: queue`). It is not
 /// an exportable A2A backend — native request ownership and cancellation
 /// cannot be imposed on an opaque harness loop — so a task input
 /// (`isolated`) is refused at the ask and never accepted into its queue; the
@@ -1944,12 +2204,17 @@ impl Message<PeerInput> for AcpChild {
             ctx.stop();
             return Ok(());
         }
-        self.end_continuation().await;
+        let me = ctx.actor_ref().clone();
+        // 06 §8.6: an open continuation turn is the harness's own work; an
+        // interrupt cancels it after the window instead of prompting into it.
+        if self.steer.mode == acp::SteerMode::Queue {
+            self.end_continuation().await;
+        }
         if self.harness.is_none() || self.turn.is_some() {
             self.queue.push_back(q);
+            self.arm_steer(&me);
             return Ok(());
         }
-        let me = ctx.actor_ref().clone();
         self.start(q, &me).await;
         Ok(())
     }
@@ -2062,6 +2327,14 @@ impl Message<Update> for AcpChild {
                 // 155 §3.1: every update of our session feeds the monitor.
                 self.observe_update(&update).await;
                 let Some(turn) = &mut self.turn else { return };
+                // 06 §8.6: streaming (what the board shows as thinking or
+                // working) after a message prompt — the harness took it.
+                if turn.interrupt.is_none() && Self::continues(&update) {
+                    turn.nudges = 0;
+                    if let Some(w) = turn.watch.take() {
+                        w.abort();
+                    }
+                }
                 if turn.continuation {
                     if let Some(q) = turn.quiet.take() {
                         q.abort();
@@ -2092,16 +2365,48 @@ impl Message<Update> for AcpChild {
 impl Message<PromptDone> for AcpChild {
     type Reply = ();
 
-    async fn handle(&mut self, PromptDone(r): PromptDone, ctx: &mut Context<Self, Self::Reply>) {
+    async fn handle(
+        &mut self,
+        PromptDone { id, r }: PromptDone,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) {
         let me = ctx.actor_ref().clone();
+        // 06 §8.6: a prompt a queue-mode nudge superseded, or one of an
+        // earlier turn: its usage counts for this turn when it was this
+        // turn's; only the newest prompt's response ends the turn.
+        if let Some(t) = &mut self.turn
+            && t.prompt != id
+        {
+            if let Ok((_, usage)) = &r
+                && t.first != 0
+                && id >= t.first
+            {
+                t.add_tokens(usage.as_ref());
+            }
+            return;
+        }
         match r {
             Ok((stop, usage)) => {
                 if let Some(t) = &mut self.turn {
-                    t.tokens = usage.as_ref().map(tokens_of);
+                    t.add_tokens(usage.as_ref());
+                    // 06 §8.6: theuth's own cancel answered — the same turn
+                    // goes on with the message(s); nothing reaches the parent.
+                    if let Some(why) = t.interrupt {
+                        self.reprompt(why, &me).await;
+                        return;
+                    }
                 }
                 self.finish(&stop, None).await;
             }
             Err(e) => {
+                // 06 §8.6: a harness that answers our own cancel with an
+                // error instead of `cancelled` still gets the message; a
+                // dead transport fails the re-prompt and ends the turn then.
+                if let Some(why) = self.turn.as_ref().and_then(|t| t.interrupt) {
+                    tracing::info!(session = %self.id, harness = %self.name, "interrupted prompt failed, re-prompting: {e}");
+                    self.reprompt(why, &me).await;
+                    return;
+                }
                 if is_busy(&e) && self.retry_busy(&e, &me).await {
                     return;
                 }
@@ -2127,10 +2432,21 @@ impl Message<CancelTurn> for AcpChild {
     // `keep` (76 §7) is ignored: the harness owns the stream and its history;
     // theuth cannot persist a prefix into a transcript it does not write.
     async fn handle(&mut self, _: CancelTurn, ctx: &mut Context<Self, Self::Reply>) {
+        if self.harness.is_none() {
+            return;
+        }
         let Some(turn) = &mut self.turn else { return };
-        let Some(h) = &self.harness else { return };
         if turn.kill.is_some() {
             return;
+        }
+        // The user's Stop wins over theuth's own interrupt (06 §8.6): the
+        // response now finishes the turn `cancelled`, the queue drains after.
+        turn.interrupt = None;
+        if let Some(w) = turn.watch.take() {
+            w.abort();
+        }
+        if let Some(s) = self.steer_timer.take() {
+            s.abort();
         }
         // Waiting out a busy refusal: nothing of ours is in flight to
         // cancel, and the harness's own work is not this turn's to kill.
@@ -2140,13 +2456,14 @@ impl Message<CancelTurn> for AcpChild {
             self.next(&me).await;
             return;
         }
-        turn.cancel.cancel();
-        if let Err(e) = h.cancel() {
+        if let Err(e) = self.cancel_prompt() {
             self.closed(e, ctx).await;
             return;
         }
         let me = ctx.actor_ref().clone();
-        turn.kill = Some(Self::timer(&me, self.grace, KillTimer(turn.id)));
+        if let Some(turn) = &mut self.turn {
+            turn.kill = Some(Self::timer(&me, self.grace, KillTimer(turn.id)));
+        }
     }
 }
 
@@ -2276,6 +2593,127 @@ impl Message<Quiet> for AcpChild {
             let me = ctx.actor_ref().clone();
             self.next(&me).await;
         }
+    }
+}
+
+/// 06 §8.6: the batching window elapsed. The turn it was armed for is
+/// interrupted for the peer message(s) at the front of the queue, through
+/// the Stop path's own `session/cancel` ([`AcpChild::cancel_prompt`]): the
+/// prompt in flight is cancelled and its response re-prompts the same turn
+/// ([`AcpChild::reprompt`]); a busy-refused prompt is re-sent at once with
+/// them; a continuation turn (the harness's own work) is cancelled and
+/// closed, and a new turn carries them. A turn already being cancelled, or
+/// a queue headed by a non-peer input, is left alone: the queue drains when
+/// the turn ends, as before.
+impl Message<SteerNow> for AcpChild {
+    type Reply = ();
+
+    async fn handle(&mut self, SteerNow(id): SteerNow, ctx: &mut Context<Self, Self::Reply>) {
+        self.steer_timer = None;
+        let me = ctx.actor_ref().clone();
+        let Some(turn) = &self.turn else { return };
+        if turn.id != id {
+            // A later turn took over: it gets its own window.
+            self.arm_steer(&me);
+            return;
+        }
+        if turn.interrupt.is_some() || turn.kill.is_some() || turn.cancel.is_cancelled() {
+            return;
+        }
+        let (continuation, waiting) = (turn.continuation, turn.retry.is_some());
+        let ready = if continuation {
+            self.queue.front().is_some_and(|q| q.peer.is_some())
+        } else {
+            self.peer_front(turn.scope)
+        };
+        if !ready {
+            return;
+        }
+        tracing::info!(session = %self.id, harness = %self.name, continuation, waiting, "steer: interrupting the turn for a peer message");
+        if let Err(e) = self.cancel_prompt() {
+            self.closed(e, ctx).await;
+            return;
+        }
+        if continuation {
+            self.end_continuation().await;
+            self.start_steer(&me).await;
+        } else if waiting {
+            self.reprompt(Interrupt::Steer, &me).await;
+        } else {
+            if let Some(t) = &mut self.turn {
+                t.interrupt = Some(Interrupt::Steer);
+            }
+            // A harness that never answers the cancel is nudged too.
+            self.arm_watch(&me);
+        }
+    }
+}
+
+/// 06 §8.6: a prompt that carries a message drew no streaming within
+/// `nudge_after`. Up to `max_nudges` times: a busy-refused prompt is sent
+/// again at once (after `session/cancel` of the harness's own work); a
+/// prompt in flight is cancelled and the same turn re-prompted with
+/// [`NUDGE_NOTE`] — under `steer: queue`, a second prompt with the note
+/// supersedes it instead; a cancel not yet answered is sent again. After
+/// the cap one `Error` says so and nothing more is sent.
+impl Message<NudgeCheck> for AcpChild {
+    type Reply = ();
+
+    async fn handle(&mut self, NudgeCheck(id): NudgeCheck, ctx: &mut Context<Self, Self::Reply>) {
+        let me = ctx.actor_ref().clone();
+        let interrupt = self.steer.mode == acp::SteerMode::Interrupt;
+        let Some(turn) = &mut self.turn else { return };
+        if turn.id != id || turn.watch.take().is_none() {
+            return;
+        }
+        if turn.nudges >= self.steer.max_nudges {
+            let secs = self.steer.nudge_after.map_or(0, |d| d.as_secs());
+            let message = format!(
+                "{}: no activity within {secs}s of a delivered message ({} nudge(s) sent); not nudging again",
+                self.name, turn.nudges
+            );
+            tracing::warn!(session = %self.id, "{message}");
+            self.publish(AgentEvent::Error {
+                session: self.id,
+                turn: Some(id),
+                message,
+            })
+            .await;
+            return;
+        }
+        turn.nudges += 1;
+        tracing::info!(session = %self.id, harness = %self.name, nudge = turn.nudges, "no activity after a message; nudging");
+        let sent = if let Some(r) = turn.retry.take() {
+            r.abort();
+            let text = turn.input.as_ref().map(|(t, _)| t.clone());
+            // Only the harness's own work is cancelled: the turn's token
+            // stays live for the busy retries of the re-sent prompt.
+            let cancelled = match (&self.harness, interrupt) {
+                (Some(h), true) => h.cancel(),
+                _ => Ok(()),
+            };
+            if cancelled.is_ok()
+                && let Some(text) = text
+            {
+                self.prompt(&text, &me);
+            }
+            cancelled
+        } else if turn.interrupt.is_some() {
+            self.cancel_prompt()
+        } else if interrupt {
+            turn.interrupt = Some(Interrupt::Nudge);
+            self.cancel_prompt()
+        } else {
+            let text = format!("<runtime>{NUDGE_NOTE}</runtime>");
+            turn.input = Some((text.clone(), Instant::now()));
+            self.prompt(&text, &me);
+            Ok(())
+        };
+        if let Err(e) = sent {
+            self.closed(e, ctx).await;
+            return;
+        }
+        self.arm_watch(&me);
     }
 }
 
@@ -6128,5 +6566,297 @@ pub(crate) mod tests {
             Some(std::fs::metadata(&jsonl).unwrap().len())
         );
         actor.tell(Shutdown).await.unwrap();
+    }
+
+    // ---- 06 §8.6: steer on message, nudge --------------------------------
+
+    use crate::communication::{PeerScope, Policy};
+    use crate::store::communication::AcceptExchange;
+
+    fn steering(window_ms: u64, nudge_ms: Option<u64>, max_nudges: u32) -> acp::Steer {
+        acp::Steer {
+            mode: acp::SteerMode::Interrupt,
+            window: Duration::from_millis(window_ms),
+            nudge_after: nudge_ms.map(Duration::from_millis),
+            max_nudges,
+        }
+    }
+
+    async fn steered(steer: acp::Steer) -> Rig {
+        Rig::tuned(Duration::from_secs(3600), move |c| c.steer = steer, true).await
+    }
+
+    impl Rig {
+        /// A peer message accepted in the store and offered to the child
+        /// as the supervisor offers it (50 §7).
+        async fn peer(&self, body: &str) {
+            let mut policy = Policy::new(true, "test");
+            policy.record_root(self.session, PeerScope::Owner).unwrap();
+            let generation = policy.generation(self.session).unwrap();
+            let recipient = format!("session:{}", self.session);
+            let receipt = self
+                .store
+                .accept_exchange(&AcceptExchange {
+                    sender: "session:parent",
+                    recipient: &recipient,
+                    sender_session: None,
+                    recipient_session: Some(self.session),
+                    request_id: None,
+                    reply_to: None,
+                    request_scope: None,
+                    generation: i64::try_from(generation.revision()).unwrap(),
+                    body,
+                })
+                .await
+                .unwrap();
+            let record = self
+                .store
+                .peer_record(self.session, receipt.id)
+                .await
+                .unwrap()
+                .unwrap();
+            self.actor
+                .ask(PeerInput {
+                    record,
+                    generation,
+                    ticket: InputTicket { id: 0, epoch: 0 },
+                    request_scope: None,
+                    isolated: false,
+                    reply_expected: false,
+                })
+                .await
+                .unwrap();
+        }
+
+        /// The client sends nothing for `d`.
+        async fn silent(&mut self, d: Duration) {
+            if let Ok(Some(m)) = tokio::time::timeout(d, self.fake.from_client.recv()).await {
+                panic!("unexpected client message: {m}");
+            }
+        }
+
+        /// The next client message is `session/cancel` on the child's own session.
+        async fn cancelled(&mut self) {
+            let m = self.fake.next().await;
+            assert_eq!(m["method"], "session/cancel", "{m}");
+            assert_eq!(m["params"]["sessionId"], "s1", "{m}");
+        }
+    }
+
+    fn started(events: &[AgentEvent]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::TurnStarted { .. }))
+            .count()
+    }
+
+    /// 06 §8.6: a peer message for a child mid-turn goes in through the Stop
+    /// path's `session/cancel` after the window; the cancelled response
+    /// re-prompts the same turn with the message under the steer note. The
+    /// interrupted turn reports nothing: one `TurnStarted`, one
+    /// `TurnFinished` (`end_turn`, never `cancelled`), no error, the session
+    /// running throughout; the partial output stays ahead of the message row.
+    #[tokio::test]
+    async fn peer_message_mid_turn_cancels_and_reprompts_the_same_turn() {
+        let mut rig = steered(steering(50, None, 1)).await;
+        rig.input("build it").await;
+        let (first, _) = rig.fake.prompt().await;
+        rig.fake.update(chunk("waiting for the lock"));
+        let mut events = rig
+            .until(|e| matches!(e, AgentEvent::TextDelta { .. }))
+            .await;
+        rig.peer("lock is free, go").await;
+        rig.cancelled().await;
+        rig.fake
+            .respond(&first, PromptResponse::new(StopReason::Cancelled));
+        let (second, text) = rig.fake.prompt().await;
+        assert!(
+            text.starts_with(&format!("<runtime>{STEER_NOTE}</runtime>\n")),
+            "{text}"
+        );
+        assert!(text.contains("lock is free, go"), "{text}");
+        assert!(rig.actor.ask(IsRunning).await.unwrap(), "the turn is open");
+        rig.fake.update(chunk("built"));
+        rig.fake.end_turn(&second);
+        events.extend(rig.until_finished().await);
+        assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
+        assert!(errors(&events).is_empty(), "{events:?}");
+        assert_eq!(started(&events), 1, "{events:?}");
+        assert!(!rig.actor.ask(IsRunning).await.unwrap());
+        let rows = rig.rows().await;
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        assert_eq!(rows[0], (ChatRole::User, "build it".into()));
+        assert_eq!(
+            rows[1],
+            (ChatRole::Assistant, "waiting for the lock".into())
+        );
+        assert_eq!(rows[2].0, ChatRole::User);
+        assert!(rows[2].1.contains("lock is free, go"), "{rows:?}");
+        assert_eq!(rows[3], (ChatRole::Assistant, "built".into()));
+    }
+
+    /// 06 §8.6: two messages inside the window are one interrupt — one
+    /// `session/cancel`, one prompt carrying both in order, then nothing.
+    #[tokio::test]
+    async fn messages_inside_the_window_share_one_interrupt() {
+        let mut rig = steered(steering(300, None, 1)).await;
+        rig.input("build it").await;
+        let (first, _) = rig.fake.prompt().await;
+        rig.peer("first note").await;
+        rig.peer("second note").await;
+        rig.cancelled().await;
+        rig.fake
+            .respond(&first, PromptResponse::new(StopReason::Cancelled));
+        let (second, text) = rig.fake.prompt().await;
+        let (a, b) = (
+            text.find("first note").expect("first"),
+            text.find("second note").expect("second"),
+        );
+        assert!(a < b, "{text}");
+        rig.fake.end_turn(&second);
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
+        rig.silent(Duration::from_millis(500)).await;
+        let users = rig
+            .rows()
+            .await
+            .into_iter()
+            .filter(|(r, _)| *r == ChatRole::User)
+            .count();
+        assert_eq!(users, 3, "the opener and both messages");
+    }
+
+    /// 06 §8.6: `steer: queue` keeps the pre-steer behaviour — nothing is
+    /// sent while the turn runs; the message is the next prompt, plain.
+    #[tokio::test]
+    async fn queue_mode_keeps_the_message_until_the_turn_ends() {
+        let mut rig = steered(acp::Steer {
+            mode: acp::SteerMode::Queue,
+            ..steering(50, None, 1)
+        })
+        .await;
+        rig.input("build it").await;
+        let (first, _) = rig.fake.prompt().await;
+        rig.peer("later").await;
+        rig.silent(Duration::from_millis(300)).await;
+        rig.fake.end_turn(&first);
+        assert_eq!(stop_reasons(&rig.until_finished().await), ["end_turn"]);
+        let (_, text) = rig.fake.prompt().await;
+        assert!(
+            text.contains("later") && !text.contains(STEER_NOTE),
+            "{text}"
+        );
+    }
+
+    /// 06 §8.6: a steer prompt that draws no streaming within
+    /// `nudge_after` is nudged once — `session/cancel`, then the same turn
+    /// re-prompted with the nudge note — and after the cap one `Error`
+    /// says so and nothing more is sent; the turn still ends normally.
+    #[tokio::test]
+    async fn silent_harness_gets_one_nudge_then_an_error() {
+        let mut rig = steered(steering(50, Some(300), 1)).await;
+        rig.input("build it").await;
+        let (first, _) = rig.fake.prompt().await;
+        rig.peer("ping").await;
+        rig.cancelled().await;
+        rig.fake
+            .respond(&first, PromptResponse::new(StopReason::Cancelled));
+        let (second, _) = rig.fake.prompt().await;
+        let silent_from = Instant::now();
+        rig.cancelled().await;
+        assert!(silent_from.elapsed() >= Duration::from_millis(300));
+        rig.fake
+            .respond(&second, PromptResponse::new(StopReason::Cancelled));
+        let (third, text) = rig.fake.prompt().await;
+        assert_eq!(text.trim_end(), format!("<runtime>{NUDGE_NOTE}</runtime>"));
+        let events = rig.until(|e| matches!(e, AgentEvent::Error { .. })).await;
+        let notes = errors(&events);
+        assert!(notes[0].contains("not nudging again"), "{notes:?}");
+        assert!(stop_reasons(&events).is_empty(), "{events:?}");
+        rig.silent(Duration::from_millis(800)).await;
+        rig.fake.end_turn(&third);
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
+        assert!(errors(&events).is_empty(), "one error only: {events:?}");
+    }
+
+    /// 06 §8.6 + §8.3: a harness still unwinding the cancel refuses the
+    /// steer prompt as busy; the busy retry sends the same text again and
+    /// the turn runs on.
+    #[tokio::test]
+    async fn busy_refusal_after_the_steer_cancel_is_retried() {
+        let mut rig = steered(steering(50, None, 1)).await;
+        rig.input("build it").await;
+        let (first, _) = rig.fake.prompt().await;
+        rig.peer("go on").await;
+        rig.cancelled().await;
+        rig.fake
+            .respond(&first, PromptResponse::new(StopReason::Cancelled));
+        let (second, text) = rig.fake.prompt().await;
+        rig.fake.busy(&second);
+        let (third, again) = rig.fake.prompt().await;
+        assert_eq!(again, text, "the steer prompt is retried as it was");
+        rig.fake.update(chunk("on it"));
+        rig.fake.end_turn(&third);
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
+        let notes = errors(&events);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("still busy"), "{notes:?}");
+    }
+
+    /// 06 §8.6: a message while the harness works on its own (a
+    /// continuation turn) cancels that work, closes the continuation
+    /// (`harness_continued`, nothing to the parent) and opens a turn for
+    /// the message under the steer note.
+    #[tokio::test]
+    async fn peer_message_during_a_continuation_cancels_and_opens_a_turn() {
+        let mut rig = steered(steering(50, None, 1)).await;
+        rig.warm().await;
+        rig.fake.update(chunk("still at it"));
+        rig.until(|e| matches!(e, AgentEvent::TextDelta { .. }))
+            .await;
+        rig.peer("new info").await;
+        rig.cancelled().await;
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), [HARNESS_CONTINUED], "{events:?}");
+        let (id, text) = rig.fake.prompt().await;
+        assert!(
+            text.starts_with(&format!("<runtime>{STEER_NOTE}</runtime>\n"))
+                && text.contains("new info"),
+            "{text}"
+        );
+        rig.fake.end_turn(&id);
+        let events = rig.until_finished().await;
+        assert_eq!(stop_reasons(&events), ["end_turn"], "{events:?}");
+        assert_eq!(started(&events), 1, "{events:?}");
+    }
+
+    /// 06 §8.6, 141 §5.4: a watch-only child takes no messages (the
+    /// supervisor refuses them), so a steer is always the ACP child's own:
+    /// `session/cancel` on its session id, and a running child the harness
+    /// announced as cancellable (`cancel_session`, the child's Stop) is
+    /// left to work.
+    #[tokio::test]
+    async fn steer_cancels_the_harness_session_not_its_watched_children() {
+        let mut rig = steered(steering(50, None, 1)).await;
+        rig.warm().await;
+        let mut a = announce(ChildSource::Rfd, "sess_child_1", ChildState::Running);
+        a.can_cancel = Some(true);
+        rig.actor.tell(Update::Subagent(a)).await.unwrap();
+        rig.until(|e| matches!(e, AgentEvent::TurnStarted { .. }))
+            .await;
+        rig.input("work").await;
+        let (first, _) = rig.fake.prompt().await;
+        rig.peer("msg").await;
+        rig.cancelled().await;
+        rig.fake
+            .respond(&first, PromptResponse::new(StopReason::Cancelled));
+        let (second, text) = rig.fake.prompt().await;
+        assert!(text.contains("msg"), "{text}");
+        rig.fake.end_turn(&second);
+        rig.silent(Duration::from_millis(300)).await;
+        let row = rig.observed(ObservedSource::Rfd, "sess_child_1").await;
+        assert_eq!(row.observed.unwrap().state, ObservedState::Running);
     }
 }

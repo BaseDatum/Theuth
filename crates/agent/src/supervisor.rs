@@ -1315,7 +1315,7 @@ impl Agents {
             .unwrap_or_else(|p| p.into_inner())
             .get(engine)
             .map(|(_, d)| d.clone());
-        let (transport, fallback_model, meta, model, effort, harness_skills, mcp) =
+        let (transport, fallback_model, meta, model, effort, harness_skills, mcp, steer) =
             match (harness, entries.get(engine), node) {
                 // A local harness: `model` and `effort` through its options
                 // after `session/new` (67 §8, 75 §8).
@@ -1333,6 +1333,7 @@ impl Agents {
                             .unwrap_or_else(|| acp::DEFAULT_SKILLS_DIR.into()),
                     )),
                     entry.mcp_enabled(),
+                    entry.steer(),
                 ),
                 // A node: native there, or its own `harness`; either way the
                 // instructions ride in `session/new` `_meta`.
@@ -1353,6 +1354,7 @@ impl Agents {
                         None,
                         None,
                         false,
+                        acp::Steer::default(),
                     )
                 }
                 _ => anyhow::bail!(
@@ -1475,7 +1477,8 @@ impl Agents {
             materialised,
             mcp_servers,
         )
-        .with_activity(self.cfg.activity);
+        .with_activity(self.cfg.activity)
+        .with_steer(steer);
         let actor = LiveActor::Acp(AcpChild::spawn_with_mailbox(
             child,
             runtime::subscriber_mailbox(),
