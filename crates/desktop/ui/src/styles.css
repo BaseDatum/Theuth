@@ -11,6 +11,14 @@
 @source inline("{text,bg}-project-{ochre,carnelian,malachite,faience,lapis,nile,umber,slate,sand,plum}");
 
 @custom-variant dark (&:is(.dark *):not(:where([data-snapshot-light], [data-snapshot-light] *)));
+/* OpenUI 0.18's typography shorthands name "Inter" directly; expose the bundled variable face under that family too. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
+}
 /* Design 46: `MessageAssistant`'s chat-prose selectors compose with `outside-openui` (`[&_p]:outside-openui:my-1`
    compiles to `<root> p:not([data-streamdown="openui"] *)`): one definition keeps the markdown register out of every
    app skin the streamdown tree hosts, however deeply the prose nests. */

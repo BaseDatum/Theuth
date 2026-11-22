@@ -1,3 +1,4 @@
+import './openui-devtools-off'
 /* OpenUI's typography (design 46): Inter with the full variable `wght` axis, bundled — no runtime font fetch; the
    app renderer is set in it through `font-variation-settings` (`components/apps/openui-theme.tsx`). */
 import '@fontsource-variable/inter'

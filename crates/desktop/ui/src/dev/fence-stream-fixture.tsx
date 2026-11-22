@@ -6,6 +6,7 @@
 // app), against no engine. A rAF sampler records every frame's skeletons, code cards, Suspense fallbacks, surfaces and
 // raw fence text with their row and box into `window.__fx.timeline`; `window.__fx.done` resolves when the scene ends.
 // Scenes: s1, s2, s3-<prose|nl|bare>-<none|reason|engine|tool>, s4, s5, all.
+import '@/openui-devtools-off'
 import '@/styles.css'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRootRoute, createRouter } from '@tanstack/react-router'
