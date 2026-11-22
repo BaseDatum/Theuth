@@ -23,8 +23,8 @@ export type Run = Entry[]
  * visible, like show tool calls." `desktop_handoff` is also always visible: its reason tells the owner what they must
  * do at the desktop. `secret_request` and approvals still use their prompt cards.
  * `send_message` (Sky, 2026-11-10): every send is its own card with its delivery track (`SendCard`). `show_web` (205): its
- * card reopens the web view tile. */
-const DELIVERABLE_TOOLS: Record<string, true> = { show: true, show_web: true, app: true, agent_draft: true, task_draft: true, routine_draft: true, ask_user: true, desktop_handoff: true, send_message: true }
+ * card reopens the web view tile; `show_pty`/`show_note` (211) likewise their terminal and note tiles. */
+const DELIVERABLE_TOOLS: Record<string, true> = { show: true, show_web: true, show_pty: true, show_note: true, app: true, agent_draft: true, task_draft: true, routine_draft: true, ask_user: true, desktop_handoff: true, send_message: true }
 export function isDeliverable(tool: Tool): boolean {
   return DELIVERABLE_TOOLS[tool.name] === true || isBoardCreate(tool)
 }
