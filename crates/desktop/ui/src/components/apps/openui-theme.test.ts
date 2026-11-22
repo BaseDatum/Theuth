@@ -56,7 +56,7 @@ test('OpenUI is set in the bundled variable Inter, so its wght-axis settings ren
 
 test('the mount scopes instead of writing the body: a display-contents wrapper carries the scope class', () => {
   const html = renderToStaticMarkup(createElement(OpenUITheme, { mode: 'dark' }, createElement('p', null, 'x')))
-  expect(html).toContain('class="openui-theuth-scope"')
+  expect(html).toContain('class="openui-theuth-scope-dark"')
   expect(html).toContain('display:contents')
   expect(html).toContain('<p>x</p>')
 })

@@ -137,15 +137,16 @@ export const theuthOpenUITheme = createTheme({
 /** Every OpenUI mount scopes its tokens to this class instead of the provider's `body` default: the provider writes
  * `--openui-*` here and nothing global, so sibling mounts — a live fence beside a snapshot's forced appearance, the
  * app view behind the panel — never rewrite one another. Every value is a `var()` reference, so the written rule is
- * identical for light and dark and concurrent providers cannot compete where the class repeats; the provider's unique
+ * mode-specific, so concurrent light and dark mounts cannot overwrite each other's unmapped defaults; the provider's unique
  * portal class still carries the tokens to anything OpenUI portals out to `document.body`. */
 const SCOPE = 'openui-theuth-scope'
+const scopeFor = (mode: 'light' | 'dark') => `${SCOPE}-${mode}`
 
 /** The one theme mount: theuth tokens, scoped to the subtree, `mode` driving only OpenUI's own mode context. */
 export function OpenUITheme({ mode, children }: { mode: 'light' | 'dark'; children: ReactNode }) {
   return (
-    <ThemeProvider mode={mode} lightTheme={theuthOpenUITheme} cssSelector={`.${SCOPE}`}>
-      <div className={SCOPE} style={{ display: 'contents' }}>
+    <ThemeProvider mode={mode} lightTheme={theuthOpenUITheme} cssSelector={`.${scopeFor(mode)}`}>
+      <div className={scopeFor(mode)} style={{ display: 'contents' }}>
         {children}
       </div>
     </ThemeProvider>
