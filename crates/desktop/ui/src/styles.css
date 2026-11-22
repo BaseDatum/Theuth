@@ -708,6 +708,52 @@ html .react-flow {
 html .react-flow__attribution a {
   color: var(--fg-tertiary);
 }
+/* Node states: hover lifts the card, keyboard focus draws the accent ring outside it (React Flow's own outline off). */
+html .react-flow__node:hover .ag-node {
+  border-color: var(--border-strong);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 0.08), 0 8px 20px -8px rgb(0 0 0 / 0.3);
+}
+html .react-flow__node:focus,
+html .react-flow__node:focus-visible {
+  outline: none;
+}
+html .react-flow__node:focus-visible .ag-node {
+  outline: 2px solid var(--fg-accent);
+  outline-offset: 3px;
+}
+/* In-flight message edges: the dashes flow toward the target; still under reduced motion. */
+html .ag-flow {
+  animation: ag-flow 0.9s linear infinite;
+}
+@keyframes ag-flow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html .ag-flow {
+    animation: none;
+  }
+}
+html .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  box-shadow: 0 4px 14px -6px rgb(0 0 0 / 0.25);
+}
+html .react-flow__controls-button {
+  width: 28px;
+  height: 28px;
+}
+html .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  box-shadow: 0 4px 14px -6px rgb(0 0 0 / 0.25);
+}
+html .react-flow__node-toolbar {
+  z-index: 20;
+}
 /* The paper (59 §24.y): every document page — notes, knowledge, artifacts, the meeting pane, the guest page — is a
    centred `--card` column with a hairline border and shadow on the pane's canvas (`bg-background`, set by the editor);
    edge to edge under `md`, 48/64 px padding on desktop; `[data-paper="dense"]` (the meeting pane) tightens it.

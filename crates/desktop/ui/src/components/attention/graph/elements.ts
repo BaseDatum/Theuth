@@ -42,9 +42,33 @@ export type CanvasNode =
   | { type: 'fold'; id: string; pos: Pos; parent: string; count: number; dim: boolean }
 export type CanvasEdge =
   | { type: 'tree'; id: string; source: string; target: string; onPath: boolean; dim: boolean }
-  | { type: 'message'; id: string; source: string; target: string; sourceHandle: 'r' | 'b'; targetHandle: 'l' | 't'; count: number; active: boolean; animated: boolean; dim: boolean }
+  | { type: 'message'; id: string; source: string; target: string; sourceHandle: 'r' | 'b' | 'ts'; targetHandle: 'l' | 't'; fwd: number; back: number; count: number; active: boolean; animated: boolean; dim: boolean }
 
-export type Elements = { nodes: CanvasNode[]; edges: CanvasEdge[]; slots: Map<string, number>; pos: Map<string, Pos> }
+/** The flow-space box the canvas draws in: every node, plus the room message arcs take above their row. */
+export type Extent = { x: number; y: number; w: number; h: number }
+
+/** Height of the control points of a same-row message arc over `dx` (the arc's top is ¾ of it). */
+export function arcRise(dx: number): number {
+  return Math.min(150, Math.max(44, Math.abs(dx) * 0.16))
+}
+
+export type Elements = { nodes: CanvasNode[]; edges: CanvasEdge[]; slots: Map<string, number>; pos: Map<string, Pos>; extent: Extent }
+
+/** Screen room kept around the drawing by the opening viewport (px). */
+export const VIEW_PAD = { x: 32, y: 28 }
+/** The opening viewport. The whole drawing when it fits at a readable zoom; otherwise the rows are fitted to the height
+ * at no less than the full level of detail (0.75) where the height allows (never under 0.4), left-aligned so the first
+ * tree is whole and the rest pans in. Centred on each axis that fits. `floor` overrides the lowest zoom (Fit: 0.1, the
+ * whole drawing). */
+export function initialViewport(e: Extent, width: number, height: number, floor?: number): { x: number; y: number; zoom: number } {
+  if (e.w <= 0 || e.h <= 0 || width <= 0 || height <= 0) return { x: VIEW_PAD.x, y: VIEW_PAD.y, zoom: 1 }
+  const byH = (height - 2 * VIEW_PAD.y) / e.h
+  const byW = (width - 2 * VIEW_PAD.x) / e.w
+  const zoom = Math.max(floor ?? Math.min(0.75, Math.max(0.4, byH)), Math.min(1, byH, byW))
+  const x = e.w * zoom <= width - 2 * VIEW_PAD.x ? (width - e.w * zoom) / 2 - e.x * zoom : VIEW_PAD.x - e.x * zoom
+  const y = e.h * zoom <= height - 2 * VIEW_PAD.y ? (height - e.h * zoom) / 2 - e.y * zoom : VIEW_PAD.y - e.y * zoom
+  return { x, y, zoom }
+}
 
 /** Builds the canvas: `prev` slots keep roots in place (null re-packs, as Fit does). */
 export function canvasElements(state: GraphState, view: VisibleGraph, highlight: string | null, expandedFolds: ReadonlySet<string>, prev: ReadonlyMap<string, number> | null, cache?: LayoutCache): Elements {
@@ -74,27 +98,45 @@ export function canvasElements(state: GraphState, view: VisibleGraph, highlight:
     const onPath = path.has(n.id) && path.has(n.parent)
     edges.push({ type: 'tree', id: `t:${n.id}`, source: n.parent, target: n.id, onPath, dim: lit && !onPath })
   }
+  let x0 = Number.POSITIVE_INFINITY
+  let y0 = Number.POSITIVE_INFINITY
+  let x1 = Number.NEGATIVE_INFINITY
+  let y1 = Number.NEGATIVE_INFINITY
+  for (const p of pos.values()) {
+    x0 = Math.min(x0, p.x)
+    y0 = Math.min(y0, p.y)
+    x1 = Math.max(x1, p.x + BOX.w)
+    y1 = Math.max(y1, p.y + BOX.h)
+  }
   for (const e of view.edges) {
     const a = pos.get(e.edge.a)
     const b = pos.get(e.edge.b)
     if (!a || !b) continue
-    // Side handles when the ends sit apart horizontally, bottom → top when one is above the other.
+    // Same row with room for a card between them: an arc over the row (top → top), never through the cards between.
+    // Otherwise side handles when the ends sit apart horizontally, bottom → top when one is above the other.
     const [left, right] = a.x <= b.x ? [e.edge.a, e.edge.b] : [e.edge.b, e.edge.a]
-    const apart = Math.abs(a.x - b.x) >= BOX.w
+    const dx = Math.abs(a.x - b.x)
+    const apart = dx >= BOX.w
+    const arc = a.y === b.y && dx >= 2 * BOX.w
     const [upper, lower] = a.y <= b.y ? [e.edge.a, e.edge.b] : [e.edge.b, e.edge.a]
     const onPath = path.has(e.edge.a) && path.has(e.edge.b)
+    const source = apart ? left : upper
+    if (arc) y0 = Math.min(y0, a.y - 0.75 * arcRise(dx))
     edges.push({
       type: 'message',
       id: e.edge.id,
-      source: apart ? left : upper,
+      source,
       target: apart ? right : lower,
-      sourceHandle: apart ? 'r' : 'b',
-      targetHandle: apart ? 'l' : 't',
+      sourceHandle: arc ? 'ts' : apart ? 'r' : 'b',
+      targetHandle: arc || !apart ? 't' : 'l',
+      fwd: source === e.edge.a ? e.edge.ab : e.edge.ba,
+      back: source === e.edge.a ? e.edge.ba : e.edge.ab,
       count: e.edge.ab + e.edge.ba,
       active: e.active,
       animated: e.animated,
       dim: lit && !onPath,
     })
   }
-  return { nodes, edges, slots, pos }
+  const extent = pos.size === 0 ? { x: 0, y: 0, w: 0, h: 0 } : { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+  return { nodes, edges, slots, pos, extent }
 }

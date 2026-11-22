@@ -9,7 +9,7 @@ import { requirements as costsRequirements } from '@/components/costs/requiremen
 import { broadcastRequirements } from '@/components/chat/requirements'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { AudioLines, Bell, Bot, ChartColumn, Library, Megaphone, Mic, PanelLeft, Plus, Settings, SquarePen, StickyNote } from 'lucide-react'
+import { AudioLines, Bot, ChartColumn, Inbox, Library, Megaphone, Mic, PanelLeft, Plus, Settings, SquarePen, StickyNote } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Mark } from '@/components/Mark'
@@ -185,7 +185,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
           <Capability required={attentionRequirements} hide><SidebarMenuItem className="group/popout-row">
             <SidebarMenuButton asChild isActive={section === 'attention'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <Link to="/attention">
-                <Bell /> Inbox
+                <Inbox /> Inbox
                 <AttentionBadge />
               </Link>
             </SidebarMenuButton>
