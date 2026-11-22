@@ -10,35 +10,47 @@
 //! desktop's IPC fence, `asset` handler check and links script have no counterpart here.
 //!
 //! Navigation (205 §4.3, §5): the main frame loads only what [`allowed`] passes; subframes also
-//! `about:blank` / `about:srcdoc`, `data:` and `blob:` ([`navigation_allowed`]). A navigation without a
-//! target frame (`target=_blank`, `window.open`) is cancelled and opened in the system browser, at most once
-//! per [`may_open`] interval per view.
+//! `about:blank` / `about:srcdoc`, `data:` and `blob:` ([`navigation_allowed`]). A new-window request
+//! (`target=_blank`, `window.open`) reaches `createWebView…`, which opens it in the system browser, at most once
+//! per [`may_open`] interval per view, and never creates a view; so does a main-frame response WebKit cannot
+//! show (a download). JavaScript panels (`alert`, `confirm`, `prompt`) are native alerts.
 //!
 //! Every UIKit / WebKit call runs on the main thread: commands hop there through the caller's
 //! `Webview::with_webview`, which also hands over Tauri's `WKWebView` for the coordinate conversion. The views
 //! and their delegates (WebKit holds delegates weakly) live in a main-thread-only registry.
+//!
+//! `objc2-web-kit` 0.3 declares the delegate protocols' methods for macOS only, so the compiler does not check
+//! the selectors or signatures below against the protocols on iOS; [`create`] asserts in debug builds that
+//! every one of [`DELEGATE_SELECTORS`] is registered.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::ptr::null_mut;
-use std::time::Instant;
+use std::ptr::{NonNull, null_mut};
+use std::rc::Rc;
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::{Duration, Instant};
 
-use objc2::rc::{Allocated, Retained};
-use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
+use block2::{DynBlock, RcBlock};
+use objc2::rc::{Allocated, Retained, Weak};
+use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject, Sel};
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, define_class, extern_class, extern_methods,
-    msg_send,
+    msg_send, sel,
 };
 use objc2_foundation::{
-    NSDictionary, NSKeyValueChangeKey, NSKeyValueObservingOptions,
+    NSDictionary, NSHTTPURLResponse, NSKeyValueChangeKey, NSKeyValueObservingOptions,
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
     NSURL, NSURLRequest, NSUUID,
 };
-use objc2_ui_kit::{UIApplication, UIResponder, UIScrollView, UIView};
+use objc2_ui_kit::{
+    UIAlertAction, UIAlertActionStyle, UIAlertController, UIAlertControllerStyle, UIApplication,
+    UIResponder, UIScrollView, UITextField, UIView,
+};
 use objc2_web_kit::{
-    WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate, WKUIDelegate,
-    WKWebViewConfiguration, WKWebsiteDataStore,
+    WKFrameInfo, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
+    WKNavigationResponse, WKNavigationResponsePolicy, WKUIDelegate, WKWebViewConfiguration,
+    WKWebsiteDataStore,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Url, Webview};
@@ -107,6 +119,31 @@ impl WKWebView {
 /// (`document.title = …`, `history.pushState`).
 const OBSERVED: [&str; 2] = ["title", "URL"];
 
+/// The KVO context of [`Delegate`]'s registrations: its address, unique to this class.
+static KVO_CONTEXT: u8 = 0;
+
+fn kvo_context() -> *mut c_void {
+    (&raw const KVO_CONTEXT).cast_mut().cast()
+}
+
+/// Every delegate method [`Delegate`] implements, checked against the runtime in debug builds.
+fn delegate_selectors() -> [Sel; 12] {
+    [
+        sel!(webView:decidePolicyForNavigationAction:decisionHandler:),
+        sel!(webView:decidePolicyForNavigationResponse:decisionHandler:),
+        sel!(webView:didStartProvisionalNavigation:),
+        sel!(webView:didCommitNavigation:),
+        sel!(webView:didFinishNavigation:),
+        sel!(webView:didFailNavigation:withError:),
+        sel!(webView:didFailProvisionalNavigation:withError:),
+        sel!(webViewWebContentProcessDidTerminate:),
+        sel!(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:),
+        sel!(webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:),
+        sel!(webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:),
+        sel!(webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:),
+    ]
+}
+
 /// What a view's delegate needs to report and police it.
 struct DelegateIvars {
     label: String,
@@ -115,6 +152,9 @@ struct DelegateIvars {
     fence: Option<Url>,
     /// The last system-browser open ([`may_open`]).
     last_open: Cell<Option<Instant>>,
+    /// The main-frame URL the policy last allowed and that has not committed: what the state reports while
+    /// it loads, and after it fails, until the view's own URL changes (205 §9).
+    target: RefCell<Option<String>>,
 }
 
 define_class!(
@@ -130,14 +170,41 @@ define_class!(
         #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
         fn decide_policy(
             &self,
-            _view: &WKWebView,
+            view: &WKWebView,
             action: &WKNavigationAction,
-            handler: &block2::DynBlock<dyn Fn(WKNavigationActionPolicy)>,
+            handler: &DynBlock<dyn Fn(WKNavigationActionPolicy)>,
         ) {
-            let policy = if self.permits(action) {
+            let policy = if self.permits(view, action) {
                 WKNavigationActionPolicy::Allow
             } else {
                 WKNavigationActionPolicy::Cancel
+            };
+            handler.call((policy,));
+        }
+
+        /// A main-frame response WebKit cannot show (or an attachment) would leave the tile blank: the
+        /// system browser gets it instead.
+        #[unsafe(method(webView:decidePolicyForNavigationResponse:decisionHandler:))]
+        fn decide_response(
+            &self,
+            view: &WKWebView,
+            response: &WKNavigationResponse,
+            handler: &DynBlock<dyn Fn(WKNavigationResponsePolicy)>,
+        ) {
+            let policy = if download(response) {
+                // SAFETY: plain property reads of a live navigation response.
+                let url = unsafe { response.response() }
+                    .URL()
+                    .and_then(|u| u.absoluteString())
+                    .and_then(|s| Url::parse(&s.to_string()).ok());
+                if let Some(url) = url {
+                    self.open_external(&url);
+                }
+                self.ivars().target.replace(None);
+                self.publish(view, view.is_loading());
+                WKNavigationResponsePolicy::Cancel
+            } else {
+                WKNavigationResponsePolicy::Allow
             };
             handler.call((policy,));
         }
@@ -149,19 +216,23 @@ define_class!(
 
         #[unsafe(method(webView:didCommitNavigation:))]
         fn did_commit(&self, view: &WKWebView, _navigation: Option<&AnyObject>) {
+            self.ivars().target.replace(None);
             self.publish(view, true);
         }
 
         #[unsafe(method(webView:didFinishNavigation:))]
         fn did_finish(&self, view: &WKWebView, _navigation: Option<&AnyObject>) {
+            self.ivars().target.replace(None);
             self.publish(view, false);
         }
 
         #[unsafe(method(webView:didFailNavigation:withError:))]
         fn did_fail(&self, view: &WKWebView, _navigation: Option<&AnyObject>, _error: &AnyObject) {
+            self.ivars().target.replace(None);
             self.publish(view, false);
         }
 
+        /// Keeps [`DelegateIvars::target`]: the address field shows the address that failed, as on the desktop.
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
         fn did_fail_provisional(
             &self,
@@ -171,10 +242,22 @@ define_class!(
         ) {
             self.publish(view, false);
         }
+
+        /// iOS killed the page's content process (memory pressure, a crash): reload, or the tile stays blank.
+        #[unsafe(method(webViewWebContentProcessDidTerminate:))]
+        fn process_terminated(&self, view: &WKWebView) {
+            tracing::warn!(
+                "web view {}: content process terminated, reloading",
+                self.ivars().label
+            );
+            view.reload();
+            self.publish(view, true);
+        }
     }
 
     unsafe impl WKUIDelegate for Delegate {
-        /// `window.open` (and a `target=_blank` the policy check let through): the system browser, never a view.
+        /// `window.open` and `target=_blank`: the system browser, never a view. The only place that opens one
+        /// for a page's request.
         #[unsafe(method(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:))]
         fn create_web_view(
             &self,
@@ -188,6 +271,83 @@ define_class!(
             }
             null_mut()
         }
+
+        #[unsafe(method(webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:))]
+        fn alert_panel(
+            &self,
+            view: &WKWebView,
+            message: &NSString,
+            frame: &WKFrameInfo,
+            handler: &DynBlock<dyn Fn()>,
+        ) {
+            let handler = handler.copy();
+            let reply = Reply::new(move |()| handler.call(()));
+            let alert = panel(self.mtm(), frame, message);
+            add_action(&alert, "OK", UIAlertActionStyle::Default, move |_| {
+                reply.send(())
+            });
+            present(view, &alert);
+        }
+
+        #[unsafe(method(webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:))]
+        fn confirm_panel(
+            &self,
+            view: &WKWebView,
+            message: &NSString,
+            frame: &WKFrameInfo,
+            handler: &DynBlock<dyn Fn(Bool)>,
+        ) {
+            let handler = handler.copy();
+            let reply = Reply::new(move |ok: bool| handler.call((Bool::new(ok),)));
+            let alert = panel(self.mtm(), frame, message);
+            let cancel = reply.clone();
+            add_action(&alert, "Cancel", UIAlertActionStyle::Cancel, move |_| {
+                cancel.send(false)
+            });
+            add_action(&alert, "OK", UIAlertActionStyle::Default, move |_| {
+                reply.send(true)
+            });
+            present(view, &alert);
+        }
+
+        #[unsafe(method(webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:))]
+        fn prompt_panel(
+            &self,
+            view: &WKWebView,
+            prompt: &NSString,
+            default_text: Option<&NSString>,
+            frame: &WKFrameInfo,
+            handler: &DynBlock<dyn Fn(*mut NSString)>,
+        ) {
+            let handler = handler.copy();
+            let reply = Reply::new(move |text: Option<Retained<NSString>>| {
+                handler.call((text
+                    .as_ref()
+                    .map_or(null_mut(), |t| Retained::as_ptr(t).cast_mut()),));
+            });
+            let alert = panel(self.mtm(), frame, prompt);
+            let default_text = default_text.map(|t| NSString::from_str(&t.to_string()));
+            let configure = RcBlock::new(move |field: NonNull<UITextField>| {
+                // SAFETY: UIKit passes the live text field it just added.
+                unsafe { field.as_ref() }.setText(default_text.as_deref());
+            });
+            alert.addTextFieldWithConfigurationHandler(Some(&configure));
+            let cancel = reply.clone();
+            add_action(&alert, "Cancel", UIAlertActionStyle::Cancel, move |_| {
+                cancel.send(None)
+            });
+            let weak = Weak::from_retained(&alert);
+            add_action(&alert, "OK", UIAlertActionStyle::Default, move |_| {
+                let text = weak
+                    .load()
+                    .and_then(|a| a.textFields())
+                    .and_then(|fields| fields.firstObject())
+                    .and_then(|field| field.text())
+                    .unwrap_or_else(NSString::new);
+                reply.send(Some(text));
+            });
+            present(view, &alert);
+        }
     }
 
     /// NSKeyValueObserving: [`OBSERVED`] changed.
@@ -195,14 +355,23 @@ define_class!(
         #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
         fn observe(
             &self,
-            _key_path: Option<&NSString>,
+            key_path: Option<&NSString>,
             object: Option<&AnyObject>,
             _change: Option<&NSDictionary<NSKeyValueChangeKey, AnyObject>>,
-            _context: *mut c_void,
+            context: *mut c_void,
         ) {
-            if let Some(view) = object.and_then(|o| o.downcast_ref::<WKWebView>()) {
-                self.publish(view, view.is_loading());
+            if context != kvo_context() {
+                return;
             }
+            let Some(view) = object.and_then(|o| o.downcast_ref::<WKWebView>()) else {
+                return;
+            };
+            let loading = view.is_loading();
+            // The page moved its own address (`pushState`, a fragment) outside a load: report that one.
+            if !loading && key_path.is_some_and(|k| k.to_string() == "URL") {
+                self.ivars().target.replace(None);
+            }
+            self.publish(view, loading);
         }
     }
 );
@@ -214,19 +383,25 @@ impl Delegate {
         unsafe { msg_send![super(this), init] }
     }
 
-    /// The navigation policy (205 §4.3, §5); a navigation with no target frame goes to the browser instead.
-    fn permits(&self, action: &WKNavigationAction) -> bool {
+    /// The navigation policy (205 §4.3, §5). A navigation with no target frame is allowed: WebKit then asks
+    /// `createWebView…`, which sends it to the browser and creates nothing. An allowed main-frame
+    /// navigation publishes its target URL.
+    fn permits(&self, view: &WKWebView, action: &WKNavigationAction) -> bool {
         let Some(url) = action_url(action) else {
             return false;
         };
         let fence = self.ivars().fence.as_ref();
         // SAFETY: plain property reads of a live navigation action.
         match unsafe { action.targetFrame() } {
-            None => {
-                self.open_external(&url);
-                false
+            None => true,
+            Some(frame) if unsafe { frame.isMainFrame() } => {
+                let ok = allowed(&url, fence);
+                if ok {
+                    self.ivars().target.replace(Some(url.to_string()));
+                    self.publish(view, view.is_loading());
+                }
+                ok
             }
-            Some(frame) if unsafe { frame.isMainFrame() } => allowed(&url, fence),
             Some(_) => navigation_allowed(&url, fence),
         }
     }
@@ -256,15 +431,17 @@ impl Delegate {
         }
     }
 
-    /// Emit `web-view://state` with the view's current URL and title.
+    /// Emit `web-view://state` with the pending target URL, else the view's, and the view's title.
     fn publish(&self, view: &WKWebView, loading: bool) {
-        let state = State {
-            label: self.ivars().label.clone(),
-            url: view
-                .url()
+        let url = self.ivars().target.borrow().clone().unwrap_or_else(|| {
+            view.url()
                 .and_then(|u| u.absoluteString())
                 .map(|s| s.to_string())
-                .unwrap_or_default(),
+                .unwrap_or_default()
+        });
+        let state = State {
+            label: self.ivars().label.clone(),
+            url,
             title: view.title().map(|s| s.to_string()).unwrap_or_default(),
             loading,
         };
@@ -279,6 +456,107 @@ fn action_url(action: &WKNavigationAction) -> Option<Url> {
     // SAFETY: plain property read of a live navigation action.
     let request = unsafe { action.request() };
     Url::parse(&request.URL()?.absoluteString()?.to_string()).ok()
+}
+
+/// A main-frame response the view cannot display: a MIME type WebKit cannot show, or
+/// `Content-Disposition: attachment`.
+fn download(response: &WKNavigationResponse) -> bool {
+    // SAFETY: plain property reads of a live navigation response.
+    let (main, showable, inner) = unsafe {
+        (
+            response.isForMainFrame(),
+            response.canShowMIMEType(),
+            response.response(),
+        )
+    };
+    let attachment = || {
+        inner
+            .downcast_ref::<NSHTTPURLResponse>()
+            .and_then(|http| {
+                http.valueForHTTPHeaderField(&NSString::from_str("Content-Disposition"))
+            })
+            .is_some_and(|v| {
+                v.to_string()
+                    .trim_start()
+                    .to_ascii_lowercase()
+                    .starts_with("attachment")
+            })
+    };
+    main && (!showable || attachment())
+}
+
+/// A JavaScript panel's completion handler, called exactly once: by [`Reply::send`], or with the panel's
+/// default answer (`()`, `false`, `nil`) when the last owner drops it unanswered (the alert could not be
+/// presented, or went away without an action).
+struct Reply<A: Default>(Cell<Option<Box<dyn FnOnce(A)>>>);
+
+impl<A: Default> Reply<A> {
+    fn new(call: impl FnOnce(A) + 'static) -> Rc<Self> {
+        Rc::new(Self(Cell::new(Some(Box::new(call)))))
+    }
+
+    fn send(&self, answer: A) {
+        if let Some(call) = self.0.take() {
+            call(answer);
+        }
+    }
+}
+
+impl<A: Default> Drop for Reply<A> {
+    fn drop(&mut self) {
+        self.send(A::default());
+    }
+}
+
+/// A native alert for a page's panel, titled with the host of the frame that asked.
+fn panel(
+    mtm: MainThreadMarker,
+    frame: &WKFrameInfo,
+    message: &NSString,
+) -> Retained<UIAlertController> {
+    // SAFETY: plain property read of a live frame info.
+    let host = unsafe { frame.request() }
+        .URL()
+        .and_then(|u| u.absoluteString())
+        .and_then(|s| Url::parse(&s.to_string()).ok())
+        .and_then(|u| u.host_str().map(str::to_owned));
+    UIAlertController::alertControllerWithTitle_message_preferredStyle(
+        host.map(|h| NSString::from_str(&h)).as_deref(),
+        Some(message),
+        UIAlertControllerStyle::Alert,
+        mtm,
+    )
+}
+
+fn add_action(
+    alert: &UIAlertController,
+    title: &str,
+    style: UIAlertActionStyle,
+    on_tap: impl Fn(NonNull<UIAlertAction>) + 'static,
+) {
+    let block = RcBlock::new(on_tap);
+    alert.addAction(&UIAlertAction::actionWithTitle_style_handler(
+        Some(&NSString::from_str(title)),
+        style,
+        Some(&block),
+        alert.mtm(),
+    ));
+}
+
+/// Present `alert` from the top-most view controller of `view`'s window. When there is none, nothing is
+/// presented and the dropped alert answers its panel with the default.
+fn present(view: &WKWebView, alert: &UIAlertController) {
+    let Some(mut top) = view.window().and_then(|w| w.rootViewController()) else {
+        tracing::warn!("web view panel: no view controller to present from");
+        return;
+    };
+    while let Some(next) = top.presentedViewController() {
+        if next.isBeingDismissed() {
+            break;
+        }
+        top = next;
+    }
+    top.presentViewController_animated_completion(alert, true, None);
 }
 
 /// `web-view://state` payload (205 §4.3).
@@ -301,7 +579,11 @@ thread_local! {
     static VIEWS: RefCell<HashMap<String, Entry>> = RefCell::new(HashMap::new());
 }
 
-/// Run `f` on the main thread with Tauri's `WKWebView` of the calling webview, and wait for its result.
+/// How long a command waits for the main thread before giving up.
+const MAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Run `f` on the main thread with Tauri's `WKWebView` of the calling webview, and wait for its result, at most
+/// [`MAIN_TIMEOUT`].
 async fn on_main<T: Send + 'static>(
     caller: &Webview,
     f: impl FnOnce(MainThreadMarker, &WKWebView) -> Result<T, String> + Send + 'static,
@@ -316,10 +598,18 @@ async fn on_main<T: Send + 'static>(
         })
         .map_err(|e| e.to_string())?;
     // The reply comes from the main thread's next turn; wait for it off the async workers.
-    tauri::async_runtime::spawn_blocking(move || rx.recv())
+    tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(MAIN_TIMEOUT))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|_| "the main thread dropped the web view call".to_owned())?
+        .map_err(|e| match e {
+            RecvTimeoutError::Timeout => format!(
+                "the main thread did not run the web view call within {} s",
+                MAIN_TIMEOUT.as_secs()
+            ),
+            RecvTimeoutError::Disconnected => {
+                "the main thread dropped the web view call".to_owned()
+            }
+        })?
 }
 
 /// The UI's rectangle (CSS px of the main webview's layout viewport) in `parent`'s coordinates: CSS px scale
@@ -367,6 +657,11 @@ fn create(
         let store =
             WKWebsiteDataStore::dataStoreForIdentifier(&NSUUID::from_bytes(DATA_STORE), mtm);
         config.setWebsiteDataStore(&store);
+        // iOS defaults to NO, which drops `window.open` outside a user gesture without a delegate call;
+        // `createWebView…` sends every one to the browser, throttled by `may_open`.
+        config
+            .preferences()
+            .setJavaScriptCanOpenWindowsAutomatically(true);
         config
     };
     let view = WKWebView::init_with_frame(WKWebView::alloc(mtm), frame, &config);
@@ -378,18 +673,25 @@ fn create(
             fence: app_url(&app),
             app,
             last_open: Cell::new(None),
+            target: RefCell::new(None),
         },
     );
+    for selector in delegate_selectors() {
+        debug_assert!(
+            delegate.respondsToSelector(selector),
+            "web view delegate lacks {selector}"
+        );
+    }
     view.set_navigation_delegate(Some(ProtocolObject::from_ref(&*delegate)));
     view.set_ui_delegate(Some(ProtocolObject::from_ref(&*delegate)));
     for key in OBSERVED {
-        // SAFETY: removed in `destroy` before the delegate or the view is released.
+        // SAFETY: removed in `destroy`, with the same context, before the delegate or the view is released.
         unsafe {
             view.addObserver_forKeyPath_options_context(
                 &delegate,
                 &NSString::from_str(key),
                 NSKeyValueObservingOptions::New,
-                null_mut(),
+                kvo_context(),
             );
         }
     }
@@ -406,8 +708,14 @@ fn create(
 fn destroy(entry: Entry) {
     let Entry { view, delegate } = entry;
     for key in OBSERVED {
-        // SAFETY: added in `create` for exactly these key paths.
-        unsafe { view.removeObserver_forKeyPath(&delegate, &NSString::from_str(key)) };
+        // SAFETY: added in `create` for exactly these key paths and this context.
+        unsafe {
+            view.removeObserver_forKeyPath_context(
+                &delegate,
+                &NSString::from_str(key),
+                kvo_context(),
+            )
+        };
     }
     view.set_navigation_delegate(None);
     view.set_ui_delegate(None);
@@ -442,7 +750,9 @@ pub async fn web_view_attach(
             return Ok(());
         }
         let entry = create(mtm, main, &label, app, &parsed?, frame)?;
-        VIEWS.with_borrow_mut(|views| views.insert(label, entry));
+        if let Some(old) = VIEWS.with_borrow_mut(|views| views.insert(label, entry)) {
+            destroy(old);
+        }
         Ok(())
     })
     .await
@@ -513,17 +823,18 @@ pub async fn web_view_reload(webview: Webview, label: String) -> Result<(), Stri
 #[tauri::command]
 pub async fn web_view_history(webview: Webview, label: String, delta: i32) -> Result<(), String> {
     check_label(&label)?;
-    if delta != -1 && delta != 1 {
-        return Err(format!("history delta must be -1 or 1, got {delta}"));
-    }
     on_main(&webview, move |_, _| {
-        with_view(&label, |e| {
-            if delta < 0 {
+        with_view(&label, |e| match delta {
+            -1 => {
                 e.view.go_back();
-            } else {
-                e.view.go_forward();
+                Ok(())
             }
-        })
+            1 => {
+                e.view.go_forward();
+                Ok(())
+            }
+            _ => Err(format!("history delta must be -1 or 1, got {delta}")),
+        })?
     })
     .await
 }

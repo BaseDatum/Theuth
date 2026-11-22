@@ -94,9 +94,9 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { workspace = true, features = ["NSURL", "NSURLRequest", "NSUUID", "NSDictionary", "NSKeyValueObserving"] }
-objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "UIView", "UIScrollView", "objc2-core-foundation", "block2"] }
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKNavigationDelegate", "WKNavigationAction", "WKFrameInfo", "WKUIDelegate"] }
+objc2-foundation = { workspace = true, features = ["NSURL", "NSURLRequest", "NSURLResponse", "NSUUID", "NSDictionary", "NSKeyValueObserving"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "UIView", "UIScrollView", "UIWindow", "UIViewController", "UIAlertController", "UIControl", "UITextField", "objc2-core-foundation", "block2"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKNavigationDelegate", "WKNavigationAction", "WKNavigationResponse", "WKFrameInfo", "WKUIDelegate", "WKPreferences"] }
 
 [build-dependencies]
 tauri-build = { workspace = true }
