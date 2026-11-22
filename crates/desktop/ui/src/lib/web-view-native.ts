@@ -99,6 +99,19 @@ export function bounds(id: string, r: Rect): Promise<void> {
   return queue(webLabel(id), () => apply(webLabel(id)))
 }
 
+/** `bounds`, sent even when the shell already has `r`: the iOS shell converts the rectangle through its scroll view's
+ * content offset, which a page scroll or the keyboard moves without the placeholder's rectangle changing (209 §7). */
+export function reframe(id: string, r: Rect): Promise<void> {
+  const label = webLabel(id)
+  const s = states.get(label)
+  if (!nativeWebViews() || !s) return Promise.resolve()
+  s.rect = r
+  return queue(label, () => {
+    s.sent.rect = null
+    return apply(label)
+  })
+}
+
 export function visible(id: string, show: boolean): Promise<void> {
   const s = states.get(webLabel(id))
   if (!nativeWebViews() || !s) return Promise.resolve()

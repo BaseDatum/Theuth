@@ -62,7 +62,8 @@ function useOccluded(ref: RefObject<HTMLElement | null>, enabled: boolean): bool
   return useOverlayOver(ref, enabled) || (enabled && dragging)
 }
 
-const rectOf = (el: HTMLElement): native.Rect => {
+/** `el`'s viewport rectangle, as the shell takes it. */
+export const rectOf = (el: HTMLElement): native.Rect => {
   const r = el.getBoundingClientRect()
   return { x: r.left, y: r.top, width: r.width, height: r.height }
 }
@@ -94,11 +95,14 @@ export function useNativeLayer(id: string, ref: RefObject<HTMLElement | null>, l
     if (live) void native.visible(id, !occluded).catch(warn('web_view_visible'))
   }, [id, live, occluded])
 
-  // Follow the placeholder (resizes, splits, scrolls, sidebar moves, the keyboard) once per frame while it shows.
+  // Follow the placeholder (resizes, splits, scrolls, sidebar moves, the keyboard) once per frame while it shows. The
+  // rectangle is sent once first: it may have changed while the layer was hidden (an overlay, a rotation under it), and
+  // showing again would otherwise put the view at its old frame.
   useEffect(() => {
     const el = ref.current
     if (!live || occluded || !el) return
     let last: native.Rect | null = rectOf(el)
+    void native.bounds(id, last).catch(warn('web_view_bounds'))
     let frame = requestAnimationFrame(function tick() {
       const r = rectOf(el)
       if (!sameRect(r, last)) {
