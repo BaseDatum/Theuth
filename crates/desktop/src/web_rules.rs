@@ -2147,7 +2147,7 @@ pub(crate) mod call {
             // Seen loading, then a finish counted: the new page.
             let mut w = Watch::new(&look(A, false, 3), true);
             assert_eq!(w.step(look(B, true, 3), false), None);
-            assert_eq!(w.step(look(B, true, 3), true).unwrap().loading, true);
+            assert!(w.step(look(B, true, 3), true).unwrap().loading);
             assert_eq!(
                 w.step(look(B, false, 4), false),
                 Some(look(B, false, 4).state)
