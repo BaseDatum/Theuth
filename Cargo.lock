@@ -2659,19 +2659,23 @@ version = "2.22.2"
 dependencies = [
  "agent",
  "anyhow",
+ "artifact",
  "async-trait",
  "base64 0.23.1",
  "decision",
  "figment",
  "futures",
  "iana-time-zone",
+ "jsonrpsee",
  "kameo",
  "obscura-js",
  "obscura-mcp",
  "parking_lot",
  "reqwest 0.13.5",
+ "rpc-core",
  "runtime",
  "schemars 1.2.3",
+ "secrets",
  "serde",
  "serde_json",
  "tempfile",
@@ -2685,6 +2689,7 @@ dependencies = [
  "url",
  "uuid",
  "web",
+ "webprofile",
  "wire",
 ]
 
@@ -4087,7 +4092,7 @@ dependencies = [
 [[package]]
 name = "cosmic-text"
 version = "0.14.2"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "bitflags 2.13.2",
  "fontdb 0.16.2",
@@ -5071,6 +5076,7 @@ name = "desktop"
 version = "2.24.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "block2",
  "dirs 7.0.0",
  "hex",
@@ -5078,10 +5084,13 @@ dependencies = [
  "libc",
  "objc2",
  "objc2-app-kit",
+ "objc2-core-graphics",
  "objc2-foundation",
  "objc2-ui-kit",
+ "objc2-web-kit",
  "percent-encoding",
  "platform",
+ "png",
  "portable-pty",
  "rand 0.10.3",
  "raw-window-handle",
@@ -14508,7 +14517,7 @@ dependencies = [
 [[package]]
 name = "obscura-browser"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -14528,7 +14537,7 @@ dependencies = [
 [[package]]
 name = "obscura-dom"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "cssparser 0.34.0",
  "html5ever 0.39.0",
@@ -14543,7 +14552,7 @@ dependencies = [
 [[package]]
 name = "obscura-js"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -14577,7 +14586,7 @@ dependencies = [
 [[package]]
 name = "obscura-mcp"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -14594,7 +14603,7 @@ dependencies = [
 [[package]]
 name = "obscura-net"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "async-trait",
  "compression-codecs",
@@ -14617,7 +14626,7 @@ dependencies = [
 [[package]]
 name = "obscura-render"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",
@@ -14639,7 +14648,7 @@ dependencies = [
 [[package]]
 name = "obscura-ssrf"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 
 [[package]]
 name = "oci-client"
@@ -17849,6 +17858,7 @@ dependencies = [
  "uuid",
  "voice",
  "web",
+ "webprofile",
  "wire",
 ]
 
@@ -21402,7 +21412,7 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.12.1"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "arrayvec",
  "grid 1.0.1",
@@ -22298,6 +22308,7 @@ dependencies = [
  "update",
  "voice",
  "web",
+ "webprofile",
  "wire",
 ]
 
@@ -25224,6 +25235,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "webprofile"
+version = "2.22.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "figment",
+ "hex",
+ "jsonrpsee",
+ "kameo",
+ "parking_lot",
+ "psl",
+ "rand 0.10.3",
+ "replica",
+ "rpc-core",
+ "rpc-core-macros",
+ "runtime",
+ "schemars 1.2.3",
+ "secrets",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ts-rs",
+ "wire",
+ "zeroize",
+]
+
+[[package]]
 name = "webview2-com"
 version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -26174,7 +26218,7 @@ dependencies = [
 [[package]]
 name = "wreq-util"
 version = "3.0.0-rc.12"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "brotli",
  "flate2",

@@ -1460,6 +1460,454 @@ use std::time::Duration;
         }
     }
 
+    /// 209 D8, P3: the `browser_*` tools on a tile, driven against the real
+    /// `answer_web_view_call` dispatch by a fake client. Time is paused, so the 2 s / 30 s
+    /// deadlines elapse at once.
+    mod web_view_call {
+        use super::*;
+        use std::time::Duration;
+
+        use artifact::webview::{
+            WebViewCallAnswer, WebViewCallId, WebViewCallRequested, WebViewCallResolved, WebViewOp,
+            WebViewState,
+        };
+        use kameo::actor::Spawn;
+        use kameo::message::Context;
+        use serde_json::{Value, json};
+        use tokio::sync::mpsc;
+        use tools::{DynTool, ToolCx, ToolOutput};
+
+        const VIEW: &str = "0123456789abcdef";
+
+        /// Bus subscriber: requests and resolutions, in order.
+        #[derive(kameo::Actor)]
+        struct Capture(mpsc::UnboundedSender<Result<WebViewCallRequested, WebViewCallId>>);
+
+        impl Message<WebViewCallRequested> for Capture {
+            type Reply = ();
+            async fn handle(&mut self, m: WebViewCallRequested, _: &mut Context<Self, ()>) {
+                let _ = self.0.send(Ok(m));
+            }
+        }
+
+        impl Message<WebViewCallResolved> for Capture {
+            type Reply = ();
+            async fn handle(&mut self, m: WebViewCallResolved, _: &mut Context<Self, ()>) {
+                let _ = self.0.send(Err(m.id));
+            }
+        }
+
+        struct Harness {
+            tools: Vec<DynTool>,
+            methods: jsonrpsee::Methods,
+            events: mpsc::UnboundedReceiver<Result<WebViewCallRequested, WebViewCallId>>,
+            session: SessionId,
+            dir: tempfile::TempDir,
+            _peer: rpc_core::RpcPeerGuard,
+        }
+
+        impl Harness {
+            async fn new() -> Self {
+                let dir = tempfile::tempdir().unwrap();
+                let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+                let mut methods: jsonrpsee::Methods =
+                    test_rpc_module(crate::new_server(rt.clone())).into();
+                let (peer, guard) = rpc_core::RpcPeer::open();
+                methods.extensions_mut().insert(peer);
+                let (tx, events) = mpsc::unbounded_channel();
+                let cap = Capture::spawn(Capture(tx));
+                rt.subscribe::<Capture, WebViewCallRequested>(&cap).await;
+                rt.subscribe::<Capture, WebViewCallResolved>(&cap).await;
+                // No isolate is ever made: every call below runs on the tile.
+                let cfg = browser::BrowserConfig::default();
+                let actor = browser::Browsers::spawn(browser::Browsers::new(cfg.clone()));
+                let session = SessionId::new();
+                // The session opened the tile (209 §9: attach only within the opener's tree).
+                artifact::webview::record_state(WebViewState {
+                    session,
+                    view: VIEW.into(),
+                    url: "https://a.test/".into(),
+                    title: "A".into(),
+                    loading: false,
+                    closed: false,
+                });
+                Self {
+                    tools: browser::tools::all(actor, cfg, rt),
+                    methods,
+                    events,
+                    session,
+                    dir,
+                    _peer: guard,
+                }
+            }
+
+            fn tool(&self, name: &str) -> DynTool {
+                self.tools
+                    .iter()
+                    .find(|t| t.spec().name == name)
+                    .unwrap_or_else(|| panic!("no tool {name}"))
+                    .clone()
+            }
+
+            /// Run `name` for the session on its own task, with the owner's local-network grant.
+            fn call(&self, name: &str, args: Value) -> tokio::task::JoinHandle<ToolOutput> {
+                let tool = self.tool(name);
+                let cx = ToolCx {
+                    session: self.session,
+                    call_id: "c".into(),
+                    quiet: false,
+                    resources: tools::SessionResources::durable_arc(self.dir.path()),
+                    cancel: tools::CancellationToken::new(),
+                    promote_after: None,
+                };
+                tokio::spawn(tools::egress::scope(true, async move {
+                    tool.call(args, cx).await.unwrap()
+                }))
+            }
+
+            async fn requested(&mut self) -> WebViewCallRequested {
+                self.events
+                    .recv()
+                    .await
+                    .unwrap()
+                    .expect("expected a request, got a resolution")
+            }
+
+            async fn resolved(&mut self) -> WebViewCallId {
+                match self.events.recv().await.unwrap() {
+                    Err(id) => id,
+                    Ok(r) => panic!("expected a resolution, got {r:?}"),
+                }
+            }
+
+            /// The raw `answer_web_view_call` reply.
+            async fn answer_raw(&self, id: WebViewCallId, answer: &WebViewCallAnswer) -> Value {
+                let req = format!(
+                    r#"{{"jsonrpc":"2.0","method":"answer_web_view_call","params":[{},{}],"id":1}}"#,
+                    serde_json::to_string(&id).unwrap(),
+                    serde_json::to_string(answer).unwrap()
+                );
+                let (resp, _) = self.methods.raw_json_request(&req, 1).await.unwrap();
+                serde_json::from_str(resp.get()).unwrap()
+            }
+
+            async fn answer(&self, id: WebViewCallId, answer: &WebViewCallAnswer) -> bool {
+                let v = self.answer_raw(id, answer).await;
+                v["result"].as_bool().unwrap_or_else(|| panic!("{v}"))
+            }
+
+            /// Claim the next request as `client` and finish it with `result`.
+            async fn serve(&mut self, result: Value) -> WebViewCallRequested {
+                let r = self.requested().await;
+                assert!(self.answer(r.id, &claimed("ipad")).await);
+                assert!(self.answer(r.id, &done(result)).await);
+                assert_eq!(self.resolved().await, r.id);
+                r
+            }
+
+            /// `browser_attach` to [`VIEW`], answered by a client on `https://a.test/`.
+            async fn attach(&mut self) -> ToolOutput {
+                let call = self.call("browser_attach", json!({ "view": format!("web:{VIEW}") }));
+                let r = self
+                    .serve(json!({ "url": "https://a.test/inbox", "title": "Inbox" }))
+                    .await;
+                assert_eq!(r.view, VIEW);
+                assert_eq!(r.session, self.session);
+                assert!(!r.delegated);
+                assert_eq!(r.op, WebViewOp::Script);
+                assert_eq!(r.args["world"], "isolated");
+                assert_eq!(r.args["arguments"]["cmd"], "location");
+                call.await.unwrap()
+            }
+        }
+
+        fn claimed(client: &str) -> WebViewCallAnswer {
+            WebViewCallAnswer::Claimed {
+                client: client.into(),
+            }
+        }
+
+        fn done(result: Value) -> WebViewCallAnswer {
+            WebViewCallAnswer::Done { result, png: None }
+        }
+
+        const PREFIX: &str = "[tile web:0123456789abcdef \u{b7} a.test]";
+
+        /// Attach, read through the agent script, a second claimant refused, a late answer
+        /// refused, every reply prefixed, close detaches without a call.
+        #[tokio::test(start_paused = true)]
+        async fn attach_read_and_detach_round_trip() {
+            let mut h = Harness::new().await;
+            let out = h.attach().await;
+            assert!(!out.is_error, "{}", out.content);
+            assert!(out.content.starts_with(PREFIX), "{}", out.content);
+            assert!(out.content.contains("\"Inbox\" (https://a.test/inbox)"), "{}", out.content);
+
+            let call = h.call("browser_read", json!({}));
+            let r = h.requested().await;
+            assert_eq!(r.args["arguments"]["cmd"], "read");
+            assert_eq!(r.args["source"], *browser::tile::AGENT_JS);
+            assert!(h.answer(r.id, &claimed("ipad")).await);
+            assert!(!h.answer(r.id, &claimed("mac")).await, "the first claim wins");
+            assert!(
+                h.answer(
+                    r.id,
+                    &done(json!({ "url": "https://a.test/inbox", "title": "Inbox", "text": "ref=e1 button \"Archive\" role=button\nThree new mails" }))
+                )
+                .await
+            );
+            assert!(!h.answer(r.id, &done(json!({}))).await, "a second Done is late");
+            assert_eq!(h.resolved().await, r.id);
+            let out = call.await.unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            assert_eq!(
+                out.content,
+                format!("{PREFIX}\nURL: https://a.test/inbox\nTitle: Inbox\n\nref=e1 button \"Archive\" role=button\nThree new mails")
+            );
+
+            // browser_tabs and browser_show stay off the tile, without a call.
+            let out = h.call("browser_tabs", json!({ "action": "list" })).await.unwrap();
+            assert!(out.is_error && out.content.starts_with(PREFIX), "{}", out.content);
+            assert!(out.content.contains("web_views"), "{}", out.content);
+            let out = h.call("browser_show", json!({})).await.unwrap();
+            assert!(out.is_error && out.content.contains("already looking"), "{}", out.content);
+
+            let out = h.call("browser_close", json!({})).await.unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            assert!(out.content.starts_with(PREFIX), "{}", out.content);
+            assert!(out.content.contains("Detached from tile web:0123456789abcdef"), "{}", out.content);
+            let out = h.call("browser_attach", json!({})).await.unwrap();
+            assert!(out.content.starts_with("Already on your own browser"), "{}", out.content);
+            assert!(h.events.try_recv().is_err(), "detaching asks no client");
+        }
+
+        /// A client's `Failed` and the agent script's `{ error }` both reach the model as
+        /// errors; acting calls on a tile are credentialed, reads are not.
+        #[tokio::test(start_paused = true)]
+        async fn failures_reach_the_model_and_acting_calls_are_credentialed() {
+            let mut h = Harness::new().await;
+            let click = h.tool("browser_click");
+            assert!(!click.credentialed(h.session, &json!({ "ref": "e1" })), "not on a tile yet");
+            h.attach().await;
+            assert!(click.credentialed(h.session, &json!({ "ref": "e1" })));
+            assert!(h.tool("browser_open").credentialed(h.session, &json!({ "url": "https://b.test/" })));
+            assert!(h.tool("browser_eval").credentialed(h.session, &json!({ "expression": "1" })));
+            assert!(!h.tool("browser_read").credentialed(h.session, &json!({})));
+
+            let call = h.call("browser_click", json!({ "ref": "e9" }));
+            let r = h.requested().await;
+            assert_eq!(r.args["arguments"], json!({ "cmd": "click", "params": { "ref": "e9" } }));
+            assert!(h.answer(r.id, &claimed("ipad")).await);
+            assert!(
+                h.answer(r.id, &done(json!({ "error": "stale ref e9: that element is gone from the page; re-run browser_elements" })))
+                    .await
+            );
+            let out = call.await.unwrap();
+            assert!(out.is_error);
+            assert!(out.content.starts_with(PREFIX), "{}", out.content);
+            assert!(out.content.contains("stale ref e9"), "{}", out.content);
+            h.resolved().await;
+
+            let call = h.call("browser_eval", json!({ "expression": "document.title" }));
+            let r = h.requested().await;
+            assert_eq!(r.args["world"], "page");
+            assert!(h.answer(r.id, &claimed("ipad")).await);
+            assert!(
+                h.answer(r.id, &WebViewCallAnswer::Failed { reason: "ReferenceError: x".into() })
+                    .await
+            );
+            let out = call.await.unwrap();
+            assert!(out.is_error && out.content.ends_with("ReferenceError: x"), "{}", out.content);
+        }
+
+        /// No claim within 2 s: `no client holds tile web:<id>`, the call resolved, a late
+        /// claim refused; a claim with no answer runs out after 30 s.
+        #[tokio::test(start_paused = true)]
+        async fn no_claim_and_no_answer_time_out() {
+            let mut h = Harness::new().await;
+            let call = h.call("browser_attach", json!({ "view": VIEW }));
+            let r = h.requested().await;
+            let out = call.await.unwrap();
+            assert!(out.is_error);
+            assert_eq!(
+                out.content,
+                "no client holds tile web:0123456789abcdef (the user may have closed it); browser_attach {} returns to your own browser"
+            );
+            assert_eq!(h.resolved().await, r.id);
+            assert!(!h.answer(r.id, &claimed("ipad")).await, "late claim");
+
+            h.attach().await;
+            let call = h.call("browser_elements", json!({}));
+            let r = h.requested().await;
+            assert!(h.answer(r.id, &claimed("ipad")).await);
+            // Past the 2 s claim mark: a claimed call waits for its answer.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            assert!(!call.is_finished());
+            let out = call.await.unwrap();
+            assert!(out.is_error);
+            assert!(out.content.contains("did not finish `script` within 30 s"), "{}", out.content);
+            assert!(!h.answer(r.id, &done(json!({}))).await, "dead after the timeout");
+        }
+
+        /// `browser_screenshot` on a tile: op `snapshot`, the PNG saved and attached like
+        /// obscura's.
+        #[tokio::test(start_paused = true)]
+        async fn screenshot_is_a_snapshot_saved_as_a_file() {
+            let mut h = Harness::new().await;
+            h.attach().await;
+            let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+            png.extend_from_slice(&13u32.to_be_bytes());
+            png.extend_from_slice(b"IHDR");
+            png.extend_from_slice(&390u32.to_be_bytes());
+            png.extend_from_slice(&844u32.to_be_bytes());
+            let call = h.call("browser_screenshot", json!({}));
+            let r = h.requested().await;
+            assert_eq!((r.op, &r.args), (WebViewOp::Snapshot, &json!({})));
+            assert!(h.answer(r.id, &claimed("ipad")).await);
+            let data = base64::engine::general_purpose::STANDARD.encode(&png);
+            assert!(
+                h.answer(
+                    r.id,
+                    &WebViewCallAnswer::Done { result: json!({ "width": 390, "height": 844 }), png: Some(data) }
+                )
+                .await
+            );
+            let out = call.await.unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            assert_eq!(out.files.len(), 1);
+            assert_eq!(std::fs::read(&out.files[0]).unwrap(), png);
+            assert!(out.content.starts_with(&format!("{PREFIX}\nscreenshot 390\u{d7}844 saved to")), "{}", out.content);
+        }
+
+        /// Owner connections only.
+        #[tokio::test(start_paused = true)]
+        async fn a_guest_cannot_answer() {
+            let mut h = Harness::new().await;
+            let (guest, _g) = rpc_core::RpcPeer::open_guest([1; 32], [2; 32]);
+            h.methods.extensions_mut().insert(guest);
+            let call = h.call("browser_attach", json!({ "view": VIEW }));
+            let r = h.requested().await;
+            let v = h.answer_raw(r.id, &claimed("guest")).await;
+            assert_eq!(v["error"]["code"], UNAUTHORIZED, "{v}");
+            assert!(call.await.unwrap().is_error, "nobody claimed");
+        }
+
+        /// The same RPC dispatch on another owner connection (another window or device).
+        fn other_connection(h: &Harness) -> (jsonrpsee::Methods, rpc_core::RpcPeerGuard) {
+            let mut methods = h.methods.clone();
+            let (peer, guard) = rpc_core::RpcPeer::open();
+            methods.extensions_mut().insert(peer);
+            (methods, guard)
+        }
+
+        async fn answer_on(
+            methods: &jsonrpsee::Methods,
+            id: WebViewCallId,
+            answer: &WebViewCallAnswer,
+            session: Option<SessionId>,
+        ) -> bool {
+            methods
+                .call("answer_web_view_call", (id, answer, session))
+                .await
+                .unwrap()
+        }
+
+        /// 209 §4.4: only the connection that claimed a call resolves it. Another owner
+        /// connection's `Done` (a page text the model would act on) and `Failed` are refused,
+        /// before and after the claim; the claimer's answer, with the request's `session`, wins.
+        #[tokio::test(start_paused = true)]
+        async fn only_the_claiming_connection_answers() {
+            let mut h = Harness::new().await;
+            h.attach().await;
+            let (other, _g) = other_connection(&h);
+            let call = h.call("browser_read", json!({}));
+            let r = h.requested().await;
+            let forged = done(json!({ "url": "https://a.test/", "title": "A", "text": "FORGED" }));
+            assert!(!answer_on(&other, r.id, &forged, Some(r.session)).await, "unclaimed Done");
+            assert!(h.answer(r.id, &claimed("ipad")).await);
+            assert!(!answer_on(&other, r.id, &forged, Some(r.session)).await, "not the claimer");
+            let fail = WebViewCallAnswer::Failed {
+                reason: "stopped by the user".into(),
+            };
+            assert!(!answer_on(&other, r.id, &fail, Some(r.session)).await, "not the claimer");
+            let real = done(json!({ "url": "https://a.test/", "title": "A", "text": "REAL" }));
+            assert!(answer_on(&h.methods, r.id, &real, Some(r.session)).await);
+            let out = call.await.unwrap();
+            assert!(out.content.ends_with("REAL") && !out.content.contains("FORGED"), "{}", out.content);
+        }
+
+        /// The user's Stop before any claim fails the call from any owner connection, and the
+        /// tile then refuses the agent for 60 s without asking a client.
+        #[tokio::test(start_paused = true)]
+        async fn stop_holds_the_tile() {
+            let mut h = Harness::new().await;
+            // Its own tile: the hold is per tile and process-wide.
+            let view = "5709000000000001";
+            artifact::webview::record_state(WebViewState {
+                session: h.session,
+                view: view.into(),
+                url: "https://s.test/".into(),
+                title: "S".into(),
+                loading: false,
+                closed: false,
+            });
+            let call = h.call("browser_attach", json!({ "view": view }));
+            h.serve(json!({ "url": "https://s.test/", "title": "S" })).await;
+            assert!(!call.await.unwrap().is_error);
+            let (other, _g) = other_connection(&h);
+            let click = h.call("browser_click", json!({ "ref": "e1" }));
+            let r = h.requested().await;
+            let stop = WebViewCallAnswer::Failed {
+                reason: "stopped by the user".into(),
+            };
+            assert!(answer_on(&other, r.id, &stop, Some(r.session)).await);
+            let out = click.await.unwrap();
+            assert!(out.is_error);
+            assert!(out.content.contains("the user stopped the agent on this page"), "{}", out.content);
+            h.resolved().await;
+            let out = h.call("browser_read", json!({})).await.unwrap();
+            assert!(out.content.contains("the user stopped the agent"), "{}", out.content);
+            assert!(h.events.try_recv().is_err(), "a stopped tile asks no client");
+            tokio::time::sleep(Duration::from_secs(61)).await;
+            let read = h.call("browser_read", json!({}));
+            let r = h.requested().await;
+            assert_eq!(r.view, view, "asked again after the hold");
+            assert!(h.answer(r.id, &claimed("ipad")).await);
+            assert!(h.answer(r.id, &done(json!({ "url": "https://s.test/", "title": "S", "text": "back" }))).await);
+            assert!(!read.await.unwrap().is_error);
+        }
+
+        /// 209 §9: a session outside the opener's tree cannot attach; nothing is asked.
+        #[tokio::test(start_paused = true)]
+        async fn attach_is_refused_outside_the_openers_tree() {
+            let mut h = Harness::new().await;
+            h.session = SessionId::new();
+            let out = h.call("browser_attach", json!({ "view": format!("web:{VIEW}") })).await.unwrap();
+            assert!(out.is_error);
+            assert_eq!(out.content, "tile web:0123456789abcdef was not opened by this session or its tree");
+            assert!(h.events.try_recv().is_err());
+        }
+
+        /// 209 §4.4: a tile the user closed is forgotten; attaching to it is refused.
+        #[tokio::test(start_paused = true)]
+        async fn a_closed_tile_cannot_be_attached() {
+            let h = Harness::new().await;
+            let view = "c105ed0000000001";
+            let state = |closed| WebViewState {
+                session: h.session,
+                view: view.into(),
+                url: "https://c.test/".into(),
+                title: "C".into(),
+                loading: false,
+                closed,
+            };
+            artifact::webview::record_state(state(false));
+            artifact::webview::record_state(state(true));
+            let out = h.call("browser_attach", json!({ "view": view })).await.unwrap();
+            assert!(out.content.contains("was not opened by this session"), "{}", out.content);
+        }
+    }
+
     /// 164 D3: the fence snapshot round trip against the real `answer_fence_snapshot`
     /// dispatch, and a full-size answer over a real authenticated WebSocket.
     mod fence_snapshot {

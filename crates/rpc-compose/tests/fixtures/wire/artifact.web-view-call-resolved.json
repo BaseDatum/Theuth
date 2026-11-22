@@ -1,0 +1,18 @@
+[
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "WebViewCallResolved",
+          "id": "00000000-0000-0000-0000-000000000001"
+        }
+      }
+    }
+  }
+]

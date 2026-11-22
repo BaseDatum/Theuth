@@ -32,6 +32,10 @@
 //! engine acts on another engine's prompt), and the pending approval and ask
 //! cards are kept for [`relayed_prompts`] until their resolution or the end
 //! of the stream.
+//!
+//! 209 §4.4: the owner also relays the [`WIRE_RELAYED`] topics of its own wire feed (`show_web`
+//! tiles, page previews, tile calls) as `Bus` frames of the event's `type`, so a client on a front
+//! door can open a remote-owned session's tile and answer its tile calls.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
@@ -87,7 +91,8 @@ pub struct Serve {
 pub struct Relayed {
     /// The session it belongs to.
     pub session: SessionId,
-    /// `ApprovalRequested` | `ApprovalResolved` | `AskRequested` | `AskResolved` | `JobEvent` | `CellEvent`.
+    /// `ApprovalRequested` | `ApprovalResolved` | `AskRequested` | `AskResolved` | `JobEvent` |
+    /// `CellEvent`, or a [`WIRE_RELAYED`] kind (209 §4.4).
     pub kind: String,
     /// The event as the owner's bridge would serialise it.
     pub event: serde_json::Value,
@@ -108,6 +113,35 @@ impl wire::WireEvent for FollowState {
     const TOPIC: &'static str = "sessionsync.follow-state";
     const VERSION: u32 = 1;
 }
+
+/// 209 §4.4: wire events of a session that the owner relays from its own wire feed by topic,
+/// as `(kind, topic)`: `show_web` tiles, page previews and tile calls raised on the owner reach a
+/// client attached to a front door. Their owner (`artifact`) declares them, so the relay needs no
+/// dependency on it. A frame without a `session` (the `*Resolved` events) goes to the session its
+/// request named. Only topics every engine declares belong here: a front door drops a relayed
+/// frame whose topic it has not declared (P5 adds its element-form pair with its declaration).
+pub const WIRE_RELAYED: &[(&str, &str)] = &[
+    ("WebViewOpened", "artifact.web-view-opened"),
+    ("PagePreviewRequested", "artifact.page-preview-requested"),
+    ("PagePreviewResolved", "artifact.page-preview-resolved"),
+    ("WebViewCallRequested", "artifact.web-view-call-requested"),
+    ("WebViewCallResolved", "artifact.web-view-call-resolved"),
+];
+
+/// The topic a [`WIRE_RELAYED`] kind is declared under, for the front door's re-publication.
+#[must_use]
+pub fn wire_topic(kind: &str) -> Option<&'static str> {
+    WIRE_RELAYED
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, t)| *t)
+}
+
+/// `tell`: one owner-side wire frame of a [`WIRE_RELAYED`] topic (its event JSON).
+struct Wired(serde_json::Value);
+
+/// Most request ids remembered for their resolution's session before the map is cleared.
+const MAX_WIRED: usize = 4096;
 
 /// `tell`: the owner of `session` (per the replica) reconnected; retry now.
 #[derive(Clone, Debug)]
@@ -245,6 +279,8 @@ pub struct EventRelay {
     /// Owner side: pending approval / ask id → its session, because the
     /// `*Resolved` events carry no session (§5.1).
     prompts: HashMap<uuid::Uuid, SessionId>,
+    /// Owner side: a [`WIRE_RELAYED`] request's id → its session, for its resolution (209 §4.4).
+    wired: HashMap<uuid::Uuid, SessionId>,
     /// Owner side: live user-cell kernel jobs, kept off the relay (183 R1 S4).
     cells: std::collections::HashSet<(SessionId, tools::JobId)>,
     /// Subscriber side.
@@ -260,7 +296,8 @@ impl EventRelay {
     }
 
     /// Spawn on the subscriber mailbox and subscribe to [`AgentEvent`] and the
-    /// relayed bus types, unregistered (a second engine in one test process).
+    /// relayed bus types, unregistered (a second engine in one test process). The
+    /// [`WIRE_RELAYED`] topics come from this engine's wire feed (209 §4.4).
     pub async fn spawn_on(rt: &Runtime, store: Store) -> ActorRef<Self> {
         let actor = Self::spawn_with_mailbox(
             Self {
@@ -269,6 +306,7 @@ impl EventRelay {
                 transport: None,
                 served: HashMap::new(),
                 prompts: HashMap::new(),
+                wired: HashMap::new(),
                 cells: std::collections::HashSet::new(),
                 following: HashMap::new(),
             },
@@ -282,6 +320,7 @@ impl EventRelay {
         rt.subscribe::<Self, JobEvent>(&actor).await;
         rt.subscribe::<Self, PeerMessageChanged>(&actor).await;
         rt.subscribe::<Self, cells::CellEvent>(&actor).await;
+        watch_wire(rt, actor.clone());
         actor
     }
 
@@ -623,6 +662,76 @@ impl Message<cells::CellEvent> for EventRelay {
             self.bus(*session, "CellEvent", &ev);
         }
     }
+}
+
+impl Message<Wired> for EventRelay {
+    type Reply = ();
+
+    /// 209 §4.4: a [`WIRE_RELAYED`] event raised here goes to the session's remote viewers as a
+    /// `Bus` frame of its own kind (the event's `type`); a request's id is kept so its
+    /// resolution, which names no session, follows it.
+    async fn handle(&mut self, Wired(event): Wired, _: &mut Context<Self, ()>) {
+        let Some(kind) = event.get("type").and_then(serde_json::Value::as_str) else {
+            return;
+        };
+        let kind = kind.to_owned();
+        let id = event
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| s.parse::<uuid::Uuid>().ok());
+        let session = event
+            .get("session")
+            .cloned()
+            .and_then(|s| serde_json::from_value::<SessionId>(s).ok());
+        let session = match (session, id) {
+            (Some(s), Some(id)) if kind.ends_with("Requested") => {
+                if self.wired.len() >= MAX_WIRED {
+                    self.wired.clear();
+                }
+                self.wired.insert(id, s);
+                s
+            }
+            (Some(s), _) => s,
+            (None, Some(id)) => match self.wired.remove(&id) {
+                Some(s) => s,
+                None => return,
+            },
+            (None, None) => return,
+        };
+        self.bus(session, &kind, &event);
+    }
+}
+
+/// Owner side (209 §4.4): hand every [`WIRE_RELAYED`] frame of this engine's wire feed to the
+/// relay until shutdown or the relay is gone.
+fn watch_wire(rt: &Runtime, relay: ActorRef<EventRelay>) {
+    use tokio::sync::broadcast::error::RecvError;
+    use wire::RuntimeWire as _;
+    let mut feed = rt.wire_events();
+    let shutdown = rt.shutdown.clone();
+    tokio::spawn(async move {
+        loop {
+            let frame = tokio::select! {
+                () = shutdown.cancelled() => return,
+                f = feed.recv() => f,
+            };
+            match frame {
+                Ok(f) => {
+                    let relayed = f
+                        .descriptor
+                        .as_ref()
+                        .is_some_and(|d| WIRE_RELAYED.iter().any(|(_, t)| *t == d.topic));
+                    if relayed && relay.tell(Wired(f.event.clone())).await.is_err() {
+                        return;
+                    }
+                }
+                Err(RecvError::Lagged(n)) => {
+                    tracing::debug!(lost = n, "events relay: wire feed lagged");
+                }
+                Err(RecvError::Closed) => return,
+            }
+        }
+    });
 }
 
 /// Owner side of one accepted `theuth/sessions/1` stream whose first frame
@@ -1244,6 +1353,110 @@ mod tests {
             !pending(id2),
             "the end of the follow withdraws relayed cards"
         );
+        t.stores.0.close().await;
+        t.stores.1.close().await;
+    }
+
+    /// 209 §4.4: the forward list names the tile-call pair, `show_web`'s event and the
+    /// page-preview pair, each under its declared topic; nothing undeclared (P5's forms).
+    #[test]
+    fn the_relay_forwards_tile_calls_tiles_and_previews() {
+        for (kind, topic) in [
+            ("WebViewCallRequested", "artifact.web-view-call-requested"),
+            ("WebViewCallResolved", "artifact.web-view-call-resolved"),
+            ("WebViewOpened", "artifact.web-view-opened"),
+            ("PagePreviewRequested", "artifact.page-preview-requested"),
+            ("PagePreviewResolved", "artifact.page-preview-resolved"),
+        ] {
+            assert_eq!(wire_topic(kind), Some(topic), "{kind}");
+        }
+        assert_eq!(wire_topic("ApprovalRequested"), None);
+        assert_eq!(wire_topic("ElementFormRequested"), None);
+    }
+
+    /// A tile call's request (as `artifact` declares it) for the wire-relay test.
+    #[derive(Clone, serde::Serialize, schemars::JsonSchema)]
+    #[serde(tag = "type", rename = "WebViewCallRequested")]
+    struct CallRequested {
+        id: uuid::Uuid,
+        session: SessionId,
+        view: String,
+        op: String,
+        args: serde_json::Value,
+    }
+
+    impl wire::WireEvent for CallRequested {
+        const TOPIC: &'static str = "artifact.web-view-call-requested";
+    }
+
+    /// Its resolution, which names no session.
+    #[derive(Clone, serde::Serialize, schemars::JsonSchema)]
+    #[serde(tag = "type", rename = "WebViewCallResolved")]
+    struct CallResolved {
+        id: uuid::Uuid,
+    }
+
+    impl wire::WireEvent for CallResolved {
+        const TOPIC: &'static str = "artifact.web-view-call-resolved";
+    }
+
+    async fn relayed(rx: &mut mpsc::UnboundedReceiver<Relayed>) -> Relayed {
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("relayed within 5 s")
+            .expect("tap open")
+    }
+
+    /// 209 §4.4: a tile call raised on the owner reaches the viewer's bus with its kind, and so
+    /// does its resolution, routed by the request's id to the same session.
+    #[tokio::test]
+    async fn a_tile_call_on_the_owner_is_relayed_with_its_resolution() {
+        use wire::RuntimeWire as _;
+        let mut t = two(false).await;
+        t.rt_o.register_wire_event::<CallRequested>().await.unwrap();
+        t.rt_o.register_wire_event::<CallResolved>().await.unwrap();
+        let (tap_tx, mut tapped) = mpsc::unbounded_channel();
+        let tap =
+            RelayTap::spawn_with_mailbox(RelayTap(tap_tx, None), runtime::subscriber_mailbox());
+        t.rt_f.subscribe::<RelayTap, Relayed>(&tap).await;
+        t.front.tell(Follow(t.session)).await.unwrap();
+        assert_eq!(t.seen.recv().await, Some("watch"));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let id = uuid::Uuid::now_v7();
+        // Another session's call stays on the owner.
+        t.rt_o
+            .publish(CallRequested {
+                id: uuid::Uuid::now_v7(),
+                session: SessionId::new(),
+                view: "fedcba9876543210".into(),
+                op: "snapshot".into(),
+                args: serde_json::json!({}),
+            })
+            .await;
+        t.rt_o
+            .publish(CallRequested {
+                id,
+                session: t.session,
+                view: "0123456789abcdef".into(),
+                op: "snapshot".into(),
+                args: serde_json::json!({}),
+            })
+            .await;
+        t.rt_o.publish(CallResolved { id }).await;
+        let got = relayed(&mut tapped).await;
+        assert_eq!(
+            (got.session, got.kind.as_str()),
+            (t.session, "WebViewCallRequested")
+        );
+        assert_eq!(got.event["view"], "0123456789abcdef");
+        assert_eq!(got.event["id"], id.to_string());
+        let got = relayed(&mut tapped).await;
+        assert_eq!(
+            (got.session, got.kind.as_str()),
+            (t.session, "WebViewCallResolved")
+        );
+        assert_eq!(got.event["id"], id.to_string());
         t.stores.0.close().await;
         t.stores.1.close().await;
     }

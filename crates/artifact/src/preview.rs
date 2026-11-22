@@ -188,6 +188,16 @@ pub fn feed_live() -> bool {
     FEED.get().is_some_and(|count| count() > 0)
 }
 
+/// Whether preview `id` waits on this engine (an answer for another engine's preview is
+/// forwarded to its session's owner, 209 §4.4).
+#[must_use]
+pub fn pending_here(id: PreviewId) -> bool {
+    PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&id)
+}
+
 /// A client's answer. `true` if the preview was still pending: the first
 /// `Done`/`Failed` resolves it, a `Started` extends the wait and leaves it
 /// pending. Every frontend answers through here.

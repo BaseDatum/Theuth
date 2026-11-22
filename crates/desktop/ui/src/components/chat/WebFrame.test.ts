@@ -6,10 +6,14 @@ import { SidebarProvider } from '@/components/ui/sidebar'
 import { leaves, usePanes, useRoutedPane } from '@/lib/panes'
 import { openPopout } from '@/lib/popout'
 import { installWebViewEvents, useWebViews, webLeaf } from '@/lib/web-views'
+import { IDLE, REFUSE_MS, started, useTileAgent } from '@/lib/web-view-agent'
+import { AgentTileBanner } from './AgentTileBanner'
 import type { Entry } from '@/store/sessions'
 import { WebFrame } from './WebFrame'
-import { WebViewCard, webCall } from './WebViewCard'
+import { openWebView, WebViewCard, webCall } from './WebViewCard'
 
+/** Settles the last `viewCall` (Stop's shell `stop`). */
+const shellStop = vi.hoisted(() => ({ settle: null as null | ((v: unknown) => void) }))
 const native = vi.hoisted(() => ({
   has: true,
   attach: vi.fn(async (_id: string, _url: string, _r: unknown): Promise<void> => {}),
@@ -22,6 +26,11 @@ const native = vi.hoisted(() => ({
   close: vi.fn(async () => {}),
   onState: vi.fn(async (_cb: (s: { label: string; url: string; title: string; loading: boolean }) => void) => () => {}),
   onClosed: vi.fn(async (_cb: (s: { label: string }) => void) => () => {}),
+  viewCall: vi.fn((_id: string, _op: string, _args: unknown) => {
+    const { promise, resolve } = Promise.withResolvers<unknown>()
+    shellStop.settle = resolve
+    return promise
+  }),
 }))
 vi.mock('@/lib/web-view-native', () => ({
   nativeWebViews: () => native.has,
@@ -37,6 +46,7 @@ vi.mock('@/lib/web-view-native', () => ({
   close: native.close,
   onState: native.onState,
   onClosed: native.onClosed,
+  viewCall: native.viewCall,
 }))
 vi.mock('@/lib/popout', async (original) => ({ ...(await original<object>()), canPopout: () => true, openPopout: vi.fn(async () => {}) }))
 
@@ -187,6 +197,9 @@ test('the main window follows every frame: state events patch it, a destroyed vi
   const closed = native.onClosed.mock.calls[0]![0]
   state({ label: `web-${ID}`, url: 'https://example.com/b', title: 'B', loading: true })
   expect(useWebViews.getState().views[ID]).toMatchObject({ current: 'https://example.com/b', title: 'B', loading: true, popped: true })
+  // A view whose load never committed reports no URL: the field keeps the address it was asked for.
+  state({ label: `web-${ID}`, url: '', title: '', loading: false })
+  expect(useWebViews.getState().views[ID]).toMatchObject({ current: 'https://example.com/b', title: 'B', loading: false })
   closed({ label: `web-${ID}` })
   expect(useWebViews.getState().views[ID]?.popped).toBe(false)
   off()
@@ -236,5 +249,62 @@ test('after a restart (empty store) the card pop-out records the frame as popped
   await act(async () => open.click())
   expect(usePanes.getState().root).toBeNull()
   expect(openPopout).toHaveBeenCalledTimes(2)
+  // A desktop window narrower than 768 px opens pages full screen (`full`): a popped page still focuses its window,
+  // never an empty full-screen frame whose attach the shell refuses.
+  openWebView('s1', { id: ID, url: 'http://localhost:3000/', title: 'Dev server' }, true)
+  expect(openPopout).toHaveBeenCalledTimes(3)
+  expect(useWebViews.getState().front).toBeNull()
   await act(async () => root.unmount())
+})
+
+test('an agent call on the tile shows the bar under the toolbar; Stop says Stopping until the shell stop settles, and refuses the tile for a minute', async () => {
+  frame()
+  useTileAgent.setState({ tiles: {}, shown: {} })
+  const { host, root } = await mount(h(WebFrame, { id: ID }))
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  await act(async () => useTileAgent.setState({ tiles: { [ID]: started(IDLE, 'c1') } }))
+  const bar = host.querySelector('[role="status"][aria-label="Agent is using this page"]')!
+  expect(bar.textContent).toContain('Agent is using this page')
+  // Between the toolbar and the placeholder the native view is laid over.
+  expect(bar.previousElementSibling?.tagName).toBe('HEADER')
+  expect(bar.nextElementSibling?.hasAttribute('data-web-frame')).toBe(true)
+  const before = Date.now()
+  await act(async () => button(host, 'Stop the agent on this page').click())
+  expect(native.viewCall).toHaveBeenCalledWith(ID, 'stop', {})
+  expect(host.querySelector('[role="status"]')!.textContent).toContain('Stopping…')
+  expect(button(host, 'Stop the agent on this page').disabled).toBe(true)
+  expect(useTileAgent.getState().tiles[ID]?.refusedUntil).toBeGreaterThanOrEqual(before + REFUSE_MS)
+  await act(async () => shellStop.settle!(null))
+  expect(host.querySelector('[role="status"]')).toBeNull()
+  await act(async () => root.unmount())
+})
+
+test('an agent call on a tile no frame shows (unmounted, or under a dialog) puts a banner with Stop over the window', async () => {
+  frame('https://mail.example.com/inbox')
+  useTileAgent.setState({ tiles: {}, shown: {} })
+  const banner = () => document.querySelector('[role="status"][aria-label="Agent is using mail.example.com in a hidden tile"]')
+  const app = await mount(h(AgentTileBanner))
+  await act(async () => useTileAgent.setState({ tiles: { [ID]: started(IDLE, 'c1') } }))
+  expect(banner()!.textContent).toContain('Agent is using mail.example.com in a hidden tile')
+
+  // The frame on screen tells of it itself.
+  const tile = await mount(h(WebFrame, { id: ID }))
+  expect(banner()).toBeNull()
+  // A dialog over the frame hides the native view, and the bar with it: the banner comes back.
+  const dialog = document.body.appendChild(document.createElement('div'))
+  await act(async () => {
+    dialog.setAttribute('role', 'dialog')
+    // The overlay check runs on the next animation frame after the mutation.
+    for (let i = 0; i < 2; i++) await new Promise((r) => requestAnimationFrame(r))
+  })
+  expect(native.visible).toHaveBeenLastCalledWith(ID, false)
+  expect(banner()).not.toBeNull()
+
+  await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Stop the agent on mail.example.com"]')!.click())
+  expect(native.viewCall).toHaveBeenLastCalledWith(ID, 'stop', {})
+  expect(document.querySelector('[role="status"][aria-label="Agent is using mail.example.com in a hidden tile"]')!.textContent).toContain('Stopping…')
+  await act(async () => shellStop.settle!(null))
+  expect(banner()).toBeNull()
+  await act(async () => tile.root.unmount())
+  await act(async () => app.root.unmount())
 })

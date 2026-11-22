@@ -125,6 +125,14 @@ async fn legacy_event_families() {
         "artifact.page-preview-resolved",
     )
     .await;
+    family::<artifact::WebViewCallRequested>(
+        &rt,
+        &mut stream,
+        "artifact.web-view-call-requested",
+    )
+    .await;
+    family::<artifact::WebViewCallResolved>(&rt, &mut stream, "artifact.web-view-call-resolved")
+        .await;
     family::<artifact::snapshot::FenceSnapshotRequested>(
         &rt,
         &mut stream,
@@ -155,6 +163,7 @@ async fn legacy_event_families() {
     family::<double::DoubleTrainingState>(&rt, &mut stream, "double.training").await;
     family::<double::DoubleVersionActivated>(&rt, &mut stream, "double.version").await;
     family::<roster::attention::AttentionChanged>(&rt, &mut stream, "roster.attention").await;
+    family::<webprofile::WebProfileChanged>(&rt, &mut stream, "browser.web-profile-changed").await;
     family::<tools::ReminderEvent>(&rt, &mut stream, "tools.reminders").await;
     family::<dreaming::DreamNightStarted>(&rt, &mut stream, "dreaming.started").await;
     family::<dreaming::DreamNightFinished>(&rt, &mut stream, "dreaming.finished").await;

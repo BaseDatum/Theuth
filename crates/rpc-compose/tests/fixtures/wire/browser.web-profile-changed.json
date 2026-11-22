@@ -1,0 +1,44 @@
+[
+  {
+    "input": {
+      "sites": [
+        "example.com",
+        "example.co.uk"
+      ],
+      "epoch": 0
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "WebProfileChanged",
+          "sites": [
+            "example.com",
+            "example.co.uk"
+          ],
+          "epoch": 0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "sites": [],
+      "epoch": 3
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "WebProfileChanged",
+          "sites": [],
+          "epoch": 3
+        }
+      }
+    }
+  }
+]

@@ -1007,6 +1007,8 @@ agent:
 #   allow_private_network: true    # false blocks localhost / RFC1918 / link-local again (Settings > Network)
 #   import_cookies: false    # adds browser_list_profiles + browser_import_cookies:
 #                            # the agent loads the user's real browser cookies and acts as them (§7)
+#   profile: shared          # 209: one sealed browser profile for the web view tile and every agent browser of the
+#                            # mesh (sign in once in the tile); off: no push, load or save (rows kept until cleared)
 
 # computer:                  # see and drive this desktop, computer_* tools (design doc 27)
 #   enabled: true            # the OS permission prompts are the consent; actions still ask
@@ -2035,6 +2037,7 @@ fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::
         nodes::rpc_module(server.clone()),
         schedule::rpc_module(server.clone()),
         secrets::rpc_module(server.clone()),
+        webprofile::rpc_module(server.clone()),
         meeting::rpc_module(server.clone()),
         dreaming::rpc_module(server.clone()),
         autoresearch::rpc_module(server.clone()),
@@ -2185,6 +2188,9 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         // 68: ships the agent store's session log over `theuth/sessions/1`; needs agent + replica.
         Box::new(sessionsync::SessionSyncPlugin),
         Box::new(roster::RosterPlugin),
+        // 209: the shared browser profile; opens its store once the vault answers and replicates
+        // `web_sites` once the replica runs (both awaited in the background).
+        Box::new(webprofile::WebProfilePlugin),
         Box::new(tasks::TasksPlugin),
         Box::new(sandbox::SandboxPlugin),
         // Always registers its actor (183 W-26: contacts need it; `a2a.enabled`

@@ -1,0 +1,915 @@
+# 209 — One browser profile for the user's web view and the agent's browser
+
+Status: design 2026-11-22, approved to build (three builders per phase in one worktree, as 205); this is the build contract; P1–P4 built, P5 (D13, form in the chat) dropped on 2026-11-22 and kept as a follow-up · extends 205 (web view tile, incl. §9 iOS shell on `feat/205-ios-web-view`), 23
+(obscura browser), 122 §5 (cookie rule), 67 §5.1 (replica), 37/67 §5.4 (vault), 68/183 (front door, event relay)
+
+Evidence: two reports, both read in full. Code recon, session `01a2007d-94f1-7532-add0-2b2aab26d032` (cited
+"recon §n"); web research, session `01a2007d-94f4-7378-aca8-91538bf9e4e4` (cited "web §n" with its URLs). Every
+`path:line` below without "(recon)" was opened for this document on `main` or on the worktree
+`theuth-ios-webview` (written `wt:`); §12 lists what was not.
+
+## 1. Context and problem
+
+Two browsers live in theuth and share nothing. The agent's browser is obscura, one isolate per session on its own
+thread; "the isolate *is* the profile: `BrowserState` holds the cookie jar and storage in memory and obscura writes
+nothing to disk" (`crates/browser/src/session.rs:9-11`, `:121`). The user's browser is the web view tile of 205: a
+native `WKWebView` / WebView2 on the user's device with its own persistent data store
+(`crates/desktop/src/webview.rs:66-71`, `:319-327`; iOS `wt:crates/desktop/src/ios_webview.rs:655-659`). The prompt
+says so to the model: "The two share nothing … a sign-in the user completes in the tile does not sign your browser
+in" (`crates/artifact/src/tools.rs:60`).
+
+The owner's requirements (2026-11-21):
+
+- R1. Cookies shared between the tile and obscura.
+- R2. The jar synced across the nodes of a mesh: the user signs into a site in the tile on an iPad, and an agent
+  on any engine continues that session in obscura.
+- R3. The agent has full control of the tile too, whether the tile is on a client far from the engine or in the
+  desktop app on the engine's own machine.
+- R4. On iOS the user moves between the page and the chat easily.
+
+## 2. Goals, and what is not one
+
+- G1. A site signed into in the tile is signed in for every agent browser session on every engine of the mesh,
+  within seconds, without the user doing anything else.
+- G2. A session the agent establishes in obscura works in the tile (P2).
+- G3. The jar is a credential: sealed at rest, never in `sessions.sqlite`, logs, transcripts, tool results or events.
+- G4. The `browser_*` tools can drive a tile through the client that holds it (P3).
+- G5. On a phone the page is one tap from the chat and back, with its state intact (P4).
+- G6. The agent can lift one form out of a page it drives into the chat; the user fills it there and the values go
+  to that page's real form and nowhere else (P5).
+- Not a goal: the user driving obscura (the live view stays watch-only, D10); syncing Safari, Chrome or any browser
+  other than theuth's own tile; passkeys, device-bound sessions, service workers, HTTP cache (D7); the web client
+  (it has no native tile, 205 D7, and takes no part).
+
+## 3. Decisions
+
+| # | Decision |
+|---|---|
+| D1 | One **browser profile** per owner mesh. There is no cross-node user id: mesh identity is per engine (recon §7d, `crates/mesh/src/identity.rs:1-3`); the owner is the paired mesh plus its shared vault keyring. The profile holds, per site (registrable domain, eTLD+1), every cookie with all attributes — `name, value, domain, host_only, path, expires, secure, http_only, same_site, partitioned` — and an optional localStorage snapshot per origin. `partitioned` is kept although `NSHTTPCookie` cannot carry the partition key (web §1). |
+| D2 | Storage: a new replicated table `web_sites` in a new plugin crate `crates/webprofile`, one row per site, the jar of the site sealed with `Vault::seal_with_mesh_key` (`crates/secrets/src/vault.rs:482-487`), the pattern link uses for `pending.psk_sealed` (`crates/link/migrations/0001_link.sql:8-11`, `crates/link/src/devices.rs:286`). Replicated by `replica::attach` (`crates/replica/src/lib.rs:104-108`). The row key is a salted hash of the site, not the site. Caps in §4.1. |
+| D3 | Tile → profile: the client app reads its own cookie store natively and pushes **deltas** (set / removed cookies) to its engine over the RPC `web_profile_push`, debounced 2 s. iOS and macOS use WebKit directly on the named store (`WKWebsiteDataStore dataStoreForIdentifier:` → `httpCookieStore`, `getAllCookies`, `WKHTTPCookieStoreObserver`); Windows and Linux use Tauri `Webview::cookies()` off the UI thread. **Changed from the brief** for macOS: Tauri's API needs a live webview and has blocked the main thread before (web §2); WebKit's needs neither. localStorage of the top-level origin is captured in an isolated content world on load-finished and before close. |
+| D4 | Profile → obscura: loaded into a session's isolate by `Ctx` (`crates/browser/src/tools.rs:26-64`) before the first `browser_*` call of that session, not in `session::spawn` / `BrowserState::new` (**changed**: the `Browsers` actor also serves isolates keyed by private ids for the render provider and scrape slots, `crates/browser/src/lib.rs:219-225`, which must stay cookie-less under 122 §5). Read back and written as deltas on `browser_close` and before every isolate drop (`drop_session`, `lib.rs:207-211`: `Close`, `Sweep`, `CloseAll`, `CloseTree`). A profile change for a site is applied before the session's next `browser_open` to that site. localStorage is applied with the cookies, per origin, at load (**changed**: obscura's `browser_set_storage_state` already stores localStorage per origin independent of the current page, `obscura-mcp/src/lib.rs:2406-2412`, so "on first navigation" buys nothing). Requires a small obscura change (§4.3): today the round trip drops `host_only`. |
+| D5 | Profile → tile (P2): on attach and on `WebProfileChanged`, the client sets the changed cookies into the tile's store. iOS/macOS can do this with no view open; Windows/Linux only while a web view exists, so they apply before the first load. |
+| D6 | The whole tile store syncs; it is theuth's own browser, not Safari. Settings lists signed-in sites with **Forget this site** and **Sign out everywhere**. Config `browser.profile: shared \| off` (default `shared`; `off` stops push, load and save, and leaves rows as they are until cleared). Alternative "ask once per site" in §8. |
+| D7 | Honest limits, in this document and in the text the model reads (§4.8): passkeys, device-bound sessions (DBSC), service workers and Cloudflare clearance do not travel; sites binding a session to IP, user agent or fingerprint may reject the moved session; the fallback is D8. |
+| D8 | Agent control of the tile: the `browser_*` tools get a second backend behind a seam introduced at `Ctx::raw` (`tools.rs:45-64`). A new tool `browser_attach { view? }` switches the calling session's target between obscura (default) and a tile (§4.6 says why not a per-call argument). The tile backend publishes `WebViewCallRequested` and awaits the RPC `answer_web_view_call`, copying `PagePreviewRequested` / `answer_page_preview` (`crates/artifact/src/preview.rs:229-289`, `crates/artifact/src/rpc_artifacts.rs:22-23`). The client runs the call in an isolated script world. Synthetic input on Apple platforms is `isTrusted: false`. |
+| D9 | Tile → engine state: the client reports each tile's URL, title and loading state with the RPC `web_view_state`; the read-only tool `web_views {}` answers "where is the user". |
+| D10 | The agent's own browser shown to the user stays what `browser_show` does today: a 500 ms screenshot poll, watch-only (`crates/desktop/ui/src/components/chat/BrowserLive.tsx:14`; tool text `tools.rs:691`). Out of scope. |
+| D11 | iOS: iPad keeps the tile beside the chat (205 §9) and collapses the sidebar when the tile would be narrower than 420 px. iPhone gets a full-screen page with a toolbar and a minimise control that leaves a pill above the composer (§7). |
+| D12 | The prompt's "The two share nothing" sentence is replaced when P1 lands (§4.9). |
+| D13 | **Follow-up, not built (P5 dropped 2026-11-22).** `browser_show_element { ref?, selector?, title? }` (crates/browser, either backend of D8) lifts one element of the page — typically a sign-in form — into a transcript card rendered in the sandboxed inline-page frame of 120 (`crates/desktop/src/pages.rs:1-8`, `components/chat/HtmlPage.tsx:1-6`). The app draws the origin, the source browser and Submit/Cancel around the frame. Submit sends the values with the RPC `answer_element_form`; the engine fills the real controls by field index and submits the real form; the agent gets a receipt without values (§4.10). |
+| D14 | Acting `browser_*` calls are raised to `Mutating` for the approval gate when they act on a site that has profile cookies, and always on a tile. Tool risk is a per-type constant today (`crates/tools/src/lib.rs:356-357`, every browser tool `Risk::ReadOnly` at `tools.rs:226`) and the registry's only per-call input is the secret-placeholder flag (`crates/tools/src/registry.rs:1484-1485`), so this needs a new per-call hook (§9). |
+
+## 4. The contract
+
+### 4.1 Table and row (crates/webprofile)
+
+`<data_dir>/webprofile.sqlite`, migration `migrations/0001_web_sites.sql`, attached with
+`replica::attach(&pool, &["web_sites"])` (single-column primary key and `hlc TEXT`, `replica/src/lib.rs:105-107`).
+**One row per cookie and one per origin's localStorage snapshot** (changed after the P1 review, finding 2): replica
+merges last-writer-wins under an HLC (`replica/src/lib.rs:1-4`), so per-cookie rows make the merge per cookie, two
+engines writing different cookies of one site both keep theirs, and a change replicates as itself.
+
+```sql
+CREATE TABLE web_sites (
+  id       TEXT PRIMARY KEY,  -- first 32 hex of HMAC-SHA256(id key, JSON ["cookie", site, name, domain, path])
+                              --   or ["storage", site, origin]; "epoch" for the epoch row
+  site_id  TEXT,              -- first 32 hex of HMAC-SHA256(id key, JSON ["site", site]); NULL on the epoch row
+  sealed   TEXT,              -- base64url(nonce ‖ XChaCha20-Poly1305(mesh key, aad = "web_sites\n" ‖ id, entry JSON));
+                              --   NULL = removed (a tombstone)
+  hlc      TEXT
+);
+```
+
+- **Id key** (changed after the P1 review, finding 1; there is no salt secret): `HMAC-SHA256(current mesh key,
+  "theuth/webprofile/id/v1")`. Every engine holding the mesh keyring (`Vault::mesh_key`, distributed by pairing and
+  the key frames, `crates/mesh/src/keys.rs`) computes the same ids with nothing created per engine, so there is no
+  creation race; the file at rest names no site, and `site_id` groups, lists and forgets a site without opening a row.
+  `site` is the lower-case registrable domain of §4.2.
+- **Mesh key rotation** (183 §6.9): the ids change with the key. The store moves every row to its new id — re-sealed
+  under the new key, the old id tombstoned — as soon as it sees the new key: `watch_keys` tells the actor on every
+  vault change (`Vault::watch_changes` fires after a rotation, a key frame or a pairing installs a key), and the first
+  store operation that sees the new key and the one-minute maintenance tick do the same; the move runs on its own task,
+  never on the actor's turn, one at a time. From the moment the store sees a new key (and from open) it holds a
+  `secrets::RetireHold`, so the vault retires no key (`RETIRE_GRACE_MS` is 10 minutes and the vault's retire counts only
+  its own rows). The hold is released only when a check taken under it, after the move, finds no row still under a
+  retained key; while the vault holds more than one mesh key, every maintenance tick takes the hold again, moves and
+  checks, so a peer's row that landed under a retained key after a release (with or without a batch notice) is moved
+  before that key can retire (P2 review, finding 5). A peer's row that arrives sealed under a retained key (a lagging
+  engine that has not adopted the new key) takes the hold again and is moved at once. Every later full read also folds
+  rows a lagging engine wrote under old ids. Every engine computes the same new ids, so concurrent moves converge; the
+  move writes the new id only when that row, read again inside the move's transaction, holds no write at least as new
+  and no newer tombstone (finding 8). A row sealed under a key already retired on this engine is unreadable here; the
+  engine that wrote it still holds that key and moves it once it adopts the new one. Residual window: the vault has no
+  synchronous hook at key install, so the hold is taken when the watcher runs, right after the install; a key could
+  retire before that only if the watcher did not run for the whole 10-minute grace, and between a clean check's
+  release and the next tick a row arriving under a retained key could meet a retire.
+- **Entry** (the sealed plaintext, JSON) — the site, the epoch, the writer and the time travel inside, and the aad binds
+  the row id, so a row is one atomic value:
+
+```json
+{ "v": 1, "site": "example.com", "epoch": 0, "writer": "tile:iPad", "updated_ms": 1795000000000, "basis_ms": 1794999990000,
+  "item": { "cookie": { "name": "__Host-sid", "value": "…", "domain": "app.example.com", "host_only": true,
+                        "path": "/", "expires": 1795000000, "secure": true, "http_only": true,
+                        "same_site": "Lax", "partitioned": false } } }
+```
+
+  `item` is `{ "cookie": … }`, `{ "storage": { "origin", "local_storage": [[k, v]], "captured_ms" } }`, on the
+  epoch row `{ "epoch": {} }`, and on a forget marker `{ "forget": {} }`. `basis_ms` (P2, optional) is when the writer
+  last read the whole profile: an agent session's load, or the `now_ms` of a client's last complete
+  `web_profile_pull`; absent for a client that names none. `expires` is Unix seconds or `null` (a session cookie, kept
+  until the site goes 30 days without a write; §11 Q1). `same_site` is `"Strict" | "Lax" | "None" | ""`, accepted in
+  any case and stored in that spelling (anything else is `invalid push`); `""` means unknown — WebKit cannot tell
+  `None` from unspecified — so a pushed `""` keeps the stored cookie's attribute and never rewrites a known one. A row of
+  another `v` is skipped (and counted in a log line), never misread. `SiteJar { v, site, cookies, origins }` remains the
+  per-site shape a load answers, gathered from the site's rows.
+- **Epoch**: the row `id = "epoch"` seals `{ "epoch": n, "item": { "epoch": {} } }`. "Sign out everywhere" writes
+  `n+1` and tombstones every row; an entry written under an older epoch is dead. The epoch never goes down (P2 review,
+  finding 4): a local, non-replicated table `web_profile_local` keeps the highest epoch this engine has seen (its own
+  clear or a replicated row); the current epoch is the higher of that and the replicated row, a clear writes it plus
+  one, a write of a lower epoch is refused, and a replicated epoch row lower than the highest seen (two engines cleared
+  apart and last-writer-wins kept the lower number) is written again with the highest one at the next maintenance
+  tick, so every engine reaches it.
+- **Forget marker** (P2): `web_profile_forget` tombstones every row of the site's `site_id` and writes the row
+  `id = HMAC(id key, ["forget", site])`, `site_id = NULL` (so it never counts as a live row), sealing
+  `{ "site", "updated_ms": F, "item": { "forget": {} } }`. For 30 days after `F` (`FORGOTTEN_MS`) an entry of that
+  site is dead (read as absent, tombstoned by the next full read, refused at push) when it was written before `F`, or
+  by a writer whose `basis_ms` is before `F` — whatever its own time: an agent session that loaded before the forget,
+  a client that last pulled before it (it was offline or closed, however late it pushes), on any engine. A writer
+  naming no `basis_ms` counts as basis 0, so an old client never brings a forgotten site back. Refused sets and
+  snapshots name their site in the push result's `refused`; removes still apply. `web_profile_pull` lists every
+  marker of the current epoch younger than 30 days in `forgotten` (full and scoped pulls, every page), so a client
+  that was away learns it. (Changed after the P2 review, finding 1: the 60 s quiet window for writers without a
+  basis is gone — the basis-0 rule makes it redundant.) The marker names the site, so a replicated forget reaches every
+  engine's `WebProfileChanged` (tombstones alone name no site once none is live). Markers go with sign out
+  everywhere. `F`, `updated_ms` and a session's basis are the clocks of the engines that wrote them, and a client's
+  basis is the clock of the engine it pulled from: a skew between engines shifts these edges by as much (finding 11;
+  the marker's HLC is not compared, because with the basis rule no edge depends on a quiet window any more).
+- **Removal** is a column write (`sealed = NULL`), never a `DELETE`: a delete loses to a newer column write
+  (`0001_link.sql:5-7`). A remove writes its tombstone even for a row this engine has not seen, so it wins over an older
+  set elsewhere. Tombstones are deleted at open and by the minute tick 30 days after their write: their `hlc`, or —
+  with no replication attached, where nothing stamps `hlc` — the time a local trigger recorded in
+  `web_sites_removed` when the tombstone was written here (migration `0002_local.sql`, P2 review finding 13).
+- **Concurrency** (P2 review, finding 7): pushes, forgets, the epoch and `web_profile_status` run on the actor's turn;
+  every read of all rows (a full load or pull, `web_profile_sites`, sign out everywhere's site list, a rotation's move,
+  a peer's batch) runs on its own task with the store's pool, so a session's load or a push is not queued behind a
+  scan. Every write such a scan makes is conditional on the row still holding the sealed text it read.
+- **Caps**: per site at most 300 cookies and 128 KiB of cookie and snapshot JSON (over it the oldest snapshots go
+  first, then the site's push is refused); one origin's snapshot at most 96 KiB, over that dropped whole, never cut;
+  at most 500 live sites and 8 MiB per profile, refusing new sites with `profile full`. The profile caps read a local,
+  non-replicated table `web_site_stats` (live rows and sealed bytes per `site_id`, kept by triggers on every write,
+  own or replicated, and counted again from the rows after a clear and after a full read tombstoned rows), never the
+  sealed rows; a push refused as `profile full` starts a full read (at most once a minute), so rows of an old epoch or
+  of a forgotten site that still count leave the stats (finding 16). Per push, before any work: at most 2000 changes
+  and 64 snapshots, the device name cut to 64 characters; every cookie needs a name, a path from `/`, a value of at
+  most 4096 bytes, a valid `same_site` and a domain that is not a bare public suffix; its domain is stored lower case,
+  and a leading `.` becomes `host_only: false`. Whether the replica feed has its own record limit was not found (§12).
+
+### 4.2 Merge: deltas, not snapshots
+
+Writers never upload a site snapshot; they upload changes against the last state they saw, so a stale browser
+cannot delete what another wrote:
+
+- The client keeps, in memory, the last cookie list it pushed or applied; on a store change it diffs
+  `getAllCookies` against it, keyed `(name, domain, path)` (obscura's identity too, `obscura-net/src/cookies.rs:27-33`).
+- `Ctx` keeps, per session, the cookies it loaded (per site and the newest row's `updated_ms`); at save it diffs the
+  isolate's export against that. Its pushes carry `basis_ms`, the time just before the session's full load (§4.1
+  forget marker). Only cookies obscura took count as loaded: after each import `Ctx` reads the jar back and drops from
+  the baseline what obscura refused (`SameSite=None` without `Secure`, a `__Host-` rule), so a later save never reports
+  such a cookie removed and deletes it from the profile everywhere (P2 review, finding 3).
+- SameSite into obscura: a stored `""` (unknown — WebKit cannot tell `None` from unspecified, and Apple's stack sends
+  such a cookie cross-site) is imported as `None` when the cookie is `Secure`, else as `Lax` (obscura refuses `None`
+  without `Secure`), so a tile's cross-site sign-in cookie keeps working in the agent's browser; the save compares
+  obscura's export through the same mapping, so an untouched cookie is no change and the profile keeps `""`.
+- The client sends the `now_ms` of the first page of its last complete `web_profile_pull` as `basis_ms` (§4.4); before
+  it applies a pull's cookies it deletes from its store the cookies of each `forgotten` site forgotten after its
+  previous basis.
+- The webprofile actor groups changes by site (the registrable domain by the public suffix list, its private section
+  included, so `user.github.io` is its own site; an IP address, a single-label host such as `localhost` and a bare
+  suffix are their own site) and writes each change as its own row: set seals the cookie, remove or an `expires` in
+  the past writes a tombstone, a set equal to the stored cookie writes nothing. A localStorage capture newer than the
+  stored one replaces it; an emptied localStorage is a capture too.
+- An agent session only updates sites the profile already holds (sites its load gave it, or sites the engine knows
+  the profile holds): cookies of any other site stay in that session. New sites enter the profile through the user's
+  web view (P1 rule, review finding 20).
+- A cookie imported by `browser_import_cookies` (`tools.rs:835-841`) is remembered by `Ctx` and never saved back:
+  that tool grants one session a local browser's cookies, not the mesh (§11 Q2). Its value is scrubbed from replies
+  like a profile cookie's.
+
+### 4.3 obscura change (skymoore/obscura, branch `theuth/sync-2026-11-02`, `Cargo.toml:315-316`)
+
+`browser_storage_state` exports `CookieInfo`, which has no `host_only` (`obscura-mcp/src/lib.rs:2323-2332`), and
+`browser_set_storage_state` imports through `set_cookies_from_cdp` with `host_only = false`
+(`lib.rs:2423`, `cookies.rs:284-286`). Every cookie comes back domain-scoped, and `cookie_prefix_allows` then drops
+any `__Host-` cookie (`cookies.rs:328`) — the prefix most session cookies of careful sites use. The jar is private
+(`BrowserState.context` is not `pub`, `obscura-mcp/src/lib.rs:73`), so theuth cannot reach it except through tools.
+Change: export `host_only` from the entry, read an optional `host_only` on import and call
+`set_cookies_from_cdp_with_scope` (`cookies.rs:291-296`). Backward compatible: absent means `false`, as today.
+`partitioned` is carried by theuth and ignored by obscura, which has no partition model.
+
+### 4.4 RPC methods (client → engine) and events
+
+| Method | Params | Result | Notes |
+|---|---|---|---|
+| `web_profile_push` | `(device, epoch, changes: [{op:"set", cookie} \| {op:"remove", name, domain, path}], storage?: [{origin, local_storage, captured_ms}] \| null, basis_ms?: u64 \| null)` | `{ applied, sites: [String], epoch, profile: "shared" \| "off", refused: [String] }` | Refused with error `stale-epoch` and data `{ epoch }` (the current one) when `epoch` is older; the client then clears its store (sign out everywhere happened elsewhere). Refused with `unknown-epoch` and the same data when `epoch` is newer than the current one. Refused before any work with `invalid push: …` beyond 2000 changes or 64 snapshots or for a malformed cookie (§4.1 caps, `same_site` not Strict/Lax/None/"" in any case; the device name is cut to 64 characters), and with `profile full`. `basis_ms` (P2 review, additive) is the `now_ms` of the first page of the client's last complete `web_profile_pull` from this mesh, `null` before any: on every engine a set or snapshot of a site whose forget marker is after it — without a basis, of any site with a marker younger than 30 days — is refused whatever its time and the site listed in `refused` (sorted; removes still apply; §4.1). A cookie's `same_site: ""` keeps the stored attribute. Owner connections only (`UNAUTHORIZED` otherwise). With `browser.profile: off` nothing is written and the result says `profile: "off"`; an error then means only "starting/unavailable" or a refusal. Not forwarded: any engine writes the replicated table. |
+| `web_profile_pull` | `(sites?: [String] \| null, cursor?: String \| null)` (hosts or registrable domains, at most 500) | `{ epoch, sites: [String], cookies: [Cookie & { site, writer, updated_ms }], storage: [{ origin, local_storage, captured_ms, site, writer, updated_ms }], profile: "shared" \| "off", forgotten: [{ site, forgotten_ms }], now_ms, next: String \| null }` | P2, for D5. The only method that returns values; owner connections only (refuses a guest or unauthenticated connection, `UNAUTHORIZED`), never logged by theuth. `sites` lists the sites the page covers, sorted (the asked ones as registrable domains; every site the profile holds when none asked, also one whose cookies all expired, so an empty answer means delete); each is answered whole, so the client deletes from its store the cookies of a covered site it did not get: a store cookie belongs to a site when its domain (lower case, no leading `.`) is the site or ends with `.site`. `writer` is the cookie's own row's (`tile:<device>` \| `obscura:<engine>`), so a client skips echoes of its own pushes. Cookies sorted by site, name, domain, path. Paged (P2 review, additive): a page carries at most 1 MiB of cookie and snapshot JSON (at least one site whole); `next` non-null: call again with the same `sites` and `cursor = next` (opaque) until it is `null`. `forgotten`: every forget marker of the current epoch younger than 30 days, on every page, full or scoped; the client deletes the cookies of each one forgotten after its previous basis before applying the cookies. `now_ms`: the engine's clock read before the page; the first page's is the client's next `basis_ms` once all pages arrived. More than 500 sites: `invalid pull: N sites > 500`. With `browser.profile: off`: no site, `profile: "off"`. |
+| `web_profile_sites` | `{}` | `[{ site, cookies, origins, updated_ms, writer }]` | Settings list. Counts, never values; `origins` counts non-empty snapshots; `updated_ms` and `writer` are the site's newest row's. `[]` with `browser.profile: off`. Owner connections only. |
+| `web_profile_status` | `{}` | `{ profile: "shared" \| "off", epoch, sites: u32, now_ms }` | P2 review, new. The mode, the current epoch, the number of sites with live rows (from the local stats, no row opened; also counted while off) and the engine's clock, so Settings shows the mode without pushing or pulling. Owner connections only. Works with `browser.profile: off`. |
+| `web_profile_forget` | `{ site }` (a host or registrable domain) | `{ site, epoch }` (the registrable domain forgotten, the current epoch) | P2. Tombstones every row of the site and writes its forget marker (§4.1), publishes `WebProfileChanged { sites: [site] }`; every engine's agent browsers drop the site's cookies before their next call (§4.6). Owner connections only. Works with `browser.profile: off`. An empty site: `invalid forget: no site`. |
+| `web_profile_clear` | `{}` | `{ epoch }` (the new one) | P2. Bumps the epoch (the highest seen plus one, §4.1) and tombstones every row; publishes `WebProfileChanged` with the sites that were live and the new epoch. Owner connections only. Works with `browser.profile: off`. |
+| `web_view_state` | `(session, view, url, title, loading, closed?)` | `{}` | D9. Forwarded to the session's owner by `rpc_forward::route` (`crates/agent/src/rpc_forward.rs:1-10`). `closed: true` (P3 review): the user closed the tile; the engine forgets it (`web_views`, the reply prefix, `browser_attach`). |
+| `answer_web_view_call` | `(id, answer, session?)` | `bool` (still pending and taken) | D8. `session` is the request's: an id this engine did not issue is forwarded to that session's owner like `web_view_state` (without it, the session the engine's feed carried for the id). The first `claimed` binds the call to the claiming RPC connection (a forwarded answer: to the forwarding engine, which binds it to its own connection); `done` / `failed` are taken only from it. Before any claim only `failed` with reason `"stopped by the user"` or `"window closed"` is taken, from any owner connection. |
+| `answer_element_form` | `(id, answer)`; `answer` = `{ submit: { values: { "<index>": String } } }` \| `{ cancel: {} }` | `bool` (still pending) | D13, P5. Forwarded to the owner. Values handled as in §4.10. |
+| `element_forms_pending` | `{}` | `ElementFormRequested[]` | D13, P5. Pending cards for a client that attached late (like `secret_requests_list`, `crates/secrets/src/rpc.rs:41-45`). |
+
+Every method is declared with `audience = "owner"` as the credentials API is (`crates/secrets/src/rpc.rs:8`).
+
+Events (`wire::WireEvent`, registered in `declare_wire`, mirrored like 205 §4.2):
+
+- `WebProfileChanged { sites: [String], epoch }`, topic `browser.web-profile-changed`. Site names, never values;
+  not session-scoped, so it is not stored with any session. Published for a local write and for rows replicated from
+  another engine (the sites read from those rows; a tombstone names its site through a live row of the same
+  `site_id`; the epoch row alone gives `sites: []`), so every engine's D14 gate learns a sign-in made elsewhere.
+- `WebViewCallRequested { id: Uuid, session, view, delegated, op, args }`, topic `artifact.web-view-call-requested`, and
+  `WebViewCallResolved { id }`, topic `artifact.web-view-call-resolved`. `op` is the string enum `script` |
+  `navigate` | `back` | `forward` | `reload` | `snapshot` | `stop` (`stop` is the client's own op, never sent by the
+  engine). `delegated` is `true` when `session` is not the session that opened the tile (§9); a client claims only
+  for a tile it holds that `session` opened, or when `delegated` is set.
+- `WebViewCallAnswer` = `Claimed { client }` | `Done { result: Value, png?: String }` | `Failed { reason }`
+  (`client` is free text for logs; the binding is the connection).
+- `ElementFormRequested { id: Uuid, session, call_id, origin, url, source, title, html, width, height, fields: [{ index, kind, name, label, masked }] }`,
+  topic `browser.element-form-requested`, and `ElementFormResolved { id, outcome: "submitted" | "cancelled" | "stale" | "timeout" }`,
+  topic `browser.element-form-resolved`. `source` is `"obscura:<engine>"` or `"web:<id>"`. No field values, ever.
+
+A session owned by another engine reaches a front-door client only through the event relay, which forwards
+`AgentEvent`s and, on a `Watch` stream, `ApprovalRequested`, `ApprovalResolved`, `AskRequested`, `AskResolved`,
+`JobEvent` and `CellEvent` (`crates/sessionsync/src/events.rs:1-34`, `:90`). `WebViewCallRequested`,
+`WebViewCallResolved`, `ElementFormRequested` and `ElementFormResolved` join that list. As read, `WebViewOpened` (205) and `PagePreviewRequested` are not on it,
+so `show_web` from a remote-owned session does not open a tile on a front-door client today (§11 Q4).
+As built in P3 (§11 Q4, after the review): the owner's relay also forwards `WebViewOpened`, `PagePreviewRequested`,
+`PagePreviewResolved`, `WebViewCallRequested` and `WebViewCallResolved` (`sessionsync::events::WIRE_RELAYED`;
+P5 adds `ElementFormRequested` / `ElementFormResolved` together with their declaration, since a front door drops a
+relayed frame whose topic it has not declared). It reads them from its own wire feed by topic, not as bus types, so
+`sessionsync` gains no dependency on `artifact`; a `*Resolved` (no `session`) follows its request's id. The front
+door re-publishes each under its declared topic (`sessionsync` `declare_wire`). An `answer_web_view_call` reaching
+a front door is forwarded to the owner of the `session` it names; `answer_page_preview(id, answer, session?)` is
+forwarded the same way when the client names the request's `session`.
+
+### 4.5 Client side: shell commands and events (crates/desktop/src)
+
+The shell reads and writes the store and runs scripts; the UI diffs, pushes and answers. Every command below exists
+on iOS (`wt:ios_webview.rs`) and the desktop (`webview.rs`) with the same name, arguments and errors.
+
+| Tauri command | Arguments | Returns / does |
+|---|---|---|
+| `web_profile_read` | — | `Cookie[]` of the whole tile store (§4.1 shape, `partitioned` from `NSHTTPCookie` properties, else `false`), sorted by name, domain, path, host-only before domain-wide for one key. |
+| `web_profile_write` | `set: Cookie[]`, `remove: CookieKey[]` (`{name, domain, path}`), `storage?: [{ origin, local_storage }]` | `Written { set, removed, skipped, storage_applied: { origin: tiles }, timed_out }`, counts only. Writes into the store; iOS/macOS with no view open; Windows/Linux `unsupported` (P1 as built). P2. |
+| `web_profile_clear` | — | Removes every cookie of the tile store and its localStorage, sessionStorage and IndexedDB data (`WKWebsiteDataStore removeDataOfTypes:`). Ships in P1: the UI calls it on `stale-epoch`. |
+| `web_storage_capture` | `label` | `{ origin, local_storage: [[k, v]] }` of the top-level origin, run in the isolated world. A capture over the snapshot cap (96 KiB) is an error starting `storage too large`, never an empty or cut snapshot. |
+| `web_view_call` | `label`, `op`, `args` | Runs one tile op (§4.7); returns its JSON, or `{ png }` (base64) for `snapshot`. P3. |
+
+Tauri events: `web-profile://changed {}` — the store changed, debounced 2 s in the shell (iOS/macOS: a
+`WKHTTPCookieStoreObserver` object, `define_class!` like the delegate at `wt:ios_webview.rs:356-389`, on the
+`httpCookieStore` of the `DATA_STORE` store at `:657-659`; Windows/Linux: after `on_page_load` finished,
+`webview.rs:302-309`). The `DATA_STORE` identifier is shared by iOS and macOS (`crates/desktop/src/web_rules.rs`, wt),
+so each device has one store for every tile. macOS uses WebKit directly (`objc2-web-kit` is already used by the iOS
+module, `wt:ios_webview.rs:50-54`); Windows/Linux use Tauri `Webview::cookies()` / `set_cookie()` on a blocking task.
+
+UI (crates/desktop/ui/src): `lib/web-profile.ts` exports `startWebProfileSync()`: on `web-profile://changed` it
+calls `web_profile_read`, diffs against the last pushed list (key `(name, domain, path)`), calls
+`web_storage_capture` for each live tile (also on each `web-view://state` with `loading: false` and before
+`web_view_close`), and `web_profile_push`; on `stale-epoch` it calls `web_profile_clear`. It
+also forwards each `web-view://state {label, url, title, loading}` (already emitted, `webview.rs:55`, `:302-318`;
+`wt:ios_webview.rs:435-450`) to `web_view_state` with the session that opened the tile, at most one per 500 ms per view.
+
+As built in P1 (the shell and UI review fixes):
+
+- **Platforms.** Every profile command answers `unsupported: the browser profile needs macOS 14 or iOS 17 and later`
+  on Windows and Linux (the Tauri `Webview::cookies()` route is not built) and on macOS < 14 / iOS < 17, where the
+  tiles use the app's default store; nothing is observed there.
+- **Callers.** Every profile command refuses a caller that is a tile (`web-*`) with an error starting `no access to
+  the browser profile from`; on iOS it also refuses anything but `main`. `web-profile://changed` is emitted to the `main`
+  window only.
+- **Host-only** is derived by `web_rules::profile::scope` from `NSHTTPCookie.domain` and its `properties`, first
+  rule that matches: (1) a `__Host-` name is host-only; (2) a domain that is an IP address is host-only; (3) a
+  leading `.` on `domain` or on the `Domain` property is domain-wide (WebKit's mark of `Domain=`); (4) no dot, but
+  the `OriginURL` property's host is a subdomain of the domain: domain-wide; (5) otherwise host-only. The domain is
+  stored lower case without the dot. A `tracing::debug!` line `web profile cookie scope` names the rule, never a
+  value.
+- **UI sync.** At start and after an engine switch, the first `web_profile_read` seeds the baseline and is not
+  pushed (cookies already in the store reach the profile when they next change). A cookie change pushes the cookie
+  diff only. A `web-view://state` with `loading: false` also re-reads the store and pushes its diff (added by the P1
+  simulator proof: there the `WKHTTPCookieStoreObserver` never fired, so a cookie set without a page load, by
+  script or `fetch`, reaches the profile only with a tile's next finished load). Storage is no longer captured on
+  cookie changes, but on `web-view://state` with `loading: false` and
+  before `web_view_close`, pushed 2 s after the last capture, and what is still captured is pushed best-effort on
+  `pagehide` / `beforeunload`. One push in flight; a failed read or push keeps its delta and retries after 10 s,
+  doubling to at most 60 s. `profile: "off"` stops pushing to that connection, re-probed by the next change after
+  60 s. On `stale-epoch` the UI calls `web_profile_clear`; a client whose clear fails keeps its old epoch and stops
+  pushing on that connection, so its cookies never sign the profile back in.
+- **One data store instance.** The shell keeps the `DATA_STORE` `WKWebsiteDataStore` it first gets for the life of
+  the process: `dataStoreForIdentifier:` answers a new instance once the last one is released, and the cookie store
+  refers to its data store only weakly, so the observer had been on a store the tile did not use.
+
+As built in P2 (the shell and UI fix builders, checked against the code):
+
+- **`web_profile_write`.** A cookie of `set` replaces only the store cookie of the same key and the same scope
+  (host-only or domain-wide; `web_rules::profile::Doom`); a key of `remove` deletes the key in every scope. Each
+  `storage` snapshot is applied in the isolated world to every open tile of its origin (`storage_applied` counts the
+  tiles per origin, 0 when none was open). When WebKit has not answered everything by the deadline the result is the
+  counts reached with `timed_out: true`; a main-thread timeout error names the time that was left. On `timed_out`
+  or an error the UI re-reads the store and folds what it reads into its baseline, so a half-applied write never
+  goes out as this device's change.
+- **Writer.** `profileDevice()` is `<device name>-<id6>`, the id generated once per install and kept in
+  localStorage `theuth.device.id`; rows say `tile:<name>-<id6>`, so two iPads are two writers and Settings knows
+  "this device".
+- **Pull into the store (D5).** On connect every site, on each `WebProfileChanged` the sites it names, are pulled
+  with `web_profile_pull`, paged until `next` is null; only real differences are written. A store `same_site` of
+  `""` equals a profile `None` or `""` (WebKit has no distinct None). A pull of every site only sets and applies
+  forgets (it never removes a key it does not name). Pulled localStorage is written into the open tiles of its
+  origin and becomes that origin's capture baseline, so it is not pushed back. A key WebKit stores under another
+  domain or path is remembered as an alias of the written one.
+- **`basis_ms`.** The `now_ms` of the first page of the last complete pull, persisted per engine in
+  `theuth.web-profile.basis.<engine>`, goes with every push. A site forgotten after the device's last pull and its
+  last push of the site, and a site a push answers in `refused`, are deleted from the tile store.
+- **Contended keys.** A key a page re-sets within 5 s of a pull writing it, twice within 10 minutes, is not written
+  from pulls for 10 minutes (two devices' pages would otherwise ping-pong it through the profile).
+- **Clear and unsupported.** A failed `web_profile_clear` (stale epoch, sign out everywhere) is retried with the
+  push backoff; nothing is pushed to that connection meanwhile. A shell answering `unsupported:` stops the sync for
+  the rest of the session.
+- **ATS.** `NSAppTransportSecurity` / `NSAllowsArbitraryLoadsInWebContent` is in `crates/desktop/ios/Info.ios.plist`
+  and in the generated `gen/apple/desktop_iOS/Info.plist` the build uses, so a tile loads plain HTTP at a named host.
+
+### 4.6 Seam and target (crates/browser)
+
+`Ctx::raw` is the one place every tool's obscura call passes (`tools.rs:45-64`); tools are a name plus JSON
+passed to `obscura_mcp::call_tool` (`session.rs:24-31`, `:147`). There is no `Page` or driver trait (recon §3).
+
+- New `enum Target { Obscura, Tile { view: String } }` in `Ctx`, keyed by `SessionId` (a `parking_lot::Mutex<HashMap>`
+  like `pending`, `tools.rs:35-36`). `raw` dispatches on it: `Obscura` sends the `Call` as now; `Tile` hands the
+  obscura tool name and arguments to `tile::call(rt, session, view, name, args)`, which maps them to a tile op.
+- `browser_attach { view?: String }` (risk `ReadOnly`): `view` is a `web:<id>` from `show_web`'s receipt or
+  `web_views`; without `view` it returns to obscura. It fails with `no client holds tile web:<id>` when no client
+  claims within 2 s. **Why a tool, not a `view` argument on 16 tools:** refs (`e3`) are per page and go stale on any
+  navigation (`tools.rs:279`); a per-call target lets one batch mix refs of two pages. One switch keeps the 16 schemas,
+  the read-then-act loop and the System-1 shadow ledger (`tools.rs:33-36`) per session as they are. Its cost, a hidden
+  mode, is paid by prefixing every reply on a tile with `[tile web:<id> · <host>]`.
+- `browser_run` (System-1), `browser_import_cookies` and `browser_list_profiles` stay obscura-only.
+- D14 timing: the gate decides before a call, on the site of the page the session starts from (`browser_open`: the
+  requested URL's site; `browser_eval`: any page once the session holds profile cookies, since a script can reach any
+  signed-in origin). After a call that may navigate, `Ctx` records the page it reached (`browser_navigate`'s reply names
+  it; other calls read `location.href`), so the next acting call is gated. The navigation that first reaches a
+  signed-in page (a redirect, a click, `browser_back`) is therefore not gated itself; it is logged.
+- Forget and sign out everywhere on live isolates (P2): the `Browsers` actor handles every `WebProfileChanged`
+  (local, or published by the profile actor for replicated rows) by handing it to its event worker, which reads the
+  named sites back one event at a time, in order, off the actor's turn (P2 review, finding 7); the read works also
+  with `browser.profile: off`. A site the profile no longer holds leaves the engine's known sites (the D14 gate) and
+  every session: its cookies and origins leave the session's baseline and rows, so a save no longer holds it, and the
+  cookie deletes (`browser_set_storage_state` with `expires: 0`) are queued for the isolate. A site that holds cookies
+  or only a localStorage snapshot is known. When the read fails, the named sites leave the known sites (the event
+  may be a forget; a session's next load learns them again). A forgotten site's localStorage stays in the isolate until it drops:
+  obscura's `browser_set_storage_state` only adds entries (`obscura-mcp/src/lib.rs` `tool_set_storage_state`, at
+  `1c76fa7`). A newer epoch empties the known sites and resets every session loaded under an older one (its profile
+  cookies queued for deletion, a new load on its next call). `Ctx::ensure_profile` runs what is queued, under the
+  session's guard, before every call of that session, so no call after the event sends a forgotten cookie. A
+  `browser_open` also drops its site when the profile no longer has it (the event missed, a lagged feed). A save that
+  races the event is refused by the store (its `basis_ms`). `browser::subscribe` is the plugin's bus subscription
+  (`AgentEvent`, `WebProfileChanged`).
+- As built in P3 (after the review): `Target::Tile { view, url, delegated, leaving }` in a process-wide map
+  (`browser::tile`, not a `Ctx` field) that the `Browsers` actor clears on `SessionDeleted` and `CloseTree`. `url`,
+  the address the tile's last answer named, feeds the reply prefix (before any answer, what `web_view_state` last
+  reported, else `page not reported`); `leaving` is the page an action started leaving (§4.7). `view` is the bare
+  tile id (`browser_attach` takes `web:<id>`, `web-<id>` or `<id>`). `browser_attach` refuses a tile no session of
+  the caller's tree opened (`tile web:<id> was not opened by this session or its tree`; the opener is the session
+  `show_web` ran in or a client reported the tile for, compared by `Store::root_of`), then probes it with the agent
+  command `location` (one `script` op); its reply names the page. `delegated` is set when the opener is another
+  session of the tree. A call on a tile never touches the session's obscura isolate: no profile load, no
+  `browser_open` refresh, no D14 tracking (the obscura session's current site stays as it was). D14 on a tile
+  differs from obscura's: every acting call (`browser_open`, `browser_click`, `browser_fill`, `browser_type`,
+  `browser_press`, `browser_select`, `browser_eval`, `browser_back`) is credentialed whatever the site and whatever
+  `browser.profile` says (the tile carries the user's own cookies, which the profile may not hold); reads
+  (`browser_read`, `browser_elements`, `browser_scroll`, `browser_wait`, `browser_screenshot`) are credentialed when
+  the tile's current site is in the profile or the tile has not said where it is, so a `read_only` subagent reads
+  only a tile on a site the user is not signed into through the profile. `browser_run` and
+  `browser_import_cookies` on a tile answer an error naming `browser_attach {}` instead of acting on obscura unseen;
+  `browser_list_profiles` is unchanged (it touches no browser). `no client holds tile web:<id>` says the user may
+  have closed it and that `browser_attach {}` returns to the session's own browser.
+
+### 4.7 Tile operations
+
+The engine owns the agent script (`crates/browser/src/tile/agent.js`, one source, also used on obscura through
+`browser_eval` for D13); the client is a generic executor. `op` is one of `script`, `navigate`, `back`, `forward`,
+`reload`, `snapshot`. `script` args: `{ world: "isolated" | "page", source, arguments, timeout_ms }`; `isolated` is
+`WKContentWorld` named `theuth-agent` with `callAsyncJavaScript` (own JS globals, same DOM; CSP `script-src` does not
+block it, web §3), where refs live in a `Map` of `WeakRef`s. Desktop reaches the native view through
+`Webview::with_webview`; Windows uses `CallDevToolsProtocolMethod` (`Page.createIsolatedWorld`, `Runtime.evaluate`,
+`Input.dispatchMouseEvent`), the one platform with trusted input (web §3). `snapshot` is `takeSnapshot` /
+`Page.captureScreenshot`. Timeouts: 2 s to `Claimed`, then 30 s, or the tool's own wait plus 5 s. `lib/web-view-agent.ts`
+exports `startWebViewAgent()`: it claims a `WebViewCallRequested` only when this window holds `web-<view>`, calls
+`web_view_call`, and answers with `answer_web_view_call`.
+
+| Tool | On a tile | How, and the limit |
+|---|---|---|
+| `browser_open` | supported | navigate the tile (same path as `web_view_navigate`), wait for finish, then `browser_read`. The user sees it. |
+| `browser_read` | supported, limits | text and refs from the main frame; cross-origin frames unread (no frame list API, web §3). Output format is ours, close to obscura's. |
+| `browser_elements` | supported, limits | same as read. |
+| `browser_click` | supported, limits | `scrollIntoView`, pointer and mouse events, `click()`. `isTrusted: false` everywhere except Windows, where CDP input is trusted; a site gating on it ignores it. |
+| `browser_fill` | supported, limits | native value setter plus `input`/`change` (works with React-controlled inputs); file inputs only from base64 via `DataTransfer`. |
+| `browser_type` | supported, limits | synthetic key events per character; no IME. |
+| `browser_press` | supported, limits | synthetic `KeyboardEvent`; Enter in a form falls back to `requestSubmit()`. |
+| `browser_select` | supported | set `selected`, fire `change`. |
+| `browser_scroll` | supported | `scrollBy` / `scrollIntoView`. |
+| `browser_wait` | supported | a promise in the content world, bounded. |
+| `browser_eval` | supported, limits | runs in the **page** world (`WKContentWorld.page`) so page globals are visible; the page can see and tamper with it. |
+| `browser_back` | supported | `goBack` (as `web_view_history` does, wt 205 §9). |
+| `browser_screenshot` | supported, limits | `takeSnapshot` (Apple), `Page.captureScreenshot` (Windows); viewport only, no `full_page`. |
+| `browser_tabs` | unsupported | a tile is one page; new windows go to the system browser (205 §8). Error names `web_views`. |
+| `browser_close` | changed | detaches (back to obscura); never closes the user's tile. |
+| `browser_show` | unsupported | "the user is already looking at this page". |
+
+There is no public API for trusted input into a `WKWebView`, and the Web Inspector protocol has no Input domain
+(web §3). This holds for the iPad and for the desktop app on the engine's machine alike: both are clients and the
+code path is the same. An engine with no client app has no tile and the agent uses obscura.
+
+As built in P3 (the exact shapes are in the handoff the shell and UI built against; revised after the review):
+`WebViewCallRequested.view` is the bare tile id. The agent script is the **body** of an async function with `cmd`
+and `params` in scope; the engine sends it as `source` with `arguments: { cmd, params }`, world `isolated`, and it
+never throws (an expected failure is `done` with `{ error }`). Its `VERSION`, which decides whether a world keeps the
+agent it built, is the hash of the script's own text (the engine writes it in), so an edited script always replaces
+the old one. Commands: `location`, `read { format: "text" | "markdown", max_chars }` (refs and states first, then the
+body text, within `max_chars`, at most 40000 whatever the model asks; a body under 200 characters ends with how
+many frames and open shadow roots were not read), `elements`, `click` (the `click` event dispatched at the
+element's centre, as `el.click()` only where `MouseEvent` cannot be built; when another element is on top there the
+reply names it), `fill`, `type`, `press` (Enter in a form: `requestSubmit()`, and the reply says the form was
+submitted; Tab moves focus), `select` (by value, then by visible text), `scroll`, `wait { selector | text,
+timeout_ms }` (polled every 250 ms; a text is looked for in `textContent` first); `helpers` keeps the building
+blocks for P5. Every command answers the document's token `doc`; `click` and `press` also `navigating` (the
+address changed, or `beforeunload` / `pagehide` fired within 50 ms) and `from` (the address before). After a
+`navigating` action the session's next read waits for another document or address, up to ten reads 500 ms apart,
+and otherwise ends with `(still on <from>: …)`. Refs `e<n>` live in a `Map` of `WeakRef`s with a `WeakMap` back, so
+an element keeps its ref across listings; a ref of a previous document is `unknown ref`, a detached element (also
+one a later listing dropped) `stale ref`. What the user typed is not read: values of password and credential
+(`autocomplete` `*password`, `one-time-code`, `cc-*`) fields are never listed; another text field, textarea or
+editable region shows `value="…"` only when the agent filled, typed into or selected it in this document and
+`value=[set]` when it holds anything else; a `<select>` shows its option when that is the page's default or the
+agent's choice, else `value=[set]`; the body text and the markdown skip form controls and editable regions (a walk
+of the text nodes, no `innerText`, no clone), and an editable region's text never names it. `visible()` is one
+`checkVisibility()` where the engine has it. `browser_eval` is `script` in the page world with
+`source: "return (<expression>\n);"`, trailing semicolons and whitespace cut first. `navigate` / `back` / `forward`
+/ `reload` take `{ url?, timeout_ms }` and answer `{ url, title, loading }` once the load finished (or failed, or
+ran out: `loading: true`); `snapshot` takes `{}` and answers `png`. A tile op's budget after the claim is
+`max(30 s, timeout_ms + 5 s)`: 15 s scripts, 25 s navigations, `browser_wait`'s own seconds plus 1 s in the client.
+After `browser_click` / `browser_open` the engine waits 300 ms before the read that follows, and a read that fails
+(the old document going away) is retried after 500 ms. `browser_screenshot`'s `width` / `height` are ignored on a
+tile (viewport only) and the reply says so. `browser_open` on a tile takes http(s) only. A call the user stopped
+(`failed` `"stopped by the user"`, §4.4) makes the tile refuse every call for 60 s without asking a client; the
+model reads "the user stopped the agent on this page".
+
+### 4.8 Tool text
+
+`browser_open` gains: "When the user has signed into a site in their web view (on any of their devices), this
+browser is signed in too. Passkeys, device-bound sessions, service workers and Cloudflare clearance do not carry
+over, and a site that ties a login to the device, network or browser may ask to sign in again: then use
+`browser_attach` with the user's tile and act there." `browser_attach` carries the trusted-input limit verbatim,
+and also says which tiles it takes, that frames, shadow roots and the user's typing are not read, that a read of a
+signed-in page asks for approval, that Enter in a form submits it, and that a click has no real hit test.
+`browser_click`, `browser_fill` and `browser_press` say that in the session's own browser Enter does not submit a
+form and that on a tile Enter in a form submits it, so the model presses Enter or clicks submit, never both.
+
+### 4.9 Prompt (D12)
+
+In `crates/artifact/src/tools.rs:60`, replace from "The two share nothing:" to "(watch only)." with:
+
+> The two share one sign-in: when the user signs into a site in a `show_web` tile on any of their devices, your
+> browser is signed in to that site too, and a site you sign into works in their tile. They share nothing else: you
+> do not see a `show_web` page unless you `browser_attach` to it, and the user does not see your browser unless you
+> call `browser_show` (watch only). A site may still refuse a login that moved; then attach to the user's tile and
+> act there, where the session is theirs. When a step needs the user's own input on a page you drive (a
+> sign-in, a code), call `browser_show_element` on the form: they fill it in the chat and you never see the values.
+
+The clause "and a site you sign into works in their tile" lands with P2, `browser_attach` with P3, the last sentence
+with P5; each phase ships the text its tools support.
+
+### 4.10 `browser_show_element` (D13) · follow-up, not built (see P5)
+
+```
+browser_show_element { ref?: String, selector?: String, title?: String }   // DIRECT, Risk::Mutating, APPROVED_BY_CARD, not promotable
+```
+
+- Exactly one of `ref` (from `browser_read` / `browser_elements`) and `selector`. Works on obscura (the agent script
+  through `browser_eval`) and on an attached tile (`web_view_call` op `script`, world `isolated`).
+- **Serialise** (`agent.js` `serializeElement`): clone the subtree; inline `getComputedStyle` of every node as a
+  `style` attribute, properties that differ from the element's default only; same-origin `<img>` as `data:` URIs,
+  cross-origin images replaced by an empty box of the same size; remove `script`, `noscript`, `style`, `link`, `iframe`,
+  `object`, `embed`, `svg <use>` with external refs, every `on*` attribute, `href`, `action`, `formaction`, `src` that
+  is not `data:`, and `url()` in styles that is not `data:image`. Never copy a control's current value; keep
+  `checked` and the selected option. Hidden inputs are dropped from the clone and stay in the real form. Each
+  visible control and each submit button gets `data-theuth-field="<n>"` in the clone and in the live page, and the
+  root gets `data-theuth-form="<id>"` in the live page. Returned with the root's rendered `width` and `height`, the
+  page `origin` (`location.origin`) and `url`.
+- **Refuse** with `ToolOutput::err`: the subtree contains any `iframe` — "the form contains a frame from <origin> (a
+  CAPTCHA or a sign-in provider); it can only be used in the page itself: show it to the user with show_web or
+  browser_attach to their tile"; the clone is over 256 KiB — "element too large to show (N KiB > 256 KiB); pick a
+  smaller element"; no visible control; a capped contact turn (as every browser tool, `tools.rs:237-239`).
+- The engine re-sanitises the HTML with an allowlist (tags of forms and text, attributes `style`, `type`, `name`,
+  `placeholder`, `autocomplete`, `checked`, `selected`, `disabled`, `for`, `id`, `class`, `data-theuth-field`) before
+  publishing `ElementFormRequested`; the client trusts nothing in it.
+- **Card** (`components/chat/ElementFormCard.tsx`, UI): app chrome above the frame shows a lock glyph, the origin
+  as `scheme://host[:port]` in ASCII (punycode, never Unicode, so a homograph shows as `xn--`), and the source ("your
+  web view" for `web:<id>`, "agent browser on <engine>" for obscura); below it **Submit** and **Cancel**. The frame is
+  `HtmlPage`'s (`sandbox="allow-scripts allow-forms"`, `HtmlPage.tsx:171`; `theuth-page` header CSP `sandbox …`,
+  `pages.rs:132-135`). That header has no `default-src`, so the document the UI builds starts with `<meta
+  http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline';
+  script-src 'unsafe-inline'; form-action 'none'; base-uri 'none'">`, then the app's own bootstrap (`lib/element-form.ts`
+  `formBootstrap()`), then the snapshot. The bootstrap answers `theuth/collect` with `{ "<index>": value }` by
+  `postMessage`, turns a submit inside the frame (Enter) into `theuth/submit-request`, and reports size. Password
+  inputs stay `type=password` and render masked.
+- **Submit**: `answerElementForm(id, values)` calls `answer_element_form`. The engine (in the owning session's
+  `Ctx`) checks the browser is still on `url` (fragment ignored) and `[data-theuth-form="<id>"]` exists with the same
+  field count; else `ElementFormResolved { outcome: "stale" }` and the tool returns "the page changed since the form
+  was shown; nothing was typed". Then, per index: native value setter plus `input`/`change` (as `browser_fill`),
+  `checked` for checkbox and radio, `value` for select; then the form's first submit button `click()`, else
+  `form.requestSubmit()`, else the clone's submit-button index. It waits for a navigation or a 10 s settle.
+- **Receipt** (the only thing the model sees): `submitted · <origin> · filled 0 email, 1 password · now <url> — <title>`
+  or `… · the page did not change within 10 s`; `cancelled`; `no answer` after `tools.ask_timeout_secs`
+  (`crates/tools/src/lib.rs:562`). Field labels and names, never values.
+- **Values** are handled like `answer_secret`'s (`crates/secrets/src/rpc.rs:29-40`): they live only in the RPC
+  params, in `Zeroizing<String>` while filling, and in the page. Not in the transcript, `ToolOutput`, events, `tracing`
+  fields or `sessions.sqlite`; the scrub of §9 adds them for the rest of the session.
+- **What "exactly like the site" means.** A static clone with computed styles and no site JavaScript: client-side
+  validation, show-password toggles, dependent fields, autocomplete widgets and web fonts do not run or load. A
+  multi-step sign-in (username, then password, then a code) is one call per step; the receipt says the page changed.
+
+## 5. The owner's scenario, end to end (P1)
+
+1. iPad app, attached through the relay to the engine holding the hub lease (recon §7c). The user opens a tile and
+   signs into `example.com`. WebKit stores `__Host-sid` (HttpOnly, Secure, Lax) in the `DATA_STORE` store.
+2. The observer fires; 2 s later the app diffs and calls `web_profile_push` with one `set`.
+3. The hub engine seals the `example.com` row; replica ships it over `theuth/records/1` to every engine.
+4. On engine B an agent session calls `browser_open https://app.example.com/orders`. `Ctx` sees no profile loaded
+   for the session, loads every live row with `browser_set_storage_state` (with `host_only`), then navigates. The
+   page is signed in.
+5. The agent's actions on `example.com` are acting calls on a profile site: the gate treats them as `Mutating` (D14).
+6. On `browser_close` or the isolate's idle drop, `Ctx` / the actor export the jar and push the diff (a refreshed
+   session cookie, say) to the profile.
+
+## 6. Settings and consent (P2)
+
+Settings › Browser: the switch `browser.profile` and the list from `web_profile_sites` (site, cookie count, last
+changed, by which device or engine). **Forget this site**: `web_profile_forget`; every client deletes that site's
+cookies from its store and every engine's `Ctx` deletes them from live isolates before their next call.
+**Sign out everywhere**: `web_profile_clear`; every client clears its store (`removeDataOfTypes` on the named store)
+and every engine drops all profile-loaded isolates. A client offline at the time learns it from `stale-epoch` on
+its next push and clears then.
+
+As built in P2: the tab is Settings › Tools › Browser (`components/settings/BrowserProfile.tsx`), shown only where
+the native web view layer exists (`nativeWebViews`) and the engine offers `web_profile_sites`, `web_profile_forget`
+and `web_profile_clear`. It reads the mode from `web_profile_status` (else from the last push or pull answer) and
+lists each site with its cookie count, origins with storage, relative time of the last change and the writer
+("this device", "another device", "agent on <engine>"). **Forget and sign out** acts at once, without a second
+dialog; **Sign out everywhere** asks in an alert dialog, then clears this device's store too.
+
+## 7. iOS navigation (P4 for iPhone)
+
+- iPad: unchanged from 205 §9. When a web tile is placed and the tile would be narrower than 420 px with the sidebar
+  inline, the sidebar collapses (`useSidebar().setOpen(false)`); it is not reopened automatically.
+- iPhone: one pane at a time below 768 px (`crates/desktop/ui/src/hooks/use-mobile.ts:3-5`,
+  `components/chat/Panes.tsx:109-119`); 205 §9 gives the phone only an address card (wt doc line 194). New:
+  `components/chat/PhoneWebView.tsx`, a full-screen overlay holding a 52 px DOM toolbar — back, forward, reload,
+  address, open in Safari, minimise, close — over the placeholder the native view frames to. **Minimise** calls
+  `web_view_visible(false)` and sets `minimised` in `lib/web-views.ts`; `components/chat/WebPill.tsx` sits above the
+  composer with the site title and favicon; tapping it restores the view, which was never destroyed, so scroll
+  position, form input and history survive. A downward swipe of at least 60 px on the toolbar minimises. The view's
+  own edge swipe is history: `ios_webview.rs` sets `allowsBackForwardNavigationGestures` (not set today, wt
+  `:655-666`). A `show_web` from the agent while the composer has focus or a draft arrives as the pill, never over
+  the screen. Several tiles: the pill shows the latest and a count; tapping the count lists them.
+- Native glass chrome (design 198) is not on main (recon §6); the pill is DOM and can move to native chrome later.
+
+## 8. Trade-offs and alternatives
+
+- **Ask once per site** instead of syncing the whole store: a sheet on the first sign-in to a site ("Let your agents
+  use your example.com sign-in?"). Narrower blast radius, one more prompt per site, and a sign-in the user did
+  for the agent's sake is not usable until answered. Rejected for P1 because the tile is theuth's own browser that
+  the user opens for this purpose; the Settings list and D14 carry the control instead.
+- **Agent in the user's own browser** (Claude in Chrome, Playwright MCP `--extension`, web §4): nothing to sync, but
+  desktop-only, and the agent acts in the real profile. D8 is the same idea limited to the tile.
+- **Persisting the whole user-data-dir** (Browserbase contexts, web §4): not possible; WebKit exposes cookies and
+  script-reachable storage only (web §1).
+- **The vault itself** (`Vault::set`, one secret per site, `vault.rs:637-645`, recon §7b) instead of a table: rows
+  are versioned per `(name, version)` and every write keeps the old version, which for a cookie jar written every
+  few seconds grows without bound, and the jar would show in `secret_list`. Rejected for its own table.
+
+## 9. Security
+
+- **The profile is a credential.** A session id is "temporarily equivalent to the strongest authentication method"
+  of the site (OWASP Session Management Cheat Sheet,
+  https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html, web §5). A copy of
+  `web_sites` plus the mesh key is the user's sign-in to every site in it. Sealed like a vault row; the mesh key
+  sits sealed under the engine's own key (`vault.rs:1-11`).
+- **Reach.** Any agent session on any engine of the mesh can act as the user on a signed-in site, including
+  sessions started by routines and channels. A capped contact turn gets no browser at all (`tools.rs:211-239`), so no
+  contact or A2A peer reaches the profile.
+- **Prompt injection.** A page read while signed in can carry instructions (a mail, a ticket, a review) aimed at an
+  agent holding that sign-in. Page text is data; the tool text says so; D14 puts a person in front of acting calls
+  under the default policy.
+- **D14, the gate.** New `Tool::credentialed(&self, session: SessionId, args: &Self::Args) -> bool` (default
+  `false`), forwarded by `ErasedTool::credentialed(&self, session, args: &Value)`. At `registry.rs:1484`, `:1616`
+  and `:2208` the registry computes `risk = if credentialed { spec.risk.max(Risk::Mutating) } else { spec.risk }`
+  and passes that `risk` to `effective()` (`registry.rs:1369-1391`), so both the cap check (`:1376`) and the policy
+  see `Mutating`; passing a bool like `mentions` would only raise to `Ask` and skip the cap. The acting browser
+  tools (open, click, fill, type, press, select, eval, back, and any call on a tile) answer from a synchronous map
+  `Ctx` keeps: session → current site and whether that site had profile cookies loaded. A session capped
+  `read_only` is refused acting calls on signed-in sites and on tiles (`denied: subagent is capped at read_only`,
+  `registry.rs:1397`); reads stay allowed. Under the default policy (`mutating: Ask`, `crates/tools/src/lib.rs:589-596`)
+  each such call prompts unless the user turned prompts off.
+- **`Tool::APPROVED_BY_CARD`** (new const, default `false`): for a tool whose own card is the user's approval. The
+  cap check uses the tool's risk; the policy lookup then uses `Risk::ReadOnly`. Only `browser_show_element` sets it
+  (Mutating, so a `read_only` cap hides it; no second prompt before the card, since pressing Submit is the approval).
+- **Never echo values.** No theuth tool returns cookies (the 16 tools have no cookie read, `tools.rs:273-694`).
+  `browser_eval` and `browser_read` replies on a profile site are scrubbed of every loaded cookie value of 8 or more
+  characters, replaced by `[cookie <name>]`. The jar never enters `tracing` fields, events, `ToolOutput`, or
+  `sessions.sqlite`; `web_profile_pull` is the only wire path that carries values, to the app.
+- **`site_learn`.** It copies the session's cookie header for a learned domain into the routes store
+  (`crates/routes/src/capture.rs:67-92`, `crates/routes/src/lib.rs:290-333`). With the profile loaded that is the
+  user's sign-in; it must only learn on a profile site after an acting-call approval, and where the routes store keeps
+  that header was not checked (§12).
+- **Transport.** Pushes travel client → relay → hub engine; the relay is stateless (recon §7c). Whether it can read
+  payloads was not checked (§12); the values ride the app's authenticated RPC connection either way.
+- **Tile control** is the user's live session on the user's screen: acting calls always credentialed (D14), every
+  reply prefixed with the tile, and the tile shows a thin "agent is acting" bar while a call is pending (`Claimed` to
+  `Done`). As built in P3 (after the review): only the session that opened a tile, or a session of its tree (the same
+  `Store::root_of`), may `browser_attach` to it (`tile web:<id> was not opened by this session or its tree`); a
+  request from another session of the tree carries `delegated: true`. A read of a tile is credentialed when the
+  tile's current site is in the profile (or unknown), and `browser_eval` on a tile always, so a `read_only` subagent
+  cannot read a page the user is signed into through the profile. A tile call's result is taken only from the RPC
+  connection that claimed it (§4.4), so another window, device or front-door client cannot put its page text in
+  front of the model; before a claim only the user's Stop or a closed window fails a call, and Stop holds the tile
+  for 60 s. What the user typed into the page (field values, textareas, editable regions) is not read (§4.7).
+- **D13, phishing and injection.** A page the agent reads (or an injected instruction) may ask it to "show the login
+  form" of another site, or a hostile page may draw a fake sign-in. The origin in the card is the app's, read from
+  the browser at serialise time, not from the snapshot; values go only to the element stamped `data-theuth-form` on
+  the page that was serialised, re-checked at submit, and nowhere else. The snapshot cannot draw outside the frame,
+  run script, load anything or submit (CSP `default-src 'none'; form-action 'none'`, sandbox without
+  `allow-same-origin` or `allow-top-navigation`). The user's Submit is the approval; a `read_only` subagent cannot
+  see the tool. What the user cannot be protected from here is a real page of the right origin that is itself
+  hostile: the card shows the origin, the user decides.
+- **Off switch and forget** (§6). `browser.profile: off` takes effect at once for new loads; isolates already
+  loaded keep their cookies until dropped.
+
+## 10. Phases
+
+Every phase is built by three builders in one worktree on disjoint paths (205 §8). Fixed for all phases:
+
+- **Engine** owns `crates/browser`, `crates/artifact`, `crates/webprofile` (new), `crates/tools`, `crates/sessionsync`,
+  `crates/agent/src/rpc_forward.rs`, `crates/rpc-compose`, `crates/theuth/tests/fixtures/wire/`, root `Cargo.toml`
+  and `Cargo.lock`, the obscura fork, and the generated bindings `crates/desktop/ui/src/rpc/bindings/**` (it runs
+  the bindings generator, `just ts-desktop`, as an early step).
+- **Shell** owns `crates/desktop/src/**/*.rs` (incl. `ios_webview.rs`, `webview.rs`, `web_rules.rs`, `lib.rs`) and
+  `crates/desktop/Cargo.toml`. A new workspace dependency is requested from the engine builder, never added to the root.
+- **UI** owns `crates/desktop/ui/src/**` except `rpc/bindings/**`.
+- Testing apart: the engine drives its RPCs and events in `rpc-compose` API tests with a fake client that answers
+  (as `answer_page_preview_first_done_wins`, `crates/rpc-compose/src/api/tests.rs:1382`); the shell keeps conversions
+  and rules in pure functions with unit tests and checks with `cargo check -p desktop` for the macOS and iOS targets;
+  the UI tests with vitest against mocked `invoke` and a mocked RPC client fed JSON fixtures of §4's shapes (as
+  `lib/web-views.test.ts`) until the bindings land.
+
+### P1 — the owner's scenario on iPad and macOS (D1–D4, D7, D9 minimal, D12, D14)
+
+| Engine | Shell | UI |
+|---|---|---|
+| obscura `obscura-mcp/src/lib.rs` (§4.3); `crates/webprofile/{Cargo.toml, migrations/0001_web_sites.sql, src/lib.rs, src/store.rs, src/merge.rs, src/rpc.rs}`; `crates/browser/src/{tools.rs, lib.rs, profile.rs}`; `crates/tools/src/{lib.rs, registry.rs}`; `crates/artifact/src/{tools.rs, webview.rs}`; `crates/agent/src/rpc_forward.rs`; rpc-compose mirror and golden; wire fixture; bindings | `ios_webview.rs`, `webview.rs`: `web_profile_read`, `web_storage_capture`, event `web-profile://changed` | `lib/web-profile.ts` (`startWebProfileSync`), `lib/web-views.ts` (state forwarding), `App.tsx` (start the sync) |
+
+- New names: table `web_sites`; secret `webprofile/salt`; actor `webprofile`; RPCs `web_profile_push`,
+  `web_profile_sites`, `web_view_state`; event `WebProfileChanged`; tool `web_views {}`; config `browser.profile`;
+  `Tool::credentialed`.
+- Tests: seal/open and wrong-aad refusal; delta merge with two writers; caps; `stale-epoch`; two engines replicate a
+  row (as `crates/document/tests/replicate.rs`); a `__Host-` HttpOnly cookie survives export → profile → import; a
+  private-id isolate never gets the profile; save on `Close` and `Sweep`; imported cookies not saved; `credentialed`
+  raises the risk and a `read_only` cap denies; scrub; wire golden and schema snapshot; UI diff and debounce.
+- iPad simulator, engine on 333 plus a second engine: sign in to a local HTTPS test site in the tile;
+  `web_profile_sites` lists it on both within 5 s; an agent on the second engine opens the protected page signed in;
+  the test site logs one session id from both browsers.
+
+#### P1 as built (after the engine review)
+
+What the P1 engine differs in from the text above, decided by the orchestrator after the review; §4.1, §4.2, §4.4
+and §4.6 already say it:
+
+- No secret `webprofile/salt` (nor the interim `mesh/webprofile-salt`): row ids are keyed by an id key derived from
+  the mesh key (§4.1), so D2's "salted hash of the site" is a keyed hash of each cookie's identity, and the P1 "new
+  names" lose the secret. A mesh key rotation moves the rows to the new ids.
+- One row per cookie and per origin's snapshot, not per site (D2, §4.1): the table is `id, site_id, sealed, hlc`
+  plus a local `web_site_stats`; epoch, writer and time are inside the sealed entry. The migration was rewritten in
+  place (never shipped); a development database created by the first P1 build fails its checksum and needs
+  `webprofile.sqlite` removed.
+- `web_profile_push`'s result has `profile: "shared" | "off"`; `unknown-epoch` and `invalid push: …` join
+  `stale-epoch` and `profile full`; `browser.profile: off` answers empty instead of an error.
+- An agent session never adds a site to the profile (§4.2); `browser_open`'s tool text says so.
+- `WebProfileChanged` is also published for replicated rows (§4.4). The browser's D14 gate answers from the sites
+  the profile is known to hold and from the session's own loaded cookies; a failed load is retried with a backoff
+  per session; a save refused as `stale-epoch` clears the isolate's profile cookies and loads again; the last save of
+  a dropped isolate waits at most 2 s for its export.
+- `Tool::CREDENTIALED` (a const, default `false`) gates `Tool::credentialed`, so no other tool's arguments are
+  deserialised for it (§9).
+
+### P2 — profile into the tile, settings (D5, D6)
+
+| Engine | Shell | UI |
+|---|---|---|
+| `crates/webprofile/src/{rpc.rs, store.rs}`; `crates/browser/src/profile.rs` (forget/clear on live isolates); fixtures; bindings | `web_profile_write`, `web_profile_clear` in `ios_webview.rs`, `webview.rs` | `lib/web-profile.ts` (apply on `WebProfileChanged`), `components/settings/BrowserProfile.tsx` |
+
+- New names: RPCs `web_profile_pull`, `web_profile_forget`, `web_profile_clear`.
+- Tests: forget on one engine clears an isolate on another before its next call; clear bumps the epoch; a stale
+  push is refused; pull answers only an owner-audience connection.
+- Simulator: the agent signs in to the test site in obscura; the user opens it in the tile signed in; forget removes
+  it from the store (`web_profile_read`).
+
+#### P2 as built (engine)
+
+What the P2 engine differs in from the text above or adds to it; §4.1, §4.2, §4.4 and §4.6 already say it:
+
+- **Shapes** (positional params like P1's; named also work). `web_profile_pull(sites?: [String], cursor?: String) →
+  PullResult { epoch, sites, cookies: [PulledCookie], storage: [PulledStorage], profile, forgotten: [ForgottenSite
+  { site, forgotten_ms }], now_ms, next: String | null }`; `PulledCookie` is the `Cookie` fields flat plus `site`,
+  `writer`, `updated_ms`; `PulledStorage` is `{ origin, local_storage, captured_ms }` flat plus the same three.
+  `web_profile_push(device, epoch, changes, storage?, basis_ms?) → PushResult { applied, sites, epoch, profile,
+  refused: [String] }`. `web_profile_status() → ProfileStatus { profile, epoch, sites, now_ms }` (new).
+  `web_profile_forget(site: String) → ForgetResult { site, epoch }` (the contract said `{}`: additive, the UI learns
+  which registrable domain the host it passed named). `web_profile_clear() → ClearResult { epoch }`.
+  `PullResult.sites`, `.profile`, `.forgotten`, `.now_ms`, `.next`, `PushResult.refused` and the `basis_ms` and
+  `cursor` params are additive to the contract. No new event: `WebProfileChanged` already names the sites.
+- **Owner only**: every `web_profile_*` method calls `rpc_core::owner` (refusing a share-link guest and an
+  unauthenticated call with `UNAUTHORIZED`) on top of `audience = "owner"`, which only shapes discovery (push and
+  sites since the P2 review, finding 9).
+- **Forget marker and `basis_ms`** (§4.1): new item kind `{ "forget": {} }`, new optional entry field `basis_ms`, new
+  `Push::basis_ms`, carried by agent sessions and (since the P2 review, finding 1) by clients. Without them a stale
+  session's save or a client that was away during the forget wrote a forgotten cookie back (a set newer than the
+  tombstone wins last-writer-wins), and a cookie written before the forget on an engine apart arrived later as live.
+  The 60 s quiet window of the first P2 build is removed: a push without a basis counts as basis 0 for a site with a
+  marker, which covers what the window covered and the client that was away longer.
+- **Forget and clear work with `browser.profile: off`** (D6: off leaves rows until cleared), and so do a load (the
+  browser reads sites back after a forget) and `web_profile_status`; pull answers no site with `profile: "off"`.
+- **Rotation** (§4.1): the store holds a `secrets::RetireHold` from open and from the moment it sees a new key, and
+  takes it again on every maintenance tick while the vault holds more than one mesh key; it releases it only when a
+  check under the hold after the move finds no row under a retained key. `webprofile::watch_keys` (on
+  `Vault::watch_changes`) tells the actor at once; a peer's row under a retained key is re-keyed on arrival; the move
+  re-reads its target inside its transaction. The vault offers no synchronous hook at key install: the residual window
+  is the time from the install to the watcher's run, against a 10-minute grace. A failed purge or move at open is
+  logged and retried by maintenance (the store opens; finding 12).
+- **Local tables** (migration `0002_local.sql`, not replicated): `web_profile_local` (the highest epoch seen) and
+  `web_sites_removed` (when each tombstone was written here, so purging works without replication).
+- **Logs**: jsonrpsee prints every request and response whole at TRACE (targets `jsonrpsee-server`,
+  `jsonrpsee-core`, `jsonrpsee-client`, and module paths `jsonrpsee_core::…`); `crates/theuth/src/logs.rs`
+  `engine_filter` now caps those targets at INFO, added last, so no bare `RUST_LOG` level and no directive naming them
+  prints a body (a longer module-path directive still would).
+- **Known gaps**: a forget marker applies 30 days; a client away longer, or a stale row from an engine apart that
+  long, can bring the site back. Clock skew between engines shifts the forget edges by as much (§4.1). A forgotten
+  site's localStorage stays in a live obscura isolate until the isolate drops (obscura can add storage entries, not
+  remove them); it is never saved back, and the cookies — the sign-in — are deleted.
+
+### P3 — agent control of the tile (D8, D9 full)
+
+| Engine | Shell | UI |
+|---|---|---|
+| `crates/browser/src/{tools.rs, tile.rs, tile/agent.js}` (`browser_attach`, `Target`); `crates/artifact/src/{webview.rs, rpc_artifacts.rs}` (event pair, `answer_web_view_call`); `crates/sessionsync/src/events.rs`; `crates/agent/src/rpc_forward.rs`; fixtures; bindings | `web_view_call` (ops of §4.7, isolated world, `takeSnapshot`, CDP on Windows) in `ios_webview.rs`, `webview.rs` | `lib/web-view-agent.ts` (`startWebViewAgent`), the "agent is acting" bar in `components/chat/WebFrame.tsx` |
+
+- New names: tool `browser_attach { view? }`; events `WebViewCallRequested`, `WebViewCallResolved`; RPC
+  `answer_web_view_call`; command `web_view_call`; world `theuth-agent`; `crates/browser/src/tile/agent.js`.
+- Tests: the round trip against the real RPC; no claim → `no client holds tile web:<id>`; only the holder claims; each
+  op of §4.7 against a fixture page in the fake client (engine) and in a desktop test webview (shell).
+- Simulator: from a session on the second engine, attach to the iPad tile, read, fill and submit a form, screenshot.
+
+#### P3 as built (engine)
+
+What the P3 engine differs in from the text above or adds to it; §4.4, §4.6 and §4.7 already say it:
+
+- **Shapes.** `WebViewCallRequested { id, session, view, delegated, op, args }` (`view` the bare tile id, `op` the
+  enum `artifact::webview::WebViewOp`), `WebViewCallResolved { id }`, `WebViewCallAnswer` tagged `kind`
+  (`claimed` / `done` / `failed`, snake case), `answer_web_view_call(id, answer, session?) -> bool`, owner
+  connections only (`rpc_core::owner`); `web_view_state(…, closed?)`; `answer_page_preview(id, answer, session?)`.
+  The event types live in `artifact::webview` with the round trip (`webview::call`, `webview::answer`); `browser`
+  depends on `artifact` for it. Waiting calls are a `Runtime` extension (one map per engine, also two engines in one
+  process). A call dropped before it resolves (the registry's timeout) still publishes `WebViewCallResolved`, with
+  a non-blocking send to the bus that needs no async context.
+- **Claims** (after the review). The first `claimed` is taken (`true`) and binds the call to the RPC connection that
+  sent it (`RpcPeer::id`; a forwarded answer: the forwarding engine, `Forwarded`, and that front door binds it to its
+  own client connection); every later claim answers `false`; `done` / `failed` are taken only from the claimer.
+  Before any claim only `failed` `"stopped by the user"` / `"window closed"` is taken (§4.4).
+- **Relay and routing**: §4.4 above. `answer_web_view_call` routes by the `session` it names (the id→session map of
+  the engine's feed is the fallback when a client sends none). `rpc_forward.rs` needed no change (`forward::route`
+  serves the answer).
+- **Prompt and tool text**: §4.9's P3 clause ("unless you `browser_attach` to it", "attach to the user's tile and act
+  there"), §4.8's sentences, `browser_attach`'s text with the trusted-input limit, and `show_web`'s description and
+  receipt pointing at `browser_attach {"view": "web:<id>"}`.
+- **Not done**: no file inputs on a tile (`browser_fill` has no file argument; a file input answers an error), no
+  `forward` / `reload` tool (the ops exist for the client, no tool sends them), no frame other than the main one, no
+  shadow root. The opener check reads the engine's in-memory tile record (`show_web`, `web_view_state`): after an
+  engine restart a tile is attachable once its app reported it again. The script still rides in every `script`
+  request (about 30 KB); only its version is derived from its hash.
+- **Tests**: the round trip against the real `answer_web_view_call` with a fake client (claim, done, second claim
+  refused, late answer refused, `failed`, the script's `{ error }`, no claim, claimed and never answered, snapshot,
+  a guest refused, a second owner connection refused before and after the claim, Stop before a claim and its 60 s
+  hold, attach outside the opener's tree, a closed tile) in `rpc-compose`; two engines in one process
+  (`rpc-compose/tests/tile_relay.rs`): a session owned by one engine attaches and reads, each call is relayed to the
+  front door, claimed and answered there through its `answer_web_view_call`, forwarded over `theuth/rpc/1`, and a
+  second client of the front door cannot answer; the binding rules in `artifact::webview`; the op mapping, request
+  shapes, answer shapes, prefix, script version and target lifetime in `browser::tile`; every op end to end in
+  `crates/browser/tests/tile.rs`, where a fake client answers over the artifact RPC dispatch and runs the ops,
+  `agent.js` included, on its own obscura page of a loopback fixture site (attach refused to another session, read,
+  elements, fill, the user's typing in a textarea and an editable region not read back, select, click, eval in the
+  page, Enter submitting a form, wait, a stale ref, open, back, screenshot, close); the relay of a tile call and its
+  resolution in `sessionsync`. obscura has no isolated world, so `agent.js` runs in the page world there; the
+  shell's WebKit and CDP executors (and the `theuth-agent` content world) are not exercised by these.
+
+### P4 — iPhone surface (D11)
+
+| Engine | Shell | UI |
+|---|---|---|
+| — | `ios_webview.rs`: `allowsBackForwardNavigationGestures` | `components/chat/{PhoneWebView.tsx, WebPill.tsx}`, `Panes.tsx`, `lib/web-views.ts` (`minimised`), `App.tsx` (`show_web` as pill), iPad sidebar collapse |
+
+- Tests: minimise/restore keeps the view (no `web_view_close`); a `show_web` while the composer has focus becomes the
+  pill. iPhone simulator: minimise, send a message, restore: same scroll position and history.
+
+### P5 — a form of the page in the chat (D13) · FOLLOW-UP, not built
+
+**Dropped from this build by the owner on 2026-11-22 (10:25) and kept as a follow-up.** P1–P4 ship without it; no
+code of D13 exists on the branch (no `browser_show_element`, no `ElementForm*` events, no `answer_element_form` /
+`element_forms_pending`, no `APPROVED_BY_CARD`; the relay does not list the `ElementForm*` topics, P3 review finding
+20). Sections 3 (D13), 4.4 (its rows), 4.10 and 9 (D13 bullet) stay as the design for that follow-up. What P3 left
+that it can build on: the tile op `script` in the isolated world, `agent.js` (one source, obscura and tile), the
+claim-bound answer pattern of `answer_web_view_call` (owner-only, bound to the claiming connection, `session` in the
+params), and the inline-page frame of design 120. Before building it, settle Q6 (sanitiser) and Q7
+(`APPROVED_BY_CARD`, accepted in principle on 2026-11-22) again against the code as it is then.
+
+The original P5 plan follows unchanged.
+
+| Engine | Shell | UI |
+|---|---|---|
+| `crates/browser/src/{show_element.rs, tile/agent.js}` (tool, serialise, sanitise, fill, receipt); `crates/tools/src/{lib.rs, registry.rs}` (`APPROVED_BY_CARD`); `crates/sessionsync/src/events.rs`; `crates/agent/src/rpc_forward.rs`; fixtures; bindings | none (runs through `web_view_call` op `script`) | `components/chat/ElementFormCard.tsx`, `lib/element-form.ts` (`formBootstrap`, `answerElementForm`), card registration with the transcript, `element_forms_pending` on attach |
+
+- New names: tool `browser_show_element { ref?, selector?, title? }`; events `ElementFormRequested`,
+  `ElementFormResolved`; RPCs `answer_element_form`, `element_forms_pending`; `Tool::APPROVED_BY_CARD`;
+  attributes `data-theuth-form`, `data-theuth-field`; messages `theuth/collect`, `theuth/submit-request`.
+- Tests: serialise a fixture sign-in form (no scripts, no `on*`, no values, password stays `type=password`); refuse an
+  iframe and an oversize element; sanitiser allowlist; stale page → nothing typed; receipt carries no value (assert
+  the test password appears in no event, log line or `ToolOutput`); a `read_only` cap cannot see the tool; the card's
+  CSP blocks a network image (UI, jsdom); collect by index.
+- iPad simulator: a login form served from the Mac (HTTP test server on the LAN); the agent, attached to the tile and
+  separately on obscura, calls `browser_show_element`; the user types in the card and presses Submit; the server logs
+  the posted fields and the receipt names the post-login page.
+
+## 11. Open questions
+
+- Q1. Session cookies (no `expires`) in the profile outlive the browser that set them, the way "continue where you
+  left off" does. Keep them until the site row goes 30 days without a write, or drop them at save?
+- Q2. Should cookies brought in by `browser_import_cookies` be promotable into the profile with an explicit flag?
+- Q3. Obscura sends its own user agent (stealth, `BrowserConfig.user_agent`, `crates/browser/src/lib.rs:46-50`) while the
+  session was minted by WebKit. Should a profile-loaded isolate present the tile's user agent for that site?
+- Q4. `show_web` from a session owned by another engine does not reach a front-door client as read (§4.4). Fix it in
+  205 (relay `WebViewOpened`) before P3, or in P3?
+- Q5. 420 px as the iPad collapse width is a guess; measure the address field at the narrowest tile.
+
+- Q6. The engine-side sanitiser for D13: a maintained allowlist crate (for example `ammonia`) or a small own
+  allowlist over `html5ever`? Neither dependency was checked in the workspace.
+- Q7. `APPROVED_BY_CARD` is a new permission shape (a tool's own card standing in for the policy's `Ask`). Accept it,
+  or keep `browser_show_element` `Mutating` with a second press under the default policy?
+
+Decided by the owner's "all good" on 2026-11-22 (orchestrator's proposals): Q1 keep session cookies until the site row
+goes 30 days without a write. Q2 no: imported cookies stay out of the profile. Q3 obscura keeps its own user agent.
+Q4 fix in P3 (relay `WebViewOpened` with the new events). Q5 measure on the simulator in P2. Q6 the P5 engine builder
+checks the workspace and picks; report the licence. Q7 accept `APPROVED_BY_CARD`. Additive wire changes for 209 are
+accepted with the build order ("build it and get it merged"); the orchestrator runs `just wire-schema-accept` at each
+phase's integration, builders do not. The obscura change of §4.3 is made by a separate worker on the fork branch
+`theuth/209-host-only` (cut from ee30f89); the P1 engine builder only repoints `Cargo.toml` at that branch once it is
+pushed and must not edit obscura sources.
+
+## 12. Unverified
+
+Taken from the reports and not checked in source or at the URL for this document:
+
+- WebKit: `WKHTTPCookieStore` methods and observer, `dataStoreForIdentifier:` (iOS 17 / macOS 14), HttpOnly and
+  session cookies returned, partition key lost through `NSHTTPCookie`, reload needed before `document.cookie`
+  reflects a set, `fetchDataRecords` without contents (web §1, WebKit headers on GitHub).
+- `WKContentWorld` and `callAsyncJavaScript` semantics, CSP not applying to them, `takeSnapshot`, no trusted input,
+  `isInspectable` with no Input domain (web §3).
+- Tauri 2.4 `cookies()`, 2.8 `set_cookie()`; wry 0.47/0.53 APIs, the 0.50.3 and 0.54.3 fixes; Android returning an
+  empty list; WebView2 `with_profile_name`, `ICoreWebView2CookieManager`, `CallDevToolsProtocolMethod` and trusted
+  `Input.dispatchMouseEvent`; WebKitGTK cookie and world APIs (web §2–3).
+- Cloudflare `cf_clearance` set Partitioned and its 30-minute default passage; DBSC in Chrome 145; Browser Use's
+  warning; Browserbase, Steel, Hyperbrowser, Operator, Claude in Chrome descriptions; Telegram's pill (web §4–6).
+- The OWASP quotation (web §5).
+- Mesh key distribution (`crates/mesh/src/keys.rs:1-5,85-120`), the relay being stateless
+  (`crates/relay/src/main.rs:1`), the hub lease (`crates/link/src/follow.rs:1-15`), the link `devices` table as the
+  owner set (recon §7).
+- `App.tsx:572,578` handling of web view and live view events, `ArtifactPanel.tsx`, `Header.tsx:274-280`,
+  `popout.ts:147` (recon §4, §6).
+- obscura is V8 plus its own DOM, not Chromium, with an unused CDP server (recon §2).
+- Whether replica imposes a size limit on one record or batch (not found in `crates/replica/src/engine.rs`).
+- Where the routes store keeps a learned `cookie` header, and whether it is sealed.
+- Whether the relay can read RPC payloads.
+- That a native `WKWebView` on macOS reached through `Webview::with_webview` accepts `callAsyncJavaScript` in a
+  named world while Tauri also drives it (205 §8 says nobody has run the desktop native layer).
+- obscura's `getComputedStyle` completeness for D13 (it exists, `obscura-js/js/bootstrap.js:4064`, `obscura-render/src/dom.rs:322`;
+  how many properties it resolves was not checked), and whether `browser_eval` can return a 256 KiB string.
+- That the RPC layer keeps `answer_secret`'s params out of logs; D13 copies that behaviour and it was not traced.
+- That `just ts-desktop` writes only `crates/desktop/ui/src/rpc/bindings/**` (from the 205 build notes, not checked).

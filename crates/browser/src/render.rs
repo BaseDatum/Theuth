@@ -72,7 +72,7 @@ impl ObscuraRender {
 
 /// Split obscura's `browser_navigate` reply, `Navigated to <url> — "<title>"`,
 /// into `(url, title)`; `None` when it has another shape.
-fn parse_navigated(reply: &str) -> Option<(&str, Option<&str>)> {
+pub(crate) fn parse_navigated(reply: &str) -> Option<(&str, Option<&str>)> {
     let rest = reply.trim().strip_prefix("Navigated to ")?;
     match rest.rsplit_once(" — \"") {
         Some((url, title)) => {

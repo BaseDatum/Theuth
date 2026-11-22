@@ -72,8 +72,18 @@ objc2 = "0.6"
 block2 = "0.6"
 # 130 D10 (`companion/macos.rs`): `NSWorkspace` launch and `NSRunningApplication` queries on top of the
 # workspace feature set; `libc` for `kill(pid, 0)` in the quit handshake.
-objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "block2", "libc"] }
-objc2-foundation = { workspace = true, features = ["NSURL", "NSError"] }
+objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "block2", "libc", "NSImage", "NSImageRep", "NSGraphicsContext", "NSResponder", "NSView", "objc2-core-graphics"] }
+objc2-foundation = { workspace = true, features = ["NSURL", "NSURLRequest", "NSError", "NSUUID", "NSDictionary", "NSHTTPCookie", "NSDate", "NSValue", "NSEnumerator", "NSProcessInfo", "NSSet"] }
+# 209 §4.5 (`apple_cookies.rs`): the web view tiles' cookie store and page storage through WebKit directly,
+# at the version wry resolves; `WKWebView` (with `objc2-app-kit`) for the typed `callAsyncJavaScript…`,
+# `WKWebsiteDataRecord` for the data type names `web_profile_clear` removes.
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKFrameInfo", "WKWebsiteDataStore", "WKWebsiteDataRecord", "WKHTTPCookieStore", "WKContentWorld", "WKNavigation", "WKSnapshotConfiguration"] }
+# 209 §4.7 (`apple_tile.rs`): `web_view_call`'s snapshot, a `takeSnapshot` image drawn into a bitmap and encoded
+# as base64 PNG off the main thread; `WKNavigation` for the history calls, `NSImage` for its `CGImage`,
+# `NSView` for the viewport, `NSURLRequest` for `navigate`.
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CGImage", "CGContext", "CGBitmapContext", "CGColorSpace"] }
+png = { workspace = true }
+base64 = { workspace = true }
 libc = { workspace = true }
 
 # Windows only: the island's Win32 styles on the `HWND` `raw_window_handle` yields (58 §6.2). Same
@@ -86,13 +96,21 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Wind
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 # iOS only: `UIApplication.beginBackgroundTask` so the relay socket outlives
-# backgrounding for the grace period iOS grants (31 §8), and the scene-configuration /
-# windowing-control-style surface `ios_windowing.rs` uses (111). Same objc2 line tauri uses.
+# backgrounding for the grace period iOS grants (31 §8), the scene-configuration /
+# windowing-control-style surface `ios_windowing.rs` uses (111), and the web view tile's raw
+# `WKWebView`s (`ios_webview.rs`, 205 §9). Same objc2 line tauri/wry use; `objc2-web-kit` at the
+# version wry resolves (its iOS `WKWebView` class is declared in `ios_webview.rs`: the crate binds it
+# for macOS only).
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { workspace = true }
-objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "block2"] }
+objc2-foundation = { workspace = true, features = ["NSURL", "NSURLRequest", "NSURLResponse", "NSUUID", "NSDictionary", "NSKeyValueObserving", "NSHTTPCookie", "NSDate", "NSValue", "NSEnumerator", "NSError", "NSProcessInfo", "NSSet"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "UIView", "UIScrollView", "UIWindow", "UIViewController", "UIAlertController", "UIControl", "UITextField", "UIImage", "objc2-core-foundation", "objc2-core-graphics", "block2"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKWebsiteDataRecord", "WKNavigationDelegate", "WKNavigationAction", "WKNavigationResponse", "WKFrameInfo", "WKUIDelegate", "WKPreferences", "WKHTTPCookieStore", "WKContentWorld"] }
+# 209 §4.7 (`apple_tile.rs`): `web_view_call`'s snapshot, as on macOS; `UIImage` for its `CGImage`.
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CGImage", "CGContext", "CGBitmapContext", "CGColorSpace"] }
+png = { workspace = true }
+base64 = { workspace = true }
 
 [build-dependencies]
 tauri-build = { workspace = true }

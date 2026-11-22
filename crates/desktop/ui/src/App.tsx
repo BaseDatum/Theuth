@@ -21,14 +21,16 @@ import { FocusTracker, Throttle, deriveFocus } from '@/lib/event-focus'
 import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
-import { chatLeaves, closeWeb, leaves, placeWeb, usePanes } from '@/lib/panes'
-import { closeAllWebViews, installWebViewEvents, useWebViews, webLeaf } from '@/lib/web-views'
+import { chatLeaves, closeWeb, leaves, usePanes } from '@/lib/panes'
+import { closeAllWebViews, installWebViewEvents, useWebViews } from '@/lib/web-views'
+import { webViewOpened } from '@/lib/web-arrival'
 import { closeAllTiles, closeSessionTiles } from '@/lib/tiles'
+import { AgentTileBanner } from '@/components/chat/AgentTileBanner'
 import { forgetArtifact } from '@/components/chat/ArtifactPanel'
-import * as webNative from '@/lib/web-view-native'
-import { isMobileLayout } from '@/hooks/use-mobile'
 import { installFenceSnapshot } from '@/lib/fence-snapshot'
 import { installPagePreview } from '@/lib/page-preview'
+import { startWebProfileSync } from '@/lib/web-profile'
+import { startWebViewAgent } from '@/lib/web-view-agent'
 import { container, isDesktop } from '@/lib/platform'
 import { POPOUT, closePopout, popoutMeeting, popoutSession } from '@/lib/popout'
 import { onOwnerChanged, onPeerChange, remoteAmong, settleAfterFollowLoss, withdrawRelayed } from '@/lib/owner'
@@ -576,23 +578,9 @@ function useEventSideEffects(st: Stores): void {
       on("browser.events@1", 'BrowserShowLive', (e) => {
         if (!visible(e.session)) router.history.push(`/c/${e.session}`)
       }),
-      // 205 §4.4: the frame is recorded for its card; an open one (tile or pop-out) navigates, else a tile opens right of
-      // the session's pane when that chat is on screen and the layout tiles (popouts never get here: `AUX`). A view
-      // that is gone (its pop-out window closed) answers `no web view …`: then it is no longer popped and the tile rule applies.
-      on("artifact.web-view-opened@1", 'WebViewOpened', (e) => {
-        const old = useWebViews.getState().views[e.id]
-        useWebViews.getState().open({ id: e.id, session: e.session, url: e.url, title: e.title })
-        const place = () => {
-          if (!isMobileLayout() && visible(e.session)) placeWeb(e.session, e.id)
-        }
-        const { root } = usePanes.getState()
-        if (!old?.popped && !(root !== null && leaves(root).includes(webLeaf(e.id)))) return place()
-        webNative.navigate(e.id, e.url).catch((err: unknown) => {
-          if (!String(err).startsWith('no web view')) return console.warn('web_view_navigate', err)
-          useWebViews.getState().patch(e.id, { popped: false })
-          place()
-        })
-      }),
+      // 205 §4.4, 209 §7: the frame is recorded for its card, then tiled beside its chat, opened full screen on a phone
+      // or put in the pill there (`webViewOpened`); popouts never get here (`AUX`).
+      on("artifact.web-view-opened@1", 'WebViewOpened', (e) => webViewOpened(e, visible(e.session))),
       // The session's frames and tiles go with it: tiles, store entries, native views; a pop-out window holding one
       // closes on `web-view://closed` (`WebFrame`).
       on("agent.events@1", 'SessionDeleted', (e) => {
@@ -738,6 +726,10 @@ function Main() {
   // 120 §11.3: only the main window renders `page_preview` requests; a popout or the island would race it.
   useEffect(() => (AUX ? undefined : installPagePreview()), [])
   useEffect(() => (AUX ? undefined : installFenceSnapshot()), [])
+  // 209 §4.5: the device's tile store is one for every window; only the main window pushes it.
+  useEffect(() => (AUX ? undefined : startWebProfileSync()), [])
+  // 209 §4.7: a pop-out window may hold a tile too; each window claims only the tiles it holds.
+  useEffect(() => (ISLAND || OVERLAY ? undefined : startWebViewAgent()), [])
   // The shell flips both windows; each webview mirrors the value into its own settings copy.
   useEffect(() => {
     const off = onCaptureHidden((h) => useMeetingSettings.getState().setHidden(h))
@@ -822,6 +814,8 @@ function Main() {
         </EngineProvider>
       )}
       <Toaster />
+      {/* 209 §9: an agent acting on a tile no frame of this window shows, in the windows `startWebViewAgent` runs in. */}
+      {!ISLAND && !OVERLAY && <AgentTileBanner />}
       {/* 163 D5: portalled to <body>; it makes everything else there inert while it is up. */}
       {!AUX && <QuitOverlay />}
       {!AUX && <PreQuit />}

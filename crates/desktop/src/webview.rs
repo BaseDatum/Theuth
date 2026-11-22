@@ -17,18 +17,40 @@
 //! The one `initialization_script` is the constant [`LINKS_SCRIPT`]. The macOS data store identifier needs
 //! macOS 14+; older systems silently use the default store, shared with the app (wry `wkwebview/mod.rs:276-287`).
 //! The `asset` scheme refuses `web-*` webviews (`crate::asset`).
+//!
+//! The browser profile (209 §4.5): on macOS `web_profile_read`, `web_profile_write`, `web_profile_clear` and
+//! `web_storage_capture` go to WebKit directly through `apple_cookies` (the store watch starts with the
+//! first web view); Windows and Linux answer all four with `PROFILE_UNSUPPORTED`, with the same declared
+//! types. All four refuse a `web-*` caller.
+//!
+//! The agent's tile operations (209 §4.7): `web_view_call` runs one op on a web view for the main webview
+//! of the window that holds it; on macOS `script` and `snapshot` go through `apple_tile`, the rest through
+//! Tauri and `WKWebView`. Windows and Linux check the same arguments and answer `CALL_UNSUPPORTED` (the CDP
+//! route of 209 §4.7 is not built).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde::Serialize;
+use serde_json::Value;
 use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, State, Url, Webview,
     WebviewUrl, Window,
 };
 use tauri_plugin_opener::OpenerExt;
+
+#[cfg(target_os = "macos")]
+use crate::web_rules::DATA_STORE;
+#[cfg(not(target_os = "macos"))]
+use crate::web_rules::PROFILE_UNSUPPORTED;
+use crate::web_rules::call::{Op, check_driver, check_holder};
+use crate::web_rules::profile::{Cookie, CookieKey, Storage, Written, check_caller};
+use crate::web_rules::{
+    CLOSED_EVENT, Closed, STATE_EVENT, app_url, check_label, check_url, in_popout, may_open,
+    navigation_allowed, no_view,
+};
 
 /// tauri-plugin-opener 2.7.2 injects `init-iife.js` into every webview's main frame: a bubble-phase `click`
 /// listener on `window` that `preventDefault()`s `<a target=_blank>` and ctrl/shift clicks on http(s), mailto
@@ -38,41 +60,6 @@ use tauri_plugin_opener::OpenerExt;
 /// `manager/webview.rs:204, 225`); for the same http(s) cases it stops the event and calls `window.open`,
 /// which reaches `on_new_window` (the system browser). mailto/tel stay with the opener script (dead, as before).
 const LINKS_SCRIPT: &str = r#"window.addEventListener("click",function(e){if(e.defaultPrevented||e.button!==0||e.metaKey||e.altKey)return;var a=e.composedPath().find(function(n){return n instanceof Node&&n.nodeName.toUpperCase()==="A"});if(!a||!a.href||(a.target!=="_blank"&&!e.ctrlKey&&!e.shiftKey))return;var p;try{p=new URL(a.href).protocol}catch(_){return}if(p!=="http:"&&p!=="https:")return;e.stopImmediatePropagation();e.preventDefault();window.open(a.href)},true);"#;
-
-/// At most one system-browser open per web view per this interval (205 §4.3): WebView2 needs no user
-/// gesture for `window.open`, so a page loop could otherwise spam tabs.
-const OPEN_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Whether a new-window request at `now` may open the browser, given the last one that did.
-fn may_open(last: Option<Instant>, now: Instant) -> bool {
-    last.is_none_or(|last| now.saturating_duration_since(last) >= OPEN_INTERVAL)
-}
-
-/// Label prefix of every web view (205 D3).
-const PREFIX: &str = "web-";
-
-/// Event to every window on navigation start, page load finished and title change (205 §4.3).
-const STATE_EVENT: &str = "web-view://state";
-
-/// Event to every window when a web view is destroyed, payload `{ label }` (205 §4.3).
-const CLOSED_EVENT: &str = "web-view://closed";
-
-/// Prefix of the error of every command on a label that does not exist (205 §4.3).
-const NO_VIEW: &str = "no web view";
-
-/// Prefix of `web_view_attach`'s refusal to take a view out of a pop-out; the parent label follows (205 §4.3).
-const IN_POPOUT: &str = "in-popout: ";
-
-/// macOS `WKWebsiteDataStore` identifier shared by all web views, separate from the app's default store
-/// (205 D3). A fixed random UUID; changing it forgets every web view's cookies.
-#[cfg(target_os = "macos")]
-const DATA_STORE: [u8; 16] = [
-    0x6f, 0x1c, 0x2e, 0x95, 0x4b, 0x7a, 0x4d, 0x0e, 0x9a, 0x53, 0x2d, 0xc8, 0x71, 0x0b, 0xe4, 0x3f,
-];
-
-/// Schemes this app serves; on Windows they appear as `http://<scheme>.localhost`, which Tauri treats as a
-/// local origin (205 §5). `ipc`, `asset` and `tauri` are Tauri's own, `theuth-page` is `pages::SCHEME`.
-const APP_SCHEMES: [&str; 4] = ["tauri", "ipc", "asset", crate::pages::SCHEME];
 
 /// Last known state per label: `web-view://state` payloads carry the full record. An entry exists from
 /// `web_view_attach` until the view is destroyed (`web_view_close` or its window's destruction).
@@ -88,105 +75,16 @@ struct ViewState {
     /// The hosting window's label, kept current across reparenting; not part of the payload.
     #[serde(skip)]
     window: String,
-}
-
-#[derive(Clone, Serialize)]
-struct Closed {
-    label: String,
+    /// Main-frame loads finished in the view (wry's page-load `Finished`, from `didFinishNavigation`): how
+    /// a tile op's load wait knows a load finished since it began (209 §4.7). Not part of the payload.
+    #[serde(skip)]
+    finished: u64,
 }
 
 /// `web_view_attach` may not take a view out of a pop-out into another window (205 §4.3): the pop-out
 /// owns it until it closes. `main` → pop-out and re-attaching in the same window are fine.
 fn steals(parent: &str, caller: &str) -> bool {
     parent != caller && parent.starts_with(crate::commands::POPOUT_PREFIX)
-}
-
-fn no_view(label: &str) -> String {
-    format!("{NO_VIEW} `{label}`")
-}
-
-fn in_popout(parent: &str) -> String {
-    format!("{IN_POPOUT}{parent}")
-}
-
-/// `^web-[0-9a-f]{16}$`.
-fn valid_label(label: &str) -> bool {
-    label.strip_prefix(PREFIX).is_some_and(|hex| {
-        hex.len() == 16
-            && hex
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    })
-}
-
-fn check_label(label: &str) -> Result<(), String> {
-    if valid_label(label) {
-        Ok(())
-    } else {
-        Err(format!(
-            "web view label must match ^web-[0-9a-f]{{16}}$, got `{label}`"
-        ))
-    }
-}
-
-/// The load check of `web_view_attach` / `web_view_navigate` (205 D3, §5): http/https, and never an origin
-/// Tauri would call local. `app_url` is the `devUrl` in dev builds (the only http app origin); `None` in release.
-fn allowed(url: &Url, app_url: Option<&Url>) -> bool {
-    if !matches!(url.scheme(), "http" | "https") {
-        return false;
-    }
-    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-    if host
-        .strip_suffix(".localhost")
-        .is_some_and(|sub| APP_SCHEMES.contains(&sub))
-    {
-        return false;
-    }
-    !app_url.is_some_and(|app| {
-        app.scheme() == url.scheme()
-            && app.host() == url.host()
-            && app.port_or_known_default() == url.port_or_known_default()
-    })
-}
-
-/// The `on_navigation` predicate (205 §4.3, §5): wry applies it to every frame, so on top of [`allowed`] it
-/// lets through the subframe URLs real pages create, none of which can carry the app's origin:
-/// `about:blank` / `about:srcdoc` and `blob:` inherit the creator's origin, `data:` is opaque. A `blob:` whose
-/// inner part parses as a URL must pass [`allowed`] (`blob:http://tauri.localhost/…` is refused); an opaque
-/// creator (`blob:null/…`) has no inner URL and passes.
-fn navigation_allowed(url: &Url, app_url: Option<&Url>) -> bool {
-    match url.scheme() {
-        "about" => matches!(url.path(), "blank" | "srcdoc"),
-        "data" => true,
-        "blob" => Url::parse(url.path())
-            .ok()
-            .is_none_or(|inner| allowed(&inner, app_url)),
-        _ => allowed(url, app_url),
-    }
-}
-
-/// The app origin Tauri treats as local besides its schemes: `devUrl`, in dev builds only
-/// (`tauri-2.12.5/src/manager/mod.rs:345-358`).
-fn app_url<R: Runtime>(app: &AppHandle<R>) -> Option<Url> {
-    if tauri::is_dev() {
-        app.config().build.dev_url.clone()
-    } else {
-        None
-    }
-}
-
-/// Parse and check a URL for attach/navigate.
-fn check_url<R: Runtime>(app: &AppHandle<R>, url: &str) -> Result<Url, String> {
-    let parsed = Url::parse(url).map_err(|e| format!("invalid url `{url}`: {e}"))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(format!("web view loads only http/https, got `{url}`"));
-    }
-    if !allowed(&parsed, app_url(app).as_ref()) {
-        return Err(format!(
-            "`{url}` is an app origin; a web view cannot load it"
-        ));
-    }
-    Ok(parsed)
 }
 
 fn webview<R: Runtime>(app: &AppHandle<R>, label: &str) -> Result<Webview<R>, String> {
@@ -305,6 +203,9 @@ fn builder<R: Runtime>(
             publish(view.app_handle(), view.label(), |s| {
                 s.url = url;
                 s.loading = loading;
+                if !loading {
+                    s.finished += 1;
+                }
             });
         })
         .on_document_title_changed(|view, title| {
@@ -364,7 +265,12 @@ pub async fn web_view_attach<R: Runtime>(
         LogicalSize::new(width, height),
     );
     match res {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            // 209 §4.5: from the first tile on, store changes reach the UI as `web-profile://changed`.
+            #[cfg(target_os = "macos")]
+            crate::apple_cookies::start(&app);
+            Ok(())
+        }
         Err(e) => {
             lock(&app.state::<Views>()).remove(&label);
             Err(e.to_string())
@@ -447,36 +353,372 @@ pub async fn web_view_close<R: Runtime>(
     Ok(())
 }
 
+/// Every cookie of the tiles' store, through WebKit on the named store (209 §4.5, D3). Never for a tile.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn web_profile_read<R: Runtime>(caller: Webview<R>) -> Result<Vec<Cookie>, String> {
+    check_caller(caller.label(), false)?;
+    crate::apple_cookies::read(caller.app_handle().clone()).await
+}
+
+/// Windows and Linux: [`PROFILE_UNSUPPORTED`] (209 §4.5 fallback not built), same types as on macOS.
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn web_profile_read<R: Runtime>(caller: Webview<R>) -> Result<Vec<Cookie>, String> {
+    check_caller(caller.label(), false)?;
+    Err(PROFILE_UNSUPPORTED.to_owned())
+}
+
+/// Empty the tiles' store: every cookie, and localStorage, sessionStorage and IndexedDB (209 §4.5). Never
+/// for a tile; emits nothing (the UI reads the store again).
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn web_profile_clear<R: Runtime>(caller: Webview<R>) -> Result<(), String> {
+    check_caller(caller.label(), false)?;
+    crate::apple_cookies::clear(caller.app_handle().clone()).await
+}
+
+/// Windows and Linux: [`PROFILE_UNSUPPORTED`], same types as on macOS.
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn web_profile_clear<R: Runtime>(caller: Webview<R>) -> Result<(), String> {
+    check_caller(caller.label(), false)?;
+    Err(PROFILE_UNSUPPORTED.to_owned())
+}
+
+/// Write into the tiles' store (209 §4.5, D5): each cookie of `set` replaces the store cookie of its key
+/// and scope, each key of `remove` goes in every scope; each localStorage snapshot of `storage` goes to
+/// the open web views of its origin. Counts only, values are never logged; when WebKit has not reported
+/// everything within `MAIN_TIMEOUT` the answer is the counts reached with `timed_out`. A loaded page
+/// keeps the cookies it has until it loads again: no view is reloaded. Never for a tile.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn web_profile_write<R: Runtime>(
+    caller: Webview<R>,
+    set: Vec<Cookie>,
+    remove: Vec<CookieKey>,
+    storage: Option<Vec<Storage>>,
+) -> Result<Written, String> {
+    use std::sync::mpsc::sync_channel;
+
+    use objc2::MainThreadMarker;
+    use objc2_web_kit::WKWebView;
+
+    use crate::apple_cookies::{MAIN_TIMEOUT, apply_storage, available, write, writer, written};
+    use crate::web_rules::profile::{plan_write, storage_for};
+    use crate::web_rules::valid_label;
+
+    check_caller(caller.label(), false)?;
+    available()?;
+    let deadline = Instant::now() + MAIN_TIMEOUT;
+    let plan = plan_write(set, remove, storage.unwrap_or_default());
+    let origins = plan.storage.iter().map(|s| s.origin.clone()).collect();
+    let app = caller.app_handle().clone();
+    let (cookies, wait_cookies) = writer(plan.cookies);
+    app.run_on_main_thread(move || match MainThreadMarker::new() {
+        Some(mtm) => write(mtm, cookies),
+        None => cookies.fail("run_on_main_thread ran off the main thread".to_owned()),
+    })
+    .map_err(|e| e.to_string())?;
+    let mut pending = Vec::new();
+    for view in app.webviews().into_values() {
+        if !valid_label(view.label()) {
+            continue;
+        }
+        let Ok(url) = view.url() else {
+            continue;
+        };
+        for snapshot in storage_for(&plan.storage, url.as_str()) {
+            let (tx, rx) = sync_channel(1);
+            let origin = snapshot.origin.clone();
+            let snapshot = snapshot.clone();
+            let res = view.with_webview(move |platform| {
+                let Some(mtm) = MainThreadMarker::new() else {
+                    let _ = tx.try_send(Err("with_webview ran off the main thread".to_owned()));
+                    return;
+                };
+                // SAFETY: on macOS `inner()` is the webview's live `WKWebView`, and `with_webview` runs on
+                // the main thread.
+                let view = unsafe { &*platform.inner().cast::<WKWebView>() };
+                apply_storage(mtm, view, &snapshot, tx);
+            });
+            match res {
+                Ok(()) => pending.push((origin, rx)),
+                Err(e) => tracing::warn!(%origin, "web profile write: localStorage: {e}"),
+            }
+        }
+    }
+    written(wait_cookies, pending, origins, deadline).await
+}
+
+/// Windows and Linux: [`PROFILE_UNSUPPORTED`], same types as on macOS.
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn web_profile_write<R: Runtime>(
+    caller: Webview<R>,
+    set: Vec<Cookie>,
+    remove: Vec<CookieKey>,
+    storage: Option<Vec<Storage>>,
+) -> Result<Written, String> {
+    check_caller(caller.label(), false)?;
+    let _ = (set, remove, storage);
+    Err(PROFILE_UNSUPPORTED.to_owned())
+}
+
+/// The top-level origin's localStorage of `label`, read in the isolated world (209 §4.5). Never for a tile.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn web_storage_capture<R: Runtime>(
+    caller: Webview<R>,
+    label: String,
+) -> Result<Storage, String> {
+    use objc2::MainThreadMarker;
+    use objc2_web_kit::WKWebView;
+
+    check_caller(caller.label(), false)?;
+    crate::apple_cookies::available()?;
+    let view = webview(caller.app_handle(), &label)?;
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    view.with_webview(move |platform| {
+        let Some(mtm) = MainThreadMarker::new() else {
+            let _ = tx.try_send(Err("with_webview ran off the main thread".to_owned()));
+            return;
+        };
+        // SAFETY: on macOS `inner()` is the webview's live `WKWebView`, and `with_webview` runs on the main
+        // thread.
+        let view = unsafe { &*platform.inner().cast::<WKWebView>() };
+        crate::apple_cookies::capture(mtm, view, tx);
+    })
+    .map_err(|e| e.to_string())?;
+    crate::apple_cookies::captured(rx).await
+}
+
+/// Windows and Linux: [`PROFILE_UNSUPPORTED`] (209 §4.5 fallback not built), same types as on macOS.
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn web_storage_capture<R: Runtime>(
+    caller: Webview<R>,
+    label: String,
+) -> Result<Storage, String> {
+    check_caller(caller.label(), false)?;
+    webview(caller.app_handle(), &label)?;
+    Err(PROFILE_UNSUPPORTED.to_owned())
+}
+
+/// Run one tile op for the agent (209 §4.7, D8): `script`, `navigate`, `back`, `forward`, `reload`,
+/// `snapshot`, or the user's `stop` on `label`, with `args` as `web_rules::call::Op::parse` checks them. Only
+/// the main webview of the window holding the tile may call it, checked before the arguments are read.
+/// One log line per call: op, label, duration, ok or error; never a value.
+#[tauri::command]
+pub async fn web_view_call<R: Runtime>(
+    caller: Webview<R>,
+    label: String,
+    op: String,
+    args: Option<Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let outcome = run_call(&caller, &label, &op, args).await;
+    crate::web_rules::call::log(&op, &label, started, &outcome);
+    outcome
+}
+
+/// The tile `label` for a `web_view_call` of `caller`: the caller first, then the tile and its window.
+fn call_target<R: Runtime>(caller: &Webview<R>, label: &str) -> Result<Webview<R>, String> {
+    let (name, window) = (caller.label(), caller.window());
+    check_driver(label, name, window.label())?;
+    let view = webview(caller.app_handle(), label)?;
+    check_holder(label, name, window.label(), view.window().label())?;
+    Ok(view)
+}
+
+/// The op, once the caller and the arguments pass. Load ops cannot wait for their `WKNavigation` here (wry
+/// owns the navigation delegate, and its page-load handler reports no failure): they wait by
+/// `apple_tile::settle`, counting the view's finished loads ([`ViewState::finished`]).
+#[cfg(target_os = "macos")]
+async fn run_call<R: Runtime>(
+    caller: &Webview<R>,
+    label: &str,
+    op: &str,
+    args: Option<Value>,
+) -> Result<Value, String> {
+    use std::sync::mpsc::sync_channel;
+    use std::time::Duration;
+
+    use objc2::MainThreadMarker;
+    use objc2_foundation::{NSString, NSURL, NSURLRequest};
+    use objc2_web_kit::WKWebView;
+
+    use crate::apple_cookies::{MAIN_TIMEOUT, wait_by};
+    use crate::apple_tile::{Ticket, script, script_done, settle, snapshot, snapshot_done, stop};
+    use crate::web_rules::call::{Loaded, Look, SNAPSHOT_TIMEOUT, css_size, no_history};
+    use crate::web_rules::profile::timeout_message;
+
+    /// `f` with the tile's `WKWebView` on the main thread; when it cannot run there, `f` is dropped with
+    /// its sender and the waiting side reads `DROPPED`.
+    fn on_tile<R: Runtime>(
+        view: &Webview<R>,
+        f: impl FnOnce(MainThreadMarker, &WKWebView) + Send + 'static,
+    ) -> Result<(), String> {
+        view.with_webview(move |platform| {
+            if let Some(mtm) = MainThreadMarker::new() {
+                // SAFETY: on macOS `inner()` is the webview's live `WKWebView`, and `with_webview` runs on
+                // the main thread.
+                f(mtm, unsafe { &*platform.inner().cast::<WKWebView>() });
+            }
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    /// [`on_tile`] and its answer by `deadline` (the call's own budget); `None` when the main thread had
+    /// not answered by then.
+    async fn hop<R: Runtime, T: Send + 'static>(
+        view: &Webview<R>,
+        deadline: Instant,
+        f: impl FnOnce(&WKWebView) -> Result<T, String> + Send + 'static,
+    ) -> Result<Option<T>, String> {
+        let (tx, rx) = sync_channel(1);
+        on_tile(view, move |_, wk| {
+            let _ = tx.try_send(f(wk));
+        })?;
+        wait_by(rx, deadline).await
+    }
+
+    /// The main frame's URL, title and loading state, and the view's finished loads; on the main thread,
+    /// where wry's page-load handler counts them, so the two agree.
+    fn look<R: Runtime>(app: &AppHandle<R>, label: &str, wk: &WKWebView) -> Look {
+        let finished = lock(&app.state::<Views>())
+            .get(label)
+            .map_or(0, |s| s.finished);
+        // SAFETY: plain property reads of a live view, on the main thread.
+        let state = unsafe {
+            Loaded {
+                url: wk
+                    .URL()
+                    .and_then(|u| u.absoluteString())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
+                title: wk.title().map(|s| s.to_string()).unwrap_or_default(),
+                loading: wk.isLoading(),
+                error: None,
+            }
+        };
+        Look { state, finished }
+    }
+
+    /// A load op: the look before it and `start` on one main-thread turn, then [`settle`] until
+    /// `started + timeout`.
+    async fn load<R: Runtime>(
+        view: &Webview<R>,
+        started: Instant,
+        timeout: Duration,
+        ticket: &Ticket,
+        start: impl FnOnce(&WKWebView) -> Result<(), String> + Send + 'static,
+    ) -> Result<Value, String> {
+        let deadline = started + timeout;
+        let (app, label) = (view.app_handle().clone(), view.label().to_owned());
+        let (a, l) = (app.clone(), label.clone());
+        let before = hop(view, deadline, move |wk| {
+            let before = look(&a, &l, wk);
+            start(wk)?;
+            Ok(before)
+        })
+        .await?
+        .ok_or_else(|| timeout_message(timeout))?;
+        let looks = || {
+            let (a, l) = (app.clone(), label.clone());
+            hop(view, deadline, move |wk| Ok(look(&a, &l, wk)))
+        };
+        settle(looks, before, true, deadline, ticket).await
+    }
+
+    let started = Instant::now();
+    let view = call_target(caller, label)?;
+    let op = Op::parse(op, args)?;
+    let ticket = Ticket::new(label);
+    match op {
+        // Through `WKWebView` rather than `Webview::navigate`, so the load is requested on the turn of the
+        // look before it; the policy (`navigation_allowed`) still applies to it.
+        Op::Navigate { url, timeout } => {
+            let url = check_url(caller.app_handle(), &url)?;
+            load(&view, started, timeout, &ticket, move |wk| {
+                let ns = NSURL::URLWithString(&NSString::from_str(url.as_str()))
+                    .ok_or_else(|| format!("invalid url `{url}`"))?;
+                // SAFETY: a plain load request on a live view, on the main thread.
+                unsafe { wk.loadRequest(&NSURLRequest::requestWithURL(&ns)) };
+                Ok(())
+            })
+            .await
+        }
+        Op::Reload(timeout) => {
+            load(&view, started, timeout, &ticket, |wk| {
+                // SAFETY: a plain reload of a live view, on the main thread.
+                unsafe { wk.reload() };
+                Ok(())
+            })
+            .await
+        }
+        Op::History { forward, timeout } => {
+            load(&view, started, timeout, &ticket, move |wk| {
+                // SAFETY: plain history calls on a live view, on the main thread; a same-document entry
+                // answers no navigation object, and moves too (its URL changes).
+                unsafe {
+                    match (forward, wk.canGoForward(), wk.canGoBack()) {
+                        (true, true, _) => drop(wk.goForward()),
+                        (false, _, true) => drop(wk.goBack()),
+                        _ => return Err(no_history(forward)),
+                    }
+                }
+                Ok(())
+            })
+            .await
+        }
+        Op::Script(body) => {
+            let (deadline, timeout) = (started + body.timeout, body.timeout);
+            let (tx, rx) = sync_channel(1);
+            on_tile(&view, move |mtm, wk| script(mtm, wk, &body, tx))?;
+            script_done(rx, deadline, timeout, ticket).await
+        }
+        Op::Snapshot => {
+            let (tx, rx) = sync_channel(1);
+            on_tile(&view, move |_, wk| {
+                // SAFETY: plain geometry reads of a live view, on the main thread.
+                let (size, scale) =
+                    unsafe { (wk.bounds().size, wk.magnification() * wk.pageZoom()) };
+                snapshot(wk, css_size(size.width, size.height, scale), tx)
+            })?;
+            snapshot_done(rx, started + SNAPSHOT_TIMEOUT, ticket).await
+        }
+        // The user's Stop (209 §9): every wait of the tile's calls in flight ends now; the page stops loading.
+        Op::Stop => {
+            stop(label);
+            hop(&view, started + MAIN_TIMEOUT, |wk| {
+                // SAFETY: a plain stop of a live view, on the main thread.
+                unsafe { wk.stopLoading() };
+                Ok(())
+            })
+            .await?
+            .ok_or_else(|| timeout_message(MAIN_TIMEOUT))?;
+            Ok(Value::Null)
+        }
+    }
+}
+
+/// Windows and Linux: the same checks, then `CALL_UNSUPPORTED`.
+#[cfg(not(target_os = "macos"))]
+async fn run_call<R: Runtime>(
+    caller: &Webview<R>,
+    label: &str,
+    op: &str,
+    args: Option<Value>,
+) -> Result<Value, String> {
+    call_target(caller, label)?;
+    Op::parse(op, args)?;
+    Err(crate::web_rules::call::CALL_UNSUPPORTED.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
-    }
-
-    #[test]
-    fn webview_label_validation() {
-        assert!(valid_label("web-0123456789abcdef"));
-        assert!(!valid_label("web-0123456789ABCDEF"));
-        assert!(!valid_label("web-0123456789abcde"));
-        assert!(!valid_label("web-0123456789abcdef0"));
-        assert!(!valid_label("web-0123456789abcdeg"));
-        assert!(!valid_label("popout-0123456789abcdef"));
-        assert!(!valid_label("main"));
-        assert!(!valid_label(""));
-    }
-
-    #[test]
-    fn webview_new_window_throttle() {
-        let t0 = Instant::now();
-        assert!(may_open(None, t0));
-        assert!(!may_open(Some(t0), t0));
-        assert!(!may_open(Some(t0), t0 + Duration::from_millis(999)));
-        assert!(may_open(Some(t0), t0 + OPEN_INTERVAL));
-        // A clock that did not advance never panics and stays closed.
-        assert!(!may_open(Some(t0 + OPEN_INTERVAL), t0));
-    }
 
     #[test]
     fn webview_attach_steal_rule() {
@@ -489,75 +731,6 @@ mod tests {
         ));
         assert!(!steals("main", "main"));
         assert!(!steals("island", "main"));
-    }
-
-    #[test]
-    fn webview_error_prefixes() {
-        assert!(no_view("web-0123456789abcdef").starts_with("no web view"));
-        assert_eq!(
-            in_popout("popout-web-0123456789abcdef"),
-            "in-popout: popout-web-0123456789abcdef"
-        );
-    }
-
-    #[test]
-    fn webview_navigation_allowlist() {
-        let dev = url("http://localhost:1420");
-        let ok_both = [
-            "http://localhost:3000/",
-            "https://example.com/a?b#c",
-            "http://127.0.0.1:1420/",
-            "http://app.localhost/",
-            "https://localhost:1420/",
-        ];
-        let bad_both = [
-            "http://localhost:1420/",
-            "http://localhost:1420/sessions?x=1",
-            "http://tauri.localhost/",
-            "https://tauri.localhost/",
-            "http://ipc.localhost/cmd",
-            "http://asset.localhost/x",
-            "http://theuth-page.localhost/abc",
-            "http://THEUTH-PAGE.localhost/abc",
-            "tauri://localhost/",
-            "asset://localhost/x",
-            "theuth-page://localhost/abc",
-            "ipc://localhost/cmd",
-            "file:///etc/passwd",
-            "javascript:alert(1)",
-            "about:config",
-            "blob:http://tauri.localhost/0b8e",
-            "blob:http://localhost:1420/0b8e",
-            "blob:tauri://localhost/0b8e",
-            "blob:theuth-page://localhost/0b8e",
-        ];
-        // Subframe URLs: fine to navigate to, never a load target for attach/navigate.
-        let ok_navigation_only = [
-            "about:blank",
-            "about:srcdoc",
-            "data:text/html,hi",
-            "blob:https://example.com/0b8e",
-            "blob:http://localhost:3000/0b8e",
-            "blob:null/0b8e",
-        ];
-        for ok in ok_both {
-            assert!(allowed(&url(ok), Some(&dev)), "load {ok}");
-            assert!(navigation_allowed(&url(ok), Some(&dev)), "navigate {ok}");
-        }
-        for bad in bad_both {
-            assert!(!allowed(&url(bad), Some(&dev)), "load {bad}");
-            assert!(!navigation_allowed(&url(bad), Some(&dev)), "navigate {bad}");
-        }
-        for sub in ok_navigation_only {
-            assert!(!allowed(&url(sub), Some(&dev)), "load {sub}");
-            assert!(navigation_allowed(&url(sub), Some(&dev)), "navigate {sub}");
-        }
-        // Release: no http app origin.
-        assert!(allowed(&url("http://localhost:1420/"), None));
-        assert!(navigation_allowed(
-            &url("blob:http://localhost:1420/0b8e"),
-            None
-        ));
     }
 
     #[test]

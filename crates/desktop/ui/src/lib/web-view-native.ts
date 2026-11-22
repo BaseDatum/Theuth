@@ -1,6 +1,6 @@
-// The shell's child web views (205 §4.3): every `invoke`/`listen` for them lives here, so tests mock one module and a
-// container without the native layer (a browser, the iOS shell) never reaches Tauri. Coordinates are logical px
-// relative to the window's content area: the placeholder's `getBoundingClientRect()`.
+// The shell's native web views (205 §4.3, §9): every `invoke`/`listen` for them lives here, so tests mock one module
+// and a container without the native layer (a browser) never reaches Tauri. Coordinates are logical px relative to the
+// window's content area: the placeholder's `getBoundingClientRect()`.
 //
 // Tauri runs async commands concurrently, so calls for one label are serialised here on one promise chain, in issue
 // order; a rejected call does not break the chain. Visibility and bounds are desired state: a call records it and the
@@ -9,7 +9,8 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { isDesktop } from '@/lib/platform'
+import { container, isDesktop } from '@/lib/platform'
+import type { Cookie } from '@/lib/web-profile-wire'
 
 /** A rectangle in logical px, viewport-relative. */
 export type Rect = { x: number; y: number; width: number; height: number }
@@ -17,9 +18,12 @@ export type Rect = { x: number; y: number; width: number; height: number }
 export type WebViewState = { label: string; url: string; title: string; loading: boolean }
 /** `web-view://closed`: the view was destroyed (`web_view_close`, or its window closed). */
 export type WebViewClosed = { label: string }
+/** `web_storage_capture`: the top-level origin's localStorage, read in the isolated world (209 §4.5). */
+export type StorageCapture = { origin: string; local_storage: [string, string][] }
 
-/** Only a desktop shell hosts child web views (205 D2, D7); the iOS shell and a browser get the address card. */
-export const nativeWebViews = (): boolean => isDesktop()
+/** A desktop shell (child webviews, 205 D2) and the iOS shell (a raw `WKWebView` over the tile, 205 §9) host web views;
+ * a browser gets the address card (205 D7). */
+export const nativeWebViews = (): boolean => isDesktop() || container() === 'ios'
 
 /** The shell's label for frame `id` (205 D3). */
 export const webLabel = (id: string): string => `web-${id}`
@@ -30,6 +34,9 @@ export const labelId = (label: string): string => label.replace(/^web-/, '')
 type State = { owned: boolean; visible: boolean; rect: Rect; sent: { visible: boolean; rect: Rect | null } }
 const states = new Map<string, State>()
 const chains = new Map<string, Promise<unknown>>()
+/** Views whose last attach landed in this window and that were not closed or taken since (209 §4.7): a frame that
+ * unmounted leaves its view here, hidden, and still drivable. */
+const held = new Set<string>()
 
 /** Run `step` after every earlier call for `label`; its result (or rejection) is the caller's, never the chain's. */
 function queue<T>(label: string, step: () => Promise<T>): Promise<T> {
@@ -71,7 +78,13 @@ export function attach(id: string, url: string, r: Rect): Promise<void> {
   states.set(label, s)
   return queue(label, async () => {
     const at = s.rect
-    await invoke<void>('web_view_attach', { label, url, x: at.x, y: at.y, width: at.width, height: at.height })
+    try {
+      await invoke<void>('web_view_attach', { label, url, x: at.x, y: at.y, width: at.width, height: at.height })
+    } catch (e) {
+      held.delete(label)
+      throw e
+    }
+    held.add(label)
     if (states.get(label) !== s) return
     s.owned = true
     s.sent = { visible: true, rect: at }
@@ -84,6 +97,19 @@ export function bounds(id: string, r: Rect): Promise<void> {
   if (!nativeWebViews() || !s) return Promise.resolve()
   s.rect = r
   return queue(webLabel(id), () => apply(webLabel(id)))
+}
+
+/** `bounds`, sent even when the shell already has `r`: the iOS shell converts the rectangle through its scroll view's
+ * content offset, which a page scroll or the keyboard moves without the placeholder's rectangle changing (209 §7). */
+export function reframe(id: string, r: Rect): Promise<void> {
+  const label = webLabel(id)
+  const s = states.get(label)
+  if (!nativeWebViews() || !s) return Promise.resolve()
+  s.rect = r
+  return queue(label, () => {
+    s.sent.rect = null
+    return apply(label)
+  })
 }
 
 export function visible(id: string, show: boolean): Promise<void> {
@@ -115,16 +141,58 @@ const call = (id: string, cmd: string, args: Record<string, unknown> = {}): Prom
 export const navigate = (id: string, url: string): Promise<void> => call(id, 'web_view_navigate', { url })
 export const reload = (id: string): Promise<void> => call(id, 'web_view_reload')
 export const history = (id: string, delta: -1 | 1): Promise<void> => call(id, 'web_view_history', { delta })
-/** Destroy the view, after every call issued before it. */
+/** Set by the profile sync (209 §4.5): gets the view's localStorage just before it is destroyed. */
+let beforeClose: ((s: StorageCapture) => void) | null = null
+/** Capture each view's storage before `close` destroys it; returns the unregister. */
+export function onBeforeClose(cb: (s: StorageCapture) => void): () => void {
+  beforeClose = cb
+  return () => {
+    if (beforeClose === cb) beforeClose = null
+  }
+}
+/** Destroy the view, after every call issued before it; a registered `onBeforeClose` gets its storage first. */
 export function close(id: string): Promise<void> {
   const label = webLabel(id)
   if (!nativeWebViews()) return Promise.resolve()
   // The state goes with the view, in order: calls issued before the close still apply first.
   return queue(label, async () => {
     states.delete(label)
+    held.delete(label)
+    const cb = beforeClose
+    if (cb) await invoke<StorageCapture>('web_storage_capture', { label }).then(cb, () => undefined)
     await invoke<void>('web_view_close', { label })
   })
 }
+
+/** `web_storage_capture` of frame `id`, in order with its other calls; rejects `no web view …` when it is gone. */
+export const captureStorage = (id: string): Promise<StorageCapture> =>
+  queue(webLabel(id), () => invoke<StorageCapture>('web_storage_capture', { label: webLabel(id) }))
+/** This window holds `web-<id>`: its last attach landed here, and it was neither closed nor gone since (209 §4.7). */
+export const holds = (id: string): boolean => nativeWebViews() && held.has(webLabel(id))
+/** `web-view://closed` for `label`, or another window took the view: this window no longer holds it. */
+export const release = (label: string): void => void held.delete(label)
+/** `web_view_call`: run one tile op (209 §4.7) in `web-<id>`; its JSON, or `{ png }` for `snapshot`. Not queued behind
+ * the frame's bounds and visibility calls: an agent's wait must not freeze the tile's layout. */
+export const viewCall = (id: string, op: string, args: unknown): Promise<unknown> =>
+  invoke<unknown>('web_view_call', { label: webLabel(id), op, args })
+/** `web_profile_read`: every cookie of this device's tile store (209 §4.5). */
+export const readProfile = (): Promise<Cookie[]> => invoke<Cookie[]>('web_profile_read')
+/** One origin's localStorage for `web_profile_write`: applied only to open tiles whose top-level origin it is. */
+export type StorageWrite = { origin: string; local_storage: [string, string][] }
+/** What `web_profile_write` answers: cookies WebKit reported set and store cookies it reported removed, cookies of
+ * `set` it refused (`skipped`), per http(s) origin of `storage` how many open tiles took the snapshot
+ * (`storage_applied`; 0: no tile of it open), and `timed_out` when WebKit had not answered every call within 5 s
+ * (part of the plan may have been applied: re-read the store). */
+export type Written = { set: number; removed: number; skipped: number; storage_applied: Record<string, number>; timed_out: boolean }
+/** `web_profile_write`: set and remove cookies of this device's tile store, and apply localStorage snapshots to the
+ * open tiles of their origins (209 §4.5, P2). */
+export const writeProfile = (set: Cookie[], remove: Pick<Cookie, 'name' | 'domain' | 'path'>[], storage: StorageWrite[] = []): Promise<Written> =>
+  invoke<Written>('web_profile_write', storage.length > 0 ? { set, remove, storage } : { set, remove })
+/** `web_profile_clear`: empty the tile store (sign out everywhere happened elsewhere, 209 §4.4). */
+export const clearProfile = (): Promise<void> => invoke<void>('web_profile_clear')
+/** `web-profile://changed`: the tile store changed (debounced 2 s in the shell); a no-op outside the shell. */
+export const onProfileChanged = (cb: () => void): Promise<() => void> =>
+  nativeWebViews() ? listen('web-profile://changed', () => cb()) : Promise.resolve(() => {})
 
 /** `web-view://state` for every frame; a no-op outside the shell. */
 export const onState = (cb: (s: WebViewState) => void): Promise<() => void> =>

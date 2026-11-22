@@ -8,6 +8,9 @@ import { type Box, isDraft, isFrame, layout, type Layout, leaves, newDraft, show
 import { closeAllTiles } from '@/lib/tiles'
 import { clampRatio, RATIO_MAX, RATIO_MIN, RATIO_STEP } from '@/lib/resize-drag'
 import { cn } from '@/lib/utils'
+import { crossLayout } from '@/lib/web-arrival'
+import { useWebViews } from '@/lib/web-views'
+import { PhoneWebView } from '@/components/chat/PhoneWebView'
 
 /**
  * Drag a sidebar row onto a chat pane (`usePressDrag` owns the gesture and its DOM glue). Spread the result on the
@@ -56,8 +59,9 @@ export function DragOverlay() {
  * selected only — the URL stays on the chat. The selected pane is lit, the others dim. A press on a control in a chat
  * while a frame is selected changes nothing, so a surface that control opens takes over the selected frame's pane.
  * `tiles`: the layout tiles (not a phone), so the subtree's surfaces open as tiles beside this leaf (`useTileHost`).
- * `box`: where it sits in the panes area, in percent. */
-function Leaf({ session, first, tiles, box, render }: { session: string; first: boolean; tiles: boolean; box: Box; render(session: string, first: boolean): ReactNode }) {
+ * `box`: where it sits in the panes area, in percent. `covered`: a phone page is full screen over it (209 §7), so it is
+ * `inert`: out of the tab order and the accessibility tree, as under a modal. */
+function Leaf({ session, first, tiles, box, covered, render }: { session: string; first: boolean; tiles: boolean; box: Box; covered: boolean; render(session: string, first: boolean): ReactNode }) {
   const navigate = useNavigate()
   const focused = usePanes((s) => s.focused)
   const lit = usePanes((s) => (s.selected !== null && s.root !== null && leaves(s.root).includes(s.selected) ? s.selected : s.focused))
@@ -65,6 +69,7 @@ function Leaf({ session, first, tiles, box, render }: { session: string; first: 
   return (
     <div
       data-pane={session}
+      inert={covered}
       className={cn('absolute flex min-h-0 min-w-0 flex-col', split && lit !== session && 'opacity-80')}
       style={{ left: `${box.left}%`, top: `${box.top}%`, width: `${box.width}%`, height: `${box.height}%` }}
       onPointerDownCapture={(e) => {
@@ -143,26 +148,40 @@ function SplitDivider({ split: s, area }: { split: Layout['splits'][number]; are
  * remounts another pane (a terminal, a VNC session, a composer keep their state); dividers are laid over the lines.
  * A phone (`isMobile`) does not tile (25 §12.3): whatever the tree holds, the focused leaf alone fills the screen as
  * `first`, so its header always carries the sidebar toggle — the Sheet's only opener. Crossing into the phone layout
- * closes the generic tiles (their surfaces open as sheets there), so widening again shows a consistent tree.
+ * closes the generic tiles (their surfaces open as sheets there), so widening again shows a consistent tree, and puts
+ * the web tiles into the pill; a phone shows a web page full screen over the chat (`PhoneWebView`, 209 §7), which
+ * becomes a tile beside its chat when the layout widens (`crossLayout`). That page belongs to its chat: a route to
+ * another chat (a link, a notification, the agent showing another chat's page) puts it into the pill, and while it
+ * shows the panes under it are `inert`.
  */
 export function Panes({ session, render }: { session: string; render(session: string, first: boolean): ReactNode }) {
   const root = usePanes((s) => s.root)
   const focused = usePanes((s) => s.focused)
   const { isMobile } = useSidebar()
   const area = useRef<HTMLDivElement>(null)
+  const covered = useWebViews((s) => isMobile && s.front !== null && s.views[s.front] !== undefined)
+  // The route's chat at the crossing, not on every navigation: `session` is read, not a dependency.
   useEffect(() => {
     if (isMobile) closeAllTiles()
+    crossLayout(isMobile, session)
   }, [isMobile])
+  // On mount too: a page left full screen when the panes unmounted (Settings) must not reappear over another chat.
+  useEffect(() => {
+    const { front, views, minimise } = useWebViews.getState()
+    const view = front === null ? undefined : views[front]
+    if (view && view.session !== session) minimise(view.id)
+  }, [session])
   const full: Box = { left: 0, top: 0, width: 100, height: 100 }
   const { leaves, splits } = isMobile ? { leaves: [{ session: shown(root, focused, session), box: full, first: true }], splits: [] } : layout(root ?? { session })
   return (
     <div ref={area} className="relative min-h-0 min-w-0 flex-1">
       {leaves.map((l) => (
-        <Leaf key={l.session} session={l.session} first={l.first} tiles={!isMobile} box={l.box} render={render} />
+        <Leaf key={l.session} session={l.session} first={l.first} tiles={!isMobile} box={l.box} covered={covered} render={render} />
       ))}
       {splits.map((s) => (
         <SplitDivider key={`split:${s.path.join('')}`} split={s} area={area} />
       ))}
+      {isMobile && <PhoneWebView />}
     </div>
   )
 }

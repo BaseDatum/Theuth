@@ -387,6 +387,23 @@ pub trait Tool: Send + Sync + 'static {
         true
     }
 
+    /// Whether [`Tool::credentialed`] can ever answer `true` for this tool
+    /// (209 D14): only then are a call's arguments deserialised to ask it, so
+    /// every other tool's call costs nothing. Default `false`.
+    const CREDENTIALED: bool = false;
+
+    /// Whether this call acts with the user's credentials: the browser
+    /// tools answer `true` for an acting call on a site whose sign-in came
+    /// from the shared browser profile, or on the user's own tile (209 D14,
+    /// §9). The registry then gates the call as at least
+    /// [`Risk::Mutating`], so a session capped at `read_only` is refused and
+    /// the policy for mutating calls applies. Must be cheap and synchronous;
+    /// default `false`. Asked only when [`Tool::CREDENTIALED`] is set.
+    fn credentialed(&self, session: SessionId, args: &Self::Args) -> bool {
+        let _ = (session, args);
+        false
+    }
+
     /// Run it.
     async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput>;
 }
@@ -420,6 +437,13 @@ pub trait ErasedTool: Send + Sync + 'static {
     fn promotable(&self) -> bool {
         true
     }
+    /// [`Tool::credentialed`] on raw args (209 §9); args that do not parse
+    /// are not credentialed (the call fails on them anyway). MCP tools keep
+    /// the default `false`.
+    fn credentialed(&self, session: SessionId, args: &serde_json::Value) -> bool {
+        let _ = (session, args);
+        false
+    }
     /// Invoke with raw args.
     fn call(
         &self,
@@ -446,6 +470,12 @@ impl<T: Tool> ErasedTool for T {
 
     fn promotable(&self) -> bool {
         Tool::promotable(self)
+    }
+
+    fn credentialed(&self, session: SessionId, args: &serde_json::Value) -> bool {
+        T::CREDENTIALED
+            && <T::Args as serde::Deserialize>::deserialize(args)
+                .is_ok_and(|a| Tool::credentialed(self, session, &a))
     }
 
     fn call(

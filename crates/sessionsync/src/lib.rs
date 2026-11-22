@@ -366,7 +366,8 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
             // Declared by the cell owner, not by this transport adapter.
             "CellEvent" => Some("cells.events"),
             "FollowState" => Some(events::FollowState::TOPIC),
-            _ => None,
+            // 209 §4.4: declared by their owner (`artifact`).
+            other => events::wire_topic(other),
         };
         let event = relayed.event.clone();
         Ok(Some(match topic {

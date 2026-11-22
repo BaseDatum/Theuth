@@ -1381,6 +1381,7 @@ export function Composer({
       {strip}
       <div
         ref={box}
+        data-composer=""
         className="relative rounded-[28px] border border-border-subtle bg-elevated px-2 py-[7px] shadow-sm"
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}

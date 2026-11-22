@@ -5,10 +5,15 @@
 //! rendered: true` works keyless. [`warmup`] runs on the main thread before
 //! plugins start (23 §3.1). Frontends poll [`Screenshot`] for a live view of
 //! a session's page; [`BrowserEvent::ShowLive`] asks the desktop to open it.
+//! [`profile`] carries the shared browser profile (209): `tools::Ctx` loads
+//! it into a session's isolate, and every isolate drop saves its delta first.
+//! [`tile`] is the tools' second target, the user's web view tile (209 D8).
 
+pub mod profile;
 pub mod render;
 pub mod session;
 pub mod systemone;
+pub mod tile;
 pub mod tools;
 
 use std::collections::{HashMap, HashSet};
@@ -156,6 +161,9 @@ pub struct Browsers {
     /// Sessions that ran `browser_run` and are still in a turn / open (57 §2.1): while any
     /// is here the browser checkpoint stays resident; the last one leaving releases it.
     systemone: HashSet<SessionId>,
+    /// The worker that runs [`profile::changed`] for each `WebProfileChanged`, in order and off
+    /// this actor's turn (it reads the profile back); started on the first event.
+    profile_events: Option<tokio::sync::mpsc::UnboundedSender<webprofile::WebProfileChanged>>,
 }
 
 impl Browsers {
@@ -165,6 +173,7 @@ impl Browsers {
             cfg,
             sessions: HashMap::new(),
             systemone: HashSet::new(),
+            profile_events: None,
         }
     }
 
@@ -179,6 +188,8 @@ impl Browsers {
         if handle.is_closed() {
             tracing::warn!(%session, "browser thread gone, spawning a fresh one");
             *handle = session::spawn(cfg);
+            // The new isolate holds nothing: the next tool call loads the profile again.
+            profile::take(session);
         }
         *last_used = Instant::now();
         handle.clone()
@@ -204,10 +215,19 @@ impl Browsers {
         }
     }
 
-    /// Drop `session`'s isolate (if any) and its System-1 claim.
+    /// Drop `session`'s isolate (if any) and its System-1 claim. A session with the shared
+    /// profile loaded saves its delta first (209 D4): the export runs on a clone of the handle,
+    /// bounded by [`profile::DROP_EXPORT_WAIT`], and the clone goes right after it, so the thread
+    /// ends (and a `CloseTree` ack comes) at most that much later; the push runs after.
     fn drop_session(&mut self, session: SessionId) -> Option<session::Handle> {
         self.systemone_done(session, "browser session closed");
-        self.sessions.remove(&session).map(|(h, _)| h)
+        let handle = self.sessions.remove(&session).map(|(h, _)| h);
+        if let Some(loaded) = profile::take(session)
+            && let Some(h) = handle.as_ref().filter(|h| !h.is_closed())
+        {
+            tokio::spawn(profile::save_dropped(session, h.clone(), loaded));
+        }
+        handle
     }
 }
 
@@ -289,13 +309,15 @@ pub(crate) fn image_data(result: &Value) -> Option<&str> {
         .as_str()
 }
 
-/// Internal tick: drop handles idle longer than `idle_secs`.
+/// `tell`: drop handles idle longer than `idle_secs` (the plugin sends it every
+/// 30 s); a session with the shared profile saves first (209 D4).
 #[derive(Clone, Copy, Debug)]
-struct Sweep;
+pub struct Sweep;
 
-/// Internal: `rt.shutdown` fired, drop every isolate.
+/// `tell`: drop every isolate (the plugin sends it when `rt.shutdown` fires); a session with the
+/// shared profile saves first (209 D4).
 #[derive(Clone, Copy, Debug)]
-struct CloseAll;
+pub struct CloseAll;
 
 impl Message<Tracked<Call>> for Browsers {
     type Reply = DelegatedReply<Result<Value, String>>;
@@ -388,10 +410,28 @@ impl Message<SystemOne> for Browsers {
 impl Message<agent::AgentEvent> for Browsers {
     type Reply = ();
 
+    /// 57 §2.1: a turn ending releases the browser checkpoint. 209 §4.6: a deleted session's
+    /// tile target goes.
     async fn handle(&mut self, e: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
-        if let agent::AgentEvent::TurnFinished { session, .. } = e {
-            self.systemone_done(session, "turn finished");
+        match e {
+            agent::AgentEvent::TurnFinished { session, .. } => {
+                self.systemone_done(session, "turn finished");
+            }
+            agent::AgentEvent::SessionDeleted { session } => tile::forget(&[session]),
+            _ => {}
         }
+    }
+}
+
+impl Message<webprofile::WebProfileChanged> for Browsers {
+    type Reply = ();
+
+    /// 209 D14, §6: a site written to the profile makes acting calls on it credentialed; a site
+    /// forgotten, or a sign out everywhere, leaves the known sites and every session's isolate
+    /// before that session's next call ([`profile::changed`]). Here or on another engine. The
+    /// read-back runs on the actor's event worker, never awaited here.
+    async fn handle(&mut self, e: webprofile::WebProfileChanged, _: &mut Context<Self, Self::Reply>) {
+        profile::changed_later(&mut self.profile_events, e);
     }
 }
 
@@ -432,6 +472,7 @@ impl Message<CloseTree> for Browsers {
         // command channel. The thread (and with it the isolate's cookie jar
         // and storage) ends once any in-flight command finishes; we wait for
         // that off the mailbox, bounded, so a hung page cannot stall the ack.
+        tile::forget(&m.subtree);
         let exits: Vec<_> = m
             .subtree
             .iter()
@@ -464,6 +505,14 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Subscribe `actor` to the bus events it handles (the plugin does this at start): `AgentEvent`
+/// (57 §2.1, a turn ending releases the browser checkpoint) and `WebProfileChanged` (209 §6, a
+/// forget or sign out everywhere, local or replicated, reaches live isolates).
+pub async fn subscribe(rt: &Runtime, actor: &kameo::actor::ActorRef<Browsers>) {
+    rt.subscribe::<Browsers, agent::AgentEvent>(actor).await;
+    rt.subscribe::<Browsers, webprofile::WebProfileChanged>(actor).await;
+}
+
 /// The plugin (23 §3.1): reads `browser`, runs the sweeper, spawns
 /// [`Browsers`] as [`BROWSER_ACTOR`], registers the tools once the registry
 /// is up and the render provider once `web` is up.
@@ -492,8 +541,8 @@ impl runtime::Plugin for BrowserPlugin {
         let actor =
             Browsers::spawn_with_mailbox(Browsers::new(cfg.clone()), runtime::subscriber_mailbox());
         actor.register(BROWSER_ACTOR)?;
-        // 57 §2.1: a turn ending releases the browser checkpoint its `browser_run` loaded.
-        rt.subscribe::<Browsers, agent::AgentEvent>(&actor).await;
+        subscribe(rt, &actor).await;
+        tokio::spawn(profile::learn_sites());
 
         let sweeper = actor.clone();
         tokio::spawn(async move {

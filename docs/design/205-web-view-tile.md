@@ -187,3 +187,69 @@ main webview, `hide`/`show`, `reparent` keeping the page, `on_new_window` and ti
 and the copied `asset:` handler are read from source only. The separate data store needs macOS 14 or later;
 older systems share the default store. Deleting the chat named in the URL while a web tile sits beside it is
 untested.
+
+## 9. iOS shell (2026-11-21)
+
+Replaces D7 for the iOS shell on iPad: the tile hosts a native page there too. The web client keeps the
+address card, and so does the phone, which does not tile (D5): its card offers **Open in browser** only.
+
+**What was built.** `crates/desktop/src/ios_webview.rs` implements the seven §4.3 commands with the same
+names, arguments, error strings and events. Tauri cannot add a child webview on iOS (`Window::add_child` is
+desktop-only, wry's `build_as_child` is unsupported there), so each `web-<id>` is a raw `WKWebView` built
+through UIKit (objc2): a sibling of Tauri's `WKWebView`, inserted directly above it in the same superview, framed
+at the placeholder's rectangle converted through Tauri's scroll view (`zoomScale`, content offset and insets),
+clipped to it. All UIKit work runs on the main thread (`Webview::with_webview`); views and their delegates live in a
+main-thread registry. The pure rules (label, allowlist, throttle, error prefixes, data store identifier) moved to
+`crates/desktop/src/web_rules.rs`, shared with the desktop's `webview.rs`. `nativeWebViews()` is true in the iOS
+container (`lib/web-view-native.ts`); the pop-out button was already absent there (`canPopout()`).
+
+**Isolation.** Each view has its own `WKWebViewConfiguration` with the persistent data store of the desktop's
+identifier (`dataStoreForIdentifier:`, iOS 17+; the app's minimum is 17.4) and nothing else: no script message
+handler, no URL scheme handler, no user script. It is not a Tauri webview, so it has no IPC, no `tauri:`/`asset:`/
+`theuth-page:` scheme and no plugin init scripts; the desktop's IPC fence, `asset` check and links script have no
+counterpart and are not needed.
+
+**Differences from the desktop.**
+- Navigation policy (`decidePolicyForNavigationAction`): the main frame passes `allowed()` only (http/https,
+  never an app origin); subframes pass `navigation_allowed()` (adds `about:blank`/`srcdoc`, `data:`, `blob:`).
+  The desktop applies `navigation_allowed()` to every frame.
+- New-window requests have one owner, `createWebViewWithConfiguration…`: it opens the URL with
+  `UIApplication openURL:options:completionHandler:` (http/https, one per second per view) and returns nil. The
+  navigation policy allows a navigation without a target frame (`target=_blank`) so that WebKit reaches it, and
+  opens nothing itself. `javaScriptCanOpenWindowsAutomatically` is set (iOS defaults to NO, which drops a
+  `window.open` outside a user gesture without any delegate call). No links script is needed: no opener plugin
+  script swallows the click.
+- A main-frame response WebKit cannot show (`canShowMIMEType` false, or `Content-Disposition: attachment`) is
+  cancelled in `decidePolicyForNavigationResponse` and opened in the system browser under the same throttle.
+- JavaScript `alert`, `confirm` and `prompt` are `UIAlertController`s titled with the asking frame's host,
+  presented from the top-most view controller of the view's window. Each completion handler is called exactly
+  once: by the tapped action, or with the default (`alert` returns, `confirm` false, `prompt` nil) when the alert
+  cannot be presented or goes away unanswered.
+- `webViewWebContentProcessDidTerminate` reloads the page and publishes state (`loading: true`).
+- `web_view_history` calls `goBack`/`goForward` instead of evaluating `history.back()`; a missing label is
+  `no web view` before the delta is checked, as on the desktop.
+- State events: the policy's allowing a main-frame navigation publishes its target URL; navigation start and
+  commit (`loading: true`), finish and failure (`loading: false`), and KVO on `title` and `URL` (title changes and
+  `pushState` without a navigation). Until the navigation commits, payloads carry that target URL; after a
+  provisional failure they keep it (the address field shows what failed, as on the desktop) until the view's own
+  URL changes outside a load. Otherwise URL and title are read from the view at that moment.
+- Commands wait at most 5 s for the main thread (`the main thread did not run the web view call within 5 s`).
+- One window: no reparenting, `in-popout` is unreachable, no `web-view://closed` from a window closing.
+- The view is not inside the DOM, so the occlusion rules of §4.4 (hide under dialogs, sheets, menus) apply
+  unchanged; the iPad sidebar is inline at tile widths, and as a sheet it is a `role="dialog"` overlay.
+
+**Review round.** `objc2-web-kit` 0.3.2 declares the delegate protocols' methods for macOS only, so the
+compiler checks none of the delegate selectors or signatures on iOS; a debug assertion at creation checks that
+the delegate answers `respondsToSelector:` for each of the twelve it implements. The KVO registrations carry a
+context pointer of their own and the observer ignores any other. A view replaced under the same label is
+destroyed (observers removed, delegates cleared, off screen) rather than dropped. Not done: nothing re-derives a
+view's frame when the app's geometry changes without the placeholder's CSS rectangle changing (Stage Manager
+resize, rotation changing the safe-area insets); the frame follows only the UI's `web_view_bounds` calls.
+
+**Not verified.** Proven on the iPad simulator only. After the review round, seen there: the address field shows
+a slow page's target while it loads; `alert`, `confirm` (OK → `true`) and `prompt` (OK → the field's text,
+Cancel → `null`) as native alerts over the tile; a `window.open` two seconds after a page load with no tap, a
+`target=_blank` link and a `Content-Disposition: attachment` response each open Safari once, the tile keeping its
+page. Untested: the content-process reload (no way to kill the process on demand), the 5 s timeout, the
+replaced-view path (not reachable from the UI), rotation, Stage Manager window resizing, the on-screen keyboard
+shifting Tauri's scroll view while a tile shows, memory with several views, and a real device.

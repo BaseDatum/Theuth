@@ -1424,14 +1424,19 @@ impl ToolRegistry {
         }
     }
 
-    /// Spec, origin, identity and effective action of one tool.
+    /// Spec, origin, identity and effective action of one tool; `risk` is
+    /// the call's risk when args were given ([`call_risk`]), else the spec's.
     fn inspect(
         &self,
         tool: &DynTool,
         session: Option<SessionId>,
         mentions: bool,
+        risk: Option<Risk>,
     ) -> ToolInspection {
-        let spec = tool.spec();
+        let mut spec = tool.spec();
+        if let Some(risk) = risk {
+            spec.risk = risk;
+        }
         ToolInspection {
             action: self.effective(session, &spec.name, spec.risk, mentions),
             identity: identity(tool, &spec),
@@ -1460,7 +1465,7 @@ impl ToolRegistry {
         let admitted = self
             .admit(call.session, name)
             .map_err(|why| Unavailable(format!("{name}: {}: {why}", communication::DISABLED)))?;
-        let spec = tool.spec();
+        let mut spec = tool.spec();
         if identity(&tool, &spec) != expected_identity {
             return Err(Unavailable(format!(
                 "{name}: tool identity changed since the app was published; republish to rebind"
@@ -1482,6 +1487,8 @@ impl ToolRegistry {
             )));
         }
         let mentions = mentions(&tool, &call.args);
+        // The identity above binds the declared spec; the gate sees the call's risk.
+        spec.risk = call_risk(&tool, call.session, spec.risk, &call.args);
         match self.effective(Some(call.session), name, spec.risk, mentions) {
             PolicyAction::Allow => {}
             PolicyAction::Deny => {
@@ -1614,7 +1621,11 @@ impl Message<InspectTool> for ToolRegistry {
             .visible(m.session, &m.name, false)
             .ok_or_else(|| format!("unknown tool: {}", m.name))?;
         let mentions = m.args.as_ref().is_some_and(|a| mentions(&tool, a));
-        Ok(self.inspect(&tool, Some(m.session), mentions))
+        let risk = m
+            .args
+            .as_ref()
+            .map(|a| call_risk(&tool, m.session, tool.spec().risk, a));
+        Ok(self.inspect(&tool, Some(m.session), mentions, risk))
     }
 }
 
@@ -1630,7 +1641,7 @@ impl Message<DescribeTools> for ToolRegistry {
             .tools
             .iter()
             .filter(|(name, _)| !session.is_some_and(|s| self.is_hidden(s, name)))
-            .map(|(_, t)| self.inspect(t, session, false))
+            .map(|(_, t)| self.inspect(t, session, false, None))
             .filter(|i| session.is_none_or(|s| self.capped(s, &i.spec.name, i.spec.risk).is_none()))
             .collect();
         out.sort_by(|a, b| a.spec.name.cmp(&b.spec.name));
@@ -2195,7 +2206,7 @@ impl ToolRegistry {
         if self.contact_scoped(call.session) {
             bound_for_contact(&call.name, &mut call.args);
         }
-        let spec = tool.spec();
+        let mut spec = tool.spec();
         // Availability before permission (50 §0.5): a gated tool that is off
         // does not exist for this session, so no approval card is ever shown.
         let admitted = match self.admit(call.session, &call.name) {
@@ -2206,6 +2217,8 @@ impl ToolRegistry {
             }
         };
         let mentions = mentions(&tool, &call.args);
+        // 209 D14: the approval card and the gate both see the call's risk.
+        spec.risk = call_risk(&tool, call.session, spec.risk, &call.args);
         let approval = match self.gate(call.session, &call.name, spec.risk, mentions) {
             Ok(a) => a,
             Err(why) => {
@@ -2256,6 +2269,18 @@ fn bound_for_contact(name: &str, args: &mut serde_json::Value) {
 /// stores its arguments as data the placeholder is the data.
 fn mentions(tool: &DynTool, args: &serde_json::Value) -> bool {
     tool.consumes_secrets() && crate::secrets::mentions(args)
+}
+
+/// The risk one call is gated at (209 D14, §9): a credentialed call
+/// ([`crate::ErasedTool::credentialed`]) is at least `Mutating`, so the cap
+/// check and the policy both see it. Only asked of tools declared below
+/// `Mutating`, where the answer can change anything.
+fn call_risk(tool: &DynTool, session: SessionId, risk: Risk, args: &serde_json::Value) -> Risk {
+    if risk < Risk::Mutating && tool.credentialed(session, args) {
+        Risk::Mutating
+    } else {
+        risk
+    }
 }
 
 /// The binding an app holds a tool to: sha256 hex over the canonical JSON
@@ -3670,6 +3695,85 @@ pub(crate) mod tests {
                 .unwrap()
                 .is_error
         );
+    }
+
+    /// A `ReadOnly` tool whose call is credentialed when its args say
+    /// `"signed": true`, like a browser click on a profile site (209 D14).
+    struct SignedIn;
+
+    #[async_trait::async_trait]
+    impl Tool for SignedIn {
+        const NAME: &'static str = "signed_in";
+        const RISK: Risk = Risk::ReadOnly;
+        const CREDENTIALED: bool = true;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        fn credentialed(&self, _: SessionId, args: &Self::Args) -> bool {
+            args["signed"] == true
+        }
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok("acted"))
+        }
+    }
+
+    /// 209 D14: a credentialed call is gated as `Mutating` (inspection and
+    /// policy see it), a session capped at `read_only` is refused it with
+    /// the cap's text, and the same tool's uncredentialed calls stay
+    /// `ReadOnly` and run.
+    #[tokio::test]
+    async fn credentialed_call_is_raised_to_mutating_and_a_read_only_cap_denies_it() {
+        let policy = Policy {
+            read_only: PolicyAction::Allow,
+            mutating: PolicyAction::Ask,
+            destructive: PolicyAction::Deny,
+        };
+        let reg = registry_with(vec![Arc::new(SignedIn)], None, policy, None);
+        let (parent, child) = (SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent,
+        })
+        .await
+        .unwrap();
+        let with = |session, signed: bool| ToolCall {
+            args: serde_json::json!({ "signed": signed }),
+            ..call("signed_in", session)
+        };
+        let inspect = |signed: bool| InspectTool {
+            session: parent,
+            name: "signed_in".into(),
+            args: Some(serde_json::json!({ "signed": signed })),
+        };
+
+        let raised = reg.ask(inspect(true)).await.unwrap();
+        assert_eq!(raised.spec.risk, Risk::Mutating);
+        assert_eq!(raised.action, PolicyAction::Ask);
+        let plain = reg.ask(inspect(false)).await.unwrap();
+        assert_eq!(plain.spec.risk, Risk::ReadOnly);
+        assert_eq!(plain.action, PolicyAction::Allow);
+
+        // Uncapped: the credentialed call asks (no approval actor here, so
+        // it fails asking); the plain one runs.
+        let out = reg.ask(Invoke(with(parent, true))).await.unwrap();
+        assert!(out.is_error && out.content.contains("approval"), "{out:?}");
+        let out = reg.ask(Invoke(with(parent, false))).await.unwrap();
+        assert_eq!(out.content, "acted");
+
+        reg.tell(SetCap {
+            session: child,
+            cap: Some(Risk::ReadOnly),
+        })
+        .await
+        .unwrap();
+        let out = reg.ask(Invoke(with(child, true))).await.unwrap();
+        assert_eq!(
+            out.content,
+            "signed_in: denied: subagent is capped at read_only"
+        );
+        let out = reg.ask(Invoke(with(child, false))).await.unwrap();
+        assert_eq!(out.content, "acted");
     }
 
     /// Journal that records every `approvals` write.

@@ -36,6 +36,7 @@ sessionsync = { workspace = true }
 mesh = { workspace = true }
 tasks = { workspace = true }
 roster = { workspace = true }
+webprofile = { workspace = true }
 sandbox = { workspace = true }
 async-trait = { workspace = true }
 a2a = { workspace = true }

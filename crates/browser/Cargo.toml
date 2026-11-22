@@ -31,6 +31,9 @@ uuid = { workspace = true }
 url = { workspace = true }
 iana-time-zone = { workspace = true }
 unjar = { workspace = true }
+webprofile = { workspace = true }
+# 209 D8: the tile target's round trip (`WebViewCallRequested` / `answer_web_view_call`).
+artifact = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [features]
@@ -42,4 +45,7 @@ workspace = true
 [dev-dependencies]
 figment = { workspace = true }
 tempfile = "3"
+secrets = { workspace = true }
 tracing-subscriber = { workspace = true }
+jsonrpsee = { workspace = true }
+rpc-core = { workspace = true }

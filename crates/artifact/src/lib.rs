@@ -58,7 +58,10 @@ pub use store::{
 };
 pub use svg::Raster;
 pub use tools::ShowArgs;
-pub use webview::{ShowWebArgs, ShowWebTool, WebViewOpened};
+pub use webview::{
+    ShowWebArgs, ShowWebTool, WebViewCallAnswer, WebViewCallId, WebViewCallRequested,
+    WebViewCallResolved, WebViewOp, WebViewOpened, WebViewState, WebViewStateReply, WebViewsTool,
+};
 
 /// Registry name of the [`ArtifactActor`].
 pub const ARTIFACT_ACTOR: &str = "artifact";
@@ -670,6 +673,8 @@ impl Message<agent::AgentEvent> for ArtifactActor {
         let agent::AgentEvent::SessionDeleted { session } = ev else {
             return;
         };
+        // 209 D9: what clients reported of the session's web view tiles goes with it.
+        webview::forget(&[session]);
         // A member of a closed private tree has nothing left; `state_for`
         // says so. Unknown ids are durable no-ops: the delete matches no rows.
         let Ok(state) = self.stores.state_for(session) else {
@@ -749,6 +754,7 @@ impl Message<::tools::CloseTree> for ArtifactActor {
         m: ::tools::CloseTree,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        webview::forget(&m.subtree);
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let stores = self.stores.clone();
@@ -779,6 +785,8 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     rt.register_wire_event::<preview::PagePreviewResolved>().await?;
     rt.register_wire_event::<snapshot::FenceSnapshotRequested>().await?;
     rt.register_wire_event::<snapshot::FenceSnapshotResolved>().await?;
+    rt.register_wire_event::<webview::WebViewCallRequested>().await?;
+    rt.register_wire_event::<webview::WebViewCallResolved>().await?;
     Ok(())
 }
 
@@ -804,6 +812,8 @@ impl runtime::Plugin for ArtifactPlugin {
         use wire::RuntimeWire as _;
         let feed_rt = rt.clone();
         preview::watch_feed(std::sync::Arc::new(move || feed_rt.wire_external_stream_count()));
+        // 209 D8: answers to tile calls relayed from another engine find their owner.
+        webview::watch_calls(rt);
         let cfg: ArtifactConfig = rt.section("artifact").unwrap_or_else(|e| {
             tracing::debug!("no [artifact] config section, using defaults: {e}");
             ArtifactConfig::default()
@@ -867,6 +877,9 @@ impl runtime::Plugin for ArtifactPlugin {
                     .ask(::tools::RegisterTool(Arc::new(webview::ShowWebTool {
                         rt: rt.clone(),
                     })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(webview::WebViewsTool)))
                     .await;
                 let _ = reg
                     .ask(::tools::RegisterTool(Arc::new(preview::PagePreviewTool {

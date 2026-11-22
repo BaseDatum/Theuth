@@ -9,6 +9,10 @@
 //! `UIBackgroundTask` so the relay socket survives the grace period. `main.rs`
 //! and the generated iOS bridge both enter at [`run`].
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod apple_cookies;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod apple_tile;
 #[cfg(desktop)]
 mod asset;
 mod commands;
@@ -16,6 +20,8 @@ mod commands;
 mod companion;
 #[cfg(target_os = "macos")]
 mod dock;
+#[cfg(target_os = "ios")]
+mod ios_webview;
 #[cfg(target_os = "ios")]
 mod ios_windowing;
 #[cfg(desktop)]
@@ -31,6 +37,8 @@ mod point;
 mod quit;
 #[cfg(desktop)]
 mod update;
+#[cfg(any(desktop, target_os = "ios"))]
+mod web_rules;
 #[cfg(desktop)]
 mod webview;
 
@@ -61,7 +69,12 @@ pub fn run() {
     ios_windowing::install();
     #[cfg(desktop)]
     app.run(|app, event| match event {
-        tauri::RunEvent::Exit => quit::on_exit(app),
+        tauri::RunEvent::Exit => {
+            // 209 §4.5: the tile store's cookie observer goes before WebKit does.
+            #[cfg(target_os = "macos")]
+            apple_cookies::unwatch(app);
+            quit::on_exit(app)
+        }
         // 166 D2: a Dock click.
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => dock::reopen(app),
@@ -97,7 +110,34 @@ mod mobile {
             .invoke_handler(tauri::generate_handler![
                 commands::connection,
                 crate::pages::page_put,
-                crate::pages::page_drop
+                crate::pages::page_drop,
+                // 205 §9: the web view tile's native layer, same contract as the desktop's.
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_attach,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_bounds,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_visible,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_navigate,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_reload,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_history,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_close,
+                // 209 §4.5: the tile store's cookies and a tile's localStorage.
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_profile_read,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_profile_write,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_profile_clear,
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_storage_capture,
+                // 209 §4.7: the agent's ops on a tile.
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_call
             ])
             .setup(|app| {
                 let builder =
@@ -148,6 +188,7 @@ mod mobile {
                 event: WindowEvent::Resumed | WindowEvent::Focused(true),
                 ..
             } => background::release(),
+            RunEvent::Exit => crate::apple_cookies::unwatch(app),
             _ => {}
         }
     }
@@ -327,6 +368,11 @@ mod desktop {
             crate::webview::web_view_reload,
             crate::webview::web_view_history,
             crate::webview::web_view_close,
+            crate::webview::web_profile_read,
+            crate::webview::web_profile_write,
+            crate::webview::web_profile_clear,
+            crate::webview::web_storage_capture,
+            crate::webview::web_view_call,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V reach the webview through it); GTK would paint it inside the window.
         #[cfg(target_os = "macos")]

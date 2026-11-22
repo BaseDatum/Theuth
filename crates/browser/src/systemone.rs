@@ -1272,6 +1272,13 @@ impl Tool for RunTool {
     }
 
     async fn call(&self, a: RunArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        // 209 §4.6: obscura-only; the loop's observe and acts would otherwise run on the user's tile.
+        if let Some((view, url)) = self.0.tile(cx.session) {
+            return Ok(ToolOutput::err(format!(
+                "{}\nbrowser_run drives only your own browser: browser_attach {{}} first, or act on the tile with browser_click / browser_fill.",
+                crate::tile::prefix(&view, &url)
+            )));
+        }
         // 57 §2.1: the browser checkpoint stays resident until this session's turn ends, it
         // calls `browser_close`, or its isolate goes (`Browsers::systemone_done`).
         let _ = self
