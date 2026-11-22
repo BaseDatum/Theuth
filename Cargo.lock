@@ -4085,7 +4085,7 @@ dependencies = [
 [[package]]
 name = "cosmic-text"
 version = "0.14.2"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "bitflags 2.13.2",
  "fontdb 0.16.2",
@@ -14492,7 +14492,7 @@ dependencies = [
 [[package]]
 name = "obscura-browser"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -14512,7 +14512,7 @@ dependencies = [
 [[package]]
 name = "obscura-dom"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "cssparser 0.34.0",
  "html5ever 0.39.0",
@@ -14527,7 +14527,7 @@ dependencies = [
 [[package]]
 name = "obscura-js"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -14561,7 +14561,7 @@ dependencies = [
 [[package]]
 name = "obscura-mcp"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -14578,7 +14578,7 @@ dependencies = [
 [[package]]
 name = "obscura-net"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "async-trait",
  "compression-codecs",
@@ -14601,7 +14601,7 @@ dependencies = [
 [[package]]
 name = "obscura-render"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",
@@ -14623,7 +14623,7 @@ dependencies = [
 [[package]]
 name = "obscura-ssrf"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 
 [[package]]
 name = "oci-client"
@@ -21387,7 +21387,7 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.12.1"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "arrayvec",
  "grid 1.0.1",
@@ -26192,7 +26192,7 @@ dependencies = [
 [[package]]
 name = "wreq-util"
 version = "3.0.0-rc.12"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-22#1c76fa7fe614946198b9c074b856939aa9cc5f91"
 dependencies = [
  "brotli",
  "flate2",
