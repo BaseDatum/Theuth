@@ -8,13 +8,14 @@ import { stopAgent, useHiddenAgents } from '@/lib/web-view-agent'
  * under a dialog, sheet or menu): a small banner at the top centre, over the session header, with its own Stop. It is
  * portalled to `<body>` above the modal layer (`z-50`) and takes its own pointer events, so a modal open over the tile
  * neither hides it nor makes Stop unreachable; a press on it does not reach the modal's outside-press handler. A frame
- * on screen shows its own bar instead (`WebFrame`).
+ * on screen shows its own bar instead (`WebFrame`). It sits below the top safe-area inset: on iPad the status bar
+ * there takes the taps, so a Stop under it could not be pressed.
  */
 export function AgentTileBanner() {
   const hidden = useHiddenAgents()
   if (hidden.length === 0) return null
   return createPortal(
-    <div className="pointer-events-auto fixed top-2 left-1/2 z-[60] flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-col gap-1" onPointerDown={(e) => e.stopPropagation()}>
+    <div className="pointer-events-auto fixed top-[max(0.5rem,env(safe-area-inset-top))] left-1/2 z-[60] flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-col gap-1" onPointerDown={(e) => e.stopPropagation()}>
       {hidden.map(({ id, host, stopping }) => {
         const text = `Agent is using ${host} in a hidden tile`
         return (
