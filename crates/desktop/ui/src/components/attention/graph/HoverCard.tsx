@@ -40,7 +40,7 @@ export function HoverCard({ node, attention, now, expiresAt }: { node: GraphNode
       </div>
       <p className="mt-2 font-medium" style={{ color: st.tone }}>
         {st.label}
-        <span className="font-normal text-fg-secondary"> · {statusText(node)}</span>
+        {statusText(node) !== st.label.toLowerCase() && <span className="font-normal text-fg-secondary"> · {statusText(node)}</span>}
       </p>
       {attention > 0 && (
         <p className="mt-1.5 flex items-center gap-1.5 font-medium text-danger">

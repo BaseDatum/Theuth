@@ -42,7 +42,7 @@ export type CanvasNode =
   | { type: 'fold'; id: string; pos: Pos; parent: string; count: number; dim: boolean }
 export type CanvasEdge =
   | { type: 'tree'; id: string; source: string; target: string; onPath: boolean; dim: boolean }
-  | { type: 'message'; id: string; source: string; target: string; sourceHandle: 'r' | 'b' | 'ts'; targetHandle: 'l' | 't'; fwd: number; back: number; count: number; active: boolean; animated: boolean; dim: boolean }
+  | { type: 'message'; id: string; source: string; target: string; sourceHandle: 'r' | 'ts'; targetHandle: 'l' | 't' | 'rt'; fwd: number; back: number; count: number; active: boolean; animated: boolean; dim: boolean }
 
 /** The flow-space box the canvas draws in: every node, plus the room message arcs take above their row. */
 export type Extent = { x: number; y: number; w: number; h: number }
@@ -113,7 +113,8 @@ export function canvasElements(state: GraphState, view: VisibleGraph, highlight:
     const b = pos.get(e.edge.b)
     if (!a || !b) continue
     // Same row with room for a card between them: an arc over the row (top → top), never through the cards between.
-    // Otherwise side handles when the ends sit apart horizontally, bottom → top when one is above the other.
+    // Otherwise side handles when the ends sit apart horizontally; one above the other (a parent and its child, whose
+    // spawn line runs between them) right side to right side, so the message curve bulges clear of the spawn line.
     const [left, right] = a.x <= b.x ? [e.edge.a, e.edge.b] : [e.edge.b, e.edge.a]
     const dx = Math.abs(a.x - b.x)
     const apart = dx >= BOX.w
@@ -127,8 +128,8 @@ export function canvasElements(state: GraphState, view: VisibleGraph, highlight:
       id: e.edge.id,
       source,
       target: apart ? right : lower,
-      sourceHandle: arc ? 'ts' : apart ? 'r' : 'b',
-      targetHandle: arc || !apart ? 't' : 'l',
+      sourceHandle: arc ? 'ts' : 'r',
+      targetHandle: arc ? 't' : apart ? 'l' : 'rt',
       fwd: source === e.edge.a ? e.edge.ab : e.edge.ba,
       back: source === e.edge.a ? e.edge.ba : e.edge.ab,
       count: e.edge.ab + e.edge.ba,

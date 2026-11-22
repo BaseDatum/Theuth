@@ -66,6 +66,7 @@ export const TreeEdge = memo(function TreeEdge(props: EdgeProps<TreeEdgeType>) {
   )
 })
 
+/** Two cards on one row: an arc from top to top, rising with the distance. Returns the path and its label point. */
 function arcPath(sx: number, sy: number, tx: number, ty: number): [string, number, number] {
   const rise = arcRise(tx - sx)
   // A cubic with both controls at `rise` above peaks at ¾ of it.
@@ -73,10 +74,22 @@ function arcPath(sx: number, sy: number, tx: number, ty: number): [string, numbe
   return [`M ${sx} ${sy} C ${sx} ${top}, ${tx} ${top}, ${tx} ${ty}`, (sx + tx) / 2, Math.min(sy, ty) - rise * 0.75]
 }
 
+/** One card above the other: a loop out of the right side of both, clear of the spawn line between them. */
+function loopPath(sx: number, sy: number, tx: number, ty: number): [string, number, number] {
+  const k = 40
+  const x = Math.max(sx, tx) + k
+  return [`M ${sx} ${sy} C ${x} ${sy}, ${x} ${ty}, ${tx} ${ty}`, Math.max(sx, tx) + 0.75 * k, (sy + ty) / 2]
+}
+
 export const MessageEdge = memo(function MessageEdge(props: EdgeProps<MessageEdgeType>) {
   const lod = useContext(LodContext)
   const arc = props.sourcePosition === Position.Top && props.targetPosition === Position.Top
-  const [path, labelX, labelY] = arc ? arcPath(props.sourceX, props.sourceY, props.targetX, props.targetY) : getBezierPath({ ...props, curvature: 0.35 })
+  const loop = props.sourcePosition === Position.Right && props.targetPosition === Position.Right
+  const [path, labelX, labelY] = arc
+    ? arcPath(props.sourceX, props.sourceY, props.targetX, props.targetY)
+    : loop
+      ? loopPath(props.sourceX, props.sourceY, props.targetX, props.targetY)
+      : getBezierPath({ ...props, curvature: 0.35 })
   const d = props.data
   const s = EDGE[messageKey(d?.active ?? false, d?.animated ?? false)]
   const flow = s.flow && !d?.reduced

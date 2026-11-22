@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 import { EDGE } from './encoding'
-import { type LegendSwatch, legendSections } from './legend'
+import { type LegendSwatch, legendSections } from './legend-entries'
 import { StatusChip } from './NodeBody'
 
 const SECTIONS = legendSections()

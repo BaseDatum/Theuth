@@ -36,10 +36,10 @@ test('highlight: the path is lit, everything else dimmed; message edges pick arc
   expect(by.get('r2')).toMatchObject({ highlighted: false, dim: true })
   const tree = els.edges.find((e) => e.id === 't:r1.builder.linter')
   expect(tree).toMatchObject({ onPath: true, dim: false })
-  // linter sits below builder (same column band): bottom → top; r1 and r2 are roots on one row with cards between
+  // linter sits below builder (same column band): a loop off their right sides, clear of the spawn line; r1 and r2 are roots on one row with cards between
   // them: an arc over the row, top → top, its arrow toward r2 (r1 wrote once, r2 never).
   const linter = els.edges.find((e) => e.id === 'r1.builder|r1.builder.linter')
-  expect(linter).toMatchObject({ type: 'message', count: 3, sourceHandle: 'b', targetHandle: 't' })
+  expect(linter).toMatchObject({ type: 'message', count: 3, sourceHandle: 'r', targetHandle: 'rt' })
   const across = els.edges.find((e) => e.id === 'r1|r2')
   expect(across).toMatchObject({ source: 'r2', target: 'r1', sourceHandle: 'ts', targetHandle: 't', fwd: 0, back: 1 })
   // The arc's room above the top row is part of the drawing's extent.

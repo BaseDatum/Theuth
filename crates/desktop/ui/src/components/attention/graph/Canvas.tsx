@@ -64,6 +64,7 @@ function Handles() {
   return (
     <>
       <Handle type="target" position={Position.Top} id="t" style={HANDLE} isConnectable={false} />
+      <Handle type="target" position={Position.Right} id="rt" style={HANDLE} isConnectable={false} />
       <Handle type="source" position={Position.Top} id="ts" style={HANDLE} isConnectable={false} />
       <Handle type="source" position={Position.Bottom} id="b" style={HANDLE} isConnectable={false} />
       <Handle type="target" position={Position.Left} id="l" style={HANDLE} isConnectable={false} />
@@ -150,9 +151,26 @@ function Flow(p: CanvasProps) {
   }
   const placeRef = useRef(place)
   placeRef.current = place
+  // Which placement the view still follows when the canvas resizes (full screen, the resize handle, the window): the
+  // opening view, Fit's whole drawing, or none once the user panned/zoomed or "Show in graph" moved it.
+  const auto = useRef<'open' | 'all' | null>('open')
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    let size = `${el.clientWidth}x${el.clientHeight}`
+    const o = new ResizeObserver(() => {
+      const next = `${el.clientWidth}x${el.clientHeight}`
+      if (next === size) return
+      size = next
+      if (auto.current) placeRef.current(auto.current === 'all', 0)
+    })
+    o.observe(el)
+    return () => o.disconnect()
+  }, [])
   useEffect(() => {
     if (fitSeen.current === p.fitNonce) return
     fitSeen.current = p.fitNonce
+    auto.current = 'all'
     requestAnimationFrame(() => placeRef.current(true, reduced ? 0 : MOVE_MS))
   }, [p.fitNonce, reduced])
 
@@ -213,6 +231,7 @@ function Flow(p: CanvasProps) {
     const t = setTimeout(() => {
       const path = pathToRoot(nodesRef.current, f.session).filter((id) => posRef.current.has(id))
       if (path.length === 0) return
+      auto.current = null
       void rf.fitView({ nodes: path.map((id) => ({ id })), padding: FIT_PADDING, maxZoom: rf.getZoom(), minZoom: 0.1, duration: reduced ? 0 : MOVE_MS })
     }, wait)
     return () => clearTimeout(t)
@@ -295,7 +314,10 @@ function Flow(p: CanvasProps) {
           onMove={onMove}
           onMoveStart={(e) => {
             setHover(null)
-            if (e) userMoved.current = Date.now()
+            if (e) {
+              userMoved.current = Date.now()
+              auto.current = null
+            }
           }}
           onPointerDown={() => {
             pointerDown.current = true
@@ -316,8 +338,15 @@ function Flow(p: CanvasProps) {
         >
           <EdgeMarkers />
           <Background variant={BackgroundVariant.Dots} gap={24} size={1.25} color="color-mix(in oklab, var(--color-fg-tertiary) 38%, transparent)" />
-          <Controls showInteractive={false} showFitView={false} position="bottom-left">
-            <ControlButton onClick={() => place(true, reduced ? 0 : MOVE_MS)} aria-label="Fit everything" title="Fit everything">
+          <Controls showInteractive={false} showFitView={false} position="bottom-left" onZoomIn={() => (auto.current = null)} onZoomOut={() => (auto.current = null)}>
+            <ControlButton
+              onClick={() => {
+                auto.current = 'all'
+                place(true, reduced ? 0 : MOVE_MS)
+              }}
+              aria-label="Fit everything"
+              title="Fit everything"
+            >
               <Scan />
             </ControlButton>
           </Controls>

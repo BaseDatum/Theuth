@@ -3,7 +3,7 @@
 import { expect, test } from 'vitest'
 import { EDGE, EDGE_ORDER, KIND, MARK, MARKERS, messageKey, PULSE, pulseTone, STATUS, STATUS_ORDER, statusOf } from './encoding'
 import { GRAPH_FIXTURE } from './fixture'
-import { legendSections } from './legend'
+import { legendSections } from './legend-entries'
 
 const entries = legendSections().flatMap((s) => s.entries)
 const byId = new Map(entries.map((e) => [e.id, e]))
