@@ -3080,6 +3080,37 @@
               "file"
             ],
             "type": "object"
+          },
+          {
+            "description": "`session`'s own knowledge harvester changed (`set_session_knowledge_harvester`);\n`harvester.model: None` = back on the default.",
+            "properties": {
+              "harvester": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.output.SessionKnowledgeHarvester"
+                  }
+                ],
+                "description": "Its stored pick."
+              },
+              "session": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.output.SessionId"
+                  }
+                ],
+                "description": "The session."
+              },
+              "type": {
+                "const": "KnowledgeHarvesterChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "harvester"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -3914,6 +3945,30 @@
         "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
         "type": "string"
+      },
+      "event.agent_2eevents.output.SessionKnowledgeHarvester": {
+        "description": "One session's own knowledge harvester (`session_knowledge_harvesters`): `model:\nNone` = the default (`agent.knowledge_harvester_model`, else the session's model).",
+        "properties": {
+          "effort": {
+            "description": "The effort of `model`; `None` = no setting. Always `None` without `model`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "description": "This session's own pick; `None` = the default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "model",
+          "effort"
+        ],
+        "type": "object"
       },
       "event.agent_2eevents.output.Status": {
         "description": "Item state.",
@@ -6356,6 +6411,37 @@
               "file"
             ],
             "type": "object"
+          },
+          {
+            "description": "`session`'s own knowledge harvester changed (`set_session_knowledge_harvester`);\n`harvester.model: None` = back on the default.",
+            "properties": {
+              "harvester": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.receiver.SessionKnowledgeHarvester"
+                  }
+                ],
+                "description": "Its stored pick."
+              },
+              "session": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.receiver.SessionId"
+                  }
+                ],
+                "description": "The session."
+              },
+              "type": {
+                "const": "KnowledgeHarvesterChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "harvester"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -7185,6 +7271,26 @@
         "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
         "type": "string"
+      },
+      "event.agent_2eevents.receiver.SessionKnowledgeHarvester": {
+        "description": "One session's own knowledge harvester (`session_knowledge_harvesters`): `model:\nNone` = the default (`agent.knowledge_harvester_model`, else the session's model).",
+        "properties": {
+          "effort": {
+            "description": "The effort of `model`; `None` = no setting. Always `None` without `model`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "description": "This session's own pick; `None` = the default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
       "event.agent_2eevents.receiver.Status": {
         "description": "Item state.",
@@ -45272,6 +45378,30 @@
           }
         ]
       },
+      "method.agent.output.SessionKnowledgeHarvester": {
+        "description": "One session's own knowledge harvester (`session_knowledge_harvesters`): `model:\nNone` = the default (`agent.knowledge_harvester_model`, else the session's model).",
+        "properties": {
+          "effort": {
+            "description": "The effort of `model`; `None` = no setting. Always `None` without `model`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "description": "This session's own pick; `None` = the default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "model",
+          "effort"
+        ],
+        "type": "object"
+      },
       "method.agent.output.SessionMemory": {
         "description": "RPC `session_memory` (§11.2).",
         "properties": {
@@ -55850,6 +55980,26 @@
             "type": "string"
           }
         ]
+      },
+      "method.agent.receiver.SessionKnowledgeHarvester": {
+        "description": "One session's own knowledge harvester (`session_knowledge_harvesters`): `model:\nNone` = the default (`agent.knowledge_harvester_model`, else the session's model).",
+        "properties": {
+          "effort": {
+            "description": "The effort of `model`; `None` = no setting. Always `None` without `model`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "description": "This session's own pick; `None` = the default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
       "method.agent.receiver.SessionMemory": {
         "description": "RPC `session_memory` (§11.2).",
@@ -133316,6 +133466,60 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "knowledge_harvester_effort",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "knowledge_harvester_model",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.agent.output.ModelInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.agent.receiver.ModelInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "knowledge_history",
       "paramStructure": "by-position",
       "params": [
@@ -140136,6 +140340,32 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "session_knowledge_harvester",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.SessionKnowledgeHarvester"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.SessionKnowledgeHarvester"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "session_memory",
       "paramStructure": "by-position",
       "params": [
@@ -141183,6 +141413,84 @@
       "x-theuth-owner": "talk"
     },
     {
+      "name": "set_knowledge_harvester_effort",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "effort",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_knowledge_harvester_model",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "model",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.agent.output.ModelInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.agent.receiver.ModelInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "set_max_salvages",
       "paramStructure": "by-position",
       "params": [
@@ -141939,6 +142247,54 @@
         },
         "x-theuth-receiverSchema": {
           "$ref": "#/components/schemas/method.agent.receiver.SessionMemory"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_session_knowledge_harvester",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "model",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "effort",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.SessionKnowledgeHarvester"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.SessionKnowledgeHarvester"
         }
       },
       "x-theuth-audience": "owner",

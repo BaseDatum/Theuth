@@ -66,6 +66,7 @@ pub mod dreaming;
 pub mod durability;
 pub mod endless;
 pub mod harness;
+mod knowledge_harvester;
 mod moved;
 pub mod suffixes;
 pub mod turn_usage;

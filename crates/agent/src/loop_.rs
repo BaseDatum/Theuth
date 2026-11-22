@@ -852,6 +852,10 @@ struct Shared {
     /// 153 §9.2 `voice.polish_model`; `None` = the title model, then the session's
     /// model. Shared with the supervisor ([`Session::with_polish_model`]).
     polish_model: Arc<RwLock<Option<Resolved>>>,
+    /// `agent.knowledge_harvester_model`: the knowledge harvest's default when
+    /// the session has no own pick; `None` = the session's model. Shared with the
+    /// supervisor ([`Session::with_knowledge_harvester_model`]).
+    knowledge_harvester_model: Arc<RwLock<Option<Resolved>>>,
     /// 194: the side-call roles' own efforts. Shared with the supervisor
     /// ([`Session::with_role_efforts`]); read per call, so a pick is live.
     role_efforts: Arc<parking_lot::RwLock<side::RoleEfforts>>,
@@ -1051,6 +1055,7 @@ impl Session {
                 image_notice: Arc::default(),
                 escalate_model,
                 polish_model: Arc::default(),
+                knowledge_harvester_model: Arc::default(),
                 role_efforts: Arc::default(),
                 subagent_model,
                 subagent_effort: Arc::default(),
@@ -1127,6 +1132,15 @@ impl Session {
     /// 153 §9.2: the supervisor's shared `voice.polish_model` slot.
     pub(crate) fn with_polish_model(mut self, slot: Arc<RwLock<Option<Resolved>>>) -> Self {
         self.shared.polish_model = slot;
+        self
+    }
+
+    /// The supervisor's shared `agent.knowledge_harvester_model` slot.
+    pub(crate) fn with_knowledge_harvester_model(
+        mut self,
+        slot: Arc<RwLock<Option<Resolved>>>,
+    ) -> Self {
+        self.shared.knowledge_harvester_model = slot;
         self
     }
 
@@ -8476,6 +8490,36 @@ impl Turn {
         Ok((current, transport))
     }
 
+    /// The knowledge harvester: this session's own pick
+    /// (`session_knowledge_harvesters`), else `agent.knowledge_harvester_model`,
+    /// else the session's model exactly as [`Turn::resolve`] gives it.
+    async fn resolve_knowledge_harvester(&mut self) -> Result<(Current, Transport), String> {
+        let own = self
+            .shared
+            .store
+            .session_knowledge_harvester(self.shared.id)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(session = %self.shared.id, "knowledge harvester: {e:#}");
+                crate::SessionKnowledgeHarvester::default()
+            });
+        let Some((model, effort)) = self.shared.knowledge_harvester_pick(&own) else {
+            return self.resolve().await;
+        };
+        Box::pin(self.load_image_refusals()).await;
+        let mut current = Current::new(model, None, &self.shared.client, &self.shared.auth);
+        current.effort = side::checked_effort(&current.model, effort.as_deref());
+        current.no_images = self
+            .shared
+            .image_refusals
+            .lock()
+            .as_ref()
+            .is_some_and(|ids| ids.contains(&current.model.id));
+        current.images_off = self.shared.images_off.load(Ordering::Relaxed);
+        let transport = current.backend.transport(&current.model).await?;
+        Ok((current, transport))
+    }
+
     /// 10 §5.2 as built: the harvest runs detached from the session. The
     /// finished frame — head, rows, baseline, tools, image index, cwd — is
     /// copied into a `Turn`-less [`Turn`] owning nothing of the session, and
@@ -8530,7 +8574,7 @@ impl Turn {
         if self.state.history.is_empty() {
             return Err("nothing to harvest".into());
         }
-        let (current, transport) = self.resolve().await?;
+        let (current, transport) = self.resolve_knowledge_harvester().await?;
         let images = self.image_index(&current).await?;
         let mut state = SessionState::resume(
             self.state.epoch,
@@ -13293,6 +13337,64 @@ mod tests {
         assert_eq!(id_of(ModelRole::Escalate).unwrap(), "cheap/e");
     }
 
+    /// The knowledge harvester: the session's own pick (with its effort), else
+    /// `agent.knowledge_harvester_model` (with `agent.knowledge_harvester_effort`),
+    /// else the session's model — never the title model, as before.
+    #[tokio::test]
+    async fn knowledge_harvester_prefers_session_pick_then_default_then_session() {
+        let scratch = crate::TestDir::new("knowledge-harvester-role");
+        let dir = scratch.0.clone();
+        let store = Store::open_memory().await.unwrap();
+        let id = SessionId::new();
+        store
+            .create_session(id, "fake/m", None, None, None)
+            .await
+            .unwrap();
+        let (base_url, _hits, _) = fake_openai(vec![]).await;
+        let (mut turn, _, _, _events) = gateway_turn(&dir, store.clone(), id, base_url).await;
+        let shared = turn.shared.clone();
+        let pick = || async {
+            let own = store.session_knowledge_harvester(id).await.unwrap();
+            shared
+                .knowledge_harvester_pick(&own)
+                .map(|(m, e)| (m.id, e))
+        };
+
+        // Nothing set (the title model does not count): the session's model, its effort.
+        *shared.title_model.write().unwrap() = Some(resolved("cheap/t"));
+        assert_eq!(pick().await, None);
+        let (current, _) = turn.resolve_knowledge_harvester().await.unwrap();
+        assert_eq!(current.model.id, "fake/m");
+
+        // The default with its own effort.
+        *shared.knowledge_harvester_model.write().unwrap() = Some(resolved("fake/h"));
+        shared.role_efforts.write().knowledge_harvester = Some("high".into());
+        assert_eq!(pick().await, Some(("fake/h".into(), Some("high".into()))));
+        let (current, _) = turn.resolve_knowledge_harvester().await.unwrap();
+        assert_eq!(current.model.id, "fake/h");
+        assert!(
+            matches!(current.effort, Some(ReasoningEffort::High)),
+            "{:?}",
+            current.effort
+        );
+
+        // The session's own pick wins, with its own effort; a reset returns to the default.
+        let own = crate::SessionKnowledgeHarvester {
+            model: Some("fake/own".into()),
+            effort: Some("low".into()),
+        };
+        store
+            .set_session_knowledge_harvester(id, &own)
+            .await
+            .unwrap();
+        assert_eq!(pick().await, Some(("fake/own".into(), Some("low".into()))));
+        store
+            .set_session_knowledge_harvester(id, &crate::SessionKnowledgeHarvester::default())
+            .await
+            .unwrap();
+        assert_eq!(pick().await, Some(("fake/h".into(), Some("high".into()))));
+    }
+
     /// 153 §9.3: `Polish` = polish → title → session, independent of the escalate slot.
     #[tokio::test]
     async fn polish_chain_prefers_polish_then_title_then_session() {
@@ -13485,6 +13587,7 @@ mod tests {
             vision: Some("medium".into()),
             escalate: Some("high".into()),
             polish: Some("max".into()),
+            knowledge_harvester: None,
         };
         // Nothing set: every chain ends on the session's model, with no effort.
         for role in [ModelRole::Title, ModelRole::Escalate, ModelRole::Polish] {
@@ -13546,6 +13649,7 @@ mod tests {
             polish: Some("low".into()),
             escalate: Some("medium".into()),
             vision: None,
+            knowledge_harvester: None,
         };
         let actor = <Session as kameo::actor::Spawn>::spawn(session);
         let body =

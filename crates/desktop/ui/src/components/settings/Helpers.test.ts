@@ -23,6 +23,7 @@ const think = { id: 'p/think', name: 'Think', image: true, efforts: ['off', 'low
 const plain = { id: 'p/plain', name: 'Plain', image: true, efforts: [] as string[] } as ModelInfo
 let title: ModelInfo | null = think
 let escalate: EscalateModel = { model: think, effective: think }
+let harvester: ModelInfo | null = null
 const api = {
   list_models: vi.fn(async () => [think, plain]),
   title_model: vi.fn(async () => title),
@@ -37,6 +38,10 @@ const api = {
   set_vision_effort: vi.fn(async (e: string | null) => e),
   set_escalate_model: vi.fn(async () => null),
   set_escalate_effort: vi.fn(async (e: string | null) => e),
+  knowledge_harvester_model: vi.fn(async () => harvester),
+  knowledge_harvester_effort: vi.fn(async (): Promise<string | null> => 'low'),
+  set_knowledge_harvester_model: vi.fn(async () => null),
+  set_knowledge_harvester_effort: vi.fn(async (e: string | null) => e),
 }
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
@@ -68,6 +73,7 @@ beforeEach(() => {
   for (const k of Object.keys(pickers)) delete pickers[k]
   title = think
   escalate = { model: think, effective: think }
+  harvester = null
 })
 
 test('194: Title, Vision fallback and Escalation carry their model’s levels and their stored effort', async () => {
@@ -108,4 +114,21 @@ test('194 D4c/D4d: a model change or Off refetches that row’s effort (the engi
   expect(api.set_vision_model).toHaveBeenLastCalledWith(null)
   expect(api.set_escalate_model).toHaveBeenLastCalledWith(null)
   for (const key of [queryKeys.titleEffort, queryKeys.visionEffort, queryKeys.escalateEffort]) expect(qc.getQueryState(key)?.isInvalidated, String(key)).toBe(true)
+})
+
+test('Knowledge harvester model: unset reads the chat’s own model; a pick carries its levels; a change or reset refetches its effort', async () => {
+  await render()
+  expect(pickers['Knowledge harvester model']).toBeDefined()
+  expect(pickers['Knowledge harvester model']?.value).toBeUndefined()
+  expect(pickers['Knowledge harvester model']?.effort).toBeUndefined()
+  harvester = think
+  const qc = await render()
+  expect(pickers['Knowledge harvester model']).toMatchObject({ value: 'p/think', effort: { levels: think.efforts, current: 'low' } })
+  const done = settled(qc)
+  pickers['Knowledge harvester model']?.effort?.onSelect('high')
+  pickers['Knowledge harvester model']?.onChange(null)
+  await done
+  expect(api.set_knowledge_harvester_effort).toHaveBeenLastCalledWith('high')
+  expect(api.set_knowledge_harvester_model).toHaveBeenLastCalledWith(null)
+  expect(qc.getQueryState(queryKeys.knowledgeHarvesterEffort)?.isInvalidated).toBe(true)
 })

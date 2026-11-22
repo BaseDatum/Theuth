@@ -192,6 +192,9 @@ pub struct Agents {
     /// Live tier-2 model of the decision oracle (57 §0.9); `None` = the title
     /// model, then each session's own model. Shared with every session.
     escalate_model: Arc<RwLock<Option<Resolved>>>,
+    /// Live `agent.knowledge_harvester_model`: the knowledge harvest's default when a
+    /// session has no own pick; `None` = each session's own model. Shared with every session.
+    knowledge_harvester_model: Arc<RwLock<Option<Resolved>>>,
     /// 194: the live title/vision/escalate/polish efforts (`agent.title_effort`,
     /// `agent.vision_effort`, `agent.escalate_effort`, `voice.polish_effort`). Shared with every session.
     role_efforts: Arc<parking_lot::RwLock<crate::loop_::RoleEfforts>>,
@@ -1160,6 +1163,7 @@ impl Agents {
         .with_advisor(advised)
         .with_budget(budget)
         .with_polish_model(self.polish_model.clone())
+        .with_knowledge_harvester_model(self.knowledge_harvester_model.clone())
         .with_role_efforts(self.role_efforts.clone())
         .with_subagent_effort(self.subagent_effort.clone())
         .with_endless(self.endless.clone())
@@ -4699,6 +4703,10 @@ const POLISH_EFFORT: RoleEffortKey = ("voice", "polish_effort", |r| &mut r.polis
 const VISION_EFFORT: RoleEffortKey = ("agent", "vision_effort", |r| &mut r.vision);
 /// 194: `agent.escalate_effort`.
 const ESCALATE_EFFORT: RoleEffortKey = ("agent", "escalate_effort", |r| &mut r.escalate);
+/// `agent.knowledge_harvester_effort`.
+const KNOWLEDGE_HARVESTER_EFFORT: RoleEffortKey = ("agent", "knowledge_harvester_effort", |r| {
+    &mut r.knowledge_harvester
+});
 
 /// A role effort's `(section, key)` in config.yaml and its field of the live slot.
 type RoleEffortKey = (
@@ -5140,6 +5148,145 @@ impl Message<crate::GetEscalateEffort> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Option<String> {
         self.role_effort(ESCALATE_EFFORT)
+    }
+}
+
+impl Message<crate::SetKnowledgeHarvesterModel> for Agents {
+    type Reply = Result<Option<ModelInfo>, String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SetKnowledgeHarvesterModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<ModelInfo>, String> {
+        let resolved = match &m.model {
+            Some(id) => Some(self.catalog.resolve(id, &*self.configured)?),
+            None => None,
+        };
+        let info = resolved.as_ref().map(ModelInfo::from);
+        // 194: every write first (the model, then a dropped effort), then publish.
+        let path = self.rt.data_dir.join("config.yaml");
+        let value = info.as_ref().map(|i| i.id.as_str()).unwrap_or_default();
+        runtime::write_config_value(&path, "agent", "knowledge_harvester_model", value)
+            .map_err(|e| format!("config.yaml: {e}"))?;
+        let cleared = self.follow_role_model(resolved.as_ref(), KNOWLEDGE_HARVESTER_EFFORT)?;
+        *self
+            .knowledge_harvester_model
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = resolved;
+        if cleared {
+            self.clear_role_effort(KNOWLEDGE_HARVESTER_EFFORT);
+        }
+        Ok(info)
+    }
+}
+
+impl Message<crate::GetKnowledgeHarvesterModel> for Agents {
+    type Reply = Option<ModelInfo>;
+
+    async fn handle(
+        &mut self,
+        _: crate::GetKnowledgeHarvesterModel,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<ModelInfo> {
+        self.knowledge_harvester_model
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(ModelInfo::from)
+    }
+}
+
+impl Message<crate::SetKnowledgeHarvesterEffort> for Agents {
+    type Reply = Result<Option<String>, String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SetKnowledgeHarvesterEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<Option<String>, String> {
+        let model = resolved_effort_model(&self.knowledge_harvester_model);
+        self.set_role_effort(model, KNOWLEDGE_HARVESTER_EFFORT, m.effort)
+    }
+}
+
+impl Message<crate::GetKnowledgeHarvesterEffort> for Agents {
+    type Reply = Option<String>;
+
+    async fn handle(
+        &mut self,
+        _: crate::GetKnowledgeHarvesterEffort,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<String> {
+        self.role_effort(KNOWLEDGE_HARVESTER_EFFORT)
+    }
+}
+
+impl Agents {
+    /// A session's own knowledge harvester, validated: the id resolves (stored
+    /// as the catalog id) and takes the effort; no model = the default, no effort.
+    fn validated_knowledge_harvester(
+        &self,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<crate::SessionKnowledgeHarvester, String> {
+        let trimmed = |s: Option<String>| s.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+        let Some(id) = trimmed(model) else {
+            return Ok(crate::SessionKnowledgeHarvester::default());
+        };
+        let resolved = self.catalog.resolve(&id, &*self.configured)?;
+        let effort = trimmed(effort);
+        if let Some(e) = &effort {
+            match &resolved.model {
+                Some(m) => m.validate_effort(e)?,
+                None if effort_of(e).is_none() => return Err(format!("unknown effort {e}")),
+                None => {}
+            }
+        }
+        Ok(crate::SessionKnowledgeHarvester {
+            model: Some(resolved.id),
+            effort,
+        })
+    }
+}
+
+impl Message<crate::SetSessionKnowledgeHarvester> for Agents {
+    type Reply = Result<crate::SessionKnowledgeHarvester, String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SetSessionKnowledgeHarvester,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        let pick = self.validated_knowledge_harvester(m.model, m.effort)?;
+        self.store_for(m.session)
+            .set_session_knowledge_harvester(m.session, &pick)
+            .await
+            .map_err(|e| format!("{e:#}"))?;
+        self.rt
+            .publish(AgentEvent::KnowledgeHarvesterChanged {
+                session: m.session,
+                harvester: pick.clone(),
+            })
+            .await;
+        Ok(pick)
+    }
+}
+
+impl Message<crate::SessionKnowledgeHarvesterOf> for Agents {
+    type Reply = Result<crate::SessionKnowledgeHarvester, String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SessionKnowledgeHarvesterOf,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.stored(m.session).await?;
+        self.store_for(m.session)
+            .session_knowledge_harvester(m.session)
+            .await
+            .map_err(|e| format!("{e:#}"))
     }
 }
 
@@ -10994,6 +11141,7 @@ impl Agents {
             &self.subagent_model,
             &self.vision_model,
             &self.escalate_model,
+            &self.knowledge_harvester_model,
         ] {
             let mut slot = slot.write().unwrap_or_else(|e| e.into_inner());
             if let Some(r) = slot.as_mut()
@@ -12366,6 +12514,17 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             })
             .ok()
     });
+    // Same leniency as the title model: an unresolvable id harvests with the session's model.
+    let knowledge_harvester_model = cfg.knowledge_harvester_model.as_deref().and_then(|id| {
+        catalog
+            .resolve(id, &*configured)
+            .map_err(|e| {
+                tracing::warn!(
+                    "agent.knowledge_harvester_model: {e}; harvests use the session's model"
+                )
+            })
+            .ok()
+    });
     // 194: the side-call roles' own efforts; one its model does not take is dropped at call time.
     let role_efforts = crate::loop_::RoleEfforts {
         title: cfg.title_effort.clone(),
@@ -12375,6 +12534,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             .section::<voice::VoiceConfig>("voice")
             .ok()
             .and_then(|v| v.polish_effort),
+        knowledge_harvester: cfg.knowledge_harvester_effort.clone(),
     };
     let nodes = Nodes::default();
     // 50 §2.1: the switch and where it came from; every persisted root and
@@ -12502,6 +12662,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
             desk_efforts: HashMap::new(),
             vision_model: Arc::new(RwLock::new(vision_model)),
             escalate_model: Arc::new(RwLock::new(escalate_model)),
+            knowledge_harvester_model: Arc::new(RwLock::new(knowledge_harvester_model)),
             role_efforts: Arc::new(parking_lot::RwLock::new(role_efforts)),
             vision_error,
             catalog,
@@ -13636,6 +13797,7 @@ pub(crate) async fn bare_agents(rt: Runtime, engine: Option<&str>, communication
         subagent_effort: Arc::default(),
         vision_model: Arc::default(),
         escalate_model: Arc::default(),
+        knowledge_harvester_model: Arc::default(),
         role_efforts: Arc::default(),
         vision_error: None,
         catalog: catalog.clone(),
@@ -15243,6 +15405,143 @@ pub(crate) mod tests {
             "polish_effort",
             polish
         );
+        use crate::SetKnowledgeHarvesterModel;
+        role!(
+            SetKnowledgeHarvesterModel,
+            SetKnowledgeHarvesterEffort,
+            GetKnowledgeHarvesterEffort,
+            "agent",
+            "knowledge_harvester_effort",
+            knowledge_harvester
+        );
+    }
+
+    /// The knowledge harvester default: `agent.knowledge_harvester_model`
+    /// persists and swaps the slot every session reads; a session's own pick
+    /// is validated (catalog id, its effort), stored in the session store, read
+    /// back, and reset to the default (dropping its effort) with `None`.
+    #[tokio::test]
+    async fn knowledge_harvester_default_and_session_pick() {
+        use crate::{
+            GetKnowledgeHarvesterModel, SessionKnowledgeHarvester, SessionKnowledgeHarvesterOf,
+            SetKnowledgeHarvesterModel, SetSessionKnowledgeHarvester,
+        };
+        let (_scratch, mut a) = agents().await;
+        let dir = a.rt.data_dir.clone();
+        role_effort_models(&mut a);
+        let slot = a.knowledge_harvester_model.clone();
+        let store = a.store.clone();
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = Sink::spawn_with_mailbox(Sink(Arc::clone(&seen)), runtime::subscriber_mailbox());
+        a.rt.subscribe::<Sink, AgentEvent>(&sink).await;
+        let agents = Agents::spawn(a);
+
+        // The default: unset, then set (bare id canonicalises), persisted and live.
+        assert!(
+            agents
+                .ask(GetKnowledgeHarvesterModel)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let info = agents
+            .ask(SetKnowledgeHarvesterModel {
+                model: Some("plain".into()),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.id, "testfx/plain");
+        assert_eq!(
+            slot.read().unwrap().as_ref().map(|r| r.id.as_str()),
+            Some("testfx/plain")
+        );
+        let yaml = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+        assert!(
+            yaml.contains("  knowledge_harvester_model: testfx/plain\n"),
+            "{yaml}"
+        );
+
+        // The session follows the default until it picks its own.
+        let of = || SessionKnowledgeHarvesterOf { session: id };
+        assert_eq!(
+            agents.ask(of()).await.unwrap(),
+            SessionKnowledgeHarvester::default()
+        );
+        let set = |m: Option<&str>, e: Option<&str>| SetSessionKnowledgeHarvester {
+            session: id,
+            model: m.map(str::to_owned),
+            effort: e.map(str::to_owned),
+        };
+        let e = agents
+            .ask(set(Some("testfx/think"), Some("max")))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("think accepts off|low|high"), "{e}");
+        assert_eq!(
+            agents.ask(of()).await.unwrap(),
+            SessionKnowledgeHarvester::default()
+        );
+
+        let own = SessionKnowledgeHarvester {
+            model: Some("testfx/think".into()),
+            effort: Some("low".into()),
+        };
+        assert_eq!(
+            agents.ask(set(Some("think"), Some("low"))).await.unwrap(),
+            own
+        );
+        assert_eq!(agents.ask(of()).await.unwrap(), own);
+        assert_eq!(store.session_knowledge_harvester(id).await.unwrap(), own);
+        // The default changing leaves the session's own pick alone.
+        agents
+            .ask(SetKnowledgeHarvesterModel { model: None })
+            .await
+            .unwrap();
+        assert_eq!(agents.ask(of()).await.unwrap(), own);
+
+        // Reset: back to the default; the effort goes with the model.
+        let reset = agents.ask(set(None, Some("low"))).await.unwrap();
+        assert_eq!(reset, SessionKnowledgeHarvester::default());
+        assert_eq!(
+            store.session_knowledge_harvester(id).await.unwrap(),
+            SessionKnowledgeHarvester::default()
+        );
+        // Each stored pick went out on the bus, in order; the refused one did not.
+        // The bus is a `tell`; a round trip through the sink orders us after it.
+        let _ = sink
+            .ask(AgentEvent::TitleChanged {
+                session: id,
+                title: String::new(),
+                tags: Vec::new(),
+            })
+            .await;
+        let changes: Vec<_> = seen
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::KnowledgeHarvesterChanged { session, harvester } if *session == id => {
+                    Some(harvester.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(changes, [own.clone(), SessionKnowledgeHarvester::default()]);
+
+        let e = agents
+            .ask(SessionKnowledgeHarvesterOf {
+                session: SessionId::new(),
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("unknown session"), "{e}");
     }
 
     /// 194 R1: a role's model change persists every key before it publishes.

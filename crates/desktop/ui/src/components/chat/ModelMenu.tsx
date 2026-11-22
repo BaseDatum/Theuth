@@ -1,6 +1,6 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bot, ChevronDown, ChevronLeft, ChevronRight, Cpu, Eye, RotateCcw } from 'lucide-react'
+import { Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, Cpu, Eye, RotateCcw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { routed } from '@/lib/owner'
@@ -17,6 +17,7 @@ import { on, useSessionField } from '@/store/sessions'
 import type { ConfigOption } from "@/rpc/bindings/method.agent.output"
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { useAdvisor, useSetAdvisor } from './advisor'
+import { useKnowledgeHarvester, useKnowledgeHarvesterDefault, useSetKnowledgeHarvester } from './knowledge-harvester'
 import { MenuRow } from './HeaderMenu'
 import { LocalTag, ModelPicker, stubModel } from './ModelPicker'
 import { surfaceOf } from './slash'
@@ -360,10 +361,75 @@ function AdvisorRow({ session, models, onOpen, className }: { session: string; m
   )
 }
 
-/** The cmdk body: providers → models, word search, the current model's effort chips under its row (124 §3); the Advisor row below (125 §8.1). */
+/**
+ * The Knowledge harvester level: the model the knowledge harvest writes memories with. `Default · <name>` (Settings ›
+ * Models › Helpers, else the chat's own model) leads; a pick is this chat's own (`set_session_knowledge_harvester`),
+ * the lead row resets it. Chips only beside the chat's own pick. The draft keeps its pick for creation.
+ */
+export function KnowledgeHarvesterCommand({ session, m, onBack, className, listClassName }: { session: string; m: Model; onBack(): void; className?: string; listClassName?: string }) {
+  const own = useKnowledgeHarvester(session || null)
+  const fallback = useKnowledgeHarvesterDefault()
+  const set = useSetKnowledgeHarvester(session)
+  const pending = useDrafts((s) => s.settings.knowledgeHarvester)
+  const model = session ? (own?.model ?? undefined) : pending?.[0]
+  const effort = session ? own?.effort : pending?.[1]
+  const current = m.models.find((x) => x.id === model)
+  const pick = (vars: { model: string | null; effort: string | null }) => {
+    if (!session) useDrafts.getState().setSettings({ knowledgeHarvester: vars.model ? [vars.model, vars.effort] : null })
+    else set.mutate(vars)
+  }
+  return (
+    <div className="flex min-h-0 flex-col">
+      <button type="button" className={`${LEAD_ROW} border-b border-border-subtle`} onClick={onBack}>
+        <ChevronLeft className="size-4 opacity-70" />
+        Back
+        <span className="ml-auto text-xs text-fg-tertiary">Knowledge harvester</span>
+      </button>
+      <ModelPicker
+        models={m.models}
+        model={model}
+        none={{ value: 'default', label: `Default · ${knowledgeHarvesterDefaultName(fallback, m.models)}` }}
+        extra={model && !current ? [model] : undefined}
+        onSelect={(id) => pick({ model: id === 'default' ? null : id, effort: id === model ? (effort ?? null) : null })}
+        onClose={m.done}
+        effort={current && current.efforts.length > 0 ? { levels: current.efforts, current: effort, onSelect: (lvl) => pick({ model: model ?? null, effort: lvl }) } : undefined}
+        favorites={m.favorites}
+        onToggleFavorite={(id) => void m.toggleFavorite(id)}
+        className={className}
+        listClassName={listClassName}
+      />
+    </div>
+  )
+}
+
+/** The default's shown name, the same in the row and the level: the Helpers pick, else the chat's own model. */
+const knowledgeHarvesterDefaultName = (fallback: ModelInfo | null | undefined, models: ModelInfo[]): string =>
+  fallback ? (models.find((x) => x.id === fallback.id)?.name ?? fallback.name ?? fallback.id) : 'chat model'
+
+/** `Knowledge harvester · <name>` under the picker, `default` when the chat has no pick of its own. */
+function KnowledgeHarvesterRow({ session, models, onOpen, className }: { session: string; models: ModelInfo[]; onOpen(): void; className?: string }) {
+  const supported = useQuerySupport(['session_knowledge_harvester', 'set_session_knowledge_harvester', 'knowledge_harvester_model'])
+  const own = useKnowledgeHarvester(session || null)
+  const fallback = useKnowledgeHarvesterDefault()
+  const pending = useDrafts((s) => s.settings.knowledgeHarvester)
+  if (!supported || (session && !own)) return null
+  const model = session ? own?.model : pending?.[0]
+  const name = model ? (models.find((x) => x.id === model)?.name ?? model) : knowledgeHarvesterDefaultName(fallback, models)
+  return (
+    <button type="button" className={cn(LEAD_ROW, 'border-t border-border-subtle', className)} onClick={onOpen}>
+      <Brain className="size-4 opacity-70" />
+      <span className="truncate">Knowledge harvester · {name}</span>
+      {!model && <span className="shrink-0 text-xs text-fg-tertiary">default</span>}
+      <ChevronRight className="ml-auto size-4 opacity-70" />
+    </button>
+  )
+}
+
+/** The cmdk body: providers → models, word search, the current model's effort chips under its row (124 §3); the Advisor (125 §8.1) and Knowledge harvester rows below. */
 function ModelCommand({ m, session, advisor, className, listClassName, footerClassName }: { m: Model; session: string | null; advisor: boolean; className?: string; listClassName?: string; footerClassName?: string }) {
-  const [level, setLevel] = useState<'model' | 'advisor'>(advisor ? 'advisor' : 'model')
+  const [level, setLevel] = useState<'model' | 'advisor' | 'knowledgeHarvester'>(advisor ? 'advisor' : 'model')
   if (level === 'advisor') return <AdvisorCommand session={session ?? ''} m={m} onBack={() => setLevel('model')} className={className} listClassName={listClassName} />
+  if (level === 'knowledgeHarvester') return <KnowledgeHarvesterCommand session={session ?? ''} m={m} onBack={() => setLevel('model')} className={className} listClassName={listClassName} />
   return (
     <>
       <ModelPicker
@@ -378,6 +444,7 @@ function ModelCommand({ m, session, advisor, className, listClassName, footerCla
         listClassName={listClassName}
       />
       <AdvisorRow session={session ?? ''} models={m.models} onOpen={() => setLevel('advisor')} className={footerClassName} />
+      <KnowledgeHarvesterRow session={session ?? ''} models={m.models} onOpen={() => setLevel('knowledgeHarvester')} className={footerClassName} />
     </>
   )
 }
