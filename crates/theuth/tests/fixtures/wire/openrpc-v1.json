@@ -13408,6 +13408,62 @@
         "format": "uuid",
         "type": "string"
       },
+      "event.browser_2eweb_2dprofile_2dchanged.output.WebProfileChanged": {
+        "description": "Event: rows of the profile changed (209 §4.4), topic `browser.web-profile-changed`. Site names\nand the epoch only, never values; not session-scoped.",
+        "properties": {
+          "epoch": {
+            "description": "The profile epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sites": {
+            "description": "Sites whose row changed, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": {
+            "const": "WebProfileChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sites",
+          "epoch",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.browser_2eweb_2dprofile_2dchanged.receiver.WebProfileChanged": {
+        "description": "Event: rows of the profile changed (209 §4.4), topic `browser.web-profile-changed`. Site names\nand the epoch only, never values; not session-scoped.",
+        "properties": {
+          "epoch": {
+            "description": "The profile epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sites": {
+            "description": "Sites whose row changed, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": {
+            "const": "WebProfileChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sites",
+          "epoch",
+          "type"
+        ],
+        "type": "object"
+      },
       "event.cells_2eevents.output.CellEvent": {
         "description": "Bus event (§15.3), fanned out by the RPC bridge. Hints only; clients re-read (§8.7).",
         "oneOf": [
@@ -59377,6 +59433,10 @@
         ],
         "type": "object"
       },
+      "method.artifact.output.WebViewStateReply": {
+        "description": "Result of `web_view_state`: `{}` (209 §4.4).",
+        "type": "object"
+      },
       "method.artifact.receiver.ArchiveEntry": {
         "description": "One member, as its header describes it. `path` is display data: never a\nlink target or a filesystem path (28).",
         "properties": {
@@ -59851,6 +59911,10 @@
           "snippet",
           "ranges"
         ],
+        "type": "object"
+      },
+      "method.artifact.receiver.WebViewStateReply": {
+        "description": "Result of `web_view_state`: `{}` (209 §4.4).",
         "type": "object"
       },
       "method.autoresearch.input.AutoresearchConfig": {
@@ -123344,6 +123408,299 @@
           "structured"
         ],
         "type": "object"
+      },
+      "method.webprofile.input.Cookie": {
+        "description": "One cookie with every attribute (209 D1, §4.1). `value` is a credential: `Debug` redacts it.",
+        "properties": {
+          "domain": {
+            "description": "Domain as the store gives it (a leading `.` is tolerated and ignored for grouping).",
+            "type": "string"
+          },
+          "expires": {
+            "default": null,
+            "description": "Unix seconds, or `null` for a session cookie.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "host_only": {
+            "default": false,
+            "description": "`true`: sent to `domain` only, not its subdomains (`__Host-` cookies need it).",
+            "type": "boolean"
+          },
+          "http_only": {
+            "default": false,
+            "description": "`HttpOnly`.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Cookie name.",
+            "type": "string"
+          },
+          "partitioned": {
+            "default": false,
+            "description": "CHIPS `Partitioned`; kept although WebKit cannot carry the partition key (209 D1).",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Path.",
+            "type": "string"
+          },
+          "same_site": {
+            "default": "",
+            "description": "`\"Strict\" | \"Lax\" | \"None\" | \"\"`.",
+            "type": "string"
+          },
+          "secure": {
+            "default": false,
+            "description": "`Secure`.",
+            "type": "boolean"
+          },
+          "value": {
+            "description": "Cookie value (never logged).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "domain",
+          "path"
+        ],
+        "type": "object"
+      },
+      "method.webprofile.input.CookieChange": {
+        "description": "One change of a push (209 §4.4): `{op:\"set\", cookie}` | `{op:\"remove\", name, domain, path}`.",
+        "oneOf": [
+          {
+            "description": "Set (replace) the cookie of this key; an `expires` in the past removes it.",
+            "properties": {
+              "cookie": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/method.webprofile.input.Cookie"
+                  }
+                ],
+                "description": "The cookie."
+              },
+              "op": {
+                "const": "set",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "cookie"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Remove the cookie of this key.",
+            "properties": {
+              "domain": {
+                "description": "Domain.",
+                "type": "string"
+              },
+              "name": {
+                "description": "Cookie name.",
+                "type": "string"
+              },
+              "op": {
+                "const": "remove",
+                "type": "string"
+              },
+              "path": {
+                "description": "Path.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "name",
+              "domain",
+              "path"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "method.webprofile.input.OriginStorage": {
+        "description": "One origin's localStorage snapshot (209 §4.1 `origins[]`, §4.4 `storage[]`). Values redacted in `Debug`.",
+        "properties": {
+          "captured_ms": {
+            "default": 0,
+            "description": "Unix ms of the capture; a newer capture replaces an older one, an older one is ignored.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "local_storage": {
+            "description": "`[key, value]` pairs in the page's order.",
+            "items": {
+              "items": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "origin": {
+            "description": "`scheme://host[:port]`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "origin",
+          "local_storage"
+        ],
+        "type": "object"
+      },
+      "method.webprofile.output.PushResult": {
+        "description": "`web_profile_push`'s result (209 §4.4).",
+        "properties": {
+          "applied": {
+            "description": "Changes and snapshots applied.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "epoch": {
+            "description": "The profile epoch the rows were written under.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sites": {
+            "description": "Sites whose row was written, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "applied",
+          "sites",
+          "epoch"
+        ],
+        "type": "object"
+      },
+      "method.webprofile.output.SiteSummary": {
+        "description": "One entry of `web_profile_sites` (209 §4.4): counts, never values.",
+        "properties": {
+          "cookies": {
+            "description": "Cookies kept.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "origins": {
+            "description": "Origins with a localStorage snapshot.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "site": {
+            "description": "Lower-case eTLD+1.",
+            "type": "string"
+          },
+          "updated_ms": {
+            "description": "Unix ms of the row's last write.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "writer": {
+            "description": "`tile:<device>` | `obscura:<engine>`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "site",
+          "cookies",
+          "origins",
+          "updated_ms",
+          "writer"
+        ],
+        "type": "object"
+      },
+      "method.webprofile.receiver.PushResult": {
+        "description": "`web_profile_push`'s result (209 §4.4).",
+        "properties": {
+          "applied": {
+            "description": "Changes and snapshots applied.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "epoch": {
+            "description": "The profile epoch the rows were written under.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sites": {
+            "description": "Sites whose row was written, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "applied",
+          "sites",
+          "epoch"
+        ],
+        "type": "object"
+      },
+      "method.webprofile.receiver.SiteSummary": {
+        "description": "One entry of `web_profile_sites` (209 §4.4): counts, never values.",
+        "properties": {
+          "cookies": {
+            "description": "Cookies kept.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "origins": {
+            "description": "Origins with a localStorage snapshot.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "site": {
+            "description": "Lower-case eTLD+1.",
+            "type": "string"
+          },
+          "updated_ms": {
+            "description": "Unix ms of the row's last write.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "writer": {
+            "description": "`tile:<device>` | `obscura:<engine>`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "site",
+          "cookies",
+          "origins",
+          "updated_ms",
+          "writer"
+        ],
+        "type": "object"
       }
     }
   },
@@ -143335,6 +143692,148 @@
       "x-theuth-owner": "talk"
     },
     {
+      "name": "web_profile_push",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "device",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "epoch",
+          "required": true,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "changes",
+          "required": true,
+          "schema": {
+            "items": {
+              "$ref": "#/components/schemas/method.webprofile.input.CookieChange"
+            },
+            "type": "array"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "storage",
+          "required": false,
+          "schema": {
+            "items": {
+              "$ref": "#/components/schemas/method.webprofile.input.OriginStorage"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.webprofile.output.PushResult"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.webprofile.receiver.PushResult"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "webprofile"
+    },
+    {
+      "name": "web_profile_sites",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.webprofile.output.SiteSummary"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.webprofile.receiver.SiteSummary"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "webprofile"
+    },
+    {
+      "name": "web_view_state",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.artifact.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "view",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "url",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "title",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "loading",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.artifact.output.WebViewStateReply"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.artifact.receiver.WebViewStateReply"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "artifact"
+    },
+    {
       "name": "withdraw",
       "paramStructure": "by-position",
       "params": [
@@ -143604,6 +144103,16 @@
           "$ref": "#/components/schemas/event.browser_2eevents.output.BrowserEvent"
         },
         "topic": "browser.events",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.browser_2eweb_2dprofile_2dchanged.receiver.WebProfileChanged"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.browser_2eweb_2dprofile_2dchanged.output.WebProfileChanged"
+        },
+        "topic": "browser.web-profile-changed",
         "version": 1
       },
       {
@@ -144045,7 +144554,8 @@
       "tools",
       "update",
       "voice",
-      "web"
+      "web",
+      "webprofile"
     ],
     "protocolVersion": {
       "major": 1,
