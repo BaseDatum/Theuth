@@ -11,11 +11,11 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ACTION_STEPS, BUILTIN_SPECS, LIMITS } from "@openuidev/lang-core";
 import {
   CURATED_COMPONENTS,
   LIBRARY_ROOT,
   buildCuratedLibrary,
+  promptOptions,
   reactiveProps,
 } from "../src/library.ts";
 import type { GeneratedLibrary } from "../src/generated-types.ts";
@@ -41,9 +41,14 @@ const library = buildCuratedLibrary();
 const spec = library.toSpec();
 const schema = library.toJSONSchema();
 const reactive = reactiveProps(library);
-const components = [...CURATED_COMPONENTS];
+const components = Object.keys(library.components);
+if (JSON.stringify(components) !== JSON.stringify(CURATED_COMPONENTS))
+  throw new Error(
+    `library components differ from CURATED_COMPONENTS (order is hashed):\n${components.join(",")}`,
+  );
 
-// Closure check: every $ref in the schema must name a curated component.
+// Closure check: every $ref in the schema must name a curated component (or the shared `ActionExpression`).
+const SHARED_DEFS = ["ActionExpression"];
 const refs = new Set<string>();
 (function walk(node: unknown): void {
   if (Array.isArray(node)) return node.forEach(walk);
@@ -56,20 +61,20 @@ const refs = new Set<string>();
 })(schema);
 const defs = Object.keys(schema.$defs ?? {});
 const missing = [...refs].filter(
-  (r) => !components.includes(r as (typeof components)[number]),
+  (r) => !components.includes(r) && !SHARED_DEFS.includes(r),
 );
 if (missing.length)
   throw new Error(
     `schema references non-curated components: ${missing.join(", ")}`,
   );
 const extra = defs.filter(
-  (d) => !components.includes(d as (typeof components)[number]),
+  (d) => !components.includes(d) && !SHARED_DEFS.includes(d),
 );
 if (extra.length)
   throw new Error(
     `schema $defs contain unexpected entries: ${extra.join(", ")}`,
   );
-if (defs.length !== components.length)
+if (defs.filter((d) => components.includes(d)).length !== components.length)
   throw new Error(
     `schema $defs (${defs.length}) != curated components (${components.length})`,
   );
@@ -81,7 +86,6 @@ const hashInput = {
   components,
   schema,
   reactive,
-  limits: LIMITS,
 };
 const hash = sha256(JSON.stringify(hashInput));
 
@@ -89,7 +93,6 @@ const generated: GeneratedLibrary = {
   hash,
   pins,
   patches,
-  limits: { ...LIMITS },
   root: LIBRARY_ROOT,
   components,
   componentGroups: spec.componentGroups ?? [],
@@ -98,57 +101,32 @@ const generated: GeneratedLibrary = {
   schema,
 };
 
-// ── catalog: compact named signatures for the prompt/skill ──
-const lines: string[] = [];
-lines.push(
+// ── catalog: the apps skill's component reference, from upstream's own prompt generation ──
+// `library.prompt()` renders signatures, group notes, built-in + library functions and the action steps (custom ones
+// included) in the 1.x wording; the skill supplies its own syntax/Query/Mutation guidance, so only those sections are
+// kept, followed by the filtered upstream rules and examples (`promptOptions`).
+const prompt = library.prompt({ ...promptOptions, toolCalls: true, bindings: true });
+const section = (title: string): string => {
+  const hit = prompt.split(/\n(?=## )/).find((s) => s.startsWith(`## ${title}`));
+  if (!hit) throw new Error(`upstream prompt has no "## ${title}" section`);
+  return hit.trimEnd();
+};
+const lines: string[] = [
   `# theuth apps component catalog (library ${hash.slice(0, 12)}) — root statement: root = ${LIBRARY_ROOT}([...])`,
-);
-lines.push(
-  "Positional arguments follow each signature; `name?` is optional; `$binding<T>` accepts a $state variable.",
-);
-lines.push("");
-for (const group of generated.componentGroups) {
-  lines.push(`## ${group.name}`);
-  for (const name of group.components) {
-    const sig = spec.components[name];
-    if (!sig) continue;
-    lines.push(
-      sig.description ? `${sig.signature} — ${sig.description}` : sig.signature,
-    );
-  }
-  for (const note of group.notes ?? []) lines.push(note);
-  lines.push("");
-}
-const grouped = new Set(generated.componentGroups.flatMap((g) => g.components));
-const ungrouped = components.filter((c) => !grouped.has(c));
-if (ungrouped.length) {
-  lines.push("## Other");
-  for (const name of ungrouped) {
-    const sig = spec.components[name]!;
-    lines.push(
-      sig.description ? `${sig.signature} — ${sig.description}` : sig.signature,
-    );
-  }
-  lines.push("");
-}
-lines.push("## Data and actions");
-lines.push(
-  '$name = literal — reactive state; Query("tool", {args}, defaults, refreshSeconds?) — read; Mutation("tool", {args}) — runs only from an action; results expose .status/.data/.error',
-);
-lines.push(
-  "Button(label, Action([steps])) steps: " +
-    Object.keys(ACTION_STEPS)
-      .map((s) => `@${s}`)
-      .join(", ") +
-    " — @Run(mutationOrQuery), @Set($var, value), @Reset($var...), @OpenUrl(url), @ToAssistant(message, context?)",
-);
-lines.push("@Each(array, item, template) — repeat a component per item");
-for (const b of Object.values(BUILTIN_SPECS))
-  lines.push(`@${b.signature} — ${b.description}`);
-lines.push("");
-lines.push(
-  `Limits: ${LIMITS.sourceBytes} source bytes, ${LIMITS.statements} statements, nesting depth ${LIMITS.depth}, ${LIMITS.expandedNodes} rendered nodes.`,
-);
+  "",
+  section("Component Signatures"),
+  "",
+  section("Built-in Functions"),
+  "",
+  section("Action — Button Behavior"),
+  "",
+  "## Rules",
+  ...promptOptions.additionalRules.map((r) => `- ${r}`),
+  "",
+  "## Examples",
+  "",
+  ...promptOptions.examples.flatMap((e) => [e, ""]),
+];
 
 mkdirSync(outDir, { recursive: true });
 writeFileSync(

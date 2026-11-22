@@ -12,14 +12,6 @@ export interface GeneratedLibrary {
   pins: Record<string, string>;
   /** sha256 per in-tree patch file. */
   patches: Record<string, string>;
-  limits: {
-    sourceBytes: number;
-    statements: number;
-    depth: number;
-    expandedNodes: number;
-    evalOps: number;
-    evalNodes: number;
-  };
   root: string;
   /** Ordered component names (order participates in the hash). */
   components: string[];

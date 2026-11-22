@@ -39,6 +39,7 @@ import {
   createProvider,
   previewPatch,
 } from "./lifecycle";
+import { copyToClipboard } from "./openui-actions";
 import { OpenUITheme } from "./openui-theme";
 import { useDark } from "./theme";
 
@@ -431,6 +432,10 @@ export default function AppHost({ session, artifact, draft }: AppViewProps) {
       if (typeof url === "string" && /^https?:\/\//i.test(url))
         window.open(url, "_blank", "noopener");
       else toast.error("Only http(s) links open from an app");
+      return;
+    }
+    if (ev.type === "CopyToClipboard") {
+      copyToClipboard(ev.params);
       return;
     }
     if (ev.type === "continue_conversation") {

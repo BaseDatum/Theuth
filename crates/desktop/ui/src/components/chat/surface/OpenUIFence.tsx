@@ -11,6 +11,7 @@ import { AppRenderer, type AppRendererProps } from '@theuth/apps/renderer'
 import { useContext, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import type { CustomRendererProps } from 'streamdown'
+import { copyToClipboard } from '@/components/apps/openui-actions'
 import { OpenUITheme } from '@/components/apps/openui-theme'
 import { useDark } from '@/components/apps/theme'
 import { Button } from '@/components/ui/button'
@@ -36,7 +37,8 @@ const onAction: NonNullable<AppRendererProps['onAction']> = (ev) => {
     const url = ev.params.url
     if (typeof url === 'string' && /^https?:\/\//i.test(url)) window.open(url, '_blank', 'noopener')
     else toast.error('Only http(s) links open from an app')
-  } else if (ev.type === 'continue_conversation') toast(INERT)
+  } else if (ev.type === 'CopyToClipboard') copyToClipboard(ev.params)
+  else if (ev.type === 'continue_conversation') toast(INERT)
 }
 
 /** The artifact name: the first `TextContent("## …")` heading slugged, else `reply-<short id>`. */

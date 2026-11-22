@@ -35,5 +35,3 @@ export type {
   StatementKind,
   ToolSnapshot,
 } from "./protocol.ts";
-export { LIMITS, LimitError, createEvalBudget } from "@openuidev/lang-core";
-export type { EvalBudget, LimitKind } from "@openuidev/lang-core";

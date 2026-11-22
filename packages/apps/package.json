@@ -46,7 +46,6 @@
   },
   "trustedDependencies": [],
   "patchedDependencies": {
-    "@openuidev/lang-core@1.1.1": "patches/@openuidev%2Flang-core@1.1.1.patch",
     "@openuidev/react-lang@1.1.1": "patches/@openuidev%2Freact-lang@1.1.1.patch"
   }
 }

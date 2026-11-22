@@ -98,10 +98,10 @@ describe("committed bundle in a bare JS context", () => {
     // No polyfill at all: loading works, and every case matches once TextEncoder alone is present.
     const { entry } = bare({ TextEncoder }, false);
     for (const c of CASES) expect([c.name, entry.call(c.line)]).toEqual([c.name, call(c.line)]);
-    // Without it, the UTF-8 caps throw (the line cap for any line ≥ MAX_LINE_BYTES/3 UTF-16 units, the
-    // source cap for any source ≥ sourceBytes/3).
+    // Without it, the UTF-8 line cap throws for any line over MAX_LINE_BYTES/3 UTF-16 units.
     const { entry: none } = bare({}, false);
-    expect(() => none.call(CASES.find((c) => c.name === "oversized source")!.line)).toThrow();
+    const long = JSON.stringify({ id: "o", op: "check", source: "a".repeat(MAX_LINE_BYTES / 3 + 10), tools: [] });
+    expect(() => none.call(long)).toThrow();
   });
 
   test("telemetry stays off: no fetch is attempted", async () => {

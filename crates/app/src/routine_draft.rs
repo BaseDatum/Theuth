@@ -361,7 +361,7 @@ pub fn source(
         })
         .collect();
     let cards: Vec<String> = (1..=routines.len()).map(|i| format!("c{i}")).collect();
-    let mut out = format!("root = Stack([intro, {}])\n", cards.join(", "));
+    let mut out = format!("root = Card([intro, drafts], \"clear\")\ndrafts = Stack([{}])\n", cards.join(", "));
     let n = routines.len();
     let s = if n == 1 { "" } else { "s" };
     let intro = format!(
@@ -419,15 +419,15 @@ pub fn source(
             "{c}_buttons = Buttons([{c}_paused, {c}_start, {c}_form])\n"
         ));
         out.push_str(&format!(
-            "{c}_paused = Button(\"Create paused\", Action([@ToAssistant({})]))\n",
+            "{c}_paused = Button(\"Create paused\", @ToAssistant({}))\n",
             lit(&format!("routine draft {id}: create paused"))
         ));
         out.push_str(&format!(
-            "{c}_start = Button(\"Create and start\", Action([@ToAssistant({})]), \"secondary\")\n",
+            "{c}_start = Button(\"Create and start\", @ToAssistant({}), \"secondary\")\n",
             lit(&format!("routine draft {id}: create and start"))
         ));
         out.push_str(&format!(
-            "{c}_form = Button(\"Open in form\", Action([@ToAssistant({})]), \"tertiary\")\n",
+            "{c}_form = Button(\"Open in form\", @ToAssistant({}), \"tertiary\")\n",
             lit(&format!("routine draft {id}: open in form"))
         ));
     }
@@ -491,11 +491,11 @@ mod tests {
         let drafts = vec![watcher("argo"), draft("brief")];
         let (src, ids) = source(&drafts, &existing, "ab12");
         assert_eq!(ids, ["r1-ab12", "r2-ab12"]);
-        assert!(src.starts_with("root = Stack([intro, c1, c2])\n"));
+        assert!(src.starts_with("root = Card([intro, drafts], \"clear\")\ndrafts = Stack([c1, c2])\n"));
         for (id, c) in ids.iter().zip(["c1", "c2"]) {
-            assert!(src.contains(&format!("{c}_paused = Button(\"Create paused\", Action([@ToAssistant(\"routine draft {id}: create paused\")]))")), "{src}");
-            assert!(src.contains(&format!("{c}_start = Button(\"Create and start\", Action([@ToAssistant(\"routine draft {id}: create and start\")]), \"secondary\")")), "{src}");
-            assert!(src.contains(&format!("{c}_form = Button(\"Open in form\", Action([@ToAssistant(\"routine draft {id}: open in form\")]), \"tertiary\")")), "{src}");
+            assert!(src.contains(&format!("{c}_paused = Button(\"Create paused\", @ToAssistant(\"routine draft {id}: create paused\"))")), "{src}");
+            assert!(src.contains(&format!("{c}_start = Button(\"Create and start\", @ToAssistant(\"routine draft {id}: create and start\"), \"secondary\")")), "{src}");
+            assert!(src.contains(&format!("{c}_form = Button(\"Open in form\", @ToAssistant(\"routine draft {id}: open in form\"), \"tertiary\")")), "{src}");
             assert!(
                 src.contains(&format!("\"routine draft {id}\"")),
                 "the header names the draft"

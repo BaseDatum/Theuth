@@ -298,7 +298,7 @@ pub fn source(
         })
         .collect();
     let cards: Vec<String> = (1..=agents.len()).map(|i| format!("c{i}")).collect();
-    let mut out = format!("root = Stack([intro, {}])\n", cards.join(", "));
+    let mut out = format!("root = Card([intro, drafts], \"clear\")\ndrafts = Stack([{}])\n", cards.join(", "));
     let n = agents.len();
     let s = if n == 1 { "" } else { "s" };
     let intro = match desk {
@@ -389,15 +389,15 @@ pub fn source(
             ("Hire", "hire")
         };
         out.push_str(&format!(
-            "{c}_hire = Button(\"{label}\", Action([@ToAssistant({})]))\n",
+            "{c}_hire = Button(\"{label}\", @ToAssistant({}))\n",
             lit(&format!("agent draft {id}: {choice}"))
         ));
         out.push_str(&format!(
-            "{c}_paused = Button(\"Hire paused\", Action([@ToAssistant({})]), \"secondary\")\n",
+            "{c}_paused = Button(\"Hire paused\", @ToAssistant({}), \"secondary\")\n",
             lit(&format!("agent draft {id}: hire paused"))
         ));
         out.push_str(&format!(
-            "{c}_discard = Button(\"Discard\", Action([@ToAssistant({})]), \"tertiary\", \"destructive\")\n",
+            "{c}_discard = Button(\"Discard\", @ToAssistant({}), \"tertiary\", \"destructive\")\n",
             lit(&format!("agent draft {id}: discard"))
         ));
     }
@@ -443,10 +443,10 @@ mod tests {
         ];
         let (src, ids) = source(&drafts, &existing, "ab12", None);
         assert_eq!(ids, ["a1-ab12", "a2-ab12"]);
-        assert!(src.starts_with("root = Stack([intro, c1, c2])\n"));
+        assert!(src.starts_with("root = Card([intro, drafts], \"clear\")\ndrafts = Stack([c1, c2])\n"));
         for (id, c) in ids.iter().zip(["c1", "c2"]) {
-            assert!(src.contains(&format!("{c}_paused = Button(\"Hire paused\", Action([@ToAssistant(\"agent draft {id}: hire paused\")]), \"secondary\")")), "{src}");
-            assert!(src.contains(&format!("{c}_discard = Button(\"Discard\", Action([@ToAssistant(\"agent draft {id}: discard\")]), \"tertiary\", \"destructive\")")), "{src}");
+            assert!(src.contains(&format!("{c}_paused = Button(\"Hire paused\", @ToAssistant(\"agent draft {id}: hire paused\"), \"secondary\")")), "{src}");
+            assert!(src.contains(&format!("{c}_discard = Button(\"Discard\", @ToAssistant(\"agent draft {id}: discard\"), \"tertiary\", \"destructive\")")), "{src}");
             assert!(
                 src.contains(&format!("\"agent draft {id}\"")),
                 "the header names the draft"
@@ -454,11 +454,11 @@ mod tests {
         }
         assert!(
             src.contains(
-                "c1_hire = Button(\"Hire\", Action([@ToAssistant(\"agent draft a1-ab12: hire\")]))"
+                "c1_hire = Button(\"Hire\", @ToAssistant(\"agent draft a1-ab12: hire\"))"
             ),
             "{src}"
         );
-        assert!(src.contains("c2_hire = Button(\"Replace\", Action([@ToAssistant(\"agent draft a2-ab12: replace\")]))"), "{src}");
+        assert!(src.contains("c2_hire = Button(\"Replace\", @ToAssistant(\"agent draft a2-ab12: replace\"))"), "{src}");
         assert!(src.contains("c2 = Card([c2_head, c2_charter, c2_meta, c2_note, c2_buttons])"));
         assert!(
             src.contains("`cto` is already on the roster — *Replace* overwrites agents/cto.md")

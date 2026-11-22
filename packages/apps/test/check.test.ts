@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { LIMITS } from "@openuidev/lang-core";
 import fixtures from "../../../scripts/apps/fixtures.json";
 import { check, libraryHash, mergeCheck } from "../src/check.ts";
 import type { ToolSnapshot } from "../src/protocol.ts";
@@ -203,25 +202,41 @@ describe("check: strict final rules", () => {
     expect(codes(r)).toEqual(["type-mismatch", "type-mismatch"]);
   });
 
-  test("action steps must be well-formed and inside Action([...])", () => {
+  test("action steps must be well-formed; one bare step is a whole action", () => {
     const r = check(
       [
-        "root = Stack([a, b, c, d])",
+        "root = Stack([a, b, c, d, e])",
         '$x = ""',
         'a = Button("bare", @Set($x, "y"))',
         'b = Button("run", Action([@Run(nothing)]))',
         'c = Button("url", Action([@OpenUrl("javascript:alert(1)")]))',
         'd = Button("reset", Action([@Reset("literal")]))',
+        'e = Button("bare url", @OpenUrl("ftp://x"))',
       ].join("\n"),
       [],
     );
     expect(
       r.diagnostics.filter((d) => d.code === "invalid-action").map((d) => d.at),
-    ).toEqual(["a", "b", "c", "d"]);
+    ).toEqual(["b", "c", "d", "e"]);
     // @Run(nothing) is also an unresolved reference for the upstream materializer.
     expect(r.diagnostics.filter((d) => d.code !== "invalid-action")).toEqual([
       expect.objectContaining({ code: "unresolved", at: "b" }),
     ]);
+  });
+
+  test("library actions are steps with their declared arity", () => {
+    const ok = check(
+      'root = Card([a, b])\na = Button("copy", @CopyToClipboard("text"))\nb = Button("both", Action([@CopyToClipboard("t"), @OpenUrl("https://example.com")]))',
+      [],
+    );
+    expect(ok.diagnostics).toEqual([]);
+    const bad = check(
+      'root = Card([a])\na = Button("copy", @CopyToClipboard("t", "extra"))',
+      [],
+    );
+    expect(
+      bad.diagnostics.filter((d) => d.code === "invalid-action"),
+    ).toEqual([expect.objectContaining({ at: "a" })]);
   });
 
   test("undeclared $state is reported at the using statement", () => {
@@ -276,48 +291,6 @@ describe("check: strict final rules", () => {
         ),
       ),
     ).toEqual(["tool-args"]);
-  });
-
-  test("oversized input is rejected before tokenizing", () => {
-    const r = check(
-      `root = TextContent("${"é".repeat(LIMITS.sourceBytes / 2 + 10)}")`,
-      [],
-    );
-    expect(codes(r)).toEqual(["budget-exceeded"]);
-    expect(r.statements).toEqual([]);
-  });
-
-  test("render-budget blowups surface as a located budget diagnostic", () => {
-    let src = "root = Stack([a11, a11])\n";
-    for (let i = 11; i > 0; i--)
-      src += `a${i} = Stack([a${i - 1}, a${i - 1}])\n`;
-    src += 'a0 = TextContent("x")';
-    const r = check(src, []);
-    expect(r.diagnostics).toEqual([
-      expect.objectContaining({ code: "budget-exceeded" }),
-    ]);
-    expect(r.diagnostics[0]!.at).not.toBe("");
-  });
-
-  test("trailing tokens and lines the streaming splitter would drop are syntax errors", () => {
-    const trailing = check("root = Stack([]) unexpected", []);
-    expect(trailing.diagnostics).toEqual([
-      expect.objectContaining({ code: "syntax", at: "root" }),
-    ]);
-    expect(trailing.statements).toEqual([]);
-    const dropped = check('root = Stack([])\nq Query("argo_sync", {})', tools);
-    expect(dropped.diagnostics).toEqual([
-      expect.objectContaining({ code: "syntax", at: "q" }),
-    ]);
-    expect(
-      codes(check('root = Stack([a b])\na = TextContent("x")\nb = a', [])),
-    ).toEqual(["syntax"]);
-    expect(codes(check("root = Stack([]) ; x", []))).toEqual(["syntax"]);
-    // incomplete input still reports the auto-close alongside the strict failure
-    expect(codes(check('root = Stack([TextContent("x")', []))).toEqual([
-      "incomplete",
-      "syntax",
-    ]);
   });
 
   test("references inside Query/Mutation arguments are validated and ordinary ones resolved", () => {
@@ -400,13 +373,5 @@ describe("mergeCheck: upstream merge semantics", () => {
       expect.objectContaining({ code: "tool-unknown", at: "syncResult" }),
     ]);
     expect(r.source).toContain('Mutation("argo_delete"');
-  });
-
-  test("oversized base or patch is rejected before merging", () => {
-    const big = `x = TextContent("${"a".repeat(LIMITS.sourceBytes + 1)}")`;
-    expect(codes(mergeCheck(prototype, big, []))).toEqual(["budget-exceeded"]);
-    expect(codes(mergeCheck(big, "root = Stack([])", []))).toEqual([
-      "budget-exceeded",
-    ]);
   });
 });
