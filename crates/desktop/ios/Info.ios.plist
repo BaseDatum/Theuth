@@ -19,5 +19,13 @@
     <key>UISceneConfigurations</key>
     <dict/>
   </dict>
+  <!-- 209 P2: the web view tile loads plain-HTTP pages at named hosts (a dev server at
+       http://mac.lan:3000); without this WebKit refuses them with -1022. Web content only: the app's
+       own networking stays under App Transport Security. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoadsInWebContent</key>
+    <true/>
+  </dict>
 </dict>
 </plist>
