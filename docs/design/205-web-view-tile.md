@@ -182,6 +182,14 @@ receipt's first line (the transcript store keeps no structured result), so that 
 is the only chat pane beside a web tile has no close button. A left-most web tile carries the sidebar toggle,
 the traffic-light inset and the drag region.
 
+**Header globe (2026-11-22).** The session header's globe lists every browser the chat has
+(`components/chat/BrowserTargets.tsx`): the agent's headless browser while one runs, then one entry per frame id
+of the transcript's `show_web` receipts (a closed tile is gone from the store, its receipt keeps it re-openable),
+then frames the store holds for the chat without a receipt yet; the store's live address and title win. One
+target: a click opens it (the card's Open for a page, the `browser` tile or `BrowserLive` for the agent's). Several:
+a click or a right-click opens a menu of them. Where nothing tiles, a page opens full screen on a phone with
+native views, else at `/web/$id`.
+
 **Not verified.** Nobody has run the native layer: coordinates under the overlay title bar, stacking above the
 main webview, `hide`/`show`, `reparent` keeping the page, `on_new_window` and title events for child webviews,
 and the copied `asset:` handler are read from source only. The separate data store needs macOS 14 or later;
