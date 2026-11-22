@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
 import type { GraphNode } from '@/rpc/bindings/method.agent.output'
 import { GRAPH_FIXTURE, GRAPH_FIXTURE_ATTENTION as ATT, GRAPH_FIXTURE_NOW as NOW } from './fixture'
+import { STATUS, statusOf } from './encoding'
 import { type Lod, NodeBody } from './NodeBody'
 
 const node = (id: string): GraphNode => GRAPH_FIXTURE.nodes.find((n) => n.id === id) as GraphNode
@@ -25,13 +26,33 @@ test('full: r1.builder — approval text, badge 1, the danger ring, data attribu
 
 test('full: harness glyph for the claude child, eye mark for the observed one, remote chip, job counts', () => {
   const claude = render('r1.claude')
-  const theuth = render('r1.docs')
-  // The harness glyph is an extra svg beside the state glyph: present for claude, absent for a theuth child.
-  expect((claude.match(/<svg/g) ?? []).length).toBeGreaterThan((theuth.match(/<svg/g) ?? []).length)
+  const bare = renderToStaticMarkup(createElement(NodeBody, { node: { ...node('r1.claude'), agent: null }, lod: 'full', attention: 0, highlighted: false, selected: false, opacity: 1, now: NOW }))
+  // The harness glyph is an extra svg beside the status chip: present with an agent, absent without.
+  expect((claude.match(/<svg/g) ?? []).length).toBeGreaterThan((bare.match(/<svg/g) ?? []).length)
   expect(render('r1.claude.explore')).toContain('aria-label="watch-only"')
   expect(text(render('r6'))).toContain('remote · mini')
   expect(text(render('r1.builder.tests'))).toContain('waiting on a job · opus-5.5 · 2 jobs · 3m')
   expect(render('r1.docs')).not.toMatch(/ring-danger/)
+})
+
+test('every card carries its status and the status tone from the shared table (the legend reads the same table)', () => {
+  for (const n of GRAPH_FIXTURE.nodes) {
+    const key = statusOf(n)
+    for (const lod of ['full', 'compact', 'dot'] as const) {
+      const html = render(n.id, lod)
+      expect([n.id, lod, html.includes(`data-status="${key}"`), html.includes(`--node-tone:${STATUS[key].tone}`)]).toEqual([n.id, lod, true, true])
+    }
+  }
+  expect(statusOf(node('r1.builder'))).toBe('needs')
+  expect(statusOf(node('r1.builder.linter'))).toBe('waiting')
+  expect(statusOf(node('r1.docs'))).toBe('finished')
+  expect(statusOf(node('r1.claude'))).toBe('working')
+})
+
+test('root and desk cards carry their kind tag; children do not', () => {
+  expect(text(render('r7'))).toMatch(/desk$/)
+  expect(text(render('r2'))).toMatch(/chat$/)
+  expect(text(render('r1.docs'))).not.toMatch(/(desk|chat)$/)
 })
 
 test('compact: glyph, name and badge only; dot: no text at all', () => {

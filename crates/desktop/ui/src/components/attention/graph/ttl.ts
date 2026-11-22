@@ -98,22 +98,19 @@ export function visibleGraph(state: GraphState, attention: ReadonlyMap<string, n
     if (n.kind === 'peer') continue
     if (n.parent === null || !state.nodes.has(n.parent)) visit(n)
   }
-  // Boundary peers: shown while an edge joins them to a shown session and their own root TTL has not run out.
-  for (const n of state.nodes.values()) {
-    if (n.kind !== 'peer') continue
+  // Boundary peers: shown while an edge joins them to a shown session and their own root TTL has not run out. One pass
+  // over the edges (review U8): `out` holds only sessions here, so an end in it is a shown session.
+  const joined = new Set<string>()
+  for (const e of state.edges.values()) {
+    if (out.has(e.a)) joined.add(e.b)
+    if (out.has(e.b)) joined.add(e.a)
+  }
+  for (const id of joined) {
+    const n = state.nodes.get(id)
+    if (!n || n.kind !== 'peer') continue
     const ms = ttl.root_min * MIN
     const opacity = fadeOpacity(now - n.last_event_ms, ms)
-    if (opacity <= 0) continue
-    let joined = false
-    for (const e of state.edges.values()) {
-      const other = e.a === n.id ? e.b : e.b === n.id ? e.a : null
-      const v = other === null ? undefined : out.get(other)
-      if (v && v.node.kind !== 'peer') {
-        joined = true
-        break
-      }
-    }
-    if (joined) out.set(n.id, { node: n, opacity, pinned: false, ghost: false, attention: attention.get(n.id) ?? 0, expiresAt: n.last_event_ms + ms })
+    if (opacity > 0) out.set(n.id, { node: n, opacity, pinned: false, ghost: false, attention: attention.get(n.id) ?? 0, expiresAt: n.last_event_ms + ms })
   }
   const edgeMs = ttl.edge_min * MIN
   const edges: EdgeView[] = []

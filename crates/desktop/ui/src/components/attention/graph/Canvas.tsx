@@ -1,29 +1,35 @@
 // 208 §8.6: the React Flow canvas — the only importer of `@xyflow/react` and its CSS besides edges.tsx, loaded lazily by
-// Region.tsx so the library is its own chunk. Thin: positions, folds, dimming and edge handles come from elements.ts.
+// Region.tsx so the library is its own chunk. Thin: positions, folds, dimming, edge handles and the opening viewport
+// come from elements.ts; colours from encoding.ts.
 import '@xyflow/react/dist/style.css'
 import {
   Background,
   BackgroundVariant,
+  ControlButton,
   Controls,
   type Edge,
   Handle,
   MiniMap,
   type Node,
   type NodeProps,
+  NodeToolbar,
   Position,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
   type Viewport,
 } from '@xyflow/react'
-import { createContext, memo, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Scan } from 'lucide-react'
+import { memo, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { GraphPulse } from '@/rpc/bindings/event.agent_2egraph.output'
-import { canvasElements, lodOf } from './elements'
-import { MessageEdge, type Pulse, TreeEdge } from './edges'
+import { canvasElements, type Extent, initialViewport, lodOf } from './elements'
+import { EdgeMarkers, MessageEdge, type Pulse, TreeEdge } from './edges'
+import { MARK, STATUS, statusOf } from './encoding'
+import { HoverCard } from './HoverCard'
 import { BOX, layoutCache } from './layout'
-import { pathToRoot } from './selectors'
-import { type Lod, NodeBody } from './NodeBody'
+import { type Lod, LodContext, NodeBody } from './NodeBody'
 import type { GraphState } from './reducer'
+import { pathToRoot } from './selectors'
 import type { NodeView, VisibleGraph } from './ttl'
 
 export type CanvasProps = {
@@ -47,20 +53,19 @@ type FoldData = { count: number; parent: string }
 type SessionNodeType = Node<SessionData, 'session'>
 type FoldNodeType = Node<FoldData, 'fold'>
 
-const LodContext = createContext<Lod>('full')
 const HANDLE = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0, pointerEvents: 'none' } as const
-/** How long after mount the first `fitView` may still move the viewport (a "Show in graph" centring waits for it). */
+/** How long after mount the opening viewport may still move (a "Show in graph" centring waits for it). */
 const FIT_SETTLE_MS = 350
-/** Room kept above the top row by every fit, so no node sits under the region's top edge. */
-const TOP_ROOM = 48
-const FIT_PADDING = { top: `${TOP_ROOM}px`, bottom: '24px', x: '24px' } as const
-/** Opacity of nodes off the highlighted path: dimmed, labels still readable in both themes. */
-const DIM = 0.5
+/** Room kept above the top row by a path fit, so no node sits under the region's top edge. */
+const FIT_PADDING = { top: '48px', bottom: '24px', x: '24px' } as const
+const MOVE_MS = 300
 
 function Handles() {
   return (
     <>
       <Handle type="target" position={Position.Top} id="t" style={HANDLE} isConnectable={false} />
+      <Handle type="target" position={Position.Right} id="rt" style={HANDLE} isConnectable={false} />
+      <Handle type="source" position={Position.Top} id="ts" style={HANDLE} isConnectable={false} />
       <Handle type="source" position={Position.Bottom} id="b" style={HANDLE} isConnectable={false} />
       <Handle type="target" position={Position.Left} id="l" style={HANDLE} isConnectable={false} />
       <Handle type="source" position={Position.Right} id="r" style={HANDLE} isConnectable={false} />
@@ -80,10 +85,16 @@ const SessionNode = memo(function SessionNode({ data }: NodeProps<SessionNodeTyp
 })
 
 const FoldNode = memo(function FoldNode({ data }: NodeProps<FoldNodeType>) {
+  const lod = useContext(LodContext)
   return (
     <>
       <Handles />
-      <div className="flex h-16 w-[200px] items-center justify-center rounded-lg border border-dashed border-border-strong bg-layer-1 text-sm text-fg-secondary" data-node-id={`fold:${data.parent}`}>
+      <div
+        className="ag-node flex h-16 w-[200px] items-center justify-center gap-1.5 rounded-[10px] border border-dashed border-border-strong bg-layer-1 font-medium text-fg-secondary"
+        style={{ fontSize: lod === 'full' ? 13 : 20 }}
+        data-node-id={`fold:${data.parent}`}
+        title={MARK.fold.detail}
+      >
         +{data.count} finished
       </div>
     </>
@@ -105,16 +116,11 @@ const subscribeTheme = (cb: () => void) => {
   return () => o.disconnect()
 }
 
-/** Minimap fill: danger for attention, else the node's state tone. */
+/** Minimap fill: danger for a node that needs you (red ring), else its status tone. */
 function miniColor(n: Node): string {
   if (n.type !== 'session') return 'var(--color-border-strong)'
   const v = (n.data as SessionData).view
-  if (v.attention > 0) return 'var(--color-danger)'
-  const s = v.node.activity.state.state
-  if (s === 'running') return 'var(--color-project-malachite)'
-  if (s === 'approval' || s === 'awaiting') return 'var(--color-warning)'
-  if (s === 'error') return 'var(--color-danger)'
-  return 'var(--color-fg-tertiary)'
+  return v.attention > 0 ? MARK.ring.tone : STATUS[statusOf(v.node)].tone
 }
 
 function Flow(p: CanvasProps) {
@@ -123,6 +129,8 @@ function Flow(p: CanvasProps) {
   const dark = useSyncExternalStore(subscribeTheme, () => document.documentElement.classList.contains('dark'))
   const [lod, setLod] = useState<Lod>('full')
   const [openFolds, setOpenFolds] = useState<ReadonlySet<string>>(() => new Set())
+  const [hover, setHover] = useState<string | null>(null)
+  const box = useRef<HTMLDivElement>(null)
   const cache = useRef(layoutCache())
   const slots = useRef<ReadonlyMap<string, number> | null>(null)
   const fitSeen = useRef(p.fitNonce)
@@ -132,11 +140,39 @@ function Flow(p: CanvasProps) {
     [p.state, p.view, p.highlight, openFolds, repack],
   )
   slots.current = els.slots
+  const extent = useRef<Extent>(els.extent)
+  extent.current = els.extent
+
+  /** The whole drawing (Fit, the Controls' fit) or the opening view (readable rows, the first tree whole). */
+  const place = (all: boolean, duration: number) => {
+    const el = box.current
+    if (!el) return
+    void rf.setViewport(initialViewport(extent.current, el.clientWidth, el.clientHeight, all ? 0.1 : undefined), { duration })
+  }
+  const placeRef = useRef(place)
+  placeRef.current = place
+  // Which placement the view still follows when the canvas resizes (full screen, the resize handle, the window): the
+  // opening view, Fit's whole drawing, or none once the user panned/zoomed or "Show in graph" moved it.
+  const auto = useRef<'open' | 'all' | null>('open')
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    let size = `${el.clientWidth}x${el.clientHeight}`
+    const o = new ResizeObserver(() => {
+      const next = `${el.clientWidth}x${el.clientHeight}`
+      if (next === size) return
+      size = next
+      if (auto.current) placeRef.current(auto.current === 'all', 0)
+    })
+    o.observe(el)
+    return () => o.disconnect()
+  }, [])
   useEffect(() => {
     if (fitSeen.current === p.fitNonce) return
     fitSeen.current = p.fitNonce
-    requestAnimationFrame(() => void rf.fitView({ padding: FIT_PADDING, duration: reduced ? 0 : 300 }))
-  }, [p.fitNonce, rf, reduced])
+    auto.current = 'all'
+    requestAnimationFrame(() => placeRef.current(true, reduced ? 0 : MOVE_MS))
+  }, [p.fitNonce, reduced])
 
   // Pulses: each new one runs once along its edge (a result up the tree edge when it joins child and parent).
   const seen = useRef(new Set<GraphPulse>(p.state.pulses))
@@ -178,23 +214,10 @@ function Flow(p: CanvasProps) {
     if (at) void rf.setCenter(at.x + BOX.w / 2, at.y + BOX.h / 2, { zoom: rf.getZoom(), duration: reduced ? 0 : 400 })
   }, [p.state, p.follow, els.pos, rf, reduced, running])
 
-  // The first fit is clamped to the compact zoom, so a tall forest can overflow: once it settled, pull the top row
-  // below the region's top edge (never under the strip). Only moves when the top is cut.
-  useEffect(() => {
-    const t = setTimeout(() => {
-      const ns = rf.getNodes()
-      if (ns.length === 0) return
-      const b = rf.getNodesBounds(ns)
-      const vp = rf.getViewport()
-      if (b.y * vp.zoom + vp.y < TOP_ROOM) void rf.setViewport({ ...vp, y: TOP_ROOM - b.y * vp.zoom })
-    }, FIT_SETTLE_MS)
-    return () => clearTimeout(t)
-  }, [rf])
-
   // Show in graph: fit the whole path root → node, never zooming in — once per nonce. A highlight alone never moves
-  // the viewport. A canvas that mounts because of the click (the region was collapsed) runs its first fit in its first
-  // frames; the centring waits until FIT_SETTLE_MS after mount so the fit does not override it. Positions are read at
-  // that moment (refs), so later moves do not re-centre.
+  // the viewport. A canvas that mounts because of the click (the region was collapsed) places its opening view first;
+  // the centring waits until FIT_SETTLE_MS after mount so that does not override it. Positions are read at that moment
+  // (refs), so later moves do not re-centre.
   const mountedAt = useRef(performance.now())
   const posRef = useRef(els.pos)
   posRef.current = els.pos
@@ -208,7 +231,8 @@ function Flow(p: CanvasProps) {
     const t = setTimeout(() => {
       const path = pathToRoot(nodesRef.current, f.session).filter((id) => posRef.current.has(id))
       if (path.length === 0) return
-      void rf.fitView({ nodes: path.map((id) => ({ id })), padding: FIT_PADDING, maxZoom: rf.getZoom(), minZoom: 0.1, duration: reduced ? 0 : 300 })
+      auto.current = null
+      void rf.fitView({ nodes: path.map((id) => ({ id })), padding: FIT_PADDING, maxZoom: rf.getZoom(), minZoom: 0.1, duration: reduced ? 0 : MOVE_MS })
     }, wait)
     return () => clearTimeout(t)
     // Only a new nonce re-centres.
@@ -218,7 +242,7 @@ function Flow(p: CanvasProps) {
     () =>
       els.nodes.map((n) =>
         n.type === 'fold'
-          ? { id: n.id, type: 'fold', position: n.pos, data: { count: n.count, parent: n.parent }, draggable: false, selectable: true, style: { opacity: n.dim ? DIM : 1 } }
+          ? { id: n.id, type: 'fold', position: n.pos, data: { count: n.count, parent: n.parent }, draggable: false, selectable: true, ariaLabel: `${n.count} finished subagents, folded`, style: { opacity: n.dim ? MARK.dim.opacity : 1 } }
           : {
               id: n.id,
               type: 'session',
@@ -228,7 +252,7 @@ function Flow(p: CanvasProps) {
               selectable: true,
               // Off the highlighted path: dimmed but readable, never compounding a TTL fade; a node that needs you
               // (red ring) is never dimmed.
-              style: { opacity: n.dim && n.view.attention === 0 ? Math.min(n.view.opacity, DIM) : n.view.opacity },
+              style: { opacity: n.dim && n.view.attention === 0 ? Math.min(n.view.opacity, MARK.dim.opacity) : n.view.opacity },
             },
       ),
     [els.nodes, p.selected, p.now],
@@ -237,7 +261,7 @@ function Flow(p: CanvasProps) {
     () =>
       els.edges.map((e) =>
         e.type === 'tree'
-          ? { id: e.id, type: 'tree', source: e.source, target: e.target, sourceHandle: 'b', targetHandle: 't', selectable: false, focusable: false, data: { onPath: e.onPath, dim: e.dim, pulse: running.get(e.id) ?? null } }
+          ? { id: e.id, type: 'tree', source: e.source, target: e.target, sourceHandle: 'b', targetHandle: 't', selectable: false, focusable: false, zIndex: e.onPath ? 1 : 0, data: { onPath: e.onPath, dim: e.dim, pulse: running.get(e.id) ?? null } }
           : {
               id: e.id,
               type: 'message',
@@ -245,10 +269,10 @@ function Flow(p: CanvasProps) {
               target: e.target,
               sourceHandle: e.sourceHandle,
               targetHandle: e.targetHandle,
-              animated: e.animated && !reduced,
               // Lit edges draw over the nodes; folded ones pass behind them.
               zIndex: e.active ? 1 : 0,
-              data: { count: e.count, active: e.active, animated: e.animated, dim: e.dim, reduced, pulse: running.get(e.id) ?? null },
+              ariaLabel: `${e.count} messages`,
+              data: { fwd: e.fwd, back: e.back, active: e.active, animated: e.animated, dim: e.dim, reduced, pulse: running.get(e.id) ?? null },
             },
       ),
     [els.edges, running, reduced],
@@ -258,55 +282,95 @@ function Flow(p: CanvasProps) {
     const next = lodOf(vp.zoom)
     if (next !== lod) setLod(next)
   }
+  const hovered = hover ? p.view.nodes.get(hover) : undefined
+  const hoverAt = hover ? els.pos.get(hover) : undefined
+  // The card opens below a node in the upper half of the canvas, above it otherwise, so it stays on screen.
+  const below = hoverAt ? (hoverAt.y + BOX.h / 2) * rf.getZoom() + rf.getViewport().y < (box.current?.clientHeight ?? 0) / 2 : true
   return (
     <LodContext.Provider value={lod}>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={NODE_TYPES}
-        edgeTypes={EDGE_TYPES}
-        nodesDraggable={false}
-        nodesConnectable={false}
-        elementsSelectable
-        onlyRenderVisibleElements={nodes.length > 50}
-        minZoom={0.1}
-        maxZoom={2}
-        fitView
-        // The first fit never zooms out past the compact level: a wide forest opens readable and pans, not as specks.
-        fitViewOptions={{ padding: FIT_PADDING, maxZoom: 1, minZoom: 0.4 }}
-        forceColorMode={dark ? 'dark' : 'light'}
-        onMove={onMove}
-        onMoveStart={(e) => {
-          if (e) userMoved.current = Date.now()
+      <div
+        ref={box}
+        className="size-full"
+        data-lod={lod}
+        onFocus={(e) => {
+          const id = (e.target as HTMLElement).closest?.('.react-flow__node-session')?.getAttribute('data-id')
+          setHover(id ?? null)
         }}
-        onPointerDown={() => {
-          pointerDown.current = true
-        }}
-        onPointerUp={() => {
-          pointerDown.current = false
-        }}
-        onNodeClick={(_, n) => {
-          if (n.type === 'fold') setOpenFolds((s) => new Set([...s, (n.data as FoldData).parent]))
-          else p.onNodeClick(n.id)
-        }}
-        onEdgeClick={(e, edge) => {
-          if (edge.type === 'message') p.onEdgeClick(edge.id, { x: e.clientX, y: e.clientY })
-        }}
-        onPaneClick={p.onPaneClick}
+        onBlur={() => setHover(null)}
       >
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="color-mix(in oklab, var(--color-fg-tertiary) 45%, transparent)" />
-        <Controls showInteractive={false} fitViewOptions={{ padding: FIT_PADDING, duration: reduced ? 0 : 300 }} />
-        <MiniMap
-          pannable
-          zoomable
-          nodeColor={miniColor}
-          nodeStrokeWidth={0}
-          nodeBorderRadius={6}
-          maskColor="color-mix(in oklab, var(--color-background) 70%, transparent)"
-          className="max-sm:!hidden"
-          style={{ width: 150, height: 84 }}
-        />
-      </ReactFlow>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={NODE_TYPES}
+          edgeTypes={EDGE_TYPES}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable
+          onlyRenderVisibleElements={nodes.length > 50}
+          minZoom={0.1}
+          maxZoom={2}
+          onInit={() => placeRef.current(false, 0)}
+          forceColorMode={dark ? 'dark' : 'light'}
+          onMove={onMove}
+          onMoveStart={(e) => {
+            setHover(null)
+            if (e) {
+              userMoved.current = Date.now()
+              auto.current = null
+            }
+          }}
+          onPointerDown={() => {
+            pointerDown.current = true
+          }}
+          onPointerUp={() => {
+            pointerDown.current = false
+          }}
+          onNodeMouseEnter={(_, n) => setHover(n.type === 'session' ? n.id : null)}
+          onNodeMouseLeave={() => setHover(null)}
+          onNodeClick={(_, n) => {
+            if (n.type === 'fold') setOpenFolds((s) => new Set([...s, (n.data as FoldData).parent]))
+            else p.onNodeClick(n.id)
+          }}
+          onEdgeClick={(e, edge) => {
+            if (edge.type === 'message') p.onEdgeClick(edge.id, { x: e.clientX, y: e.clientY })
+          }}
+          onPaneClick={p.onPaneClick}
+        >
+          <EdgeMarkers />
+          <Background variant={BackgroundVariant.Dots} gap={24} size={1.25} color="color-mix(in oklab, var(--color-fg-tertiary) 38%, transparent)" />
+          <Controls showInteractive={false} showFitView={false} position="bottom-left" onZoomIn={() => (auto.current = null)} onZoomOut={() => (auto.current = null)}>
+            <ControlButton
+              onClick={() => {
+                auto.current = 'all'
+                place(true, reduced ? 0 : MOVE_MS)
+              }}
+              aria-label="Fit everything"
+              title="Fit everything"
+            >
+              <Scan />
+            </ControlButton>
+          </Controls>
+          <MiniMap
+            pannable
+            zoomable
+            nodeColor={miniColor}
+            nodeStrokeWidth={0}
+            nodeBorderRadius={14}
+            bgColor="var(--bg-layer-1)"
+            maskColor="color-mix(in oklab, var(--bg-page) 62%, transparent)"
+            maskStrokeColor="var(--color-fg-accent)"
+            maskStrokeWidth={2}
+            ariaLabel="Agent graph overview"
+            className="max-sm:!hidden"
+            style={{ width: 184, height: 104 }}
+          />
+          {hovered && hover && (
+            <NodeToolbar nodeId={hover} isVisible position={below ? Position.Bottom : Position.Top} offset={10}>
+              <HoverCard node={hovered.node} attention={hovered.attention} now={p.now} expiresAt={hovered.expiresAt} />
+            </NodeToolbar>
+          )}
+        </ReactFlow>
+      </div>
     </LodContext.Provider>
   )
 }

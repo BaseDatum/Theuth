@@ -18,6 +18,7 @@ import { isStale } from './lifecycle'
 import { useAgentGraph } from './queries'
 import { attentionBySession, includeSessions, nodeLabel, stripCounts, stripText, subtreeIds } from './selectors'
 import { Strip } from './Strip'
+import { LegendPopover } from './Legend'
 import { TtlPopover } from './TtlPopover'
 import { nextTtlTick, visibleGraph } from './ttl'
 
@@ -58,12 +59,14 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree 
   const attention = useMemo(() => attentionBySession(items ?? [], Date.now()), [items])
 
   // The TTL clock: re-derived on every graph change and at the next visible change (nextTtlTick), never per second.
-  const [now, setNow] = useState(graphNow)
-  useEffect(() => setNow(graphNow()), [state])
+  // The clock is read in the same render as a new state (review U8: one derivation per delta, not one with the old
+  // clock and another after an effect), and again when the TTL timer ticks.
+  const [tick, setTick] = useState(0)
+  const now = useMemo(() => graphNow(), [state, tick])
   const view = useMemo(() => (state ? visibleGraph(state, attention, prefs.ttl, now) : null), [state, attention, prefs.ttl, now])
   useEffect(() => {
     if (!state || !view) return
-    const t = setTimeout(() => setNow(graphNow()), nextTtlTick(state, view, prefs.ttl, now))
+    const t = setTimeout(() => setTick((n) => n + 1), nextTtlTick(state, view, prefs.ttl, now))
     return () => clearTimeout(t)
   }, [state, view, prefs.ttl, now])
 
@@ -171,6 +174,7 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree 
       <Button size="icon-xs" variant={prefs.follow ? 'secondary' : 'ghost'} aria-label="Follow activity" aria-pressed={prefs.follow} title="Follow activity" onClick={() => prefs.set({ follow: !prefs.follow })}>
         <Crosshair />
       </Button>
+      <LegendPopover />
       <TtlPopover />
       <Button size="icon-xs" variant="ghost" aria-label={full ? 'Leave full screen' : 'Full screen'} aria-keyshortcuts="Shift+G" title={full ? 'Leave full screen (Esc)' : 'Full screen (Shift+G)'} onClick={() => setFull(!full)}>
         {full ? <Minimize2 /> : <Maximize2 />}
