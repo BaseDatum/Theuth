@@ -21,13 +21,12 @@ import { FocusTracker, Throttle, deriveFocus } from '@/lib/event-focus'
 import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
-import { chatLeaves, closeWeb, leaves, placeWeb, usePanes } from '@/lib/panes'
-import { closeAllWebViews, installWebViewEvents, useWebViews, webLeaf } from '@/lib/web-views'
+import { chatLeaves, closeWeb, leaves, usePanes } from '@/lib/panes'
+import { closeAllWebViews, installWebViewEvents, useWebViews } from '@/lib/web-views'
+import { webViewOpened } from '@/lib/web-arrival'
 import { closeAllTiles, closeSessionTiles } from '@/lib/tiles'
 import { AgentTileBanner } from '@/components/chat/AgentTileBanner'
 import { forgetArtifact } from '@/components/chat/ArtifactPanel'
-import * as webNative from '@/lib/web-view-native'
-import { isMobileLayout } from '@/hooks/use-mobile'
 import { installFenceSnapshot } from '@/lib/fence-snapshot'
 import { installPagePreview } from '@/lib/page-preview'
 import { startWebProfileSync } from '@/lib/web-profile'
@@ -579,23 +578,9 @@ function useEventSideEffects(st: Stores): void {
       on("browser.events@1", 'BrowserShowLive', (e) => {
         if (!visible(e.session)) router.history.push(`/c/${e.session}`)
       }),
-      // 205 §4.4: the frame is recorded for its card; an open one (tile or pop-out) navigates, else a tile opens right of
-      // the session's pane when that chat is on screen and the layout tiles (popouts never get here: `AUX`). A view
-      // that is gone (its pop-out window closed) answers `no web view …`: then it is no longer popped and the tile rule applies.
-      on("artifact.web-view-opened@1", 'WebViewOpened', (e) => {
-        const old = useWebViews.getState().views[e.id]
-        useWebViews.getState().open({ id: e.id, session: e.session, url: e.url, title: e.title })
-        const place = () => {
-          if (!isMobileLayout() && visible(e.session)) placeWeb(e.session, e.id)
-        }
-        const { root } = usePanes.getState()
-        if (!old?.popped && !(root !== null && leaves(root).includes(webLeaf(e.id)))) return place()
-        webNative.navigate(e.id, e.url).catch((err: unknown) => {
-          if (!String(err).startsWith('no web view')) return console.warn('web_view_navigate', err)
-          useWebViews.getState().patch(e.id, { popped: false })
-          place()
-        })
-      }),
+      // 205 §4.4, 209 §7: the frame is recorded for its card, then tiled beside its chat, opened full screen on a phone
+      // or put in the pill there (`webViewOpened`); popouts never get here (`AUX`).
+      on("artifact.web-view-opened@1", 'WebViewOpened', (e) => webViewOpened(e, visible(e.session))),
       // The session's frames and tiles go with it: tiles, store entries, native views; a pop-out window holding one
       // closes on `web-view://closed` (`WebFrame`).
       on("agent.events@1", 'SessionDeleted', (e) => {

@@ -17,16 +17,29 @@ export type WebView = {
   loading: boolean
   /** Popped out of this window (205 D6): the card focuses that window instead of placing a tile. */
   popped?: boolean
+  /** 209 §7, phone: hidden in the pill above the composer, its native view kept (page, scroll, form input, history). */
+  minimised?: boolean
+  /** When it last went full screen or into the pill (a counter): the pill shows the latest. */
+  seen?: number
 }
 
 type WebViewsStore = {
   views: Record<string, WebView>
+  /** 209 §7: the frame full screen on a phone (`PhoneWebView`), or none. */
+  front: string | null
   /** Add the frame, or (same id: same session and origin, 205 D4) point the existing one at `url` and `title`. */
   open(view: Pick<WebView, 'id' | 'session' | 'url' | 'title'>): void
   /** Forget the frame and destroy its native web view. */
   close(id: string): void
   patch(id: string, p: Partial<Omit<WebView, 'id'>>): void
+  /** 209 §7: frame `id` full screen on the phone; one that was there goes to the pill. */
+  show(id: string): void
+  /** 209 §7: frame `id` into the pill: its native view is hidden (`web_view_visible(false)`), never destroyed. */
+  minimise(id: string): void
 }
+
+/** Orders `seen`. */
+let tick = 0
 
 const WEB = 'web:'
 export const webLeaf = (id: string): string => `${WEB}${id}`
@@ -36,12 +49,14 @@ export const webId = (leaf: string): string => leaf.slice(WEB.length)
 
 export const useWebViews = create<WebViewsStore>()((set, get) => ({
   views: {},
+  front: null,
   open({ id, session, url, title }) {
     const old = get().views[id]
     set({ views: { ...get().views, [id]: { loading: false, ...old, id, session: session || old?.session || '', url, title, current: url } } })
   },
   close(id) {
     placed.delete(id)
+    if (get().front === id) set({ front: null })
     const old = get().views[id]
     if (!old) return
     const { [id]: _, ...rest } = get().views
@@ -54,7 +69,44 @@ export const useWebViews = create<WebViewsStore>()((set, get) => ({
     const old = get().views[id]
     if (old) set({ views: { ...get().views, [id]: { ...old, ...p } } })
   },
+  show(id) {
+    const { views, front } = get()
+    const view = views[id]
+    if (!view) return
+    const next = { ...views, [id]: { ...view, minimised: false, seen: ++tick } }
+    const prev = front !== null && front !== id ? views[front] : undefined
+    if (prev) next[prev.id] = { ...prev, minimised: true, seen: ++tick }
+    set({ views: next, front: id })
+  },
+  minimise(id) {
+    const { views, front } = get()
+    const old = views[id]
+    if (!old) return
+    set({ views: { ...views, [id]: { ...old, minimised: true, seen: ++tick } }, front: front === id ? null : front })
+    void native.visible(id, false).catch((e: unknown) => console.warn('web_view_visible', e))
+  },
 }))
+
+/** 209 §7: what the pill above the composer shows: the latest minimised frame, how many there are, and all of them,
+ * latest first; `null` when none is minimised. A popped-out frame lives in its window, never in the pill. */
+export function pillOf(views: Record<string, WebView>): { latest: WebView; count: number; list: WebView[] } | null {
+  const list = Object.values(views)
+    .filter((v) => v.minimised && !v.popped)
+    .sort((a, b) => (b.seen ?? 0) - (a.seen ?? 0))
+  const latest = list[0]
+  return latest ? { latest, count: list.length, list } : null
+}
+
+/** How a `show_web` (or a card's Open) reaches the screen (209 D11, §7). A tablet or desktop tiles it beside its chat
+ * when that chat is on screen (205 D5), else it waits for its card. A phone with native views opens it full screen,
+ * except while the user is writing (the composer has focus or holds a draft) or is looking at another chat: then it
+ * arrives as the pill, never over the screen. A phone without native views (a browser) keeps the card. */
+export type Arrival = 'tile' | 'full' | 'pill' | 'card'
+export function arrival(o: { phone: boolean; native: boolean; visible: boolean; writing: boolean }): Arrival {
+  if (!o.phone) return o.visible ? 'tile' : 'card'
+  if (!o.native) return 'card'
+  return o.visible && !o.writing ? 'full' : 'pill'
+}
 
 /** Every frame closed, native views included: the engine they belong to was left. */
 export function closeAllWebViews(): void {
@@ -188,8 +240,11 @@ export function installWebViewEvents(): () => void {
       const old = useWebViews.getState().views[id]
       if (!old) return
       const title = s.title || old.title
-      useWebViews.getState().patch(id, { current: s.url, title, loading: s.loading })
-      if (old.session) forward.push({ session: old.session, view: webLeaf(id), url: s.url, title, loading: s.loading })
+      // A view with no URL yet (a load that never committed, as a LAN host that does not answer) reports `''`: it is
+      // still at the address it was asked for, which the field keeps showing.
+      const url = s.url || old.current
+      useWebViews.getState().patch(id, { current: url, title, loading: s.loading })
+      if (old.session) forward.push({ session: old.session, view: webLeaf(id), url, title, loading: s.loading })
     }),
   )
   keep(

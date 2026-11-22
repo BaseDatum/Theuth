@@ -2,6 +2,8 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { chatLeaves, closeWeb, leaves, placeWeb, shown, usePanes } from './panes'
 import {
   STATE_EVERY_MS,
+  arrival,
+  pillOf,
   WEB_TILE_MIN_WIDTH,
   type WebViewStateReport,
   collapseSidebarFor,
@@ -23,7 +25,7 @@ vi.mock('@/rpc/discovery', () => ({ supports: () => true }))
 
 const reset = () => {
   usePanes.setState({ root: null, focused: null, drag: null })
-  useWebViews.setState({ views: {} })
+  useWebViews.setState({ views: {}, front: null })
   native.close.mockClear()
   engine.web_view_state.mockClear()
 }
@@ -187,4 +189,41 @@ test('209 D11: a frame decides on its first measured width, once; a width of 0 d
   expect(placeTile('p1', ipad)).toBe(true)
   useWebViews.getState().close('p1')
   useWebViews.getState().close('p2')
+})
+
+test('209 §7: a phone shows one page full screen; showing another puts the first in the pill; the pill names the latest first and counts all', () => {
+  const s = useWebViews.getState()
+  for (const id of ['a', 'b', 'c']) s.open({ id, session: 's1', url: `https://${id}.example/`, title: id.toUpperCase() })
+  expect(pillOf(useWebViews.getState().views)).toBeNull()
+  s.show('a')
+  expect(useWebViews.getState().front).toBe('a')
+  s.show('b')
+  expect(useWebViews.getState().front).toBe('b')
+  expect(pillOf(useWebViews.getState().views)).toMatchObject({ latest: { id: 'a' }, count: 1 })
+  s.minimise('b')
+  expect(useWebViews.getState().front).toBeNull()
+  s.minimise('c')
+  const pill = pillOf(useWebViews.getState().views)!
+  expect(pill.latest.id).toBe('c')
+  expect(pill.count).toBe(3)
+  expect(pill.list.map((v) => v.id)).toEqual(['c', 'b', 'a'])
+  // Restoring one takes it out of the pill; a popped-out frame is never in it; closing one forgets it.
+  s.show('a')
+  s.patch('b', { popped: true })
+  expect(pillOf(useWebViews.getState().views)).toMatchObject({ latest: { id: 'c' }, count: 1 })
+  s.close('a')
+  expect(useWebViews.getState().front).toBeNull()
+  expect(native.close).toHaveBeenCalledWith('a')
+})
+
+test('209 D11: a tablet or desktop tiles a page beside its chat on screen; a phone opens it full screen unless the user writes or looks elsewhere; a phone without native views keeps the card', () => {
+  const tablet = { phone: false, native: true, visible: true, writing: false }
+  expect(arrival(tablet)).toBe('tile')
+  expect(arrival({ ...tablet, writing: true })).toBe('tile')
+  expect(arrival({ ...tablet, visible: false })).toBe('card')
+  const phone = { ...tablet, phone: true }
+  expect(arrival(phone)).toBe('full')
+  expect(arrival({ ...phone, writing: true })).toBe('pill')
+  expect(arrival({ ...phone, visible: false })).toBe('pill')
+  expect(arrival({ ...phone, native: false })).toBe('card')
 })

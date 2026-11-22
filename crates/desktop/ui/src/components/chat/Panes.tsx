@@ -8,6 +8,8 @@ import { type Box, isDraft, isFrame, layout, type Layout, leaves, newDraft, show
 import { closeAllTiles } from '@/lib/tiles'
 import { clampRatio, RATIO_MAX, RATIO_MIN, RATIO_STEP } from '@/lib/resize-drag'
 import { cn } from '@/lib/utils'
+import { crossLayout } from '@/lib/web-arrival'
+import { PhoneWebView } from '@/components/chat/PhoneWebView'
 
 /**
  * Drag a sidebar row onto a chat pane (`usePressDrag` owns the gesture and its DOM glue). Spread the result on the
@@ -143,15 +145,19 @@ function SplitDivider({ split: s, area }: { split: Layout['splits'][number]; are
  * remounts another pane (a terminal, a VNC session, a composer keep their state); dividers are laid over the lines.
  * A phone (`isMobile`) does not tile (25 §12.3): whatever the tree holds, the focused leaf alone fills the screen as
  * `first`, so its header always carries the sidebar toggle — the Sheet's only opener. Crossing into the phone layout
- * closes the generic tiles (their surfaces open as sheets there), so widening again shows a consistent tree.
+ * closes the generic tiles (their surfaces open as sheets there), so widening again shows a consistent tree, and puts
+ * the web tiles into the pill; a phone shows a web page full screen over the chat (`PhoneWebView`, 209 §7), which
+ * becomes a tile beside its chat when the layout widens (`crossLayout`).
  */
 export function Panes({ session, render }: { session: string; render(session: string, first: boolean): ReactNode }) {
   const root = usePanes((s) => s.root)
   const focused = usePanes((s) => s.focused)
   const { isMobile } = useSidebar()
   const area = useRef<HTMLDivElement>(null)
+  // The route's chat at the crossing, not on every navigation: `session` is read, not a dependency.
   useEffect(() => {
     if (isMobile) closeAllTiles()
+    crossLayout(isMobile, session)
   }, [isMobile])
   const full: Box = { left: 0, top: 0, width: 100, height: 100 }
   const { leaves, splits } = isMobile ? { leaves: [{ session: shown(root, focused, session), box: full, first: true }], splits: [] } : layout(root ?? { session })
@@ -163,6 +169,7 @@ export function Panes({ session, render }: { session: string; render(session: st
       {splits.map((s) => (
         <SplitDivider key={`split:${s.path.join('')}`} split={s} area={area} />
       ))}
+      {isMobile && <PhoneWebView />}
     </div>
   )
 }

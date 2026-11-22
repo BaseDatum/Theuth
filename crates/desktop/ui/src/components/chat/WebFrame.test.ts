@@ -197,6 +197,9 @@ test('the main window follows every frame: state events patch it, a destroyed vi
   const closed = native.onClosed.mock.calls[0]![0]
   state({ label: `web-${ID}`, url: 'https://example.com/b', title: 'B', loading: true })
   expect(useWebViews.getState().views[ID]).toMatchObject({ current: 'https://example.com/b', title: 'B', loading: true, popped: true })
+  // A view whose load never committed reports no URL: the field keeps the address it was asked for.
+  state({ label: `web-${ID}`, url: '', title: '', loading: false })
+  expect(useWebViews.getState().views[ID]).toMatchObject({ current: 'https://example.com/b', title: 'B', loading: false })
   closed({ label: `web-${ID}` })
   expect(useWebViews.getState().views[ID]?.popped).toBe(false)
   off()
