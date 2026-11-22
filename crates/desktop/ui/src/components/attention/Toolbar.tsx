@@ -97,6 +97,15 @@ export function Toolbar({ filter, sort, kinds, projects, searchRef, onFilter, on
         )}
       </div>
       <div className="flex gap-1.5 overflow-x-auto px-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="group" aria-label="Kinds">
+        {filter.subtree && (
+          // 208 §7.4: the graph's node click restricts the list to that tree; the chip names it and clears it.
+          <span className="flex h-6 max-w-48 shrink-0 items-center gap-1 rounded-full border border-fg-accent bg-fg-accent/10 pr-1 pl-2.5 text-xs whitespace-nowrap text-foreground">
+            <span className="truncate">In {filter.subtree.label}</span>
+            <button type="button" aria-label="Clear tree filter" title="Clear tree filter" onClick={() => onFilter({ ...filter, subtree: null })} className="rounded-full p-0.5 text-fg-tertiary hover:text-foreground">
+              <X className="size-3" />
+            </button>
+          </span>
+        )}
         {kinds
           .filter((k) => k.n > 0)
           .map(({ kind, n }) => {

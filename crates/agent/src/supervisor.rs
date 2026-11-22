@@ -139,6 +139,7 @@ pub mod pause; // 179
 mod resume;
 pub mod transfer; // 139 W2
 mod view; // 176 E1
+pub(crate) use view::observed_state; // 208: the graph's node state
 mod waits;
 pub use acp_resume::LastBootPass; // 146 D4
 pub use drain::{Drain, DrainReport, OpenTurns, drain_engine, draining}; // 109 W5
@@ -2201,27 +2202,61 @@ impl Agents {
         }
     }
 
-    /// Publish [`PeerMessageChanged`] to each local participant of `receipt`.
+    /// Publish [`PeerMessageChanged`] to each local participant of `receipt`, with the exchange's ends and whether
+    /// it is a child's final result (208 D6). The sender read runs in a spawned task, never on this actor (176);
+    /// the changes of one exchange still publish in call order (each task waits for its predecessor's). A failed
+    /// read publishes to the recipient with `from` empty: the event stays a refetch trigger, and the graph ignores
+    /// an exchange without both ends rather than guessing one.
     pub(crate) async fn peer_changed(&self, receipt: &PeerReceipt) {
-        let mut parties: Vec<SessionId> = PeerAddress::local(&receipt.to).into_iter().collect();
-        match self.store.exchange_record(receipt.id).await {
-            Ok(Some(rec)) => {
-                if let Some(s) = PeerAddress::local(&rec.from).filter(|s| !parties.contains(s)) {
-                    parties.push(s);
-                }
+        type Chain = HashMap<Uuid, (u64, tokio::sync::oneshot::Receiver<()>)>;
+        static ORDER: std::sync::LazyLock<parking_lot::Mutex<Chain>> =
+            std::sync::LazyLock::new(Default::default);
+        static TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = receipt.id;
+        let ticket = TICKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (done, rx) = tokio::sync::oneshot::channel();
+        let prev = ORDER.lock().insert(id, (ticket, rx)).map(|(_, r)| r);
+        let (store, rt, state, to) = (
+            self.store.clone(),
+            self.rt.clone(),
+            receipt.state,
+            receipt.to.clone(),
+        );
+        tokio::spawn(async move {
+            if let Some(prev) = prev {
+                // A dropped predecessor (panic) resolves too.
+                let _ = prev.await;
             }
-            Ok(None) => {}
-            Err(e) => tracing::error!(id = %receipt.id, "exchange_record: {e:#}"),
-        }
-        for session in parties {
-            self.rt
-                .publish(PeerMessageChanged {
+            let mut parties: Vec<SessionId> = PeerAddress::local(&to).into_iter().collect();
+            let (mut from, mut result) = (String::new(), false);
+            match store.exchange_sender(id).await {
+                Ok(Some((sender, request_id))) => {
+                    if let Some(s) = PeerAddress::local(&sender).filter(|s| !parties.contains(s)) {
+                        parties.push(s);
+                    }
+                    result = request_id.starts_with("result:");
+                    from = sender;
+                }
+                Ok(None) => {}
+                Err(e) => tracing::error!(%id, "exchange_sender: {e:#}"),
+            }
+            for session in parties {
+                rt.publish(PeerMessageChanged {
                     session,
-                    id: receipt.id,
-                    state: receipt.state,
+                    id,
+                    state,
+                    from: from.clone(),
+                    to: to.clone(),
+                    result,
                 })
                 .await;
-        }
+            }
+            let _ = done.send(());
+            let mut order = ORDER.lock();
+            if order.get(&id).is_some_and(|(t, _)| *t == ticket) {
+                order.remove(&id);
+            }
+        });
     }
 
     /// Publish the policy change for `session` (`None` = global).

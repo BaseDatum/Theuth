@@ -1268,6 +1268,9 @@ mod tests {
                 session: t.session,
                 id,
                 state: agent::PeerMessageState::Replied,
+                from: String::new(),
+                to: String::new(),
+                result: false,
             })
             .await;
         let got = tokio::time::timeout(Duration::from_secs(5), tapped.recv())

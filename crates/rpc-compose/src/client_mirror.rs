@@ -72,6 +72,7 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         agent::CommunicationChanged,
         agent::PeerMessageChanged,
         agent::PeerDelivered,
+        agent::AgentGraphChanged,
         signal::SignalEvent,
         slack::SlackEvent,
         knowledge::KnowledgeChanged,

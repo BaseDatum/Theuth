@@ -7422,6 +7422,1652 @@
           }
         ]
       },
+      "event.agent_2egraph.output.AgentGraphChanged": {
+        "description": "208 §4: coalesced changes since the previous event (at most one per `FLUSH_MS`). `PartialEq` only.",
+        "properties": {
+          "at_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "edges": {
+            "default": [],
+            "description": "Edges added or changed (whole aggregates).",
+            "items": {
+              "$ref": "#/components/schemas/event.agent_2egraph.output.GraphEdge"
+            },
+            "type": "array"
+          },
+          "edges_removed": {
+            "default": [],
+            "description": "Edge ids gone.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "epoch_ms": {
+            "description": "The activation this belongs to.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nodes": {
+            "default": [],
+            "description": "Nodes added or changed (whole nodes), parents before children.",
+            "items": {
+              "$ref": "#/components/schemas/event.agent_2egraph.output.GraphNode"
+            },
+            "type": "array"
+          },
+          "older": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.output.GraphOlder"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The current over-cap stub (unchanged when equal to the last one sent)."
+          },
+          "pulses": {
+            "default": [],
+            "description": "Exchange state changes since the previous event, oldest first, at most `MAX_PULSES`.",
+            "items": {
+              "$ref": "#/components/schemas/event.agent_2egraph.output.GraphPulse"
+            },
+            "type": "array"
+          },
+          "removed": {
+            "default": [],
+            "description": "Node ids gone (session deleted); their edges go too.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "resync": {
+            "default": false,
+            "description": "Too much changed: every list is empty; call `agent_graph` again.",
+            "type": "boolean"
+          },
+          "seq": {
+            "description": "1-based per activation, +1 per event.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": {
+            "const": "AgentGraphChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "epoch_ms",
+          "seq",
+          "at_ms",
+          "nodes",
+          "removed",
+          "edges",
+          "edges_removed",
+          "pulses",
+          "older",
+          "resync",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.output.AgentState": {
+        "description": "Live state of one subagent (design doc 19 §2.1).",
+        "oneOf": [
+          {
+            "description": "Never ran, or the last turn finished normally.",
+            "properties": {
+              "state": {
+                "const": "idle",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A turn is in flight.",
+            "properties": {
+              "state": {
+                "const": "running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Blocked in `send_message{await_reply}` on `from` (`\"parent\"` or a child name).",
+            "properties": {
+              "from": {
+                "description": "Whose answer it waits for.",
+                "type": "string"
+              },
+              "state": {
+                "const": "awaiting",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "from"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An `ApprovalRequested` for this session is unanswered.",
+            "properties": {
+              "state": {
+                "const": "approval",
+                "type": "string"
+              },
+              "tool": {
+                "description": "Tool waiting on the human.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "tool"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last turn ended with `stop_reason = \"error\"`.",
+            "properties": {
+              "state": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last turn ended `\"cancelled\"` (incl. the `max_runtime` timeout).",
+            "properties": {
+              "state": {
+                "const": "cancelled",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "event.agent_2egraph.output.CostRule": {
+        "description": "How a watch-only child's cost relates to its parent's (141 §7.6, D8).\nChosen by the adapter that sees the frame; stored by the agent crate.",
+        "oneOf": [
+          {
+            "const": "counted",
+            "description": "The child's cost is its own meter rows and rolls up (omp background\nspawns: excluded from the harness's `usage_update`).",
+            "type": "string"
+          },
+          {
+            "const": "inside_parent",
+            "description": "Already inside the parent's meter; display-only (omp sync spawns).",
+            "type": "string"
+          },
+          {
+            "const": "display_only",
+            "description": "Reported by the harness, not aggregated (RFD `idle.usage`).",
+            "type": "string"
+          },
+          {
+            "const": "unreported",
+            "description": "Not on the wire (\"—\"): opencode 1.x / 2.x.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.output.GraphEdge": {
+        "description": "208 D8: the peer messages between one unordered pair of nodes, `a < b` (byte order of the ids).",
+        "properties": {
+          "a": {
+            "description": "The smaller node id.",
+            "type": "string"
+          },
+          "ab": {
+            "description": "Exchanges sent a → b in the window.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "b": {
+            "description": "The larger node id.",
+            "type": "string"
+          },
+          "ba": {
+            "description": "Exchanges sent b → a in the window.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "`\"<a>|<b>\"`.",
+            "type": "string"
+          },
+          "last_from": {
+            "description": "Sender of the newest exchange (`a` or `b`).",
+            "type": "string"
+          },
+          "last_id": {
+            "description": "The newest exchange's id (for the popover).",
+            "type": "string"
+          },
+          "last_ms": {
+            "description": "ms since epoch of the newest exchange change.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "open": {
+            "description": "Exchanges still in flight (`accepted` or `held`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "results": {
+            "description": "Of those, a child's final result to its parent (request id `result:*`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "a",
+          "b",
+          "ab",
+          "ba",
+          "results",
+          "open",
+          "last_ms",
+          "last_from",
+          "last_id"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.output.GraphNode": {
+        "description": "208 §2.1: one session (or boundary endpoint) on the graph. `PartialEq` only: [`ObservedMeta`] carries a\n`serde_json::Value`.",
+        "properties": {
+          "activity": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.output.SessionActivity"
+              }
+            ],
+            "description": "Live facts (`ActivityOf`); remote-owned: `Running` when `SessionSummary.running`, else `Idle`; boundary: idle default."
+          },
+          "agent": {
+            "description": "The harness (`agents.yaml` key) of an ACP session; `None` for theuth sessions.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "desk": {
+            "description": "The desk's roster agent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Session id; a boundary node is `peer:<name>`.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.output.GraphNodeKind"
+              }
+            ],
+            "description": "What the node is."
+          },
+          "last_event_ms": {
+            "description": "ms since epoch of the session's last event of any kind (208 §2.3); boundary: its newest exchange.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "model": {
+            "description": "The session's model id (\"\" for boundary nodes).",
+            "type": "string"
+          },
+          "name": {
+            "description": "The peer name of a child; `None` for roots, desks and boundary nodes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.output.ObservedMeta"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Watch-only children: the harness's view (141)."
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.output.GraphOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last turn's outcome while the session is not running; `None` before any turn, while running, and for\n`interrupted` / `suspended` / `harness_continued`."
+          },
+          "owner": {
+            "description": "The owning engine (`SessionSummary.owner`; \"\" for boundary nodes).",
+            "type": "string"
+          },
+          "parent": {
+            "description": "The parent session; `None` for roots, desks and boundary nodes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "description": "The root's project.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remote": {
+            "description": "Owned by another engine: state is last-known (208 §6).",
+            "type": "boolean"
+          },
+          "root": {
+            "description": "The root of the node's tree (itself for a root, desk or boundary node).",
+            "type": "string"
+          },
+          "started_ms": {
+            "description": "ms since epoch the session was created (boundary: its first exchange).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Root/desk: the title (empty → `<desk> desk`, else the short id); child: the peer name; boundary: the name.",
+            "type": "string"
+          },
+          "waits": {
+            "description": "What it waits on besides its state, sorted, deduplicated.",
+            "items": {
+              "$ref": "#/components/schemas/event.agent_2egraph.output.GraphWait"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "parent",
+          "root",
+          "title",
+          "name",
+          "agent",
+          "model",
+          "project",
+          "desk",
+          "activity",
+          "waits",
+          "outcome",
+          "observed",
+          "owner",
+          "remote",
+          "started_ms",
+          "last_event_ms"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.output.GraphNodeKind": {
+        "description": "208 D9: what a graph node is.",
+        "oneOf": [
+          {
+            "const": "root",
+            "description": "A root chat or routine run (no parent, no desk).",
+            "type": "string"
+          },
+          {
+            "const": "desk",
+            "description": "A hired agent's desk session.",
+            "type": "string"
+          },
+          {
+            "const": "child",
+            "description": "A subagent: native, or an ACP harness child (`agent` set).",
+            "type": "string"
+          },
+          {
+            "const": "observed",
+            "description": "A watch-only child a harness runs inside itself (141 D2).",
+            "type": "string"
+          },
+          {
+            "const": "peer",
+            "description": "A boundary endpoint outside this engine's sessions: a mesh peer or a contact (`peer:<name>`).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.output.GraphOlder": {
+        "description": "208 D10: idle trees left out of a snapshot over the node cap.",
+        "properties": {
+          "newest_ms": {
+            "description": "The newest `last_event_ms` among them.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nodes": {
+            "description": "Nodes in them.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "roots": {
+            "description": "Trees left out.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "roots",
+          "nodes",
+          "newest_ms"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.output.GraphOutcome": {
+        "description": "208 D7: how the session's last turn ended (207 §4's mapping of `stop_reason`).",
+        "oneOf": [
+          {
+            "const": "finished",
+            "description": "Any provider stop reason that is not one of the three below.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "`error`.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "`cancelled`.",
+            "type": "string"
+          },
+          {
+            "const": "timed_out",
+            "description": "`timed_out`.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.output.GraphPulse": {
+        "description": "208 §2.2: one exchange's state change, for the UI to animate along `edge`.",
+        "properties": {
+          "at_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "edge": {
+            "description": "The edge (`GraphEdge.id`).",
+            "type": "string"
+          },
+          "from": {
+            "description": "Sender node id.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The exchange id.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.output.GraphPulseKind"
+              }
+            ],
+            "description": "What happened."
+          },
+          "to": {
+            "description": "Recipient node id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "edge",
+          "from",
+          "to",
+          "kind",
+          "id",
+          "at_ms"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.output.GraphPulseKind": {
+        "description": "208 §2.2: what happened to one exchange (a live edge event).",
+        "oneOf": [
+          {
+            "const": "sent",
+            "description": "Accepted into the recipient's intake.",
+            "type": "string"
+          },
+          {
+            "const": "delivered",
+            "description": "Consumed by the recipient's turn.",
+            "type": "string"
+          },
+          {
+            "const": "replied",
+            "description": "Answered.",
+            "type": "string"
+          },
+          {
+            "const": "result",
+            "description": "A child's final result reached its parent.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Suppressed or failed.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.output.GraphWait": {
+        "description": "208 D7: what a session is parked on besides its `AgentState`.",
+        "oneOf": [
+          {
+            "const": "user",
+            "description": "A pending question to the user: ask, hand-off or secret (`waits.kind = 'question'`).",
+            "type": "string"
+          },
+          {
+            "const": "job",
+            "description": "A shell job or pty (`waits.kind` `job` | `pty_wait`).",
+            "type": "string"
+          },
+          {
+            "const": "children",
+            "description": "Its children's results (`waits.kind = 'child_result'`).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.output.ObservedMeta": {
+        "description": "Watch-only facts of an `observed` row (141 §5.1), carried on\n[`AgentInfo`], [`SessionSummary`], [`Loaded`] and\n[`AgentEvent::ObservedChildChanged`].",
+        "properties": {
+          "can_cancel": {
+            "description": "The harness accepts `session/cancel` for this child (RFD `capabilities.cancel`).",
+            "type": "boolean"
+          },
+          "cost_rule": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.output.CostRule"
+              }
+            ],
+            "description": "Cost rule applied (141 §7.6)."
+          },
+          "description": {
+            "description": "Roster card second line (`observed_description`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "default": null,
+            "description": "Source-specific live fields (`observed_detail`, 141 §6 mapping tables);\n`null` when none were stored."
+          },
+          "external": {
+            "description": "The harness's own id for the child (`sessions.acp_session`).",
+            "type": "string"
+          },
+          "source": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.output.ObservedSource"
+              }
+            ],
+            "description": "Which feed produced the row."
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.output.ObservedState"
+              }
+            ],
+            "description": "Lifecycle as the harness reports it."
+          },
+          "stop": {
+            "description": "Stop reason or error text (`observed_stop`); `\"lost contact\"` from the engine.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_call": {
+            "description": "The spawning tool call id in the parent's transcript (`observed_tool_call`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "source",
+          "external",
+          "state",
+          "stop",
+          "can_cancel",
+          "description",
+          "tool_call",
+          "cost_rule",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.output.ObservedSource": {
+        "description": "Which feed produced a watch-only child (141 §3 \"Source\"); stored as\n`sessions.observed_source`.",
+        "oneOf": [
+          {
+            "const": "rfd",
+            "description": "ACP RFD `subagent_update` + child-addressed `session/update`s (UI tag `ACP`).",
+            "type": "string"
+          },
+          {
+            "const": "opencode_ext",
+            "description": "opencode 2.x `opencode/session/child_update` (UI tag `opencode`).",
+            "type": "string"
+          },
+          {
+            "const": "opencode_task",
+            "description": "opencode 1.x `task` tool-call lifecycle only (UI tag `opencode`).",
+            "type": "string"
+          },
+          {
+            "const": "omp_task",
+            "description": "omp `task` progress rows + on-disk transcript tail (UI tag `omp task`).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.output.ObservedState": {
+        "description": "Lifecycle of a watch-only child as the harness reports it (141 §5.2);\nstored as `sessions.observed_state`. Any observation may move any\nstate to any other; the restart sweep touches non-terminal rows only.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "Announced, not started.",
+            "type": "string"
+          },
+          {
+            "const": "running",
+            "description": "The harness is working on it.",
+            "type": "string"
+          },
+          {
+            "const": "requires_action",
+            "description": "Waits on a human (permission/elicitation).",
+            "type": "string"
+          },
+          {
+            "const": "idle",
+            "description": "Turn ended; the harness may prompt it again (RFD).",
+            "type": "string"
+          },
+          {
+            "const": "completed",
+            "description": "Finished successfully.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Finished with an error.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "Stopped by a cancel.",
+            "type": "string"
+          },
+          {
+            "const": "unknown",
+            "description": "Lost contact / activity unobservable.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.output.SessionActivity": {
+        "description": "Live facts about one session, computed on `Agents` (62 §0.5, §3.2).",
+        "properties": {
+          "asks": {
+            "description": "Reserved: sessions blocked in `ask_user` (not in v1, always `None`).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "children": {
+            "description": "Descendants with a live actor.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "jobs": {
+            "description": "Running background jobs (non-PTY).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_active": {
+            "description": "`max(last_input, last_stop, turn start)`; the store's `updated_at` when cold.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "live": {
+            "description": "Has an actor now (vs stored/cold).",
+            "type": "boolean"
+          },
+          "ptys": {
+            "description": "Running PTY jobs.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.output.AgentState"
+              }
+            ],
+            "description": "As `agents()` computes it."
+          },
+          "turn_started_at": {
+            "description": "Start of the current turn; `None` when not running.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "waiting_since_ms": {
+            "default": null,
+            "description": "130 E2: ms since epoch `state` entered `awaiting` / `approval`; `None` otherwise.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "last_active",
+          "turn_started_at",
+          "jobs",
+          "ptys",
+          "children",
+          "asks",
+          "live",
+          "waiting_since_ms"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.receiver.AgentGraphChanged": {
+        "description": "208 §4: coalesced changes since the previous event (at most one per `FLUSH_MS`). `PartialEq` only.",
+        "properties": {
+          "at_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "edges": {
+            "default": [],
+            "description": "Edges added or changed (whole aggregates).",
+            "items": {
+              "$ref": "#/components/schemas/event.agent_2egraph.receiver.GraphEdge"
+            },
+            "type": "array"
+          },
+          "edges_removed": {
+            "default": [],
+            "description": "Edge ids gone.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "epoch_ms": {
+            "description": "The activation this belongs to.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nodes": {
+            "default": [],
+            "description": "Nodes added or changed (whole nodes), parents before children.",
+            "items": {
+              "$ref": "#/components/schemas/event.agent_2egraph.receiver.GraphNode"
+            },
+            "type": "array"
+          },
+          "older": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.receiver.GraphOlder"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The current over-cap stub (unchanged when equal to the last one sent)."
+          },
+          "pulses": {
+            "default": [],
+            "description": "Exchange state changes since the previous event, oldest first, at most `MAX_PULSES`.",
+            "items": {
+              "$ref": "#/components/schemas/event.agent_2egraph.receiver.GraphPulse"
+            },
+            "type": "array"
+          },
+          "removed": {
+            "default": [],
+            "description": "Node ids gone (session deleted); their edges go too.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "resync": {
+            "default": false,
+            "description": "Too much changed: every list is empty; call `agent_graph` again.",
+            "type": "boolean"
+          },
+          "seq": {
+            "description": "1-based per activation, +1 per event.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": {
+            "const": "AgentGraphChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "epoch_ms",
+          "seq",
+          "at_ms",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.receiver.AgentState": {
+        "description": "Live state of one subagent (design doc 19 §2.1).",
+        "oneOf": [
+          {
+            "description": "Never ran, or the last turn finished normally.",
+            "properties": {
+              "state": {
+                "const": "idle",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A turn is in flight.",
+            "properties": {
+              "state": {
+                "const": "running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Blocked in `send_message{await_reply}` on `from` (`\"parent\"` or a child name).",
+            "properties": {
+              "from": {
+                "description": "Whose answer it waits for.",
+                "type": "string"
+              },
+              "state": {
+                "const": "awaiting",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "from"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An `ApprovalRequested` for this session is unanswered.",
+            "properties": {
+              "state": {
+                "const": "approval",
+                "type": "string"
+              },
+              "tool": {
+                "description": "Tool waiting on the human.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "tool"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last turn ended with `stop_reason = \"error\"`.",
+            "properties": {
+              "state": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The last turn ended `\"cancelled\"` (incl. the `max_runtime` timeout).",
+            "properties": {
+              "state": {
+                "const": "cancelled",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "event.agent_2egraph.receiver.CostRule": {
+        "description": "How a watch-only child's cost relates to its parent's (141 §7.6, D8).\nChosen by the adapter that sees the frame; stored by the agent crate.",
+        "oneOf": [
+          {
+            "const": "counted",
+            "description": "The child's cost is its own meter rows and rolls up (omp background\nspawns: excluded from the harness's `usage_update`).",
+            "type": "string"
+          },
+          {
+            "const": "inside_parent",
+            "description": "Already inside the parent's meter; display-only (omp sync spawns).",
+            "type": "string"
+          },
+          {
+            "const": "display_only",
+            "description": "Reported by the harness, not aggregated (RFD `idle.usage`).",
+            "type": "string"
+          },
+          {
+            "const": "unreported",
+            "description": "Not on the wire (\"—\"): opencode 1.x / 2.x.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.receiver.GraphEdge": {
+        "description": "208 D8: the peer messages between one unordered pair of nodes, `a < b` (byte order of the ids).",
+        "properties": {
+          "a": {
+            "description": "The smaller node id.",
+            "type": "string"
+          },
+          "ab": {
+            "description": "Exchanges sent a → b in the window.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "b": {
+            "description": "The larger node id.",
+            "type": "string"
+          },
+          "ba": {
+            "description": "Exchanges sent b → a in the window.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "`\"<a>|<b>\"`.",
+            "type": "string"
+          },
+          "last_from": {
+            "description": "Sender of the newest exchange (`a` or `b`).",
+            "type": "string"
+          },
+          "last_id": {
+            "description": "The newest exchange's id (for the popover).",
+            "type": "string"
+          },
+          "last_ms": {
+            "description": "ms since epoch of the newest exchange change.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "open": {
+            "description": "Exchanges still in flight (`accepted` or `held`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "results": {
+            "description": "Of those, a child's final result to its parent (request id `result:*`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "a",
+          "b",
+          "ab",
+          "ba",
+          "results",
+          "open",
+          "last_ms",
+          "last_from",
+          "last_id"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.receiver.GraphNode": {
+        "description": "208 §2.1: one session (or boundary endpoint) on the graph. `PartialEq` only: [`ObservedMeta`] carries a\n`serde_json::Value`.",
+        "properties": {
+          "activity": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.receiver.SessionActivity"
+              }
+            ],
+            "description": "Live facts (`ActivityOf`); remote-owned: `Running` when `SessionSummary.running`, else `Idle`; boundary: idle default."
+          },
+          "agent": {
+            "description": "The harness (`agents.yaml` key) of an ACP session; `None` for theuth sessions.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "desk": {
+            "description": "The desk's roster agent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Session id; a boundary node is `peer:<name>`.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.receiver.GraphNodeKind"
+              }
+            ],
+            "description": "What the node is."
+          },
+          "last_event_ms": {
+            "description": "ms since epoch of the session's last event of any kind (208 §2.3); boundary: its newest exchange.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "model": {
+            "description": "The session's model id (\"\" for boundary nodes).",
+            "type": "string"
+          },
+          "name": {
+            "description": "The peer name of a child; `None` for roots, desks and boundary nodes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.receiver.ObservedMeta"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Watch-only children: the harness's view (141)."
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.receiver.GraphOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last turn's outcome while the session is not running; `None` before any turn, while running, and for\n`interrupted` / `suspended` / `harness_continued`."
+          },
+          "owner": {
+            "description": "The owning engine (`SessionSummary.owner`; \"\" for boundary nodes).",
+            "type": "string"
+          },
+          "parent": {
+            "description": "The parent session; `None` for roots, desks and boundary nodes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "description": "The root's project.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remote": {
+            "description": "Owned by another engine: state is last-known (208 §6).",
+            "type": "boolean"
+          },
+          "root": {
+            "description": "The root of the node's tree (itself for a root, desk or boundary node).",
+            "type": "string"
+          },
+          "started_ms": {
+            "description": "ms since epoch the session was created (boundary: its first exchange).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Root/desk: the title (empty → `<desk> desk`, else the short id); child: the peer name; boundary: the name.",
+            "type": "string"
+          },
+          "waits": {
+            "description": "What it waits on besides its state, sorted, deduplicated.",
+            "items": {
+              "$ref": "#/components/schemas/event.agent_2egraph.receiver.GraphWait"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "root",
+          "title",
+          "model",
+          "activity",
+          "waits",
+          "owner",
+          "remote",
+          "started_ms",
+          "last_event_ms"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.receiver.GraphNodeKind": {
+        "description": "208 D9: what a graph node is.",
+        "oneOf": [
+          {
+            "const": "root",
+            "description": "A root chat or routine run (no parent, no desk).",
+            "type": "string"
+          },
+          {
+            "const": "desk",
+            "description": "A hired agent's desk session.",
+            "type": "string"
+          },
+          {
+            "const": "child",
+            "description": "A subagent: native, or an ACP harness child (`agent` set).",
+            "type": "string"
+          },
+          {
+            "const": "observed",
+            "description": "A watch-only child a harness runs inside itself (141 D2).",
+            "type": "string"
+          },
+          {
+            "const": "peer",
+            "description": "A boundary endpoint outside this engine's sessions: a mesh peer or a contact (`peer:<name>`).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.receiver.GraphOlder": {
+        "description": "208 D10: idle trees left out of a snapshot over the node cap.",
+        "properties": {
+          "newest_ms": {
+            "description": "The newest `last_event_ms` among them.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nodes": {
+            "description": "Nodes in them.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "roots": {
+            "description": "Trees left out.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "roots",
+          "nodes",
+          "newest_ms"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.receiver.GraphOutcome": {
+        "description": "208 D7: how the session's last turn ended (207 §4's mapping of `stop_reason`).",
+        "oneOf": [
+          {
+            "const": "finished",
+            "description": "Any provider stop reason that is not one of the three below.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "`error`.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "`cancelled`.",
+            "type": "string"
+          },
+          {
+            "const": "timed_out",
+            "description": "`timed_out`.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.receiver.GraphPulse": {
+        "description": "208 §2.2: one exchange's state change, for the UI to animate along `edge`.",
+        "properties": {
+          "at_ms": {
+            "description": "ms since epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "edge": {
+            "description": "The edge (`GraphEdge.id`).",
+            "type": "string"
+          },
+          "from": {
+            "description": "Sender node id.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The exchange id.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.receiver.GraphPulseKind"
+              }
+            ],
+            "description": "What happened."
+          },
+          "to": {
+            "description": "Recipient node id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "edge",
+          "from",
+          "to",
+          "kind",
+          "id",
+          "at_ms"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.receiver.GraphPulseKind": {
+        "description": "208 §2.2: what happened to one exchange (a live edge event).",
+        "oneOf": [
+          {
+            "const": "sent",
+            "description": "Accepted into the recipient's intake.",
+            "type": "string"
+          },
+          {
+            "const": "delivered",
+            "description": "Consumed by the recipient's turn.",
+            "type": "string"
+          },
+          {
+            "const": "replied",
+            "description": "Answered.",
+            "type": "string"
+          },
+          {
+            "const": "result",
+            "description": "A child's final result reached its parent.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Suppressed or failed.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.receiver.GraphWait": {
+        "description": "208 D7: what a session is parked on besides its `AgentState`.",
+        "oneOf": [
+          {
+            "const": "user",
+            "description": "A pending question to the user: ask, hand-off or secret (`waits.kind = 'question'`).",
+            "type": "string"
+          },
+          {
+            "const": "job",
+            "description": "A shell job or pty (`waits.kind` `job` | `pty_wait`).",
+            "type": "string"
+          },
+          {
+            "const": "children",
+            "description": "Its children's results (`waits.kind = 'child_result'`).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.receiver.ObservedMeta": {
+        "description": "Watch-only facts of an `observed` row (141 §5.1), carried on\n[`AgentInfo`], [`SessionSummary`], [`Loaded`] and\n[`AgentEvent::ObservedChildChanged`].",
+        "properties": {
+          "can_cancel": {
+            "description": "The harness accepts `session/cancel` for this child (RFD `capabilities.cancel`).",
+            "type": "boolean"
+          },
+          "cost_rule": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.receiver.CostRule"
+              }
+            ],
+            "description": "Cost rule applied (141 §7.6)."
+          },
+          "description": {
+            "description": "Roster card second line (`observed_description`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "default": null,
+            "description": "Source-specific live fields (`observed_detail`, 141 §6 mapping tables);\n`null` when none were stored."
+          },
+          "external": {
+            "description": "The harness's own id for the child (`sessions.acp_session`).",
+            "type": "string"
+          },
+          "source": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.receiver.ObservedSource"
+              }
+            ],
+            "description": "Which feed produced the row."
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.receiver.ObservedState"
+              }
+            ],
+            "description": "Lifecycle as the harness reports it."
+          },
+          "stop": {
+            "description": "Stop reason or error text (`observed_stop`); `\"lost contact\"` from the engine.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_call": {
+            "description": "The spawning tool call id in the parent's transcript (`observed_tool_call`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "source",
+          "external",
+          "state",
+          "can_cancel",
+          "cost_rule"
+        ],
+        "type": "object"
+      },
+      "event.agent_2egraph.receiver.ObservedSource": {
+        "description": "Which feed produced a watch-only child (141 §3 \"Source\"); stored as\n`sessions.observed_source`.",
+        "oneOf": [
+          {
+            "const": "rfd",
+            "description": "ACP RFD `subagent_update` + child-addressed `session/update`s (UI tag `ACP`).",
+            "type": "string"
+          },
+          {
+            "const": "opencode_ext",
+            "description": "opencode 2.x `opencode/session/child_update` (UI tag `opencode`).",
+            "type": "string"
+          },
+          {
+            "const": "opencode_task",
+            "description": "opencode 1.x `task` tool-call lifecycle only (UI tag `opencode`).",
+            "type": "string"
+          },
+          {
+            "const": "omp_task",
+            "description": "omp `task` progress rows + on-disk transcript tail (UI tag `omp task`).",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.receiver.ObservedState": {
+        "description": "Lifecycle of a watch-only child as the harness reports it (141 §5.2);\nstored as `sessions.observed_state`. Any observation may move any\nstate to any other; the restart sweep touches non-terminal rows only.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "Announced, not started.",
+            "type": "string"
+          },
+          {
+            "const": "running",
+            "description": "The harness is working on it.",
+            "type": "string"
+          },
+          {
+            "const": "requires_action",
+            "description": "Waits on a human (permission/elicitation).",
+            "type": "string"
+          },
+          {
+            "const": "idle",
+            "description": "Turn ended; the harness may prompt it again (RFD).",
+            "type": "string"
+          },
+          {
+            "const": "completed",
+            "description": "Finished successfully.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Finished with an error.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "Stopped by a cancel.",
+            "type": "string"
+          },
+          {
+            "const": "unknown",
+            "description": "Lost contact / activity unobservable.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.agent_2egraph.receiver.SessionActivity": {
+        "description": "Live facts about one session, computed on `Agents` (62 §0.5, §3.2).",
+        "properties": {
+          "asks": {
+            "description": "Reserved: sessions blocked in `ask_user` (not in v1, always `None`).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "children": {
+            "description": "Descendants with a live actor.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "jobs": {
+            "description": "Running background jobs (non-PTY).",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_active": {
+            "description": "`max(last_input, last_stop, turn start)`; the store's `updated_at` when cold.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "live": {
+            "description": "Has an actor now (vs stored/cold).",
+            "type": "boolean"
+          },
+          "ptys": {
+            "description": "Running PTY jobs.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.agent_2egraph.receiver.AgentState"
+              }
+            ],
+            "description": "As `agents()` computes it."
+          },
+          "turn_started_at": {
+            "description": "Start of the current turn; `None` when not running.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "waiting_since_ms": {
+            "default": null,
+            "description": "130 E2: ms since epoch `state` entered `awaiting` / `approval`; `None` otherwise.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "jobs",
+          "ptys",
+          "children",
+          "live"
+        ],
+        "type": "object"
+      },
       "event.agent_2elogin.output.LoginFinished": {
         "description": "Event: the login started by [`Login`] ended.",
         "properties": {
@@ -8570,10 +10216,20 @@
       "event.agent_2epeer_2dmessage.output.PeerMessageChanged": {
         "description": "Event: a participant's receipt changed state (§10). No body; reload the\ndurable record when needed.",
         "properties": {
+          "from": {
+            "default": "",
+            "description": "208 D6: the sender endpoint (`session:<uuid>` | `peer:<name>`).",
+            "type": "string"
+          },
           "id": {
             "description": "Message id.",
             "format": "uuid",
             "type": "string"
+          },
+          "result": {
+            "default": false,
+            "description": "208 D6: the exchange is a child's final result to its parent (request id `result:*`).",
+            "type": "boolean"
           },
           "session": {
             "allOf": [
@@ -8591,6 +10247,11 @@
             ],
             "description": "New state."
           },
+          "to": {
+            "default": "",
+            "description": "208 D6: the recipient endpoint, as addressed.",
+            "type": "string"
+          },
           "type": {
             "const": "PeerMessageChanged",
             "type": "string"
@@ -8600,6 +10261,9 @@
           "session",
           "id",
           "state",
+          "from",
+          "to",
+          "result",
           "type"
         ],
         "type": "object"
@@ -8652,10 +10316,20 @@
       "event.agent_2epeer_2dmessage.receiver.PeerMessageChanged": {
         "description": "Event: a participant's receipt changed state (§10). No body; reload the\ndurable record when needed.",
         "properties": {
+          "from": {
+            "default": "",
+            "description": "208 D6: the sender endpoint (`session:<uuid>` | `peer:<name>`).",
+            "type": "string"
+          },
           "id": {
             "description": "Message id.",
             "format": "uuid",
             "type": "string"
+          },
+          "result": {
+            "default": false,
+            "description": "208 D6: the exchange is a child's final result to its parent (request id `result:*`).",
+            "type": "boolean"
           },
           "session": {
             "allOf": [
@@ -8672,6 +10346,11 @@
               }
             ],
             "description": "New state."
+          },
+          "to": {
+            "default": "",
+            "description": "208 D6: the recipient endpoint, as addressed.",
+            "type": "string"
           },
           "type": {
             "const": "PeerMessageChanged",
@@ -34020,6 +35699,28 @@
         },
         "type": "object"
       },
+      "method.agent.input.GraphCursor": {
+        "description": "208 §4: where a client is in the delta stream.",
+        "properties": {
+          "epoch_ms": {
+            "description": "The activation (`AgentGraph.epoch_ms`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "seq": {
+            "description": "The last applied `seq`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "epoch_ms",
+          "seq"
+        ],
+        "type": "object"
+      },
       "method.agent.input.InputId": {
         "description": "One user input, identified by its sender so it can be shown before any\nreply arrives.",
         "format": "uuid",
@@ -35020,6 +36721,75 @@
         "required": [
           "severity",
           "note"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.AgentGraph": {
+        "description": "208 §4: the `agent_graph` reply. `PartialEq` only (carries [`GraphNode`]).",
+        "properties": {
+          "at_ms": {
+            "description": "ms since epoch of this reply.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "edges": {
+            "description": "Every message edge whose two ends are in `nodes`.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.output.GraphEdge"
+            },
+            "type": "array"
+          },
+          "epoch_ms": {
+            "description": "ms since epoch this activation started; a new value = a new stream (`seq` restarts).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nodes": {
+            "description": "Every node in the window, parents before children.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.output.GraphNode"
+            },
+            "type": "array"
+          },
+          "older": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.GraphOlder"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Trees left out over the node cap."
+          },
+          "seq": {
+            "description": "The last published delta's `seq` (0 = none yet); the next delta is `seq + 1`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unchanged": {
+            "description": "The caller's cursor was current: every list is empty, keep your state.",
+            "type": "boolean"
+          },
+          "window_ms": {
+            "description": "The window served (requested, defaulted and clamped).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "epoch_ms",
+          "seq",
+          "at_ms",
+          "window_ms",
+          "unchanged",
+          "nodes",
+          "edges",
+          "older"
         ],
         "type": "object"
       },
@@ -38779,6 +40549,320 @@
           "effective"
         ],
         "type": "object"
+      },
+      "method.agent.output.GraphEdge": {
+        "description": "208 D8: the peer messages between one unordered pair of nodes, `a < b` (byte order of the ids).",
+        "properties": {
+          "a": {
+            "description": "The smaller node id.",
+            "type": "string"
+          },
+          "ab": {
+            "description": "Exchanges sent a → b in the window.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "b": {
+            "description": "The larger node id.",
+            "type": "string"
+          },
+          "ba": {
+            "description": "Exchanges sent b → a in the window.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "`\"<a>|<b>\"`.",
+            "type": "string"
+          },
+          "last_from": {
+            "description": "Sender of the newest exchange (`a` or `b`).",
+            "type": "string"
+          },
+          "last_id": {
+            "description": "The newest exchange's id (for the popover).",
+            "type": "string"
+          },
+          "last_ms": {
+            "description": "ms since epoch of the newest exchange change.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "open": {
+            "description": "Exchanges still in flight (`accepted` or `held`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "results": {
+            "description": "Of those, a child's final result to its parent (request id `result:*`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "a",
+          "b",
+          "ab",
+          "ba",
+          "results",
+          "open",
+          "last_ms",
+          "last_from",
+          "last_id"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.GraphNode": {
+        "description": "208 §2.1: one session (or boundary endpoint) on the graph. `PartialEq` only: [`ObservedMeta`] carries a\n`serde_json::Value`.",
+        "properties": {
+          "activity": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.SessionActivity"
+              }
+            ],
+            "description": "Live facts (`ActivityOf`); remote-owned: `Running` when `SessionSummary.running`, else `Idle`; boundary: idle default."
+          },
+          "agent": {
+            "description": "The harness (`agents.yaml` key) of an ACP session; `None` for theuth sessions.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "desk": {
+            "description": "The desk's roster agent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Session id; a boundary node is `peer:<name>`.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.GraphNodeKind"
+              }
+            ],
+            "description": "What the node is."
+          },
+          "last_event_ms": {
+            "description": "ms since epoch of the session's last event of any kind (208 §2.3); boundary: its newest exchange.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "model": {
+            "description": "The session's model id (\"\" for boundary nodes).",
+            "type": "string"
+          },
+          "name": {
+            "description": "The peer name of a child; `None` for roots, desks and boundary nodes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.ObservedMeta"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Watch-only children: the harness's view (141)."
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.GraphOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last turn's outcome while the session is not running; `None` before any turn, while running, and for\n`interrupted` / `suspended` / `harness_continued`."
+          },
+          "owner": {
+            "description": "The owning engine (`SessionSummary.owner`; \"\" for boundary nodes).",
+            "type": "string"
+          },
+          "parent": {
+            "description": "The parent session; `None` for roots, desks and boundary nodes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "description": "The root's project.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remote": {
+            "description": "Owned by another engine: state is last-known (208 §6).",
+            "type": "boolean"
+          },
+          "root": {
+            "description": "The root of the node's tree (itself for a root, desk or boundary node).",
+            "type": "string"
+          },
+          "started_ms": {
+            "description": "ms since epoch the session was created (boundary: its first exchange).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Root/desk: the title (empty → `<desk> desk`, else the short id); child: the peer name; boundary: the name.",
+            "type": "string"
+          },
+          "waits": {
+            "description": "What it waits on besides its state, sorted, deduplicated.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.output.GraphWait"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "parent",
+          "root",
+          "title",
+          "name",
+          "agent",
+          "model",
+          "project",
+          "desk",
+          "activity",
+          "waits",
+          "outcome",
+          "observed",
+          "owner",
+          "remote",
+          "started_ms",
+          "last_event_ms"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.GraphNodeKind": {
+        "description": "208 D9: what a graph node is.",
+        "oneOf": [
+          {
+            "const": "root",
+            "description": "A root chat or routine run (no parent, no desk).",
+            "type": "string"
+          },
+          {
+            "const": "desk",
+            "description": "A hired agent's desk session.",
+            "type": "string"
+          },
+          {
+            "const": "child",
+            "description": "A subagent: native, or an ACP harness child (`agent` set).",
+            "type": "string"
+          },
+          {
+            "const": "observed",
+            "description": "A watch-only child a harness runs inside itself (141 D2).",
+            "type": "string"
+          },
+          {
+            "const": "peer",
+            "description": "A boundary endpoint outside this engine's sessions: a mesh peer or a contact (`peer:<name>`).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.agent.output.GraphOlder": {
+        "description": "208 D10: idle trees left out of a snapshot over the node cap.",
+        "properties": {
+          "newest_ms": {
+            "description": "The newest `last_event_ms` among them.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nodes": {
+            "description": "Nodes in them.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "roots": {
+            "description": "Trees left out.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "roots",
+          "nodes",
+          "newest_ms"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.GraphOutcome": {
+        "description": "208 D7: how the session's last turn ended (207 §4's mapping of `stop_reason`).",
+        "oneOf": [
+          {
+            "const": "finished",
+            "description": "Any provider stop reason that is not one of the three below.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "`error`.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "`cancelled`.",
+            "type": "string"
+          },
+          {
+            "const": "timed_out",
+            "description": "`timed_out`.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.agent.output.GraphWait": {
+        "description": "208 D7: what a session is parked on besides its `AgentState`.",
+        "oneOf": [
+          {
+            "const": "user",
+            "description": "A pending question to the user: ask, hand-off or secret (`waits.kind = 'question'`).",
+            "type": "string"
+          },
+          {
+            "const": "job",
+            "description": "A shell job or pty (`waits.kind` `job` | `pty_wait`).",
+            "type": "string"
+          },
+          {
+            "const": "children",
+            "description": "Its children's results (`waits.kind = 'child_result'`).",
+            "type": "string"
+          }
+        ]
       },
       "method.agent.output.GuardTrips": {
         "description": "Guard trips by kind (§6).",
@@ -45432,6 +47516,74 @@
         ],
         "type": "object"
       },
+      "method.agent.receiver.AgentGraph": {
+        "description": "208 §4: the `agent_graph` reply. `PartialEq` only (carries [`GraphNode`]).",
+        "properties": {
+          "at_ms": {
+            "description": "ms since epoch of this reply.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "edges": {
+            "description": "Every message edge whose two ends are in `nodes`.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.receiver.GraphEdge"
+            },
+            "type": "array"
+          },
+          "epoch_ms": {
+            "description": "ms since epoch this activation started; a new value = a new stream (`seq` restarts).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nodes": {
+            "description": "Every node in the window, parents before children.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.receiver.GraphNode"
+            },
+            "type": "array"
+          },
+          "older": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.GraphOlder"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Trees left out over the node cap."
+          },
+          "seq": {
+            "description": "The last published delta's `seq` (0 = none yet); the next delta is `seq + 1`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unchanged": {
+            "description": "The caller's cursor was current: every list is empty, keep your state.",
+            "type": "boolean"
+          },
+          "window_ms": {
+            "description": "The window served (requested, defaulted and clamped).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "epoch_ms",
+          "seq",
+          "at_ms",
+          "window_ms",
+          "unchanged",
+          "nodes",
+          "edges"
+        ],
+        "type": "object"
+      },
       "method.agent.receiver.AgentInfo": {
         "description": "One subagent in a session's subtree with its live state (design doc 19 §2.1).",
         "properties": {
@@ -49095,6 +51247,313 @@
           }
         },
         "type": "object"
+      },
+      "method.agent.receiver.GraphEdge": {
+        "description": "208 D8: the peer messages between one unordered pair of nodes, `a < b` (byte order of the ids).",
+        "properties": {
+          "a": {
+            "description": "The smaller node id.",
+            "type": "string"
+          },
+          "ab": {
+            "description": "Exchanges sent a → b in the window.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "b": {
+            "description": "The larger node id.",
+            "type": "string"
+          },
+          "ba": {
+            "description": "Exchanges sent b → a in the window.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "`\"<a>|<b>\"`.",
+            "type": "string"
+          },
+          "last_from": {
+            "description": "Sender of the newest exchange (`a` or `b`).",
+            "type": "string"
+          },
+          "last_id": {
+            "description": "The newest exchange's id (for the popover).",
+            "type": "string"
+          },
+          "last_ms": {
+            "description": "ms since epoch of the newest exchange change.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "open": {
+            "description": "Exchanges still in flight (`accepted` or `held`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "results": {
+            "description": "Of those, a child's final result to its parent (request id `result:*`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "a",
+          "b",
+          "ab",
+          "ba",
+          "results",
+          "open",
+          "last_ms",
+          "last_from",
+          "last_id"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.GraphNode": {
+        "description": "208 §2.1: one session (or boundary endpoint) on the graph. `PartialEq` only: [`ObservedMeta`] carries a\n`serde_json::Value`.",
+        "properties": {
+          "activity": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.SessionActivity"
+              }
+            ],
+            "description": "Live facts (`ActivityOf`); remote-owned: `Running` when `SessionSummary.running`, else `Idle`; boundary: idle default."
+          },
+          "agent": {
+            "description": "The harness (`agents.yaml` key) of an ACP session; `None` for theuth sessions.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "desk": {
+            "description": "The desk's roster agent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Session id; a boundary node is `peer:<name>`.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.GraphNodeKind"
+              }
+            ],
+            "description": "What the node is."
+          },
+          "last_event_ms": {
+            "description": "ms since epoch of the session's last event of any kind (208 §2.3); boundary: its newest exchange.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "model": {
+            "description": "The session's model id (\"\" for boundary nodes).",
+            "type": "string"
+          },
+          "name": {
+            "description": "The peer name of a child; `None` for roots, desks and boundary nodes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.ObservedMeta"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Watch-only children: the harness's view (141)."
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.GraphOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last turn's outcome while the session is not running; `None` before any turn, while running, and for\n`interrupted` / `suspended` / `harness_continued`."
+          },
+          "owner": {
+            "description": "The owning engine (`SessionSummary.owner`; \"\" for boundary nodes).",
+            "type": "string"
+          },
+          "parent": {
+            "description": "The parent session; `None` for roots, desks and boundary nodes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "description": "The root's project.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remote": {
+            "description": "Owned by another engine: state is last-known (208 §6).",
+            "type": "boolean"
+          },
+          "root": {
+            "description": "The root of the node's tree (itself for a root, desk or boundary node).",
+            "type": "string"
+          },
+          "started_ms": {
+            "description": "ms since epoch the session was created (boundary: its first exchange).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Root/desk: the title (empty → `<desk> desk`, else the short id); child: the peer name; boundary: the name.",
+            "type": "string"
+          },
+          "waits": {
+            "description": "What it waits on besides its state, sorted, deduplicated.",
+            "items": {
+              "$ref": "#/components/schemas/method.agent.receiver.GraphWait"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "root",
+          "title",
+          "model",
+          "activity",
+          "waits",
+          "owner",
+          "remote",
+          "started_ms",
+          "last_event_ms"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.GraphNodeKind": {
+        "description": "208 D9: what a graph node is.",
+        "oneOf": [
+          {
+            "const": "root",
+            "description": "A root chat or routine run (no parent, no desk).",
+            "type": "string"
+          },
+          {
+            "const": "desk",
+            "description": "A hired agent's desk session.",
+            "type": "string"
+          },
+          {
+            "const": "child",
+            "description": "A subagent: native, or an ACP harness child (`agent` set).",
+            "type": "string"
+          },
+          {
+            "const": "observed",
+            "description": "A watch-only child a harness runs inside itself (141 D2).",
+            "type": "string"
+          },
+          {
+            "const": "peer",
+            "description": "A boundary endpoint outside this engine's sessions: a mesh peer or a contact (`peer:<name>`).",
+            "type": "string"
+          }
+        ]
+      },
+      "method.agent.receiver.GraphOlder": {
+        "description": "208 D10: idle trees left out of a snapshot over the node cap.",
+        "properties": {
+          "newest_ms": {
+            "description": "The newest `last_event_ms` among them.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nodes": {
+            "description": "Nodes in them.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "roots": {
+            "description": "Trees left out.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "roots",
+          "nodes",
+          "newest_ms"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.GraphOutcome": {
+        "description": "208 D7: how the session's last turn ended (207 §4's mapping of `stop_reason`).",
+        "oneOf": [
+          {
+            "const": "finished",
+            "description": "Any provider stop reason that is not one of the three below.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "`error`.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "`cancelled`.",
+            "type": "string"
+          },
+          {
+            "const": "timed_out",
+            "description": "`timed_out`.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.agent.receiver.GraphWait": {
+        "description": "208 D7: what a session is parked on besides its `AgentState`.",
+        "oneOf": [
+          {
+            "const": "user",
+            "description": "A pending question to the user: ask, hand-off or secret (`waits.kind = 'question'`).",
+            "type": "string"
+          },
+          {
+            "const": "job",
+            "description": "A shell job or pty (`waits.kind` `job` | `pty_wait`).",
+            "type": "string"
+          },
+          {
+            "const": "children",
+            "description": "Its children's results (`waits.kind = 'child_result'`).",
+            "type": "string"
+          }
+        ]
       },
       "method.agent.receiver.GuardTrips": {
         "description": "Guard trips by kind (§6).",
@@ -121451,6 +123910,65 @@
       "x-theuth-owner": "roster"
     },
     {
+      "name": "agent_graph",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "window_ms",
+          "required": true,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "windowMs"
+          ]
+        },
+        {
+          "name": "include",
+          "required": true,
+          "schema": {
+            "items": {
+              "$ref": "#/components/schemas/method.agent.input.SessionId"
+            },
+            "type": "array"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "cursor",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.GraphCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.AgentGraph"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.AgentGraph"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "agent_pause",
       "paramStructure": "by-position",
       "params": [
@@ -140936,6 +143454,16 @@
           "$ref": "#/components/schemas/event.agent_2eevents.output.AgentEvent"
         },
         "topic": "agent.events",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.agent_2egraph.receiver.AgentGraphChanged"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.agent_2egraph.output.AgentGraphChanged"
+        },
+        "topic": "agent.graph",
         "version": 1
       },
       {

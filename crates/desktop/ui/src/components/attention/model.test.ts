@@ -432,3 +432,17 @@ test('urlHost', () => {
   expect(urlHost('https://github.com/x/y/pull/1')).toBe('github.com')
   expect(urlHost('not a url')).toBe('not a url')
 })
+
+test('208 subtree filter: an item lists only when its session is in the subtree; no session never matches', () => {
+  expect(EMPTY_FILTER.subtree).toBeNull()
+  const withSession = F.find((i) => typeof i.session === 'string') as AttentionItem
+  const session = withSession.session as string
+  const inTree = filter({ subtree: { session, label: 'tree', ids: new Set([session]) } })
+  const outTree = filter({ subtree: { session: 'other', label: 'other', ids: new Set(['other']) } })
+  expect(matchesFilter(withSession, inTree)).toBe(true)
+  expect(matchesFilter(withSession, outTree)).toBe(false)
+  expect(matchesFilter({ ...withSession, session: null } as AttentionItem, inTree)).toBe(false)
+  expect(matchesFilter(withSession, filter({}))).toBe(true)
+  const sub = { session, label: 'tree', ids: new Set([session]) }
+  expect(pruneFilter(filter({ kinds: new Set(['gone']), subtree: sub }), ['ask'], []).subtree).toBe(sub)
+})
