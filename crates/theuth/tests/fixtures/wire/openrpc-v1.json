@@ -123599,6 +123599,26 @@
         ],
         "type": "object"
       },
+      "method.webprofile.output.ForgottenSite": {
+        "description": "One forgotten site of `web_profile_pull` (209 §4.1 forget marker).",
+        "properties": {
+          "forgotten_ms": {
+            "description": "Unix ms of the forget (the forgetting engine's clock).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "site": {
+            "description": "Lower-case eTLD+1.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "site",
+          "forgotten_ms"
+        ],
+        "type": "object"
+      },
       "method.webprofile.output.ProfileMode": {
         "description": "Config `browser.profile` (209 D6): `shared` (default) or `off` (no push, load or save; rows stay).",
         "oneOf": [
@@ -123614,8 +123634,46 @@
           }
         ]
       },
+      "method.webprofile.output.ProfileStatus": {
+        "description": "`web_profile_status`'s result (209 §4.4): the mode and the profile's size, cheap (no row is\nopened), for Settings.",
+        "properties": {
+          "epoch": {
+            "description": "The current profile epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "now_ms": {
+            "description": "The engine's clock, Unix ms.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.webprofile.output.ProfileMode"
+              }
+            ],
+            "description": "`\"shared\"` or `\"off\"` (config `browser.profile`)."
+          },
+          "sites": {
+            "description": "Sites with live rows (kept also while off, until cleared).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "profile",
+          "epoch",
+          "sites",
+          "now_ms"
+        ],
+        "type": "object"
+      },
       "method.webprofile.output.PullResult": {
-        "description": "`web_profile_pull`'s result (209 §4.4, D5): the profile's cookies and snapshots of `sites`.\nEvery site in `sites` is answered whole: a client sets what it gets and deletes from its store\nthe cookies of those sites it did not get (a forgotten site answers nothing). `Debug` redacts\nevery value; nothing logs it.",
+        "description": "`web_profile_pull`'s result (209 §4.4, D5): one page of the profile's cookies and snapshots of\n`sites`. Every site in `sites` is answered whole: a client sets what it gets and deletes from\nits store the cookies of those sites it did not get (a forgotten site answers nothing).\n`Debug` redacts every value; nothing logs it.",
         "properties": {
           "cookies": {
             "description": "Every live cookie of those sites, sorted by site, then name, domain and path.",
@@ -123630,6 +123688,29 @@
             "minimum": 0,
             "type": "integer"
           },
+          "forgotten": {
+            "default": [],
+            "description": "Every site forgotten in the last 30 days of this epoch, with when (on every page). The\nclient deletes from its store the cookies of each one forgotten after its previous\n`basis_ms` before it applies this answer's cookies.",
+            "items": {
+              "$ref": "#/components/schemas/method.webprofile.output.ForgottenSite"
+            },
+            "type": "array"
+          },
+          "next": {
+            "default": null,
+            "description": "More sites follow: pull again with the same `sites` and this as `cursor`. `null` when this\npage is the last.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "now_ms": {
+            "default": 0,
+            "description": "The engine's clock (Unix ms) just before it read this page: the first page's is the\nclient's next `basis_ms` once every page arrived.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "profile": {
             "allOf": [
               {
@@ -123637,17 +123718,17 @@
               }
             ],
             "default": "shared",
-            "description": "`\"shared\"`, or `\"off\"` when `browser.profile: off`: then nothing else is answered."
+            "description": "`\"shared\"`, or `\"off\"` when `browser.profile: off`: then no site is answered."
           },
           "sites": {
-            "description": "The sites this answer covers, sorted: the asked ones as registrable domains, or every live\nsite when none were asked. A cookie of the client's store belongs to a site when its domain\n(lower case, no leading `.`) is the site or ends with `.` and the site.",
+            "description": "The sites this page covers, sorted: the asked ones as registrable domains, or every site\nthe profile holds (also one whose cookies all expired) when none were asked. A cookie of\nthe client's store belongs to a site when its domain (lower case, no leading `.`) is the\nsite or ends with `.` and the site.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "storage": {
-            "description": "Every localStorage snapshot of those sites, sorted by origin.",
+            "description": "Every localStorage snapshot of those sites, sorted by site, then origin.",
             "items": {
               "$ref": "#/components/schemas/method.webprofile.output.PulledStorage"
             },
@@ -123659,7 +123740,10 @@
           "sites",
           "cookies",
           "storage",
-          "profile"
+          "profile",
+          "forgotten",
+          "now_ms",
+          "next"
         ],
         "type": "object"
       },
@@ -123828,6 +123912,14 @@
             "default": "shared",
             "description": "`\"shared\"`, or `\"off\"` when `browser.profile: off` made the push a no-op (209 D6): the\nclient stops pushing until it reads `\"shared\"` again."
           },
+          "refused": {
+            "default": [],
+            "description": "Sites whose sets and snapshots were refused because the site was forgotten after the\npush's `basis_ms` (or the push named none), sorted; its removes still applied. The client\npulls to learn the forget and does not push those sets again.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "sites": {
             "description": "Sites whose rows were written, sorted.",
             "items": {
@@ -123840,7 +123932,8 @@
           "applied",
           "sites",
           "epoch",
-          "profile"
+          "profile",
+          "refused"
         ],
         "type": "object"
       },
@@ -123918,6 +124011,26 @@
         ],
         "type": "object"
       },
+      "method.webprofile.receiver.ForgottenSite": {
+        "description": "One forgotten site of `web_profile_pull` (209 §4.1 forget marker).",
+        "properties": {
+          "forgotten_ms": {
+            "description": "Unix ms of the forget (the forgetting engine's clock).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "site": {
+            "description": "Lower-case eTLD+1.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "site",
+          "forgotten_ms"
+        ],
+        "type": "object"
+      },
       "method.webprofile.receiver.ProfileMode": {
         "description": "Config `browser.profile` (209 D6): `shared` (default) or `off` (no push, load or save; rows stay).",
         "oneOf": [
@@ -123933,8 +124046,46 @@
           }
         ]
       },
+      "method.webprofile.receiver.ProfileStatus": {
+        "description": "`web_profile_status`'s result (209 §4.4): the mode and the profile's size, cheap (no row is\nopened), for Settings.",
+        "properties": {
+          "epoch": {
+            "description": "The current profile epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "now_ms": {
+            "description": "The engine's clock, Unix ms.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.webprofile.receiver.ProfileMode"
+              }
+            ],
+            "description": "`\"shared\"` or `\"off\"` (config `browser.profile`)."
+          },
+          "sites": {
+            "description": "Sites with live rows (kept also while off, until cleared).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "profile",
+          "epoch",
+          "sites",
+          "now_ms"
+        ],
+        "type": "object"
+      },
       "method.webprofile.receiver.PullResult": {
-        "description": "`web_profile_pull`'s result (209 §4.4, D5): the profile's cookies and snapshots of `sites`.\nEvery site in `sites` is answered whole: a client sets what it gets and deletes from its store\nthe cookies of those sites it did not get (a forgotten site answers nothing). `Debug` redacts\nevery value; nothing logs it.",
+        "description": "`web_profile_pull`'s result (209 §4.4, D5): one page of the profile's cookies and snapshots of\n`sites`. Every site in `sites` is answered whole: a client sets what it gets and deletes from\nits store the cookies of those sites it did not get (a forgotten site answers nothing).\n`Debug` redacts every value; nothing logs it.",
         "properties": {
           "cookies": {
             "description": "Every live cookie of those sites, sorted by site, then name, domain and path.",
@@ -123949,6 +124100,29 @@
             "minimum": 0,
             "type": "integer"
           },
+          "forgotten": {
+            "default": [],
+            "description": "Every site forgotten in the last 30 days of this epoch, with when (on every page). The\nclient deletes from its store the cookies of each one forgotten after its previous\n`basis_ms` before it applies this answer's cookies.",
+            "items": {
+              "$ref": "#/components/schemas/method.webprofile.receiver.ForgottenSite"
+            },
+            "type": "array"
+          },
+          "next": {
+            "default": null,
+            "description": "More sites follow: pull again with the same `sites` and this as `cursor`. `null` when this\npage is the last.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "now_ms": {
+            "default": 0,
+            "description": "The engine's clock (Unix ms) just before it read this page: the first page's is the\nclient's next `basis_ms` once every page arrived.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "profile": {
             "allOf": [
               {
@@ -123956,17 +124130,17 @@
               }
             ],
             "default": "shared",
-            "description": "`\"shared\"`, or `\"off\"` when `browser.profile: off`: then nothing else is answered."
+            "description": "`\"shared\"`, or `\"off\"` when `browser.profile: off`: then no site is answered."
           },
           "sites": {
-            "description": "The sites this answer covers, sorted: the asked ones as registrable domains, or every live\nsite when none were asked. A cookie of the client's store belongs to a site when its domain\n(lower case, no leading `.`) is the site or ends with `.` and the site.",
+            "description": "The sites this page covers, sorted: the asked ones as registrable domains, or every site\nthe profile holds (also one whose cookies all expired) when none were asked. A cookie of\nthe client's store belongs to a site when its domain (lower case, no leading `.`) is the\nsite or ends with `.` and the site.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "storage": {
-            "description": "Every localStorage snapshot of those sites, sorted by origin.",
+            "description": "Every localStorage snapshot of those sites, sorted by site, then origin.",
             "items": {
               "$ref": "#/components/schemas/method.webprofile.receiver.PulledStorage"
             },
@@ -124138,6 +124312,14 @@
             ],
             "default": "shared",
             "description": "`\"shared\"`, or `\"off\"` when `browser.profile: off` made the push a no-op (209 D6): the\nclient stops pushing until it reads `\"shared\"` again."
+          },
+          "refused": {
+            "default": [],
+            "description": "Sites whose sets and snapshots were refused because the site was forgotten after the\npush's `basis_ms` (or the push named none), sorted; its removes still applied. The client\npulls to learn the forget and does not push those sets again.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "sites": {
             "description": "Sites whose rows were written, sorted.",
@@ -144242,6 +144424,17 @@
             ]
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "cursor",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
         }
       ],
       "result": {
@@ -144303,6 +144496,21 @@
             ]
           },
           "x-theuth-aliases": []
+        },
+        {
+          "name": "basis_ms",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "basisMs"
+          ]
         }
       ],
       "result": {
@@ -144335,6 +144543,23 @@
             "$ref": "#/components/schemas/method.webprofile.receiver.SiteSummary"
           },
           "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "webprofile"
+    },
+    {
+      "name": "web_profile_status",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.webprofile.output.ProfileStatus"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.webprofile.receiver.ProfileStatus"
         }
       },
       "x-theuth-audience": "owner",
