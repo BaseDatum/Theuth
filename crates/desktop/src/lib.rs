@@ -70,7 +70,7 @@ pub fn run() {
         tauri::RunEvent::Exit => {
             // 209 §4.5: the tile store's cookie observer goes before WebKit does.
             #[cfg(target_os = "macos")]
-            apple_cookies::unwatch();
+            apple_cookies::unwatch(app);
             quit::on_exit(app)
         }
         // 166 D2: a Dock click.
@@ -128,6 +128,8 @@ mod mobile {
                 #[cfg(target_os = "ios")]
                 crate::ios_webview::web_profile_read,
                 #[cfg(target_os = "ios")]
+                crate::ios_webview::web_profile_clear,
+                #[cfg(target_os = "ios")]
                 crate::ios_webview::web_storage_capture
             ])
             .setup(|app| {
@@ -179,7 +181,7 @@ mod mobile {
                 event: WindowEvent::Resumed | WindowEvent::Focused(true),
                 ..
             } => background::release(),
-            RunEvent::Exit => crate::apple_cookies::unwatch(),
+            RunEvent::Exit => crate::apple_cookies::unwatch(app),
             _ => {}
         }
     }
@@ -360,6 +362,7 @@ mod desktop {
             crate::webview::web_view_history,
             crate::webview::web_view_close,
             crate::webview::web_profile_read,
+            crate::webview::web_profile_clear,
             crate::webview::web_storage_capture,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V reach the webview through it); GTK would paint it inside the window.

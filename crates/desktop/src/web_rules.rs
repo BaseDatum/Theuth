@@ -140,22 +140,37 @@ pub(crate) fn check_url<R: Runtime>(app: &AppHandle<R>, url: &str) -> Result<Url
     Ok(parsed)
 }
 
-/// `web_profile_read` / `web_storage_capture` on Windows and Linux: the store is not read there yet
-/// (209 §4.5 allows Tauri's `Webview::cookies()`; it has no host-only flag and no script result).
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+/// Error of every browser profile command where the tile store cannot be read (209 §4.5): Windows and Linux
+/// (Tauri's `Webview::cookies()` fallback is not built: it has no host-only flag and no script result), and
+/// macOS < 14 / iOS < 17, where the tiles use the app's own default store, which is never exported.
 pub(crate) const PROFILE_UNSUPPORTED: &str =
-    "unsupported: the browser profile is read on macOS and iOS only";
+    "unsupported: the browser profile needs macOS 14 or iOS 17 and later";
 
-/// The browser profile's client-side rules (209 §4.5): what `web_profile_read` returns, what
-/// `web_storage_capture` returns, and when `web-profile://changed` fires. Apple platforms only: Windows and
-/// Linux answer both commands with [`PROFILE_UNSUPPORTED`].
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+/// The browser profile's client-side rules (209 §4.5): who may call the profile commands, what
+/// `web_profile_read` returns, what `web_storage_capture` returns, and when `web-profile://changed` fires.
+/// Used on Apple platforms only: Windows and Linux answer every profile command with
+/// [`PROFILE_UNSUPPORTED`], with the same declared types.
+#[cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
 pub(crate) mod profile {
+    use std::fmt;
     use std::time::{Duration, Instant};
 
     use serde::{Deserialize, Serialize};
 
-    /// Event to every window when the tile store's cookies changed, payload `{}` (209 §4.5).
+    /// Prefix of every profile command's refusal of a caller that may not reach the store.
+    const NO_ACCESS: &str = "no access to the browser profile from";
+
+    /// The profile commands answer the app's own webviews only (209 §4.5): never a tile (`web-*`, whose page
+    /// is a stranger), and on iOS (`main_only`) only the main webview, the one window there is.
+    pub(crate) fn check_caller(caller: &str, main_only: bool) -> Result<(), String> {
+        if caller.starts_with(super::PREFIX) || (main_only && caller != "main") {
+            Err(format!("{NO_ACCESS} `{caller}`"))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Event to the main window when the tile store's cookies changed, payload `{}` (209 §4.5).
     pub(crate) const CHANGED_EVENT: &str = "web-profile://changed";
 
     /// A change is reported once the store has been quiet this long (209 §4.5, D3).
@@ -171,7 +186,8 @@ pub(crate) mod profile {
 
     /// One cookie in the contract's shape (209 §4.1). `domain` has no leading dot; `host_only` says whether
     /// it was set without a `Domain` attribute. `expires` is Unix seconds, `None` for a session cookie.
-    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    /// `Debug` never prints `value`.
+    #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
     pub(crate) struct Cookie {
         pub(crate) name: String,
         pub(crate) value: String,
@@ -184,6 +200,23 @@ pub(crate) mod profile {
         /// `"Strict" | "Lax" | "None" | ""`.
         pub(crate) same_site: String,
         pub(crate) partitioned: bool,
+    }
+
+    impl fmt::Debug for Cookie {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("Cookie")
+                .field("name", &self.name)
+                .field("value", &"[redacted]")
+                .field("domain", &self.domain)
+                .field("host_only", &self.host_only)
+                .field("path", &self.path)
+                .field("expires", &self.expires)
+                .field("secure", &self.secure)
+                .field("http_only", &self.http_only)
+                .field("same_site", &self.same_site)
+                .field("partitioned", &self.partitioned)
+                .finish()
+        }
     }
 
     /// The identity of a cookie, `(name, domain, path)` (209 §4.2).
@@ -204,7 +237,8 @@ pub(crate) mod profile {
         }
     }
 
-    /// An `NSHTTPCookie`'s attributes as plain values, read by `apple_cookies`.
+    /// An `NSHTTPCookie`'s attributes as plain values, read by `apple_cookies` on the main thread and mapped
+    /// to a [`Cookie`] off it. No `Debug`: it holds the value.
     pub(crate) struct NativeCookie {
         pub(crate) name: String,
         pub(crate) value: String,
@@ -218,20 +252,93 @@ pub(crate) mod profile {
         pub(crate) http_only: bool,
         /// `sameSitePolicy`: `"lax"`, `"strict"`, or absent.
         pub(crate) same_site: Option<String>,
-        /// Every entry of `properties`, values as their description.
+        /// The entries of `properties` named in [`PROPERTIES`], values as strings (an `NSURL` as its
+        /// absolute string).
         pub(crate) properties: Vec<(String, String)>,
+    }
+
+    /// The `NSHTTPCookie.properties` keys the mapping reads (`NSHTTPCookieDomain`,
+    /// `NSHTTPCookieOriginURL`, and a `Partitioned` flag WebKit may carry); compared ignoring case.
+    pub(crate) const PROPERTIES: [&str; 3] = ["Domain", "OriginURL", "Partitioned"];
+
+    fn property<'a>(properties: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        properties
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Which rule of [`scope`] decided a cookie's host-only flag.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum ScopeRule {
+        /// A `__Host-` name: the browser accepted it only without `Domain`, so host-only.
+        HostPrefix,
+        /// The domain is an IP address: no other host can domain-match it, so host-only.
+        IpHost,
+        /// `NSHTTPCookie.domain` or the `Domain` property has a leading dot: WebKit's mark of a
+        /// `Domain=` attribute, so domain-wide.
+        Dot,
+        /// No dot, but the cookie's `OriginURL` is a subdomain of its domain: a host-only cookie's domain
+        /// is its origin's host, so this one was set with `Domain=` and is domain-wide.
+        OriginSubdomain,
+        /// No dot and no origin elsewhere: host-only.
+        Bare,
+    }
+
+    /// A cookie's domain (lower-case, no leading dot) and whether it is host-only (209 §4.1, §4.3).
+    /// `NSHTTPCookie` has no host-only flag; WebKit keeps the leading dot of a `Domain=` cookie, and that
+    /// is cross-checked against `properties` (`Domain`, `OriginURL`) rather than trusted alone.
+    pub(crate) fn scope(
+        name: &str,
+        domain: &str,
+        properties: &[(String, String)],
+    ) -> (String, bool, ScopeRule) {
+        let declared = property(properties, "Domain").unwrap_or(domain);
+        let dotted = domain.starts_with('.') || declared.starts_with('.');
+        let bare = domain.trim_start_matches('.').to_ascii_lowercase();
+        let ip = bare
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok();
+        let origin_sub = property(properties, "OriginURL")
+            .and_then(|u| tauri::Url::parse(u).ok())
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+            .is_some_and(|host| host.ends_with(&format!(".{bare}")));
+        let rule = if name.starts_with("__Host-") {
+            ScopeRule::HostPrefix
+        } else if ip {
+            ScopeRule::IpHost
+        } else if dotted {
+            ScopeRule::Dot
+        } else if origin_sub {
+            ScopeRule::OriginSubdomain
+        } else {
+            ScopeRule::Bare
+        };
+        let host_only = matches!(
+            rule,
+            ScopeRule::HostPrefix | ScopeRule::IpHost | ScopeRule::Bare
+        );
+        (bare, host_only, rule)
     }
 
     impl From<NativeCookie> for Cookie {
         fn from(n: NativeCookie) -> Self {
-            let (domain, host_only) = match n.domain.strip_prefix('.') {
-                Some(rest) => (rest.to_owned(), false),
-                None => (n.domain, true),
-            };
+            let (domain, host_only, rule) = scope(&n.name, &n.domain, &n.properties);
+            // No values: which rule decided, to confirm the leading-dot behaviour on a device.
+            tracing::debug!(
+                name_len = n.name.len(),
+                dotted = n.domain.starts_with('.'),
+                has_origin = property(&n.properties, "OriginURL").is_some(),
+                host_only,
+                rule = ?rule,
+                "web profile cookie scope"
+            );
             Cookie {
                 name: n.name,
                 value: n.value,
-                domain: domain.to_ascii_lowercase(),
+                domain,
                 host_only,
                 path: if n.path.is_empty() {
                     "/".to_owned()
@@ -348,15 +455,45 @@ pub(crate) mod profile {
     /// Name of the isolated `WKContentWorld` the shell's scripts run in (209 §4.7).
     pub(crate) const AGENT_WORLD: &str = "theuth-agent";
 
-    /// Body of the `callAsyncJavaScript` that `web_storage_capture` runs in [`AGENT_WORLD`], in the main
-    /// frame: the top-level origin and its localStorage as JSON.
-    pub(crate) const CAPTURE_SCRIPT: &str = "const s=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k!==null){s.push([k,localStorage.getItem(k)??\"\"]);}}return JSON.stringify({origin:location.origin,local_storage:s});";
+    /// One origin's localStorage snapshot at most this many bytes, measured as UTF-8 of
+    /// `JSON.stringify(local_storage)` (209 §4.1; the UI's `STORAGE_MAX_BYTES`).
+    pub(crate) const STORAGE_MAX_BYTES: usize = 96 * 1024;
+    const _: () = assert!(
+        STORAGE_MAX_BYTES == 98304,
+        "CAPTURE_SCRIPT spells the cap out"
+    );
 
-    /// `web_storage_capture` result (209 §4.5).
-    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    /// Body of the `callAsyncJavaScript` that `web_storage_capture` runs in [`AGENT_WORLD`], in the main
+    /// frame: the top-level origin and its localStorage as JSON. The size is counted while the list is built
+    /// (exactly the UTF-8 length of `JSON.stringify(local_storage)`); past [`STORAGE_MAX_BYTES`] the snapshot
+    /// is dropped whole in the page (209 §4.1) and an empty `local_storage` crosses the bridge instead.
+    pub(crate) const CAPTURE_SCRIPT: &str = concat!(
+        "const max=",
+        98304,
+        ",e=new TextEncoder(),s=[];let n=1;",
+        "for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k===null)continue;",
+        "const p=[k,localStorage.getItem(k)??\"\"];n+=e.encode(JSON.stringify(p)).length+1;",
+        "if(n>max)return JSON.stringify({origin:location.origin,local_storage:[]});s.push(p);}",
+        "return JSON.stringify({origin:location.origin,local_storage:s});"
+    );
+
+    /// `web_storage_capture` result (209 §4.5). `Debug` never prints the stored keys or values.
+    #[derive(PartialEq, Eq, Serialize, Deserialize)]
     pub(crate) struct Storage {
         pub(crate) origin: String,
         pub(crate) local_storage: Vec<(String, String)>,
+    }
+
+    impl fmt::Debug for Storage {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("Storage")
+                .field("origin", &self.origin)
+                .field(
+                    "local_storage",
+                    &format_args!("[redacted; {} entries]", self.local_storage.len()),
+                )
+                .finish()
+        }
     }
 
     /// The capture script's JSON, refused unless the origin is http(s) (an `about:blank` or opaque page
@@ -426,6 +563,7 @@ pub(crate) mod profile {
                 }
             );
             let d = Cookie::from(NativeCookie {
+                name: "sid".into(),
                 session_only: true,
                 same_site: None,
                 path: String::new(),
@@ -550,6 +688,101 @@ pub(crate) mod profile {
                 );
             }
             assert!(parse_capture("[]").is_err());
+        }
+
+        #[test]
+        fn profile_cookie_scope() {
+            let props = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+                pairs
+                    .iter()
+                    .map(|(k, v)| ((*k).into(), (*v).into()))
+                    .collect()
+            };
+            let host = |domain: &str, p: &[(&str, &str)]| {
+                let (d, host_only, rule) = scope("sid", domain, &props(p));
+                (d, host_only, rule)
+            };
+            // `Domain=example.com`: WebKit's leading dot, on the cookie or in its `Domain` property.
+            assert_eq!(
+                host(".Example.com", &[]),
+                ("example.com".into(), false, ScopeRule::Dot)
+            );
+            assert_eq!(
+                host("example.com", &[("Domain", ".example.com")]),
+                ("example.com".into(), false, ScopeRule::Dot)
+            );
+            // No `Domain`: a bare host, whose origin is that host.
+            assert_eq!(
+                host("app.example.com", &[]),
+                ("app.example.com".into(), true, ScopeRule::Bare)
+            );
+            assert_eq!(
+                host(
+                    "app.example.com",
+                    &[("OriginURL", "https://app.example.com/login")]
+                ),
+                ("app.example.com".into(), true, ScopeRule::Bare)
+            );
+            // No dot, but set from a subdomain: it had `Domain=`.
+            assert_eq!(
+                host("example.com", &[("originurl", "https://app.example.com/")]),
+                ("example.com".into(), false, ScopeRule::OriginSubdomain)
+            );
+            // A suffix that is not a label boundary is not a subdomain.
+            assert_eq!(
+                host("example.com", &[("OriginURL", "https://badexample.com/")]),
+                ("example.com".into(), true, ScopeRule::Bare)
+            );
+            // `__Host-` is host-only whatever the domain says.
+            let (d, host_only, rule) = scope(
+                "__Host-sid",
+                ".example.com",
+                &props(&[("OriginURL", "https://a.example.com/")]),
+            );
+            assert_eq!(
+                (d.as_str(), host_only, rule),
+                ("example.com", true, ScopeRule::HostPrefix)
+            );
+            // IP hosts: host-only, dot or not.
+            for ip in ["192.168.1.10", ".10.0.0.1", "[::1]", "::1"] {
+                let (_, host_only, rule) = scope("sid", ip, &[]);
+                assert_eq!((host_only, rule), (true, ScopeRule::IpHost), "{ip}");
+            }
+        }
+
+        #[test]
+        fn profile_debug_redacts_values() {
+            let c = cookie("sid", "s3cr3t-cookie");
+            let s = Storage {
+                origin: "https://app.example.com".into(),
+                local_storage: vec![("t0k3n-key".into(), "s3cr3t-storage".into())],
+            };
+            let printed = format!("{c:?} {s:?} {:?}", diff(&[], std::slice::from_ref(&c)));
+            for secret in ["s3cr3t-cookie", "s3cr3t-storage", "t0k3n-key"] {
+                assert!(!printed.contains(secret), "{secret} in {printed}");
+            }
+            assert!(printed.contains("[redacted]") && printed.contains("app.example.com"));
+        }
+
+        #[test]
+        fn profile_caller_rule() {
+            assert!(check_caller("main", false).is_ok());
+            assert!(check_caller("popout-web-0123456789abcdef", false).is_ok());
+            assert!(check_caller("island", false).is_ok());
+            assert!(check_caller("main", true).is_ok());
+            for (caller, main_only) in [
+                ("web-0123456789abcdef", false),
+                ("web-0123456789abcdef", true),
+                ("web-", false),
+                ("island", true),
+                ("popout-chat-x", true),
+            ] {
+                let e = check_caller(caller, main_only).unwrap_err();
+                assert!(
+                    e.starts_with("no access to the browser profile from"),
+                    "{caller}"
+                );
+            }
         }
     }
 }

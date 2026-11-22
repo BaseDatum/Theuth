@@ -5,7 +5,8 @@
 //! here through UIKit.
 //!
 //! Isolation (205 §5): each view has its own `WKWebViewConfiguration` with the persistent data store
-//! [`DATA_STORE`] (iOS 17+), and nothing else: no script message handler, no URL scheme handler, no user
+//! [`DATA_STORE`](crate::web_rules::DATA_STORE) (iOS 17+; before that the default store, as wry does), and
+//! nothing else: no script message handler, no URL scheme handler, no user
 //! script. It is not a Tauri webview, so it gets none of Tauri's schemes, IPC or plugin init scripts: the
 //! desktop's IPC fence, `asset` handler check and links script have no counterpart here.
 //!
@@ -23,9 +24,10 @@
 //! the selectors or signatures below against the protocols on iOS; [`create`] asserts in debug builds that
 //! every one of [`DELEGATE_SELECTORS`] is registered.
 //!
-//! The browser profile (209 §4.5): `web_profile_read` and `web_storage_capture` read the [`DATA_STORE`]
-//! store's cookies and a view's localStorage through `apple_cookies`, which [`create`] also starts watching
-//! for `web-profile://changed`.
+//! The browser profile (209 §4.5): `web_profile_read`, `web_profile_clear` and `web_storage_capture` read
+//! and empty the [`DATA_STORE`](crate::web_rules::DATA_STORE) store and read a view's localStorage through
+//! `apple_cookies`, which [`create`] also starts watching for `web-profile://changed`. They answer the
+//! main webview only, and `PROFILE_UNSUPPORTED` before iOS 17.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -43,35 +45,35 @@ use objc2::{
     msg_send, sel,
 };
 use objc2_foundation::{
-    NSDictionary, NSHTTPURLResponse, NSKeyValueChangeKey, NSKeyValueObservingOptions,
+    NSDictionary, NSError, NSHTTPURLResponse, NSKeyValueChangeKey, NSKeyValueObservingOptions,
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
-    NSURL, NSURLRequest, NSUUID,
+    NSURL, NSURLRequest,
 };
 use objc2_ui_kit::{
     UIAlertAction, UIAlertActionStyle, UIAlertController, UIAlertControllerStyle, UIApplication,
     UIResponder, UIScrollView, UITextField, UIView,
 };
 use objc2_web_kit::{
-    WKFrameInfo, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
-    WKNavigationResponse, WKNavigationResponsePolicy, WKUIDelegate, WKWebViewConfiguration,
-    WKWebsiteDataStore,
+    WKContentWorld, WKFrameInfo, WKNavigationAction, WKNavigationActionPolicy,
+    WKNavigationDelegate, WKNavigationResponse, WKNavigationResponsePolicy, WKUIDelegate,
+    WKWebViewConfiguration, WKWebsiteDataStore,
 };
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Url, Webview};
+use tauri::{AppHandle, Emitter, Manager, Url, Webview};
 
-use crate::apple_cookies::{capture, read, wait, watch};
-use crate::web_rules::profile::{Cookie, Storage};
+use crate::apple_cookies::{available, capture, captured, clear, data_store, read, wait, watch};
+use crate::web_rules::profile::{Cookie, Storage, check_caller};
 use crate::web_rules::{
-    CLOSED_EVENT, Closed, DATA_STORE, STATE_EVENT, allowed, app_url, check_label, check_url,
-    may_open, navigation_allowed, no_view,
+    CLOSED_EVENT, Closed, STATE_EVENT, allowed, app_url, check_label, check_url, may_open,
+    navigation_allowed, no_view,
 };
 
 extern_class!(
     /// `WKWebView` as UIKit declares it; `objc2-web-kit` 0.3 binds the class for macOS only (wry declares
-    /// its own copy for the same reason). Only the members this module uses.
+    /// its own copy for the same reason). Only the members this module and `apple_cookies` use.
     #[unsafe(super(UIView, UIResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
-    struct WKWebView;
+    pub(crate) struct WKWebView;
 );
 
 impl WKWebView {
@@ -118,6 +120,19 @@ impl WKWebView {
 
         #[unsafe(method(scrollView))]
         fn scroll_view(&self) -> Retained<UIScrollView>;
+
+        /// The selector `objc2-web-kit` binds on macOS (`WKWebView.rs`), with the same name and types, so
+        /// `apple_cookies::capture` calls one method on both platforms.
+        #[allow(non_snake_case)]
+        #[unsafe(method(callAsyncJavaScript:arguments:inFrame:inContentWorld:completionHandler:))]
+        pub(crate) unsafe fn callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+            &self,
+            function_body: &NSString,
+            arguments: Option<&NSDictionary<NSString, AnyObject>>,
+            frame: Option<&WKFrameInfo>,
+            content_world: &WKContentWorld,
+            completion_handler: Option<&DynBlock<dyn Fn(*mut AnyObject, *mut NSError)>>,
+        );
     );
 }
 
@@ -642,12 +657,12 @@ fn create(
     frame: NSRect,
 ) -> Result<Entry, String> {
     let parent = parent_of(main)?;
-    // SAFETY: plain configuration setters on a fresh object; the identifier API exists from iOS 17 and the
-    // app's minimum is 17.4.
+    // SAFETY: plain configuration setters on a fresh object. The named store exists from iOS 17
+    // (`data_store` checks); before that the tile uses the default store, as wry does, and the profile
+    // commands refuse.
     let config = unsafe {
         let config = WKWebViewConfiguration::new(mtm);
-        let store =
-            WKWebsiteDataStore::dataStoreForIdentifier(&NSUUID::from_bytes(DATA_STORE), mtm);
+        let store = data_store(mtm).unwrap_or_else(|| WKWebsiteDataStore::defaultDataStore(mtm));
         config.setWebsiteDataStore(&store);
         // iOS defaults to NO, which drops `window.open` outside a user gesture without a delegate call;
         // `createWebView…` sends every one to the browser, throttled by `may_open`.
@@ -849,20 +864,32 @@ pub async fn web_view_close(app: AppHandle, webview: Webview, label: String) -> 
     Ok(())
 }
 
-/// Every cookie of the tiles' store, through WebKit on the named store (209 §4.5).
+/// Every cookie of the tiles' store, through WebKit on the named store (209 §4.5). Main webview only.
 #[tauri::command]
-pub async fn web_profile_read(app: AppHandle) -> Result<Vec<Cookie>, String> {
-    read(app).await
+pub async fn web_profile_read(webview: Webview) -> Result<Vec<Cookie>, String> {
+    check_caller(webview.label(), true)?;
+    read(webview.app_handle().clone()).await
 }
 
-/// The top-level origin's localStorage of `label`, read in the isolated world (209 §4.5).
+/// Empty the tiles' store: every cookie, and localStorage, sessionStorage and IndexedDB (209 §4.5). Main
+/// webview only; emits nothing (the UI reads the store again).
+#[tauri::command]
+pub async fn web_profile_clear(webview: Webview) -> Result<(), String> {
+    check_caller(webview.label(), true)?;
+    clear(webview.app_handle().clone()).await
+}
+
+/// The top-level origin's localStorage of `label`, read in the isolated world (209 §4.5). Main webview
+/// only.
 #[tauri::command]
 pub async fn web_storage_capture(webview: Webview, label: String) -> Result<Storage, String> {
+    check_caller(webview.label(), true)?;
+    available()?;
     check_label(&label)?;
     let (tx, rx) = sync_channel(1);
     on_main(&webview, move |mtm, _| {
         with_view(&label, |e| capture(mtm, &e.view, tx))
     })
     .await?;
-    wait(rx).await
+    captured(rx).await
 }
