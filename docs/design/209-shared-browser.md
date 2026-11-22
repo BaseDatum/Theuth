@@ -86,29 +86,46 @@ CREATE TABLE web_sites (
   the key frames, `crates/mesh/src/keys.rs`) computes the same ids with nothing created per engine, so there is no
   creation race; the file at rest names no site, and `site_id` groups, lists and forgets a site without opening a row.
   `site` is the lower-case registrable domain of §4.2.
-- **Mesh key rotation** (183 §6.9): the ids change with the key. The first store operation that sees a new current
-  key, or the plugin's one-minute maintenance tick, moves every row to its new id — re-sealed under the new key, the
-  old id tombstoned — well inside the vault's 10-minute retire grace (`RETIRE_GRACE_MS`; the vault's retire counts only
-  its own rows). Every later full read (a session's first load, the Settings list) also folds rows a lagging engine
-  still wrote under the old ids, while the old key is retained. Every engine computes the same new ids, so concurrent
-  moves converge; a newer tombstone at the new id keeps a removal. A row sealed under a key already retired is lost.
+- **Mesh key rotation** (183 §6.9): the ids change with the key. The store moves every row to its new id — re-sealed
+  under the new key, the old id tombstoned — as soon as it sees the new key: `watch_keys` tells the actor on every
+  vault change (`Vault::watch_changes` fires after a rotation, a key frame or a pairing installs a key), and the first
+  store operation that sees the new key and the one-minute maintenance tick do the same. From the moment the store sees
+  a new key (and from open) until the move is done it holds a `secrets::RetireHold`, so the vault retires no key
+  (`RETIRE_GRACE_MS` is 10 minutes and the vault's retire counts only its own rows); the hold is released once every
+  readable row opens under the current key (P2). A peer's row that arrives sealed under a retained key (a lagging
+  engine that has not adopted the new key) takes the hold again and is moved at once. Every later full read also folds
+  rows a lagging engine wrote under old ids. Every engine computes the same new ids, so concurrent moves converge; a
+  newer tombstone at the new id keeps a removal. A row sealed under a key already retired on this engine is unreadable
+  here; the engine that wrote it still holds that key and moves it once it adopts the new one. Residual window: the
+  vault has no synchronous hook at key install, so the hold is taken when the watcher runs, right after the install;
+  a key could retire before that only if the watcher did not run for the whole 10-minute grace.
 - **Entry** (the sealed plaintext, JSON) — the site, the epoch, the writer and the time travel inside, and the aad binds
   the row id, so a row is one atomic value:
 
 ```json
-{ "v": 1, "site": "example.com", "epoch": 0, "writer": "tile:iPad", "updated_ms": 1795000000000,
+{ "v": 1, "site": "example.com", "epoch": 0, "writer": "tile:iPad", "updated_ms": 1795000000000, "basis_ms": 1794999990000,
   "item": { "cookie": { "name": "__Host-sid", "value": "…", "domain": "app.example.com", "host_only": true,
                         "path": "/", "expires": 1795000000, "secure": true, "http_only": true,
                         "same_site": "Lax", "partitioned": false } } }
 ```
 
-  `item` is `{ "cookie": … }`, `{ "storage": { "origin", "local_storage": [[k, v]], "captured_ms" } }` or, on the
-  epoch row, `{ "epoch": {} }`. `expires` is Unix seconds or `null` (a session cookie, kept until the site goes 30 days
-  without a write; §11 Q1). `same_site` is `"Strict" | "Lax" | "None" | ""`. A row of another `v` is skipped (and
-  counted in a log line), never misread. `SiteJar { v, site, cookies, origins }` remains the per-site shape a load
-  answers, gathered from the site's rows.
+  `item` is `{ "cookie": … }`, `{ "storage": { "origin", "local_storage": [[k, v]], "captured_ms" } }`, on the
+  epoch row `{ "epoch": {} }`, and on a forget marker `{ "forget": {} }`. `basis_ms` (P2, optional, absent for a tile)
+  is when the writer last read the whole profile: an agent session's load. `expires` is Unix seconds or `null` (a
+  session cookie, kept until the site goes 30 days without a write; §11 Q1). `same_site` is `"Strict" | "Lax" | "None"
+  | ""`. A row of another `v` is skipped (and counted in a log line), never misread. `SiteJar { v, site, cookies,
+  origins }` remains the per-site shape a load answers, gathered from the site's rows.
 - **Epoch**: the row `id = "epoch"` seals `{ "epoch": n, "item": { "epoch": {} } }`. "Sign out everywhere" writes
   `n+1` and tombstones every row; an entry written under an older epoch is dead.
+- **Forget marker** (P2): `web_profile_forget` tombstones every row of the site's `site_id` and writes the row
+  `id = HMAC(id key, ["forget", site])`, `site_id = NULL` (so it never counts as a live row), sealing
+  `{ "site", "updated_ms": F, "item": { "forget": {} } }`. An entry of that site is dead (read as absent, tombstoned by
+  the next full read, refused at push) when it was written before `F`; or after `F` by a writer whose `basis_ms` is
+  before `F` (an agent session that loaded before the forget: its save never brings the site back, on any engine,
+  however late it arrives); or, without `basis_ms` (a tile), within 60 s after `F` (`FORGET_QUIET_MS`: the client had
+  not applied the forget yet). Removes still apply. The marker names the site, so a replicated forget reaches every
+  engine's `WebProfileChanged` (tombstones alone name no site once none is live). Markers go with sign out everywhere.
+  Clocks of different engines are compared, so a skew of seconds shifts these edges by as much.
 - **Removal** is a column write (`sealed = NULL`), never a `DELETE`: a delete loses to a newer column write
   (`0001_link.sql:5-7`). A remove writes its tombstone even for a row this engine has not seen, so it wins over an older
   set elsewhere. Tombstones are deleted at open 30 days after their write (their `hlc`).
@@ -129,7 +146,8 @@ cannot delete what another wrote:
 - The client keeps, in memory, the last cookie list it pushed or applied; on a store change it diffs
   `getAllCookies` against it, keyed `(name, domain, path)` (obscura's identity too, `obscura-net/src/cookies.rs:27-33`).
 - `Ctx` keeps, per session, the cookies it loaded (per site and the newest row's `updated_ms`); at save it diffs the
-  isolate's export against that.
+  isolate's export against that. Its pushes carry `basis_ms`, the time just before the session's full load (§4.1
+  forget marker).
 - The webprofile actor groups changes by site (the registrable domain by the public suffix list, its private section
   included, so `user.github.io` is its own site; an IP address, a single-label host such as `localhost` and a bare
   suffix are their own site) and writes each change as its own row: set seals the cookie, remove or an `expires` in
@@ -158,10 +176,10 @@ Change: export `host_only` from the entry, read an optional `host_only` on impor
 | Method | Params | Result | Notes |
 |---|---|---|---|
 | `web_profile_push` | `{ device, epoch, changes: [{op:"set", cookie} \| {op:"remove", name, domain, path}], storage: [{origin, local_storage, captured_ms}] }` | `{ applied, sites: [String], epoch, profile: "shared" \| "off" }` | Refused with error `stale-epoch` and data `{ epoch }` (the current one) when `epoch` is older; the client then clears its store (sign out everywhere happened elsewhere). Refused with `unknown-epoch` and the same data when `epoch` is newer than the current one. Refused before any work with `invalid push: …` beyond 2000 changes or 64 snapshots or for a malformed cookie (§4.1 caps; the device name is cut to 64 characters), and with `profile full`. With `browser.profile: off` nothing is written and the result says `profile: "off"`; an error then means only "starting/unavailable" or a refusal. Not forwarded: any engine writes the replicated table. |
-| `web_profile_pull` | `{ sites?: [String] }` | `{ epoch, cookies: [Cookie], storage: [...] }` | P2, for D5. The only method that returns values; the app only. |
+| `web_profile_pull` | `{ sites?: [String] }` (hosts or registrable domains, at most 500) | `{ epoch, sites: [String], cookies: [Cookie & { site, writer, updated_ms }], storage: [{ origin, local_storage, captured_ms, site, writer, updated_ms }], profile: "shared" \| "off" }` | P2, for D5. The only method that returns values; owner connections only (refuses a guest or unauthenticated connection, `UNAUTHORIZED`), never logged by theuth. `sites` lists the sites the answer covers (the asked ones as registrable domains, sorted; all live sites when none asked); each is answered whole, so the client deletes from its store the cookies of a covered site it did not get (a forgotten site answers none): a store cookie belongs to a site when its domain (lower case, no leading `.`) is the site or ends with `.site`. `writer` is the cookie's own row's (`tile:<device>` \| `obscura:<engine>`), so a client skips echoes of its own pushes. Cookies sorted by site, name, domain, path. More than 500 sites: `invalid pull: N sites > 500`. With `browser.profile: off`: empty lists and `profile: "off"`. |
 | `web_profile_sites` | `{}` | `[{ site, cookies, origins, updated_ms, writer }]` | Settings list. Counts, never values; `origins` counts non-empty snapshots; `updated_ms` and `writer` are the site's newest row's. `[]` with `browser.profile: off`. |
-| `web_profile_forget` | `{ site }` | `{}` | P2. Writes `sealed = NULL`, publishes `WebProfileChanged`. |
-| `web_profile_clear` | `{}` | `{ epoch }` | P2. Bumps the epoch and nulls every row. |
+| `web_profile_forget` | `{ site }` (a host or registrable domain) | `{ site, epoch }` (the registrable domain forgotten, the current epoch) | P2. Tombstones every row of the site and writes its forget marker (§4.1), publishes `WebProfileChanged { sites: [site] }`; every engine's agent browsers drop the site's cookies before their next call (§4.6). Owner connections only. Works with `browser.profile: off`. An empty site: `invalid forget: no site`. |
+| `web_profile_clear` | `{}` | `{ epoch }` (the new one) | P2. Bumps the epoch and tombstones every row; publishes `WebProfileChanged` with the sites that were live and the new epoch. Owner connections only. Works with `browser.profile: off`. |
 | `web_view_state` | `{ session, view, url, title, loading }` | `{}` | D9. Forwarded to the session's owner by `rpc_forward::route` (`crates/agent/src/rpc_forward.rs:1-10`). |
 | `answer_web_view_call` | `(id, answer)` | `bool` (still pending) | D8. Forwarded to the owner like `web_view_state`. |
 | `answer_element_form` | `(id, answer)`; `answer` = `{ submit: { values: { "<index>": String } } }` \| `{ cancel: {} }` | `bool` (still pending) | D13, P5. Forwarded to the owner. Values handled as in §4.10. |
@@ -264,6 +282,17 @@ passed to `obscura_mcp::call_tool` (`session.rs:24-31`, `:147`). There is no `Pa
   signed-in origin). After a call that may navigate, `Ctx` records the page it reached (`browser_navigate`'s reply names
   it; other calls read `location.href`), so the next acting call is gated. The navigation that first reaches a
   signed-in page (a redirect, a click, `browser_back`) is therefore not gated itself; it is logged.
+- Forget and sign out everywhere on live isolates (P2): the `Browsers` actor handles every `WebProfileChanged`
+  (local, or published by the profile actor for replicated rows) by reading the named sites back. A site the profile
+  no longer holds leaves the engine's known sites (the D14 gate) and every session: its cookies and origins leave the
+  session's baseline and rows, so a save no longer holds it, and the cookie deletes (`browser_set_storage_state` with
+  `expires: 0`) are queued for the isolate. Its localStorage stays in the isolate until it drops: obscura's
+  `browser_set_storage_state` only adds entries (`obscura-mcp/src/lib.rs` `tool_set_storage_state`, at `1c76fa7`).
+  A newer epoch empties the known sites and resets every session loaded under an older one (its profile cookies
+  queued for deletion, a new load on its next call). `Ctx::ensure_profile` runs what is queued, under the session's
+  guard, before every call of that session, so no call after the event sends a forgotten cookie. A `browser_open`
+  also drops its site when the profile no longer has it (the event missed, a lagged feed). A save that races the
+  event is refused by the store (its `basis_ms`).
 
 ### 4.7 Tile operations
 
@@ -540,6 +569,37 @@ and §4.6 already say it:
   push is refused; pull answers only an owner-audience connection.
 - Simulator: the agent signs in to the test site in obscura; the user opens it in the tile signed in; forget removes
   it from the store (`web_profile_read`).
+
+#### P2 as built (engine)
+
+What the P2 engine differs in from the text above or adds to it; §4.1, §4.2, §4.4 and §4.6 already say it:
+
+- **Shapes** (positional params like P1's; named also work). `web_profile_pull(sites?: [String]) → PullResult
+  { epoch, sites, cookies: [PulledCookie], storage: [PulledStorage], profile }`; `PulledCookie` is the `Cookie`
+  fields flat plus `site`, `writer`, `updated_ms`; `PulledStorage` is `{ origin, local_storage, captured_ms }` flat
+  plus the same three. `web_profile_forget(site: String) → ForgetResult { site, epoch }` (the contract said `{}`:
+  additive, the UI learns which registrable domain the host it passed named). `web_profile_clear() → ClearResult
+  { epoch }`. `PullResult.sites` and `.profile` are additive to the contract's `{ epoch, cookies, storage }`. No new
+  event: `WebProfileChanged` already names the sites.
+- **Owner only**: pull, forget and clear call `rpc_core::owner` (refusing a share-link guest and an unauthenticated
+  call with `UNAUTHORIZED`) on top of `audience = "owner"`, which only shapes discovery.
+- **Forget marker and `basis_ms`** (§4.1): new item kind `{ "forget": {} }`, new optional entry field `basis_ms`, new
+  `Push::basis_ms`. Without them a stale session's save or an early client push wrote a forgotten cookie back (a set
+  newer than the tombstone wins last-writer-wins), and a cookie written before the forget on an engine apart arrived
+  later as live.
+- **Forget and clear work with `browser.profile: off`** (D6: off leaves rows until cleared); pull answers empty with
+  `profile: "off"`.
+- **Rotation** (§4.1): the store holds a `secrets::RetireHold` from open and from the moment it sees a new key until
+  every readable row opens under the current key; `webprofile::watch_keys` (on `Vault::watch_changes`) tells the actor
+  at once; a peer's row under a retained key is re-keyed on arrival. The vault offers no synchronous hook at key
+  install: the residual window is the time from the install to the watcher's run, against a 10-minute grace.
+- **Logs**: jsonrpsee's own `jsonrpsee-server` target prints every request and response whole at TRACE, outside
+  theuth's code; the engine filter (INFO) does not enable it unless `RUST_LOG` names that target. A directive capping it
+  in `crates/theuth/src/logs.rs` is proposed to the orchestrator (not an engine-P2 path).
+- **Known gaps**: a client that pushes a change of a forgotten site more than 60 s after the forget without having
+  applied it (it was offline, or its engine was cut off from the forgetting one) writes that cookie back. A forgotten
+  site's localStorage stays in a live obscura isolate until the isolate drops (obscura can add storage entries, not
+  remove them); it is never saved back, and the cookies — the sign-in — are deleted.
 
 ### P3 — agent control of the tile (D8, D9 full)
 

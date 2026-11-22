@@ -376,7 +376,8 @@ async fn a_forget_reaches_the_other_engine_and_an_earlier_write_stays_dead() {
     );
     a.replica.flush().await.unwrap();
 
-    let late_id = store::Ids::of(&a.vault.mesh_key()).cookie("example.com", "late", "app.example.com", "/");
+    let late_id =
+        store::Ids::of(&a.vault.mesh_key()).cookie("example.com", "late", "app.example.com", "/");
     connect(&Arc::new(Switch::default()), [&a, &b]);
     until("A received B's earlier row", async || {
         sqlx::query_scalar::<_, String>("SELECT id FROM web_sites WHERE id = ?")
@@ -395,7 +396,11 @@ async fn a_forget_reaches_the_other_engine_and_an_earlier_write_stays_dead() {
         pulled(&b_wp).await.is_empty()
     })
     .await;
-    assert_eq!(pulled(&a_wp).await, vec![], "B's earlier write is dead on A");
+    assert_eq!(
+        pulled(&a_wp).await,
+        vec![],
+        "B's earlier write is dead on A"
+    );
     assert!(a_wp.sites().await.unwrap().is_empty());
     assert!(b_wp.sites().await.unwrap().is_empty());
 }

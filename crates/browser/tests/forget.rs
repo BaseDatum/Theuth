@@ -248,7 +248,11 @@ async fn forget_and_sign_out_reach_live_isolates_before_their_next_call() {
     kit.touch(s).await;
     assert!(has(&export(&actor, a).await, "sid"));
     let out = kit
-        .call(a, "browser_open", json!({ "url": format!("{base}/before") }))
+        .call(
+            a,
+            "browser_open",
+            json!({ "url": format!("{base}/before") }),
+        )
         .await;
     assert!(!out.is_error, "{}", out.content);
     assert!(
@@ -260,10 +264,7 @@ async fn forget_and_sign_out_reach_live_isolates_before_their_next_call() {
     assert!(open.credentialed(a, &json!({ "url": format!("{base}/x") })));
 
     // Another engine forgets the loopback site; this engine's event has not arrived yet.
-    assert_eq!(
-        profile.forget("127.0.0.1").await.unwrap().site,
-        "127.0.0.1"
-    );
+    assert_eq!(profile.forget("127.0.0.1").await.unwrap().site, "127.0.0.1");
     // S's site refreshes the forgotten cookie and sets one of a held site; S closes and saves.
     // The held site's cookie is written, the forgotten one is not: S read the profile before
     // the forget.

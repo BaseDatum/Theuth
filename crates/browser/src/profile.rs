@@ -259,7 +259,8 @@ pub(crate) async fn changed(e: webprofile::WebProfileChanged) {
 }
 
 /// Take `sites` out of `l` — rows, baseline cookies (imports stay) and origins — and return the
-/// calls that delete them from the isolate.
+/// call that deletes their cookies from the isolate. Their localStorage stays in the isolate
+/// until it drops: obscura's `browser_set_storage_state` only adds entries, it removes none.
 fn drop_sites(l: &mut Loaded, sites: &HashSet<String>) -> Vec<Value> {
     let mut gone = Vec::new();
     l.baseline.retain(|c| {
@@ -270,22 +271,14 @@ fn drop_sites(l: &mut Loaded, sites: &HashSet<String>) -> Vec<Value> {
         !of
     });
     l.rows.retain(|site, _| !sites.contains(site));
-    let mut origins = Vec::new();
     l.storage.retain(|origin, _| {
-        let of = webprofile::merge::origin_host(origin).is_some_and(|h| sites.contains(&site_of(&h)));
-        if of {
-            origins.push(json!({ "origin": origin, "localStorage": [] }));
-        }
-        !of
+        !webprofile::merge::origin_host(origin).is_some_and(|h| sites.contains(&site_of(&h)))
     });
-    let mut calls = Vec::new();
-    if !gone.is_empty() {
-        calls.push(json!({ "state": { "cookies": gone } }));
+    if gone.is_empty() {
+        Vec::new()
+    } else {
+        vec![json!({ "state": { "cookies": gone } })]
     }
-    if !origins.is_empty() {
-        calls.push(json!({ "state": { "origins": origins } }));
-    }
-    calls
 }
 
 /// 209 D14: whether an acting call on `site` acts with the user's sign-in: the session's load gave
@@ -1033,8 +1026,8 @@ mod tests {
     }
 
     /// 209 §6: a site asked for that the profile no longer has (forgotten, the event missed) is
-    /// taken out of the session before its `browser_open` to it, its cookies and origins deleted
-    /// from the isolate; imports and other sites stay, and a save no longer holds it.
+    /// taken out of the session before its `browser_open` to it, its cookies deleted from the
+    /// isolate; the other site stays, and a save writes neither its cookies nor its storage.
     #[test]
     fn refresh_drops_a_site_the_profile_forgot() {
         let session = SessionId::new();
@@ -1065,20 +1058,28 @@ mod tests {
             LoadedProfile::default(),
             &["app.forgot-test.example".to_owned()],
         );
-        assert_eq!(apply.calls.len(), 2, "{:?}", apply.calls);
+        assert_eq!(apply.calls.len(), 1, "{:?}", apply.calls);
         let gone = apply.calls[0]["state"]["cookies"].as_array().unwrap();
+        assert_eq!(gone.len(), 1);
         assert_eq!(
             (gone[0]["name"].as_str(), gone[0]["expires"].as_i64()),
             (Some("sid"), Some(0))
-        );
-        assert_eq!(
-            apply.calls[1]["state"]["origins"],
-            json!([{ "origin": "https://app.forgot-test.example", "localStorage": [] }])
         );
         let l = snapshot(session).unwrap();
         assert!(!l.has_site("forgot-test.example"));
         assert!(l.has_site("kept-test.example"));
         assert!(!held(&l, "forgot-test.example"));
+        // The isolate still exports the old cookie and storage (the delete has not run): no save.
+        let text = export(
+            json!([
+                { "name": "sid", "value": "refreshed-0123", "domain": "app.forgot-test.example", "path": "/" },
+                { "name": "k", "value": "1", "domain": "kept-test.example", "path": "/",
+                  "secure": true, "http_only": true, "same_site": "Lax", "expires": 4_000_000_000i64 },
+            ]),
+            json!([{ "origin": "https://app.forgot-test.example", "localStorage": [["k", "v2"]] }]),
+        );
+        let save = plan(&l, &text, 5).unwrap();
+        assert!(save.is_empty(), "{:?}", save.changes);
         take(session);
     }
 

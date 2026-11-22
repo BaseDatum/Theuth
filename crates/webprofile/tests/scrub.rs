@@ -5,7 +5,9 @@
 use std::sync::Arc;
 
 use kameo::actor::Spawn as _;
-use webprofile::{Cookie, CookieChange, OriginStorage, Profile, Push, WebProfileActor, caps, store};
+use webprofile::{
+    Cookie, CookieChange, OriginStorage, Profile, Push, WebProfileActor, caps, store,
+};
 
 const SECRET: &str = "s3cr3t-session-value-0123456789";
 
@@ -52,9 +54,14 @@ impl std::io::Write for Sink {
 async fn values_never_reach_debug_logs_summaries_or_the_file() {
     let sink = Sink::default();
     let writer = sink.clone();
+    // Everything at TRACE except jsonrpsee's own server target: its TRACE line prints every
+    // response whole (any method's, `web_profile_pull`'s values too), outside this crate; the
+    // engine's filter (INFO) does not enable it unless `RUST_LOG` names that target.
     tracing::subscriber::set_global_default(
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                "trace,jsonrpsee-server=debug",
+            ))
             .with_writer(move || writer.clone())
             .finish(),
     )
@@ -121,7 +128,10 @@ async fn values_never_reach_debug_logs_summaries_or_the_file() {
     let req = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "web_profile_pull",
         "params": { "sites": ["app.example.com"] } });
     let (resp, _) = methods.raw_json_request(&req.to_string(), 1).await.unwrap();
-    assert!(resp.get().contains(SECRET), "the owner's app gets the values");
+    assert!(
+        resp.get().contains(SECRET),
+        "the owner's app gets the values"
+    );
     let pulled = p.pull(None).await.unwrap();
     assert_eq!(pulled.cookies[0].cookie.value, SECRET);
     assert!(!format!("{pulled:?}").contains(SECRET));

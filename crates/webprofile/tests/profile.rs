@@ -560,7 +560,10 @@ async fn pull_answers_whole_sites_with_each_rows_writer() {
     .unwrap();
 
     let r = p
-        .pull(Some(&["app.example.com".to_owned(), "nothing.test".to_owned()]))
+        .pull(Some(&[
+            "app.example.com".to_owned(),
+            "nothing.test".to_owned(),
+        ]))
         .await
         .unwrap();
     assert_eq!(r.epoch, 0);
@@ -623,7 +626,13 @@ async fn a_forgotten_site_does_not_come_back_from_stale_writers() {
     let gone = p.pull(Some(&["example.com".to_owned()])).await.unwrap();
     assert_eq!(gone.sites, ["example.com"]);
     assert!(gone.cookies.is_empty(), "{:?}", gone.cookies);
-    let listed: Vec<String> = p.sites().await.unwrap().into_iter().map(|s| s.site).collect();
+    let listed: Vec<String> = p
+        .sites()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|s| s.site)
+        .collect();
     assert_eq!(listed, ["other.org"], "the other site stays");
     // Every row of the site is a tombstone; the marker names no site_id.
     let site_id = p.site_id("example.com");
@@ -728,9 +737,13 @@ async fn clear_bumps_the_epoch_and_a_stale_push_is_refused() {
         .await,
         Err(ProfileError::StaleEpoch { current: 1 })
     );
-    p.push(push("tile:iPad", 1, vec![set(cookie("sid", "after", "example.com"))]))
-        .await
-        .unwrap();
+    p.push(push(
+        "tile:iPad",
+        1,
+        vec![set(cookie("sid", "after", "example.com"))],
+    ))
+    .await
+    .unwrap();
     assert_eq!(p.pull(None).await.unwrap().epoch, 1);
     assert_eq!(p.clear().await.unwrap(), 2);
 }
@@ -762,7 +775,11 @@ async fn a_new_mesh_key_holds_the_old_one_until_the_rows_moved() {
     assert_eq!(p.under_retained_keys().await.unwrap(), 1);
     let far = store::now_ms() + secrets::vault::RETIRE_GRACE_MS + 60_000;
     vault.maintain(far).await.unwrap();
-    assert_eq!(vault.held_keys().len(), 2, "held: the row is still under it");
+    assert_eq!(
+        vault.held_keys().len(),
+        2,
+        "held: the row is still under it"
+    );
     // The move (the plugin's watcher, or its minute tick) lets go.
     p.maintain().await.unwrap();
     assert!(!p.holding());

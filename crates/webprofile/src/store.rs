@@ -1007,11 +1007,10 @@ impl Profile {
         Ok(rows
             .into_iter()
             .filter(|(id, sealed)| {
-                URL_SAFE_NO_PAD.decode(sealed).ok().is_some_and(|b| {
-                    self.vault
-                        .reseal_with_mesh_key(&aad(id), &b)
-                        .is_some()
-                })
+                URL_SAFE_NO_PAD
+                    .decode(sealed)
+                    .ok()
+                    .is_some_and(|b| self.vault.reseal_with_mesh_key(&aad(id), &b).is_some())
             })
             .count())
     }
