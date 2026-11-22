@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
-import { ATTENTION_FIXTURE, ATTENTION_FIXTURE_NOW as NOW } from '@/components/settings/attention-fixtures'
+import { ATTENTION_FIXTURE, ATTENTION_FIXTURE_NOW as NOW, webViewFixture } from '@/components/settings/attention-fixtures'
 import { ATTENTION_SIM, SANDBOXES_SIM, SECRET_REQUESTS_SIM } from '@/components/settings/sandbox-queries'
 import type * as Router from '@tanstack/react-router'
 import type * as Rpc from '@/lib/rpc'
@@ -129,6 +129,16 @@ test('decision, review and show cards open the pane; every card can be snoozed o
     expect(html).toContain('>Open<')
     expect(html).toContain('>Dismiss<')
   }
+})
+
+test('a web page card: the "web page" chip, the page title, its host (not the whole address), where it came from, Open / Snooze / Dismiss', async () => {
+  const html = await render(card(webViewFixture(NOW)[0] as AttentionItem))
+  expect(html).toContain('>web page<')
+  expect(html).toContain('Checkout preview')
+  expect(html).toMatch(/<p class="[^"]*font-mono[^"]*" title="http:\/\/localhost:5173\/checkout\?cart=demo">localhost:5173<\/p>/)
+  expect(html).toContain('>release-2.5 · Ship 2.5 release › builder<')
+  expect(html).toContain('>5m<')
+  for (const label of ['>Open<', 'Snooze', '>Dismiss<']) expect(html).toContain(label)
 })
 
 test('the toolbar: search, sort, one chip per kind with its count (lit chips pressed), the project select', async () => {

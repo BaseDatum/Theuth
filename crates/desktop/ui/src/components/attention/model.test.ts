@@ -1,6 +1,6 @@
 import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
-import { ATTENTION_FIXTURE, ATTENTION_FIXTURE_NOW as NOW } from '@/components/settings/attention-fixtures'
+import { ATTENTION_FIXTURE, ATTENTION_FIXTURE_NOW as NOW, inboxFixture, webViewFixture } from '@/components/settings/attention-fixtures'
 import type { AttentionChanged } from '@/rpc/bindings/event.roster_2eattention.output'
 import type { AttentionItem, AttentionOutcome } from '@/rpc/bindings/method.roster.output'
 import type { Pointer } from '@/rpc/bindings/method.roster.output'
@@ -26,6 +26,7 @@ import {
   PATCH_START,
   patchEvent,
   patchSettled,
+  paneAfter,
   pruneFilter,
   resolveSummary,
   restoreItems,
@@ -45,6 +46,7 @@ import {
   stackEntries,
   stackKey,
   urlHost,
+  webViewOf,
   visibleEntries,
 } from './model'
 
@@ -334,6 +336,42 @@ test('focusAfter / nextItemAfter: the entry after the removed one, else before i
   expect(nextItemAfter(entries, at(33).id)).toBe(at(32).id)
   expect(nextItemAfter(visibleEntries(F, EMPTY_FILTER, 'newest', NOW), at(33).id)).toBe(at(6).id)
   expect(nextItemAfter(entries, 'gone')).toBeNull()
+})
+
+// Task: an item dismissed, snoozed or resolved from the LIST (or the bulk bar) took the detail pane with it.
+test('paneAfter: the open item left the list — the next listed item, else the one before, a stack sibling first, else none', () => {
+  const entries = stackEntries(F)
+  const without = (...ids: string[]) => stackEntries(F.filter((i) => !ids.includes(i.id)))
+  // Still listed: it stays.
+  expect(paneAfter(entries, entries, at(1).id)).toBe(at(1).id)
+  // Dismissed from its card: the next item.
+  expect(paneAfter(entries, without(at(1).id), at(1).id)).toBe(at(2).id)
+  // Bulk-dismissed with the items after it: the first survivor after them.
+  expect(paneAfter(entries, without(at(1).id, at(2).id, at(3).id), at(1).id)).toBe(at(4).id)
+  // One member of the ops stack resolved: another member, even one before it.
+  expect(paneAfter(entries, without(at(5).id), at(5).id)).toBe(at(3).id)
+  // The last item snoozed: the one before; the last items all gone: the nearest survivor before them.
+  expect(paneAfter(entries, without(at(33).id), at(33).id)).toBe(at(32).id)
+  expect(paneAfter(entries, without(at(31).id, at(32).id, at(33).id), at(33).id)).toBe(at(30).id)
+  // The order as shown (a sort), not the engine's.
+  const newest = visibleEntries(F, EMPTY_FILTER, 'newest', NOW)
+  const after = visibleEntries(F.filter((i) => i.id !== at(33).id), EMPTY_FILTER, 'newest', NOW)
+  expect(paneAfter(newest, after, at(33).id)).toBe(at(6).id)
+  // Everything gone: the empty state; an id the list never showed: nothing to follow.
+  expect(paneAfter(stackEntries([at(0)]), [], at(0).id)).toBeNull()
+  expect(paneAfter(entries, entries.slice(1), 'gone')).toBeNull()
+})
+
+test('web_view items: tile id, session, address and title; urlHost names the page on the card; kept in score order', () => {
+  const [dev, docs] = webViewFixture(NOW) as [AttentionItem, AttentionItem]
+  expect(webViewOf(dev)).toEqual({ id: '5f1c0a9e7d3b2c41', session: dev.session, url: 'http://localhost:5173/checkout?cart=demo', title: 'Checkout preview' })
+  expect(urlHost(dev.detail ?? '')).toBe('localhost:5173')
+  expect(urlHost(docs.detail ?? '')).toBe('docs.stripe.com')
+  for (const i of [dev, docs]) expect(i.score).toBe(i.reasons.reduce((s, r) => s + r.points, 0))
+  const all = inboxFixture(NOW)
+  expect(all).toHaveLength(36)
+  for (let n = 1; n < all.length; n++) expect((all[n - 1] as AttentionItem).score).toBeGreaterThanOrEqual((all[n] as AttentionItem).score)
+  expect(kindCounts(all).find((k) => k.kind === 'web_view')).toEqual({ kind: 'web_view', n: 2 })
 })
 
 test('restoreItems puts a failed action’s items back where they stood', () => {

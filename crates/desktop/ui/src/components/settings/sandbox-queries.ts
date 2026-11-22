@@ -234,7 +234,7 @@ export const ATTENTION_SIM: AttentionItem[] = [
   receiveComponent("method.roster.output.AttentionItem", { id: 'handoff:h-sim-1', kind: 'handoff', title: 'researcher needs you: the login page wants a 2FA code', detail: 'lab', at_ms: NOW - 120_000, task: null, agent: 'researcher', session: 'sess-lab-01a0f02b', approval: null, decision: null, packet: null, ask: null, turn: null, priority: null, rank: 5 }),
 ]
 
-/** 132 D10 / 207 §9: `?mock=crowded` — the Attention list served from `attentionFixture(Date.now())` (34 items, every kind). */
+/** 132 D10 / 207 §9: `?mock=crowded` — the Attention list served from `inboxFixture(Date.now())` (the 34-item table, every kind, and two web pages). */
 export function crowdedFlag(search = typeof location === 'undefined' ? '' : location.search): boolean {
   return new URLSearchParams(search).get('mock') === 'crowded'
 }
