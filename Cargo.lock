@@ -2668,6 +2668,7 @@ dependencies = [
  "reqwest 0.13.5",
  "runtime",
  "schemars 1.2.3",
+ "secrets",
  "serde",
  "serde_json",
  "tempfile",
@@ -2681,6 +2682,7 @@ dependencies = [
  "url",
  "uuid",
  "web",
+ "webprofile",
  "wire",
 ]
 
@@ -4083,7 +4085,7 @@ dependencies = [
 [[package]]
 name = "cosmic-text"
 version = "0.14.2"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
 dependencies = [
  "bitflags 2.13.2",
  "fontdb 0.16.2",
@@ -14490,7 +14492,7 @@ dependencies = [
 [[package]]
 name = "obscura-browser"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -14510,7 +14512,7 @@ dependencies = [
 [[package]]
 name = "obscura-dom"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
 dependencies = [
  "cssparser 0.34.0",
  "html5ever 0.39.0",
@@ -14525,7 +14527,7 @@ dependencies = [
 [[package]]
 name = "obscura-js"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -14559,7 +14561,7 @@ dependencies = [
 [[package]]
 name = "obscura-mcp"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -14576,7 +14578,7 @@ dependencies = [
 [[package]]
 name = "obscura-net"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
 dependencies = [
  "async-trait",
  "compression-codecs",
@@ -14599,7 +14601,7 @@ dependencies = [
 [[package]]
 name = "obscura-render"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",
@@ -14621,7 +14623,7 @@ dependencies = [
 [[package]]
 name = "obscura-ssrf"
 version = "0.1.0"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
 
 [[package]]
 name = "oci-client"
@@ -17831,6 +17833,7 @@ dependencies = [
  "uuid",
  "voice",
  "web",
+ "webprofile",
  "wire",
 ]
 
@@ -21384,7 +21387,7 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.12.1"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
 dependencies = [
  "arrayvec",
  "grid 1.0.1",
@@ -22279,6 +22282,7 @@ dependencies = [
  "update",
  "voice",
  "web",
+ "webprofile",
  "wire",
 ]
 
@@ -25211,6 +25215,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.23.1",
+ "figment",
  "hex",
  "jsonrpsee",
  "kameo",
@@ -25230,8 +25235,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "ts-rs",
- "uuid",
  "wire",
  "zeroize",
 ]
@@ -26187,7 +26192,7 @@ dependencies = [
 [[package]]
 name = "wreq-util"
 version = "3.0.0-rc.12"
-source = "git+https://github.com/skymoore/obscura?branch=theuth%2Fsync-2026-11-02#ee30f89df7929d14ad8ad004d751a50e330c6fd8"
+source = "git+https://github.com/skymoore/obscura?branch=theuth%2F209-host-only#d0c745bc96cb64de7462e69eff88669f5db2e28f"
 dependencies = [
  "brotli",
  "flate2",

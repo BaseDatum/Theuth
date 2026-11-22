@@ -307,14 +307,15 @@ arboard = { version = "3.6", default-features = false, features = ["image-data"]
 # Attachment mime check (17 §3.1); already in the tree via genai.
 mime_guess = "2"
 # Embedded headless browser (design doc 23 §3.3, §9): obscura's agent tool layer, in-process.
-# Fork branch `theuth/sync-2026-11-02` = tag v0.2.6 + `tools()`/`call_tool()` (23 §3.3) + the
+# Fork branch `theuth/209-host-only` = `theuth/sync-2026-11-02` (ee30f89) + the lossless `host_only` round trip of
+# `browser_storage_state` / `browser_set_storage_state` (209 §4.3). `theuth/sync-2026-11-02` = tag v0.2.6 + `tools()`/`call_tool()` (23 §3.3) + the
 # `browser_network_capture` tool (44 §3.1: on_response exchanges with request headers and
 # bodies, documents and fetch/XHR only) + wreq `prefix-symbols` on every platform. The iframe
 # realm-slot SIGSEGV fix our old `main` carried is upstream since v0.2.6 (#850).
 # `stealth` = wreq/BoringSSL TLS fingerprint (needs cmake + clang to build); `render` =
 # layout/paint for `browser_screenshot`. obscura-js only for the main-thread warmup.
-obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-02", features = ["stealth", "render"] }
-obscura-js = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-02", features = ["stealth", "render"] }
+obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "theuth/209-host-only", features = ["stealth", "render"] }
+obscura-js = { git = "https://github.com/skymoore/obscura", branch = "theuth/209-host-only", features = ["stealth", "render"] }
 # Stealth page fetches (design doc 122 revision 1, `crates/web/src/fetch/client.rs`): the exact wreq/wreq-util
 # pins obscura's `stealth` feature uses, so the graph holds ONE wreq (and one BoringSSL build). Features mirror
 # obscura-net's minus `socks`: streamed bodies, the decompressors Chrome's `Accept-Encoding` invites, the
@@ -442,9 +443,9 @@ pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", tag = "v1.
 # workspace; a git dependency's patches do not propagate, so we point at the same copies (23 §2).
 # Since v0.2.6 obscura-net takes wreq-util from `vendor/` too; patching it keeps crates/web on
 # the same copy (one wreq-util).
-taffy = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-02" }
-cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-02" }
-wreq-util = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-02" }
+taffy = { git = "https://github.com/skymoore/obscura", branch = "theuth/209-host-only" }
+cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "theuth/209-host-only" }
+wreq-util = { git = "https://github.com/skymoore/obscura", branch = "theuth/209-host-only" }
 # genai: preserve ToolResponse.images (23 §5), plus upstream Bedrock profile selection,
 # credential refresh, region and explicit-profile isolation fixes (02 §2.2).
 genai = { git = "https://github.com/skymoore/rust-genai", branch = "main" }
