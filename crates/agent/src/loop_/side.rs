@@ -35,7 +35,8 @@ pub(crate) struct Side {
 }
 
 /// 194: the side-call roles' own efforts — `agent.title_effort`,
-/// `agent.vision_effort`, `agent.escalate_effort`, `voice.polish_effort` —
+/// `agent.vision_effort`, `agent.escalate_effort`, `voice.polish_effort`,
+/// `agent.knowledge_harvester_effort` —
 /// live, one slot shared by the supervisor with every session; `None` = no setting.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RoleEfforts {
@@ -43,6 +44,7 @@ pub(crate) struct RoleEfforts {
     pub vision: Option<String>,
     pub escalate: Option<String>,
     pub polish: Option<String>,
+    pub knowledge_harvester: Option<String>,
 }
 
 /// 194 D4e: `effort` (a keyword or token budget) as `model`'s call sends it.
@@ -113,6 +115,33 @@ impl Shared {
                 named(model).map(|m| (m, effort.clone()))
             }
         }
+    }
+
+    /// The knowledge harvester: `own` (the session's pick, with its own
+    /// effort), else `agent.knowledge_harvester_model` with
+    /// `agent.knowledge_harvester_effort`; `None` = the session's model (no
+    /// override). A pick the catalog no longer resolves is skipped with a warning.
+    pub(crate) fn knowledge_harvester_pick(
+        &self,
+        own: &crate::SessionKnowledgeHarvester,
+    ) -> Option<(Resolved, Option<String>)> {
+        if let Some(id) = &own.model {
+            match self
+                .catalog
+                .resolve(id, &*crate::supervisor::configured(self.auth.clone()))
+            {
+                Ok(m) => return Some((m, own.effort.clone())),
+                Err(e) => {
+                    tracing::warn!(session = %self.id, "knowledge harvester {id}: {e}; using the default")
+                }
+            }
+        }
+        let global = self
+            .knowledge_harvester_model
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()?;
+        Some((global, self.role_efforts.read().knowledge_harvester.clone()))
     }
 
     /// Snapshot for a detached call attributed to `turn` (the running turn, or `None`).

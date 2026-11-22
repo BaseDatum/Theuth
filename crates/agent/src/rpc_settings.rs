@@ -89,6 +89,44 @@ pub trait AgentSettingsApi {
     /// take it; `None` clears it. Returns the stored value. Escalation Off clears it too.
     #[method(name = "set_escalate_effort")]
     async fn set_escalate_effort(&self, effort: Option<String>) -> RpcResult<Option<String>>;
+    /// The knowledge harvester's default model (`agent.knowledge_harvester_model`), if
+    /// set; unset = each session harvests with its own model.
+    #[method(name = "knowledge_harvester_model")]
+    async fn knowledge_harvester_model(&self) -> RpcResult<Option<ModelInfo>>;
+    /// Persist `agent.knowledge_harvester_model`; `None` clears it (harvests use the
+    /// session's model). A model that does not take the stored effort clears it.
+    #[method(name = "set_knowledge_harvester_model")]
+    async fn set_knowledge_harvester_model(
+        &self,
+        model: Option<String>,
+    ) -> RpcResult<Option<ModelInfo>>;
+    /// The live knowledge harvester effort (`agent.knowledge_harvester_effort`), sent
+    /// when `agent.knowledge_harvester_model` answers.
+    #[method(name = "knowledge_harvester_effort")]
+    async fn knowledge_harvester_effort(&self) -> RpcResult<Option<String>>;
+    /// Persist `agent.knowledge_harvester_effort`; refused when the knowledge harvester
+    /// model does not take it; `None` clears it. Returns the stored value.
+    #[method(name = "set_knowledge_harvester_effort")]
+    async fn set_knowledge_harvester_effort(
+        &self,
+        effort: Option<String>,
+    ) -> RpcResult<Option<String>>;
+    /// `session`'s own knowledge harvester model and effort (`model: None` = the default).
+    #[method(name = "session_knowledge_harvester", with_extensions)]
+    async fn session_knowledge_harvester(
+        &self,
+        session: SessionId,
+    ) -> RpcResult<agent::SessionKnowledgeHarvester>;
+    /// Set `session`'s own knowledge harvester model and effort; `model: None` resets to
+    /// the default (`agent.knowledge_harvester_model`, else the session's model).
+    /// Persisted; the next harvest uses it. `KnowledgeHarvesterChanged` follows on the stream.
+    #[method(name = "set_session_knowledge_harvester", with_extensions)]
+    async fn set_session_knowledge_harvester(
+        &self,
+        session: SessionId,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> RpcResult<agent::SessionKnowledgeHarvester>;
     /// The live subagent default model (`agent.subagents.model`), if set.
     #[method(name = "subagent_model")]
     async fn subagent_model(&self) -> RpcResult<Option<ModelInfo>>;
@@ -374,6 +412,83 @@ impl AgentSettingsApiServer for Server {
 
     async fn set_escalate_effort(&self, effort: Option<String>) -> RpcResult<Option<String>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetEscalateEffort { effort }).await
+    }
+
+    async fn knowledge_harvester_model(&self) -> RpcResult<Option<ModelInfo>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetKnowledgeHarvesterModel).await
+    }
+
+    async fn set_knowledge_harvester_model(
+        &self,
+        model: Option<String>,
+    ) -> RpcResult<Option<ModelInfo>> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::SetKnowledgeHarvesterModel { model },
+        )
+        .await
+    }
+
+    async fn knowledge_harvester_effort(&self) -> RpcResult<Option<String>> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetKnowledgeHarvesterEffort).await
+    }
+
+    async fn set_knowledge_harvester_effort(
+        &self,
+        effort: Option<String>,
+    ) -> RpcResult<Option<String>> {
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::SetKnowledgeHarvesterEffort { effort },
+        )
+        .await
+    }
+
+    async fn session_knowledge_harvester(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+    ) -> RpcResult<agent::SessionKnowledgeHarvester> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(r) =
+            forward::route(ext, session, "session_knowledge_harvester", (session,)).await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::SessionKnowledgeHarvesterOf { session },
+        )
+        .await
+    }
+
+    async fn set_session_knowledge_harvester(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> RpcResult<agent::SessionKnowledgeHarvester> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(r) = forward::route(
+            ext,
+            session,
+            "set_session_knowledge_harvester",
+            (session, model.clone(), effort.clone()),
+        )
+        .await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            agent::SetSessionKnowledgeHarvester {
+                session,
+                model,
+                effort,
+            },
+        )
+        .await
     }
 
     async fn subagent_model(&self) -> RpcResult<Option<ModelInfo>> {

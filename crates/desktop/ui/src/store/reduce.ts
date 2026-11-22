@@ -1150,6 +1150,9 @@ export function apply(
     // The child's command manifest (75 §3): the skills page reads it — same shape of change as the harness model.
     case "HarnessCommandsChanged":
       return { ...slice, harnessCommands: e.commands };
+    // The chat's knowledge harvester pick: the model menu's query holds it (`useInvalidateOn`) — no tail close, no `live` bump.
+    case "KnowledgeHarvesterChanged":
+      return slice;
   }
   // Unknown events (approvals, speech, …) leave the slice — and a streaming tail — alone.
   const next = turn(closeTail(slice, e, ctx), e, ctx);

@@ -4,11 +4,12 @@ import { act, createElement, type ReactElement, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, type Mock, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
+import { queryKeys, useInvalidateOn } from '@/lib/rpc'
 import type { ConfigOption } from "@/rpc/bindings/method.agent.output"
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
-import { useSessions } from '@/store/sessions'
-import { AdvisorCommand, dialogPlacement, HarnessPicker, harnessCurrent, harnessGroups, type Model, ModelMenu, slashTarget } from './ModelMenu'
+import { dispatch, useSessions } from '@/store/sessions'
+import { AdvisorCommand, dialogPlacement, HarnessPicker, harnessCurrent, harnessGroups, KnowledgeHarvesterCommand, type Model, ModelMenu, slashTarget } from './ModelMenu'
 import { useDrafts } from '@/lib/drafts'
 
 const rpc = vi.hoisted(() => ({ api: {} as Record<string, unknown> }))
@@ -205,4 +206,88 @@ test('chat header (ModelMenu): a model with levels is set once and the popover s
   expect(calls.at(-1)).toEqual(['set_model', 's1', 'anthropic/claude-opus-4-1'])
   expect(calls).toHaveLength(3)
   expect(isOpen()).toBe(false)
+})
+
+// ── Knowledge harvester: the knowledge harvest's model, a level beside Advisor ──────────────────────────────────────
+
+test('knowledge harvester row: the default (Helpers pick, else the chat model) until the chat has its own; it opens the level, whose lead row resets the pick', async () => {
+  useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'legacy' }, info: { favorite_models: [] } as never })
+  useSessions.setState((s) => ({ sessions: { ...s.sessions, s1: { ...s.sessions.s1, model: 'anthropic/claude-opus-4-1', effort: null } as never } }))
+  let own: { model: string | null; effort: string | null } = { model: null, effort: null }
+  let fallback: ModelInfo | null = catalog[1]!
+  const set = vi.fn(async (_s: string, model: string | null, effort: string | null) => (own = { model, effort: model ? effort : null }))
+  rpc.api = {
+    list_sessions: async () => [],
+    list_models: async () => catalog,
+    session_knowledge_harvester: async () => own,
+    knowledge_harvester_model: async () => fallback,
+    set_session_knowledge_harvester: set,
+  }
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  const p = await mount(createElement(QueryClientProvider, { client: qc }, createElement(ModelMenu, { session: 's1' })))
+  const trigger = p.host.querySelector('button')!
+  await vi.waitFor(() => expect(trigger.textContent).toBe('Claude Opus 4.1'))
+  const row = () => [...document.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Knowledge harvester ·'))
+  await p.click(trigger)
+  await vi.waitFor(() => expect(row()?.textContent).toBe('Knowledge harvester · Claude Opus 4.1default'))
+
+  // The level: the default leads, selected; a model with levels is this chat's own pick, a chip sets its effort.
+  await p.click(row()!)
+  const at = (sel: string) => document.querySelector<HTMLElement>(sel)!
+  expect([...document.querySelectorAll('button')].some((b) => b.textContent === 'Default · Claude Opus 4.1')).toBe(true)
+  await p.click(at('[data-value="provider:openai"]'))
+  await p.click(at('[data-value="model:openai/gpt-5.4"]'))
+  expect(set).toHaveBeenLastCalledWith('s1', 'openai/gpt-5.4', null)
+  await vi.waitFor(() => expect(document.querySelector('[aria-label="Effort"]')).not.toBeNull())
+  await p.click(at('[aria-label="Effort"] [data-value="effort:high"]'))
+  expect(set).toHaveBeenLastCalledWith('s1', 'openai/gpt-5.4', 'high')
+  expect(document.querySelector('[cmdk-root]')).toBeNull()
+
+  // Reopened: the row shows the chat's own pick (no `default`); the lead row resets it.
+  await p.click(trigger)
+  await vi.waitFor(() => expect(row()?.textContent).toBe('Knowledge harvester · GPT-5.4'))
+  await p.click(row()!)
+  await p.click([...document.querySelectorAll('button')].find((b) => b.textContent === 'Default · Claude Opus 4.1')!)
+  expect(set).toHaveBeenLastCalledWith('s1', null, null)
+  expect(qc.getQueryData(['session-knowledge-harvester', 's1'])).toEqual({ model: null, effort: null })
+
+  // No Helpers default: the chat's own model is the default.
+  fallback = null
+  await act(async () => void (await qc.invalidateQueries({ queryKey: ['knowledge-harvester-model'] })))
+  await p.click(trigger)
+  await vi.waitFor(() => expect(row()?.textContent).toBe('Knowledge harvester · chat modeldefault'))
+})
+
+test('the draft knowledge harvester pick is held for creation (no RPC); the lead row returns it to the default', async () => {
+  useDrafts.setState({ settings: {} })
+  const set = vi.fn()
+  rpc.api = { knowledge_harvester_model: async () => null, set_session_knowledge_harvester: set }
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  const m = { models: catalog, favorites: [], toggleFavorite: async () => {}, done: vi.fn() } as unknown as Model
+  const p = await mount(createElement(QueryClientProvider, { client: qc }, createElement(KnowledgeHarvesterCommand, { session: '', m, onBack() {} })))
+  await p.click(p.host.querySelector('[data-value="provider:anthropic"]')!)
+  await p.click(p.host.querySelector('[data-value="model:anthropic/claude-opus-4-1"]')!)
+  expect(useDrafts.getState().settings.knowledgeHarvester).toEqual(['anthropic/claude-opus-4-1', null])
+  useDrafts.getState().setSettings({ knowledgeHarvester: ['openai/gpt-5.4', 'low'] })
+  const again = await mount(createElement(QueryClientProvider, { client: qc }, createElement(KnowledgeHarvesterCommand, { session: '', m, onBack() {} })))
+  expect(again.chipsAfter(again.lead('GPT-5.4openai'))).toEqual(['Default', 'low*', 'high'])
+  await again.click([...again.host.querySelectorAll('button')].find((b) => b.textContent === 'Default · chat model')!)
+  expect(useDrafts.getState().settings.knowledgeHarvester).toBeNull()
+  expect(set).not.toHaveBeenCalled()
+  useDrafts.setState({ settings: {} })
+})
+
+test('KnowledgeHarvesterChanged from another client writes the chat’s pick into the cache (no refetch) and leaves the transcript alone', async () => {
+  const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
+  qc.setQueryData(queryKeys.sessionKnowledgeHarvester('s1'), { model: null, effort: null })
+  function Listeners() {
+    useInvalidateOn()
+    return null
+  }
+  await mount(createElement(QueryClientProvider, { client: qc }, createElement(Listeners)))
+  const harvester = { model: 'openai/gpt-5.4', effort: 'low' }
+  const before = useSessions.getState().sessions.s1
+  await act(async () => dispatch([{ key: 'agent.events@1', event: { type: 'KnowledgeHarvesterChanged', session: 's1', harvester } }]))
+  expect(qc.getQueryData(queryKeys.sessionKnowledgeHarvester('s1'))).toEqual(harvester)
+  expect(useSessions.getState().sessions.s1).toBe(before)
 })

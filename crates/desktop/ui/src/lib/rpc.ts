@@ -69,6 +69,8 @@ export const queryKeys = {
   sessionCost: (id: string) => ['session-cost', id] as const,
   /** `advisor_status(id)` (125 §8.1); patched in place by `AdvisorChanged`. */
   advisorStatus: (id: string) => ['advisor-status', id] as const,
+  /** `session_knowledge_harvester(id)`: the chat's own knowledge harvester pick; the setter's reply replaces it. */
+  sessionKnowledgeHarvester: (id: string) => ['session-knowledge-harvester', id] as const,
   terminals: (id: string) => ['terminals', id] as const,
   jobs: (id: string) => ['jobs', id] as const,
   jobHistory: (id: string, mode: 'page' | 'infinite') => ['jobs', id, 'history', mode] as const,
@@ -111,6 +113,10 @@ export const queryKeys = {
   escalateModel: ['escalate-model'] as const,
   /** `escalate_effort()` (194); refetched with `escalateModel`. */
   escalateEffort: ['escalate-effort'] as const,
+  /** `knowledge_harvester_model()`: the knowledge harvester's default (Settings › Models › Helpers). */
+  knowledgeHarvesterModel: ['knowledge-harvester-model'] as const,
+  /** `knowledge_harvester_effort()`; refetched with `knowledgeHarvesterModel` (a model change may drop it). */
+  knowledgeHarvesterEffort: ['knowledge-harvester-effort'] as const,
   signal: ['signal'] as const,
   slack: ['slack'] as const,
   /** `slack_manifest()` (170 D1): static per engine build; not under `slack` so channel events never refetch it. */
@@ -320,6 +326,8 @@ export function useInvalidateOn(): void {
       }),
       // 125 §8.1: the event carries the whole status — written into the query, no refetch.
       on("agent.events@1", 'AdvisorChanged', (e) => qc.setQueryData(queryKeys.advisorStatus(e.session), e.status)),
+      // Another client's knowledge harvester pick: the event carries the stored pick — written into the query, no refetch.
+      on("agent.events@1", 'KnowledgeHarvesterChanged', (e) => qc.setQueryData(queryKeys.sessionKnowledgeHarvester(e.session), e.harvester)),
       // 53 (03 §3): the list and the current status follow the state machine; a title lands at `Summarized`.
       on("meeting.events@1", 'Started', (e) => {
         void qc.invalidateQueries({ queryKey: queryKeys.meetings })

@@ -5,7 +5,7 @@ import { ModelCombobox } from '@/components/chat/ModelCombobox'
 import { Row, Section, useAction } from '@/components/settings/shared'
 import { queryKeys, useApi } from '@/lib/rpc'
 
-/** 188 A5: Settings › Models › Helpers — the cheap side-call models: chat titles, the vision fallback, the oracle's escalation. */
+/** 188 A5: Settings › Models › Helpers — the cheap side-call models: chat titles, the vision fallback, the oracle's escalation, the knowledge harvest. */
 export function Helpers() {
   const canQuery1 = useQuerySupport(["title_model"])
   const canQuery1_2 = useQuerySupport(["title_effort"])
@@ -13,6 +13,8 @@ export function Helpers() {
   const canQuery1_4 = useQuerySupport(["vision_effort"])
   const canQuery1_5 = useQuerySupport(["escalate_model"])
   const canQuery1_6 = useQuerySupport(["escalate_effort"])
+  const canHarvester = useQuerySupport(["knowledge_harvester_model"])
+  const canHarvesterEffort = useQuerySupport(["knowledge_harvester_effort"])
   const api = useApi()
   const models = useModels()
   const titleModel = useQuery({ enabled: canQuery1,
@@ -45,6 +47,12 @@ export function Helpers() {
     keys: [queryKeys.escalateModel, queryKeys.escalateEffort],
   })
   const setEscalateEffort = useAction((level: string | null) => api.set_escalate_effort(level), { keys: [queryKeys.escalateEffort] })
+  const harvesterModel = useQuery({ enabled: canHarvester, queryKey: queryKeys.knowledgeHarvesterModel, queryFn: () => api.knowledge_harvester_model() })
+  const harvesterEffort = useQuery({ enabled: canHarvesterEffort, queryKey: queryKeys.knowledgeHarvesterEffort, queryFn: () => api.knowledge_harvester_effort() })
+  const setHarvesterModel = useAction((id: string) => api.set_knowledge_harvester_model(id === 'off' ? null : id), {
+    keys: [queryKeys.knowledgeHarvesterModel, queryKeys.knowledgeHarvesterEffort],
+  })
+  const setHarvesterEffort = useAction((level: string | null) => api.set_knowledge_harvester_effort(level), { keys: [queryKeys.knowledgeHarvesterEffort] })
 
   // 52 §3.2: only models whose backend can actually receive images (`ModelInfo.image` is effective support).
   const visionModels = models.data?.filter((m) => m.image) ?? []
@@ -53,6 +61,7 @@ export function Helpers() {
   const title = models.data?.find((m) => m.id === titleModel.data?.id)
   const visionInfo = visionModels.find((m) => m.id === vision?.id)
   const escalate = models.data?.find((m) => m.id === escalateModel.data?.model?.id)
+  const harvester = models.data?.find((m) => m.id === harvesterModel.data?.id)
   // A saved selection whose provider went away stays visible as unavailable, never as Off.
   const unavailable =
     vision && models.isSuccess && !visionModels.some((m) => m.id === vision.id) ? vision.id : null
@@ -115,6 +124,26 @@ export function Helpers() {
           effort={escalate && escalate.efforts.length > 0 ? { levels: escalate.efforts, current: escalateEffort.data, onSelect: (level) => setEscalateEffort.mutate(level) } : undefined}
           disabled={!escalateModel.isSuccess || setEscalateModel.isPending || setEscalateEffort.isPending}
           onChange={(v) => setEscalateModel.mutate(v ?? 'off')}
+        />
+      </Row>
+      <Row
+        stack
+        label="Knowledge harvester model"
+        description={
+          harvesterModel.isError
+            ? `Could not read the knowledge harvester: ${harvesterModel.error.message}`
+            : "Writes durable memories to the knowledge base as a chat runs. Unset, each chat harvests with its own model. A chat can pick its own in the model menu."
+        }
+      >
+        <ModelCombobox
+          aria-label="Knowledge harvester model"
+          className="max-w-64 max-md:w-full max-md:max-w-none"
+          models={models.data ?? []}
+          value={harvesterModel.data?.id}
+          none={{ label: "Chat's own model" }}
+          effort={harvester && harvester.efforts.length > 0 ? { levels: harvester.efforts, current: harvesterEffort.data, onSelect: (level) => setHarvesterEffort.mutate(level) } : undefined}
+          disabled={!harvesterModel.isSuccess || setHarvesterModel.isPending || setHarvesterEffort.isPending}
+          onChange={(v) => setHarvesterModel.mutate(v ?? 'off')}
         />
       </Row>
     </Section>

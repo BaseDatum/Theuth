@@ -161,6 +161,7 @@ const pending = {
   hidden: { read_file: true, write_file: false },
   compactorModel: 'summary/model',
   compactorEffort: 'high',
+  knowledgeHarvester: ['harvester/model', 'low'] as [string, string | null],
   viewBytes: 128000,
   scope: 'owner' as const,
   alias: 'research',
@@ -171,6 +172,7 @@ const setters = [
   ['set_mcp_hidden', 'tools and MCP switches'],
   ['set_session_compactor_model', 'summary model'],
   ['set_session_compactor_effort', 'summary effort'],
+  ['set_session_knowledge_harvester', 'knowledge harvester'],
   ['set_session_view_bytes', 'memory view size'],
   ['set_peer_scope', 'messaging scope and alias'],
 ] as const
@@ -209,6 +211,7 @@ test('first send awaits create, then every pending setter, then send; spends set
     ['set_mcp_hidden', ['s-new', ['read_file'], true]],
     ['set_session_compactor_model', ['s-new', 'summary/model']],
     ['set_session_compactor_effort', ['s-new', 'high']],
+    ['set_session_knowledge_harvester', ['s-new', 'harvester/model', 'low']],
     ['set_session_view_bytes', ['s-new', 128000]],
     ['set_peer_scope', ['s-new', 'owner', 'research']],
     ['created', []],

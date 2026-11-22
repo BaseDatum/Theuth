@@ -970,6 +970,68 @@ pub struct SetEscalateEffort {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetEscalateEffort;
 
+/// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.knowledge_harvester_model`,
+/// the default model of the knowledge harvest (10 §5.2); `None` clears it
+/// (each session harvests with its own model). The id must resolve.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetKnowledgeHarvesterModel {
+    /// `provider/model`, bare id, or `None`.
+    pub model: Option<String>,
+}
+
+/// `ask` → `Option<ModelInfo>`: the live `agent.knowledge_harvester_model`, if set.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetKnowledgeHarvesterModel;
+
+/// `ask` → `Result<Option<String>, String>`: persist `agent.knowledge_harvester_effort`,
+/// sent when `agent.knowledge_harvester_model` answers; refused when it does not
+/// take it. `None` clears it. Replies the stored value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetKnowledgeHarvesterEffort {
+    /// An effort keyword or token budget, or `None`.
+    pub effort: Option<String>,
+}
+
+/// `ask` → `Option<String>`: the live `agent.knowledge_harvester_effort`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct GetKnowledgeHarvesterEffort;
+
+/// One session's own knowledge harvester (`session_knowledge_harvesters`): `model:
+/// None` = the default (`agent.knowledge_harvester_model`, else the session's model).
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, kameo::Reply, schemars::JsonSchema,
+)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct SessionKnowledgeHarvester {
+    /// This session's own pick; `None` = the default.
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub model: Option<String>,
+    /// The effort of `model`; `None` = no setting. Always `None` without `model`.
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub effort: Option<String>,
+}
+
+/// `ask` → `Result<SessionKnowledgeHarvester, String>`: `session`'s own knowledge harvester.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SessionKnowledgeHarvesterOf {
+    /// The session.
+    pub session: SessionId,
+}
+
+/// `ask` → `Result<SessionKnowledgeHarvester, String>`: set `session`'s own
+/// knowledge harvester model and effort (`model: None` resets to the default and
+/// drops the effort); the model must resolve and take the effort. Persisted; the
+/// next harvest uses it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetSessionKnowledgeHarvester {
+    /// The session.
+    pub session: SessionId,
+    /// `provider/model`, bare id, or `None` (default).
+    pub model: Option<String>,
+    /// An effort keyword or token budget, or `None`.
+    pub effort: Option<String>,
+}
+
 /// The escalation slot as the UI shows it: what is set and what would answer.
 #[derive(Clone, Debug, Serialize, Deserialize, kameo::Reply, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -4006,6 +4068,14 @@ pub enum AgentEvent {
         /// Its current card.
         file: communication::files::ContactFile,
     },
+    /// `session`'s own knowledge harvester changed (`set_session_knowledge_harvester`);
+    /// `harvester.model: None` = back on the default.
+    KnowledgeHarvesterChanged {
+        /// The session.
+        session: SessionId,
+        /// Its stored pick.
+        harvester: SessionKnowledgeHarvester,
+    },
 }
 
 impl wire::WireEvent for AgentEvent {
@@ -4067,6 +4137,7 @@ impl AgentEvent {
             | Self::TurnSuspended { session, .. }
             | Self::PartialDropped { session, .. }
             | Self::AdvisorChanged { session, .. }
+            | Self::KnowledgeHarvesterChanged { session, .. }
             | Self::AdvisoryAdded { session, .. }
             | Self::ContactFileChanged { session, .. } => Some(*session),
             Self::SubagentSpawned { child, .. } | Self::ObservedChildChanged { child, .. } => {
@@ -4157,6 +4228,12 @@ pub struct AgentConfig {
     pub escalate_model: Option<String>,
     /// 194: a tier-2 call's reasoning effort when `escalate_model` answers; unset = no setting.
     pub escalate_effort: Option<String>,
+    /// Knowledge harvester: the default model of the knowledge harvest (10 §5.2)
+    /// when the session has no own pick; unset = the session's model.
+    pub knowledge_harvester_model: Option<String>,
+    /// The knowledge harvester's reasoning effort when `knowledge_harvester_model`
+    /// answers; unset = no setting.
+    pub knowledge_harvester_effort: Option<String>,
     /// How the loop uses the knowledge plugin (12 §9.2); the store itself is `knowledge.enabled`.
     pub knowledge: KnowledgeUse,
     /// Human broadcast limits (62 §7).
@@ -4209,6 +4286,8 @@ impl Default for AgentConfig {
             vision_effort: None,
             escalate_model: None,
             escalate_effort: None,
+            knowledge_harvester_model: None,
+            knowledge_harvester_effort: None,
             knowledge: KnowledgeUse::default(),
             broadcast: BroadcastConfig::default(),
             compaction: CompactionConfig::default(),

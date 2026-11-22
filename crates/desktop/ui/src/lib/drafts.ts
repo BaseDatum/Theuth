@@ -45,6 +45,8 @@ export type DraftSettings = {
   hidden?: Record<string, boolean>
   compactorModel?: string | null
   compactorEffort?: string | null
+  /** The chat's own knowledge harvester `[model, effort]`; `null` or absent = the default. */
+  knowledgeHarvester?: [string, string | null] | null
   viewBytes?: number
   scope?: PeerScope
   alias?: string | null
@@ -306,6 +308,7 @@ export async function openDraftSession(
   // A model change can clear its effort, so the model must be installed first.
   if (settings.compactorModel !== undefined) await apply('summary model', () => api.set_session_compactor_model(id, settings.compactorModel!))
   if (settings.compactorEffort !== undefined) await apply('summary effort', () => api.set_session_compactor_effort(id, settings.compactorEffort!))
+  if (settings.knowledgeHarvester) await apply('knowledge harvester', () => api.set_session_knowledge_harvester(id, settings.knowledgeHarvester![0], settings.knowledgeHarvester![1]))
   if (settings.viewBytes !== undefined) await apply('memory view size', () => api.set_session_view_bytes(id, settings.viewBytes!))
   if (settings.scope !== undefined) await apply('messaging scope and alias', () => api.set_peer_scope(id, settings.scope!, settings.alias ?? null))
   draft.spend()
