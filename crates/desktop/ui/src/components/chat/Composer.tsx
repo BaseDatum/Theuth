@@ -7,7 +7,6 @@ import { open as pickFiles } from '@tauri-apps/plugin-dialog'
 import {
   ArrowUp,
   AudioLines,
-  ChevronLeft,
   ChevronRight,
   CircleAlert,
   FileUp,
@@ -16,7 +15,6 @@ import {
   MessageSquarePlus,
   Paperclip,
   Plus,
-  Settings2,
   Square,
   StickyNote,
   X,
@@ -55,7 +53,7 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { useMesh } from '@/components/tasks/queries'
 import type { CreateSessionOptions } from '@/rpc/bindings/method.sessionsync.input'
 import { EMPTY, PLAIN_OPTIONS, sendFirst, sendSkills, useDraftTarget, useDrafts, useSkillDraft } from '@/lib/drafts'
-import { type Suffix, activeSuffix, useSuffixes, withSuffix } from '@/lib/suffixes'
+import { type Suffix, activeFor, activeSuffix, useSuffixes, withSuffix } from '@/lib/suffixes'
 import { YOUNG_MS, useRemoteStart } from '@/lib/remote-start'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -78,6 +76,7 @@ import { createNote } from '@/components/notes/create'
 import { useNotes } from '@/components/notes/useNotes'
 import { AttachPicker } from './AttachPicker'
 import { SkillChips, SkillPicker, SkillsEntry } from './SkillPicker'
+import { SuffixList, SuffixScopes } from './SuffixPicker'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
@@ -404,11 +403,17 @@ export function Composer({
       (e: unknown) => toast.error(e instanceof Error ? e.message : String(e)),
     )
   }
-  /** #3: the chat's prompt suffix (`lib/suffixes`), keyed by session — or by the draft until the chat exists. */
+  /** #3: the chat's prompt suffix (`lib/suffixes`), keyed by session — or by the draft until the chat exists. An
+   * "every message" suffix of a session comes from its engine when that engine keeps suffixes (`watch`). */
   const suffixChat = session ?? draftKey
   const suffixes = useSuffixes((s) => s.list)
-  const suffixOn = useSuffixes((s) => s.active[suffixChat])
-  const suffix = activeSuffix(suffixes, suffixOn)
+  const suffixLocal = useSuffixes((s) => s.active[suffixChat])
+  const suffixAlways = useSuffixes((s) => s.always[suffixChat])
+  const suffixEngine = useSuffixes((s) => s.engine)
+  useEffect(() => {
+    void useSuffixes.getState().watch(suffixChat)
+  }, [suffixChat, suffixEngine])
+  const suffix = activeSuffix(suffixes, activeFor(suffixLocal, suffixAlways))
   const [selected, setSelected] = useState(0)
   /** D15: a harness command picked from the menu that takes arguments; the next send goes to the harness verbatim. */
   const [rawCmd, setRawCmd] = useState<string | null>(null)
@@ -1418,55 +1423,26 @@ export function Composer({
               {skillStep ? (
                 <SkillPicker skills={skillIndex} parked={skills} onPick={pickSkill} onBack={() => setSkillStep(false)} />
               ) : suffixStep === 'list' ? (
-                <div role="menu" aria-label="Prompt suffixes">
-                  <Button variant="ghost" className="w-full justify-start text-fg-secondary" onClick={() => setSuffixStep(null)}>
-                    <ChevronLeft /> Add prompt suffix
-                  </Button>
-                  {suffixes.length === 0 && <p className="px-3 py-1.5 text-sm text-fg-tertiary">No suffixes saved yet.</p>}
-                  {suffixes.map((s) => (
-                    <Button key={s.id} variant="ghost" role="menuitem" className="w-full justify-start" onClick={() => setSuffixStep(s)}>
-                      <span className="truncate">{s.name}</span>
-                    </Button>
-                  ))}
-                  <div className="mt-1 border-t border-border-subtle pt-1">
-                    <Button
-                      variant="ghost"
-                      className="w-full justify-start"
-                      onClick={() => {
-                        setMenu(false)
-                        setSuffixStep(null)
-                        void navigate({ to: '/settings/$tab', params: { tab: 'suffixes' } })
-                      }}
-                    >
-                      <Settings2 /> Manage suffixes…
-                    </Button>
-                  </div>
-                </div>
+                <SuffixList
+                  suffixes={suffixes}
+                  onPick={setSuffixStep}
+                  onBack={() => setSuffixStep(null)}
+                  onManage={() => {
+                    setMenu(false)
+                    setSuffixStep(null)
+                    void navigate({ to: '/settings/$tab', params: { tab: 'suffixes' } })
+                  }}
+                />
               ) : suffixStep ? (
-                <div role="menu" aria-label={`Add ${suffixStep.name}`}>
-                  <p className="truncate px-3 py-1.5 text-xs text-fg-tertiary">Add “{suffixStep.name}” to</p>
-                  {(
-                    [
-                      ['once', 'This message'],
-                      ['always', 'Every message until I turn it off'],
-                    ] as const
-                  ).map(([scope, label]) => (
-                    <Button
-                      key={scope}
-                      variant="ghost"
-                      role="menuitem"
-                      className="h-auto w-full justify-start py-1.5 text-left whitespace-normal"
-                      onClick={() => {
-                        useSuffixes.getState().activate(suffixChat, suffixStep.id, scope)
-                        setMenu(false)
-                        setSuffixStep(null)
-                        ref.current?.focus()
-                      }}
-                    >
-                      {label}
-                    </Button>
-                  ))}
-                </div>
+                <SuffixScopes
+                  suffix={suffixStep}
+                  onPick={(scope) => {
+                    useSuffixes.getState().activate(suffixChat, suffixStep.id, scope)
+                    setMenu(false)
+                    setSuffixStep(null)
+                    ref.current?.focus()
+                  }}
+                />
               ) : (
                 <>
                   <Button

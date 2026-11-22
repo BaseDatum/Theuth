@@ -56,6 +56,8 @@ pub mod rpc_forward;
 pub mod rpc_jobs;
 /// Skill RPC server and client methods.
 pub mod rpc_skills;
+/// Prompt suffix RPC methods (mesh-wide list, per-chat "every message" suffix).
+pub mod rpc_suffixes;
 /// Turn RPC server and client methods.
 pub mod rpc_turns;
 
@@ -73,6 +75,7 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
         rpc_settings::rpc_module(server.clone()),
         rpc_jobs::rpc_module(server.clone()),
         rpc_skills::rpc_module(server.clone()),
+        rpc_suffixes::rpc_module(server.clone()),
         rpc_turns::rpc_module(server),
     ]).expect("agent RPC composition")
 }
@@ -4433,6 +4436,7 @@ pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
     rt.register_wire_event::<ask::NotebookAsk>().await?;
     rt.register_wire_event::<EndlessProgress>().await?;
     rt.register_wire_event::<CostCubeChanged>().await?;
+    rt.register_wire_event::<rpc_suffixes::SuffixesChanged>().await?;
     Ok(())
 }
 
