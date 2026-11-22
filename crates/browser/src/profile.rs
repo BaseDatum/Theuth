@@ -488,7 +488,15 @@ pub(crate) fn plan(l: &Loaded, export: &str, now_ms: u64) -> Option<Save> {
                 expires: c.expires,
                 secure: c.secure,
                 http_only: c.http_only,
-                same_site: c.same_site,
+                // obscura stores an absent SameSite as `Lax` and title-cases the rest: the profile's
+                // spelling when they mean the same, so a cookie the session never touched is no change
+                // (else its loaded, possibly older, value would overwrite the profile's).
+                same_site: match before {
+                    Some(b) if obscura_same_site(&b.same_site) == c.same_site => {
+                        b.same_site.clone()
+                    }
+                    _ => c.same_site,
+                },
             }
         })
         .collect();
@@ -523,6 +531,16 @@ pub(crate) fn plan(l: &Loaded, export: &str, now_ms: u64) -> Option<Save> {
         after,
         after_storage,
     })
+}
+
+/// The `same_site` obscura exports for a cookie imported with `same_site` (its `normalize_same_site`,
+/// an empty value as `Lax`).
+fn obscura_same_site(same_site: &str) -> &'static str {
+    match same_site.trim().to_ascii_lowercase().as_str() {
+        "strict" => "Strict",
+        "none" => "None",
+        _ => "Lax",
+    }
 }
 
 /// A copy of `session`'s state for a checkpoint save, when it has a profile.
@@ -740,6 +758,35 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+        take(session);
+    }
+
+    /// A cookie the profile holds without SameSite comes back from obscura as `Lax`: no change,
+    /// so the session's loaded value never overwrites a newer one the tile wrote since.
+    #[test]
+    fn plan_ignores_obscuras_same_site_spelling() {
+        let session = SessionId::new();
+        let mut pref = cookie("pref", "loaded-value", "same-site-test.example", false);
+        pref.same_site = String::new();
+        let mut strict = cookie("st", "v", "same-site-test.example", false);
+        strict.same_site = "strict".into();
+        load(
+            session,
+            0,
+            vec![row("same-site-test.example", 10, vec![pref, strict])],
+        );
+        let l = snapshot(session).unwrap();
+        let text = export(
+            json!([
+                { "name": "pref", "value": "loaded-value", "domain": "same-site-test.example", "path": "/",
+                  "secure": true, "http_only": true, "same_site": "Lax", "expires": 4_000_000_000i64 },
+                { "name": "st", "value": "v", "domain": "same-site-test.example", "path": "/",
+                  "secure": true, "http_only": true, "same_site": "Strict", "expires": 4_000_000_000i64 },
+            ]),
+            json!([]),
+        );
+        let save = plan(&l, &text, 1).unwrap();
+        assert!(save.is_empty(), "{:?}", save.changes);
         take(session);
     }
 
