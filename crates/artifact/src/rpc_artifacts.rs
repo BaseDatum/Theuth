@@ -1,3 +1,7 @@
+// `web_view_state` takes six positional params (209 §4.4) plus the connection's extensions; the
+// RPC macro's generated server method trips the argument-count lint.
+#![allow(clippy::too_many_arguments)]
+
 use crate as artifact;
 use agent::rpc_forward as forward;
 use std::path::{Path, PathBuf};
