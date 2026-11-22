@@ -1,6 +1,6 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { toast } from 'sonner'
 import { ATTENTION_KEY, PACKET_KEY, attentionPatched, dropFromList } from '@/components/hud/queries'
 import { PACKET_SIM, crowdedFlag, simFlag } from '@/components/settings/sandbox-queries'
@@ -12,6 +12,20 @@ import { type ResolveOutcome, bulkTarget, outcomeSummary, pathText, resolveSumma
 
 /** 207 review 7: every bulk call carries this key, so the page's key map and every card's buttons wait for it. */
 export const ATTENTION_BULK_KEY = ['attention-bulk'] as const
+
+/** Ids whose Dismiss / Snooze is in flight: the list card collapses to a line until the call settles (207 follow-up). */
+const PENDING = new Set<string>()
+const PENDING_LISTENERS = new Set<() => void>()
+function markPending(ids: readonly string[], on: boolean) {
+  for (const id of ids) if (on) PENDING.add(id)
+  for (const id of ids) if (!on) PENDING.delete(id)
+  for (const cb of PENDING_LISTENERS) cb()
+}
+const subscribePending = (cb: () => void) => {
+  PENDING_LISTENERS.add(cb)
+  return () => PENDING_LISTENERS.delete(cb)
+}
+export const useAttentionPending = (id: string): boolean => useSyncExternalStore(subscribePending, () => PENDING.has(id), () => false)
 
 /** True while any bulk Dismiss / Snooze / Allow / Deny runs, on any surface. */
 export const useBulkPending = (): boolean => useIsMutating({ mutationKey: ATTENTION_BULK_KEY }) > 0
@@ -95,17 +109,27 @@ export function useAttentionBulk() {
       ids.length === 0
         ? Promise.resolve([])
         : run(async () => {
-            if (local) return report(ids.map((id) => ({ id, resolution: 'hidden', error: null })))
-            if (many) return report(await api.attention_dismiss_many(bulkTarget(ids)))
-            return report(await perId(ids, 'hidden', (id) => api.attention_dismiss(id)))
+            markPending(ids, true)
+            try {
+              if (local) return report(ids.map((id) => ({ id, resolution: 'hidden', error: null })))
+              if (many) return report(await api.attention_dismiss_many(bulkTarget(ids)))
+              return report(await perId(ids, 'hidden', (id) => api.attention_dismiss(id)))
+            } finally {
+              markPending(ids, false)
+            }
           }).catch(allFailed(ids)),
     snooze: (ids: readonly string[], until: number): Promise<AttentionOutcome[]> =>
       ids.length === 0
         ? Promise.resolve([])
         : run(async () => {
-            if (local) return report(ids.map((id) => ({ id, resolution: 'snoozed', error: null })))
-            if (many) return report(await api.attention_snooze_many(bulkTarget(ids), until))
-            return report(await perId(ids, 'snoozed', (id) => api.attention_snooze(id, until)))
+            markPending(ids, true)
+            try {
+              if (local) return report(ids.map((id) => ({ id, resolution: 'snoozed', error: null })))
+              if (many) return report(await api.attention_snooze_many(bulkTarget(ids), until))
+              return report(await perId(ids, 'snoozed', (id) => api.attention_snooze(id, until)))
+            } finally {
+              markPending(ids, false)
+            }
           }).catch(allFailed(ids)),
     /** Outcomes keyed by item id (`approval:<id>`). */
     resolve: (approvals: readonly ApprovalId[], decision: 'allow' | 'deny'): Promise<ResolveOutcome[]> =>
