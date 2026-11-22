@@ -2666,6 +2666,7 @@ dependencies = [
  "figment",
  "futures",
  "iana-time-zone",
+ "js-runtime",
  "jsonrpsee",
  "kameo",
  "obscura-js",

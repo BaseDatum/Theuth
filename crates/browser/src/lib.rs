@@ -101,9 +101,12 @@ impl Default for BrowserConfig {
 /// One-time V8 setup, **on the main thread, before any plugin starts**
 /// (23 §2, §3.1): exports obscura's environment knobs from config while the
 /// process is still effectively single-threaded (the only place `set_var`
-/// is safe), then builds and drops one `ObscuraJsRuntime` exactly as
-/// `obscura-cdp` does, because the first isolate built off-main once
-/// segfaulted in `InitializeBuiltinJSDispatchTable`. No-op when disabled.
+/// is safe), then builds one `ObscuraJsRuntime` on the main thread, because
+/// the first isolate built off-main once segfaulted in
+/// `InitializeBuiltinJSDispatchTable`, and keeps it alive for the process
+/// lifetime so V8's shared read-only heap always comes from obscura's
+/// snapshot (see the invariant in the body). No-op when disabled — then no
+/// obscura isolate is ever built in the process.
 pub fn warmup(cfg: &BrowserConfig) {
     if !cfg.enabled {
         return;
@@ -146,7 +149,20 @@ pub fn warmup(cfg: &BrowserConfig) {
         }
     }
     let started = Instant::now();
-    drop(obscura_js::runtime::ObscuraJsRuntime::new());
+    // INVARIANT: an obscura isolate is alive for the whole process, built before any other isolate.
+    // V8 keeps ONE read-only heap per isolate group (src/heap/read-only-heap.cc `ReadOnlyHeap::SetUp`):
+    // it is deserialised from the snapshot of whichever isolate is created while the group is empty and
+    // released when the last isolate goes (src/init/isolate-group.cc `RemoveIsolate`); later isolates
+    // reuse it whatever their snapshot says, and the checksum that would catch a mismatch is checked in
+    // debug builds only (`ReadOnlyArtifacts::VerifyChecksum`). obscura's startup snapshot is built from
+    // V8's built-in one plus read-only promotion, so its read-only heap is the built-in one with more
+    // objects after it: a js-runtime isolate (built-in snapshot) on obscura's heap is fine, but an
+    // obscura isolate on the built-in heap — any page started while documents-js / app-js held the
+    // only live isolate — indexes past its pages in `Deserializer::ReadReadOnlyHeapRef` and libc++
+    // aborts the process (crash of 2026-11-22 12:32:51). Leaking this one isolate pins obscura's
+    // read-only heap for the process lifetime. It is exited and idle; it costs one bare page's heap.
+    // Test: tests/v8_isolates.rs.
+    std::mem::forget(obscura_js::runtime::ObscuraJsRuntime::new());
     tracing::info!(ms = started.elapsed().as_millis(), "browser warmup done");
 }
 

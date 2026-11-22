@@ -43,6 +43,8 @@ ts = ["dep:ts-rs", "runtime/ts"]
 workspace = true
 
 [dev-dependencies]
+# tests/v8_isolates.rs: js-runtime and obscura isolates side by side in one process.
+js-runtime = { workspace = true }
 figment = { workspace = true }
 tempfile = "3"
 secrets = { workspace = true }

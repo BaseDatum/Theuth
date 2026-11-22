@@ -1810,7 +1810,10 @@ async fn run() -> anyhow::Result<()> {
 
     // V8's one-time setup must happen on the main thread before any plugin
     // thread builds an isolate, and the env knobs are exported while the
-    // process is still effectively single-threaded (23 §3.1).
+    // process is still effectively single-threaded (23 §3.1). The warmup must stay
+    // FIRST: its obscura isolate lives for the whole process and so fixes V8's shared
+    // read-only heap to obscura's snapshot, which js-runtime's isolates (V8's built-in
+    // snapshot) can share but not the other way round (see `browser::warmup`).
     let browser_cfg = config
         .extract_inner::<browser::BrowserConfig>("browser")
         .unwrap_or_default();
