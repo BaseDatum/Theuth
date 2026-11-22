@@ -213,18 +213,43 @@ counterpart and are not needed.
 - Navigation policy (`decidePolicyForNavigationAction`): the main frame passes `allowed()` only (http/https,
   never an app origin); subframes pass `navigation_allowed()` (adds `about:blank`/`srcdoc`, `data:`, `blob:`).
   The desktop applies `navigation_allowed()` to every frame.
-- A navigation without a target frame (`target=_blank`) is cancelled and opened with
-  `UIApplication openURL:options:completionHandler:`; `window.open` reaches `createWebViewWithConfiguration`,
-  which returns nil after the same open. Both share the one-per-second throttle. No links script is needed: no
-  opener plugin script swallows the click.
-- `web_view_history` calls `goBack`/`goForward` instead of evaluating `history.back()`.
-- State events: navigation start and commit (`loading: true`), finish and failure (`loading: false`), and KVO on
-  `title` and `URL` (title changes and `pushState` without a navigation). Each payload reads URL and title from
-  the view at that moment.
+- New-window requests have one owner, `createWebViewWithConfiguration…`: it opens the URL with
+  `UIApplication openURL:options:completionHandler:` (http/https, one per second per view) and returns nil. The
+  navigation policy allows a navigation without a target frame (`target=_blank`) so that WebKit reaches it, and
+  opens nothing itself. `javaScriptCanOpenWindowsAutomatically` is set (iOS defaults to NO, which drops a
+  `window.open` outside a user gesture without any delegate call). No links script is needed: no opener plugin
+  script swallows the click.
+- A main-frame response WebKit cannot show (`canShowMIMEType` false, or `Content-Disposition: attachment`) is
+  cancelled in `decidePolicyForNavigationResponse` and opened in the system browser under the same throttle.
+- JavaScript `alert`, `confirm` and `prompt` are `UIAlertController`s titled with the asking frame's host,
+  presented from the top-most view controller of the view's window. Each completion handler is called exactly
+  once: by the tapped action, or with the default (`alert` returns, `confirm` false, `prompt` nil) when the alert
+  cannot be presented or goes away unanswered.
+- `webViewWebContentProcessDidTerminate` reloads the page and publishes state (`loading: true`).
+- `web_view_history` calls `goBack`/`goForward` instead of evaluating `history.back()`; a missing label is
+  `no web view` before the delta is checked, as on the desktop.
+- State events: the policy's allowing a main-frame navigation publishes its target URL; navigation start and
+  commit (`loading: true`), finish and failure (`loading: false`), and KVO on `title` and `URL` (title changes and
+  `pushState` without a navigation). Until the navigation commits, payloads carry that target URL; after a
+  provisional failure they keep it (the address field shows what failed, as on the desktop) until the view's own
+  URL changes outside a load. Otherwise URL and title are read from the view at that moment.
+- Commands wait at most 5 s for the main thread (`the main thread did not run the web view call within 5 s`).
 - One window: no reparenting, `in-popout` is unreachable, no `web-view://closed` from a window closing.
 - The view is not inside the DOM, so the occlusion rules of §4.4 (hide under dialogs, sheets, menus) apply
   unchanged; the iPad sidebar is inline at tile widths, and as a sheet it is a `role="dialog"` overlay.
 
-**Not verified.** Proven on the iPad simulator only (see the task's screenshots): rotation, Stage Manager window
-resizing, the on-screen keyboard shifting Tauri's scroll view while a tile shows, memory with several views,
-and a real device are untested.
+**Review round.** `objc2-web-kit` 0.3.2 declares the delegate protocols' methods for macOS only, so the
+compiler checks none of the delegate selectors or signatures on iOS; a debug assertion at creation checks that
+the delegate answers `respondsToSelector:` for each of the twelve it implements. The KVO registrations carry a
+context pointer of their own and the observer ignores any other. A view replaced under the same label is
+destroyed (observers removed, delegates cleared, off screen) rather than dropped. Not done: nothing re-derives a
+view's frame when the app's geometry changes without the placeholder's CSS rectangle changing (Stage Manager
+resize, rotation changing the safe-area insets); the frame follows only the UI's `web_view_bounds` calls.
+
+**Not verified.** Proven on the iPad simulator only. After the review round, seen there: the address field shows
+a slow page's target while it loads; `alert`, `confirm` (OK → `true`) and `prompt` (OK → the field's text,
+Cancel → `null`) as native alerts over the tile; a `window.open` two seconds after a page load with no tap, a
+`target=_blank` link and a `Content-Disposition: attachment` response each open Safari once, the tile keeping its
+page. Untested: the content-process reload (no way to kill the process on demand), the 5 s timeout, the
+replaced-view path (not reachable from the UI), rotation, Stage Manager window resizing, the on-screen keyboard
+shifting Tauri's scroll view while a tile shows, memory with several views, and a real device.
