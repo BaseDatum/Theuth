@@ -353,17 +353,22 @@ if (!agent || agent.version !== VERSION) {
 
     // Run `act` and report whether it started leaving this page: the address changed, or the
     // page is unloading (`beforeunload` / `pagehide` within a moment). `from` is the address
-    // before; the engine's next read waits for another document or address.
+    // before; the engine's next read waits for another document or address. The wait ends at the
+    // first `beforeunload` / `pagehide`, while the document is still alive: a timer still pending
+    // when the document goes away never fires, and the command would never answer (WebKit drops
+    // the script's result and the call runs into its timeout).
     async function leaving(act) {
       const from = location.href;
       let left = false;
-      const mark = () => { left = true; };
+      let wake = () => {};
+      const gone = new Promise((resolve) => { wake = resolve; });
+      const mark = () => { left = true; wake(); };
       addEventListener('beforeunload', mark);
       addEventListener('pagehide', mark);
       let out;
       try {
         out = act();
-        await sleep(50);
+        await Promise.race([sleep(50), gone]);
       } finally {
         removeEventListener('beforeunload', mark);
         removeEventListener('pagehide', mark);
