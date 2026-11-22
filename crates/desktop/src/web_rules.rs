@@ -481,14 +481,17 @@ pub(crate) mod profile {
             // An attribute other than the value is a change too.
             let mut a_strict = a.clone();
             a_strict.same_site = "Strict".into();
-            assert_eq!(diff(&[a.clone()], &[a_strict.clone()]).set, vec![a_strict]);
+            assert_eq!(
+                diff(std::slice::from_ref(&a), std::slice::from_ref(&a_strict)).set,
+                vec![a_strict]
+            );
             // The same name under another path is another cookie.
             let mut a_sub = a.clone();
             a_sub.path = "/sub".into();
-            let d = diff(&[a.clone()], &[a.clone(), a_sub.clone()]);
+            let d = diff(std::slice::from_ref(&a), &[a.clone(), a_sub.clone()]);
             assert_eq!(d.set, vec![a_sub]);
             assert!(d.removed.is_empty());
-            assert_eq!(diff(&[a.clone()], &[]).removed, vec![a.key()]);
+            assert_eq!(diff(std::slice::from_ref(&a), &[]).removed, vec![a.key()]);
         }
 
         #[test]
