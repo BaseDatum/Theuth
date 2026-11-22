@@ -694,11 +694,19 @@ if (!agent || agent.version !== VERSION) {
       }
     }
 
-    // The snapshot of `root` as an HTML string, plus the live controls it stamps (in order).
+    // The snapshot of `root` as an HTML string, plus the live controls it stamps (in order). The
+    // walk stops once the snapshot outgrows MAX_SNAPSHOT (`over`), so a huge element costs little.
     function snapshot(root) {
       const defaults = defaultsOf();
       const stamps = [];
-      const out = [];
+      const out = {
+        parts: [],
+        size: 0,
+        push(s) {
+          this.parts.push(s);
+          this.size += s.length;
+        },
+      };
       const attrs = (el, extra) => {
         let a = '';
         for (const n of ['id', 'class', 'name', 'placeholder', 'autocomplete', 'for', 'alt']) {
@@ -709,7 +717,7 @@ if (!agent || agent.version !== VERSION) {
         return a + (extra || '');
       };
       const walk = (el, inherited, isRoot) => {
-        if (DROPPED.has(el.tagName)) return;
+        if (DROPPED.has(el.tagName) || out.size > MAX_SNAPSHOT) return;
         if (el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'hidden') return;
         if (!isRoot && !shown(el)) return;
         const tag = el.tagName.toLowerCase();
@@ -766,7 +774,7 @@ if (!agent || agent.version !== VERSION) {
       } finally {
         defaults.done();
       }
-      return { html: out.join(''), stamps };
+      return { html: out.parts.join(''), stamps, over: out.size > MAX_SNAPSHOT };
     }
 
     // ---- commands -----------------------------------------------------------------------
@@ -986,9 +994,12 @@ if (!agent || agent.version !== VERSION) {
         const frame = /^(IFRAME|FRAME|OBJECT|EMBED)$/.test(root.tagName) ? root : root.querySelector('iframe, frame, object, embed');
         if (frame) return { refused: 'frame', origin: frameOrigin(frame) };
         const snap = snapshot(root);
-        if (!snap.stamps.some(fillable)) return { refused: 'empty' };
         const bytes = byteLength(snap.html);
-        if (bytes > MAX_SNAPSHOT) return { refused: 'size', kib: Math.ceil(bytes / 1024) };
+        if (snap.over || bytes > MAX_SNAPSHOT) {
+          const whole = Math.max(bytes, byteLength(root.outerHTML || ''));
+          return { refused: 'size', kib: Math.ceil(whole / 1024) };
+        }
+        if (!snap.stamps.some(fillable)) return { refused: 'empty' };
         for (const el of document.querySelectorAll('[data-theuth-field]')) el.removeAttribute('data-theuth-field');
         for (const el of document.querySelectorAll('[data-theuth-form]')) el.removeAttribute('data-theuth-form');
         snap.stamps.forEach((el, i) => el.setAttribute('data-theuth-field', String(i)));
