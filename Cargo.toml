@@ -50,6 +50,7 @@ sessionsync = { path = "crates/sessionsync" }  # transcript replication with tra
 mesh = { path = "crates/mesh" }  # engine mesh: iroh endpoint, pairing, hub lease, engine stats (67 §4)
 tasks = { path = "crates/tasks" }  # task records, wakes, checkout, disposition (67 §7)
 roster = { path = "crates/roster" }  # agents as files, desks, episodes, budgets, proposals (67 §6)
+webprofile = { path = "crates/webprofile" }  # one sealed, mesh-replicated browser profile for the tile and obscura (209)
 # Mesh (design doc 67 §4, §17): iroh = QUIC dialed by public key, hole punching, relay fallback; `tls-aws-lc-rs`
 # only, because `theuth::main` installs aws-lc-rs as the process CryptoProvider. iroh-gossip = lease heartbeats
 # over the same endpoint; iroh-mdns-address-lookup = LAN discovery (split out of iroh in 1.0); data-encoding =

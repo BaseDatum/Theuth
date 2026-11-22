@@ -25205,6 +25205,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "webprofile"
+version = "2.22.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "hex",
+ "jsonrpsee",
+ "kameo",
+ "parking_lot",
+ "psl",
+ "rand 0.10.3",
+ "replica",
+ "rpc-core",
+ "rpc-core-macros",
+ "runtime",
+ "schemars 1.2.3",
+ "secrets",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ts-rs",
+ "uuid",
+ "wire",
+ "zeroize",
+]
+
+[[package]]
 name = "webview2-com"
 version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
