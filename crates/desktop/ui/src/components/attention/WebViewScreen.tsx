@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils'
 import * as native from '@/lib/web-view-native'
 import { openInBrowser, useWebViews } from '@/lib/web-views'
 import type { AttentionItem } from '@/rpc/bindings/method.roster.output'
+import { TONE_ACCENT, TONE_NEUTRAL } from './actions'
 import { Footer, useResolved } from './shared'
 import { ActionBar, Source } from './source'
 import { webViewOf } from './model'
@@ -96,18 +97,18 @@ export function WebViewScreen({ item }: { item: AttentionItem }) {
       </div>
       <ActionBar>
         {page.session && (
-          <Button size="sm" onClick={openInChat}>
+          <Button size="sm" className={TONE_ACCENT} onClick={openInChat}>
             <MessageSquare />
             Open in chat
           </Button>
         )}
         {canPopout() && (
-          <Button size="sm" variant="outline" onClick={popOut}>
+          <Button size="sm" variant="outline" className={TONE_NEUTRAL} onClick={popOut}>
             <AppWindow />
             Pop out
           </Button>
         )}
-        <Button size="sm" variant="ghost" disabled={!url} onClick={copy}>
+        <Button size="sm" variant="ghost" className={TONE_NEUTRAL} disabled={!url} onClick={copy}>
           <Copy />
           Copy URL
         </Button>

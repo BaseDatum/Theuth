@@ -11,7 +11,7 @@ import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import type { Packet } from "@/rpc/bindings/method.roster.output"
 import type { Priority } from "@/rpc/bindings/method.roster.output"
 import { nextItemAfter } from './model'
-import { SnoozeDismiss } from './actions'
+import { SnoozeDismiss, TONE_NEUTRAL } from './actions'
 import { chipLabel } from './labels'
 import { useAttentionView } from './Page'
 
@@ -56,7 +56,7 @@ export function Footer({ item, onResolved, children }: { item: AttentionItem; on
     <div className="flex flex-wrap items-center gap-1.5">
       {children}
       {item.task && (
-        <Button asChild variant="ghost" size="sm">
+        <Button asChild variant="ghost" size="sm" className={TONE_NEUTRAL}>
           <Link to="/tasks/$id" params={{ id: item.task }}>
             Open task
           </Link>

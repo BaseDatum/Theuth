@@ -15,7 +15,7 @@ import { Pointers } from './Pointers'
 import { Bundle, type Pick, allAnswered, allRecommended, bundleAnswer } from './Bundle'
 import { usePrediction } from '@/store/double'
 import { usePacket } from './queries'
-import { TONE_SUCCESS } from './actions'
+import { TONE_ACCENT, TONE_SUCCESS } from './actions'
 import { Body, Chip, Footer, IfWrong, OptionCards, PrioritySelect, SectionTitle, useResolved } from './shared'
 
 /**
@@ -147,7 +147,7 @@ export function DecisionScreen({ item }: { item: AttentionItem }) {
               Approve all as recommended
             </Button>
           )}
-          <Button type="submit" size="sm" variant={items.length > 0 ? 'outline' : 'default'} className="w-full sm:w-fit" disabled={busy || !answer || !item.decision}>
+          <Button type="submit" size="sm" variant={items.length > 0 ? 'outline' : 'default'} className={cn('w-full sm:w-fit', TONE_ACCENT)} disabled={busy || !answer || !item.decision}>
             Answer
           </Button>
         </div>

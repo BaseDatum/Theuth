@@ -27,7 +27,11 @@ export type Size = 'xs' | 'sm' | 'default'
  */
 export const TONE_SUCCESS = 'border border-success-border bg-success-bg text-success hover:bg-success-bg/80 hover:text-success'
 export const TONE_DANGER = 'border border-danger-border bg-danger-bg text-danger hover:bg-danger-bg/80 hover:text-danger'
+export const TONE_ACCENT = 'border border-fg-accent/40 bg-fg-accent/10 text-fg-accent hover:bg-fg-accent/20'
+export const TONE_NEUTRAL = 'border border-border-subtle bg-layer-1 text-fg-secondary hover:bg-layer-2 hover:text-foreground'
 export const paneTone = (size: Size, tone: 'success' | 'danger') => (size === 'xs' ? undefined : tone === 'success' ? TONE_SUCCESS : TONE_DANGER)
+/** The pane's one button style: every action is a soft tinted button; the list cards keep their own look. */
+export const paneClass = (size: Size, cls: string) => (size === 'xs' ? undefined : cls)
 
 /** The snooze presets of every card and the bulk bar (`hud/model.ts` `snoozeUntil`). */
 export const SNOOZE_PRESETS = [
@@ -143,7 +147,7 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
       {item.kind === 'double' && <DoubleUndo ids={doubleIds(item)} size={size} />}
       {(item.kind === 'ask' || item.kind === 'show') && (
         // 104: the questions and the artifact need the screen; the card only points there.
-        <Button asChild size={size} variant="outline">
+        <Button asChild size={size} variant="outline" className={paneClass(size, TONE_NEUTRAL)}>
           <Link to="/attention/$id" params={{ id: item.id }}>
             {item.kind === 'ask' ? 'Answer' : 'Open'}
           </Link>
@@ -152,7 +156,7 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
       {item.kind === 'handoff' && handoffId && (
         <>
           {vm && canPopout() && (
-            <Button size={size} disabled={busy} onClick={() => void openPopout({ kind: 'vm', name: vm.name })}>
+            <Button size={size} className={paneClass(size, TONE_ACCENT)} disabled={busy} onClick={() => void openPopout({ kind: 'vm', name: vm.name })}>
               Open desktop
             </Button>
           )}
@@ -190,7 +194,7 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
           }}
         >
           <Input value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your decision…" className={cn('w-44 text-base', size === 'xs' ? 'h-7 md:text-xs' : 'h-8 md:text-sm')} aria-label="Decision" />
-          <Button size={size} type="submit" disabled={busy || !answer.trim()}>
+          <Button size={size} type="submit" className={paneClass(size, TONE_ACCENT)} disabled={busy || !answer.trim()}>
             Answer
           </Button>
         </form>
@@ -210,19 +214,19 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
           <Button size={size} className={paneTone(size, 'success')} disabled={busy} onClick={() => then(act.move.mutateAsync({ id: item.task as string, state: 'done' }))}>
             Move done
           </Button>
-          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.move.mutateAsync({ id: item.task as string, state: 'doing' }))}>
+          <Button size={size} variant="outline" className={paneClass(size, TONE_NEUTRAL)} disabled={busy} onClick={() => then(act.move.mutateAsync({ id: item.task as string, state: 'doing' }))}>
             Send back
           </Button>
         </>
       )}
       {item.kind === 'blocked' && item.task && (
-        <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.move.mutateAsync({ id: item.task as string, state: 'todo' }))}>
+        <Button size={size} variant="outline" className={paneClass(size, TONE_NEUTRAL)} disabled={busy} onClick={() => then(act.move.mutateAsync({ id: item.task as string, state: 'todo' }))}>
           Unblock
         </Button>
       )}
       {item.kind === 'home' && <HomeActions item={item} size={size} busy={busy} act={act} then={then} />}
       {item.kind === 'budget' && item.agent && (
-        <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.unpause.mutateAsync(item.agent as string))}>
+        <Button size={size} variant="outline" className={paneClass(size, TONE_NEUTRAL)} disabled={busy} onClick={() => then(act.unpause.mutateAsync(item.agent as string))}>
           Un-pause
         </Button>
       )}
