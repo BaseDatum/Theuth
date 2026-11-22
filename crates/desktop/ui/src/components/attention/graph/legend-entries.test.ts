@@ -23,7 +23,7 @@ test('every status, line, pulse and mark the canvas draws has one legend entry i
 test('the states the canvas maps nodes and edges to are all in the legend', () => {
   for (const n of GRAPH_FIXTURE.nodes) expect(byId.has(`status:${statusOf(n)}`)).toBe(true)
   for (const a of [false, true]) for (const b of [false, true]) expect(byId.has(`edge:${messageKey(a, b)}`)).toBe(true)
-  const pulses = new Set(Object.values(PULSE).map((p) => p.tone))
+  const pulses = new Set<string>(Object.values(PULSE).map((p) => p.tone))
   for (const kind of ['sent', 'delivered', 'replied', 'result', 'failed']) for (const tree of [false, true]) expect(pulses.has(pulseTone(kind, tree))).toBe(true)
   // Each edge style's arrowhead is defined, in its own colour.
   for (const k of EDGE_ORDER) expect(MARKERS.find((m) => m.id === EDGE[k].marker)?.fill).toBe(EDGE[k].stroke)
