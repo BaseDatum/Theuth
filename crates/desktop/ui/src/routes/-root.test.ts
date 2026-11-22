@@ -44,6 +44,6 @@ test('a page window renders its route alone — no rail, search, meeting bar or 
   env.pathname = '/attention'
   await act(async () => root.render(h(Shell, { key: 'next' })))
   expect(host.querySelector('[data-outlet="/attention"]')).not.toBeNull()
-  expect(document.title).toBe('Attention')
+  expect(document.title).toBe('Inbox')
   await act(async () => root.unmount())
 })

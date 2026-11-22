@@ -299,7 +299,7 @@ function RelayCard({ packet, askId, onExpand }: { packet: Packet; askId: string;
       <div className="flex flex-wrap gap-2">
         <Button asChild size="sm">
           <Link to="/attention/$id" params={{ id: `decision:${packet.task}:${packet.key}` }} search={true}>
-            Open in Attention
+            Open in Inbox
           </Link>
         </Button>
         <Button size="sm" variant="ghost" onClick={onExpand}>

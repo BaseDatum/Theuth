@@ -43,7 +43,7 @@ export function Toolbar({ filter, sort, kinds, projects, searchRef, onFilter, on
             dictate={false}
             value={filter.query}
             placeholder="Search"
-            aria-label="Search attention"
+            aria-label="Search inbox"
             title="Search title, agent, tool, task, project, path ( / )"
             className="h-8 rounded-[10px] bg-layer-2 pr-7 pl-8 text-base md:text-[13px]"
             onChange={(e) => onFilter({ ...filter, query: e.target.value })}

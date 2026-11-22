@@ -420,8 +420,8 @@ function Training({ s, settings }: { s: DoubleStatus | undefined; settings: Doub
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           {(['approvals', 'asks', 'attention', 'packets', 'drafts'] as const).map((k) => (
             <label key={k} className="flex items-center gap-1.5 text-xs">
-              <Switch checked={settings?.capture[k] ?? false} disabled={!settings || busy} onCheckedChange={(v) => patch((c) => ({ ...c, capture: { ...c.capture, [k]: v } }))} aria-label={`capture ${k}`} />
-              {k}
+              <Switch checked={settings?.capture[k] ?? false} disabled={!settings || busy} onCheckedChange={(v) => patch((c) => ({ ...c, capture: { ...c.capture, [k]: v } }))} aria-label={`capture ${k === 'attention' ? 'inbox' : k}`} />
+              {k === 'attention' ? 'inbox' : k}
             </label>
           ))}
         </div>

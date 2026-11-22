@@ -32,7 +32,7 @@ function Selected() {
     <div className="m-auto flex flex-col items-center gap-2 p-6 text-center text-sm text-fg-tertiary">
       <p>{attention.isError ? attention.error.message : 'This item is no longer in the inbox.'}</p>
       <Link to="/attention" search={true} className="underline underline-offset-2">
-        Back to attention
+        Back to inbox
       </Link>
     </div>
   )

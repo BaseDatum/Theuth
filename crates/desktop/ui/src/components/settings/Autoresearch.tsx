@@ -153,7 +153,7 @@ export function Autoresearch() {
       </Section>
 
       <Section title="Review and the machine">
-        <Row label="A keep the reviewer calls gaming" description="Undo reverts it, keeps the patch and raises an attention row with Restore (R1-D2). Flag only keeps the change and marks it.">
+        <Row label="A keep the reviewer calls gaming" description="Undo reverts it, keeps the patch and raises an inbox row with Restore (R1-D2). Flag only keeps the change and marks it.">
           <ToggleGroup type="single" variant="outline" size="sm" value={s?.review.on_suspicious ?? 'revert'} aria-label="Reviewer action" disabled={busy} onValueChange={(v) => v && change((c) => ({ ...c, review: { ...c.review, on_suspicious: v as 'revert' | 'flag' } }))}>
             <ToggleGroupItem value="revert">Undo</ToggleGroupItem>
             <ToggleGroupItem value="flag">Flag only</ToggleGroupItem>

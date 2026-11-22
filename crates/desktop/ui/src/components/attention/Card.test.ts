@@ -135,7 +135,7 @@ test('the toolbar: search, sort, one chip per kind with its count (lit chips pre
   const html = await render(
     createElement(Toolbar, { filter: { ...EMPTY_FILTER, kinds: new Set(['finished']) }, sort: 'priority', kinds: kindCounts(F), projects: projectsOf(F), onFilter: () => undefined, onSort: () => undefined }),
   )
-  expect(html).toMatch(/<input[^>]*aria-label="Search attention"/)
+  expect(html).toMatch(/<input[^>]*aria-label="Search inbox"/)
   expect(html).toContain('aria-label="Sort"')
   expect(html).toContain('aria-label="Project"')
   expect(html.match(/aria-pressed="/g)).toHaveLength(16)
