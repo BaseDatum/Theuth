@@ -128,6 +128,8 @@ mod mobile {
                 #[cfg(target_os = "ios")]
                 crate::ios_webview::web_profile_read,
                 #[cfg(target_os = "ios")]
+                crate::ios_webview::web_profile_write,
+                #[cfg(target_os = "ios")]
                 crate::ios_webview::web_profile_clear,
                 #[cfg(target_os = "ios")]
                 crate::ios_webview::web_storage_capture
@@ -362,6 +364,7 @@ mod desktop {
             crate::webview::web_view_history,
             crate::webview::web_view_close,
             crate::webview::web_profile_read,
+            crate::webview::web_profile_write,
             crate::webview::web_profile_clear,
             crate::webview::web_storage_capture,
         ]);

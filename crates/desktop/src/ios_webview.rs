@@ -24,10 +24,10 @@
 //! the selectors or signatures below against the protocols on iOS; [`create`] asserts in debug builds that
 //! every one of [`DELEGATE_SELECTORS`] is registered.
 //!
-//! The browser profile (209 §4.5): `web_profile_read`, `web_profile_clear` and `web_storage_capture` read
-//! and empty the [`DATA_STORE`](crate::web_rules::DATA_STORE) store and read a view's localStorage through
-//! `apple_cookies`, which [`create`] also starts watching for `web-profile://changed`. They answer the
-//! main webview only, and `PROFILE_UNSUPPORTED` before iOS 17.
+//! The browser profile (209 §4.5): `web_profile_read`, `web_profile_write`, `web_profile_clear` and
+//! `web_storage_capture` read, write and empty the [`DATA_STORE`](crate::web_rules::DATA_STORE) store and
+//! read or write a view's localStorage through `apple_cookies`, which [`create`] also starts watching for
+//! `web-profile://changed`. They answer the main webview only, and `PROFILE_UNSUPPORTED` before iOS 17.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -61,8 +61,13 @@ use objc2_web_kit::{
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Url, Webview};
 
-use crate::apple_cookies::{available, capture, captured, clear, data_store, read, wait, watch};
-use crate::web_rules::profile::{Cookie, Storage, check_caller};
+use crate::apple_cookies::{
+    MAIN_TIMEOUT, apply_storage, available, capture, captured, clear, data_store, read, wait,
+    watch, write, written,
+};
+use crate::web_rules::profile::{
+    Cookie, CookieKey, Storage, Written, check_caller, plan_write, web_origin,
+};
 use crate::web_rules::{
     CLOSED_EVENT, Closed, STATE_EVENT, allowed, app_url, check_label, check_url, may_open,
     navigation_allowed, no_view,
@@ -877,6 +882,48 @@ pub async fn web_profile_read(webview: Webview) -> Result<Vec<Cookie>, String> {
 pub async fn web_profile_clear(webview: Webview) -> Result<(), String> {
     check_caller(webview.label(), true)?;
     clear(webview.app_handle().clone()).await
+}
+
+/// Set `set` and delete the cookies of `remove` in the tiles' store, and apply each localStorage snapshot of
+/// `storage` to the open views of its origin (209 §4.5, D5). Counts only; values are never logged. A
+/// loaded page keeps the cookies it has until it loads again: no view is reloaded. Main webview only.
+#[tauri::command]
+pub async fn web_profile_write(
+    webview: Webview,
+    set: Vec<Cookie>,
+    remove: Vec<CookieKey>,
+    storage: Option<Vec<Storage>>,
+) -> Result<Written, String> {
+    check_caller(webview.label(), true)?;
+    available()?;
+    let deadline = Instant::now() + MAIN_TIMEOUT;
+    let plan = plan_write(set, remove, storage.unwrap_or_default());
+    let (tx, rx) = sync_channel(1);
+    let pending = on_main(&webview, move |mtm, _| {
+        write(mtm, plan.cookies, tx);
+        let mut pending = Vec::new();
+        VIEWS.with_borrow(|views| {
+            for entry in views.values() {
+                let origin = entry
+                    .view
+                    .url()
+                    .and_then(|u| u.absoluteString())
+                    .and_then(|s| web_origin(&s.to_string()));
+                for snapshot in plan
+                    .storage
+                    .iter()
+                    .filter(|s| Some(&s.origin) == origin.as_ref())
+                {
+                    let (tx, rx) = sync_channel(1);
+                    apply_storage(mtm, &entry.view, snapshot, tx);
+                    pending.push((snapshot.origin.clone(), rx));
+                }
+            }
+        });
+        Ok(pending)
+    })
+    .await?;
+    written(rx, pending, deadline).await
 }
 
 /// The top-level origin's localStorage of `label`, read in the isolated world (209 §4.5). Main webview

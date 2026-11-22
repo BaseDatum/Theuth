@@ -5,7 +5,11 @@
 //! - [`available`]: the named store exists from macOS 14 / iOS 17 (wry's own check,
 //!   `wry-0.57.1/src/wkwebview/mod.rs:264-287`). Before that the tiles use the app's default store, which
 //!   is never exported: every profile command answers [`PROFILE_UNSUPPORTED`] and nothing is observed.
-//! - [`read`]: `WKHTTPCookieStore.getAllCookies` in the contract's [`Cookie`] shape (`web_profile_read`).
+//! - [`read`]: `WKHTTPCookieStore.getAllCookies` in the contract's [`Cookie`] shape, sorted by key
+//!   (`web_profile_read`).
+//! - [`write`]: delete the cookies of the given keys and set the given ones (`web_profile_write`), and
+//!   [`apply_storage`]: a localStorage snapshot into a tile of its origin, by `callAsyncJavaScript` in
+//!   [`AGENT_WORLD`]; [`written`] awaits both.
 //! - [`clear`]: every cookie of the store, and its localStorage, sessionStorage and IndexedDB data
 //!   (`web_profile_clear`).
 //! - [`watch`]: one `WKHTTPCookieStoreObserver` on the store, kept alive in a main-thread registry until
@@ -32,10 +36,12 @@ use std::time::{Duration, Instant};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_foundation::{
-    NSArray, NSDate, NSError, NSHTTPCookie, NSNumber, NSObjectProtocol, NSProcessInfo, NSSet,
-    NSString, NSURL, NSUUID,
+    NSArray, NSDate, NSDictionary, NSError, NSHTTPCookie, NSHTTPCookieDomain, NSHTTPCookieExpires,
+    NSHTTPCookieName, NSHTTPCookiePath, NSHTTPCookieSameSiteLax, NSHTTPCookieSameSitePolicy,
+    NSHTTPCookieSameSiteStrict, NSHTTPCookieSecure, NSHTTPCookieValue, NSNumber, NSObjectProtocol,
+    NSProcessInfo, NSSet, NSString, NSURL, NSUUID,
 };
 #[cfg(target_os = "macos")]
 use objc2_web_kit::WKWebView;
@@ -49,8 +55,9 @@ use tauri::{AppHandle, Emitter, Runtime};
 #[cfg(target_os = "ios")]
 use crate::ios_webview::WKWebView;
 use crate::web_rules::profile::{
-    AGENT_WORLD, CAPTURE_SCRIPT, CHANGED_EVENT, Changed, Cookie, Debounce, Due, NativeCookie,
-    PROPERTIES, QUIET, Storage, diff, parse_capture,
+    AGENT_WORLD, APPLY_STORAGE_SCRIPT, CAPTURE_SCRIPT, CHANGED_EVENT, Changed, Cookie, CookieWrite,
+    Debounce, Due, NativeCookie, NativeSet, PROPERTIES, QUIET, SameSitePolicy, Storage,
+    StorageApply, Written, diff, jar_key, parse_capture,
 };
 use crate::web_rules::{DATA_STORE, PROFILE_UNSUPPORTED};
 
@@ -62,7 +69,13 @@ const MAIN_WINDOW: &str = "main";
 
 /// A main-thread reply, at most [`MAIN_TIMEOUT`] away.
 fn recv<T>(rx: &Receiver<Result<T, String>>) -> Result<T, String> {
-    rx.recv_timeout(MAIN_TIMEOUT).map_err(|e| match e {
+    recv_until(rx, Instant::now() + MAIN_TIMEOUT)
+}
+
+/// A main-thread reply, at most until `deadline`.
+fn recv_until<T>(rx: &Receiver<Result<T, String>>, deadline: Instant) -> Result<T, String> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    rx.recv_timeout(left).map_err(|e| match e {
         RecvTimeoutError::Timeout => format!(
             "the main thread did not run the web view call within {} s",
             MAIN_TIMEOUT.as_secs()
@@ -202,7 +215,17 @@ pub(crate) fn read_blocking<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<Cookie
         unsafe { store.getAllCookies(&reply) };
     })
     .map_err(|e| e.to_string())?;
-    Ok(recv(&rx)?.into_iter().map(Cookie::from).collect())
+    let mut cookies: Vec<Cookie> = recv(&rx)?.into_iter().map(Cookie::from).collect();
+    // A deterministic order (209 §4.5): by key, host-only first for one key in both scopes.
+    cookies.sort_by(|a, b| {
+        (&a.name, &a.domain, &a.path, !a.host_only).cmp(&(
+            &b.name,
+            &b.domain,
+            &b.path,
+            !b.host_only,
+        ))
+    });
+    Ok(cookies)
 }
 
 /// [`read_blocking`] off the async workers.
@@ -210,6 +233,203 @@ pub(crate) async fn read<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Cookie>, S
     tauri::async_runtime::spawn_blocking(move || read_blocking(&app))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// An `NSHTTPCookie` of `cookie`'s properties (209 §4.5), `None` when Foundation refuses them. HttpOnly
+/// has no exported key: `HttpOnly` is the one `isHTTPOnly` reads.
+fn ns_cookie(cookie: &NativeSet) -> Option<Retained<NSHTTPCookie>> {
+    fn object(value: Retained<NSString>) -> Retained<AnyObject> {
+        Retained::into_super(Retained::into_super(value))
+    }
+    let yes = || object(NSString::from_str("TRUE"));
+    let http_only = NSString::from_str("HttpOnly");
+    // SAFETY: Foundation's exported property keys and policy names, immutable statics.
+    let (mut keys, mut values): (Vec<&NSString>, Vec<Retained<AnyObject>>) = unsafe {
+        (
+            vec![
+                NSHTTPCookieName,
+                NSHTTPCookieValue,
+                NSHTTPCookieDomain,
+                NSHTTPCookiePath,
+            ],
+            vec![
+                object(NSString::from_str(&cookie.name)),
+                object(NSString::from_str(&cookie.value)),
+                object(NSString::from_str(&cookie.domain)),
+                object(NSString::from_str(&cookie.path)),
+            ],
+        )
+    };
+    if let Some(expires) = cookie.expires {
+        keys.push(unsafe { NSHTTPCookieExpires });
+        values.push(Retained::into_super(Retained::into_super(
+            NSDate::dateWithTimeIntervalSince1970(expires as f64),
+        )));
+    }
+    if cookie.secure {
+        keys.push(unsafe { NSHTTPCookieSecure });
+        values.push(yes());
+    }
+    if cookie.http_only {
+        keys.push(&http_only);
+        values.push(yes());
+    }
+    if let Some(policy) = cookie.same_site {
+        // SAFETY: as above.
+        let name = unsafe {
+            match policy {
+                SameSitePolicy::Lax => NSHTTPCookieSameSiteLax,
+                SameSitePolicy::Strict => NSHTTPCookieSameSiteStrict,
+            }
+        };
+        keys.push(unsafe { NSHTTPCookieSameSitePolicy });
+        values.push(object(name.retain()));
+    }
+    let properties = NSDictionary::<NSString, AnyObject>::from_retained_objects(&keys, &values);
+    // SAFETY: string keys of Foundation's cookie properties with string and date values.
+    unsafe { NSHTTPCookie::cookieWithProperties(&properties) }
+}
+
+/// Write the cookie half of `web_profile_write` into the tiles' store (209 §4.5), on the main thread: list
+/// the store, delete every cookie whose [`jar_key`] is in `remove`, then set each of `set`. `tx` gets the
+/// counts once WebKit has reported every deletion and every set done. Main-thread work is copying keys
+/// and building `NSHTTPCookie`s; the mapping was done before ([`plan_write`]). Values are never logged.
+///
+/// [`plan_write`]: crate::web_rules::profile::plan_write
+pub(crate) fn write(
+    mtm: MainThreadMarker,
+    cookies: CookieWrite,
+    tx: SyncSender<Result<Written, String>>,
+) {
+    let store = match cookie_store(mtm) {
+        Ok(store) => store,
+        Err(e) => {
+            let _ = tx.try_send(Err(e));
+            return;
+        }
+    };
+    let jar = store.clone();
+    let listed = RcBlock::new(move |all: NonNull<NSArray<NSHTTPCookie>>| {
+        // SAFETY: WebKit passes a live array for the duration of the call.
+        let all = unsafe { all.as_ref() };
+        let doomed: Vec<Retained<NSHTTPCookie>> = all
+            .iter()
+            .filter(|c| {
+                cookies.remove.contains(&jar_key(
+                    &c.name().to_string(),
+                    &c.domain().to_string(),
+                    &c.path().to_string(),
+                ))
+            })
+            .collect();
+        let fresh: Vec<Retained<NSHTTPCookie>> = cookies.set.iter().filter_map(ns_cookie).collect();
+        let written = Written {
+            set: fresh.len(),
+            removed: doomed.len(),
+            skipped: cookies.skipped + (cookies.set.len() - fresh.len()),
+        };
+        // One tick per WebKit reply plus one for the loop itself; the answer goes at zero.
+        let left = Rc::new(Cell::new(doomed.len() + fresh.len() + 1));
+        let tick = {
+            let tx = tx.clone();
+            Rc::new(move |left: &Cell<usize>| match left.get() {
+                0 => {}
+                1 => {
+                    left.set(0);
+                    let _ = tx.try_send(Ok(written));
+                }
+                n => left.set(n - 1),
+            })
+        };
+        for cookie in &doomed {
+            let (left, tick) = (left.clone(), tick.clone());
+            let done = RcBlock::new(move || tick(&left));
+            // SAFETY: a cookie of this store; the handler is called on the main thread.
+            unsafe { jar.deleteCookie_completionHandler(cookie, Some(&*done)) };
+        }
+        for cookie in &fresh {
+            let (left, tick) = (left.clone(), tick.clone());
+            let done = RcBlock::new(move || tick(&left));
+            // SAFETY: a valid cookie; the handler is called on the main thread.
+            unsafe { jar.setCookie_completionHandler(cookie, Some(&*done)) };
+        }
+        tick(&left);
+    });
+    // SAFETY: the handler is called once, on the main thread, with the store's cookies.
+    unsafe { store.getAllCookies(&listed) };
+}
+
+/// Start applying `snapshot` to `view`'s main frame in [`AGENT_WORLD`] (209 §4.5): `localStorage.setItem`
+/// per pair, no other key removed. The origin and entries are arguments, never script source. `tx` gets
+/// `true` once written, `false` when the page is no longer at `snapshot.origin`.
+pub(crate) fn apply_storage(
+    mtm: MainThreadMarker,
+    view: &WKWebView,
+    snapshot: &StorageApply,
+    tx: SyncSender<Result<bool, String>>,
+) {
+    // SAFETY: a named world for this app's scripts; WebKit keeps one instance per name while it lives.
+    let world = unsafe { WKContentWorld::worldWithName(&NSString::from_str(AGENT_WORLD), mtm) };
+    let arguments = NSDictionary::<NSString, AnyObject>::from_retained_objects(
+        &[
+            &*NSString::from_str("origin"),
+            &*NSString::from_str("entries"),
+        ],
+        &[
+            Retained::into_super(Retained::into_super(NSString::from_str(&snapshot.origin))),
+            Retained::into_super(Retained::into_super(NSString::from_str(&snapshot.entries))),
+        ],
+    );
+    let done = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
+        // SAFETY: WebKit passes live (or nil) objects for the duration of the call.
+        let reply = match unsafe { error.as_ref() } {
+            // The code only: a script error's description may quote the page.
+            Some(error) => Err(format!(
+                "storage apply failed (WebKit error {})",
+                error.code()
+            )),
+            None => Ok(unsafe { result.as_ref() }
+                .and_then(|r| r.downcast_ref::<NSNumber>())
+                .is_some_and(|n| n.boolValue())),
+        };
+        let _ = tx.try_send(reply);
+    });
+    // SAFETY: string arguments the body names; no frame means the main frame; WebKit copies the handler
+    // and calls it once, on the main thread.
+    unsafe {
+        view.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+            &NSString::from_str(APPLY_STORAGE_SCRIPT),
+            Some(&arguments),
+            None,
+            &world,
+            Some(&*done),
+        )
+    };
+}
+
+/// Await [`write`]'s counts and every [`apply_storage`] (each with the tile's origin) until `deadline`,
+/// off the async workers. A storage apply that fails or times out is logged by origin and does not fail
+/// the write: the snapshot is applied again on the next change.
+pub(crate) async fn written(
+    cookies: Receiver<Result<Written, String>>,
+    storage: Vec<(String, Receiver<Result<bool, String>>)>,
+    deadline: Instant,
+) -> Result<Written, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let written = recv_until(&cookies, deadline)?;
+        for (origin, rx) in storage {
+            match recv_until(&rx, deadline) {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::debug!(%origin, "web profile write: the tile left the origin")
+                }
+                Err(e) => tracing::warn!(%origin, "web profile write: localStorage: {e}"),
+            }
+        }
+        Ok(written)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Empty the tiles' store (`web_profile_clear`, 209 §4.5): delete every cookie, then remove the

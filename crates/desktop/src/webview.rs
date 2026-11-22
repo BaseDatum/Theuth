@@ -18,10 +18,10 @@
 //! macOS 14+; older systems silently use the default store, shared with the app (wry `wkwebview/mod.rs:276-287`).
 //! The `asset` scheme refuses `web-*` webviews (`crate::asset`).
 //!
-//! The browser profile (209 §4.5): on macOS `web_profile_read`, `web_profile_clear` and `web_storage_capture`
-//! go to WebKit directly through `apple_cookies` (the store watch starts with the first web view); Windows
-//! and Linux answer all three with `PROFILE_UNSUPPORTED`, with the same declared types. All three refuse a
-//! `web-*` caller.
+//! The browser profile (209 §4.5): on macOS `web_profile_read`, `web_profile_write`, `web_profile_clear` and
+//! `web_storage_capture` go to WebKit directly through `apple_cookies` (the store watch starts with the
+//! first web view); Windows and Linux answer all four with `PROFILE_UNSUPPORTED`, with the same declared
+//! types. All four refuse a `web-*` caller.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -39,7 +39,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::web_rules::DATA_STORE;
 #[cfg(not(target_os = "macos"))]
 use crate::web_rules::PROFILE_UNSUPPORTED;
-use crate::web_rules::profile::{Cookie, Storage, check_caller};
+use crate::web_rules::profile::{Cookie, CookieKey, Storage, Written, check_caller};
 use crate::web_rules::{
     CLOSED_EVENT, Closed, STATE_EVENT, app_url, check_label, check_url, in_popout, may_open,
     navigation_allowed, no_view,
@@ -369,6 +369,84 @@ pub async fn web_profile_clear<R: Runtime>(caller: Webview<R>) -> Result<(), Str
 #[tauri::command]
 pub async fn web_profile_clear<R: Runtime>(caller: Webview<R>) -> Result<(), String> {
     check_caller(caller.label(), false)?;
+    Err(PROFILE_UNSUPPORTED.to_owned())
+}
+
+/// Set `set` and delete the cookies of `remove` in the tiles' store, and apply each localStorage snapshot of
+/// `storage` to the open web views of its origin (209 §4.5, D5). Counts only; values are never logged. A
+/// loaded page keeps the cookies it has until it loads again: no view is reloaded. Never for a tile.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn web_profile_write<R: Runtime>(
+    caller: Webview<R>,
+    set: Vec<Cookie>,
+    remove: Vec<CookieKey>,
+    storage: Option<Vec<Storage>>,
+) -> Result<Written, String> {
+    use std::sync::mpsc::sync_channel;
+
+    use objc2::MainThreadMarker;
+    use objc2_web_kit::WKWebView;
+
+    use crate::apple_cookies::{MAIN_TIMEOUT, apply_storage, available, write, written};
+    use crate::web_rules::profile::{plan_write, web_origin};
+    use crate::web_rules::valid_label;
+
+    check_caller(caller.label(), false)?;
+    available()?;
+    let deadline = Instant::now() + MAIN_TIMEOUT;
+    let plan = plan_write(set, remove, storage.unwrap_or_default());
+    let app = caller.app_handle().clone();
+    let (tx, rx) = sync_channel(1);
+    let cookies = plan.cookies;
+    app.run_on_main_thread(move || match MainThreadMarker::new() {
+        Some(mtm) => write(mtm, cookies, tx),
+        None => {
+            let _ = tx.try_send(Err("run_on_main_thread ran off the main thread".to_owned()));
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    let mut pending = Vec::new();
+    for view in app.webviews().into_values() {
+        if !valid_label(view.label()) {
+            continue;
+        }
+        let Some(origin) = view.url().ok().and_then(|u| web_origin(u.as_str())) else {
+            continue;
+        };
+        for snapshot in plan.storage.iter().filter(|s| s.origin == origin) {
+            let (tx, rx) = sync_channel(1);
+            let snapshot = snapshot.clone();
+            let res = view.with_webview(move |platform| {
+                let Some(mtm) = MainThreadMarker::new() else {
+                    let _ = tx.try_send(Err("with_webview ran off the main thread".to_owned()));
+                    return;
+                };
+                // SAFETY: on macOS `inner()` is the webview's live `WKWebView`, and `with_webview` runs on
+                // the main thread.
+                let view = unsafe { &*platform.inner().cast::<WKWebView>() };
+                apply_storage(mtm, view, &snapshot, tx);
+            });
+            match res {
+                Ok(()) => pending.push((origin.clone(), rx)),
+                Err(e) => tracing::warn!(%origin, "web profile write: localStorage: {e}"),
+            }
+        }
+    }
+    written(rx, pending, deadline).await
+}
+
+/// Windows and Linux: [`PROFILE_UNSUPPORTED`], same types as on macOS.
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn web_profile_write<R: Runtime>(
+    caller: Webview<R>,
+    set: Vec<Cookie>,
+    remove: Vec<CookieKey>,
+    storage: Option<Vec<Storage>>,
+) -> Result<Written, String> {
+    check_caller(caller.label(), false)?;
+    let _ = (set, remove, storage);
     Err(PROFILE_UNSUPPORTED.to_owned())
 }
 

@@ -1,7 +1,8 @@
 //! The web view tile's pure rules (205 §4.3, §5, §9), shared by the desktop child webviews (`webview.rs`) and the
 //! iOS shell's raw `WKWebView`s (`ios_webview.rs`): labels, events, error prefixes, the load / navigation
 //! allowlist, the browser-open throttle and the data store identifier; and, in [`profile`], the browser
-//! profile's cookie shape, jar diff, change debounce and storage-capture parsing (209 §4.1, §4.2, §4.5).
+//! profile's cookie shape, jar diff, change debounce, storage-capture parsing and the write plan
+//! (209 §4.1, §4.2, §4.5).
 
 use std::time::{Duration, Instant};
 
@@ -296,18 +297,13 @@ pub(crate) mod profile {
         let declared = property(properties, "Domain").unwrap_or(domain);
         let dotted = domain.starts_with('.') || declared.starts_with('.');
         let bare = domain.trim_start_matches('.').to_ascii_lowercase();
-        let ip = bare
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .parse::<std::net::IpAddr>()
-            .is_ok();
         let origin_sub = property(properties, "OriginURL")
             .and_then(|u| tauri::Url::parse(u).ok())
             .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
             .is_some_and(|host| host.ends_with(&format!(".{bare}")));
         let rule = if name.starts_with("__Host-") {
             ScopeRule::HostPrefix
-        } else if ip {
+        } else if ip(&bare) {
             ScopeRule::IpHost
         } else if dotted {
             ScopeRule::Dot
@@ -376,6 +372,188 @@ pub(crate) mod profile {
                 && matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes")
         })
     }
+
+    /// A cookie as `NSHTTPCookie` properties take it, the inverse of [`scope`] (`web_profile_write`,
+    /// 209 §4.5). No `Debug`: it holds the value.
+    pub(crate) struct NativeSet {
+        pub(crate) name: String,
+        pub(crate) value: String,
+        /// `NSHTTPCookieDomain`: the bare host of a host-only cookie (WebKit's host-only form), `.` and
+        /// the domain for a domain-wide one (WebKit's mark of `Domain=`); lower case.
+        pub(crate) domain: String,
+        pub(crate) path: String,
+        /// `NSHTTPCookieExpires`, Unix seconds; `None` for a session cookie (no expiry property).
+        pub(crate) expires: Option<i64>,
+        pub(crate) secure: bool,
+        pub(crate) http_only: bool,
+        /// `NSHTTPCookieSameSitePolicy`; `None` omits it.
+        pub(crate) same_site: Option<SameSitePolicy>,
+    }
+
+    /// The two policies `NSHTTPCookie` names (`NSHTTPCookieSameSiteLax`, `NSHTTPCookieSameSiteStrict`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum SameSitePolicy {
+        Lax,
+        Strict,
+    }
+
+    /// Why a cookie of `web_profile_write` was not set.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Unsettable {
+        /// A `__Host-` cookie that is not secure, host-only and on path `/`: a browser never holds one.
+        HostPrefix,
+        /// No name, no domain, or a path that does not start with `/`.
+        Malformed,
+    }
+
+    /// The `NSHTTPCookie` properties of `cookie` (209 §4.5): host-only → the bare host, domain-wide →
+    /// `.` + domain (a leading `.` on the incoming domain also means domain-wide, as §4.1 stores it), an
+    /// IP address always bare (host-only, as [`scope`] reads it back). `expires` `None` is a session
+    /// cookie. `same_site` `"Lax"` / `"Strict"` map to WebKit's policies; `"None"` and `""` omit the
+    /// property: WebKit has no `None` policy distinct from unspecified (its cookie converts a missing
+    /// policy to `None`), so both read back as `""`. `partitioned` cannot be carried (209 D1).
+    pub(crate) fn native_set(cookie: Cookie) -> Result<NativeSet, Unsettable> {
+        let dotted = cookie.domain.starts_with('.');
+        let bare = cookie.domain.trim_start_matches('.').to_ascii_lowercase();
+        if cookie.name.is_empty() || bare.is_empty() || !cookie.path.starts_with('/') {
+            return Err(Unsettable::Malformed);
+        }
+        let host_only = (cookie.host_only && !dotted) || ip(&bare);
+        if cookie.name.starts_with("__Host-") && !(cookie.secure && host_only && cookie.path == "/")
+        {
+            return Err(Unsettable::HostPrefix);
+        }
+        Ok(NativeSet {
+            domain: if host_only { bare } else { format!(".{bare}") },
+            name: cookie.name,
+            value: cookie.value,
+            path: cookie.path,
+            expires: cookie.expires,
+            secure: cookie.secure,
+            http_only: cookie.http_only,
+            same_site: match cookie.same_site.to_ascii_lowercase().as_str() {
+                "lax" => Some(SameSitePolicy::Lax),
+                "strict" => Some(SameSitePolicy::Strict),
+                _ => None,
+            },
+        })
+    }
+
+    /// Whether `host` (lower case, no dot) is an IP address, bracketed or not.
+    fn ip(host: &str) -> bool {
+        host.trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok()
+    }
+
+    /// The contract key of a cookie in the tile store, from `NSHTTPCookie`'s `name`, `domain` and `path`
+    /// (the domain without WebKit's leading dot, lower case; an empty path is `/`), as [`Cookie::from`]
+    /// keys it: what `web_profile_write`'s `remove` keys are matched against.
+    pub(crate) fn jar_key(name: &str, domain: &str, path: &str) -> CookieKey {
+        CookieKey {
+            name: name.to_owned(),
+            domain: domain.trim_start_matches('.').to_ascii_lowercase(),
+            path: if path.is_empty() { "/" } else { path }.to_owned(),
+        }
+    }
+
+    /// The http(s) origin of `url` (`scheme://host[:port]`), `None` for any other URL.
+    pub(crate) fn web_origin(url: &str) -> Option<String> {
+        tauri::Url::parse(url)
+            .ok()
+            .filter(|u| matches!(u.scheme(), "http" | "https"))
+            .map(|u| u.origin().ascii_serialization())
+    }
+
+    /// `web_profile_write`'s result (209 §4.5): counts only. `skipped` counts the cookies of `set` that
+    /// were not set ([`Unsettable`], or `NSHTTPCookie` refused the properties).
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+    pub(crate) struct Written {
+        pub(crate) set: usize,
+        pub(crate) removed: usize,
+        pub(crate) skipped: usize,
+    }
+
+    /// The cookie half of a [`WritePlan`], applied on the main thread by `apple_cookies::write`.
+    pub(crate) struct CookieWrite {
+        pub(crate) set: Vec<NativeSet>,
+        /// Normalised by [`jar_key`]'s rule; every cookie of the store with one of these keys is deleted.
+        pub(crate) remove: std::collections::HashSet<CookieKey>,
+        /// Cookies of `set` already refused by [`native_set`].
+        pub(crate) skipped: usize,
+    }
+
+    /// One origin's localStorage to apply to the open tiles of that origin. No `Debug`: `entries` holds
+    /// the values.
+    #[derive(Clone)]
+    pub(crate) struct StorageApply {
+        /// As [`web_origin`] spells it, compared with a tile's top-level origin.
+        pub(crate) origin: String,
+        /// `local_storage` as JSON `[[k, v]]`, passed to the script as an argument, never in its source.
+        pub(crate) entries: String,
+    }
+
+    /// What `web_profile_write` does, worked out off the main thread (209 §4.5).
+    pub(crate) struct WritePlan {
+        pub(crate) cookies: CookieWrite,
+        pub(crate) storage: Vec<StorageApply>,
+    }
+
+    /// Map `set` with [`native_set`] (a refusal is counted, logged by reason, never by value), normalise
+    /// `remove`, and keep the snapshots whose origin is http(s), keyed by [`web_origin`].
+    pub(crate) fn plan_write(
+        set: Vec<Cookie>,
+        remove: Vec<CookieKey>,
+        storage: Vec<Storage>,
+    ) -> WritePlan {
+        let mut skipped = 0;
+        let set = set
+            .into_iter()
+            .filter_map(|c| {
+                native_set(c)
+                    .inspect_err(|reason| {
+                        skipped += 1;
+                        tracing::debug!(?reason, "web profile write: cookie skipped");
+                    })
+                    .ok()
+            })
+            .collect();
+        let remove = remove
+            .iter()
+            .map(|k| jar_key(&k.name, &k.domain, &k.path))
+            .collect();
+        let storage = storage
+            .into_iter()
+            .filter_map(|s| {
+                let Some(origin) = web_origin(&s.origin) else {
+                    tracing::debug!(origin = %s.origin, "web profile write: storage origin skipped");
+                    return None;
+                };
+                Some(StorageApply {
+                    origin,
+                    entries: serde_json::to_string(&s.local_storage).ok()?,
+                })
+            })
+            .collect();
+        WritePlan {
+            cookies: CookieWrite {
+                set,
+                remove,
+                skipped,
+            },
+            storage,
+        }
+    }
+
+    /// Body of the `callAsyncJavaScript` that applies a [`StorageApply`] in [`AGENT_WORLD`], in the main
+    /// frame, with the arguments `origin` and `entries`: `localStorage.setItem` per pair, no other key
+    /// removed; `false` (nothing written) when the page moved to another origin since it was picked.
+    pub(crate) const APPLY_STORAGE_SCRIPT: &str = concat!(
+        "if(location.origin!==origin)return false;",
+        "for(const [k,v] of JSON.parse(entries))localStorage.setItem(k,v);",
+        "return true;"
+    );
 
     /// Cookies set (new or any attribute changed) and removed between two reads of the store (209 §4.2).
     #[derive(Debug, Default, PartialEq, Eq)]
@@ -832,6 +1010,214 @@ pub(crate) mod profile {
                     "{caller}"
                 );
             }
+        }
+
+        fn contract(name: &str, domain: &str, host_only: bool) -> Cookie {
+            Cookie {
+                name: name.into(),
+                value: "v".into(),
+                domain: domain.into(),
+                host_only,
+                path: "/".into(),
+                expires: Some(1_795_000_000),
+                secure: true,
+                http_only: true,
+                same_site: "Lax".into(),
+                partitioned: false,
+            }
+        }
+
+        /// What `apple_cookies` reads back from an `NSHTTPCookie` made of `n` (no properties).
+        fn read_back(n: &NativeSet) -> Cookie {
+            Cookie::from(NativeCookie {
+                name: n.name.clone(),
+                value: n.value.clone(),
+                domain: n.domain.clone(),
+                path: n.path.clone(),
+                expires: n.expires.map(|s| s as f64),
+                session_only: n.expires.is_none(),
+                secure: n.secure,
+                http_only: n.http_only,
+                same_site: n.same_site.map(|p| format!("{p:?}").to_ascii_lowercase()),
+                properties: vec![],
+            })
+        }
+
+        #[test]
+        fn profile_write_cookie_mapping() {
+            // Host-only: the bare host, no dot.
+            let n = native_set(contract("sid", "App.Example.com", true)).unwrap();
+            assert_eq!(n.domain, "app.example.com");
+            assert_eq!(
+                (n.name.as_str(), n.value.as_str(), n.path.as_str()),
+                ("sid", "v", "/")
+            );
+            assert_eq!(n.expires, Some(1_795_000_000));
+            assert!(n.secure && n.http_only);
+            assert_eq!(n.same_site, Some(SameSitePolicy::Lax));
+            // Domain-wide: a leading dot; a dotted incoming domain is domain-wide whatever `host_only` says.
+            assert_eq!(
+                native_set(contract("sid", "example.com", false))
+                    .unwrap()
+                    .domain,
+                ".example.com"
+            );
+            assert_eq!(
+                native_set(contract("sid", ".example.com", true))
+                    .unwrap()
+                    .domain,
+                ".example.com"
+            );
+            // An IP address is always host-only.
+            assert_eq!(
+                native_set(contract("sid", "10.0.0.1", false))
+                    .unwrap()
+                    .domain,
+                "10.0.0.1"
+            );
+            // A session cookie has no expiry; flags go through as they are.
+            let n = native_set(Cookie {
+                expires: None,
+                secure: false,
+                http_only: false,
+                path: "/app".into(),
+                ..contract("sid", "a.test", true)
+            })
+            .unwrap();
+            assert_eq!(n.expires, None);
+            assert!(!n.secure && !n.http_only);
+            assert_eq!(n.path, "/app");
+            // SameSite: Lax and Strict are WebKit's policies; None and "" omit it.
+            for (same_site, want) in [
+                ("Lax", Some(SameSitePolicy::Lax)),
+                ("Strict", Some(SameSitePolicy::Strict)),
+                ("strict", Some(SameSitePolicy::Strict)),
+                ("None", None),
+                ("", None),
+            ] {
+                let c = Cookie {
+                    same_site: same_site.into(),
+                    ..contract("sid", "a.test", true)
+                };
+                assert_eq!(native_set(c).unwrap().same_site, want, "{same_site}");
+            }
+            // Malformed cookies are refused.
+            for c in [
+                contract("", "a.test", true),
+                contract("sid", "", true),
+                contract("sid", ".", false),
+                Cookie {
+                    path: "app".into(),
+                    ..contract("sid", "a.test", true)
+                },
+            ] {
+                assert_eq!(native_set(c).err(), Some(Unsettable::Malformed));
+            }
+        }
+
+        #[test]
+        fn profile_write_host_prefix_rules() {
+            assert!(native_set(contract("__Host-sid", "app.example.com", true)).is_ok());
+            for c in [
+                contract("__Host-sid", "example.com", false),
+                contract("__Host-sid", ".example.com", true),
+                Cookie {
+                    secure: false,
+                    ..contract("__Host-sid", "app.example.com", true)
+                },
+                Cookie {
+                    path: "/app".into(),
+                    ..contract("__Host-sid", "app.example.com", true)
+                },
+            ] {
+                assert_eq!(native_set(c).err(), Some(Unsettable::HostPrefix));
+            }
+        }
+
+        #[test]
+        fn profile_write_reads_back_as_written() {
+            // The inverse of `scope`: what `web_profile_write` sets, `web_profile_read` returns unchanged
+            // (SameSite `None` is the one exception: WebKit reads it back as "").
+            for c in [
+                contract("__Host-sid", "app.example.com", true),
+                contract("sid", "example.com", false),
+                contract("sid", "192.168.1.10", true),
+                Cookie {
+                    expires: None,
+                    same_site: "Strict".into(),
+                    ..contract("pref", "a.test", true)
+                },
+                Cookie {
+                    same_site: String::new(),
+                    ..contract("pref", "a.test", false)
+                },
+            ] {
+                let n = native_set(c.clone()).unwrap();
+                assert_eq!(read_back(&n), c);
+            }
+            let n = native_set(Cookie {
+                same_site: "None".into(),
+                ..contract("x", "a.test", true)
+            })
+            .unwrap();
+            assert_eq!(read_back(&n).same_site, "");
+        }
+
+        #[test]
+        fn profile_write_plan() {
+            let plan = plan_write(
+                vec![
+                    contract("sid", "a.test", true),
+                    contract("__Host-x", "a.test", false),
+                    contract("", "a.test", true),
+                ],
+                vec![CookieKey {
+                    name: "old".into(),
+                    domain: ".A.test".into(),
+                    path: String::new(),
+                }],
+                vec![
+                    Storage {
+                        origin: "https://App.Example.com:443/ignored".into(),
+                        local_storage: vec![("k".into(), "v\"".into())],
+                    },
+                    Storage {
+                        origin: "file:///x".into(),
+                        local_storage: vec![],
+                    },
+                ],
+            );
+            assert_eq!(plan.cookies.set.len(), 1);
+            assert_eq!(plan.cookies.skipped, 2);
+            // A removal key matches the store's cookie whatever its dot, case or empty path.
+            assert!(plan.cookies.remove.contains(&jar_key("old", ".a.test", "")));
+            assert!(plan.cookies.remove.contains(&jar_key("old", "a.test", "/")));
+            assert!(
+                !plan
+                    .cookies
+                    .remove
+                    .contains(&jar_key("old", "a.test", "/x"))
+            );
+            assert_eq!(plan.storage.len(), 1);
+            assert_eq!(plan.storage[0].origin, "https://app.example.com");
+            assert_eq!(
+                serde_json::from_str::<Vec<(String, String)>>(&plan.storage[0].entries).unwrap(),
+                vec![("k".to_owned(), "v\"".to_owned())]
+            );
+            assert_eq!(
+                web_origin("http://mac.lan:3000/a?b").as_deref(),
+                Some("http://mac.lan:3000")
+            );
+            assert_eq!(web_origin("about:blank"), None);
+            assert_eq!(
+                serde_json::to_value(Written {
+                    set: 1,
+                    removed: 2,
+                    skipped: 3
+                })
+                .unwrap(),
+                serde_json::json!({"set": 1, "removed": 2, "skipped": 3})
+            );
         }
     }
 }
