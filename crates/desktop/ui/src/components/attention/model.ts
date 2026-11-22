@@ -22,9 +22,11 @@ export const SORTS: readonly { key: SortKey; label: string }[] = [
 ]
 
 export type ProjectFilter = { type: 'all' } | { type: 'none' } | { type: 'project'; name: string }
-export type ListFilter = { kinds: ReadonlySet<string>; project: ProjectFilter; query: string }
-/** Every kind, every project, no query. */
-export const EMPTY_FILTER: ListFilter = { kinds: new Set(), project: { type: 'all' }, query: '' }
+/** 208 §7.4: the list restricted to one graph subtree; `ids` = the subtree's session ids as the graph knows them now. */
+export type SubtreeFilter = { session: string; label: string; ids: ReadonlySet<string> }
+export type ListFilter = { kinds: ReadonlySet<string>; project: ProjectFilter; query: string; subtree: SubtreeFilter | null }
+/** Every kind, every project, no query, no subtree. */
+export const EMPTY_FILTER: ListFilter = { kinds: new Set(), project: { type: 'all' }, query: '', subtree: null }
 
 /** Chip order: stop-asks, mesh, yours, receipts; kinds outside it sort after, by name. */
 export const KIND_ORDER: readonly AttentionKind[] = ['approval', 'ask', 'decision', 'secret', 'handoff', 'resume', 'contact_first', 'node', 'home', 'review', 'hire', 'blocked', 'budget', 'show', 'finished', 'double']
@@ -50,12 +52,13 @@ export function matchesQuery(item: AttentionItem, query: string): boolean {
   return terms.every((t) => hay.includes(t))
 }
 
-/** Kind (empty set = any), project (`none` = project null) and query. */
+/** Kind (empty set = any), project (`none` = project null), graph subtree (208) and query. */
 export function matchesFilter(item: AttentionItem, f: ListFilter): boolean {
   if (f.kinds.size > 0 && !f.kinds.has(item.kind)) return false
   const project = projectOf(item)
   if (f.project.type === 'none' && project !== null) return false
   if (f.project.type === 'project' && project !== f.project.name) return false
+  if (f.subtree && !(typeof item.session === 'string' && f.subtree.ids.has(item.session))) return false
   return matchesQuery(item, f.query)
 }
 

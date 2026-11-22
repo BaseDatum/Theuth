@@ -30,3 +30,13 @@ export const panelRequirements = {
     "roster.attention@1"
   ]
 } as const satisfies Requirements
+
+/** 208: the graph region above the list (hidden, not `Unavailable`, when the engine lacks it). */
+export const graphRequirements = {
+  "methods": [
+    "agent_graph"
+  ],
+  "topics": [
+    "agent.graph@1"
+  ]
+} as const satisfies Requirements

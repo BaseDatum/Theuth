@@ -7572,6 +7572,9 @@
             session: s,
             id,
             state: agent::PeerMessageState::Replied,
+            from: String::new(),
+            to: String::new(),
+            result: false,
         }));
         assert!(m.components.get::<Peers>().unwrap().refresh_peers);
     }
