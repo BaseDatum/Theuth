@@ -297,13 +297,18 @@ impl Tool for DesktopHandoffTool {
     }
 }
 
-/// `{ outcome, elapsed_secs }`; an error unless `done`.
+/// 207: the outcome of a hand-off the user left to the agent (Attention dismiss),
+/// beside `done` | `cancelled` | `timeout`. Written by the engine only.
+pub const PROCEED_WITHOUT: &str = "proceed_without";
+
+/// `{ outcome, elapsed_secs }`; an error unless `done` or [`PROCEED_WITHOUT`].
 fn result(outcome: &str, elapsed_secs: u64) -> ToolOutput {
-    let text = format!("{outcome} after {elapsed_secs} s");
-    let mut out = if outcome == "done" {
-        ToolOutput::ok(text)
-    } else {
-        ToolOutput::err(text)
+    let mut out = match outcome {
+        "done" => ToolOutput::ok(format!("{outcome} after {elapsed_secs} s")),
+        PROCEED_WITHOUT => ToolOutput::ok(format!(
+            "nobody is coming to the desktop: the user left this to you \u{2014} proceed without it (after {elapsed_secs} s)"
+        )),
+        _ => ToolOutput::err(format!("{outcome} after {elapsed_secs} s")),
     };
     out.structured = Some(serde_json::json!({
         "outcome": outcome,
@@ -392,5 +397,22 @@ mod tests {
             .collect();
         assert_eq!(open, ["b"]);
         assert_eq!(list(pool, false).await.unwrap().len(), 2);
+    }
+
+    /// 207 §5.2: a hand-off left to the agent resolves ok, not as an error.
+    #[test]
+    fn proceed_without_is_an_ok_result() {
+        let out = result(PROCEED_WITHOUT, 12);
+        assert!(!out.is_error);
+        assert_eq!(
+            out.content,
+            "nobody is coming to the desktop: the user left this to you \u{2014} proceed without it (after 12 s)"
+        );
+        assert_eq!(
+            out.structured,
+            Some(serde_json::json!({"outcome": "proceed_without", "elapsed_secs": 12}))
+        );
+        assert!(result("cancelled", 3).is_error);
+        assert!(!result("done", 3).is_error);
     }
 }

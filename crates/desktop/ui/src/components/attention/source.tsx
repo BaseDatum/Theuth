@@ -13,7 +13,7 @@ import { useMesh, useTask, useTasks } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
-import { clampText, lastAssistantBefore } from './model'
+import { clampText, lastAssistantBefore, pathText } from './model'
 import { Chip } from './shared'
 
 /** `list_sessions` — the names behind every row's and screen's `from <session>`; one query, shared with the sidebar. */
@@ -23,16 +23,19 @@ export function useSessionList() {
   return useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
 }
 
-/** The header line: kind chip · **From ‹session› · ‹agent› · ‹age›** · Open session (→ `/c/$session`) · the task's title (→ `/tasks/$id`). */
+/**
+ * The header line: kind chip · **From ‹project · Root › child› · ‹agent› · ‹age›** · Open session (→ `/c/$session`) ·
+ * the task's title (→ `/tasks/$id`). 207 R5: the engine's lineage path when it sent one, else the session's title.
+ */
 export function Source({ item }: { item: AttentionItem }) {
   const sessions = useSessionList()
   const task = useTask(item.task ?? '', item.task !== null)
   const on = itemHome(item.task, useTasks().data, useMesh().data)
-  const from = item.session ? title(item.session, sessions.data, item.session.slice(0, 8)) : ''
+  const from = pathText(item) || (item.session ? title(item.session, sessions.data, item.session.slice(0, 8)) : '')
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-tertiary">
-        <Chip kind={item.kind} id={item.id} />
+        <Chip kind={item.kind} id={item.id} stop={item.stop} />
         <span className="min-w-0 truncate">
           {(from || item.agent) && 'From '}
           {from && <span className="text-fg-secondary">{from}</span>}

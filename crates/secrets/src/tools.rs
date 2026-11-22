@@ -310,18 +310,25 @@ async fn run(
     ask: Ask,
 ) -> ToolOutput {
     let single = ask.title.is_none() && ask.fields.len() == 1;
+    let names = ask
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
     match request(actor, timeout, cx, ask.title, ask.fields, ask.expires).await {
-        Ok(out) => receipt(&out, single, timeout),
+        Ok(out) => receipt(&out, single, timeout, &names),
         Err(SendError::HandlerError(e)) => ToolOutput::err(e),
         Err(e) => ToolOutput::err(format!("secrets actor: {e}")),
     }
 }
 
 /// `stored a v1, b v2` (one value also names its previous version's placeholder),
-/// `; expires <local time>` when the user set one; else `declined` / `no answer`.
-fn receipt(out: &Outcome, single: bool, timeout: Duration) -> ToolOutput {
+/// `; expires <local time>` when the user set one; else `declined` / `no answer` /
+/// 207's "proceed without". `names` = the requested field names joined by ", ".
+fn receipt(out: &Outcome, single: bool, timeout: Duration, names: &str) -> ToolOutput {
     if out.stored.is_empty() {
-        return not_stored(out, timeout);
+        return not_stored(out, timeout, names);
     }
     let list: Vec<String> = out.stored.iter().map(|(n, v)| format!("{n} v{v}")).collect();
     let mut line = format!("stored {}", list.join(", "));
@@ -337,9 +344,13 @@ fn receipt(out: &Outcome, single: bool, timeout: Duration) -> ToolOutput {
     ToolOutput::ok(line)
 }
 
-/// The receipt when nothing was stored.
-fn not_stored(out: &Outcome, timeout: Duration) -> ToolOutput {
-    if out.timed_out {
+/// The receipt when nothing was stored; `names` = the requested field names joined by ", ".
+fn not_stored(out: &Outcome, timeout: Duration, names: &str) -> ToolOutput {
+    if out.waived {
+        ToolOutput::ok(format!(
+            "no secret is coming: the user left this to you — proceed without {names}, and say in your reply what you could not do."
+        ))
+    } else if out.timed_out {
         ToolOutput::err(format!("no answer after {} s", timeout.as_secs()))
     } else {
         ToolOutput::err("declined")
@@ -388,6 +399,7 @@ async fn request(
             return Ok(Outcome {
                 stored: Vec::new(),
                 timed_out: row.state == QuestionState::TimedOut,
+                waived: false,
                 expires_ms: None,
             });
         }
@@ -447,9 +459,14 @@ async fn request(
             Ok(o) if o.timed_out => row.state = QuestionState::TimedOut,
             Ok(o) => {
                 row.state = QuestionState::Answered;
-                row.answer = Some(serde_json::json!({
-                    "outcome": if o.stored.is_empty() { "declined" } else { "stored" },
-                }));
+                let outcome = if o.waived {
+                    crate::PROCEED_WITHOUT
+                } else if o.stored.is_empty() {
+                    "declined"
+                } else {
+                    "stored"
+                };
+                row.answer = Some(serde_json::json!({ "outcome": outcome }));
             }
             // The actor refused or died: the question was never raised.
             Err(_) => row.state = QuestionState::Superseded,
@@ -700,6 +717,28 @@ mod tests {
         assert_eq!(strip_exit_code("exit code: soon\n"), "exit code: soon\n");
     }
 
+    /// 207: a waived request is ok, names every requested field and says to proceed without them.
+    #[test]
+    fn waived_request_says_proceed_without() {
+        let out = Outcome {
+            stored: Vec::new(),
+            timed_out: false,
+            waived: true,
+            expires_ms: None,
+        };
+        let o = receipt(&out, false, Duration::from_secs(60), "gh.user, gh.pass");
+        assert!(!o.is_error);
+        assert_eq!(
+            o.content,
+            "no secret is coming: the user left this to you — proceed without gh.user, gh.pass, and say in your reply what you could not do."
+        );
+        let declined = Outcome {
+            waived: false,
+            ..out
+        };
+        assert!(not_stored(&declined, Duration::from_secs(60), "x").is_error);
+    }
+
     const NOW: u64 = 1_790_000_000_000;
 
     fn args(v: serde_json::Value) -> RequestArgs {
@@ -810,28 +849,30 @@ mod tests {
         let out = |stored: &[(&str, u32)], expires_ms| Outcome {
             stored: stored.iter().map(|(n, v)| ((*n).to_owned(), *v)).collect(),
             timed_out: false,
+            waived: false,
             expires_ms,
         };
         assert_eq!(
-            receipt(&out(&[("a", 1), ("b", 2)], None), false, t).content,
+            receipt(&out(&[("a", 1), ("b", 2)], None), false, t, "a, b").content,
             "stored a v1, b v2"
         );
         assert_eq!(
-            receipt(&out(&[("a", 2)], None), true, t).content,
+            receipt(&out(&[("a", 2)], None), true, t, "a").content,
             "stored a v2 (v1 is {{secret:a:-1}})"
         );
         let at = NOW + 3_600_000;
         assert_eq!(
-            receipt(&out(&[("a", 1)], Some(at)), true, t).content,
+            receipt(&out(&[("a", 1)], Some(at)), true, t, "a").content,
             format!("stored a v1; expires {}", expiry::local_time(at))
         );
-        assert_eq!(receipt(&out(&[], None), false, t).content, "declined");
+        assert_eq!(receipt(&out(&[], None), false, t, "a").content, "declined");
         let timed = Outcome {
             stored: vec![],
             timed_out: true,
+            waived: false,
             expires_ms: None,
         };
-        assert_eq!(receipt(&timed, false, t).content, "no answer after 60 s");
+        assert_eq!(receipt(&timed, false, t, "a").content, "no answer after 60 s");
     }
 
     #[test]

@@ -6130,6 +6130,7 @@
             id: req.id,
             dismissed: false,
             timed_out: false,
+            left_to_agent: false,
         }));
         assert!(m.ask().is_none());
     }
@@ -7571,6 +7572,9 @@
             session: s,
             id,
             state: agent::PeerMessageState::Replied,
+            from: String::new(),
+            to: String::new(),
+            result: false,
         }));
         assert!(m.components.get::<Peers>().unwrap().refresh_peers);
     }
@@ -8435,6 +8439,7 @@
             id,
             decision: Decision::Allow,
             timed_out: false,
+            dismissed: false,
         }));
         assert_eq!(m.components.get::<Double>().unwrap().chip(), None);
         assert!(m.components.get::<Double>().unwrap().predictions.is_empty());

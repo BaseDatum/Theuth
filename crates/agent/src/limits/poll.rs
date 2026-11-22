@@ -470,6 +470,7 @@ fn codex_window(w: &Value, id: String, name: Option<&str>, now_ms: u64) -> Optio
         used_fraction: used / 100.0,
         resets_at_ms,
         window_secs,
+        history: Vec::new(),
     })
 }
 
@@ -578,6 +579,7 @@ pub(crate) fn parse_claude(v: &Value) -> Result<PollData, String> {
                 used_fraction: pct / 100.0,
                 resets_at_ms: iso_ms(w, "resets_at"),
                 window_secs: Some(secs),
+                history: Vec::new(),
             });
         }
     }
@@ -616,6 +618,7 @@ pub(crate) fn parse_claude(v: &Value) -> Result<PollData, String> {
             used_fraction: pct / 100.0,
             resets_at_ms: iso_ms(l, "resets_at"),
             window_secs: Some(secs),
+            history: Vec::new(),
         });
     }
     if !known {
@@ -712,6 +715,7 @@ pub(crate) fn parse_xai(
                 used_fraction: pct / 100.0,
                 resets_at_ms: Some(end),
                 window_secs: Some((end - start) / 1000),
+                history: Vec::new(),
             };
             data.windows
                 .push(window("weekly".into(), "Weekly".into(), pct));
@@ -748,6 +752,7 @@ pub(crate) fn parse_xai(
             used_fraction: used / limit,
             resets_at_ms: Some(end),
             window_secs: Some((end - start) / 1000),
+            history: Vec::new(),
         });
     }
     if data.windows.is_empty() {
@@ -794,6 +799,7 @@ pub(crate) fn parse_openrouter(v: &Value) -> Result<PollData, String> {
             used_fraction: used / cap,
             resets_at_ms: None,
             window_secs: Some(86_400),
+            history: Vec::new(),
         });
     }
     data.limited = data
@@ -829,6 +835,7 @@ pub(crate) fn parse_opencode_go(v: &Value) -> Result<PollData, String> {
             used_fraction: if rate_limited { used.max(1.0) } else { used },
             resets_at_ms: iso_ms(w, "resetsAt"),
             window_secs: secs,
+            history: Vec::new(),
         });
     }
     if data.windows.is_empty() {

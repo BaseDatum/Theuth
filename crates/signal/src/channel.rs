@@ -1587,16 +1587,17 @@ impl Channel {
                     return;
                 };
                 let to = self.lock().threads.recipient(&entry.number);
-                if let Some(ts) = entry.sent_ts {
+                if let (Some(ts), Some(emoji)) = (entry.sent_ts, approvals::reaction_for(&res)) {
                     match self.transport.account().await {
-                        Ok(Some(me)) => {
-                            self.react(&to, approvals::reaction_for(&res), &me, ts)
-                                .await
-                        }
+                        Ok(Some(me)) => self.react(&to, emoji, &me, ts).await,
                         _ => tracing::debug!("own account unknown; skipping approval reaction"),
                     }
                 }
-                if res.timed_out {
+                if res.dismissed {
+                    // 207: left to the agent, said in words, not as a deny.
+                    self.send_chunks(&to, &approvals::left_text(&entry.code))
+                        .await;
+                } else if res.timed_out {
                     self.send_chunks(&to, &format!("⌛ {} expired", entry.code))
                         .await;
                 }
@@ -3193,6 +3194,7 @@ mod tests {
                 id,
                 decision: Decision::Allow,
                 timed_out: false,
+                dismissed: false,
             }))
             .await;
         assert_eq!(
@@ -3283,6 +3285,7 @@ mod tests {
                 id,
                 dismissed: false,
                 timed_out: false,
+                left_to_agent: false,
             }))
             .await;
         assert!(last_text().starts_with("❓ Question 1/1: more?\n"));
@@ -3294,6 +3297,7 @@ mod tests {
                 id: next_id,
                 dismissed: true,
                 timed_out: false,
+                left_to_agent: false,
             }))
             .await;
         assert_eq!(last_text(), "🚫 dismissed; turn cancelled");

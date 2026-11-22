@@ -3,7 +3,8 @@
     "input": {
       "id": "00000000-0000-0000-0000-000000000001",
       "dismissed": false,
-      "timed_out": false
+      "timed_out": false,
+      "left_to_agent": false
     },
     "notification": {
       "jsonrpc": "2.0",
@@ -14,7 +15,8 @@
           "type": "AskResolved",
           "id": "00000000-0000-0000-0000-000000000001",
           "dismissed": false,
-          "timed_out": false
+          "timed_out": false,
+          "left_to_agent": false
         }
       }
     }
@@ -23,7 +25,8 @@
     "input": {
       "id": "00000000-0000-0000-0000-000000000001",
       "dismissed": true,
-      "timed_out": false
+      "timed_out": false,
+      "left_to_agent": false
     },
     "notification": {
       "jsonrpc": "2.0",
@@ -34,7 +37,8 @@
           "type": "AskResolved",
           "id": "00000000-0000-0000-0000-000000000001",
           "dismissed": true,
-          "timed_out": false
+          "timed_out": false,
+          "left_to_agent": false
         }
       }
     }
@@ -43,7 +47,8 @@
     "input": {
       "id": "00000000-0000-0000-0000-000000000001",
       "dismissed": false,
-      "timed_out": true
+      "timed_out": true,
+      "left_to_agent": false
     },
     "notification": {
       "jsonrpc": "2.0",
@@ -54,7 +59,30 @@
           "type": "AskResolved",
           "id": "00000000-0000-0000-0000-000000000001",
           "dismissed": false,
-          "timed_out": true
+          "timed_out": true,
+          "left_to_agent": false
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "dismissed": false,
+      "timed_out": false,
+      "left_to_agent": true
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "AskResolved",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "dismissed": false,
+          "timed_out": false,
+          "left_to_agent": true
         }
       }
     }

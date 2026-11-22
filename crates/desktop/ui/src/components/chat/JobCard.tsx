@@ -18,6 +18,8 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { toolKey } from './disclosure'
 import { useTranscriptJump } from './jump'
 import { PopoutTerminalButton, Terminal } from './TerminalViewer'
+import { useTileHost } from '@/components/tiles/host'
+import { openJobTerminalTile } from '@/components/tiles/open'
 
 const PAGE = 32 * 1024
 const EMPTY: Entry[] = []
@@ -129,9 +131,11 @@ function Output({ job }: { job: JobView }) {
   </div>
 }
 
-/** The sheet card and the expanded transcript tool share this exact body. */
+/** The sheet card and the expanded transcript tool share this exact body. Open terminal opens a `job-terminal` tile
+ * beside the chat where the layout tiles, else a dialog. */
 export function JobCard({ job, bodyOnly = false, onJump }: { job: JobView; bodyOnly?: boolean; onJump?(): void }) {
   const api = useApi()
+  const host = useTileHost()
   const [open, setOpen] = useDisclosure(disclosureKey('job', job.session, job.id, 'output'))
   const [terminal, setTerminal] = useDisclosure(disclosureKey('job', job.session, job.id, 'terminal'))
   const [now, setNow] = useState(Date.now)
@@ -169,7 +173,7 @@ export function JobCard({ job, bodyOnly = false, onJump }: { job: JobView; bodyO
         {!bodyOnly && <button aria-label={`${open ? 'Collapse' : 'Expand'} ${job.id}`} aria-expanded={open} onClick={() => setOpen(!open)} className="flex items-center gap-2"><ChevronRight className={cn('size-3.5 text-fg-tertiary', open && 'rotate-90')} /><JobState job={job} /></button>}
         {bodyOnly && <JobState job={job} />}<span className="font-mono text-xs text-fg-secondary">{job.id}</span>
       </div>
-      <div className="flex items-center gap-2 text-xs text-fg-tertiary"><span className="tabular-nums">{duration(secs)}</span>{running && <Button size="xs" variant="outline" className="text-danger" disabled={killing} onClick={() => void kill()}>Kill</Button>}{job.pty && <><Button size="xs" variant="outline" onClick={() => setTerminal(true)}>Open terminal</Button><PopoutTerminalButton session={job.session} job={job.id} className="size-6" /></>}</div>
+      <div className="flex items-center gap-2 text-xs text-fg-tertiary"><span className="tabular-nums">{duration(secs)}</span>{running && <Button size="xs" variant="outline" className="text-danger" disabled={killing} onClick={() => void kill()}>Kill</Button>}{job.pty && <><Button size="xs" variant="outline" onClick={() => host ? openJobTerminalTile(host, job) : setTerminal(true)}>Open terminal</Button><PopoutTerminalButton session={job.session} job={job.id} className="size-6" /></>}</div>
       <div className="col-span-2"><Command command={job.command} /></div>
       <div className="col-span-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-fg-tertiary">
         <span>started <b className="font-normal text-fg-secondary">{clock(job.started_ms)}</b></span>{!running && <span>ended {clock(job.ended_ms)}</span>}<span>{job.kind ?? (job.pty ? 'pty' : 'shell')}</span>

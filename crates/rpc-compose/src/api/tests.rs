@@ -670,20 +670,49 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         assert!(!wanted(&other, Some("c"), Some(&mut tree)));
     }
 
-    /// 130 E1: the inbox-changed event is a tagged object every `subscribe_events(null)` client sees.
+    /// 130 E1 / 207 §5.5: the inbox-changed event is a tagged object every `subscribe_events(null)`
+    /// client sees; it carries the changed items, the order, its seq / epoch and the alerts flag;
+    /// a pre-207 payload (no new fields) still decodes.
     #[test]
     fn attention_changed_wire_shape() {
+        let item = roster::attention::AttentionItem::new(
+            "finished:s1:t9".into(),
+            roster::attention::AttentionKind::Finished,
+            "s1 finished".into(),
+            None,
+            5,
+        );
         let ev = roster::attention::AttentionChanged {
             count: 2,
             ids_added: vec!["finished:s1:t9".into()],
             ids_removed: vec!["ask:a1".into()],
             at_ms: 1_700_000_000_000,
+            items: vec![item.clone()],
+            order: vec!["finished:s1:t9".into(), "show:c1".into()],
+            seq: 3,
+            epoch_ms: 1_699_999_000_000,
+            alerts_changed: true,
         };
         let v = serde_json::to_value(&ev).unwrap();
         assert_eq!(
             v,
-            serde_json::json!({ "type": "AttentionChanged", "count": 2, "ids_added": ["finished:s1:t9"], "ids_removed": ["ask:a1"], "at_ms": 1_700_000_000_000u64 })
+            serde_json::json!({
+                "type": "AttentionChanged", "count": 2, "ids_added": ["finished:s1:t9"],
+                "ids_removed": ["ask:a1"], "at_ms": 1_700_000_000_000u64,
+                "items": [serde_json::to_value(&item).unwrap()],
+                "order": ["finished:s1:t9", "show:c1"], "seq": 3,
+                "epoch_ms": 1_699_999_000_000u64, "alerts_changed": true
+            })
         );
+        assert_eq!(v["items"][0]["score"], 0);
+        assert_eq!(v["items"][0]["session_live"], false);
+        assert!(v["items"][0]["stop"].is_null());
+        let old: roster::attention::AttentionChanged = serde_json::from_value(serde_json::json!({
+            "type": "AttentionChanged", "count": 0, "ids_added": [], "ids_removed": [], "at_ms": 1
+        }))
+        .unwrap();
+        assert_eq!((old.seq, old.epoch_ms, old.alerts_changed), (0, 0, false));
+        assert!(old.items.is_empty() && old.order.is_empty());
         assert!(
             wanted(&v, None, None),
             "session-less: every global subscriber"

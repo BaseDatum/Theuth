@@ -38,8 +38,8 @@ export function ApprovalScreen({ item }: { item: AttentionItem }) {
         <Source item={item} />
         <ContextLine session={item.session} beforeMs={item.at_ms} />
         <div className="flex flex-col gap-1">
-          <h1 className="font-mono text-xl font-semibold leading-snug md:text-2xl">{tool}</h1>
-          <p className="text-sm text-fg-secondary">wants to run{request ? ` · ${RISK[request.risk]}` : ''}</p>
+          <h1 className="text-xl font-semibold leading-snug md:text-2xl">{item.title}</h1>
+          {(request?.risk ?? item.risk) && <p className="text-sm text-fg-secondary">{RISK[(request?.risk ?? item.risk) as Risk]}</p>}
           <DoubleChip ids={[item.approval]} className="mt-1 w-fit" />
         </div>
         {command && (

@@ -103,13 +103,25 @@ fi
 [[ -x "$APP/Contents/MacOS/theuth-desktop" ]] || { echo "error: app binary missing at $APP/Contents/MacOS/theuth-desktop" >&2; exit 1; }
 
 echo "==> [3/5] libonnxruntime ${ORT_VERSION} → Contents/Frameworks"
-if [[ ! -f "$ORT_TGZ" ]] || ! echo "$ORT_SHA256  $ORT_TGZ" | shasum -a 256 -c --status; then
-  curl -sSfL -o "$ORT_TGZ" "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-arm64-${ORT_VERSION}.tgz"
-  echo "$ORT_SHA256  $ORT_TGZ" | shasum -a 256 -c --status || { echo "error: onnxruntime tarball sha256 mismatch" >&2; exit 1; }
-fi
+# Three sources, in order: the cached archive, Microsoft's release, our model bucket (the same
+# dylib, extracted from that archive by release-models.sh). github.com/microsoft/onnxruntime
+# has answered 404 since 2026-11-18, so the bucket is what works today. Whatever the source,
+# the dylib itself must match its pin.
 mkdir -p "$APP/Contents/Frameworks"
-tar -xzf "$ORT_TGZ" -O "onnxruntime-osx-arm64-${ORT_VERSION}/lib/libonnxruntime.${ORT_VERSION}.dylib" > "$APP/Contents/Frameworks/libonnxruntime.dylib"
-chmod 755 "$APP/Contents/Frameworks/libonnxruntime.dylib"
+ORT_DYLIB="$APP/Contents/Frameworks/libonnxruntime.dylib"
+ORT_MIRROR="${THEUTH_S3_PUBLIC_BASE_URL:-https://s3.rwx.dev/theuth/releases}/models/onnxruntime/aarch64-apple-darwin/libonnxruntime.dylib"
+ort_tgz_ok() { [[ -f "$ORT_TGZ" ]] && echo "$ORT_SHA256  $ORT_TGZ" | shasum -a 256 -c --status; }
+if ! ort_tgz_ok; then
+  curl -sSfL -o "$ORT_TGZ" "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-arm64-${ORT_VERSION}.tgz" 2>/dev/null || rm -f "$ORT_TGZ"
+fi
+if ort_tgz_ok; then
+  tar -xzf "$ORT_TGZ" -O "onnxruntime-osx-arm64-${ORT_VERSION}/lib/libonnxruntime.${ORT_VERSION}.dylib" > "$ORT_DYLIB"
+else
+  echo "    Microsoft's release archive is unavailable; taking the dylib from $ORT_MIRROR"
+  curl -sSfL -o "$ORT_DYLIB" "$ORT_MIRROR" || { echo "error: libonnxruntime ${ORT_VERSION}: neither Microsoft's archive nor $ORT_MIRROR could be fetched" >&2; exit 1; }
+fi
+echo "$ORT_DYLIB_SHA256_OSX_ARM64  $ORT_DYLIB" | shasum -a 256 -c --status || { echo "error: libonnxruntime.dylib sha256 mismatch (scripts/ort-version.env)" >&2; exit 1; }
+chmod 755 "$ORT_DYLIB"
 
 # 202: the MLX speech model's Metal kernels. The sidecar (Contents/MacOS/t) finds them at
 # ../Resources/mlx.metallib (crates/voice-mlx/src/metal.rs); without the file the MLX engine reports

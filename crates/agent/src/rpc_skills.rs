@@ -1,9 +1,9 @@
 use crate as agent;
 use crate::rpc_forward as forward;
-use crate::rpc_support::{owner_root, RpcServerExt};
+use crate::rpc_support::{RpcServerExt, owner_root};
 use crate::{
-    AddSkill, AddSkillRepo, Agents, ListSkills, LoadSkill, RemoveSkill, RemoveSkillRepo,
-    SkillBody, SkillMeta, SyncSkills, UseSkill,
+    AddSkill, AddSkillRepo, Agents, ListSkills, LoadSkill, RemoveSkill, RemoveSkillRepo, SkillBody,
+    SkillMeta, SyncSkills, UseSkill,
 };
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
@@ -31,6 +31,15 @@ pub trait SkillsApi {
         name: String,
         args: String,
     ) -> RpcResult<SessionId>;
+    /// [`use_skill`](Self::use_skill) for several skills at once: one input
+    /// whose `<skill>` blocks follow `names`' order, then `args`.
+    #[method(name = "use_skills", with_extensions)]
+    async fn use_skills(
+        &self,
+        session: Option<SessionId>,
+        names: Vec<String>,
+        args: String,
+    ) -> RpcResult<SessionId>;
     /// Write `skills/<name>.md`.
     #[method(name = "add_skill")]
     async fn add_skill(
@@ -56,7 +65,6 @@ pub trait SkillsApi {
 
 #[async_trait]
 impl SkillsApiServer for Server {
-
     async fn list_skills(&self) -> RpcResult<Vec<SkillMeta>> {
         ask::<Agents, _>(agent::AGENT_ACTOR, ListSkills).await
     }
@@ -86,7 +94,35 @@ impl SkillsApiServer for Server {
             agent::AGENT_ACTOR,
             UseSkill {
                 session: Some(session),
-                name,
+                names: vec![name],
+                args,
+            },
+        )
+        .await
+    }
+
+    async fn use_skills(
+        &self,
+        ext: &Extensions,
+        session: Option<SessionId>,
+        names: Vec<String>,
+        args: String,
+    ) -> RpcResult<SessionId> {
+        self.authorize_opt_fwd(ext, session).await?;
+        let session = match session {
+            Some(s) => s,
+            None => owner_root().await?,
+        };
+        if let Some(r) =
+            forward::route(ext, session, "use_skills", (Some(session), &names, &args)).await?
+        {
+            return Ok(r);
+        }
+        ask::<Agents, _>(
+            agent::AGENT_ACTOR,
+            UseSkill {
+                session: Some(session),
+                names,
                 args,
             },
         )

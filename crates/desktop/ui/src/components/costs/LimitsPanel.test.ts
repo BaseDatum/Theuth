@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
-import type { BudgetLimit, ProviderLimits, UsageLimits } from '@/rpc/bindings/method.agent.output'
+import type { BudgetLimit, ProviderLimits, UsageLimits, UsageWindow } from '@/rpc/bindings/method.agent.output'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { limitsFixture } from '@/dev/costs-fixture'
 import { LIMITS_KEY } from '@/lib/costs/queries'
@@ -49,7 +49,7 @@ test('only providers with measured limits get a card; routine budgets are not ca
     generated_at_ms: NOW,
     budgets,
     providers: [
-      provider('anthropic:oauth', 'Claude · subscription', { auth: 'oauth', source: 'usage endpoint', windows: [{ id: 'seven_day', label: 'Weekly', used_fraction: 0.4, resets_at_ms: NOW + 3_600_000, window_secs: 604_800 }] }),
+      provider('anthropic:oauth', 'Claude · subscription', { auth: 'oauth', source: 'usage endpoint', windows: [{ id: 'seven_day', label: 'Weekly', used_fraction: 0.4, resets_at_ms: NOW + 3_600_000, window_secs: 604_800, history: [] }] }),
       provider('xai:api_key', 'xAI', { status: 'stale', message: 'no fresh data since 14:00', rates: [{ id: 'requests', label: 'Requests', scope: null, limit: 100, remaining: 60, resets_at_ms: null }] }),
       provider('lm-studio', 'lm-studio · gateway', { auth: 'gateway', status: 'stale', message: STALE }),
       provider('opencode-zen', 'OpenCode Zen', { status: 'stale', message: STALE, observed_at_ms: NOW - 15 * 86_400_000 }),
@@ -75,4 +75,44 @@ test('nothing measured and only routine budgets: one sentence, no cards', () => 
   })
   expect(html).toContain('No usage limits reported by your providers.')
   for (const gone of ['theuth budgets', 'nvidia', 'Groq', 'dreaming']) expect(html).not.toContain(gone)
+})
+
+// The owner's ask: each subscription window shows where usage is and where it lands at the reset, so going over is
+// visible at a glance. Fallback projection without history, recent rate with it, no chart without a reset.
+test('pace tiles: verdict by projection at reset; no chart without a reset or window length', () => {
+  const H = 3_600_000
+  const win = (id: string, label: string, used: number, extra: Partial<UsageWindow> = {}): UsageWindow => ({
+    id, label, used_fraction: used, resets_at_ms: NOW + 5 * H, window_secs: 36_000, history: [], ...extra,
+  })
+  const html = render({
+    generated_at_ms: NOW,
+    budgets: [],
+    providers: [
+      provider('anthropic:oauth', 'Claude · Max', {
+        auth: 'oauth',
+        source: 'usage endpoint',
+        windows: [
+          // half the time gone, 30 % used → 60 % by reset
+          win('a', 'Under', 0.3),
+          // half the time gone, 70 % used → 140 %; 100 % on that line 3/7 of the 5 h left from now
+          win('b', 'Over', 0.7),
+          // history: slow, then a burst in the last 2 h (the last 20 % of 10 h). The straight line says 80 %; the recent
+          // rate (0.1 → 0.4 in 2 h) says 0.4 + 0.15 × 5 = 115 %, hitting 100 % in 4 h.
+          win('c', 'Burst', 0.4, { history: [{ at_ms: NOW - 5 * H, used_fraction: 0 }, { at_ms: NOW - 3 * H, used_fraction: 0.05 }, { at_ms: NOW - 2 * H, used_fraction: 0.1 }, { at_ms: NOW, used_fraction: 0.4 }] }),
+          win('d', 'No reset', 0.2, { resets_at_ms: null }),
+          // an engine from before `history`: the field is missing
+          { id: 'e', label: 'Old engine', used_fraction: 0.2, resets_at_ms: NOW + 5 * H, window_secs: 36_000 } as UsageWindow,
+        ],
+      }),
+    ],
+  })
+  expect(html).toContain('▼ under pace · 60% by reset')
+  expect(html).toContain('▲ on track for 140% · hits 100% in 2h 9m')
+  expect(html).toContain('▲ on track for 115% · hits 100% in 4h 0m')
+  expect(html).not.toContain('80% by reset')
+  expect(html).toContain('50% of time gone')
+  expect(html).toContain('▼ under pace · 40% by reset')
+  const noReset = html.slice(html.indexOf('No reset'), html.indexOf('Old engine'))
+  expect(noReset).not.toContain('of time gone')
+  expect(noReset).not.toContain('by reset')
 })

@@ -90,22 +90,25 @@ pub fn answered_blocks(a: &DoubleAnswered) -> serde_json::Value {
 
 /// Card after resolution: one markdown block, no buttons. `body` is the text
 /// [`card`] used; its first line is replaced by the outcome and the fenced args
-/// are kept. `by`: `Some(user id)` → "allowed by <@U…>".
+/// are kept. `by`: `Some(user id)` → "allowed by <@U…>". `dismissed` (207):
+/// left to the agent from Attention — neither allowed nor denied.
 pub fn resolved_card(
     body: &str,
     decision: Decision,
     timed_out: bool,
+    dismissed: bool,
     by: Option<&str>,
 ) -> serde_json::Value {
     let (head, rest) = body.split_once('\n').unwrap_or((body, ""));
     // `⚠️ **tool** wants to run` → the bold tool name.
     let tool = head.split("**").nth(1).unwrap_or(head);
     let mut line = match (decision, timed_out) {
+        _ if dismissed => format!("**{tool}** left to the agent (not run, not refused)"),
         (_, true) => format!("⌛ **{tool}** timed out (denied)"),
         (Decision::Allow, false) => format!("✅ **{tool}** allowed"),
         (Decision::Deny, false) => format!("❌ **{tool}** denied"),
     };
-    if let Some(user) = by.filter(|_| !timed_out) {
+    if let Some(user) = by.filter(|_| !timed_out && !dismissed) {
         line.push_str(&format!(" by <@{user}>"));
     }
     if !rest.is_empty() {
@@ -345,7 +348,7 @@ mod tests {
     #[test]
     fn resolved_card_drops_buttons_and_names_user() {
         let b = body(&req("shell", json!({ "command": "ls" })));
-        let allowed = resolved_card(&b, Decision::Allow, false, Some("U42"));
+        let allowed = resolved_card(&b, Decision::Allow, false, false, Some("U42"));
         let blocks = allowed.as_array().unwrap();
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0]["type"], "markdown");
@@ -353,19 +356,25 @@ mod tests {
             blocks[0]["text"],
             "✅ **shell** allowed by <@U42>\n```sh\nls\n```"
         );
-        let denied = resolved_card(&b, Decision::Deny, false, None);
+        let denied = resolved_card(&b, Decision::Deny, false, false, None);
         assert!(
             denied[0]["text"]
                 .as_str()
                 .unwrap()
                 .starts_with("❌ **shell** denied\n")
         );
-        let timed = resolved_card(&b, Decision::Deny, true, Some("U42"));
+        let timed = resolved_card(&b, Decision::Deny, true, false, Some("U42"));
         assert!(
             timed[0]["text"]
                 .as_str()
                 .unwrap()
                 .starts_with("⌛ **shell** timed out (denied)\n")
+        );
+        // 207 E4: left to the agent is not a denial and names nobody.
+        let left = resolved_card(&b, Decision::Deny, false, true, Some("U42"));
+        assert_eq!(
+            left[0]["text"],
+            "**shell** left to the agent (not run, not refused)\n```sh\nls\n```"
         );
     }
 

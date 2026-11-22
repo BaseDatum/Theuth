@@ -2974,6 +2974,304 @@ pub(super) async fn delete_communication_in(
     Ok(())
 }
 
+/// `?, ?, …` for `n` binds.
+fn binds(n: usize) -> String {
+    vec!["?"; n].join(", ")
+}
+
+/// 208: the Attention graph's reads and its engine-local clock table (`session_last_event`, migration 0073).
+impl Store {
+    /// Upsert each session's last event time, keeping the larger (`max`); one transaction.
+    pub async fn upsert_last_events(&self, rows: &[(SessionId, u64)]) -> anyhow::Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.begin_write().await?;
+        for (id, at) in rows {
+            sqlx::query(
+                "INSERT INTO session_last_event (session, at_ms) VALUES (?, ?) \
+                 ON CONFLICT(session) DO UPDATE SET at_ms = max(at_ms, excluded.at_ms)",
+            )
+            .bind(id.to_string())
+            .bind(i64::try_from(*at).unwrap_or(i64::MAX))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The stored last event time of each of `ids` that has one.
+    pub async fn last_events(
+        &self,
+        ids: &[SessionId],
+    ) -> anyhow::Result<std::collections::HashMap<SessionId, u64>> {
+        let mut out = std::collections::HashMap::new();
+        let mut conn = self.read.acquire().await?;
+        for chunk in ids.chunks(500) {
+            let sql = format!(
+                "SELECT session, at_ms FROM session_last_event WHERE session IN ({})",
+                binds(chunk.len())
+            );
+            let mut q = sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(sql));
+            for id in chunk {
+                q = q.bind(id.to_string());
+            }
+            for (s, at) in q.fetch_all(&mut *conn).await? {
+                if let Ok(id) = s.parse() {
+                    out.insert(id, u64::try_from(at).unwrap_or(0));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Forget a deleted session's clock.
+    pub async fn delete_last_event(&self, id: SessionId) -> anyhow::Result<()> {
+        let mut tx = self.begin_write().await?;
+        sqlx::query("DELETE FROM session_last_event WHERE session = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The `waits.kind` of every open wait of `ids` (a row is deleted when its wait resolves).
+    pub async fn graph_waits(
+        &self,
+        ids: &[SessionId],
+    ) -> anyhow::Result<std::collections::HashMap<SessionId, Vec<String>>> {
+        let mut out: std::collections::HashMap<SessionId, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut conn = self.read.acquire().await?;
+        for chunk in ids.chunks(500) {
+            let sql = format!(
+                "SELECT session_id, kind FROM waits WHERE session_id IN ({})",
+                binds(chunk.len())
+            );
+            let mut q = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql));
+            for id in chunk {
+                q = q.bind(id.to_string());
+            }
+            for (s, kind) in q.fetch_all(&mut *conn).await? {
+                if let Ok(id) = s.parse() {
+                    out.entry(id).or_default().push(kind);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// `sessions.last_stop` of each of `ids` that has one.
+    pub async fn last_stops(
+        &self,
+        ids: &[SessionId],
+    ) -> anyhow::Result<std::collections::HashMap<SessionId, String>> {
+        let mut out = std::collections::HashMap::new();
+        let mut conn = self.read.acquire().await?;
+        for chunk in ids.chunks(500) {
+            let sql = format!(
+                "SELECT id, last_stop FROM sessions WHERE last_stop IS NOT NULL AND id IN ({})",
+                binds(chunk.len())
+            );
+            let mut q = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql));
+            for id in chunk {
+                q = q.bind(id.to_string());
+            }
+            for (s, stop) in q.fetch_all(&mut *conn).await? {
+                if let Ok(id) = s.parse() {
+                    out.insert(id, stop);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The newest `limit` exchanges changed at or after `since`, newest first, read in the order of the
+    /// `peer_exchanges_updated` index (no sort of the window before the limit). `updated_at` is written by
+    /// `now()` (`Utc::now().to_rfc3339()`: `+00:00`, 0/3/6/9 fraction digits) and the bound uses the same
+    /// formatter, so the text comparison orders correctly (`+` sorts before `.`); fractional seconds of varying
+    /// length can misorder rows inside one second, harmless for a window bound.
+    pub async fn exchanges_since(
+        &self,
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<crate::graph::ExchangeEdgeRow>> {
+        let mut conn = self.read.acquire().await?;
+        Ok(sqlx::query_as(
+            "SELECT id, sender, recipient, sender_session, recipient_session, request_id, state, created_at, \
+             updated_at FROM peer_exchanges WHERE updated_at >= ? ORDER BY updated_at DESC LIMIT ?",
+        )
+        .bind(since.to_rfc3339())
+        .bind(limit)
+        .fetch_all(&mut *conn)
+        .await?)
+    }
+
+    /// 208: delete at most `limit` `session_last_event` rows whose session no longer exists (deleted without
+    /// the event reaching the graph). Returns the rows deleted.
+    pub async fn prune_last_events(&self, limit: i64) -> anyhow::Result<u64> {
+        let mut tx = self.begin_write().await?;
+        let n = sqlx::query(
+            "DELETE FROM session_last_event WHERE session IN (SELECT session FROM session_last_event \
+             WHERE session NOT IN (SELECT id FROM sessions) LIMIT ?)",
+        )
+        .bind(limit)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(n)
+    }
+
+    /// Test support: one `peer_exchanges` row as the intake writes it (`updated_at` = `created_at` = `at`).
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn insert_exchange_for_test(
+        &self,
+        id: &str,
+        sender: &str,
+        recipient: &str,
+        session: SessionId,
+        request_id: &str,
+        state: &str,
+        at: &str,
+    ) {
+        let local = |a: &str| a.strip_prefix("session:").map(str::to_owned);
+        sqlx::query(
+            "INSERT INTO peer_exchanges (id, sender, recipient, sender_session, recipient_session, session, \
+             request_id, fingerprint, generation, body, state, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'f', 0, 'hi', ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(sender)
+        .bind(recipient)
+        .bind(local(sender))
+        .bind(local(recipient))
+        .bind(session.to_string())
+        .bind(request_id)
+        .bind(state)
+        .bind(at)
+        .bind(at)
+        .execute(&self.write)
+        .await
+        .unwrap();
+    }
+
+    /// 208 D6: an exchange's sender address and idempotency key (`result:*` = a child's final result).
+    pub async fn exchange_sender(&self, id: Uuid) -> anyhow::Result<Option<(String, String)>> {
+        let mut conn = self.read.acquire().await?;
+        Ok(
+            sqlx::query_as("SELECT sender, request_id FROM peer_exchanges WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *conn)
+                .await?,
+        )
+    }
+}
+
+#[cfg(test)]
+mod graph_store_tests {
+    use super::*;
+
+    async fn open(dir: &std::path::Path) -> Store {
+        Store::open(&dir.join("sessions.sqlite"), None)
+            .await
+            .unwrap()
+    }
+
+    /// `upsert_last_events` keeps the max and survives a reopen; `delete_last_event` forgets.
+    #[tokio::test]
+    async fn last_events_keep_the_max_and_survive_reopen() {
+        let scratch = crate::TestDir::new("graph-last");
+        let (a, b) = (SessionId::new(), SessionId::new());
+        let store = open(&scratch.0).await;
+        store
+            .upsert_last_events(&[(a, 100), (b, 50)])
+            .await
+            .unwrap();
+        store.upsert_last_events(&[(a, 90), (b, 70)]).await.unwrap();
+        store.close().await;
+        drop(store);
+        let store = open(&scratch.0).await;
+        let got = store.last_events(&[a, b, SessionId::new()]).await.unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[&a], got[&b]), (100, 70));
+        store.delete_last_event(a).await.unwrap();
+        assert_eq!(store.last_events(&[a, b]).await.unwrap().len(), 1);
+    }
+
+    /// `exchanges_since` honours the bound and the limit, newest first; `graph_waits` reads kinds.
+    #[tokio::test]
+    async fn exchanges_since_bound_and_graph_waits() {
+        let scratch = crate::TestDir::new("graph-ex");
+        let store = open(&scratch.0).await;
+        let (p, c) = (SessionId::new(), SessionId::new());
+        store
+            .create_session(p, "m", None, None, None)
+            .await
+            .unwrap();
+        store
+            .create_session(c, "m", Some(p), Some("kid"), None)
+            .await
+            .unwrap();
+        let rows = [
+            ("x1", "2020-01-01T00:00:00+00:00", "a"),
+            ("x2", "2030-01-01T00:00:00+00:00", "result:t1"),
+            ("x3", "2030-01-02T00:00:00+00:00", "b"),
+        ];
+        for (id, at, req) in rows {
+            sqlx::query(
+                "INSERT INTO peer_exchanges (id, sender, recipient, sender_session, recipient_session, session, \
+                 request_id, fingerprint, generation, body, state, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 'f', 0, 'hi', 'accepted', ?, ?)",
+            )
+            .bind(id)
+            .bind(format!("session:{c}"))
+            .bind(format!("session:{p}"))
+            .bind(c.to_string())
+            .bind(p.to_string())
+            .bind(p.to_string())
+            .bind(req)
+            .bind(at)
+            .bind(at)
+            .execute(&store.write)
+            .await
+            .unwrap();
+        }
+        let since = DateTime::parse_from_rfc3339("2025-01-01T00:00:00+00:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let got = store.exchanges_since(since, 10).await.unwrap();
+        assert_eq!(
+            got.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["x3", "x2"]
+        );
+        assert_eq!(store.exchanges_since(since, 1).await.unwrap().len(), 1);
+        assert_eq!(
+            store
+                .exchange_sender("x2".parse().unwrap_or_default())
+                .await
+                .unwrap(),
+            None,
+            "a non-uuid id never matches a parsed one"
+        );
+
+        sqlx::query("INSERT INTO waits (session_id, tool_call_id, kind, target) VALUES (?, 'c1', 'job', 'j1'), (?, 'c2', 'question', 'q1')")
+            .bind(p.to_string())
+            .bind(p.to_string())
+            .execute(&store.write)
+            .await
+            .unwrap();
+        let w = store.graph_waits(&[p, c]).await.unwrap();
+        let mut kinds = w[&p].clone();
+        kinds.sort();
+        assert_eq!(kinds, ["job", "question"]);
+        assert!(!w.contains_key(&c));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

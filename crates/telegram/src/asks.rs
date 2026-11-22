@@ -108,7 +108,7 @@ impl Card {
         let answer = match kind {
             Kind::Dismiss => {
                 self.done = true;
-                return Ok((closed(&self.req, i, true, false), Next::Dismiss));
+                return Ok((closed(&self.req, i, true, false, false), Next::Dismiss));
             }
             Kind::Pick(k) if *k >= self.req.questions[i].options.len() => {
                 return Err("unknown option");
@@ -197,10 +197,19 @@ pub fn answered(req: &AskRequested, i: usize, answer: &Answer) -> String {
 }
 
 /// Question `i` once the set closed without an answer here: dismissed (turn
-/// cancelled), timed out, or answered from another frontend.
+/// cancelled), timed out, left to the agent from Attention (207: the turn
+/// goes on), or answered from another frontend.
 #[must_use]
-pub fn closed(req: &AskRequested, i: usize, dismissed: bool, timed_out: bool) -> String {
-    if dismissed {
+pub fn closed(
+    req: &AskRequested,
+    i: usize,
+    dismissed: bool,
+    timed_out: bool,
+    left_to_agent: bool,
+) -> String {
+    if left_to_agent {
+        "**Questions left to the agent** (not answered; the turn goes on)".to_owned()
+    } else if dismissed {
         "🚫 **Questions dismissed** (turn cancelled)".to_owned()
     } else if timed_out {
         format!(
@@ -376,9 +385,14 @@ mod tests {
         assert_eq!(text, "🚫 **Questions dismissed** (turn cancelled)");
         assert_eq!(next, Next::Dismiss);
         assert_eq!(
-            closed(&r, 1, false, true),
+            closed(&r, 1, false, true, false),
             "⌛ **Question 2/2** — timed out"
         );
-        assert!(closed(&r, 0, false, false).ends_with("→ _answered elsewhere_"));
+        assert!(closed(&r, 0, false, false, false).ends_with("→ _answered elsewhere_"));
+        // 207 E4: left to the agent is neither "answered elsewhere" nor a dismissal.
+        assert_eq!(
+            closed(&r, 0, false, false, true),
+            "**Questions left to the agent** (not answered; the turn goes on)"
+        );
     }
 }

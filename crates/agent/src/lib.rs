@@ -56,8 +56,12 @@ pub mod rpc_forward;
 pub mod rpc_jobs;
 /// Skill RPC server and client methods.
 pub mod rpc_skills;
+/// Prompt suffix RPC methods (mesh-wide list, per-chat "every message" suffix).
+pub mod rpc_suffixes;
 /// Turn RPC server and client methods.
 pub mod rpc_turns;
+/// 208: Attention graph RPC server and client methods.
+pub mod rpc_graph;
 
 /// Assemble agent-owned RPC domains.
 pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
@@ -73,6 +77,8 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
         rpc_settings::rpc_module(server.clone()),
         rpc_jobs::rpc_module(server.clone()),
         rpc_skills::rpc_module(server.clone()),
+        rpc_suffixes::rpc_module(server.clone()),
+        rpc_graph::rpc_module(server.clone()),
         rpc_turns::rpc_module(server),
     ]).expect("agent RPC composition")
 }
@@ -96,6 +102,7 @@ pub mod durability;
 pub mod endless;
 pub mod endless_ext;
 pub mod frame;
+pub mod graph;
 pub mod limits;
 pub mod local;
 pub mod loop_;
@@ -230,6 +237,10 @@ pub use communication::{
     PeerUplink, SetCommunication, SetPeerScope, ShareMode,
 };
 pub use compact::CompactStyle;
+pub use graph::{
+    AgentGraph, AgentGraphChanged, GRAPH_ACTOR, Graph, GraphCursor, GraphEdge, GraphNode, GraphNodeKind,
+    GraphOlder, GraphOutcome, GraphPulse, GraphPulseKind, GraphWait,
+};
 pub use context::{
     ContextAttachment, ContextBreakdown, ContextEntry, ContextItem, ContextKind, ContextOwner,
     ContextPiece, ContextRemoval, ContextSnapshot, ContextTarget,
@@ -2498,17 +2509,17 @@ pub struct LoadSkill {
     pub name: String,
 }
 
-/// `ask` → `Result<SessionId, String>`: hand a skill to the model as user
-/// input (design doc 04 §2.4) — the body [`LoadSkill`] returns, wrapped in
-/// `<skill name="…">`, then `args` as the user's words. Same delivery as
-/// [`SendInput`]: a new turn when idle, a steer when one is running.
-/// `Err` names an unknown skill.
+/// `ask` → `Result<SessionId, String>`: hand skills to the model as one user
+/// input (design doc 04 §2.4) — each body [`LoadSkill`] returns, wrapped in
+/// its own `<skill name="…">` in order, then `args` as the user's words. Same
+/// delivery as [`SendInput`]: a new turn when idle, a steer when one is running.
+/// `Err` names an unknown skill (nothing is sent).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UseSkill {
     /// Existing session, or `None` for a new one.
     pub session: Option<SessionId>,
-    /// Skill name.
-    pub name: String,
+    /// Skill names, in order; at least one.
+    pub names: Vec<String>,
     /// What the user wants done with it; may be empty.
     pub args: String,
 }
@@ -4430,9 +4441,11 @@ pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
     rt.register_wire_event::<CommunicationChanged>().await?;
     rt.register_wire_event::<PeerMessageChanged>().await?;
     rt.register_wire_event::<PeerDelivered>().await?;
+    rt.register_wire_event::<AgentGraphChanged>().await?;
     rt.register_wire_event::<ask::NotebookAsk>().await?;
     rt.register_wire_event::<EndlessProgress>().await?;
     rt.register_wire_event::<CostCubeChanged>().await?;
+    rt.register_wire_event::<rpc_suffixes::SuffixesChanged>().await?;
     Ok(())
 }
 
@@ -4453,7 +4466,13 @@ impl runtime::Plugin for AgentPlugin {
         declare_wire(rt).await?;
         // 144 §13.2 (E1): `notebook_context_set` / `notebook_context_estimate` ride the agent's store.
         notebook_context::register(rt);
-        supervisor::start(rt).await
+        supervisor::start(rt).await?;
+        // 208: the Attention graph, after `Agents` (it reads through it); dormant until `agent_graph`.
+        let agents = kameo::actor::ActorRef::<Agents>::lookup(AGENT_ACTOR)?
+            .ok_or_else(|| anyhow::anyhow!("graph: no agents actor"))?;
+        let store = agents.ask(DurableStore).await?;
+        graph::Graph::start(rt, store, agents).await?;
+        Ok(())
     }
 }
 

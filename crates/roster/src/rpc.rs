@@ -108,9 +108,25 @@ pub trait BoardsApi {
     /// Hide an attention item until `until_ms` (ms since epoch).
     #[method(name = "attention_snooze")]
     async fn attention_snooze(&self, id: String, until_ms: u64) -> RpcResult<()>;
-    /// Hide an attention item for good.
-    #[method(name = "attention_dismiss")]
+    /// Dismiss an attention item. 207: per-kind semantics of `attention_dismiss_many` — the
+    /// request is left to the agent (an approval is not run, an ask / decision is left to the
+    /// agent, a secret / hand-off proceeds without); other kinds are hidden. Never wakes a session.
+    #[method(name = "attention_dismiss", with_extensions)]
     async fn attention_dismiss(&self, id: String) -> RpcResult<()>;
+    /// 207 §5: dismiss by ids or by filter in one call — per kind, a dismissal leaves the request to the
+    /// agent and never wakes a session; per-id outcomes (ids order; filter: engine order).
+    #[method(name = "attention_dismiss_many", with_extensions)]
+    async fn attention_dismiss_many(
+        &self,
+        target: roster::attention::AttentionTarget,
+    ) -> RpcResult<Vec<roster::attention::AttentionOutcome>>;
+    /// 207 §5: hide every target item until `until_ms` (ms since epoch); per-id outcomes.
+    #[method(name = "attention_snooze_many")]
+    async fn attention_snooze_many(
+        &self,
+        target: roster::attention::AttentionTarget,
+        until_ms: u64,
+    ) -> RpcResult<Vec<roster::attention::AttentionOutcome>>;
     /// The packet behind a decision / review attention item (101 §3): `decision:<id>` | `review:<task>`;
     /// `null` when none was raised.
     #[method(name = "packet_get")]
@@ -294,15 +310,51 @@ impl BoardsApiServer for Server {
     }
 
     async fn attention_snooze(&self, id: String, until_ms: u64) -> RpcResult<()> {
-        send(
-            &attention_actor()?,
-            roster::attention::SnoozeAttention { id, until_ms },
-        )
-        .await
+        let m = roster::attention::SnoozeMany {
+            target: roster::attention::AttentionTarget {
+                ids: vec![id],
+                filter: None,
+            },
+            until_ms,
+        };
+        let out = send(&attention_actor()?, m).await?;
+        one_outcome(out)
     }
 
-    async fn attention_dismiss(&self, id: String) -> RpcResult<()> {
-        send(&attention_actor()?, roster::attention::DismissAttention(id)).await
+    async fn attention_dismiss(&self, ext: &Extensions, id: String) -> RpcResult<()> {
+        let m = roster::attention::DismissMany {
+            target: roster::attention::AttentionTarget {
+                ids: vec![id],
+                filter: None,
+            },
+            actor: rpc_core::Client::actor(ext),
+        };
+        let out = send(&attention_actor()?, m).await?;
+        one_outcome(out)
+    }
+
+    async fn attention_dismiss_many(
+        &self,
+        ext: &Extensions,
+        target: roster::attention::AttentionTarget,
+    ) -> RpcResult<Vec<roster::attention::AttentionOutcome>> {
+        let m = roster::attention::DismissMany {
+            target,
+            actor: rpc_core::Client::actor(ext),
+        };
+        send(&attention_actor()?, m).await
+    }
+
+    async fn attention_snooze_many(
+        &self,
+        target: roster::attention::AttentionTarget,
+        until_ms: u64,
+    ) -> RpcResult<Vec<roster::attention::AttentionOutcome>> {
+        send(
+            &attention_actor()?,
+            roster::attention::SnoozeMany { target, until_ms },
+        )
+        .await
     }
 
     async fn packet_get(&self, key: String) -> RpcResult<Option<tasks::packet::Packet>> {
@@ -329,4 +381,14 @@ impl BoardsApiServer for Server {
 pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
     rpc_core::DescribedModule::new(BoardsApiServer::into_rpc(server), rpc_descriptors())
         .expect("roster RPC descriptors")
+}
+
+/// 207 §5.3: the single-id methods keep `()` — `Ok` unless the one outcome is `failed`.
+fn one_outcome(out: Vec<roster::attention::AttentionOutcome>) -> RpcResult<()> {
+    match out.into_iter().next() {
+        Some(o) if o.resolution == roster::attention::AttentionResolution::Failed => {
+            Err(rpc_core::failed(o.error.unwrap_or_default()))
+        }
+        _ => Ok(()),
+    }
 }

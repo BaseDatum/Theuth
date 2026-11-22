@@ -1,10 +1,11 @@
 import { AppWindow, ArrowLeft, ArrowRight, ExternalLink, Globe, RotateCw, X } from 'lucide-react'
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
-import { SidebarToggle } from '@/components/chat/Header'
+import { SidebarToggle } from '@/components/chat/SidebarToggle'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { usePaneDrag } from '@/hooks/use-pane-drag'
 import { useEngines } from '@/link/engines'
 import { isLocal } from '@/lib/files'
 import { isMacDesktop } from '@/lib/hotkeys'
@@ -111,6 +112,9 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
   const live = view !== undefined && hasNative && (!remote || forced)
   const occluded = useOccluded(ref, live)
   const mac = isMacDesktop()
+  // The toolbar drags the tile (`usePaneDrag`) once the tree is split; the address field and buttons stay interactive.
+  const drag = usePaneDrag(view?.title || 'Web')
+  const region = (mac && drag.region) || undefined
   // `Header`'s rule: a popped window has no sidebar to open and is its own window.
   const nav = first && (!open || isMobile) && !popped && !isPopout()
 
@@ -176,7 +180,7 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
   if (!view) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        <header data-tauri-drag-region={mac || undefined} className={cn(rowClass, 'justify-between')}>
+        <header {...drag.props} data-tauri-drag-region={region} className={cn(rowClass, 'justify-between')}>
           {toggle}
           {onClose && !popped && <CloseButton onClose={onClose} />}
         </header>
@@ -201,7 +205,7 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header data-tauri-drag-region={mac || undefined} className={rowClass}>
+      <header {...drag.props} data-tauri-drag-region={region} className={rowClass}>
         {toggle}
         <Tip label="Back">
           <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Back" disabled={!live} onClick={() => void native.history(id, -1).catch(warn('web_view_history'))}>

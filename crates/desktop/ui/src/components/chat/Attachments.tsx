@@ -1,5 +1,7 @@
 import { X } from 'lucide-react'
 import { memo, type ReactNode, useEffect, useState } from 'react'
+import { useTileHost } from '@/components/tiles/host'
+import { openMediaTile, refreshMediaTiles } from '@/components/tiles/open'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { resolveDocument, resolveFile } from '@/lib/files'
@@ -134,24 +136,40 @@ function Thumb({ item, session, onOpen, control, chipControl }: { item: Item; se
 }
 
 /** The media: the image, or the PDF in a frame (WKWebView's own viewer; iOS draws page 1 — ponytail: reuse the artifact panel's pdf.js pages if that matters).
- * Both are sized to the viewport minus room for the close button above and the toolbar below, inside the safe area; `dvh`, so iPad's URL bar never hides the bottom. */
-function Original({ item, session }: { item: Item; session?: string }) {
-  return item.image ? <OriginalImage item={item} session={session} /> : <OriginalDocument item={item} session={session} />
+ * In the lightbox both are sized to the viewport minus room for the close button above and the toolbar below, inside the safe area; `dvh`, so iPad's URL
+ * bar never hides the bottom. `fit` sizes them to the parent instead (the media tile). */
+export function Original({ item, session, fit }: { item: Item; session?: string; fit?: boolean }) {
+  return item.image ? <OriginalImage item={item} session={session} fit={fit} /> : <OriginalDocument item={item} session={session} fit={fit} />
 }
 
-function OriginalImage({ item, session }: { item: Item; session?: string }) {
+function OriginalImage({ item, session, fit }: { item: Item; session?: string; fit?: boolean }) {
   const src = useFileUrl(item.path ?? '', session)
-  if (src === null) return <div className="h-64 w-96 animate-pulse rounded-xl bg-layer-2" />
+  if (src === null) return <div className="h-64 w-96 max-w-full animate-pulse rounded-xl bg-layer-2" />
   if (src === '') return <div className="rounded-xl bg-layer-1 px-4 py-3 text-sm text-fg-secondary">Preview unavailable: {item.name}</div>
-  return <img src={src} alt={item.name} className="max-h-[calc(100dvh_-_8rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] w-auto max-w-[calc(100vw_-_2rem_-_env(safe-area-inset-left)_-_env(safe-area-inset-right))] rounded-xl object-contain" />
+  return (
+    <img
+      src={src}
+      alt={item.name}
+      className={cn(
+        'w-auto rounded-xl object-contain',
+        fit ? 'min-h-0 max-h-full max-w-full' : 'max-h-[calc(100dvh_-_8rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] max-w-[calc(100vw_-_2rem_-_env(safe-area-inset-left)_-_env(safe-area-inset-right))]',
+      )}
+    />
+  )
 }
 
 /** 120 §9b: a document never loads from `asset:` — a typed `blob:` of the RPC bytes, locally too. */
-function OriginalDocument({ item, session }: { item: Item; session?: string }) {
+function OriginalDocument({ item, session, fit }: { item: Item; session?: string; fit?: boolean }) {
   const src = useDocumentUrl(item.path ?? '', session)
-  if (src === null) return <div className="h-64 w-96 animate-pulse rounded-xl bg-layer-2" />
+  if (src === null) return <div className="h-64 w-96 max-w-full animate-pulse rounded-xl bg-layer-2" />
   if (src === '') return <div className="rounded-xl bg-layer-1 px-4 py-3 text-sm text-fg-secondary">Preview unavailable: {item.name}</div>
-  return <iframe src={src} title={item.name} className="h-[calc(100dvh_-_8rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] w-[min(90vw,1100px)] rounded-xl border-0 bg-white" />
+  return (
+    <iframe
+      src={src}
+      title={item.name}
+      className={cn('rounded-xl border-0 bg-white', fit ? 'min-h-0 w-full flex-1' : 'h-[calc(100dvh_-_8rem_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] w-[min(90vw,1100px)]')}
+    />
+  )
 }
 
 /** The lightbox body, portal-free so tests can render it: a `Close` X top-right of the viewport, the media, and under it the
@@ -191,7 +209,7 @@ export function Lightbox({ item, session, active }: { item: Item; session?: stri
  * the stored, model-visible attachments and get a sibling corner `X` (image) or chip `X` (document) that opens the removal
  * review on exactly that occurrence; removed ones collapse to a `Removed from context` chip whose `View original` is
  * archive-only. `active` is the owning row's membership (false once folded before `tail_from`). `files` are plain paths
- * for artifact/optimistic callers and get no controls. */
+ * for artifact/optimistic callers and get no controls. In a tiling chat pane the viewer is a `media` tile beside the chat. */
 export const Attachments = memo(function Attachments({
   files,
   occurrences,
@@ -206,6 +224,11 @@ export const Attachments = memo(function Attachments({
   className?: string
 }) {
   const list = items(files, occurrences)
+  const host = useTileHost()
+  // An open tile follows its item (removed from context, the row folded), as the lightbox does by reading `list`.
+  useEffect(() => {
+    if (host) refreshMediaTiles(host, items(files, occurrences), session, active)
+  }, [host, files, occurrences, session, active])
   // 171F B13: the item in the lightbox is a disclosure per item, so a remount of the card does not close it.
   const lightbox = useScopeKey('lightbox')
   const shown = useDisclosed((d) => list.find((i) => d[disclosureKey(lightbox, i.key)])?.key ?? '')
@@ -215,6 +238,7 @@ export const Attachments = memo(function Attachments({
     if (open) setDisclosed(disclosureKey(lightbox, open.key), false)
     if (item) setDisclosed(disclosureKey(lightbox, item.key), true)
   }
+  const view = (item: Item) => (host ? openMediaTile(host, item, session, active) : setOpen(item))
   if (list.length === 0) return null
   const control = (item: Item, corner: boolean) =>
     session && item.occurrence && !item.occurrence.removed ? (
@@ -235,9 +259,9 @@ export const Attachments = memo(function Attachments({
     <div className={cn('flex flex-wrap gap-2', className)}>
       {list.map((item) =>
         !item.occurrence?.removed && item.image && item.path ? (
-          <Thumb key={item.key} item={item} session={privateOwner(session)} onOpen={() => setOpen(item)} control={control(item, true)} chipControl={control(item, false)} />
+          <Thumb key={item.key} item={item} session={privateOwner(session)} onOpen={() => view(item)} control={control(item, true)} chipControl={control(item, false)} />
         ) : (
-          <Chip key={item.key} item={item} removed={!!item.occurrence?.removed} onOpen={() => setOpen(item)} control={control(item, false)} />
+          <Chip key={item.key} item={item} removed={!!item.occurrence?.removed} onOpen={() => view(item)} control={control(item, false)} />
         ),
       )}
       <Dialog open={open !== null} onOpenChange={(o) => !o && setOpen(null)}>

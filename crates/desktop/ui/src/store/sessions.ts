@@ -88,7 +88,7 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       text: string;
       /** A steer whose card moved from the queue into the transcript. */
       injected?: boolean;
-      /** `/<skill>` injection: chip name; `text` is the user's words. */
+      /** `/<skill>` injection: the skill names joined by `, ` (one card each); `text` is the user's words. */
       skill?: string;
       /** Attachment paths sent with the text: optimistic, our own sends only; `context.attachments` supersedes it once stored. */
       files?: string[];

@@ -4,6 +4,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { container } from '@/lib/platform'
 import { isTauri } from '@/lib/tauri'
 
@@ -160,6 +161,11 @@ export function openPopout(t: PopoutTarget): Promise<void> {
   if (size) window.open(popoutUrl(t), popoutLabel(t), `width=${size.width},height=${size.height}`)
   else window.open(popoutUrl(t), popoutLabel(t))
   return Promise.resolve()
+}
+
+/** `t` is open in its own window right now (desktop shell only; a browser cannot tell). */
+export async function popoutOpen(t: PopoutTarget): Promise<boolean> {
+  return isTauri() && (await WebviewWindow.getByLabel(popoutLabel(t))) !== null
 }
 
 /** Close this popped window: what it showed is gone (its chat, meeting or note was deleted). */
