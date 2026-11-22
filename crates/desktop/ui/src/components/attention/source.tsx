@@ -113,7 +113,7 @@ export function ActionBar({ children }: { children: ReactNode }) {
 export function SnoozeButton({ item, onResolved, size = 'sm' }: { item: AttentionItem; onResolved: () => void; size?: 'sm' | 'default' }) {
   const act = useAttentionActions()
   return (
-    <Button variant="ghost" size={size} disabled={act.snooze.isPending} title="Snooze until 09:00 tomorrow" onClick={() => void act.snooze.mutateAsync({ id: item.id, until: snoozeUntil('tomorrow') }).then(onResolved, () => undefined)}>
+    <Button variant="outline" size={size} className="ml-auto border-warning-border bg-warning-bg text-warning hover:bg-warning-bg/80 hover:text-warning" disabled={act.snooze.isPending} title="Snooze until 09:00 tomorrow" onClick={() => void act.snooze.mutateAsync({ id: item.id, until: snoozeUntil('tomorrow') }).then(onResolved, () => undefined)}>
       Snooze
     </Button>
   )
