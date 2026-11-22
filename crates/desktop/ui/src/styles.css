@@ -689,6 +689,25 @@ html .bn-root[data-color-scheme="dark"] {
   --bn-colors-side-menu: var(--fg-tertiary);
   --bn-font-family: inherit;
 }
+/* The agent graph (208, `@xyflow/react`): its palette aliased onto the tokens, like BlockNote above. React Flow's own
+   dark defaults are neutral greys (#141414 canvas, #2b2b2b controls) that read cold beside the warm soot page; its light
+   canvas is transparent. Only the un-suffixed `--xy-*` variables are set: they take precedence over the library's
+   `*-default` ones whatever the load order (its sheet arrives with the lazy canvas chunk). */
+html .react-flow {
+  --xy-background-color: var(--bg-page);
+  --xy-minimap-background-color: var(--bg-layer-1);
+  --xy-controls-button-background-color: var(--bg-elevated);
+  --xy-controls-button-background-color-hover: var(--bg-layer-2);
+  --xy-controls-button-color: var(--fg-primary);
+  --xy-controls-button-color-hover: var(--fg-primary);
+  --xy-controls-button-border-color: var(--border-subtle);
+  --xy-edge-label-background-color: var(--bg-page);
+  --xy-edge-label-color: var(--fg-primary);
+  --xy-attribution-background-color: color-mix(in oklab, var(--bg-page) 70%, transparent);
+}
+html .react-flow__attribution a {
+  color: var(--fg-tertiary);
+}
 /* The paper (59 §24.y): every document page — notes, knowledge, artifacts, the meeting pane, the guest page — is a
    centred `--card` column with a hairline border and shadow on the pane's canvas (`bg-background`, set by the editor);
    edge to edge under `md`, 48/64 px padding on desktop; `[data-paper="dense"]` (the meeting pane) tightens it.
