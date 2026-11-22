@@ -71,6 +71,26 @@ fn node_kind_covers_every_row() {
 }
 
 #[test]
+fn a_harness_child_shows_its_reported_model_never_the_harness_name() {
+    let root = row(None, NOW);
+    let mut acp = row(Some(root.id), NOW);
+    acp.agent = Some("omp".into());
+    acp.model = "omp".into();
+    acp.harness_model = Some("anthropic/claude-opus-5-5".into());
+    let n = node_of(&acp, root.id, NOW, None, None, None).unwrap();
+    assert_eq!(n.model, "anthropic/claude-opus-5-5");
+    assert_eq!(n.agent.as_deref(), Some("omp"));
+
+    acp.harness_model = None;
+    let n = node_of(&acp, root.id, NOW, None, None, None).unwrap();
+    assert_eq!(n.model, "");
+
+    let native = row(Some(root.id), NOW);
+    let n = node_of(&native, root.id, NOW, None, None, None).unwrap();
+    assert_eq!(n.model, "m");
+}
+
+#[test]
 fn outcome_wait_endpoint_pair_and_title() {
     assert_eq!(outcome_of("error"), Some(GraphOutcome::Failed));
     assert_eq!(outcome_of("cancelled"), Some(GraphOutcome::Cancelled));
