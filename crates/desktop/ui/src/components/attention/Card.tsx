@@ -2,7 +2,7 @@
 // itself (Allow / Deny, a question's options, Enter secret, a reply to a stopped session) without opening the item.
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Check, ChevronDown, Minus, Network } from 'lucide-react'
+import { Check, ChevronDown, Clock, EyeOff, Minus, Network } from 'lucide-react'
 import { type ComponentProps, type MouseEvent, type ReactNode, memo, useState } from 'react'
 import { DoubleChip } from '@/components/chat/DoubleChip'
 import { SecretRequestCard, eventFields } from '@/components/chat/SecretRequestCard'
@@ -16,7 +16,8 @@ import { useSecretRequests } from '@/store/approvals'
 import { KindActions, SnoozeDismiss } from './actions'
 import { chipLabel, doubleIds } from './labels'
 import { pathText, reasonLine, stackRisk, urlHost } from './model'
-import { useAttentionBulk, useBulkPending } from './queries'
+import { useAttentionBulk, useAttentionPending, useBulkPending } from './queries'
+import { useCardSwipe } from './swipe'
 import { Reply } from './Reply'
 
 /** 132 D1/D4: `urgent` and `high` show a chip after the kind chip (gold-ochre · the warning hue); medium/low show nothing. */
@@ -79,19 +80,40 @@ function Frame({ item, now, entryKey = item.id, stack, active, focused, selected
   const agent = item.agent && !said([...(item.path ?? []), item.project ?? ''], item.agent) ? item.agent : null
   const from = [path, agent].filter(Boolean).join(' · ')
   const reason = reasonLine(item, now)
+  const pending = useAttentionPending(item.id)
+  const swipe = useCardSwipe(item, stack === undefined)
   const click = (e: MouseEvent<HTMLDivElement>) => {
     if ((e.target as Element).closest(OWN_CLICK)) return
     if (e.shiftKey) onSelect?.('range', entryKey)
     else if (e.metaKey || e.ctrlKey) onSelect?.('toggle', entryKey)
     else onOpen?.(entryKey)
   }
+  // A dismissing/snoozing card collapses to a red line with a gap sweeping right to left; the cache is untouched
+  // until the call resolves, so a failure brings the card back (the bulk call toasts the error).
+  if (pending) {
+    return (
+      <li {...li} data-entry-key={entryKey} className={cn('group border-b border-border-subtle', className)}>
+        <div className="px-3 py-2.5">
+          <div className="inbox-dismiss-line" role="status" aria-label="Dismissing" />
+        </div>
+      </li>
+    )
+  }
   return (
-    <li {...li} data-entry-key={entryKey} data-focused={focused || undefined} aria-current={active || undefined} className={cn('group border-b border-border-subtle', className)}>
+    <li {...li} data-entry-key={entryKey} data-focused={focused || undefined} aria-current={active || undefined} className={cn('group relative border-b border-border-subtle', className)}>
+      {/* Swipe right = dismiss, swipe left = snooze an hour; the underlay names the action in its colour. */}
+      {swipe.dx !== 0 && (
+        <div aria-hidden className={cn('absolute inset-0 flex items-center px-4', swipe.dx > 0 ? 'justify-start bg-danger-bg text-danger' : 'justify-end bg-warning-bg text-warning')}>
+          {swipe.dx > 0 ? <EyeOff className="size-4" /> : <Clock className="size-4" />}
+        </div>
+      )}
       {/* Mouse only: the list's own key map (J/K, Enter, X) opens and selects the focused card. */}
       <div
         onClick={click}
+        {...swipe.handlers}
+        style={{ transform: swipe.dx !== 0 ? `translateX(${swipe.dx}px)` : undefined, transition: swipe.dx === 0 ? 'transform 150ms ease-out' : undefined, touchAction: 'pan-y' }}
         className={cn(
-          'flex cursor-default gap-2.5 px-3 py-2.5 text-[13px] motion-safe:transition-colors hover:bg-layer-2/60',
+          'relative flex cursor-default gap-2.5 bg-background px-3 py-2.5 text-[13px] motion-safe:transition-colors hover:bg-layer-2/60',
           selected && 'bg-fg-accent/10 hover:bg-fg-accent/15',
           active && 'bg-accent hover:bg-accent',
           focused && 'shadow-[inset_3px_0_0_var(--color-fg-accent)]',

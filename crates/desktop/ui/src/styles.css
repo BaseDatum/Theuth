@@ -1062,3 +1062,35 @@ html .bn-root .theuth-cite-pulse {
     outline: 2px solid var(--primary);
   }
 }
+
+/* Inbox: a card whose Dismiss / Snooze is in flight collapses to a red line; a gap sweeps right to left until the
+   call settles. On failure the card returns (the list cache was never touched). */
+.inbox-dismiss-line {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--color-danger);
+  animation: inbox-line-collapse 220ms ease-out;
+}
+.inbox-dismiss-line::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 30%;
+  background: var(--bg-page);
+  animation: inbox-line-gap 900ms linear infinite;
+}
+@keyframes inbox-line-collapse {
+  from { height: 36px; opacity: 0.5; }
+  to { height: 2px; opacity: 1; }
+}
+@keyframes inbox-line-gap {
+  from { left: 100%; }
+  to { left: -30%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .inbox-dismiss-line { animation: none; }
+  .inbox-dismiss-line::after { animation: none; left: 35%; }
+}
