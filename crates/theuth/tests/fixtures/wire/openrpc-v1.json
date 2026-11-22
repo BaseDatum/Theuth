@@ -123564,6 +123564,41 @@
         ],
         "type": "object"
       },
+      "method.webprofile.output.ClearResult": {
+        "description": "`web_profile_clear`'s result (209 §4.4): the new epoch.",
+        "properties": {
+          "epoch": {
+            "description": "The profile epoch after the clear; pushes under an older one are `stale-epoch`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "epoch"
+        ],
+        "type": "object"
+      },
+      "method.webprofile.output.ForgetResult": {
+        "description": "`web_profile_forget`'s result (209 §4.4).",
+        "properties": {
+          "epoch": {
+            "description": "The current profile epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "site": {
+            "description": "The registrable domain forgotten (the asked host's eTLD+1).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "site",
+          "epoch"
+        ],
+        "type": "object"
+      },
       "method.webprofile.output.ProfileMode": {
         "description": "Config `browser.profile` (209 D6): `shared` (default) or `off` (no push, load or save; rows stay).",
         "oneOf": [
@@ -123578,6 +123613,196 @@
             "type": "string"
           }
         ]
+      },
+      "method.webprofile.output.PullResult": {
+        "description": "`web_profile_pull`'s result (209 §4.4, D5): the profile's cookies and snapshots of `sites`.\nEvery site in `sites` is answered whole: a client sets what it gets and deletes from its store\nthe cookies of those sites it did not get (a forgotten site answers nothing). `Debug` redacts\nevery value; nothing logs it.",
+        "properties": {
+          "cookies": {
+            "description": "Every live cookie of those sites, sorted by site, then name, domain and path.",
+            "items": {
+              "$ref": "#/components/schemas/method.webprofile.output.PulledCookie"
+            },
+            "type": "array"
+          },
+          "epoch": {
+            "description": "The current profile epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.webprofile.output.ProfileMode"
+              }
+            ],
+            "default": "shared",
+            "description": "`\"shared\"`, or `\"off\"` when `browser.profile: off`: then nothing else is answered."
+          },
+          "sites": {
+            "description": "The sites this answer covers, sorted: the asked ones as registrable domains, or every live\nsite when none were asked. A cookie of the client's store belongs to a site when its domain\n(lower case, no leading `.`) is the site or ends with `.` and the site.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "storage": {
+            "description": "Every localStorage snapshot of those sites, sorted by origin.",
+            "items": {
+              "$ref": "#/components/schemas/method.webprofile.output.PulledStorage"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "epoch",
+          "sites",
+          "cookies",
+          "storage",
+          "profile"
+        ],
+        "type": "object"
+      },
+      "method.webprofile.output.PulledCookie": {
+        "description": "One cookie of `web_profile_pull` (209 §4.4, D5): the [`Cookie`] fields, plus its site and\nthe writer and time of its row, so a client skips echoes of its own pushes (`tile:<device>`).\n`Debug` redacts the value.",
+        "properties": {
+          "domain": {
+            "description": "Domain as the store gives it (a leading `.` is tolerated and ignored for grouping).",
+            "type": "string"
+          },
+          "expires": {
+            "default": null,
+            "description": "Unix seconds, or `null` for a session cookie.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "host_only": {
+            "default": false,
+            "description": "`true`: sent to `domain` only, not its subdomains (`__Host-` cookies need it).",
+            "type": "boolean"
+          },
+          "http_only": {
+            "default": false,
+            "description": "`HttpOnly`.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Cookie name.",
+            "type": "string"
+          },
+          "partitioned": {
+            "default": false,
+            "description": "CHIPS `Partitioned`; kept although WebKit cannot carry the partition key (209 D1).",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Path.",
+            "type": "string"
+          },
+          "same_site": {
+            "default": "",
+            "description": "`\"Strict\" | \"Lax\" | \"None\" | \"\"`.",
+            "type": "string"
+          },
+          "secure": {
+            "default": false,
+            "description": "`Secure`.",
+            "type": "boolean"
+          },
+          "site": {
+            "description": "Lower-case eTLD+1 it belongs to.",
+            "type": "string"
+          },
+          "updated_ms": {
+            "description": "Unix ms of its row's write.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "value": {
+            "description": "Cookie value (never logged).",
+            "type": "string"
+          },
+          "writer": {
+            "description": "`tile:<device>` | `obscura:<engine>` of its row.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "domain",
+          "host_only",
+          "path",
+          "expires",
+          "secure",
+          "http_only",
+          "same_site",
+          "partitioned",
+          "site",
+          "writer",
+          "updated_ms"
+        ],
+        "type": "object"
+      },
+      "method.webprofile.output.PulledStorage": {
+        "description": "One origin's localStorage snapshot of `web_profile_pull`, with its site and row writer and time.\n`Debug` redacts the values.",
+        "properties": {
+          "captured_ms": {
+            "default": 0,
+            "description": "Unix ms of the capture; a newer capture replaces an older one, an older one is ignored.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "local_storage": {
+            "description": "`[key, value]` pairs in the page's order.",
+            "items": {
+              "items": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "origin": {
+            "description": "`scheme://host[:port]`.",
+            "type": "string"
+          },
+          "site": {
+            "description": "Lower-case eTLD+1 of the origin.",
+            "type": "string"
+          },
+          "updated_ms": {
+            "description": "Unix ms of its row's write.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "writer": {
+            "description": "`tile:<device>` | `obscura:<engine>` of its row.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "origin",
+          "local_storage",
+          "captured_ms",
+          "site",
+          "writer",
+          "updated_ms"
+        ],
+        "type": "object"
       },
       "method.webprofile.output.PushResult": {
         "description": "`web_profile_push`'s result (209 §4.4).",
@@ -123658,6 +123883,41 @@
         ],
         "type": "object"
       },
+      "method.webprofile.receiver.ClearResult": {
+        "description": "`web_profile_clear`'s result (209 §4.4): the new epoch.",
+        "properties": {
+          "epoch": {
+            "description": "The profile epoch after the clear; pushes under an older one are `stale-epoch`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "epoch"
+        ],
+        "type": "object"
+      },
+      "method.webprofile.receiver.ForgetResult": {
+        "description": "`web_profile_forget`'s result (209 §4.4).",
+        "properties": {
+          "epoch": {
+            "description": "The current profile epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "site": {
+            "description": "The registrable domain forgotten (the asked host's eTLD+1).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "site",
+          "epoch"
+        ],
+        "type": "object"
+      },
       "method.webprofile.receiver.ProfileMode": {
         "description": "Config `browser.profile` (209 D6): `shared` (default) or `off` (no push, load or save; rows stay).",
         "oneOf": [
@@ -123672,6 +123932,188 @@
             "type": "string"
           }
         ]
+      },
+      "method.webprofile.receiver.PullResult": {
+        "description": "`web_profile_pull`'s result (209 §4.4, D5): the profile's cookies and snapshots of `sites`.\nEvery site in `sites` is answered whole: a client sets what it gets and deletes from its store\nthe cookies of those sites it did not get (a forgotten site answers nothing). `Debug` redacts\nevery value; nothing logs it.",
+        "properties": {
+          "cookies": {
+            "description": "Every live cookie of those sites, sorted by site, then name, domain and path.",
+            "items": {
+              "$ref": "#/components/schemas/method.webprofile.receiver.PulledCookie"
+            },
+            "type": "array"
+          },
+          "epoch": {
+            "description": "The current profile epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.webprofile.receiver.ProfileMode"
+              }
+            ],
+            "default": "shared",
+            "description": "`\"shared\"`, or `\"off\"` when `browser.profile: off`: then nothing else is answered."
+          },
+          "sites": {
+            "description": "The sites this answer covers, sorted: the asked ones as registrable domains, or every live\nsite when none were asked. A cookie of the client's store belongs to a site when its domain\n(lower case, no leading `.`) is the site or ends with `.` and the site.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "storage": {
+            "description": "Every localStorage snapshot of those sites, sorted by origin.",
+            "items": {
+              "$ref": "#/components/schemas/method.webprofile.receiver.PulledStorage"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "epoch",
+          "sites",
+          "cookies",
+          "storage"
+        ],
+        "type": "object"
+      },
+      "method.webprofile.receiver.PulledCookie": {
+        "description": "One cookie of `web_profile_pull` (209 §4.4, D5): the [`Cookie`] fields, plus its site and\nthe writer and time of its row, so a client skips echoes of its own pushes (`tile:<device>`).\n`Debug` redacts the value.",
+        "properties": {
+          "domain": {
+            "description": "Domain as the store gives it (a leading `.` is tolerated and ignored for grouping).",
+            "type": "string"
+          },
+          "expires": {
+            "default": null,
+            "description": "Unix seconds, or `null` for a session cookie.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "host_only": {
+            "default": false,
+            "description": "`true`: sent to `domain` only, not its subdomains (`__Host-` cookies need it).",
+            "type": "boolean"
+          },
+          "http_only": {
+            "default": false,
+            "description": "`HttpOnly`.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "Cookie name.",
+            "type": "string"
+          },
+          "partitioned": {
+            "default": false,
+            "description": "CHIPS `Partitioned`; kept although WebKit cannot carry the partition key (209 D1).",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Path.",
+            "type": "string"
+          },
+          "same_site": {
+            "default": "",
+            "description": "`\"Strict\" | \"Lax\" | \"None\" | \"\"`.",
+            "type": "string"
+          },
+          "secure": {
+            "default": false,
+            "description": "`Secure`.",
+            "type": "boolean"
+          },
+          "site": {
+            "description": "Lower-case eTLD+1 it belongs to.",
+            "type": "string"
+          },
+          "updated_ms": {
+            "description": "Unix ms of its row's write.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "value": {
+            "description": "Cookie value (never logged).",
+            "type": "string"
+          },
+          "writer": {
+            "description": "`tile:<device>` | `obscura:<engine>` of its row.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "domain",
+          "path",
+          "site",
+          "writer",
+          "updated_ms"
+        ],
+        "type": "object"
+      },
+      "method.webprofile.receiver.PulledStorage": {
+        "description": "One origin's localStorage snapshot of `web_profile_pull`, with its site and row writer and time.\n`Debug` redacts the values.",
+        "properties": {
+          "captured_ms": {
+            "default": 0,
+            "description": "Unix ms of the capture; a newer capture replaces an older one, an older one is ignored.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "local_storage": {
+            "description": "`[key, value]` pairs in the page's order.",
+            "items": {
+              "items": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "origin": {
+            "description": "`scheme://host[:port]`.",
+            "type": "string"
+          },
+          "site": {
+            "description": "Lower-case eTLD+1 of the origin.",
+            "type": "string"
+          },
+          "updated_ms": {
+            "description": "Unix ms of its row's write.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "writer": {
+            "description": "`tile:<device>` | `obscura:<engine>` of its row.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "origin",
+          "local_storage",
+          "site",
+          "writer",
+          "updated_ms"
+        ],
+        "type": "object"
       },
       "method.webprofile.receiver.PushResult": {
         "description": "`web_profile_push`'s result (209 §4.4).",
@@ -143739,6 +144181,81 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "talk"
+    },
+    {
+      "name": "web_profile_clear",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.webprofile.output.ClearResult"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.webprofile.receiver.ClearResult"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "webprofile"
+    },
+    {
+      "name": "web_profile_forget",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "site",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.webprofile.output.ForgetResult"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.webprofile.receiver.ForgetResult"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "webprofile"
+    },
+    {
+      "name": "web_profile_pull",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "sites",
+          "required": false,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.webprofile.output.PullResult"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.webprofile.receiver.PullResult"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "webprofile"
     },
     {
       "name": "web_profile_push",
