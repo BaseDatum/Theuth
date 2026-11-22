@@ -1,14 +1,18 @@
 //! 209 P3, end to end in-process: an agent session attached to a tile drives it through the
 //! `browser_*` tools, and a fake client app holding the tile runs every op of 209 §4.7 on its own
 //! obscura page (the agent script `tile/agent.js` included) against a loopback fixture site. The
-//! RPC dispatch of the answers is covered in `rpc-compose` (`web_view_call`); here the client
-//! answers through `artifact::webview::answer`, the function that RPC calls.
+//! client answers through the real `answer_web_view_call` RPC dispatch (artifact's module, an
+//! authenticated owner connection), as the app does. obscura has no isolated world (its
+//! `browser_evaluate` runs in the page), so the agent script runs in the page world here; the
+//! WebKit content world is exercised only by the shell on a device.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
 
-use artifact::webview::{self, WebViewCallAnswer, WebViewCallRequested};
+use artifact::webview::{
+    self, WebViewCallAnswer, WebViewCallId, WebViewCallRequested, WebViewOp, WebViewState,
+};
 use browser::{BrowserConfig, Browsers, Call};
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -27,6 +31,8 @@ const PAGE: &str = r#"<!doctype html><html><head><title>Tile fixture</title></he
 <select name="color" aria-label="Color"><option value="r">Red</option><option value="g">Green</option></select>
 <button type="submit">Go</button>
 </form>
+<textarea aria-label="Note"></textarea>
+<div contenteditable="true" aria-label="Draft"></div>
 <div hidden><button>Hidden action</button></div>
 <button id="counter" onclick="window.n = (window.n || 0) + 1; this.textContent = 'clicked ' + window.n">count</button>
 </body></html>"#;
@@ -121,12 +127,21 @@ fn text_of(v: &Value) -> (String, bool) {
 }
 
 /// The fake client app: holds tile [`VIEW`] as its own obscura session `page`, claims every
-/// call for it and runs the op there, as the shell's `web_view_call` does in the tile.
+/// call for it and runs the op there, as the shell's `web_view_call` does in the tile, answering
+/// over `answer_web_view_call` on one owner connection.
 #[derive(kameo::Actor)]
 struct Client {
     browsers: ActorRef<Browsers>,
     page: SessionId,
+    rpc: jsonrpsee::Methods,
     ops: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+/// `answer_web_view_call(id, answer)` through the RPC dispatch.
+async fn answer(rpc: &jsonrpsee::Methods, id: WebViewCallId, answer: WebViewCallAnswer) -> bool {
+    rpc.call("answer_web_view_call", (id, answer))
+        .await
+        .expect("answer_web_view_call")
 }
 
 impl Message<WebViewCallRequested> for Client {
@@ -136,21 +151,20 @@ impl Message<WebViewCallRequested> for Client {
         if r.view != VIEW {
             return;
         }
-        assert!(webview::answer(
-            r.id,
-            WebViewCallAnswer::Claimed {
-                client: "fake".into()
-            }
-        ));
+        assert!(!r.delegated, "the tile's own session acts");
         let cmd = r.args["arguments"]["cmd"].as_str().unwrap_or_default();
         self.ops
             .lock()
             .unwrap()
-            .push(format!("{} {cmd}", r.op).trim().to_owned());
-        let (browsers, page) = (self.browsers.clone(), self.page);
+            .push(format!("{} {cmd}", r.op.as_str()).trim().to_owned());
+        let (browsers, page, rpc) = (self.browsers.clone(), self.page, self.rpc.clone());
         tokio::spawn(async move {
-            let answer = run(&browsers, page, &r.op, &r.args).await;
-            webview::answer(r.id, answer);
+            let claim = WebViewCallAnswer::Claimed {
+                client: "fake".into(),
+            };
+            assert!(answer(&rpc, r.id, claim).await, "claim refused");
+            let done = run(&browsers, page, r.op, &r.args).await;
+            assert!(answer(&rpc, r.id, done).await, "answer refused");
         });
     }
 }
@@ -206,12 +220,17 @@ async fn script(
 
 const WHERE: &str = "return { url: location.href, title: document.title, loading: false };";
 
-async fn run(b: &ActorRef<Browsers>, page: SessionId, op: &str, args: &Value) -> WebViewCallAnswer {
+async fn run(
+    b: &ActorRef<Browsers>,
+    page: SessionId,
+    op: WebViewOp,
+    args: &Value,
+) -> WebViewCallAnswer {
     let done = |result| WebViewCallAnswer::Done { result, png: None };
     let failed = |reason| WebViewCallAnswer::Failed { reason };
     let ms = args["timeout_ms"].as_u64().unwrap_or(15_000);
     let out = match op {
-        "script" => script(
+        WebViewOp::Script => script(
             b,
             page,
             args["source"].as_str().unwrap_or_default(),
@@ -220,8 +239,8 @@ async fn run(b: &ActorRef<Browsers>, page: SessionId, op: &str, args: &Value) ->
         )
         .await
         .map(done),
-        "navigate" | "back" => {
-            let step = if op == "navigate" {
+        WebViewOp::Navigate | WebViewOp::Back => {
+            let step = if op == WebViewOp::Navigate {
                 obscura(b, page, "browser_navigate", json!({ "url": args["url"] })).await
             } else {
                 obscura(b, page, "browser_back", json!({})).await
@@ -231,7 +250,7 @@ async fn run(b: &ActorRef<Browsers>, page: SessionId, op: &str, args: &Value) ->
                 Err(e) => Err(e),
             }
         }
-        "snapshot" => obscura(b, page, "browser_screenshot", json!({}))
+        WebViewOp::Snapshot => obscura(b, page, "browser_screenshot", json!({}))
             .await
             .and_then(|v| {
                 let data = v["content"]
@@ -245,7 +264,7 @@ async fn run(b: &ActorRef<Browsers>, page: SessionId, op: &str, args: &Value) ->
                     png: Some(data),
                 })
             }),
-        other => Err(format!("op {other} not in the fake client")),
+        other => Err(format!("op {} not in the fake client", other.as_str())),
     };
     out.unwrap_or_else(failed)
 }
@@ -322,9 +341,16 @@ async fn drives_a_tile_through_the_agent_script() {
         .await
         .expect("tile page");
     let ops = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    // The app's owner connection: artifact's RPC module with an authenticated peer.
+    let mut rpc: jsonrpsee::Methods = artifact::rpc_module(rpc_core::Server::new(rt.clone()))
+        .module
+        .into();
+    let (peer, _conn) = rpc_core::RpcPeer::open();
+    rpc.extensions_mut().insert(peer);
     let client = Client::spawn(Client {
         browsers: browsers.clone(),
         page,
+        rpc,
         ops: ops.clone(),
     });
     rt.subscribe::<Client, WebViewCallRequested>(&client).await;
@@ -335,6 +361,30 @@ async fn drives_a_tile_through_the_agent_script() {
         data_dir: data_dir.path().to_path_buf(),
     };
     let prefix = format!("[tile web:{VIEW} \u{b7} 127.0.0.1:{port}]");
+
+    // Another session cannot attach to this session's tile (209 §9).
+    let stranger = Kit {
+        tools: kit.tools.clone(),
+        session: SessionId::new(),
+        data_dir: data_dir.path().to_path_buf(),
+    };
+    let refused = stranger
+        .call("browser_attach", json!({ "view": format!("web:{VIEW}") }))
+        .await;
+    assert!(refused.is_error, "{}", refused.content);
+    assert_eq!(
+        refused.content,
+        format!("tile web:{VIEW} was not opened by this session or its tree")
+    );
+    // The session opened the tile (its show_web; here the app's report).
+    webview::record_state(WebViewState {
+        session: kit.session,
+        view: format!("web-{VIEW}"),
+        url: base.clone(),
+        title: "Tile fixture".into(),
+        loading: false,
+        closed: false,
+    });
 
     // Attach: the probe reads where the tile is.
     let attached = kit
@@ -389,6 +439,13 @@ async fn drives_a_tile_through_the_agent_script() {
         &prefix,
     )
     .await;
+    // What the user typed elsewhere on the page is not read back: no value, no body text.
+    kit.ok(
+        "browser_eval",
+        json!({ "expression": "(document.querySelector('textarea').value = 'USER_DRAFT_SECRET', document.querySelector('[contenteditable]').textContent = 'USER_EDITOR_SECRET', 1);" }),
+        &prefix,
+    )
+    .await;
     let listing = kit.ok("browser_elements", json!({}), &prefix).await;
     assert!(listing.contains("value=\"hello tile\""), "{listing}");
     assert!(
@@ -397,6 +454,20 @@ async fn drives_a_tile_through_the_agent_script() {
     );
     // The same element keeps its ref across listings.
     assert_eq!(ref_of(&listing, "\"Query\""), query);
+    let read = kit.ok("browser_read", json!({}), &prefix).await;
+    let markdown = kit
+        .ok("browser_read", json!({ "format": "markdown" }), &prefix)
+        .await;
+    for text in [&listing, &read, &markdown] {
+        assert!(
+            !text.contains("USER_DRAFT_SECRET") && !text.contains("USER_EDITOR_SECRET"),
+            "user input read back: {text}"
+        );
+    }
+    assert!(
+        ref_of(&listing, "\"Note\"") != query && listing.contains("value=[set]"),
+        "{listing}"
+    );
 
     let selected = kit
         .ok(
@@ -431,7 +502,10 @@ async fn drives_a_tile_through_the_agent_script() {
             &prefix,
         )
         .await;
-    assert!(pressed.ends_with("the form was submitted"), "{pressed}");
+    assert!(
+        pressed.contains("Enter submitted the form on this tile"),
+        "{pressed}"
+    );
     kit.ok(
         "browser_wait",
         json!({ "text": "you sent", "timeout": 10 }),

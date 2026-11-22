@@ -6,16 +6,23 @@
 // are in scope, and its `return` is the result. It never throws: a failure returns `{ error }`.
 // State (the refs) lives on the world's global as `__theuthAgent` and dies with the document.
 // Refs `e<n>` map to elements through a Map of WeakRefs; the page's DOM is never stamped.
-// Values typed into fields are never returned; password and credential fields show no value.
+// What the user typed never leaves the page: a listing shows `value=` only for fields this agent
+// set, `value=[set]` for any other non-empty one, nothing for password and credential fields,
+// and the page text skips form controls and editable regions.
+// The engine replaces the VERSION line with the hash of this source (crates/browser/src/tile.rs).
 
 const VERSION = 1;
 
 let agent = globalThis.__theuthAgent;
 if (!agent || agent.version !== VERSION) {
   agent = (() => {
+    // This document's token: a read after an action that left the page compares it.
+    const DOC = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
     // ---- refs ---------------------------------------------------------------------------
     const refs = new Map(); // "e<n>" -> WeakRef<Element>
     const ids = new WeakMap(); // Element -> "e<n>"
+    const dead = new Set(); // refs whose element left the page
     let next = 1;
     const weak = (el) => (typeof WeakRef === 'function' ? new WeakRef(el) : { deref: () => el });
 
@@ -32,9 +39,15 @@ if (!agent || agent.version !== VERSION) {
     function prune() {
       for (const [r, w] of refs) {
         const el = w.deref();
-        if (!el || !el.isConnected) refs.delete(r);
+        if (!el || !el.isConnected) {
+          refs.delete(r);
+          dead.add(r);
+        }
       }
     }
+
+    // Fields this agent filled, typed into or selected: only their values are listed.
+    const SET = new WeakSet();
 
     // ---- reading the page ---------------------------------------------------------------
     const INTERACTIVE =
@@ -43,8 +56,11 @@ if (!agent || agent.version !== VERSION) {
       '[role=menuitem], [role=option], [role=combobox], [role=textbox], [role=searchbox], ' +
       '[contenteditable=""], [contenteditable=true], [onclick], [tabindex]:not([tabindex="-1"])';
     const MAX_ELEMENTS = 500;
+    const MAX_CHARS = 40000;
+    const SHORT_BODY = 200;
     const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'HEAD', 'IFRAME', 'OBJECT']);
     const SECRET_AUTOCOMPLETE = /(password|one-time-code|cc-|csc)/i;
+    const NO_VALUE = ['checkbox', 'radio', 'submit', 'button', 'reset', 'image', 'file'];
 
     const clip = (s, n) => {
       const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
@@ -59,25 +75,50 @@ if (!agent || agent.version !== VERSION) {
       }
     }
 
+    // One native check where the engine has it; the ancestor walk stops at the first hidden one.
     function visible(el) {
       if (!el || !el.isConnected) return false;
+      if (el.closest && el.closest('[hidden], [aria-hidden="true"]')) return false;
       if (typeof el.checkVisibility === 'function') {
         try {
-          if (!el.checkVisibility({ visibilityProperty: true })) return false;
+          return el.checkVisibility({ visibilityProperty: true });
         } catch (_) {
           // older engines: fall through to the ancestor walk
         }
       }
       for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
-        if (n.hidden || n.getAttribute('aria-hidden') === 'true') return false;
         const s = style(n);
         if (s && (s.display === 'none' || (n === el && s.visibility === 'hidden'))) return false;
       }
       return true;
     }
 
-    function textOf(el) {
-      return el ? clip(el.innerText !== undefined ? el.innerText : el.textContent, 200) : '';
+    // An element whose own box is not drawn; `display: contents` has no box but its children do.
+    function shown(el) {
+      if (el.hidden) return false;
+      if (typeof el.checkVisibility === 'function') {
+        try {
+          if (el.checkVisibility()) return true;
+          const s = style(el);
+          return !!s && s.display === 'contents';
+        } catch (_) {
+          // fall through
+        }
+      }
+      const s = style(el);
+      return !(s && s.display === 'none');
+    }
+
+    // Inside an editable region (`contenteditable`; the attribute too, for engines without
+    // `isContentEditable`): what is there is the user's draft.
+    function editableRegion(el) {
+      return !!el.isContentEditable || !!(el.closest && el.closest('[contenteditable]:not([contenteditable="false"])'));
+    }
+
+    // A form control or an editable region: what the user types lives there.
+    function formish(el) {
+      const t = el.tagName;
+      return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || editableRegion(el);
     }
 
     function accessibleName(el) {
@@ -113,10 +154,13 @@ if (!agent || agent.version !== VERSION) {
         if (type === 'image' && el.alt) return clip(el.alt, 80);
       }
       if (tag === 'IMG' && el.alt) return clip(el.alt, 80);
-      const text = clip(el.innerText !== undefined ? el.innerText : el.textContent, 80);
-      if (text) return text;
-      const img = el.querySelector && el.querySelector('img[alt]');
-      if (img && img.alt.trim()) return clip(img.alt, 80);
+      // An editable region's text is what the user wrote: never its name.
+      if (!editableRegion(el)) {
+        const text = clip(el.innerText !== undefined ? el.innerText : el.textContent, 80);
+        if (text) return text;
+        const img = el.querySelector && el.querySelector('img[alt]');
+        if (img && img.alt.trim()) return clip(img.alt, 80);
+      }
       return clip(el.getAttribute('placeholder') || el.getAttribute('title') || '', 80);
     }
 
@@ -136,7 +180,7 @@ if (!agent || agent.version !== VERSION) {
         if (type === 'search') return 'searchbox';
         return 'textbox';
       }
-      if (el.isContentEditable) return 'textbox';
+      if (editableRegion(el)) return 'textbox';
       return 'generic';
     }
 
@@ -149,6 +193,11 @@ if (!agent || agent.version !== VERSION) {
       return el.tagName.toLowerCase() + ' "' + accessibleName(el) + '"';
     }
 
+    // ` value="…"` for a field this agent set, ` value=[set]` for another non-empty one.
+    function valueOf(el, value) {
+      return SET.has(el) ? ' value=' + JSON.stringify(clip(value, 80)) : ' value=[set]';
+    }
+
     function line(el) {
       const tag = el.tagName.toLowerCase();
       let s = 'ref=' + refOf(el) + ' ' + tag + ' ' + JSON.stringify(accessibleName(el)) + ' role=' + role(el);
@@ -158,12 +207,17 @@ if (!agent || agent.version !== VERSION) {
       if (name) s += ' name=' + JSON.stringify(clip(name, 80));
       if (tag === 'a' && el.getAttribute('href')) s += ' href=' + JSON.stringify(clip(el.href, 120));
       const kind = (el.type || '').toLowerCase();
-      if ((tag === 'input' || tag === 'textarea') && !secret(el) && !['checkbox', 'radio', 'submit', 'button', 'reset', 'image', 'file'].includes(kind) && el.value) {
-        s += ' value=' + JSON.stringify(clip(el.value, 80));
+      if ((tag === 'input' || tag === 'textarea') && !secret(el) && !NO_VALUE.includes(kind) && el.value) {
+        s += valueOf(el, el.value);
+      } else if (editableRegion(el) && el.textContent.trim()) {
+        s += valueOf(el, el.textContent);
       }
       const chosen = tag === 'select' ? (el.selectedOptions ? el.selectedOptions[0] : el.options[el.selectedIndex]) : null;
       if (chosen) {
-        s += ' value=' + JSON.stringify(clip(chosen.text, 80));
+        // The page's own default is page content; another choice is the user's unless we made it.
+        const defaults = Array.from(el.options).some((o) => o.defaultSelected);
+        const pageDefault = chosen.defaultSelected || (!defaults && el.selectedIndex === 0);
+        s += pageDefault ? ' value=' + JSON.stringify(clip(chosen.text, 80)) : valueOf(el, chosen.text);
       }
       if (kind === 'checkbox' || kind === 'radio') s += ' checked=' + !!el.checked;
       if (el.disabled) s += ' disabled=true';
@@ -180,6 +234,8 @@ if (!agent || agent.version !== VERSION) {
       const out = [];
       let total = 0;
       for (const el of Array.from(document.querySelectorAll(INTERACTIVE))) {
+        // Inside an editable region every element is the user's draft.
+        if (el.parentElement && editableRegion(el.parentElement)) continue;
         if (!visible(el)) continue;
         total++;
         if (out.length < MAX_ELEMENTS) out.push(line(el));
@@ -188,19 +244,52 @@ if (!agent || agent.version !== VERSION) {
       return out;
     }
 
+    const BLOCKS = new Set(['P', 'DIV', 'SECTION', 'ARTICLE', 'MAIN', 'HEADER', 'FOOTER', 'NAV', 'ASIDE', 'UL', 'OL', 'TABLE', 'TBODY', 'THEAD', 'TR', 'FORM', 'BLOCKQUOTE', 'DL', 'DT', 'DD', 'FIGURE', 'BODY', 'LI', 'PRE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'FIELDSET']);
+
+    // The page's visible text, from its text nodes (no clone, no innerText): form controls and
+    // editable regions are skipped, so nothing the user typed is in it.
     function bodyText() {
       const b = document.body;
       if (!b) return '';
-      const t = b.innerText !== undefined ? b.innerText : b.textContent;
-      return String(t || '')
+      const out = [];
+      const walk = (node, pre) => {
+        for (let c = node.firstChild; c; c = c.nextSibling) {
+          if (c.nodeType === 3) {
+            out.push(pre ? c.nodeValue : c.nodeValue.replace(/\s+/g, ' '));
+            continue;
+          }
+          if (c.nodeType !== 1) continue;
+          const tag = c.tagName.toUpperCase();
+          if (SKIP.has(tag) || formish(c) || !shown(c)) continue;
+          if (tag === 'BR') {
+            out.push('\n');
+            continue;
+          }
+          const block = BLOCKS.has(tag);
+          if (block) out.push('\n');
+          else if (tag === 'TD' || tag === 'TH') out.push(' ');
+          walk(c, pre || tag === 'PRE');
+          if (block) out.push('\n');
+        }
+      };
+      walk(b, false);
+      return out
+        .join('')
         .split('\n')
-        .map((l) => l.replace(/[ \t\u00a0]+/g, ' ').trim())
+        .map((l) => l.replace(/[ \t\u00a0\r]+/g, ' ').trim())
         .join('\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
     }
 
-    const BLOCKS = new Set(['P', 'DIV', 'SECTION', 'ARTICLE', 'MAIN', 'HEADER', 'FOOTER', 'NAV', 'ASIDE', 'UL', 'OL', 'TABLE', 'TBODY', 'THEAD', 'TR', 'FORM', 'BLOCKQUOTE', 'DL', 'DT', 'DD', 'FIGURE', 'BODY', 'LI', 'PRE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'FIELDSET']);
+    // What a short read did not cover: frames and (open) shadow roots.
+    function unread() {
+      const frames = document.querySelectorAll('iframe, frame').length;
+      let shadows = 0;
+      for (const el of document.querySelectorAll('*')) if (el.shadowRoot) shadows++;
+      if (!frames && !shadows) return '';
+      return '\n(' + frames + ' frames and ' + shadows + ' shadow roots on this page were not read)';
+    }
 
     function markdown(root) {
       const out = [];
@@ -208,7 +297,7 @@ if (!agent || agent.version !== VERSION) {
       // Inline content of one node as one line (links, code and images kept).
       function one(c) {
         if (c.nodeType === 3) return c.nodeValue;
-        if (c.nodeType !== 1 || SKIP.has(c.tagName.toUpperCase()) || !visible(c)) return '';
+        if (c.nodeType !== 1 || SKIP.has(c.tagName.toUpperCase()) || formish(c) || !visible(c)) return '';
         const tag = c.tagName.toUpperCase();
         if (tag === 'A' && c.getAttribute('href')) return '[' + (flat(inline(c)) || c.href) + '](' + c.href + ')';
         if (tag === 'IMG') return c.alt ? '![' + clip(c.alt, 80) + ']' : '';
@@ -238,7 +327,7 @@ if (!agent || agent.version !== VERSION) {
           run = '';
         };
         for (const c of Array.from(node.childNodes)) {
-          if (c.nodeType === 1 && !SKIP.has(c.tagName.toUpperCase()) && visible(c) && BLOCKS.has(c.tagName.toUpperCase())) {
+          if (c.nodeType === 1 && !SKIP.has(c.tagName.toUpperCase()) && !formish(c) && visible(c) && BLOCKS.has(c.tagName.toUpperCase())) {
             flush();
             block(c);
           } else {
@@ -262,16 +351,37 @@ if (!agent || agent.version !== VERSION) {
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+    // Run `act` and report whether it started leaving this page: the address changed, or the
+    // page is unloading (`beforeunload` / `pagehide` within a moment). `from` is the address
+    // before; the engine's next read waits for another document or address.
+    async function leaving(act) {
+      const from = location.href;
+      let left = false;
+      const mark = () => { left = true; };
+      addEventListener('beforeunload', mark);
+      addEventListener('pagehide', mark);
+      let out;
+      try {
+        out = act();
+        await sleep(50);
+      } finally {
+        removeEventListener('beforeunload', mark);
+        removeEventListener('pagehide', mark);
+      }
+      return Object.assign(out, { navigating: left || location.href !== from, from, url: location.href, doc: DOC });
+    }
+
     // ---- targets ------------------------------------------------------------------------
     function resolve(p) {
       if (p.ref) {
         const w = refs.get(p.ref);
-        if (!w) {
+        const el = w && w.deref();
+        if (!w && !dead.has(p.ref)) {
           throw new Error('unknown ref ' + p.ref + ': refs come from browser_read or browser_elements of this page and go stale after a navigation; re-run browser_elements');
         }
-        const el = w.deref();
         if (!el || !el.isConnected) {
           refs.delete(p.ref);
+          dead.add(p.ref);
           throw new Error('stale ref ' + p.ref + ': that element is gone from the page; re-run browser_elements');
         }
         return el;
@@ -297,6 +407,15 @@ if (!agent || agent.version !== VERSION) {
       } catch (_) {
         return { clientX: 0, clientY: 0 };
       }
+    }
+
+    // What the page shows on top at `at` when it is not `el` (or a part or label of it).
+    function coveredBy(el, at) {
+      if (typeof document.elementFromPoint !== 'function') return '';
+      const top = document.elementFromPoint(at.clientX, at.clientY);
+      if (!top || top === el || el.contains(top) || top.contains(el)) return '';
+      if (top.tagName === 'LABEL' && top.control === el) return '';
+      return describe(top);
     }
 
     function fire(el, type, init) {
@@ -345,14 +464,13 @@ if (!agent || agent.version !== VERSION) {
     }
 
     function editable(el) {
-      if (el.isContentEditable) return 'content';
       if (el.tagName === 'TEXTAREA') return 'value';
       if (el.tagName === 'INPUT') {
         const t = (el.type || 'text').toLowerCase();
         if (['checkbox', 'radio', 'submit', 'button', 'reset', 'image', 'file', 'range', 'color'].includes(t)) return null;
         return 'value';
       }
-      return null;
+      return editableRegion(el) ? 'content' : null;
     }
 
     const KEYS = {
@@ -384,16 +502,17 @@ if (!agent || agent.version !== VERSION) {
     // ---- commands -----------------------------------------------------------------------
     const commands = {
       async location() {
-        return { url: location.href, title: document.title, ready: document.readyState };
+        return { url: location.href, title: document.title, ready: document.readyState, doc: DOC };
       },
 
       async read(p) {
         await settled(Math.min(p.settle_ms || 5000, 10000));
-        const max = Math.max(0, p.max_chars == null ? 4000 : p.max_chars);
-        const page = { url: location.href, title: document.title };
+        const max = Math.min(MAX_CHARS, Math.max(0, p.max_chars == null ? 4000 : p.max_chars));
+        const page = { url: location.href, title: document.title, doc: DOC };
         if (max === 0) return Object.assign(page, { text: '' });
         if (p.format === 'markdown') {
-          const md = markdown(document.body);
+          let md = markdown(document.body);
+          if (md.length < SHORT_BODY) md += unread();
           return Object.assign(page, { text: md.length > max ? md.slice(0, max) + '\u2026' : md });
         }
         const lines = listing();
@@ -407,14 +526,15 @@ if (!agent || agent.version !== VERSION) {
           shown++;
         }
         if (shown < lines.length) text += '...(' + (lines.length - shown) + ' controls omitted; use browser_elements)\n';
-        const body = bodyText();
+        let body = bodyText();
+        if (body.length < SHORT_BODY) body += unread();
         text += body.length > remaining ? body.slice(0, remaining) + '\u2026' : body;
         return Object.assign(page, { text });
       },
 
       async elements() {
         await settled(5000);
-        return { url: location.href, title: document.title, lines: listing() };
+        return { url: location.href, title: document.title, lines: listing(), doc: DOC };
       },
 
       async click(p) {
@@ -422,12 +542,21 @@ if (!agent || agent.version !== VERSION) {
         if (el.disabled) throw new Error(describe(el) + ' is disabled');
         scrollTo(el);
         const at = center(el);
-        for (const t of ['pointerover', 'pointerenter', 'mouseover', 'pointerdown', 'mousedown']) fire(el, t, Object.assign({ button: 0, buttons: 1 }, at));
-        focus(el);
-        for (const t of ['pointerup', 'mouseup']) fire(el, t, Object.assign({ button: 0 }, at));
+        const covered = coveredBy(el, at);
         const what = describe(el);
-        el.click();
-        return { clicked: what, url: location.href };
+        return leaving(() => {
+          for (const t of ['pointerover', 'pointerenter', 'mouseover', 'pointerdown', 'mousedown']) fire(el, t, Object.assign({ button: 0, buttons: 1 }, at));
+          focus(el);
+          for (const t of ['pointerup', 'mouseup']) fire(el, t, Object.assign({ button: 0 }, at));
+          // The click itself at the element's centre (activation runs as for el.click()); an
+          // engine without the MouseEvent constructor falls back to el.click() at (0, 0).
+          try {
+            fire(el, 'click', Object.assign({ button: 0, detail: 1 }, at));
+          } catch (_) {
+            el.click();
+          }
+          return { clicked: what, covered };
+        });
       },
 
       async fill(p) {
@@ -447,6 +576,7 @@ if (!agent || agent.version !== VERSION) {
         } else {
           setNativeValue(el, value);
         }
+        SET.add(el);
         fire(el, 'input', { inputType: 'insertText', data: value, cancelable: false });
         fire(el, 'change', { cancelable: false });
         return { filled: describe(el) };
@@ -459,6 +589,7 @@ if (!agent || agent.version !== VERSION) {
         if (el.disabled || el.readOnly) throw new Error(describe(el) + ' is not editable');
         scrollTo(el);
         focus(el);
+        SET.add(el);
         const text = String(p.text == null ? '' : p.text);
         for (const ch of text) {
           const init = keyInit(ch);
@@ -480,31 +611,33 @@ if (!agent || agent.version !== VERSION) {
         if (!key) throw new Error('pass a `key`');
         const el = p.selector || p.ref ? resolve(p) : document.activeElement || document.body;
         const init = keyInit(key);
-        const go = fire(el, 'keydown', init);
-        if (go && (key.length === 1 || key === 'Enter')) fire(el, 'keypress', Object.assign({ charCode: init.keyCode }, init));
-        let submitted = false;
-        if (go && key === 'Enter') {
-          const form = el.form || (el.closest && el.closest('form'));
-          if (form && el.tagName !== 'TEXTAREA' && !el.isContentEditable) {
-            if (typeof form.requestSubmit === 'function') form.requestSubmit();
-            else {
-              const btn = form.querySelector('button:not([type]), button[type=submit], input[type=submit]');
-              if (btn) btn.click();
+        return leaving(() => {
+          const go = fire(el, 'keydown', init);
+          if (go && (key.length === 1 || key === 'Enter')) fire(el, 'keypress', Object.assign({ charCode: init.keyCode }, init));
+          let submitted = false;
+          if (go && key === 'Enter') {
+            const form = el.form || (el.closest && el.closest('form'));
+            if (form && el.tagName !== 'TEXTAREA' && !editableRegion(el)) {
+              if (typeof form.requestSubmit === 'function') form.requestSubmit();
+              else {
+                const btn = form.querySelector('button:not([type]), button[type=submit], input[type=submit]');
+                if (btn) btn.click();
+              }
+              submitted = true;
+            } else if (el.tagName === 'A' || el.tagName === 'BUTTON') {
+              el.click();
             }
-            submitted = true;
-          } else if (el.tagName === 'A' || el.tagName === 'BUTTON') {
-            el.click();
           }
-        }
-        if (go && key === 'Tab') {
-          const list = focusables();
-          const i = list.indexOf(document.activeElement);
-          const to = list[(i + (p.shift ? -1 : 1) + list.length) % list.length];
-          if (to) focus(to);
-        }
-        fire(el, 'keyup', init);
-        const on = el === document.body ? 'the page' : describe(el);
-        return { pressed: key, on, submitted };
+          if (go && key === 'Tab') {
+            const list = focusables();
+            const i = list.indexOf(document.activeElement);
+            const to = list[(i + (p.shift ? -1 : 1) + list.length) % list.length];
+            if (to) focus(to);
+          }
+          fire(el, 'keyup', init);
+          const on = el === document.body ? 'the page' : describe(el);
+          return { pressed: key, on, submitted };
+        });
       },
 
       async select(p) {
@@ -521,6 +654,7 @@ if (!agent || agent.version !== VERSION) {
         focus(el);
         setNativeValue(el, opt.value);
         opt.selected = true;
+        SET.add(el);
         fire(el, 'input', { cancelable: false });
         fire(el, 'change', { cancelable: false });
         return { selected: opt.text.trim(), in: describe(el) };
@@ -546,6 +680,8 @@ if (!agent || agent.version !== VERSION) {
         return { x: Math.round(scrollX), y: Math.round(scrollY), height: se.scrollHeight, viewport: innerHeight };
       },
 
+      // Polls every 250 ms; a text is looked for in the cheap `textContent` first and confirmed
+      // in the visible text only when it is there.
       async wait(p) {
         const limit = Math.max(0, Math.min(p.timeout_ms == null ? 30000 : p.timeout_ms, 60000));
         const started = Date.now();
@@ -559,14 +695,15 @@ if (!agent || agent.version !== VERSION) {
               throw new Error('invalid CSS selector ' + JSON.stringify(p.selector));
             }
           } else {
-            hit = bodyText().includes(p.text);
+            const b = document.body;
+            hit = !!b && String(b.textContent || '').includes(p.text) && bodyText().includes(p.text);
           }
           const waited = Date.now() - started;
           if (hit) return { found: p.selector ? 'selector' : 'text', waited_ms: waited };
           if (waited >= limit) {
             throw new Error('timed out after ' + Math.round(limit / 1000) + ' s waiting for ' + (p.selector ? 'selector ' + JSON.stringify(p.selector) : 'text ' + JSON.stringify(p.text)));
           }
-          await sleep(100);
+          await sleep(250);
         }
       },
     };
@@ -576,7 +713,7 @@ if (!agent || agent.version !== VERSION) {
     }
 
     // Helpers for later commands (209 P5: serialise a form, fill fields by index).
-    const helpers = { resolve, describe, accessibleName, role, visible, secret, refOf, fire, setNativeValue, focus, scrollTo, editable, settled, markdown, bodyText, listing };
+    const helpers = { resolve, describe, accessibleName, role, visible, secret, refOf, fire, setNativeValue, focus, scrollTo, editable, settled, markdown, bodyText, listing, formish };
 
     return { version: VERSION, commands, helpers };
   })();

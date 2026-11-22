@@ -40,8 +40,6 @@ pub struct Ctx {
     /// acting `browser_*` call is the label and settles it ([`Ctx::settle`]).
     pub pending:
         parking_lot::Mutex<std::collections::HashMap<SessionId, crate::systemone::Pending>>,
-    /// 209 §4.6: where each session's calls go; absent = [`Target::Obscura`].
-    pub targets: parking_lot::Mutex<std::collections::HashMap<SessionId, Target>>,
 }
 
 impl Ctx {
@@ -59,12 +57,10 @@ impl Ctx {
         name: &str,
         args: Value,
     ) -> anyhow::Result<Result<Value, String>> {
-        if let Some((view, _)) = self.tile(session) {
-            let (out, url) = tile::call(&self.rt, session, &view, name, &args).await;
-            if let Some(url) = url {
-                self.seen(session, &view, url);
-            }
-            return Ok(out);
+        if let Some((view, _, delegated)) = tile::tile_of(session) {
+            return Ok(tile::call(&self.rt, session, &view, delegated, name, &args)
+                .await
+                .out);
         }
         self.ensure_profile(session).await?;
         self.send(session, name, args).await
@@ -73,19 +69,7 @@ impl Ctx {
     /// The tile `session` is attached to and the address last seen there, if any (209 §4.6).
     #[must_use]
     pub fn tile(&self, session: SessionId) -> Option<(String, String)> {
-        match self.targets.lock().get(&session) {
-            Some(Target::Tile { view, url }) => Some((view.clone(), url.clone())),
-            _ => None,
-        }
-    }
-
-    /// Remember the address an answer from tile `view` named, while `session` is still on it.
-    fn seen(&self, session: SessionId, view: &str, address: String) {
-        if let Some(Target::Tile { view: v, url }) = self.targets.lock().get_mut(&session)
-            && v == view
-        {
-            *url = address;
-        }
+        tile::tile_of(session).map(|(view, url, _)| (view, url))
     }
 
     /// `out` with the tile prefix in front, when `on` names the tile (and the address known then)
@@ -107,10 +91,11 @@ impl Ctx {
     }
 
     /// `browser_attach` (209 §4.6): `view` switches `session` to that tile once a client claims a
-    /// probe of it within 2 s; `None` returns it to its own browser.
+    /// probe of it within 2 s; `None` returns it to its own browser. Only a tile this session or
+    /// a session of its tree opened (209 §9).
     async fn attach(&self, session: SessionId, view: Option<String>) -> ToolOutput {
         let Some(view) = view.filter(|v| !v.trim().is_empty()) else {
-            return match self.targets.lock().remove(&session) {
+            return match tile::set_target(session, Target::Obscura) {
                 Some(Target::Tile { view, .. }) => ToolOutput::ok(format!(
                     "Detached from tile web:{view}; browser_* act on your own browser again. The user's tile stays open."
                 )),
@@ -122,22 +107,38 @@ impl Ctx {
                 "`view` is a tile id like web:0123456789abcdef (from show_web or web_views), not {view:?}"
             ));
         };
-        let (out, url) = tile::call(&self.rt, session, &id, tile::LOCATE_TOOL, &json!({})).await;
-        let page = match out {
+        let Some(opener) = artifact::webview::opener_in_tree(session, &id).await else {
+            return ToolOutput::err(format!(
+                "tile web:{id} was not opened by this session or its tree"
+            ));
+        };
+        let delegated = opener != session;
+        let reply = tile::call(
+            &self.rt,
+            session,
+            &id,
+            delegated,
+            tile::LOCATE_TOOL,
+            &json!({}),
+        )
+        .await;
+        let page = match reply.out {
             Err(e) => return ToolOutput::err(e),
             Ok(v) if text_of(&v).1 => return ToolOutput::err(text_of(&v).0),
             Ok(v) => text_of(&v).0,
         };
-        let url = url.unwrap_or_default();
-        self.targets.lock().insert(
+        let url = reply.url.unwrap_or_default();
+        tile::set_target(
             session,
             Target::Tile {
                 view: id.clone(),
                 url: url.clone(),
+                delegated,
+                leaving: None,
             },
         );
         ToolOutput::ok(format!(
-            "{}\nAttached to the user's tile web:{id}, now on {page}. Every browser_* call acts on this page in front of the user until browser_attach {{}} or browser_close. Input here is synthetic (isTrusted: false, except on Windows): a site that checks for trusted input ignores it; then ask the user to do that step.",
+            "{}\nAttached to the user's tile web:{id}, now on {page}. Every browser_* call acts on this page in front of the user until browser_attach {{}} or browser_close. Input here is synthetic (isTrusted: false, except on Windows): a site that checks for trusted input ignores it; then ask the user to do that step. Enter in a form submits it here.",
             tile::prefix(&id, &url)
         ))
     }
@@ -582,6 +583,21 @@ fn opens_signed_in_site(ctx: &Ctx, session: SessionId, a: &OpenArgs) -> bool {
     ctx.tile(session).is_some() || profile::credentialed_url(session, &a.url)
 }
 
+/// 209 §9: a read of the user's tile is a credentialed read when the site the tile is on is in
+/// the shared profile (the user is signed in there), or when the tile has not said where it is.
+/// Reads of the session's own browser are not.
+fn reads_signed_in_tile<A>(_: &Ctx, session: SessionId, _: &A) -> bool {
+    let Some((view, url, _)) = tile::tile_of(session) else {
+        return false;
+    };
+    let url = if url.is_empty() {
+        artifact::webview::tile_url(&view).unwrap_or_default()
+    } else {
+        url
+    };
+    url.is_empty() || profile::credentialed_url(session, &url)
+}
+
 /// No arguments.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 pub struct NoArgs {}
@@ -670,7 +686,8 @@ browser_tool!(
             out.content = tidy(&out.content, max);
         }
         Ok(out)
-    }
+    },
+    credentialed: reads_signed_in_tile
 );
 
 browser_tool!(
@@ -681,7 +698,8 @@ browser_tool!(
         "Pass the ref to `browser_click`, `browser_fill`, `browser_type`, `browser_select` or `browser_scroll` instead of guessing a CSS selector.",
         " Refs like `e3` (from `browser_read` / `browser_elements`) go stale after ANY navigation or click, including the click you just made. Re-run `browser_elements` before the next ref, and never reuse a ref for a second action in the same batch (it fails with `unknown ref`). Batched fills that share one listing are fine; clicks must be sequential: click, then re-read, then click.",
     ),
-    |ctx, _a, cx| ctx.call(cx.session, "browser_interactive_elements", json!({})).await
+    |ctx, _a, cx| ctx.call(cx.session, "browser_interactive_elements", json!({})).await,
+    credentialed: reads_signed_in_tile
 );
 
 /// Element target: `ref` (preferred) or a CSS `selector`.
@@ -700,7 +718,7 @@ browser_tool!(
     ClickTool, "browser_click", TargetArgs,
     concat!(
         "Click an element by `ref` (preferred) or CSS `selector`, wait for any navigation it triggers, and return the resulting page. ",
-        "This is how forms are submitted: click their submit button (pressing Enter does not submit).",
+        "This is how forms are submitted: click their submit button. In your own browser pressing Enter does not submit; on a tile, Enter in a form submits it, so press Enter or click submit, never both.",
         " Refs like `e3` (from `browser_read` / `browser_elements`) go stale after ANY navigation or click, including the click you just made. Re-run `browser_elements` before the next ref, and never reuse a ref for a second action in the same batch (it fails with `unknown ref`). Batched fills that share one listing are fine; clicks must be sequential: click, then re-read, then click.",
     ),
     |ctx, a, cx| {
@@ -728,7 +746,7 @@ browser_tool!(
     FillTool, "browser_fill", ValueArgs,
     concat!(
         "Set an input or textarea to `value` (replacing what was there) and fire its input/change events. Target by `ref` (preferred) or CSS `selector`. ",
-        "Then click the form's submit button with `browser_click`; Enter does not submit.",
+        "Then click the form's submit button with `browser_click` (in your own browser Enter does not submit; on a tile, Enter in a form submits it: one or the other, never both).",
         " Refs like `e3` (from `browser_read` / `browser_elements`) go stale after ANY navigation or click, including the click you just made. Re-run `browser_elements` before the next ref, and never reuse a ref for a second action in the same batch (it fails with `unknown ref`). Batched fills that share one listing are fine; clicks must be sequential: click, then re-read, then click.",
     ),
     |ctx, a, cx| {
@@ -780,7 +798,7 @@ browser_tool!(
     PressTool, "browser_press", PressArgs,
     concat!(
         "Dispatch a keyboard event (`key` such as `Enter`, `Tab`, `Escape`, `ArrowDown`) on an element by CSS `selector`, or on the document. ",
-        "For key handlers, menus and shortcuts only: to submit a form click its submit button with `browser_click`, Enter does not submit.",
+        "In your own browser it is for key handlers, menus and shortcuts only: Enter does not submit a form, click its submit button with `browser_click`. On a tile, Enter in a form submits it (the reply says so): then do not click its submit button as well.",
     ),
     |ctx, a, cx| {
         let args = compact(json!({ "key": a.key, "selector": a.selector }));
@@ -853,7 +871,8 @@ browser_tool!(
             "direction": a.direction, "amount": a.amount, "ref": a.ref_, "selector": a.selector,
         }));
         ctx.call(cx.session, "browser_scroll", args).await
-    }
+    },
+    credentialed: reads_signed_in_tile
 );
 
 /// Arguments for [`WaitTool`].
@@ -897,7 +916,8 @@ browser_tool!(
     |ctx, a, cx| match wait_call(&a) {
         Ok((name, args)) => ctx.call(cx.session, name, args).await,
         Err(e) => Ok(ToolOutput::err(e)),
-    }
+    },
+    credentialed: reads_signed_in_tile
 );
 
 /// Arguments for [`EvalTool`].
@@ -938,8 +958,10 @@ browser_tool!(
     /// `browser_screenshot` → `browser_screenshot`; the PNG is written to
     /// [`shot_dir`]`/shot-<n>.png` and attached (23 §5).
     ScreenshotTool, "browser_screenshot", ScreenshotArgs,
-    "Render the current page to a PNG and attach it to this result as an image you can look at: use it to check layout, styling or anything text cannot show. Optional `width` / `height` in CSS pixels override the viewport. A text-only model gets the vision fallback's description or a note instead of the image.",
+    "Render the current page to a PNG and attach it to this result as an image you can look at: use it to check layout, styling or anything text cannot show. Optional `width` / `height` in CSS pixels override the viewport (not on the user's tile, which shows its visible viewport only). A text-only model gets the vision fallback's description or a note instead of the image.",
     |ctx, a, cx| {
+        // 209 §4.7: a tile snapshots its visible viewport; the override is dropped, and said so.
+        let ignored = ctx.tile(cx.session).is_some() && (a.width.is_some() || a.height.is_some());
         let args = compact(json!({ "width": a.width, "height": a.height }));
         let result = match ctx.raw(cx.session, "browser_screenshot", args).await? {
             Ok(v) => v,
@@ -968,12 +990,16 @@ browser_tool!(
             .find(|p| !p.exists())
             .ok_or_else(|| anyhow::anyhow!("no free screenshot name"))?;
         tokio::fs::write(&path, &png).await?;
-        let content = format!("screenshot {w}\u{d7}{h} saved to {}", path.display());
+        let mut content = format!("screenshot {w}\u{d7}{h} saved to {}", path.display());
+        if ignored {
+            content.push_str(" (width/height ignored: a tile shows its visible viewport only)");
+        }
         Ok(ToolOutput {
             files: vec![path],
             ..ToolOutput::ok(content)
         })
-    }
+    },
+    credentialed: reads_signed_in_tile
 );
 
 /// `browser_tabs` action.
@@ -1072,11 +1098,11 @@ pub struct AttachArgs {
 
 /// What `browser_attach` tells the model (209 §4.8: the trusted-input limit verbatim).
 const ATTACH_TEXT: &str = concat!(
-    "Point every browser_* tool of this session at the user's web view tile `view` (`web:<id>` from show_web or web_views), or back at your own headless browser without `view`. ",
-    "On a tile you act in the user's live, signed-in session in front of them: browser_open navigates their tile, browser_read / browser_elements read it (main frame only; cross-origin frames are not read), browser_click / browser_fill / browser_type / browser_press / browser_select act, browser_eval runs in the page itself (the page can see it), browser_screenshot shows the visible part. ",
-    "Every reply starts with `[tile web:<id> · <host>]`; every acting call asks for approval first. browser_tabs and browser_show are not available there; browser_close only detaches and never closes the user's tile. ",
-    "Input on a tile is synthetic: `isTrusted: false` everywhere except Windows, where CDP input is trusted; a site gating on it ignores it. Then ask the user to do that step. ",
-    "Use it when a site refuses the sign-in your own browser carries, or when the user asks you to act on the page they have open. Fails with `no client holds tile web:<id>` when no app of the user shows that tile.",
+    "Point every browser_* tool of this session at the user's web view tile `view` (`web:<id>` from show_web or web_views), or back at your own headless browser without `view`. Only a tile this session or a session of its tree opened. ",
+    "On a tile you act in the user's live, signed-in session in front of them: browser_open navigates their tile, browser_read / browser_elements read it (main frame only: frames and shadow roots are not read, and a short read says how many there were; text the user typed into fields is not shown, a field you did not fill reads `value=[set]`), browser_click / browser_fill / browser_type / browser_press / browser_select act, browser_eval runs in the page itself (the page can see it), browser_screenshot shows the visible part. ",
+    "Every reply starts with `[tile web:<id> · <host>]`; every acting call, and a read of a signed-in page, asks for approval first. Enter in a form submits it on a tile. browser_tabs and browser_show are not available there; browser_close only detaches and never closes the user's tile. ",
+    "Input on a tile is synthetic: `isTrusted: false` everywhere except Windows, where CDP input is trusted; a site gating on it ignores it. Then ask the user to do that step. A click is dispatched at the element's centre without a real hit test: when something covers it there the reply says so, and canvas apps or custom pickers may ignore it. ",
+    "Use it when a site refuses the sign-in your own browser carries, or when the user asks you to act on the page they have open. Fails with `no client holds tile web:<id>` when no app of the user shows that tile; when the user stops the agent on the page, leave it alone.",
 );
 
 /// `browser_attach { view? }` (209 §4.6): switch the session's target. Not a `browser_tool!`: its
@@ -1329,7 +1355,6 @@ pub fn all(actor: ActorRef<Browsers>, cfg: BrowserConfig, rt: Runtime) -> Vec<Dy
         cfg,
         rt,
         pending: parking_lot::Mutex::default(),
-        targets: parking_lot::Mutex::default(),
     });
     let mut all: Vec<DynTool> = vec![
         Arc::new(OpenTool(Arc::clone(&ctx))),

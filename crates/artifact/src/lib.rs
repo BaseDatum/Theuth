@@ -60,7 +60,7 @@ pub use svg::Raster;
 pub use tools::ShowArgs;
 pub use webview::{
     ShowWebArgs, ShowWebTool, WebViewCallAnswer, WebViewCallId, WebViewCallRequested,
-    WebViewCallResolved, WebViewOpened, WebViewState, WebViewStateReply, WebViewsTool,
+    WebViewCallResolved, WebViewOp, WebViewOpened, WebViewState, WebViewStateReply, WebViewsTool,
 };
 
 /// Registry name of the [`ArtifactActor`].

@@ -1,21 +1,36 @@
 //! The second target of the `browser_*` tools: the user's web view tile (209 D8, §4.6, §4.7).
 //!
-//! [`crate::tools::Ctx`] keeps one [`Target`] per session (`browser_attach` switches it).
-//! On a tile, `Ctx::raw` hands each obscura tool name and its arguments to [`call`], which maps
-//! them to one tile op ([`plan`]), runs it through `artifact::webview::call` (the
+//! Each session has one [`Target`] ([`TARGETS`]; `browser_attach` switches it, the session's end
+//! forgets it). On a tile, `Ctx::raw` hands each obscura tool name and its arguments to [`call`],
+//! which maps them to one tile op ([`plan`]), runs it through `artifact::webview::call` (the
 //! `WebViewCallRequested` / `answer_web_view_call` round trip with the client app holding the
 //! tile) and shapes the answer like obscura's MCP result (`{ content, isError }`), so the tools
 //! above `raw` stay as they are. Reads and actions run the agent script ([`AGENT_JS`]) in the
-//! client's isolated world `theuth-agent`; `browser_eval` runs in the page world.
+//! client's isolated world `theuth-agent`; `browser_eval` runs in the page world. A read after an
+//! action that started a navigation waits, bounded, for the next page ([`Leaving`]).
 
+use std::collections::HashMap;
+use std::sync::LazyLock;
 use std::time::Duration;
 
-use artifact::webview::{self, CallOutcome};
+use artifact::webview::{self, CallOutcome, WebViewOp};
+use parking_lot::Mutex;
 use runtime::{Runtime, SessionId};
 use serde_json::{Value, json};
 
 /// The agent script (209 §4.7): the body of an async function with `cmd` and `params` in scope.
-pub const AGENT_JS: &str = include_str!("tile/agent.js");
+/// Its `VERSION`, which decides whether a client's world keeps the agent it already built, is
+/// the hash of the source itself, so an edited script always replaces the old one.
+pub static AGENT_JS: LazyLock<String> = LazyLock::new(|| {
+    const SOURCE: &str = include_str!("tile/agent.js");
+    const MARK: &str = "const VERSION = 1;";
+    assert!(SOURCE.contains(MARK), "agent.js lost its VERSION line");
+    // FNV-1a 64: a cache key, not a secret.
+    let hash = SOURCE.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    SOURCE.replacen(MARK, &format!("const VERSION = '{hash:016x}';"), 1)
+});
 
 /// Where a session's `browser_*` calls go (209 §4.6).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -29,7 +44,87 @@ pub enum Target {
         view: String,
         /// The address its last answer named (for the reply prefix), or empty.
         url: String,
+        /// The tile was opened by another session of this session's tree (209 §9).
+        delegated: bool,
+        /// The last action started a navigation away from this page: the next read waits.
+        leaving: Option<Leaving>,
     },
+}
+
+/// An action that started leaving a page: the agent script's per-document token and the address
+/// before the action (209 §4.7). A read showing the same document at the same address is stale.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Leaving {
+    /// The agent's `doc` token of the page the action ran on.
+    pub doc: String,
+    /// `location.href` before the action.
+    pub from: String,
+}
+
+/// Every session's target; absent = [`Target::Obscura`]. Process-wide, like the profile's
+/// session map: the tools write it, the `Browsers` actor forgets a session when it ends.
+static TARGETS: LazyLock<Mutex<HashMap<SessionId, Target>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// `session`'s tile: id, last address, delegated (209 §4.6).
+#[must_use]
+pub fn tile_of(session: SessionId) -> Option<(String, String, bool)> {
+    match TARGETS.lock().get(&session) {
+        Some(Target::Tile {
+            view,
+            url,
+            delegated,
+            ..
+        }) => Some((view.clone(), url.clone(), *delegated)),
+        _ => None,
+    }
+}
+
+/// Point `session` at `target` ([`Target::Obscura`] removes the entry); the previous target.
+pub fn set_target(session: SessionId, target: Target) -> Option<Target> {
+    let mut all = TARGETS.lock();
+    match target {
+        Target::Obscura => all.remove(&session),
+        t => all.insert(session, t),
+    }
+}
+
+/// The sessions ended (deleted, or their tree closed): their targets go.
+pub fn forget(sessions: &[SessionId]) {
+    let mut all = TARGETS.lock();
+    for s in sessions {
+        all.remove(s);
+    }
+}
+
+/// Remember the address an answer from tile `view` named and whether the action is leaving the
+/// page, while `session` is still on that tile.
+fn seen(session: SessionId, view: &str, address: Option<String>, left: Option<Leaving>) {
+    if let Some(Target::Tile {
+        view: v,
+        url,
+        leaving,
+        ..
+    }) = TARGETS.lock().get_mut(&session)
+        && v == view
+    {
+        if let Some(a) = address {
+            *url = a;
+        }
+        if left.is_some() {
+            *leaving = left;
+        }
+    }
+}
+
+/// Take the pending [`Leaving`] of `session` on tile `view` (a read consumes it).
+fn take_leaving(session: SessionId, view: &str) -> Option<Leaving> {
+    match TARGETS.lock().get_mut(&session) {
+        Some(Target::Tile {
+            view: v, leaving, ..
+        }) if v == view => leaving.take(),
+        _ => None,
+    }
 }
 
 /// What `browser_tabs` answers on a tile (209 §4.7).
@@ -37,10 +132,20 @@ pub const NO_TABS: &str = "browser_tabs is not available on a tile: a tile is on
      windows open in the system browser. web_views lists the user's tiles; browser_attach {} \
      returns to your own browser, which has tabs.";
 
+/// How a session gets back from a tile no client answers for (209 §4.6).
+const BACK_HOME: &str = "browser_attach {} returns to your own browser";
+
 /// How long a navigation may take in the client before it answers with the page still loading.
 const NAV_MS: u64 = 25_000;
 /// How long one agent-script command may run in the client.
 const SCRIPT_MS: u64 = 15_000;
+/// The most characters one read of a tile returns (the reply crosses the mesh twice).
+pub const MAX_READ_CHARS: u64 = 40_000;
+/// A read after an action that started a navigation tries this often, [`RETRY`] apart, for the
+/// next page (209 §4.7): 5 s at most.
+const LEAVE_TRIES: u32 = 10;
+/// Between two reads of a page going away.
+const RETRY: Duration = Duration::from_millis(500);
 
 /// One tile op of 209 §4.7 for one obscura tool call.
 #[derive(Clone, Debug, PartialEq)]
@@ -63,7 +168,7 @@ pub enum Op {
     /// `navigate`, `back`, `forward` or `reload`.
     Nav {
         /// The op.
-        op: &'static str,
+        op: WebViewOp,
         /// Its arguments.
         args: Value,
     },
@@ -74,10 +179,10 @@ pub enum Op {
 }
 
 impl Op {
-    /// The op name, its arguments as the client receives them, and how long it may run once a
-    /// client claimed it (the client's limit plus 5 s; `artifact` makes that at least 30 s).
+    /// The op, its arguments as the client receives them, and how long it may run once a client
+    /// claimed it (the client's limit plus 5 s; `artifact` makes that at least 30 s).
     #[must_use]
-    pub fn request(&self) -> Option<(&'static str, Value, Duration)> {
+    pub fn request(&self) -> Option<(WebViewOp, Value, Duration)> {
         let wait = |ms: u64| Duration::from_millis(ms + 5_000);
         Some(match self {
             Self::Agent {
@@ -85,33 +190,49 @@ impl Op {
                 params,
                 timeout_ms,
             } => (
-                "script",
+                WebViewOp::Script,
                 json!({
                     "world": "isolated",
-                    "source": AGENT_JS,
+                    "source": AGENT_JS.as_str(),
                     "arguments": { "cmd": cmd, "params": params },
                     "timeout_ms": timeout_ms,
                 }),
                 wait(*timeout_ms),
             ),
-            Self::Page { expression } => (
-                "script",
-                json!({
-                    "world": "page",
-                    "source": format!("return ({expression}\n);"),
-                    "arguments": {},
-                    "timeout_ms": SCRIPT_MS,
-                }),
-                wait(SCRIPT_MS),
-            ),
+            Self::Page { expression } => {
+                // `document.title;` is a statement on obscura; here it would end the wrapper.
+                let expression =
+                    expression.trim_end_matches(|c: char| c == ';' || c.is_whitespace());
+                (
+                    WebViewOp::Script,
+                    json!({
+                        "world": "page",
+                        "source": format!("return ({expression}\n);"),
+                        "arguments": {},
+                        "timeout_ms": SCRIPT_MS,
+                    }),
+                    wait(SCRIPT_MS),
+                )
+            }
             Self::Nav { op, args } => (
                 *op,
                 args.clone(),
                 wait(args["timeout_ms"].as_u64().unwrap_or(NAV_MS)),
             ),
-            Self::Snapshot => ("snapshot", json!({}), wait(SCRIPT_MS)),
+            Self::Snapshot => (WebViewOp::Snapshot, json!({}), wait(SCRIPT_MS)),
             Self::Unsupported(_) => return None,
         })
+    }
+
+    /// A read of the page (what waits for a page an action is leaving).
+    fn reads(&self) -> bool {
+        matches!(
+            self,
+            Self::Agent {
+                cmd: "read" | "elements",
+                ..
+            }
+        )
     }
 }
 
@@ -145,6 +266,14 @@ fn with(args: &Value, key: &str) -> Value {
     v
 }
 
+/// A read's `max_chars`, at most [`MAX_READ_CHARS`] (default 4000).
+fn read_chars(args: &Value) -> u64 {
+    args["max_chars"]
+        .as_u64()
+        .unwrap_or(4_000)
+        .min(MAX_READ_CHARS)
+}
+
 /// The tile op for obscura tool `name` called with `args` (209 §4.7's table).
 #[must_use]
 pub fn plan(name: &str, args: &Value) -> Op {
@@ -156,22 +285,22 @@ pub fn plan(name: &str, args: &Value) -> Op {
     match name {
         "browser_navigate" => match args["url"].as_str().map(url::Url::parse) {
             Some(Ok(u)) if matches!(u.scheme(), "http" | "https") => Op::Nav {
-                op: "navigate",
+                op: WebViewOp::Navigate,
                 args: json!({ "url": u.as_str(), "timeout_ms": NAV_MS }),
             },
             _ => Op::Unsupported("a tile opens http(s) addresses only".to_owned()),
         },
         "browser_back" => Op::Nav {
-            op: "back",
+            op: WebViewOp::Back,
             args: json!({ "timeout_ms": NAV_MS }),
         },
         "browser_snapshot" => agent(
             "read",
-            json!({ "format": "text", "max_chars": args["max_chars"] }),
+            json!({ "format": "text", "max_chars": read_chars(args) }),
         ),
         "browser_markdown" => agent(
             "read",
-            json!({ "format": "markdown", "max_chars": args["max_chars"] }),
+            json!({ "format": "markdown", "max_chars": read_chars(args) }),
         ),
         "browser_interactive_elements" => agent("elements", json!({})),
         "browser_click" => agent("click", target(args)),
@@ -207,9 +336,7 @@ pub fn plan(name: &str, args: &Value) -> Op {
         "browser_tab_list" | "browser_tab_new" | "browser_tab_switch" | "browser_tab_close" => {
             Op::Unsupported(NO_TABS.to_owned())
         }
-        other => Op::Unsupported(format!(
-            "{other} is not available on a tile; browser_attach {{}} returns to your own browser"
-        )),
+        other => Op::Unsupported(format!("{other} is not available on a tile; {BACK_HOME}")),
     }
 }
 
@@ -221,68 +348,158 @@ fn text(text: impl Into<String>, is_error: bool) -> Value {
 /// Not an obscura tool: `browser_attach`'s probe, the agent command `location` (`{ url, title }`).
 pub(crate) const LOCATE_TOOL: &str = "tile_location";
 
-/// Run obscura tool `name` with `args` on tile `view` for `session`. `Ok` is an MCP-shaped
-/// result (an error the client or the page gave is `isError`), `Err` a tile nobody answers
-/// (`no client holds tile web:<id>`, or a claimed op that never finished). The second value is
-/// the page address the answer named, when it named one.
+/// Tiles the user stopped the agent on, until when (209 §4.4: Stop holds for 60 s).
+static STOPPED: LazyLock<Mutex<HashMap<String, tokio::time::Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// What the model reads while a tile refuses it.
+fn stopped_text(view: &str) -> String {
+    format!(
+        "the user stopped the agent on this page (tile web:{view}): do not act on it again \
+         unless they ask you to; {BACK_HOME}"
+    )
+}
+
+/// Whether the user stopped the agent on `view` less than [`webview::STOP_HOLD`] ago.
+fn is_stopped(view: &str) -> bool {
+    let mut all = STOPPED.lock();
+    let now = tokio::time::Instant::now();
+    all.retain(|_, until| *until > now);
+    all.contains_key(view)
+}
+
+/// One answered call on a tile, shaped: `out` is an MCP-shaped result (an error the client or
+/// the page gave is `isError`) or `Err` for a tile nobody answers (`no client holds tile
+/// web:<id>`, or a claimed op that never finished).
+#[derive(Debug)]
+pub struct Reply {
+    /// The result.
+    pub out: Result<Value, String>,
+    /// The page address the answer named.
+    pub url: Option<String>,
+    /// The agent script's document token.
+    doc: Option<String>,
+    /// The action started leaving the page.
+    leaving: Option<Leaving>,
+}
+
+impl Reply {
+    fn of(out: Result<Value, String>) -> Self {
+        Self {
+            out,
+            url: None,
+            doc: None,
+            leaving: None,
+        }
+    }
+}
+
+/// Run obscura tool `name` with `args` on tile `view` for `session` (`delegated` as in the
+/// request). A read after an action that left the page waits for the next one, at most
+/// [`LEAVE_TRIES`] reads, and says when the page had not changed; a read that fails (the old
+/// document going away) is tried again. The address and a navigation the answer reported are
+/// remembered for `session`.
 pub async fn call(
     rt: &Runtime,
     session: SessionId,
     view: &str,
+    delegated: bool,
     name: &str,
     args: &Value,
-) -> (Result<Value, String>, Option<String>) {
+) -> Reply {
     let op = plan(name, args);
-    let mut out = run(rt, session, view, &op).await;
-    // A read right after a click that navigated can meet the old document going away: once more.
-    if matches!(
-        &op,
-        Op::Agent {
-            cmd: "read" | "elements",
-            ..
+    let leaving = if op.reads() {
+        take_leaving(session, view)
+    } else {
+        None
+    };
+    let tries = if leaving.is_some() { LEAVE_TRIES } else { 1 };
+    let mut n = 0;
+    let mut reply = loop {
+        let r = run(rt, session, view, delegated, &op).await;
+        let failed = op.reads() && matches!(&r.out, Ok(v) if v["isError"] == true);
+        let stale = leaving.as_ref().is_some_and(|l| same_page(&r, l));
+        if (failed || stale) && n < tries {
+            n += 1;
+            tokio::time::sleep(RETRY).await;
+            continue;
         }
-    ) && matches!(&out.0, Ok(v) if v["isError"] == true)
+        break r;
+    };
+    let still = leaving.as_ref().filter(|l| same_page(&reply, l));
+    if let (Some(l), Ok(v)) = (still, &mut reply.out)
+        && let Some(t) = v["content"][0]["text"].as_str()
     {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        out = run(rt, session, view, &op).await;
+        v["content"][0]["text"] = format!(
+            "{t}\n(still on {}: the navigation the last action started had not finished; \
+             browser_read again in a moment)",
+            l.from
+        )
+        .into();
     }
-    out
+    seen(session, view, reply.url.clone(), reply.leaving.clone());
+    reply
+}
+
+/// Whether `r` read the page `l` was leaving: the same document at the same address.
+fn same_page(r: &Reply, l: &Leaving) -> bool {
+    r.out.is_ok()
+        && r.doc.as_deref() == Some(l.doc.as_str())
+        && r.url.as_deref() == Some(l.from.as_str())
 }
 
 /// One op on the tile, shaped (see [`call`]).
-async fn run(
-    rt: &Runtime,
-    session: SessionId,
-    view: &str,
-    op: &Op,
-) -> (Result<Value, String>, Option<String>) {
+async fn run(rt: &Runtime, session: SessionId, view: &str, delegated: bool, op: &Op) -> Reply {
     let Some((name, args, work)) = op.request() else {
         let Op::Unsupported(why) = op else {
             unreachable!("only Unsupported has no request")
         };
-        return (Ok(text(why.clone(), true)), None);
+        return Reply::of(Ok(text(why.clone(), true)));
     };
-    match webview::call(rt, session, view, name, args, work).await {
-        CallOutcome::NoClient => (Err(format!("no client holds tile web:{view}")), None),
-        CallOutcome::TimedOut => (
-            Err(format!(
-                "tile web:{view} did not finish `{name}` within {} s",
-                work.max(webview::OP_WAIT).as_secs()
-            )),
-            None,
-        ),
-        CallOutcome::Failed(reason) => (Ok(text(reason, true)), None),
-        CallOutcome::Done { result, png } => (Ok(shape(op, &result, png)), url_of(&result)),
+    if is_stopped(view) {
+        return Reply::of(Ok(text(stopped_text(view), true)));
     }
-}
-
-/// The address an answer names (`url`), when it is a string.
-fn url_of(result: &Value) -> Option<String> {
-    result
-        .get("url")
-        .and_then(Value::as_str)
-        .filter(|u| !u.is_empty())
-        .map(str::to_owned)
+    match webview::call(rt, session, view, delegated, name, args, work).await {
+        CallOutcome::NoClient => Reply::of(Err(format!(
+            "no client holds tile web:{view} (the user may have closed it); {BACK_HOME}"
+        ))),
+        CallOutcome::TimedOut => Reply::of(Err(format!(
+            "tile web:{view} did not finish `{}` within {} s",
+            name.as_str(),
+            work.max(webview::OP_WAIT).as_secs()
+        ))),
+        CallOutcome::Failed(reason) if reason == webview::STOPPED => {
+            STOPPED.lock().insert(
+                view.to_owned(),
+                tokio::time::Instant::now() + webview::STOP_HOLD,
+            );
+            Reply::of(Ok(text(stopped_text(view), true)))
+        }
+        CallOutcome::Failed(reason) => Reply::of(Ok(text(reason, true))),
+        CallOutcome::Done { result, png } => {
+            let str_of = |k: &str| {
+                result
+                    .get(k)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+            };
+            let doc = str_of("doc");
+            let leaving = match (result["navigating"] == true, &doc, str_of("from")) {
+                (true, Some(doc), Some(from)) => Some(Leaving {
+                    doc: doc.clone(),
+                    from,
+                }),
+                _ => None,
+            };
+            Reply {
+                url: str_of("url"),
+                doc,
+                leaving,
+                out: Ok(shape(op, &result, png)),
+            }
+        }
+    }
 }
 
 /// A done op's result as the text obscura would have answered (209 §4.7: our format, close to
@@ -296,7 +513,7 @@ pub fn shape(op: &Op, result: &Value, png: Option<String>) -> Value {
             if let Some(e) = result.get("error").and_then(Value::as_str) {
                 return text(e, true);
             }
-            let out = match *cmd {
+            let mut out = match *cmd {
                 "read" => format!("URL: {}\nTitle: {}\n\n{}", s("url"), s("title"), s("text")),
                 "elements" => {
                     let lines: Vec<&str> = result["lines"]
@@ -309,13 +526,24 @@ pub fn shape(op: &Op, result: &Value, png: Option<String>) -> Value {
                         lines.join("\n")
                     }
                 }
-                "click" => format!("Clicked {}", s("clicked")),
+                "click" => {
+                    let mut t = format!("Clicked {}", s("clicked"));
+                    if !s("covered").is_empty() {
+                        t.push_str(&format!(
+                            " (at its centre the page shows {} on top; a real click would hit that)",
+                            s("covered")
+                        ));
+                    }
+                    t
+                }
                 "fill" => format!("Filled {}", s("filled")),
                 "type" => format!("Typed {} characters into {}", n("typed"), s("into")),
                 "press" => {
                     let mut t = format!("Pressed {} on {}", s("pressed"), s("on"));
                     if result["submitted"] == true {
-                        t.push_str("; the form was submitted");
+                        t.push_str(
+                            "; Enter submitted the form on this tile: do not also click its submit button",
+                        );
                     }
                     t
                 }
@@ -338,6 +566,9 @@ pub fn shape(op: &Op, result: &Value, png: Option<String>) -> Value {
                 "location" => format!("\"{}\" ({})", s("title"), s("url")),
                 _ => s("url").to_owned(),
             };
+            if result["navigating"] == true {
+                out.push_str("; the page is navigating");
+            }
             text(out, false)
         }
         Op::Page { .. } => text(
@@ -349,10 +580,10 @@ pub fn shape(op: &Op, result: &Value, png: Option<String>) -> Value {
             false,
         ),
         Op::Nav { op, .. } => {
-            let verb = match *op {
-                "navigate" => "Navigated to",
-                "back" => "Went back to",
-                "forward" => "Went forward to",
+            let verb = match op {
+                WebViewOp::Navigate => "Navigated to",
+                WebViewOp::Back => "Went back to",
+                WebViewOp::Forward => "Went forward to",
                 _ => "Reloaded",
             };
             let mut t = format!("{verb} {} — \"{}\"", s("url"), s("title"));
@@ -414,19 +645,25 @@ mod tests {
         assert_eq!(
             nav,
             Op::Nav {
-                op: "navigate",
+                op: WebViewOp::Navigate,
                 args: json!({ "url": "https://a.test/x", "timeout_ms": NAV_MS })
             }
         );
         assert!(matches!(
             plan("browser_back", &json!({})),
-            Op::Nav { op: "back", .. }
+            Op::Nav {
+                op: WebViewOp::Back,
+                ..
+            }
         ));
         let read = plan("browser_snapshot", &json!({ "max_chars": 900 }));
         assert_eq!(
             agent(&read),
             ("read", &json!({ "format": "text", "max_chars": 900 }))
         );
+        // A read of the user's page is capped whatever the model asks.
+        let huge = plan("browser_snapshot", &json!({ "max_chars": 10_000_000 }));
+        assert_eq!(agent(&huge).1["max_chars"], MAX_READ_CHARS);
         let md = plan("browser_markdown", &json!({ "max_chars": 900 }));
         assert_eq!(agent(&md).1["format"], "markdown");
         assert_eq!(
@@ -515,9 +752,9 @@ mod tests {
         let (op, args, work) = plan("browser_click", &json!({ "ref": "e1" }))
             .request()
             .unwrap();
-        assert_eq!(op, "script");
+        assert_eq!(op, WebViewOp::Script);
         assert_eq!(args["world"], "isolated");
-        assert_eq!(args["source"], AGENT_JS);
+        assert_eq!(args["source"], *AGENT_JS);
         assert_eq!(
             args["arguments"],
             json!({ "cmd": "click", "params": { "ref": "e1" } })
@@ -529,9 +766,17 @@ mod tests {
         )
         .request()
         .unwrap();
-        assert_eq!(op, "script");
+        assert_eq!(op, WebViewOp::Script);
         assert_eq!(args["world"], "page");
         assert_eq!(args["source"], "return (document.title // x\n);");
+        // A trailing semicolon, fine on obscura, does not end the wrapper here.
+        let (_, args, _) = plan(
+            "browser_evaluate",
+            &json!({ "expression": "document.title; \n" }),
+        )
+        .request()
+        .unwrap();
+        assert_eq!(args["source"], "return (document.title\n);");
         let (_, _, work) = plan(
             "browser_wait_for",
             &json!({ "selector": "#x", "timeout": 60 }),
@@ -540,8 +785,25 @@ mod tests {
         .unwrap();
         assert_eq!(work, Duration::from_secs(66));
         let (op, args, _) = plan("browser_screenshot", &json!({})).request().unwrap();
-        assert_eq!((op, args), ("snapshot", json!({})));
+        assert_eq!((op, args), (WebViewOp::Snapshot, json!({})));
         assert!(Op::Unsupported("x".into()).request().is_none());
+    }
+
+    /// The script's version is its content hash, so a changed script replaces the agent a
+    /// client's world already holds.
+    #[test]
+    fn the_agent_version_is_the_source_hash() {
+        let line = AGENT_JS
+            .lines()
+            .find(|l| l.starts_with("const VERSION = "))
+            .unwrap();
+        let hex = line
+            .strip_prefix("const VERSION = '")
+            .and_then(|l| l.strip_suffix("';"))
+            .unwrap();
+        assert_eq!(hex.len(), 16);
+        assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert!(!AGENT_JS.contains("const VERSION = 1;"));
     }
 
     #[test]
@@ -565,6 +827,25 @@ mod tests {
             None,
         );
         assert!(crate::tools::text_of(&stale).1);
+        let left = shape(
+            &plan("browser_click", &json!({ "ref": "e2" })),
+            &json!({ "clicked": "a \"next\"", "navigating": true, "covered": "div \"Cookies\"" }),
+            None,
+        );
+        assert_eq!(
+            crate::tools::text_of(&left).0,
+            "Clicked a \"next\" (at its centre the page shows div \"Cookies\" on top; a real click would hit that); the page is navigating"
+        );
+        let enter = shape(
+            &plan("browser_press_key", &json!({ "key": "Enter" })),
+            &json!({ "pressed": "Enter", "on": "input \"Query\"", "submitted": true }),
+            None,
+        );
+        assert!(
+            crate::tools::text_of(&enter)
+                .0
+                .ends_with("do not also click its submit button")
+        );
         let nav = shape(
             &plan("browser_navigate", &json!({ "url": "https://a.test/" })),
             &json!({ "url": "https://a.test/", "title": "A", "loading": false }),
@@ -601,5 +882,31 @@ mod tests {
             prefix("ffffffffffffffff", ""),
             "[tile web:ffffffffffffffff \u{b7} page not reported]"
         );
+    }
+
+    /// A session's target goes with the session, and a read consumes the page an action left.
+    #[test]
+    fn targets_are_forgotten_and_leaving_is_read_once() {
+        let s = SessionId::new();
+        set_target(
+            s,
+            Target::Tile {
+                view: "aa".into(),
+                url: String::new(),
+                delegated: true,
+                leaving: None,
+            },
+        );
+        assert_eq!(tile_of(s), Some(("aa".into(), String::new(), true)));
+        let l = Leaving {
+            doc: "d1".into(),
+            from: "https://a.test/".into(),
+        };
+        seen(s, "aa", Some("https://a.test/".into()), Some(l.clone()));
+        assert_eq!(take_leaving(s, "bb"), None, "another tile");
+        assert_eq!(take_leaving(s, "aa"), Some(l));
+        assert_eq!(take_leaving(s, "aa"), None);
+        forget(&[s]);
+        assert_eq!(tile_of(s), None);
     }
 }

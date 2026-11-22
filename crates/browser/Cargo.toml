@@ -47,3 +47,5 @@ figment = { workspace = true }
 tempfile = "3"
 secrets = { workspace = true }
 tracing-subscriber = { workspace = true }
+jsonrpsee = { workspace = true }
+rpc-core = { workspace = true }

@@ -18,12 +18,14 @@ use base64::Engine as _;
 pub trait ArtifactArtifactsApi {
     /// A client's answer to a `PagePreviewRequested` (120 §11.2): `Started`
     /// extends the wait, the first `Done`/`Failed` resolves it. `true` if the
-    /// preview was still pending.
-    #[method(name = "answer_page_preview")]
+    /// preview was still pending. 209 §4.4: with `session` (the request's), an
+    /// answer for a preview another engine issued is forwarded to that session's owner.
+    #[method(name = "answer_page_preview", with_extensions)]
     async fn answer_page_preview(
         &self,
         id: artifact::preview::PreviewId,
         answer: artifact::preview::PagePreviewAnswer,
+        session: Option<SessionId>,
     ) -> RpcResult<bool>;
     /// A client's answer to a `FenceSnapshotRequested` (164 D3): `Started`
     /// extends the wait, the first `Done`/`Failed` resolves it. `true` while
@@ -35,7 +37,8 @@ pub trait ArtifactArtifactsApi {
         answer: artifact::snapshot::FenceSnapshotAnswer,
     ) -> RpcResult<bool>;
     /// 209 D9: a client's report of one web view tile (address, title, loading), recorded for
-    /// the `web_views` tool. Forwarded to the session's owner when another engine owns it.
+    /// the `web_views` tool; `closed` forgets the tile. Forwarded to the session's owner when
+    /// another engine owns it.
     #[method(name = "web_view_state", with_extensions)]
     async fn web_view_state(
         &self,
@@ -44,16 +47,20 @@ pub trait ArtifactArtifactsApi {
         url: String,
         title: String,
         loading: bool,
+        closed: Option<bool>,
     ) -> RpcResult<artifact::webview::WebViewStateReply>;
-    /// 209 D8: a client's answer to a `WebViewCallRequested`: the first `Claimed` wins (later
-    /// ones answer `false`), the first `Done`/`Failed` resolves it. `true` while the call was
-    /// pending and the answer was taken. Owner connections only. An id another engine issued
-    /// (the event came through the relay) is forwarded to its session's owner.
+    /// 209 D8, §4.4: a client's answer to a `WebViewCallRequested`: the first `Claimed` wins
+    /// (later ones answer `false`) and binds the call to this connection; only that connection's
+    /// `Done`/`Failed` resolves it (before any claim, only a `Failed` "stopped by the user" or
+    /// "window closed"). `true` while the call was pending and the answer was taken. Owner
+    /// connections only. `session` is the request's: an id another engine issued (the event came
+    /// through the relay) is forwarded to that session's owner.
     #[method(name = "answer_web_view_call", with_extensions)]
     async fn answer_web_view_call(
         &self,
         id: artifact::webview::WebViewCallId,
         answer: artifact::webview::WebViewCallAnswer,
+        session: Option<SessionId>,
     ) -> RpcResult<bool>;
     /// 192: draw one fence through the 164 renderer (a connected desktop/web client) and
     /// return the PNG — the native companions' pictures. `width` is clamped to 240..=1200
@@ -131,9 +138,19 @@ impl ArtifactArtifactsApiServer for Server {
 
     async fn answer_page_preview(
         &self,
+        ext: &Extensions,
         id: artifact::preview::PreviewId,
         answer: artifact::preview::PagePreviewAnswer,
+        session: Option<SessionId>,
     ) -> RpcResult<bool> {
+        if !artifact::preview::pending_here(id)
+            && let Some(session) = session
+            && let Some(r) =
+                forward::route(ext, session, "answer_page_preview", (id, &answer, Some(session)))
+                    .await?
+        {
+            return Ok(r);
+        }
         Ok(artifact::preview::answer(id, answer))
     }
 
@@ -153,13 +170,14 @@ impl ArtifactArtifactsApiServer for Server {
         url: String,
         title: String,
         loading: bool,
+        closed: Option<bool>,
     ) -> RpcResult<artifact::webview::WebViewStateReply> {
         self.authorize_fwd(ext, session).await?;
         if let Some(r) = forward::route(
             ext,
             session,
             "web_view_state",
-            (session, &view, &url, &title, loading),
+            (session, &view, &url, &title, loading, closed),
         )
         .await?
         {
@@ -171,6 +189,7 @@ impl ArtifactArtifactsApiServer for Server {
             url,
             title,
             loading,
+            closed: closed.unwrap_or(false),
         }))
     }
 
@@ -179,16 +198,31 @@ impl ArtifactArtifactsApiServer for Server {
         ext: &Extensions,
         id: artifact::webview::WebViewCallId,
         answer: artifact::webview::WebViewCallAnswer,
+        session: Option<SessionId>,
     ) -> RpcResult<bool> {
-        owner(ext)?;
-        if !artifact::webview::pending_here(id)
-            && let Some(session) = artifact::webview::session_of(id)
-            && let Some(r) =
-                forward::route(ext, session, "answer_web_view_call", (id, &answer)).await?
+        use artifact::webview;
+        let peer = owner(ext)?;
+        // 209 §4.4: the answerer is this connection, or the engine a forwarded answer came from
+        // (that engine binds it to its own connection, `webview::relay_allows`).
+        let by = match ext.get::<forward::Forwarded>() {
+            Some(f) => format!("engine:{}", f.0.0),
+            None => format!("conn:{}", peer.id()),
+        };
+        if !webview::pending_here(&self.rt, id)
+            && let Some(session) = session.or_else(|| webview::session_of(id))
         {
-            return Ok(r);
+            if !webview::relay_allows(id, &answer, &by) {
+                return Ok(false);
+            }
+            if let Some(taken) =
+                forward::route(ext, session, "answer_web_view_call", (id, &answer, Some(session)))
+                    .await?
+            {
+                webview::relayed(id, &answer, &by, taken);
+                return Ok(taken);
+            }
         }
-        Ok(artifact::webview::answer(id, answer))
+        Ok(webview::answer(&self.rt, id, answer, &by))
     }
 
     async fn fence_snapshot(

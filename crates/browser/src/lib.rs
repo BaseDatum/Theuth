@@ -410,9 +410,15 @@ impl Message<SystemOne> for Browsers {
 impl Message<agent::AgentEvent> for Browsers {
     type Reply = ();
 
+    /// 57 §2.1: a turn ending releases the browser checkpoint. 209 §4.6: a deleted session's
+    /// tile target goes.
     async fn handle(&mut self, e: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
-        if let agent::AgentEvent::TurnFinished { session, .. } = e {
-            self.systemone_done(session, "turn finished");
+        match e {
+            agent::AgentEvent::TurnFinished { session, .. } => {
+                self.systemone_done(session, "turn finished");
+            }
+            agent::AgentEvent::SessionDeleted { session } => tile::forget(&[session]),
+            _ => {}
         }
     }
 }
@@ -466,6 +472,7 @@ impl Message<CloseTree> for Browsers {
         // command channel. The thread (and with it the isolate's cookie jar
         // and storage) ends once any in-flight command finishes; we wait for
         // that off the mailbox, bounded, so a hung page cannot stall the ack.
+        tile::forget(&m.subtree);
         let exits: Vec<_> = m
             .subtree
             .iter()
