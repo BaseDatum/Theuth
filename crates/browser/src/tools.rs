@@ -81,8 +81,16 @@ impl Ctx {
     /// isolate through `browser_set_storage_state`. `browser.profile: off` leaves the isolate
     /// empty. A load that fails (store starting, vault not ready) records nothing and is tried
     /// again by a later call after a backoff; loads of one session wait on that session's guard
-    /// only. A failed apply is logged (without values) and the call goes on.
+    /// only. A failed apply is logged (without values) and the call goes on. First, the deletes a
+    /// forget or sign out everywhere queued for the isolate run (209 §6), so no call after the
+    /// change sends a forgotten cookie.
     async fn ensure_profile(&self, session: SessionId) -> anyhow::Result<()> {
+        if profile::has_pending(session) {
+            let guard = profile::guard(session);
+            let _held = guard.lock().await;
+            let apply = profile::take_pending(session);
+            self.apply_profile(session, apply).await?;
+        }
         if profile::active(session)
             || webprofile::mode(&self.rt) == webprofile::ProfileMode::Off
             || !profile::retry_due(session)
@@ -94,11 +102,12 @@ impl Ctx {
         if profile::active(session) || !profile::retry_due(session) {
             return Ok(());
         }
+        let basis_ms = webprofile::store::now_ms();
         let Some(load) = self.load_profile(None).await else {
             profile::failed(session);
             return Ok(());
         };
-        let apply = profile::loaded(session, load);
+        let apply = profile::loaded(session, load, basis_ms);
         self.apply_profile(session, apply).await?;
         profile::activate(session);
         Ok(())
@@ -143,7 +152,7 @@ impl Ctx {
     }
 
     /// 209 D4: before `browser_open` to `url`, apply its site's rows again when they changed
-    /// since this session applied them.
+    /// since this session applied them, or take the site out when the profile no longer has it.
     async fn refresh_profile(&self, session: SessionId, url: &str) -> anyhow::Result<()> {
         self.ensure_profile(session).await?;
         if !profile::active(session) {
@@ -152,10 +161,10 @@ impl Ctx {
         let Some(site) = profile::site_of_url(url) else {
             return Ok(());
         };
-        let Some(load) = self.load_profile(Some(vec![site])).await else {
+        let Some(load) = self.load_profile(Some(vec![site.clone()])).await else {
             return Ok(());
         };
-        let apply = profile::refreshed(session, load);
+        let apply = profile::refreshed(session, load, &[site]);
         self.apply_profile(session, apply).await
     }
 

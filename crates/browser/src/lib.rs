@@ -414,9 +414,11 @@ impl Message<agent::AgentEvent> for Browsers {
 impl Message<webprofile::WebProfileChanged> for Browsers {
     type Reply = ();
 
-    /// 209 D14: a site written to the profile makes acting calls on it credentialed.
+    /// 209 D14, §6: a site written to the profile makes acting calls on it credentialed; a site
+    /// forgotten, or a sign out everywhere, leaves the known sites and every session's isolate
+    /// before that session's next call ([`profile::changed`]). Here or on another engine.
     async fn handle(&mut self, e: webprofile::WebProfileChanged, _: &mut Context<Self, Self::Reply>) {
-        profile::know(e.sites);
+        profile::changed(e).await;
     }
 }
 

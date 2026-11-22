@@ -4,7 +4,8 @@
 
 use std::sync::Arc;
 
-use webprofile::{Cookie, CookieChange, OriginStorage, Profile, Push, caps, store};
+use kameo::actor::Spawn as _;
+use webprofile::{Cookie, CookieChange, OriginStorage, Profile, Push, WebProfileActor, caps, store};
 
 const SECRET: &str = "s3cr3t-session-value-0123456789";
 
@@ -29,6 +30,7 @@ fn push(changes: Vec<CookieChange>) -> Push {
         epoch: 0,
         changes,
         storage: vec![],
+        basis_ms: None,
     }
 }
 
@@ -63,7 +65,7 @@ async fn values_never_reach_debug_logs_summaries_or_the_file() {
             .await
             .unwrap(),
     );
-    let p = Profile::open(&dir.path().join(store::DB), vault)
+    let p = Profile::open(&dir.path().join(store::DB), vault.clone())
         .await
         .unwrap();
     let mut msg = push(vec![CookieChange::Set {
@@ -102,8 +104,38 @@ async fn values_never_reach_debug_logs_summaries_or_the_file() {
     ] {
         assert!(!shown.contains(SECRET), "{shown}");
     }
+
+    // 209 §4.4 `web_profile_pull`, the one answer with values: the owner's connection gets them
+    // through the RPC and the actor; no log line and no `Debug` of the answer does.
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let served = Profile::open(&dir.path().join(store::DB), vault.clone())
+        .await
+        .unwrap();
+    let actor = WebProfileActor::spawn(WebProfileActor::new(Some(rt.clone()), Ok(served)));
+    actor.register(webprofile::WEBPROFILE_ACTOR).unwrap();
+    let mut methods: jsonrpsee::Methods = webprofile::rpc_module(rpc_core::Server::new(rt))
+        .module
+        .into();
+    let (peer, _guard) = rpc_core::RpcPeer::open();
+    methods.extensions_mut().insert(peer);
+    let req = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "web_profile_pull",
+        "params": { "sites": ["app.example.com"] } });
+    let (resp, _) = methods.raw_json_request(&req.to_string(), 1).await.unwrap();
+    assert!(resp.get().contains(SECRET), "the owner's app gets the values");
+    let pulled = p.pull(None).await.unwrap();
+    assert_eq!(pulled.cookies[0].cookie.value, SECRET);
+    assert!(!format!("{pulled:?}").contains(SECRET));
+    // A push dropped after a forget logs what it dropped by count, never by value.
+    p.forget("example.com", "settings").await.unwrap();
+    p.push(push(vec![CookieChange::Set {
+        cookie: cookie("__Host-sid", SECRET, "app.example.com"),
+    }]))
+    .await
+    .unwrap();
+
     let logs = String::from_utf8(sink.0.lock().clone()).unwrap();
     assert!(logs.contains("refused"), "{logs}");
+    assert!(logs.contains("dropped"), "{logs}");
     assert!(!logs.contains(SECRET), "{logs}");
     // At rest: neither the value nor the site name is readable in the file.
     drop(p);

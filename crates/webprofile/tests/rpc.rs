@@ -133,6 +133,98 @@ async fn push_sites_and_stale_epoch_over_rpc() {
         .clone();
     assert_eq!(org["writer"], format!("tile:{}", "d".repeat(64)));
 
+    // 209 §4.4 `web_profile_pull` on the owner's connection: the site whole, values included,
+    // each cookie with its writer.
+    let pulled = call(
+        &methods,
+        "web_profile_pull",
+        json!({ "sites": ["app.example.com"] }),
+    )
+    .await;
+    let r = &pulled["result"];
+    assert_eq!(r["sites"], json!(["example.com"]), "{pulled}");
+    assert_eq!(r["epoch"], 0);
+    assert_eq!(r["profile"], "shared");
+    assert_eq!(r["cookies"].as_array().unwrap().len(), 1);
+    assert_eq!(r["cookies"][0]["name"], "__Host-sid");
+    assert_eq!(r["cookies"][0]["value"], "v1");
+    assert_eq!(r["cookies"][0]["host_only"], true);
+    assert_eq!(r["cookies"][0]["writer"], "tile:iPad");
+    assert_eq!(r["cookies"][0]["site"], "example.com");
+    assert_eq!(r["storage"][0]["origin"], "https://app.example.com");
+    assert_eq!(r["storage"][0]["local_storage"], json!([["k", "v"]]));
+    let every = call(&methods, "web_profile_pull", json!({})).await;
+    assert_eq!(
+        every["result"]["sites"],
+        json!(["example.com", "example.org"]),
+        "{every}"
+    );
+
+    // Pull, forget and clear answer only an owner's connection: nothing authenticated, or a
+    // share-link guest, is refused before the actor (and nothing is forgotten or cleared).
+    let bare: jsonrpsee::Methods = webprofile::rpc_module(rpc_core::Server::new(rt.clone()))
+        .module
+        .into();
+    let mut as_guest: jsonrpsee::Methods =
+        webprofile::rpc_module(rpc_core::Server::new(rt.clone()))
+            .module
+            .into();
+    let (guest, _guest_guard) = rpc_core::RpcPeer::open_guest([7; 32], [9; 32]);
+    as_guest.extensions_mut().insert(guest);
+    for (who, m) in [("no connection", &bare), ("a guest", &as_guest)] {
+        for (method, params) in [
+            ("web_profile_pull", json!({})),
+            ("web_profile_forget", json!({ "site": "example.org" })),
+            ("web_profile_clear", json!({})),
+        ] {
+            let r = call(m, method, params).await;
+            assert_eq!(
+                r["error"]["code"],
+                rpc_core::UNAUTHORIZED,
+                "{who} {method}: {r}"
+            );
+            assert!(r.get("result").is_none(), "{who} {method}: {r}");
+        }
+    }
+
+    // Forget one site (any host of it): gone from the list and from a pull, the other stays.
+    let forgot = call(
+        &methods,
+        "web_profile_forget",
+        json!({ "site": "www.example.org" }),
+    )
+    .await;
+    assert_eq!(
+        forgot["result"],
+        json!({ "site": "example.org", "epoch": 0 }),
+        "{forgot}"
+    );
+    let after = call(
+        &methods,
+        "web_profile_pull",
+        json!({ "sites": ["example.org"] }),
+    )
+    .await;
+    assert_eq!(after["result"]["sites"], json!(["example.org"]));
+    assert_eq!(after["result"]["cookies"], json!([]), "{after}");
+    let sites = call(&methods, "web_profile_sites", json!({})).await;
+    assert_eq!(sites["result"].as_array().unwrap().len(), 1, "{sites}");
+    let no_site = call(&methods, "web_profile_forget", json!({ "site": " " })).await;
+    assert_eq!(
+        no_site["error"]["message"], "invalid forget: no site",
+        "{no_site}"
+    );
+    let many = call(
+        &methods,
+        "web_profile_pull",
+        json!({ "sites": vec!["example.com"; 501] }),
+    )
+    .await;
+    assert_eq!(
+        many["error"]["message"], "invalid pull: 501 sites > 500",
+        "{many}"
+    );
+
     // A client cannot make up an epoch.
     let ahead = call(
         &methods,
@@ -163,20 +255,44 @@ async fn push_sites_and_stale_epoch_over_rpc() {
     assert_eq!(stale["error"]["message"], "stale-epoch", "{stale}");
     assert_eq!(stale["error"]["data"], json!({ "epoch": 2 }));
 
+    // 209 §4.4 `web_profile_clear` over RPC: the epoch goes up; a push under the old one is
+    // stale with the new epoch as data.
+    let cleared = call(&methods, "web_profile_clear", json!({})).await;
+    assert_eq!(cleared["result"], json!({ "epoch": 3 }), "{cleared}");
+    let old = call(
+        &methods,
+        "web_profile_push",
+        json!({ "device": "iPad", "epoch": 2, "changes": [] }),
+    )
+    .await;
+    assert_eq!(old["error"]["message"], "stale-epoch", "{old}");
+    assert_eq!(old["error"]["data"], json!({ "epoch": 3 }));
+
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while seen.lock().is_empty() {
+        while seen.lock().len() < 4 {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await
     .expect("WebProfileChanged published");
+    // The first push, the long-named device's push, the forget (naming the site) and the clear
+    // (the new epoch).
+    let heard = seen.lock().clone();
     assert_eq!(
-        seen.lock()[0],
+        heard[0],
         WebProfileChanged {
             sites: vec!["example.com".into()],
             epoch: 0
         }
     );
+    assert_eq!(
+        heard[2],
+        WebProfileChanged {
+            sites: vec!["example.org".into()],
+            epoch: 0
+        }
+    );
+    assert_eq!(heard[3].epoch, 3);
 }
 
 /// 209 D6: with `browser.profile: off` a push is a no-op the client can read (`profile: "off"`)
@@ -209,6 +325,7 @@ async fn off_answers_empty() {
                 path: "/".into(),
             }],
             storage: vec![],
+            basis_ms: None,
         })
         .await
         .unwrap();
@@ -218,4 +335,12 @@ async fn off_answers_empty() {
     );
     assert_eq!(wp.sites().await.unwrap(), vec![]);
     assert!(wp.load(None).await.is_err(), "no load while off");
+    let pulled = wp.pull(None).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&pulled).unwrap(),
+        json!({ "epoch": 0, "sites": [], "cookies": [], "storage": [], "profile": "off" })
+    );
+    // Off leaves rows until cleared: forget and clear still work.
+    assert_eq!(wp.forget("example.com").await.unwrap().site, "example.com");
+    assert_eq!(wp.clear().await.unwrap().epoch, 1);
 }

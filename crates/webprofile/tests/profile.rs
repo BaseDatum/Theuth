@@ -59,6 +59,7 @@ fn push(writer: &str, epoch: u64, changes: Vec<CookieChange>) -> Push {
         epoch,
         changes,
         storage: vec![],
+        basis_ms: None,
     }
 }
 
@@ -512,4 +513,262 @@ async fn rows_of_an_unknown_version_are_skipped() {
     ] {
         assert_eq!(names(&load.sites[0].jar), ["sid"]);
     }
+}
+
+fn at(writer: &str, basis_ms: Option<u64>, changes: Vec<CookieChange>) -> Push {
+    Push {
+        basis_ms,
+        ..push(writer, 0, changes)
+    }
+}
+
+fn pulled_names(r: &webprofile::PullResult) -> Vec<(&str, &str, &str)> {
+    r.cookies
+        .iter()
+        .map(|c| (c.site.as_str(), c.cookie.name.as_str(), c.writer.as_str()))
+        .collect()
+}
+
+/// 209 §4.4 `web_profile_pull` (D5): the asked sites answered whole, each cookie with its own
+/// row's writer (a client skips its own echoes), the snapshot with its origin; a site with
+/// nothing is still covered, so the client deletes what it holds of it; no site asked = all.
+#[tokio::test]
+async fn pull_answers_whole_sites_with_each_rows_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (p, _) = profile(dir.path()).await;
+    let mut first = push(
+        "tile:iPad",
+        0,
+        vec![
+            set(cookie("__Host-sid", SECRET, "app.example.com")),
+            set(cookie("pref", "dark", ".example.com")),
+            set(cookie("o", "1", "other.org")),
+        ],
+    );
+    first.storage = vec![OriginStorage {
+        origin: "https://app.example.com".into(),
+        local_storage: vec![("k".into(), "v".into())],
+        captured_ms: 1,
+    }];
+    p.push(first).await.unwrap();
+    p.push(push(
+        "obscura:engine-b",
+        0,
+        vec![set(cookie("agent", "2", "www.example.com"))],
+    ))
+    .await
+    .unwrap();
+
+    let r = p
+        .pull(Some(&["app.example.com".to_owned(), "nothing.test".to_owned()]))
+        .await
+        .unwrap();
+    assert_eq!(r.epoch, 0);
+    assert_eq!(r.sites, ["example.com", "nothing.test"]);
+    assert_eq!(
+        pulled_names(&r),
+        [
+            ("example.com", "__Host-sid", "tile:iPad"),
+            ("example.com", "agent", "obscura:engine-b"),
+            ("example.com", "pref", "tile:iPad"),
+        ]
+    );
+    let sid = &r.cookies[0];
+    assert_eq!(sid.cookie.value, SECRET);
+    assert!(sid.cookie.host_only && sid.cookie.http_only);
+    assert!(sid.updated_ms > 0);
+    assert_eq!(r.storage.len(), 1);
+    assert_eq!(r.storage[0].storage.origin, "https://app.example.com");
+    assert_eq!(r.storage[0].site, "example.com");
+    // The wire shape: the cookie's fields flat, plus site, writer and time.
+    let wire = serde_json::to_value(&r.cookies[1]).unwrap();
+    assert_eq!(wire["name"], "agent");
+    assert_eq!(wire["domain"], "www.example.com");
+    assert_eq!(wire["writer"], "obscura:engine-b");
+    assert_eq!(wire["site"], "example.com");
+    assert!(!format!("{r:?}").contains(SECRET), "Debug redacts");
+
+    let all = p.pull(None).await.unwrap();
+    assert_eq!(all.sites, ["example.com", "other.org"]);
+    assert_eq!(all.cookies.len(), 4);
+}
+
+/// 209 §4.4 `web_profile_forget`, §6: the site's rows are tombstoned, and neither a stale
+/// session's save (it read the profile before the forget) nor a client push made before the
+/// client applied the forget (within the quiet window) brings its cookies back. A sign-in after
+/// the window, and a session that read the profile after the forget, write again.
+#[tokio::test]
+async fn a_forgotten_site_does_not_come_back_from_stale_writers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (p, _) = profile(dir.path()).await;
+    p.push(push(
+        "tile:iPad",
+        0,
+        vec![
+            set(cookie("sid", SECRET, "example.com")),
+            set(cookie("keep", "1", "other.org")),
+        ],
+    ))
+    .await
+    .unwrap();
+    let session_read = store::now_ms();
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let forgot = store::now_ms();
+    assert_eq!(
+        p.forget_at("example.com", "settings", forgot)
+            .await
+            .unwrap(),
+        0
+    );
+    let gone = p.pull(Some(&["example.com".to_owned()])).await.unwrap();
+    assert_eq!(gone.sites, ["example.com"]);
+    assert!(gone.cookies.is_empty(), "{:?}", gone.cookies);
+    let listed: Vec<String> = p.sites().await.unwrap().into_iter().map(|s| s.site).collect();
+    assert_eq!(listed, ["other.org"], "the other site stays");
+    // Every row of the site is a tombstone; the marker names no site_id.
+    let site_id = p.site_id("example.com");
+    assert!(
+        rows(&p)
+            .await
+            .iter()
+            .filter(|r| r.1.as_deref() == Some(site_id.as_str()))
+            .all(|r| r.2.is_none())
+    );
+
+    // A stale session's save: it read the profile before the forget.
+    let stale = p
+        .push_at(
+            at(
+                "obscura:engine-b",
+                Some(session_read),
+                vec![set(cookie("sid", "refreshed-by-agent", "example.com"))],
+            ),
+            forgot + 10_000,
+        )
+        .await
+        .unwrap();
+    assert!(stale.sites.is_empty(), "{stale:?}");
+    // A client push before the client applied the forget.
+    let early = p
+        .push_at(
+            at(
+                "tile:iPad",
+                None,
+                vec![set(cookie("sid", "refreshed-in-tile", "example.com"))],
+            ),
+            forgot + 1_000,
+        )
+        .await
+        .unwrap();
+    assert!(early.sites.is_empty(), "{early:?}");
+    assert!(
+        p.pull(Some(&["example.com".to_owned()]))
+            .await
+            .unwrap()
+            .cookies
+            .is_empty()
+    );
+
+    // After the window, a new sign-in in the tile is the profile again; a session that read the
+    // profile after the forget may update it.
+    let later = forgot + caps::FORGET_QUIET_MS + 1_000;
+    p.push_at(
+        at(
+            "tile:iPad",
+            None,
+            vec![set(cookie("sid", "new-sign-in", "example.com"))],
+        ),
+        later,
+    )
+    .await
+    .unwrap();
+    p.push_at(
+        at(
+            "obscura:engine-b",
+            Some(later),
+            vec![set(cookie("agent", "2", "example.com"))],
+        ),
+        later + 1,
+    )
+    .await
+    .unwrap();
+    let back = p.pull(Some(&["example.com".to_owned()])).await.unwrap();
+    let mut got: Vec<(&str, &str)> = back
+        .cookies
+        .iter()
+        .map(|c| (c.cookie.name.as_str(), c.cookie.value.as_str()))
+        .collect();
+    got.sort_unstable();
+    assert_eq!(got, [("agent", "2"), ("sid", "new-sign-in")]);
+}
+
+/// 209 §4.4 `web_profile_clear`: the epoch goes up, every row is a tombstone, a push under the
+/// old epoch is `stale-epoch` with the new one.
+#[tokio::test]
+async fn clear_bumps_the_epoch_and_a_stale_push_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (p, _) = profile(dir.path()).await;
+    p.push(push(
+        "tile:iPad",
+        0,
+        vec![set(cookie("sid", SECRET, "example.com"))],
+    ))
+    .await
+    .unwrap();
+    assert_eq!(p.clear().await.unwrap(), 1);
+    assert_eq!(p.epoch().await.unwrap(), 1);
+    assert!(p.load(None).await.unwrap().sites.is_empty());
+    assert!(rows(&p).await.iter().all(|r| r.2.is_none()));
+    assert_eq!(
+        p.push(push(
+            "tile:iPad",
+            0,
+            vec![set(cookie("sid", SECRET, "example.com"))]
+        ))
+        .await,
+        Err(ProfileError::StaleEpoch { current: 1 })
+    );
+    p.push(push("tile:iPad", 1, vec![set(cookie("sid", "after", "example.com"))]))
+        .await
+        .unwrap();
+    assert_eq!(p.pull(None).await.unwrap().epoch, 1);
+    assert_eq!(p.clear().await.unwrap(), 2);
+}
+
+/// 209 §4.1 rotation: the moment the store sees a new mesh key it holds the old one; the vault
+/// cannot retire it until the rows moved; after the move the hold is gone, the old key retires,
+/// and every row still opens.
+#[tokio::test]
+async fn a_new_mesh_key_holds_the_old_one_until_the_rows_moved() {
+    let dir = tempfile::tempdir().unwrap();
+    let (p, vault) = profile(dir.path()).await;
+    assert!(!p.holding(), "open moved everything and let go");
+    p.push(push(
+        "tile:iPad",
+        0,
+        vec![set(cookie("sid", SECRET, "example.com"))],
+    ))
+    .await
+    .unwrap();
+    let other_dir = tempfile::tempdir().unwrap();
+    let other = secrets::Vault::open(other_dir.path(), secrets::KeyStore::File)
+        .await
+        .unwrap();
+    vault.adopt_keyring(other.keyring()).await.unwrap();
+    assert_eq!(vault.held_keys().len(), 2);
+    // The store notices the key (any call that names ids) and holds the old one at once.
+    p.site_id("example.com");
+    assert!(p.holding());
+    assert_eq!(p.under_retained_keys().await.unwrap(), 1);
+    let far = store::now_ms() + secrets::vault::RETIRE_GRACE_MS + 60_000;
+    vault.maintain(far).await.unwrap();
+    assert_eq!(vault.held_keys().len(), 2, "held: the row is still under it");
+    // The move (the plugin's watcher, or its minute tick) lets go.
+    p.maintain().await.unwrap();
+    assert!(!p.holding());
+    assert_eq!(p.under_retained_keys().await.unwrap(), 0);
+    vault.maintain(far).await.unwrap();
+    assert_eq!(vault.held_keys().len(), 1, "the old key retired");
+    let load = p.load(Some(&["example.com".to_owned()])).await.unwrap();
+    assert_eq!(load.sites[0].jar.cookies[0].value, SECRET);
 }

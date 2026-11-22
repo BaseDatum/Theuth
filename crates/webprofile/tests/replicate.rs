@@ -6,7 +6,11 @@
 //! - one row per cookie: two engines writing different cookies of one site while apart both keep
 //!   theirs, and a removal on one beats an older set on the other (B2);
 //! - a peer's rows reach B's bus as `WebProfileChanged` (209 D14 on every engine);
-//! - B's save merges back on A; sign out everywhere on A makes B's push stale.
+//! - B's save merges back on A; sign out everywhere on A makes B's push stale;
+//! - P2: a forget on A reaches B's bus naming the site, and a cookie B wrote before the forget,
+//!   which A had not seen, stays dead on both;
+//! - P2: a mesh key rotation across two engines — one adopting the new key late and writing
+//!   under the old one meanwhile — loses no row, and the old key retires on both.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -166,6 +170,7 @@ fn push(writer: &str, epoch: u64, changes: Vec<CookieChange>) -> Push {
         epoch,
         changes,
         storage: vec![],
+        basis_ms: None,
     }
 }
 
@@ -295,4 +300,169 @@ async fn per_cookie_rows_replicate_between_engines_with_their_own_vaults() {
             .await,
         Err(webprofile::ProfileError::StaleEpoch { current: 1 })
     );
+}
+
+/// An actor over its own store on `n`'s file, fed by `n`'s replica feed and vault changes, as
+/// the plugin wires it; `rt` publishes on a bus when given.
+fn serve(n: &Node, rt: Option<runtime::Runtime>, store: Profile) -> webprofile::Handle {
+    let actor = WebProfileActor::spawn(WebProfileActor::new(rt, Ok(store)));
+    tokio::spawn(webprofile::watch_replica(n.replica.clone(), actor.clone()));
+    tokio::spawn(webprofile::watch_keys(n.vault.clone(), actor.clone()));
+    webprofile::Handle::from_actor(actor)
+}
+
+async fn store_of(n: &Node) -> Profile {
+    Profile::open(&n.dir.path().join(store::DB), n.vault.clone())
+        .await
+        .unwrap()
+}
+
+/// Rows of `n`'s file that open only under a retained mesh key.
+async fn under_old_key(n: &Node) -> usize {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, sealed FROM web_sites WHERE sealed IS NOT NULL")
+            .fetch_all(n.profile.pool())
+            .await
+            .unwrap();
+    rows.iter()
+        .filter(|(id, sealed)| {
+            use base64::Engine as _;
+            let b = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(sealed)
+                .unwrap();
+            n.vault
+                .reseal_with_mesh_key(format!("web_sites\n{id}").as_bytes(), &b)
+                .is_some()
+        })
+        .count()
+}
+
+async fn pulled(wp: &webprofile::Handle) -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = wp
+        .pull(Some(vec!["example.com".into()]))
+        .await
+        .unwrap()
+        .cookies
+        .into_iter()
+        .map(|c| (c.cookie.name, c.cookie.value))
+        .collect();
+    v.sort();
+    v
+}
+
+/// 209 §4.4 `web_profile_forget` across engines: A forgets a site; B's bus hears it named (the
+/// marker row names it, the tombstones alone could not), B's rows of it are gone, and a cookie B
+/// wrote before the forget while apart — a row A never saw, so A has no tombstone for it — is
+/// dead on both when it arrives.
+#[tokio::test]
+async fn a_forget_reaches_the_other_engine_and_an_earlier_write_stays_dead() {
+    let a = node("A", None).await;
+    let b = node("B", Some(&a.vault)).await;
+    let set = |c: Cookie| CookieChange::Set { cookie: c };
+    write(&a, push("tile:iPad", 0, vec![set(cookie("sid", "from-a"))])).await;
+    write(&b, push("tile:Mac", 0, vec![set(cookie("late", "from-b"))])).await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let rt = runtime::Runtime::new(figment::Figment::new(), b.dir.path().to_path_buf());
+    webprofile::declare_wire(&rt).await.unwrap();
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let sink = Heard::spawn_with_mailbox(Heard(heard.clone()), runtime::subscriber_mailbox());
+    rt.subscribe::<Heard, WebProfileChanged>(&sink).await;
+    let b_wp = serve(&b, Some(rt), store_of(&b).await);
+    let a_wp = serve(&a, None, store_of(&a).await);
+    assert_eq!(
+        a_wp.forget("app.example.com").await.unwrap().site,
+        "example.com"
+    );
+    a.replica.flush().await.unwrap();
+
+    let late_id = store::Ids::of(&a.vault.mesh_key()).cookie("example.com", "late", "app.example.com", "/");
+    connect(&Arc::new(Switch::default()), [&a, &b]);
+    until("A received B's earlier row", async || {
+        sqlx::query_scalar::<_, String>("SELECT id FROM web_sites WHERE id = ?")
+            .bind(&late_id)
+            .fetch_optional(a.profile.pool())
+            .await
+            .unwrap()
+            .is_some()
+    })
+    .await;
+    until("B's bus hears the forgotten site", async || {
+        heard.lock().iter().any(|e| e.sites == ["example.com"])
+    })
+    .await;
+    until("B's rows of the site are gone", async || {
+        pulled(&b_wp).await.is_empty()
+    })
+    .await;
+    assert_eq!(pulled(&a_wp).await, vec![], "B's earlier write is dead on A");
+    assert!(a_wp.sites().await.unwrap().is_empty());
+    assert!(b_wp.sites().await.unwrap().is_empty());
+}
+
+/// 209 §4.1 rotation across two engines: A mints a new mesh key and moves its rows at once; B,
+/// still on the old key, writes a cookie; A moves B's row as it arrives (holding the old key
+/// meanwhile) so A's old key can retire without losing it; B adopts the new key late, moves its
+/// rows, and its old key retires too. Every cookie still opens on both.
+#[tokio::test]
+async fn a_key_rotation_across_two_engines_loses_no_row() {
+    let a = node("A", None).await;
+    let b = node("B", Some(&a.vault)).await;
+    let a_wp = serve(&a, None, store_of(&a).await);
+    let b_wp = serve(&b, None, store_of(&b).await);
+    connect(&Arc::new(Switch::default()), [&a, &b]);
+    let set = |c: Cookie| CookieChange::Set { cookie: c };
+    a_wp.push(push("tile:iPad", 0, vec![set(cookie("a", "from-a"))]))
+        .await
+        .unwrap();
+    a.replica.flush().await.unwrap();
+    until("B has A's cookie", async || {
+        pulled(&b_wp).await == [("a".to_owned(), "from-a".to_owned())]
+    })
+    .await;
+
+    // A rotates (183 §6.9): its watcher moves the rows to the new key's ids at once.
+    a.vault
+        .rotate("A", vec!["A".into(), "B".into()], vec![], 0, false)
+        .await
+        .unwrap();
+    assert_eq!(a.vault.held_keys().len(), 2);
+    until("A moved its rows", async || under_old_key(&a).await == 0).await;
+
+    // B has not adopted the new key: it writes under the old one; A moves the row on arrival.
+    b_wp.push(push("obscura:B", 0, vec![set(cookie("lag", "from-b"))]))
+        .await
+        .unwrap();
+    b.replica.flush().await.unwrap();
+    let both = vec![
+        ("a".to_owned(), "from-a".to_owned()),
+        ("lag".to_owned(), "from-b".to_owned()),
+    ];
+    until("A has B's row under the new key", async || {
+        under_old_key(&a).await == 0 && pulled(&a_wp).await == both
+    })
+    .await;
+    // The vault's grace is over: the old key retires on A, and nothing is lost.
+    let far = store::now_ms() + secrets::vault::RETIRE_GRACE_MS + 60_000;
+    a.vault.maintain(far).await.unwrap();
+    assert_eq!(a.vault.held_keys().len(), 1, "A's old key retired");
+    assert_eq!(pulled(&a_wp).await, both);
+
+    // B adopts the new key late: its watcher moves its rows; then its old key retires.
+    let new_key = a.vault.keyring().into_iter().next().unwrap();
+    assert!(b.vault.adopt_key(new_key).await.unwrap());
+    until("B moved its rows", async || under_old_key(&b).await == 0).await;
+    b.vault.maintain(far).await.unwrap();
+    assert_eq!(b.vault.held_keys().len(), 1, "B's old key retired");
+    assert_eq!(pulled(&b_wp).await, both);
+    assert_eq!(
+        a.profile.site_id("example.com"),
+        b.profile.site_id("example.com"),
+        "both name the site under the new key"
+    );
+    b.replica.flush().await.unwrap();
+    until("A still has both after B's moves arrive", async || {
+        pulled(&a_wp).await == both
+    })
+    .await;
 }

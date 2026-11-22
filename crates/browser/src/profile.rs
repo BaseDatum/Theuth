@@ -18,7 +18,15 @@
 //! the jar first, bounded ([`save_dropped`]). A save refused as `stale-epoch` (sign out
 //! everywhere happened) clears the isolate's profile cookies and loads again ([`reset`]).
 //! Cookies brought in by `browser_import_cookies` are remembered and never saved (209 §4.2, §11
-//! Q2).
+//! Q2). Each save names when the session read the whole profile (`basis_ms`), so a site forgotten
+//! since is not written back by it on any engine (209 §4.1 forget marker).
+//!
+//! Forget and sign out everywhere (209 §6, P2) reach live isolates through
+//! [`webprofile::WebProfileChanged`], local or replicated ([`changed`]): a site the profile no
+//! longer holds leaves the known sites and every session's baseline, and the deletes are queued
+//! for the isolate ([`take_pending`]); a newer epoch resets every session loaded under an older
+//! one. `Ctx` runs what is queued before the session's next call, so no call after the change
+//! sends a forgotten cookie. A save in between leaves the site out (it is no longer held).
 //!
 //! What a session holds is kept in a process-wide map, like `artifact`'s preview waits: the tools
 //! and the actor's drop path share it, and the registry's synchronous
@@ -33,6 +41,7 @@
 //! cookie, and a new cookie counts as host-only only when its name has the `__Host-` prefix.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -72,6 +81,8 @@ pub(crate) struct Loaded {
     active: bool,
     /// The profile epoch saves are made under.
     epoch: u64,
+    /// Unix ms just before the session's full load was read: the `basis_ms` of its saves.
+    basis_ms: u64,
     /// Per site: the newest row `updated_ms` applied.
     rows: HashMap<String, u64>,
     /// The cookies the profile holds for this isolate as far as it knows: loaded, re-applied or
@@ -98,9 +109,17 @@ static SESSIONS: LazyLock<Mutex<HashMap<SessionId, Loaded>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Sites the profile holds, as last seen in a load, a `web_profile_sites` listing or a
-/// [`webprofile::WebProfileChanged`] (local or replicated). Only grows until restart: forgetting
-/// is P2.
+/// [`webprofile::WebProfileChanged`] (local or replicated); a site the profile no longer holds
+/// leaves it ([`changed`]), and sign out everywhere empties it.
 static KNOWN: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(|| RwLock::new(HashSet::new()));
+
+/// The newest profile epoch a [`webprofile::WebProfileChanged`] named.
+static EPOCH: AtomicU64 = AtomicU64::new(0);
+
+/// Per session: `browser_set_storage_state` calls a forget or a sign out everywhere queued, run
+/// by `Ctx` before the session's next call ([`take_pending`]).
+static PENDING: LazyLock<Mutex<HashMap<SessionId, Vec<Value>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Per-session load guards: a second concurrent call of a session waits for the first's load,
 /// other sessions do not.
@@ -141,6 +160,7 @@ pub(crate) fn failed(session: SessionId) {
 pub(crate) fn take(session: SessionId) -> Option<Loaded> {
     GUARDS.lock().remove(&session);
     RETRY.lock().remove(&session);
+    PENDING.lock().remove(&session);
     SESSIONS.lock().remove(&session)
 }
 
@@ -149,11 +169,132 @@ pub(crate) fn know(sites: impl IntoIterator<Item = String>) {
     KNOWN.write().extend(sites);
 }
 
+/// Whether a forget or sign out everywhere left calls for `session`'s isolate.
+pub(crate) fn has_pending(session: SessionId) -> bool {
+    PENDING.lock().contains_key(&session)
+}
+
+/// The calls a forget or sign out everywhere queued for `session`'s isolate (209 §6): run them
+/// before its next call.
+pub(crate) fn take_pending(session: SessionId) -> Apply {
+    Apply {
+        calls: PENDING.lock().remove(&session).unwrap_or_default(),
+    }
+}
+
+fn queue(session: SessionId, calls: Vec<Value>) {
+    if !calls.is_empty() {
+        PENDING.lock().entry(session).or_default().extend(calls);
+    }
+}
+
+/// 209 §6 (P2): the profile changed, here or on another engine. A newer epoch (sign out
+/// everywhere) empties the known sites and resets every session loaded under an older one: its
+/// profile cookies are queued for deletion and it loads again. The named sites are read back: a
+/// site the profile no longer holds (forgotten) leaves the known sites and every session — its
+/// cookies and origins out of the baseline, their deletes queued — so neither a call nor a save
+/// of that session uses it again; a site that holds cookies is known. Without a readable profile
+/// the sites are only remembered (P1). Values never reach a log.
+pub(crate) async fn changed(e: webprofile::WebProfileChanged) {
+    if EPOCH.fetch_max(e.epoch, Ordering::SeqCst) < e.epoch {
+        KNOWN.write().clear();
+    }
+    let stale: Vec<(SessionId, Vec<Value>)> = {
+        let mut sessions = SESSIONS.lock();
+        sessions
+            .iter_mut()
+            .filter(|(_, l)| l.active && l.epoch < e.epoch)
+            .map(|(s, l)| (*s, unload(l)))
+            .collect()
+    };
+    for (session, calls) in stale {
+        tracing::info!(%session, epoch = e.epoch, "browser profile signed out everywhere; the session drops its profile cookies");
+        queue(session, calls);
+    }
+    if e.sites.is_empty() {
+        return;
+    }
+    let read = match webprofile::Handle::lookup() {
+        Some(profile) => profile.load(Some(e.sites.clone())).await.ok(),
+        None => None,
+    };
+    let Some(read) = read else {
+        know(e.sites);
+        return;
+    };
+    let held: HashSet<String> = read
+        .sites
+        .iter()
+        .filter(|s| !s.jar.cookies.is_empty())
+        .map(|s| s.jar.site.clone())
+        .collect();
+    let present: HashSet<String> = read.sites.into_iter().map(|s| s.jar.site).collect();
+    let named: HashSet<String> = e.sites.iter().map(|s| site_of(s)).collect();
+    let gone: HashSet<String> = named.difference(&present).cloned().collect();
+    {
+        let mut known = KNOWN.write();
+        for site in &named {
+            if held.contains(site) {
+                known.insert(site.clone());
+            } else {
+                known.remove(site);
+            }
+        }
+    }
+    if gone.is_empty() {
+        return;
+    }
+    let dropped: Vec<(SessionId, Vec<Value>)> = {
+        let mut sessions = SESSIONS.lock();
+        sessions
+            .iter_mut()
+            .map(|(s, l)| (*s, drop_sites(l, &gone)))
+            .filter(|(_, calls)| !calls.is_empty())
+            .collect()
+    };
+    for (session, calls) in dropped {
+        tracing::info!(%session, sites = ?gone, "browser profile sites forgotten; the session drops their cookies");
+        queue(session, calls);
+    }
+}
+
+/// Take `sites` out of `l` — rows, baseline cookies (imports stay) and origins — and return the
+/// calls that delete them from the isolate.
+fn drop_sites(l: &mut Loaded, sites: &HashSet<String>) -> Vec<Value> {
+    let mut gone = Vec::new();
+    l.baseline.retain(|c| {
+        let of = sites.contains(&site_of(&c.domain));
+        if of && !l.imported.contains_key(&key_of(c)) {
+            gone.push(removal_json(c));
+        }
+        !of
+    });
+    l.rows.retain(|site, _| !sites.contains(site));
+    let mut origins = Vec::new();
+    l.storage.retain(|origin, _| {
+        let of = webprofile::merge::origin_host(origin).is_some_and(|h| sites.contains(&site_of(&h)));
+        if of {
+            origins.push(json!({ "origin": origin, "localStorage": [] }));
+        }
+        !of
+    });
+    let mut calls = Vec::new();
+    if !gone.is_empty() {
+        calls.push(json!({ "state": { "cookies": gone } }));
+    }
+    if !origins.is_empty() {
+        calls.push(json!({ "state": { "origins": origins } }));
+    }
+    calls
+}
+
 /// 209 D14: whether an acting call on `site` acts with the user's sign-in: the session's load gave
 /// it cookies of `site`, or the profile is known to hold `site` (a session that has not loaded
 /// yet loads before acting).
 fn credentialed_site(session: SessionId, site: &str) -> bool {
-    KNOWN.read().contains(site)
+    // KNOWN is released before SESSIONS is taken: paths holding SESSIONS take KNOWN.
+    let known = KNOWN.read().contains(site);
+    known
         || SESSIONS
             .lock()
             .get(&session)
@@ -264,13 +405,14 @@ pub(crate) struct Apply {
     pub calls: Vec<Value>,
 }
 
-/// Record a full load for `session` and return the calls that apply it; the session counts as
-/// loaded once they ran ([`activate`]).
-pub(crate) fn loaded(session: SessionId, load: LoadedProfile) -> Apply {
+/// Record a full load for `session`, read at `basis_ms` (Unix ms taken just before the read), and
+/// return the calls that apply it; the session counts as loaded once they ran ([`activate`]).
+pub(crate) fn loaded(session: SessionId, load: LoadedProfile, basis_ms: u64) -> Apply {
     RETRY.lock().remove(&session);
     let mut sessions = SESSIONS.lock();
     let l = sessions.entry(session).or_default();
     l.epoch = load.epoch;
+    l.basis_ms = basis_ms;
     absorb(l, load)
 }
 
@@ -281,14 +423,30 @@ pub(crate) fn activate(session: SessionId) {
     }
 }
 
-/// Rows may have changed since `session` applied them: record `load` and return the calls that
-/// bring the isolate up to it. Sites not newer than the applied ones are skipped.
-pub(crate) fn refreshed(session: SessionId, load: LoadedProfile) -> Apply {
+/// Rows of `asked` may have changed since `session` applied them: record `load` and return the
+/// calls that bring the isolate up to it. Sites not newer than the applied ones are skipped; a
+/// site asked for that the profile no longer has (forgotten) is taken out of the session and
+/// deleted from the isolate.
+pub(crate) fn refreshed(session: SessionId, load: LoadedProfile, asked: &[String]) -> Apply {
     let mut sessions = SESSIONS.lock();
     let Some(l) = sessions.get_mut(&session).filter(|l| l.active) else {
         return Apply { calls: Vec::new() };
     };
-    absorb(l, load)
+    let absent: HashSet<String> = asked
+        .iter()
+        .map(|s| site_of(s))
+        .filter(|s| !load.sites.iter().any(|r| r.jar.site == *s))
+        .collect();
+    {
+        let mut known = KNOWN.write();
+        for site in &absent {
+            known.remove(site);
+        }
+    }
+    let gone: HashSet<String> = absent.into_iter().filter(|s| l.has_site(s)).collect();
+    let mut calls = drop_sites(l, &gone);
+    calls.extend(absorb(l, load).calls);
+    Apply { calls }
 }
 
 /// A save was refused as `stale-epoch` (209 §6: sign out everywhere happened elsewhere): forget
@@ -299,6 +457,12 @@ pub(crate) fn reset(session: SessionId) -> Apply {
     let Some(l) = sessions.get_mut(&session) else {
         return Apply { calls: Vec::new() };
     };
+    Apply { calls: unload(l) }
+}
+
+/// Forget what `l` was given (imports and the current page stay) and return the calls that
+/// delete its profile cookies from the isolate; the session loads again on its next call.
+fn unload(l: &mut Loaded) -> Vec<Value> {
     let gone: Vec<Value> = l
         .baseline
         .iter()
@@ -310,12 +474,11 @@ pub(crate) fn reset(session: SessionId) -> Apply {
         current: l.current.take(),
         ..Loaded::default()
     };
-    let calls = if gone.is_empty() {
+    if gone.is_empty() {
         Vec::new()
     } else {
         vec![json!({ "state": { "cookies": gone } })]
-    };
-    Apply { calls }
+    }
 }
 
 /// Fold every newer site of `load` into `l` and build the calls: set each row cookie (imported
@@ -441,6 +604,7 @@ struct Export {
 /// What one save sends and what the session's state becomes once it is applied.
 pub(crate) struct Save {
     epoch: u64,
+    basis_ms: u64,
     changes: Vec<webprofile::CookieChange>,
     storage: Vec<OriginStorage>,
     after: Vec<Cookie>,
@@ -526,6 +690,7 @@ pub(crate) fn plan(l: &Loaded, export: &str, now_ms: u64) -> Option<Save> {
     }
     Some(Save {
         epoch: l.epoch,
+        basis_ms: l.basis_ms,
         changes,
         storage,
         after,
@@ -578,6 +743,7 @@ async fn push(session: SessionId, save: &Save) -> Result<u64, Saved> {
         epoch: save.epoch,
         changes: save.changes.clone(),
         storage: save.storage.clone(),
+        basis_ms: Some(save.basis_ms),
     };
     match profile.push(msg).await {
         Ok(r) if r.profile == webprofile::ProfileMode::Off => Err(Saved::Skipped),
@@ -702,7 +868,7 @@ mod tests {
     }
 
     fn load(session: SessionId, epoch: u64, sites: Vec<LoadedSite>) -> Apply {
-        let apply = loaded(session, LoadedProfile { epoch, sites });
+        let apply = loaded(session, LoadedProfile { epoch, sites }, 1);
         activate(session);
         apply
     }
@@ -847,6 +1013,7 @@ mod tests {
                 epoch: 0,
                 sites: vec![row("example.com", 10, vec![a.clone()])],
             },
+            &["example.com".to_owned()],
         );
         assert!(same.calls.is_empty());
         let newer = refreshed(
@@ -855,12 +1022,63 @@ mod tests {
                 epoch: 0,
                 sites: vec![row("example.com", 11, vec![a])],
             },
+            &["example.com".to_owned()],
         );
         let cookies = newer.calls[0]["state"]["cookies"].as_array().unwrap();
         assert_eq!(cookies.len(), 2);
         assert_eq!(cookies[0]["name"], "b");
         assert_eq!(cookies[0]["expires"], 0);
         assert_eq!(cookies[1]["name"], "a");
+        take(session);
+    }
+
+    /// 209 §6: a site asked for that the profile no longer has (forgotten, the event missed) is
+    /// taken out of the session before its `browser_open` to it, its cookies and origins deleted
+    /// from the isolate; imports and other sites stay, and a save no longer holds it.
+    #[test]
+    fn refresh_drops_a_site_the_profile_forgot() {
+        let session = SessionId::new();
+        load(
+            session,
+            0,
+            vec![
+                row(
+                    "forgot-test.example",
+                    10,
+                    vec![cookie("sid", "0123456789", "app.forgot-test.example", true)],
+                ),
+                row(
+                    "kept-test.example",
+                    10,
+                    vec![cookie("k", "1", "kept-test.example", false)],
+                ),
+            ],
+        );
+        if let Some(l) = SESSIONS.lock().get_mut(&session) {
+            l.storage.insert(
+                "https://app.forgot-test.example".into(),
+                vec![("k".into(), "v".into())],
+            );
+        }
+        let apply = refreshed(
+            session,
+            LoadedProfile::default(),
+            &["app.forgot-test.example".to_owned()],
+        );
+        assert_eq!(apply.calls.len(), 2, "{:?}", apply.calls);
+        let gone = apply.calls[0]["state"]["cookies"].as_array().unwrap();
+        assert_eq!(
+            (gone[0]["name"].as_str(), gone[0]["expires"].as_i64()),
+            (Some("sid"), Some(0))
+        );
+        assert_eq!(
+            apply.calls[1]["state"]["origins"],
+            json!([{ "origin": "https://app.forgot-test.example", "localStorage": [] }])
+        );
+        let l = snapshot(session).unwrap();
+        assert!(!l.has_site("forgot-test.example"));
+        assert!(l.has_site("kept-test.example"));
+        assert!(!held(&l, "forgot-test.example"));
         take(session);
     }
 
@@ -968,7 +1186,7 @@ mod tests {
         assert!(retry_due(session));
         failed(session);
         assert!(!retry_due(session));
-        loaded(session, LoadedProfile::default());
+        loaded(session, LoadedProfile::default(), 1);
         assert!(retry_due(session), "a load clears the backoff");
         take(session);
     }

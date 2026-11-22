@@ -4,16 +4,18 @@
 //!
 //! Public surface consumed by other plugins:
 //! - the [`WEBPROFILE_ACTOR`] actor ([`WebProfileActor`]) and its messages [`Push`], [`Load`],
-//!   [`Sites`], [`CurrentEpoch`] — or the [`Handle`] wrapper (`browser`'s `Ctx` loads and saves
-//!   through it, 209 D4);
+//!   [`Pull`], [`Forget`], [`Clear`], [`Sites`], [`CurrentEpoch`] — or the [`Handle`] wrapper
+//!   (`browser`'s `Ctx` loads and saves through it, 209 D4);
 //! - the wire types [`Cookie`], [`CookieKey`], [`CookieChange`], [`OriginStorage`], [`SiteJar`],
-//!   [`PushResult`], [`SiteSummary`] (209 §4.1, §4.4);
+//!   [`PushResult`], [`SiteSummary`], [`PullResult`], [`PulledCookie`], [`PulledStorage`],
+//!   [`ForgetResult`], [`ClearResult`] (209 §4.1, §4.4);
 //! - the event [`WebProfileChanged`] (site names and the epoch, never values);
 //! - [`merge::diff`] (the per-cookie delta of 209 §4.2), [`site_of`] (eTLD+1), [`mode`] (config
 //!   `browser.profile`).
 //!
 //! Values never reach `Debug`, `tracing` or events: [`Cookie`] and [`OriginStorage`] print
-//! `[redacted]` for every value (209 §9, G3).
+//! `[redacted]` for every value (209 §9, G3). [`PullResult`] (`web_profile_pull`) is the one
+//! answer that carries values, to the owner's app only.
 
 use std::sync::Arc;
 
@@ -43,6 +45,9 @@ pub const PROFILE_FULL: &str = "profile full";
 pub const WRITER_TILE: &str = "tile:";
 /// Writer label prefix of a save from an agent browser: `obscura:<engine name>`.
 pub const WRITER_OBSCURA: &str = "obscura:";
+/// Writer label of the rows `web_profile_forget` and `web_profile_clear` write (the Settings
+/// screen; the RPCs name no device).
+pub const WRITER_SETTINGS: &str = "settings";
 
 /// Caps of 209 §4.1.
 pub mod caps {
@@ -69,6 +74,13 @@ pub mod caps {
     pub const COOKIE_VALUE: usize = 4096;
     /// A removed row (`sealed = NULL`) is deleted this long after its write, at open.
     pub const TOMBSTONE_MS: u64 = 30 * 24 * 3600 * 1000;
+    /// After `web_profile_forget`, sets of that site written this long after the forget by a
+    /// writer that names no read time (a tile, whose client may not have applied the forget yet)
+    /// are dead (209 §4.1 forget marker).
+    pub const FORGET_QUIET_MS: u64 = 60_000;
+    /// Sites one `web_profile_pull` may name at most (the answer is bounded by
+    /// [`PROFILE_BYTES`] anyway).
+    pub const PULL_SITES: usize = SITES;
 }
 
 /// One cookie with every attribute (209 D1, §4.1). `value` is a credential: `Debug` redacts it.
@@ -270,6 +282,84 @@ pub struct SiteSummary {
     pub writer: String,
 }
 
+/// One cookie of `web_profile_pull` (209 §4.4, D5): the [`Cookie`] fields, plus its site and
+/// the writer and time of its row, so a client skips echoes of its own pushes (`tile:<device>`).
+/// `Debug` redacts the value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PulledCookie {
+    /// The cookie.
+    #[serde(flatten)]
+    pub cookie: Cookie,
+    /// Lower-case eTLD+1 it belongs to.
+    pub site: String,
+    /// `tile:<device>` | `obscura:<engine>` of its row.
+    pub writer: String,
+    /// Unix ms of its row's write.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub updated_ms: u64,
+}
+
+/// One origin's localStorage snapshot of `web_profile_pull`, with its site and row writer and time.
+/// `Debug` redacts the values.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PulledStorage {
+    /// The snapshot.
+    #[serde(flatten)]
+    pub storage: OriginStorage,
+    /// Lower-case eTLD+1 of the origin.
+    pub site: String,
+    /// `tile:<device>` | `obscura:<engine>` of its row.
+    pub writer: String,
+    /// Unix ms of its row's write.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub updated_ms: u64,
+}
+
+/// `web_profile_pull`'s result (209 §4.4, D5): the profile's cookies and snapshots of `sites`.
+/// Every site in `sites` is answered whole: a client sets what it gets and deletes from its store
+/// the cookies of those sites it did not get (a forgotten site answers nothing). `Debug` redacts
+/// every value; nothing logs it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PullResult {
+    /// The current profile epoch.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub epoch: u64,
+    /// The sites this answer covers, sorted: the asked ones as registrable domains, or every live
+    /// site when none were asked. A cookie of the client's store belongs to a site when its domain
+    /// (lower case, no leading `.`) is the site or ends with `.` and the site.
+    pub sites: Vec<String>,
+    /// Every live cookie of those sites, sorted by site, then name, domain and path.
+    pub cookies: Vec<PulledCookie>,
+    /// Every localStorage snapshot of those sites, sorted by origin.
+    pub storage: Vec<PulledStorage>,
+    /// `"shared"`, or `"off"` when `browser.profile: off`: then nothing else is answered.
+    #[serde(default)]
+    pub profile: ProfileMode,
+}
+
+/// `web_profile_forget`'s result (209 §4.4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ForgetResult {
+    /// The registrable domain forgotten (the asked host's eTLD+1).
+    pub site: String,
+    /// The current profile epoch.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub epoch: u64,
+}
+
+/// `web_profile_clear`'s result (209 §4.4): the new epoch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ClearResult {
+    /// The profile epoch after the clear; pushes under an older one are `stale-epoch`.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub epoch: u64,
+}
+
 /// One live site as [`Load`] answers it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadedSite {
@@ -326,6 +416,9 @@ pub enum ProfileError {
     Full,
     /// The push breaks a cap of one push or holds a malformed cookie; nothing was written.
     Invalid(String),
+    /// A pull or forget the profile refuses before any work; the text is the whole message
+    /// (`invalid pull: …`, `invalid forget: …`).
+    Rejected(String),
     /// No store or no vault yet (starting), or `browser.profile: off` for a load.
     Unavailable(String),
 }
@@ -337,6 +430,7 @@ impl std::fmt::Display for ProfileError {
             Self::UnknownEpoch { .. } => f.write_str(UNKNOWN_EPOCH),
             Self::Full => f.write_str(PROFILE_FULL),
             Self::Invalid(why) => write!(f, "invalid push: {why}"),
+            Self::Rejected(why) => f.write_str(why),
             Self::Unavailable(why) => write!(f, "browser profile unavailable: {why}"),
         }
     }
@@ -407,6 +501,10 @@ pub struct Push {
     pub changes: Vec<CookieChange>,
     /// localStorage snapshots.
     pub storage: Vec<OriginStorage>,
+    /// Unix ms when the writer last read the whole profile (an agent session's load; `None` for
+    /// a tile). A site forgotten after it is not written again by this push, and a row it wrote
+    /// that reaches an engine after the forget is dead there (209 §4.1 forget marker).
+    pub basis_ms: Option<u64>,
 }
 
 /// Read live rows: every one (`sites: None`) or those named.
@@ -423,6 +521,27 @@ pub struct Sites;
 /// The current profile epoch.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CurrentEpoch;
+
+/// `web_profile_pull` (209 §4.4, D5): the live cookies and snapshots of `sites` (any hosts,
+/// grouped by registrable domain), or of every site.
+#[derive(Clone, Debug, Default)]
+pub struct Pull {
+    /// Sites to answer; `None` = all.
+    pub sites: Option<Vec<String>>,
+}
+
+/// `web_profile_forget` (209 §4.4, §6): tombstone every row of the site of `site` and mark it
+/// forgotten, so a stale save or push does not write it back.
+#[derive(Clone, Debug)]
+pub struct Forget {
+    /// A host or registrable domain.
+    pub site: String,
+}
+
+/// `web_profile_clear` (209 §4.4, §6): sign out everywhere — the epoch goes up by one and every
+/// row is tombstoned.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Clear;
 
 /// Housekeeping, told by the plugin every minute: when the mesh key changed since the store last
 /// looked, every row moves to the ids of the new key ([`Profile::maintain`], 209 §4.1).
@@ -456,6 +575,14 @@ impl WebProfileActor {
         if self.off() {
             return Err(ProfileError::Unavailable("browser.profile is off".into()));
         }
+        self.profile
+            .as_ref()
+            .map_err(|e| ProfileError::Unavailable(e.clone()))
+    }
+
+    /// The store whatever `browser.profile` says: forget and clear work while it is off (209 D6:
+    /// off leaves rows as they are until cleared).
+    fn store(&self) -> Result<&Profile, ProfileError> {
         self.profile
             .as_ref()
             .map_err(|e| ProfileError::Unavailable(e.clone()))
@@ -518,6 +645,63 @@ impl Message<CurrentEpoch> for WebProfileActor {
     }
 }
 
+impl Message<Pull> for WebProfileActor {
+    type Reply = Result<PullResult, ProfileError>;
+    /// At most [`caps::PULL_SITES`] named sites (`invalid pull: …` otherwise, before any work);
+    /// `browser.profile: off` answers nothing with `profile: "off"` (209 D6).
+    async fn handle(&mut self, msg: Pull, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if let Some(sites) = &msg.sites
+            && sites.len() > caps::PULL_SITES
+        {
+            return Err(ProfileError::Rejected(format!(
+                "invalid pull: {} sites > {}",
+                sites.len(),
+                caps::PULL_SITES
+            )));
+        }
+        if self.off() {
+            let epoch = match &self.profile {
+                Ok(p) => p.epoch().await.unwrap_or_default(),
+                Err(_) => 0,
+            };
+            return Ok(PullResult {
+                epoch,
+                profile: ProfileMode::Off,
+                ..PullResult::default()
+            });
+        }
+        self.profile()?.pull(msg.sites.as_deref()).await
+    }
+}
+
+impl Message<Forget> for WebProfileActor {
+    type Reply = Result<ForgetResult, ProfileError>;
+    /// Tombstones the site's rows on this engine (replication carries them to the others) and
+    /// publishes [`WebProfileChanged`] naming it, also with `browser.profile: off`.
+    async fn handle(&mut self, msg: Forget, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let site = site_of(&msg.site);
+        if site.is_empty() {
+            return Err(ProfileError::Rejected("invalid forget: no site".into()));
+        }
+        let epoch = self.store()?.forget(&site, WRITER_SETTINGS).await?;
+        self.publish(vec![site.clone()], epoch).await;
+        Ok(ForgetResult { site, epoch })
+    }
+}
+
+impl Message<Clear> for WebProfileActor {
+    type Reply = Result<ClearResult, ProfileError>;
+    /// Sign out everywhere, also with `browser.profile: off`; publishes [`WebProfileChanged`] with
+    /// the sites that were live and the new epoch.
+    async fn handle(&mut self, _: Clear, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let p = self.store()?;
+        let was: Vec<String> = p.sites().await?.into_iter().map(|s| s.site).collect();
+        let epoch = p.clear().await?;
+        self.publish(was, epoch).await;
+        Ok(ClearResult { epoch })
+    }
+}
+
 impl Message<Maintain> for WebProfileActor {
     type Reply = ();
     async fn handle(&mut self, _: Maintain, _: &mut Context<Self, Self::Reply>) {
@@ -537,6 +721,11 @@ impl Message<Replicated> for WebProfileActor {
             Ok(Some((sites, epoch))) => self.publish(sites, epoch).await,
             Ok(None) => {}
             Err(e) => tracing::debug!("webprofile: replicated rows not read: {e}"),
+        }
+        // A lagging engine's rows under a key this engine already moved off: re-keyed now, while
+        // the old key is still held (209 §4.1 rotation).
+        if let Err(e) = p.rekey_replicated(msg.0.as_deref()).await {
+            tracing::warn!("webprofile: replicated rows not re-keyed: {e}");
         }
     }
 }
@@ -577,6 +766,24 @@ impl Handle {
     /// [`Sites`].
     pub async fn sites(&self) -> Result<Vec<SiteSummary>, ProfileError> {
         self.0.ask(Sites).await.map_err(send_err)
+    }
+
+    /// [`Pull`].
+    pub async fn pull(&self, sites: Option<Vec<String>>) -> Result<PullResult, ProfileError> {
+        self.0.ask(Pull { sites }).await.map_err(send_err)
+    }
+
+    /// [`Forget`].
+    pub async fn forget(&self, site: impl Into<String>) -> Result<ForgetResult, ProfileError> {
+        self.0
+            .ask(Forget { site: site.into() })
+            .await
+            .map_err(send_err)
+    }
+
+    /// [`Clear`].
+    pub async fn clear(&self) -> Result<ClearResult, ProfileError> {
+        self.0.ask(Clear).await.map_err(send_err)
     }
 
     /// [`CurrentEpoch`].
@@ -623,6 +830,20 @@ pub async fn watch_replica(handle: replica::ReplicaHandle, actor: ActorRef<WebPr
     }
 }
 
+/// Tell `actor` [`Maintain`] after every change of the vault (a peer's key frame, a rotation, a
+/// pairing adopting a keyring): a new mesh key is noticed at once, so the rows move to it and the
+/// old key is held ([`secrets::RetireHold`]) until they did — well before the vault's 10-minute
+/// retire grace can end (209 §4.1 rotation). Runs until the vault or the actor ends.
+pub async fn watch_keys(vault: Arc<secrets::Vault>, actor: ActorRef<WebProfileActor>) {
+    let mut changes = vault.watch_changes();
+    drop(vault);
+    while changes.changed().await.is_ok() {
+        if actor.tell(Maintain).await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Declare the wire contract ([`WebProfileChanged`]) before producers start.
 pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     use wire::RuntimeWire as _;
@@ -660,7 +881,11 @@ impl runtime::Plugin for WebProfilePlugin {
             if let Err(e) = &profile {
                 tracing::warn!("webprofile: {e}; the browser profile is off");
             }
+            let keys = profile.as_ref().ok().map(|p| p.vault().clone());
             let _ = actor.tell(Opened(profile)).await;
+            if let Some(vault) = keys {
+                tokio::spawn(watch_keys(vault, actor.clone()));
+            }
             let mut tick = tokio::time::interval(MAINTAIN_EVERY);
             tick.tick().await;
             loop {
