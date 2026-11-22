@@ -98,7 +98,8 @@ pub struct GraphNode {
     /// The harness (`agents.yaml` key) of an ACP session; `None` for theuth sessions.
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub agent: Option<String>,
-    /// The session's model id ("" for boundary nodes).
+    /// The session's model id ("" for boundary nodes). A harness child shows
+    /// the model its harness reports (`harness_model`), never the harness name.
     pub model: String,
     /// The root's project.
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
@@ -710,7 +711,11 @@ fn node_of(
             .then(|| s.name.clone())
             .flatten(),
         agent: s.agent.clone(),
-        model: s.model.clone(),
+        model: if s.agent.is_some() {
+            s.harness_model.clone().unwrap_or_default()
+        } else {
+            s.model.clone()
+        },
         project: s.project.clone(),
         desk: s.desk.clone(),
         activity,
