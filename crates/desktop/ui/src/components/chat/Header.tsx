@@ -51,7 +51,8 @@ import { CostDialog, CostPill } from './CostPill'
 import { HeaderMenu, MenuRow, useHeaderMenuClose } from './HeaderMenu'
 import { ModelDialog, ModelMenu, ModelRow } from './ModelMenu'
 import { DraftMemory, MemoryBadge, MemoryPanel } from './MemoryPanel'
-import { BrowserIndicator } from './Indicators'
+import { BrowserButton, openTarget, useBrowserTargets } from './BrowserTargets'
+import { nativeWebViews } from '@/lib/web-view-native'
 import { SessionMenu } from './SessionMenu'
 import { MessagingSheet } from './MessagingSheet'
 import { ToolsSheet } from './ToolsSheet'
@@ -61,7 +62,7 @@ import { surfaceOf } from './slash'
 const HEADER_REQUIREMENTS: Partial<Record<HeaderId, Requirements>> = {
   search: searchRequirements, memory: memoryRequirements, model: modelRequirements,
   desktop: vmRequirements, context: contextRequirements, cost: sessionCostRequirements,
-  terminals: terminalRequirements, browser: browserRequirements, artifacts: artifactRequirements,
+  terminals: terminalRequirements, artifacts: artifactRequirements,
   codemap: codemapRequirements, pending: approvalsRequirements, menu: sessionMenuRequirements,
 }
 
@@ -249,6 +250,20 @@ export function Header({
   const toggleMemory = () =>
     host === null ? setMemory((o) => !o) : memoryTile ? closeTile(tileId('memory', host)) : void openMemoryTile(host)
   const openBrowser = (session: string) => (host === null ? useSessions.getState().setBrowserLive(session, true) : void openBrowserTile(host))
+  // The globe's targets: the agent's headless browser (where this engine serves it) and the chat's `show_web` pages,
+  // closed ones included (`useBrowserTargets`); the item is gated here, not by `HEADER_REQUIREMENTS`, since a page needs no `browser_*`.
+  const targets = useBrowserTargets(session ?? '', !!session && !!browser && supports(discovery, browserRequirements))
+  const navigate = useNavigate()
+  const openBrowserTarget = (t: (typeof targets)[number]) => {
+    if (!session) return
+    openTarget(t, {
+      session,
+      host,
+      full: isMobile && nativeWebViews(),
+      openAgent: () => openBrowser(session),
+      route: (w) => void navigate({ to: '/web/$id', params: { id: w.id }, search: { url: w.url, title: w.title } }),
+    })
+  }
   // 183 §4.5: the session's effective value on its owner (pin, else that machine's `tools.approvals`), the ⋯ menu's
   // reader (its setters invalidate the `['approvals', session]` prefix; a flip of this engine's switch re-reads);
   // this engine's own switch until it answers, or with the owner offline.
@@ -274,7 +289,7 @@ export function Header({
    * The one panel button the compact bar keeps: artifacts (the session's output surface, with its count) over the
    * live browser over terminals (a job detail); the others move behind the chevron.
    */
-  const panel = artifacts?.size ? 'artifacts' : codemap ? 'codemap' : browser ? 'browser' : terminals ? 'terminals' : null
+  const panel = artifacts?.size ? 'artifacts' : codemap ? 'codemap' : targets.length ? 'browser' : terminals ? 'terminals' : null
   const { bar, menu } = layout(headerOrder(panel, canPopout() && !popped, chat, !!observed).filter(item => !HEADER_REQUIREMENTS[item.id] || supports(discovery, HEADER_REQUIREMENTS[item.id]!)), tier)
 
   const render: Record<HeaderId, (mode: Mode) => ReactNode> = {
@@ -349,19 +364,7 @@ export function Header({
     context: (mode) => (session ? <ContextMeter session={session} memory={row?.memory} row={mode === 'row'} compact={mode === 'bar'} /> : null),
     cost: (mode) => (session ? <CostPill session={session} row={mode === 'row'} onOpen={() => setCost(true)} /> : null),
     terminals: (mode) => (session ? <TerminalButton session={session} row={mode === 'row'} onOpen={() => (host === null ? setTerminal(true) : void openTerminalsTile(host))} /> : null),
-    browser: (mode) =>
-      !session || !browser ? null : mode === 'row' ? (
-        <MenuRow icon={<BrowserIndicator live={browserBusy} className="text-fg-secondary" />} label="Live browser" onSelect={() => openBrowser(session)} />
-      ) : (
-        <Button
-          variant="ghost"
-          className="size-9 rounded-lg text-fg-secondary"
-          aria-label="Live browser"
-          onClick={() => openBrowser(session)}
-        >
-          <BrowserIndicator live={browserBusy} size={20} />
-        </Button>
-      ),
+    browser: (mode) => (session ? <BrowserButton targets={targets} busy={browserBusy} row={mode === 'row'} onOpen={openBrowserTarget} /> : null),
     artifacts: (mode) => (session ? <Artifacts session={session} row={mode === 'row'} /> : null),
     codemap: (mode) => (session && codemap ? <CodeMapButton session={session} row={mode === 'row'} /> : null),
     approvalsOff: (mode) =>
