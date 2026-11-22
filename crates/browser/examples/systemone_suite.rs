@@ -218,6 +218,7 @@ async fn main() -> anyhow::Result<()> {
         cfg: bcfg,
         rt,
         pending: Default::default(),
+        targets: Default::default(),
     });
 
     let mut rows = Vec::new();
