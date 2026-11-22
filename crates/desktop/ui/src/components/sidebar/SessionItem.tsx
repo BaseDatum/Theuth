@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Brain, Check, Cog, Eye, type LucideIcon, MoreHorizontal, Network, PencilLine, Shrink, Timer, Wrench } from 'lucide-react'
+import { Archive, Brain, Check, Cog, Eye, type LucideIcon, MoreHorizontal, Network, PencilLine, Shrink, Timer, Trash2, Wrench } from 'lucide-react'
 import { type ComponentType, memo, useState } from 'react'
 import { toast } from 'sonner'
 import {
@@ -39,6 +39,7 @@ import { openMeeting, useMeetingForSession } from '@/lib/meeting-link'
 import { canPopout, openPopout } from '@/lib/popout'
 import { useApi, queryKeys } from '@/lib/rpc'
 import type { SelectMode } from '@/lib/selection'
+import { useRowSwipe } from '@/lib/use-row-swipe'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { type Activity, type SessionSlice, shownActivity, useSessionField, useSessions } from '@/store/sessions'
@@ -300,6 +301,9 @@ export const SessionItem = memo(function SessionItem({
     }
   }
 
+  // Touch: swipe left (right to left) archives; swipe right opens the same Delete confirmation as the menu.
+  const swipe = useRowSwipe({ onSwipeLeft: () => void archive(), onSwipeRight: () => setConfirming(true) })
+
   const archive = async () => {
     try {
       await routed(id, () => api.archive_session(id, !archived))
@@ -320,6 +324,11 @@ export const SessionItem = memo(function SessionItem({
 
   return (
     <div className="group/menu-item group/popout-row relative">
+      {swipe.dx !== 0 && (
+        <div aria-hidden className={cn('absolute inset-0 flex items-center rounded-[10px] px-3', swipe.dx > 0 ? 'justify-start bg-danger-bg text-danger' : 'justify-end bg-warning-bg text-warning')}>
+          {swipe.dx > 0 ? <Trash2 className="size-4" /> : <Archive className="size-4" />}
+        </div>
+      )}
       {editing !== null ? (
         <Input
           autoFocus
@@ -335,7 +344,7 @@ export const SessionItem = memo(function SessionItem({
           className="h-9 rounded-[10px] text-sm"
         />
       ) : (
-        <>
+        <div {...swipe.handlers} style={swipe.style} className="relative rounded-[10px] bg-sidebar">
           <SidebarMenuButton
             asChild
             isActive={active}
@@ -444,7 +453,7 @@ export const SessionItem = memo(function SessionItem({
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
-        </>
+        </div>
       )}
     </div>
   )
