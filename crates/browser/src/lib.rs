@@ -161,7 +161,10 @@ pub fn warmup(cfg: &BrowserConfig) {
     // only live isolate — indexes past its pages in `Deserializer::ReadReadOnlyHeapRef` and libc++
     // aborts the process (crash of 2026-11-22 12:32:51). Leaking this one isolate pins obscura's
     // read-only heap for the process lifetime. It is exited and idle; it costs one bare page's heap.
-    // Test: tests/v8_isolates.rs.
+    // Since fork branch theuth/sync-2026-11-22b obscura-js also builds its snapshot with
+    // `--no-extensible-ro-snapshot` (no read-only promotion), so its read-only heap is the built-in
+    // one and creation order no longer matters. The leak stays as belt and braces, in case that flag
+    // is lost in a future obscura sync. Test: tests/v8_isolates.rs.
     std::mem::forget(obscura_js::runtime::ObscuraJsRuntime::new());
     tracing::info!(ms = started.elapsed().as_millis(), "browser warmup done");
 }
