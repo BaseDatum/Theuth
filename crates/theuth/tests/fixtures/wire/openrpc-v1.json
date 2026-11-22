@@ -123564,6 +123564,21 @@
         ],
         "type": "object"
       },
+      "method.webprofile.output.ProfileMode": {
+        "description": "Config `browser.profile` (209 D6): `shared` (default) or `off` (no push, load or save; rows stay).",
+        "oneOf": [
+          {
+            "const": "shared",
+            "description": "One profile for the tile and every agent browser of the mesh.",
+            "type": "string"
+          },
+          {
+            "const": "off",
+            "description": "Nothing is pushed, loaded or saved.",
+            "type": "string"
+          }
+        ]
+      },
       "method.webprofile.output.PushResult": {
         "description": "`web_profile_push`'s result (209 §4.4).",
         "properties": {
@@ -123579,8 +123594,17 @@
             "minimum": 0,
             "type": "integer"
           },
+          "profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.webprofile.output.ProfileMode"
+              }
+            ],
+            "default": "shared",
+            "description": "`\"shared\"`, or `\"off\"` when `browser.profile: off` made the push a no-op (209 D6): the\nclient stops pushing until it reads `\"shared\"` again."
+          },
           "sites": {
-            "description": "Sites whose row was written, sorted.",
+            "description": "Sites whose rows were written, sorted.",
             "items": {
               "type": "string"
             },
@@ -123590,7 +123614,8 @@
         "required": [
           "applied",
           "sites",
-          "epoch"
+          "epoch",
+          "profile"
         ],
         "type": "object"
       },
@@ -123633,6 +123658,21 @@
         ],
         "type": "object"
       },
+      "method.webprofile.receiver.ProfileMode": {
+        "description": "Config `browser.profile` (209 D6): `shared` (default) or `off` (no push, load or save; rows stay).",
+        "oneOf": [
+          {
+            "const": "shared",
+            "description": "One profile for the tile and every agent browser of the mesh.",
+            "type": "string"
+          },
+          {
+            "const": "off",
+            "description": "Nothing is pushed, loaded or saved.",
+            "type": "string"
+          }
+        ]
+      },
       "method.webprofile.receiver.PushResult": {
         "description": "`web_profile_push`'s result (209 §4.4).",
         "properties": {
@@ -123648,8 +123688,17 @@
             "minimum": 0,
             "type": "integer"
           },
+          "profile": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.webprofile.receiver.ProfileMode"
+              }
+            ],
+            "default": "shared",
+            "description": "`\"shared\"`, or `\"off\"` when `browser.profile: off` made the push a no-op (209 D6): the\nclient stops pushing until it reads `\"shared\"` again."
+          },
           "sites": {
-            "description": "Sites whose row was written, sorted.",
+            "description": "Sites whose rows were written, sorted.",
             "items": {
               "type": "string"
             },
