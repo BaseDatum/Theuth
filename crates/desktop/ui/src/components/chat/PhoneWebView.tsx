@@ -80,7 +80,7 @@ function Page({ id }: { id: string }) {
           <RotateCw className={cn('size-5', view.loading && 'animate-spin')} />
         </Button>
         {/* 16 px: iOS zooms the page into a smaller focused field. */}
-        <AddressField id={id} live={live} current={current} className="mx-0.5 h-9 text-[16px] md:text-[16px]" />
+        <AddressField id={id} live={live} current={current} compact className="mx-0.5 h-9 px-2 text-[16px] md:text-[16px]" />
         <Button variant="ghost" size="icon" className={icon} aria-label="Open in Safari" onClick={() => openInBrowser(current)}>
           <ExternalLink className="size-5" />
         </Button>

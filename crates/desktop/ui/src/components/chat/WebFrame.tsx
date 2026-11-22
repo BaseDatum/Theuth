@@ -166,11 +166,13 @@ export function useLiveFrame(id: string) {
 }
 
 /** The address field (205 §4.4): Enter navigates an http(s) address (`httpUrl`); anything else marks the field and
- * stays. `current` follows the page: the shell's state event, or the navigation having been accepted. */
-export function AddressField({ id, live, current, className }: { id: string; live: boolean; current: string; className?: string }) {
+ * stays. `current` follows the page: the shell's state event, or the navigation having been accepted. `compact` (the
+ * phone, 209 §7): no dictation mic in the narrow field, a URL keyboard, and the field lets go once it navigated, so the
+ * keyboard goes down over the page. */
+export function AddressField({ id, live, current, className, compact = false }: { id: string; live: boolean; current: string; className?: string; compact?: boolean }) {
   const [draft, setDraft] = useState<string | null>(null)
   const [invalid, setInvalid] = useState(false)
-  const go = (input: string) => {
+  const go = (input: string, field: HTMLInputElement) => {
     const url = httpUrl(input)
     if (!url) {
       setInvalid(true)
@@ -178,6 +180,7 @@ export function AddressField({ id, live, current, className }: { id: string; liv
     }
     setDraft(null)
     setInvalid(false)
+    if (compact) field.blur()
     if (live) native.navigate(id, url).then(() => useWebViews.getState().patch(id, { url, current: url }), warn('web_view_navigate'))
     else useWebViews.getState().patch(id, { url, current: url })
   }
@@ -188,6 +191,7 @@ export function AddressField({ id, live, current, className }: { id: string; liv
       title={invalid ? 'Only http and https addresses open here' : undefined}
       className={cn('min-w-0 flex-1 font-mono', className)}
       spellCheck={false}
+      {...(compact && { dictate: false, inputMode: 'url' as const, enterKeyHint: 'go' as const, autoCapitalize: 'off', autoCorrect: 'off' })}
       value={draft ?? current}
       onChange={(e) => {
         setDraft(e.target.value)
@@ -198,7 +202,7 @@ export function AddressField({ id, live, current, className }: { id: string; liv
         setInvalid(false)
       }}
       onKeyDown={(e) => {
-        if (e.key === 'Enter' && draft !== null && draft.trim()) go(draft)
+        if (e.key === 'Enter' && draft !== null && draft.trim()) go(draft, e.currentTarget)
         else if (e.key === 'Escape') {
           setDraft(null)
           setInvalid(false)

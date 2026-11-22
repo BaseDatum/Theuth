@@ -233,8 +233,11 @@ export function installWebViewEvents(): () => void {
       const old = useWebViews.getState().views[id]
       if (!old) return
       const title = s.title || old.title
-      useWebViews.getState().patch(id, { current: s.url, title, loading: s.loading })
-      if (old.session) forward.push({ session: old.session, view: webLeaf(id), url: s.url, title, loading: s.loading })
+      // A view with no URL yet (a load that never committed, as a LAN host that does not answer) reports `''`: it is
+      // still at the address it was asked for, which the field keeps showing.
+      const url = s.url || old.current
+      useWebViews.getState().patch(id, { current: url, title, loading: s.loading })
+      if (old.session) forward.push({ session: old.session, view: webLeaf(id), url, title, loading: s.loading })
     }),
   )
   keep(
