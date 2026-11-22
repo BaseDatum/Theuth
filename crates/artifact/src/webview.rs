@@ -152,12 +152,76 @@ struct Tile {
     /// `false` while only `show_web` has spoken for it: no client reported it yet.
     reported: bool,
     at: Instant,
+    /// ms since epoch of the latest `show_web` that opened or re-targeted it; `None` for a tile
+    /// only a client reported (the engine restarted under an open tile). Client reports keep it.
+    opened_ms: Option<u64>,
 }
 
 /// Tiles by session, then by id. Process-wide like `preview`'s pending map: the RPC handler and
 /// the tool live in different actors and share nothing else.
 static TILES: LazyLock<Mutex<HashMap<SessionId, BTreeMap<String, Tile>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Bumped whenever a tile opens, closes, is forgotten or reports another address or title: the
+/// inbox (`roster::attention`) watches it to re-derive its `web_view` items.
+static CHANGES: LazyLock<tokio::sync::watch::Sender<u64>> =
+    LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
+fn changed() {
+    CHANGES.send_modify(|n| *n = n.wrapping_add(1));
+}
+
+/// A receiver that sees every later change to the tiles (coalesced, like any `watch`).
+#[must_use]
+pub fn watch_tiles() -> tokio::sync::watch::Receiver<u64> {
+    CHANGES.subscribe()
+}
+
+/// One tile a `show_web` opened and the user has not closed: the inbox's `web_view` item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenTile {
+    /// The session that opened it.
+    pub session: SessionId,
+    /// Frame identity (205 D4).
+    pub id: String,
+    /// The page's address now (the client's report, else the `show_web` address); may be empty.
+    pub url: String,
+    /// The page's title now; may be empty.
+    pub title: String,
+    /// `host[:port]` of `url`; empty without an address.
+    pub host: String,
+    /// ms since epoch of the latest `show_web` for it.
+    pub opened_ms: u64,
+}
+
+/// Every open tile a `show_web` opened (client-only tiles are left out), newest first.
+#[must_use]
+pub fn open_tiles() -> Vec<OpenTile> {
+    let mut out: Vec<OpenTile> = TILES
+        .lock()
+        .iter()
+        .flat_map(|(s, m)| {
+            m.iter().filter_map(move |(id, t)| {
+                Some(OpenTile {
+                    session: *s,
+                    id: id.clone(),
+                    url: t.url.clone(),
+                    title: t.title.clone(),
+                    host: Url::parse(&t.url).map(|u| host_port(&u)).unwrap_or_default(),
+                    opened_ms: t.opened_ms?,
+                })
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.opened_ms.cmp(&a.opened_ms).then_with(|| a.id.cmp(&b.id)));
+    out
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
 
 /// Most tiles remembered across all sessions; the least recently updated goes first.
 const MAX_TILES: usize = 512;
@@ -177,23 +241,35 @@ pub fn record_state(s: WebViewState) -> WebViewStateReply {
                 all.remove(&s.session);
             }
         }
+        drop(all);
+        changed();
         return WebViewStateReply::default();
     }
     let url = match Url::parse(&s.url) {
         Ok(u) if matches!(u.scheme(), "http" | "https") && s.url.len() <= MAX_URL => s.url,
         _ => String::new(),
     };
+    let title = clean_title(&s.title);
+    let (opened_ms, same) = TILES
+        .lock()
+        .get(&s.session)
+        .and_then(|m| m.get(&id))
+        .map_or((None, false), |t| (t.opened_ms, t.url == url && t.title == title));
     put(
         s.session,
         id,
         Tile {
             url,
-            title: clean_title(&s.title),
+            title,
             loading: s.loading,
             reported: true,
             at: Instant::now(),
+            opened_ms,
         },
     );
+    if !same {
+        changed();
+    }
     WebViewStateReply::default()
 }
 
@@ -208,8 +284,10 @@ fn opened(session: SessionId, id: &str, url: &str, title: &str) {
             loading: true,
             reported: false,
             at: Instant::now(),
+            opened_ms: Some(now_ms()),
         },
     );
+    changed();
 }
 
 /// The sessions ended (deleted, or their tree closed): what was known of their tiles goes.
@@ -218,6 +296,8 @@ pub fn forget(sessions: &[SessionId]) {
     for s in sessions {
         all.remove(s);
     }
+    drop(all);
+    changed();
 }
 
 fn put(session: SessionId, id: String, tile: Tile) {
@@ -1194,6 +1274,48 @@ mod tests {
         for bad in ["", "web:", "web:a b", "web:../x", &"a".repeat(65)] {
             assert_eq!(view_id(bad), None, "{bad}");
         }
+    }
+
+    /// 205 inbox: `open_tiles` lists what `show_web` opened with its open time, follows the client's
+    /// reports for address and title without moving that time, leaves out client-only tiles, drops
+    /// closed ones, and every such change is seen by `watch_tiles`.
+    #[test]
+    fn open_tiles_follow_show_web_reports_and_close() {
+        let s = SessionId::new();
+        let mine = || open_tiles().into_iter().filter(|t| t.session == s).collect::<Vec<_>>();
+        let mut rx = watch_tiles();
+        rx.borrow_and_update();
+        opened(s, "00000000000000c1", "http://localhost:5173/", "localhost:5173");
+        assert!(rx.has_changed().unwrap());
+        let first = mine();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].host, "localhost:5173");
+        let at = first[0].opened_ms;
+        assert!(at > 0);
+
+        rx.borrow_and_update();
+        let report = |view: &str, url: &str, title: &str, closed: bool| {
+            record_state(WebViewState {
+                session: s,
+                view: view.into(),
+                url: url.into(),
+                title: title.into(),
+                loading: false,
+                closed,
+            });
+        };
+        report("web-00000000000000c1", "http://localhost:5173/cart", "Cart", false);
+        assert!(rx.has_changed().unwrap());
+        let t = &mine()[0];
+        assert_eq!((t.url.as_str(), t.title.as_str(), t.opened_ms), ("http://localhost:5173/cart", "Cart", at));
+        // The same page reported again keeps its open time.
+        report("web-00000000000000c1", "http://localhost:5173/cart", "Cart", false);
+        assert_eq!(mine()[0].opened_ms, at);
+        // A tile only a client knows (the engine restarted under it) makes no item.
+        report("web:00000000000000c2", "http://localhost:8080/", "Other", false);
+        assert_eq!(mine().len(), 1);
+        report("web:00000000000000c1", "", "", true);
+        assert!(mine().is_empty());
     }
 
     /// 209 D9: `show_web` seeds the tile, the client's `web_view_state` replaces it, and

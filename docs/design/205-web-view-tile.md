@@ -253,3 +253,33 @@ Cancel → `null`) as native alerts over the tile; a `window.open` two seconds a
 page. Untested: the content-process reload (no way to kill the process on demand), the 5 s timeout, the
 replaced-view path (not reachable from the UI), rotation, Stage Manager window resizing, the on-screen keyboard
 shifting Tauri's scroll view while a tile shows, memory with several views, and a real device.
+
+## 10. In the inbox (2026-11-22)
+
+Every `show_web` page is also an Inbox item (207's list), kind `web_view`, label "web page".
+
+- **Source.** `artifact::webview` keeps, per tile, `opened_ms` (wall clock of the latest `show_web` for it; a
+  client's `web_view_state` report keeps it) and publishes nothing new: a process-wide `watch` (`watch_tiles`) is
+  bumped when a tile opens, closes, is forgotten (session deleted, tree closed) or reports another address or title.
+  `open_tiles()` lists the tiles a `show_web` opened (a tile only a client reported — the engine restarted under it —
+  makes no item). The Attention actor watches that channel (one recheck per 250 ms burst) and `gather` reads
+  `open_tiles()`.
+- **Item.** Id `web_view:<tile id>`: the tile id is `sha256(session ‖ origin)` (D4), so the same origin in the same
+  chat stays one item. Title: the page's current title, else its `host[:port]`; `detail`: the current address;
+  `session` the opener (lineage, project, path as every session item); `waiting_since_ms` none; `at_ms` = `opened_ms`.
+- **Score.** Base class Shown (120), no live bonus (the page waits on nobody), task and age points as usual — always
+  below an approval or a question. No alert.
+- **Lifetime.** Dismiss and snooze are 207's hidden kinds (versioned): a later `show_web` for the same origin moves
+  `opened_ms` and the item is back. It leaves when the tile closes (`web_view_state{closed}`), its session is
+  deleted, or the engine restarts (tiles are memory-only on both sides).
+- **Wire.** `AttentionKind` gains `web_view` (an output enum member: the classifier rates it `ReviewRequired`; the
+  consumers' fallback is documented — the desktop UI renders unknown kinds with the plain screen, the companions
+  decode them to `.other`). No new field: the address rides in `detail`.
+- **Detail pane.** `components/attention/WebViewScreen.tsx`: Source, title and address, then the page — the frame's
+  own native view `web-<id>` laid over the pane through `useNativeLayer` (the tile's machinery), so leaving the item
+  or the page hides it and the chat's tile takes it back when shown — and a footer: Open in chat (the session's
+  route, then the tile beside it), Pop out, Open in browser, Copy URL, Reload, Snooze, Dismiss. A pop-out window
+  holding the page leaves a "This page is open in its own window" face. Without a native layer (a browser, the dev
+  fixture) the pane shows `FrameFace`: the address with **Open in browser** (D7), the size the page would be.
+- **Not verified in the Tauri app**: the native view over the inbox pane (position under the graph region and the
+  header, hide on item change, the chat tile taking it back) is read from the tile's code, not seen.
