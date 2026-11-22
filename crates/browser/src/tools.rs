@@ -128,7 +128,10 @@ impl Ctx {
     }
 
     /// Run the `browser_set_storage_state` calls of one load, refresh or reset, each bounded by
-    /// [`APPLY_WAIT`] so a hung page cannot hold the session's load forever.
+    /// [`APPLY_WAIT`] so a hung page cannot hold the session's load forever. When they set
+    /// cookies, the isolate's jar is read back (as bounded) and only the cookies it took stay in
+    /// the session's baseline ([`profile::confirm`]): one obscura refused is never saved back as
+    /// removed (209 §4.2).
     async fn apply_profile(&self, session: SessionId, apply: profile::Apply) -> anyhow::Result<()> {
         for args in apply.calls {
             let sent = tokio::time::timeout(
@@ -146,6 +149,23 @@ impl Ctx {
                     }
                     Err(e) => tracing::info!(%session, "browser profile apply failed: {e}"),
                 },
+            }
+        }
+        if apply.set.is_empty() {
+            return Ok(());
+        }
+        let export = tokio::time::timeout(
+            APPLY_WAIT,
+            self.send(session, "browser_storage_state", json!({})),
+        )
+        .await;
+        match export {
+            Ok(r) => match r? {
+                Ok(v) if !text_of(&v).1 => profile::confirm(session, &text_of(&v).0, &apply.set),
+                _ => tracing::info!(%session, "browser profile read-back after the apply failed"),
+            },
+            Err(_) => {
+                tracing::info!(%session, "browser profile read-back after the apply timed out")
             }
         }
         Ok(())

@@ -3,9 +3,12 @@
 //! tools, and a loopback HTTP server that records the `Cookie` header it receives. One test, so
 //! the actor registers once per binary.
 //!
-//! The profile changes "on another engine": the rows are written straight into the store and the
-//! `WebProfileChanged` the engine's own profile actor publishes for replicated rows (tested in
-//! `crates/webprofile/tests/replicate.rs`) is handed to the `Browsers` actor as the bus would.
+//! The events travel as in the engine: the profile actor publishes `WebProfileChanged` on a
+//! `Runtime`'s bus and the `Browsers` actor is subscribed to it as the plugin subscribes it
+//! (`browser::subscribe`). The forget happens "on another engine": its rows are written straight
+//! into the file (as replication would) and the profile actor is told which rows changed
+//! (`Replicated`, as the replica feed tells it), so it reads the forgotten site from the marker
+//! row and publishes it; sign out everywhere goes through the profile actor itself.
 //!
 //! - a stale session (loaded before the forget) saving a refreshed cookie of the forgotten site
 //!   does not write it back;
@@ -25,7 +28,16 @@ use runtime::SessionId;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tools::{DynTool, ToolCx, ToolOutput};
-use webprofile::{Cookie, CookieChange, Push, WebProfileActor, WebProfileChanged};
+use webprofile::{Cookie, CookieChange, Push, WebProfileActor};
+
+/// Wait until `f` holds (an event handled on the bus), at most 10 s.
+async fn until(what: &str, f: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !f() {
+        assert!(Instant::now() < deadline, "timed out: {what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
 
 const LOOPBACK_SECRET: &str = "loopback-secret-0123456789";
 
@@ -210,12 +222,15 @@ async fn forget_and_sign_out_reach_live_isolates_before_their_next_call() {
             .await
             .unwrap(),
     );
-    let store = webprofile::Profile::open(&dir.path().join(webprofile::store::DB), vault)
-        .await
-        .unwrap();
-    let wp = WebProfileActor::spawn(WebProfileActor::new(None, Ok(store)));
+    let db = dir.path().join(webprofile::store::DB);
+    let store = webprofile::Profile::open(&db, vault.clone()).await.unwrap();
+    // This engine's bus: the profile actor publishes on it; `Browsers` listens as in the plugin.
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    webprofile::declare_wire(&rt).await.unwrap();
+    browser::declare_wire(&rt).await.unwrap();
+    let wp = WebProfileActor::spawn(WebProfileActor::new(Some(rt.clone()), Ok(store)));
     wp.register(webprofile::WEBPROFILE_ACTOR).unwrap();
-    let profile = webprofile::Handle::from_actor(wp);
+    let profile = webprofile::Handle::from_actor(wp.clone());
 
     // The user signed in on the tile: a loopback site's session and an example.com cookie.
     profile
@@ -233,15 +248,16 @@ async fn forget_and_sign_out_reach_live_isolates_before_their_next_call() {
         .await
         .expect("tile push");
 
-    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
-    let actor = Browsers::spawn(Browsers::new(cfg.clone()));
+    let actor =
+        Browsers::spawn_with_mailbox(Browsers::new(cfg.clone()), runtime::subscriber_mailbox());
+    browser::subscribe(&rt, &actor).await;
     let kit = Kit {
         data_dir: rt.data_dir.clone(),
-        tools: browser::tools::all(actor.clone(), cfg.clone(), rt),
+        tools: browser::tools::all(actor.clone(), cfg.clone(), rt.clone()),
     };
     let (base, seen) = echo_server().await;
     let open = kit.tool("browser_open");
-
+    let loopback = json!({ "url": format!("{base}/x") });
     // Session A (stays live) and session S (will be stale) load the profile.
     let (a, s) = (SessionId::new(), SessionId::new());
     kit.touch(a).await;
@@ -261,10 +277,12 @@ async fn forget_and_sign_out_reach_live_isolates_before_their_next_call() {
             .is_some_and(|c| c.contains(LOOPBACK_SECRET)),
         "signed in before the forget"
     );
-    assert!(open.credentialed(a, &json!({ "url": format!("{base}/x") })));
+    assert!(open.credentialed(a, &loopback));
 
-    // Another engine forgets the loopback site; this engine's event has not arrived yet.
-    assert_eq!(profile.forget("127.0.0.1").await.unwrap().site, "127.0.0.1");
+    // Another engine forgets the loopback site: its rows land in this engine's file, and the
+    // replica feed has not told this engine's profile actor yet.
+    let elsewhere = webprofile::Profile::open(&db, vault.clone()).await.unwrap();
+    elsewhere.forget("127.0.0.1", "settings").await.unwrap();
     // S's site refreshes the forgotten cookie and sets one of a held site; S closes and saves.
     // The held site's cookie is written, the forgotten one is not: S read the profile before
     // the forget.
@@ -278,18 +296,17 @@ async fn forget_and_sign_out_reach_live_isolates_before_their_next_call() {
         "a stale session's save does not bring the forgotten site back"
     );
 
-    // The event arrives (the bus of this engine, fed by the replicated rows).
-    actor
-        .ask(WebProfileChanged {
-            sites: vec!["127.0.0.1".into()],
-            epoch: 0,
-        })
+    // The replica feed tells the profile actor which rows changed (the forget marker): it reads
+    // the site from it and publishes `WebProfileChanged` on the bus, which `Browsers` handles.
+    let marker = webprofile::store::Ids::of(&vault.mesh_key()).forget("127.0.0.1");
+    wp.tell(webprofile::Replicated(Some(vec![marker])))
         .await
         .unwrap();
-    assert!(
-        !open.credentialed(a, &json!({ "url": format!("{base}/x") })),
-        "acting on the forgotten site is no longer credentialed"
-    );
+    until(
+        "acting on the forgotten site is no longer credentialed",
+        || !open.credentialed(a, &loopback),
+    )
+    .await;
     // A's next call is not an open of that site; the cookie is gone after it, the other stays.
     kit.touch(a).await;
     let state = export(&actor, a).await;
@@ -306,18 +323,15 @@ async fn forget_and_sign_out_reach_live_isolates_before_their_next_call() {
     );
     assert!(open.credentialed(a, &json!({ "url": "https://example.com/" })));
 
-    // Sign out everywhere: the epoch goes up; A drops its profile cookies before its next call
-    // and loads again (nothing); a client push under the old epoch is stale.
+    // Sign out everywhere through this engine's profile actor: the new epoch reaches `Browsers`
+    // on the bus; A drops its profile cookies before its next call and loads again (nothing); a
+    // client push under the old epoch is stale.
     let epoch = profile.clear().await.unwrap().epoch;
     assert_eq!(epoch, 1);
-    actor
-        .ask(WebProfileChanged {
-            sites: vec!["example.com".into()],
-            epoch,
-        })
-        .await
-        .unwrap();
-    assert!(!open.credentialed(a, &json!({ "url": "https://example.com/" })));
+    until("sign out everywhere reached the browser", || {
+        !open.credentialed(a, &json!({ "url": "https://example.com/" }))
+    })
+    .await;
     kit.touch(a).await;
     let state = export(&actor, a).await;
     assert!(!has(&state, "pref"), "{state}");

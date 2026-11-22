@@ -36,7 +36,8 @@ pub fn expired(c: &Cookie, now_s: i64) -> bool {
 /// Check and normalise `msg` before any work (209 §4.4): at most [`caps::PUSH_CHANGES`] changes
 /// and [`caps::PUSH_STORAGE`] snapshots; the writer cut to its prefix and
 /// [`caps::DEVICE_CHARS`] characters; every cookie with a name, a path from `/`, a value of at
-/// most [`caps::COOKIE_VALUE`] bytes, and a domain cookies may be scoped to ([`cookie_host`]),
+/// most [`caps::COOKIE_VALUE`] bytes, a `same_site` of `Strict`, `Lax`, `None` (any case, stored
+/// in that spelling) or `""` (unknown), and a domain cookies may be scoped to ([`cookie_host`]),
 /// written lower case without a leading `.` (a leading `.` makes the cookie `host_only: false`).
 /// Errors name the change by index, never a value.
 pub fn validate(msg: &mut Push) -> Result<(), ProfileError> {
@@ -68,6 +69,14 @@ pub fn validate(msg: &mut Push) -> Result<(), ProfileError> {
                         caps::COOKIE_VALUE
                     )));
                 }
+                cookie.same_site = match cookie.same_site.trim().to_ascii_lowercase().as_str() {
+                    "strict" => "Strict",
+                    "lax" => "Lax",
+                    "none" => "None",
+                    "" => "",
+                    _ => return Err(bad("same_site is not Strict, Lax, None or empty")),
+                }
+                .to_owned();
                 if cookie.domain.trim().starts_with('.') {
                     cookie.host_only = false;
                 }

@@ -22,11 +22,18 @@
 //! since is not written back by it on any engine (209 §4.1 forget marker).
 //!
 //! Forget and sign out everywhere (209 §6, P2) reach live isolates through
-//! [`webprofile::WebProfileChanged`], local or replicated ([`changed`]): a site the profile no
-//! longer holds leaves the known sites and every session's baseline, and the deletes are queued
-//! for the isolate ([`take_pending`]); a newer epoch resets every session loaded under an older
-//! one. `Ctx` runs what is queued before the session's next call, so no call after the change
-//! sends a forgotten cookie. A save in between leaves the site out (it is no longer held).
+//! [`webprofile::WebProfileChanged`], local or replicated ([`changed`], run one event at a time
+//! on its own task, never on the `Browsers` actor's turn): a site the profile no longer holds
+//! leaves the known sites and every session's baseline, and the deletes are queued for the
+//! isolate ([`take_pending`]); a newer epoch resets every session loaded under an older one.
+//! `Ctx` runs what is queued before the session's next call, so no call after the change sends a
+//! forgotten cookie. A save in between leaves the site out (it is no longer held).
+//!
+//! SameSite: a stored `""` (never known: WebKit cannot tell `None` from unspecified, and Apple's
+//! stack sends such a cookie cross-site) goes into obscura as `None` when the cookie is `Secure`,
+//! else as `Lax`, so a tile's cross-site sign-in cookie keeps working here. Only cookies obscura
+//! actually took count as loaded ([`confirm`], read back after the import): a cookie it refused
+//! (`None` without `Secure`, a `__Host-` rule) is never reported as removed by a later save.
 //!
 //! What a session holds is kept in a process-wide map, like `artifact`'s preview waits: the tools
 //! and the actor's drop path share it, and the registry's synchronous
@@ -179,6 +186,7 @@ pub(crate) fn has_pending(session: SessionId) -> bool {
 pub(crate) fn take_pending(session: SessionId) -> Apply {
     Apply {
         calls: PENDING.lock().remove(&session).unwrap_or_default(),
+        ..Apply::default()
     }
 }
 
@@ -190,11 +198,13 @@ fn queue(session: SessionId, calls: Vec<Value>) {
 
 /// 209 §6 (P2): the profile changed, here or on another engine. A newer epoch (sign out
 /// everywhere) empties the known sites and resets every session loaded under an older one: its
-/// profile cookies are queued for deletion and it loads again. The named sites are read back: a
-/// site the profile no longer holds (forgotten) leaves the known sites and every session — its
-/// cookies and origins out of the baseline, their deletes queued — so neither a call nor a save
-/// of that session uses it again; a site that holds cookies is known. Without a readable profile
-/// the sites are only remembered (P1). Values never reach a log.
+/// profile cookies are queued for deletion and it loads again. The named sites are read back
+/// (also with `browser.profile: off`): a site the profile no longer holds (forgotten) leaves the
+/// known sites and every session — its cookies and origins out of the baseline, their deletes
+/// queued — so neither a call nor a save of that session uses it again; a site that holds cookies
+/// or a localStorage snapshot is known. When the profile cannot be read the named sites leave the
+/// known sites (the event may be a forget; a session's next load learns them again). Values never
+/// reach a log.
 pub(crate) async fn changed(e: webprofile::WebProfileChanged) {
     if EPOCH.fetch_max(e.epoch, Ordering::SeqCst) < e.epoch {
         KNOWN.write().clear();
@@ -214,27 +224,28 @@ pub(crate) async fn changed(e: webprofile::WebProfileChanged) {
     if e.sites.is_empty() {
         return;
     }
-    let read = match webprofile::Handle::lookup() {
-        Some(profile) => profile.load(Some(e.sites.clone())).await.ok(),
-        None => None,
-    };
-    let Some(read) = read else {
-        know(e.sites);
-        return;
-    };
-    let held: HashSet<String> = read
-        .sites
-        .iter()
-        .filter(|s| !s.jar.cookies.is_empty())
-        .map(|s| s.jar.site.clone())
-        .collect();
-    let present: HashSet<String> = read.sites.into_iter().map(|s| s.jar.site).collect();
     let named: HashSet<String> = e.sites.iter().map(|s| site_of(s)).collect();
+    let read = match webprofile::Handle::lookup() {
+        Some(profile) => profile.load(Some(e.sites.clone())).await,
+        None => Err(ProfileError::Unavailable("no browser profile".into())),
+    };
+    let read = match read {
+        Ok(read) => read,
+        Err(err) => {
+            tracing::info!(sites = ?named, "browser profile sites not read back ({err}); they leave the known sites");
+            let mut known = KNOWN.write();
+            for site in &named {
+                known.remove(site);
+            }
+            return;
+        }
+    };
+    let present: HashSet<String> = read.sites.into_iter().map(|s| s.jar.site).collect();
     let gone: HashSet<String> = named.difference(&present).cloned().collect();
     {
         let mut known = KNOWN.write();
         for site in &named {
-            if held.contains(site) {
+            if present.contains(site) {
                 known.insert(site.clone());
             } else {
                 known.remove(site);
@@ -255,6 +266,28 @@ pub(crate) async fn changed(e: webprofile::WebProfileChanged) {
     for (session, calls) in dropped {
         tracing::info!(%session, sites = ?gone, "browser profile sites forgotten; the session drops their cookies");
         queue(session, calls);
+    }
+}
+
+/// Hand `e` to the `Browsers` actor's event worker ([`changed`], one event at a time and in
+/// order, off the actor's turn), starting it on first use.
+pub(crate) fn changed_later(
+    worker: &mut Option<tokio::sync::mpsc::UnboundedSender<webprofile::WebProfileChanged>>,
+    e: webprofile::WebProfileChanged,
+) {
+    let tx = worker.get_or_insert_with(|| {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Some(e) = rx.recv().await {
+                changed(e).await;
+            }
+        });
+        tx
+    });
+    if let Err(e) = tx.send(e) {
+        // The worker ended (its runtime is gone): start a new one with this event.
+        *worker = None;
+        changed_later(worker, e.0);
     }
 }
 
@@ -393,9 +426,13 @@ pub(crate) fn imported(session: SessionId, cookies: &[Value]) {
 
 /// The calls that put a loaded profile into an isolate: `browser_set_storage_state` arguments,
 /// cookies first (one call, so a storage quota error cannot cost the sign-in), then storage.
+#[derive(Default)]
 pub(crate) struct Apply {
     /// Arguments of each `browser_set_storage_state`, in order.
     pub calls: Vec<Value>,
+    /// The cookies these calls set: once they ran, [`confirm`] keeps in the baseline only those
+    /// the isolate took.
+    pub set: Vec<Key>,
 }
 
 /// Record a full load for `session`, read at `basis_ms` (Unix ms taken just before the read), and
@@ -423,7 +460,7 @@ pub(crate) fn activate(session: SessionId) {
 pub(crate) fn refreshed(session: SessionId, load: LoadedProfile, asked: &[String]) -> Apply {
     let mut sessions = SESSIONS.lock();
     let Some(l) = sessions.get_mut(&session).filter(|l| l.active) else {
-        return Apply { calls: Vec::new() };
+        return Apply::default();
     };
     let absent: HashSet<String> = asked
         .iter()
@@ -438,8 +475,12 @@ pub(crate) fn refreshed(session: SessionId, load: LoadedProfile, asked: &[String
     }
     let gone: HashSet<String> = absent.into_iter().filter(|s| l.has_site(s)).collect();
     let mut calls = drop_sites(l, &gone);
-    calls.extend(absorb(l, load).calls);
-    Apply { calls }
+    let applied = absorb(l, load);
+    calls.extend(applied.calls);
+    Apply {
+        calls,
+        set: applied.set,
+    }
 }
 
 /// A save was refused as `stale-epoch` (209 §6: sign out everywhere happened elsewhere): forget
@@ -448,9 +489,12 @@ pub(crate) fn refreshed(session: SessionId, load: LoadedProfile, asked: &[String
 pub(crate) fn reset(session: SessionId) -> Apply {
     let mut sessions = SESSIONS.lock();
     let Some(l) = sessions.get_mut(&session) else {
-        return Apply { calls: Vec::new() };
+        return Apply::default();
     };
-    Apply { calls: unload(l) }
+    Apply {
+        calls: unload(l),
+        ..Apply::default()
+    }
 }
 
 /// Forget what `l` was given (imports and the current page stay) and return the calls that
@@ -479,10 +523,11 @@ fn unload(l: &mut Loaded) -> Vec<Value> {
 /// whose snapshot differs.
 fn absorb(l: &mut Loaded, load: LoadedProfile) -> Apply {
     let mut set = Vec::new();
+    let mut keys = Vec::new();
     let mut origins = Vec::new();
     for row in load.sites {
         let site = row.jar.site.clone();
-        if !row.jar.cookies.is_empty() {
+        if !row.jar.cookies.is_empty() || !row.jar.origins.is_empty() {
             KNOWN.write().insert(site.clone());
         }
         if l.rows.get(&site).is_some_and(|at| *at >= row.updated_ms) {
@@ -502,6 +547,7 @@ fn absorb(l: &mut Loaded, load: LoadedProfile) -> Apply {
         for c in row.jar.cookies {
             if !l.imported.contains_key(&key_of(&c)) {
                 set.push(cookie_json(&c));
+                keys.push(key_of(&c));
             }
             l.baseline.push(c);
         }
@@ -519,7 +565,41 @@ fn absorb(l: &mut Loaded, load: LoadedProfile) -> Apply {
     if !origins.is_empty() {
         calls.push(json!({ "state": { "origins": origins } }));
     }
-    Apply { calls }
+    Apply { calls, set: keys }
+}
+
+/// The cookies of `keys` the isolate did not take (absent from `export`, obscura's
+/// `browser_storage_state` text read right after the import: `SameSite=None` without `Secure`,
+/// a `__Host-` rule) leave `session`'s baseline, so a later save does not report them removed
+/// and delete them from the profile everywhere (209 §4.2). Logs the count, never a value.
+pub(crate) fn confirm(session: SessionId, export: &str, keys: &[Key]) {
+    let Ok(export) = serde_json::from_str::<Export>(export) else {
+        return;
+    };
+    let took: HashSet<Key> = export
+        .cookies
+        .iter()
+        .map(|c| key(&c.name, &c.domain, &c.path))
+        .collect();
+    let refused: HashSet<&Key> = keys.iter().filter(|k| !took.contains(*k)).collect();
+    if refused.is_empty() {
+        return;
+    }
+    if let Some(l) = SESSIONS.lock().get_mut(&session) {
+        l.baseline.retain(|c| !refused.contains(&key_of(c)));
+    }
+    tracing::info!(%session, cookies = refused.len(), "browser profile cookies the isolate did not take; they are not saved back as removed");
+}
+
+/// The `same_site` a cookie goes into obscura with: a stored `""` (never known — WebKit cannot
+/// tell `None` from unspecified, and Apple's stack sends such a cookie cross-site) as `None` when
+/// it is `Secure`, else `Lax` (obscura refuses `None` without `Secure`); a known value as is.
+fn import_same_site(c: &Cookie) -> &str {
+    match c.same_site.as_str() {
+        "" if c.secure => "None",
+        "" => "Lax",
+        s => s,
+    }
 }
 
 /// obscura's import shape of one cookie, with `host_only` (209 §4.3).
@@ -533,7 +613,7 @@ fn cookie_json(c: &Cookie) -> Value {
         "expires": c.expires,
         "secure": c.secure,
         "http_only": c.http_only,
-        "same_site": c.same_site,
+        "same_site": import_same_site(c),
     })
 }
 
@@ -645,11 +725,12 @@ pub(crate) fn plan(l: &Loaded, export: &str, now_ms: u64) -> Option<Save> {
                 expires: c.expires,
                 secure: c.secure,
                 http_only: c.http_only,
-                // obscura stores an absent SameSite as `Lax` and title-cases the rest: the profile's
-                // spelling when they mean the same, so a cookie the session never touched is no change
-                // (else its loaded, possibly older, value would overwrite the profile's).
+                // obscura title-cases SameSite, and a stored `""` went in as `None` or `Lax`
+                // (`import_same_site`): the profile's spelling when they mean the same, so a
+                // cookie the session never touched is no change (else its loaded, possibly older,
+                // value would overwrite the profile's).
                 same_site: match before {
-                    Some(b) if obscura_same_site(&b.same_site) == c.same_site => {
+                    Some(b) if obscura_same_site(import_same_site(b)) == c.same_site => {
                         b.same_site.clone()
                     }
                     _ => c.same_site,
@@ -822,7 +903,12 @@ pub(crate) async fn learn_sites() {
         if let Some(profile) = webprofile::Handle::lookup()
             && let Ok(sites) = profile.sites().await
         {
-            know(sites.into_iter().filter(|s| s.cookies > 0).map(|s| s.site));
+            know(
+                sites
+                    .into_iter()
+                    .filter(|s| s.cookies > 0 || s.origins > 0)
+                    .map(|s| s.site),
+            );
             return;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1190,5 +1276,119 @@ mod tests {
         loaded(session, LoadedProfile::default(), 1);
         assert!(retry_due(session), "a load clears the backoff");
         take(session);
+    }
+
+    /// 209 §4.2: a stored `""` SameSite (the tile could not tell) goes into obscura as `None`
+    /// when the cookie is `Secure` (a cross-site sign-in keeps working), else `Lax`; obscura's
+    /// export of either is no change, so the save never rewrites the profile's attribute.
+    #[test]
+    fn an_unknown_same_site_goes_in_as_none_when_secure_else_lax() {
+        let session = SessionId::new();
+        let mut sso = cookie("sso", "sso-value-0123", "idp-same-site.example", false);
+        sso.same_site = String::new();
+        let mut plain = sso.clone();
+        plain.name = "plain".into();
+        plain.secure = false;
+        let apply = load(
+            session,
+            0,
+            vec![row("idp-same-site.example", 1, vec![sso, plain])],
+        );
+        let sent = apply.calls[0]["state"]["cookies"].as_array().unwrap();
+        let same_site = |n: &str| {
+            sent.iter().find(|c| c["name"] == n).unwrap()["same_site"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(same_site("sso"), "None");
+        assert_eq!(same_site("plain"), "Lax");
+        let l = snapshot(session).unwrap();
+        let text = export(
+            json!([
+                { "name": "sso", "value": "sso-value-0123", "domain": "idp-same-site.example", "path": "/",
+                  "secure": true, "http_only": true, "same_site": "None", "expires": 4_000_000_000i64 },
+                { "name": "plain", "value": "sso-value-0123", "domain": "idp-same-site.example", "path": "/",
+                  "secure": false, "http_only": true, "same_site": "Lax", "expires": 4_000_000_000i64 },
+            ]),
+            json!([]),
+        );
+        let save = plan(&l, &text, 1).unwrap();
+        assert!(save.is_empty(), "{:?}", save.changes);
+        take(session);
+    }
+
+    /// 209 §4.2: a cookie obscura refused at import (`SameSite=None` without `Secure`) is not in
+    /// the isolate; once the read-back confirmed what it took, a save does not report it removed
+    /// (which would delete it from the profile everywhere).
+    #[test]
+    fn a_cookie_obscura_refused_is_not_saved_as_removed() {
+        let session = SessionId::new();
+        let mut refused = cookie("x", "refused-0123", "refused-test.example", false);
+        refused.same_site = "None".into();
+        refused.secure = false;
+        let kept = cookie("k", "kept-0123", "refused-test.example", false);
+        let apply = load(
+            session,
+            0,
+            vec![row("refused-test.example", 1, vec![refused, kept])],
+        );
+        assert_eq!(apply.set.len(), 2);
+        // obscura's jar after the import: only `k`.
+        let took = export(
+            json!([
+                { "name": "k", "value": "kept-0123", "domain": "refused-test.example", "path": "/",
+                  "secure": true, "http_only": true, "same_site": "Lax", "expires": 4_000_000_000i64 },
+            ]),
+            json!([]),
+        );
+        let l = snapshot(session).unwrap();
+        let before = plan(&l, &took, 1).unwrap();
+        assert!(
+            matches!(before.changes.as_slice(), [webprofile::CookieChange::Remove { name, .. }] if name == "x"),
+            "without the read-back the refused cookie reads as removed: {:?}",
+            before.changes
+        );
+        confirm(session, &took, &apply.set);
+        let l = snapshot(session).unwrap();
+        let save = plan(&l, &took, 1).unwrap();
+        assert!(save.is_empty(), "{:?}", save.changes);
+        take(session);
+    }
+
+    /// 209 D14: a site the profile holds only as a localStorage snapshot is known, so a session's
+    /// capture of that origin is saved.
+    #[test]
+    fn a_snapshot_only_site_is_known() {
+        let session = SessionId::new();
+        let mut site = row("snapshot-only.example", 1, vec![]);
+        site.jar.origins.push(OriginStorage {
+            origin: "https://snapshot-only.example".into(),
+            local_storage: vec![("k".into(), "v".into())],
+            captured_ms: 1,
+        });
+        load(session, 0, vec![site]);
+        assert!(KNOWN.read().contains("snapshot-only.example"));
+        let l = snapshot(session).unwrap();
+        let text = export(
+            json!([]),
+            json!([{ "origin": "https://snapshot-only.example", "localStorage": [["k", "v2"]] }]),
+        );
+        let save = plan(&l, &text, 5).unwrap();
+        assert_eq!(save.storage.len(), 1);
+        take(session);
+    }
+
+    /// 209 §4.6: a `WebProfileChanged` whose sites cannot be read back (no profile here) takes
+    /// them out of the known sites rather than adding them: it may be a forget.
+    #[tokio::test]
+    async fn a_failed_read_back_forgets_the_named_sites() {
+        know(["read-back-failed.example".to_owned()]);
+        changed(webprofile::WebProfileChanged {
+            sites: vec!["www.read-back-failed.example".into()],
+            epoch: 0,
+        })
+        .await;
+        assert!(!KNOWN.read().contains("read-back-failed.example"));
     }
 }

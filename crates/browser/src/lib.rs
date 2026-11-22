@@ -159,6 +159,9 @@ pub struct Browsers {
     /// Sessions that ran `browser_run` and are still in a turn / open (57 §2.1): while any
     /// is here the browser checkpoint stays resident; the last one leaving releases it.
     systemone: HashSet<SessionId>,
+    /// The worker that runs [`profile::changed`] for each `WebProfileChanged`, in order and off
+    /// this actor's turn (it reads the profile back); started on the first event.
+    profile_events: Option<tokio::sync::mpsc::UnboundedSender<webprofile::WebProfileChanged>>,
 }
 
 impl Browsers {
@@ -168,6 +171,7 @@ impl Browsers {
             cfg,
             sessions: HashMap::new(),
             systemone: HashSet::new(),
+            profile_events: None,
         }
     }
 
@@ -416,9 +420,10 @@ impl Message<webprofile::WebProfileChanged> for Browsers {
 
     /// 209 D14, §6: a site written to the profile makes acting calls on it credentialed; a site
     /// forgotten, or a sign out everywhere, leaves the known sites and every session's isolate
-    /// before that session's next call ([`profile::changed`]). Here or on another engine.
+    /// before that session's next call ([`profile::changed`]). Here or on another engine. The
+    /// read-back runs on the actor's event worker, never awaited here.
     async fn handle(&mut self, e: webprofile::WebProfileChanged, _: &mut Context<Self, Self::Reply>) {
-        profile::changed(e).await;
+        profile::changed_later(&mut self.profile_events, e);
     }
 }
 
@@ -491,6 +496,14 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Subscribe `actor` to the bus events it handles (the plugin does this at start): `AgentEvent`
+/// (57 §2.1, a turn ending releases the browser checkpoint) and `WebProfileChanged` (209 §6, a
+/// forget or sign out everywhere, local or replicated, reaches live isolates).
+pub async fn subscribe(rt: &Runtime, actor: &kameo::actor::ActorRef<Browsers>) {
+    rt.subscribe::<Browsers, agent::AgentEvent>(actor).await;
+    rt.subscribe::<Browsers, webprofile::WebProfileChanged>(actor).await;
+}
+
 /// The plugin (23 §3.1): reads `browser`, runs the sweeper, spawns
 /// [`Browsers`] as [`BROWSER_ACTOR`], registers the tools once the registry
 /// is up and the render provider once `web` is up.
@@ -519,9 +532,7 @@ impl runtime::Plugin for BrowserPlugin {
         let actor =
             Browsers::spawn_with_mailbox(Browsers::new(cfg.clone()), runtime::subscriber_mailbox());
         actor.register(BROWSER_ACTOR)?;
-        // 57 §2.1: a turn ending releases the browser checkpoint its `browser_run` loaded.
-        rt.subscribe::<Browsers, agent::AgentEvent>(&actor).await;
-        rt.subscribe::<Browsers, webprofile::WebProfileChanged>(&actor).await;
+        subscribe(rt, &actor).await;
         tokio::spawn(profile::learn_sites());
 
         let sweeper = actor.clone();

@@ -16,18 +16,37 @@ pub fn env_filter(rust_log: &str) -> EnvFilter {
     EnvFilter::builder().parse_lossy(format!("ort=warn,{rust_log}"))
 }
 
-/// The engine's filter: [`env_filter`], then INFO for everything and iroh's pkarr publisher
+/// jsonrpsee's own targets: at TRACE it prints every request's params and every response whole
+/// (`[Methods::inner_call] Method: …, response: …`), which carries cookie values of
+/// `web_profile_pull` / `web_profile_push` and secrets of `answer_secret` (209 §9). Both
+/// spellings: the crates log under `jsonrpsee-server` / `-core` / `-client` and some events under
+/// their module path.
+const JSONRPSEE: [&str; 6] = [
+    "jsonrpsee-server=info",
+    "jsonrpsee_server=info",
+    "jsonrpsee-core=info",
+    "jsonrpsee_core=info",
+    "jsonrpsee-client=info",
+    "jsonrpsee_client_transport=info",
+];
+
+/// The engine's filter: [`env_filter`], then INFO for everything, iroh's pkarr publisher
 /// at ERROR — it warns "Failed to publish to pkarr" every 1–13 s while the DNS relay is
-/// unreachable (69 Z) and the endpoint keeps working. Added last, these two override
+/// unreachable (69 Z) and the endpoint keeps working — and jsonrpsee at INFO, so neither a bare
+/// `RUST_LOG` level nor a directive naming these targets prints RPC bodies ([`JSONRPSEE`]; a
+/// longer target such as `jsonrpsee_core::server=trace` still would). Added last, these override
 /// `RUST_LOG` for their targets, as before.
 pub fn engine_filter(rust_log: &str) -> EnvFilter {
-    env_filter(rust_log)
-        .add_directive(tracing::Level::INFO.into())
-        .add_directive(
-            "iroh::address_lookup::pkarr=error"
-                .parse()
-                .expect("static directive"),
-        )
+    JSONRPSEE.iter().fold(
+        env_filter(rust_log)
+            .add_directive(tracing::Level::INFO.into())
+            .add_directive(
+                "iroh::address_lookup::pkarr=error"
+                    .parse()
+                    .expect("static directive"),
+            ),
+        |f, d| f.add_directive(d.parse().expect("static directive")),
+    )
 }
 
 /// A handler at least this long holds its actor's mailbox long enough to stall callers.
@@ -175,6 +194,39 @@ mod tests {
             .filter(|(t, ..)| t == "ort::logging")
             .map(|(_, l, _)| *l)
             .collect()
+    }
+
+    /// 209 §9: jsonrpsee's TRACE/DEBUG lines (whole requests and responses, cookie values
+    /// included) never pass, whatever `RUST_LOG` says; its INFO does.
+    #[test]
+    fn jsonrpsee_bodies_never_reach_the_log() {
+        for rust_log in [
+            "",
+            "debug",
+            "trace",
+            "jsonrpsee-server=trace",
+            "jsonrpsee_core=trace,jsonrpsee-core=trace",
+        ] {
+            let seen = Seen::default();
+            let sub = tracing_subscriber::registry()
+                .with(engine_filter(rust_log))
+                .with(seen.clone());
+            tracing::subscriber::with_default(sub, || {
+                tracing::trace!(target: "jsonrpsee-server", "response: body");
+                tracing::debug!(target: "jsonrpsee-server", "request: body");
+                tracing::trace!(target: "jsonrpsee-core", "response: body");
+                tracing::trace!(target: "jsonrpsee_core::server::rpc_module", "request: body");
+                tracing::trace!(target: "jsonrpsee-client", "rx: body");
+                tracing::info!(target: "jsonrpsee-server", "listening");
+            });
+            let seen = seen.0.lock().unwrap();
+            let got: Vec<&str> = seen
+                .iter()
+                .filter(|(t, ..)| t.starts_with("jsonrpsee"))
+                .map(|(.., m)| m.as_str())
+                .collect();
+            assert_eq!(got, ["listening"], "RUST_LOG={rust_log}");
+        }
     }
 
     #[test]

@@ -4,11 +4,11 @@
 //!
 //! Public surface consumed by other plugins:
 //! - the [`WEBPROFILE_ACTOR`] actor ([`WebProfileActor`]) and its messages [`Push`], [`Load`],
-//!   [`Pull`], [`Forget`], [`Clear`], [`Sites`], [`CurrentEpoch`] — or the [`Handle`] wrapper
-//!   (`browser`'s `Ctx` loads and saves through it, 209 D4);
+//!   [`Pull`], [`Forget`], [`Clear`], [`Sites`], [`Status`], [`CurrentEpoch`] — or the [`Handle`]
+//!   wrapper (`browser`'s `Ctx` loads and saves through it, 209 D4);
 //! - the wire types [`Cookie`], [`CookieKey`], [`CookieChange`], [`OriginStorage`], [`SiteJar`],
 //!   [`PushResult`], [`SiteSummary`], [`PullResult`], [`PulledCookie`], [`PulledStorage`],
-//!   [`ForgetResult`], [`ClearResult`] (209 §4.1, §4.4);
+//!   [`ForgottenSite`], [`ForgetResult`], [`ClearResult`], [`ProfileStatus`] (209 §4.1, §4.4);
 //! - the event [`WebProfileChanged`] (site names and the epoch, never values);
 //! - [`merge::diff`] (the per-cookie delta of 209 §4.2), [`site_of`] (eTLD+1), [`mode`] (config
 //!   `browser.profile`).
@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
+use kameo::reply::DelegatedReply;
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 
@@ -74,13 +75,15 @@ pub mod caps {
     pub const COOKIE_VALUE: usize = 4096;
     /// A removed row (`sealed = NULL`) is deleted this long after its write, at open.
     pub const TOMBSTONE_MS: u64 = 30 * 24 * 3600 * 1000;
-    /// After `web_profile_forget`, sets of that site written this long after the forget by a
-    /// writer that names no read time (a tile, whose client may not have applied the forget yet)
-    /// are dead (209 §4.1 forget marker).
-    pub const FORGET_QUIET_MS: u64 = 60_000;
-    /// Sites one `web_profile_pull` may name at most (the answer is bounded by
-    /// [`PROFILE_BYTES`] anyway).
+    /// A forget marker applies this long after the forget: sets and snapshots of the site from
+    /// a writer whose last full read (`basis_ms`) is before it are refused, and
+    /// `web_profile_pull` lists it in `forgotten` (209 §4.1 forget marker).
+    pub const FORGOTTEN_MS: u64 = TOMBSTONE_MS;
+    /// Sites one `web_profile_pull` may name at most.
     pub const PULL_SITES: usize = SITES;
+    /// Cookie and snapshot JSON one `web_profile_pull` answer carries at most: further sites go
+    /// to the next page (`next`); a page always carries at least one site whole.
+    pub const PULL_BYTES: usize = 1024 * 1024;
 }
 
 /// One cookie with every attribute (209 D1, §4.1). `value` is a credential: `Debug` redacts it.
@@ -263,6 +266,11 @@ pub struct PushResult {
     /// client stops pushing until it reads `"shared"` again.
     #[serde(default)]
     pub profile: ProfileMode,
+    /// Sites whose sets and snapshots were refused because the site was forgotten after the
+    /// push's `basis_ms` (or the push named none), sorted; its removes still applied. The client
+    /// pulls to learn the forget and does not push those sets again.
+    #[serde(default)]
+    pub refused: Vec<String>,
 }
 
 /// One entry of `web_profile_sites` (209 §4.4): counts, never values.
@@ -317,27 +325,53 @@ pub struct PulledStorage {
     pub updated_ms: u64,
 }
 
-/// `web_profile_pull`'s result (209 §4.4, D5): the profile's cookies and snapshots of `sites`.
-/// Every site in `sites` is answered whole: a client sets what it gets and deletes from its store
-/// the cookies of those sites it did not get (a forgotten site answers nothing). `Debug` redacts
-/// every value; nothing logs it.
+/// `web_profile_pull`'s result (209 §4.4, D5): one page of the profile's cookies and snapshots of
+/// `sites`. Every site in `sites` is answered whole: a client sets what it gets and deletes from
+/// its store the cookies of those sites it did not get (a forgotten site answers nothing).
+/// `Debug` redacts every value; nothing logs it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PullResult {
     /// The current profile epoch.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub epoch: u64,
-    /// The sites this answer covers, sorted: the asked ones as registrable domains, or every live
-    /// site when none were asked. A cookie of the client's store belongs to a site when its domain
-    /// (lower case, no leading `.`) is the site or ends with `.` and the site.
+    /// The sites this page covers, sorted: the asked ones as registrable domains, or every site
+    /// the profile holds (also one whose cookies all expired) when none were asked. A cookie of
+    /// the client's store belongs to a site when its domain (lower case, no leading `.`) is the
+    /// site or ends with `.` and the site.
     pub sites: Vec<String>,
     /// Every live cookie of those sites, sorted by site, then name, domain and path.
     pub cookies: Vec<PulledCookie>,
-    /// Every localStorage snapshot of those sites, sorted by origin.
+    /// Every localStorage snapshot of those sites, sorted by site, then origin.
     pub storage: Vec<PulledStorage>,
-    /// `"shared"`, or `"off"` when `browser.profile: off`: then nothing else is answered.
+    /// `"shared"`, or `"off"` when `browser.profile: off`: then no site is answered.
     #[serde(default)]
     pub profile: ProfileMode,
+    /// Every site forgotten in the last 30 days of this epoch, with when (on every page). The
+    /// client deletes from its store the cookies of each one forgotten after its previous
+    /// `basis_ms` before it applies this answer's cookies.
+    #[serde(default)]
+    pub forgotten: Vec<ForgottenSite>,
+    /// The engine's clock (Unix ms) just before it read this page: the first page's is the
+    /// client's next `basis_ms` once every page arrived.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub now_ms: u64,
+    /// More sites follow: pull again with the same `sites` and this as `cursor`. `null` when this
+    /// page is the last.
+    #[serde(default)]
+    pub next: Option<String>,
+}
+
+/// One forgotten site of `web_profile_pull` (209 §4.1 forget marker).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ForgottenSite {
+    /// Lower-case eTLD+1.
+    pub site: String,
+    /// Unix ms of the forget (the forgetting engine's clock).
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub forgotten_ms: u64,
 }
 
 /// `web_profile_forget`'s result (209 §4.4).
@@ -358,6 +392,23 @@ pub struct ClearResult {
     /// The profile epoch after the clear; pushes under an older one are `stale-epoch`.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub epoch: u64,
+}
+
+/// `web_profile_status`'s result (209 §4.4): the mode and the profile's size, cheap (no row is
+/// opened), for Settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct ProfileStatus {
+    /// `"shared"` or `"off"` (config `browser.profile`).
+    pub profile: ProfileMode,
+    /// The current profile epoch.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub epoch: u64,
+    /// Sites with live rows (kept also while off, until cleared).
+    pub sites: u32,
+    /// The engine's clock, Unix ms.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub now_ms: u64,
 }
 
 /// One live site as [`Load`] answers it.
@@ -522,12 +573,18 @@ pub struct Sites;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CurrentEpoch;
 
-/// `web_profile_pull` (209 §4.4, D5): the live cookies and snapshots of `sites` (any hosts,
-/// grouped by registrable domain), or of every site.
+/// `web_profile_status`: mode, epoch and live site count, without opening a row.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Status;
+
+/// One page of `web_profile_pull` (209 §4.4, D5): the live cookies and snapshots of `sites` (any
+/// hosts, grouped by registrable domain), or of every site, from the site `cursor` on.
 #[derive(Clone, Debug, Default)]
 pub struct Pull {
     /// Sites to answer; `None` = all.
     pub sites: Option<Vec<String>>,
+    /// The previous page's `next`; `None` = the first page.
+    pub cursor: Option<String>,
 }
 
 /// `web_profile_forget` (209 §4.4, §6): tombstone every row of the site of `site` and mark it
@@ -555,50 +612,86 @@ pub struct Maintain;
 pub struct Replicated(pub Option<Vec<String>>);
 
 /// The [`WEBPROFILE_ACTOR`] actor: the store (when open), the bus for [`WebProfileChanged`].
+/// A push, a forget, the epoch and the status run on the actor's turn; everything that reads
+/// every row (a full load or pull, the Settings list, sign out everywhere's site list, a key
+/// rotation's move, a peer's batch) runs on its own task with the store's pool, so a session's
+/// load or a push is never queued behind a scan (209 §4.1).
 #[derive(kameo::Actor)]
 pub struct WebProfileActor {
     rt: Option<Runtime>,
-    profile: Result<Profile, String>,
+    profile: Result<Arc<Profile>, String>,
+    /// When a push refused as `profile full` last started a full read.
+    rescanned: Option<std::time::Instant>,
 }
 
 impl WebProfileActor {
     /// An actor over `profile` (`Err` = why there is none); `rt` publishes [`WebProfileChanged`].
     pub fn new(rt: Option<Runtime>, profile: Result<Profile, String>) -> Self {
-        Self { rt, profile }
+        Self {
+            rt,
+            profile: profile.map(Arc::new),
+            rescanned: None,
+        }
     }
 
     fn off(&self) -> bool {
         self.rt.as_ref().is_some_and(|rt| mode(rt) == ProfileMode::Off)
     }
 
-    fn profile(&self) -> Result<&Profile, ProfileError> {
+    fn mode(&self) -> ProfileMode {
+        if self.off() {
+            ProfileMode::Off
+        } else {
+            ProfileMode::Shared
+        }
+    }
+
+    fn profile(&self) -> Result<&Arc<Profile>, ProfileError> {
         if self.off() {
             return Err(ProfileError::Unavailable("browser.profile is off".into()));
         }
-        self.profile
-            .as_ref()
-            .map_err(|e| ProfileError::Unavailable(e.clone()))
+        self.store()
     }
 
     /// The store whatever `browser.profile` says: forget and clear work while it is off (209 D6:
-    /// off leaves rows as they are until cleared).
-    fn store(&self) -> Result<&Profile, ProfileError> {
+    /// off leaves rows as they are until cleared), and so do reads that are not a push.
+    fn store(&self) -> Result<&Arc<Profile>, ProfileError> {
         self.profile
             .as_ref()
             .map_err(|e| ProfileError::Unavailable(e.clone()))
     }
 
-    async fn publish(&self, sites: Vec<String>, epoch: u64) {
-        if let Some(rt) = &self.rt {
-            rt.publish(WebProfileChanged { sites, epoch }).await;
+    /// A write saw a new mesh key: the move runs on its own task ([`Profile::maintain`]).
+    fn fold_if_owed(&self) {
+        if let Ok(p) = &self.profile
+            && p.fold_owed()
+        {
+            let p = p.clone();
+            tokio::spawn(async move {
+                if let Err(e) = p.maintain().await {
+                    tracing::warn!("webprofile: maintenance failed: {e}");
+                }
+            });
         }
     }
 }
 
+async fn publish(rt: Option<&Runtime>, sites: Vec<String>, epoch: u64) {
+    if let Some(rt) = rt {
+        rt.publish(WebProfileChanged { sites, epoch }).await;
+    }
+}
+
+/// How often a push refused as `profile full` may start a full read: rows of an older epoch or
+/// of a forgotten site count in the stats until a full read tombstones them (209 §4.1 caps).
+const RESCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl Message<Push> for WebProfileActor {
     type Reply = Result<PushResult, ProfileError>;
     /// `browser.profile: off` answers an empty result with `profile: "off"` (209 D6); otherwise
-    /// the push is checked ([`merge::validate`]) before any work, then merged.
+    /// the push is checked ([`merge::validate`]) before any work, then merged. A push refused as
+    /// `profile full` starts a full read on its own task (at most once a minute), so dead rows
+    /// still counted leave the stats for the next push.
     async fn handle(&mut self, mut msg: Push, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         if self.off() {
             let epoch = match &self.profile {
@@ -612,29 +705,52 @@ impl Message<Push> for WebProfileActor {
             });
         }
         merge::validate(&mut msg)?;
-        let out = self.profile()?.push(msg).await?;
-        if !out.sites.is_empty() {
-            self.publish(out.sites.clone(), out.epoch).await;
+        let p = self.profile()?.clone();
+        let out = p.push(msg).await;
+        self.fold_if_owed();
+        match &out {
+            Ok(r) if !r.sites.is_empty() => {
+                publish(self.rt.as_ref(), r.sites.clone(), r.epoch).await;
+            }
+            Err(ProfileError::Full) if self.rescanned.is_none_or(|t| t.elapsed() > RESCAN_EVERY) => {
+                self.rescanned = Some(std::time::Instant::now());
+                tokio::spawn(async move {
+                    if let Err(e) = p.load(None).await {
+                        tracing::debug!("webprofile: full read after a full profile failed: {e}");
+                    }
+                });
+            }
+            _ => {}
         }
-        Ok(out)
+        out
     }
 }
 
 impl Message<Load> for WebProfileActor {
-    type Reply = Result<LoadedProfile, ProfileError>;
-    async fn handle(&mut self, msg: Load, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        self.profile()?.load(msg.sites.as_deref()).await
+    type Reply = DelegatedReply<Result<LoadedProfile, ProfileError>>;
+    /// On its own task, whatever `browser.profile` says: a session's load checks the mode itself,
+    /// and the browser reads sites back after a forget also while it is off (209 §4.6).
+    async fn handle(&mut self, msg: Load, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let p = self.store().cloned();
+        ctx.spawn(async move { p?.load(msg.sites.as_deref()).await })
     }
 }
 
 impl Message<Sites> for WebProfileActor {
-    type Reply = Result<Vec<SiteSummary>, ProfileError>;
-    /// `browser.profile: off` lists nothing (209 D6).
-    async fn handle(&mut self, _: Sites, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if self.off() {
-            return Ok(Vec::new());
-        }
-        self.profile()?.sites().await
+    type Reply = DelegatedReply<Result<Vec<SiteSummary>, ProfileError>>;
+    /// `browser.profile: off` lists nothing (209 D6); otherwise a full read on its own task.
+    async fn handle(&mut self, _: Sites, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let p = if self.off() {
+            None
+        } else {
+            Some(self.store().cloned())
+        };
+        ctx.spawn(async move {
+            match p {
+                None => Ok(Vec::new()),
+                Some(p) => p?.sites().await,
+            }
+        })
     }
 }
 
@@ -645,32 +761,52 @@ impl Message<CurrentEpoch> for WebProfileActor {
     }
 }
 
+impl Message<Status> for WebProfileActor {
+    type Reply = Result<ProfileStatus, ProfileError>;
+    /// The mode, the epoch and the live sites of the local stats; also while off.
+    async fn handle(&mut self, _: Status, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (epoch, sites) = self.store()?.status().await?;
+        Ok(ProfileStatus {
+            profile: self.mode(),
+            epoch,
+            sites,
+            now_ms: store::now_ms(),
+        })
+    }
+}
+
 impl Message<Pull> for WebProfileActor {
-    type Reply = Result<PullResult, ProfileError>;
+    type Reply = DelegatedReply<Result<PullResult, ProfileError>>;
     /// At most [`caps::PULL_SITES`] named sites (`invalid pull: …` otherwise, before any work);
-    /// `browser.profile: off` answers nothing with `profile: "off"` (209 D6).
-    async fn handle(&mut self, msg: Pull, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        if let Some(sites) = &msg.sites
-            && sites.len() > caps::PULL_SITES
-        {
-            return Err(ProfileError::Rejected(format!(
-                "invalid pull: {} sites > {}",
-                sites.len(),
-                caps::PULL_SITES
-            )));
-        }
-        if self.off() {
-            let epoch = match &self.profile {
-                Ok(p) => p.epoch().await.unwrap_or_default(),
-                Err(_) => 0,
-            };
-            return Ok(PullResult {
-                epoch,
-                profile: ProfileMode::Off,
-                ..PullResult::default()
-            });
-        }
-        self.profile()?.pull(msg.sites.as_deref()).await
+    /// `browser.profile: off` answers no site with `profile: "off"` (209 D6). The page is read on
+    /// its own task.
+    async fn handle(&mut self, msg: Pull, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (off, p) = (self.off(), self.store().cloned());
+        ctx.spawn(async move {
+            if let Some(sites) = &msg.sites
+                && sites.len() > caps::PULL_SITES
+            {
+                return Err(ProfileError::Rejected(format!(
+                    "invalid pull: {} sites > {}",
+                    sites.len(),
+                    caps::PULL_SITES
+                )));
+            }
+            if off {
+                let epoch = match &p {
+                    Ok(p) => p.epoch().await.unwrap_or_default(),
+                    Err(_) => 0,
+                };
+                return Ok(PullResult {
+                    epoch,
+                    profile: ProfileMode::Off,
+                    now_ms: store::now_ms(),
+                    ..PullResult::default()
+                });
+            }
+            p?.pull_page(msg.sites.as_deref(), msg.cursor.as_deref())
+                .await
+        })
     }
 }
 
@@ -684,49 +820,63 @@ impl Message<Forget> for WebProfileActor {
             return Err(ProfileError::Rejected("invalid forget: no site".into()));
         }
         let epoch = self.store()?.forget(&site, WRITER_SETTINGS).await?;
-        self.publish(vec![site.clone()], epoch).await;
+        self.fold_if_owed();
+        publish(self.rt.as_ref(), vec![site.clone()], epoch).await;
         Ok(ForgetResult { site, epoch })
     }
 }
 
 impl Message<Clear> for WebProfileActor {
-    type Reply = Result<ClearResult, ProfileError>;
-    /// Sign out everywhere, also with `browser.profile: off`; publishes [`WebProfileChanged`] with
-    /// the sites that were live and the new epoch.
-    async fn handle(&mut self, _: Clear, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
-        let p = self.store()?;
-        let was: Vec<String> = p.sites().await?.into_iter().map(|s| s.site).collect();
-        let epoch = p.clear().await?;
-        self.publish(was, epoch).await;
-        Ok(ClearResult { epoch })
+    type Reply = DelegatedReply<Result<ClearResult, ProfileError>>;
+    /// Sign out everywhere, also with `browser.profile: off`, on its own task (it lists the live
+    /// sites first); publishes [`WebProfileChanged`] with the sites that were live and the new
+    /// epoch.
+    async fn handle(&mut self, _: Clear, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (p, rt) = (self.store().cloned(), self.rt.clone());
+        ctx.spawn(async move {
+            let p = p?;
+            let was: Vec<String> = p.sites().await?.into_iter().map(|s| s.site).collect();
+            let epoch = p.clear().await?;
+            publish(rt.as_ref(), was, epoch).await;
+            Ok(ClearResult { epoch })
+        })
     }
 }
 
 impl Message<Maintain> for WebProfileActor {
     type Reply = ();
+    /// On its own task ([`Profile::maintain`]; moves are one at a time).
     async fn handle(&mut self, _: Maintain, _: &mut Context<Self, Self::Reply>) {
-        if let Ok(p) = &self.profile
-            && let Err(e) = p.maintain().await
-        {
-            tracing::warn!("webprofile: maintenance failed: {e}");
+        if let Ok(p) = &self.profile {
+            let p = p.clone();
+            tokio::spawn(async move {
+                if let Err(e) = p.maintain().await {
+                    tracing::warn!("webprofile: maintenance failed: {e}");
+                }
+            });
         }
     }
 }
 
 impl Message<Replicated> for WebProfileActor {
     type Reply = ();
+    /// On its own task: read the sites the batch names and publish them, then re-key rows a
+    /// lagging engine wrote under a retained key.
     async fn handle(&mut self, msg: Replicated, _: &mut Context<Self, Self::Reply>) {
         let Ok(p) = &self.profile else { return };
-        match p.changed(msg.0.as_deref()).await {
-            Ok(Some((sites, epoch))) => self.publish(sites, epoch).await,
-            Ok(None) => {}
-            Err(e) => tracing::debug!("webprofile: replicated rows not read: {e}"),
-        }
-        // A lagging engine's rows under a key this engine already moved off: re-keyed now, while
-        // the old key is still held (209 §4.1 rotation).
-        if let Err(e) = p.rekey_replicated(msg.0.as_deref()).await {
-            tracing::warn!("webprofile: replicated rows not re-keyed: {e}");
-        }
+        let (p, rt) = (p.clone(), self.rt.clone());
+        tokio::spawn(async move {
+            match p.changed(msg.0.as_deref()).await {
+                Ok(Some((sites, epoch))) => publish(rt.as_ref(), sites, epoch).await,
+                Ok(None) => {}
+                Err(e) => tracing::debug!("webprofile: replicated rows not read: {e}"),
+            }
+            // A lagging engine's rows under a key this engine already moved off: re-keyed now,
+            // while the old key is still held (209 §4.1 rotation).
+            if let Err(e) = p.rekey_replicated(msg.0.as_deref()).await {
+                tracing::warn!("webprofile: replicated rows not re-keyed: {e}");
+            }
+        });
     }
 }
 
@@ -768,9 +918,26 @@ impl Handle {
         self.0.ask(Sites).await.map_err(send_err)
     }
 
-    /// [`Pull`].
+    /// The first page of [`Pull`].
     pub async fn pull(&self, sites: Option<Vec<String>>) -> Result<PullResult, ProfileError> {
-        self.0.ask(Pull { sites }).await.map_err(send_err)
+        self.pull_page(sites, None).await
+    }
+
+    /// One page of [`Pull`], from `cursor` (the previous page's `next`).
+    pub async fn pull_page(
+        &self,
+        sites: Option<Vec<String>>,
+        cursor: Option<String>,
+    ) -> Result<PullResult, ProfileError> {
+        self.0
+            .ask(Pull { sites, cursor })
+            .await
+            .map_err(send_err)
+    }
+
+    /// [`Status`].
+    pub async fn status(&self) -> Result<ProfileStatus, ProfileError> {
+        self.0.ask(Status).await.map_err(send_err)
     }
 
     /// [`Forget`].
@@ -908,7 +1075,7 @@ struct Opened(Result<Profile, String>);
 impl Message<Opened> for WebProfileActor {
     type Reply = ();
     async fn handle(&mut self, msg: Opened, _: &mut Context<Self, Self::Reply>) {
-        self.profile = msg.0;
+        self.profile = msg.0.map(Arc::new);
     }
 }
 

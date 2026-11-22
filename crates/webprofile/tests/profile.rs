@@ -596,10 +596,12 @@ async fn pull_answers_whole_sites_with_each_rows_writer() {
     assert_eq!(all.cookies.len(), 4);
 }
 
-/// 209 §4.4 `web_profile_forget`, §6: the site's rows are tombstoned, and neither a stale
-/// session's save (it read the profile before the forget) nor a client push made before the
-/// client applied the forget (within the quiet window) brings its cookies back. A sign-in after
-/// the window, and a session that read the profile after the forget, write again.
+/// 209 §4.4 `web_profile_forget`, §6, §4.1 forget marker: the site's rows are tombstoned; no
+/// writer whose basis is before the forget brings its cookies back — a stale session's save, a
+/// client that pulled before the forget (however long after it pushes), a client that names no
+/// basis — and each refusal names the site in `refused`; a remove still applies. A client that
+/// pulled after the forget, and a session that read the profile after it, write again. Every
+/// pull lists the marker in `forgotten` with `now_ms`.
 #[tokio::test]
 async fn a_forgotten_site_does_not_come_back_from_stale_writers() {
     let dir = tempfile::tempdir().unwrap();
@@ -626,6 +628,21 @@ async fn a_forgotten_site_does_not_come_back_from_stale_writers() {
     let gone = p.pull(Some(&["example.com".to_owned()])).await.unwrap();
     assert_eq!(gone.sites, ["example.com"]);
     assert!(gone.cookies.is_empty(), "{:?}", gone.cookies);
+    // The marker is answered on a scoped pull of another site and on a full pull, with the
+    // engine's clock read before the rows.
+    for r in [
+        p.pull(Some(&["other.org".to_owned()])).await.unwrap(),
+        p.pull(None).await.unwrap(),
+    ] {
+        assert_eq!(
+            r.forgotten,
+            [webprofile::ForgottenSite {
+                site: "example.com".into(),
+                forgotten_ms: forgot
+            }]
+        );
+        assert!(r.now_ms >= forgot && r.next.is_none(), "{r:?}");
+    }
     let listed: Vec<String> = p
         .sites()
         .await
@@ -644,6 +661,7 @@ async fn a_forgotten_site_does_not_come_back_from_stale_writers() {
             .all(|r| r.2.is_none())
     );
 
+    let hour = 3600 * 1000;
     // A stale session's save: it read the profile before the forget.
     let stale = p
         .push_at(
@@ -657,19 +675,36 @@ async fn a_forgotten_site_does_not_come_back_from_stale_writers() {
         .await
         .unwrap();
     assert!(stale.sites.is_empty(), "{stale:?}");
-    // A client push before the client applied the forget.
-    let early = p
+    assert_eq!(stale.refused, ["example.com"]);
+    // A client that was offline during the forget: it pulled before it, and pushes an hour
+    // later; and an old client that names no basis. Neither is written back.
+    for basis in [Some(session_read), None] {
+        let late = p
+            .push_at(
+                at(
+                    "tile:iPad",
+                    basis,
+                    vec![
+                        set(cookie("sid", "refreshed-in-tile", "example.com")),
+                        set(cookie("k2", "2", "other.org")),
+                    ],
+                ),
+                forgot + hour,
+            )
+            .await
+            .unwrap();
+        assert_eq!(late.sites, ["other.org"], "{basis:?}");
+        assert_eq!(late.refused, ["example.com"], "{basis:?}");
+    }
+    // A remove still applies (it writes its tombstone).
+    let removed = p
         .push_at(
-            at(
-                "tile:iPad",
-                None,
-                vec![set(cookie("sid", "refreshed-in-tile", "example.com"))],
-            ),
-            forgot + 1_000,
+            at("tile:iPad", None, vec![remove("sid", "example.com")]),
+            forgot + hour,
         )
         .await
         .unwrap();
-    assert!(early.sites.is_empty(), "{early:?}");
+    assert!(removed.refused.is_empty(), "{removed:?}");
     assert!(
         p.pull(Some(&["example.com".to_owned()]))
             .await
@@ -678,19 +713,21 @@ async fn a_forgotten_site_does_not_come_back_from_stale_writers() {
             .is_empty()
     );
 
-    // After the window, a new sign-in in the tile is the profile again; a session that read the
-    // profile after the forget may update it.
-    let later = forgot + caps::FORGET_QUIET_MS + 1_000;
-    p.push_at(
-        at(
-            "tile:iPad",
-            None,
-            vec![set(cookie("sid", "new-sign-in", "example.com"))],
-        ),
-        later,
-    )
-    .await
-    .unwrap();
+    // A client that pulled after the forget signs in again; a session that read the profile
+    // after the forget may update it.
+    let later = forgot + hour;
+    let back_in = p
+        .push_at(
+            at(
+                "tile:iPad",
+                Some(forgot + 1),
+                vec![set(cookie("sid", "new-sign-in", "example.com"))],
+            ),
+            later,
+        )
+        .await
+        .unwrap();
+    assert!(back_in.refused.is_empty(), "{back_in:?}");
     p.push_at(
         at(
             "obscura:engine-b",
@@ -709,6 +746,158 @@ async fn a_forgotten_site_does_not_come_back_from_stale_writers() {
         .collect();
     got.sort_unstable();
     assert_eq!(got, [("agent", "2"), ("sid", "new-sign-in")]);
+}
+
+/// 209 §4.1: a tile cannot read SameSite (WebKit has no distinct `None`), so its `""` keeps the
+/// stored attribute instead of rewriting it; a known value is stored in one spelling; anything
+/// else is refused before any work.
+#[tokio::test]
+async fn an_unknown_same_site_keeps_the_stored_attribute() {
+    let dir = tempfile::tempdir().unwrap();
+    let (p, _) = profile(dir.path()).await;
+    let wp = webprofile::Handle::from_actor(kameo::actor::Spawn::spawn(
+        webprofile::WebProfileActor::new(None, Ok(p)),
+    ));
+    let with = |same_site: &str, value: &str| {
+        let mut c = cookie("sso", value, "idp.example.com");
+        c.same_site = same_site.into();
+        push("tile:iPad", 0, vec![set(c)])
+    };
+    let stored = async || {
+        let r = wp.pull(Some(vec!["example.com".into()])).await.unwrap();
+        let c = &r.cookies[0].cookie;
+        (c.same_site.clone(), c.value.clone())
+    };
+    wp.push(with("none", "v1")).await.unwrap();
+    assert_eq!(stored().await, ("None".to_owned(), "v1".to_owned()));
+    // The tile reads it back as "": no write at all.
+    let echo = wp.push(with("", "v1")).await.unwrap();
+    assert!(echo.sites.is_empty(), "{echo:?}");
+    // A new value from the tile keeps "None".
+    wp.push(with("", "v2")).await.unwrap();
+    assert_eq!(stored().await, ("None".to_owned(), "v2".to_owned()));
+    wp.push(with("STRICT", "v2")).await.unwrap();
+    assert_eq!(stored().await, ("Strict".to_owned(), "v2".to_owned()));
+    let bad = wp
+        .push(with("sometimes", "v3"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        bad.starts_with("invalid push: change 0: same_site"),
+        "{bad}"
+    );
+    assert_eq!(stored().await, ("Strict".to_owned(), "v2".to_owned()));
+}
+
+/// 209 §4.4: a pull answer carries at most 1 MiB of cookie and snapshot JSON; the client pages
+/// with `next` until it is `null`, and every site arrives once, whole, full or scoped.
+#[tokio::test]
+async fn pulls_page_by_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let (p, _) = profile(dir.path()).await;
+    let wp = webprofile::Handle::from_actor(kameo::actor::Spawn::spawn(
+        webprofile::WebProfileActor::new(None, Ok(p)),
+    ));
+    let value = "v".repeat(3000);
+    let sites: Vec<String> = (0..12).map(|i| format!("page{i:02}.example")).collect();
+    for site in &sites {
+        let changes = (0..35)
+            .map(|i| set(cookie(&format!("c{i}"), &value, site)))
+            .collect();
+        wp.push(push("tile:iPad", 0, changes)).await.unwrap();
+    }
+    for asked in [None, Some(sites.clone())] {
+        let (mut seen, mut pages, mut cursor) = (Vec::<String>::new(), 0, None);
+        loop {
+            let r = wp.pull_page(asked.clone(), cursor).await.unwrap();
+            pages += 1;
+            let bytes: usize = r
+                .cookies
+                .iter()
+                .map(|c| serde_json::to_vec(c).unwrap().len())
+                .sum();
+            assert!(bytes <= caps::PULL_BYTES, "page {pages}: {bytes} bytes");
+            for site in &r.sites {
+                let n = r.cookies.iter().filter(|c| &c.site == site).count();
+                assert_eq!(n, 35, "{site} whole on one page");
+            }
+            seen.extend(r.sites);
+            cursor = r.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(pages >= 2, "{pages} pages");
+        assert_eq!(seen, sites, "every site once, in order");
+    }
+}
+
+/// 209 §4.4: a full pull names every site the profile holds, also one whose cookies all
+/// expired, so the client deletes what it still holds of it.
+#[tokio::test]
+async fn a_full_pull_names_a_site_whose_cookies_expired() {
+    let dir = tempfile::tempdir().unwrap();
+    let (p, _) = profile(dir.path()).await;
+    let now = store::now_ms();
+    let mut short = cookie("short", "1", "expired.example");
+    short.expires = Some((now / 1000) as i64 - 5);
+    p.push_at(push("tile:iPad", 0, vec![set(short)]), now - 60_000)
+        .await
+        .unwrap();
+    p.push(push(
+        "tile:iPad",
+        0,
+        vec![set(cookie("k", "1", "live.example"))],
+    ))
+    .await
+    .unwrap();
+    let all = p.pull(None).await.unwrap();
+    assert_eq!(all.sites, ["expired.example", "live.example"]);
+    assert!(
+        all.cookies.iter().all(|c| c.site == "live.example"),
+        "{all:?}"
+    );
+}
+
+/// 209 §4.1: the epoch never goes down: a lower value is refused, a clear writes the highest
+/// seen plus one.
+#[tokio::test]
+async fn the_epoch_never_goes_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let (p, _) = profile(dir.path()).await;
+    p.set_epoch(3).await.unwrap();
+    assert!(matches!(
+        p.set_epoch(2).await,
+        Err(ProfileError::Rejected(_))
+    ));
+    assert_eq!(p.epoch().await.unwrap(), 3);
+    assert_eq!(p.clear().await.unwrap(), 4);
+}
+
+/// 209 §4.1: tombstones go 30 days after they were written also when no replica ever stamped
+/// them (a local-only profile), and not before.
+#[tokio::test]
+async fn tombstones_are_purged_without_replication() {
+    let dir = tempfile::tempdir().unwrap();
+    let (p, _) = profile(dir.path()).await;
+    p.push(push(
+        "tile:iPad",
+        0,
+        vec![set(cookie("a", "1", "example.com"))],
+    ))
+    .await
+    .unwrap();
+    p.push(push("tile:iPad", 0, vec![remove("a", "example.com")]))
+        .await
+        .unwrap();
+    let tombstones = async || rows(&p).await.iter().filter(|r| r.2.is_none()).count();
+    assert_eq!(tombstones().await, 1);
+    let now = store::now_ms();
+    p.purge(now + 29 * DAY_MS).await.unwrap();
+    assert_eq!(tombstones().await, 1, "kept within 30 days");
+    p.purge(now + 31 * DAY_MS).await.unwrap();
+    assert_eq!(tombstones().await, 0, "purged after 30 days");
 }
 
 /// 209 §4.4 `web_profile_clear`: the epoch goes up, every row is a tombstone, a push under the
@@ -749,8 +938,10 @@ async fn clear_bumps_the_epoch_and_a_stale_push_is_refused() {
 }
 
 /// 209 §4.1 rotation: the moment the store sees a new mesh key it holds the old one; the vault
-/// cannot retire it until the rows moved; after the move the hold is gone, the old key retires,
-/// and every row still opens.
+/// cannot retire it until the rows moved; after the move the hold is gone. While the vault still
+/// holds both keys, a row that lands under the old one afterwards (a lagging peer's, no batch
+/// notice) is moved by the next maintenance before the old key can retire; every row still
+/// opens.
 #[tokio::test]
 async fn a_new_mesh_key_holds_the_old_one_until_the_rows_moved() {
     let dir = tempfile::tempdir().unwrap();
@@ -759,10 +950,26 @@ async fn a_new_mesh_key_holds_the_old_one_until_the_rows_moved() {
     p.push(push(
         "tile:iPad",
         0,
-        vec![set(cookie("sid", SECRET, "example.com"))],
+        vec![
+            set(cookie("sid", SECRET, "example.com")),
+            set(cookie("lag", "late-row", "example.com")),
+        ],
     ))
     .await
     .unwrap();
+    // Keep the `lag` row as sealed under the old key, as if it arrived later from a peer.
+    let lag_id = store::Ids::of(&vault.mesh_key()).cookie("example.com", "lag", "example.com", "/");
+    let (site_id, sealed): (String, String) =
+        sqlx::query_as("SELECT site_id, sealed FROM web_sites WHERE id = ?")
+            .bind(&lag_id)
+            .fetch_one(p.pool())
+            .await
+            .unwrap();
+    sqlx::query("DELETE FROM web_sites WHERE id = ?")
+        .bind(&lag_id)
+        .execute(p.pool())
+        .await
+        .unwrap();
     let other_dir = tempfile::tempdir().unwrap();
     let other = secrets::Vault::open(other_dir.path(), secrets::KeyStore::File)
         .await
@@ -784,8 +991,31 @@ async fn a_new_mesh_key_holds_the_old_one_until_the_rows_moved() {
     p.maintain().await.unwrap();
     assert!(!p.holding());
     assert_eq!(p.under_retained_keys().await.unwrap(), 0);
+    // The peer's row lands under the old key after the move.
+    sqlx::query("INSERT INTO web_sites (id, site_id, sealed, hlc) VALUES (?, ?, ?, NULL)")
+        .bind(&lag_id)
+        .bind(&site_id)
+        .bind(&sealed)
+        .execute(p.pool())
+        .await
+        .unwrap();
+    assert_eq!(p.under_retained_keys().await.unwrap(), 1);
+    // Two keys are still held: the next maintenance takes the hold again and moves it.
+    p.maintain().await.unwrap();
+    assert_eq!(p.under_retained_keys().await.unwrap(), 0);
+    assert!(
+        !p.holding(),
+        "released once a check under the hold found nothing left"
+    );
     vault.maintain(far).await.unwrap();
     assert_eq!(vault.held_keys().len(), 1, "the old key retired");
     let load = p.load(Some(&["example.com".to_owned()])).await.unwrap();
-    assert_eq!(load.sites[0].jar.cookies[0].value, SECRET);
+    let mut got: Vec<(&str, &str)> = load.sites[0]
+        .jar
+        .cookies
+        .iter()
+        .map(|c| (c.name.as_str(), c.value.as_str()))
+        .collect();
+    got.sort_unstable();
+    assert_eq!(got, [("lag", "late-row"), ("sid", SECRET)]);
 }

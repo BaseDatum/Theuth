@@ -370,6 +370,9 @@ async fn a_forget_reaches_the_other_engine_and_an_earlier_write_stays_dead() {
     rt.subscribe::<Heard, WebProfileChanged>(&sink).await;
     let b_wp = serve(&b, Some(rt), store_of(&b).await);
     let a_wp = serve(&a, None, store_of(&a).await);
+    // A client last pulled (from either engine) before the forget.
+    let basis = store::now_ms();
+    tokio::time::sleep(Duration::from_millis(5)).await;
     assert_eq!(
         a_wp.forget("app.example.com").await.unwrap().site,
         "example.com"
@@ -403,6 +406,69 @@ async fn a_forget_reaches_the_other_engine_and_an_earlier_write_stays_dead() {
     );
     assert!(a_wp.sites().await.unwrap().is_empty());
     assert!(b_wp.sites().await.unwrap().is_empty());
+
+    // 209 §4.1: the offline client comes back and pushes its old cookie with the basis of its
+    // last pull, or with none (an old client): refused on the forgetting engine and on the
+    // engine that only received the forget; B's pull tells it the site was forgotten.
+    let full = b_wp.pull(None).await.unwrap();
+    assert_eq!(full.forgotten.len(), 1, "{full:?}");
+    assert_eq!(full.forgotten[0].site, "example.com");
+    assert!(full.forgotten[0].forgotten_ms > basis);
+    for (engine, wp) in [("A", &a_wp), ("B", &b_wp)] {
+        for basis in [Some(basis), None] {
+            let r = wp
+                .push(Push {
+                    basis_ms: basis,
+                    ..push("tile:iPad", 0, vec![set(cookie("sid", "resurrected"))])
+                })
+                .await
+                .unwrap();
+            assert_eq!(r.refused, ["example.com"], "{engine} {basis:?}");
+            assert!(r.sites.is_empty(), "{engine} {basis:?}");
+        }
+    }
+    assert!(pulled(&a_wp).await.is_empty() && pulled(&b_wp).await.is_empty());
+}
+
+/// 209 §4.1: the epoch never goes down. A signs out everywhere twice while B, apart, signs out
+/// once later (its epoch row wins last-writer-wins with the lower number): A keeps answering 2,
+/// writes 2 again at its next maintenance, and B reaches 2.
+#[tokio::test]
+async fn the_epoch_never_goes_down_when_two_engines_clear_apart() {
+    let a = node("A", None).await;
+    let b = node("B", Some(&a.vault)).await;
+    assert_eq!(a.profile.clear().await.unwrap(), 1);
+    assert_eq!(a.profile.clear().await.unwrap(), 2);
+    a.replica.flush().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(b.profile.clear().await.unwrap(), 1);
+    b.replica.flush().await.unwrap();
+
+    connect(&Arc::new(Switch::default()), [&a, &b]);
+    until("A received B's epoch row", async || {
+        let sealed: Option<String> =
+            sqlx::query_scalar("SELECT hlc FROM web_sites WHERE id = 'epoch'")
+                .fetch_one(a.profile.pool())
+                .await
+                .unwrap();
+        let b_hlc: Option<String> =
+            sqlx::query_scalar("SELECT hlc FROM web_sites WHERE id = 'epoch'")
+                .fetch_one(b.profile.pool())
+                .await
+                .unwrap();
+        sealed.is_some() && sealed == b_hlc
+    })
+    .await;
+    assert_eq!(a.profile.epoch().await.unwrap(), 2, "A never answers less");
+    a.profile.maintain().await.unwrap();
+    a.replica.flush().await.unwrap();
+    until("B reaches 2", async || {
+        b.profile.epoch().await.unwrap() == 2
+    })
+    .await;
+    assert_eq!(a.profile.epoch().await.unwrap(), 2);
+    // The next sign out everywhere goes on from the highest.
+    assert_eq!(b.profile.clear().await.unwrap(), 3);
 }
 
 /// 209 §4.1 rotation across two engines: A mints a new mesh key and moves its rows at once; B,

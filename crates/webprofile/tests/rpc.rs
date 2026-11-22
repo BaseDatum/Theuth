@@ -73,7 +73,7 @@ async fn push_sites_and_stale_epoch_over_rpc() {
     .await;
     assert_eq!(
         push["result"],
-        json!({ "applied": 3, "sites": ["example.com"], "epoch": 0, "profile": "shared" }),
+        json!({ "applied": 3, "sites": ["example.com"], "epoch": 0, "profile": "shared", "refused": [] }),
         "{push}"
     );
 
@@ -160,8 +160,8 @@ async fn push_sites_and_stale_epoch_over_rpc() {
         "{every}"
     );
 
-    // Pull, forget and clear answer only an owner's connection: nothing authenticated, or a
-    // share-link guest, is refused before the actor (and nothing is forgotten or cleared).
+    // Every method answers only an owner's connection: nothing authenticated, or a share-link
+    // guest, is refused before the actor (nothing is written, forgotten or cleared).
     let bare: jsonrpsee::Methods = webprofile::rpc_module(rpc_core::Server::new(rt.clone()))
         .module
         .into();
@@ -173,6 +173,12 @@ async fn push_sites_and_stale_epoch_over_rpc() {
     as_guest.extensions_mut().insert(guest);
     for (who, m) in [("no connection", &bare), ("a guest", &as_guest)] {
         for (method, params) in [
+            (
+                "web_profile_push",
+                json!({ "device": "guest", "epoch": 0, "changes": [cookie(9)] }),
+            ),
+            ("web_profile_sites", json!({})),
+            ("web_profile_status", json!({})),
             ("web_profile_pull", json!({})),
             ("web_profile_forget", json!({ "site": "example.org" })),
             ("web_profile_clear", json!({})),
@@ -207,8 +213,44 @@ async fn push_sites_and_stale_epoch_over_rpc() {
     .await;
     assert_eq!(after["result"]["sites"], json!(["example.org"]));
     assert_eq!(after["result"]["cookies"], json!([]), "{after}");
+    assert_eq!(
+        after["result"]["forgotten"][0]["site"], "example.org",
+        "{after}"
+    );
+    assert_eq!(after["result"]["next"], Value::Null);
+    let forgot_ms = after["result"]["forgotten"][0]["forgotten_ms"]
+        .as_u64()
+        .unwrap();
+    let basis = after["result"]["now_ms"].as_u64().unwrap();
+    assert!(basis >= forgot_ms);
     let sites = call(&methods, "web_profile_sites", json!({})).await;
     assert_eq!(sites["result"].as_array().unwrap().len(), 1, "{sites}");
+    // A client that pulled before the forget (positional params, basis 1) is refused for that
+    // site; one that pulled after it signs in again.
+    let stale = call(
+        &methods,
+        "web_profile_push",
+        json!(["iPad", 0, [cookie(1)], null, 1]),
+    )
+    .await;
+    assert_eq!(
+        stale["result"]["refused"],
+        json!(["example.org"]),
+        "{stale}"
+    );
+    assert_eq!(stale["result"]["sites"], json!([]), "{stale}");
+    let fresh = call(
+        &methods,
+        "web_profile_push",
+        json!({ "device": "iPad", "epoch": 0, "changes": [cookie(1)], "basis_ms": basis }),
+    )
+    .await;
+    assert_eq!(fresh["result"]["sites"], json!(["example.org"]), "{fresh}");
+    let status = call(&methods, "web_profile_status", json!({})).await;
+    assert_eq!(status["result"]["profile"], "shared", "{status}");
+    assert_eq!(status["result"]["epoch"], 0);
+    assert_eq!(status["result"]["sites"], 2, "{status}");
+    assert!(status["result"]["now_ms"].as_u64().unwrap() >= basis);
     let no_site = call(&methods, "web_profile_forget", json!({ "site": " " })).await;
     assert_eq!(
         no_site["error"]["message"], "invalid forget: no site",
@@ -269,14 +311,14 @@ async fn push_sites_and_stale_epoch_over_rpc() {
     assert_eq!(old["error"]["data"], json!({ "epoch": 3 }));
 
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while seen.lock().len() < 4 {
+        while seen.lock().len() < 5 {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await
     .expect("WebProfileChanged published");
-    // The first push, the long-named device's push, the forget (naming the site) and the clear
-    // (the new epoch).
+    // The first push, the long-named device's push, the forget (naming the site), the push after
+    // it, and the clear (the new epoch); the refused push wrote nothing.
     let heard = seen.lock().clone();
     assert_eq!(
         heard[0],
@@ -292,7 +334,8 @@ async fn push_sites_and_stale_epoch_over_rpc() {
             epoch: 0
         }
     );
-    assert_eq!(heard[3].epoch, 3);
+    assert_eq!(heard[3].sites, ["example.org"]);
+    assert_eq!(heard[4].epoch, 3);
 }
 
 /// 209 D6: with `browser.profile: off` a push is a no-op the client can read (`profile: "off"`)
@@ -331,14 +374,22 @@ async fn off_answers_empty() {
         .unwrap();
     assert_eq!(
         serde_json::to_value(&r).unwrap(),
-        json!({ "applied": 0, "sites": [], "epoch": 0, "profile": "off" })
+        json!({ "applied": 0, "sites": [], "epoch": 0, "profile": "off", "refused": [] })
     );
     assert_eq!(wp.sites().await.unwrap(), vec![]);
-    assert!(wp.load(None).await.is_err(), "no load while off");
+    // The browser reads sites back after a forget also while off (209 §4.6); its sessions
+    // check the mode before they load.
+    assert!(wp.load(None).await.is_ok(), "a read works while off");
     let pulled = wp.pull(None).await.unwrap();
     assert_eq!(
-        serde_json::to_value(&pulled).unwrap(),
-        json!({ "epoch": 0, "sites": [], "cookies": [], "storage": [], "profile": "off" })
+        (pulled.profile, pulled.sites.len(), pulled.cookies.len()),
+        (webprofile::ProfileMode::Off, 0, 0)
+    );
+    assert!(pulled.now_ms > 0 && pulled.next.is_none());
+    let status = wp.status().await.unwrap();
+    assert_eq!(
+        (status.profile, status.epoch),
+        (webprofile::ProfileMode::Off, 0)
     );
     // Off leaves rows until cleared: forget and clear still work.
     assert_eq!(wp.forget("example.com").await.unwrap().site, "example.com");

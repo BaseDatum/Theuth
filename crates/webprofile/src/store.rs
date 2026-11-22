@@ -19,14 +19,21 @@
 //! retire that key before the rows moved; [`crate::watch_keys`] notices a new key at once.
 //!
 //! The row `id = "epoch"` seals the profile epoch; entries written under an older epoch are dead.
-//! `web_profile_forget` writes a forget marker per site (id keyed `["forget", site]`, no
-//! `site_id`): an entry of that site written before it is dead, and so is a later one whose writer
-//! read the profile before it (`basis_ms`) or, naming no read time (a tile), was written within
-//! [`caps::FORGET_QUIET_MS`] after it (`dead`).
-//! Writes are serialised by the actor; `hlc` is left NULL for the replica to stamp at capture.
+//! The epoch never goes down: the local table `web_profile_local` keeps the highest one seen, a
+//! clear writes that plus one, and a replicated epoch row lower than it is written upward again by
+//! [`Profile::maintain`]. `web_profile_forget` writes a forget marker per site (id keyed
+//! `["forget", site]`, no `site_id`): for 30 days ([`caps::FORGOTTEN_MS`]) an entry of that site
+//! is dead when it was written before the marker or by a writer whose `basis_ms` (its last full
+//! read) is before it — a writer naming no basis counts as basis 0 (`dead`).
+//! Writes of one operation are one transaction; the full scans ([`Profile::load`] of every site,
+//! [`Profile::pull_page`], the rotation move) run beside the actor, so every write they make is
+//! conditional on the row still holding what they read. `hlc` is left NULL for the replica to
+//! stamp at capture; a local trigger records when each tombstone was written, so tombstones are
+//! purged after 30 days with or without replication.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -40,8 +47,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePo
 use zeroize::Zeroizing;
 
 use crate::{
-    Cookie, CookieChange, LoadedProfile, LoadedSite, OriginStorage, ProfileError, ProfileMode,
-    PullResult, PulledCookie, PulledStorage, Push, PushResult, SiteJar, SiteSummary, caps, merge,
+    Cookie, CookieChange, ForgottenSite, LoadedProfile, LoadedSite, OriginStorage, ProfileError,
+    ProfileMode, PullResult, PulledCookie, PulledStorage, Push, PushResult, SiteJar, SiteSummary,
+    caps, merge,
 };
 
 /// Sqlite file under `data_dir`.
@@ -185,16 +193,29 @@ impl Item {
 
 /// Whether an entry of a site written at `updated_ms` by a writer that read the profile at
 /// `basis_ms` is dead under the site's forget marker of `forgot_ms` (209 §4.1): written before the
-/// forget, or after it by a writer whose read came before it, or — no read time (a tile, whose
-/// client may not have applied the forget yet) — within [`caps::FORGET_QUIET_MS`] after it.
+/// forget, or by a writer whose last full read came before it. A writer naming no read time (an
+/// old client) counts as basis 0, so it never brings a forgotten site back.
 pub(crate) fn dead(updated_ms: u64, basis_ms: Option<u64>, forgot_ms: Option<u64>) -> bool {
     let Some(f) = forgot_ms else { return false };
-    updated_ms < f
-        || match basis_ms {
-            Some(b) => b < f,
-            None => updated_ms < f.saturating_add(caps::FORGET_QUIET_MS),
-        }
+    updated_ms < f || basis_ms.unwrap_or(0) < f
 }
+
+/// Whether a forget marker written at `forgot_ms` still applies at `now` ([`caps::FORGOTTEN_MS`]).
+fn marker_live(forgot_ms: u64, now: u64) -> bool {
+    forgot_ms.saturating_add(caps::FORGOTTEN_MS) >= now
+}
+
+/// Key of the highest epoch seen in `web_profile_local`.
+const EPOCH_SEEN: &str = "epoch_seen";
+
+/// Re-count `web_site_stats` from the rows (after a clear or a scan tombstoned rows the triggers
+/// counted while they were live).
+const RESTAT: [&str; 2] = [
+    "DELETE FROM web_site_stats",
+    "INSERT INTO web_site_stats (site_id, n, sealed_bytes)
+     SELECT site_id, count(*), sum(length(sealed)) FROM web_sites
+     WHERE site_id IS NOT NULL AND sealed IS NOT NULL GROUP BY site_id",
+];
 
 /// Only the version, read first so a row of a newer format is skipped rather than misread.
 #[derive(Deserialize)]
@@ -237,21 +258,30 @@ struct SiteRows {
     forgot: Option<u64>,
 }
 
-/// The profile store: pool, vault and the ids of the current mesh key. The actor owns one.
+/// The profile store: pool, vault and the ids of the current mesh key. The actor owns one and
+/// shares it with the tasks that scan.
 pub struct Profile {
     pool: SqlitePool,
     vault: Arc<secrets::Vault>,
     ids: Mutex<Arc<Ids>>,
     /// Held while rows may still open only under a retained mesh key: the vault retires no key
-    /// meanwhile (209 §4.1 rotation). Released by [`Self::fold`] once every readable row opens
-    /// under the current key.
+    /// meanwhile (209 §4.1 rotation). Released by [`Self::fold`] only when a check taken under
+    /// the hold, after the move, finds no row under a retained key.
     hold: Mutex<Option<secrets::RetireHold>>,
+    /// A write saw a new mesh key, or a move failed: [`Self::fold`] is owed.
+    owed: AtomicBool,
+    /// One move at a time (the minute tick, the key watcher and a peer's batch may each ask).
+    folding: tokio::sync::Mutex<()>,
+    /// One epoch bump at a time.
+    bumping: tokio::sync::Mutex<()>,
 }
 
 impl Profile {
-    /// Open or create the file, run the migration, delete tombstones older than
+    /// Open or create the file, run the migrations, delete tombstones older than
     /// [`caps::TOMBSTONE_MS`], and move rows a key rotation left under old ids (holding the
-    /// vault's retired keys until they moved).
+    /// vault's retired keys until they moved). A failed purge or move is logged and left to
+    /// [`Self::maintain`] (the hold stays open), so a busy file at start does not take the profile
+    /// down until a restart.
     pub async fn open(path: &Path, vault: Arc<secrets::Vault>) -> anyhow::Result<Self> {
         let opts = SqliteConnectOptions::new()
             .filename(path)
@@ -274,9 +304,17 @@ impl Profile {
             vault,
             ids,
             hold,
+            owed: AtomicBool::new(false),
+            folding: tokio::sync::Mutex::new(()),
+            bumping: tokio::sync::Mutex::new(()),
         };
-        p.purge(now_ms()).await?;
-        p.fold().await?;
+        if let Err(e) = p.purge(now_ms()).await {
+            tracing::warn!("webprofile: tombstones not purged at open: {e}");
+        }
+        if let Err(e) = p.fold().await {
+            p.owed.store(true, Ordering::SeqCst);
+            tracing::warn!("webprofile: rows not moved at open ({e}); maintenance retries");
+        }
         Ok(p)
     }
 
@@ -299,7 +337,7 @@ impl Profile {
         }
     }
 
-    /// Whether a hold is open (a move to the current key is owed).
+    /// Whether a hold is open (a move to the current key is owed or not yet checked).
     pub fn holding(&self) -> bool {
         self.hold
             .lock()
@@ -307,8 +345,15 @@ impl Profile {
             .is_some()
     }
 
+    /// Whether a move to the current mesh key is owed: the actor then runs [`Self::maintain`] on
+    /// its own task.
+    pub fn fold_owed(&self) -> bool {
+        self.owed.load(Ordering::SeqCst)
+    }
+
     /// The ids of the current mesh key, and whether the key changed since the last call. A change
-    /// takes the retire hold at once, before any await.
+    /// takes the retire hold at once, before any await, and marks the move owed; the move itself
+    /// runs beside the actor ([`Self::maintain`]), and full reads fold rows under old ids meanwhile.
     fn ids(&self) -> (Arc<Ids>, bool) {
         let key = self.vault.mesh_key();
         let mut held = self.ids.lock().unwrap_or_else(PoisonError::into_inner);
@@ -316,28 +361,23 @@ impl Profile {
             return (held.clone(), false);
         }
         self.hold();
+        self.owed.store(true, Ordering::SeqCst);
         *held = Arc::new(Ids::of(&key));
         (held.clone(), true)
     }
 
-    /// [`Self::ids`], moving every row to the new ids first when the mesh key changed.
-    async fn current_ids(&self) -> Result<Arc<Ids>, ProfileError> {
-        let (ids, changed) = self.ids();
+    /// The plugin's minute tick and [`crate::watch_keys`]: purge old tombstones, write a replicated
+    /// epoch lower than the highest seen upward again, and — while the vault holds more than one
+    /// mesh key, after a key change or a failed move — move every row to the current key's ids
+    /// under the retire hold ([`Self::fold`]).
+    pub async fn maintain(&self) -> Result<(), ProfileError> {
+        self.purge(now_ms()).await?;
+        self.raise_epoch().await?;
+        let (_, changed) = self.ids();
         if changed {
             tracing::info!("webprofile: the mesh key changed; moving rows to its ids");
-            self.fold().await?;
         }
-        Ok(ids)
-    }
-
-    /// The plugin's minute tick and [`crate::watch_keys`]: catch a mesh key rotation before the
-    /// vault retires the old key, and retry a move that failed (the hold is still open).
-    pub async fn maintain(&self) -> Result<(), ProfileError> {
-        let (_, changed) = self.ids();
-        if changed || self.holding() {
-            if changed {
-                tracing::info!("webprofile: the mesh key changed; moving rows to its ids");
-            }
+        if changed || self.fold_owed() || self.holding() || self.vault.held_keys().len() > 1 {
             self.fold().await?;
         }
         Ok(())
@@ -379,9 +419,28 @@ impl Profile {
         Ok(URL_SAFE_NO_PAD.encode(self.vault.seal_with_mesh_key(&aad(id), &plain)))
     }
 
-    /// The current profile epoch (`0` before any sign out everywhere, or when the epoch row does
-    /// not open here).
+    /// The current profile epoch: the highest of the replicated epoch row and the highest epoch
+    /// this engine has seen (`0` before any sign out everywhere). A replicated epoch higher than
+    /// the one seen is recorded.
     pub async fn epoch(&self) -> Result<u64, ProfileError> {
+        let replicated = self.replicated_epoch().await?;
+        let seen = self.seen_epoch().await?;
+        if replicated > seen {
+            sqlx::query(
+                "INSERT INTO web_profile_local (key, value) VALUES (?, ?)
+                 ON CONFLICT (key) DO UPDATE SET value = max(value, excluded.value)",
+            )
+            .bind(EPOCH_SEEN)
+            .bind(replicated as i64)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        }
+        Ok(replicated.max(seen))
+    }
+
+    /// The epoch the replicated row holds (`0` when there is none or it does not open here).
+    async fn replicated_epoch(&self) -> Result<u64, ProfileError> {
         let sealed: Option<Option<String>> =
             sqlx::query_scalar("SELECT sealed FROM web_sites WHERE id = ?")
                 .bind(EPOCH_ID)
@@ -397,10 +456,19 @@ impl Profile {
         })
     }
 
-    /// Set the epoch to `epoch` and tombstone every row (sign out everywhere writes `n + 1`, 209
-    /// §4.1, §4.4 `web_profile_clear`).
-    pub async fn set_epoch(&self, epoch: u64) -> Result<(), ProfileError> {
-        let entry = Entry {
+    /// The highest epoch this engine has seen.
+    async fn seen_epoch(&self) -> Result<u64, ProfileError> {
+        let seen: Option<i64> =
+            sqlx::query_scalar("SELECT value FROM web_profile_local WHERE key = ?")
+                .bind(EPOCH_SEEN)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db)?;
+        Ok(seen.unwrap_or(0).max(0) as u64)
+    }
+
+    fn epoch_entry(epoch: u64) -> Entry {
+        Entry {
             v: ENTRY_V,
             site: String::new(),
             epoch,
@@ -408,9 +476,21 @@ impl Profile {
             updated_ms: now_ms(),
             basis_ms: None,
             item: Item::Epoch {},
-        };
-        let sealed = self.seal(EPOCH_ID, &entry)?;
-        let mut tx = self.pool.begin().await.map_err(db)?;
+        }
+    }
+
+    /// Set the epoch to `epoch` and tombstone every row (sign out everywhere writes `n + 1`, 209
+    /// §4.1, §4.4 `web_profile_clear`); the site stats are counted again. Refused when `epoch` is
+    /// below the current one: the epoch never goes down.
+    pub async fn set_epoch(&self, epoch: u64) -> Result<(), ProfileError> {
+        let current = self.epoch().await?;
+        if epoch < current {
+            return Err(ProfileError::Rejected(format!(
+                "epoch {epoch} is below the current {current}"
+            )));
+        }
+        let sealed = self.seal(EPOCH_ID, &Self::epoch_entry(epoch))?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
         put(&mut tx, EPOCH_ID, None, Some(&sealed)).await?;
         sqlx::query(
             "UPDATE web_sites SET sealed = NULL, hlc = NULL WHERE id != ? AND sealed IS NOT NULL",
@@ -419,13 +499,43 @@ impl Profile {
         .execute(&mut *tx)
         .await
         .map_err(db)?;
+        sqlx::query(
+            "INSERT INTO web_profile_local (key, value) VALUES (?, ?)
+             ON CONFLICT (key) DO UPDATE SET value = max(value, excluded.value)",
+        )
+        .bind(EPOCH_SEEN)
+        .bind(epoch as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+        for q in RESTAT {
+            sqlx::query(q).execute(&mut *tx).await.map_err(db)?;
+        }
         tx.commit().await.map_err(db)
     }
 
-    /// Sign out everywhere (209 §4.4 `web_profile_clear`): the epoch goes up by one and every
-    /// row is tombstoned. Returns the new epoch.
+    /// A replicated epoch row lower than the highest epoch seen here (two engines cleared apart
+    /// and last-writer-wins kept the lower number) is written again with the highest one.
+    async fn raise_epoch(&self) -> Result<(), ProfileError> {
+        let (replicated, seen) = (self.replicated_epoch().await?, self.seen_epoch().await?);
+        if replicated >= seen {
+            return Ok(());
+        }
+        tracing::info!(
+            replicated,
+            seen,
+            "webprofile: the replicated epoch went down; writing the highest seen"
+        );
+        let sealed = self.seal(EPOCH_ID, &Self::epoch_entry(seen))?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
+        put(&mut tx, EPOCH_ID, None, Some(&sealed)).await?;
+        tx.commit().await.map_err(db)
+    }
+
+    /// Sign out everywhere (209 §4.4 `web_profile_clear`): the epoch goes to the highest seen plus
+    /// one and every row is tombstoned. Returns the new epoch.
     pub async fn clear(&self) -> Result<u64, ProfileError> {
-        self.current_ids().await?;
+        let _one = self.bumping.lock().await;
         let epoch = self.epoch().await?.saturating_add(1);
         self.set_epoch(epoch).await?;
         Ok(epoch)
@@ -441,7 +551,7 @@ impl Profile {
     /// (a row this engine has not seen yet, a lagging engine's) is dead wherever it lands, and so
     /// is a stale writer's later one (`dead`). Returns the current epoch.
     pub async fn forget_at(&self, site: &str, writer: &str, now: u64) -> Result<u64, ProfileError> {
-        let ids = self.current_ids().await?;
+        let ids = self.ids().0;
         let epoch = self.epoch().await?;
         let marker = Entry {
             v: ENTRY_V,
@@ -467,8 +577,15 @@ impl Profile {
         Ok(epoch)
     }
 
-    /// When `site` was last forgotten in epoch `epoch` or later (its marker's `updated_ms`).
-    async fn forgot(&self, ids: &Ids, site: &str, epoch: u64) -> Result<Option<u64>, ProfileError> {
+    /// When `site` was last forgotten in epoch `epoch` or later (its marker's `updated_ms`), when
+    /// that marker still applies at `now` ([`caps::FORGOTTEN_MS`]).
+    async fn forgot(
+        &self,
+        ids: &Ids,
+        site: &str,
+        epoch: u64,
+        now: u64,
+    ) -> Result<Option<u64>, ProfileError> {
         let id = ids.forget(site);
         let sealed: Option<Option<String>> =
             sqlx::query_scalar("SELECT sealed FROM web_sites WHERE id = ?")
@@ -478,7 +595,10 @@ impl Profile {
                 .map_err(db)?;
         Ok(match sealed.flatten().map(|s| self.open_entry(&id, &s)) {
             Some(Opened::Entry(e))
-                if matches!(e.item, Item::Forget {}) && e.site == site && e.epoch >= epoch =>
+                if matches!(e.item, Item::Forget {})
+                    && e.site == site
+                    && e.epoch >= epoch
+                    && marker_live(e.updated_ms, now) =>
             {
                 Some(e.updated_ms)
             }
@@ -486,8 +606,37 @@ impl Profile {
         })
     }
 
-    /// Live sites and their plaintext bytes, estimated from the sealed lengths the local stats
-    /// table keeps (never by re-reading the rows).
+    /// Every forget marker of epoch `epoch` or later that still applies at `now`, newest per site,
+    /// sorted by site (`web_profile_pull`'s `forgotten`). Reads only the marker rows (no
+    /// `site_id`).
+    async fn forgotten(&self, epoch: u64, now: u64) -> Result<Vec<ForgottenSite>, ProfileError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, sealed FROM web_sites
+             WHERE site_id IS NULL AND id != ? AND sealed IS NOT NULL",
+        )
+        .bind(EPOCH_ID)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        let mut at: BTreeMap<String, u64> = BTreeMap::new();
+        for (id, sealed) in rows {
+            if let Opened::Entry(e) = self.open_entry(&id, &sealed)
+                && matches!(e.item, Item::Forget {})
+                && e.epoch >= epoch
+                && marker_live(e.updated_ms, now)
+            {
+                let t = at.entry(e.site).or_default();
+                *t = (*t).max(e.updated_ms);
+            }
+        }
+        Ok(at
+            .into_iter()
+            .map(|(site, forgotten_ms)| ForgottenSite { site, forgotten_ms })
+            .collect())
+    }
+
+    /// Live sites, live rows and their plaintext bytes, estimated from the local stats table
+    /// (never by re-reading the rows).
     async fn totals(&self) -> Result<(usize, u64), ProfileError> {
         let r = sqlx::query(
             "SELECT count(*), coalesce(sum(n), 0), coalesce(sum(sealed_bytes), 0)
@@ -502,16 +651,30 @@ impl Profile {
         Ok((sites, (bytes * 3 / 4).saturating_sub(rows * SEAL_OVERHEAD)))
     }
 
+    /// `web_profile_status` (209 §4.4): the current epoch and the live sites the local stats
+    /// count. No row is opened.
+    pub async fn status(&self) -> Result<(u64, u32), ProfileError> {
+        let epoch = self.epoch().await?;
+        let (sites, _) = self.totals().await?;
+        Ok((epoch, sites as u32))
+    }
+
     /// The rows of `site` under `ids`, live entries of epoch `epoch` or later opened; entries dead
-    /// under the site's forget marker count as not there.
-    async fn site_rows(&self, ids: &Ids, site: &str, epoch: u64) -> Result<SiteRows, ProfileError> {
+    /// under the site's forget marker (as it applies at `now`) count as not there.
+    async fn site_rows(
+        &self,
+        ids: &Ids,
+        site: &str,
+        epoch: u64,
+        now: u64,
+    ) -> Result<SiteRows, ProfileError> {
         let rows = sqlx::query("SELECT id, site_id, sealed FROM web_sites WHERE site_id = ?")
             .bind(ids.site(site))
             .fetch_all(&self.pool)
             .await
             .map_err(db)?;
         let mut out = SiteRows {
-            forgot: self.forgot(ids, site, epoch).await?,
+            forgot: self.forgot(ids, site, epoch, now).await?,
             ..SiteRows::default()
         };
         for r in rows.into_iter().map(raw) {
@@ -541,16 +704,17 @@ impl Profile {
     /// [`ProfileError::UnknownEpoch`] when it is newer. Per site, each change becomes a write of
     /// its own row: a set seals the cookie, a remove (or a set already expired) tombstones it, a
     /// snapshot newer than the stored one replaces it and one over
-    /// [`caps::ORIGIN_STORAGE_BYTES`] tombstones it (dropped whole, never cut). A change that
-    /// leaves the row as it is writes nothing. The caps of 209 §4.1 apply per site (a site over a
-    /// cap is skipped, logged by count, never by value; over the byte cap the oldest snapshots
-    /// go first) and per profile; when nothing could be written because of the profile caps the
-    /// push fails with [`ProfileError::Full`]. A forgotten site takes no set or snapshot from a
-    /// writer whose entry would be dead under its marker (a stale session's save, a tile within
-    /// [`caps::FORGET_QUIET_MS`] of the forget); removes still apply. The caller checked the push
-    /// ([`merge::validate`]).
+    /// [`caps::ORIGIN_STORAGE_BYTES`] tombstones it (dropped whole, never cut). A set whose
+    /// `same_site` is `""` (unknown: WebKit cannot tell `None` from unspecified) keeps the stored
+    /// cookie's attribute. A change that leaves the row as it is writes nothing. The caps of 209
+    /// §4.1 apply per site (a site over a cap is skipped, logged by count, never by value; over
+    /// the byte cap the oldest snapshots go first) and per profile; when nothing could be written
+    /// because of the profile caps the push fails with [`ProfileError::Full`]. A site forgotten
+    /// after the writer's `basis_ms` (no basis: any forget marker of the site) takes no set or
+    /// snapshot from this push, whatever its time; it is listed in `refused`, and removes still
+    /// apply. The caller checked the push ([`merge::validate`]).
     pub async fn push_at(&self, msg: Push, now: u64) -> Result<PushResult, ProfileError> {
-        let ids = self.current_ids().await?;
+        let ids = self.ids().0;
         let current = self.epoch().await?;
         if msg.epoch < current {
             return Err(ProfileError::StaleEpoch { current });
@@ -569,29 +733,39 @@ impl Profile {
             sites: Vec::new(),
             epoch,
             profile: ProfileMode::Shared,
+            refused: Vec::new(),
         };
         let mut refused_full = false;
         for site in sites {
-            let rows = self.site_rows(&ids, &site, epoch).await?;
+            let rows = self.site_rows(&ids, &site, epoch, now).await?;
             let mut changes = cookies.remove(&site).unwrap_or_default();
             let mut snaps = storage.remove(&site).unwrap_or_default();
             if dead(now, msg.basis_ms, rows.forgot) {
                 let before = changes.len() + snaps.len();
                 changes.retain(|c| matches!(c, CookieChange::Remove { .. }));
                 snaps.clear();
-                tracing::info!(
-                    "webprofile: {site} was forgotten since {} read it: {} sets and snapshots dropped",
-                    msg.writer,
-                    before - changes.len()
-                );
+                if before > changes.len() {
+                    tracing::info!(
+                        "webprofile: {site} was forgotten since {} read it: {} sets and snapshots refused",
+                        msg.writer,
+                        before - changes.len()
+                    );
+                    out.refused.push(site.clone());
+                }
             }
             let applied = changes.len() + snaps.len();
             // Row id → its next item (`None` = tombstone), in push order.
             let mut next: BTreeMap<String, Option<Item>> = BTreeMap::new();
             for c in changes {
                 match c {
-                    CookieChange::Set { cookie } => {
+                    CookieChange::Set { mut cookie } => {
                         let id = ids.cookie(&site, &cookie.name, &cookie.domain, &cookie.path);
+                        if cookie.same_site.is_empty()
+                            && let Some((e, _)) = rows.live.get(&id)
+                            && let Item::Cookie(stored) = &e.item
+                        {
+                            cookie.same_site.clone_from(&stored.same_site);
+                        }
                         let item =
                             (!merge::expired(&cookie, now_s)).then_some(Item::Cookie(cookie));
                         next.insert(id, item);
@@ -715,10 +889,11 @@ impl Profile {
     /// dead under a forget marker.
     pub async fn load(&self, sites: Option<&[String]>) -> Result<LoadedProfile, ProfileError> {
         let wanted = sites.map(|s| s.iter().map(|h| crate::site_of(h)).collect());
-        let (epoch, entries) = self.live(wanted.as_ref()).await?;
+        let now = now_ms();
+        let (epoch, entries) = self.live(wanted.as_ref(), now).await?;
         Ok(LoadedProfile {
             epoch,
-            sites: assemble(entries, now_ms()),
+            sites: assemble(entries, now),
         })
     }
 
@@ -727,15 +902,16 @@ impl Profile {
     async fn live(
         &self,
         wanted: Option<&BTreeSet<String>>,
+        now: u64,
     ) -> Result<(u64, Vec<Entry>), ProfileError> {
-        let ids = self.current_ids().await?;
+        let ids = self.ids().0;
         let epoch = self.epoch().await?;
         let entries = match wanted {
             None => self.scan(&ids, epoch).await?,
             Some(wanted) => {
                 let mut v = Vec::new();
                 for site in wanted {
-                    let rows = self.site_rows(&ids, site, epoch).await?;
+                    let rows = self.site_rows(&ids, site, epoch, now).await?;
                     v.extend(rows.live.into_values().map(|(e, _)| e));
                 }
                 v
@@ -744,25 +920,68 @@ impl Profile {
         Ok((epoch, entries))
     }
 
-    /// `web_profile_pull` (209 §4.4, D5): the live cookies and snapshots of `sites` (any hosts,
-    /// grouped by registrable domain) or of every site, each with its site and its row's writer
-    /// and time; the same rules as [`Self::load`]. A site asked for and not answered has nothing
-    /// (forgotten, cleared, never signed in). The only read whose values leave the engine; it logs
-    /// nothing.
+    /// The first page of `web_profile_pull`; see [`Self::pull_page`].
     pub async fn pull(&self, sites: Option<&[String]>) -> Result<PullResult, ProfileError> {
+        self.pull_page(sites, None).await
+    }
+
+    /// One page of `web_profile_pull` (209 §4.4, D5): the live cookies and snapshots of `sites`
+    /// (any hosts, grouped by registrable domain) or of every site the profile holds, from the
+    /// site `cursor` on, each with its site and its row's writer and time; the same rules as
+    /// [`Self::load`]. Sites go whole and in order until the next would carry the page past
+    /// [`caps::PULL_BYTES`] of cookie and snapshot JSON (a page has at least one site); `next`
+    /// names where the following page starts. Every page also lists the forget markers that
+    /// apply (`forgotten`) and `now_ms`, read before any row: the client's `basis_ms`. A site
+    /// asked for and not answered has nothing (forgotten, cleared, never signed in); a full pull
+    /// names every site the profile holds, also one whose cookies all expired. The only read whose
+    /// values leave the engine; it logs nothing.
+    pub async fn pull_page(
+        &self,
+        sites: Option<&[String]>,
+        cursor: Option<&str>,
+    ) -> Result<PullResult, ProfileError> {
+        let now = now_ms();
         let wanted: Option<BTreeSet<String>> = sites.map(|s| {
             s.iter()
                 .map(|h| crate::site_of(h))
                 .filter(|s| !s.is_empty())
                 .collect()
         });
-        let (epoch, entries) = self.live(wanted.as_ref()).await?;
-        let mut out = pulled(entries, now_ms());
-        out.epoch = epoch;
-        if let Some(wanted) = wanted {
-            out.sites = wanted.into_iter().collect();
+        let ids = self.ids().0;
+        let epoch = self.epoch().await?;
+        let mut page = Page {
+            out: PullResult {
+                epoch,
+                forgotten: self.forgotten(epoch, now).await?,
+                now_ms: now,
+                ..PullResult::default()
+            },
+            bytes: 0,
+        };
+        let from = |site: &str| cursor.is_none_or(|c| site >= c);
+        match wanted {
+            None => {
+                let mut by_site: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
+                for e in self.scan(&ids, epoch).await? {
+                    by_site.entry(e.site.clone()).or_default().push(e);
+                }
+                for (site, entries) in by_site.into_iter().filter(|(s, _)| from(s)) {
+                    if !page.add(site, entries, now) {
+                        break;
+                    }
+                }
+            }
+            Some(wanted) => {
+                for site in wanted.into_iter().filter(|s| from(s)) {
+                    let rows = self.site_rows(&ids, &site, epoch, now).await?;
+                    let entries = rows.live.into_values().map(|(e, _)| e).collect();
+                    if !page.add(site, entries, now) {
+                        break;
+                    }
+                }
+            }
         }
-        Ok(out)
+        Ok(page.out)
     }
 
     /// The Settings list (209 §4.4 `web_profile_sites`): counts, never values.
@@ -850,11 +1069,14 @@ impl Profile {
 
     /// Every live entry, deduplicated per row identity (the newest write wins). Rows found under
     /// an id other than the current mesh key's (a rotation, or a lagging engine) move to it —
-    /// written there unless a newer write or a newer tombstone is there already — and their old
-    /// id is tombstoned; rows of an older epoch and rows dead under their site's forget marker
-    /// (`dead`) are tombstoned. Forget markers move like any row and are not returned. Rows of
-    /// an unknown format version are skipped and counted.
+    /// written there unless the row there now holds a write at least as new, or a newer tombstone
+    /// — and their old id is tombstoned; rows of an older epoch and rows dead under their site's
+    /// forget marker (`dead`) are tombstoned. Each tombstone is written only while the row still
+    /// holds what was read, so a write that landed meanwhile (a push, a peer's row) stays. Forget
+    /// markers move like any row and are not returned. Rows of an unknown format version are
+    /// skipped and counted.
     async fn scan(&self, ids: &Ids, epoch: u64) -> Result<Vec<Entry>, ProfileError> {
+        let now = now_ms();
         let rows = sqlx::query(
             "SELECT id, site_id, sealed FROM web_sites WHERE id != ? AND sealed IS NOT NULL",
         )
@@ -863,39 +1085,43 @@ impl Profile {
         .await
         .map_err(db)?;
         let mut unknown = 0usize;
-        let mut opened: Vec<(String, Entry)> = Vec::with_capacity(rows.len());
+        let mut opened: Vec<(String, String, Entry)> = Vec::with_capacity(rows.len());
         for r in rows.into_iter().map(raw) {
-            let Some(sealed) = &r.sealed else { continue };
-            match self.open_entry(&r.id, sealed) {
-                Opened::Entry(e) => opened.push((r.id, *e)),
+            let Some(sealed) = r.sealed else { continue };
+            match self.open_entry(&r.id, &sealed) {
+                Opened::Entry(e) => opened.push((r.id, sealed, *e)),
                 Opened::Unknown => unknown += 1,
                 Opened::Unreadable => {}
             }
         }
-        // Site → when it was last forgotten in this epoch.
+        // Site → when it was last forgotten in this epoch (markers that still apply).
         let mut forgot: HashMap<String, u64> = HashMap::new();
-        for (_, e) in &opened {
-            if matches!(e.item, Item::Forget {}) && e.epoch >= epoch {
+        for (_, _, e) in &opened {
+            if matches!(e.item, Item::Forget {})
+                && e.epoch >= epoch
+                && marker_live(e.updated_ms, now)
+            {
                 let at = forgot.entry(e.site.clone()).or_default();
                 *at = (*at).max(e.updated_ms);
             }
         }
         // Identity (current id) → the newest entry and whether it already sits at that id.
         let mut best: HashMap<String, (Entry, bool)> = HashMap::new();
-        let mut gone: Vec<String> = Vec::new();
+        // Rows to tombstone: id and the sealed text read (the write is conditional on it).
+        let mut gone: Vec<(String, String)> = Vec::new();
         let mut targets: BTreeSet<String> = BTreeSet::new();
-        for (id, e) in opened {
+        for (id, sealed, e) in opened {
             let marker = matches!(e.item, Item::Forget {});
             if e.epoch < epoch
                 || (!marker && dead(e.updated_ms, e.basis_ms, forgot.get(&e.site).copied()))
             {
-                gone.push(id);
+                gone.push((id, sealed));
                 continue;
             }
             let canonical = ids.of_entry(&e);
             let home = canonical == id;
             if !home {
-                gone.push(id);
+                gone.push((id, sealed));
                 targets.insert(canonical.clone());
             }
             let newer = best.get(&canonical).is_none_or(|(b, b_home)| {
@@ -913,43 +1139,62 @@ impl Profile {
                 rows = gone.len(),
                 "webprofile: rows moved to the current key's ids, of an old epoch or forgotten"
             );
-            let mut tx = self.pool.begin().await.map_err(db)?;
-            for id in &gone {
-                sqlx::query("UPDATE web_sites SET sealed = NULL, hlc = NULL WHERE id = ?")
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(db)?;
+            let gone_ids: HashSet<String> = gone.iter().map(|(id, _)| id.clone()).collect();
+            let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
+            for (id, sealed) in &gone {
+                sqlx::query(
+                    "UPDATE web_sites SET sealed = NULL, hlc = NULL WHERE id = ? AND sealed = ?",
+                )
+                .bind(id)
+                .bind(sealed)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
             }
             for id in targets {
-                let Some((e, home)) = best.get(&id) else {
+                let Some((e, false)) = best.get(&id).map(|(e, h)| (e.clone(), *h)) else {
                     continue;
                 };
-                if *home {
-                    continue;
-                }
-                // A tombstone at the current id newer than the moved write keeps the removal.
+                // What the current id holds now, inside this transaction: a newer tombstone keeps
+                // the removal; a live write at least as new (a push, a peer's row that landed
+                // after the read above) is kept and answered instead.
                 let stamp: Option<(Option<String>, Option<String>)> =
                     sqlx::query_as("SELECT sealed, hlc FROM web_sites WHERE id = ?")
                         .bind(&id)
                         .fetch_optional(&mut *tx)
                         .await
                         .map_err(db)?;
-                if let Some((None, hlc)) = stamp
-                    && !gone.contains(&id)
-                {
-                    let at = hlc
-                        .as_deref()
-                        .and_then(replica::Hlc::parse)
-                        .map_or(u64::MAX, |h| h.wall_ms);
-                    if at >= e.updated_ms {
-                        best.remove(&id);
-                        continue;
+                match stamp {
+                    Some((None, hlc)) if !gone_ids.contains(&id) => {
+                        let at = hlc
+                            .as_deref()
+                            .and_then(replica::Hlc::parse)
+                            .map_or(u64::MAX, |h| h.wall_ms);
+                        if at >= e.updated_ms {
+                            best.remove(&id);
+                            continue;
+                        }
                     }
+                    Some((Some(there), _)) => {
+                        if let Opened::Entry(t) = self.open_entry(&id, &there)
+                            && t.updated_ms >= e.updated_ms
+                        {
+                            if t.epoch >= epoch {
+                                best.insert(id, (*t, true));
+                            } else {
+                                best.remove(&id);
+                            }
+                            continue;
+                        }
+                    }
+                    _ => {}
                 }
-                let sealed = self.seal(&id, e)?;
+                let sealed = self.seal(&id, &e)?;
                 let site_id = (!matches!(e.item, Item::Forget {})).then(|| ids.site(&e.site));
                 put(&mut tx, &id, site_id.as_deref(), Some(&sealed)).await?;
+            }
+            for q in RESTAT {
+                sqlx::query(q).execute(&mut *tx).await.map_err(db)?;
             }
             tx.commit().await.map_err(db)?;
         }
@@ -960,41 +1205,76 @@ impl Profile {
             .collect())
     }
 
-    /// Move every row to the current mesh key's ids ([`Self::scan`]), re-seal in place every row
-    /// that still opens only under a retained key (the epoch row, rows of an unknown format
-    /// version, a write that landed meanwhile), then release the retire hold: every readable row
-    /// opens under the current key. On an error the hold stays and [`Self::maintain`] retries.
+    /// Move every row to the current mesh key's ids under the retire hold: take the hold, move
+    /// ([`Self::scan`]), re-seal in place every row that still opens only under a retained key
+    /// (the epoch row, rows of an unknown format version, a write that landed meanwhile), then
+    /// count the rows still under a retained key — a check taken under the hold, after the move —
+    /// and release the hold only when there are none, so a peer's row that arrived during the move
+    /// keeps the old key alive until the next pass. On an error the hold stays and
+    /// [`Self::maintain`] retries.
     async fn fold(&self) -> Result<(), ProfileError> {
-        let (ids, _) = self.ids();
-        let epoch = self.epoch().await?;
-        self.scan(&ids, epoch).await?;
+        let _one = self.folding.lock().await;
+        self.owed.store(false, Ordering::SeqCst);
+        self.hold();
+        let result = async {
+            let (ids, _) = self.ids();
+            let epoch = self.epoch().await?;
+            self.scan(&ids, epoch).await?;
+            self.reseal().await?;
+            self.under_retained_keys().await
+        }
+        .await;
+        match result {
+            Ok(0) if !self.fold_owed() => {
+                *self.hold.lock().unwrap_or_else(PoisonError::into_inner) = None;
+                Ok(())
+            }
+            Ok(left) => {
+                if left > 0 {
+                    tracing::info!(
+                        rows = left,
+                        "webprofile: rows still under a retained mesh key; holding it"
+                    );
+                }
+                Ok(())
+            }
+            Err(e) => {
+                self.owed.store(true, Ordering::SeqCst);
+                Err(e)
+            }
+        }
+    }
+
+    /// Re-seal under the current mesh key every row that opens only under a retained one; each
+    /// write only while the row still holds what was read.
+    async fn reseal(&self) -> Result<(), ProfileError> {
         let rows: Vec<(String, String)> =
             sqlx::query_as("SELECT id, sealed FROM web_sites WHERE sealed IS NOT NULL")
                 .fetch_all(&self.pool)
                 .await
                 .map_err(db)?;
-        let resealed: Vec<(String, String)> = rows
+        let resealed: Vec<(String, String, String)> = rows
             .into_iter()
             .filter_map(|(id, sealed)| {
-                let bytes = URL_SAFE_NO_PAD.decode(sealed).ok()?;
+                let bytes = URL_SAFE_NO_PAD.decode(&sealed).ok()?;
                 let r = self.vault.reseal_with_mesh_key(&aad(&id), &bytes)?;
-                Some((id, URL_SAFE_NO_PAD.encode(r)))
+                Some((id, sealed, URL_SAFE_NO_PAD.encode(r)))
             })
             .collect();
-        if !resealed.is_empty() {
-            let mut tx = self.pool.begin().await.map_err(db)?;
-            for (id, sealed) in &resealed {
-                sqlx::query("UPDATE web_sites SET sealed = ?, hlc = NULL WHERE id = ?")
-                    .bind(sealed)
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(db)?;
-            }
-            tx.commit().await.map_err(db)?;
+        if resealed.is_empty() {
+            return Ok(());
         }
-        *self.hold.lock().unwrap_or_else(PoisonError::into_inner) = None;
-        Ok(())
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
+        for (id, old, new) in &resealed {
+            sqlx::query("UPDATE web_sites SET sealed = ?, hlc = NULL WHERE id = ? AND sealed = ?")
+                .bind(new)
+                .bind(id)
+                .bind(old)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+        }
+        tx.commit().await.map_err(db)
     }
 
     /// Rows that open only under a retained mesh key (not yet moved to the current one).
@@ -1050,20 +1330,59 @@ impl Profile {
         Ok(())
     }
 
-    /// Delete tombstones whose write (their `hlc`) is older than [`caps::TOMBSTONE_MS`]; one
-    /// never stamped (no replication yet) stays.
-    async fn purge(&self, now: u64) -> Result<(), ProfileError> {
-        let cutoff = format!("{:016x}", now.saturating_sub(caps::TOMBSTONE_MS));
+    /// Delete tombstones written more than [`caps::TOMBSTONE_MS`] before `now`: by their `hlc`
+    /// when the replica stamped one, else by the local time a trigger recorded when the tombstone
+    /// was written here (a profile with no replication attached). Run at open and by
+    /// [`Self::maintain`].
+    pub async fn purge(&self, now: u64) -> Result<(), ProfileError> {
+        let cutoff = now.saturating_sub(caps::TOMBSTONE_MS);
         sqlx::query(
             "DELETE FROM web_sites
-             WHERE sealed IS NULL AND id != ? AND hlc IS NOT NULL AND hlc < ?",
+             WHERE sealed IS NULL AND id != ?
+               AND ((hlc IS NOT NULL AND hlc < ?)
+                    OR id IN (SELECT id FROM web_sites_removed WHERE removed_ms < ?))",
         )
         .bind(EPOCH_ID)
-        .bind(cutoff)
+        .bind(format!("{cutoff:016x}"))
+        .bind(cutoff as i64)
         .execute(&self.pool)
         .await
         .map_err(db)?;
         Ok(())
+    }
+}
+
+/// One page of a pull being filled.
+struct Page {
+    out: PullResult,
+    /// Cookie and snapshot JSON so far.
+    bytes: usize,
+}
+
+impl Page {
+    /// Add `site` whole (its live `entries`, by the rules of [`assemble`]), unless the page already
+    /// holds a site and this one would carry it past [`caps::PULL_BYTES`]: then `next` is `site`
+    /// and `false` says the page is full.
+    fn add(&mut self, site: String, entries: Vec<Entry>, now: u64) -> bool {
+        let (cookies, storage) = site_answer(&site, entries, now);
+        let size: usize = cookies
+            .iter()
+            .map(|c| serde_json::to_vec(c).map_or(0, |v| v.len()))
+            .chain(
+                storage
+                    .iter()
+                    .map(|s| serde_json::to_vec(s).map_or(0, |v| v.len())),
+            )
+            .sum();
+        if !self.out.sites.is_empty() && self.bytes + size > caps::PULL_BYTES {
+            self.out.next = Some(site);
+            return false;
+        }
+        self.bytes += size;
+        self.out.sites.push(site);
+        self.out.cookies.extend(cookies);
+        self.out.storage.extend(storage);
+        true
     }
 }
 
@@ -1117,52 +1436,42 @@ fn assemble(entries: Vec<Entry>, now: u64) -> Vec<LoadedSite> {
         .collect()
 }
 
-/// `web_profile_pull`'s answer of live entries, by the rules of [`assemble`], each cookie and
-/// snapshot with its site and its own row's writer and time; `sites` = the sites answered.
-fn pulled(entries: Vec<Entry>, now: u64) -> PullResult {
-    let mut by_site: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
-    for e in entries {
-        by_site.entry(e.site.clone()).or_default().push(e);
-    }
+/// One site of `web_profile_pull`, by the rules of [`assemble`]: each cookie and snapshot with the
+/// site and its own row's writer and time, cookies sorted by name, domain and path, snapshots by
+/// origin.
+fn site_answer(
+    site: &str,
+    entries: Vec<Entry>,
+    now: u64,
+) -> (Vec<PulledCookie>, Vec<PulledStorage>) {
     let now_s = (now / 1000) as i64;
-    let mut out = PullResult::default();
-    for (site, entries) in by_site {
-        let Some(newest) = entries.iter().map(|e| e.updated_ms).max() else {
-            continue;
-        };
-        let idle = now.saturating_sub(newest) > caps::SESSION_COOKIE_IDLE_MS;
-        let (mut cookies, mut storage) = (Vec::new(), Vec::new());
-        for e in entries {
-            match e.item {
-                Item::Cookie(c) => {
-                    if !merge::expired(&c, now_s) && !(idle && c.expires.is_none()) {
-                        cookies.push(PulledCookie {
-                            cookie: c,
-                            site: site.clone(),
-                            writer: e.writer,
-                            updated_ms: e.updated_ms,
-                        });
-                    }
+    let newest = entries.iter().map(|e| e.updated_ms).max().unwrap_or(0);
+    let idle = now.saturating_sub(newest) > caps::SESSION_COOKIE_IDLE_MS;
+    let (mut cookies, mut storage) = (Vec::new(), Vec::new());
+    for e in entries {
+        match e.item {
+            Item::Cookie(c) => {
+                if !merge::expired(&c, now_s) && !(idle && c.expires.is_none()) {
+                    cookies.push(PulledCookie {
+                        cookie: c,
+                        site: site.to_owned(),
+                        writer: e.writer,
+                        updated_ms: e.updated_ms,
+                    });
                 }
-                Item::Storage(s) => storage.push(PulledStorage {
-                    storage: s,
-                    site: site.clone(),
-                    writer: e.writer,
-                    updated_ms: e.updated_ms,
-                }),
-                Item::Epoch {} | Item::Forget {} => {}
             }
+            Item::Storage(s) => storage.push(PulledStorage {
+                storage: s,
+                site: site.to_owned(),
+                writer: e.writer,
+                updated_ms: e.updated_ms,
+            }),
+            Item::Epoch {} | Item::Forget {} => {}
         }
-        if cookies.is_empty() && storage.is_empty() {
-            continue;
-        }
-        cookies.sort_by_key(|c| merge::norm_cookie(&c.cookie));
-        storage.sort_by(|a, b| a.storage.origin.cmp(&b.storage.origin));
-        out.sites.push(site);
-        out.cookies.extend(cookies);
-        out.storage.extend(storage);
     }
-    out
+    cookies.sort_by_key(|c| merge::norm_cookie(&c.cookie));
+    storage.sort_by(|a, b| a.storage.origin.cmp(&b.storage.origin));
+    (cookies, storage)
 }
 
 /// Write one row: `sealed = None` is a tombstone; `hlc` NULL for the replica to stamp.
