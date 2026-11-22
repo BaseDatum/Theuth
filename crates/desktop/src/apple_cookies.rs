@@ -74,15 +74,15 @@ fn recv<T>(rx: &Receiver<Result<T, String>>) -> Result<T, String> {
 }
 
 /// Why a main-thread reply did not come: the time ran out (the budget it had), or the sender is gone.
-enum Late {
+pub(crate) enum Late {
     Timeout(Duration),
     Dropped,
 }
 
-const DROPPED: &str = "the main thread dropped the web view call";
+pub(crate) const DROPPED: &str = "the main thread dropped the web view call";
 
 /// A main-thread reply, or why there is none by `deadline`.
-fn recv_by<T>(rx: &Receiver<T>, deadline: Instant) -> Result<T, Late> {
+pub(crate) fn recv_by<T>(rx: &Receiver<T>, deadline: Instant) -> Result<T, Late> {
     let left = deadline.saturating_duration_since(Instant::now());
     rx.recv_timeout(left).map_err(|e| match e {
         RecvTimeoutError::Timeout => Late::Timeout(left),

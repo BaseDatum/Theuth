@@ -11,6 +11,8 @@
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple_cookies;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod apple_tile;
 #[cfg(desktop)]
 mod asset;
 mod commands;
@@ -132,7 +134,10 @@ mod mobile {
                 #[cfg(target_os = "ios")]
                 crate::ios_webview::web_profile_clear,
                 #[cfg(target_os = "ios")]
-                crate::ios_webview::web_storage_capture
+                crate::ios_webview::web_storage_capture,
+                // 209 §4.7: the agent's ops on a tile.
+                #[cfg(target_os = "ios")]
+                crate::ios_webview::web_view_call
             ])
             .setup(|app| {
                 let builder =
@@ -367,6 +372,7 @@ mod desktop {
             crate::webview::web_profile_write,
             crate::webview::web_profile_clear,
             crate::webview::web_storage_capture,
+            crate::webview::web_view_call,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V reach the webview through it); GTK would paint it inside the window.
         #[cfg(target_os = "macos")]

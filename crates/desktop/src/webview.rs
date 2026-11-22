@@ -22,12 +22,18 @@
 //! `web_storage_capture` go to WebKit directly through `apple_cookies` (the store watch starts with the
 //! first web view); Windows and Linux answer all four with `PROFILE_UNSUPPORTED`, with the same declared
 //! types. All four refuse a `web-*` caller.
+//!
+//! The agent's tile operations (209 §4.7): `web_view_call` runs one op on a web view for the main webview
+//! of the window that holds it; on macOS `script` and `snapshot` go through `apple_tile`, the rest through
+//! Tauri and `WKWebView`. Windows and Linux check the same arguments and answer `CALL_UNSUPPORTED` (the CDP
+//! route of 209 §4.7 is not built).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
 use serde::Serialize;
+use serde_json::Value;
 use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, State, Url, Webview,
@@ -39,6 +45,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::web_rules::DATA_STORE;
 #[cfg(not(target_os = "macos"))]
 use crate::web_rules::PROFILE_UNSUPPORTED;
+use crate::web_rules::call::{Op, check_holder};
 use crate::web_rules::profile::{Cookie, CookieKey, Storage, Written, check_caller};
 use crate::web_rules::{
     CLOSED_EVENT, Closed, STATE_EVENT, app_url, check_label, check_url, in_popout, may_open,
@@ -489,6 +496,128 @@ pub async fn web_storage_capture<R: Runtime>(
     check_caller(caller.label(), false)?;
     webview(caller.app_handle(), &label)?;
     Err(PROFILE_UNSUPPORTED.to_owned())
+}
+
+/// Run one tile op for the agent (209 §4.7, D8): `script`, `navigate`, `back`, `forward`, `reload` or
+/// `snapshot` on `label`, with `args` as `web_rules::call::Op::parse` checks them. Only the main webview of
+/// the window holding the tile may call it. One log line per call: op, label, duration, ok or error;
+/// never a value.
+#[tauri::command]
+pub async fn web_view_call<R: Runtime>(
+    caller: Webview<R>,
+    label: String,
+    op: String,
+    args: Option<Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let outcome = run_call(&caller, &label, &op, args).await;
+    crate::web_rules::call::log(&op, &label, started, &outcome);
+    outcome
+}
+
+/// The op, once the arguments and the caller pass.
+#[cfg(target_os = "macos")]
+async fn run_call<R: Runtime>(
+    caller: &Webview<R>,
+    label: &str,
+    op: &str,
+    args: Option<Value>,
+) -> Result<Value, String> {
+    use std::sync::mpsc::sync_channel;
+
+    use objc2::MainThreadMarker;
+    use objc2_web_kit::WKWebView;
+    use serde_json::json;
+
+    use crate::web_rules::call::SNAPSHOT_TIMEOUT;
+
+    /// `f` with the tile's `WKWebView` on the main thread; when it cannot run there, `f` is dropped with
+    /// its sender and the waiting side reads `DROPPED`.
+    fn on_tile<R: Runtime>(
+        view: &Webview<R>,
+        f: impl FnOnce(MainThreadMarker, &WKWebView) + Send + 'static,
+    ) -> Result<(), String> {
+        view.with_webview(move |platform| {
+            if let Some(mtm) = MainThreadMarker::new() {
+                // SAFETY: on macOS `inner()` is the webview's live `WKWebView`, and `with_webview` runs on
+                // the main thread.
+                f(mtm, unsafe { &*platform.inner().cast::<WKWebView>() });
+            }
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    let started = Instant::now();
+    let op = Op::parse(op, args)?;
+    let app = caller.app_handle();
+    let view = webview(app, label)?;
+    check_holder(
+        label,
+        caller.label(),
+        caller.window().label(),
+        view.window().label(),
+    )?;
+    match op {
+        Op::Navigate(url) => {
+            view.navigate(check_url(app, &url)?)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({}))
+        }
+        Op::Reload => {
+            view.reload().map_err(|e| e.to_string())?;
+            Ok(json!({}))
+        }
+        Op::Back | Op::Forward => {
+            let forward = op == Op::Forward;
+            let (tx, rx) = sync_channel(1);
+            on_tile(&view, move |_, wk| {
+                // SAFETY: plain history calls on a live view, on the main thread.
+                let moved = unsafe {
+                    match (forward, wk.canGoForward(), wk.canGoBack()) {
+                        (true, true, _) => wk.goForward().is_some(),
+                        (false, _, true) => wk.goBack().is_some(),
+                        _ => false,
+                    }
+                };
+                let _ = tx.try_send(Ok(moved));
+            })?;
+            let moved = crate::apple_cookies::wait(rx).await?;
+            Ok(json!({ "moved": moved }))
+        }
+        Op::Script(script) => {
+            let (deadline, timeout) = (started + script.timeout, script.timeout);
+            let (tx, rx) = sync_channel(1);
+            on_tile(&view, move |mtm, wk| {
+                crate::apple_tile::script(mtm, wk, &script, tx)
+            })?;
+            crate::apple_tile::script_done(rx, deadline, timeout).await
+        }
+        Op::Snapshot => {
+            let deadline = started + SNAPSHOT_TIMEOUT;
+            let (tx, rx) = sync_channel(1);
+            on_tile(&view, move |_, wk| crate::apple_tile::snapshot(wk, tx))?;
+            crate::apple_tile::snapshot_done(rx, deadline).await
+        }
+    }
+}
+
+/// Windows and Linux: the same checks, then `CALL_UNSUPPORTED`.
+#[cfg(not(target_os = "macos"))]
+async fn run_call<R: Runtime>(
+    caller: &Webview<R>,
+    label: &str,
+    op: &str,
+    args: Option<Value>,
+) -> Result<Value, String> {
+    Op::parse(op, args)?;
+    let view = webview(caller.app_handle(), label)?;
+    check_holder(
+        label,
+        caller.label(),
+        caller.window().label(),
+        view.window().label(),
+    )?;
+    Err(crate::web_rules::call::CALL_UNSUPPORTED.to_owned())
 }
 
 #[cfg(test)]

@@ -72,12 +72,17 @@ objc2 = "0.6"
 block2 = "0.6"
 # 130 D10 (`companion/macos.rs`): `NSWorkspace` launch and `NSRunningApplication` queries on top of the
 # workspace feature set; `libc` for `kill(pid, 0)` in the quit handshake.
-objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "block2", "libc"] }
+objc2-app-kit = { workspace = true, features = ["NSWorkspace", "NSRunningApplication", "block2", "libc", "NSImage", "NSImageRep", "NSGraphicsContext", "objc2-core-graphics"] }
 objc2-foundation = { workspace = true, features = ["NSURL", "NSError", "NSUUID", "NSDictionary", "NSHTTPCookie", "NSDate", "NSValue", "NSEnumerator", "NSProcessInfo", "NSSet"] }
 # 209 §4.5 (`apple_cookies.rs`): the web view tiles' cookie store and page storage through WebKit directly,
 # at the version wry resolves; `WKWebView` (with `objc2-app-kit`) for the typed `callAsyncJavaScript…`,
 # `WKWebsiteDataRecord` for the data type names `web_profile_clear` removes.
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKFrameInfo", "WKWebsiteDataStore", "WKWebsiteDataRecord", "WKHTTPCookieStore", "WKContentWorld"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKFrameInfo", "WKWebsiteDataStore", "WKWebsiteDataRecord", "WKHTTPCookieStore", "WKContentWorld", "WKNavigation", "WKSnapshotConfiguration"] }
+# 209 §4.7 (`apple_tile.rs`): `web_view_call`'s snapshot, a `takeSnapshot` image drawn into a bitmap and encoded
+# as base64 PNG off the main thread; `WKNavigation` for `goBack`/`goForward`, `NSImage` for its `CGImage`.
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CGImage", "CGContext", "CGBitmapContext", "CGColorSpace"] }
+png = { workspace = true }
+base64 = { workspace = true }
 libc = { workspace = true }
 
 # Windows only: the island's Win32 styles on the `HWND` `raw_window_handle` yields (58 §6.2). Same
@@ -99,8 +104,12 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { workspace = true, features = ["NSURL", "NSURLRequest", "NSURLResponse", "NSUUID", "NSDictionary", "NSKeyValueObserving", "NSHTTPCookie", "NSDate", "NSValue", "NSEnumerator", "NSError", "NSProcessInfo", "NSSet"] }
-objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "UIView", "UIScrollView", "UIWindow", "UIViewController", "UIAlertController", "UIControl", "UITextField", "objc2-core-foundation", "block2"] }
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "UIApplication", "UIResponder", "UIScreen", "UITraitCollection", "UIInterface", "UIScene", "UISceneConfiguration", "UISceneDefinitions", "UISceneOptions", "UISceneSession", "UISceneWindowingControlStyle", "UIView", "UIScrollView", "UIWindow", "UIViewController", "UIAlertController", "UIControl", "UITextField", "UIImage", "objc2-core-foundation", "objc2-core-graphics", "block2"] }
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKWebsiteDataRecord", "WKNavigationDelegate", "WKNavigationAction", "WKNavigationResponse", "WKFrameInfo", "WKUIDelegate", "WKPreferences", "WKHTTPCookieStore", "WKContentWorld"] }
+# 209 §4.7 (`apple_tile.rs`): `web_view_call`'s snapshot, as on macOS; `UIImage` for its `CGImage`.
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CGImage", "CGContext", "CGBitmapContext", "CGColorSpace"] }
+png = { workspace = true }
+base64 = { workspace = true }
 
 [build-dependencies]
 tauri-build = { workspace = true }

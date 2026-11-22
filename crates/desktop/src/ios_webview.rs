@@ -28,6 +28,9 @@
 //! `web_storage_capture` read, write and empty the [`DATA_STORE`](crate::web_rules::DATA_STORE) store and
 //! read or write a view's localStorage through `apple_cookies`, which [`create`] also starts watching for
 //! `web-profile://changed`. They answer the main webview only, and `PROFILE_UNSUPPORTED` before iOS 17.
+//!
+//! The agent's tile operations (209 §4.7): `web_view_call` runs one op on a view for the main webview
+//! only; `script` and `snapshot` go through `apple_tile`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -51,7 +54,7 @@ use objc2_foundation::{
 };
 use objc2_ui_kit::{
     UIAlertAction, UIAlertActionStyle, UIAlertController, UIAlertControllerStyle, UIApplication,
-    UIResponder, UIScrollView, UITextField, UIView,
+    UIImage, UIResponder, UIScrollView, UITextField, UIView,
 };
 use objc2_web_kit::{
     WKContentWorld, WKFrameInfo, WKNavigationAction, WKNavigationActionPolicy,
@@ -59,12 +62,14 @@ use objc2_web_kit::{
     WKWebViewConfiguration, WKWebsiteDataStore,
 };
 use serde::Serialize;
+use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, Url, Webview};
 
 use crate::apple_cookies::{
     MAIN_TIMEOUT, apply_storage, available, capture, captured, clear, data_store, read, wait,
     watch, write, writer, written,
 };
+use crate::web_rules::call::{Op, SNAPSHOT_TIMEOUT, check_holder};
 use crate::web_rules::profile::{
     Cookie, CookieKey, Storage, Written, check_caller, plan_write, storage_for,
 };
@@ -117,6 +122,12 @@ impl WKWebView {
         #[unsafe(method(goForward))]
         fn go_forward(&self) -> Option<Retained<AnyObject>>;
 
+        #[unsafe(method(canGoBack))]
+        fn can_go_back(&self) -> bool;
+
+        #[unsafe(method(canGoForward))]
+        fn can_go_forward(&self) -> bool;
+
         #[unsafe(method(reload))]
         fn reload(&self) -> Option<Retained<AnyObject>>;
 
@@ -137,6 +148,16 @@ impl WKWebView {
             frame: Option<&WKFrameInfo>,
             content_world: &WKContentWorld,
             completion_handler: Option<&DynBlock<dyn Fn(*mut AnyObject, *mut NSError)>>,
+        );
+
+        /// The selector `objc2-web-kit` binds on macOS, with `UIImage` for `NSImage` and the configuration
+        /// untyped (only `None` is passed: the visible bounds), for `apple_tile::snapshot` (209 §4.7).
+        #[allow(non_snake_case)]
+        #[unsafe(method(takeSnapshotWithConfiguration:completionHandler:))]
+        pub(crate) unsafe fn takeSnapshotWithConfiguration_completionHandler(
+            &self,
+            configuration: Option<&AnyObject>,
+            completion_handler: &DynBlock<dyn Fn(*mut UIImage, *mut NSError)>,
         );
     );
 }
@@ -937,4 +958,94 @@ pub async fn web_storage_capture(webview: Webview, label: String) -> Result<Stor
     })
     .await?;
     captured(rx).await
+}
+
+/// Run one tile op for the agent (209 §4.7, D8): `script`, `navigate`, `back`, `forward`, `reload` or
+/// `snapshot` on `label`, with `args` as `web_rules::call::Op::parse` checks them. Main webview only. One
+/// log line per call: op, label, duration, ok or error; never a value.
+#[tauri::command]
+pub async fn web_view_call(
+    app: AppHandle,
+    webview: Webview,
+    label: String,
+    op: String,
+    args: Option<Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let outcome = run_call(&app, &webview, &label, &op, args).await;
+    crate::web_rules::call::log(&op, &label, started, &outcome);
+    outcome
+}
+
+async fn run_call(
+    app: &AppHandle,
+    webview: &Webview,
+    label: &str,
+    op: &str,
+    args: Option<Value>,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let op = Op::parse(op, args)?;
+    check_label(label)?;
+    check_holder(label, webview.label(), webview.window().label(), "main")?;
+    let label = label.to_owned();
+    match op {
+        Op::Navigate(url) => {
+            let parsed = check_url(app, &url)?;
+            on_main(webview, move |_, _| {
+                with_view(&label, |e| load(&e.view, &parsed))?
+            })
+            .await?;
+            Ok(json!({}))
+        }
+        Op::Reload => {
+            on_main(webview, move |_, _| {
+                with_view(&label, |e| {
+                    e.view.reload();
+                })
+            })
+            .await?;
+            Ok(json!({}))
+        }
+        Op::Back | Op::Forward => {
+            let forward = op == Op::Forward;
+            let moved = on_main(webview, move |_, _| {
+                with_view(&label, |e| {
+                    let can = if forward {
+                        e.view.can_go_forward()
+                    } else {
+                        e.view.can_go_back()
+                    };
+                    if can && forward {
+                        e.view.go_forward();
+                    } else if can {
+                        e.view.go_back();
+                    }
+                    can
+                })
+            })
+            .await?;
+            Ok(json!({ "moved": moved }))
+        }
+        Op::Script(script) => {
+            let (deadline, timeout) = (started + script.timeout, script.timeout);
+            let (tx, rx) = sync_channel(1);
+            on_main(webview, move |mtm, _| {
+                with_view(&label, |e| {
+                    crate::apple_tile::script(mtm, &e.view, &script, tx)
+                })
+            })
+            .await?;
+            crate::apple_tile::script_done(rx, deadline, timeout).await
+        }
+        Op::Snapshot => {
+            let deadline = started + SNAPSHOT_TIMEOUT;
+            let (tx, rx) = sync_channel(1);
+            on_main(webview, move |_, _| {
+                with_view(&label, |e| crate::apple_tile::snapshot(&e.view, tx))
+            })
+            .await?;
+            crate::apple_tile::snapshot_done(rx, deadline).await
+        }
+    }
 }

@@ -1577,6 +1577,559 @@ pub(crate) mod profile {
     }
 }
 
+/// The agent's tile operations (209 §4.7, D8): `web_view_call`'s argument check per op, the script wrapper
+/// and its reply, the caller rule, and the snapshot's size and pixel arithmetic. The platform code is in
+/// `apple_tile` (macOS and iOS); Windows and Linux check the same arguments and answer `CALL_UNSUPPORTED`.
+#[cfg_attr(not(any(target_os = "macos", target_os = "ios")), allow(dead_code))]
+pub(crate) mod call {
+    use std::time::{Duration, Instant};
+
+    use serde::Deserialize;
+    use serde_json::{Map, Value};
+
+    /// Error of `web_view_call` on Windows and Linux (209 §4.7: the CDP route is not built).
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    pub(crate) const CALL_UNSUPPORTED: &str = "unsupported: web_view_call needs macOS or iOS";
+
+    /// A script's wait when `timeout_ms` is not given: the engine's own default wait (209 §4.7).
+    pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+    /// The longest `timeout_ms` accepted.
+    pub(crate) const MAX_TIMEOUT: Duration = Duration::from_secs(300);
+    /// `source` at most this many bytes.
+    pub(crate) const MAX_SOURCE: usize = 1024 * 1024;
+    /// At most this many `arguments`.
+    pub(crate) const MAX_ARGUMENTS: usize = 64;
+    /// A script's result at most this many UTF-16 units of JSON; counted in the page, so a larger one never
+    /// crosses the bridge.
+    pub(crate) const MAX_RESULT: usize = 2 * 1024 * 1024;
+    /// A thrown message is cut to this many characters (in the page).
+    const MAX_THROWN: usize = 2000;
+    /// A snapshot's long side at most this many pixels.
+    pub(crate) const SNAPSHOT_MAX_SIDE: usize = 1600;
+    /// How long WebKit has to take a snapshot (the main-thread hop included; encoding is not counted).
+    pub(crate) const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Name of the one argument the wrapped body gets: the JSON array of the caller's argument values.
+    pub(crate) const ARGS_NAME: &str = "__theuth_args";
+    /// Names the wrapper keeps for itself.
+    const RESERVED_PREFIX: &str = "__theuth";
+
+    /// Which content world a script runs in (209 §4.7).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    pub(crate) enum World {
+        /// `WKContentWorld` named `theuth-agent` (`profile::AGENT_WORLD`): own globals, same DOM.
+        Isolated,
+        /// `WKContentWorld.page`: the page's globals, which the page can see and change.
+        Page,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ScriptArgs {
+        world: World,
+        source: String,
+        #[serde(default)]
+        arguments: Map<String, Value>,
+        timeout_ms: Option<u64>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct NavigateArgs {
+        url: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct NoArgs {}
+
+    /// A checked `script` op. `Debug` never prints the source or the argument values.
+    #[derive(PartialEq)]
+    pub(crate) struct Script {
+        pub(crate) world: World,
+        /// The body that runs: the caller's source in [`wrap`].
+        pub(crate) body: String,
+        /// The value of [`ARGS_NAME`]: the argument values as one JSON array, in the order of the
+        /// wrapper's parameters.
+        pub(crate) args_json: String,
+        pub(crate) timeout: Duration,
+    }
+
+    impl std::fmt::Debug for Script {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Script")
+                .field("world", &self.world)
+                .field("body", &format_args!("[{} bytes]", self.body.len()))
+                .field(
+                    "args_json",
+                    &format_args!("[{} bytes]", self.args_json.len()),
+                )
+                .field("timeout", &self.timeout)
+                .finish()
+        }
+    }
+
+    /// One checked tile op (209 §4.7).
+    #[derive(Debug, PartialEq)]
+    pub(crate) enum Op {
+        Script(Script),
+        /// Not yet checked against the allowlist: that needs the app (`check_url`).
+        Navigate(String),
+        Back,
+        Forward,
+        Reload,
+        Snapshot,
+    }
+
+    impl Op {
+        /// `op` and its `args` (absent counts as `{}`), or the reason they are refused. Unknown fields are
+        /// refused, so a caller's typo is an error and not a default.
+        pub(crate) fn parse(op: &str, args: Option<Value>) -> Result<Self, String> {
+            let args = args.unwrap_or_else(|| Value::Object(Map::new()));
+            let invalid = |e: String| format!("invalid args for `{op}`: {e}");
+            // serde's message names the field or the expected type; a value it quotes is the caller's own
+            // argument, never page data.
+            let de = |e: serde_json::Error| invalid(e.to_string());
+            match op {
+                "script" => {
+                    let a: ScriptArgs = serde_json::from_value(args).map_err(de)?;
+                    let timeout = timeout(a.timeout_ms).map_err(invalid)?;
+                    if a.source.len() > MAX_SOURCE {
+                        return Err(invalid(format!("source is over {} KiB", MAX_SOURCE / 1024)));
+                    }
+                    if a.arguments.len() > MAX_ARGUMENTS {
+                        return Err(invalid(format!("more than {MAX_ARGUMENTS} arguments")));
+                    }
+                    for name in a.arguments.keys() {
+                        if !identifier(name) || name.starts_with(RESERVED_PREFIX) {
+                            return Err(invalid(format!(
+                                "argument name `{name}` is not a JavaScript identifier of the caller's"
+                            )));
+                        }
+                    }
+                    let names: Vec<&str> = a.arguments.keys().map(String::as_str).collect();
+                    let values: Vec<&Value> = a.arguments.values().collect();
+                    Ok(Op::Script(Script {
+                        world: a.world,
+                        body: wrap(&a.source, &names),
+                        args_json: serde_json::to_string(&values).map_err(de)?,
+                        timeout,
+                    }))
+                }
+                "navigate" => {
+                    let a: NavigateArgs = serde_json::from_value(args).map_err(de)?;
+                    Ok(Op::Navigate(a.url))
+                }
+                "back" | "forward" | "reload" | "snapshot" => {
+                    let NoArgs {} = serde_json::from_value(args).map_err(de)?;
+                    Ok(match op {
+                        "back" => Op::Back,
+                        "forward" => Op::Forward,
+                        "reload" => Op::Reload,
+                        _ => Op::Snapshot,
+                    })
+                }
+                _ => Err(format!("unknown web view op `{op}`")),
+            }
+        }
+    }
+
+    /// `timeout_ms` as a duration: absent is [`DEFAULT_TIMEOUT`]; 0 and above [`MAX_TIMEOUT`] are refused.
+    pub(crate) fn timeout(ms: Option<u64>) -> Result<Duration, String> {
+        let Some(ms) = ms else {
+            return Ok(DEFAULT_TIMEOUT);
+        };
+        let max = MAX_TIMEOUT.as_millis() as u64;
+        if ms == 0 || ms > max {
+            return Err(format!("timeout_ms must be 1..={max}, got {ms}"));
+        }
+        Ok(Duration::from_millis(ms))
+    }
+
+    /// An ASCII JavaScript identifier (no reserved-word check: one would fail the script with a syntax error).
+    fn identifier(name: &str) -> bool {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    }
+
+    /// The body `callAsyncJavaScript` runs, given the one argument [`ARGS_NAME`]: the caller's `source` as an
+    /// async function of `names`, applied to the parsed values. It answers one JSON string, which
+    /// [`reply`] reads off the main thread: `{"value":…}`, `{"error":…}` (a throw or rejection, the message
+    /// cut in the page) or `{"over":n}` (JSON past [`MAX_RESULT`], which never crosses the bridge). A syntax
+    /// error in `source` fails the whole body; WebKit reports it.
+    pub(crate) fn wrap(source: &str, names: &[&str]) -> String {
+        format!(
+            concat!(
+                "const __theuth_f=async function({names}){{\n{source}\n}};\n",
+                "let __theuth_v;",
+                "try{{__theuth_v=await __theuth_f.apply(this,JSON.parse({args}));}}",
+                "catch(e){{let m;try{{m=e instanceof Error?e.name+\": \"+e.message:String(e);}}",
+                "catch(_){{m=\"a value that cannot be printed\";}}",
+                "return JSON.stringify({{error:String(m).slice(0,{thrown})}});}}",
+                "let __theuth_r;",
+                "try{{__theuth_r=JSON.stringify(__theuth_v);}}",
+                "catch(e){{return JSON.stringify({{not_json:String(e&&e.message).slice(0,{thrown})}});}}",
+                "if(__theuth_r===undefined)return '{{\"value\":null}}';",
+                "if(__theuth_r.length>{max})return JSON.stringify({{over:__theuth_r.length}});",
+                "return '{{\"value\":'+__theuth_r+'}}';"
+            ),
+            names = names.join(","),
+            source = source,
+            args = ARGS_NAME,
+            thrown = MAX_THROWN,
+            max = MAX_RESULT,
+        )
+    }
+
+    /// What [`wrap`]'s body answers.
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Reply {
+        #[serde(default)]
+        value: Option<Value>,
+        error: Option<String>,
+        not_json: Option<String>,
+        over: Option<u64>,
+    }
+
+    /// The script's value from [`wrap`]'s JSON (`None`: WebKit answered nothing, which the wrapper never
+    /// does), or the error the caller gets. Errors never quote the value.
+    pub(crate) fn reply(json: Option<&str>) -> Result<Value, String> {
+        let shape = || "script answered an unexpected shape".to_owned();
+        let reply: Reply = serde_json::from_str(json.ok_or_else(shape)?).map_err(|_| shape())?;
+        match reply {
+            Reply { error: Some(e), .. } => Err(format!("script threw: {e}")),
+            Reply {
+                not_json: Some(e), ..
+            } => Err(format!("script result is not JSON: {e}")),
+            Reply { over: Some(n), .. } => Err(format!(
+                "script result too large: {n} characters of JSON, at most {MAX_RESULT}"
+            )),
+            Reply { value: Some(v), .. } => Ok(v),
+            // `{"value":null}` deserialises `value` as `None`.
+            Reply { value: None, .. } => Ok(Value::Null),
+        }
+    }
+
+    /// A WebKit failure of the whole body (a syntax error in `source`, the page gone): its message, cut.
+    pub(crate) fn failed(message: &str) -> String {
+        let cut: String = message.chars().take(MAX_THROWN).collect();
+        format!("script failed: {cut}")
+    }
+
+    pub(crate) fn timed_out(timeout: Duration) -> String {
+        format!("script timed out after {} ms", timeout.as_millis())
+    }
+
+    /// Prefix of `web_view_call`'s refusal of a caller.
+    const NO_ACCESS: &str = "no access to web view";
+
+    /// Only the main webview of the window that holds the tile may drive it (209 §4.7): never a tile
+    /// (`web-*`), never another webview of that window, never another window. On iOS the tile's window is
+    /// `main`, the only one.
+    pub(crate) fn check_holder(
+        label: &str,
+        caller: &str,
+        caller_window: &str,
+        tile_window: &str,
+    ) -> Result<(), String> {
+        if caller.starts_with(super::PREFIX)
+            || caller != caller_window
+            || caller_window != tile_window
+        {
+            Err(format!("{NO_ACCESS} `{label}` from `{caller}`"))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The PNG size for an image of `width` × `height` pixels: the same, or scaled down so the long side
+    /// is [`SNAPSHOT_MAX_SIDE`], each side at least 1. `None` for an empty image.
+    pub(crate) fn fit(width: usize, height: usize) -> Option<(usize, usize)> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let long = width.max(height);
+        if long <= SNAPSHOT_MAX_SIDE {
+            return Some((width, height));
+        }
+        let scale = |side: usize| ((side * SNAPSHOT_MAX_SIDE + long / 2) / long).max(1);
+        Some((scale(width), scale(height)))
+    }
+
+    /// Premultiplied RGBA (what a CoreGraphics bitmap holds) to straight RGBA (what PNG stores), in place.
+    pub(crate) fn unpremultiply(rgba: &mut [u8]) {
+        for px in rgba.chunks_exact_mut(4) {
+            let a = u32::from(px[3]);
+            if a == 0 || a == 255 {
+                continue;
+            }
+            for c in &mut px[..3] {
+                *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
+            }
+        }
+    }
+
+    /// The one log line of a call (209 §4.7): op, label, duration and ok/error, never a value or an
+    /// error's text (a script's can quote the page).
+    pub(crate) fn log(op: &str, label: &str, started: Instant, outcome: &Result<Value, String>) {
+        let ms = started.elapsed().as_millis() as u64;
+        let outcome = if outcome.is_ok() { "ok" } else { "error" };
+        tracing::debug!(op, label, ms, outcome, "web view call");
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use serde_json::json;
+
+        use super::*;
+
+        fn script(args: Value) -> Result<Script, String> {
+            match Op::parse("script", Some(args))? {
+                Op::Script(s) => Ok(s),
+                other => panic!("not a script: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn call_ops_without_args() {
+            for (op, want) in [
+                ("back", Op::Back),
+                ("forward", Op::Forward),
+                ("reload", Op::Reload),
+                ("snapshot", Op::Snapshot),
+            ] {
+                assert_eq!(Op::parse(op, None).unwrap(), want);
+                assert_eq!(Op::parse(op, Some(json!({}))).unwrap(), want);
+                let err = Op::parse(op, Some(json!({ "full_page": true }))).unwrap_err();
+                assert!(
+                    err.starts_with(&format!("invalid args for `{op}`")),
+                    "{err}"
+                );
+            }
+            assert_eq!(
+                Op::parse("navigate", Some(json!({ "url": "https://example.com/" }))).unwrap(),
+                Op::Navigate("https://example.com/".into())
+            );
+            assert!(Op::parse("navigate", None).unwrap_err().contains("url"));
+            assert_eq!(
+                Op::parse("click", None).unwrap_err(),
+                "unknown web view op `click`"
+            );
+        }
+
+        #[test]
+        fn call_script_args() {
+            let s = script(json!({ "world": "isolated", "source": "return 1" })).unwrap();
+            assert_eq!(s.world, World::Isolated);
+            assert_eq!(s.timeout, DEFAULT_TIMEOUT);
+            assert_eq!(s.args_json, "[]");
+            let s = script(json!({
+                "world": "page",
+                "source": "return a + b.x",
+                "arguments": { "a": 1, "b": { "x": "two" } },
+                "timeout_ms": 1500,
+            }))
+            .unwrap();
+            assert_eq!(s.world, World::Page);
+            assert_eq!(s.timeout, Duration::from_millis(1500));
+            assert_eq!(s.args_json, r#"[1,{"x":"two"}]"#);
+            assert!(
+                s.body
+                    .starts_with("const __theuth_f=async function(a,b){\nreturn a + b.x\n};")
+            );
+
+            for (args, needle) in [
+                (json!({ "source": "1" }), "world"),
+                (json!({ "world": "main", "source": "1" }), "`main`"),
+                (json!({ "world": "page" }), "source"),
+                (
+                    json!({ "world": "page", "source": "1", "args": {} }),
+                    "args",
+                ),
+                (
+                    json!({ "world": "page", "source": "1", "arguments": [] }),
+                    "map",
+                ),
+                (
+                    json!({ "world": "page", "source": "1", "arguments": { "1x": 0 } }),
+                    "1x",
+                ),
+                (
+                    json!({ "world": "page", "source": "1", "arguments": { "a-b": 0 } }),
+                    "a-b",
+                ),
+                (
+                    json!({ "world": "page", "source": "1", "arguments": { "__theuth_args": 0 } }),
+                    "__theuth_args",
+                ),
+                (
+                    json!({ "world": "page", "source": "1", "timeout_ms": 0 }),
+                    "timeout_ms",
+                ),
+                (
+                    json!({ "world": "page", "source": "1", "timeout_ms": -5 }),
+                    "-5",
+                ),
+            ] {
+                let err = script(args.clone()).unwrap_err();
+                assert!(
+                    err.starts_with("invalid args for `script`"),
+                    "{args}: {err}"
+                );
+                assert!(err.contains(needle), "{args}: {err}");
+            }
+            let big = "x".repeat(MAX_SOURCE + 1);
+            assert!(
+                script(json!({ "world": "page", "source": big }))
+                    .unwrap_err()
+                    .contains("source")
+            );
+            let many: Map<String, Value> = (0..=MAX_ARGUMENTS)
+                .map(|i| (format!("a{i}"), json!(i)))
+                .collect();
+            assert!(
+                script(json!({ "world": "page", "source": "1", "arguments": many }))
+                    .unwrap_err()
+                    .contains("arguments")
+            );
+        }
+
+        #[test]
+        fn call_timeout_bounds() {
+            assert_eq!(timeout(None).unwrap(), DEFAULT_TIMEOUT);
+            assert_eq!(timeout(Some(1)).unwrap(), Duration::from_millis(1));
+            assert_eq!(timeout(Some(300_000)).unwrap(), MAX_TIMEOUT);
+            assert!(timeout(Some(0)).is_err());
+            assert_eq!(
+                timeout(Some(300_001)).unwrap_err(),
+                "timeout_ms must be 1..=300000, got 300001"
+            );
+            assert_eq!(
+                timed_out(Duration::from_millis(1500)),
+                "script timed out after 1500 ms"
+            );
+        }
+
+        #[test]
+        fn call_identifiers() {
+            for ok in ["a", "_", "$", "ref", "e3", "$el", "snake_case", "camelCase"] {
+                assert!(identifier(ok), "{ok}");
+            }
+            for bad in ["", "3e", "a b", "a-b", "é", "a.b", "a;b"] {
+                assert!(!identifier(bad), "{bad}");
+            }
+        }
+
+        #[test]
+        fn call_script_reply_shape() {
+            assert_eq!(
+                reply(Some(r#"{"value":{"n":1,"s":"x"}}"#)).unwrap(),
+                json!({"n":1,"s":"x"})
+            );
+            assert_eq!(reply(Some(r#"{"value":null}"#)).unwrap(), Value::Null);
+            assert_eq!(
+                reply(Some(r#"{"value":[1,"a",true]}"#)).unwrap(),
+                json!([1, "a", true])
+            );
+            assert_eq!(
+                reply(Some(r#"{"error":"TypeError: x is undefined"}"#)).unwrap_err(),
+                "script threw: TypeError: x is undefined"
+            );
+            assert_eq!(
+                reply(Some(r#"{"not_json":"cyclic object value"}"#)).unwrap_err(),
+                "script result is not JSON: cyclic object value"
+            );
+            assert!(
+                reply(Some(r#"{"over":3000000}"#))
+                    .unwrap_err()
+                    .starts_with("script result too large: 3000000")
+            );
+            for bad in [
+                None,
+                Some(""),
+                Some("42"),
+                Some(r#"{"value":1,"extra":2}"#),
+                Some("{"),
+            ] {
+                assert_eq!(
+                    reply(bad).unwrap_err(),
+                    "script answered an unexpected shape"
+                );
+            }
+            assert_eq!(
+                failed(&"x".repeat(5000)).len(),
+                "script failed: ".len() + MAX_THROWN
+            );
+        }
+
+        #[test]
+        fn call_wrapper_spells_its_limits() {
+            let body = wrap("return 1", &[]);
+            assert!(body.starts_with("const __theuth_f=async function(){\nreturn 1\n};"));
+            assert!(body.contains(&format!("JSON.parse({ARGS_NAME})")));
+            assert!(body.contains(&format!(">{MAX_RESULT})")));
+            assert!(body.contains(&format!(".slice(0,{MAX_THROWN})")));
+            assert!(body.ends_with(r#"return '{"value":'+__theuth_r+'}';"#));
+        }
+
+        #[test]
+        fn call_holder_rule() {
+            let tile = "web-0123456789abcdef";
+            assert!(check_holder(tile, "main", "main", "main").is_ok());
+            assert!(check_holder(tile, "popout-chat-1", "popout-chat-1", "popout-chat-1").is_ok());
+            // A tile, another window, or a second webview of the holding window.
+            for (caller, window, holder) in [
+                ("web-fedcba9876543210", "main", "main"),
+                (tile, "main", "main"),
+                ("main", "main", "popout-web-0123456789abcdef"),
+                ("island", "island", "main"),
+                ("helper", "main", "main"),
+            ] {
+                assert_eq!(
+                    check_holder(tile, caller, window, holder).unwrap_err(),
+                    format!("no access to web view `{tile}` from `{caller}`")
+                );
+            }
+        }
+
+        #[test]
+        fn call_snapshot_fit() {
+            assert_eq!(fit(0, 10), None);
+            assert_eq!(fit(10, 0), None);
+            assert_eq!(fit(800, 600), Some((800, 600)));
+            assert_eq!(fit(1600, 1600), Some((1600, 1600)));
+            assert_eq!(fit(3200, 2000), Some((1600, 1000)));
+            assert_eq!(fit(2048, 2732), Some((1199, 1600)));
+            assert_eq!(fit(2732, 2048), Some((1600, 1199)));
+            assert_eq!(fit(100_000, 10), Some((1600, 1)));
+            assert_eq!(fit(1601, 1), Some((1600, 1)));
+        }
+
+        #[test]
+        fn call_unpremultiply() {
+            let mut px = [
+                10, 20, 30, 255, // opaque: unchanged
+                0, 0, 0, 0, // clear: unchanged
+                64, 32, 0, 128, // half: doubled
+                200, 0, 0, 100, // over-bright input clamps
+                1, 2, 3, // a partial pixel is left alone
+            ];
+            unpremultiply(&mut px);
+            assert_eq!(
+                px,
+                [
+                    10, 20, 30, 255, 0, 0, 0, 0, 128, 64, 0, 128, 255, 0, 0, 100, 1, 2, 3
+                ]
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
