@@ -2867,6 +2867,8 @@ impl Worker {
             | AgentEvent::InputsParked { .. }
             // 125 §9: the pill is the TUI's and the app's; the thread sees nothing.
             | AgentEvent::AdvisorChanged { .. }
+            // The knowledge harvester pick is a model-menu setting; the thread sees nothing.
+            | AgentEvent::KnowledgeHarvesterChanged { .. }
             // 199: file cards are the TUI's and the app's; the thread sees the notice row.
             | AgentEvent::ContactFileChanged { .. } => {}
             // 125 §9: a concern or blocker is one quiet line; nits post nothing.
