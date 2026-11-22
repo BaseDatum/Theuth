@@ -56,7 +56,7 @@ declare const __APP_VERSION__: string
 export const NOTE_PLUS = 'text-success'
 
 /**
- * ChatGPT's left rail: Chat, Talk, Note, Meeting, Attention, Agents, Library, Costs, the desks, the chat list, Settings; Search sits in
+ * ChatGPT's left rail: Chat, Inbox, Talk, Note, Meeting, Agents, Library, Costs, the desks, the chat list, Settings; Search sits in
  * the header beside the toggle (49 §5.1). 97: the five Agents pages and the five Library pages are one row each; the
  * page under it carries the tab band (`SectionBand`), so the rail stays short.
  */
@@ -182,6 +182,15 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             />
             <NewChatOnMenu />
           </SidebarMenuItem>
+          <Capability required={attentionRequirements} hide><SidebarMenuItem className="group/popout-row">
+            <SidebarMenuButton asChild isActive={section === 'attention'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
+              <Link to="/attention">
+                <Bell /> Inbox
+                <AttentionBadge />
+              </Link>
+            </SidebarMenuButton>
+            <SidebarPopoutButton target={{ kind: 'page', path: '/attention' }} className="top-2 right-2" />
+          </SidebarMenuItem></Capability>
           <Capability required={talkRequirements} hide><SidebarMenuItem className="group/popout-row">
             <SidebarMenuButton asChild isActive={section === 'talk'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <Link
@@ -230,15 +239,6 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               <SidebarPopoutButton target={{ kind: 'page', path: '/meetings/new' }} className="top-2 right-2" />
             </SidebarMenuItem>
           )}
-          <Capability required={attentionRequirements} hide><SidebarMenuItem className="group/popout-row">
-            <SidebarMenuButton asChild isActive={section === 'attention'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
-              <Link to="/attention">
-                <Bell /> Attention
-                <AttentionBadge />
-              </Link>
-            </SidebarMenuButton>
-            <SidebarPopoutButton target={{ kind: 'page', path: '/attention' }} className="top-2 right-2" />
-          </SidebarMenuItem></Capability>
           {agentsTab && (<SidebarMenuItem className="group/popout-row">
             <SidebarMenuButton asChild isActive={section === 'agents'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <Link to={agentsTab.to}>

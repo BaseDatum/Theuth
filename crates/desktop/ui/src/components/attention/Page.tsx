@@ -298,7 +298,7 @@ export function Page() {
         >
           <SidebarLead />
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">
-            Attention {items && <span className="font-normal text-fg-tertiary tabular-nums">{live.length}</span>}
+            Inbox {items && <span className="font-normal text-fg-tertiary tabular-nums">{live.length}</span>}
           </h2>
         </header>
         <div className={cn(active ? 'hidden md:contents' : 'contents')}>
@@ -348,7 +348,7 @@ export function Page() {
                     ref={scrollRef}
                     tabIndex={0}
                     role="region"
-                    aria-label="Attention items"
+                    aria-label="Inbox items"
                     aria-keyshortcuts="J K Enter A D S E X Shift+X / Escape"
                     onKeyDown={onKeyDown}
                     onFocus={onFocus}

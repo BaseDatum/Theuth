@@ -70,5 +70,5 @@ export const pageTitle = (pathname: string): string | undefined => {
   const group = groupOf(pathname)
   if (group) return GROUPS[group].find((t) => t.to === pathname)?.label
   const section = sectionOf(pathname)
-  return section === 'attention' ? 'Attention' : section === 'costs' ? 'Costs' : section === 'settings' ? 'Settings' : section === 'meeting' ? 'Start meeting' : undefined
+  return section === 'attention' ? 'Inbox' : section === 'costs' ? 'Costs' : section === 'settings' ? 'Settings' : section === 'meeting' ? 'Start meeting' : undefined
 }

@@ -207,7 +207,7 @@ export function Dreaming() {
         <Row label="Auto-promote preferences" description="A standing preference is added on its own when you said it explicitly at least twice; off, every one is proposed first.">
           <Switch checked={settings.data?.preferences_auto ?? false} disabled={busy} aria-label="Auto-promote preferences" onCheckedChange={(v) => change({ kind: 'preferences_auto', on: v })} />
         </Row>
-        <Row stack label="Weekly digest" description="One attention row a week with the nights' counts, undos and open proposals.">
+        <Row stack label="Weekly digest" description="One inbox row a week with the nights' counts, undos and open proposals.">
           <Select value={digest?.day} disabled={busy} onValueChange={(v) => change({ kind: 'digest_day', day: v as Day })}>
             <SelectTrigger className="w-24" aria-label="Digest day">
               <SelectValue />

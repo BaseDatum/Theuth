@@ -293,7 +293,6 @@ function Flow(p: CanvasProps) {
           if (edge.type === 'message') p.onEdgeClick(edge.id, { x: e.clientX, y: e.clientY })
         }}
         onPaneClick={p.onPaneClick}
-        className="bg-background"
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="color-mix(in oklab, var(--color-fg-tertiary) 45%, transparent)" />
         <Controls showInteractive={false} fitViewOptions={{ padding: FIT_PADDING, duration: reduced ? 0 : 300 }} />
@@ -304,7 +303,7 @@ function Flow(p: CanvasProps) {
           nodeStrokeWidth={0}
           nodeBorderRadius={6}
           maskColor="color-mix(in oklab, var(--color-background) 70%, transparent)"
-          className="!bg-layer-1 max-sm:!hidden"
+          className="max-sm:!hidden"
           style={{ width: 150, height: 84 }}
         />
       </ReactFlow>

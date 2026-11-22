@@ -84,8 +84,8 @@ test('every page row pops its own route alone; the click on the button never nav
   await mount()
   const pages: [string, string][] = [
     ['Chat', '/new'],
+    ['Inbox', '/attention'],
     ['Meeting', '/meetings/new'],
-    ['Attention', '/attention'],
     ['Agents', '/agents'],
     ['Library', '/artifacts'],
     ['Costs', '/costs'],
@@ -101,6 +101,15 @@ test('every page row pops its own route alone; the click on the button never nav
   expect(openNewChat).not.toHaveBeenCalled()
   // The home mark is not a destination row.
   expect(row('THEUTH').button).toBeNull()
+})
+
+test('Inbox is the row right under Chat (the route stays /attention)', async () => {
+  await mount()
+  const rows = [...document.querySelectorAll<HTMLElement>('[data-sidebar="menu-item"]')].map((el) => el.textContent?.trim() ?? '')
+  const chat = rows.findIndex((t) => t.startsWith('Chat'))
+  expect(chat).toBeGreaterThanOrEqual(0)
+  expect(rows[chat + 1]).toMatch(/^Inbox/)
+  expect(row('Inbox').item.querySelector('a')!.getAttribute('href')).toBe('/attention')
 })
 
 test('every New chat press opens a fresh window (its own label); a second Costs press brings the same window forward', async () => {

@@ -111,7 +111,7 @@ export function movedToast(r: { moved: readonly unknown[]; refused: readonly str
 }
 
 export const offlineCallout = (name: string, secs = ASK_SECS): string =>
-  `Nothing runs elsewhere while ${name} is off. Move it to another machine to continue. If it is still waiting after ${waitText(secs)}, you get an Attention item asking the same.`
+  `Nothing runs elsewhere while ${name} is off. Move it to another machine to continue. If it is still waiting after ${waitText(secs)}, you get an Inbox item asking the same.`
 
 /** One row of Move to ▸. `detail` is the subtitle: why it is disabled, or what the move brings along; `inline` = it follows the name after a dash (no agent there), else it is a second line. */
 export type HomeTarget = { id: string; name: string; here: boolean; online: boolean; enabled: boolean; detail: string; inline: boolean }

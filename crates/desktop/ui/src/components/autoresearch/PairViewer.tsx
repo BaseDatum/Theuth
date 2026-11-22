@@ -90,7 +90,7 @@ export function PairList({ pairs, busy, onAnswer }: { pairs: Pair[]; busy: boole
     <div data-pairs={pairs.length} className="mt-3 space-y-3">
       {pending.length > 0 && (
         <section data-pending={pending.length} className="space-y-2 rounded-md border border-border bg-layer-2 p-3 text-xs">
-          <p className="font-semibold">Your pairs — which is better? (A and B as shown in the attention row; the judge's view stays hidden until you answer)</p>
+          <p className="font-semibold">Your pairs — which is better? (A and B as shown in the inbox row; the judge's view stays hidden until you answer)</p>
           <ul className="space-y-1">
             {pending.map((p) => (
               <li key={`${p.n}:${p.caseId}`} data-pair={`${p.n}:${p.caseId}`} data-human="pending" className="space-y-1.5">
