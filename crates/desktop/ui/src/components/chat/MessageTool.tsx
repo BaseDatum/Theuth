@@ -18,6 +18,7 @@ import { fenced, plugins, shikiTheme } from './MessageAssistant'
 import { toolKey } from './disclosure'
 import { useDisclosure } from '@/lib/tool-runs'
 import { TranscriptJob } from './JobCard'
+import { DesktopHandoffCard } from './DesktopHandoffCard'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 
@@ -95,6 +96,8 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
       <WebViewCard tool={tool} session={session} />
     ) : tool.name === 'crawl' || tool.name === 'map_site' || tool.name === 'scrape_url' || tool.name === 'search_web' ? (
       <ScrapeCard tool={tool} session={session} />
+    ) : tool.name === 'desktop_handoff' ? (
+      <DesktopHandoffCard tool={tool} session={session} />
     ) : tool.name === 'remind_me_in' ? (
       <ReminderCard tool={tool} session={session} />
     ) : isBoardCreate(tool) ? (

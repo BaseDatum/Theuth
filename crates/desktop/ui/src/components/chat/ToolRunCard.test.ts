@@ -71,13 +71,16 @@ test('foldRuns: a deliverable never joins a run — it splits one; a board creat
   expect(foldRuns([a, b, c, d])).toEqual([[a, b, c, d]])
 })
 
-test('foldRuns: an answered ask_user is a deliverable — it splits a run and a lone one between text rows stays a plain entry', () => {
+test('foldRuns: human-input cards that stay visible split a run and a lone one between text rows stays a plain entry', () => {
   const [a, b, c, d] = [tool(1), tool(2), tool(3), tool(4)]
   const ask = tool(9, { name: 'ask_user', args: { questions: [{ id: 'q', text: 'Which?' }] }, result: { output: 'answered', isError: false, files: [] } })
   expect(isDeliverable(ask)).toBe(true)
   expect(foldRuns([a, b, ask, c, d])).toEqual([[a, b], ask, [c, d]])
   expect(foldRuns([text('x'), ask, text('y')])).toEqual([text('x'), ask, text('y')])
-  for (const name of ['secret_request', 'desktop_handoff']) expect(isDeliverable(tool(8, { name }))).toBe(false)
+  const handoff = tool(8, { name: 'desktop_handoff', args: { reason: 'Log in to GitHub' } })
+  expect(isDeliverable(handoff)).toBe(true)
+  expect(foldRuns([a, b, handoff, c, d])).toEqual([[a, b], handoff, [c, d]])
+  expect(isDeliverable(tool(8, { name: 'secret_request' }))).toBe(false)
 })
 
 type Peer = Extract<Entry, { kind: 'peer' }>
