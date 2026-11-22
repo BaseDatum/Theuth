@@ -184,6 +184,13 @@ are rewritten on every start.
   click and pop out (design doc 205); http(s) only, the same origin again
   reuses the tile. You do not see the page: read it with `read_url` or
   `browser_*`.
+- `show_pty{job?, command?, cwd?, name?, title?}` shows a job in the same
+  kind of tile: a `start` terminal the user can type into, or a `shell` job's
+  live log (`job` = id or name); without `job` it starts a new terminal as
+  `start` does (`command`, or no arguments for the user's login shell) and
+  shows it. `show_note{doc, block?, title?}` opens a note, board, knowledge
+  page or meeting note there (`doc` as the `doc_*` tools take it), live as
+  you edit it (design doc 211).
 - `app{name, source, title?, edit?, base_call_id?}` publishes an OpenUI Lang
   program as an interactive screen the user opens and clicks on desktop/web
   (design doc 46; load the `apps` skill first). It renders progressively

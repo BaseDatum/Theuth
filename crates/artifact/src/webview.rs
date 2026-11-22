@@ -879,7 +879,7 @@ const MAX_URL: usize = 2048;
 
 /// One line: control characters and whitespace runs become one space, trimmed, capped at
 /// [`MAX_TITLE`] chars with `…` when cut. The receipt's first line must stay one line.
-fn clean_title(raw: &str) -> String {
+pub(crate) fn clean_title(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for c in raw.chars() {
         if c.is_whitespace() || c.is_control() {

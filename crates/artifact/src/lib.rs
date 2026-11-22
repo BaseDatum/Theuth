@@ -38,6 +38,7 @@ pub mod snapshot;
 pub mod sniff;
 pub mod store;
 pub mod svg;
+pub mod tileview;
 pub mod tools;
 pub mod webview;
 
@@ -58,6 +59,9 @@ pub use store::{
 };
 pub use svg::Raster;
 pub use tools::ShowArgs;
+pub use tileview::{
+    NoteViewOpened, PtyViewOpened, ShowNoteArgs, ShowNoteTool, ShowPtyArgs, ShowPtyTool,
+};
 pub use webview::{
     ShowWebArgs, ShowWebTool, WebViewCallAnswer, WebViewCallId, WebViewCallRequested,
     WebViewCallResolved, WebViewOp, WebViewOpened, WebViewState, WebViewStateReply, WebViewsTool,
@@ -781,6 +785,8 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     use wire::RuntimeWire as _;
     rt.register_wire_event::<ArtifactShown>().await?;
     rt.register_wire_event::<WebViewOpened>().await?;
+    rt.register_wire_event::<PtyViewOpened>().await?;
+    rt.register_wire_event::<NoteViewOpened>().await?;
     rt.register_wire_event::<preview::PagePreviewRequested>().await?;
     rt.register_wire_event::<preview::PagePreviewResolved>().await?;
     rt.register_wire_event::<snapshot::FenceSnapshotRequested>().await?;
@@ -875,6 +881,16 @@ impl runtime::Plugin for ArtifactPlugin {
                     .await;
                 let _ = reg
                     .ask(::tools::RegisterTool(Arc::new(webview::ShowWebTool {
+                        rt: rt.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(tileview::ShowPtyTool {
+                        rt: rt.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(tileview::ShowNoteTool {
                         rt: rt.clone(),
                     })))
                     .await;

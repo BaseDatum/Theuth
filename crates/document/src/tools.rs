@@ -103,8 +103,8 @@ impl Docs {
     /// `doc` is a `DocId`, `knowledge:<id>`, `meeting:<id>` (66 §6.4: the meeting's note),
     /// `agent-charter:<name>` (the agent's charter, once opened in the Agents view), or a bare concept
     /// id with a `/` in it. A concept without a document gets one from its file on demand (§7.1), as
-    /// `doc_resolve` does.
-    async fn resolve(&self, doc: &str) -> anyhow::Result<DocId> {
+    /// `doc_resolve` does. Public for `show_note` (design 211), which opens what `doc` names in a tile.
+    pub async fn resolve(&self, doc: &str) -> anyhow::Result<DocId> {
         if let Some(id) = DocId::parse(doc) {
             return Ok(id);
         }
