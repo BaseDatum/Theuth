@@ -28,6 +28,7 @@ import { chatName } from '@/lib/attach'
 import { chatLeaves, closeWeb, isDraft, isTile, tileOf, usePanes, useRoutedPane } from '@/lib/panes'
 import { isWeb, webId } from '@/lib/web-views'
 import { WebFrame } from '@/components/chat/WebFrame'
+import { WebPill } from '@/components/chat/WebPill'
 import { TileLeaf } from '@/components/tiles/registry'
 import { reportLoadError, useRemoteStart } from '@/lib/remote-start'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
@@ -201,6 +202,7 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
       {lost && <UnreachableCard session={session} machine={lost} />}
       <SubagentStrip session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
       <BackgroundArea key={`d:${session}`} session={session} />
+      <WebPill />
       {aboveComposer}
       {watching ? (
         <>

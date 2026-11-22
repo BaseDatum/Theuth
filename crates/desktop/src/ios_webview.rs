@@ -135,6 +135,9 @@ impl WKWebView {
         #[unsafe(method(stopLoading))]
         fn stop_loading(&self);
 
+        #[unsafe(method(setAllowsBackForwardNavigationGestures:))]
+        fn set_allows_back_forward_navigation_gestures(&self, allows: bool);
+
         #[unsafe(method(scrollView))]
         fn scroll_view(&self) -> Retained<UIScrollView>;
 
@@ -702,6 +705,8 @@ fn create(
     // 209 §4.5: from the first tile on, store changes reach the UI as `web-profile://changed`.
     watch(mtm, &app);
     view.setClipsToBounds(true);
+    // 209 §7: the edge swipe is the page's history (back from the left edge, forward from the right).
+    view.set_allows_back_forward_navigation_gestures(true);
     let delegate = Delegate::new(
         mtm,
         DelegateIvars {

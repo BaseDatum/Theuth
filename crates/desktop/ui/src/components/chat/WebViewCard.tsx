@@ -1,9 +1,10 @@
-import { AppWindow, ExternalLink, Globe, PanelRight } from 'lucide-react'
+import { AppWindow, ExternalLink, Globe, Maximize2, PanelRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { placeWeb, popOutWeb } from '@/lib/panes'
 import { canPopout } from '@/lib/popout'
+import { nativeWebViews } from '@/lib/web-view-native'
 import { openInBrowser, useWebViews } from '@/lib/web-views'
 import type { Entry } from '@/store/sessions'
 import { ToolSpinner } from './Indicators'
@@ -23,11 +24,16 @@ export function webCall(tool: Pick<Tool, 'args' | 'result'>): WebCall {
   return { id: null, url, title: typeof args.title === 'string' && args.title ? args.title : url }
 }
 
-/** **Open**: the frame's tile right of `session`'s pane (an open one stays), or its popped-out window, focused. */
-export function openWebView(session: string, { id, url, title }: { id: string; url: string; title: string }): void {
+/** **Open**: the frame's tile right of `session`'s pane (an open one stays), or its popped-out window, focused; on a
+ * phone (`full`) the page full screen (209 §7), as it was when it had been shown before. */
+export function openWebView(session: string, { id, url, title }: { id: string; url: string; title: string }, full = false): void {
   const store = useWebViews.getState()
   const view = store.views[id]
   if (!view) store.open({ id, session, url, title })
+  if (full) {
+    useWebViews.getState().show(id)
+    return
+  }
   if (view?.popped && canPopout()) {
     void popOutWeb({ id, session: view.session, url: view.current, title: view.title }).catch((e: unknown) => console.warn('open_window', e))
     return
@@ -43,13 +49,17 @@ function popOutCard(session: string, { id, url, title }: { id: string; url: stri
 }
 
 /** The transcript card of a `show_web` call (205 §4.4): title, address, Open, pop out, open in browser. A phone does not
- * tile, so there **Open in browser** is the card's action. */
+ * tile: with native views its Open shows the page full screen (209 §7); without (a browser) **Open in browser** is the
+ * card's action. */
 export function WebViewCard({ tool, session }: { tool: Tool; session: string }) {
   const { isMobile } = useSidebar()
   const call = webCall(tool)
   const failed = tool.result?.isError === true
   const running = !tool.interrupted && (tool.pending || !tool.result)
   const id = call.id
+  const full = isMobile && nativeWebViews()
+  // Only a phone without native views makes Open in browser the card's labelled action.
+  const external = isMobile && !full
   return (
     <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm" data-web-card={id ?? undefined}>
       <div className="flex min-w-0 items-center gap-3">
@@ -59,16 +69,16 @@ export function WebViewCard({ tool, session }: { tool: Tool; session: string }) 
           <span className="truncate font-mono text-xs text-fg-secondary">{call.url}</span>
         </div>
         {running && <ToolSpinner />}
-        {id && !isMobile && (
-          <Button variant="outline" size="sm" onClick={() => openWebView(session, { id, url: call.url, title: call.title })}>
-            <PanelRight />
+        {id && !external && (
+          <Button variant="outline" size="sm" onClick={() => openWebView(session, { id, url: call.url, title: call.title }, full)}>
+            {full ? <Maximize2 /> : <PanelRight />}
             Open
           </Button>
         )}
         {call.url && !failed && (
-          <Button variant={isMobile ? 'outline' : 'ghost'} size={isMobile ? 'sm' : 'icon-sm'} className={isMobile ? undefined : 'text-fg-secondary'} aria-label="Open in browser" onClick={() => openInBrowser(call.url)}>
-            <ExternalLink className={isMobile ? undefined : 'size-4'} />
-            {isMobile && 'Open in browser'}
+          <Button variant={external ? 'outline' : 'ghost'} size={external ? 'sm' : 'icon-sm'} className={external ? undefined : 'text-fg-secondary'} aria-label="Open in browser" onClick={() => openInBrowser(call.url)}>
+            <ExternalLink className={external ? undefined : 'size-4'} />
+            {external && 'Open in browser'}
           </Button>
         )}
         {id && canPopout() && (
