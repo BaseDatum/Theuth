@@ -22,7 +22,7 @@
 //! `objc2-web-kit` 0.3 declares some protocol methods for macOS only, so [`watch`] asserts in debug builds
 //! that the observer answers its selector on either platform.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
@@ -97,11 +97,32 @@ pub(crate) fn available() -> Result<(), String> {
 }
 
 /// The tiles' data store, `None` where [`available`] fails (the tiles then use the default store).
+///
+/// One instance for the life of the process, kept in [`STORE`]: `dataStoreForIdentifier:` answers the live
+/// store of that identifier if there is one, else a new one, and a `WKHTTPCookieStore` refers to its data
+/// store only weakly. Without it, the UI's first read (before any tile) made a store that died after the
+/// read, [`watch`] observed that store's cookie store, and the first tile got a second instance (seen on the
+/// iPad simulator in the 209 P1 proof: the tile's cookie store was not the observed one).
 pub(crate) fn data_store(mtm: MainThreadMarker) -> Option<Retained<WKWebsiteDataStore>> {
-    // SAFETY: a non-zero identifier; the selector exists from macOS 14 / iOS 17, checked first.
-    named_stores().then(|| unsafe {
-        WKWebsiteDataStore::dataStoreForIdentifier(&NSUUID::from_bytes(DATA_STORE), mtm)
+    if !named_stores() {
+        return None;
+    }
+    STORE.with(|cell| {
+        Some(
+            cell.get_or_init(|| {
+                // SAFETY: a non-zero identifier; the selector exists from macOS 14 / iOS 17, checked above.
+                unsafe {
+                    WKWebsiteDataStore::dataStoreForIdentifier(&NSUUID::from_bytes(DATA_STORE), mtm)
+                }
+            })
+            .clone(),
+        )
     })
+}
+
+thread_local! {
+    /// Main thread only: the one [`data_store`] instance, never released.
+    static STORE: OnceCell<Retained<WKWebsiteDataStore>> = const { OnceCell::new() };
 }
 
 /// The tiles' cookie store, or the refusal to send.
