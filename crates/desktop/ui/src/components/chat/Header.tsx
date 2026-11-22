@@ -9,7 +9,7 @@ import { searchRequirements } from '@/components/sidebar/requirements'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, Contact, CornerLeftUp, Eye, LayoutGrid, MessageSquare, Monitor, Network, PanelLeft, Search, ShieldOff, X } from 'lucide-react'
+import { AppWindow, Contact, CornerLeftUp, Eye, LayoutGrid, MessageSquare, Monitor, Network, Search, ShieldOff, X } from 'lucide-react'
 import { Fragment, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -19,16 +19,21 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
+import { SidebarToggle } from './SidebarToggle'
+import { useTileHost } from '@/components/tiles/host'
+import { openBrowserTile, openMemoryTile, openTerminalsTile, openVmTile, showArtifact } from '@/components/tiles/open'
+import { usePaneDrag } from '@/hooks/use-pane-drag'
 import { chatName } from '@/lib/attach'
 import { sharedLabel, useSharing } from '@/lib/contacts'
 import { previewText } from '@/lib/channel-origin'
 import { type HeaderId, type Mode, approvalsOff as pillOff, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
-import { canPopout, isPopout, openPopout, type PopoutTarget } from '@/lib/popout'
+import { canPopout, isPopout, openPopout, popoutOpen, type PopoutTarget } from '@/lib/popout'
 import { ownerState, useEngineLabel, useOwnerOffline } from '@/lib/owner'
 import { useMesh } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
+import { closeTile, tileId, useTileOpen } from '@/lib/tiles'
 import { sourceTag } from '@/lib/session-tree'
 import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
 import { parseSpoken } from '@/lib/injected'
@@ -138,7 +143,7 @@ function Artifacts({ session, row }: { session: string; row?: boolean }) {
             className="flex-col items-start gap-0"
             onSelect={() => {
               close()
-              useSessions.getState().setArtifactPanel(session, a.call_id)
+              showArtifact(session, a.call_id)
             }}
           >
             <span className="w-full truncate">{a.title}</span>
@@ -238,6 +243,12 @@ export function Header({
   const [terminal, setTerminal] = useState(false)
   const [picker, setPicker] = useState(false)
   const [memory, setMemory] = useState(false)
+  // Inside a pane on the tiling layout, surfaces open as tiles beside this one; otherwise their sheets and dialogs.
+  const host = useTileHost()
+  const memoryTile = useTileOpen('memory', host ?? '')
+  const toggleMemory = () =>
+    host === null ? setMemory((o) => !o) : memoryTile ? closeTile(tileId('memory', host)) : void openMemoryTile(host)
+  const openBrowser = (session: string) => (host === null ? useSessions.getState().setBrowserLive(session, true) : void openBrowserTile(host))
   // 183 §4.5: the session's effective value on its owner (pin, else that machine's `tools.approvals`), the ⋯ menu's
   // reader (its setters invalidate the `['approvals', session]` prefix; a flip of this engine's switch re-reads);
   // this engine's own switch until it answers, or with the owner offline.
@@ -251,6 +262,9 @@ export function Header({
 
   const raw = session ? liveTitle || (row ? chatName(row) : 'Untitled chat') : 'New chat'
   const title = parseNote(raw)?.body || parseSpoken(raw)?.text || previewText(raw)
+  // A split tree: the bar drags this tile (`usePaneDrag`) and must not be a window drag region.
+  const drag = usePaneDrag(title)
+  const region = (mac && drag.region) || undefined
   // A popped window has no sidebar to open and is already its own window: no toggle, no search, no popout button.
   const popped = isPopout()
   const nav = first && (!open || isMobile) && !popped
@@ -291,12 +305,12 @@ export function Header({
     // `w-0 flex-1`: takes the slack without counting towards the bar's natural width, so a long title never pushes
     // the controls out; it truncates to nothing before they move (or, in the full bar, before the tier drops).
     title: () => (
-      <span data-tauri-drag-region={mac || undefined} className="flex w-0 min-w-0 flex-1 items-center gap-1.5 truncate text-sm font-medium" title={title}>
+      <span data-tauri-drag-region={region} className="flex w-0 min-w-0 flex-1 items-center gap-1.5 truncate text-sm font-medium" title={title}>
         {observed && <EyeMark className="size-3.5" />}
         <span className="truncate">{title}</span>
       </span>
     ),
-    memory: (mode) => (session ? <MemoryBadge session={session} summary={row} row={mode === 'row'} open={memory} onToggle={() => setMemory((o) => !o)} /> : null),
+    memory: (mode) => (session ? <MemoryBadge session={session} summary={row} row={mode === 'row'} open={host === null ? memory : memoryTile} onToggle={toggleMemory} /> : null),
     parent: (mode) => (parent ? <Parent id={parent} mode={mode} observed={observed} /> : null),
     owner: (mode) =>
       row && !row.here ? (
@@ -315,27 +329,35 @@ export function Header({
           <span className="truncate">{shared}</span>
         </Badge>
       ),
-    desktop: (mode) =>
-      !vm || !canPopout() ? null : mode === 'row' ? (
-        <MenuRow icon={Monitor} label="Desktop" detail={vm.name} onSelect={() => void openPopout({ kind: 'vm', name: vm.name })} />
+    desktop: (mode) => {
+      if (!vm || (host === null && !canPopout())) return null
+      // A desktop already in its own window is focused there, never opened twice (one RFB session per VM).
+      const show = async () => {
+        const target = { kind: 'vm', name: vm.name } as const
+        if (host === null || (await popoutOpen(target))) await openPopout(target)
+        else openVmTile(host, vm.name)
+      }
+      return mode === 'row' ? (
+        <MenuRow icon={Monitor} label="Desktop" detail={vm.name} onSelect={() => void show().catch((e: unknown) => console.warn('open_window', e))} />
       ) : (
-        <Button variant="ghost" size="sm" className="rounded-lg text-fg-secondary" aria-label={`Desktop of ${vm.name}`} onClick={() => void openPopout({ kind: 'vm', name: vm.name })}>
+        <Button variant="ghost" size="sm" className="rounded-lg text-fg-secondary" aria-label={`Desktop of ${vm.name}`} onClick={() => void show().catch((e: unknown) => console.warn('open_window', e))}>
           <Monitor className="size-5" />
           {!compact && vm.name}
         </Button>
-      ),
+      )
+    },
     context: (mode) => (session ? <ContextMeter session={session} memory={row?.memory} row={mode === 'row'} compact={mode === 'bar'} /> : null),
     cost: (mode) => (session ? <CostPill session={session} row={mode === 'row'} onOpen={() => setCost(true)} /> : null),
-    terminals: (mode) => (session ? <TerminalButton session={session} row={mode === 'row'} onOpen={() => setTerminal(true)} /> : null),
+    terminals: (mode) => (session ? <TerminalButton session={session} row={mode === 'row'} onOpen={() => (host === null ? setTerminal(true) : void openTerminalsTile(host))} /> : null),
     browser: (mode) =>
       !session || !browser ? null : mode === 'row' ? (
-        <MenuRow icon={<BrowserIndicator live={browserBusy} className="text-fg-secondary" />} label="Live browser" onSelect={() => useSessions.getState().setBrowserLive(session, true)} />
+        <MenuRow icon={<BrowserIndicator live={browserBusy} className="text-fg-secondary" />} label="Live browser" onSelect={() => openBrowser(session)} />
       ) : (
         <Button
           variant="ghost"
           className="size-9 rounded-lg text-fg-secondary"
           aria-label="Live browser"
-          onClick={() => useSessions.getState().setBrowserLive(session, true)}
+          onClick={() => openBrowser(session)}
         >
           <BrowserIndicator live={browserBusy} size={20} />
         </Button>
@@ -389,16 +411,24 @@ export function Header({
   useEffect(() => {
     if (session) return
     const on = (e: Event) => {
-      if (surfaceOf(e) === 'memory') setMemory(true)
+      if (surfaceOf(e) !== 'memory') return
+      if (host === null) setMemory(true)
+      else void openMemoryTile(host)
     }
     window.addEventListener('theuth:open', on)
     return () => window.removeEventListener('theuth:open', on)
-  }, [session])
+  }, [session, host])
+  // `BrowserShowLive` sets `browserLive` (the reducer): where this chat tiles, that is the live browser tile instead.
+  // The one owner of that conversion; a tile that could not open leaves the request for the dialog.
+  useEffect(() => {
+    if (!live || !session || host === null) return
+    if (openBrowserTile(host) !== null) useSessions.getState().setBrowserLive(session, false)
+  }, [live, session, host])
   return (
-    <header ref={ref} data-header-tier={tier} className="relative flex h-[52px] shrink-0 overflow-hidden">
+    <header ref={ref} {...drag.props} data-header-tier={tier} className="relative flex h-[52px] shrink-0 overflow-hidden">
       <div
         ref={rowRef}
-        data-tauri-drag-region={mac || undefined}
+        data-tauri-drag-region={region}
         className={cn('flex h-full w-full min-w-max items-center', compact ? 'gap-1 px-2' : 'gap-2 px-3', nav && !open && mac && 'pl-20')}
       >
         {bar.map((i) => (
@@ -414,27 +444,12 @@ export function Header({
         <>
           <Capability required={sessionCostRequirements} hide><CostDialog session={session} open={cost} onOpenChange={setCost} /></Capability>
           <Capability required={terminalRequirements} hide><TerminalViewer session={session} open={terminal} onOpenChange={setTerminal} /></Capability>
-          <Capability required={browserRequirements} hide><BrowserLive session={session} open={!!live} onOpenChange={(o) => useSessions.getState().setBrowserLive(session, o)} /></Capability>
+          <Capability required={browserRequirements} hide><BrowserLive session={session} open={!!live && host === null} onOpenChange={(o) => useSessions.getState().setBrowserLive(session, o)} /></Capability>
           <Capability required={artifactRequirements} hide><ArtifactPanel session={session} /></Capability>
           <Capability required={codemapRequirements} hide><CodeMapSheet session={session} /></Capability>
           <Capability required={memoryRequirements} hide><MemoryPanel session={session} open={memory} onOpenChange={setMemory} /></Capability>
         </>
       )}
     </header>
-  )
-}
-
-export function SidebarToggle() {
-  const { toggleSidebar } = useSidebar()
-  return (
-    <Button
-      variant="ghost"
-      size="icon"
-      className="rounded-lg text-fg-secondary"
-      aria-label="Open sidebar"
-      onClick={toggleSidebar}
-    >
-      <PanelLeft className="size-5" />
-    </Button>
   )
 }

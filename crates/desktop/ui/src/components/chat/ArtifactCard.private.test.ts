@@ -7,6 +7,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import type * as PageTheme from '@/lib/page-theme'
 import { usePrivate } from '@/lib/private'
 import type * as Rpc from '@/lib/rpc'
+import type * as Tiles from '@/lib/tiles'
 import { useEngines } from '@/link/engines'
 import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import { type Entry, useSessions } from '@/store/sessions'
@@ -56,6 +57,8 @@ const api = vi.hoisted(() => {
 const save = vi.hoisted(() => vi.fn(async () => '/tmp/out/a.md'))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ save }))
 vi.mock('@/components/hud/queries', () => ({ useMarkShown: () => {} }))
+// No panes here: the record opens in the panel, never a tile.
+vi.mock('@/lib/tiles', async (original) => ({ ...(await original<typeof Tiles>()), tileable: () => false }))
 // The page frame reads the document's computed theme.
 vi.mock('@/lib/page-theme', async (actual) => ({ ...(await actual<typeof PageTheme>()), useHtmlPageTheme: () => ({ appearance: 'dark', variables: {} }) }))
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))

@@ -2,7 +2,7 @@
  * Streamdown custom renderer for ```` ```openui ```` fences (30 §8, 46 §8): the apps renderer inline in a reply.
  * Open fence: progressive render (`isStreaming`). Closed fence: the static program — `$state`, `@Set`/`@Reset`/`@OpenUrl`
  * and inputs work; `Query`/`Mutation`/`@ToAssistant` are inert and say so. `Open as app` commits the source through
- * `publish_app` (no model turn) and opens the record in the artifact panel.
+ * `publish_app` (no model turn) and opens the record in the artifact tile (the panel on a phone).
  * 2026-09-25 ruling: a fence merges into the message flow like a json-render block — no card, no title bar, only a
  * hover-revealed `Open as app` / `Show source` toolbar. An app (the published record) stays an app card.
  */
@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/button'
 import { useApi } from '@/lib/rpc'
 import { useSnapshot } from '@/lib/snapshot-mode'
 import type { Api } from '@/rpc/bindings/client'
+import { showArtifact } from '@/components/tiles/open'
 import { useSessions } from '@/store/sessions'
 import { FenceScope, useScopedDisclosure } from '../disclosure'
 import { FenceContext, FenceFallback } from './JsonRenderFence'
@@ -50,15 +51,14 @@ export function appName(source: string): string {
   return slug || `reply-${crypto.randomUUID().slice(0, 8)}`
 }
 
-/** `publish_app`, then the panel on the new record; the doc's artifact enters the store first so the panel has it even before `ArtifactShown`. */
+/** `publish_app`, then the record shown (`showArtifact`); the doc's artifact enters the store first so the tile/panel has it even before `ArtifactShown`. */
 export async function openAsApp(api: Pick<Api, 'publish_app'>, session: string, source: string): Promise<void> {
   try {
     const doc = await api.publish_app(session, appName(source), source)
     // The generated binding types u64s as bigint; on the wire they are JSON numbers, as `Artifact` in `rpc/extra` says.
     const artifact = { ...doc.artifact, bytes: Number(doc.artifact.bytes), created_at: Number(doc.artifact.created_at) }
-    const st = useSessions.getState()
-    st.applyEvents([{ type: 'ArtifactShown', session, call_id: artifact.call_id, artifact }])
-    st.setArtifactPanel(session, artifact.call_id)
+    useSessions.getState().applyEvents([{ type: 'ArtifactShown', session, call_id: artifact.call_id, artifact }])
+    showArtifact(session, artifact.call_id)
     toast.success('Published as app')
   } catch (e) {
     toast.error(e instanceof Error ? e.message : String(e))

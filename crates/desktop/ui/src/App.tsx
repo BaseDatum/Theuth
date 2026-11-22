@@ -23,6 +23,8 @@ import { useMeetingSettings } from '@/lib/meeting-settings'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { chatLeaves, closeWeb, leaves, placeWeb, usePanes } from '@/lib/panes'
 import { closeAllWebViews, installWebViewEvents, useWebViews, webLeaf } from '@/lib/web-views'
+import { closeAllTiles, closeSessionTiles } from '@/lib/tiles'
+import { forgetArtifact } from '@/components/chat/ArtifactPanel'
 import * as webNative from '@/lib/web-view-native'
 import { isMobileLayout } from '@/hooks/use-mobile'
 import { installFenceSnapshot } from '@/lib/fence-snapshot'
@@ -569,6 +571,7 @@ function useEventSideEffects(st: Stores): void {
         if ((slice?.parent ?? summary?.parent) != null) return
         alerts.legacy(`finished:${e.session}:`, 'Turn finished', slice?.title ?? summary?.title ?? '')
       }),
+      // The reducer sets `browserLive`; where the chat tiles its header turns that into the live browser tile.
       on("browser.events@1", 'BrowserShowLive', (e) => {
         if (!visible(e.session)) router.history.push(`/c/${e.session}`)
       }),
@@ -589,10 +592,12 @@ function useEventSideEffects(st: Stores): void {
           place()
         })
       }),
-      // The session's frames go with it: tiles, store entries, native views; a pop-out window holding one closes on
-      // `web-view://closed` (`WebFrame`).
+      // The session's frames and tiles go with it: tiles, store entries, native views; a pop-out window holding one
+      // closes on `web-view://closed` (`WebFrame`).
       on("agent.events@1", 'SessionDeleted', (e) => {
         for (const v of Object.values(useWebViews.getState().views)) if (v.session === e.session) closeWeb(v.id)
+        closeSessionTiles(e.session)
+        forgetArtifact(e.session)
         const to = usePanes.getState().close(e.session)
         if (to) router.history.push(`/c/${to}`)
       }),
@@ -789,10 +794,11 @@ function Main() {
   useSyncExternalStore(switcher.subscribe, () => switcher.shown)
   useEffect(() => {
     if (!hydrated) return
-    // Panes name sessions of the engine being left; its web frames go too (native views included).
+    // Panes name sessions of the engine being left; its web frames and tiles go too (native views included).
     if (switcher.shown !== null && switcher.shown !== active) {
-      usePanes.setState({ root: null, focused: null, drag: null })
+      usePanes.setState({ root: null, focused: null, selected: null, drag: null })
       closeAllWebViews()
+      closeAllTiles()
     }
     const { pathname, href } = router.state.location
     void switcher.activate(active, { pathname, href })

@@ -1,19 +1,23 @@
 /**
- * 73 §6.7 / §12.1 (Sky's ruling): the CodeMap is a real side pane docked beside the chat, not a Sheet overlay.
- * `CodeMapPane` wraps one chat leaf in a row flex and docks the panel on its right with a drag strip (360–920 px,
- * persisted); under 768 px `CodeMapSheet` (mounted from the header) shows the list forms in a bottom Sheet instead.
- * Availability = `codemap.roots` non-empty, exactly like `browser` / `terminal` (§0.2).
+ * 73 §6.7 / §12.1 (Sky's ruling): the CodeMap is a real side pane beside the chat, not a Sheet overlay. In the pane
+ * tree it is the `codemap` tile (`components/tiles/kinds/codemap`); the talk view docks it with `CodeMapPane` (a drag
+ * strip, 360–920 px, persisted); under 768 px `CodeMapSheet` (mounted from the header) shows the list forms in a bottom
+ * Sheet instead. Availability = `codemap.roots` non-empty, exactly like `browser` / `terminal` (§0.2).
  */
 import { MapIcon } from 'lucide-react'
 import { useSupported } from '@/rpc/capabilities'
 import { requirements } from './requirements'
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
 import { MenuRow } from '@/components/chat/HeaderMenu'
+import { useTileHost } from '@/components/tiles/host'
+import { openCodemapTile } from '@/components/tiles/open'
 import { Button } from '@/components/ui/button'
 import { ResizeHandle } from '@/components/ui/resize-handle'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { leaves, tileLeaf, usePanes } from '@/lib/panes'
 import { PX_STEP } from '@/lib/resize-drag'
+import { closeTile, tileId, useTiles } from '@/lib/tiles'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { CodeMapPanel } from './CodeMapPanel'
 
@@ -27,28 +31,39 @@ const clampW = (w: number) => Math.min(MAX_W, Math.max(MIN_W, w), Math.floor(win
 export const useCodemapAvailable = (session: string | null): boolean =>
   (useSessionField(session ?? '', 'codemap')?.roots.length ?? 0) > 0
 
-/** The header button: toggles the pane on the last touched root; a dot while a call arrived that the pane has not shown. */
+/**
+ * The header button: toggles the CodeMap on the last touched root — the tile when the chat sits in a pane, else the
+ * docked pane / phone Sheet (`codemapPanel`); a dot while a call arrived that the CodeMap has not shown.
+ */
 export function CodeMapButton({ session, row }: { session: string; row?: boolean }) {
+  const host = useTileHost()
   const codemap = useSessionField(session, 'codemap')
-  const open = useSessionField(session, 'codemapPanel') ?? null
+  const panel = useSessionField(session, 'codemapPanel') ?? null
+  const id = tileId('codemap', session)
+  const inTree = usePanes((s) => s.root !== null && leaves(s.root).includes(tileLeaf(id)))
+  const stored = useTiles((s) => id in s.tiles)
+  const open = host ? inTree && stored : panel !== null
   const seen = useRef<number>(-1)
   const last = codemap?.last ?? null
-  if (open !== null && last) seen.current = last.seq
-  const dot = open === null && last !== null && last.seq !== seen.current
+  if (open && last) seen.current = last.seq
+  const dot = !open && last !== null && last.seq !== seen.current
   const toggle = () => {
     const root = last?.root ?? codemap?.roots.at(-1) ?? null
-    useSessions.getState().setCodemapPanel(session, open === null ? root : null)
+    if (host) {
+      if (open) closeTile(id)
+      else if (root !== null) openCodemapTile(host, root)
+    } else useSessions.getState().setCodemapPanel(session, open ? null : root)
   }
-  if (row) return <MenuRow icon={MapIcon} label={open === null ? 'CodeMap' : 'Close CodeMap'} onSelect={toggle} />
+  if (row) return <MenuRow icon={MapIcon} label={open ? 'Close CodeMap' : 'CodeMap'} onSelect={toggle} />
   return (
-    <Button variant="ghost" className="relative size-9 rounded-lg text-fg-secondary" aria-label="CodeMap" aria-pressed={open !== null} onClick={toggle}>
+    <Button variant="ghost" className="relative size-9 rounded-lg text-fg-secondary" aria-label="CodeMap" aria-pressed={open} onClick={toggle}>
       <MapIcon className="size-5" />
       {dot && <span aria-hidden className="absolute top-2 right-2 size-1.5 rounded-full bg-fg-accent" />}
     </Button>
   )
 }
 
-/** Docked host: `children` = the chat column; the panel sits to its right when `codemapPanel` names a root (desktop only). */
+/** Docked host outside the pane tree (the talk view): `children` = the chat column; the panel sits to its right when `codemapPanel` names a root (desktop only). */
 export function CodeMapPane({ session, children }: { session: string; children: ReactNode }) {
   const root = useSessionField(session, 'codemapPanel') ?? null
   const available = useSupported(requirements)

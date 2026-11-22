@@ -20,6 +20,7 @@ import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useDraftTarget, useDrafts } from '@/lib/drafts'
 import { draftProject, newDraft, usePanes } from '@/lib/panes'
+import { promoteDraft } from '@/lib/tiles'
 import { useCompactorLabel } from '@/lib/endless'
 import { VIEW, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -347,7 +348,7 @@ export function NewChatPane({ id, first }: { id: string; first: boolean }) {
     if (to) void navigate({ to: '/c/$session', params: { session: to } })
   }
   const created = (session: string) => {
-    usePanes.getState().place(id, session, 'center')
+    promoteDraft(id, session)
     void navigate({ to: '/c/$session', params: { session } })
   }
   // 183 §5.6: the chat (opened at once) did not take its first message: its leaf becomes a draft again; the draft's

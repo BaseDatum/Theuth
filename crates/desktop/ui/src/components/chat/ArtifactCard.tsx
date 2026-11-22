@@ -59,6 +59,7 @@ import { attachTo, toRef } from "@/lib/attach";
 import { Img } from "./Attachments";
 import { RemoveButton } from "./MessageAssistant";
 import { HtmlPage, capFromArgs } from "./HtmlPage";
+import { showArtifact } from "@/components/tiles/open";
 
 type Tool = Extract<Entry, { kind: "tool" }>;
 
@@ -95,7 +96,7 @@ export const GLYPH: Record<Kind, typeof File> = {
 const fail = (e: unknown) =>
   toast.error(e instanceof Error ? e.message : String(e));
 
-/** Open the panel on `callId`. A finished `show` whose record the store lacks (its `ArtifactShown` was lost on a
+/** Show `callId` (`showArtifact`: a tile beside the chat, else the panel). A finished `show` whose record the store lacks (its `ArtifactShown` was lost on a
  * dead relay socket and nothing re-listed) fetches it with `get_artifact` and applies it as the event would have. */
 export async function openShow(
   api: Pick<Api, "get_artifact">,
@@ -115,7 +116,7 @@ export async function openShow(
       return;
     }
   }
-  useSessions.getState().setArtifactPanel(session, callId);
+  showArtifact(session, callId);
 }
 
 /**
