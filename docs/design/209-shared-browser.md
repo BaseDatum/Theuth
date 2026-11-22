@@ -250,8 +250,8 @@ on iOS (`wt:ios_webview.rs`) and the desktop (`webview.rs`) with the same name, 
 
 | Tauri command | Arguments | Returns / does |
 |---|---|---|
-| `web_profile_read` | — | `Cookie[]` of the whole tile store (§4.1 shape, `partitioned` from `NSHTTPCookie` properties, else `false`). |
-| `web_profile_write` | `set: Cookie[]`, `remove: CookieKey[]` (`{name, domain, path}`) | Writes into the store; iOS/macOS with no view open, Windows/Linux only while a web view exists (else error `no web view`). P2. |
+| `web_profile_read` | — | `Cookie[]` of the whole tile store (§4.1 shape, `partitioned` from `NSHTTPCookie` properties, else `false`), sorted by name, domain, path, host-only before domain-wide for one key. |
+| `web_profile_write` | `set: Cookie[]`, `remove: CookieKey[]` (`{name, domain, path}`), `storage?: [{ origin, local_storage }]` | `Written { set, removed, skipped, storage_applied: { origin: tiles }, timed_out }`, counts only. Writes into the store; iOS/macOS with no view open; Windows/Linux `unsupported` (P1 as built). P2. |
 | `web_profile_clear` | — | Removes every cookie of the tile store and its localStorage, sessionStorage and IndexedDB data (`WKWebsiteDataStore removeDataOfTypes:`). Ships in P1: the UI calls it on `stale-epoch`. |
 | `web_storage_capture` | `label` | `{ origin, local_storage: [[k, v]] }` of the top-level origin, run in the isolated world. A capture over the snapshot cap (96 KiB) is an error starting `storage too large`, never an empty or cut snapshot. |
 | `web_view_call` | `label`, `op`, `args` | Runs one tile op (§4.7); returns its JSON, or `{ png }` (base64) for `snapshot`. P3. |
@@ -298,6 +298,35 @@ As built in P1 (the shell and UI review fixes):
 - **One data store instance.** The shell keeps the `DATA_STORE` `WKWebsiteDataStore` it first gets for the life of
   the process: `dataStoreForIdentifier:` answers a new instance once the last one is released, and the cookie store
   refers to its data store only weakly, so the observer had been on a store the tile did not use.
+
+As built in P2 (the shell and UI fix builders, checked against the code):
+
+- **`web_profile_write`.** A cookie of `set` replaces only the store cookie of the same key and the same scope
+  (host-only or domain-wide; `web_rules::profile::Doom`); a key of `remove` deletes the key in every scope. Each
+  `storage` snapshot is applied in the isolated world to every open tile of its origin (`storage_applied` counts the
+  tiles per origin, 0 when none was open). When WebKit has not answered everything by the deadline the result is the
+  counts reached with `timed_out: true`; a main-thread timeout error names the time that was left. On `timed_out`
+  or an error the UI re-reads the store and folds what it reads into its baseline, so a half-applied write never
+  goes out as this device's change.
+- **Writer.** `profileDevice()` is `<device name>-<id6>`, the id generated once per install and kept in
+  localStorage `theuth.device.id`; rows say `tile:<name>-<id6>`, so two iPads are two writers and Settings knows
+  "this device".
+- **Pull into the store (D5).** On connect every site, on each `WebProfileChanged` the sites it names, are pulled
+  with `web_profile_pull`, paged until `next` is null; only real differences are written. A store `same_site` of
+  `""` equals a profile `None` or `""` (WebKit has no distinct None). A pull of every site only sets and applies
+  forgets (it never removes a key it does not name). Pulled localStorage is written into the open tiles of its
+  origin and becomes that origin's capture baseline, so it is not pushed back. A key WebKit stores under another
+  domain or path is remembered as an alias of the written one.
+- **`basis_ms`.** The `now_ms` of the first page of the last complete pull, persisted per engine in
+  `theuth.web-profile.basis.<engine>`, goes with every push. A site forgotten after the device's last pull and its
+  last push of the site, and a site a push answers in `refused`, are deleted from the tile store.
+- **Contended keys.** A key a page re-sets within 5 s of a pull writing it, twice within 10 minutes, is not written
+  from pulls for 10 minutes (two devices' pages would otherwise ping-pong it through the profile).
+- **Clear and unsupported.** A failed `web_profile_clear` (stale epoch, sign out everywhere) is retried with the
+  push backoff; nothing is pushed to that connection meanwhile. A shell answering `unsupported:` stops the sync for
+  the rest of the session.
+- **ATS.** `NSAppTransportSecurity` / `NSAllowsArbitraryLoadsInWebContent` is in `crates/desktop/ios/Info.ios.plist`
+  and in the generated `gen/apple/desktop_iOS/Info.plist` the build uses, so a tile loads plain HTTP at a named host.
 
 ### 4.6 Seam and target (crates/browser)
 
@@ -463,6 +492,13 @@ cookies from its store and every engine's `Ctx` deletes them from live isolates 
 **Sign out everywhere**: `web_profile_clear`; every client clears its store (`removeDataOfTypes` on the named store)
 and every engine drops all profile-loaded isolates. A client offline at the time learns it from `stale-epoch` on
 its next push and clears then.
+
+As built in P2: the tab is Settings › Tools › Browser (`components/settings/BrowserProfile.tsx`), shown only where
+the native web view layer exists (`nativeWebViews`) and the engine offers `web_profile_sites`, `web_profile_forget`
+and `web_profile_clear`. It reads the mode from `web_profile_status` (else from the last push or pull answer) and
+lists each site with its cookie count, origins with storage, relative time of the last change and the writer
+("this device", "another device", "agent on <engine>"). **Forget and sign out** acts at once, without a second
+dialog; **Sign out everywhere** asks in an alert dialog, then clears this device's store too.
 
 ## 7. iOS navigation (P4 for iPhone)
 
