@@ -122,6 +122,8 @@ impl wire::WireEvent for FollowState {
 /// frame whose topic it has not declared (P5 adds its element-form pair with its declaration).
 pub const WIRE_RELAYED: &[(&str, &str)] = &[
     ("WebViewOpened", "artifact.web-view-opened"),
+    ("PtyViewOpened", "artifact.pty-view-opened"),
+    ("NoteViewOpened", "artifact.note-view-opened"),
     ("PagePreviewRequested", "artifact.page-preview-requested"),
     ("PagePreviewResolved", "artifact.page-preview-resolved"),
     ("WebViewCallRequested", "artifact.web-view-call-requested"),
@@ -1365,6 +1367,8 @@ mod tests {
             ("WebViewCallRequested", "artifact.web-view-call-requested"),
             ("WebViewCallResolved", "artifact.web-view-call-resolved"),
             ("WebViewOpened", "artifact.web-view-opened"),
+            ("PtyViewOpened", "artifact.pty-view-opened"),
+            ("NoteViewOpened", "artifact.note-view-opened"),
             ("PagePreviewRequested", "artifact.page-preview-requested"),
             ("PagePreviewResolved", "artifact.page-preview-resolved"),
         ] {

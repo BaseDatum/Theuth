@@ -53,6 +53,8 @@ async fn feature_golden_parity() {
     let mut feed = rt.wire_events();
     family::<artifact::ArtifactShown>(&rt, &mut feed, "artifact.shown").await;
     family::<artifact::WebViewOpened>(&rt, &mut feed, "artifact.web-view-opened").await;
+    family::<artifact::PtyViewOpened>(&rt, &mut feed, "artifact.pty-view-opened").await;
+    family::<artifact::NoteViewOpened>(&rt, &mut feed, "artifact.note-view-opened").await;
     family::<artifact::preview::PagePreviewRequested>(
         &rt,
         &mut feed,

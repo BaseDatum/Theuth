@@ -215,6 +215,8 @@ pub const CATEGORIES: &[CategoryDef] = &[
         exact: &[
             "show",
             "show_web",
+            "show_pty",
+            "show_note",
             "page_preview",
             "artifact_read",
             "app",
@@ -465,6 +467,8 @@ mod tests {
                 &[
                     "show",
                     "show_web",
+                    "show_pty",
+                    "show_note",
                     "page_preview",
                     "artifact_read",
                     "app",
