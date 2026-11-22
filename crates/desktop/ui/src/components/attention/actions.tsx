@@ -30,10 +30,12 @@ export const SNOOZE_PRESETS = [
 
 /** Snooze ▾ — an hour · tomorrow 09:00 · a week; `onPick` gets the instant. */
 export function SnoozeMenu({ size, disabled, label = 'Snooze', onPick }: { size: Size; disabled?: boolean; label?: string; onPick: (until: number) => void }) {
+  // The detail pane's actions are tinted per action (Snooze = waiting amber); the list cards keep the quiet ghost.
+  const pane = size !== 'xs'
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size={size} variant="ghost" disabled={disabled} className="text-fg-secondary hover:text-foreground">
+        <Button size={size} variant={pane ? 'outline' : 'ghost'} disabled={disabled} className={pane ? 'border-warning-border bg-warning-bg text-warning hover:bg-warning-bg/80 hover:text-warning' : 'text-fg-secondary hover:text-foreground'}>
           <Clock />
           {label}
           <ChevronDown className="opacity-60" />
@@ -60,14 +62,15 @@ export function SnoozeDismiss({ item, ids = [item.id], size, onResolved }: { ite
   const done = (p: Promise<AttentionOutcome[]>) => void p.then((outs) => outs.some((o) => o.resolution !== 'failed') && onResolved?.())
   const leaves = useQuerySupport(['attention_dismiss_many'])
   const label = dismissLabel(item, leaves)
+  const pane = size !== 'xs'
   return (
-    <>
+    <span className={cn('flex items-center gap-1.5', pane && 'ml-auto')}>
       <SnoozeMenu size={size} disabled={bulk.pending} onPick={(until) => done(bulk.snooze(ids, until))} />
-      <Button size={size} variant="ghost" className="text-fg-secondary hover:text-foreground" disabled={bulk.pending} title={leaves ? DISMISS_HINT : 'Hide this item'} onClick={() => done(bulk.dismiss(ids))}>
+      <Button size={size} variant={pane ? 'outline' : 'ghost'} className={pane ? 'border-danger-border bg-danger-bg text-danger hover:bg-danger-bg/80 hover:text-danger' : 'text-fg-secondary hover:text-foreground'} disabled={bulk.pending} title={leaves ? DISMISS_HINT : 'Hide this item'} onClick={() => done(bulk.dismiss(ids))}>
         {label === 'Dismiss' ? <EyeOff /> : <Forward />}
         {label}
       </Button>
-    </>
+    </span>
   )
 }
 
