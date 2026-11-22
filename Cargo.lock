@@ -5074,7 +5074,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "2.25.1"
+version = "2.25.2"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -17373,7 +17373,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "relay"
-version = "2.25.1"
+version = "2.25.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -22241,7 +22241,7 @@ dependencies = [
 
 [[package]]
 name = "theuth"
-version = "2.25.1"
+version = "2.25.2"
 dependencies = [
  "a2a",
  "agent",
