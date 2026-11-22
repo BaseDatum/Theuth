@@ -45,11 +45,12 @@ export function siteLines(sites: readonly WebProfileSite[], device: string, now:
     })
 }
 
-/** What the Sharing row says (209 D6): no RPC reads `browser.profile`, so it is what this device's last push heard. */
+/** What the Sharing row says (209 D6): no RPC reads `browser.profile`, so it is what the engine last answered this
+ * device's push or pull. */
 export function modeText(mode: ProfileMode | null): string {
-  if (mode === 'shared') return 'On: sign-ins in your web views reach the agents’ browsers on every engine, and theirs reach your web views. As the last push from this device reported.'
-  if (mode === 'off') return 'Off (browser.profile: off in config.yaml): nothing is shared or loaded; the sites below stay until forgotten. As the last push from this device reported.'
-  return 'Not known yet: the engine reports it when this device next sends a change. Set browser.profile in config.yaml to shared or off.'
+  if (mode === 'shared') return 'On: sign-ins in your web views reach the agents’ browsers on every engine, and theirs reach your web views. As the engine last reported to this device.'
+  if (mode === 'off') return 'Off (browser.profile: off in config.yaml): nothing is shared, loaded or listed; what the profile held stays until you sign out everywhere. As the engine last reported to this device.'
+  return 'Not known yet: the engine reports it when this device next syncs. Set browser.profile in config.yaml to shared or off.'
 }
 
 /** 209 §6, D6: Settings › Tools › Browser — the shared browser profile's sites, Forget and Sign out everywhere. */

@@ -150,11 +150,18 @@ beforeEach(() => {
     engine.pushes.push(structuredClone({ device, epoch, changes, storage }))
     return { applied: changes.length, sites: [], epoch: Math.max(epoch, 1), profile: 'shared' }
   })
-  engine.pull.mockReset().mockImplementation(async (sites?: string[]) => ({
-    epoch: engine.epoch,
-    cookies: engine.profile.filter((c) => !sites || siteOf(c.domain, sites) !== null).map((c) => ({ ...c })),
-    storage: [],
-  }))
+  // As the engine answers (209 §4.4 as built): each cookie with its site, row writer and time; the sites covered.
+  engine.pull.mockReset().mockImplementation(async (sites?: string[]) => {
+    const siteOfCookie = (c: Cookie) => (c.domain === 'other.org' ? 'other.org' : 'example.com')
+    const cookies = engine.profile.filter((c) => !sites || sites.includes(siteOfCookie(c)))
+    return {
+      epoch: engine.epoch,
+      sites: sites ?? [...new Set(cookies.map(siteOfCookie))],
+      cookies: cookies.map((c) => ({ ...c, site: siteOfCookie(c), writer: 'obscura:studio', updated_ms: 1 })),
+      storage: [],
+      profile: 'shared',
+    }
+  })
   events.changed = null
   useWebProfileMode.setState({ engine: null, mode: null })
   local.clear()
@@ -644,8 +651,8 @@ test('this device\'s own sign out everywhere clears its store even without a sav
   expect(engine.push).not.toHaveBeenCalled()
 })
 
-test('a pull refused as `browser profile is off` writes nothing; without the native layer nothing is pulled at all', async () => {
-  engine.pull.mockRejectedValueOnce(new RpcError(-32000, 'browser profile is off'))
+test('a pull answering `profile: "off"` writes nothing; without the native layer nothing is pulled at all', async () => {
+  engine.pull.mockResolvedValueOnce({ epoch: 1, sites: [], cookies: [], storage: [], profile: 'off' })
   engine.profile = [cookie('a', '1')]
   await startedPulling()
   expect(shell.writeProfile).not.toHaveBeenCalled()

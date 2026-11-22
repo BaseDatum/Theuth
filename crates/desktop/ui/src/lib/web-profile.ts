@@ -81,15 +81,29 @@ export function siteOf(domain: string, sites: Iterable<string>): string | null {
   return best
 }
 
-/** The same cookie as far as the tile store can tell: WebKit may read back `""` for a default `Lax`, an `expires`
- * a second off, and never keeps `partitioned` (209 D1, §4.5). */
+/** The same cookie as far as the tile store can tell: WebKit reads a default `Lax` and a `None` back as `""`, may put
+ * `expires` a second off, and never keeps `partitioned` (209 D1, §4.5). */
 const sameInStore = (a: Cookie, b: Cookie): boolean =>
   a.value === b.value &&
   !!a.host_only === !!b.host_only &&
   !!a.secure === !!b.secure &&
   !!a.http_only === !!b.http_only &&
-  (a.same_site || 'Lax') === (b.same_site || 'Lax') &&
+  (!a.same_site || !b.same_site || a.same_site === b.same_site) &&
   (a.expires == null ? b.expires == null : b.expires != null && Math.abs(a.expires - b.expires) <= 1)
+
+/** The ten cookie fields of 209 §4.1, without what a pull adds (`site`, `writer`, `updated_ms`). */
+const bare = (c: Cookie): Cookie => ({
+  name: c.name,
+  value: c.value,
+  domain: c.domain,
+  host_only: c.host_only,
+  path: c.path,
+  expires: c.expires,
+  secure: c.secure,
+  http_only: c.http_only,
+  same_site: c.same_site,
+  partitioned: c.partitioned,
+})
 
 /** What `web_profile_write` gets: cookies to set and keys to remove. */
 export type WritePlan = { set: Cookie[]; remove: Pick<Cookie, 'name' | 'domain' | 'path'>[]; localChanges: boolean }
@@ -122,11 +136,13 @@ export function planApply(
     return ok
   }
   const live = pulled.filter((c) => c.expires == null || c.expires > nowSecs)
-  const set = live.filter((c) => {
-    const key = cookieKey(c)
-    const s = store.get(key)
-    return !(s && sameInStore(s, c)) && settled(key)
-  })
+  const set = live
+    .filter((c) => {
+      const key = cookieKey(c)
+      const s = store.get(key)
+      return !(s && sameInStore(s, c)) && settled(key)
+    })
+    .map(bare)
   const remove: WritePlan['remove'] = []
   if (sites !== null) {
     const pulledKeys = new Set(live.map(cookieKey))
@@ -145,8 +161,8 @@ export function planApply(
   return { set, remove, localChanges }
 }
 
-/** What the connected engine last said of `browser.profile` (209 D6): no RPC reads the mode, so this is the last push
- * result's `profile` (or its `profile off` refusal) for `engine`; `null` until this device pushed to it. */
+/** What the connected engine last said of `browser.profile` (209 D6): no RPC reads the mode, so this is the `profile`
+ * of the last push or pull result (or a `profile off` refusal) for `engine`; `null` until one answered. */
 export const useWebProfileMode = create<{ engine: string | null; mode: ProfileMode | null }>()(() => ({ engine: null, mode: null }))
 const setMode = (engine: string, mode: ProfileMode) => useWebProfileMode.setState({ engine, mode })
 
@@ -477,11 +493,20 @@ export function startWebProfileSync(): () => void {
       else for (const s of sites) pullSites.add(s)
     }
     let pulled: Cookie[]
+    /** The sites the answer covers, each whole: the asked ones (as the engine names them) for a scoped pull. */
+    let covered: string[] | null
     try {
       const result = await api.web_profile_pull(sites ?? undefined)
+      if (result.profile === 'off') {
+        markOff(api, discovery)
+        return
+      }
+      if (result.profile === 'shared') setMode(engine, 'shared')
       // A newer epoch here is a sign out everywhere this device missed: clear, then write what the pull holds.
       if (!(await adopt(api, result.epoch, false))) return
       pulled = result.cookies
+      // A pull of every site only sets: a site answered with snapshots and no cookie must not empty the store.
+      covered = sites && [...new Set([...sites, ...(result.sites ?? [])])]
     } catch (e) {
       if (refusal(e)?.kind === 'off') {
         markOff(api, discovery)
@@ -493,7 +518,7 @@ export function startWebProfileSync(): () => void {
       return
     }
     // Every site, none held: nothing to write, and no store read needed.
-    if (sites === null && pulled.length === 0) {
+    if (covered === null && pulled.length === 0) {
       known.clear()
       return
     }
@@ -507,10 +532,10 @@ export function startWebProfileSync(): () => void {
       return
     }
     const base = last ?? new Map<string, Cookie>()
-    const plan = planApply(jar, pulled, sites, known, base)
+    const plan = planApply(jar, pulled, covered, known, base)
     // `known` follows the profile: a whole pull replaces it, a pull of some sites replaces those sites' keys.
-    if (sites === null) known.clear()
-    else for (const key of [...known]) if (siteOf(JSON.parse(key)[1] as string, sites) !== null) known.delete(key)
+    if (covered === null) known.clear()
+    else for (const key of [...known]) if (siteOf(JSON.parse(key)[1] as string, covered) !== null) known.delete(key)
     for (const c of pulled) known.add(cookieKey(c))
     // A change of this device left alone goes out with the next push.
     if (plan.localChanges) {

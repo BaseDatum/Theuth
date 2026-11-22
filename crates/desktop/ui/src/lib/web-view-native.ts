@@ -146,9 +146,10 @@ export const captureStorage = (id: string): Promise<StorageCapture> =>
   queue(webLabel(id), () => invoke<StorageCapture>('web_storage_capture', { label: webLabel(id) }))
 /** `web_profile_read`: every cookie of this device's tile store (209 §4.5). */
 export const readProfile = (): Promise<Cookie[]> => invoke<Cookie[]>('web_profile_read')
-/** `web_profile_write`: set and remove cookies of this device's tile store (209 §4.5, P2). */
-export const writeProfile = (set: Cookie[], remove: Pick<Cookie, 'name' | 'domain' | 'path'>[]): Promise<void> =>
-  invoke<void>('web_profile_write', { set, remove })
+/** `web_profile_write`: set and remove cookies of this device's tile store (209 §4.5, P2). Answers how many were set,
+ * how many store cookies removed, and how many of `set` WebKit refused. */
+export const writeProfile = (set: Cookie[], remove: Pick<Cookie, 'name' | 'domain' | 'path'>[]): Promise<{ set: number; removed: number; skipped: number }> =>
+  invoke('web_profile_write', { set, remove })
 /** `web_profile_clear`: empty the tile store (sign out everywhere happened elsewhere, 209 §4.4). */
 export const clearProfile = (): Promise<void> => invoke<void>('web_profile_clear')
 /** `web-profile://changed`: the tile store changed (debounced 2 s in the shell); a no-op outside the shell. */

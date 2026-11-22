@@ -91,7 +91,7 @@ test('the list is newest change first (then by site), with counts, relative time
     { site: 'b.org', detail: '1 cookie · changed 3 h ago by another device' },
   ])
   expect(modeText(null)).toContain('Not known yet')
-  expect(modeText('off')).toContain('As the last push from this device reported')
+  expect(modeText('off')).toContain('As the engine last reported to this device')
 })
 
 test('Forget calls web_profile_forget for its site and the list refreshes; WebProfileChanged refreshes it too', async () => {
