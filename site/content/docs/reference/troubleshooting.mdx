@@ -27,8 +27,7 @@ them there first.
 | build fails in BoringSSL / `btls-sys` | install `cmake`, `clang`/`libclang`, `llvm-objcopy`/`llvm-nm` (`brew install cmake llvm`; `apt install cmake clang libclang-dev`); the cmake ≥ 4 policy shim is already in `.cargo/config.toml` |
 | first build stalls downloading V8 | network is needed once for the prebuilt archive; set `RUSTY_V8_ARCHIVE` to a local copy to build offline |
 | `just` recipes fail with `cargo: command not found` | Homebrew's rustup installs no proxies; recipes prepend `$(dirname "$(rustup which cargo)")`, and `export PATH="$(just toolchain):$PATH"` does the same in your shell |
-| `apps are unavailable on this harness: parser helper missing at …` | the `theuth-app-parser-<hash>` executable must sit beside `t`; `just install` and the Homebrew formula place it; `t --app-parser-hash` prints the hash this build wants; `THEUTH_APP_PARSER=<path>` points at a development build |
-| the parser helper has the wrong version | the error names both hashes; rebuild with `just helper` and reinstall |
+| `app parser failed: …` / `app parser did not answer within 2s` | the in-process OpenUI validator was stopped and rebuilt; that one `app` call failed, the next one runs on a fresh parser |
 | the self-updater never updates | `update.enabled` is `true` by default and replaces the binary on disk silently, live at the next start; `RUST_LOG=debug t --update` forces a check and says why it did not; `update.url` must point at the release manifest |
 
 ## Startup and the daemon

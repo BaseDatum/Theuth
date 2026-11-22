@@ -106,13 +106,13 @@ Already in place from 25 §5; listed because release gates 2–3 depend on it.
    hash preferred) and the `THEUTH_NOTARY_*` values from
    `.env.signing.example`; `xcrun notarytool store-credentials theuth-notary`
    has been run once.
-2. The release Mac has `bun` (`brew install oven-sh/bun/bun`): `just
-   package-macos` builds the app parser helper from `packages/apps` with
-   `bun build --compile` into a standalone executable (46 §2.1), named
-   `theuth-app-parser-<hash>` after the committed
-   `packages/apps/generated/library-hash.txt`, and signs it with
-   `scripts/entitlements-app-parser.plist` (JIT, for Bun's runtime). Bun is
-   a build tool only; nothing shipped needs Node or Bun.
+2. The release Mac has `bun` (`brew install oven-sh/bun/bun`) for the documents
+   helper (`packages/documents`, `bun build --compile`, signed with
+   `scripts/entitlements-app-parser.plist`: JIT, for Bun's runtime). The app
+   parser runs inside `t`; `just package-macos` builds only its
+   `theuth-app-parser-<hash>` compatibility stub, with cargo (named after the
+   committed `packages/apps/generated/library-hash.txt`, signed without
+   entitlements). Bun is a build tool only; nothing shipped needs Node or Bun.
 3. `just package-macos && just notarize-macos` produces a `.app` for which
 
    ```sh
@@ -260,8 +260,9 @@ Tick each on the first release and after any change to `crates/update`,
       the file beside it. A payload whose `t --app-parser-hash` does not
       match its helper, or with any third entry, is refused with the binary
       unchanged; a payload whose helper hash is already installed keeps the
-      existing file. `THEUTH_APP_PARSER=<path>` overrides the lookup in every
-      build — a development/test hook, never set it in a service unit.
+      existing file. (2026-11-21: `t` validates apps in-process; the entry is
+      a compatibility stub, `crates/app-parser-stub`, and a payload without it
+      now installs without the probe — apps-inproc-as-built-P1.md.)
 - [ ] 5 Homebrew: formula at `0.1.0` on macOS and Linux; publish `0.1.1`;
       `t --update` prints brew's summary, `brew list --versions theuth` →
       `0.1.1`, `readlink -f $(which theuth)` under `Cellar/theuth/0.1.1/` with

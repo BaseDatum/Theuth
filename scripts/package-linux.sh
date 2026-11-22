@@ -2,7 +2,8 @@
 # Package the theuth desktop app for Linux: .deb, .rpm and .AppImage, staged for release-s3.sh.
 #
 #   1. cargo build --release -p theuth  (daemon sidecar, host arch)
-#      + packages/apps: bun build --compile → theuth-app-parser (46 §2.1; scripts/app-parser-env.sh)
+#      + crates/app-parser-stub: cargo build → theuth-app-parser compatibility stub (46 §2.1; the parser
+#        runs in-process, apps-inproc-as-built-P1.md; scripts/app-parser-env.sh)
 #      + packages/documents: bun build --compile → theuth-documents (59 §3.2; same env script)
 #   2. stage all as externalBin: binaries/t-<triple>, binaries/theuth-app-parser-<hash>-<triple>,
 #      binaries/theuth-documents-<ver>-<triple> (the helpers must sit beside `t` — helper_path — so
@@ -26,7 +27,7 @@
 #   THEUTH_S3_ENDPOINT / THEUTH_S3_BUCKET   as release-s3.sh
 #   THEUTH_S3_DRY_RUN=1                     print the upload instead of running it
 #   THEUTH_SKIP_UPLOAD=1                    stop after dist/ (local install / smoke test; release-s3.sh reads dist/ first)
-#   THEUTH_SKIP_BUN_INSTALL=1               skip `bun install` (desktop UI and packages/apps)
+#   THEUTH_SKIP_BUN_INSTALL=1               skip `bun install` (desktop UI and packages/documents)
 set -euo pipefail
 
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -120,7 +121,7 @@ just ts-desktop
 echo "==> [1/5] building theuth (release, $HOST_TRIPLE)"
 cargo build --release -p theuth
 
-echo "==> [1/5] building $HELPER (bun build --compile)"
+echo "==> [1/5] building $HELPER (compatibility stub, cargo)"
 build_helper
 
 echo "==> [1/5] building $DOC_HELPER (bun build --compile)"
@@ -142,7 +143,7 @@ fi
 BUNDLE_CONF="$(jq -cn --arg h "binaries/$HELPER" --arg d "binaries/$DOC_HELPER" '{bundle: {externalBin: ["binaries/t", $h, $d]}}')"
 rm -rf "$BUNDLE_DIR/deb" "$BUNDLE_DIR/rpm" "$BUNDLE_DIR/appimage"
 # linuxdeploy aborts when `ldd` fails on any executable in the AppDir; on aarch64 `ldd` exits 1 with no output on
-# Bun-compiled binaries (the two helpers) although `ld.so --verify` accepts them and they need only glibc, which
+# Bun-compiled binaries (the documents helper) although `ld.so --verify` accepts them and they need only glibc, which
 # linuxdeploy never bundles. A shim turns "failed silently" into "no dependencies"; every other case passes through.
 LDD_SHIM="$(mktemp -d)"
 cat >"$LDD_SHIM/ldd" <<'SH'

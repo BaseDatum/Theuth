@@ -20,7 +20,7 @@ setup:
 build *ARGS:
     cargo build {{ARGS}}
 
-check *ARGS:
+check *ARGS: apps-bundle-check
     CARGO_INCREMENTAL={{incremental}} cargo check --workspace --all-targets {{ARGS}}
 
 test *ARGS:
@@ -91,14 +91,43 @@ install: helper documents-helper
     install -m 755 target/release/t "$bin/t.new" && mv -f "$bin/t.new" "$bin/t"
     echo "installed $(command -v t) + $bin/$HELPER + $bin/$DOC_HELPER"
 
-# Standalone app parser helper (bun build --compile) → packages/apps/dist/theuth-app-parser,
-# checked against packages/apps/generated/library-hash.txt. THEUTH_SKIP_BUN_INSTALL=1 skips bun install.
+# The theuth-app-parser-<hash> compatibility stub (crates/app-parser-stub, cargo; `t` validates apps
+# in-process, docs/design/apps-inproc-as-built-P1.md) → target/release/theuth-app-parser-stub, checked
+# against packages/apps/generated/library-hash.txt. Shipped only for installed updaters (46 §2.1).
 helper:
     #!/usr/bin/env bash
     set -euo pipefail
     source scripts/app-parser-env.sh
     build_helper
     echo "built $HELPER_SRC ($HELPER)"
+
+# The in-process bundles (crates/app-js): the OpenUI check/merge validator (packages/apps/src/inproc.ts →
+# js/theuth-apps-inproc.js, scripts/build-inproc.ts, golden transcript scripts/record-inproc-golden.ts) and the
+# parse-only mermaid check (src/inproc-mermaid.ts → js/theuth-mermaid-inproc.js, scripts/build-inproc-mermaid.ts),
+# with their inputs' hashes in crates/app-js/js/BUNDLE.sha256. Needs bun; a cargo build never does (both are
+# committed). The mermaid parity golden file is recorded separately from the jsdom reference
+# (`bun run test-inproc/mermaid-corpus/reference.ts`).
+apps-bundle:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    (cd packages/apps && bun install --frozen-lockfile && bun run scripts/build-inproc.ts && bun run scripts/record-inproc-golden.ts && bun run scripts/build-inproc-mermaid.ts)
+    for b in theuth-apps-inproc theuth-mermaid-inproc; do
+        cp "packages/apps/dist/$b.js" "crates/app-js/js/$b.js"
+        cp "packages/apps/dist/$b.inputs" "crates/app-js/js/$b.inputs"
+    done
+    scripts/apps-bundle-hash.sh > crates/app-js/js/BUNDLE.sha256
+    cat crates/app-js/js/BUNDLE.sha256
+
+# Fails when a bundle's inputs changed since the committed bundles were built (run `just apps-bundle`),
+# or when a committed bundle is not the one recorded. shasum only (scripts/apps-bundle-hash.sh: each bundle's
+# real inputs as listed in crates/app-js/js/*.inputs, plus lockfile, patches, tsconfig and build scripts).
+apps-bundle-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! diff <(scripts/apps-bundle-hash.sh) crates/app-js/js/BUNDLE.sha256; then
+        echo "crates/app-js/js is stale: run \`just apps-bundle\` and commit the result" >&2
+        exit 1
+    fi
 
 # Standalone documents helper (bun build --compile) → packages/documents/dist/theuth-documents (59 §3.2);
 # `--version` must print the PROTOCOL_VERSION of packages/documents/src/protocol.ts. Debug builds of `t`

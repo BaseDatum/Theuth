@@ -95,6 +95,19 @@ heap). No custom Rust grammar, no Monty app backend, no generic JS plugin
 runtime. `t --app-parser-hash` lets packaging and the updater (39) check the
 helper against the binary.
 
+**2026-11-21 (apps in-process, phase 1):** the exception above no longer holds
+for OpenUI check/merge. The same TypeScript runs as a committed bundle in a bare
+deno_core isolate inside `t` (crate `app-js`, its own lazily started thread,
+watchdog deadline, heap cap, panic containment, rebuild on failure); no child
+process, no `--version` handshake. Mermaid fence checks fail open until their
+own in-process phase. `theuth-app-parser-<hash>` survives only as a tiny
+compatibility stub in release payloads for installed updaters; `t
+--app-parser-hash` stays. See `apps-inproc-as-built-P1.md`.
+
+**2026-11-21 (apps in-process, phase 2):** mermaid fence checks run in-process
+too, in their own deno_core isolate and thread (no jsdom, no child); nothing
+of the Bun helper runs any more. See `apps-inproc-as-built-P1.md` § Phase 2.
+
 ## 3. Message bus: kameo
 
 Library: `kameo` 0.22 + `kameo_actors` 0.8 (`MessageBus`, `PubSub`, `Broker`).

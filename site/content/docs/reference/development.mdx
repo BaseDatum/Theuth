@@ -18,7 +18,7 @@ notes and are not published here.
 | `justfile` | every build, test, packaging and release recipe |
 | `scripts/` | packaging and release scripts, model fetching (`fetch-models.sh`), remote builds, smoke drivers under `scripts/apps/` and `scripts/tests/` |
 | `bindings/` | generated TypeScript wire types, `methods.json` (every RPC method name), `surface-catalog.json` |
-| `packages/apps`, `packages/documents` | Bun sources of `theuth-app-parser-<hash>` and `theuth-documents-<protocol>` |
+| `packages/apps`, `packages/documents` | TypeScript sources of the in-process app parser bundles (`crates/app-js/js`) and of `theuth-documents-<protocol>` |
 | `deploy/relay`, `deploy/vm`, `deploy/update` | relay container and Kubernetes manifests; sandbox VM image; Linux CLI tarball builder |
 | `vendor/` | patched `libsqlite3-sys`, `pbjson-types`, `a2a-client` |
 | `site/` | this website: Vite + React marketing page and the docs under `site/content/docs/` |
@@ -105,9 +105,10 @@ just run -- --headless          # debug build, runs t
 just run -- --data-dir /tmp/theuth-dev   # a scratch data dir
 just ts                         # TypeScript bindings → bindings/ (cargo test -p rpc --features ts --lib export_bindings)
 just ts-desktop                 # the same plus a copy into crates/desktop/ui/src/rpc/bindings
-just helper                     # bun build --compile → packages/apps/dist/theuth-app-parser
+just helper                     # cargo → the theuth-app-parser-<hash> compatibility stub (updaters only)
+just apps-bundle                # bun → rebuild the in-process app parser bundles in crates/app-js/js
 just documents-helper           # → packages/documents/dist/theuth-documents
-just install                    # release t + both helpers into ~/.cargo/bin (or $THEUTH_INSTALL_BIN)
+just install                    # release t + theuth-documents + the app-parser stub into ~/.cargo/bin (or $THEUTH_INSTALL_BIN)
 just models                     # refresh crates/models/data/models.json from models.dev
 just models-check               # fail when the committed catalog drifted
 just fetch-models [--check]     # every local model the daemon loads → $THEUTH_DATA_DIR/models
@@ -120,10 +121,10 @@ it:
 THEUTH_RPC__LISTEN=127.0.0.1:7791 ./target/debug/t --headless --data-dir /tmp/theuth-x
 ```
 
-Debug builds find the app-parser helper at `packages/apps/dist/` and the
-documents helper at `packages/documents/dist/`; `THEUTH_APP_PARSER` and
-`THEUTH_DOCUMENTS_HELPER` override. Release layouts look beside `t` for
-`theuth-app-parser-<hash>` and `theuth-documents-<protocol>`.
+The app parser runs inside `t` (its bundle is committed under `crates/app-js/js`;
+`just apps-bundle` rebuilds it after a `packages/apps` change). Debug builds find the
+documents helper at `packages/documents/dist/`; `THEUTH_DOCUMENTS_HELPER` overrides.
+Release layouts look beside `t` for `theuth-documents-<protocol>`.
 
 ### Desktop
 

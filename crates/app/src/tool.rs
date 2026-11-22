@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tools::{Risk, Tool, ToolCx, ToolInspection, ToolOutput};
 
 use crate::actor::{Core, Loaded};
-use crate::helper::{self, CheckResult, ToolSnapshot};
+use crate::helper::{CheckResult, ToolSnapshot};
 use crate::meta::{self, AppMeta, MAX_SOURCE};
 
 /// Longest app name (before `.openui`).
@@ -284,22 +284,7 @@ pub(crate) async fn commit_source(
         }
         None => core.helper.check(&args.source, &snapshot).await,
     };
-    let check = match check {
-        Ok(c) => c,
-        Err(helper::Error::Missing(p)) => {
-            return Err(match origin {
-                Origin::Tool => format!(
-                    "apps are unavailable on this harness: parser helper missing at {}. Existing apps stay readable; use `show` for a static file.",
-                    p.display()
-                ),
-                Origin::Ui => format!(
-                    "apps are unavailable on this harness: parser helper missing at {}",
-                    p.display()
-                ),
-            });
-        }
-        Err(e) => return Err(e.to_string()),
-    };
+    let check = check.map_err(|e| e.to_string())?;
     if check.library_hash != crate::hash() {
         return Err(format!(
             "parser helper validated against library {}, this harness is {}",
