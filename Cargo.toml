@@ -308,21 +308,23 @@ arboard = { version = "3.6", default-features = false, features = ["image-data"]
 # Attachment mime check (17 §3.1); already in the tree via genai.
 mime_guess = "2"
 # Embedded headless browser (design doc 23 §3.3, §9): obscura's agent tool layer, in-process.
-# Fork branch `theuth/sync-2026-11-22` (1c76fa7) = upstream tag v0.2.7 + the lossless `host_only` round trip of
-# `browser_storage_state` / `browser_set_storage_state` (209 §4.3) + `tools()`/`call_tool()` (23 §3.3) + the
-# `browser_network_capture` tool (44 §3.1: on_response exchanges with request headers and
-# bodies, documents and fetch/XHR only) + wreq `prefix-symbols` on every platform. The iframe
-# realm-slot SIGSEGV fix our old `main` carried is upstream since v0.2.6 (#850).
+# Fork branch `theuth/sync-2026-11-22b` (dd8f335) = upstream main fef5274 (v0.2.7 + 107) + the lossless
+# `host_only` round trip of `browser_storage_state` / `browser_set_storage_state` (209 §4.3) +
+# `tools()`/`call_tool()` (23 §3.3) + the `browser_network_capture` tool (44 §3.1: on_response exchanges
+# with request headers and bodies, documents and fetch/XHR only) + wreq `prefix-symbols` on every
+# platform + `--no-extensible-ro-snapshot` for the host snapshot (obscura's read-only heap = V8's
+# built-in one; see `warmup` in crates/browser). The iframe realm-slot SIGSEGV fix our old `main`
+# carried is upstream since v0.2.6 (#850).
 # `stealth` = wreq/BoringSSL TLS fingerprint (needs cmake + clang to build); `render` =
 # layout/paint for `browser_screenshot`. obscura-js only for the main-thread warmup.
-obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-22", features = ["stealth", "render"] }
-obscura-js = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-22", features = ["stealth", "render"] }
+obscura-mcp = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-22b", features = ["stealth", "render"] }
+obscura-js = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-22b", features = ["stealth", "render"] }
 # Stealth page fetches (design doc 122 revision 1, `crates/web/src/fetch/client.rs`): the exact wreq/wreq-util
 # pins obscura's `stealth` feature uses, so the graph holds ONE wreq (and one BoringSSL build). Features mirror
 # obscura-net's minus `socks`: streamed bodies, the decompressors Chrome's `Accept-Encoding` invites, the
 # default roots/runtime (`default-features = false` so the list is explicit), wreq-util's emulation profiles.
 # No `cookies` (122 §5). `prefix-symbols` stays obscura's Linux-only concern (features union).
-# Held at rc.29/rc.12: obscura-net (skymoore/obscura theuth/sync-2026-11-22) still pins `wreq = "=6.0.0-rc.29"` and
+# Held at rc.29/rc.12: obscura-net (skymoore/obscura theuth/sync-2026-11-22b) still pins `wreq = "=6.0.0-rc.29"` and
 # its vendored wreq-util (patched in below) is `=3.0.0-rc.12`; bump both together once obscura moves.
 wreq = { version = "=6.0.0-rc.29", default-features = false, features = ["webpki-roots", "tokio-rt", "stream", "gzip", "brotli", "deflate", "zstd"] }
 wreq-util = { version = "=3.0.0-rc.12", default-features = false, features = ["emulation", "emulation-compression"] }
@@ -444,9 +446,9 @@ pdf-inspector = { git = "https://github.com/firecrawl/pdf-inspector", tag = "v1.
 # workspace; a git dependency's patches do not propagate, so we point at the same copies (23 §2).
 # Since v0.2.6 obscura-net takes wreq-util from `vendor/` too; patching it keeps crates/web on
 # the same copy (one wreq-util).
-taffy = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-22" }
-cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-22" }
-wreq-util = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-22" }
+taffy = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-22b" }
+cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-22b" }
+wreq-util = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-22b" }
 # genai: preserve ToolResponse.images (23 §5), plus upstream Bedrock profile selection,
 # credential refresh, region and explicit-profile isolation fixes (02 §2.2).
 genai = { git = "https://github.com/skymoore/rust-genai", branch = "main" }
