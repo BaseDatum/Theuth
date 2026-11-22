@@ -1,6 +1,7 @@
-//! 209 §4.4 over the real RPC methods: `web_profile_push` with a fake client's named params,
-//! `stale-epoch` with the current epoch as data, `web_profile_sites` with counts only, and
-//! `WebProfileChanged` on the bus after a write. One test: the actor registry is process-wide.
+//! 209 §4.4 over the real RPC methods: `web_profile_push` with a fake client's named params, the
+//! caps of one push, `stale-epoch` / `unknown-epoch` with the current epoch as data,
+//! `web_profile_sites` with counts only, and `WebProfileChanged` on the bus after a write; and the
+//! actor with `browser.profile: off`. The registered actor is process-wide: one test registers.
 
 use std::sync::Arc;
 
@@ -72,7 +73,7 @@ async fn push_sites_and_stale_epoch_over_rpc() {
     .await;
     assert_eq!(
         push["result"],
-        json!({ "applied": 3, "sites": ["example.com"], "epoch": 0 }),
+        json!({ "applied": 3, "sites": ["example.com"], "epoch": 0, "profile": "shared" }),
         "{push}"
     );
 
@@ -84,6 +85,63 @@ async fn push_sites_and_stale_epoch_over_rpc() {
     assert_eq!(list[0]["origins"], 1);
     assert_eq!(list[0]["writer"], "tile:iPad");
     assert!(list[0]["updated_ms"].as_u64().unwrap() > 0);
+
+    // The caps of one push are checked before any work; the device name is cut to 64 characters.
+    let cookie = |i: usize| {
+        json!({ "op": "set", "cookie": { "name": format!("c{i}"), "value": "v", "domain": "example.org",
+            "path": "/" } })
+    };
+    let over = call(
+        &methods,
+        "web_profile_push",
+        json!({ "device": "iPad", "epoch": 0, "changes": (0..2001).map(cookie).collect::<Vec<_>>() }),
+    )
+    .await;
+    assert_eq!(
+        over["error"]["message"], "invalid push: 2001 changes > 2000",
+        "{over}"
+    );
+    let suffix = call(
+        &methods,
+        "web_profile_push",
+        json!({ "device": "iPad", "epoch": 0, "changes": [
+            { "op": "set", "cookie": { "name": "n", "value": "v", "domain": ".co.uk", "path": "/" } } ] }),
+    )
+    .await;
+    assert!(
+        suffix["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("public suffix"),
+        "{suffix}"
+    );
+    let long = "d".repeat(200);
+    let named = call(
+        &methods,
+        "web_profile_push",
+        json!({ "device": long, "epoch": 0, "changes": [cookie(0)] }),
+    )
+    .await;
+    assert_eq!(named["result"]["sites"], json!(["example.org"]), "{named}");
+    let sites = call(&methods, "web_profile_sites", json!({})).await;
+    let org = sites["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["site"] == "example.org")
+        .unwrap()
+        .clone();
+    assert_eq!(org["writer"], format!("tile:{}", "d".repeat(64)));
+
+    // A client cannot make up an epoch.
+    let ahead = call(
+        &methods,
+        "web_profile_push",
+        json!({ "device": "iPad", "epoch": 7, "changes": [] }),
+    )
+    .await;
+    assert_eq!(ahead["error"]["message"], "unknown-epoch", "{ahead}");
+    assert_eq!(ahead["error"]["data"], json!({ "epoch": 0 }));
 
     // Sign out everywhere happened elsewhere: the client's next push is refused with the epoch.
     let p = Profile::open(&dir.path().join(store::DB), {
@@ -119,4 +177,45 @@ async fn push_sites_and_stale_epoch_over_rpc() {
             epoch: 0
         }
     );
+}
+
+/// 209 D6: with `browser.profile: off` a push is a no-op the client can read (`profile: "off"`)
+/// and the list is empty — not an error the client would retry forever.
+#[tokio::test]
+async fn off_answers_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let figment = figment::Figment::new().merge(figment::providers::Serialized::defaults(
+        json!({ "browser": { "profile": "off" } }),
+    ));
+    let rt = runtime::Runtime::new(figment, dir.path().to_path_buf());
+    assert_eq!(webprofile::mode(&rt), webprofile::ProfileMode::Off);
+    let vault = Arc::new(
+        secrets::Vault::open(dir.path(), secrets::KeyStore::File)
+            .await
+            .unwrap(),
+    );
+    let profile = Profile::open(&dir.path().join(store::DB), vault)
+        .await
+        .unwrap();
+    let actor = WebProfileActor::spawn(WebProfileActor::new(Some(rt), Ok(profile)));
+    let wp = webprofile::Handle::from_actor(actor);
+    let r = wp
+        .push(webprofile::Push {
+            writer: "tile:iPad".into(),
+            epoch: 0,
+            changes: vec![webprofile::CookieChange::Remove {
+                name: "n".into(),
+                domain: "example.com".into(),
+                path: "/".into(),
+            }],
+            storage: vec![],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&r).unwrap(),
+        json!({ "applied": 0, "sites": [], "epoch": 0, "profile": "off" })
+    );
+    assert_eq!(wp.sites().await.unwrap(), vec![]);
+    assert!(wp.load(None).await.is_err(), "no load while off");
 }

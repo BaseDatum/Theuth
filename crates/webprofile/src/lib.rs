@@ -34,6 +34,9 @@ pub const WEBPROFILE_ACTOR: &str = "webprofile";
 /// Error message of a push made under an older profile epoch (209 §4.4); the error's data is
 /// `{ "epoch": <current> }`.
 pub const STALE_EPOCH: &str = "stale-epoch";
+/// Error message of a push made under an epoch newer than the current one (a client that made one
+/// up); the error's data is `{ "epoch": <current> }`.
+pub const UNKNOWN_EPOCH: &str = "unknown-epoch";
 /// Error message when the profile is at its site or byte cap and a new site is refused (209 §4.1).
 pub const PROFILE_FULL: &str = "profile full";
 /// Writer label prefix of a push from a client's tile: `tile:<device name>` (209 §4.1 `writer`).
@@ -43,7 +46,7 @@ pub const WRITER_OBSCURA: &str = "obscura:";
 
 /// Caps of 209 §4.1.
 pub mod caps {
-    /// A row's plaintext (`SiteJar` JSON) at most.
+    /// Plaintext of one site's live rows together at most.
     pub const ROW_BYTES: usize = 128 * 1024;
     /// Cookies of one site at most.
     pub const SITE_COOKIES: usize = 300;
@@ -56,6 +59,16 @@ pub mod caps {
     /// 209 §11 Q1 (decided): session cookies (no `expires`) are kept until their site row goes this
     /// long without a write.
     pub const SESSION_COOKIE_IDLE_MS: u64 = 30 * 24 * 3600 * 1000;
+    /// Cookie changes in one push at most (checked before any work).
+    pub const PUSH_CHANGES: usize = 2000;
+    /// localStorage snapshots in one push at most.
+    pub const PUSH_STORAGE: usize = 64;
+    /// Characters of a push's device name kept.
+    pub const DEVICE_CHARS: usize = 64;
+    /// One cookie value at most (browsers cap a cookie at 4096 bytes).
+    pub const COOKIE_VALUE: usize = 4096;
+    /// A removed row (`sealed = NULL`) is deleted this long after its write, at open.
+    pub const TOMBSTONE_MS: u64 = 30 * 24 * 3600 * 1000;
 }
 
 /// One cookie with every attribute (209 D1, §4.1). `value` is a credential: `Debug` redacts it.
@@ -193,8 +206,9 @@ impl std::fmt::Debug for OriginStorage {
     }
 }
 
-/// The plaintext of one `web_sites` row (209 §4.1): every cookie of a registrable domain and its
-/// origins' localStorage snapshots.
+/// One site as a load answers it (209 §4.1): every live cookie of a registrable domain and its
+/// origins' localStorage snapshots, gathered from the site's rows (one row per cookie, one per
+/// origin's snapshot).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SiteJar {
@@ -228,11 +242,15 @@ impl SiteJar {
 pub struct PushResult {
     /// Changes and snapshots applied.
     pub applied: u32,
-    /// Sites whose row was written, sorted.
+    /// Sites whose rows were written, sorted.
     pub sites: Vec<String>,
     /// The profile epoch the rows were written under.
     #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub epoch: u64,
+    /// `"shared"`, or `"off"` when `browser.profile: off` made the push a no-op (209 D6): the
+    /// client stops pushing until it reads `"shared"` again.
+    #[serde(default)]
+    pub profile: ProfileMode,
 }
 
 /// One entry of `web_profile_sites` (209 §4.4): counts, never values.
@@ -299,9 +317,16 @@ pub enum ProfileError {
         /// The current epoch.
         current: u64,
     },
+    /// The write was made under `epoch > current`: no engine ever wrote that epoch.
+    UnknownEpoch {
+        /// The current epoch.
+        current: u64,
+    },
     /// No site could be written: the profile is at a cap ([`PROFILE_FULL`]).
     Full,
-    /// `browser.profile: off`, no store or no vault.
+    /// The push breaks a cap of one push or holds a malformed cookie; nothing was written.
+    Invalid(String),
+    /// No store or no vault yet (starting), or `browser.profile: off` for a load.
     Unavailable(String),
 }
 
@@ -309,7 +334,9 @@ impl std::fmt::Display for ProfileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::StaleEpoch { .. } => f.write_str(STALE_EPOCH),
+            Self::UnknownEpoch { .. } => f.write_str(UNKNOWN_EPOCH),
             Self::Full => f.write_str(PROFILE_FULL),
+            Self::Invalid(why) => write!(f, "invalid push: {why}"),
             Self::Unavailable(why) => write!(f, "browser profile unavailable: {why}"),
         }
     }
@@ -319,6 +346,7 @@ impl std::error::Error for ProfileError {}
 
 /// Config `browser.profile` (209 D6): `shared` (default) or `off` (no push, load or save; rows stay).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum ProfileMode {
     /// One profile for the tile and every agent browser of the mesh.
@@ -341,12 +369,31 @@ pub fn mode(rt: &Runtime) -> ProfileMode {
         .unwrap_or_default()
 }
 
-/// The registrable domain (eTLD+1, lower case) of `host` by the public suffix list; a host with no
-/// registrable domain (an IP address, `localhost`) is its own site. A leading `.` is ignored.
+/// The registrable domain (eTLD+1, lower case) of `host` by the public suffix list (its private
+/// section included, so `user.github.io` is its own site). An IP address (with or without `[]`),
+/// a single-label host (`localhost`) and a host that is itself a public suffix are their own
+/// site. A leading or trailing `.` is ignored.
 pub fn site_of(host: &str) -> String {
     let host = host.trim().trim_start_matches('.').trim_end_matches('.');
-    let host = host.to_ascii_lowercase();
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host)
+        .to_ascii_lowercase();
+    if host.parse::<std::net::IpAddr>().is_ok() || !host.contains('.') {
+        return host;
+    }
     psl::domain_str(&host).unwrap_or(&host).to_owned()
+}
+
+/// Whether cookies may be scoped to `host` (lower case, no leading `.`): an IP address, a
+/// single-label host, or a host with a registrable domain — never a bare public suffix
+/// (`co.uk`, `github.io`), whose cookie would reach every site under it.
+pub fn cookie_host(host: &str) -> bool {
+    !host.is_empty()
+        && (host.parse::<std::net::IpAddr>().is_ok()
+            || !host.contains('.')
+            || psl::domain_str(host).is_some())
 }
 
 /// Push changes made under `epoch` by `writer` (209 §4.2). Grouped by site and merged into each row.
@@ -377,6 +424,17 @@ pub struct Sites;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CurrentEpoch;
 
+/// Housekeeping, told by the plugin every minute: when the mesh key changed since the store last
+/// looked, every row moves to the ids of the new key ([`Profile::maintain`], 209 §4.1).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Maintain;
+
+/// Rows of `web_sites` a peer's batch changed (their ids; `None` = unknown, the feed lagged):
+/// published as [`WebProfileChanged`] with the sites they belong to, so every engine learns a
+/// sign-in made elsewhere within seconds (209 D14).
+#[derive(Clone, Debug, Default)]
+pub struct Replicated(pub Option<Vec<String>>);
+
 /// The [`WEBPROFILE_ACTOR`] actor: the store (when open), the bus for [`WebProfileChanged`].
 #[derive(kameo::Actor)]
 pub struct WebProfileActor {
@@ -390,30 +448,46 @@ impl WebProfileActor {
         Self { rt, profile }
     }
 
+    fn off(&self) -> bool {
+        self.rt.as_ref().is_some_and(|rt| mode(rt) == ProfileMode::Off)
+    }
+
     fn profile(&self) -> Result<&Profile, ProfileError> {
-        if let Some(rt) = &self.rt
-            && mode(rt) == ProfileMode::Off
-        {
+        if self.off() {
             return Err(ProfileError::Unavailable("browser.profile is off".into()));
         }
         self.profile
             .as_ref()
             .map_err(|e| ProfileError::Unavailable(e.clone()))
     }
+
+    async fn publish(&self, sites: Vec<String>, epoch: u64) {
+        if let Some(rt) = &self.rt {
+            rt.publish(WebProfileChanged { sites, epoch }).await;
+        }
+    }
 }
 
 impl Message<Push> for WebProfileActor {
     type Reply = Result<PushResult, ProfileError>;
-    async fn handle(&mut self, msg: Push, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+    /// `browser.profile: off` answers an empty result with `profile: "off"` (209 D6); otherwise
+    /// the push is checked ([`merge::validate`]) before any work, then merged.
+    async fn handle(&mut self, mut msg: Push, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if self.off() {
+            let epoch = match &self.profile {
+                Ok(p) => p.epoch().await.unwrap_or(msg.epoch),
+                Err(_) => msg.epoch,
+            };
+            return Ok(PushResult {
+                epoch,
+                profile: ProfileMode::Off,
+                ..PushResult::default()
+            });
+        }
+        merge::validate(&mut msg)?;
         let out = self.profile()?.push(msg).await?;
-        if !out.sites.is_empty()
-            && let Some(rt) = &self.rt
-        {
-            rt.publish(WebProfileChanged {
-                sites: out.sites.clone(),
-                epoch: out.epoch,
-            })
-            .await;
+        if !out.sites.is_empty() {
+            self.publish(out.sites.clone(), out.epoch).await;
         }
         Ok(out)
     }
@@ -428,7 +502,11 @@ impl Message<Load> for WebProfileActor {
 
 impl Message<Sites> for WebProfileActor {
     type Reply = Result<Vec<SiteSummary>, ProfileError>;
+    /// `browser.profile: off` lists nothing (209 D6).
     async fn handle(&mut self, _: Sites, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        if self.off() {
+            return Ok(Vec::new());
+        }
         self.profile()?.sites().await
     }
 }
@@ -437,6 +515,29 @@ impl Message<CurrentEpoch> for WebProfileActor {
     type Reply = Result<u64, ProfileError>;
     async fn handle(&mut self, _: CurrentEpoch, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         self.profile()?.epoch().await
+    }
+}
+
+impl Message<Maintain> for WebProfileActor {
+    type Reply = ();
+    async fn handle(&mut self, _: Maintain, _: &mut Context<Self, Self::Reply>) {
+        if let Ok(p) = &self.profile
+            && let Err(e) = p.maintain().await
+        {
+            tracing::warn!("webprofile: maintenance failed: {e}");
+        }
+    }
+}
+
+impl Message<Replicated> for WebProfileActor {
+    type Reply = ();
+    async fn handle(&mut self, msg: Replicated, _: &mut Context<Self, Self::Reply>) {
+        let Ok(p) = &self.profile else { return };
+        match p.changed(msg.0.as_deref()).await {
+            Ok(Some((sites, epoch))) => self.publish(sites, epoch).await,
+            Ok(None) => {}
+            Err(e) => tracing::debug!("webprofile: replicated rows not read: {e}"),
+        }
     }
 }
 
@@ -491,13 +592,47 @@ fn send_err<M>(e: kameo::error::SendError<M, ProfileError>) -> ProfileError {
     }
 }
 
+/// Tell `actor` about every peer batch that touches `web_sites` ([`Replicated`]): a sign-in made
+/// on another engine reaches this engine's bus as [`WebProfileChanged`] (209 D14). Runs until the
+/// feed or the actor ends.
+pub async fn watch_replica(handle: replica::ReplicaHandle, actor: ActorRef<WebProfileActor>) {
+    use tokio::sync::broadcast::error::RecvError;
+    let mut feed = handle.subscribe();
+    let me = handle.origin().clone();
+    loop {
+        let ids = match feed.recv().await {
+            Ok(batch) if batch.origin == me => continue,
+            Ok(batch) => {
+                let ids: std::collections::BTreeSet<String> = batch
+                    .changes
+                    .iter()
+                    .filter(|c| store::TABLES.contains(&c.table.as_str()))
+                    .map(|c| c.pk.clone())
+                    .collect();
+                if ids.is_empty() {
+                    continue;
+                }
+                Some(ids.into_iter().collect())
+            }
+            Err(RecvError::Lagged(_)) => None,
+            Err(RecvError::Closed) => return,
+        };
+        if actor.tell(Replicated(ids)).await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Declare the wire contract ([`WebProfileChanged`]) before producers start.
 pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     use wire::RuntimeWire as _;
     rt.register_wire_event::<WebProfileChanged>().await
 }
 
-/// The plugin: opens `webprofile.sqlite`, the salt, replication, and registers [`WEBPROFILE_ACTOR`].
+/// How often the plugin tells the actor [`Maintain`].
+const MAINTAIN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The plugin: opens `webprofile.sqlite`, replication, and registers [`WEBPROFILE_ACTOR`].
 pub struct WebProfilePlugin;
 
 #[async_trait::async_trait]
@@ -521,11 +656,22 @@ impl runtime::Plugin for WebProfilePlugin {
         actor.register(WEBPROFILE_ACTOR)?;
         let rt = rt.clone();
         tokio::spawn(async move {
-            let profile = open(&rt).await;
+            let profile = open(&rt, &actor).await;
             if let Err(e) = &profile {
                 tracing::warn!("webprofile: {e}; the browser profile is off");
             }
             let _ = actor.tell(Opened(profile)).await;
+            let mut tick = tokio::time::interval(MAINTAIN_EVERY);
+            tick.tick().await;
+            loop {
+                tokio::select! {
+                    () = rt.shutdown.cancelled() => return,
+                    _ = tick.tick() => {}
+                }
+                if actor.tell(Maintain).await.is_err() {
+                    return;
+                }
+            }
         });
         Ok(())
     }
@@ -541,9 +687,9 @@ impl Message<Opened> for WebProfileActor {
     }
 }
 
-/// Open the store, wait for the vault, read or create the salt, and attach replication once the
-/// replica plugin is up (it may start after this one).
-async fn open(rt: &Runtime) -> Result<Profile, String> {
+/// Open the store once the vault is up, and attach replication once the replica plugin is up (it
+/// may start after this one); a peer's rows then reach `actor` through [`watch_replica`].
+async fn open(rt: &Runtime, actor: &ActorRef<WebProfileActor>) -> Result<Profile, String> {
     let vault: Arc<secrets::Vault> = secrets::handle(rt)
         .await
         .ok_or_else(|| "secrets vault unavailable".to_owned())?;
@@ -552,6 +698,7 @@ async fn open(rt: &Runtime) -> Result<Profile, String> {
         .map_err(|e| format!("{e:#}"))?;
     let pool = profile.pool().clone();
     let rt2 = rt.clone();
+    let actor = actor.clone();
     tokio::spawn(async move {
         if rt2
             .lookup_when::<replica::Replica>(replica::REPLICA_ACTOR)
@@ -561,7 +708,10 @@ async fn open(rt: &Runtime) -> Result<Profile, String> {
             return;
         }
         match replica::attach(&pool, store::TABLES).await {
-            Ok(_) => tracing::info!("webprofile: web_sites replicated"),
+            Ok(handle) => {
+                tracing::info!("webprofile: web_sites replicated");
+                watch_replica(handle, actor).await;
+            }
             Err(e) => tracing::info!("webprofile: replication unavailable ({e}); local only"),
         }
     });

@@ -1,25 +1,40 @@
-//! `<data_dir>/webprofile.sqlite` (209 §4.1): the replicated table `web_sites`, one row per site,
-//! the jar sealed with the vault's mesh key (`aad = "web_sites\n" ‖ id`), the row id a salted
-//! hash of the site so the file at rest does not name the sites. The epoch row (`id = "epoch"`)
-//! carries the profile epoch; rows written under an older epoch are dead. Forget is a column write
-//! (`sealed = NULL`), never a `DELETE`. Writes are serialised by the actor; `hlc` is left NULL for
-//! the replica to stamp at capture.
+//! `<data_dir>/webprofile.sqlite` (209 §4.1): the replicated table `web_sites`, one row per cookie
+//! and one per origin's localStorage snapshot, so replica's per-row last-writer-wins is per-cookie
+//! LWW and a change replicates as itself. Each row seals one [`Entry`] — the site, the profile
+//! epoch, the writer, the write time and the cookie or snapshot — with the vault's mesh key
+//! (`aad = "web_sites\n" ‖ id`), so a row is one atomic value. `sealed = NULL` is a tombstone: a
+//! removal is a column write, never a `DELETE` (a delete loses to a newer column write), and
+//! tombstones are deleted 30 days after their write.
+//!
+//! Row ids are keyed hashes under an id key derived from the current mesh key
+//! (`HMAC-SHA256(mesh key, "theuth/webprofile/id/v1")`): every engine holding the mesh keyring
+//! computes the same ids with nothing created per engine, and the file at rest names no site. When
+//! the mesh key rotates (183 §6.9) the ids change with it: the first operation that sees the new
+//! key — or the plugin's [`Profile::maintain`] within a minute — moves every row to its new id
+//! (re-sealed under the new key, the old id tombstoned), and every later full read folds rows a
+//! lagging engine still wrote under the old ids ([`Profile::load`] with every site). Every engine
+//! computes the same new ids, so concurrent moves converge.
+//!
+//! The row `id = "epoch"` seals the profile epoch; entries written under an older epoch are dead.
+//! Writes are serialised by the actor; `hlc` is left NULL for the replica to stamp at capture.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use sqlx::Row as _;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use zeroize::Zeroizing;
 
 use crate::{
-    LoadedProfile, LoadedSite, ProfileError, Push, PushResult, SiteJar, SiteSummary, caps, merge,
+    Cookie, CookieChange, LoadedProfile, LoadedSite, OriginStorage, ProfileError, ProfileMode,
+    Push, PushResult, SiteJar, SiteSummary, caps, merge,
 };
 
 /// Sqlite file under `data_dir`.
@@ -28,12 +43,14 @@ pub const DB: &str = "webprofile.sqlite";
 pub const TABLES: &[&str] = &["web_sites"];
 /// Id of the epoch row.
 pub const EPOCH_ID: &str = "epoch";
-/// Vault secret holding the row-id salt (32 random bytes, base64url). The contract names it
-/// `webprofile/salt`; the vault only accepts `/` names in its hidden families (`oauth/`, `mesh/`,
-/// `sandbox/`), so it lives in the mesh family, which is also never listed nor expandable.
-pub const SALT_SECRET: &str = "mesh/webprofile-salt";
-/// `aad` prefix of a sealed jar.
+/// Context of the id key derived from the mesh key (209 §4.1).
+pub const ID_CONTEXT: &[u8] = b"theuth/webprofile/id/v1";
+/// `aad` prefix of a sealed row.
 const AAD: &[u8] = b"web_sites\n";
+/// Format version of an [`Entry`]; a row of another version is skipped (and counted).
+const ENTRY_V: u32 = 1;
+/// AEAD overhead of a sealed row before base64: 24-byte nonce and 16-byte tag.
+const SEAL_OVERHEAD: u64 = 40;
 
 /// Unix ms now.
 pub fn now_ms() -> u64 {
@@ -42,41 +59,161 @@ pub fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-/// The row id of `site`: the first 32 hex of `sha256(salt ‖ "\n" ‖ site)`.
-pub fn row_id(salt: &[u8; 32], site: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(salt);
-    h.update(b"\n");
-    h.update(site.as_bytes());
-    let mut s = hex::encode(h.finalize());
-    s.truncate(32);
-    s
+/// HMAC-SHA256 (RFC 2104) over `sha2`, the one hash the crate already carries.
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    let mut k0 = Zeroizing::new([0u8; 64]);
+    if key.len() > 64 {
+        let d: [u8; 32] = Sha256::digest(key).into();
+        k0[..32].copy_from_slice(&d);
+    } else {
+        k0[..key.len()].copy_from_slice(key);
+    }
+    let pad = |b: u8| Zeroizing::new(k0.iter().map(|k| k ^ b).collect::<Vec<u8>>());
+    let inner: [u8; 32] = Sha256::new()
+        .chain_update(&*pad(0x36))
+        .chain_update(msg)
+        .finalize()
+        .into();
+    Sha256::new()
+        .chain_update(&*pad(0x5c))
+        .chain_update(inner)
+        .finalize()
+        .into()
 }
 
 fn aad(id: &str) -> Vec<u8> {
     [AAD, id.as_bytes()].concat()
 }
 
-/// One stored row (the jar still sealed).
-#[derive(Clone, Debug)]
-struct Row {
-    id: String,
-    sealed: Option<String>,
-    epoch: u64,
-    bytes: u64,
-    updated_ms: u64,
-    writer: String,
+/// The id key of one mesh key and the keyed hashes rows are named by (209 §4.1).
+pub struct Ids {
+    /// `secrets::vault::key_id` of the mesh key it was derived from.
+    key_id: String,
+    key: Zeroizing<[u8; 32]>,
 }
 
-/// The profile store: pool, vault and salt. The actor owns one.
+impl Ids {
+    /// The ids under `mesh_key`: id key = HMAC-SHA256(mesh key, [`ID_CONTEXT`]).
+    pub fn of(mesh_key: &[u8; 32]) -> Self {
+        Self {
+            key_id: secrets::vault::key_id(mesh_key),
+            key: Zeroizing::new(hmac_sha256(mesh_key, ID_CONTEXT)),
+        }
+    }
+
+    /// First 32 hex of HMAC-SHA256(id key, JSON array of `parts`).
+    fn hash(&self, parts: &[&str]) -> String {
+        let msg = serde_json::to_vec(parts).unwrap_or_default();
+        let mut s = hex::encode(hmac_sha256(&*self.key, &msg));
+        s.truncate(32);
+        s
+    }
+
+    /// `site_id` of `site` (eTLD+1): groups, lists and forgets a site without opening a row.
+    pub fn site(&self, site: &str) -> String {
+        self.hash(&["site", site])
+    }
+
+    /// Row id of the cookie `(name, domain, path)` of `site` (the key as [`merge::norm`] has it).
+    pub fn cookie(&self, site: &str, name: &str, domain: &str, path: &str) -> String {
+        let (name, domain, path) = merge::norm(name, domain, path);
+        self.hash(&["cookie", site, &name, &domain, &path])
+    }
+
+    /// Row id of `origin`'s localStorage snapshot.
+    pub fn storage(&self, site: &str, origin: &str) -> String {
+        self.hash(&["storage", site, origin])
+    }
+
+    fn of_entry(&self, e: &Entry) -> String {
+        match &e.item {
+            Item::Cookie(c) => self.cookie(&e.site, &c.name, &c.domain, &c.path),
+            Item::Storage(s) => self.storage(&e.site, &s.origin),
+            Item::Epoch {} => EPOCH_ID.to_owned(),
+        }
+    }
+}
+
+/// The plaintext of one row. No `Debug`: it holds a value.
+#[derive(Clone, Serialize, Deserialize)]
+struct Entry {
+    /// [`ENTRY_V`].
+    v: u32,
+    /// Lower-case eTLD+1 (`""` on the epoch row).
+    site: String,
+    /// The profile epoch it was written under (the epoch itself on the epoch row).
+    epoch: u64,
+    /// `tile:<device>` | `obscura:<engine>`.
+    writer: String,
+    /// Unix ms of the write.
+    updated_ms: u64,
+    item: Item,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Item {
+    Cookie(Cookie),
+    Storage(OriginStorage),
+    Epoch {},
+}
+
+impl Item {
+    /// Its plaintext size for the per-site caps.
+    fn bytes(&self) -> usize {
+        serde_json::to_vec(self).map_or(0, |v| v.len())
+    }
+}
+
+/// Only the version, read first so a row of a newer format is skipped rather than misread.
+#[derive(Deserialize)]
+struct Head {
+    v: u32,
+}
+
+/// What opening a sealed row gave.
+enum Opened {
+    Entry(Box<Entry>),
+    /// A format version this build does not know.
+    Unknown,
+    /// No held key opens it, a wrong aad, damaged bytes or a body that does not parse.
+    Unreadable,
+}
+
+/// One row as stored.
+struct Raw {
+    id: String,
+    site_id: Option<String>,
+    sealed: Option<String>,
+}
+
+fn raw(r: sqlx::sqlite::SqliteRow) -> Raw {
+    Raw {
+        id: r.get("id"),
+        site_id: r.get("site_id"),
+        sealed: r.get("sealed"),
+    }
+}
+
+/// The live rows of one site as a push sees them.
+#[derive(Default)]
+struct SiteRows {
+    /// Row id → its entry and the item's size.
+    live: HashMap<String, (Entry, usize)>,
+    /// Tombstoned row ids.
+    removed: HashSet<String>,
+}
+
+/// The profile store: pool, vault and the ids of the current mesh key. The actor owns one.
 pub struct Profile {
     pool: SqlitePool,
     vault: Arc<secrets::Vault>,
-    salt: Zeroizing<[u8; 32]>,
+    ids: Mutex<Arc<Ids>>,
 }
 
 impl Profile {
-    /// Open or create the file, run the migration, read or create the salt.
+    /// Open or create the file, run the migration, delete tombstones older than
+    /// [`caps::TOMBSTONE_MS`], and move rows a key rotation left under old ids.
     pub async fn open(path: &Path, vault: Arc<secrets::Vault>) -> anyhow::Result<Self> {
         let opts = SqliteConnectOptions::new()
             .filename(path)
@@ -92,8 +229,11 @@ impl Profile {
             .run(&pool)
             .await
             .context("run migrations")?;
-        let salt = salt(&vault).await?;
-        Ok(Self { pool, vault, salt })
+        let ids = Mutex::new(Arc::new(Ids::of(&vault.mesh_key())));
+        let p = Self { pool, vault, ids };
+        p.purge(now_ms()).await?;
+        p.fold().await?;
+        Ok(p)
     }
 
     /// The underlying pool (`replica::attach` takes it).
@@ -101,228 +241,308 @@ impl Profile {
         &self.pool
     }
 
-    /// The row id of `site` under this profile's salt.
-    pub fn id_of(&self, site: &str) -> String {
-        row_id(&self.salt, site)
-    }
-
-    /// The current profile epoch (`0` before any sign out everywhere).
-    pub async fn epoch(&self) -> Result<u64, ProfileError> {
-        let row = sqlx::query("SELECT epoch FROM web_sites WHERE id = ?")
-            .bind(EPOCH_ID)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db)?;
-        Ok(row.map_or(0, |r| r.get::<i64, _>(0).max(0) as u64))
-    }
-
-    /// Set the epoch row to `epoch` (sign out everywhere writes `n + 1`, 209 §4.1).
-    pub async fn set_epoch(&self, epoch: u64) -> Result<(), ProfileError> {
-        sqlx::query(
-            "INSERT INTO web_sites (id, sealed, epoch, bytes, updated_ms, writer, hlc)
-             VALUES (?, NULL, ?, NULL, ?, NULL, NULL)
-             ON CONFLICT(id) DO UPDATE SET sealed = NULL, epoch = excluded.epoch,
-               updated_ms = excluded.updated_ms, hlc = NULL",
-        )
-        .bind(EPOCH_ID)
-        .bind(epoch as i64)
-        .bind(now_ms() as i64)
-        .execute(&self.pool)
-        .await
-        .map_err(db)?;
-        Ok(())
-    }
-
-    async fn rows(&self) -> Result<Vec<Row>, ProfileError> {
-        let rows = sqlx::query(
-            "SELECT id, sealed, epoch, bytes, updated_ms, writer FROM web_sites WHERE id != ?",
-        )
-        .bind(EPOCH_ID)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db)?;
-        Ok(rows.into_iter().map(row).collect())
-    }
-
-    async fn row(&self, id: &str) -> Result<Option<Row>, ProfileError> {
-        let r = sqlx::query(
-            "SELECT id, sealed, epoch, bytes, updated_ms, writer FROM web_sites WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db)?;
-        Ok(r.map(row))
-    }
-
-    /// The jar of a live row (`sealed` set, written under `epoch` or later); `None` when dead or
-    /// when it does not open (another mesh's key, a wrong aad, damaged bytes).
-    fn open_row(&self, r: &Row, epoch: u64) -> Option<SiteJar> {
-        if r.epoch < epoch {
-            return None;
+    /// The ids of the current mesh key, and whether the key changed since the last call.
+    fn ids(&self) -> (Arc<Ids>, bool) {
+        let key = self.vault.mesh_key();
+        let mut held = self.ids.lock().unwrap_or_else(PoisonError::into_inner);
+        if held.key_id == secrets::vault::key_id(&key) {
+            return (held.clone(), false);
         }
-        let bytes = URL_SAFE_NO_PAD.decode(r.sealed.as_deref()?).ok()?;
-        let plain = self.vault.open_with_mesh_key(&aad(&r.id), &bytes)?;
-        match serde_json::from_slice::<SiteJar>(&plain) {
-            Ok(jar) => Some(jar),
+        *held = Arc::new(Ids::of(&key));
+        (held.clone(), true)
+    }
+
+    /// [`Self::ids`], moving every row to the new ids first when the mesh key changed.
+    async fn current_ids(&self) -> Result<Arc<Ids>, ProfileError> {
+        let (ids, changed) = self.ids();
+        if changed {
+            tracing::info!("webprofile: the mesh key changed; moving rows to its ids");
+            self.fold().await?;
+        }
+        Ok(ids)
+    }
+
+    /// The plugin's minute tick: catch a mesh key rotation before the vault retires the old key.
+    pub async fn maintain(&self) -> Result<(), ProfileError> {
+        self.current_ids().await.map(|_| ())
+    }
+
+    /// The `site_id` of `site` under the current mesh key.
+    pub fn site_id(&self, site: &str) -> String {
+        self.ids().0.site(site)
+    }
+
+    fn open_entry(&self, id: &str, sealed: &str) -> Opened {
+        let Some(plain) = URL_SAFE_NO_PAD
+            .decode(sealed)
+            .ok()
+            .and_then(|b| self.vault.open_with_mesh_key(&aad(id), &b))
+        else {
+            return Opened::Unreadable;
+        };
+        match serde_json::from_slice::<Head>(&plain) {
+            Ok(h) if h.v == ENTRY_V => {}
+            Ok(_) => return Opened::Unknown,
+            Err(_) => return Opened::Unreadable,
+        }
+        match serde_json::from_slice::<Entry>(&plain) {
+            Ok(e) => Opened::Entry(Box::new(e)),
             Err(e) => {
-                tracing::warn!("webprofile: row {} does not parse: {e}", r.id);
-                None
+                tracing::warn!("webprofile: row {id} does not parse: {e}");
+                Opened::Unreadable
             }
         }
     }
 
-    /// Seal `jar` for row `id`: base64url(nonce ‖ XChaCha20-Poly1305(mesh key, aad, JSON)).
-    pub fn seal(&self, id: &str, jar: &SiteJar) -> (String, usize) {
-        let plain = Zeroizing::new(serde_json::to_vec(jar).unwrap_or_default());
-        let sealed = self.vault.seal_with_mesh_key(&aad(id), &plain);
-        (URL_SAFE_NO_PAD.encode(sealed), plain.len())
+    /// Seal `entry` for row `id`: base64url(nonce ‖ XChaCha20-Poly1305(mesh key, aad, JSON)).
+    fn seal(&self, id: &str, entry: &Entry) -> Result<String, ProfileError> {
+        let plain = Zeroizing::new(
+            serde_json::to_vec(entry)
+                .map_err(|e| ProfileError::Unavailable(format!("serialise row {id}: {e}")))?,
+        );
+        Ok(URL_SAFE_NO_PAD.encode(self.vault.seal_with_mesh_key(&aad(id), &plain)))
     }
 
-    /// Open a sealed jar of row `id` (the inverse of [`Profile::seal`]).
-    pub fn unseal(&self, id: &str, sealed: &str) -> Option<SiteJar> {
-        let bytes = URL_SAFE_NO_PAD.decode(sealed).ok()?;
-        let plain = self.vault.open_with_mesh_key(&aad(id), &bytes)?;
-        serde_json::from_slice(&plain).ok()
+    /// The current profile epoch (`0` before any sign out everywhere, or when the epoch row does
+    /// not open here).
+    pub async fn epoch(&self) -> Result<u64, ProfileError> {
+        let sealed: Option<Option<String>> =
+            sqlx::query_scalar("SELECT sealed FROM web_sites WHERE id = ?")
+                .bind(EPOCH_ID)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db)?;
+        Ok(match sealed.flatten() {
+            Some(s) => match self.open_entry(EPOCH_ID, &s) {
+                Opened::Entry(e) => e.epoch,
+                _ => 0,
+            },
+            None => 0,
+        })
     }
 
-    async fn write(
-        &self,
-        id: &str,
-        sealed: Option<&str>,
-        epoch: u64,
-        bytes: usize,
-        writer: &str,
-    ) -> Result<u64, ProfileError> {
-        let at = now_ms();
+    /// Set the epoch to `epoch` and tombstone every row (sign out everywhere writes `n + 1`, 209
+    /// §4.1, §4.4 `web_profile_clear`).
+    pub async fn set_epoch(&self, epoch: u64) -> Result<(), ProfileError> {
+        let entry = Entry {
+            v: ENTRY_V,
+            site: String::new(),
+            epoch,
+            writer: String::new(),
+            updated_ms: now_ms(),
+            item: Item::Epoch {},
+        };
+        let sealed = self.seal(EPOCH_ID, &entry)?;
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        put(&mut tx, EPOCH_ID, None, Some(&sealed)).await?;
         sqlx::query(
-            "INSERT INTO web_sites (id, sealed, epoch, bytes, updated_ms, writer, hlc)
-             VALUES (?, ?, ?, ?, ?, ?, NULL)
-             ON CONFLICT(id) DO UPDATE SET sealed = excluded.sealed, epoch = excluded.epoch,
-               bytes = excluded.bytes, updated_ms = excluded.updated_ms, writer = excluded.writer,
-               hlc = NULL",
+            "UPDATE web_sites SET sealed = NULL, hlc = NULL WHERE id != ? AND sealed IS NOT NULL",
         )
-        .bind(id)
-        .bind(sealed)
-        .bind(epoch as i64)
-        .bind(bytes as i64)
-        .bind(at as i64)
-        .bind(writer)
-        .execute(&self.pool)
+        .bind(EPOCH_ID)
+        .execute(&mut *tx)
         .await
         .map_err(db)?;
-        Ok(at)
+        tx.commit().await.map_err(db)
     }
 
-    /// Merge a push into the rows (209 §4.2): refused with [`ProfileError::StaleEpoch`] when
-    /// `msg.epoch` is older than the current epoch; per site, the changes and snapshots are applied
-    /// to the current row under the caps of 209 §4.1. A site over a cap is skipped (logged by
-    /// count, never by value); when nothing could be written because of the profile caps the push
-    /// fails with [`ProfileError::Full`]. A site left with no cookie and no snapshot is written as
-    /// forgotten (`sealed = NULL`).
+    /// Live sites and their plaintext bytes, estimated from the sealed lengths the local stats
+    /// table keeps (never by re-reading the rows).
+    async fn totals(&self) -> Result<(usize, u64), ProfileError> {
+        let r = sqlx::query(
+            "SELECT count(*), coalesce(sum(n), 0), coalesce(sum(sealed_bytes), 0)
+             FROM web_site_stats WHERE n > 0",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db)?;
+        let sites = r.get::<i64, _>(0).max(0) as usize;
+        let rows = r.get::<i64, _>(1).max(0) as u64;
+        let bytes = r.get::<i64, _>(2).max(0) as u64;
+        Ok((sites, (bytes * 3 / 4).saturating_sub(rows * SEAL_OVERHEAD)))
+    }
+
+    /// The rows of `site_id`, live entries of epoch `epoch` or later opened.
+    async fn site_rows(
+        &self,
+        site: &str,
+        site_id: &str,
+        epoch: u64,
+    ) -> Result<SiteRows, ProfileError> {
+        let rows = sqlx::query("SELECT id, site_id, sealed FROM web_sites WHERE site_id = ?")
+            .bind(site_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
+        let mut out = SiteRows::default();
+        for r in rows.into_iter().map(raw) {
+            let Some(sealed) = &r.sealed else {
+                out.removed.insert(r.id);
+                continue;
+            };
+            if let Opened::Entry(e) = self.open_entry(&r.id, sealed)
+                && e.epoch >= epoch
+                && e.site == site
+            {
+                let bytes = e.item.bytes();
+                out.live.insert(r.id, (*e, bytes));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Merge a push into the rows (209 §4.2) at now; see [`Self::push_at`].
     pub async fn push(&self, msg: Push) -> Result<PushResult, ProfileError> {
+        self.push_at(msg, now_ms()).await
+    }
+
+    /// Merge a push made at `now` (Unix ms) into the rows (209 §4.2). Refused with
+    /// [`ProfileError::StaleEpoch`] when `msg.epoch` is older than the current epoch and
+    /// [`ProfileError::UnknownEpoch`] when it is newer. Per site, each change becomes a write of
+    /// its own row: a set seals the cookie, a remove (or a set already expired) tombstones it, a
+    /// snapshot newer than the stored one replaces it and one over
+    /// [`caps::ORIGIN_STORAGE_BYTES`] tombstones it (dropped whole, never cut). A change that
+    /// leaves the row as it is writes nothing. The caps of 209 §4.1 apply per site (a site over a
+    /// cap is skipped, logged by count, never by value; over the byte cap the oldest snapshots
+    /// go first) and per profile; when nothing could be written because of the profile caps the
+    /// push fails with [`ProfileError::Full`]. The caller checked the push ([`merge::validate`]).
+    pub async fn push_at(&self, msg: Push, now: u64) -> Result<PushResult, ProfileError> {
+        let ids = self.current_ids().await?;
         let current = self.epoch().await?;
         if msg.epoch < current {
             return Err(ProfileError::StaleEpoch { current });
         }
-        let epoch = msg.epoch.max(current);
-        let now = now_ms();
+        if msg.epoch > current {
+            return Err(ProfileError::UnknownEpoch { current });
+        }
+        let epoch = current;
         let now_s = (now / 1000) as i64;
         let mut cookies = merge::group(msg.changes);
         let mut storage = merge::group_storage(msg.storage);
         let sites: BTreeSet<String> = cookies.keys().chain(storage.keys()).cloned().collect();
-        // Live totals for the profile caps.
-        let all = self.rows().await?;
-        let mut live = 0usize;
-        let mut total = 0usize;
-        for r in &all {
-            if r.sealed.is_some() && r.epoch >= epoch {
-                live += 1;
-                total += r.bytes as usize;
-            }
-        }
+        let (mut live, mut total) = self.totals().await?;
         let mut out = PushResult {
             applied: 0,
             sites: Vec::new(),
             epoch,
+            profile: ProfileMode::Shared,
         };
         let mut refused_full = false;
         for site in sites {
-            let id = self.id_of(&site);
-            let row = self.row(&id).await?;
-            let (mut jar, old_bytes, was_live) = match &row {
-                Some(r) => match self.open_row(r, epoch) {
-                    Some(mut jar) => {
-                        let idle = now.saturating_sub(r.updated_ms) > caps::SESSION_COOKIE_IDLE_MS;
-                        merge::prune(&mut jar, now_s, idle);
-                        (jar, r.bytes as usize, true)
-                    }
-                    None => (SiteJar::new(&site), 0, false),
-                },
-                None => (SiteJar::new(&site), 0, false),
-            };
-            jar.site.clone_from(&site);
-            let before = jar.clone();
+            let site_id = ids.site(&site);
+            let rows = self.site_rows(&site, &site_id, epoch).await?;
             let changes = cookies.remove(&site).unwrap_or_default();
-            let mut applied = merge::apply(&mut jar, &changes, now_s);
-            for s in storage.remove(&site).unwrap_or_default() {
-                merge::apply_storage(&mut jar, &s);
-                applied += 1;
+            let snaps = storage.remove(&site).unwrap_or_default();
+            let applied = changes.len() + snaps.len();
+            // Row id → its next item (`None` = tombstone), in push order.
+            let mut next: BTreeMap<String, Option<Item>> = BTreeMap::new();
+            for c in changes {
+                match c {
+                    CookieChange::Set { cookie } => {
+                        let id = ids.cookie(&site, &cookie.name, &cookie.domain, &cookie.path);
+                        let item =
+                            (!merge::expired(&cookie, now_s)).then_some(Item::Cookie(cookie));
+                        next.insert(id, item);
+                    }
+                    CookieChange::Remove { name, domain, path } => {
+                        next.insert(ids.cookie(&site, &name, &domain, &path), None);
+                    }
+                }
             }
-            if jar == before {
+            for s in snaps {
+                let id = ids.storage(&site, &s.origin);
+                let have = match next.get(&id) {
+                    Some(Some(Item::Storage(o))) => Some(o.captured_ms),
+                    Some(_) => None,
+                    None => rows.live.get(&id).and_then(|(e, _)| match &e.item {
+                        Item::Storage(o) => Some(o.captured_ms),
+                        _ => None,
+                    }),
+                };
+                if have.is_some_and(|ms| ms > s.captured_ms) {
+                    continue;
+                }
+                let item = (s.bytes() <= caps::ORIGIN_STORAGE_BYTES).then_some(Item::Storage(s));
+                next.insert(id, item);
+            }
+            // Only what changes the row: an unchanged set writes nothing; a remove of a row this
+            // engine has not seen still tombstones it, so it wins over an older set elsewhere.
+            next.retain(|id, item| match (rows.live.get(id), item) {
+                (Some((e, _)), Some(i)) => e.item != *i,
+                (Some(_), None) | (None, Some(_)) => true,
+                (None, None) => !rows.removed.contains(id),
+            });
+            if next.is_empty() {
                 continue;
             }
-            if jar.cookies.len() > caps::SITE_COOKIES {
+            // The site after the writes: row id → (is a cookie, snapshot capture time, bytes).
+            let mut after: HashMap<String, (bool, u64, usize)> = rows
+                .live
+                .iter()
+                .map(|(id, (e, b))| (id.clone(), shape(&e.item, *b)))
+                .collect();
+            for (id, item) in &next {
+                match item {
+                    Some(i) => after.insert(id.clone(), shape(i, i.bytes())),
+                    None => after.remove(id),
+                };
+            }
+            let n_cookies = after.values().filter(|(c, ..)| *c).count();
+            if n_cookies > caps::SITE_COOKIES {
                 tracing::warn!(
-                    "webprofile: {site}: {} cookies > {}; push for this site refused",
-                    jar.cookies.len(),
+                    "webprofile: {site}: {n_cookies} cookies > {}; push for this site refused",
                     caps::SITE_COOKIES
                 );
                 continue;
             }
-            if jar.cookies.is_empty() && jar.origins.is_empty() {
-                if was_live {
-                    self.write(&id, None, epoch, 0, &msg.writer).await?;
-                    live -= 1;
-                    total -= old_bytes;
-                    out.applied += applied as u32;
-                    out.sites.push(site);
-                }
-                continue;
-            }
-            let mut plain = serde_json::to_vec(&jar)
-                .map_err(|e| ProfileError::Unavailable(format!("serialise {site}: {e}")))?;
-            // Over the row cap: drop the oldest snapshots whole until it fits.
-            while plain.len() > caps::ROW_BYTES && !jar.origins.is_empty() {
-                let oldest = jar
-                    .origins
+            let mut bytes: usize = after.values().map(|(.., b)| b).sum();
+            while bytes > caps::ROW_BYTES {
+                let oldest = after
                     .iter()
-                    .enumerate()
-                    .min_by_key(|(_, o)| o.captured_ms)
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
-                jar.origins.remove(oldest);
-                plain = serde_json::to_vec(&jar).unwrap_or_default();
+                    .filter(|(_, (c, ..))| !*c)
+                    .min_by_key(|(_, (_, at, _))| *at)
+                    .map(|(id, (.., b))| (id.clone(), *b));
+                let Some((id, b)) = oldest else { break };
+                after.remove(&id);
+                bytes -= b;
+                next.insert(id, None);
             }
-            let plain = Zeroizing::new(plain);
-            if plain.len() > caps::ROW_BYTES {
+            if bytes > caps::ROW_BYTES {
                 tracing::warn!(
-                    "webprofile: {site}: {} bytes > {}; push for this site refused",
-                    plain.len(),
+                    "webprofile: {site}: {bytes} bytes > {}; push for this site refused",
                     caps::ROW_BYTES
                 );
                 continue;
             }
-            let new_live = live + usize::from(!was_live);
-            let new_total = total - old_bytes + plain.len();
-            if new_live > caps::SITES || new_total > caps::PROFILE_BYTES {
+            let old: usize = rows.live.values().map(|(_, b)| b).sum();
+            let (was_live, is_live) = (!rows.live.is_empty(), !after.is_empty());
+            let new_live = live + usize::from(is_live) - usize::from(was_live);
+            let new_total = (total + bytes as u64).saturating_sub(old as u64);
+            if (is_live && !was_live && new_live > caps::SITES)
+                || (new_total > caps::PROFILE_BYTES as u64 && bytes > old)
+            {
                 tracing::warn!("webprofile: {site} refused: {}", crate::PROFILE_FULL);
                 refused_full = true;
                 continue;
             }
-            let sealed = URL_SAFE_NO_PAD.encode(self.vault.seal_with_mesh_key(&aad(&id), &plain));
-            self.write(&id, Some(&sealed), epoch, plain.len(), &msg.writer)
-                .await?;
+            let mut tx = self.pool.begin().await.map_err(db)?;
+            for (id, item) in next {
+                let sealed = match item {
+                    Some(item) => Some(self.seal(
+                        &id,
+                        &Entry {
+                            v: ENTRY_V,
+                            site: site.clone(),
+                            epoch,
+                            writer: msg.writer.clone(),
+                            updated_ms: now,
+                            item,
+                        },
+                    )?),
+                    None => None,
+                };
+                put(&mut tx, &id, Some(&site_id), sealed.as_deref()).await?;
+            }
+            tx.commit().await.map_err(db)?;
             live = new_live;
             total = new_total;
             out.applied += applied as u32;
@@ -334,39 +554,29 @@ impl Profile {
         Ok(out)
     }
 
-    /// Live rows, every one or those of `sites`, sorted by site: expired cookies dropped, session
-    /// cookies dropped from a row idle past [`caps::SESSION_COOKIE_IDLE_MS`] (209 §11 Q1).
+    /// Live sites, every one or those of `sites` (any host; grouped by its site), sorted by site:
+    /// expired cookies dropped, session cookies dropped from a site none of whose rows was written
+    /// in [`caps::SESSION_COOKIE_IDLE_MS`] (209 §11 Q1). Reading every site also moves rows a
+    /// lagging engine wrote under an old mesh key's ids and tombstones rows of an old epoch.
     pub async fn load(&self, sites: Option<&[String]>) -> Result<LoadedProfile, ProfileError> {
+        let ids = self.current_ids().await?;
         let epoch = self.epoch().await?;
-        let rows = match sites {
-            None => self.rows().await?,
+        let entries = match sites {
+            None => self.scan(&ids, epoch).await?,
             Some(sites) => {
                 let mut v = Vec::new();
-                for s in sites {
-                    if let Some(r) = self.row(&self.id_of(&crate::site_of(s))).await? {
-                        v.push(r);
-                    }
+                let wanted: BTreeSet<String> = sites.iter().map(|s| crate::site_of(s)).collect();
+                for site in wanted {
+                    let rows = self.site_rows(&site, &ids.site(&site), epoch).await?;
+                    v.extend(rows.live.into_values().map(|(e, _)| e));
                 }
                 v
             }
         };
-        let now = now_ms();
-        let now_s = (now / 1000) as i64;
-        let mut out: Vec<LoadedSite> = rows
-            .iter()
-            .filter_map(|r| {
-                let mut jar = self.open_row(r, epoch)?;
-                let idle = now.saturating_sub(r.updated_ms) > caps::SESSION_COOKIE_IDLE_MS;
-                merge::prune(&mut jar, now_s, idle);
-                Some(LoadedSite {
-                    jar,
-                    updated_ms: r.updated_ms,
-                    writer: r.writer.clone(),
-                })
-            })
-            .collect();
-        out.sort_by(|a, b| a.jar.site.cmp(&b.jar.site));
-        Ok(LoadedProfile { epoch, sites: out })
+        Ok(LoadedProfile {
+            epoch,
+            sites: assemble(entries, now_ms()),
+        })
     }
 
     /// The Settings list (209 §4.4 `web_profile_sites`): counts, never values.
@@ -377,59 +587,294 @@ impl Profile {
             .sites
             .into_iter()
             .map(|s| SiteSummary {
-                site: s.jar.site,
                 cookies: s.jar.cookies.len() as u32,
-                origins: s.jar.origins.len() as u32,
+                origins: s
+                    .jar
+                    .origins
+                    .iter()
+                    .filter(|o| !o.local_storage.is_empty())
+                    .count() as u32,
+                site: s.jar.site,
                 updated_ms: s.updated_ms,
                 writer: s.writer,
             })
             .collect())
     }
+
+    /// The sites a peer's batch changed (row ids `ids`; `None` = unknown, every live site) and the
+    /// epoch, for [`crate::WebProfileChanged`]; `None` when no site and not the epoch changed. A
+    /// tombstone names its site through any live row of the same `site_id`.
+    pub async fn changed(
+        &self,
+        ids: Option<&[String]>,
+    ) -> Result<Option<(Vec<String>, u64)>, ProfileError> {
+        let Some(ids) = ids else {
+            let p = self.load(None).await?;
+            return Ok(Some((
+                p.sites.into_iter().map(|s| s.jar.site).collect(),
+                p.epoch,
+            )));
+        };
+        let epoch = self.epoch().await?;
+        let mut sites = BTreeSet::new();
+        let mut epoch_changed = false;
+        for id in ids {
+            if id == EPOCH_ID {
+                epoch_changed = true;
+                continue;
+            }
+            let row = sqlx::query("SELECT id, site_id, sealed FROM web_sites WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db)?
+                .map(raw);
+            let Some(row) = row else { continue };
+            let found = match &row.sealed {
+                Some(s) => match self.open_entry(&row.id, s) {
+                    Opened::Entry(e) => Some(e.site),
+                    _ => None,
+                },
+                None => self.site_by_id(row.site_id.as_deref()).await?,
+            };
+            sites.extend(found);
+        }
+        Ok((!sites.is_empty() || epoch_changed).then(|| (sites.into_iter().collect(), epoch)))
+    }
+
+    /// The site of any live row of `site_id`.
+    async fn site_by_id(&self, site_id: Option<&str>) -> Result<Option<String>, ProfileError> {
+        let Some(site_id) = site_id else {
+            return Ok(None);
+        };
+        let rows = sqlx::query(
+            "SELECT id, site_id, sealed FROM web_sites WHERE site_id = ? AND sealed IS NOT NULL",
+        )
+        .bind(site_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(rows.into_iter().map(raw).find_map(|r| {
+            match self.open_entry(&r.id, r.sealed.as_deref()?) {
+                Opened::Entry(e) => Some(e.site),
+                _ => None,
+            }
+        }))
+    }
+
+    /// Every live entry, deduplicated per row identity (the newest write wins). Rows found under
+    /// an id other than the current mesh key's (a rotation, or a lagging engine) move to it —
+    /// written there unless a newer write or a newer tombstone is there already — and their old
+    /// id is tombstoned; rows of an older epoch are tombstoned. Rows of an unknown format version
+    /// are skipped and counted.
+    async fn scan(&self, ids: &Ids, epoch: u64) -> Result<Vec<Entry>, ProfileError> {
+        let rows = sqlx::query(
+            "SELECT id, site_id, sealed FROM web_sites WHERE id != ? AND sealed IS NOT NULL",
+        )
+        .bind(EPOCH_ID)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db)?;
+        let mut unknown = 0usize;
+        // Identity (current id) → the newest entry and whether it already sits at that id.
+        let mut best: HashMap<String, (Entry, bool)> = HashMap::new();
+        let mut gone: Vec<String> = Vec::new();
+        let mut targets: BTreeSet<String> = BTreeSet::new();
+        for r in rows.into_iter().map(raw) {
+            let Some(sealed) = &r.sealed else { continue };
+            let e = match self.open_entry(&r.id, sealed) {
+                Opened::Entry(e) => *e,
+                Opened::Unknown => {
+                    unknown += 1;
+                    continue;
+                }
+                Opened::Unreadable => continue,
+            };
+            if e.epoch < epoch {
+                gone.push(r.id);
+                continue;
+            }
+            let canonical = ids.of_entry(&e);
+            let home = canonical == r.id;
+            if !home {
+                gone.push(r.id);
+                targets.insert(canonical.clone());
+            }
+            let newer = best.get(&canonical).is_none_or(|(b, b_home)| {
+                e.updated_ms > b.updated_ms || (e.updated_ms == b.updated_ms && home && !b_home)
+            });
+            if newer {
+                best.insert(canonical, (e, home));
+            }
+        }
+        if unknown > 0 {
+            tracing::warn!("webprofile: {unknown} rows of an unknown format version skipped");
+        }
+        if !gone.is_empty() {
+            tracing::info!(
+                rows = gone.len(),
+                "webprofile: rows moved to the current key's ids or of an old epoch"
+            );
+            let mut tx = self.pool.begin().await.map_err(db)?;
+            for id in &gone {
+                sqlx::query("UPDATE web_sites SET sealed = NULL, hlc = NULL WHERE id = ?")
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+            for id in targets {
+                let Some((e, home)) = best.get(&id) else {
+                    continue;
+                };
+                if *home {
+                    continue;
+                }
+                // A tombstone at the current id newer than the moved write keeps the removal.
+                let stamp: Option<(Option<String>, Option<String>)> =
+                    sqlx::query_as("SELECT sealed, hlc FROM web_sites WHERE id = ?")
+                        .bind(&id)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(db)?;
+                if let Some((None, hlc)) = stamp
+                    && !gone.contains(&id)
+                {
+                    let at = hlc
+                        .as_deref()
+                        .and_then(replica::Hlc::parse)
+                        .map_or(u64::MAX, |h| h.wall_ms);
+                    if at >= e.updated_ms {
+                        best.remove(&id);
+                        continue;
+                    }
+                }
+                let sealed = self.seal(&id, e)?;
+                put(&mut tx, &id, Some(&ids.site(&e.site)), Some(&sealed)).await?;
+            }
+            tx.commit().await.map_err(db)?;
+        }
+        Ok(best.into_values().map(|(e, _)| e).collect())
+    }
+
+    /// Move every row to the current mesh key's ids ([`Self::scan`]) and re-seal the epoch row
+    /// when it opens only under a retained key.
+    async fn fold(&self) -> Result<(), ProfileError> {
+        let (ids, _) = self.ids();
+        let epoch = self.epoch().await?;
+        self.scan(&ids, epoch).await?;
+        let sealed: Option<Option<String>> =
+            sqlx::query_scalar("SELECT sealed FROM web_sites WHERE id = ?")
+                .bind(EPOCH_ID)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db)?;
+        if let Some(bytes) = sealed
+            .flatten()
+            .and_then(|s| URL_SAFE_NO_PAD.decode(s).ok())
+            && let Some(resealed) = self.vault.reseal_with_mesh_key(&aad(EPOCH_ID), &bytes)
+        {
+            let mut tx = self.pool.begin().await.map_err(db)?;
+            put(
+                &mut tx,
+                EPOCH_ID,
+                None,
+                Some(&URL_SAFE_NO_PAD.encode(resealed)),
+            )
+            .await?;
+            tx.commit().await.map_err(db)?;
+        }
+        Ok(())
+    }
+
+    /// Delete tombstones whose write (their `hlc`) is older than [`caps::TOMBSTONE_MS`]; one
+    /// never stamped (no replication yet) stays.
+    async fn purge(&self, now: u64) -> Result<(), ProfileError> {
+        let cutoff = format!("{:016x}", now.saturating_sub(caps::TOMBSTONE_MS));
+        sqlx::query(
+            "DELETE FROM web_sites
+             WHERE sealed IS NULL AND id != ? AND hlc IS NOT NULL AND hlc < ?",
+        )
+        .bind(EPOCH_ID)
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
 }
 
-fn row(r: sqlx::sqlite::SqliteRow) -> Row {
-    Row {
-        id: r.get("id"),
-        sealed: r.get("sealed"),
-        epoch: r.get::<i64, _>("epoch").max(0) as u64,
-        bytes: r.get::<Option<i64>, _>("bytes").unwrap_or(0).max(0) as u64,
-        updated_ms: r.get::<Option<i64>, _>("updated_ms").unwrap_or(0).max(0) as u64,
-        writer: r.get::<Option<String>, _>("writer").unwrap_or_default(),
+/// `(is a cookie, snapshot capture time, bytes)` of an item.
+fn shape(item: &Item, bytes: usize) -> (bool, u64, usize) {
+    match item {
+        Item::Cookie(_) => (true, 0, bytes),
+        Item::Storage(s) => (false, s.captured_ms, bytes),
+        Item::Epoch {} => (false, 0, 0),
     }
+}
+
+/// Group live entries into sites, sorted: expired cookies dropped, session cookies of a site idle
+/// past [`caps::SESSION_COOKIE_IDLE_MS`] dropped, cookies and origins sorted; the site's
+/// `updated_ms` and `writer` are those of its newest row.
+fn assemble(entries: Vec<Entry>, now: u64) -> Vec<LoadedSite> {
+    let mut by_site: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
+    for e in entries {
+        by_site.entry(e.site.clone()).or_default().push(e);
+    }
+    let now_s = (now / 1000) as i64;
+    by_site
+        .into_iter()
+        .filter_map(|(site, entries)| {
+            let newest = entries.iter().max_by_key(|e| e.updated_ms)?;
+            let (updated_ms, writer) = (newest.updated_ms, newest.writer.clone());
+            let idle = now.saturating_sub(updated_ms) > caps::SESSION_COOKIE_IDLE_MS;
+            let mut jar = SiteJar::new(site);
+            for e in entries {
+                match e.item {
+                    Item::Cookie(c) => {
+                        if !merge::expired(&c, now_s) && !(idle && c.expires.is_none()) {
+                            jar.cookies.push(c);
+                        }
+                    }
+                    Item::Storage(s) => jar.origins.push(s),
+                    Item::Epoch {} => {}
+                }
+            }
+            if jar.cookies.is_empty() && jar.origins.is_empty() {
+                return None;
+            }
+            jar.cookies.sort_by_key(merge::norm_cookie);
+            jar.origins.sort_by(|a, b| a.origin.cmp(&b.origin));
+            Some(LoadedSite {
+                jar,
+                updated_ms,
+                writer,
+            })
+        })
+        .collect()
+}
+
+/// Write one row: `sealed = None` is a tombstone; `hlc` NULL for the replica to stamp.
+async fn put(
+    tx: &mut sqlx::SqliteConnection,
+    id: &str,
+    site_id: Option<&str>,
+    sealed: Option<&str>,
+) -> Result<(), ProfileError> {
+    sqlx::query(
+        "INSERT INTO web_sites (id, site_id, sealed, hlc) VALUES (?, ?, ?, NULL)
+         ON CONFLICT(id) DO UPDATE SET site_id = excluded.site_id, sealed = excluded.sealed,
+           hlc = NULL",
+    )
+    .bind(id)
+    .bind(site_id)
+    .bind(sealed)
+    .execute(tx)
+    .await
+    .map_err(db)?;
+    Ok(())
 }
 
 fn db(e: sqlx::Error) -> ProfileError {
     ProfileError::Unavailable(format!("webprofile.sqlite: {e}"))
-}
-
-/// The row-id salt: read [`SALT_SECRET`], or create it with the lost-the-race pattern of
-/// `mesh/device_key` (`Vault::mesh_device_key`) so every engine of the mesh uses the winner's.
-pub async fn salt(vault: &secrets::Vault) -> anyhow::Result<Zeroizing<[u8; 32]>> {
-    fn decode(v: &str) -> anyhow::Result<Zeroizing<[u8; 32]>> {
-        let bytes = Zeroizing::new(URL_SAFE_NO_PAD.decode(v.trim())?);
-        let arr: [u8; 32] = bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("{SALT_SECRET}: not 32 bytes"))?;
-        Ok(Zeroizing::new(arr))
-    }
-    if let Some(v) = vault.get(SALT_SECRET, 0) {
-        return decode(&v);
-    }
-    let fresh: Zeroizing<[u8; 32]> = Zeroizing::new(rand::random());
-    let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(*fresh));
-    match vault
-        .set_if_version(SALT_SECRET, &encoded, "webprofile", None)
-        .await
-    {
-        Ok(Some(_)) => Ok(fresh),
-        Ok(None) => {
-            vault.refresh().await?;
-            let v = vault
-                .get(SALT_SECRET, 0)
-                .ok_or_else(|| anyhow::anyhow!("{SALT_SECRET}: lost the race but no row"))?;
-            decode(&v)
-        }
-        Err(e) => Err(anyhow::anyhow!("{SALT_SECRET}: {e}")),
-    }
 }

@@ -1,16 +1,24 @@
-//! 209 §10 P1: `web_sites` rides `replica::attach` — a site row the tile pushes on engine A is read,
-//! opened and loaded on engine B (same mesh keyring and salt), and B's save merges back on A. Two
-//! in-process engines over a `tokio::io::duplex` transport, the harness of
-//! `crates/document/tests/replicate.rs`.
+//! 209 §10 P1: `web_sites` rides `replica::attach`. Two in-process engines with their OWN vault
+//! files sharing one mesh keyring (B adopted A's, as pairing does) over a `tokio::io::duplex`
+//! transport, the harness of `crates/document/tests/replicate.rs`:
+//!
+//! - row ids come from the mesh key, so B finds A's rows by site (B1);
+//! - one row per cookie: two engines writing different cookies of one site while apart both keep
+//!   theirs, and a removal on one beats an older set on the other (B2);
+//! - a peer's rows reach B's bus as `WebProfileChanged` (209 D14 on every engine);
+//! - B's save merges back on A; sign out everywhere on A makes B's push stale.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use kameo::actor::Spawn as _;
 use parking_lot::Mutex;
-use replica::{ByteStream, Engine, PeerEvent, PeerId, Transport};
+use replica::{ByteStream, Engine, PeerEvent, PeerId, ReplicaHandle, Transport};
 use tokio::sync::{broadcast, mpsc};
-use webprofile::{Cookie, CookieChange, Profile, Push, merge, store};
+use webprofile::{
+    Cookie, CookieChange, Profile, Push, WebProfileActor, WebProfileChanged, merge, store,
+};
 
 type Inbound = (PeerId, Box<dyn ByteStream>);
 
@@ -77,32 +85,56 @@ impl Transport for Loop {
     }
 }
 
+/// One engine: its own vault file, `webprofile.sqlite` and replica engine. Not on the network
+/// until [`connect`].
 struct Node {
+    name: &'static str,
+    vault: Arc<secrets::Vault>,
     profile: Profile,
-    _engine: Arc<Engine>,
-    transport: Arc<Loop>,
-    _dir: tempfile::TempDir,
+    engine: Arc<Engine>,
+    replica: ReplicaHandle,
+    dir: tempfile::TempDir,
 }
 
-/// One engine: its own `webprofile.sqlite` and replica engine; the vault is the mesh's shared
-/// keyring (the mesh key and the salt replicate with the vault in a real mesh).
-async fn node(name: &str, switch: &Arc<Switch>, vault: &Arc<secrets::Vault>) -> Node {
+async fn node(name: &'static str, keyring_of: Option<&secrets::Vault>) -> Node {
     let dir = tempfile::tempdir().unwrap();
+    let vault = Arc::new(
+        secrets::Vault::open(&dir.path().join("vault"), secrets::KeyStore::File)
+            .await
+            .unwrap(),
+    );
+    if let Some(owner) = keyring_of {
+        vault.adopt_keyring(owner.keyring()).await.unwrap();
+    }
     let engine = Engine::open(&dir.path().join("replica.sqlite"))
         .await
         .unwrap();
     let profile = Profile::open(&dir.path().join(store::DB), vault.clone())
         .await
         .unwrap();
-    engine.attach(profile.pool(), store::TABLES).await.unwrap();
-    let transport = Loop::new(name, switch);
-    engine.register_transport(transport.clone());
+    let replica = engine.attach(profile.pool(), store::TABLES).await.unwrap();
     Node {
+        name,
+        vault,
         profile,
-        _engine: engine,
-        transport,
-        _dir: dir,
+        engine,
+        replica,
+        dir,
     }
+}
+
+fn connect(switch: &Arc<Switch>, nodes: [&Node; 2]) {
+    let loops = nodes.map(|n| {
+        let t = Loop::new(n.name, switch);
+        n.engine.register_transport(t.clone());
+        t
+    });
+    let _ = loops[0]
+        .events
+        .send(PeerEvent::Connected(loops[1].me.clone()));
+    let _ = loops[1]
+        .events
+        .send(PeerEvent::Connected(loops[0].me.clone()));
 }
 
 async fn until(what: &str, mut f: impl AsyncFnMut() -> bool) {
@@ -113,9 +145,9 @@ async fn until(what: &str, mut f: impl AsyncFnMut() -> bool) {
     }
 }
 
-fn host_sid(value: &str) -> Cookie {
+fn cookie(name: &str, value: &str) -> Cookie {
     Cookie {
-        name: "__Host-sid".into(),
+        name: name.into(),
         value: value.into(),
         domain: "app.example.com".into(),
         host_only: true,
@@ -128,64 +160,117 @@ fn host_sid(value: &str) -> Cookie {
     }
 }
 
-#[tokio::test]
-async fn a_site_row_replicates_between_two_engines() {
-    let keyring = tempfile::tempdir().unwrap();
-    let vault = Arc::new(
-        secrets::Vault::open(keyring.path(), secrets::KeyStore::File)
-            .await
-            .unwrap(),
-    );
-    let switch = Arc::new(Switch::default());
-    let a = node("A", &switch, &vault).await;
-    let b = node("B", &switch, &vault).await;
-    let _ = a
-        .transport
-        .events
-        .send(PeerEvent::Connected(b.transport.me.clone()));
-    let _ = b
-        .transport
-        .events
-        .send(PeerEvent::Connected(a.transport.me.clone()));
+fn push(writer: &str, epoch: u64, changes: Vec<CookieChange>) -> Push {
+    Push {
+        writer: writer.into(),
+        epoch,
+        changes,
+        storage: vec![],
+    }
+}
 
-    // 209 §5 steps 1-3: the iPad pushes its sign-in to engine A.
-    a.profile
-        .push(Push {
-            writer: "tile:iPad".into(),
-            epoch: 0,
-            changes: vec![CookieChange::Set {
-                cookie: host_sid("one"),
-            }],
-            storage: vec![],
-        })
+/// Push on `n` and capture the write now, so its HLC is stamped at this moment.
+async fn write(n: &Node, msg: Push) {
+    n.profile.push(msg).await.unwrap();
+    n.replica.flush().await.unwrap();
+}
+
+async fn names(p: &Profile) -> Vec<(String, String)> {
+    let load = p.load(Some(&["example.com".to_owned()])).await.unwrap();
+    let mut v: Vec<(String, String)> = load
+        .sites
+        .iter()
+        .flat_map(|s| s.jar.cookies.iter())
+        .map(|c| (c.name.clone(), c.value.clone()))
+        .collect();
+    v.sort();
+    v
+}
+
+#[derive(kameo::Actor)]
+struct Heard(Arc<Mutex<Vec<WebProfileChanged>>>);
+
+impl kameo::message::Message<WebProfileChanged> for Heard {
+    type Reply = ();
+    async fn handle(
+        &mut self,
+        m: WebProfileChanged,
+        _: &mut kameo::message::Context<Self, Self::Reply>,
+    ) {
+        self.0.lock().push(m);
+    }
+}
+
+#[tokio::test]
+async fn per_cookie_rows_replicate_between_engines_with_their_own_vaults() {
+    let a = node("A", None).await;
+    let b = node("B", Some(&a.vault)).await;
+    assert_eq!(*a.vault.mesh_key(), *b.vault.mesh_key());
+    // B1: no per-engine secret: both engines name a site's rows the same.
+    assert_eq!(
+        a.profile.site_id("example.com"),
+        b.profile.site_id("example.com")
+    );
+
+    // B's bus hears a peer's rows (209 D14): its actor over the same file, fed by the feed.
+    let rt = runtime::Runtime::new(figment::Figment::new(), b.dir.path().to_path_buf());
+    webprofile::declare_wire(&rt).await.unwrap();
+    let b_store = Profile::open(&b.dir.path().join(store::DB), b.vault.clone())
         .await
         .unwrap();
+    let b_actor = WebProfileActor::spawn(WebProfileActor::new(Some(rt.clone()), Ok(b_store)));
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let sink = Heard::spawn_with_mailbox(Heard(heard.clone()), runtime::subscriber_mailbox());
+    rt.subscribe::<Heard, WebProfileChanged>(&sink).await;
+    tokio::spawn(webprofile::watch_replica(b.replica.clone(), b_actor));
 
-    // Step 4: engine B loads it, `host_only` and `HttpOnly` intact.
-    until("B sees example.com", async || {
-        !b.profile.load(None).await.unwrap().sites.is_empty()
+    // Apart: A and B each set a different cookie of the same site; B sets `c`, then A (later)
+    // removes `c`, which A never saw.
+    let set = |c: Cookie| CookieChange::Set { cookie: c };
+    write(&a, push("tile:iPad", 0, vec![set(cookie("a", "from-a"))])).await;
+    write(&b, push("obscura:B", 0, vec![set(cookie("b", "from-b"))])).await;
+    write(&b, push("obscura:B", 0, vec![set(cookie("c", "old"))])).await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let remove_c = CookieChange::Remove {
+        name: "c".into(),
+        domain: "app.example.com".into(),
+        path: "/".into(),
+    };
+    write(&a, push("tile:Mac", 0, vec![remove_c])).await;
+
+    let switch = Arc::new(Switch::default());
+    connect(&switch, [&a, &b]);
+    let both = vec![
+        ("a".to_owned(), "from-a".to_owned()),
+        ("b".to_owned(), "from-b".to_owned()),
+    ];
+    until("A and B converge per cookie", async || {
+        names(&a.profile).await == both && names(&b.profile).await == both
     })
     .await;
+    until("B's bus hears example.com", async || {
+        heard
+            .lock()
+            .iter()
+            .any(|e| e.sites == ["example.com"] && e.epoch == 0)
+    })
+    .await;
+
+    // 209 §5 step 6: B's agent browser saves a refreshed cookie as a delta; A has it, and A's
+    // other cookie is untouched.
     let loaded = b.profile.load(None).await.unwrap();
     let site = &loaded.sites[0];
-    assert_eq!(site.jar.site, "example.com");
-    assert_eq!(site.jar.cookies, vec![host_sid("one")]);
-    assert_eq!(site.writer, "tile:iPad");
-    assert_eq!(b.profile.sites().await.unwrap()[0].cookies, 1);
-
-    // Step 6: the agent browser on B saves a refreshed cookie as a delta; A has it.
-    let changes = merge::diff(&site.jar.cookies, &[host_sid("two")]);
-    b.profile
-        .push(Push {
-            writer: "obscura:B".into(),
-            epoch: loaded.epoch,
-            changes,
-            storage: vec![],
-        })
-        .await
-        .unwrap();
+    let mut after = site.jar.cookies.clone();
+    after.iter_mut().find(|c| c.name == "b").unwrap().value = "refreshed".into();
+    let changes = merge::diff(&site.jar.cookies, &after);
+    assert_eq!(changes.len(), 1);
+    write(&b, push("obscura:B", loaded.epoch, changes)).await;
     until("A sees the refresh", async || {
-        a.profile.load(None).await.unwrap().sites[0].jar.cookies == vec![host_sid("two")]
+        names(&a.profile).await
+            == vec![
+                ("a".to_owned(), "from-a".to_owned()),
+                ("b".to_owned(), "refreshed".to_owned()),
+            ]
     })
     .await;
     assert_eq!(
@@ -193,23 +278,20 @@ async fn a_site_row_replicates_between_two_engines() {
         "obscura:B"
     );
 
-    // Sign out everywhere on A reaches B: B's rows of the old epoch are dead, its push is stale.
+    // Sign out everywhere on A reaches B: B's rows are gone, its push is stale.
     a.profile.set_epoch(1).await.unwrap();
+    a.replica.flush().await.unwrap();
     until("B sees epoch 1", async || {
         b.profile.epoch().await.unwrap() == 1
     })
     .await;
-    assert!(b.profile.load(None).await.unwrap().sites.is_empty());
+    until("B's rows are tombstones", async || {
+        b.profile.load(None).await.unwrap().sites.is_empty()
+    })
+    .await;
     assert_eq!(
         b.profile
-            .push(Push {
-                writer: "obscura:B".into(),
-                epoch: 0,
-                changes: vec![CookieChange::Set {
-                    cookie: host_sid("three"),
-                }],
-                storage: vec![],
-            })
+            .push(push("obscura:B", 0, vec![set(cookie("d", "three"))]))
             .await,
         Err(webprofile::ProfileError::StaleEpoch { current: 1 })
     );
