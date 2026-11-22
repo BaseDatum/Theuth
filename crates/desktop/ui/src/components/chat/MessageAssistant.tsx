@@ -374,6 +374,9 @@ export const MessageAssistant = memo(function MessageAssistant({
           <FenceText value={text}>
             <CellOrdinals value={ordinals}>
               <ShakeFenceContext value={shake}>
+                {/* The chat register only: every prose selector composes with `outside-openui` (styles.css), which
+                    compiles each to `<root> <el>:not([data-streamdown="openui"] *)` — the markdown rhythm never
+                    reaches inside an OpenUI fence this reply hosts, at any nesting depth. */}
                 <Streamdown
                   mode={mode}
                   isAnimating={open}
@@ -381,7 +384,7 @@ export const MessageAssistant = memo(function MessageAssistant({
                   rehypePlugins={rehypePlugins}
                   components={markdownComponents}
                   shikiTheme={shikiTheme}
-                  className="[&_h1]:mb-2 [&_h1]:text-2xl [&_h1]:leading-8 [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-6 [&_h2]:text-xl [&_h2]:font-semibold [&_h3]:mt-4 [&_h3]:font-semibold [&_p]:my-1 [&_p]:leading-[26px] [&_li]:pt-3 [&_li]:leading-[26px] [&_a]:underline [&_a]:underline-offset-2 [&_pre]:rounded-2xl [&_table]:w-max [&_table]:min-w-full [&_table_th]:font-semibold [&_table_th]:wrap-normal"
+                  className="[&_h1]:outside-openui:mb-2 [&_h1]:outside-openui:text-2xl [&_h1]:outside-openui:leading-8 [&_h1]:outside-openui:font-semibold [&_h2]:outside-openui:mb-2 [&_h2]:outside-openui:mt-6 [&_h2]:outside-openui:text-xl [&_h2]:outside-openui:font-semibold [&_h3]:outside-openui:mt-4 [&_h3]:outside-openui:font-semibold [&_p]:outside-openui:my-1 [&_p]:outside-openui:leading-[26px] [&_li]:outside-openui:pt-3 [&_li]:outside-openui:leading-[26px] [&_a]:outside-openui:underline [&_a]:outside-openui:underline-offset-2 [&_pre]:outside-openui:rounded-2xl [&_table]:outside-openui:w-max [&_table]:outside-openui:min-w-full [&_table_th]:outside-openui:font-semibold [&_table_th]:outside-openui:wrap-normal"
                 >
                   {open ? holdFenceOpener(text) : text}
                 </Streamdown>

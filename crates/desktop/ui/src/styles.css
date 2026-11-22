@@ -1,10 +1,20 @@
+/* Design 46: OpenUI's layered stylesheet, imported from exactly one place (its README "Styling integration" — more
+   import sites race the layer order under code splitting). The statement below fixes the order: `openui` sits above
+   Tailwind's preflight but below our components and utilities, so a theuth utility always beats an OpenUI rule and
+   preflight never resets an OpenUI part. `vite.config.ts` aliases this specifier to packages/apps' pinned install. */
+@layer theme, base, openui, components, utilities;
 @import "tailwindcss";
+@import "@openuidev/react-ui/layered/styles/index.css";
 @source "../node_modules/streamdown/dist/*.js";
 @source "../node_modules/@streamdown/code/dist/*.js";
 /* Project palette classes are built from keys at runtime (project-style.ts), so the scanner never sees them. */
 @source inline("{text,bg}-project-{ochre,carnelian,malachite,faience,lapis,nile,umber,slate,sand,plum}");
 
 @custom-variant dark (&:is(.dark *):not(:where([data-snapshot-light], [data-snapshot-light] *)));
+/* Design 46: `MessageAssistant`'s chat-prose selectors compose with `outside-openui` (`[&_p]:outside-openui:my-1`
+   compiles to `<root> p:not([data-streamdown="openui"] *)`): one definition keeps the markdown register out of every
+   app skin the streamdown tree hosts, however deeply the prose nests. */
+@custom-variant outside-openui (&:not([data-streamdown="openui"], [data-streamdown="openui"] *));
 
 /* theuth palette: warm ink on bone (docs/design/25-desktop.md §2.4). No pure #000/#FFF; accents are
    mineral (ochre, malachite, faience, carnelian). Status washes are the status colour at low alpha. */

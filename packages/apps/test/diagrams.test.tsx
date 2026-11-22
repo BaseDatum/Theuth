@@ -50,9 +50,9 @@ const elements = (prefix: string) =>
 const NAMES = Object.keys(DIAGRAMS);
 
 describe("diagram schema parity with crates/surface", () => {
-  test("the fifteen names are appended after OptionCard in catalog order", () => {
-    const i = CURATED_COMPONENTS.indexOf("OptionCard");
-    expect(CURATED_COMPONENTS.slice(i + 1)).toEqual(NAMES as never);
+  test("the fifteen names end the catalog order, after Graph", () => {
+    expect(CURATED_COMPONENTS.slice(-NAMES.length)).toEqual(NAMES as never);
+    expect(CURATED_COMPONENTS.at(-NAMES.length - 1)).toBe("Graph");
     expect(NAMES).toEqual([
       "StateMachine",
       "Entities",

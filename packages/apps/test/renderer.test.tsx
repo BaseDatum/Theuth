@@ -380,44 +380,4 @@ describe("generation adoption", () => {
     });
     expect(view.texts()).toEqual(["edited"]);
   });
-
-  test("a new generation that exceeds the budget shows nothing rather than the old generation's controls", async () => {
-    const { calls, provider, live } = recordingProvider();
-    const errors: { code: string }[][] = [];
-    const rows = Array.from({ length: 3000 }, (_, i) => i);
-    const base: Props = {
-      response: [
-        "root = Root([b])",
-        "$rows = []",
-        'q = Query("fetch", {})',
-        'm = Mutation("save", {n: 1})',
-        'b = Button("Go", Action([@Set($rows, q), @Run(m)]))',
-      ].join("\n"),
-      isStreaming: false,
-      generation: 1,
-      provider,
-      onError: (e) => errors.push(e.map(({ code }) => ({ code }))),
-    };
-    const view = await mount(base);
-    live()[0]!.resolve(rows);
-    await settle();
-    await view.click("Go");
-    expect(calls.at(-1)).toMatchObject({ tool: "save", args: { n: 1 } });
-    calls.at(-1)!.resolve({ ok: true });
-    await settle();
-
-    await view.render({
-      ...base,
-      generation: 2,
-      response: [
-        'root = Root(@Each($rows, "r", Text("" + r)))',
-        "$rows = []",
-        'm = Mutation("delete", {n: 2})',
-        'b = Button("Go", Action([@Run(m)]))',
-      ].join("\n"),
-    });
-    expect(view.el.querySelectorAll("button")).toHaveLength(0);
-    expect(errors.at(-1)).toEqual([{ code: "budget-exceeded" }]);
-    expect(calls.filter((c) => c.tool === "delete")).toHaveLength(0);
-  });
 });

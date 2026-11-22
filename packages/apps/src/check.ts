@@ -1,20 +1,18 @@
 /**
  * Final-document validation shared by the headless helper and the desktop adapter (design 46 §4).
  *
- * Upstream parsing is permissive for streaming; this module layers the strict publish rules on
- * top using upstream AST/schema utilities only: complete source, strict syntax (no skipped lines
- * or trailing tokens), a `root` statement, no unresolved/cyclic references (including inside
- * Query/Mutation arguments), no parser errors, supported action targets, literal tool bindings
- * that exist in the visible tool snapshot, and object-literal tool arguments whose keys satisfy
- * the tool schema. Dynamic argument values are schema-checked again at invocation.
+ * Parsing, `autoClose` recovery and validation are upstream's (`meta.errors`, `meta.incomplete`,
+ * `meta.unresolved`); this module layers the publish rules on top using upstream AST/schema
+ * utilities only: complete source, a `root` statement, no unresolved/cyclic references (including
+ * inside Query/Mutation arguments), no parser errors, supported action targets, literal tool
+ * bindings that exist in the visible tool snapshot, and object-literal tool arguments whose keys
+ * satisfy the tool schema. Dynamic argument values are schema-checked again at invocation.
+ * Input size, deadlines and heap are bounded by the host runtime, not here.
  *
  * Imports only `@openuidev/lang-core` and the generated JSON: no React, no component renderers.
  */
 import {
   ACTION_STEPS,
-  LIMITS,
-  LimitError,
-  StrictParseError,
   createParser,
   mergeStatements,
   parseExpression,
@@ -23,7 +21,7 @@ import {
   type ASTNode,
   type ParseResult,
 } from "@openuidev/lang-core";
-import generated from "../generated/library.json";
+import generated from "../generated/library.json" with { type: "json" };
 import type { GeneratedLibrary } from "./generated-types.ts";
 import type {
   Binding,
@@ -59,19 +57,6 @@ interface TypedStatement {
   expr: ASTNode;
 }
 
-/** UTF-8 size guard applied before any tokenizing/merging can expand input; mirrors the parser's cap. */
-function oversized(text: string): LimitError | undefined {
-  const max = LIMITS.sourceBytes;
-  if (text.length * 3 <= max) return;
-  const bytes =
-    text.length > max ? text.length : new TextEncoder().encode(text).byteLength;
-  if (bytes <= max) return;
-  return new LimitError(
-    "sourceBytes",
-    `source is at least ${bytes} bytes; limit is ${max}`,
-  );
-}
-
 /** Upstream fence stripping without a second grammar: `mergeStatements("", src)` re-emits the patch statements verbatim. */
 function canonicalize(source: string): string {
   const trimmed = source.trim();
@@ -79,20 +64,12 @@ function canonicalize(source: string): string {
 }
 
 /**
- * Strict re-parse of the final document (`strict` upstream option): trailing tokens, missing
- * closers/separators, unrecognized characters and lines the streaming splitter would drop all
- * throw `StrictParseError`, located at the statement when the splitter knows it.
+ * Statement list with kinds for diagnostics, from upstream `split`/`parseExpression`. Recovery
+ * and validation of malformed input are upstream's (`autoClose`, `meta.errors`, `meta.unresolved`).
  */
 function typedStatements(source: string): TypedStatement[] {
-  return split(tokenize(source, true), true).map((raw) => {
-    let expr: ASTNode;
-    try {
-      expr = parseExpression(raw.tokens, true);
-    } catch (e) {
-      if (e instanceof StrictParseError || e instanceof LimitError)
-        e.statementId ??= raw.id;
-      throw e;
-    }
+  return split(tokenize(source)).map((raw) => {
+    const expr = parseExpression(raw.tokens);
     const kind: StatementKind =
       expr.k === "Comp" && expr.name === "Query"
         ? "query"
@@ -167,10 +144,6 @@ function failure(
 }
 
 function exceptionResult(source: string, e: unknown): CheckResult {
-  if (e instanceof LimitError)
-    return failure(source, "budget-exceeded", e.message, e.statementId ?? "");
-  if (e instanceof StrictParseError)
-    return failure(source, "syntax", e.message, e.statementId ?? "");
   return failure(
     source,
     "parse-exception",
@@ -180,8 +153,6 @@ function exceptionResult(source: string, e: unknown): CheckResult {
 
 /** Validate a complete program against the curated library and the visible tool snapshot. */
 export function check(source: string, tools: ToolSnapshot[]): CheckResult {
-  const tooBig = oversized(source);
-  if (tooBig) return exceptionResult("", tooBig);
   let canonical: string;
   try {
     canonical = canonicalize(source);
@@ -197,8 +168,6 @@ export function mergeCheck(
   patch: string,
   tools: ToolSnapshot[],
 ): CheckResult {
-  const tooBig = oversized(base) ?? oversized(patch);
-  if (tooBig) return exceptionResult("", tooBig);
   let merged: string;
   try {
     merged = mergeStatements(canonicalize(base), patch, ROOT_ID);
@@ -220,7 +189,9 @@ function analyze(source: string, tools: ToolSnapshot[]): CheckResult {
     return exceptionResult(source, e);
   }
 
-  for (const err of result.meta.errors)
+  // upstream 1.x also reports entry fallbacks as `no-root`; this adapter owns that diagnostic
+  const metaErrors = result.meta.errors.filter((e) => e.code !== "no-root");
+  for (const err of metaErrors)
     push(err.code, err.message, err.statementId ?? "");
   if (result.meta.incomplete)
     push(
@@ -252,7 +223,7 @@ function analyze(source: string, tools: ToolSnapshot[]): CheckResult {
       "no-root",
       `no root statement: define root = ${generatedLibrary.root}([...]) as the first line`,
     );
-  else if (!result.root && !result.meta.errors.length)
+  else if (!result.root && !result.rootExpression && !metaErrors.length)
     push("no-root", "root did not produce a renderable component", ROOT_ID);
 
   const locate = (pred: (n: ASTNode) => boolean): string => {
@@ -293,7 +264,11 @@ function analyze(source: string, tools: ToolSnapshot[]): CheckResult {
   for (const s of statements)
     if (s.kind === "query" || s.kind === "mutation") callable.set(s.id, s.kind);
 
-  const stepNames = new Set(Object.keys(ACTION_STEPS));
+  // Built-in steps and the library's custom actions (`schema.actions`, e.g. @CopyToClipboard).
+  const stepNames = new Set([
+    ...Object.keys(ACTION_STEPS),
+    ...Object.keys(generatedLibrary.schema.actions ?? {}),
+  ]);
   for (const s of statements) {
     visit(s.expr, null, (n, parent) => {
       if (
@@ -326,12 +301,24 @@ function analyze(source: string, tools: ToolSnapshot[]): CheckResult {
         return;
       }
       if (!stepNames.has(n.name)) return;
-      if (!(parent && parent.k === "Arr"))
+      // One bare step is a whole action (`Button("Go", @OpenUrl(url))`, `onClick = @Set($v, 1)`); several go in Action([...]).
+      if (!(parent === null || parent.k === "Comp" || parent.k === "Arr"))
         push(
           "invalid-action",
-          `@${n.name} must appear inside Action([...])`,
+          `@${n.name} must be a component's action, a statement, or inside Action([...])`,
           s.id,
         );
+      const custom = generatedLibrary.schema.actions?.[n.name];
+      if (custom) {
+        const params = Object.keys(custom.params.properties ?? {});
+        const required = custom.params.required?.length ?? 0;
+        if (n.args.length < required || n.args.length > params.length)
+          push(
+            "invalid-action",
+            `@${n.name} takes (${params.join(", ")})`,
+            s.id,
+          );
+      }
       switch (n.name) {
         case "Run": {
           const target = n.args[0];

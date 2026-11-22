@@ -6,13 +6,13 @@
  * 2026-09-25 ruling: a fence merges into the message flow like a json-render block — no card, no title bar, only a
  * hover-revealed `Open as app` / `Show source` toolbar. An app (the published record) stays an app card.
  */
-import '@openuidev/react-ui/layered/styles/index.css'
-import { ThemeProvider } from '@openuidev/react-ui'
 import { check, library } from '@theuth/apps'
 import { AppRenderer, type AppRendererProps } from '@theuth/apps/renderer'
 import { useContext, useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import type { CustomRendererProps } from 'streamdown'
+import { copyToClipboard } from '@/components/apps/openui-actions'
+import { OpenUITheme } from '@/components/apps/openui-theme'
 import { useDark } from '@/components/apps/theme'
 import { Button } from '@/components/ui/button'
 import { useApi } from '@/lib/rpc'
@@ -37,7 +37,8 @@ const onAction: NonNullable<AppRendererProps['onAction']> = (ev) => {
     const url = ev.params.url
     if (typeof url === 'string' && /^https?:\/\//i.test(url)) window.open(url, '_blank', 'noopener')
     else toast.error('Only http(s) links open from an app')
-  } else if (ev.type === 'continue_conversation') toast(INERT)
+  } else if (ev.type === 'CopyToClipboard') copyToClipboard(ev.params)
+  else if (ev.type === 'continue_conversation') toast(INERT)
 }
 
 /** The artifact name: the first `TextContent("## …")` heading slugged, else `reply-<short id>`. */
@@ -111,9 +112,9 @@ function OpenUI({ code, isIncomplete }: CustomRendererProps) {
         </div>
       )}
       <div className="[&_a]:underline">
-        <ThemeProvider mode={snap ? snap.appearance : dark ? 'dark' : 'light'}>
+        <OpenUITheme mode={snap ? snap.appearance : dark ? 'dark' : 'light'}>
           <AppRenderer response={code} library={library} isStreaming={isIncomplete} generation={0} provider={staticProvider} paused={false} onAction={onAction} />
-        </ThemeProvider>
+        </OpenUITheme>
       </div>
       {source && <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap">{code}</pre>}
     </div>

@@ -22,23 +22,25 @@ It is static: `$state`, `@Set`/`@Reset`/`@OpenUrl` and inputs work; `Query`, `Mu
 `@ToAssistant` are inert until the user opens it as an app. Reach for the explanatory components:
 `Steps`/`StepsItem`, `Tabs`/`TabItem`, `Callout`, `Card`/`CardHeader`, `Table`/`Col`,
 `BarChart`/`LineChart`/`Series`, `MetricIndicatorInline`, `ListBlock`/`ListItem`, `Tag`,
-`Accordion`/`AccordionItem`, `CodeBlock`, `Chips`/`ChipItem`, `OptionCards`/`OptionCard`, and
-`Buttons` with `@Set`/`@OpenUrl`. Use the `app` tool instead when the screen needs live data or
-actions that run tools.
+`Accordion`/`AccordionItem`, `SectionBlock`/`SectionItem`, `InlineHeader`, `EntityList`, `CodeBlock`,
+`Chips`/`ChipItem`, `OptionCards`/`OptionCard`, and `Buttons` with `@Set`/`@OpenUrl`. Start the fence with
+`root = Card([...])`. Use the `app` tool instead when the screen needs live data or actions that run tools.
 
 ## Syntax in one screen
 
 ```openui
-root = Stack([title, body])                 # statements are `name = expression`; `root` is required
+root = Card([title, body])                  # statements are `name = expression`; `root` is required, a Card
 $count = 0                                  # `$name` declares reactive state with a literal default
 title = TextContent("## Counter")          # components take POSITIONAL arguments, in signature order
 body = Stack([label, controls], "row")     # optional arguments follow required ones; skip with null
 label = TextContent("Count: " + $count)    # expressions: + - * / comparisons, ?: ternary, &&, ||, !
 controls = Buttons([inc, reset])
-inc = Button("Add one", Action([@Set($count, $count + 1)]))
-reset = Button("Reset", Action([@Reset($count)]), "secondary")
+inc = Button("Add one", @Set($count, $count + 1))   # one step goes bare; several: Action([@Set(...), @Run(...)])
+reset = Button("Reset", @Reset($count), "secondary")
 ```
 
+- Every app is `root = Card([...])`: Card is the page (stacked children, house styling, optional `variant`
+  and flex arguments). Use `Stack` inside it for rows/columns (`Stack([a, b], "row")`); never as the root.
 - Write `root` first, then the statements it references; reference before definition is fine.
 - Strings use double quotes; `null` skips an optional argument; lists are `[a, b]`, objects `{k: v}`.
 - Anything not reachable from `root` is never rendered (the receipt lists it).
@@ -62,9 +64,10 @@ result = TextContent(sync.status == "success" ? sync.data.message : (sync.status
   are installed and visible now; the receipt names each with its risk.
 - `Mutation(tool, args)` runs **only** inside an activated action (`@Run`). Never on a timer.
   Results expose `.status` (`"idle" | "loading" | "success" | "error"`), `.data`, `.error`.
-- `Action([steps])`: `@Run(mutationOrQuery)`, `@Set($var, value)`, `@Reset($var…)`,
-  `@OpenUrl(url)`, `@ToAssistant(message, context?)`. `@Run(mutation)` awaits and stops the
-  action on failure; `@Run(query)` starts a refetch and continues.
+- An action is one bare step, `Button("Add", @Set($n, $n + 1))`, or several in order,
+  `Action([@Run(mutationOrQuery), @Set($var, value), @Reset($var…), @OpenUrl(url), @ToAssistant(message, context?)])`.
+  `@CopyToClipboard(text)` copies text for the user (host action). `@Run(mutation)` awaits and stops the
+  action on failure; `@Run(query)` starts a refetch and continues. `$value` inside a diagram's `onSelect` is the pressed unit id.
 - **The press is the approval.** One click runs the chosen action, including destructive or
   secret-bearing calls, and the harness shows no second confirmation. Make the consequence clear
   in the label and use `type: "destructive"` on buttons that delete or overwrite. Do not build
@@ -116,21 +119,21 @@ called from an app.
 Prototype with state, a link and an external image (no tools):
 
 ```openui
-root = Stack([title, status, picture, controls])
+root = Card([title, status, picture, controls])
 $stage = "idle"
 title = TextContent("## DR cutover drill")
 status = TextContent("Stage: " + $stage)
 picture = TextContent("![Architecture](https://www.rust-lang.org/logos/rust-logo-128x128.png)")
 controls = Stack([begin, reset, docs], "row")
-begin = Button("Begin drill", Action([@Set($stage, "cutover")]))
-reset = Button("Reset", Action([@Reset($stage)]))
-docs = Button("Open runbook", Action([@OpenUrl("https://argo-cd.readthedocs.io/")]))
+begin = Button("Begin drill", @Set($stage, "cutover"))
+reset = Button("Reset", @Reset($stage), "secondary")
+docs = Button("Open runbook", @OpenUrl("https://argo-cd.readthedocs.io/"))
 ```
 
 Live panel over installed tools `argo_app_health({name})` and `argo_sync({name})`:
 
 ```openui
-root = Stack([title, pick, healthText, controls, resultText])
+root = Card([title, pick, healthText, controls, resultText])
 $app = "portal-web"
 title = TextContent("## ArgoCD health")
 pick = Select("app", [SelectItem("portal-web", "Portal web"), SelectItem("portal-api", "Portal API")], "Choose application", null, $app)
@@ -139,7 +142,7 @@ healthText = TextContent($app + ": " + health.status + (health.synced ? " — sy
 syncResult = Mutation("argo_sync", {name: $app})
 controls = Stack([syncBtn, explain], "row")
 syncBtn = Button("Sync " + $app, Action([@Run(syncResult), @Run(health)]))
-explain = Button("Explain health", Action([@ToAssistant("Explain this application's health", health.status)]))
+explain = Button("Explain health", @ToAssistant("Explain this application's health", health.status))
 resultText = TextContent(syncResult.status == "success" ? syncResult.data.message : (syncResult.status == "error" ? syncResult.error : ""))
 ```
 
@@ -163,7 +166,7 @@ Step-through diagram (design 65 §3.5): a `Graph` whose `highlight` follows `$st
 `@OpenUrl` arguments are evaluated when the props are, so send the selection through a `$state`):
 
 ```openui
-root = Stack([title, graph, narrative, nav])
+root = Card([title, graph, narrative, nav])
 $step = 0
 $selected = ""
 title = TextContent("## One request")
@@ -172,7 +175,7 @@ nodes = [{id: "client", label: "Client", kind: "actor"}, {id: "api", label: "API
 edges = [{from: "client", to: "api", label: "HTTPS"}, {from: "api", to: "db", label: "reads"}]
 graph = Graph(nodes, edges, null, "LR", steps[$step].ids, Action([@Set($selected, $value), @ToAssistant("Explain the selected node", $selected)]))
 narrative = TextContent(steps[$step].text + ($selected == "" ? "" : " Selected: " + $selected))
-nav = Buttons([Button("Back", Action([@Set($step, $step > 0 ? $step - 1 : 0)]), "secondary"), Button("Next", Action([@Set($step, $step < 2 ? $step + 1 : 2)]))])
+nav = Buttons([Button("Back", @Set($step, $step > 0 ? $step - 1 : 0), "secondary"), Button("Next", @Set($step, $step < 2 ? $step + 1 : 2))])
 ```
 
 ### When a diagram is an app
@@ -190,7 +193,7 @@ json-render grammars of the same names.
 Routines as a `Gantt` with Run-now; `plan_status` returns `{tasks: [{id, label, start, end, state}], today, running: [id]}`:
 
 ```openui
-root = Stack([plan, controls])
+root = Card([plan, controls])
 $pick = "nightly-digest"
 st = Query("plan_status", {}, {tasks: [], today: "2026-10-07", running: []}, 30)
 fire = Mutation("schedule_fire", {name: $pick})
@@ -203,25 +206,26 @@ run = Button("Run " + $pick + " now", Action([@Run(fire), @Run(st)]))
 A task's lifecycle with the live state highlighted; `task_state` returns `{state, title}`:
 
 ```openui
-root = Stack([machine, explain])
+root = Card([machine, explain])
 task = Query("task_state", {id: "01a1"}, {state: "todo", title: ""}, 15)
 machine = StateMachine(states, transitions, "LR", "Task lifecycle", [task.state])
 states = [{id: "todo", label: "Todo", kind: "initial"}, {id: "doing", label: "Doing"}, {id: "blocked", label: "Blocked", state: "muted"}, {id: "done", label: "Done", kind: "final"}]
 transitions = [{from: "todo", to: "doing", label: "start"}, {from: "doing", to: "blocked", label: "wait"}, {from: "blocked", to: "doing", label: "unblock"}, {from: "doing", to: "done", label: "finish"}]
-explain = Button("Why is it " + task.state + "?", Action([@ToAssistant("Explain why this task is in state " + task.state, task)]))
+explain = Button("Why is it " + task.state + "?", @ToAssistant("Explain why this task is in state " + task.state, task))
 ```
 
 Spend by model → session as a `Sankey`; `session_cost` returns `{nodes: [{id, label, stage}], flows: [{from, to, value}]}`:
 
 ```openui
-root = Sankey(cost.nodes, cost.flows, "USD", "Spend by model and session")
+root = Card([flow])
+flow = Sankey(cost.nodes, cost.flows, "USD", "Spend by model and session")
 cost = Query("session_cost", {}, {nodes: [], flows: []}, 60)
 ```
 
 The inbox as a `Swimlane` by state with a move per card; `task_board` returns `{steps: [{id, lane, label}], blocked: [id]}`:
 
 ```openui
-root = Stack([board, controls])
+root = Card([board, controls])
 $card = ""
 inbox = Query("task_board", {}, {steps: [], blocked: []}, 15)
 start = Mutation("task_move", {task: $card, state: "doing"})

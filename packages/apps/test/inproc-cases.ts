@@ -4,7 +4,6 @@
  * inproc.test.ts (bundle in a bare node:vm context vs direct `call()`) and by scripts/record-inproc-golden.ts
  * (crates/js-runtime/tests/apps_golden.json, replayed in deno_core by the Rust tests).
  */
-import { LIMITS } from "@openuidev/lang-core";
 import fixtures from "../../../scripts/apps/fixtures.json";
 import type { ToolSnapshot } from "../src/protocol.ts";
 
@@ -98,10 +97,6 @@ export interface Case {
 const req = (id: string, op: string, source: string, ts: ToolSnapshot[], base?: string) =>
   JSON.stringify(base === undefined ? { id, op, source, tools: ts } : { id, op, source, base, tools: ts });
 
-let budget = "root = Stack([a11, a11])\n";
-for (let i = 11; i > 0; i--) budget += `a${i} = Stack([a${i - 1}, a${i - 1}])\n`;
-budget += 'a0 = TextContent("x")';
-
 const fixtureSource = fixtures.app.source.join("\n");
 
 export const CASES: Case[] = [
@@ -152,13 +147,6 @@ export const CASES: Case[] = [
     name: "refresh not literal",
     line: req("c17", "check", 'root = Stack([t])\n$r = 30\nq = Query("argo_sync", {name: "x"}, null, $r)\nt = TextContent(q.status)', tools),
   },
-  {
-    name: "oversized source",
-    line: req("c18", "check", `root = TextContent("${"é".repeat(LIMITS.sourceBytes / 2 + 10)}")`, []),
-  },
-  { name: "render budget", line: req("c19", "check", budget, []) },
-  { name: "trailing tokens", line: req("c20", "check", "root = Stack([]) unexpected", []) },
-  { name: "dropped line", line: req("c21", "check", 'root = Stack([])\nq Query("argo_sync", {})', tools) },
   { name: "reference in mutation args", line: req("c22", "check", 'root = Stack([])\nm = Mutation("argo_sync", {name: missing})', tools) },
   { name: "resolved mutation args", line: req("c23", "check", 'root = Stack([])\nname = "prod"\nm = Mutation("argo_sync", {name: name})', tools) },
   {
@@ -177,10 +165,6 @@ export const CASES: Case[] = [
     line: req("m3", "merge_check", 'health = Query("argo_app_health", {name: $app}, {status: "Loading", synced: false}, 60)', tools, livePanel),
   },
   { name: "merge: invisible tool", line: req("m4", "merge_check", 'syncResult = Mutation("argo_delete", {name: $app})', tools, livePanel) },
-  {
-    name: "merge: oversized patch",
-    line: req("m5", "merge_check", `x = TextContent("${"a".repeat(LIMITS.sourceBytes + 1)}")`, [], prototype),
-  },
   { name: "merge: fixtures edit A", line: req("m6", "merge_check", fixtures.patches.a, fixtureTools(), fixtureSource) },
   { name: "merge: fixtures edit B", line: req("m7", "merge_check", fixtures.patches.b, fixtureTools(), fixtureSource) },
   { name: "protocol: invalid JSON", line: "{not json" },

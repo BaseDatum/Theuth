@@ -235,7 +235,7 @@ pub fn source(tasks: &[Draft], suffix: &str) -> (String, Vec<String>) {
         .collect();
     let mut out = String::new();
     let cards: Vec<String> = (1..=tasks.len()).map(|i| format!("c{i}")).collect();
-    out.push_str(&format!("root = Stack([intro, {}])\n", cards.join(", ")));
+    out.push_str(&format!("root = Card([intro, drafts], \"clear\")\ndrafts = Stack([{}])\n", cards.join(", ")));
     out.push_str(&format!(
         "intro = TextContent({}, \"small\")\n",
         lit(&format!(
@@ -303,15 +303,15 @@ pub fn source(tasks: &[Draft], suffix: &str) -> (String, Vec<String>) {
             "{c}_buttons = Buttons([{c}_backlog, {c}_start, {c}_discard])\n"
         ));
         out.push_str(&format!(
-            "{c}_backlog = Button(\"Add to backlog\", Action([@ToAssistant({})]))\n",
+            "{c}_backlog = Button(\"Add to backlog\", @ToAssistant({}))\n",
             lit(&format!("draft {id}: add to backlog"))
         ));
         out.push_str(&format!(
-            "{c}_start = Button(\"Start now\", Action([@ToAssistant({})]), \"secondary\")\n",
+            "{c}_start = Button(\"Start now\", @ToAssistant({}), \"secondary\")\n",
             lit(&format!("draft {id}: start now"))
         ));
         out.push_str(&format!(
-            "{c}_discard = Button(\"Discard\", Action([@ToAssistant({})]), \"tertiary\", \"destructive\")\n",
+            "{c}_discard = Button(\"Discard\", @ToAssistant({}), \"tertiary\", \"destructive\")\n",
             lit(&format!("draft {id}: discard"))
         ));
     }
@@ -341,11 +341,11 @@ mod tests {
         ];
         let (src, ids) = source(&drafts, "ab12");
         assert_eq!(ids, ["d1-ab12", "d2-ab12"]);
-        assert!(src.starts_with("root = Stack([intro, c1, c2])\n"));
+        assert!(src.starts_with("root = Card([intro, drafts], \"clear\")\ndrafts = Stack([c1, c2])\n"));
         for (id, c) in ids.iter().zip(["c1", "c2"]) {
-            assert!(src.contains(&format!("{c}_backlog = Button(\"Add to backlog\", Action([@ToAssistant(\"draft {id}: add to backlog\")]))")), "{src}");
-            assert!(src.contains(&format!("{c}_start = Button(\"Start now\", Action([@ToAssistant(\"draft {id}: start now\")]), \"secondary\")")), "{src}");
-            assert!(src.contains(&format!("{c}_discard = Button(\"Discard\", Action([@ToAssistant(\"draft {id}: discard\")]), \"tertiary\", \"destructive\")")), "{src}");
+            assert!(src.contains(&format!("{c}_backlog = Button(\"Add to backlog\", @ToAssistant(\"draft {id}: add to backlog\"))")), "{src}");
+            assert!(src.contains(&format!("{c}_start = Button(\"Start now\", @ToAssistant(\"draft {id}: start now\"), \"secondary\")")), "{src}");
+            assert!(src.contains(&format!("{c}_discard = Button(\"Discard\", @ToAssistant(\"draft {id}: discard\"), \"tertiary\", \"destructive\")")), "{src}");
             assert!(
                 src.contains(&format!("\"draft {id}\"")),
                 "the header names the draft"

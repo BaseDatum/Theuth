@@ -7,7 +7,8 @@
  *
  * `just apps-bundle` runs this and commits the output as crates/app-js/js/theuth-apps-inproc.js.
  * The build fails when the output names a `node:`/`bun:` module, a `require(` call, or a UI/DOM package
- * (React, the OpenUI React packages, zustand, jsdom, mermaid) the runtime cannot and must not host.
+ * (React, the OpenUI React packages, zustand, jsdom, mermaid) the runtime cannot and must not host. Pristine
+ * lang-core 1.x imports zod at module scope, so zod is an allowed runtime-neutral dependency.
  */
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -44,7 +45,6 @@ const forbidden = [
   "zustand",
   "jsdom",
   "mermaid",
-  "zod",
 ];
 for (const name of forbidden) {
   if (modules.includes(name))

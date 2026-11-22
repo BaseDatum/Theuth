@@ -27,10 +27,10 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",
-    "@openuidev/lang-core": "0.3.0",
-    "@openuidev/react-headless": "0.16.1",
-    "@openuidev/react-lang": "0.3.0",
-    "@openuidev/react-ui": "0.16.1",
+    "@openuidev/lang-core": "1.1.1",
+    "@openuidev/react-headless": "0.18.10",
+    "@openuidev/react-lang": "1.1.1",
+    "@openuidev/react-ui": "0.18.10",
     "mermaid": "^12.0.0",
     "react": "19",
     "react-dom": "19",
@@ -46,7 +46,6 @@
   },
   "trustedDependencies": [],
   "patchedDependencies": {
-    "@openuidev/lang-core@0.3.0": "patches/@openuidev%2Flang-core@0.3.0.patch",
-    "@openuidev/react-lang@0.3.0": "patches/@openuidev%2Freact-lang@0.3.0.patch"
+    "@openuidev/react-lang@1.1.1": "patches/@openuidev%2Freact-lang@1.1.1.patch"
   }
 }

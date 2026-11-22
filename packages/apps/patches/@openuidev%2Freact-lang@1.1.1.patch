@@ -1,34 +1,143 @@
-diff --git a/dist/exports-Cab8UG5o.mjs b/dist/exports-Cab8UG5o.mjs
-index fb50f51..0012650 100644
---- a/dist/exports-Cab8UG5o.mjs
-+++ b/dist/exports-Cab8UG5o.mjs
+diff --git a/node_modules/@openuidev/react-lang/.bun-tag-2327e9cfa6805a54 b/.bun-tag-2327e9cfa6805a54
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/dist/index.d.mts b/dist/index.d.mts
+index 1ae3b976017c167a58f72cd7acf09a5a9d259519..a9b5032ae6ed5ab4b2c2380cfe34031cd49f922f 100644
+--- a/dist/index.d.mts
++++ b/dist/index.d.mts
+@@ -1,8 +1,9 @@
+-import { ACTION_STEPS, ActionEvent, ActionPlan, ActionPlan as ActionPlan$1, ActionRef, ActionStep, BuildMessageInput, BuiltinActionType, ComponentGroup, ComponentPromptSpec, ComponentRenderProps as ComponentRenderProps$1, DefinedAction, DefinedAction as DefinedAction$1, DefinedComponent as DefinedComponent$1, DefinedFunction, ElementNode, EvaluationContext, InferStateFieldValue, Library as Library$1, LibraryActionEvent, LibraryActionEvent as LibraryActionEvent$1, LibraryDefinition as LibraryDefinition$1, LibraryExtension as LibraryExtension$1, McpClientLike, McpClientLike as McpClientLike$1, OpenUIError, OpenUIError as OpenUIError$1, ParseMessageOptions, ParseResult, ParseResult as ParseResult$1, ParsedMessage, ParsedRule, ParsedRule as ParsedRule$1, PromptOptions, PromptSpec, ReactiveAssign, StateField, StateField as StateField$1, SubComponentOf, SystemPromptOptions, SystemPromptSpec, ToolDescriptor, ToolNotFoundError, ToolProvider, ToolSpec, ValidatorFn, action, buildMessage, builtInValidators, createParser, createStreamingParser, defineAction, defineFunction, extractToolResult, generatePrompt, generateSystemPrompt, isReactiveAssign, mergeStatements, parseMessage, parseRules, parseStructuredRules, steps, tagSchemaId, validate } from "@openuidev/lang-core";
++import { ACTION_STEPS, ActionEvent, ActionPlan, ActionPlan as ActionPlan$1, ActionRef, ActionStep, BuildMessageInput, BuiltinActionType, ComponentGroup, ComponentPromptSpec, ComponentRenderProps as ComponentRenderProps$1, DefinedAction, DefinedAction as DefinedAction$1, DefinedComponent as DefinedComponent$1, DefinedFunction, ElementNode, EvaluationContext, InferStateFieldValue, Library as Library$1, LibraryActionEvent, LibraryActionEvent as LibraryActionEvent$1, LibraryDefinition as LibraryDefinition$1, LibraryExtension as LibraryExtension$1, McpClientLike, McpClientLike as McpClientLike$1, MutationResult, OpenUIError, OpenUIError as OpenUIError$1, ParseMessageOptions, ParseResult, ParseResult as ParseResult$1, ParsedMessage, ParsedRule, ParsedRule as ParsedRule$1, PromptOptions, PromptSpec, ReactiveAssign, StateField, StateField as StateField$1, SubComponentOf, SystemPromptOptions, SystemPromptSpec, ToolDescriptor, ToolNotFoundError, ToolProvider, ToolSpec, ValidatorFn, action, buildMessage, builtInValidators, createParser, createStreamingParser, defineAction, defineFunction, extractToolResult, generatePrompt, generateSystemPrompt, isReactiveAssign, mergeStatements, parseMessage, parseRules, parseStructuredRules, steps, tagSchemaId, validate } from "@openuidev/lang-core";
+ import * as _$react from "react";
+ import React$1, { ComponentPropsWithRef, ReactNode } from "react";
+ import { z } from "zod/v4";
+ import { $ZodObject } from "zod/v4/core";
++import { ActionEndEvent, ActionStartEvent, QueryStatus, ToolCallMeta } from "./theuth-runtime.mjs";
+ 
+ //#region src/library.d.ts
+ interface ComponentRenderProps<P = Record<string, unknown>> extends ComponentRenderProps$1<P, ReactNode> {}
+@@ -35,6 +36,22 @@ interface RendererQueryState {
+   retry: () => void;
+   isRetrying: boolean;
+ }
++/** Function provider receiving theuth provenance with every call (patch). */
++type MetaToolProviderFn = (toolName: string, args: Record<string, unknown>, meta: ToolCallMeta) => Promise<unknown>;
++/** Host handle published through `RendererProps.runtimeRef` (patch). */
++interface OpenUIRuntime {
++  pause(): void;
++  resume(): void;
++  isPaused(): boolean;
++  getQueryStatus(statementId: string): QueryStatus | null;
++  getMutationResult(statementId: string): MutationResult | null;
++  getMutationCause(statementId: string): unknown;
++  subscribe(listener: () => void): () => void;
++  /** Automatic refetch (`refresh`), e.g. after reconnect. */
++  refresh(statementIds?: string[]): void;
++  /** User-activated refetch (`press`) with a fresh action id; reports action start/end. */
++  press(statementIds: string[]): string;
++}
+ interface RendererProps<L extends Library = Library> {
+   /** Raw response: openui-lang code, or a stored message with protocol markers (see buildMessage). */
+   response: string | null;
+@@ -42,8 +59,10 @@ interface RendererProps<L extends Library = Library> {
+   library: L;
+   /** Whether the LLM is still streaming (form interactions disabled during streaming). */
+   isStreaming?: boolean;
+-  /** Callback when a component triggers an action. Typed by the library's custom actions. */
+-  onAction?: (event: LibraryActionEvent$1<L>) => void;
++  /** Callback when a component triggers an action; `actionId` identifies the activation (patch). */
++  onAction?: (event: LibraryActionEvent$1<L> & {
++    actionId?: string;
++  }) => void;
+   /**
+    * Called whenever a form field value changes. Receives the raw form state map.
+    * The consumer decides how to persist this (e.g. embed in message, store separately).
+@@ -59,10 +78,11 @@ interface RendererProps<L extends Library = Library> {
+   onParseResult?: (result: ParseResult$1 | null) => void;
+   /**
+    * Tool provider for Query()/Mutation() calls.
+-   * - Function map: `{ tool_name: async (args) => result }` — simplest option
+-   * - MCP client: any object with `callTool({ name, arguments })` (e.g. from @modelcontextprotocol/sdk)
++   * - Function `(toolName, args, meta) => result` receiving ToolCallMeta (patch)
++   * - Function map: `{ tool_name: async (args, meta) => result }`
++   * - MCP client: any object with `callTool({ name, arguments })` (no provenance forwarded)
+    */
+-  toolProvider?: Record<string, (args: Record<string, unknown>) => Promise<unknown>> | McpClientLike$1 | null;
++  toolProvider?: MetaToolProviderFn | Record<string, (args: Record<string, unknown>, meta: ToolCallMeta) => Promise<unknown>> | McpClientLike$1 | null;
+   /** Custom loading indicator. Defaults to a spinner. */
+   queryLoader?: React$1.ReactNode;
+   /** Custom slot composition. Omit to keep content visible with a loading indicator. */
+@@ -77,6 +97,15 @@ interface RendererProps<L extends Library = Library> {
+    */
+   onError?: (errors: OpenUIError$1[]) => void;
+   publishObservability?: boolean;
++  /** Version of the committed program; a change disposes queries and reloads data, $state survives (patch). */
++  generation?: number;
++  /** Stop starting fetches (hidden/background/disconnected view); in-flight calls finish (patch). */
++  paused?: boolean;
++  onActionStart?: (event: ActionStartEvent) => void;
++  onActionEnd?: (event: ActionEndEvent) => void;
++  runtimeRef?: {
++    current: OpenUIRuntime | null;
++  };
+ }
+ declare function RendererRoot<L extends Library = Library>({
+   response,
+@@ -90,7 +119,12 @@ declare function RendererRoot<L extends Library = Library>({
+   queryLoader,
+   children,
+   onError,
+-  publishObservability
++  publishObservability,
++  generation,
++  paused,
++  onActionStart,
++  onActionEnd,
++  runtimeRef
+ }: RendererProps<L>): React$1.JSX.Element;
+ /** Access query loading, failures, and retry within the nearest Renderer root. */
+ declare function useRendererQuery(): RendererQueryState;
+@@ -298,5 +332,5 @@ declare const WithPreviewRenderer: typeof DefaultWithPreviewRenderer & {
+   Close: typeof PreviewClose;
+ };
+ //#endregion
+-export { ACTION_STEPS, type ActionEvent, type ActionPlan, type ActionRef, type ActionStep, type BuildMessageInput, BuiltinActionType, type ComponentGroup, type ComponentPromptSpec, type ComponentRenderProps, type ComponentRenderer, type DefinedAction, type DefinedComponent, type DefinedFunction, type ElementNode, type EvaluationContext, FormNameContext, FormValidationContext, type FormValidationContextValue, type Library, type LibraryActionEvent, type LibraryDefinition, type LibraryExtension, type McpClientLike, type OpenUIError, type ParseMessageOptions, type ParseResult, type ParsedMessage, type ParsedRule, type PreviewButtonProps, type PreviewContentProps, type PromptOptions, type PromptSpec, type ReactiveAssign, Renderer, type RendererContentSlotProps, type RendererPreviewState, type RendererProps, type RendererQueryState, type RendererRetryProps, type RendererSlotProps, type ResponseMetadata, type StateField, type SubComponentOf, type SystemPromptOptions, type SystemPromptSpec, type ToolDescriptor, ToolNotFoundError, type ToolProvider, type ToolSpec, type ValidatorFn, WithPreviewRenderer, type WithPreviewRendererProps, action, buildMessage, builtInValidators, createLibrary, createParser, createStreamingParser, defineAction, defineComponent, defineFunction, extractToolResult, generatePrompt, generateSystemPrompt, isReactiveAssign, mergeStatements, parseMessage, parseRules, parseStructuredRules, reactive, steps, tagSchemaId, useCreateFormValidation, useFormName, useFormValidation, useGetFieldValue, useIsQueryLoading, useIsStreaming, useRenderNode, useRendererPreview, useRendererQuery, useSetDefaultValue, useSetFieldValue, useStateField, useTriggerAction, validate };
++export { ACTION_STEPS, type ActionEvent, type ActionPlan, type ActionRef, type ActionStep, type BuildMessageInput, BuiltinActionType, type ComponentGroup, type ComponentPromptSpec, type ComponentRenderProps, type ComponentRenderer, type DefinedAction, type DefinedComponent, type DefinedFunction, type ElementNode, type EvaluationContext, FormNameContext, FormValidationContext, type FormValidationContextValue, type Library, type LibraryActionEvent, type LibraryDefinition, type LibraryExtension, type McpClientLike, type MetaToolProviderFn, type OpenUIRuntime, type OpenUIError, type ParseMessageOptions, type ParseResult, type ParsedMessage, type ParsedRule, type PreviewButtonProps, type PreviewContentProps, type PromptOptions, type PromptSpec, type ReactiveAssign, Renderer, type RendererContentSlotProps, type RendererPreviewState, type RendererProps, type RendererQueryState, type RendererRetryProps, type RendererSlotProps, type ResponseMetadata, type StateField, type SubComponentOf, type SystemPromptOptions, type SystemPromptSpec, type ToolDescriptor, ToolNotFoundError, type ToolProvider, type ToolSpec, type ValidatorFn, WithPreviewRenderer, type WithPreviewRendererProps, action, buildMessage, builtInValidators, createLibrary, createParser, createStreamingParser, defineAction, defineComponent, defineFunction, extractToolResult, generatePrompt, generateSystemPrompt, isReactiveAssign, mergeStatements, parseMessage, parseRules, parseStructuredRules, reactive, steps, tagSchemaId, useCreateFormValidation, useFormName, useFormValidation, useGetFieldValue, useIsQueryLoading, useIsStreaming, useRenderNode, useRendererPreview, useRendererQuery, useSetDefaultValue, useSetFieldValue, useStateField, useTriggerAction, validate };
+ //# sourceMappingURL=index.d.mts.map
+\ No newline at end of file
+diff --git a/dist/index.mjs b/dist/index.mjs
+index ab6f93c7cc4e60bd949ef455107b902691ec7eab..52b53d93c70a9b350466c01b001cd8cf4348a13d 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
 @@ -1,4 +1,5 @@
--import { ACTION_STEPS, ACTION_STEPS as ACTION_STEPS$1, BuiltinActionType, BuiltinActionType as BuiltinActionType$1, ToolNotFoundError, ToolNotFoundError as ToolNotFoundError$1, builtInValidators, createLibrary, createParser, createQueryManager, createStore, createStreamingParser, createStreamingParser as createStreamingParser$1, defineComponent, enrichErrors, evaluate, evaluateElementProps, extractToolResult, extractToolResult as extractToolResult$1, generatePrompt, generateSystemPrompt, isReactiveAssign, markReactive, mergeStatements, parseRules, parseStructuredRules, resolveStateField, tagSchemaId, validate, validate as validate$1 } from "@openuidev/lang-core";
-+import { ACTION_STEPS as ACTION_STEPS$1, BuiltinActionType, BuiltinActionType as BuiltinActionType$1, LimitError, ToolNotFoundError, ToolNotFoundError as ToolNotFoundError$1, builtInValidators, createEvalBudget, createLibrary, createParser, createStore, createStreamingParser, createStreamingParser as createStreamingParser$1, defineComponent, enrichErrors, evaluateElementProps, extractToolResult, extractToolResult as extractToolResult$1, generatePrompt, generateSystemPrompt, isReactiveAssign, markReactive, mergeStatements, parseRules, parseStructuredRules, resolveStateField, tagSchemaId, validate, validate as validate$1 } from "@openuidev/lang-core";
-+import { createActionId, createQueryManager, evaluateBudgeted, runActionPlan } from "./theuth-runtime.mjs";
+-import { ACTION_STEPS, ACTION_STEPS as ACTION_STEPS$1, BuiltinActionType, BuiltinActionType as BuiltinActionType$1, ToolNotFoundError, ToolNotFoundError as ToolNotFoundError$1, action, buildMessage, builtInValidators, createLibrary as createLibrary$1, createParser, createQueryManager, createStore, createStreamingParser, createStreamingParser as createStreamingParser$1, defineAction, defineComponent as defineComponent$1, defineFunction, enrichErrors, evaluate, evaluateRoot, extractToolResult, extractToolResult as extractToolResult$1, generatePrompt, generateSystemPrompt, isElementNode, isReactiveAssign, markReactive, mergeStatements, parseMessage, parseMessage as parseMessage$1, parseRules, parseStructuredRules, resolveStateField, steps, tagSchemaId, validate, validate as validate$1 } from "@openuidev/lang-core";
++import { ACTION_STEPS, ACTION_STEPS as ACTION_STEPS$1, BuiltinActionType, BuiltinActionType as BuiltinActionType$1, ToolNotFoundError, ToolNotFoundError as ToolNotFoundError$1, action, buildMessage, builtInValidators, createLibrary as createLibrary$1, createParser, createStore, createStreamingParser, createStreamingParser as createStreamingParser$1, defineAction, defineComponent as defineComponent$1, defineFunction, enrichErrors, evaluate, evaluateRoot, extractToolResult, extractToolResult as extractToolResult$1, generatePrompt, generateSystemPrompt, isElementNode, isReactiveAssign, markReactive, mergeStatements, parseMessage, parseMessage as parseMessage$1, parseRules, parseStructuredRules, resolveStateField, steps, tagSchemaId, validate, validate as validate$1 } from "@openuidev/lang-core";
++import { createActionId, createQueryManager, runActionPlan } from "./theuth-runtime.mjs";
  import { observability } from "@openuidev/observability";
- import { Component, Fragment, createContext, useCallback, useContext, useEffect, useInsertionEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
- import { jsx, jsxs } from "react/jsx-runtime";
-@@ -338,7 +339,7 @@ function unwrapFieldValue(v) {
+ import React, { Component, Fragment, createContext, useCallback, useContext, useEffect, useId, useInsertionEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+ import { Fragment as Fragment$1, jsx, jsxs } from "react/jsx-runtime";
+@@ -588,7 +589,7 @@ function unwrapFieldValue(v) {
  * Store holds everything: $bindings as top-level keys, form fields nested
  * under formName as plain values.
  */
--function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdate, initialState, toolProvider, onError, publishObservability }, renderDeep) {
-+function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdate, initialState, toolProvider, onError, publishObservability, onActionStart, onActionEnd, generation = 0, paused = false }, renderDeep) {
- 	const sp = useMemo(() => createStreamingParser(library.toJSONSchema(), library.root), [library]);
- 	const parseExceptionRef = useRef(null);
- 	const result = useMemo(() => {
-@@ -357,51 +358,95 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
- 		}
- 	}, [sp, response]);
+-function useOpenUIState({ response: raw, library, isStreaming, onAction, onStateUpdate, initialState, toolProvider, onError, publishObservability }, renderDeep) {
++function useOpenUIState({ response: raw, library, isStreaming, onAction, onStateUpdate, initialState, toolProvider, onError, publishObservability, onActionStart, onActionEnd, generation = 0, paused = false }, renderDeep) {
+ 	const bundle = useMemo(() => parseResponseBundle(raw, isStreaming), [raw, isStreaming]);
+ 	const blocked = isStreaming || !bundle.complete || !!bundle.error;
+ 	const bundleBlocked = bundle.isBundle && blocked;
+@@ -637,28 +638,45 @@ function useOpenUIState({ response: raw, library, isStreaming, onAction, onState
+ 		isStreaming
+ 	]);
  	const store = useMemo(() => createStore(), []);
 -	const queryManager = useMemo(() => createQueryManager(toolProvider ?? null), [toolProvider]);
++	const runtimeErrorsRef = useRef([]);
 +	/* born paused when the view is paused: the first scheduling pass must not call the provider */
 +	const queryManager = useMemo(() => createQueryManager(toolProvider ?? null, { paused }), [toolProvider]);
  	useEffect(() => {
  		queryManager.activate();
  		return () => queryManager.dispose();
  	}, [queryManager]);
+ 	const initializingRef = useRef(false);
 +	/**
 +	* Reconcile `$state` with the committed declarations: values survive across generations only
 +	* for declarations that are unchanged; changed defaults reset, deleted names are cleared, names
@@ -55,8 +164,10 @@ index fb50f51..0012650 100644
 +		}
 +		if (initialState) for (const [key, value] of Object.entries(initialState)) if (key.startsWith("$")) forced[key] = value;
  		else store.set(key, value);
+ 		initializingRef.current = true;
 -		store.initialize(result?.stateDeclarations ?? {}, bindingDefaults);
 +		store.initialize(decls, forced);
+ 		initializingRef.current = false;
  	}, [
  		result?.stateDeclarations,
  		store,
@@ -66,98 +177,7 @@ index fb50f51..0012650 100644
  	]);
  	const storeSnapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
  	const querySnapshot = useSyncExternalStore(queryManager.subscribe, queryManager.getSnapshot, queryManager.getSnapshot);
-+	const runtimeErrorsRef = useRef([]);
-+	/* errors raised outside render (effects, input handlers) need a render to reach onError */
-+	const [, bumpRuntimeErrors] = useState(0);
-+	const reportRuntimeError = useCallback((error) => {
-+		runtimeErrorsRef.current = [...runtimeErrorsRef.current, error];
-+		bumpRuntimeErrors((n) => n + 1);
-+	}, []);
-+	const limitToError = (e, hint) => ({
-+		source: "runtime",
-+		code: "budget-exceeded",
-+		message: e.message,
-+		statementId: e.statementId,
-+		hint
-+	});
- 	const evaluationContext = useMemo(() => ({
- 		getState: (name) => unwrapFieldValue(store.get(name)),
- 		resolveRef: (name) => {
- 			const mutResult = queryManager.getMutationResult(name);
- 			if (mutResult) return mutResult;
- 			return queryManager.getResult(name);
--		}
--	}), [store, queryManager]);
-+		},
-+		/* reactive input assignments evaluate with a fresh per-change budget in lang-core; a limit is reported, not stored */
-+		onLimitError: (e) => reportRuntimeError(limitToError(e, "Input assignment exceeds the evaluation budget"))
-+	}), [
-+		store,
-+		queryManager,
-+		reportRuntimeError
-+	]);
- 	useEffect(() => {
- 		if (isStreaming) return;
--		const evaluatedNodes = (result?.queryStatements ?? []).map((qn) => {
--			const relevantDeps = {};
--			if (qn.deps) for (const ref of qn.deps) relevantDeps[ref] = storeSnapshot[ref];
--			return {
--				statementId: qn.statementId,
--				toolName: qn.toolAST ? evaluate(qn.toolAST, evaluationContext) : "",
--				args: qn.argsAST ? evaluate(qn.argsAST, evaluationContext) : null,
--				defaults: qn.defaultsAST ? evaluate(qn.defaultsAST, evaluationContext) : null,
--				refreshInterval: qn.refreshAST ? evaluate(qn.refreshAST, evaluationContext) : void 0,
--				deps: Object.keys(relevantDeps).length > 0 ? relevantDeps : void 0,
--				complete: qn.complete
--			};
--		});
-+		let evaluatedNodes;
-+		try {
-+			evaluatedNodes = (result?.queryStatements ?? []).map((qn) => {
-+				const relevantDeps = {};
-+				if (qn.deps) for (const ref of qn.deps) relevantDeps[ref] = storeSnapshot[ref];
-+				return {
-+					statementId: qn.statementId,
-+					toolName: qn.toolAST ? evaluateBudgeted(qn.toolAST, evaluationContext) : "",
-+					args: qn.argsAST ? evaluateBudgeted(qn.argsAST, evaluationContext) : null,
-+					defaults: qn.defaultsAST ? evaluateBudgeted(qn.defaultsAST, evaluationContext) : null,
-+					refreshInterval: qn.refreshAST ? evaluateBudgeted(qn.refreshAST, evaluationContext) : void 0,
-+					deps: Object.keys(relevantDeps).length > 0 ? relevantDeps : void 0,
-+					complete: qn.complete
-+				};
-+			});
-+		} catch (e) {
-+			if (!(e instanceof LimitError)) throw e;
-+			/* keep the previously scheduled queries; report the located limit */
-+			reportRuntimeError(limitToError(e, "Query arguments exceed the evaluation budget"));
-+			return;
-+		}
- 		queryManager.evaluateQueries(evaluatedNodes);
- 	}, [
- 		isStreaming,
-@@ -412,10 +457,17 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
- 	]);
- 	useEffect(() => {
- 		if (isStreaming) return;
--		const nodes = (result?.mutationStatements ?? []).map((mn) => ({
--			statementId: mn.statementId,
--			toolName: mn.toolAST ? evaluate(mn.toolAST, evaluationContext) : ""
--		}));
-+		let nodes;
-+		try {
-+			nodes = (result?.mutationStatements ?? []).map((mn) => ({
-+				statementId: mn.statementId,
-+				toolName: mn.toolAST ? evaluateBudgeted(mn.toolAST, evaluationContext) : ""
-+			}));
-+		} catch (e) {
-+			if (!(e instanceof LimitError)) throw e;
-+			reportRuntimeError(limitToError(e, "Mutation tool name exceeds the evaluation budget"));
-+			return;
-+		}
- 		queryManager.registerMutations(nodes);
- 	}, [
- 		isStreaming,
-@@ -425,11 +477,15 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+@@ -704,11 +722,15 @@ function useOpenUIState({ response: raw, library, isStreaming, onAction, onState
  	]);
  	const propsRef = useRef({
  		onAction,
@@ -175,7 +195,7 @@ index fb50f51..0012650 100644
  	};
  	const resultRef = useRef(result);
  	resultRef.current = result;
-@@ -472,9 +528,14 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+@@ -751,9 +773,14 @@ function useOpenUIState({ response: raw, library, isStreaming, onAction, onState
  		}
  		return store.getSnapshot();
  	}, [store]);
@@ -185,13 +205,13 @@ index fb50f51..0012650 100644
 +	* through each step by runActionPlan; nothing global records an active press.
 +	*/
  	const triggerAction = useCallback(async (userMessage, formName, action) => {
- 		const formPayload = getFormPayload(formName);
+ 		if (bundleBlocked) return;
 -		const { onAction: handler } = propsRef.current;
 +		const { onAction: handler, onActionStart, onActionEnd } = propsRef.current;
  		if (action && !("steps" in action)) {
- 			const actionType = action.type || BuiltinActionType.ContinueConversation;
- 			const params = { ...action.params || {} };
-@@ -485,61 +546,31 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+ 			const formPayload = getFormPayload(formName);
+ 			const actionType = action.type || BuiltinActionType$1.ContinueConversation;
+@@ -766,70 +793,31 @@ function useOpenUIState({ response: raw, library, isStreaming, onAction, onState
  				params,
  				humanFriendlyMessage: userMessage,
  				formState: formPayload,
@@ -204,32 +224,41 @@ index fb50f51..0012650 100644
 -		const actionPlan = action;
 -		if (actionPlan?.steps) {
 -			for (const step of actionPlan.steps) switch (step.type) {
--				case ACTION_STEPS.Run:
+-				case ACTION_STEPS$1.Run:
 -					if (step.refType === "mutation") {
 -						const mn = resultRef.current?.mutationStatements?.find((m) => m.statementId === step.statementId);
 -						const evaluatedArgs = mn?.argsAST ? evaluate(mn.argsAST, evaluationContext) : {};
 -						if (!await queryManager.fireMutation(step.statementId, evaluatedArgs)) return;
 -					} else queryManager.invalidate([step.statementId]);
 -					break;
--				case ACTION_STEPS.ToAssistant:
+-				case ACTION_STEPS$1.ToAssistant:
 -					handler?.({
--						type: BuiltinActionType.ContinueConversation,
--						params: step.context ? { context: step.context } : {},
+-						type: BuiltinActionType$1.ContinueConversation,
+-						params: step.context !== void 0 ? { context: step.context } : {},
 -						humanFriendlyMessage: step.message,
--						formState: formPayload,
+-						formState: getFormPayload(formName),
 -						formName
 -					});
 -					break;
--				case ACTION_STEPS.OpenUrl:
+-				case ACTION_STEPS$1.OpenUrl:
 -					handler?.({
--						type: BuiltinActionType.OpenUrl,
+-						type: BuiltinActionType$1.OpenUrl,
 -						params: { url: step.url },
 -						humanFriendlyMessage: "",
--						formState: formPayload,
+-						formState: getFormPayload(formName),
 -						formName
 -					});
 -					break;
--				case ACTION_STEPS.Set: {
+-				case "custom_action":
+-					handler?.({
+-						type: step.name,
+-						params: step.params,
+-						humanFriendlyMessage: "",
+-						formState: getFormPayload(formName),
+-						formName
+-					});
+-					break;
+-				case ACTION_STEPS$1.Set: {
 -					if (!step.valueAST) {
 -						console.warn(`[openui] Set action for ${step.target} has no valueAST — skipping`);
 -						break;
@@ -238,9 +267,9 @@ index fb50f51..0012650 100644
 -					store.set(step.target, value);
 -					break;
 -				}
--				case ACTION_STEPS.Reset: {
+-				case ACTION_STEPS$1.Reset: {
 -					const decls = resultRef.current?.stateDeclarations ?? {};
--					for (const target of step.targets) store.set(target, decls[target] ?? null);
+-					for (const target of step.targets) store.set(target, decls[target] ?? null, { pristine: true });
 -					break;
 -				}
 -			}
@@ -250,7 +279,7 @@ index fb50f51..0012650 100644
 +			plan: action,
 +			userMessage,
 +			formName,
-+			formPayload,
++			formPayload: getFormPayload(formName),
 +			handler,
 +			queryManager,
 +			evaluationContext,
@@ -260,19 +289,19 @@ index fb50f51..0012650 100644
 +			onActionEnd
 +		});
  		handler?.({
- 			type: BuiltinActionType.ContinueConversation,
+ 			type: BuiltinActionType$1.ContinueConversation,
  			params: {},
  			humanFriendlyMessage: userMessage,
- 			formState: formPayload,
+ 			formState: getFormPayload(formName),
 -			formName
 +			formName,
 +			actionId: createActionId()
  		});
  	}, [
+ 		bundleBlocked,
+@@ -856,7 +844,13 @@ function useOpenUIState({ response: raw, library, isStreaming, onAction, onState
  		queryManager,
-@@ -578,12 +609,21 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
- 		evaluationContext,
- 		reportError
+ 		queryErrors
  	]);
 -	const runtimeErrorsRef = useRef([]);
 +	/* a fallback frame is only valid for the generation whose bindings/context it was evaluated against */
@@ -283,20 +312,11 @@ index fb50f51..0012650 100644
 +		lastGoodResultRef.current = null;
 +	}
  	const evaluatedResult = useMemo(() => {
- 		if (!result?.root) return result;
+ 		if (!result?.root && !result?.rootExpression) return result;
  		const errors = [];
- 		const evalCtx = {
--			ctx: evaluationContext,
-+			ctx: {
-+				...evaluationContext,
-+				budget: createEvalBudget()
-+			},
- 			library,
- 			store,
- 			errors
-@@ -591,19 +631,25 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
+@@ -869,19 +863,24 @@ function useOpenUIState({ response: raw, library, isStreaming, onAction, onState
  		try {
- 			const evaluatedRoot = evaluateElementProps(result.root, evalCtx);
+ 			const evaluatedRoot = evaluateRoot(result, evalCtx);
  			runtimeErrorsRef.current = errors;
 -			return {
 +			const evaluated = {
@@ -307,9 +327,7 @@ index fb50f51..0012650 100644
 +			return evaluated;
  		} catch (e) {
 -			const msg = e instanceof Error ? e.message : String(e);
--			errors.push({
-+			if (e instanceof LimitError) errors.push(limitToError(e, "Reduce repeated/nested components or @Each item counts"));
-+			else errors.push({
+ 			errors.push({
  				source: "runtime",
  				code: "runtime-error",
 -				message: `Prop evaluation failed: ${msg}`
@@ -325,34 +343,31 @@ index fb50f51..0012650 100644
  		}
  	}, [
  		result,
-@@ -638,7 +684,8 @@ function useOpenUIState({ response, library, isStreaming, onAction, onStateUpdat
- 		result: evaluatedResult,
- 		parseResult: result,
+@@ -943,7 +942,8 @@ function useOpenUIState({ response: raw, library, isStreaming, onAction, onState
  		contextValue,
--		isQueryLoading
-+		isQueryLoading,
+ 		isQueryLoading,
+ 		queryErrors,
+-		retryQueries
++		retryQueries,
 +		queryManager
  	};
  }
  //#endregion
-@@ -743,7 +790,15 @@ const DefaultQueryLoader = () => /* @__PURE__ */ jsx("div", { style: {
- 	animation: "openui-spin 0.6s linear infinite",
- 	zIndex: 10
- } });
--function Renderer({ response, library, isStreaming = false, onAction, onStateUpdate, initialState, onParseResult, toolProvider, queryLoader, onError, publishObservability }) {
+@@ -1058,14 +1058,31 @@ function RenderNodeInner({ el, Comp }) {
+ 		statementId: el.statementId
+ 	});
+ }
+-function RendererRoot({ response, library, isStreaming = false, onAction, onStateUpdate, initialState, onParseResult, toolProvider, queryLoader, children, onError, publishObservability }) {
 +/**
-+* Patched Renderer. `toolProvider` also accepts a function `(toolName, args, meta) => Promise`
++* Patched RendererRoot. `toolProvider` also accepts a function `(toolName, args, meta) => Promise`
 +* receiving ToolCallMeta; function-map entries receive `(args, meta)`. An MCP client receives
 +* neither provenance nor an abort signal (its callTool positional options are its own).
 +* Changing `generation` disposes the query manager (late results of the old generation are
 +* ignored, data reloads) while $state in the store survives. `paused` stops scheduling.
 +* `runtimeRef.current` exposes pause/status/retry controls to the host.
 +*/
-+function Renderer({ response, library, isStreaming = false, onAction, onStateUpdate, initialState, onParseResult, toolProvider, queryLoader, onError, publishObservability, generation = 0, paused = false, onActionStart, onActionEnd, runtimeRef }) {
- 	useInsertionEffect(() => {
- 		ensureLoadingStyle();
- 	}, []);
-@@ -751,9 +806,18 @@ function Renderer({ response, library, isStreaming = false, onAction, onStateUpd
++function RendererRoot({ response, library, isStreaming = false, onAction, onStateUpdate, initialState, onParseResult, toolProvider, queryLoader, children, onError, publishObservability, generation = 0, paused = false, onActionStart, onActionEnd, runtimeRef }) {
+ 	const onParseResultRef = useRef(onParseResult);
  	onParseResultRef.current = onParseResult;
  	const toolProviderInputRef = useRef(toolProvider);
  	toolProviderInputRef.current = toolProvider;
@@ -369,19 +384,19 @@ index fb50f51..0012650 100644
  		const current = toolProviderInputRef.current ?? null;
  		if (current == null) throw new Error("[openui] toolProvider is null");
 +		if (typeof current === "function") return current(toolName, args, meta);
- 		if (typeof current.callTool === "function") return extractToolResult(await current.callTool({
+ 		if (typeof current.callTool === "function") return extractToolResult$1(await current.callTool({
  			name: toolName,
  			arguments: args
-@@ -761,22 +825,60 @@ function Renderer({ response, library, isStreaming = false, onAction, onStateUpd
+@@ -1073,22 +1090,60 @@ function RendererRoot({ response, library, isStreaming = false, onAction, onStat
  		const map = current;
  		const fn = map[toolName];
- 		if (!fn) throw new ToolNotFoundError(toolName, Object.keys(map));
+ 		if (!fn) throw new ToolNotFoundError$1(toolName, Object.keys(map));
 -		return fn(args);
 -	} });
--	const { result, parseResult, contextValue, isQueryLoading } = useOpenUIState({
+-	const { result, parseResult, contextValue, isQueryLoading, queryErrors, retryQueries } = useOpenUIState({
 +		return fn(args, meta);
 +	} }), [generation]);
-+	const { result, parseResult, contextValue, isQueryLoading, queryManager } = useOpenUIState({
++	const { result, parseResult, contextValue, isQueryLoading, queryErrors, retryQueries, queryManager } = useOpenUIState({
  		response,
  		library,
  		isStreaming,
@@ -435,125 +450,16 @@ index fb50f51..0012650 100644
 +			runtimeRef.current = null;
 +		};
 +	}, [queryManager, runtimeRef]);
- 	if (!result?.root) return null;
- 	return /* @__PURE__ */ jsx(OpenUIContext.Provider, {
- 		value: contextValue,
-diff --git a/dist/exports-CqIWw0ev.d.mts b/dist/exports-CqIWw0ev.d.mts
-index 1f165ea..abba2e8 100644
---- a/dist/exports-CqIWw0ev.d.mts
-+++ b/dist/exports-CqIWw0ev.d.mts
-@@ -1,4 +1,6 @@
- import { ACTION_STEPS as ACTION_STEPS$1, ActionEvent, ActionEvent as ActionEvent$1, ActionPlan, ActionPlan as ActionPlan$1, ActionStep, BuiltinActionType as BuiltinActionType$1, ComponentGroup, ComponentPromptSpec, ComponentRenderProps, DefinedComponent, ElementNode, EvaluationContext, InferStateFieldValue, Library, LibraryDefinition, McpClientLike, McpClientLike as McpClientLike$1, OpenUIError, OpenUIError as OpenUIError$1, ParseResult, ParseResult as ParseResult$1, ParsedRule, ParsedRule as ParsedRule$1, PromptOptions, PromptSpec, ReactiveAssign, StateField, StateField as StateField$1, SubComponentOf, SystemPromptOptions, SystemPromptSpec, ToolDescriptor, ToolNotFoundError as ToolNotFoundError$1, ToolProvider, ToolSpec, ValidatorFn, builtInValidators, createParser, createStreamingParser as createStreamingParser$1, extractToolResult as extractToolResult$1, generatePrompt, generateSystemPrompt, isReactiveAssign, mergeStatements, parseRules, parseStructuredRules, tagSchemaId, validate as validate$1 } from "@openuidev/lang-core";
-+import { ActionEndEvent, ActionStartEvent, QueryStatus, ScopedActionEvent, ToolCallMeta } from "./theuth-runtime.mjs";
-+import { MutationResult } from "@openuidev/lang-core";
- import * as _$react from "react";
- import React$1, { ReactNode } from "react";
- import { z } from "zod/v4";
-@@ -19,6 +21,22 @@ declare function defineComponent$1<T extends $ZodObject>(config: {
- declare function createLibrary$1(input: LibraryDefinition$1): Library$1;
- //#endregion
- //#region src/Renderer.d.ts
-+/** Function provider receiving theuth provenance with every call (patch). */
-+type MetaToolProviderFn = (toolName: string, args: Record<string, unknown>, meta: ToolCallMeta) => Promise<unknown>;
-+/** Host handle published through `RendererProps.runtimeRef` (patch). */
-+interface OpenUIRuntime {
-+  pause(): void;
-+  resume(): void;
-+  isPaused(): boolean;
-+  getQueryStatus(statementId: string): QueryStatus | null;
-+  getMutationResult(statementId: string): MutationResult | null;
-+  getMutationCause(statementId: string): unknown;
-+  subscribe(listener: () => void): () => void;
-+  /** Automatic refetch (`refresh`), e.g. after reconnect. */
-+  refresh(statementIds?: string[]): void;
-+  /** User-activated refetch (`press`) with a fresh action id; reports action start/end. */
-+  press(statementIds: string[]): string;
-+}
- interface RendererProps {
-   /** Raw response text (openui-lang code). */
-   response: string | null;
-@@ -26,8 +44,8 @@ interface RendererProps {
-   library: Library$1;
-   /** Whether the LLM is still streaming (form interactions disabled during streaming). */
-   isStreaming?: boolean;
--  /** Callback when a component triggers an action. */
--  onAction?: (event: ActionEvent) => void;
-+  /** Callback when a component triggers an action; `actionId` identifies the activation (patch). */
-+  onAction?: (event: ScopedActionEvent) => void;
-   /**
-    * Called whenever a form field value changes. Receives the raw form state map.
-    * The consumer decides how to persist this (e.g. embed in message, store separately).
-@@ -43,10 +61,11 @@ interface RendererProps {
-   onParseResult?: (result: ParseResult | null) => void;
-   /**
-    * Tool provider for Query()/Mutation() calls.
--   * - Function map: `{ tool_name: async (args) => result }` — simplest option
--   * - MCP client: any object with `callTool({ name, arguments })` (e.g. from @modelcontextprotocol/sdk)
-+   * - Function `(toolName, args, meta) => result` receiving ToolCallMeta (patch)
-+   * - Function map: `{ tool_name: async (args, meta) => result }`
-+   * - MCP client: any object with `callTool({ name, arguments })` (no provenance forwarded)
-    */
--  toolProvider?: Record<string, (args: Record<string, unknown>) => Promise<unknown>> | McpClientLike | null;
-+  toolProvider?: MetaToolProviderFn | Record<string, (args: Record<string, unknown>, meta: ToolCallMeta) => Promise<unknown>> | McpClientLike | null;
-   /** Custom loading indicator shown while queries are fetching. Defaults to a spinner. */
-   queryLoader?: React$1.ReactNode;
-   /**
-@@ -57,6 +76,15 @@ interface RendererProps {
-    */
-   onError?: (errors: OpenUIError[]) => void;
-   publishObservability?: boolean;
-+  /** Version of the committed program; a change disposes queries and reloads data, $state survives (patch). */
-+  generation?: number;
-+  /** Stop starting fetches (hidden/background/disconnected view); in-flight calls finish (patch). */
-+  paused?: boolean;
-+  onActionStart?: (event: ActionStartEvent) => void;
-+  onActionEnd?: (event: ActionEndEvent) => void;
-+  runtimeRef?: {
-+    current: OpenUIRuntime | null;
-+  };
- }
- declare function Renderer({
-   response,
-@@ -69,7 +97,12 @@ declare function Renderer({
-   toolProvider,
-   queryLoader,
-   onError,
--  publishObservability
-+  publishObservability,
-+  generation,
-+  paused,
-+  onActionStart,
-+  onActionEnd,
-+  runtimeRef
- }: RendererProps): React$1.JSX.Element | null;
- //#endregion
- //#region src/context.d.ts
-@@ -177,5 +210,5 @@ declare const FormValidationContext: _$react.Context<FormValidationContextValue
- declare function useFormValidation(): FormValidationContextValue | null;
- declare function useCreateFormValidation(): FormValidationContextValue;
- //#endregion
--export { ComponentRenderer as $, parseRules as A, FormNameContext as B, createParser as C, generateSystemPrompt as D, generatePrompt as E, FormValidationContextValue as F, useRenderNode as G, useGetFieldValue as H, useCreateFormValidation as I, useTriggerAction as J, useSetDefaultValue as K, useFormValidation as L, tagSchemaId as M, validate$1 as N, isReactiveAssign as O, FormValidationContext as P, ComponentRenderProps$1 as Q, useStateField as R, builtInValidators as S, extractToolResult$1 as T, useIsQueryLoading as U, useFormName as V, useIsStreaming as W, RendererProps as X, Renderer as Y, ComponentGroup as Z, SystemPromptSpec as _, BuiltinActionType$1 as a, ToolDescriptor as at, ToolSpec as b, EvaluationContext as c, ParseResult$1 as d, DefinedComponent$1 as et, ParsedRule$1 as f, SystemPromptOptions as g, StateField$1 as h, ActionStep as i, SubComponentOf as it, parseStructuredRules as j, mergeStatements as k, McpClientLike$1 as l, ReactiveAssign as m, ActionEvent$1 as n, LibraryDefinition$1 as nt, ComponentPromptSpec as o, createLibrary$1 as ot, PromptSpec as p, useSetFieldValue as q, ActionPlan$1 as r, PromptOptions as rt, ElementNode as s, defineComponent$1 as st, ACTION_STEPS$1 as t, Library$1 as tt, OpenUIError$1 as u, ToolNotFoundError$1 as v, createStreamingParser$1 as w, ValidatorFn as x, ToolProvider as y, reactive as z };
-+export { ComponentRenderer as $, parseRules as A, FormNameContext as B, createParser as C, generateSystemPrompt as D, generatePrompt as E, FormValidationContextValue as F, useRenderNode as G, useGetFieldValue as H, useCreateFormValidation as I, useTriggerAction as J, useSetDefaultValue as K, useFormValidation as L, tagSchemaId as M, validate$1 as N, isReactiveAssign as O, FormValidationContext as P, ComponentRenderProps$1 as Q, useStateField as R, builtInValidators as S, extractToolResult$1 as T, useIsQueryLoading as U, useFormName as V, useIsStreaming as W, RendererProps as X, Renderer as Y, ComponentGroup as Z, SystemPromptSpec as _, BuiltinActionType$1 as a, ToolDescriptor as at, ToolSpec as b, EvaluationContext as c, ParseResult$1 as d, DefinedComponent$1 as et, ParsedRule$1 as f, SystemPromptOptions as g, StateField$1 as h, ActionStep as i, SubComponentOf as it, parseStructuredRules as j, mergeStatements as k, McpClientLike$1 as l, ReactiveAssign as m, ActionEvent$1 as n, LibraryDefinition$1 as nt, ComponentPromptSpec as o, createLibrary$1 as ot, PromptSpec as p, useSetFieldValue as q, ActionPlan$1 as r, PromptOptions as rt, ElementNode as s, defineComponent$1 as st, ACTION_STEPS$1 as t, Library$1 as tt, OpenUIError$1 as u, ToolNotFoundError$1 as v, createStreamingParser$1 as w, ValidatorFn as x, ToolProvider as y, reactive as z, MetaToolProviderFn, OpenUIRuntime };
- //# sourceMappingURL=exports-CqIWw0ev.d.mts.map
-\ No newline at end of file
-diff --git a/dist/index.d.mts b/dist/index.d.mts
-index c5b3745..befd76f 100644
---- a/dist/index.d.mts
-+++ b/dist/index.d.mts
-@@ -1,2 +1,2 @@
--import { $ as ComponentRenderer, A as parseRules, B as FormNameContext, C as createParser, D as generateSystemPrompt, E as generatePrompt, F as FormValidationContextValue, G as useRenderNode, H as useGetFieldValue, I as useCreateFormValidation, J as useTriggerAction, K as useSetDefaultValue, L as useFormValidation, M as tagSchemaId, N as validate, O as isReactiveAssign, P as FormValidationContext, Q as ComponentRenderProps, R as useStateField, S as builtInValidators, T as extractToolResult, U as useIsQueryLoading, V as useFormName, W as useIsStreaming, X as RendererProps, Y as Renderer, Z as ComponentGroup, _ as SystemPromptSpec, a as BuiltinActionType, at as ToolDescriptor, b as ToolSpec, c as EvaluationContext, d as ParseResult, et as DefinedComponent, f as ParsedRule, g as SystemPromptOptions, h as StateField, i as ActionStep, it as SubComponentOf, j as parseStructuredRules, k as mergeStatements, l as McpClientLike, m as ReactiveAssign, n as ActionEvent, nt as LibraryDefinition, o as ComponentPromptSpec, ot as createLibrary, p as PromptSpec, q as useSetFieldValue, r as ActionPlan, rt as PromptOptions, s as ElementNode, st as defineComponent, t as ACTION_STEPS, tt as Library, u as OpenUIError, v as ToolNotFoundError, w as createStreamingParser, x as ValidatorFn, y as ToolProvider, z as reactive } from "./exports-CqIWw0ev.mjs";
--export { ACTION_STEPS, ActionEvent, ActionPlan, ActionStep, BuiltinActionType, ComponentGroup, ComponentPromptSpec, ComponentRenderProps, ComponentRenderer, DefinedComponent, ElementNode, EvaluationContext, FormNameContext, FormValidationContext, FormValidationContextValue, Library, LibraryDefinition, McpClientLike, OpenUIError, ParseResult, ParsedRule, PromptOptions, PromptSpec, ReactiveAssign, Renderer, RendererProps, StateField, SubComponentOf, SystemPromptOptions, SystemPromptSpec, ToolDescriptor, ToolNotFoundError, ToolProvider, ToolSpec, ValidatorFn, builtInValidators, createLibrary, createParser, createStreamingParser, defineComponent, extractToolResult, generatePrompt, generateSystemPrompt, isReactiveAssign, mergeStatements, parseRules, parseStructuredRules, reactive, tagSchemaId, useCreateFormValidation, useFormName, useFormValidation, useGetFieldValue, useIsQueryLoading, useIsStreaming, useRenderNode, useSetDefaultValue, useSetFieldValue, useStateField, useTriggerAction, validate };
-\ No newline at end of file
-+import { $ as ComponentRenderer, A as parseRules, B as FormNameContext, C as createParser, D as generateSystemPrompt, E as generatePrompt, F as FormValidationContextValue, G as useRenderNode, H as useGetFieldValue, I as useCreateFormValidation, J as useTriggerAction, K as useSetDefaultValue, L as useFormValidation, M as tagSchemaId, N as validate, O as isReactiveAssign, P as FormValidationContext, Q as ComponentRenderProps, R as useStateField, S as builtInValidators, T as extractToolResult, U as useIsQueryLoading, V as useFormName, W as useIsStreaming, X as RendererProps, Y as Renderer, Z as ComponentGroup, _ as SystemPromptSpec, a as BuiltinActionType, at as ToolDescriptor, b as ToolSpec, c as EvaluationContext, d as ParseResult, et as DefinedComponent, f as ParsedRule, g as SystemPromptOptions, h as StateField, i as ActionStep, it as SubComponentOf, j as parseStructuredRules, k as mergeStatements, l as McpClientLike, m as ReactiveAssign, n as ActionEvent, nt as LibraryDefinition, o as ComponentPromptSpec, ot as createLibrary, p as PromptSpec, q as useSetFieldValue, r as ActionPlan, rt as PromptOptions, s as ElementNode, st as defineComponent, t as ACTION_STEPS, tt as Library, u as OpenUIError, v as ToolNotFoundError, w as createStreamingParser, x as ValidatorFn, y as ToolProvider, z as reactive, MetaToolProviderFn, OpenUIRuntime } from "./exports-CqIWw0ev.mjs";
-+export { MetaToolProviderFn, OpenUIRuntime, ACTION_STEPS, ActionEvent, ActionPlan, ActionStep, BuiltinActionType, ComponentGroup, ComponentPromptSpec, ComponentRenderProps, ComponentRenderer, DefinedComponent, ElementNode, EvaluationContext, FormNameContext, FormValidationContext, FormValidationContextValue, Library, LibraryDefinition, McpClientLike, OpenUIError, ParseResult, ParsedRule, PromptOptions, PromptSpec, ReactiveAssign, Renderer, RendererProps, StateField, SubComponentOf, SystemPromptOptions, SystemPromptSpec, ToolDescriptor, ToolNotFoundError, ToolProvider, ToolSpec, ValidatorFn, builtInValidators, createLibrary, createParser, createStreamingParser, defineComponent, extractToolResult, generatePrompt, generateSystemPrompt, isReactiveAssign, mergeStatements, parseRules, parseStructuredRules, reactive, tagSchemaId, useCreateFormValidation, useFormName, useFormValidation, useGetFieldValue, useIsQueryLoading, useIsStreaming, useRenderNode, useSetDefaultValue, useSetFieldValue, useStateField, useTriggerAction, validate };
-\ No newline at end of file
-diff --git a/dist/theuth-runtime.d.mts b/dist/theuth-runtime.d.mts
+ 	const query = useMemo(() => ({
+ 		isLoading: isQueryLoading,
+ 		errors: queryErrors,
+diff --git a/node_modules/@openuidev/react-lang/dist/theuth-runtime.d.mts b/dist/theuth-runtime.d.mts
 new file mode 100644
-index 0000000..0ac9d38
+index 0000000000000000000000000000000000000000..09d72a32d551eedd812c1a18977fd4e1618c1db7
 --- /dev/null
 +++ b/dist/theuth-runtime.d.mts
-@@ -0,0 +1,93 @@
-+import { ActionEvent, ActionPlan, EvaluationContext, MutationNode, MutationResult, OpenUIError, ParseResult, QueryNode, QuerySnapshot, Store } from "@openuidev/lang-core";
+@@ -0,0 +1,101 @@
++import { ActionEvent, ActionPlan, EvaluationContext, MutationNode, MutationResult, OpenUIError, ParseResult, QueryNode, QuerySnapshot, QueryStatementInfo, Store } from "@openuidev/lang-core";
 +
 +//#region theuth/runtime.d.ts (patch)
 +/** Why a provider call happens. Timers are `refresh`; only real activations are `press`. */
@@ -585,6 +491,15 @@ index 0000000..0ac9d38
 +  cause?: unknown;
 +}
 +interface QueryManager {
++  /**
++   * Run `ParseResult.queryStatements` (patch: budgeted). A query that reads another's result
++   * waits for it and runs again when it changes. `context` is read on every evaluation, so it
++   * must return live values. `extraDeps` adds values to a query's cache key.
++   */
++  evaluateStatements(statements: QueryStatementInfo[], context: EvaluationContext, options?: {
++    extraDeps?: (toolName: string) => Record<string, unknown> | undefined;
++  }): void;
++  /** Run already evaluated queries. They do not wait for each other; see `evaluateStatements`. */
 +  evaluateQueries(queryNodes: QueryNode[]): void;
 +  getResult(statementId: string): unknown;
 +  isLoading(statementId: string): boolean;
@@ -615,7 +530,6 @@ index 0000000..0ac9d38
 +  paused?: boolean;
 +}
 +declare function createQueryManager(toolProvider: MetaToolProvider | null, options?: QueryManagerOptions): QueryManager;
-+declare function evaluateBudgeted(ast: unknown, evaluationContext: EvaluationContext): unknown;
 +interface ActionStartEvent {
 +  actionId: string;
 +  steps: number;
@@ -645,14 +559,14 @@ index 0000000..0ac9d38
 +}
 +declare function runActionPlan(input: RunActionPlanInput): Promise<void>;
 +//#endregion
-+export { type ActionEndEvent, type ActionStartEvent, MIN_REFRESH_INTERVAL_S, type MetaToolProvider, type QueryManager, type QueryManagerOptions, type QueryStatus, type RunActionPlanInput, STATE_CHANGE_DEBOUNCE_MS, type ScopedActionEvent, type ToolCallMeta, type ToolCallTrigger, createActionId, createQueryManager, evaluateBudgeted, runActionPlan };
-diff --git a/dist/theuth-runtime.mjs b/dist/theuth-runtime.mjs
++export { type ActionEndEvent, type ActionStartEvent, MIN_REFRESH_INTERVAL_S, type MetaToolProvider, type QueryManager, type QueryManagerOptions, type QueryStatus, type RunActionPlanInput, STATE_CHANGE_DEBOUNCE_MS, type ScopedActionEvent, type ToolCallMeta, type ToolCallTrigger, createActionId, createQueryManager, runActionPlan };
+diff --git a/node_modules/@openuidev/react-lang/dist/theuth-runtime.mjs b/dist/theuth-runtime.mjs
 new file mode 100644
-index 0000000..3938f7e
+index 0000000000000000000000000000000000000000..78c35cefcbdd61abde14ba77704a729262204f72
 --- /dev/null
 +++ b/dist/theuth-runtime.mjs
-@@ -0,0 +1,582 @@
-+import { ACTION_STEPS, BuiltinActionType, McpToolError, ToolNotFoundError, createEvalBudget, evaluate } from "@openuidev/lang-core";
+@@ -0,0 +1,669 @@
++import { ACTION_STEPS, BuiltinActionType, McpToolError, ToolNotFoundError, evaluate } from "@openuidev/lang-core";
 +//#region theuth/runtime.ts (patch)
 +/**
 +* theuth patch: replaces lang-core's createQueryManager for the React renderer and owns
@@ -661,20 +575,16 @@ index 0000000..3938f7e
 +* (timer), state_change (arguments changed), press (real activation: mutation, pressed
 +* @Run(query) refetch or host retry). An action id exists only for the duration of one
 +* triggerAction()/press call chain; timers never inherit it.
++* Kept from upstream 1.1.1: evaluateStatements() with query→query `waitFor` ordering and
++* reader re-evaluation; the trigger/debounce/pause/provenance model is the theuth one.
 +*/
 +/** JSON.stringify with stable key ordering at all nesting levels. */
 +function stableStringify(value) {
 +	return JSON.stringify(value, (_key, val) => {
 +		if (val && typeof val === "object" && !Array.isArray(val)) {
-+			const sorted = {};
-+			for (const k of Object.keys(val).sort()) sorted[k] = val[k];
-+			return sorted;
-+		}
-+		if (val === void 0) return "__undefined__";
-+		if (typeof val === "number") {
-+			if (Number.isNaN(val)) return "__NaN__";
-+			if (val === Infinity) return "__Inf__";
-+			if (val === -Infinity) return "__-Inf__";
++			const out = {};
++			for (const k of Object.keys(val).sort()) out[k] = val[k];
++			return out;
 +		}
 +		return val;
 +	});
@@ -710,6 +620,23 @@ index 0000000..3938f7e
 +	if (err instanceof McpToolError) return toolError(source, component, "mcp-error", `${component} "${toolName}" returned an error: ${err.toolErrorText}`, statementId, toolName);
 +	return toolError(source, component, "tool-error", `${component} "${toolName}" ${verb}: ${err instanceof Error ? err.message : String(err)}`, statementId, toolName);
 +}
++/** Evaluate one statement's fields (upstream 1.1.1 `toQueryNode`). */
++function toQueryNode(statement, context, extraDeps) {
++	const toolName = statement.toolAST ? evaluate(statement.toolAST, context) : "";
++	const deps = {};
++	for (const ref of statement.deps ?? []) deps[ref] = context.getState(ref);
++	Object.assign(deps, extraDeps?.(toolName));
++	return {
++		statementId: statement.statementId,
++		toolName,
++		args: statement.argsAST ? evaluate(statement.argsAST, context) : null,
++		defaults: statement.defaultsAST ? evaluate(statement.defaultsAST, context) : null,
++		refreshInterval: statement.refreshAST ? evaluate(statement.refreshAST, context) : void 0,
++		deps: Object.keys(deps).length > 0 ? deps : void 0,
++		complete: statement.complete,
++		waitFor: statement.waitFor
++	};
++}
 +/** `options.paused` starts the manager paused so the first scheduling pass defers instead of calling the provider. */
 +function createQueryManager(toolProvider, options) {
 +	const queries = /* @__PURE__ */ new Map();
@@ -725,6 +652,11 @@ index 0000000..3938f7e
 +	let disposed = false;
 +	let paused = options?.paused === true;
 +	let generation = 0;
++	let statements = [];
++	let toNode = null;
++	const nodes = /* @__PURE__ */ new Map();
++	/** Per reader: the results it read when its node was built. */
++	const seen = /* @__PURE__ */ new Map();
 +	function settledData(cacheKey) {
 +		const entry = cacheKey ? cache.get(cacheKey) : void 0;
 +		return entry && entry.data !== void 0 ? entry : void 0;
@@ -738,7 +670,7 @@ index 0000000..3938f7e
 +		for (const [sid, q] of queries) {
 +			const entry = settledData(q.cacheKey) ?? settledData(q.prevCacheKey);
 +			out[sid] = entry ? entry.data : q.defaults;
-+			if (q.loading) {
++			if (isPending(sid)) {
 +				out.__openui_loading.push(sid);
 +				if (q.everFetched) out.__openui_refetching.push(sid);
 +			}
@@ -856,6 +788,7 @@ index 0000000..3938f7e
 +					}
 +				} else if (rebuildSnapshot()) notify();
 +			}
++			reevaluateReaders();
 +		}
 +	}
 +	/** Remove a cache entry if no query references it. */
@@ -872,14 +805,56 @@ index 0000000..3938f7e
 +		if (q.prevCacheKey) cleanupCacheEntry(q.prevCacheKey);
 +	}
 +	/** Start a fetch for the query's current key unless settled data or an in-flight fetch for that key exists. */
-+	function fetchIfNeeded(sid, trigger) {
++	function fetchIfNeeded(sid, trigger, actionId) {
 +		const q = queries.get(sid);
 +		if (!q || !toolProvider) return;
 +		const entry = cache.get(q.cacheKey);
 +		if (entry?.inFlight) return;
-+		if (!(entry && entry.data !== void 0)) executeFetch(q.cacheKey, sid, trigger);
++		if (!(entry && entry.data !== void 0)) executeFetch(q.cacheKey, sid, trigger, actionId);
++	}
++	function buildNode(statement) {
++		const reads = /* @__PURE__ */ new Map();
++		for (const id of statement.waitFor ?? []) reads.set(id, getData(id));
++		const node = toNode(statement);
++		seen.set(statement.statementId, reads);
++		nodes.set(statement.statementId, node);
++		return node;
++	}
++	function evaluateStatements(next, context, opts) {
++		if (disposed) return;
++		statements = next;
++		toNode = (statement) => toQueryNode(statement, context, opts?.extraDeps);
++		nodes.clear();
++		seen.clear();
++		applyNodes(next.map(buildNode));
++		reevaluateReaders();
++	}
++	/**
++	* Re-evaluate the readers whose waited-on result changed. Never for a query's own result, so it
++	* cannot loop; each round follows one link, and the bound stops cycles. An evaluation error is
++	* warned and leaves the scheduled queries untouched.
++	*/
++	function reevaluateReaders() {
++		for (let round = 0; round <= statements.length; round++) {
++			if (disposed || !toNode) return;
++			const stale = new Set(statements.filter((s) => s.waitFor?.some((id) => getData(id) !== seen.get(s.statementId)?.get(id))));
++			if (stale.size === 0) return;
++			try {
++				applyNodes(statements.map((s) => stale.has(s) ? buildNode(s) : nodes.get(s.statementId)));
++			} catch (e) {
++				console.warn(`[openui] reader re-evaluation failed: ${e instanceof Error ? e.message : String(e)}`);
++				return;
++			}
++		}
 +	}
 +	function evaluateQueries(queryNodes) {
++		statements = [];
++		toNode = null;
++		nodes.clear();
++		seen.clear();
++		applyNodes(queryNodes);
++	}
++	function applyNodes(queryNodes) {
 +		if (disposed) return;
 +		const activeIds = new Set(queryNodes.map((n) => n.statementId));
 +		for (const [sid, q] of queries) if (!activeIds.has(sid)) removeQuery(sid, q);
@@ -887,6 +862,7 @@ index 0000000..3938f7e
 +			if (!node.complete) continue;
 +			const cacheKey = buildCacheKey(node.toolName, node.args, node.deps);
 +			const existing = queries.get(node.statementId);
++			const wasWaiting = existing?.waiting ?? false;
 +			let trigger = "load";
 +			if (existing) {
 +				if (existing.cacheKey !== cacheKey) {
@@ -895,7 +871,7 @@ index 0000000..3938f7e
 +					abortInFlight(existing);
 +					existing.needsRefetch = void 0;
 +					existing.loading = false;
-+					trigger = "state_change";
++					trigger = existing.everFetched ? "state_change" : "load";
 +				} else trigger = void 0;
 +				existing.toolName = node.toolName;
 +				existing.args = node.args;
@@ -911,6 +887,12 @@ index 0000000..3938f7e
 +				refreshInterval: 0
 +			});
 +			const q = queries.get(node.statementId);
++			q.waitFor = node.waitFor;
++			q.waiting = node.waitFor?.some((dep) => getData(dep) === void 0) ?? false;
++			if (q.waiting) {
++				clearDebounce(q);
++				continue;
++			}
 +			if (trigger === "state_change") {
 +				clearDebounce(q);
 +				q.debounce = setTimeout(() => {
@@ -919,7 +901,11 @@ index 0000000..3938f7e
 +					fetchIfNeeded(node.statementId, "state_change");
 +				}, STATE_CHANGE_DEBOUNCE_MS);
 +			} else if (trigger === "load") fetchIfNeeded(node.statementId, "load");
-+			else if (q.debounce && settledData(cacheKey)) clearDebounce(q);
++			else {
++				if (q.debounce && settledData(cacheKey)) clearDebounce(q);
++				/* a reader whose dependency just arrived: schedule its first (or changed) fetch */
++				if (wasWaiting && !cache.get(cacheKey)?.inFlight && !settledData(cacheKey) && !q.error) fetchIfNeeded(node.statementId, q.everFetched ? "state_change" : "load");
++			}
 +			const requested = node.refreshInterval ?? 0;
 +			const newInterval = requested > 0 ? Math.max(requested, MIN_REFRESH_INTERVAL_S) : 0;
 +			if (newInterval !== q.refreshInterval) {
@@ -936,6 +922,20 @@ index 0000000..3938f7e
 +		}
 +		if (rebuildSnapshot()) notify();
 +	}
++	function getData(statementId) {
++		const q = queries.get(statementId);
++		if (!q) return void 0;
++		const data = settledData(q.cacheKey)?.data;
++		if (data !== void 0 || !q.prevCacheKey) return data;
++		return settledData(q.prevCacheKey)?.data;
++	}
++	/** Loading, or waiting on a pending query. */
++	function isPending(statementId, visited = /* @__PURE__ */ new Set()) {
++		const q = queries.get(statementId);
++		if (!q || visited.has(statementId)) return false;
++		visited.add(statementId);
++		return q.loading || !!q.waiting && (q.waitFor ?? []).some((dep) => isPending(dep, visited));
++	}
 +	function getResult(statementId) {
 +		const q = queries.get(statementId);
 +		if (!q) return null;
@@ -946,7 +946,7 @@ index 0000000..3938f7e
 +		return queries.get(statementId)?.loading ?? false;
 +	}
 +	function isAnyLoading() {
-+		for (const q of queries.values()) if (q.loading) return true;
++		for (const q of queries.values()) if (q.loading || q.waiting) return true;
 +		return false;
 +	}
 +	/**
@@ -960,8 +960,9 @@ index 0000000..3938f7e
 +		if (!q) return null;
 +		const current = settledData(q.cacheKey);
 +		const hasData = !!(current ?? settledData(q.prevCacheKey));
++		const busy = q.loading || isPending(statementId);
 +		return {
-+			state: q.error ? "error" : q.loading ? q.everFetched ? "refetching" : "loading" : "idle",
++			state: q.error ? "error" : busy ? q.everFetched ? "refetching" : "loading" : "idle",
 +			hasData,
 +			stale: hasData && (!!q.error || !current),
 +			trigger: q.lastTrigger,
@@ -1117,6 +1118,7 @@ index 0000000..3938f7e
 +	}
 +	return {
 +		evaluateQueries,
++		evaluateStatements,
 +		getResult,
 +		isLoading,
 +		isAnyLoading,
@@ -1134,13 +1136,6 @@ index 0000000..3938f7e
 +		isPaused,
 +		dispose
 +	};
-+}
-+/** Evaluate with a fresh per-call budget; the caller decides what a LimitError means. */
-+function evaluateBudgeted(ast, evaluationContext) {
-+	return evaluate(ast, {
-+		...evaluationContext,
-+		budget: createEvalBudget()
-+	});
 +}
 +/** Unwrap `{ value, componentType }` form-field entries (same as useOpenUIState's getState). */
 +function unwrapFieldValue(v) {
@@ -1174,13 +1169,12 @@ index 0000000..3938f7e
 +		const local = { ...store.getSnapshot() };
 +		const ctx = {
 +			...evaluationContext,
-+			getState: (name) => unwrapFieldValue(local[name]),
-+			budget: createEvalBudget()
++			getState: (name) => unwrapFieldValue(local[name])
 +		};
 +		const result = getResult();
-+		const assign = (target, value) => {
++		const assign = (target, value, pristine) => {
 +			local[target] = value;
-+			store.set(target, value);
++			store.set(target, value, pristine ? { pristine: true } : void 0);
 +		};
 +		for (const step of plan.steps) switch (step.type) {
 +			case ACTION_STEPS.Run:
@@ -1207,6 +1201,13 @@ index 0000000..3938f7e
 +					humanFriendlyMessage: ""
 +				});
 +				break;
++			case "custom_action":
++				emit({
++					type: step.name,
++					params: step.params,
++					humanFriendlyMessage: ""
++				});
++				break;
 +			case ACTION_STEPS.Set:
 +				if (!step.valueAST) {
 +					console.warn(`[openui] Set action for ${step.target} has no valueAST — skipping`);
@@ -1216,7 +1217,7 @@ index 0000000..3938f7e
 +				break;
 +			case ACTION_STEPS.Reset: {
 +				const decls = result?.stateDeclarations ?? {};
-+				for (const target of step.targets) assign(target, decls[target] ?? null);
++				for (const target of step.targets) assign(target, decls[target] ?? null, true);
 +				break;
 +			}
 +		}
@@ -1233,19 +1234,25 @@ index 0000000..3938f7e
 +	}
 +}
 +//#endregion
-+export { MIN_REFRESH_INTERVAL_S, STATE_CHANGE_DEBOUNCE_MS, createActionId, createQueryManager, evaluateBudgeted, runActionPlan };
++export { MIN_REFRESH_INTERVAL_S, STATE_CHANGE_DEBOUNCE_MS, createActionId, createQueryManager, runActionPlan };
 diff --git a/package.json b/package.json
-index dce573d..cc410b4 100644
+index ff0b9da92dfd4fdfaa134d14bc14f65d1ca281b2..982e7eda3361946fd3f8f346ff1a9589309fa874 100644
 --- a/package.json
 +++ b/package.json
-@@ -37,6 +37,10 @@
+@@ -37,6 +37,16 @@
          "types": "./dist/index.d.cts",
          "default": "./dist/index.cjs"
        }
 +    },
 +    "./theuth-runtime": {
-+      "types": "./dist/theuth-runtime.d.mts",
-+      "default": "./dist/theuth-runtime.mjs"
++      "import": {
++        "types": "./dist/theuth-runtime.d.mts",
++        "default": "./dist/theuth-runtime.mjs"
++      },
++      "require": {
++        "types": "./dist/theuth-runtime.d.mts",
++        "default": "./dist/theuth-runtime.mjs"
++      }
      }
    },
    "react-native": "./dist/index.native.cjs",

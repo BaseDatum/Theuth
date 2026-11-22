@@ -320,7 +320,7 @@ pub fn source(spec: &StudySpec, warnings: &[String], token: &str) -> String {
         ));
     }
     out.push_str(&format!(
-        "bEdit = Button(\"Edit\", Action([@ToAssistant({})]), \"tertiary\")\n",
+        "bEdit = Button(\"Edit\", @ToAssistant({}), \"tertiary\")\n",
         lit(&format!("study draft {slug}: edit"))
     ));
     // 151 addition A: Discard deletes the draft (token-checked, like Start) and then tells the chat.
@@ -361,7 +361,7 @@ pub fn source_compact(slug: &str, settled: u32, total: u32) -> String {
          head = CardHeader({}, {})\n\
          line = TextContent({}, \"small\")\n\
          buttons = Buttons([bOpen])\n\
-         bOpen = Button(\"Open in Autoresearch\", Action([@ToAssistant({})]))\n",
+         bOpen = Button(\"Open in Autoresearch\", @ToAssistant({}))\n",
         lit(slug),
         lit(&format!("study draft {slug}")),
         lit(&format!(
@@ -695,7 +695,7 @@ mod tests {
         assert!(!s.contains("autoresearch_control"), "{s}");
         assert!(s.contains("bStart = Button(\"Start now\", Action([@Run(start), @ToAssistant(\"study draft sort-speed: started\")]))\n"), "{s}");
         assert!(s.contains("bWindow = Button(\"Start in idle window\", Action([@Run(startWindow), @ToAssistant(\"study draft sort-speed: started\")]), \"secondary\")\n"), "{s}");
-        assert!(s.contains("bEdit = Button(\"Edit\", Action([@ToAssistant(\"study draft sort-speed: edit\")]), \"tertiary\")\n"));
+        assert!(s.contains("bEdit = Button(\"Edit\", @ToAssistant(\"study draft sort-speed: edit\"), \"tertiary\")\n"));
         assert!(s.contains("discard = Mutation(\"autoresearch_discard\", {draft_id: \"sort-speed\", token: \"tok123\"})\n"), "{s}");
         assert!(s.contains("bDiscard = Button(\"Discard\", Action([@Run(discard), @ToAssistant(\"study draft sort-speed: discarded\")]), \"tertiary\", \"destructive\")\n"), "{s}");
         // R-11: the third Start snapshots the user's dirty tree (`include_dirty`); the result line covers it.
@@ -750,7 +750,7 @@ mod tests {
              head = CardHeader(\"sort-speed\", \"study draft sort-speed\")\n\
              line = TextContent(\"Study draft sort-speed · 3 of 9 settled\", \"small\")\n\
              buttons = Buttons([bOpen])\n\
-             bOpen = Button(\"Open in Autoresearch\", Action([@ToAssistant(\"study draft sort-speed: open in autoresearch\")]))\n"
+             bOpen = Button(\"Open in Autoresearch\", @ToAssistant(\"study draft sort-speed: open in autoresearch\"))\n"
         );
         assert!(!s.contains("Mutation"));
         let view = autoresearch::DraftView {

@@ -1,40 +1,60 @@
-# theuth apps component catalog (library 5e864f05eda4) — root statement: root = Stack([...])
-Positional arguments follow each signature; `name?` is optional; `$binding<T>` accepts a $state variable.
+# theuth apps component catalog (library 5dfe88ce20de) — root statement: root = Card([...])
 
-## Layout
+## Component Signatures
+
+Arguments marked with ? are optional. Sub-components can be inline or referenced; prefer references for better streaming.
+Props typed `ActionExpression` accept one @step, or Action([@steps...]) for several. See the Action section for available steps (@Run, @ToAssistant, @OpenUrl, @Set, @Reset, @CopyToClipboard).
+Props marked `$binding<type>` accept a `$variable` reference for two-way binding.
+
+### Layout
 Stack(children: any[], direction?: "row" | "column", gap?: "none" | "xs" | "s" | "m" | "l" | "xl" | "2xl", align?: "start" | "center" | "end" | "stretch" | "baseline", justify?: "start" | "center" | "end" | "between" | "around" | "evenly", wrap?: boolean) — Flex container. direction: "row"|"column" (default "column"). gap: "none"|"xs"|"s"|"m"|"l"|"xl"|"2xl" (default "m"). align: "start"|"center"|"end"|"stretch"|"baseline". justify: "start"|"center"|"end"|"between"|"around"|"evenly".
 Tabs(items: TabItem[]) — Tabbed container
-TabItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[]) — value is unique id, trigger is tab label, content is array of components
+TabItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageBlock | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Form | Buttons | IconButton | Steps | InlineHeader | EntityList | EditableTable | SnippetCardBlock | OverviewCardBlock | ContextCardBlock | CompositeCardBlock | ListBlock | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[]) — value is unique id, trigger is tab label, content is array of components
 Accordion(items: AccordionItem[]) — Collapsible sections
-AccordionItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[]) — value is unique id, trigger is section title
+AccordionItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageBlock | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Form | Buttons | IconButton | Steps | InlineHeader | EntityList | EditableTable | SnippetCardBlock | OverviewCardBlock | ContextCardBlock | CompositeCardBlock | ListBlock | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[]) — value is unique id, trigger is section title
 Steps(items: StepsItem[]) — Step-by-step guide
 StepsItem(title: string, details: string) — title and details text for one step
-Carousel(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[][], variant?: "card" | "sunk") — Horizontal scrollable carousel
+Carousel(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageBlock | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Form | Buttons | IconButton | Steps | InlineHeader | EntityList | EditableTable | SnippetCardBlock | OverviewCardBlock | ContextCardBlock | CompositeCardBlock | ListBlock | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[][], variant?: "card" | "sunk") — Horizontal scrollable carousel
 Separator(orientation?: "horizontal" | "vertical", decorative?: boolean) — Visual divider between content sections
+Modal(title: string, open?: $binding<boolean>, children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageBlock | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Form | Buttons | IconButton | Steps | InlineHeader | EntityList | EditableTable | SnippetCardBlock | OverviewCardBlock | ContextCardBlock | CompositeCardBlock | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[], size?: "sm" | "md" | "lg") — Modal dialog. open is a reactive $boolean binding — set to true to open, X/Escape/backdrop auto-closes. Put Form with buttons inside children.
+SectionBlock(sections: SectionItem[], isFoldable?: boolean) — Collapsible accordion sections. Auto-opens sections as they stream in. Use SectionItem for each section.
+SectionItem(value: string, trigger: string, content: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageBlock | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Form | Buttons | IconButton | Steps | InlineHeader | EntityList | EditableTable | SnippetCardBlock | OverviewCardBlock | ContextCardBlock | CompositeCardBlock | Tabs | Accordion | ListBlock | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[]) — Section with a label and collapsible content — used inside SectionBlock
 - For grid-like layouts, use Stack with direction "row" and wrap set to true.
 - Prefer justify "start" (or omit justify) with wrap=true for stable columns instead of uneven gutters.
 - Use nested Stacks when you need explicit rows/sections.
 - Show/hide sections: $editId != "" ? Card([editForm]) : null
+- Modal: Modal("Title", $showModal, [content]) — $showModal is boolean, X/Escape auto-closes. Put Form with its own buttons inside children.
 - Use Tabs for alternative views (chart types, data sections) — no $variable needed
 - Shared filter across Tabs: same $days binding in Query args works across all TabItems
+- The root is a Card: root = Card([...]). Use Stack inside it for rows/columns and app layouts (direction "row", wrap, gap, align); do not make Stack the root.
+- SectionBlock groups long content into foldable SectionItem(value, trigger, content[]) sections; never the first child of the root Card.
 
-## Content
-Card(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Buttons | Steps | Tabs | Carousel | Stack | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[], variant?: "card" | "sunk" | "clear", direction?: "row" | "column", gap?: "none" | "xs" | "s" | "m" | "l" | "xl" | "2xl", align?: "start" | "center" | "end" | "stretch" | "baseline", justify?: "start" | "center" | "end" | "between" | "around" | "evenly", wrap?: boolean) — Styled container. variant: "card" (default, elevated) | "sunk" (recessed) | "clear" (transparent). Always full width. Accepts all Stack flex params (default: direction "column"). Cards flex to share space in row/wrap layouts.
+### Content
+Card(children: (TextContent | MarkDownRenderer | CardHeader | Callout | TextCallout | CodeBlock | Image | ImageBlock | ImageGallery | Separator | HorizontalBarChart | RadarChart | PieChart | SingleStackedBarChart | ScatterChart | AreaChart | BarChart | LineChart | Table | TagBlock | Form | Buttons | IconButton | Steps | InlineHeader | EntityList | EditableTable | SnippetCardBlock | OverviewCardBlock | ContextCardBlock | CompositeCardBlock | Tabs | Carousel | Stack | SectionBlock | FollowUpBlock | ListBlock | Modal | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[], variant?: "card" | "sunk" | "clear", direction?: "row" | "column", gap?: "none" | "xs" | "s" | "m" | "l" | "xl" | "2xl", align?: "start" | "center" | "end" | "stretch" | "baseline", justify?: "start" | "center" | "end" | "between" | "around" | "evenly", wrap?: boolean) — Styled container. variant: "card" (default, elevated) | "sunk" (recessed) | "clear" (transparent). Always full width. Accepts all Stack flex params (default: direction "column"). Cards flex to share space in row/wrap layouts.
 CardHeader(title?: string, subtitle?: string) — Header with optional title and subtitle
 TextContent(text: string, size?: "small" | "default" | "large" | "small-heavy" | "large-heavy") — Text block. Supports markdown. Optional size: "small" | "default" | "large" | "small-heavy" | "large-heavy".
 MarkDownRenderer(textMarkdown: string, variant?: "clear" | "card" | "sunk") — Renders markdown text with optional container variant
 Callout(variant: "info" | "warning" | "error" | "success" | "neutral", title: string, description: string, visible?: $binding<boolean>) — Callout banner. Optional visible is a reactive $boolean — auto-dismisses after 3s by setting $visible to false.
 TextCallout(variant?: "neutral" | "info" | "warning" | "success" | "danger", title?: string, description?: string) — Text callout with variant, title, and description
 Image(alt: string, src?: string) — Image with alt text and optional URL
+ImageBlock(src: string, alt?: string) — Image block with loading state
 ImageGallery(images: {src: string, alt?: string, details?: string}[]) — Gallery grid of images with modal preview
 CodeBlock(language: string, codeString: string) — Syntax-highlighted code block
+InlineHeader(heading: string, description?: string) — Compact section heading with an optional one-line description, for use inside cards.
+FollowUpBlock(items: FollowUpItem[]) — List of clickable follow-up suggestions placed at the end of a response
+FollowUpItem(text: string) — Clickable follow-up suggestion — when clicked, sends text as user message
+- InlineHeader is a compact heading + description pair for labelling a block (lighter than CardHeader).
 - Use Cards to group related KPIs or sections. Stack with direction "row" for side-by-side layouts.
 - Success toast: Callout("success", "Saved", "Done.", $showSuccess) — use @Set($showSuccess, true) in save action, auto-dismisses after 3s. For errors: result.status == "error" ? Callout("error", "Failed", result.error) : null
 - KPI card: Card([TextContent("Label", "small"), TextContent("" + @Count(@Filter(data.rows, "field", "==", "value")), "large-heavy")])
+- FollowUpBlock([FollowUpItem("question"), ...]) at the END of the root Card suggests what to ask next; pressing one sends its text to the assistant.
 
-## Tables
+### Tables
 Table(columns: Col[]) — Data table — column-oriented. Each Col holds its own data array.
 Col(label: string, data: any, type?: "string" | "number" | "action") — Column definition — holds label + data array
+EditableTable(name?: string, columns?: {type: "text" | "number" | "date-single" | "select" | "url", key?: string, header?: string, width?: number, options?: {value: string, label: string}[]}[], data?: {id: string, values: (string | number)[]}[]) — Spreadsheet-like table whose cells the user can edit inline (text, number, url, date, select columns); edits are saved back as a form field
+- EditableTable lets the user edit cells inline. Give it a unique name, columns of { type, key, header } with type one of text | number | date-single | select | url (select also needs options: [{ value, label }]).
+- data is an array of { id, values } rows where values are ordered positionally to match columns. Edited data is submitted when the user clicks Save Changes.
 - Table is COLUMN-oriented: Table([Col("Label", dataArray), Col("Count", countArray, "number")]). Use array pluck for data: data.rows.fieldName
 - Col data can be component arrays for styled cells: Col("Status", @Each(data.rows, "item", Tag(item.status, null, "sm", item.status == "open" ? "success" : "danger")))
 - Row actions: Col("Actions", @Each(data.rows, "t", Button("Edit", Action([@Set($showEdit, true), @Set($editId, t.id)]))))
@@ -43,7 +63,7 @@ Col(label: string, data: any, type?: "string" | "number" | "action") — Column 
 - Chain sort + filter: filtered = @Filter(...) then sorted = @Sort(filtered, ...) — use sorted for both Table and Charts
 - Empty state: @Count(data.rows) > 0 ? Table([...]) : TextContent("No data yet")
 
-## Charts (2D)
+### Charts (2D)
 BarChart(labels: string[], series: Series[], variant?: "grouped" | "stacked", xLabel?: string, yLabel?: string, height?: number) — Vertical bars; use for comparing values across categories with one or more series
 LineChart(labels: string[], series: Series[], variant?: "linear" | "natural" | "step", xLabel?: string, yLabel?: string, height?: number) — Lines over categories; use for trends and continuous data over time
 AreaChart(labels: string[], series: Series[], variant?: "linear" | "natural" | "step", xLabel?: string, yLabel?: string, height?: number) — Filled area under lines; use for cumulative totals or volume trends over time
@@ -55,24 +75,27 @@ Series(category: string, values: number[]) — One data series
 - Chart + Table from same source: use @Sort or @Filter result for both LineChart and Table Col data
 - Multiple chart views: use Tabs — Tabs([TabItem("line", "Line", [LineChart(...)]), TabItem("bar", "Bar", [BarChart(...)])])
 
-## Charts (1D)
+### Charts (1D)
 PieChart(labels: string[], values: number[], variant?: "pie" | "donut", appearance?: "circular" | "semiCircular") — Circular slices; use plucked arrays: PieChart(data.categories, data.values)
 SingleStackedBarChart(labels: string[], values: number[]) — Single horizontal stacked bar; use plucked arrays: SingleStackedBarChart(data.categories, data.values)
 - PieChart and BarChart need NUMBERS, not objects. For list data, use @Count(@Filter(...)) to aggregate:
 - PieChart from list: `PieChart(["Low", "Med", "High"], [@Count(@Filter(data.rows, "priority", "==", "low")), @Count(@Filter(data.rows, "priority", "==", "medium")), @Count(@Filter(data.rows, "priority", "==", "high"))], "donut")`
 - KPI from count: `TextContent("" + @Count(@Filter(data.rows, "status", "==", "open")), "large-heavy")`
 
-## Charts (Scatter)
+### Charts (Scatter)
 ScatterChart(datasets: ScatterSeries[], xLabel?: string, yLabel?: string) — X/Y scatter plot; use for correlations, distributions, and clustering
 ScatterSeries(name: string, points: Point[]) — Named dataset
 Point(x: number, y: number, z?: number) — Data point with numeric coordinates
 
-## Forms
+### Forms
+Form(name: string, buttons: Buttons, fields?: FormControl[]) — Form container with fields and explicit action buttons
+FormControl(label: string, input: Input | TextArea | Select | DatePicker | Slider | CheckBoxGroup | RadioGroup | Chips | OptionCards, hint?: string) — Field with label, input component, and optional hint text
 Label(text: string) — Text label
 Input(name: string, placeholder?: string, type?: "text" | "email" | "password" | "number" | "url", rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>)
 TextArea(name: string, placeholder?: string, rows?: number, rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>)
 Select(name: string, items: SelectItem[], placeholder?: string, rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<string>, size?: "small" | "medium" | "large")
 SelectItem(value: string, label: string) — Option for Select
+DatePicker(name: string, mode?: "single" | "range", rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<any>)
 Slider(name: string, variant: "continuous" | "discrete", min: number, max: number, step?: number, defaultValue?: number[], label?: string, rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<number[]>) — Numeric slider input; supports continuous and discrete (stepped) variants
 CheckBoxGroup(name: string, items: CheckBoxItem[], rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, value?: $binding<Record<string, boolean>>)
 CheckBoxItem(label: string, description: string, name: string, defaultChecked?: boolean)
@@ -83,33 +106,59 @@ SwitchItem(label?: string, description?: string, name: string, defaultChecked?: 
 Chips(name: string, type?: "single" | "multiple", items?: ChipItem[], rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, defaultValue?: string | string[]) — A form field of compact selectable chips for choosing one or many short options; the selection is stored under `name`.
 ChipItem(value: string, label: string, icon?: Icon, disabled?: boolean) — A single selectable chip inside a Chips group, with a value, label and optional icon.
 OptionCards(name: string, type?: "single" | "multiple", items?: OptionCard[], rules?: {required?: boolean, email?: boolean, url?: boolean, numeric?: boolean, min?: number, max?: number, minLength?: number, maxLength?: number, pattern?: string}, defaultValue?: string | string[]) — A form field of selectable cards (title, optional subtitle, optional icon or image) laid out in a responsive grid for choosing one or many options; the selection is stored under `name`.
-OptionCard(value: string, title: string, subtitle?: string, topContent?: Icon | Image | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone, disabled?: boolean) — A single selectable card inside an OptionCards group, with a value, title, optional subtitle and an optional Icon or Image on top.
+OptionCard(value: string, title: string, subtitle?: string, topContent?: Icon | Image, disabled?: boolean) — A single selectable card inside an OptionCards group, with a value, title, optional subtitle and an optional Icon or Image on top.
 - Chips: compact single/multiple selection pills. Use ChipItem references for each option.
 - OptionCards: larger selectable cards with title, subtitle and an optional Icon or Image on top. Use OptionCard references for each option.
+- For Form fields, define EACH FormControl as its own reference — do NOT inline all controls in one array. This allows progressive field-by-field streaming.
+- NEVER nest Form inside Form — each Form should be a standalone container.
+- Form requires explicit buttons. Always pass a Buttons(...) reference as the third Form argument.
 - rules is an optional object: {required: true, email: true, minLength: 8, maxLength: 100}
 - Available rules: required, email, min, max, minLength, maxLength, pattern, url, numeric
 - The renderer shows error messages automatically — do NOT generate error text in the UI
 - Conditional fields: $country == "US" ? stateField : $country == "UK" ? postcodeField : addressField
+- Edit form in Modal: Modal("Edit", $showEdit, [Form("edit", Buttons([saveBtn, cancelBtn]), [fields...])]). Save button should include @Set($showEdit, false) to close modal.
 
-## Buttons
+### Buttons
 Button(label: string, action?: ActionExpression, variant?: "primary" | "secondary" | "tertiary", type?: "normal" | "destructive", size?: "extra-small" | "small" | "medium" | "large") — Clickable button
 Buttons(buttons: Button[], direction?: "row" | "column") — Group of Button components. direction: "row" (default) | "column".
+IconButton(name: string, icon: Icon, action?: ActionExpression, variant?: "primary" | "secondary" | "tertiary", size?: "extra-small" | "small" | "medium" | "large", shape?: "square" | "circle") — Icon-only button. name is the accessible label and the action label; icon is an Icon; action fires on click.
+- Icon renders a lucide icon by kebab-case name; it is also used as the icon of IconButton, IconText and OptionCard.
 - Toggle in @Each: @Each(rows, "t", Button(t.status == "open" ? "Close" : "Reopen", Action([...])))
 
-## Data Display
+### Data Display
 TagBlock(tags: string[], size?: "sm" | "md" | "lg") — tags is an array of strings; optional size sm | md | lg
 Tag(text: string, icon?: Icon, size?: "sm" | "md" | "lg", variant?: "neutral" | "info" | "success" | "warning" | "danger") — Styled tag/badge with optional Icon and variant
 Icon(name: string, category?: string) — A lucide icon by kebab-case name (e.g. 'circle-check'). Optional category picks a topical fallback when the name doesn't resolve.
+EntityList(rows?: {left: string, right: string, rightVariant?: "text" | "number"}[], size?: "small" | "default", header?: {left: string, right: string, rightVariant?: "text" | "number"}, footer?: {left: string, right: string, rightVariant?: "text" | "number"}) — Two-column key/value rows (left label, right value). size 'default' supports optional header and footer rows; rightVariant 'number' uses tabular numbers.
 ListBlock(items: ListItem[], variant?: "number" | "image", size?: "default" | "small") — A list of items with number or image indicators. Each item can optionally have an action. size small renders a compact list.
 ListItem(title: string, subtitle?: string, image?: {src: string, alt: string}, actionLabel?: string, action?: ActionExpression) — Item in a ListBlock — displays a title with an optional subtitle and image. When action is provided, the item becomes clickable.
 - Color-mapped Tag: Tag(value, null, "sm", value == "high" ? "danger" : value == "medium" ? "warning" : "neutral")
+- EntityList is a compact two-column list of { left, right } rows (e.g. name / value). size='default' also supports a header and footer row; size='small' does not.
 - ListBlock is a numbered or image list of ListItem references. An action on ListItem is optional.
 
-## Cards
+### Cards
+SnippetCardBlock(items: SnippetCardItem[], layout?: "grid", responsive?: boolean, action?: ActionExpression, gap?: number | string) — A responsive grid of compact label/value cards (2 per row) for showing several short facts side by side; optionally clickable with a shared action.
+SnippetCardItem(id?: string, lhs: IconText | ImageText, rhs?: Text | BoldText) — One row-style snippet card: a label on the left (IconText or ImageText) and an optional value on the right (Text or BoldText).
+OverviewCardBlock(items: OverviewCardItem[], layout?: "grid" | "carousel", responsive?: boolean, action?: ActionExpression, gap?: number | string) — A grid or horizontal carousel of compact overview cards, each with a heading (icon/image/text) on top and an inline metric below; optionally clickable with a shared action.
+OverviewCardItem(id?: string, top: IconText | ImageText | Text, bottom?: MetricIndicatorInline) — One overview card: a heading slot at the top (IconText, ImageText or Text) and an optional MetricIndicatorInline at the bottom.
+ContextCardBlock(items: ContextCardItem[], layout?: "grid" | "carousel", responsive?: boolean, action?: ActionExpression, gap?: number | string) — A grid or carousel of compact tinted context cards (title or tag plus a short bold body); an optional action makes every card clickable.
+ContextCardItem(id?: string, title: string | Tag, body?: string, bgColor?: "gray", bgImageSrc?: string, bgImageAlt?: string) — A single card inside a ContextCardBlock: a title (plain string or Tag), an optional markdown body, and an optional gray tint or background image.
+CompositeCardBlock(items: CompositeCardItem[], layout?: "grid" | "carousel", responsive?: boolean, action?: ActionExpression, gap?: number | string) — A two-per-row grid or carousel of rich cards, each with an optional header, stacked body content (text, metrics, charts, lists, tags) and a price/button footer; an optional action makes every card clickable.
+CompositeCardItem(id?: string, header?: IconText | ImageText | ImageTextLarge | Text | Image, body?: (Text | BoldText | MetricIndicatorInline | IconText | Image | AreaChart | BarChart | LineChart | ListBlock | TagBlock | EntityList | Graph | StateMachine | Entities | Swimlane | GraphDelta | Waterfall | Funnel | Gantt | Quadrant | Treemap | Sankey | Venn | Loop | Layers | Journey | Fishbone)[], footer?: {price?: BoldText, button?: Button}) — A single card inside a CompositeCardBlock: an optional header (icon/image/text), a stack of body elements (text, metrics, charts, lists, tags), and an optional price/button footer.
+Text(variant?: "text" | "number", value: string, subtext?: string, subtextVariant?: "text" | "number" | "metric", size?: "xs" | "sm" | "md" | "lg") — Plain text line with optional subtext. variant 'number' uses tabular number styling; subtextVariant 'metric' colors a leading +/- subtext green/red.
+BoldText(variant?: "text" | "number", value: string, subtext?: string, subtextVariant?: "text" | "number" | "metric", size?: "xs" | "sm" | "md" | "lg") — Emphasized (bold) text line with optional subtext. variant 'number' uses tabular number styling; subtextVariant 'metric' colors a leading +/- subtext green/red.
+IconText(icon: Icon, iconVariant?: "neutral" | "info" | "success" | "warning" | "danger" | "inverted" | "filled" | "soft", iconSize?: "xs" | "s" | "m" | "l" | "xl" | "sm" | "md" | "lg", title: string, subtitle?: string, bold?: boolean, layout?: "horizontal" | "vertical") — An icon badge with a title and optional subtitle, laid out horizontally or vertically. iconVariant sets the badge color.
+ImageText(src: string, alt?: string, title: string, subtitle?: string, bold?: boolean, layout?: "horizontal" | "vertical", imageSize?: number) — A small square image (thumbnail/avatar) with a title and optional subtitle. src must be a real image URL.
+ImageTextLarge(src: string, alt?: string, title: string, subtitle?: string, bold?: boolean) — A full-width banner image above a bold title and optional subtitle. src must be a real image URL.
 MetricIndicatorInline(value: string, subtext?: string, trend?: {direction: "up" | "down", value: number}) — Headline metric value with an optional +/- percentage trend and subtext, all on one line.
 - Card blocks lay out 2+ items in a responsive grid (or carousel where supported). Every item in a block must have the same structure.
+- SnippetCardItem: small card with lhs (IconText | ImageText) and optional rhs (Text | BoldText) — good for key/value facts.
+- OverviewCardItem: small card with top (IconText | ImageText | Text) and optional bottom MetricIndicatorInline — good for KPIs.
+- ContextCardItem: medium card with a title (string or Tag), body text and optional background image — good for summaries.
+- CompositeCardItem: rich card with header, body array (Text, BoldText, MetricIndicatorInline, IconText, Image, charts, ListBlock, TagBlock, EntityList) and footer (price + Button) — good for products/offers.
+- Text / BoldText / IconText / ImageText / ImageTextLarge / MetricIndicator* are the inline building blocks used INSIDE card items; do not place them directly in the root Card.
 
-## Other
+### Diagrams
 Graph(nodes: {id: string, label: string, kind?: "box" | "rounded" | "pill" | "diamond" | "cylinder" | "actor" | "hexagon" | "circle" | "note", group?: string, state?: "default" | "active" | "done" | "muted" | "danger", sub?: string, tag?: string, icon?: "server" | "database" | "cloud" | "user" | "users" | "globe" | "lock" | "shield" | "key" | "queue" | "cpu" | "box" | "package" | "file" | "folder" | "terminal" | "laptop" | "phone" | "mail" | "clock" | "settings" | "code" | "git-branch" | "bot" | "browser"}[], edges: {from: string, to: string, label?: string, style?: "solid" | "dashed", state?: "default" | "active" | "done" | "muted" | "danger", arrow?: "forward" | "both" | "none"}[], groups?: {id: string, label: string, parent?: string, kind?: "zone" | "boundary" | "cluster"}[], direction?: "LR" | "TB", highlight?: $binding<string[]>, onSelect?: ActionExpression, legend?: {label: string, state?: "default" | "active" | "done" | "muted" | "danger", style?: "solid" | "dashed", kind?: "box" | "rounded" | "pill" | "diamond" | "cylinder" | "actor" | "hexagon" | "circle" | "note"}[], title?: string) — Typed boxes and arrows: nodes (id, label, kind?, group?, state?, sub?, tag?, icon?), directed edges (from, to, label?, style?, state?, arrow?), optional groups (nested by parent) and legend. `highlight` marks node ids active; `onSelect` runs an Action when a node is pressed, with `$value` bound to the node id (`@Set($selected, $value)`).
 StateMachine(states: {id: string, label: string, kind?: "initial" | "final" | "state" | "choice", sub?: string, state?: "default" | "active" | "done" | "muted" | "danger", ref?: string}[], transitions: {from: string, to: string, label?: string, guard?: string, style?: "solid" | "dashed", state?: "default" | "active" | "done" | "muted" | "danger"}[], direction?: "LR" | "TB", title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression) — States and transitions of a lifecycle: states (id, label, kind? initial|final|state|choice, sub?, state?), transitions (from, to, label? = event, guard?, style?, state?). `highlight` lights state ids; `onSelect` runs with the pressed state id as $value.
 Entities(entities: {id: string, label: string, kind?: "entity" | "table" | "class" | "interface" | "enum", fields: {name: string, type?: string, key?: "pk" | "fk" | "uk", nullable?: boolean, note?: string}[], methods?: {name: string, sig?: string}[], state?: "default" | "active" | "done" | "muted" | "danger", ref?: string}[], relations: {from: string, to: string, kind: "one-one" | "one-many" | "many-many" | "inherits" | "implements" | "composes" | "aggregates" | "depends" | "references", label?: string, from_field?: string, to_field?: string}[], detail?: "model" | "schema" | "class", title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression) — Entities, tables or classes with fields and typed relations (one-one|one-many|many-many|inherits|implements|composes|aggregates|depends|references). `highlight` lights entity ids; `onSelect` runs with the pressed entity id as $value.
@@ -126,23 +175,190 @@ Loop(steps: {label: string, note?: string, state?: "default" | "active" | "done"
 Layers(layers: {label: string, items?: string[], note?: string, state?: "default" | "active" | "done" | "muted" | "danger", ref?: string}[], direction?: "top-down" | "bottom-up", title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression) — Stacked horizontal layers (label, items?, note?, state?), top-down or bottom-up. `highlight` lights layer indices as strings; `onSelect` runs with the pressed index as $value.
 Journey(stages: string[], rows: {label: string, cells: string[]}[], mood?: number[], pains?: {stage: number, text: string}[], title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression) — Stages across, rows down (label, cells one per stage), a mood line (−1..1 per stage) and pain points (stage index, text). `highlight` lights stage indices as strings; `onSelect` runs with the pressed index as $value.
 Fishbone(effect: string, causes: {category: string, items: string[]}[], title?: string, highlight?: $binding<string[]>, onSelect?: ActionExpression) — Cause and effect: an effect with categorised causes (category, items) on the bones. `highlight` lights category indices as strings; `onSelect` runs with the pressed index as $value.
+- Every diagram takes `highlight` (a $binding of active unit ids) and `onSelect` (one action; `$value` is the pressed unit id): onSelect = @Set($selected, $value).
+- Diagram data is plain literals — do not compute it with @Each.
 
-## Data and actions
-$name = literal — reactive state; Query("tool", {args}, defaults, refreshSeconds?) — read; Mutation("tool", {args}) — runs only from an action; results expose .status/.data/.error
-Button(label, Action([steps])) steps: @Run, @ToAssistant, @OpenUrl, @Set, @Reset — @Run(mutationOrQuery), @Set($var, value), @Reset($var...), @OpenUrl(url), @ToAssistant(message, context?)
-@Each(array, item, template) — repeat a component per item
-@Count(array) → number — Returns array length
-@First(array) → element — Returns first element of array
-@Last(array) → element — Returns last element of array
-@Sum(numbers[]) → number — Sum of numeric array
-@Avg(numbers[]) → number — Average of numeric array
-@Min(numbers[]) → number — Minimum value in array
-@Max(numbers[]) → number — Maximum value in array
-@Sort(array, field, direction?) → sorted array — Sort array by field. Direction: "asc" (default) or "desc"
-@Filter(array, field, operator: "==" | "!=" | ">" | "<" | ">=" | "<=" | "contains", value) → filtered array — Filter array by field value
-@Round(number, decimals?) → number — Round to N decimal places (default 0)
-@Abs(number) → number — Absolute value
-@Floor(number) → number — Round down to nearest integer
-@Ceil(number) → number — Round up to nearest integer
+## Built-in Functions
 
-Limits: 131072 source bytes, 512 statements, nesting depth 32, 2048 rendered nodes.
+Data functions prefixed with `@` to distinguish from components. These are the ONLY functions available — do NOT invent new ones.
+Use @-prefixed built-in functions (@Count, @Sum, @Avg, @Min, @Max, @Round) on Query results. Do NOT hardcode computed values.
+
+@Count(array: any[]) → number — Returns array length
+@First(array: any[]) → any — Returns first element of array
+@Last(array: any[]) → any — Returns last element of array
+@Sum(numbers: number[]) → number — Sum of numeric array
+@Avg(numbers: number[]) → number — Average of numeric array
+@Min(numbers: number[]) → number — Minimum value in array
+@Max(numbers: number[]) → number — Maximum value in array
+@Sort(array: any[], field: string, direction?: "asc" | "desc") → any[] — Sort array by field. Direction: "asc" (default) or "desc"
+@Filter(array: any[], field: string, operator: "==" | "!=" | ">" | "<" | ">=" | "<=" | "contains", value: any) → any[] — Filter array by field value
+@Round(number: number | number[], decimals?: number) → number | number[] — Round to N decimal places (default 0)
+@Abs(number: number | number[]) → number | number[] — Absolute value
+@Floor(number: number | number[]) → number | number[] — Round down to nearest integer
+@Ceil(number: number | number[]) → number | number[] — Round up to nearest integer
+@Each(array: any[], varName: string, template: any) — Evaluate template for each element. varName is the loop variable — use it ONLY inside the template expression (inline). Do NOT create a separate statement for the template.
+@Percent(part: number, total: number, digits?: number) → string — part / total as a percentage string, e.g. @Percent(3, 4) → "75%"; 0% when total is 0
+@FormatNumber(value: number, notation?: "standard" | "compact", digits?: number, currency?: string) → string — number for display, en-US: @FormatNumber(1234.5) → "1,234.5"; "compact" → "1.2K"; currency is an ISO code, e.g. @FormatNumber(1234.5, "standard", 2, "USD") → "$1,234.50"
+@FormatDate(value: string | number, style?: "short" | "long" | "iso" | "datetime") → string — ISO date/datetime string or epoch milliseconds in UTC: @FormatDate("2026-01-05") → "Jan 5, 2026"; style "iso" → "2026-01-05", "long" → "January 5, 2026", "datetime" → "Jan 5, 2026, 14:30 UTC"
+
+Builtins compose — output of one is input to the next:
+`@Count(@Filter(data.rows, "field", "==", "val"))` for KPIs/chart values, `@Round(@Avg(data.rows.score), 1)`, `@Each(data.rows, "item", Comp(item.field))` for per-item rendering.
+Array pluck: `data.rows.field` extracts a field from every row → use with @Sum, @Avg, charts, tables.
+
+IMPORTANT @Each rule: The loop variable (e.g. "item") is ONLY available inside the @Each template expression. Always inline the template — do NOT extract it to a separate statement.
+CORRECT: `list = @Each(rows, "t", Comp(t.name))`
+WRONG: `item = Comp(t.name)` then `list = @Each(rows, "t", item)`, because t is undefined in item.
+
+## Action — Button Behavior
+
+An action wires a button click to operations. Pass one @-prefixed step bare, e.g. Button("Ask", @ToAssistant("Tell me more")). Put several steps in Action([...]), e.g. Button("Read", Action([@OpenUrl("https://example.com"), @ToAssistant("Summarize this page")])). Steps execute in order.
+Buttons without an action automatically send their label to the assistant (equivalent to @ToAssistant(label)).
+
+Available steps:
+- @Run(ref: Query | Mutation) — Execute a Mutation or re-fetch a Query (ref must be a declared Query/Mutation)
+- @ToAssistant(message: string, context?: any) — Send a message to the assistant (for conversational buttons like "Tell me more", "Explain this"). The optional context is any value (object, array, string, number) passed to the assistant as hidden data, e.g. @ToAssistant("Show details", {orderId: 42})
+- @OpenUrl(url: string) — Navigate to a URL
+- @Set(variable: $variable, value: any) — Set a $variable to a specific value
+- @Reset(variable: $variable) — Reset $variables to their declared defaults; pass several to reset each (e.g. @Reset($title, $priority) restores $title="" and $priority="medium")
+- @CopyToClipboard(text: string) — copy text to the user's clipboard (host action; use for values the user will paste elsewhere)
+
+Example — mutation + refresh + reset (PREFERRED pattern):
+```
+$binding = "default"
+result = Mutation("tool_name", {field: $binding})
+data = Query("tool_name", {}, {rows: []})
+onSubmit = Action([@Run(result), @Run(data), @Reset($binding)])
+```
+
+Example — simple nav:
+```
+viewBtn = Button("View", @OpenUrl("https://example.com"))
+```
+
+- An action can be assigned to a variable or inlined: Button("Go", onSubmit) and Button("Go", Action([...])) both work
+- If a @Run(mutation) step fails, remaining steps are skipped (halt on failure)
+- @Run(queryRef) re-fetches the query (fire-and-forget, cannot fail)
+
+## Rules
+- Every app is root = Card([...]): Card stacks its children vertically with the house styling. Use Stack only inside it for rows/columns (direction "row", wrap) and compact layouts; never make Stack the root.
+- An action is ONE bare step — Button("Ask", @ToAssistant("Tell me more")) — or Action([@Run(m), @Set($v, 1)]) for several steps in order.
+- To copy a value for the user, use @CopyToClipboard(text) as a button action.
+- Format numbers, percentages and dates for display with @FormatNumber, @Percent and @FormatDate instead of building the strings by hand.
+- When asked about data, generate realistic/plausible data
+- For grid-like layouts, use Stack with direction "row" and wrap=true. Avoid justify="between" unless you specifically want large gutters.
+- For forms, define one FormControl reference per field so controls can stream progressively.
+- For forms, always provide the second Form argument with Buttons(...) actions: Form(name, buttons, fields).
+- Never nest Form inside Form.
+- Use @Reset($var1, $var2) after form submit to restore defaults — not @Set($var, "")
+- Multi-query refresh: Action([@Run(mutation), @Run(query1), @Run(query2), @Reset(...)])
+- $variables are reactive: changing via Select or @Set re-evaluates all Queries and expressions referencing them
+- Use existing components (Tabs, Accordion, Modal) before inventing ternary show/hide patterns
+- Text / BoldText / IconText / ImageText / ImageTextLarge / MetricIndicatorInline are inline building blocks used INSIDE card items — do not place them directly in a Stack or Card.
+- EntityList size='small' (no header/footer) is only for use inside a CompositeCardItem body; use size='default' everywhere else.
+- Image URLs must be real (from a tool result or the user) — never invent or template an image URL.
+- Always pass a category to Icon — it enables a topical fallback when the exact icon name is unavailable.
+- EditableTable requires the consuming app to persist edits — use it only when the user or app explicitly asks for an editable table; default to Table for read-only data.
+- Use FollowUpBlock at the END of a Card to suggest what the user can do or ask next.
+- Use ListBlock when presenting a set of options or steps; give each ListItem an action (5th argument) to make it clickable — without one the item is plain text.
+- Use SectionItem inside SectionBlock: each item needs a unique value id, a trigger (header label), and a content array.
+- Carousel takes an array of slides, where each slide is an array of content: carousel = Carousel([[t1, img1], [t2, img2]])
+- IMPORTANT: Every slide in a Carousel must use the same component structure in the same order — e.g. all slides: [title, image, description, tags].
+- CardHeader is the page-level heading — place it as the first child of Card; InlineHeader is a lighter subsection label for a block inside the response, and is redundant when the following component already has a heading.
+- Never use Callout or TextCallout to justify why you did what you did or for any meta-information.
+- If no image URL is in context, compose without image components — icons, gray ContextCardItems, and charts still make rich layouts.
+- Argument-order trap: Image takes alt FIRST, while ImageBlock, ImageText, and ImageTextLarge take src FIRST — alt text in a src slot ships a broken image.
+- Card blocks (SnippetCardBlock, OverviewCardBlock, ContextCardBlock, CompositeCardBlock) need at least 2 items, all with the same structure; use layout "grid" for primary side-by-side comparison and "carousel" for secondary browsing.
+- The card-block action is BLOCK-LEVEL: one action shared by every card, with the clicked card's details attached automatically — keep the @ToAssistant message generic (e.g. "Tell me more about this destination"), and never use a block-level @OpenUrl since it would send every card to the same URL.
+- Card items have NO per-item action: to give each item its own external link, use CompositeCardItem with footer { button: Button(label, @OpenUrl(url)) } — never claim a card opens a link it cannot.
+- Tag variant must be semantically correct (success=positive, danger=negative, warning=cautionary, info=informational, neutral=label); Tag takes an optional Icon second, so use Tag(text, icon, size, variant) when a variant is needed.
+- TagBlock takes plain strings — keep it to at most 3 tags.
+- ListBlock variant "number" is for ordered sequences and rankings, "image" for products/profiles with a real image; Steps is for ordered sequential processes only.
+- Use SectionBlock to divide a long response into independent, equally prominent topics; use Tabs when the items are alternative views of the same thing; set isFoldable=false unless a section has 4+ distinct blocks; never make SectionBlock the first Card child.
+- Accordion is for supplementary or FAQ content only — never primary information, 3-5 items max, and always the last component in its section or card.
+- Charts: LineChart/AreaChart variant "natural" for smooth trends and "linear" for precise point-to-point data; BarChart "grouped" for side-by-side comparison and "stacked" for part-to-whole; prefer HorizontalBarChart when category labels are long or numerous.
+- For large chart values, scale the data and put the unit in the axis label (e.g. yLabel "Revenue ($k)") instead of passing raw thousands or millions.
+- Table is column-oriented: each Col holds its own data array of plain strings or numbers (never components), and every column's array must have the same length.
+- Every Form MUST have EXACTLY ONE submit Button with variant "primary" — that button validates the form; other buttons (secondary/tertiary escape hatches like "Just Surprise Me") skip validation, and there is never a reset button.
+- Prefer structured inputs (Select, Chips, OptionCards, DatePicker, Slider) over free-text Input, give every FormControl a clear label (and a hint where it prevents mistakes), and keep each field name unique within the response.
+- Validation rules ({ required: true, email: true, minLength: 8, ... }) are enforced with inline errors — use them for genuinely essential fields, but never require a free-text field where leaving it blank is meaningful.
+- Every Button label must accurately describe what clicking it does; use "primary" for the main action and "secondary"/"tertiary" only for lower-emphasis supporting actions.
+
+## Examples
+
+Example 1 — Table (column-oriented):
+
+root = Card([title, tbl])
+title = TextContent("Top Languages", "large-heavy")
+tbl = Table([Col("Language", langs), Col("Users (M)", users), Col("Year", years)])
+langs = ["Python", "JavaScript", "Java", "TypeScript", "Go"]
+users = [15.7, 14.2, 12.1, 8.5, 5.2]
+years = [1991, 1995, 1995, 2012, 2009]
+
+Example 2 — Form with validation:
+
+root = Card([title, form])
+title = TextContent("Contact Us", "large-heavy")
+form = Form("contact", btns, [nameField, emailField, countryField, msgField])
+nameField = FormControl("Name", Input("name", "Your name", "text", { required: true, minLength: 2 }))
+emailField = FormControl("Email", Input("email", "you@example.com", "email", { required: true, email: true }))
+countryField = FormControl("Country", Select("country", countryOpts, "Select...", { required: true }))
+msgField = FormControl("Message", TextArea("message", "Tell us more...", 4, { required: true, minLength: 10 }))
+countryOpts = [SelectItem("us", "United States"), SelectItem("uk", "United Kingdom"), SelectItem("de", "Germany")]
+btns = Buttons([Button("Submit", @ToAssistant("Submit"), "primary"), Button("Cancel", @ToAssistant("Cancel"), "secondary")])
+
+Example 3 — Tabs with mixed content:
+
+root = Card([title, tabs])
+title = TextContent("React vs Vue", "large-heavy")
+tabs = Tabs([tabReact, tabVue])
+tabReact = TabItem("react", "React", reactContent)
+tabVue = TabItem("vue", "Vue", vueContent)
+reactContent = [TextContent("React is a library by Meta for building UIs."), Callout("info", "Note", "React uses JSX syntax.")]
+vueContent = [TextContent("Vue is a progressive framework by Evan You."), Callout("success", "Tip", "Vue has a gentle learning curve.")]
+
+Example 4 — KPI and product cards:
+
+root = Card([kpiHeader, kpiBlock, productsHeader, productCards])
+kpiHeader = InlineHeader("This Month", "Key account metrics")
+kpiBlock = SnippetCardBlock([kpi1, kpi2, kpi3])
+kpi1 = SnippetCardItem("revenue", kpi1lhs, kpi1rhs)
+kpi1lhs = IconText(kpi1icon, "neutral", "m", "Revenue", "Month to date", false, "horizontal")
+kpi1icon = Icon("circle-dollar-sign", "finance")
+kpi1rhs = BoldText("number", "$48,200", "+8.1%", "metric")
+kpi2 = SnippetCardItem("active-users", kpi2lhs, kpi2rhs)
+kpi2lhs = IconText(kpi2icon, "neutral", "m", "Active Users", "This month", false, "horizontal")
+kpi2icon = Icon("users", "people")
+kpi2rhs = BoldText("number", "1,204", "+3.4%", "metric")
+kpi3 = SnippetCardItem("churn", kpi3lhs, kpi3rhs)
+kpi3lhs = IconText(kpi3icon, "neutral", "m", "Churn", "This month", false, "horizontal")
+kpi3icon = Icon("user-minus", "people")
+kpi3rhs = BoldText("number", "1.8%", "-0.3%", "metric")
+productsHeader = InlineHeader("Top Products", "By units sold")
+productCards = CompositeCardBlock([p1, p2])
+p1 = CompositeCardItem("widget-pro", p1header, [p1body], p1footer)
+p1header = IconText(p1icon, "neutral", "m", "Widget Pro", "Best seller", true, "horizontal")
+p1icon = Icon("package", "shopping")
+p1body = MetricIndicatorInline("2,410 units", "Sold this month", { direction: "up", value: 12 })
+p1footer = { price: BoldText("text", "$29.00"), button: p1btn }
+p1btn = Button("View Details", @ToAssistant("Show details for Widget Pro"), "secondary")
+p2 = CompositeCardItem("widget-mini", p2header, [p2body], p2footer)
+p2header = IconText(p2icon, "neutral", "m", "Widget Mini", "New arrival", true, "horizontal")
+p2icon = Icon("box", "shopping")
+p2body = MetricIndicatorInline("980 units", "Sold this month", { direction: "up", value: 4 })
+p2footer = { price: BoldText("text", "$14.00"), button: p2btn }
+p2btn = Button("View Details", @ToAssistant("Show details for Widget Mini"), "secondary")
+
+Example 5 — Diagram with selection, formatting and a copy action:
+
+root = Card([head, graph, detail, copyBtn])
+$selected = "api"
+head = CardHeader("Request path", "Press a node")
+graph = Graph([n1, n2, n3], [e1, e2], null, "LR", [$selected], @Set($selected, $value))
+n1 = { id: "edge", label: "Edge" }
+n2 = { id: "api", label: "API", state: "done" }
+n3 = { id: "db", label: "Database", kind: "cylinder" }
+e1 = { from: "edge", to: "api" }
+e2 = { from: "api", to: "db" }
+detail = TextContent("Selected: " + $selected + " · p99 " + @FormatNumber(1234.5, "standard", 1) + " ms · " + @Percent(97, 100) + " ok · since " + @FormatDate("2026-01-05"))
+copyBtn = Button("Copy node id", @CopyToClipboard($selected), "secondary")
+
