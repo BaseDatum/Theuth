@@ -1151,6 +1151,7 @@ mod tests {
                 skills_dir: None,
                 mcp: None,
                 reports: None,
+                steering: Default::default(),
             },
         );
         acp::save(&dir, &entries).unwrap();

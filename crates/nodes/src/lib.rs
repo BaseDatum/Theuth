@@ -775,6 +775,7 @@ mod tests {
                 skills_dir: None,
                 mcp: None,
                 reports: None,
+                steering: Default::default(),
             },
         );
         let e = precheck(&our(), &[], &agents, &key, None).unwrap_err();

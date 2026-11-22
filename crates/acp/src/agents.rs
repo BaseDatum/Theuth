@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use agent_client_protocol::AcpAgentConfig;
 use anyhow::Context;
@@ -56,6 +57,94 @@ pub struct Entry {
     /// [`Entry::reports`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reports: Option<Reports>,
+    /// 06 §8.6: what a peer message does to this harness while it is busy
+    /// (`steer`, `steer_window_ms`, `nudge_after_secs`, `max_nudges` at the
+    /// entry's top level); read via [`Entry::steer`].
+    #[serde(flatten)]
+    pub steering: SteerKeys,
+}
+
+/// 06 §8.6: how a peer message reaches a harness that is busy with a turn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SteerMode {
+    /// `session/cancel` the turn in flight, then prompt again at once with
+    /// the message(s) and a note to resume (what the user's Stop does,
+    /// minus the stop). ACP makes `session/cancel` baseline, so every
+    /// harness takes it; this is the default.
+    #[default]
+    Interrupt,
+    /// Queue the message until the turn's prompt returns (the pre-06 §8.6
+    /// behaviour), for a harness that mishandles `session/cancel`.
+    Queue,
+}
+
+/// The optional steering keys of an [`Entry`] as written; unset = default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SteerKeys {
+    /// `interrupt` (default) | `queue`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer: Option<SteerMode>,
+    /// Messages arriving within this many ms of the first share one
+    /// interrupt; default [`Steer::DEFAULT_WINDOW`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer_window_ms: Option<u64>,
+    /// Seconds without streaming (thought, text or tool activity) after a
+    /// prompt that carries a message before the harness is nudged; `0`
+    /// turns the watch off. Default [`Steer::DEFAULT_NUDGE_AFTER`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nudge_after_secs: Option<u64>,
+    /// Nudges per silence before an error is published instead; default
+    /// [`Steer::DEFAULT_MAX_NUDGES`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_nudges: Option<u32>,
+}
+
+/// [`SteerKeys`] resolved against the defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Steer {
+    /// What a peer message does to a busy harness.
+    pub mode: SteerMode,
+    /// The batching window of one interrupt.
+    pub window: Duration,
+    /// The no-activity watch after a message prompt; `None` = off.
+    pub nudge_after: Option<Duration>,
+    /// Nudges before the error.
+    pub max_nudges: u32,
+}
+
+impl Steer {
+    /// Default `steer_window_ms`.
+    pub const DEFAULT_WINDOW: Duration = Duration::from_millis(1500);
+    /// Default `nudge_after_secs`.
+    pub const DEFAULT_NUDGE_AFTER: Duration = Duration::from_secs(20);
+    /// Default `max_nudges`.
+    pub const DEFAULT_MAX_NUDGES: u32 = 1;
+}
+
+impl Default for Steer {
+    fn default() -> Self {
+        SteerKeys::default().resolve()
+    }
+}
+
+impl SteerKeys {
+    /// Every unset key at its default.
+    #[must_use]
+    pub fn resolve(&self) -> Steer {
+        Steer {
+            mode: self.steer.unwrap_or_default(),
+            window: self
+                .steer_window_ms
+                .map_or(Steer::DEFAULT_WINDOW, Duration::from_millis),
+            nudge_after: match self.nudge_after_secs {
+                Some(0) => None,
+                Some(s) => Some(Duration::from_secs(s)),
+                None => Some(Steer::DEFAULT_NUDGE_AFTER),
+            },
+            max_nudges: self.max_nudges.unwrap_or(Steer::DEFAULT_MAX_NUDGES),
+        }
+    }
 }
 
 /// 155 §8.1 (D7): the capability entry of a harness, as data. All false
@@ -145,6 +234,12 @@ impl Entry {
         self.reports
             .unwrap_or_else(|| Reports::for_command(&self.command, &self.args))
     }
+
+    /// 06 §8.6: the steering keys resolved against their defaults.
+    #[must_use]
+    pub fn steer(&self) -> Steer {
+        self.steering.resolve()
+    }
 }
 
 /// [`Entry::skills_dir`] when unset: what omp, opencode, Codex and Gemini read.
@@ -200,7 +295,7 @@ pub fn save(data_dir: &Path, entries: &BTreeMap<String, Entry>) -> anyhow::Resul
 }
 
 /// One line for the tool description: `External harnesses: claude — …; codex — …`
-/// plus the note that a busy harness takes a message late (06 §8.3).
+/// plus how a busy harness takes a message (06 §8.3, §8.6).
 /// With none configured it says so and how the user adds one, so the model
 /// points at `/acp` instead of guessing a name. An entry without a description
 /// shows its command line.
@@ -224,7 +319,7 @@ pub fn describe(entries: &BTreeMap<String, Entry>) -> String {
         })
         .collect();
     format!(
-        "External harnesses: {}. A harness still busy with its previous task takes a send_message late: the prompt is retried until it is accepted.",
+        "External harnesses: {}. A send_message to a harness busy with a turn interrupts that turn (within ~2 s) and re-prompts it with the message and a note to resume its work; one with `steer: queue` takes it when the turn ends, retried while the harness is still busy.",
         items.join("; ")
     )
 }
@@ -273,6 +368,7 @@ mod tests {
                 skills_dir: None,
                 mcp: None,
                 reports: None,
+                steering: SteerKeys::default(),
             },
         );
         entries.insert(
@@ -291,6 +387,12 @@ mod tests {
                     turn_end: true,
                     session_load: false,
                 }),
+                steering: SteerKeys {
+                    steer: Some(SteerMode::Queue),
+                    steer_window_ms: Some(500),
+                    nudge_after_secs: Some(0),
+                    max_nudges: Some(2),
+                },
             },
         );
         save(&dir, &entries).unwrap();
@@ -384,6 +486,38 @@ mod tests {
         assert!(yaml.contains("permission: false"), "{yaml}");
     }
 
+    /// 06 §8.6: the steering keys sit at the entry's top level; unset ones
+    /// take the defaults, `nudge_after_secs: 0` turns the watch off, an
+    /// unknown mode is a parse error, and an entry without them writes none.
+    #[test]
+    fn steer_keys_default_and_override() {
+        let entries: BTreeMap<String, Entry> = serde_yaml::from_str(
+            "omp:\n  command: omp\nslow:\n  command: x\n  steer: queue\n  steer_window_ms: 250\n  nudge_after_secs: 0\n  max_nudges: 2\n",
+        )
+        .unwrap();
+        assert_eq!(
+            entries["omp"].steer(),
+            Steer {
+                mode: SteerMode::Interrupt,
+                window: Duration::from_millis(1500),
+                nudge_after: Some(Duration::from_secs(20)),
+                max_nudges: 1,
+            }
+        );
+        assert_eq!(
+            entries["slow"].steer(),
+            Steer {
+                mode: SteerMode::Queue,
+                window: Duration::from_millis(250),
+                nudge_after: None,
+                max_nudges: 2,
+            }
+        );
+        let yaml = serde_yaml::to_string(&entries).unwrap();
+        assert_eq!(yaml.matches("steer").count(), 2, "{yaml}");
+        assert!(serde_yaml::from_str::<Entry>("command: x\nsteer: later\n").is_err());
+    }
+
     #[test]
     fn describe_line() {
         assert!(describe(&BTreeMap::new()).contains("none configured"));
@@ -393,7 +527,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             describe(&entries),
-            "External harnesses: claude — npx -y x; codex — ChatGPT. A harness still busy with its previous task takes a send_message late: the prompt is retried until it is accepted."
+            "External harnesses: claude — npx -y x; codex — ChatGPT. A send_message to a harness busy with a turn interrupts that turn (within ~2 s) and re-prompts it with the message and a note to resume its work; one with `steer: queue` takes it when the turn ends, retried while the harness is still busy."
         );
     }
 }

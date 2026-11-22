@@ -168,6 +168,10 @@ opencode:
   skills: true                             # default; false = no theuth skills written into the child's cwd
   skills_dir: .agents/skills               # default; .claude/skills for Claude Code
   mcp: true                                # default; false opts out of the theuth MCP shim
+  steer: interrupt                         # default; queue = a message waits for the harness's turn to end
+  steer_window_ms: 1500                    # default; messages inside the window share one interrupt
+  nudge_after_secs: 20                     # default; 0 = no nudge when a message draws no activity
+  max_nudges: 1                            # default; then an error is shown, nothing more is sent
 codex-acp:
   command: npx
   args: [-y, "@agentclientprotocol/codex-acp"]
@@ -220,6 +224,7 @@ Exercised in this repo as of this writing: **opencode 1.18.30 and 2.0.22**, **om
 | Message body | 32 KiB; up to 16 recipients per `send_message` |
 | Harness probe | 10 s |
 | Busy harness | `session/prompt` refused as busy is retried at 5, 10, 20, 30 s… until the runtime deadline |
+| Message to a busy harness | After `steer_window_ms` (1.5 s) the turn gets `session/cancel` and is re-prompted at once with the message(s) and a note to resume; the parent still gets one result for the turn. No streaming within `nudge_after_secs` (20 s) of a message prompt → one nudge, then an error. `steer: queue` waits for the turn instead |
 | Harness tail work | Output after the harness returned its prompt is a "continuation turn", closed after 120 s quiet and never delivered to the parent |
 | Cancel grace | ACP child: `session/cancel`, process killed after 5 s |
 

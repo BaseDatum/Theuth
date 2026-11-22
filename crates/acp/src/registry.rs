@@ -170,6 +170,7 @@ pub fn entry_from_distribution(
         skills_dir: None,
         mcp: None,
         reports: None,
+        steering: Default::default(),
     }))
 }
 
@@ -209,6 +210,7 @@ pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<E
             skills_dir: None,
             mcp: None,
             reports: Some(Reports::for_registry(&agent.id)),
+            steering: Default::default(),
         });
     }
 
@@ -280,6 +282,7 @@ pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<E
         skills_dir: None,
         mcp: None,
         reports: Some(Reports::for_registry(&agent.id)),
+        steering: Default::default(),
     })
 }
 
