@@ -6,6 +6,7 @@ import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import type { Risk } from "@/rpc/bindings/method.agent.output"
 import { useApprovals } from '@/store/approvals'
 import { Body, Footer, SectionTitle, useResolved } from './shared'
+import { TONE_DANGER, TONE_SUCCESS } from './actions'
 import { ActionBar, ContextLine, Source } from './source'
 
 const RISK: Record<Risk, string> = { read_only: 'read-only', mutating: 'mutating', destructive: 'destructive' }
@@ -57,10 +58,10 @@ export function ApprovalScreen({ item }: { item: AttentionItem }) {
         {!request && <p className="text-xs text-fg-tertiary">{command ? 'Only the command reached this inbox; the full arguments are in the session.' : 'The arguments are in the session.'}</p>}
       </Body>
       <ActionBar>
-        <Button size="default" variant={pick === 1 ? 'outline' : 'default'} disabled={busy || !item.approval} onClick={() => decide(true)}>
+        <Button size="default" variant={pick === 1 ? 'outline' : 'default'} className={TONE_SUCCESS} disabled={busy || !item.approval} onClick={() => decide(true)}>
           Allow
         </Button>
-        <Button size="default" variant={pick === 1 ? 'default' : 'outline'} disabled={busy || !item.approval} onClick={() => decide(false)}>
+        <Button size="default" variant={pick === 1 ? 'default' : 'outline'} className={TONE_DANGER} disabled={busy || !item.approval} onClick={() => decide(false)}>
           Deny
         </Button>
         <Footer item={item} onResolved={onResolved} />

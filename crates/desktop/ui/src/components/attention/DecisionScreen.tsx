@@ -15,6 +15,7 @@ import { Pointers } from './Pointers'
 import { Bundle, type Pick, allAnswered, allRecommended, bundleAnswer } from './Bundle'
 import { usePrediction } from '@/store/double'
 import { usePacket } from './queries'
+import { TONE_SUCCESS } from './actions'
 import { Body, Chip, Footer, IfWrong, OptionCards, PrioritySelect, SectionTitle, useResolved } from './shared'
 
 /**
@@ -142,7 +143,7 @@ export function DecisionScreen({ item }: { item: AttentionItem }) {
         />
         <div className="flex flex-wrap gap-2">
           {items.length > 0 && (
-            <Button type="submit" size="sm" className="w-full sm:w-fit" disabled={busy || !answer || !item.decision || !allRecommended(items, picks) || !!typed}>
+            <Button type="submit" size="sm" className={cn('w-full sm:w-fit', TONE_SUCCESS)} disabled={busy || !answer || !item.decision || !allRecommended(items, picks) || !!typed}>
               Approve all as recommended
             </Button>
           )}
