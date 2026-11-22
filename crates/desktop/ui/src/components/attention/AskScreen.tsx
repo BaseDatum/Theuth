@@ -9,7 +9,7 @@ import type { Answer } from '@/rpc/bindings/method.tasks.input'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { usePrediction } from '@/store/double'
 import { useQuerySupport } from '@/rpc/capabilities'
-import { TONE_DANGER } from './actions'
+import { TONE_ACCENT, TONE_DANGER } from './actions'
 import { DISMISS_HINT, dismissLabel } from './labels'
 import { useAttentionBulk } from './queries'
 import { Body, useResolved } from './shared'
@@ -93,7 +93,7 @@ export function AskScreen({ item }: { item: AttentionItem }) {
         )}
       </Body>
       <ActionBar>
-        <Button size="sm" disabled={busy || !ask || !answered} onClick={() => send(draft.picks.map(toAnswer))}>
+        <Button size="sm" className={TONE_ACCENT} disabled={busy || !ask || !answered} onClick={() => send(draft.picks.map(toAnswer))}>
           Send
         </Button>
         <Button size="sm" variant="outline" className={TONE_DANGER} disabled={busy} title={leaves ? DISMISS_HINT : 'Hide this question; the agent keeps waiting for it'} onClick={leave}>
