@@ -1,11 +1,11 @@
 // 205 in the inbox: a `show_web` page as the detail pane — the live page itself (the frame's native web view laid over
 // the pane, `useNativeLayer`), its title and address above, and the footer of what to do with it.
 import { useNavigate } from '@tanstack/react-router'
-import { AppWindow, Copy, ExternalLink, MessageSquare, RotateCw } from 'lucide-react'
+import { AppWindow, ArrowLeft, ArrowRight, Copy, ExternalLink, MessageSquare, RotateCw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { openWebView } from '@/components/chat/WebViewCard'
-import { FrameFace, Quiet, useLiveFrame } from '@/components/chat/WebFrame'
+import { AddressField, FrameFace, Quiet, useLiveFrame } from '@/components/chat/WebFrame'
 import { useNativeLayer, warn } from '@/components/chat/web-native-frame'
 import { Button } from '@/components/ui/button'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -21,7 +21,7 @@ import { webViewOf } from './model'
 
 /**
  * A `web_view` item (205): Source · the page's title and address · the live page filling the pane · Open in chat · Pop
- * out · Open in browser · Copy URL · Reload · Snooze · Dismiss. The page is the chat's own frame (`web-<id>`): showing it
+ * out · Copy URL · Snooze · Dismiss; the tile's address bar (Back / Forward / Reload / address / Open in browser) sits above the page. The page is the chat's own frame (`web-<id>`): showing it
  * here moves its native view over this pane, leaving the pane (another item, another page) hides it again, and the chat's
  * tile takes it back when it shows. Without a native layer (a browser, the dev fixture) the pane shows the address with
  * **Open in browser** (205 D7), the same size as the page would be.
@@ -60,11 +60,22 @@ export function WebViewScreen({ item }: { item: AttentionItem }) {
       <div className="shrink-0 border-b border-border-subtle px-4 py-3 md:px-6">
         <div className="mx-auto flex w-full max-w-[720px] flex-col gap-2">
           <Source item={item} />
-          <div className="flex min-w-0 flex-col">
-            <h1 className="truncate text-lg font-semibold leading-snug">{title}</h1>
-            <p className="truncate font-mono text-xs text-fg-secondary" title={url}>
-              {url}
-            </p>
+          <h1 className="truncate text-lg font-semibold leading-snug">{title}</h1>
+          {/* The tile's own address bar (205 §4.4): Back · Forward · Reload · the address field · Open in browser. */}
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="icon" className="size-8 shrink-0 rounded-lg text-fg-secondary" aria-label="Back" disabled={!shows} onClick={() => void native.history(page.id, -1).catch(warn('web_view_history'))}>
+              <ArrowLeft className="size-4" />
+            </Button>
+            <Button variant="ghost" size="icon" className="size-8 shrink-0 rounded-lg text-fg-secondary" aria-label="Forward" disabled={!shows} onClick={() => void native.history(page.id, 1).catch(warn('web_view_history'))}>
+              <ArrowRight className="size-4" />
+            </Button>
+            <Button variant="ghost" size="icon" className="size-8 shrink-0 rounded-lg text-fg-secondary" aria-label="Reload" disabled={!shows} onClick={() => void native.reload(page.id).catch(warn('web_view_reload'))}>
+              <RotateCw className={cn('size-4', view?.loading && 'animate-spin')} />
+            </Button>
+            <AddressField id={page.id} live={shows} current={url} compact={mobile} className="mx-1 h-8 text-xs" />
+            <Button variant="ghost" size="icon" className="size-8 shrink-0 rounded-lg text-fg-secondary" aria-label="Open in browser" disabled={!url} onClick={() => openInBrowser(url)}>
+              <ExternalLink className="size-4" />
+            </Button>
           </div>
         </div>
       </div>
@@ -96,17 +107,9 @@ export function WebViewScreen({ item }: { item: AttentionItem }) {
             Pop out
           </Button>
         )}
-        <Button size="sm" variant="ghost" disabled={!url} onClick={() => openInBrowser(url)}>
-          <ExternalLink />
-          Open in browser
-        </Button>
         <Button size="sm" variant="ghost" disabled={!url} onClick={copy}>
           <Copy />
           Copy URL
-        </Button>
-        <Button size="sm" variant="ghost" disabled={!shows} onClick={() => void native.reload(page.id).catch(warn('web_view_reload'))}>
-          <RotateCw className={cn(view?.loading && 'animate-spin')} />
-          Reload
         </Button>
         <Footer item={item} onResolved={onResolved} />
       </ActionBar>
