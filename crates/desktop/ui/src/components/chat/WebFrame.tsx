@@ -193,6 +193,11 @@ export function AddressField({ id, live, current, className, compact = false }: 
       spellCheck={false}
       {...(compact && { dictate: false, inputMode: 'url' as const, enterKeyHint: 'go' as const, autoCapitalize: 'off', autoCorrect: 'off' })}
       value={draft ?? current}
+      // A long address in a narrow field: a tap selects it all, so typing replaces it (as Safari's address bar).
+      onFocus={(e) => {
+        const el = e.currentTarget
+        if (compact) requestAnimationFrame(() => el.setSelectionRange(0, el.value.length))
+      }}
       onChange={(e) => {
         setDraft(e.target.value)
         setInvalid(false)
