@@ -203,6 +203,18 @@ test('storage captured on load-finished and before close is pushed once, PUSH_DE
   expect(shell.captureStorage).toHaveBeenCalledTimes(2)
 })
 
+test('a load-finished pushes the cookies the load set, without any web-profile://changed', async () => {
+  await started()
+  vi.useFakeTimers()
+  shell.storage.a1 = { origin: 'https://a.example', local_storage: [] }
+  // A sign-in's redirect landed: the store has the session cookie, and the shell's observer stayed silent.
+  shell.store = [cookie('sid', SECRET)]
+  shell.state!({ label: 'web-a1', url: 'https://a.example/', title: 'A', loading: false })
+  await vi.advanceTimersByTimeAsync(PUSH_DEBOUNCE_MS)
+  expect(engine.pushes).toHaveLength(1)
+  expect(engine.pushes[0]!.changes).toEqual([{ op: 'set', cookie: cookie('sid', SECRET) }])
+})
+
 test('what is still captured when the page goes away is pushed at once, without waiting for the debounce', async () => {
   await started()
   shell.beforeClose!({ origin: 'https://c.example', local_storage: [['k', 'v3']] })

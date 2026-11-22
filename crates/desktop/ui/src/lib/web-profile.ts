@@ -1,8 +1,9 @@
 // The tile's half of the shared browser profile (209 §4.2, §4.5, §5): this device's tile store goes to the engine as
 // deltas. At start (and after an engine switch) one `web_profile_read` seeds the baseline without pushing it; on
 // `web-profile://changed` (already debounced 2 s in the shell) the sync reads the store, diffs it against that
-// baseline (key `(name, domain, path)`) and calls `web_profile_push` at once; a tile that finished loading or is about
-// to close has its storage captured and pushed `PUSH_DEBOUNCE_MS` after the last such capture, and what is still
+// baseline (key `(name, domain, path)`) and calls `web_profile_push` at once; a tile that finished loading has the
+// store read and diffed the same way and its storage captured, and one about to close has its storage captured, both
+// pushed `PUSH_DEBOUNCE_MS` after the last such event, and what is still
 // captured when the page goes away is pushed best-effort. One push is in flight at a time; work that arrives meanwhile
 // goes in the next one. A failed read or push keeps its delta and retries with a backoff capped at `MAX_RETRY_MS`.
 //
@@ -331,10 +332,10 @@ export function startWebProfileSync(): () => void {
   keep(
     native.onState((s) => {
       if (s.loading) return
-      void native.captureStorage(native.labelId(s.label)).then((c) => {
-        capture(c)
-        schedule(PUSH_DEBOUNCE_MS)
-      }, () => undefined)
+      // A finished load also re-reads the store: on the iPad simulator (iOS 26) the shell's cookie observer
+      // never fired, so a sign-in's `Set-Cookie` reached the profile only through this (209 P1 proof).
+      cookiesDirty = true
+      void native.captureStorage(native.labelId(s.label)).then(capture, () => undefined).finally(() => schedule(PUSH_DEBOUNCE_MS))
     }),
   )
   offs.push(
