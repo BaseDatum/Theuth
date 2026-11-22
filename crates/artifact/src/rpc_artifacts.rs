@@ -45,6 +45,16 @@ pub trait ArtifactArtifactsApi {
         title: String,
         loading: bool,
     ) -> RpcResult<artifact::webview::WebViewStateReply>;
+    /// 209 D8: a client's answer to a `WebViewCallRequested`: the first `Claimed` wins (later
+    /// ones answer `false`), the first `Done`/`Failed` resolves it. `true` while the call was
+    /// pending and the answer was taken. Owner connections only. An id another engine issued
+    /// (the event came through the relay) is forwarded to its session's owner.
+    #[method(name = "answer_web_view_call", with_extensions)]
+    async fn answer_web_view_call(
+        &self,
+        id: artifact::webview::WebViewCallId,
+        answer: artifact::webview::WebViewCallAnswer,
+    ) -> RpcResult<bool>;
     /// 192: draw one fence through the 164 renderer (a connected desktop/web client) and
     /// return the PNG — the native companions' pictures. `width` is clamped to 240..=1200
     /// CSS px, `scale` to 1..=3. Read-only; guest peers are refused.
@@ -162,6 +172,23 @@ impl ArtifactArtifactsApiServer for Server {
             title,
             loading,
         }))
+    }
+
+    async fn answer_web_view_call(
+        &self,
+        ext: &Extensions,
+        id: artifact::webview::WebViewCallId,
+        answer: artifact::webview::WebViewCallAnswer,
+    ) -> RpcResult<bool> {
+        owner(ext)?;
+        if !artifact::webview::pending_here(id)
+            && let Some(session) = artifact::webview::session_of(id)
+            && let Some(r) =
+                forward::route(ext, session, "answer_web_view_call", (id, &answer)).await?
+        {
+            return Ok(r);
+        }
+        Ok(artifact::webview::answer(id, answer))
     }
 
     async fn fence_snapshot(

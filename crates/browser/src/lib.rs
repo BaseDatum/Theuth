@@ -7,11 +7,13 @@
 //! a session's page; [`BrowserEvent::ShowLive`] asks the desktop to open it.
 //! [`profile`] carries the shared browser profile (209): `tools::Ctx` loads
 //! it into a session's isolate, and every isolate drop saves its delta first.
+//! [`tile`] is the tools' second target, the user's web view tile (209 D8).
 
 pub mod profile;
 pub mod render;
 pub mod session;
 pub mod systemone;
+pub mod tile;
 pub mod tools;
 
 use std::collections::{HashMap, HashSet};

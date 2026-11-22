@@ -2,9 +2,12 @@
 //! beside the chat. The engine only validates the address and announces it; the desktop shell
 //! hosts the page in a native child webview (205 §4.3). The engine's record of what each tile
 //! shows now ([`record_state`], fed by the RPC `web_view_state`) and the `web_views` tool that
-//! reads it (209 D9).
+//! reads it (209 D9). Agent control of a tile (209 D8): [`call`] publishes
+//! [`WebViewCallRequested`] and waits for the client's [`WebViewCallAnswer`]s through [`answer`]
+//! (the RPC `answer_web_view_call`).
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -70,8 +73,9 @@ impl Tool for ShowWebTool {
          `url` is http(s) only (a bare `localhost:3000` gets `http://`); `title` names the tile \
          (default host[:port]). Showing the same origin again in this session reuses its tile \
          and navigates it. Use it for a page the user should see or use themselves; for web work you do on \
-         their behalf use browser_* instead. You do not see the page: to read or drive it use \
-         browser_* or read_url; web_views tells you what the tile shows now. A site the user \
+         their behalf use browser_* instead. You do not see the page unless you attach to it: \
+         browser_attach {view: \"web:<id>\"} points your browser_* tools at this tile, where the \
+         user watches you act; read_url reads it unseen; web_views tells you what the tile shows now. A site the user \
          signs into here is signed in for your browser_* too, on every engine of theirs, so for a \
          sign-in only they can do, open the sign-in page here and ask them to sign in. \
          Not for files — `show` hands those over."
@@ -220,7 +224,8 @@ fn put(session: SessionId, id: String, tile: Tile) {
 }
 
 /// The tile id of `web:<id>`, `web-<id>` or `<id>`: 1..=64 of `[0-9A-Za-z_-]`.
-fn view_id(view: &str) -> Option<String> {
+#[must_use]
+pub fn view_id(view: &str) -> Option<String> {
     let id = view
         .strip_prefix("web:")
         .or_else(|| view.strip_prefix("web-"))
@@ -231,6 +236,289 @@ fn view_id(view: &str) -> Option<String> {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
     .then(|| id.to_owned())
+}
+
+/// The address tile `id` last showed, in whichever session reported it most recently (209 §4.6:
+/// the `[tile web:<id> · <host>]` prefix before the first call answered).
+#[must_use]
+pub fn tile_url(id: &str) -> Option<String> {
+    TILES
+        .lock()
+        .values()
+        .filter_map(|m| m.get(id))
+        .filter(|t| !t.url.is_empty())
+        .max_by_key(|t| t.at)
+        .map(|t| t.url.clone())
+}
+
+/// Correlates a [`WebViewCallRequested`] with its answers (209 D8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(transparent)]
+pub struct WebViewCallId(pub uuid::Uuid);
+
+/// Event: an agent session wants one operation run in a web view tile (209 D8, §4.4, §4.7).
+/// A client claims it only when its window holds the shell label `web-<view>`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
+#[serde(tag = "type")]
+pub struct WebViewCallRequested {
+    /// Use in `answer_web_view_call`.
+    pub id: WebViewCallId,
+    /// The agent session acting.
+    pub session: SessionId,
+    /// The bare tile id (the shell label is `web-<view>`).
+    pub view: String,
+    /// `script`, `navigate`, `back`, `forward`, `reload` or `snapshot` (209 §4.7).
+    pub op: String,
+    /// The op's arguments (209 §4.7).
+    #[cfg_attr(feature = "ts", ts(type = "unknown"))]
+    pub args: serde_json::Value,
+}
+
+impl wire::WireEvent for WebViewCallRequested {
+    const TOPIC: &'static str = "artifact.web-view-call-requested";
+}
+
+/// Event: the call was answered, failed, timed out or nobody claimed it; the tile's "agent is
+/// acting" bar for it goes (209 §9).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
+#[serde(tag = "type")]
+pub struct WebViewCallResolved {
+    /// The request.
+    pub id: WebViewCallId,
+}
+
+impl wire::WireEvent for WebViewCallResolved {
+    const TOPIC: &'static str = "artifact.web-view-call-resolved";
+}
+
+/// A client's answer to a [`WebViewCallRequested`] (209 §4.4).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WebViewCallAnswer {
+    /// "This window holds the tile and runs the op": the first one wins, later ones are refused.
+    Claimed {
+        /// Who runs it (free text, e.g. the client's install id).
+        client: String,
+    },
+    /// The op ran; first `Done`/`Failed` wins.
+    Done {
+        /// The op's JSON result.
+        #[cfg_attr(feature = "ts", ts(type = "unknown"))]
+        result: serde_json::Value,
+        /// `snapshot`: the viewport as a base64 PNG.
+        #[serde(default)]
+        png: Option<String>,
+    },
+    /// The op could not run.
+    Failed {
+        /// Why, for the model.
+        reason: String,
+    },
+}
+
+/// How one [`call`] ended.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CallOutcome {
+    /// The client ran the op.
+    Done {
+        /// The op's JSON result.
+        result: serde_json::Value,
+        /// `snapshot`'s PNG, base64.
+        png: Option<String>,
+    },
+    /// The client could not run it.
+    Failed(String),
+    /// No client claimed the call within [`CLAIM_WAIT`].
+    NoClient,
+    /// Claimed, but no `Done`/`Failed` within the op's budget.
+    TimedOut,
+}
+
+/// No `Claimed` within this → [`CallOutcome::NoClient`] (209 §4.7).
+pub const CLAIM_WAIT: Duration = Duration::from_secs(2);
+/// The shortest budget of a claimed op (209 §4.7: 30 s, or the tool's own wait plus 5 s).
+pub const OP_WAIT: Duration = Duration::from_secs(30);
+
+/// One waiting call: where its answers go, and whether a client claimed it.
+struct Pending {
+    tx: tokio::sync::mpsc::UnboundedSender<WebViewCallAnswer>,
+    claimed: bool,
+}
+
+/// Waiting calls of this engine. Process-wide like `preview`'s: the tool and the RPC handler
+/// share nothing else.
+static PENDING: LazyLock<Mutex<HashMap<WebViewCallId, Pending>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Calls seen on this engine's event feed, local or relayed from the session's owner, by id →
+/// session: `answer_web_view_call` names only the id, and an answer for a call another engine
+/// issued is forwarded to that session's owner ([`note_feed`]).
+static SEEN: LazyLock<Mutex<std::collections::VecDeque<(WebViewCallId, SessionId)>>> =
+    LazyLock::new(|| Mutex::new(std::collections::VecDeque::new()));
+
+/// Most calls remembered in [`SEEN`]; the oldest goes first.
+const MAX_SEEN: usize = 1024;
+
+/// Whether `id` waits on this engine.
+#[must_use]
+pub fn pending_here(id: WebViewCallId) -> bool {
+    PENDING.lock().contains_key(&id)
+}
+
+/// The session a call seen on this engine's feed named, for forwarding its answer.
+#[must_use]
+pub fn session_of(id: WebViewCallId) -> Option<SessionId> {
+    SEEN.lock()
+        .iter()
+        .rev()
+        .find(|(i, _)| *i == id)
+        .map(|(_, s)| *s)
+}
+
+/// Remember the calls this engine's event feed carries (the artifact plugin runs it on
+/// `wire_events`): a requested call's session until it resolves.
+pub fn note_feed(topic: &str, event: &serde_json::Value) {
+    use wire::WireEvent as _;
+    let id = || {
+        serde_json::from_value::<WebViewCallId>(event.get("id").cloned().unwrap_or_default()).ok()
+    };
+    if topic == WebViewCallRequested::TOPIC {
+        let session = event
+            .get("session")
+            .cloned()
+            .and_then(|s| serde_json::from_value::<SessionId>(s).ok());
+        if let (Some(id), Some(session)) = (id(), session) {
+            let mut seen = SEEN.lock();
+            seen.push_back((id, session));
+            while seen.len() > MAX_SEEN {
+                seen.pop_front();
+            }
+        }
+    } else if topic == WebViewCallResolved::TOPIC
+        && let Some(id) = id()
+    {
+        SEEN.lock().retain(|(i, _)| *i != id);
+    }
+}
+
+/// Run [`note_feed`] over this engine's wire feed until shutdown (the artifact plugin starts it).
+pub fn watch_calls(rt: &Runtime) {
+    use tokio::sync::broadcast::error::RecvError;
+    use wire::RuntimeWire as _;
+    let mut rx = rt.wire_events();
+    let shutdown = rt.shutdown.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = shutdown.cancelled() => return,
+                frame = rx.recv() => match frame {
+                    Ok(f) => {
+                        if let Some(d) = &f.descriptor {
+                            note_feed(d.topic, &f.event);
+                        }
+                    }
+                    Err(RecvError::Lagged(_)) => {}
+                    Err(RecvError::Closed) => return,
+                },
+            }
+        }
+    });
+}
+
+/// A client's answer on this engine. `true` while the call was pending and the answer was
+/// taken: the first `Claimed` is taken and every later one refused (`false`); the first
+/// `Done`/`Failed` resolves the call.
+pub fn answer(id: WebViewCallId, answer: WebViewCallAnswer) -> bool {
+    let mut map = PENDING.lock();
+    let Some(p) = map.get_mut(&id) else {
+        return false;
+    };
+    match answer {
+        WebViewCallAnswer::Claimed { .. } if p.claimed => false,
+        WebViewCallAnswer::Claimed { .. } => {
+            p.claimed = true;
+            p.tx.send(answer).is_ok()
+        }
+        _ => {
+            let delivered = p.tx.send(answer).is_ok();
+            map.remove(&id);
+            delivered
+        }
+    }
+}
+
+/// One round trip (209 D8): publish [`WebViewCallRequested`], wait [`CLAIM_WAIT`] for a
+/// `Claimed`, then `work` (at least [`OP_WAIT`]) from the claim for `Done`/`Failed`, publish
+/// [`WebViewCallResolved`]. `view` is the bare tile id.
+pub async fn call(
+    rt: &Runtime,
+    session: SessionId,
+    view: &str,
+    op: &str,
+    args: serde_json::Value,
+    work: Duration,
+) -> CallOutcome {
+    let id = WebViewCallId(uuid::Uuid::now_v7());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    PENDING.lock().insert(id, Pending { tx, claimed: false });
+    let mut guard = Unresolved {
+        rt: Some(rt.clone()),
+        id,
+    };
+    rt.publish(WebViewCallRequested {
+        id,
+        session,
+        view: view.to_owned(),
+        op: op.to_owned(),
+        args,
+    })
+    .await;
+    let mut deadline = tokio::time::Instant::now() + CLAIM_WAIT;
+    let mut claimed = false;
+    let out = loop {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Some(WebViewCallAnswer::Claimed { .. })) => {
+                claimed = true;
+                deadline = tokio::time::Instant::now() + work.max(OP_WAIT);
+            }
+            Ok(Some(WebViewCallAnswer::Done { result, png })) => {
+                break CallOutcome::Done { result, png };
+            }
+            Ok(Some(WebViewCallAnswer::Failed { reason })) => break CallOutcome::Failed(reason),
+            // The sender lives in `PENDING` until a terminal answer, sent before removal.
+            Ok(None) => break CallOutcome::TimedOut,
+            Err(_) if claimed => break CallOutcome::TimedOut,
+            Err(_) => break CallOutcome::NoClient,
+        }
+    };
+    PENDING.lock().remove(&id);
+    guard.rt = None;
+    rt.publish(WebViewCallResolved { id }).await;
+    out
+}
+
+/// A [`call`] dropped before it resolved (the tool's timeout or cancel): its pending entry goes
+/// and `WebViewCallResolved` is still published, so no tile keeps its "agent is acting" bar.
+struct Unresolved {
+    rt: Option<Runtime>,
+    id: WebViewCallId,
+}
+
+impl Drop for Unresolved {
+    fn drop(&mut self) {
+        let Some(rt) = self.rt.take() else { return };
+        PENDING.lock().remove(&self.id);
+        let id = self.id;
+        if let Ok(h) = tokio::runtime::Handle::try_current() {
+            h.spawn(async move { rt.publish(WebViewCallResolved { id }).await });
+        }
+    }
 }
 
 /// Arguments of `web_views`: none.
@@ -320,8 +608,10 @@ fn receipt(title: &str, url: &str, id: &str, live: bool) -> String {
     if !live {
         s.push_str("\nnote: no app is connected; the card in the chat opens it later");
     }
-    s.push_str(
-        "\nThe user sees and clicks this page; you do not. Read a page with browser_* or read_url.",
+    let _ = write!(
+        s,
+        "\nThe user sees and clicks this page; you do not. To read or act on it in front of them, \
+         browser_attach {{\"view\": \"web:{id}\"}}; read_url reads it unseen."
     );
     s
 }
@@ -702,14 +992,14 @@ mod tests {
         assert_eq!(
             live,
             "web view opened · Docs · http://localhost:3000/ · tile web:0123456789abcdef\n\
-             The user sees and clicks this page; you do not. Read a page with browser_* or read_url."
+             The user sees and clicks this page; you do not. To read or act on it in front of them, browser_attach {\"view\": \"web:0123456789abcdef\"}; read_url reads it unseen."
         );
         let offline = receipt("Docs", "http://localhost:3000/", "0123456789abcdef", false);
         assert_eq!(
             offline,
             "web view opened · Docs · http://localhost:3000/ · tile web:0123456789abcdef\n\
              note: no app is connected; the card in the chat opens it later\n\
-             The user sees and clicks this page; you do not. Read a page with browser_* or read_url."
+             The user sees and clicks this page; you do not. To read or act on it in front of them, browser_attach {\"view\": \"web:0123456789abcdef\"}; read_url reads it unseen."
         );
     }
 

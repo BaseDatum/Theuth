@@ -32,6 +32,8 @@ url = { workspace = true }
 iana-time-zone = { workspace = true }
 unjar = { workspace = true }
 webprofile = { workspace = true }
+# 209 D8: the tile target's round trip (`WebViewCallRequested` / `answer_web_view_call`).
+artifact = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [features]

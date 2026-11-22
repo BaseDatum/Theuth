@@ -59,7 +59,8 @@ pub use store::{
 pub use svg::Raster;
 pub use tools::ShowArgs;
 pub use webview::{
-    ShowWebArgs, ShowWebTool, WebViewOpened, WebViewState, WebViewStateReply, WebViewsTool,
+    ShowWebArgs, ShowWebTool, WebViewCallAnswer, WebViewCallId, WebViewCallRequested,
+    WebViewCallResolved, WebViewOpened, WebViewState, WebViewStateReply, WebViewsTool,
 };
 
 /// Registry name of the [`ArtifactActor`].
@@ -784,6 +785,8 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     rt.register_wire_event::<preview::PagePreviewResolved>().await?;
     rt.register_wire_event::<snapshot::FenceSnapshotRequested>().await?;
     rt.register_wire_event::<snapshot::FenceSnapshotResolved>().await?;
+    rt.register_wire_event::<webview::WebViewCallRequested>().await?;
+    rt.register_wire_event::<webview::WebViewCallResolved>().await?;
     Ok(())
 }
 
@@ -809,6 +812,8 @@ impl runtime::Plugin for ArtifactPlugin {
         use wire::RuntimeWire as _;
         let feed_rt = rt.clone();
         preview::watch_feed(std::sync::Arc::new(move || feed_rt.wire_external_stream_count()));
+        // 209 D8: answers to tile calls relayed from another engine find their owner.
+        webview::watch_calls(rt);
         let cfg: ArtifactConfig = rt.section("artifact").unwrap_or_else(|e| {
             tracing::debug!("no [artifact] config section, using defaults: {e}");
             ArtifactConfig::default()
