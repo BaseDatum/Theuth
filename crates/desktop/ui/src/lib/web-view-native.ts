@@ -34,6 +34,9 @@ export const labelId = (label: string): string => label.replace(/^web-/, '')
 type State = { owned: boolean; visible: boolean; rect: Rect; sent: { visible: boolean; rect: Rect | null } }
 const states = new Map<string, State>()
 const chains = new Map<string, Promise<unknown>>()
+/** Views whose last attach landed in this window and that were not closed or taken since (209 §4.7): a frame that
+ * unmounted leaves its view here, hidden, and still drivable. */
+const held = new Set<string>()
 
 /** Run `step` after every earlier call for `label`; its result (or rejection) is the caller's, never the chain's. */
 function queue<T>(label: string, step: () => Promise<T>): Promise<T> {
@@ -75,7 +78,13 @@ export function attach(id: string, url: string, r: Rect): Promise<void> {
   states.set(label, s)
   return queue(label, async () => {
     const at = s.rect
-    await invoke<void>('web_view_attach', { label, url, x: at.x, y: at.y, width: at.width, height: at.height })
+    try {
+      await invoke<void>('web_view_attach', { label, url, x: at.x, y: at.y, width: at.width, height: at.height })
+    } catch (e) {
+      held.delete(label)
+      throw e
+    }
+    held.add(label)
     if (states.get(label) !== s) return
     s.owned = true
     s.sent = { visible: true, rect: at }
@@ -135,6 +144,7 @@ export function close(id: string): Promise<void> {
   // The state goes with the view, in order: calls issued before the close still apply first.
   return queue(label, async () => {
     states.delete(label)
+    held.delete(label)
     const cb = beforeClose
     if (cb) await invoke<StorageCapture>('web_storage_capture', { label }).then(cb, () => undefined)
     await invoke<void>('web_view_close', { label })
@@ -144,6 +154,14 @@ export function close(id: string): Promise<void> {
 /** `web_storage_capture` of frame `id`, in order with its other calls; rejects `no web view …` when it is gone. */
 export const captureStorage = (id: string): Promise<StorageCapture> =>
   queue(webLabel(id), () => invoke<StorageCapture>('web_storage_capture', { label: webLabel(id) }))
+/** This window holds `web-<id>`: its last attach landed here, and it was neither closed nor gone since (209 §4.7). */
+export const holds = (id: string): boolean => nativeWebViews() && held.has(webLabel(id))
+/** `web-view://closed` for `label`, or another window took the view: this window no longer holds it. */
+export const release = (label: string): void => void held.delete(label)
+/** `web_view_call`: run one tile op (209 §4.7) in `web-<id>`; its JSON, or `{ png }` for `snapshot`. Not queued behind
+ * the frame's bounds and visibility calls: an agent's wait must not freeze the tile's layout. */
+export const viewCall = (id: string, op: string, args: unknown): Promise<unknown> =>
+  invoke<unknown>('web_view_call', { label: webLabel(id), op, args })
 /** `web_profile_read`: every cookie of this device's tile store (209 §4.5). */
 export const readProfile = (): Promise<Cookie[]> => invoke<Cookie[]>('web_profile_read')
 /** One origin's localStorage for `web_profile_write`: applied only to open tiles whose top-level origin it is. */

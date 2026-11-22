@@ -1,4 +1,4 @@
-import { AppWindow, ArrowLeft, ArrowRight, ExternalLink, Globe, RotateCw, X } from 'lucide-react'
+import { AppWindow, ArrowLeft, ArrowRight, Bot, ExternalLink, Globe, RotateCw, Square, X } from 'lucide-react'
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 import { SidebarToggle } from '@/components/chat/SidebarToggle'
 import { Button } from '@/components/ui/button'
@@ -13,6 +13,7 @@ import { container } from '@/lib/platform'
 import { popOutWeb, usePanes } from '@/lib/panes'
 import { canPopout, closePopout, isPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
+import { stopAgent, useAgentActing } from '@/lib/web-view-agent'
 import * as native from '@/lib/web-view-native'
 import { httpUrl, isLoopback, openInBrowser, placeTile, useWebViews } from '@/lib/web-views'
 
@@ -101,6 +102,7 @@ function Tip({ label, children }: { label: string; children: ReactNode }) {
  */
 export function WebFrame({ id, first = false, onClose, popped = false }: { id: string; first?: boolean; onClose?: () => void; popped?: boolean }) {
   const view = useWebViews((s) => s.views[id])
+  const acting = useAgentActing(id)
   const active = useEngines((s) => s.active)
   const engine = useEngines((s) => s.engines.find((e) => e.id === s.active)?.name ?? s.active)
   const { open, isMobile, setOpen } = useSidebar()
@@ -276,6 +278,7 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
         )}
         {onClose && !popped && <CloseButton onClose={onClose} />}
       </header>
+      {acting && <AgentBar onStop={() => stopAgent(id)} />}
       <div ref={ref} data-web-frame={id} className="relative min-h-0 flex-1 border-t bg-muted/40">
         {live ? (
           occluded && <Quiet title={view.title} url={current} />
@@ -296,6 +299,22 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
           </Quiet>
         )}
       </div>
+    </div>
+  )
+}
+
+/** 209 §9: while an agent call on this tile is in flight (and `LINGER_MS` after), a slim bar under the toolbar; Stop
+ * fails the call and refuses the tile's next calls for a minute. Between the toolbar and the placeholder, so the native
+ * view (laid over the placeholder) moves down for it rather than covering it. */
+function AgentBar({ onStop }: { onStop: () => void }) {
+  return (
+    <div role="status" aria-label="Agent is using this page" className="flex h-9 shrink-0 items-center gap-2 border-t bg-accent px-3 text-xs">
+      <Bot className="size-4 shrink-0 text-fg-secondary" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate">Agent is using this page</span>
+      <Button variant="outline" size="xs" className="pointer-coarse:min-h-9" aria-label="Stop the agent on this page" onClick={onStop}>
+        <Square aria-hidden="true" />
+        Stop
+      </Button>
     </div>
   )
 }

@@ -30,6 +30,7 @@ import { isMobileLayout } from '@/hooks/use-mobile'
 import { installFenceSnapshot } from '@/lib/fence-snapshot'
 import { installPagePreview } from '@/lib/page-preview'
 import { startWebProfileSync } from '@/lib/web-profile'
+import { startWebViewAgent } from '@/lib/web-view-agent'
 import { container, isDesktop } from '@/lib/platform'
 import { POPOUT, closePopout, popoutMeeting, popoutSession } from '@/lib/popout'
 import { onOwnerChanged, onPeerChange, remoteAmong, settleAfterFollowLoss, withdrawRelayed } from '@/lib/owner'
@@ -741,6 +742,8 @@ function Main() {
   useEffect(() => (AUX ? undefined : installFenceSnapshot()), [])
   // 209 §4.5: the device's tile store is one for every window; only the main window pushes it.
   useEffect(() => (AUX ? undefined : startWebProfileSync()), [])
+  // 209 §4.7: a pop-out window may hold a tile too; each window claims only the tiles it holds.
+  useEffect(() => (ISLAND || OVERLAY ? undefined : startWebViewAgent()), [])
   // The shell flips both windows; each webview mirrors the value into its own settings copy.
   useEffect(() => {
     const off = onCaptureHidden((h) => useMeetingSettings.getState().setHidden(h))
