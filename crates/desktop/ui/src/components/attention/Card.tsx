@@ -15,7 +15,7 @@ import type { AttentionItem } from '@/rpc/bindings/method.roster.output'
 import { useSecretRequests } from '@/store/approvals'
 import { KindActions, SnoozeDismiss } from './actions'
 import { chipLabel, doubleIds } from './labels'
-import { pathText, reasonLine, stackRisk } from './model'
+import { pathText, reasonLine, stackRisk, urlHost } from './model'
 import { useAttentionBulk, useBulkPending } from './queries'
 import { Reply } from './Reply'
 
@@ -30,7 +30,7 @@ const troubled = (item: AttentionItem) => item.stop?.outcome === 'failed' || ite
 
 /** Kinds whose answer needs the pane (a packet, an artifact, several questions): the card links there. */
 function needsPane(item: AttentionItem): boolean {
-  if (item.kind === 'decision' || item.kind === 'review' || item.kind === 'show') return true
+  if (item.kind === 'decision' || item.kind === 'review' || item.kind === 'show' || item.kind === 'web_view') return true
   if (item.kind !== 'ask') return false
   const qs = item.ask?.questions ?? []
   return qs.length !== 1 || (qs[0]?.options.length ?? 0) === 0
@@ -142,9 +142,10 @@ function Frame({ item, now, entryKey = item.id, stack, active, focused, selected
   )
 }
 
-/** One line of the card's facts: the approval's command in mono, a stopped session's summary and error, else `detail`. */
+/** One line of the card's facts: the approval's command in mono, a web page's host, a stopped session's summary and error, else `detail`. */
 function Detail({ item }: { item: AttentionItem }) {
   if (item.kind === 'approval') return item.detail ? <p className="truncate font-mono text-xs text-fg-secondary">{item.detail}</p> : null
+  if (item.kind === 'web_view') return item.detail ? <p className="truncate font-mono text-xs text-fg-secondary" title={item.detail}>{urlHost(item.detail)}</p> : null
   if (item.kind === 'finished') {
     const summary = item.summary ?? item.detail
     const error = item.stop?.error

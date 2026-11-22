@@ -82,7 +82,8 @@ pub fn base_class(item: &AttentionItem) -> BaseClass {
                 Notice
             }
         }
-        K::Show => Shown,
+        // 205: a live page beside a chat is shown to you, like an artifact.
+        K::Show | K::WebView => Shown,
         K::Finished => match item.stop.as_ref().map(|s| s.outcome) {
             Some(StopOutcome::Failed | StopOutcome::TimedOut) => StoppedFailed,
             _ => Stopped,
@@ -147,6 +148,7 @@ pub fn base_text(item: &AttentionItem) -> &'static str {
         K::Blocked if left_decision(item) => "decision left to the agent",
         K::Blocked => "blocked task",
         K::Show => "shown to you",
+        K::WebView => "web page",
         K::Double => "answered by your double",
         K::Finished => "finished",
     }
@@ -194,8 +196,9 @@ pub fn score(item: &AttentionItem, w: &ScoreWeights, now_ms: u64) -> (u32, Vec<A
         class.points(w),
         base_text(item).to_owned(),
     )];
-    // D3: a double's session approval is its own item; a stopped session is not live.
-    if item.session_live && !matches!(item.kind, K::Double | K::Finished) && w.live > 0 {
+    // D3: a double's session approval is its own item; a stopped session is not live. 205: a web
+    // page waits on nobody, so a running session does not lift it above the asks.
+    if item.session_live && !matches!(item.kind, K::Double | K::Finished | K::WebView) && w.live > 0 {
         let text = if class == BaseClass::StopsAgent {
             "agent waiting on you"
         } else {

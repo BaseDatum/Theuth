@@ -1,0 +1,115 @@
+// 205 in the inbox: a `show_web` page as the detail pane — the live page itself (the frame's native web view laid over
+// the pane, `useNativeLayer`), its title and address above, and the footer of what to do with it.
+import { useNavigate } from '@tanstack/react-router'
+import { AppWindow, Copy, ExternalLink, MessageSquare, RotateCw } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
+import { openWebView } from '@/components/chat/WebViewCard'
+import { FrameFace, Quiet, useLiveFrame } from '@/components/chat/WebFrame'
+import { useNativeLayer, warn } from '@/components/chat/web-native-frame'
+import { Button } from '@/components/ui/button'
+import { useIsMobile } from '@/hooks/use-mobile'
+import { popOutWeb } from '@/lib/panes'
+import { canPopout } from '@/lib/popout'
+import { cn } from '@/lib/utils'
+import * as native from '@/lib/web-view-native'
+import { openInBrowser, useWebViews } from '@/lib/web-views'
+import type { AttentionItem } from '@/rpc/bindings/method.roster.output'
+import { Footer, useResolved } from './shared'
+import { ActionBar, Source } from './source'
+import { webViewOf } from './model'
+
+/**
+ * A `web_view` item (205): Source · the page's title and address · the live page filling the pane · Open in chat · Pop
+ * out · Open in browser · Copy URL · Reload · Snooze · Dismiss. The page is the chat's own frame (`web-<id>`): showing it
+ * here moves its native view over this pane, leaving the pane (another item, another page) hides it again, and the chat's
+ * tile takes it back when it shows. Without a native layer (a browser, the dev fixture) the pane shows the address with
+ * **Open in browser** (205 D7), the same size as the page would be.
+ */
+export function WebViewScreen({ item }: { item: AttentionItem }) {
+  const page = webViewOf(item)
+  const onResolved = useResolved(item)
+  const navigate = useNavigate()
+  const mobile = useIsMobile()
+  // The frame may be unknown to this window (it started after the `show_web`): record it, as the chat card's Open does.
+  const known = useWebViews((s) => s.views[page.id] !== undefined)
+  useEffect(() => {
+    if (!known && page.session) useWebViews.getState().open({ id: page.id, session: page.session, url: page.url, title: page.title })
+  }, [known, page.id, page.session, page.url, page.title])
+  const { view, current, live, remote, engine, force } = useLiveFrame(page.id)
+  // A pop-out window holds the page (205 D6): it stays there; this pane says so instead of taking it back.
+  const [elsewhere, setElsewhere] = useState(false)
+  const popped = elsewhere || view?.popped === true
+  const ref = useRef<HTMLDivElement>(null)
+  const shows = live && !popped
+  const occluded = useNativeLayer(page.id, ref, shows, (e) => (String(e).startsWith('in-popout:') ? setElsewhere(true) : warn('web_view_attach')(e)))
+  const url = current || page.url
+  const title = view?.title || page.title
+
+  const popOut = () => void popOutWeb({ id: page.id, session: view?.session || page.session, url, title }).then(() => setElsewhere(true), warn('open_window'))
+  const openInChat = () => {
+    if (!page.session) return
+    const session = page.session
+    // The chat's pane must be in the tree before the tile is placed beside it.
+    void navigate({ to: '/c/$session', params: { session } }).then(() => requestAnimationFrame(() => openWebView(session, { id: page.id, url, title }, mobile && native.nativeWebViews())))
+  }
+  const copy = () => void navigator.clipboard.writeText(url).then(() => toast('Copied'), () => toast.error('Copy failed'))
+
+  return (
+    <>
+      <div className="shrink-0 border-b border-border-subtle px-4 py-3 md:px-6">
+        <div className="mx-auto flex w-full max-w-[720px] flex-col gap-2">
+          <Source item={item} />
+          <div className="flex min-w-0 flex-col">
+            <h1 className="truncate text-lg font-semibold leading-snug">{title}</h1>
+            <p className="truncate font-mono text-xs text-fg-secondary" title={url}>
+              {url}
+            </p>
+          </div>
+        </div>
+      </div>
+      <div ref={ref} data-web-frame={page.id} className={cn('relative min-h-0 flex-1 bg-muted/40')}>
+        {popped ? (
+          <Quiet title={title} url={url}>
+            <p className="text-sm text-fg-secondary">This page is open in its own window.</p>
+            {canPopout() && (
+              <Button variant="outline" size="sm" onClick={popOut}>
+                <AppWindow />
+                Show window
+              </Button>
+            )}
+          </Quiet>
+        ) : (
+          <FrameFace live={live} occluded={occluded} remote={remote} engine={engine} title={title} url={url} onForce={force} />
+        )}
+      </div>
+      <ActionBar>
+        {page.session && (
+          <Button size="sm" onClick={openInChat}>
+            <MessageSquare />
+            Open in chat
+          </Button>
+        )}
+        {canPopout() && (
+          <Button size="sm" variant="outline" onClick={popOut}>
+            <AppWindow />
+            Pop out
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" disabled={!url} onClick={() => openInBrowser(url)}>
+          <ExternalLink />
+          Open in browser
+        </Button>
+        <Button size="sm" variant="ghost" disabled={!url} onClick={copy}>
+          <Copy />
+          Copy URL
+        </Button>
+        <Button size="sm" variant="ghost" disabled={!shows} onClick={() => void native.reload(page.id).catch(warn('web_view_reload'))}>
+          <RotateCw className={cn(view?.loading && 'animate-spin')} />
+          Reload
+        </Button>
+        <Footer item={item} onResolved={onResolved} />
+      </ActionBar>
+    </>
+  )
+}

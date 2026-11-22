@@ -3,7 +3,7 @@ import { type QueryClient, type QueryKey, useMutation, useQueries, useQuery, use
 import { useEffect, useMemo, useRef } from 'react'
 import { useModels } from '@/components/agents/queries'
 import { type PatchState, PATCH_START, type Removed, bulkTarget, patchEvent, patchSettled, restoreItems } from '@/components/attention/model'
-import { attentionFixture } from '@/components/settings/attention-fixtures'
+import { inboxFixture } from '@/components/settings/attention-fixtures'
 import { ATTENTION_SIM, SECRET_REQUESTS_SIM, crowdedFlag, simFlag } from '@/components/settings/sandbox-queries'
 import { errorText, useAction } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
@@ -141,9 +141,15 @@ export function useAttention() {
   return useQuery({
     enabled: canQuery1,
     queryKey: ATTENTION_KEY,
-    queryFn: () => (sim ? ATTENTION_SIM : crowded ? attentionFixture(Date.now()).filter((i) => !MOCK_GONE.has(i.id)) : api.attention_list()),
+    queryFn: () => (sim ? ATTENTION_SIM : crowded ? inboxFixture(Date.now()).filter((i) => !MOCK_GONE.has(i.id)) : api.attention_list()),
   })
 }
+
+/**
+ * 104 A2: `show:` ids the inbox's Show screen marked seen by being on screen. Their screen stays up until the user moves
+ * (the route holds the item), so the inbox does not move its pane on when such an item leaves the list.
+ */
+export const SEEN_ON_SCREEN = new Set<string>()
 
 /**
  * 104 A2: the user saw the artifact of `callId` — on the attention Show screen (after `delayMs` on screen), in the chat
@@ -163,6 +169,7 @@ export function useMarkShown(callId: string | null, delayMs = 0) {
     if (!present || fired.current || id === null) return
     const t = setTimeout(() => {
       fired.current = true
+      if (delayMs > 0) SEEN_ON_SCREEN.add(id)
       api.attention_dismiss(id).then(() => qc.invalidateQueries({ queryKey: ATTENTION_KEY }), () => undefined)
     }, delayMs)
     return () => clearTimeout(t)

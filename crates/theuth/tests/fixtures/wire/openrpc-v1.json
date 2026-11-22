@@ -22683,7 +22683,7 @@
             ]
           },
           "id": {
-            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
+            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
             "type": "string"
           },
           "kind": {
@@ -22981,6 +22981,11 @@
           {
             "const": "contact_first",
             "description": "183 §7.6 (W-27): a contact's first task for an export waits — Allow once · Always ·\nBlock (`contact_first_answer`). Id `contact_first:<contact>:<export>` (both names are\n`[a-z0-9_-]`); the title names the contact, its machine and the export.",
+            "type": "string"
+          },
+          {
+            "const": "web_view",
+            "description": "A `show_web` call opened a live web page beside a chat (205): see it. Id\n`web_view:<tile id>` (the tile's `sha256(session ‖ origin)` prefix, 205 D4), so the same\norigin in the same chat is one item; it leaves when the tile closes.",
             "type": "string"
           }
         ]
@@ -23524,7 +23529,7 @@
             ]
           },
           "id": {
-            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
+            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
             "type": "string"
           },
           "kind": {
@@ -23793,6 +23798,11 @@
           {
             "const": "contact_first",
             "description": "183 §7.6 (W-27): a contact's first task for an export waits — Allow once · Always ·\nBlock (`contact_first_answer`). Id `contact_first:<contact>:<export>` (both names are\n`[a-z0-9_-]`); the title names the contact, its machine and the export.",
+            "type": "string"
+          },
+          {
+            "const": "web_view",
+            "description": "A `show_web` call opened a live web page beside a chat (205): see it. Id\n`web_view:<tile id>` (the tile's `sha256(session ‖ origin)` prefix, 205 D4), so the same\norigin in the same chat is one item; it leaves when the tile closes.",
             "type": "string"
           }
         ]
@@ -101225,6 +101235,11 @@
             "const": "contact_first",
             "description": "183 §7.6 (W-27): a contact's first task for an export waits — Allow once · Always ·\nBlock (`contact_first_answer`). Id `contact_first:<contact>:<export>` (both names are\n`[a-z0-9_-]`); the title names the contact, its machine and the export.",
             "type": "string"
+          },
+          {
+            "const": "web_view",
+            "description": "A `show_web` call opened a live web page beside a chat (205): see it. Id\n`web_view:<tile id>` (the tile's `sha256(session ‖ origin)` prefix, 205 D4), so the same\norigin in the same chat is one item; it leaves when the tile closes.",
+            "type": "string"
           }
         ]
       },
@@ -102720,7 +102735,7 @@
             ]
           },
           "id": {
-            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
+            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
             "type": "string"
           },
           "kind": {
@@ -103018,6 +103033,11 @@
           {
             "const": "contact_first",
             "description": "183 §7.6 (W-27): a contact's first task for an export waits — Allow once · Always ·\nBlock (`contact_first_answer`). Id `contact_first:<contact>:<export>` (both names are\n`[a-z0-9_-]`); the title names the contact, its machine and the export.",
+            "type": "string"
+          },
+          {
+            "const": "web_view",
+            "description": "A `show_web` call opened a live web page beside a chat (205): see it. Id\n`web_view:<tile id>` (the tile's `sha256(session ‖ origin)` prefix, 205 D4), so the same\norigin in the same chat is one item; it leaves when the tile closes.",
             "type": "string"
           }
         ]
@@ -105179,7 +105199,7 @@
             ]
           },
           "id": {
-            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
+            "description": "`approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.",
             "type": "string"
           },
           "kind": {
@@ -105448,6 +105468,11 @@
           {
             "const": "contact_first",
             "description": "183 §7.6 (W-27): a contact's first task for an export waits — Allow once · Always ·\nBlock (`contact_first_answer`). Id `contact_first:<contact>:<export>` (both names are\n`[a-z0-9_-]`); the title names the contact, its machine and the export.",
+            "type": "string"
+          },
+          {
+            "const": "web_view",
+            "description": "A `show_web` call opened a live web page beside a chat (205): see it. Id\n`web_view:<tile id>` (the tile's `sha256(session ‖ origin)` prefix, 205 D4), so the same\norigin in the same chat is one item; it leaves when the tile closes.",
             "type": "string"
           }
         ]

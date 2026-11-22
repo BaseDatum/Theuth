@@ -85,6 +85,10 @@ pub enum AttentionKind {
     /// `[a-z0-9_-]`); the title names the contact, its machine and the export.
     // 183 P3: E — derive these items from the waiting tasks.
     ContactFirst,
+    /// A `show_web` call opened a live web page beside a chat (205): see it. Id
+    /// `web_view:<tile id>` (the tile's `sha256(session ‖ origin)` prefix, 205 D4), so the same
+    /// origin in the same chat is one item; it leaves when the tile closes.
+    WebView,
 }
 
 /// One inbox item. `id` is stable across derivations (dismiss / snooze key).
@@ -93,7 +97,7 @@ pub enum AttentionKind {
 )]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AttentionItem {
-    /// `approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.
+    /// `approval:<id>` · `ask:<id>` · `decision:<task>:<decision>` · `hire:<agent>` · `blocked:<task>` · `review:<task>` · `budget:<agent>` · `node:<engine>` (kind node or home) · `misplaced:<task>` · `handoff:<id>` · `secret:<id>` · `show:<call_id>` · `web_view:<tile id>` · `resume:<session>:<turn>` · `resume:boot:<ms>` · `finished:<session>:<turn>` · `double:<question>` · `contact_first:<contact>:<export>` · `contact_roster:<record>` · `autoresearch:{finished,paused,reverted,pair,launch}:…`.
     pub id: String,
     /// What.
     pub kind: AttentionKind,
@@ -652,6 +656,8 @@ pub struct Inputs {
     pub asks: Vec<AskRequested>,
     /// Undismissed `attention_shows` rows (104 A1).
     pub shows: Vec<Shown>,
+    /// 205: open `show_web` tiles (`artifact::webview::open_tiles`), one `web_view:<id>` item each.
+    pub web_views: Vec<artifact::webview::OpenTile>,
     /// Session id → desk agent name, for a desk session and every session under it (104 A3).
     pub desks: HashMap<String, String>,
     /// Task id → newest `task_events.session`, for open tasks without a checkout (104 A3).
@@ -999,6 +1005,33 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                     s.version
                 )),
                 s.at_ms,
+            )
+        });
+    }
+
+    // 205: a live page an agent opened beside a chat; informational, waits on nobody.
+    for w in &inputs.web_views {
+        let session = w.session.to_string();
+        let agent = desk(&session);
+        let (priority, rank) = by_session(&session);
+        let host = Some(w.host.clone()).filter(|h| !h.is_empty());
+        let title = Some(w.title.trim())
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+            .or_else(|| host.clone())
+            .unwrap_or_else(|| "web page".to_owned());
+        out.push(AttentionItem {
+            agent,
+            session: Some(session),
+            waiting_since_ms: None,
+            priority,
+            rank,
+            ..item(
+                format!("web_view:{}", w.id),
+                AttentionKind::WebView,
+                title,
+                Some(w.url.clone()).filter(|u| !u.is_empty()),
+                w.opened_ms,
             )
         });
     }
@@ -1801,6 +1834,22 @@ impl Attention {
                 }
             }
         });
+        // 205: a `show_web` tile opened, closed or changed its page — re-derive its `web_view` item.
+        // Coalesced: one recheck per burst (a page load reports several times).
+        let weak = actor.downgrade();
+        let mut tiles = artifact::webview::watch_tiles();
+        tokio::spawn(async move {
+            while tiles.changed().await.is_ok() {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                tiles.borrow_and_update();
+                let Some(me) = weak.upgrade() else {
+                    break;
+                };
+                if me.tell(WebViewsChanged).await.is_err() {
+                    break;
+                }
+            }
+        });
         Ok(actor)
     }
 
@@ -2094,6 +2143,7 @@ impl Attention {
             engines,
             asks,
             shows,
+            web_views: artifact::webview::open_tiles(),
             desks,
             task_sessions,
             resumes,
@@ -2843,6 +2893,18 @@ pub struct SnoozeMany {
 /// `stopped_ttl_mins`, re-derive, publish only when something changed.
 #[derive(Clone, Copy, Debug)]
 pub struct RescoreTick;
+
+/// `tell` (internal): `show_web` tiles changed (205): re-derive, publish only when something changed.
+#[derive(Clone, Copy, Debug)]
+pub struct WebViewsChanged;
+
+impl Message<WebViewsChanged> for Attention {
+    type Reply = ();
+
+    async fn handle(&mut self, _: WebViewsChanged, _: &mut Context<Self, Self::Reply>) {
+        self.recheck_quietly().await;
+    }
+}
 
 impl Attention {
     /// 207 §5.1: the current list (no publish) and the ids `target` names in it.
@@ -5424,5 +5486,55 @@ mod tests {
             Some((100, Some(100))),
             "no filed task → now"
         );
+    }
+
+    /// 205: one `web_view:<tile>` item per open tile: the page's title (else its host), the address as
+    /// detail, shown-class base without the live bonus, below an ask; a dismissal sticks until the
+    /// next `show_web` re-targets the tile.
+    #[test]
+    fn web_view_items_are_quiet_and_keyed_by_tile() {
+        let s = runtime::SessionId::new();
+        let tile = |id: &str, url: &str, host: &str, title: &str, at: u64| artifact::webview::OpenTile {
+            session: s,
+            id: id.into(),
+            url: url.into(),
+            title: title.into(),
+            host: host.into(),
+            opened_ms: at,
+        };
+        let mut inputs = Inputs {
+            web_views: vec![
+                tile("00000000000000aa", "http://localhost:3000/orders", "localhost:3000", "Orders", 10),
+                tile("00000000000000bb", "https://docs.rs/", "docs.rs", "", 20),
+            ],
+            live: [s.to_string()].into_iter().collect(),
+            ..Default::default()
+        };
+        let items = derive(&inputs, &HashMap::new(), 60_010);
+        let a = items.iter().find(|i| i.id == "web_view:00000000000000aa").unwrap();
+        assert_eq!(a.kind, AttentionKind::WebView);
+        assert_eq!(a.title, "Orders");
+        assert_eq!(a.detail.as_deref(), Some("http://localhost:3000/orders"));
+        assert_eq!(a.session.as_deref(), Some(s.to_string().as_str()));
+        assert_eq!(a.waiting_since_ms, None);
+        assert!(a.session_live);
+        // 120 shown + 1 min of age; no +300 for the live session.
+        assert_eq!(a.score, 121, "{:?}", a.reasons);
+        assert!(a.reasons.iter().all(|r| r.signal != AttentionSignal::Live));
+        assert_eq!(a.reasons[0].text, "web page");
+        let b = items.iter().find(|i| i.id == "web_view:00000000000000bb").unwrap();
+        assert_eq!(b.title, "docs.rs", "an untitled page is named by its host");
+
+        let states = HashMap::from([(
+            "web_view:00000000000000aa".to_owned(),
+            State { dismissed_ms: Some(50), snoozed_until_ms: None },
+        )]);
+        assert!(derive(&inputs, &states, 60_010).iter().all(|i| i.id != "web_view:00000000000000aa"));
+        // A later `show_web` for the same origin re-targets the tile: the item is back.
+        inputs.web_views[0].opened_ms = 70;
+        assert!(derive(&inputs, &states, 60_010).iter().any(|i| i.id == "web_view:00000000000000aa"));
+        // The tile closed: no item.
+        inputs.web_views.clear();
+        assert!(derive(&inputs, &HashMap::new(), 60_010).is_empty());
     }
 }

@@ -29,7 +29,7 @@ export type ListFilter = { kinds: ReadonlySet<string>; project: ProjectFilter; q
 export const EMPTY_FILTER: ListFilter = { kinds: new Set(), project: { type: 'all' }, query: '', subtree: null }
 
 /** Chip order: stop-asks, mesh, yours, receipts; kinds outside it sort after, by name. */
-export const KIND_ORDER: readonly AttentionKind[] = ['approval', 'ask', 'decision', 'secret', 'handoff', 'resume', 'contact_first', 'node', 'home', 'review', 'hire', 'blocked', 'budget', 'show', 'finished', 'double']
+export const KIND_ORDER: readonly AttentionKind[] = ['approval', 'ask', 'decision', 'secret', 'handoff', 'resume', 'contact_first', 'node', 'home', 'review', 'hire', 'blocked', 'budget', 'show', 'web_view', 'finished', 'double']
 
 // An engine before 207 (or a fixture built through `receiveComponent` without the new fields) leaves them undefined:
 // every reader below goes through these, so such an item still lists, searches and sorts.
@@ -221,6 +221,31 @@ export function nextItemAfter(entries: readonly Entry[], id: string): string | n
   const key = focusAfter(keys, keys.filter((k) => k !== mine.key), mine.key)
   const e = entries.find((x) => x.key === key)
   return e ? entryHead(e).id : null
+}
+
+/**
+ * Where the detail pane goes once the open item `id` left the list for any reason (dismissed, snoozed or resolved from
+ * its card, the bulk bar, the keyboard, another client, its own expiry): `prev` is the list as shown before, `next` as
+ * shown now. Another member of its stack still listed, else the entry after it in `prev` that is still listed, else the
+ * nearest one before it; null when nothing is left. `id` itself while it is still listed.
+ */
+export function paneAfter(prev: readonly Entry[], next: readonly Entry[], id: string): string | null {
+  const alive = new Set(next.flatMap(entryIds))
+  if (alive.has(id)) return id
+  const mine = prev.find((e) => entryIds(e).includes(id))
+  if (!mine) return null
+  const sibling = entryIds(mine).find((x) => x !== id && alive.has(x))
+  if (sibling) return sibling
+  const ids = prev.flatMap(entryIds)
+  const at = ids.indexOf(id)
+  for (let j = at + 1; j < ids.length; j++) if (alive.has(ids[j] as string)) return ids[j] as string
+  for (let j = at - 1; j >= 0; j--) if (alive.has(ids[j] as string)) return ids[j] as string
+  return null
+}
+
+/** 205: what a `web_view` item names — the tile id (`web_view:<id>`), the opening session, the page's address (`detail`) and title. */
+export function webViewOf(item: AttentionItem): { id: string; session: string; url: string; title: string } {
+  return { id: item.id.replace(/^web_view:/, ''), session: item.session ?? '', url: item.detail ?? '', title: item.title }
 }
 
 /**

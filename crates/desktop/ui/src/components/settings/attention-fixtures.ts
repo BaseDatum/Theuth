@@ -93,3 +93,17 @@ export function attentionFixture(now: number): AttentionItem[] {
 }
 
 export const ATTENTION_FIXTURE: AttentionItem[] = attentionFixture(ATTENTION_FIXTURE_NOW)
+
+/** 205: two `show_web` pages (kind `web_view`) at `now`: a dev server the builder opened (its checkout task's points, no
+ * live bonus) and a docs page from the research chat. Kept apart from the 34-item table the engine mirrors. */
+export function webViewFixture(now: number): AttentionItem[] {
+  return [
+    item({ id: "web_view:5f1c0a9e7d3b2c41", kind: 'web_view', title: "Checkout preview", detail: "http://localhost:5173/checkout?cart=demo", at_ms: now - 300_000, priority: "high", ...at(BUILDER), rank: 107, session_live: true, score: 205, reasons: [r('base', 120, "web page"), r('task', 80, "high priority · ranked project"), r('age', 5, "5 min ago")] }),
+    item({ id: "web_view:a07e44d2c9b81f30", kind: 'web_view', title: "Stripe API reference: Exports", detail: "https://docs.stripe.com/api/reporting/report_run", at_ms: now - 900_000, ...at(RESEARCH), score: 135, reasons: [r('base', 120, "web page"), r('age', 15, "15 min ago")] }),
+  ]
+}
+
+/** `?mock=crowded`: the 34-item table with the web pages in their score places (engine order). */
+export function inboxFixture(now: number): AttentionItem[] {
+  return [...attentionFixture(now), ...webViewFixture(now)].sort((a, b) => b.score - a.score)
+}
