@@ -5,6 +5,7 @@ import { PanelLeftIcon } from 'lucide-react'
 import { Slot } from 'radix-ui'
 
 import { useIsMobile } from '@/hooks/use-mobile'
+import { touch } from '@/lib/hotkeys'
 import { clamp, PX_STEP } from '@/lib/resize-drag'
 import { ResizeHandle } from '@/components/ui/resize-handle'
 import { Button } from '@/components/ui/button'
@@ -178,8 +179,52 @@ function Sidebar({
   variant?: 'sidebar' | 'floating' | 'inset'
   collapsible?: 'offcanvas' | 'icon' | 'none'
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, width, setWidth } = useSidebar()
+  const { isMobile, state, open, setOpen, openMobile, setOpenMobile, width, setWidth } = useSidebar()
   const [resizing, setResizing] = React.useState(false)
+
+  // Touch (phones and tablets): a rightward swipe from the screen's left edge opens the sidebar; a leftward swipe
+  // that starts inside it closes it. Gestures elsewhere are left to the content (a card's own swipe, scrolling).
+  React.useEffect(() => {
+    if (!isMobile && !touch()) return
+    let start: { x: number; y: number; axis: 'x' | 'y' | null } | null = null
+    const down = (e: globalThis.PointerEvent) => {
+      if (e.pointerType !== 'touch' || !e.isPrimary) return
+      if (!openMobile && !open && e.clientX > 24) return
+      start = { x: e.clientX, y: e.clientY, axis: null }
+    }
+    const move = (e: globalThis.PointerEvent) => {
+      if (!start) return
+      const dx = e.clientX - start.x
+      const dy = e.clientY - start.y
+      if (start.axis === null && (Math.abs(dx) > 12 || Math.abs(dy) > 12)) start.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y'
+      if (start.axis === 'y') start = null
+    }
+    const up = (e: globalThis.PointerEvent) => {
+      if (!start) return
+      const s = start
+      start = null
+      if (s.axis !== 'x') return
+      const dx = e.clientX - s.x
+      const inside = s.x < 300
+      if (dx > 64 && s.x <= 24) {
+        if (isMobile) setOpenMobile(true)
+        else setOpen(true)
+      } else if (dx < -64 && inside) {
+        if (isMobile) setOpenMobile(false)
+        else setOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', down, { passive: true })
+    document.addEventListener('pointermove', move, { passive: true })
+    document.addEventListener('pointerup', up, { passive: true })
+    document.addEventListener('pointercancel', up, { passive: true })
+    return () => {
+      document.removeEventListener('pointerdown', down)
+      document.removeEventListener('pointermove', move)
+      document.removeEventListener('pointerup', up)
+      document.removeEventListener('pointercancel', up)
+    }
+  }, [isMobile, open, openMobile, setOpen, setOpenMobile])
   const start = React.useRef({ x: 0, width: 0 })
   // A left sidebar grows as its edge moves right; a right one as it moves left.
   const dir = side === 'left' ? 1 : -1
