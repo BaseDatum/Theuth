@@ -597,8 +597,11 @@ test('the plan writes only real differences: same cookies (as WebKit spells them
   expect(sameSite(blank, { ...blank, same_site: 'Lax' })).toEqual([{ ...blank, same_site: 'Lax' }])
   expect(sameSite({ ...blank, same_site: 'Strict' }, blank)).toEqual([blank])
   expect(sameSite({ ...blank, same_site: 'Lax' }, { ...blank, same_site: 'Strict' })).toHaveLength(1)
-  // A site the pull holds nothing of is forgotten: all of its cookies go, no other site's.
-  expect(planApply(jar, [], ['example.com'], new Set(), keys(jar)).remove).toEqual([
+  // A site the pull holds no cookie of: only what the profile was seen to hold goes; a store cookie it never had
+  // (kept from before this launch, the site live through a storage snapshot only) stays. A forget goes by `drop`.
+  expect(planApply(jar, [], ['example.com'], new Set(), keys(jar)).remove).toEqual([])
+  expect(planApply(jar, [], ['example.com'], new Set([cookieKey(a)]), keys(jar)).remove).toEqual([{ name: 'a', domain: 'app.example.com', path: '/' }])
+  expect(planApply(jar, [], ['example.com'], new Set(), keys(jar), { drop: new Set(['example.com']) }).remove).toEqual([
     { name: 'a', domain: 'app.example.com', path: '/' },
     { name: 'b', domain: 'app.example.com', path: '/' },
   ])
@@ -834,9 +837,11 @@ test('a scoped pull removes only what the answer names: never by suffix of the a
   expect(shell.writeProfile).not.toHaveBeenCalled()
   // A live child site keeps its cookies when the bare suffix is forgotten.
   const jar = [cookie('x', '1', { domain: 'user.github.io' }), cookie('y', '1', { domain: 'github.io' })]
-  expect(planApply(jar, [], ['github.io'], new Set(), keys(jar), { universe: ['github.io', 'user.github.io'] }).remove).toEqual([
+  const universe = ['github.io', 'user.github.io']
+  expect(planApply(jar, [], ['github.io'], new Set(), keys(jar), { universe, drop: new Set(['github.io']) }).remove).toEqual([
     { name: 'y', domain: 'github.io', path: '/' },
   ])
+  expect(planApply(jar, [], ['github.io'], new Set(jar.map(cookieKey)), keys(jar), { universe }).remove).toEqual([{ name: 'y', domain: 'github.io', path: '/' }])
 })
 
 test('two devices: a live page re-setting a cookie a pull wrote makes it contended on the second time; pulls then leave it, pushes go on', async () => {
@@ -972,6 +977,31 @@ test('profile localStorage flows into an open tile of its origin; the next captu
   engine.storage = [{ origin: 'https://app.example.com', local_storage: [['t', 'agent']], site: 'example.com' }]
   await profileChanged(['example.com'])
   expect(shell.writeProfile).toHaveBeenCalledTimes(1)
+})
+
+test('a capture of what a pull wrote, read back in another key order, is not pushed back (209 P2 proof)', async () => {
+  await startedPulling()
+  vi.useFakeTimers()
+  shell.state!({ label: 'web-t1', url: 'https://app.example.com/', title: 'App', loading: true })
+  engine.storage = [{ origin: 'https://app.example.com', local_storage: [['draft', STORE_SECRET], ['theme', 'dark']], site: 'example.com' }]
+  await profileChanged(['example.com'])
+  expect(shell.writeProfile).toHaveBeenCalledTimes(1)
+  // The reloaded page holds the same pairs; WebKit lists them in its own order.
+  shell.storage.t1 = { origin: 'https://app.example.com', local_storage: [['theme', 'dark'], ['draft', STORE_SECRET]] }
+  shell.state!({ label: 'web-t1', url: 'https://app.example.com/', title: 'App', loading: false })
+  await vi.advanceTimersByTimeAsync(PUSH_DEBOUNCE_MS)
+  expect(engine.push).not.toHaveBeenCalled()
+})
+
+test('a site live through a storage snapshot only keeps the store cookies the profile never held (209 P2 proof)', async () => {
+  // Kept from before this launch: seeded, never pushed, never pulled.
+  shell.store = [cookie('theme', 'old')]
+  await startedPulling()
+  // This device's empty snapshot made the site; its pull answers it with no cookie.
+  engine.storage = [{ origin: 'https://app.example.com', local_storage: [], site: 'example.com' }]
+  await profileChanged(['example.com'])
+  expect(shell.writeProfile).not.toHaveBeenCalled()
+  expect(shell.store).toEqual([cookie('theme', 'old')])
 })
 
 test('a failed clear is retried with the backoff, and at once by a new sign out everywhere, without a reconnect', async () => {

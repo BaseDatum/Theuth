@@ -149,9 +149,10 @@ export type PlanOptions = {
  * 209 D5: what to write into the tile store so it holds what the profile pulled.
  * - `pulled`: the cookies `web_profile_pull` answered; one that already expired is not written.
  * - `sites`: the sites the answer names (each answered whole), or `null` for a pull of every site (connect). Only a
- *   store cookie claimed by a named site can go: all of the site's when the pull has none of it (forgotten, or every
- *   cookie removed), else the ones the profile was seen to hold (`known`) and no longer does. A pull of every site
- *   only sets (and drops `drop`).
+ *   store cookie claimed by a named site can go, and only one the profile was seen to hold (`known`) and no longer
+ *   does: a site the answer holds no cookie of (live through a storage snapshot only, or every cookie removed) never
+ *   empties the store of cookies the profile never had, such as ones kept from before this launch (209 P2 proof).
+ *   A forgotten site goes through `drop`. A pull of every site only sets (and drops `drop`).
  * - `baseline`: what the store held at the last push, seed or write. A key whose store cookie differs from it is a
  *   change of this device not pushed yet: left alone (`localChanges`), the next push carries it.
  */
@@ -191,11 +192,6 @@ export function planApply(
   const remove: CookieId[] = []
   const pulledKeys = new Set(live.map(cookieKey))
   const named = sites === null ? null : new Set(sites)
-  const held = new Set<string>()
-  for (const c of live) {
-    const s = siteOf(c.domain, universe)
-    if (s) held.add(s)
-  }
   for (const c of jar) {
     const key = cookieKey(c)
     const s = siteOf(c.domain, universe)
@@ -203,7 +199,7 @@ export function planApply(
     const p = profileKey.get(key) ?? key
     if (pulledKeys.has(p)) continue
     if (drop.has(s)) remove.push(idOf(c))
-    else if (named?.has(s) && (!held.has(s) || known.has(p)) && settled(key)) remove.push(idOf(c))
+    else if (named?.has(s) && known.has(p) && settled(key)) remove.push(idOf(c))
   }
   return { set, remove, localChanges }
 }
@@ -312,6 +308,12 @@ function snapshot(s: native.StorageCapture): OriginStorage | null {
   if (new TextEncoder().encode(JSON.stringify(s.local_storage)).length > STORAGE_MAX_BYTES) return null
   return { origin: s.origin, local_storage: s.local_storage, captured_ms: Date.now() }
 }
+
+/** A snapshot's `local_storage` as compared with what was sent or written: its pairs sorted by key. The tile reads
+ * pairs in `localStorage.key(i)` order and the engine answers its own, so one content in two orders is one snapshot
+ * (209 P2 proof: a reload of a page the pull had written pushed it back, the agent's row rewritten as this device's). */
+const storageJson = (pairs: readonly (readonly [string, string])[]): string =>
+  JSON.stringify([...pairs].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)))
 
 /** The connected engine's api when it can take a push now, else `null`. */
 function pushTarget() {
@@ -451,7 +453,7 @@ export function startWebProfileSync(): () => void {
     if (snap) captured.set(snap.origin, snap)
   }
   /** Captured snapshots that differ from what was last pushed for their origin. */
-  const pendingStorage = () => [...captured.values()].filter((s) => sentStorage.get(s.origin) !== JSON.stringify(s.local_storage))
+  const pendingStorage = () => [...captured.values()].filter((s) => sentStorage.get(s.origin) !== storageJson(s.local_storage))
   const requeueStorage = (storage: readonly OriginStorage[]) => {
     for (const s of storage) if (!captured.has(s.origin)) captured.set(s.origin, s)
   }
@@ -678,7 +680,7 @@ export function startWebProfileSync(): () => void {
       noteResets(changes, readAt)
       last = keyed(read)
     }
-    for (const s of storage) sentStorage.set(s.origin, JSON.stringify(s.local_storage))
+    for (const s of storage) sentStorage.set(s.origin, storageJson(s.local_storage))
     saveEpoch(engine, result.epoch)
     // A site forgotten since this device's last pull: the profile did not take it, and the store lets it go too.
     for (const s of result.refused ?? []) dropQueue.add(s)
@@ -706,7 +708,7 @@ export function startWebProfileSync(): () => void {
     } finally {
       await fold(jar, set, remove, ok, universe)
     }
-    for (const s of storage) if (applied.includes(s.origin)) sentStorage.set(s.origin, JSON.stringify(s.local_storage))
+    for (const s of storage) if (applied.includes(s.origin)) sentStorage.set(s.origin, storageJson(s.local_storage))
     return ok
   }
 
@@ -842,7 +844,7 @@ export function startWebProfileSync(): () => void {
     // device already sent or wrote.
     const open = new Set(tileOrigins.values())
     const storage = answer.storage
-      .filter((s) => open.has(s.origin) && !captured.has(s.origin) && sentStorage.get(s.origin) !== JSON.stringify(s.local_storage))
+      .filter((s) => open.has(s.origin) && !captured.has(s.origin) && sentStorage.get(s.origin) !== storageJson(s.local_storage))
       .map((s) => ({ origin: s.origin, local_storage: s.local_storage }))
 
     // Every site, none held, nothing forgotten: nothing to write, and no store read needed.
@@ -898,7 +900,7 @@ export function startWebProfileSync(): () => void {
     if (storage.length === 0) return
     void api.web_profile_push(profileDevice(), loadEpoch(engine) ?? 0, [], storage, loadBasis(engine)).then(
       () => {
-        for (const s of storage) sentStorage.set(s.origin, JSON.stringify(s.local_storage))
+        for (const s of storage) sentStorage.set(s.origin, storageJson(s.local_storage))
       },
       () => requeueStorage(storage),
     )
