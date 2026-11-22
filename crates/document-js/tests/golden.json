@@ -1,0 +1,565 @@
+{
+ "peer": "bun packages/documents/src/helper.ts",
+ "cases": [
+  {
+   "name": "test:paragraph",
+   "text": "Plain **bold** *italic* ~~strike~~ `code` [link](https://x.y/).",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":1,\"touched\":[\"ID0\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID0\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"Plain **bold** *italic* ~~strike~~ `code` [link](https://x.y/).\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"Plain bold italic strike code link.\",\"type\":\"paragraph\"}],\"outline\":\"ID0 Plain bold italic strike code link.\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\nPlain **bold** *italic* ~~strike~~ `code` [link](https://x.y/).\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID1\",\"ID2\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID1\",\"ID2\"],\"removed\":[],\"touched\":[\"ID1\",\"ID2\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID1\",\"ID2\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"Plain **bold** *italic* ~~strike~~ `code` [link](https://x.y/).\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":2,\"touched\":[\"ID3\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":2,\"touched\":[\"ID3\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"Plain **bold** *italic* ~~strike~~ `code` [link](https://x.y/).\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:headings",
+   "text": "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":6,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":6,\"touched\":[\"ID0\",\"ID1\",\"ID2\",\"ID3\",\"ID4\",\"ID5\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":6,\"total\":6,\"touched\":[\"ID0\",\"ID1\",\"ID2\",\"ID3\",\"ID4\",\"ID5\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"# One\\n\\n## Two\\n\\n### Three\\n\\n#### Four\\n\\n##### Five\\n\\n###### Six\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[h1] One\",\"type\":\"heading\"},{\"children\":[],\"id\":\"ID1\",\"text\":\"[h2] Two\",\"type\":\"heading\"},{\"children\":[],\"id\":\"ID2\",\"text\":\"[h3] Three\",\"type\":\"heading\"},{\"children\":[],\"id\":\"ID3\",\"text\":\"[h4] Four\",\"type\":\"heading\"},{\"children\":[],\"id\":\"ID4\",\"text\":\"[h5] Five\",\"type\":\"heading\"},{\"children\":[],\"id\":\"ID5\",\"text\":\"[h6] Six\",\"type\":\"heading\"}],\"outline\":\"ID0 [h1] One\\nID1 [h2] Two\\nID2 [h3] Three\\nID3 [h4] Four\\nID4 [h5] Five\\nID5 [h6] Six\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n# One\\n\\n<!-- ID1 -->\\n## Two\\n\\n<!-- ID2 -->\\n### Three\\n\\n<!-- ID3 -->\\n#### Four\\n\\n<!-- ID4 -->\\n##### Five\\n\\n<!-- ID5 -->\\n###### Six\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID6\",\"ID7\",\"ID8\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID6\",\"ID7\",\"ID8\"],\"removed\":[\"ID1\"],\"touched\":[\"ID6\",\"ID7\",\"ID8\"],\"undo\":[{\"anchor\":{\"after\":\"ID4\"},\"blocks\":[{\"children\":[],\"content\":[{\"styles\":{},\"text\":\"Six\",\"type\":\"text\"}],\"id\":\"ID5\",\"props\":{\"backgroundColor\":\"default\",\"isToggleable\":false,\"level\":6,\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"heading\"}],\"op\":\"restore\",\"remove\":[\"ID5\"]},{\"anchor\":{\"after\":\"ID7\"},\"blocks\":[{\"children\":[],\"content\":[{\"styles\":{},\"text\":\"Two\",\"type\":\"text\"}],\"id\":\"ID1\",\"props\":{\"backgroundColor\":\"default\",\"isToggleable\":false,\"level\":2,\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"heading\"}],\"op\":\"restore\",\"remove\":[\"ID8\"]},{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID6\",\"ID7\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"###### Six\\n\\n# One\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\\n## Replaced `heading`\\n\\n### Three\\n\\n#### Four\\n\\n##### Five\\n\"}}",
+    "{\"changed\":3,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":7,\"touched\":[\"ID9\",\"ID10\",\"ID11\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":3,\"total\":7,\"touched\":[\"ID9\",\"ID10\",\"ID11\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"# One\\n\\n## Two\\n\\n### Three\\n\\n#### Four\\n\\n##### Five\\n\\n###### Six\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:bullet list",
+   "text": "- a\n- b\n  - nested",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":2,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"* a\\n* b\\n  * nested\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"• a\",\"type\":\"bulletListItem\"},{\"children\":[{\"children\":[],\"id\":\"ID2\",\"text\":\"• nested\",\"type\":\"bulletListItem\"}],\"id\":\"ID1\",\"text\":\"• b\",\"type\":\"bulletListItem\"}],\"outline\":\"ID0 • a\\nID1 • b\\n  ID2 • nested\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n* a\\n\\n<!-- ID1 -->\\n* b\\n  * nested\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID3\",\"ID4\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID3\",\"ID4\"],\"removed\":[],\"touched\":[\"ID3\",\"ID4\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID3\",\"ID4\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"* a\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n* b\\n  * nested\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":3,\"touched\":[\"ID5\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":3,\"touched\":[\"ID5\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"* a\\n* b\\n  * nested\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:numbered list",
+   "text": "1. one\n2. two",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":2,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"1. one\\n2. two\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"1. one\",\"type\":\"numberedListItem\"},{\"children\":[],\"id\":\"ID1\",\"text\":\"1. two\",\"type\":\"numberedListItem\"}],\"outline\":\"ID0 1. one\\nID1 1. two\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n1. one\\n\\n<!-- ID1 -->\\n1. two\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID2\",\"ID3\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID2\",\"ID3\"],\"removed\":[],\"touched\":[\"ID2\",\"ID3\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID2\",\"ID3\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"1. one\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\\n1. two\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":3,\"touched\":[\"ID4\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":3,\"touched\":[\"ID4\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"1. one\\n2. two\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:check list",
+   "text": "- [ ] todo\n- [x] done",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":2,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"* [ ] todo\\n* [x] done\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[ ] todo\",\"type\":\"checkListItem\"},{\"children\":[],\"id\":\"ID1\",\"text\":\"[x] done\",\"type\":\"checkListItem\"}],\"outline\":\"ID0 [ ] todo\\nID1 [x] done\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n* [ ] todo\\n\\n<!-- ID1 -->\\n* [x] done\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID2\",\"ID3\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID2\",\"ID3\"],\"removed\":[],\"touched\":[\"ID2\",\"ID3\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID2\",\"ID3\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"* [ ] todo\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n* [x] done\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":3,\"touched\":[\"ID4\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":3,\"touched\":[\"ID4\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"* [ ] todo\\n* [x] done\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:code block",
+   "text": "```rust\nfn main() {}\n```",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":1,\"touched\":[\"ID0\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID0\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"```rust\\nfn main() {}\\n```\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[code:rust] fn main() {}\",\"type\":\"codeBlock\"}],\"outline\":\"ID0 [code:rust] fn main() {}\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n```rust\\nfn main() {}\\n```\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID1\",\"ID2\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID1\",\"ID2\"],\"removed\":[],\"touched\":[\"ID1\",\"ID2\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID1\",\"ID2\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"```rust\\nfn main() {}\\n```\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":2,\"touched\":[\"ID3\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":2,\"touched\":[\"ID3\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"```rust\\nfn main() {}\\n```\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:mermaid",
+   "text": "```mermaid\nflowchart LR\n  A --> B\n```",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":1,\"touched\":[\"ID0\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID0\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"```mermaid\\nflowchart LR\\n  A --> B\\n```\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[code:mermaid] flowchart LR … (2 lines)\",\"type\":\"codeBlock\"}],\"outline\":\"ID0 [code:mermaid] flowchart LR … (2 lines)\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n```mermaid\\nflowchart LR\\n  A --> B\\n```\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID1\",\"ID2\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID1\",\"ID2\"],\"removed\":[],\"touched\":[\"ID1\",\"ID2\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID1\",\"ID2\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"```mermaid\\nflowchart LR\\n  A --> B\\n```\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":2,\"touched\":[\"ID3\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":2,\"touched\":[\"ID3\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"```mermaid\\nflowchart LR\\n  A --> B\\n```\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:json-render",
+   "text": "```json-render\n{\"root\":\"a\"}\n```",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":1,\"touched\":[\"ID0\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID0\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"```json-render\\n{\\\"root\\\":\\\"a\\\"}\\n```\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[code:json-render] {\\\"root\\\":\\\"a\\\"}\",\"type\":\"codeBlock\"}],\"outline\":\"ID0 [code:json-render] {\\\"root\\\":\\\"a\\\"}\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n```json-render\\n{\\\"root\\\":\\\"a\\\"}\\n```\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID1\",\"ID2\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID1\",\"ID2\"],\"removed\":[],\"touched\":[\"ID1\",\"ID2\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID1\",\"ID2\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"```json-render\\n{\\\"root\\\":\\\"a\\\"}\\n```\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":2,\"touched\":[\"ID3\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":2,\"touched\":[\"ID3\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"```json-render\\n{\\\"root\\\":\\\"a\\\"}\\n```\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:table",
+   "text": "| a | b |\n| --- | --- |\n| 1 | 2 |",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":1,\"touched\":[\"ID0\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID0\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"| a          | b          |\\n| ---------- | ---------- |\\n| 1          | 2          |\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[table 2×2] a | b\",\"type\":\"table\"}],\"outline\":\"ID0 [table 2×2] a | b\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n| a          | b          |\\n| ---------- | ---------- |\\n| 1          | 2          |\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID1\",\"ID2\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID1\",\"ID2\"],\"removed\":[],\"touched\":[\"ID1\",\"ID2\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID1\",\"ID2\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"| a          | b          |\\n| ---------- | ---------- |\\n| 1          | 2          |\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":2,\"touched\":[\"ID3\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":2,\"touched\":[\"ID3\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"| a          | b          |\\n| ---------- | ---------- |\\n| 1          | 2          |\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:quote",
+   "text": "> quoted",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":1,\"touched\":[\"ID0\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID0\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"> quoted\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[quote] quoted\",\"type\":\"quote\"}],\"outline\":\"ID0 [quote] quoted\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n> quoted\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID1\",\"ID2\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID1\",\"ID2\"],\"removed\":[],\"touched\":[\"ID1\",\"ID2\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID1\",\"ID2\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"> quoted\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":2,\"touched\":[\"ID3\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":2,\"touched\":[\"ID3\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"> quoted\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:divider",
+   "text": "para\n\n---\n\npara2",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":3,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":3,\"touched\":[\"ID0\",\"ID1\",\"ID2\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":3,\"total\":3,\"touched\":[\"ID0\",\"ID1\",\"ID2\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"para\\n\\n***\\n\\npara2\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"para\",\"type\":\"paragraph\"},{\"children\":[],\"id\":\"ID1\",\"text\":\"[divider] \",\"type\":\"divider\"},{\"children\":[],\"id\":\"ID2\",\"text\":\"para2\",\"type\":\"paragraph\"}],\"outline\":\"ID0 para\\nID1 [divider] \\nID2 para2\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\npara\\n\\n<!-- ID1 -->\\n***\\n\\n<!-- ID2 -->\\npara2\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID3\",\"ID4\",\"ID5\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID3\",\"ID4\",\"ID5\"],\"removed\":[\"ID1\"],\"touched\":[\"ID3\",\"ID4\",\"ID5\"],\"undo\":[{\"anchor\":{\"after\":\"ID5\"},\"blocks\":[{\"children\":[],\"content\":[{\"styles\":{},\"text\":\"para2\",\"type\":\"text\"}],\"id\":\"ID2\",\"props\":{\"backgroundColor\":\"default\",\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"paragraph\"}],\"op\":\"restore\",\"remove\":[\"ID2\"]},{\"anchor\":{\"after\":\"ID4\"},\"blocks\":[{\"children\":[],\"id\":\"ID1\",\"props\":{},\"type\":\"divider\"}],\"op\":\"restore\",\"remove\":[\"ID5\"]},{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID3\",\"ID4\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"para2\\n\\npara\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\\n## Replaced `heading`\\n\"}}",
+    "{\"changed\":3,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":4,\"touched\":[\"ID6\",\"ID7\",\"ID8\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":3,\"total\":4,\"touched\":[\"ID6\",\"ID7\",\"ID8\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"para\\n\\n***\\n\\npara2\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:code: link",
+   "text": "See [parse()](code:crates/surface/src/lib.rs#L71-L84) and [x](theuth://notes/1).",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":1,\"touched\":[\"ID0\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID0\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"See [parse()](code:crates/surface/src/lib.rs#L71-L84) and [x](theuth://notes/1).\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"See parse() and x.\",\"type\":\"paragraph\"}],\"outline\":\"ID0 See parse() and x.\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\nSee [parse()](code:crates/surface/src/lib.rs#L71-L84) and [x](theuth://notes/1).\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID1\",\"ID2\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID1\",\"ID2\"],\"removed\":[],\"touched\":[\"ID1\",\"ID2\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID1\",\"ID2\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"See [parse()](code:crates/surface/src/lib.rs#L71-L84) and [x](theuth://notes/1).\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":2,\"touched\":[\"ID3\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":2,\"touched\":[\"ID3\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"See [parse()](code:crates/surface/src/lib.rs#L71-L84) and [x](theuth://notes/1).\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:all types",
+   "text": "# T\n\npara\n\n- a\n\n1. b\n\n- [ ] c\n\n```js\nx\n```\n\n| a |\n| - |\n| 1 |\n\n> q\n\n---\n",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":9,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":9,\"touched\":[\"ID0\",\"ID1\",\"ID2\",\"ID3\",\"ID4\",\"ID5\",\"ID6\",\"ID7\",\"ID8\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":9,\"total\":9,\"touched\":[\"ID0\",\"ID1\",\"ID2\",\"ID3\",\"ID4\",\"ID5\",\"ID6\",\"ID7\",\"ID8\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"# T\\n\\npara\\n\\n* a\\n\\n1. b\\n\\n* [ ] c\\n\\n```js\\nx\\n```\\n\\n| a          |\\n| ---------- |\\n| 1          |\\n\\n> q\\n\\n***\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[h1] T\",\"type\":\"heading\"},{\"children\":[],\"id\":\"ID1\",\"text\":\"para\",\"type\":\"paragraph\"},{\"children\":[],\"id\":\"ID2\",\"text\":\"• a\",\"type\":\"bulletListItem\"},{\"children\":[],\"id\":\"ID3\",\"text\":\"1. b\",\"type\":\"numberedListItem\"},{\"children\":[],\"id\":\"ID4\",\"text\":\"[ ] c\",\"type\":\"checkListItem\"},{\"children\":[],\"id\":\"ID5\",\"text\":\"[code:js] x\",\"type\":\"codeBlock\"},{\"children\":[],\"id\":\"ID6\",\"text\":\"[table 2×1] a\",\"type\":\"table\"},{\"children\":[],\"id\":\"ID7\",\"text\":\"[quote] q\",\"type\":\"quote\"},{\"children\":[],\"id\":\"ID8\",\"text\":\"[divider] \",\"type\":\"divider\"}],\"outline\":\"ID0 [h1] T\\nID1 para\\nID2 • a\\nID3 1. b\\nID4 [ ] c\\nID5 [code:js] x\\nID6 [table 2×1] a\\nID7 [quote] q\\nID8 [divider] \"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n# T\\n\\n<!-- ID1 -->\\npara\\n\\n<!-- ID2 -->\\n* a\\n\\n<!-- ID3 -->\\n1. b\\n\\n<!-- ID4 -->\\n* [ ] c\\n\\n<!-- ID5 -->\\n```js\\nx\\n```\\n\\n<!-- ID6 -->\\n| a          |\\n| ---------- |\\n| 1          |\\n\\n<!-- ID7 -->\\n> q\\n\\n<!-- ID8 -->\\n***\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID9\",\"ID10\",\"ID11\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID9\",\"ID10\",\"ID11\"],\"removed\":[\"ID1\"],\"touched\":[\"ID9\",\"ID10\",\"ID11\"],\"undo\":[{\"anchor\":{\"after\":\"ID7\"},\"blocks\":[{\"children\":[],\"id\":\"ID8\",\"props\":{},\"type\":\"divider\"}],\"op\":\"restore\",\"remove\":[\"ID8\"]},{\"anchor\":{\"after\":\"ID10\"},\"blocks\":[{\"children\":[],\"content\":[{\"styles\":{},\"text\":\"para\",\"type\":\"text\"}],\"id\":\"ID1\",\"props\":{\"backgroundColor\":\"default\",\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"paragraph\"}],\"op\":\"restore\",\"remove\":[\"ID11\"]},{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID9\",\"ID10\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"***\\n\\n# T\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\\n## Replaced `heading`\\n\\n* a\\n\\n1. b\\n\\n* [ ] c\\n\\n```js\\nx\\n```\\n\\n| a          |\\n| ---------- |\\n| 1          |\\n\\n> q\\n\"}}",
+    "{\"changed\":3,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":10,\"touched\":[\"ID12\",\"ID13\",\"ID14\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":3,\"total\":10,\"touched\":[\"ID12\",\"ID13\",\"ID14\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"# T\\n\\npara\\n\\n* a\\n\\n1. b\\n\\n* [ ] c\\n\\n```js\\nx\\n```\\n\\n| a          |\\n| ---------- |\\n| 1          |\\n\\n> q\\n\\n***\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:frontmatter header",
+   "text": "---\ntype: fact\ntitle: theuth's Rust toolchain lives under rustup, not on PATH\ndescription: \"cargo/rustc are at ~/.rustup: homebrew's rustup does not proxy them\"\ntags:\n  - rust\n  - toolchain\nscope: /Users/Sky.Moore/Develop/theuth\nsource: harvest\ntimestamp: 2026-09-10T09:41:03Z\nextra_key: something the store never saw\n---\n\nBody para.\n",
+   "frontmatter": true,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":1,\"touched\":[\"ID0\",\"ID1\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID0\",\"ID1\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"---\\ntype: fact\\ntitle: theuth's Rust toolchain lives under rustup, not on PATH\\ndescription: \\\"cargo/rustc are at ~/.rustup: homebrew's rustup does not proxy them\\\"\\ntags:\\n  - rust\\n  - toolchain\\nscope: /Users/Sky.Moore/Develop/theuth\\nsource: harvest\\ntimestamp: 2026-09-10T09:41:03Z\\nextra_key: something the store never saw\\n---\\nBody para.\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID1\",\"text\":\"type=fact title=\\\"theuth's Rust toolchain lives under rustup, not on PATH\\\" tags=rust,toolchain\",\"type\":\"frontmatter\"},{\"children\":[],\"id\":\"ID0\",\"text\":\"Body para.\",\"type\":\"paragraph\"}],\"outline\":\"[fm] type=fact title=\\\"theuth's Rust toolchain lives under rustup, not on PATH\\\" tags=rust,toolchain\\nID0 Body para.\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"---\\ntype: fact\\ntitle: theuth's Rust toolchain lives under rustup, not on PATH\\ndescription: \\\"cargo/rustc are at ~/.rustup: homebrew's rustup does not proxy them\\\"\\ntags:\\n  - rust\\n  - toolchain\\nscope: /Users/Sky.Moore/Develop/theuth\\nsource: harvest\\ntimestamp: 2026-09-10T09:41:03Z\\nextra_key: something the store never saw\\n---\\n<!-- ID0 by Ada -->\\nBody para.\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID2\",\"ID3\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID2\",\"ID3\"],\"removed\":[],\"touched\":[\"ID2\",\"ID3\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID2\",\"ID3\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"---\\ntype: fact\\ntitle: theuth's Rust toolchain lives under rustup, not on PATH\\ndescription: \\\"cargo/rustc are at ~/.rustup: homebrew's rustup does not proxy them\\\"\\ntags:\\n  - rust\\n  - toolchain\\nscope: /Users/Sky.Moore/Develop/theuth\\nsource: harvest\\ntimestamp: 2026-09-10T09:41:03Z\\nextra_key: something the store never saw\\n---\\nBody para.\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":2,\"touched\":[\"ID4\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":2,\"touched\":[\"ID4\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"---\\ntype: fact\\ntitle: theuth's Rust toolchain lives under rustup, not on PATH\\ndescription: \\\"cargo/rustc are at ~/.rustup: homebrew's rustup does not proxy them\\\"\\ntags:\\n  - rust\\n  - toolchain\\nscope: /Users/Sky.Moore/Develop/theuth\\nsource: harvest\\ntimestamp: 2026-09-10T09:41:03Z\\nextra_key: something the store never saw\\n---\\nBody para.\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "test:outline golden",
+   "text": "---\ntype: project\ntitle: wth apps\ntags:\n  - wth\n  - openui\n---\n## Decisions\n\n- app = artifact\n  - nested child\n\n```rust\npub struct A {}\nfn b() {}\n```\n\n| step | crates | done when |\n| --- | --- | --- |\n| 1 | a | b |\n| 2 | c | d |\n",
+   "frontmatter": true,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":4,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":4,\"touched\":[\"ID0\",\"ID1\",\"ID2\",\"ID3\",\"ID4\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":4,\"total\":4,\"touched\":[\"ID0\",\"ID1\",\"ID2\",\"ID3\",\"ID4\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"---\\ntype: project\\ntitle: wth apps\\ntags:\\n  - wth\\n  - openui\\n---\\n## Decisions\\n\\n* app = artifact\\n  * nested child\\n\\n```rust\\npub struct A {}\\nfn b() {}\\n```\\n\\n| step       | crates     | done when  |\\n| ---------- | ---------- | ---------- |\\n| 1          | a          | b          |\\n| 2          | c          | d          |\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID4\",\"text\":\"type=project title=\\\"wth apps\\\" tags=wth,openui\",\"type\":\"frontmatter\"},{\"children\":[],\"id\":\"ID0\",\"text\":\"[h2] Decisions\",\"type\":\"heading\"},{\"children\":[{\"children\":[],\"id\":\"ID5\",\"text\":\"• nested child\",\"type\":\"bulletListItem\"}],\"id\":\"ID1\",\"text\":\"• app = artifact\",\"type\":\"bulletListItem\"},{\"children\":[],\"id\":\"ID2\",\"text\":\"[code:rust] pub struct A {} … (2 lines)\",\"type\":\"codeBlock\"},{\"children\":[],\"id\":\"ID3\",\"text\":\"[table 3×3] step | crates | done when\",\"type\":\"table\"}],\"outline\":\"[fm] type=project title=\\\"wth apps\\\" tags=wth,openui\\nID0 [h2] Decisions\\nID1 • app = artifact\\n  ID5 • nested child\\nID2 [code:rust] pub struct A {} … (2 lines)\\nID3 [table 3×3] step | crates | done when\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"---\\ntype: project\\ntitle: wth apps\\ntags:\\n  - wth\\n  - openui\\n---\\n<!-- ID0 by Ada -->\\n## Decisions\\n\\n<!-- ID1 -->\\n* app = artifact\\n  * nested child\\n\\n<!-- ID2 -->\\n```rust\\npub struct A {}\\nfn b() {}\\n```\\n\\n<!-- ID3 -->\\n| step       | crates     | done when  |\\n| ---------- | ---------- | ---------- |\\n| 1          | a          | b          |\\n| 2          | c          | d          |\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID6\",\"ID7\",\"ID8\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID6\",\"ID7\",\"ID8\"],\"removed\":[\"ID1\"],\"touched\":[\"ID6\",\"ID7\",\"ID8\"],\"undo\":[{\"anchor\":{\"after\":\"ID2\"},\"blocks\":[{\"children\":[],\"content\":{\"columnWidths\":[null,null,null],\"headerRows\":1,\"rows\":[{\"cells\":[{\"content\":[{\"styles\":{},\"text\":\"step\",\"type\":\"text\"}],\"props\":{\"backgroundColor\":\"default\",\"colspan\":1,\"rowspan\":1,\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"tableCell\"},{\"content\":[{\"styles\":{},\"text\":\"crates\",\"type\":\"text\"}],\"props\":{\"backgroundColor\":\"default\",\"colspan\":1,\"rowspan\":1,\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"tableCell\"},{\"content\":[{\"styles\":{},\"text\":\"done when\",\"type\":\"text\"}],\"props\":{\"backgroundColor\":\"default\",\"colspan\":1,\"rowspan\":1,\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"tableCell\"}]},{\"cells\":[{\"content\":[{\"styles\":{},\"text\":\"1\",\"type\":\"text\"}],\"props\":{\"backgroundColor\":\"default\",\"colspan\":1,\"rowspan\":1,\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"tableCell\"},{\"content\":[{\"styles\":{},\"text\":\"a\",\"type\":\"text\"}],\"props\":{\"backgroundColor\":\"default\",\"colspan\":1,\"rowspan\":1,\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"tableCell\"},{\"content\":[{\"styles\":{},\"text\":\"b\",\"type\":\"text\"}],\"props\":{\"backgroundColor\":\"default\",\"colspan\":1,\"rowspan\":1,\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"tableCell\"}]},{\"cells\":[{\"content\":[{\"styles\":{},\"text\":\"2\",\"type\":\"text\"}],\"props\":{\"backgroundColor\":\"default\",\"colspan\":1,\"rowspan\":1,\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"tableCell\"},{\"content\":[{\"styles\":{},\"text\":\"c\",\"type\":\"text\"}],\"props\":{\"backgroundColor\":\"default\",\"colspan\":1,\"rowspan\":1,\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"tableCell\"},{\"content\":[{\"styles\":{},\"text\":\"d\",\"type\":\"text\"}],\"props\":{\"backgroundColor\":\"default\",\"colspan\":1,\"rowspan\":1,\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"tableCell\"}]}],\"type\":\"tableContent\"},\"id\":\"ID3\",\"props\":{\"textColor\":\"default\"},\"type\":\"table\"}],\"op\":\"restore\",\"remove\":[\"ID3\"]},{\"anchor\":{\"after\":\"ID7\"},\"blocks\":[{\"children\":[{\"children\":[],\"content\":[{\"styles\":{},\"text\":\"nested child\",\"type\":\"text\"}],\"id\":\"ID5\",\"props\":{\"backgroundColor\":\"default\",\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"bulletListItem\"}],\"content\":[{\"styles\":{},\"text\":\"app = artifact\",\"type\":\"text\"}],\"id\":\"ID1\",\"props\":{\"backgroundColor\":\"default\",\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"bulletListItem\"}],\"op\":\"restore\",\"remove\":[\"ID8\"]},{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID6\",\"ID7\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"---\\ntype: project\\ntitle: wth apps\\ntags:\\n  - wth\\n  - openui\\n---\\n| step       | crates     | done when  |\\n| ---------- | ---------- | ---------- |\\n| 1          | a          | b          |\\n| 2          | c          | d          |\\n\\n## Decisions\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\\n## Replaced `heading`\\n\\n```rust\\npub struct A {}\\nfn b() {}\\n```\\n\"}}",
+    "{\"changed\":3,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":5,\"touched\":[\"ID9\",\"ID10\",\"ID11\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":3,\"total\":5,\"touched\":[\"ID9\",\"ID10\",\"ID11\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"---\\ntype: project\\ntitle: wth apps\\ntags:\\n  - wth\\n  - openui\\n---\\n## Decisions\\n\\n* app = artifact\\n  * nested child\\n\\n```rust\\npub struct A {}\\nfn b() {}\\n```\\n\\n| step       | crates     | done when  |\\n| ---------- | ---------- | ---------- |\\n| 1          | a          | b          |\\n| 2          | c          | d          |\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:deep nesting",
+   "text": "- l1\n  - l2\n    - l3\n      - l4\n        1. n5\n        2. n5b\n  - l2b\n- [ ] check\n  - [x] nested check\n",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":2,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"* l1\\n  * l2\\n    * l3\\n      * l4\\n        1. n5\\n        2. n5b\\n  * l2b\\n* [ ] check\\n  * [x] nested check\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[{\"children\":[{\"children\":[{\"children\":[{\"children\":[],\"id\":\"ID2\",\"text\":\"1. n5\",\"type\":\"numberedListItem\"},{\"children\":[],\"id\":\"ID3\",\"text\":\"1. n5b\",\"type\":\"numberedListItem\"}],\"id\":\"ID4\",\"text\":\"• l4\",\"type\":\"bulletListItem\"}],\"id\":\"ID5\",\"text\":\"• l3\",\"type\":\"bulletListItem\"}],\"id\":\"ID6\",\"text\":\"• l2\",\"type\":\"bulletListItem\"},{\"children\":[],\"id\":\"ID7\",\"text\":\"• l2b\",\"type\":\"bulletListItem\"}],\"id\":\"ID0\",\"text\":\"• l1\",\"type\":\"bulletListItem\"},{\"children\":[{\"children\":[],\"id\":\"ID8\",\"text\":\"[x] nested check\",\"type\":\"checkListItem\"}],\"id\":\"ID1\",\"text\":\"[ ] check\",\"type\":\"checkListItem\"}],\"outline\":\"ID0 • l1\\n  ID6 • l2\\n    ID5 • l3\\n      ID4 • l4\\n        ID2 1. n5\\n        ID3 1. n5b\\n  ID7 • l2b\\nID1 [ ] check\\n  ID8 [x] nested check\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n* l1\\n  * l2\\n    * l3\\n      * l4\\n        1. n5\\n        2. n5b\\n  * l2b\\n\\n<!-- ID1 -->\\n* [ ] check\\n  * [x] nested check\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID9\",\"ID10\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID9\",\"ID10\"],\"removed\":[],\"touched\":[\"ID9\",\"ID10\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID9\",\"ID10\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"* l1\\n  * l2\\n    * l3\\n      * l4\\n        1. n5\\n        2. n5b\\n  * l2b\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n* [ ] check\\n  * [x] nested check\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":3,\"touched\":[\"ID11\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":3,\"touched\":[\"ID11\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"* l1\\n  * l2\\n    * l3\\n      * l4\\n        1. n5\\n        2. n5b\\n  * l2b\\n* [ ] check\\n  * [x] nested check\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:marks",
+   "text": "***bold italic*** and **bold `code` inside** and ~~*strike italic*~~ and <u>underline?</u> \\*escaped\\* a_b_c snake_case_word\n\nline one  \nhard break\n",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":2,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"***bold italic*** and **bold** `code`** inside** and *~~strike italic~~* and underline? *escaped* a_b_c snake_case_word\\n\\nline one\\\\\\n hard break\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"bold italic and bold code inside and strike italic and underline? *escaped* a_b_c snake_case_word\",\"type\":\"paragraph\"},{\"children\":[],\"id\":\"ID1\",\"text\":\"line one\\n hard break\",\"type\":\"paragraph\"}],\"outline\":\"ID0 bold italic and bold code inside and strike italic and underline? *escaped* a_b_c snake_case_word\\nID1 line one\\n hard break\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n***bold italic*** and **bold** `code`** inside** and *~~strike italic~~* and underline? *escaped* a_b_c snake_case_word\\n\\n<!-- ID1 -->\\nline one\\\\\\n hard break\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID2\",\"ID3\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID2\",\"ID3\"],\"removed\":[],\"touched\":[\"ID2\",\"ID3\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID2\",\"ID3\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"***bold italic*** and **bold** `code`** inside** and *~~strike italic~~* and underline? *escaped* a_b_c snake_case_word\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\\nline one\\\\\\n hard break\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":3,\"touched\":[\"ID4\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":3,\"touched\":[\"ID4\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"***bold italic*** and **bold** `code`** inside** and *~~strike italic~~* and underline? *escaped* a_b_c snake_case_word\\n\\nline one\\\\\\n hard break\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:links",
+   "text": "[http](https://example.com/a?b=c&d=e) [rel](./docs/x.md) [code](code:crates/a/src/b.rs#L1-L9) [theuth](theuth://notes/42#blk) [mail](mailto:a@b.c) [bad](javascript:alert(1)) [ftp](ftp://h/f) <https://auto.link/>\n",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":1,\"touched\":[\"ID0\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID0\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"[http](https://example.com/a?b=c&d=e) [rel](./docs/x.md) [code](code:crates/a/src/b.rs#L1-L9) [theuth](theuth://notes/42#blk) [mail](mailto:a@b.c) bad [ftp](ftp://h/f) <https://auto.link/>\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"http rel code theuth mail bad ftp <https://auto.link/>\",\"type\":\"paragraph\"}],\"outline\":\"ID0 http rel code theuth mail bad ftp <https://auto.link/>\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n[http](https://example.com/a?b=c&d=e) [rel](./docs/x.md) [code](code:crates/a/src/b.rs#L1-L9) [theuth](theuth://notes/42#blk) [mail](mailto:a@b.c) bad [ftp](ftp://h/f) <https://auto.link/>\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID1\",\"ID2\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID1\",\"ID2\"],\"removed\":[],\"touched\":[\"ID1\",\"ID2\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID1\",\"ID2\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"[http](https://example.com/a?b=c&d=e) [rel](./docs/x.md) [code](code:crates/a/src/b.rs#L1-L9) [theuth](theuth://notes/42#blk) [mail](mailto:a@b.c) bad [ftp](ftp://h/f) <https://auto.link/>\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":2,\"touched\":[\"ID3\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":2,\"touched\":[\"ID3\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"[http](https://example.com/a?b=c&d=e) [rel](./docs/x.md) [code](code:crates/a/src/b.rs#L1-L9) [theuth](theuth://notes/42#blk) [mail](mailto:a@b.c) bad [ftp](ftp://h/f) <https://auto.link/>\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:quarto fence",
+   "text": "```python\n#| label: fig-x\n#| echo: false\nimport numpy as np\nprint(np.pi)\n```\n\nText after.\n",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":2,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"```python\\n#| label: fig-x\\n#| echo: false\\nimport numpy as np\\nprint(np.pi)\\n```\\n\\nText after.\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[code:python] #| label: fig-x … (4 lines)\",\"type\":\"codeBlock\"},{\"children\":[],\"id\":\"ID1\",\"text\":\"Text after.\",\"type\":\"paragraph\"}],\"outline\":\"ID0 [code:python] #| label: fig-x … (4 lines)\\nID1 Text after.\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n```python\\n#| label: fig-x\\n#| echo: false\\nimport numpy as np\\nprint(np.pi)\\n```\\n\\n<!-- ID1 -->\\nText after.\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID2\",\"ID3\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID2\",\"ID3\"],\"removed\":[],\"touched\":[\"ID2\",\"ID3\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID2\",\"ID3\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"```python\\n#| label: fig-x\\n#| echo: false\\nimport numpy as np\\nprint(np.pi)\\n```\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\\nText after.\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":3,\"touched\":[\"ID4\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":3,\"touched\":[\"ID4\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"```python\\n#| label: fig-x\\n#| echo: false\\nimport numpy as np\\nprint(np.pi)\\n```\\n\\nText after.\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:json-render big",
+   "text": "```json-render\n{\n  \"root\": \"card\",\n  \"elements\": {\n    \"card\": {\"type\": \"Card\", \"props\": {\"title\": \"T\"}, \"children\": [\"t\"]},\n    \"t\": {\"type\": \"Text\", \"props\": {\"text\": \"hi <b>\"}}\n  }\n}\n```\n",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":1,\"touched\":[\"ID0\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID0\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"```json-render\\n{\\n  \\\"root\\\": \\\"card\\\",\\n  \\\"elements\\\": {\\n    \\\"card\\\": {\\\"type\\\": \\\"Card\\\", \\\"props\\\": {\\\"title\\\": \\\"T\\\"}, \\\"children\\\": [\\\"t\\\"]},\\n    \\\"t\\\": {\\\"type\\\": \\\"Text\\\", \\\"props\\\": {\\\"text\\\": \\\"hi <b>\\\"}}\\n  }\\n}\\n```\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[code:json-render] { … (7 lines)\",\"type\":\"codeBlock\"}],\"outline\":\"ID0 [code:json-render] { … (7 lines)\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n```json-render\\n{\\n  \\\"root\\\": \\\"card\\\",\\n  \\\"elements\\\": {\\n    \\\"card\\\": {\\\"type\\\": \\\"Card\\\", \\\"props\\\": {\\\"title\\\": \\\"T\\\"}, \\\"children\\\": [\\\"t\\\"]},\\n    \\\"t\\\": {\\\"type\\\": \\\"Text\\\", \\\"props\\\": {\\\"text\\\": \\\"hi <b>\\\"}}\\n  }\\n}\\n```\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID1\",\"ID2\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID1\",\"ID2\"],\"removed\":[],\"touched\":[\"ID1\",\"ID2\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID1\",\"ID2\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"```json-render\\n{\\n  \\\"root\\\": \\\"card\\\",\\n  \\\"elements\\\": {\\n    \\\"card\\\": {\\\"type\\\": \\\"Card\\\", \\\"props\\\": {\\\"title\\\": \\\"T\\\"}, \\\"children\\\": [\\\"t\\\"]},\\n    \\\"t\\\": {\\\"type\\\": \\\"Text\\\", \\\"props\\\": {\\\"text\\\": \\\"hi <b>\\\"}}\\n  }\\n}\\n```\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":2,\"touched\":[\"ID3\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":2,\"touched\":[\"ID3\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"```json-render\\n{\\n  \\\"root\\\": \\\"card\\\",\\n  \\\"elements\\\": {\\n    \\\"card\\\": {\\\"type\\\": \\\"Card\\\", \\\"props\\\": {\\\"title\\\": \\\"T\\\"}, \\\"children\\\": [\\\"t\\\"]},\\n    \\\"t\\\": {\\\"type\\\": \\\"Text\\\", \\\"props\\\": {\\\"text\\\": \\\"hi <b>\\\"}}\\n  }\\n}\\n```\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:table marks",
+   "text": "| **h1** | `h2` | [h3](https://x.y) |\n| :--- | :---: | ---: |\n| *a* | b \\| pipe | ~~c~~ |\n| | empty | cells |\n",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":1,\"touched\":[\"ID0\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID0\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"| **h1**     | `h2`       | [h3](https://x.y) |\\n| ---------- | ---------- | ----------------- |\\n| *a*        | b \\\\| pipe  | ~~c~~             |\\n|            | empty      | cells             |\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[table 3×3] h1 | h2 | h3\",\"type\":\"table\"}],\"outline\":\"ID0 [table 3×3] h1 | h2 | h3\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n| **h1**     | `h2`       | [h3](https://x.y) |\\n| ---------- | ---------- | ----------------- |\\n| *a*        | b \\\\| pipe  | ~~c~~             |\\n|            | empty      | cells             |\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID1\",\"ID2\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID1\",\"ID2\"],\"removed\":[],\"touched\":[\"ID1\",\"ID2\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID1\",\"ID2\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"| **h1**     | `h2`       | [h3](https://x.y) |\\n| ---------- | ---------- | ----------------- |\\n| *a*        | b \\\\| pipe  | ~~c~~             |\\n|            | empty      | cells             |\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":2,\"touched\":[\"ID3\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":2,\"touched\":[\"ID3\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"| **h1**     | `h2`       | [h3](https://x.y) |\\n| ---------- | ---------- | ----------------- |\\n| *a*        | b \\\\| pipe  | ~~c~~             |\\n|            | empty      | cells             |\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:unicode",
+   "text": "# Ünïcödé — “quotes” ‘single’ … 🚀\n\nCJK 漢字かな 한국어 עברית العربية\n\n- • bullet char\n- ◦ another\n",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":4,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":4,\"touched\":[\"ID0\",\"ID1\",\"ID2\",\"ID3\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":4,\"total\":4,\"touched\":[\"ID0\",\"ID1\",\"ID2\",\"ID3\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"# Ünïcödé — “quotes” ‘single’ … 🚀\\n\\nCJK 漢字かな 한국어 עברית العربية\\n\\n* • bullet char\\n* ◦ another\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[h1] Ünïcödé — “quotes” ‘single’ … 🚀\",\"type\":\"heading\"},{\"children\":[],\"id\":\"ID1\",\"text\":\"CJK 漢字かな 한국어 עברית العربية\",\"type\":\"paragraph\"},{\"children\":[],\"id\":\"ID2\",\"text\":\"• • bullet char\",\"type\":\"bulletListItem\"},{\"children\":[],\"id\":\"ID3\",\"text\":\"• ◦ another\",\"type\":\"bulletListItem\"}],\"outline\":\"ID0 [h1] Ünïcödé — “quotes” ‘single’ … 🚀\\nID1 CJK 漢字かな 한국어 עברית العربية\\nID2 • • bullet char\\nID3 • ◦ another\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n# Ünïcödé — “quotes” ‘single’ … 🚀\\n\\n<!-- ID1 -->\\nCJK 漢字かな 한국어 עברית العربية\\n\\n<!-- ID2 -->\\n* • bullet char\\n\\n<!-- ID3 -->\\n* ◦ another\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID4\",\"ID5\",\"ID6\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID4\",\"ID5\",\"ID6\"],\"removed\":[\"ID1\"],\"touched\":[\"ID4\",\"ID5\",\"ID6\"],\"undo\":[{\"anchor\":{\"after\":\"ID2\"},\"blocks\":[{\"children\":[],\"content\":[{\"styles\":{},\"text\":\"◦ another\",\"type\":\"text\"}],\"id\":\"ID3\",\"props\":{\"backgroundColor\":\"default\",\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"bulletListItem\"}],\"op\":\"restore\",\"remove\":[\"ID3\"]},{\"anchor\":{\"after\":\"ID5\"},\"blocks\":[{\"children\":[],\"content\":[{\"styles\":{},\"text\":\"CJK 漢字かな 한국어 עברית العربية\",\"type\":\"text\"}],\"id\":\"ID1\",\"props\":{\"backgroundColor\":\"default\",\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"paragraph\"}],\"op\":\"restore\",\"remove\":[\"ID6\"]},{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID4\",\"ID5\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"* ◦ another\\n\\n# Ünïcödé — “quotes” ‘single’ … 🚀\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\\n## Replaced `heading`\\n\\n* • bullet char\\n\"}}",
+    "{\"changed\":3,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":5,\"touched\":[\"ID7\",\"ID8\",\"ID9\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":3,\"total\":5,\"touched\":[\"ID7\",\"ID8\",\"ID9\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"# Ünïcödé — “quotes” ‘single’ … 🚀\\n\\nCJK 漢字かな 한국어 עברית العربية\\n\\n* • bullet char\\n* ◦ another\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:html-ish",
+   "text": "Inline <span>html</span> & entities &amp; &lt;tag&gt; &copy; &#x1F600;\n\n<div>block html</div>\n",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":2,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":2,\"total\":2,\"touched\":[\"ID0\",\"ID1\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"Inline html & entities &amp; &lt;tag&gt; &copy; &#x1F600;\\n\\nblock html\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"Inline html & entities &amp; &lt;tag&gt; &copy; &#x1F600;\",\"type\":\"paragraph\"},{\"children\":[],\"id\":\"ID1\",\"text\":\"block html\",\"type\":\"paragraph\"}],\"outline\":\"ID0 Inline html & entities &amp; &lt;tag&gt; &copy; &#x1F600;\\nID1 block html\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\nInline html & entities &amp; &lt;tag&gt; &copy; &#x1F600;\\n\\n<!-- ID1 -->\\nblock html\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID2\",\"ID3\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID2\",\"ID3\"],\"removed\":[],\"touched\":[\"ID2\",\"ID3\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID2\",\"ID3\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"Inline html & entities &amp; &lt;tag&gt; &copy; &#x1F600;\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\\nblock html\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":3,\"touched\":[\"ID4\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":3,\"touched\":[\"ID4\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"Inline html & entities &amp; &lt;tag&gt; &copy; &#x1F600;\\n\\nblock html\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:frontmatter only",
+   "text": "---\ntitle: empty body\ntags: [a, b]\n---\n",
+   "frontmatter": true,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":0,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":0,\"touched\":[\"ID0\",\"ID1\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":0,\"total\":0,\"touched\":[\"ID0\",\"ID1\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"---\\ntitle: empty body\\ntags: [a, b]\\n---\\n\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID1\",\"text\":\"title=\\\"empty body\\\" tags=a,b\",\"type\":\"frontmatter\"},{\"children\":[],\"id\":\"ID0\",\"text\":\"\",\"type\":\"paragraph\"}],\"outline\":\"[fm] title=\\\"empty body\\\" tags=a,b\\nID0 \"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"---\\ntitle: empty body\\ntags: [a, b]\\n---\\n<!-- ID0 by Ada -->\\n\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID2\",\"ID3\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID2\",\"ID3\"],\"removed\":[],\"touched\":[\"ID2\",\"ID3\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID2\",\"ID3\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"---\\ntitle: empty body\\ntags: [a, b]\\n---\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":1,\"touched\":[\"ID4\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID4\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"---\\ntitle: empty body\\ntags: [a, b]\\n---\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:empty",
+   "text": "",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":0,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":0,\"touched\":[\"ID0\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":0,\"total\":0,\"touched\":[\"ID0\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"\",\"type\":\"paragraph\"}],\"outline\":\"ID0 \"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID1\",\"ID2\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID1\",\"ID2\"],\"removed\":[],\"touched\":[\"ID1\",\"ID2\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID1\",\"ID2\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"Inserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":1,\"touched\":[\"ID3\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID3\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"Appended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:code fences mixed",
+   "text": "~~~\ntilde fence\n~~~\n\n```\nno lang\n  indented\n\ttab\n```\n\n    indented code block\n\n```ts title=\"x.ts\"\nconst a = 1;\n```\n",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":4,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":4,\"touched\":[\"ID0\",\"ID1\",\"ID2\",\"ID3\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":4,\"total\":4,\"touched\":[\"ID0\",\"ID1\",\"ID2\",\"ID3\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"```text\\ntilde fence\\n```\\n\\n```text\\nno lang\\n  indented\\n\\ttab\\n```\\n\\n indented code block\\n\\n```ts title=\\\"x.ts\\\"\\nconst a = 1;\\n```\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[code:text] tilde fence\",\"type\":\"codeBlock\"},{\"children\":[],\"id\":\"ID1\",\"text\":\"[code:text] no lang … (3 lines)\",\"type\":\"codeBlock\"},{\"children\":[],\"id\":\"ID2\",\"text\":\" indented code block\",\"type\":\"paragraph\"},{\"children\":[],\"id\":\"ID3\",\"text\":\"[code:ts title=\\\"x.ts\\\"] const a = 1;\",\"type\":\"codeBlock\"}],\"outline\":\"ID0 [code:text] tilde fence\\nID1 [code:text] no lang … (3 lines)\\nID2  indented code block\\nID3 [code:ts title=\\\"x.ts\\\"] const a = 1;\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n```text\\ntilde fence\\n```\\n\\n<!-- ID1 -->\\n```text\\nno lang\\n  indented\\n\\ttab\\n```\\n\\n<!-- ID2 -->\\nindented code block\\n\\n<!-- ID3 -->\\n```ts title=\\\"x.ts\\\"\\nconst a = 1;\\n```\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID4\",\"ID5\",\"ID6\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID4\",\"ID5\",\"ID6\"],\"removed\":[\"ID1\"],\"touched\":[\"ID4\",\"ID5\",\"ID6\"],\"undo\":[{\"anchor\":{\"after\":\"ID2\"},\"blocks\":[{\"children\":[],\"content\":[{\"styles\":{},\"text\":\"const a = 1;\",\"type\":\"text\"}],\"id\":\"ID3\",\"props\":{\"language\":\"ts title=\\\"x.ts\\\"\"},\"type\":\"codeBlock\"}],\"op\":\"restore\",\"remove\":[\"ID3\"]},{\"anchor\":{\"after\":\"ID5\"},\"blocks\":[{\"children\":[],\"content\":[{\"styles\":{},\"text\":\"no lang\\n  indented\\n\\ttab\",\"type\":\"text\"}],\"id\":\"ID1\",\"props\":{\"language\":\"text\"},\"type\":\"codeBlock\"}],\"op\":\"restore\",\"remove\":[\"ID6\"]},{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID4\",\"ID5\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"```ts title=\\\"x.ts\\\"\\nconst a = 1;\\n```\\n\\n```text\\ntilde fence\\n```\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\\n## Replaced `heading`\\n\\n indented code block\\n\"}}",
+    "{\"changed\":3,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":5,\"touched\":[\"ID7\",\"ID8\",\"ID9\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":3,\"total\":5,\"touched\":[\"ID7\",\"ID8\",\"ID9\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"```text\\ntilde fence\\n```\\n\\n```text\\nno lang\\n  indented\\n\\ttab\\n```\\n\\n indented code block\\n\\n```ts title=\\\"x.ts\\\"\\nconst a = 1;\\n```\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:numbered start",
+   "text": "3. three\n4. four\n\n10. ten\n",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":3,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":3,\"touched\":[\"ID0\",\"ID1\",\"ID2\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":3,\"total\":3,\"touched\":[\"ID0\",\"ID1\",\"ID2\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"3. three\\n4. four\\n5. ten\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"1. three\",\"type\":\"numberedListItem\"},{\"children\":[],\"id\":\"ID1\",\"text\":\"1. four\",\"type\":\"numberedListItem\"},{\"children\":[],\"id\":\"ID2\",\"text\":\"1. ten\",\"type\":\"numberedListItem\"}],\"outline\":\"ID0 1. three\\nID1 1. four\\nID2 1. ten\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n3. three\\n\\n<!-- ID1 -->\\n1. four\\n\\n<!-- ID2 -->\\n1. ten\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID3\",\"ID4\",\"ID5\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID3\",\"ID4\",\"ID5\"],\"removed\":[\"ID1\"],\"touched\":[\"ID3\",\"ID4\",\"ID5\"],\"undo\":[{\"anchor\":{\"after\":\"ID5\"},\"blocks\":[{\"children\":[],\"content\":[{\"styles\":{},\"text\":\"ten\",\"type\":\"text\"}],\"id\":\"ID2\",\"props\":{\"backgroundColor\":\"default\",\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"numberedListItem\"}],\"op\":\"restore\",\"remove\":[\"ID2\"]},{\"anchor\":{\"after\":\"ID4\"},\"blocks\":[{\"children\":[],\"content\":[{\"styles\":{},\"text\":\"four\",\"type\":\"text\"}],\"id\":\"ID1\",\"props\":{\"backgroundColor\":\"default\",\"textAlignment\":\"left\",\"textColor\":\"default\"},\"type\":\"numberedListItem\"}],\"op\":\"restore\",\"remove\":[\"ID5\"]},{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID3\",\"ID4\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"1. ten\\n2. three\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\\n## Replaced `heading`\\n\"}}",
+    "{\"changed\":3,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":4,\"touched\":[\"ID6\",\"ID7\",\"ID8\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":3,\"total\":4,\"touched\":[\"ID6\",\"ID7\",\"ID8\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"3. three\\n4. four\\n5. ten\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  },
+  {
+   "name": "syn:quote nested",
+   "text": "> level one\n> > level two\n>\n> - list in quote\n",
+   "frontmatter": false,
+   "transcript": [
+    "{\"id\":1,\"ok\":true}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":2,\"total\":1,\"touched\":[\"ID0\"]}",
+    "{\"id\":2,\"ok\":true,\"result\":{\"changed\":1,\"total\":1,\"touched\":[\"ID0\"]}}",
+    "{\"id\":3,\"ok\":true,\"result\":{\"markdown\":\"> level one\\\\\\n> level two\\\\\\n> list in quote\\n\"}}",
+    "{\"id\":4,\"ok\":true,\"result\":{\"blocks\":[{\"children\":[],\"id\":\"ID0\",\"text\":\"[quote] level one\\nlevel two\\nlist in quote\",\"type\":\"quote\"}],\"outline\":\"ID0 [quote] level one\\nlevel two\\nlist in quote\"}}",
+    "{\"id\":5,\"ok\":true,\"result\":{\"markdown\":\"<!-- ID0 by Ada -->\\n> level one\\\\\\n> level two\\\\\\n> list in quote\\n\"}}",
+    "{\"doc\":\"d\",\"ev\":\"update\",\"req\":6,\"touched\":[\"ID1\",\"ID2\"]}",
+    "{\"id\":6,\"ok\":true,\"result\":{\"inserted\":[\"ID1\",\"ID2\"],\"removed\":[],\"touched\":[\"ID1\",\"ID2\"],\"undo\":[{\"anchor\":{},\"blocks\":[],\"op\":\"restore\",\"remove\":[\"ID1\",\"ID2\"]}]}}",
+    "{\"id\":7,\"ok\":true,\"result\":{\"markdown\":\"> level one\\\\\\n> level two\\\\\\n> list in quote\\n\\nInserted **para** with [link](theuth://notes/1)\\n\\n* x\\n  * y\\n\"}}",
+    "{\"changed\":1,\"doc\":\"d\",\"ev\":\"update\",\"req\":8,\"total\":2,\"touched\":[\"ID3\"]}",
+    "{\"id\":8,\"ok\":true,\"result\":{\"changed\":1,\"total\":2,\"touched\":[\"ID3\"]}}",
+    "{\"id\":9,\"ok\":true,\"result\":{\"markdown\":\"> level one\\\\\\n> level two\\\\\\n> list in quote\\n\\nAppended paragraph with *emphasis*.\\n\"}}",
+    "{\"id\":10,\"ok\":true}"
+   ]
+  }
+ ]
+}

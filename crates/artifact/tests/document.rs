@@ -1,8 +1,7 @@
-//! Design 59 §7.2 / §14 row 5 against the compiled documents helper: `show` a
+//! Design 59 §7.2 / §14 row 5 against the in-process documents helper: `show` a
 //! markdown report twice → one document, two `artifact-v<N>` snapshots, two
 //! version rows; a settled user edit → version 3 (`call_id = "edit:…"`,
-//! `origin = None`) whose blob `Export` copies. Skipped when the helper binary
-//! is not built (`just documents-helper`).
+//! `origin = None`) whose blob `Export` copies.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -19,10 +18,10 @@ use runtime::SessionId;
 /// The document actor registers under one global name: one test at a time.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-async fn start_documents(rt: &runtime::Runtime, bin: &std::path::Path) -> ActorRef<DocumentActor> {
+async fn start_documents(rt: &runtime::Runtime) -> ActorRef<DocumentActor> {
     let store = store::Store::open(&rt.data_dir).await.unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let h = helper::Helper::new(bin.to_path_buf(), tx, rt.shutdown.clone());
+    let h = helper::Helper::new(tx, rt.shutdown.clone());
     let cfg = DocumentsConfig {
         export_debounce_ms: 100,
         ..DocumentsConfig::default()
@@ -57,14 +56,9 @@ async fn versions(state: &State, session: SessionId) -> Vec<artifact::Artifact> 
 #[tokio::test]
 async fn show_twice_then_edit_is_three_versions_of_one_document() {
     let _serial = SERIAL.lock().await;
-    let bin = helper::helper_path();
-    if !bin.is_file() {
-        eprintln!("skipped: documents helper not built at {}", bin.display());
-        return;
-    }
     let dir = tempfile::tempdir().unwrap();
     let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
-    let docs = start_documents(&rt, &bin).await;
+    let docs = start_documents(&rt).await;
     let state = Arc::new(
         State::open(dir.path(), rt.clone(), Vec::new())
             .await
@@ -233,15 +227,10 @@ async fn markdown_export_carries_cell_outputs_and_run_lines() {
         }
     }
     let _serial = SERIAL.lock().await;
-    let bin = helper::helper_path();
-    if !bin.is_file() {
-        eprintln!("skipped: documents helper not built at {}", bin.display());
-        return;
-    }
     document::set_run_annotations(Arc::new(Hook));
     let dir = tempfile::tempdir().unwrap();
     let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
-    let docs = start_documents(&rt, &bin).await;
+    let docs = start_documents(&rt).await;
     let state = Arc::new(
         State::open(dir.path(), rt.clone(), Vec::new())
             .await

@@ -209,7 +209,7 @@ Microphone access is requested the first time you dictate, record a voice note o
 
 **`Could not register ⌥Space; another app holds it`** — another app owns the global chord. Pick a different one under Settings › Shortcuts › System-wide.
 
-**Notes, knowledge editing or meeting notes are missing.** Settings › General › **Documents** shows `Helper missing at …`; reinstall the app so the documents helper sits beside `t`.
+**Notes, knowledge editing or meeting notes are missing.** The documents helper runs inside `t` itself, in a JavaScript runtime on its own thread; there is no separate file to install. When a request breaks it (too slow, out of memory, an internal error), `t` fails that request, builds a fresh runtime and reopens the open documents on its own. If notes stay unavailable, look for `documents runtime` lines in `t`'s log and restart `t`. See [Documents](/docs/workspace/documents).
 
 **No microphone or audio prompt appears.** macOS only shows the prompt once; grant access under System Settings › Privacy & Security › Microphone (and › Screen & System Audio Recording for meetings). Settings › Computer links to the Accessibility and Screen Recording panes for computer control.
 

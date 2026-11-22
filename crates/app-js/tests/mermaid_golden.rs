@@ -1,0 +1,63 @@
+//! Replays the mermaid parity corpus (148 sources: every diagram type mermaid 12 registers × valid / error on
+//! line 2 / error on the last line, plus edge cases; `packages/apps/test-inproc/mermaid-corpus/`) through the
+//! committed MERMAID bundle in deno_core, against `golden.json` recorded from the jsdom reference path. Exact,
+//! except `edge/timeline-typeerror`, whose message is the JS engine's own TypeError text (JSC in the reference,
+//! V8 here): matched on `ok` and `line`.
+
+use std::time::Duration;
+
+use app_js::{BundleThread, Limits, MERMAID};
+use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
+
+const ENGINE_WORDING: &[&str] = &["edge/timeline-typeerror"];
+
+#[tokio::test]
+async fn mermaid_corpus_replays_against_the_jsdom_golden() {
+    let golden: serde_json::Map<String, Value> = serde_json::from_str(include_str!(
+        "../../../packages/apps/test-inproc/mermaid-corpus/golden.json"
+    ))
+    .expect("golden.json parses");
+    assert_eq!(golden.len(), 148);
+    let t = BundleThread::new(
+        &MERMAID,
+        Limits {
+            deadline: Duration::from_secs(5),
+            first_deadline: Duration::from_secs(10),
+            heap_limit: 256 * 1024 * 1024,
+            max_line: 4 * 1024 * 1024,
+        },
+        CancellationToken::new(),
+    );
+    let tickets: Vec<_> = golden
+        .iter()
+        .map(|(name, case)| {
+            let line =
+                json!({ "id": name, "op": "check_mermaid", "source": case["source"] }).to_string();
+            t.enqueue(line)
+        })
+        .collect();
+    let mut exact = 0;
+    let mut mismatches = Vec::new();
+    for ((name, case), ticket) in golden.iter().zip(tickets) {
+        let reply = ticket.await.unwrap_or_else(|e| panic!("{name}: {e}"));
+        let mut got: Value = serde_json::from_str(&reply.reply).expect("reply JSON");
+        assert_eq!(got["id"], name.as_str());
+        got.as_object_mut().expect("object").remove("id");
+        let want = &case["reply"];
+        if ENGINE_WORDING.contains(&name.as_str()) {
+            if got["ok"] != want["ok"] || got["errors"][0]["line"] != want["errors"][0]["line"] {
+                mismatches.push(format!("{name}: got {got} want {want}"));
+            }
+            continue;
+        }
+        if &got == want {
+            exact += 1;
+        } else {
+            mismatches.push(format!("{name}:\n  got  {got}\n  want {want}"));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    assert_eq!(exact, 147);
+    assert_eq!(t.generation(), 1, "the corpus never needed a rebuild");
+}

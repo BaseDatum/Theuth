@@ -1359,7 +1359,7 @@ mod tests {
         let store = crate::store::Store::open(dir.path()).await.unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let helper =
-            crate::helper::Helper::new(dir.path().join("no-helper"), tx, rt.shutdown.clone());
+            crate::helper::Helper::new(tx, rt.shutdown.clone());
         let actor = DocumentActor::spawn(DocumentActor::new(
             store.clone(),
             helper,

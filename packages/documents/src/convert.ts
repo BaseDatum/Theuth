@@ -1,9 +1,9 @@
 /**
- * Markdown ⇄ blocks ⇄ Y.XmlFragment, on top of BlockNote's server editor (design 59 §3.2,
- * §4.3–§4.5, §5.1). Pure of I/O: `helper.ts` owns stdio, this owns the conversions and the
- * one-transaction import. Everything here is exercised by `test/*.test.ts` without a process.
+ * Markdown ⇄ blocks ⇄ Y.XmlFragment, on top of BlockNote's headless editor (design 59 §3.2,
+ * §4.3–§4.5, §5.1). Pure of I/O: `inproc.ts` owns the wire, this owns the conversions and the
+ * one-transaction import. Everything here is exercised by `test/*.test.ts` without a runtime host.
  */
-import { ServerBlockNoteEditor } from "@blocknote/server-util";
+import { ServerBlockNoteEditor } from "./inproc/editor.ts";
 import * as Y from "yjs";
 import type { Anchor, Edit, EditError, EditResult, ImportMode, ImportResult, OutlineBlock, Restore } from "./protocol.ts";
 import { type DocBlock, type DocumentSchema, FRAGMENT, links, schema } from "./schema.ts";

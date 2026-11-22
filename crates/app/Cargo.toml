@@ -3,14 +3,14 @@ name = "app"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
-description = "Interactive OpenUI apps: the `app` publishing tool, the headless parser helper, and the app actor that runs one-press tool calls (design doc 46)"
+description = "Interactive OpenUI apps: the `app` publishing tool, the in-process headless validator (app-js), and the app actor that runs one-press tool calls (design doc 46)"
 
 [dependencies]
 jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 tools = { workspace = true }
-platform = { workspace = true }
+app-js = { workspace = true }  # the OpenUI check/merge validator in-process (apps-inproc-as-built-P1.md)
 artifact = { workspace = true }
 rpc-core = { workspace = true }
 rpc-core-macros = { workspace = true }

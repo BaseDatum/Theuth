@@ -692,6 +692,7 @@ version = "2.22.2"
 dependencies = [
  "agent",
  "anyhow",
+ "app-js",
  "artifact",
  "async-trait",
  "autoresearch",
@@ -700,7 +701,6 @@ dependencies = [
  "jsonrpsee",
  "kameo",
  "parking_lot",
- "platform",
  "roster",
  "rpc-core",
  "rpc-core-macros",
@@ -719,6 +719,24 @@ dependencies = [
  "uuid",
  "wire",
 ]
+
+[[package]]
+name = "app-js"
+version = "2.24.0"
+dependencies = [
+ "deno_core",
+ "getrandom 0.2.17",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "app-parser-stub"
+version = "2.24.0"
 
 [[package]]
 name = "apple-cf"
@@ -5304,6 +5322,7 @@ dependencies = [
  "chrono",
  "codeindex",
  "decision",
+ "document-js",
  "figment",
  "futures",
  "hmac 0.13.0",
@@ -5353,6 +5372,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
 dependencies = [
  "litrs",
+]
+
+[[package]]
+name = "document-js"
+version = "2.22.2"
+dependencies = [
+ "deno_core",
+ "getrandom 0.2.17",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -22217,6 +22249,7 @@ dependencies = [
  "agent",
  "anyhow",
  "app",
+ "app-js",
  "artifact",
  "async-trait",
  "autoresearch",

@@ -5,7 +5,7 @@ description: Install the t command or the desktop app on macOS, Linux and Window
 
 ## Two things you can install
 
-- **The `t` command** — the whole harness in one binary: terminal UI, headless daemon, print mode, CLI subcommands. Two helper executables sit beside it: `theuth-app-parser-<hash>` (validates apps) and `theuth-documents-<version>` (the notes/knowledge editor backend). Every package below ships all three.
+- **The `t` command** — the whole harness in one binary: terminal UI, headless daemon, print mode, CLI subcommands; app validation and the notes/knowledge editor backend run inside it. Every package below also ships a small `theuth-app-parser-<hash>` file beside `t` that only older self-updaters look for.
 - **The desktop app** (`theuth.app`, `theuth-desktop`) — a tray/menubar shell around the same engine. It bundles its own `t`, so it does not need the command installed, and it reuses an engine a terminal `t` already started on the same data directory.
 
 They share `~/.theuth` (`--data-dir` / `THEUTH_DATA_DIR` relocate it on every OS, `C:\Users\<you>\.theuth` on Windows). Installing both is normal.
@@ -53,9 +53,9 @@ Requirements: x86_64 or aarch64 with glibc 2.39 or newer (Ubuntu 24.04+, Debian 
 brew install basedatum/tap/theuth
 ```
 
-Or download `theuth_<version>_linux-<arch>.tar.gz` from the release directory above (its `.sig` and `SHA256SUMS` sit beside it), unpack `t` and the two helpers into one directory on your `PATH`. The helpers must stay beside `t`; the updater keeps them together.
+Or download `theuth_<version>_linux-<arch>.tar.gz` from the release directory above (its `.sig` and `SHA256SUMS` sit beside it), unpack `t` and `theuth-app-parser-<hash>` into one directory on your `PATH`. The compatibility file stays beside `t`; the updater keeps them together.
 
-**The desktop app.** Releases may include `theuth_<version>_linux-<arch>.deb`, `.rpm` and `.AppImage`, built with `scripts/package-linux.sh` on a Linux host of the target architecture. Check `latest.json` and `SHA256SUMS` for the version you want; if a Linux desktop file is not listed, that release shipped the CLI only and you can build the bundles yourself (`just package-linux`, see [Development](/docs/reference/development)). The `.deb` installs `theuth-desktop`, `t` and both helpers into `/usr/bin`, so the command is on your `PATH` afterwards. The app depends on WebKitGTK and the usual GTK/appindicator libraries your package manager pulls in.
+**The desktop app.** Releases may include `theuth_<version>_linux-<arch>.deb`, `.rpm` and `.AppImage`, built with `scripts/package-linux.sh` on a Linux host of the target architecture. Check `latest.json` and `SHA256SUMS` for the version you want; if a Linux desktop file is not listed, that release shipped the CLI only and you can build the bundles yourself (`just package-linux`, see [Development](/docs/reference/development)). The `.deb` installs `theuth-desktop`, `t` and `theuth-app-parser-<hash>` into `/usr/bin`, so the command is on your `PATH` afterwards. The app depends on WebKitGTK and the usual GTK/appindicator libraries your package manager pulls in.
 
 What differs from macOS:
 
@@ -73,8 +73,8 @@ The two artifacts:
 
 | File | What it is |
 |---|---|
-| `theuth_<version>_windows-x86_64-setup.exe` | NSIS installer, per-user (no UAC prompt), into `%LOCALAPPDATA%\theuth\`: `theuth-desktop.exe`, `t.exe`, both helpers, `onnxruntime.dll`, `uninstall.exe`. Start-menu and desktop shortcuts, an Add/Remove Programs entry. `/S` installs silently. |
-| `theuth_<version>_windows-x86_64.zip` | `t.exe`, `theuth-app-parser-<hash>.exe`, `theuth-documents-<version>.exe` — unzip into one folder and put it on your `PATH`. |
+| `theuth_<version>_windows-x86_64-setup.exe` | NSIS installer, per-user (no UAC prompt), into `%LOCALAPPDATA%\theuth\`: `theuth-desktop.exe`, `t.exe`, the app parser helper, `onnxruntime.dll`, `uninstall.exe`. Start-menu and desktop shortcuts, an Add/Remove Programs entry. `/S` installs silently. |
+| `theuth_<version>_windows-x86_64.zip` | `t.exe`, `theuth-app-parser-<hash>.exe` — unzip into one folder and put it on your `PATH`. |
 
 WebView2 is required by the app; Windows 11 ships it, and where it is missing the installer downloads Microsoft's bootstrapper (about 2 MB). The app lives in the notification area like on macOS (Windows may tuck a new tray icon under the overflow chevron); closing the window hides it, right-click › **Quit** stops the engine with it.
 
@@ -90,10 +90,10 @@ What differs on Windows:
 ```sh
 just setup      # rustup toolchain from rust-toolchain.toml
 just run        # debug build, terminal UI
-just install    # release `t` + both helpers into ~/.cargo/bin
+just install    # release `t` + the app-parser compatibility stub into ~/.cargo/bin
 ```
 
-Prerequisites from the README: `cmake`, `clang`/`libclang`, `llvm-objcopy`/`llvm-nm` (`brew install cmake llvm` or `apt install cmake clang libclang-dev`), network on the first build for the prebuilt V8 archive, and `bun` to compile the helpers (not needed at run time). The desktop app, packaging recipes and the full toolchain are covered in [Development](/docs/reference/development).
+Prerequisites from the README: `cmake`, `clang`/`libclang`, `llvm-objcopy`/`llvm-nm` (`brew install cmake llvm` or `apt install cmake clang libclang-dev`), and network on the first build for the prebuilt V8 archive. `bun` is needed only for the desktop UI and to rebuild the committed in-process TypeScript bundles after a `packages/apps` or `packages/documents` change (never at run time). The desktop app, packaging recipes and the full toolchain are covered in [Development](/docs/reference/development).
 
 ## Updating
 
@@ -124,7 +124,7 @@ update:
   url: https://s3.rwx.dev/theuth/releases/latest.json
 ```
 
-Helpers are versioned by name (`theuth-app-parser-<hash>`, `theuth-documents-<version>`); an update adds the new ones and leaves older ones in place for any `t` still running. Debug builds never check.
+The `theuth-app-parser-<hash>` compatibility file is versioned by name; an update adds the new one and leaves older ones in place for any `t` still running. Debug builds never check.
 
 ### The desktop app
 
@@ -144,7 +144,7 @@ Limitations in this version: the in-app updater only knows how to swap a macOS `
    brew uninstall --cask theuth            # the app; add --zap to trash ~/Library/Application Support/io.theuth.mac
    ```
 
-   Linux: remove the `theuth` package with your package manager, or delete the AppImage / the tarball's three files. Windows: Add/Remove Programs, or `%LOCALAPPDATA%\theuth\uninstall.exe`.
+   Linux: remove the `theuth` package with your package manager, or delete the AppImage / the tarball's two files. Windows: Add/Remove Programs, or `%LOCALAPPDATA%\theuth\uninstall.exe`.
 3. Decide about `~/.theuth`. Nothing above touches it: the config, the encrypted vault (`secrets.sqlite`), sessions, knowledge, artifacts, documents, logs and downloaded models all stay until you delete the directory.
 4. The vault **key** is not in that directory when a keychain was available: it is a keychain item with service `theuth` and account `secrets:<absolute data dir>` (Keychain Access on macOS, Credential Manager on Windows, your Secret Service keyring on Linux). Delete it after the directory; without the directory the item is useless, and without the item the vault cannot be opened. If you ever set `secrets.key_store: file`, the key is `~/.theuth/secrets.key` instead.
 
@@ -154,7 +154,6 @@ Limitations in this version: the in-app updater only knows how to swap a macOS `
 - ``engine already running (pid …) — run `t` to attach``. Another engine owns this data directory. A plain `t` or `t -p` attaches to it automatically; `t --headless` and `t --serve` will not start a second one. Point `THEUTH_DATA_DIR` elsewhere if you want two.
 - **The RPC port is taken.** The engine listens on `127.0.0.1:7777` by default (`rpc.listen` in `config.yaml`, or `THEUTH_RPC__LISTEN=127.0.0.1:<port>` for one run). The desktop app picks a free port for the engine it starts and finds a terminal engine through `~/.theuth/engine.json`.
 - **The desktop app shows `no daemon on 127.0.0.1:<port> after 15 s`.** The engine did not come up. On macOS/Linux it starts through your login shell so it inherits your environment; a `.zshrc`/`.bashrc` that prompts (`your shell startup is waiting for input`) or exits blocks it. The message quotes the last lines of the launch transcript.
-- **`app parser helper not found at …`** or Settings › General saying **`Helper missing at … — notes, knowledge editing and meeting notes are disabled`.** `t` could not find `theuth-app-parser-<hash>` / `theuth-documents-<version>` beside itself. Reinstall the package, or after a source build run `just install` so the helpers land next to `t`. For a development checkout `THEUTH_APP_PARSER=<path>` points at a helper explicitly.
 - **Log line `no keychain available: … vault key in ~/.theuth/secrets.key (mode 0600)`.** Expected on a headless server, over SSH, or in a container: the vault works, the key is a file. To make that explicit (and silence the warning) set `secrets.key_store: file`; set `keychain` to refuse the fallback instead.
 - **`Could not register Alt+Space; another app holds it`.** Rebind under Settings › Shortcuts.
 - **`screen recording not granted …` / `accessibility not granted …`** from a `computer_*` tool. Grant the permission to the app that launched theuth (see macOS permissions above); Screen Recording needs that app restarted.

@@ -1813,6 +1813,14 @@ async fn run() -> anyhow::Result<()> {
         .extract_inner::<browser::BrowserConfig>("browser")
         .unwrap_or_default();
     browser::warmup(&browser_cfg);
+    // The app parser (app-js) and the documents helper (document-js) run in-process on their own
+    // threads: initialise V8 here, also when the browser (and so its warmup) is disabled. Here =
+    // synchronously in this future, which `main`'s `block_on` drives on the main thread, before
+    // `Runtime::new` starts any plugin; a spawned task would race the plugins. Neither call builds an
+    // isolate or a tokio runtime (none may be dropped inside this async context); both are idempotent
+    // (deno_core's process-wide `Once`), so no-ops after `browser::warmup` or each other.
+    app_js::init_platform();
+    document::helper::init_js_platform();
 
     let rt = Runtime::new(config, data_dir);
     // 187: MCP servers start only on their home engine, so the tools plugin needs this

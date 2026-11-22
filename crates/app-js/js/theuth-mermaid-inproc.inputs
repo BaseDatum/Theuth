@@ -1,0 +1,4 @@
+src/inproc-mermaid.ts
+src/inproc/dompurify-shim.ts
+src/inproc/stub.ts
+src/mermaid-core.ts

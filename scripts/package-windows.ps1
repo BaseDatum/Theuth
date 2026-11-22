@@ -5,12 +5,11 @@ release-s3.sh. Runs ON the Windows host from the repo root: `just package-window
 `pwsh -NoProfile -File scripts/package-windows.ps1`. Mirrors scripts/package-macos.sh:
 
   1. cargo build --release -p theuth  (daemon sidecar, x86_64-pc-windows-msvc)
-     + packages/apps: bun build --compile -> theuth-app-parser-<hash>.exe (46 S2.1; the same
-       hash / --version / stdin-EOF checks as scripts/app-parser-env.sh)
-     + packages/documents: bun build --compile -> theuth-documents-<ver>.exe (59 S3.2)
-  2. stage all as externalBin: binaries/t-<triple>.exe, binaries/theuth-app-parser-<hash>-<triple>.exe,
-     binaries/theuth-documents-<ver>-<triple>.exe (the helpers must sit beside `t.exe` - helper_path -
-     so they ride the same mechanism, as package-linux.sh does)
+     + crates/app-parser-stub: cargo build -> theuth-app-parser-<hash>.exe compatibility stub (46 S2.1; the
+       parser runs in-process, docs/design/apps-inproc-as-built-P1.md; same hash / --version / stdin-EOF checks)
+  2. stage both as externalBin: binaries/t-<triple>.exe, binaries/theuth-app-parser-<hash>-<triple>.exe
+     (the stub must sit beside `t.exe`, so it rides the same mechanism, as package-linux.sh does;
+     the documents helper is compiled into `t`)
   3. onnxruntime.dll (Microsoft's win-x64 CPU build, pinned in scripts/ort-version.env, sha256-checked,
      zip cached in target/) staged as a Tauri resource that lands beside t.exe in the install dir -
      first in `models::onnx::find_ort_lib`'s search order (<exe dir>\onnxruntime.dll before
@@ -25,17 +24,17 @@ release-s3.sh. Runs ON the Windows host from the repo root: `just package-window
   4. cargo tauri build --config <rendered json>  (target nsis only; crates/desktop/tauri.windows.conf.json:
      currentUser install, WebView2 downloadBootstrapper)
   5. target/release/dist/theuth_<ver>_windows-x86_64-setup.exe
-  6. target/release/dist/theuth_<ver>_windows-x86_64.zip = exactly t.exe + both helper exes
+  6. target/release/dist/theuth_<ver>_windows-x86_64.zip = exactly t.exe + the app-parser stub exe
 
 Unsigned: no Authenticode on the exes or the installer. The updater signature (.sig) is made by
 release-s3.sh on the Mac (cargo tauri signer sign), like the Linux tarballs. Never uploads.
 
 Host tools: rustup (rust-toolchain.toml picks the channel; MSVC target), cargo-tauri, bun.
 Env:
-  THEUTH_SKIP_BUN_INSTALL=1   skip `bun install` (desktop UI and both packages)
+  THEUTH_SKIP_BUN_INSTALL=1   skip `bun install` (desktop UI)
   THEUTH_SKIP_COMPANION_SMOKE=1  stage the companion without running `--probe-notify` on it
 #>
-# Progress lines go to the host on purpose: Build-Helper returns a path through the output stream.
+# Progress lines go to the host on purpose.
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]
 [CmdletBinding()]
 param()
@@ -68,29 +67,6 @@ function Test-StdinEof([string]$Exe) {
     if ($p.ExitCode -ne 0) { Fail "$Exe did not exit 0 on stdin EOF (exit $($p.ExitCode))" }
 }
 
-# `bun run build:helper` in $Pkg, then the compiled exe. Bun appends .exe to a suffix-less
-# --outfile on Windows, and both build-helper.ts scripts then copy/self-test the suffix-less name,
-# which fails *after* the compile; so the script's exit code is reported, not fatal - the exe
-# must exist and pass the same checks release-s3.sh runs on every payload.
-function Build-Helper([string]$Pkg, [string]$Stable) {
-    $dist = Join-Path $Pkg 'dist'
-    if (Test-Path $dist) { Get-ChildItem $dist -File | Remove-Item -Force }
-    Push-Location $Pkg
-    try {
-        $env:OPENUI_TELEMETRY_DISABLED = '1'
-        $env:DO_NOT_TRACK = '1'
-        if ($env:THEUTH_SKIP_BUN_INSTALL -ne '1') { Exec "bun install ($Pkg)" { bun install --frozen-lockfile } }
-        bun run build:helper | Out-Host
-        if ($LASTEXITCODE -ne 0) { Write-Host "    note: bun run build:helper exited $LASTEXITCODE (build-helper.ts is not Windows-clean after the compile step); checking the compiled exe" }
-    } finally { Pop-Location }
-    $exe = Join-Path $dist "$Stable.exe"
-    if (-not (Test-Path $exe)) {
-        $bare = Join-Path $dist $Stable
-        if (Test-Path $bare) { Move-Item $bare $exe -Force } else { Fail "$exe not produced by bun run build:helper" }
-    }
-    return $exe
-}
-
 function Format-Size([long]$Bytes) { '{0,9:N1} MiB' -f ($Bytes / 1MB) }
 
 if (-not $IsWindows) { Fail "builds Windows bundles on Windows only" }
@@ -114,10 +90,12 @@ if ($TauriVersion -ne $Version) { Fail "version mismatch: crates/theuth/Cargo.to
 # scripts/app-parser-env.sh, in PowerShell.
 $HelperHash = (Get-Content packages/apps/generated/library-hash.txt -Raw).Trim()
 if ($HelperHash -notmatch '^[0-9a-f]{64}$') { Fail "packages/apps/generated/library-hash.txt is not a sha256 hex (got '$HelperHash'; run bun run generate in packages/apps)" }
+# Review M1: the committed OpenUI bundle (compiled into t) must embed this library hash. A plain text
+# search, not the full input hash of scripts/apps-bundle-hash.sh (TODO: port that to PowerShell; the cargo
+# build.rs in crates/app enforces the same text check at build time anyway).
+$AppsBundle = Get-Content crates/app-js/js/theuth-apps-inproc.js -Raw
+if (-not $AppsBundle.Contains($HelperHash)) { Fail "crates/app-js/js/theuth-apps-inproc.js does not embed library hash $HelperHash (run just apps-bundle and commit)" }
 $Helper = "theuth-app-parser-$HelperHash"
-$DocVersion = (Select-String -Path packages/documents/src/protocol.ts -Pattern '^export const PROTOCOL_VERSION = "([0-9.]+)";').Matches[0].Groups[1].Value
-if ($DocVersion -notmatch '^[0-9.]+$') { Fail "packages/documents/src/protocol.ts declares no PROTOCOL_VERSION" }
-$DocHelper = "theuth-documents-$DocVersion"
 
 # scripts/ort-version.env: the one ORT pin.
 $OrtEnv = Get-Content scripts/ort-version.env -Raw
@@ -148,26 +126,20 @@ Exec 'cargo build --release -p theuth' { cargo build --release -p theuth }
 $T = Join-Path $Root 'target/release/t.exe'
 if (-not (Test-Path $T)) { Fail "$T not produced" }
 
-Write-Host "==> [1/6] building $Helper.exe (bun build --compile)"
-$HelperSrc = Build-Helper 'packages/apps' 'theuth-app-parser'
+Write-Host "==> [1/6] building $Helper.exe (compatibility stub, cargo)"
+Exec 'cargo build -p app-parser-stub' { cargo build --release -p app-parser-stub }
+$HelperSrc = Join-Path $Root 'target/release/theuth-app-parser-stub.exe'
+if (-not (Test-Path $HelperSrc)) { Fail "$HelperSrc not produced" }
 $said = (& $HelperSrc --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) { Fail "$HelperSrc --version failed: $said" }
-if ($said -notlike "*$HelperHash*") { Fail "$HelperSrc --version printed '$said', expected library hash $HelperHash (stale build? rerun bun run generate && build:helper)" }
+if ($said -notlike "*$HelperHash*") { Fail "$HelperSrc --version printed '$said', expected library hash $HelperHash (stale build? rerun cargo build --release -p app-parser-stub)" }
 Test-StdinEof $HelperSrc
 
-Write-Host "==> [1/6] building $DocHelper.exe (bun build --compile)"
-$DocHelperSrc = Build-Helper 'packages/documents' 'theuth-documents'
-$said = (& $DocHelperSrc --version 2>&1 | Out-String).Trim()
-if ($LASTEXITCODE -ne 0) { Fail "$DocHelperSrc --version failed: $said" }
-if ($said -ne "theuth-documents $DocVersion") { Fail "$DocHelperSrc --version printed '$said', expected 'theuth-documents $DocVersion'" }
-Test-StdinEof $DocHelperSrc
-
-Write-Host "==> [2/6] staging sidecars (t, $Helper, $DocHelper)"
+Write-Host "==> [2/6] staging sidecars (t, $Helper)"
 New-Item -ItemType Directory -Path $Binaries -Force | Out-Null
 Get-ChildItem $Binaries -File | Remove-Item -Force
 Copy-Item $T (Join-Path $Binaries "t-$Triple.exe")
 Copy-Item $HelperSrc (Join-Path $Binaries "$Helper-$Triple.exe")
-Copy-Item $DocHelperSrc (Join-Path $Binaries "$DocHelper-$Triple.exe")
 
 Write-Host "==> [3/6] onnxruntime.dll $OrtVersion -> binaries/ (bundled beside t.exe)"
 $OrtZip = Join-Path $Root "target/onnxruntime-win-x64-$OrtVersion.zip"
@@ -251,15 +223,16 @@ if ($env:THEUTH_SKIP_BUN_INSTALL -ne '1') {
     try { Exec 'bun install (desktop UI)' { bun install } } finally { Pop-Location }
 }
 # externalBin/resources are not in tauri.conf.json (tauri-build would fail `cargo check` without
-# the files); the helper names carry the library hash / protocol version, so the overlay is
-# rendered here - to a file, not inline, so no JSON survives Windows argument quoting.
+# the files); the app parser's name carries its library hash (the documents helper is compiled into
+# t.exe, nothing to ship), so the overlay is rendered here - to a file, not inline, so no JSON
+# survives Windows argument quoting.
 $BundleConf = Join-Path $Root 'target/tauri.windows.bundle.conf.json'
 # A directory key under resources is walked and lands under its value (tauri-utils resources.rs:
 # dest.join(path.strip_prefix(dir))), so the ~450-file publish folder becomes $INSTDIR\companion\.
 $resources = @{ 'binaries/onnxruntime.dll' = 'onnxruntime.dll' }
 if ($Companion) { $resources['../../target/release/companion-windows/'] = 'companion/' }
 @{ bundle = @{
-    externalBin = @('binaries/t', "binaries/$Helper", "binaries/$DocHelper")
+    externalBin = @('binaries/t', "binaries/$Helper")
     resources   = $resources
 } } | ConvertTo-Json -Depth 4 | Set-Content -Path $BundleConf -Encoding utf8
 if (Test-Path $BundleDir) { Remove-Item $BundleDir -Recurse -Force }
@@ -281,12 +254,11 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item $T (Join-Path $stage 't.exe')
 Copy-Item $HelperSrc (Join-Path $stage "$Helper.exe")
-Copy-Item $DocHelperSrc (Join-Path $stage "$DocHelper.exe")
 if (Test-Path $Zip) { Remove-Item $Zip -Force }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $Zip -CompressionLevel Optimal
 $archive = [System.IO.Compression.ZipFile]::OpenRead($Zip)
 try { $members = @($archive.Entries | ForEach-Object FullName | Sort-Object) } finally { $archive.Dispose() }
-$expected = @('t.exe', "$Helper.exe", "$DocHelper.exe") | Sort-Object
+$expected = @('t.exe', "$Helper.exe") | Sort-Object
 if (($members -join "`n") -ne ($expected -join "`n")) { Fail "$Zip members: $($members -join ', '); expected exactly: $($expected -join ', ')" }
 
 Write-Host ''
@@ -294,5 +266,5 @@ Write-Host 'done:'
 foreach ($f in @($Setup, $Zip)) { Write-Host ("  {0}  {1}" -f (Format-Size (Get-Item $f).Length), $f) }
 Write-Host "  installer: unsigned NSIS, per-user (%LOCALAPPDATA%\theuth); silent: $($built[0].Name) /S"
 if ($Companion) { Write-Host "  companion: $CompanionExe -> %LOCALAPPDATA%\theuth\companion\ (Run value removed by nsis/hooks.nsh on uninstall)" } else { Write-Host '  companion: not bundled (build.ps1 absent)' }
-Write-Host "  zip: t.exe, $Helper.exe, $DocHelper.exe"
+Write-Host "  zip: t.exe, $Helper.exe"
 Write-Host "  .sig files: release-s3.sh (cargo tauri signer sign) on the Mac"

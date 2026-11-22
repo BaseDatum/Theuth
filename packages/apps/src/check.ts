@@ -24,7 +24,6 @@ import {
   type ParseResult,
 } from "@openuidev/lang-core";
 import generated from "../generated/library.json" with { type: "json" };
-import { DIAGRAMS } from "./diagrams.ts";
 import type { GeneratedLibrary } from "./generated-types.ts";
 import type {
   Binding,
@@ -43,13 +42,14 @@ const ROOT_ID = "root";
 /**
  * Positional index of `onSelect` per diagram component (123 §6): the wire props in catalog order, then
  * `highlight`, then `onSelect`; `Graph` keeps 65's order (`nodes, edges, groups, direction, highlight, onSelect, …`).
+ * Read from the generated schema (property order = positional order) rather than from `diagrams.ts`, so the
+ * in-process bundle carries neither the diagram definitions nor zod; same table (apps-inproc-as-built-P1.md).
  */
-const SELECT_AT: Record<string, number> = {
-  Graph: 5,
-  ...Object.fromEntries(
-    Object.entries(DIAGRAMS).map(([name, d]) => [name, Object.keys(d.props.shape).length + 1]),
-  ),
-};
+export const SELECT_AT: Record<string, number> = {};
+for (const [name, def] of Object.entries(generatedLibrary.schema.$defs ?? {})) {
+  const at = def.properties ? Object.keys(def.properties).indexOf("onSelect") : -1;
+  if (at !== -1) SELECT_AT[name] = at;
+}
 /** Compiled once per process; the helper's startup cost, not a per-request cost. */
 const parser = createParser(generatedLibrary.schema, generatedLibrary.root);
 

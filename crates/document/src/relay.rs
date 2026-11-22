@@ -1213,17 +1213,33 @@ mod tests {
         a.register(crate::DOCUMENT_ACTOR).unwrap();
     }
 
-    /// An actor over `data_dir` with no helper (nothing here imports or exports).
+    /// An actor over `data_dir` with the in-process helper (nothing here imports or exports).
     async fn actor(data_dir: &Path) -> (ActorRef<DocumentActor>, Store) {
-        actor_with(data_dir, &data_dir.join("no-helper")).await
+        let rt = Runtime::new(figment::Figment::new(), data_dir.to_path_buf());
+        let (tx, rx) = mpsc::unbounded_channel();
+        let helper = crate::helper::Helper::new(tx, rt.shutdown.clone());
+        spawn_actor(data_dir, rt, helper, rx).await
     }
 
-    /// An actor over `data_dir` whose helper is `bin`; its events reach the actor as in the plugin.
-    async fn actor_with(data_dir: &Path, bin: &Path) -> (ActorRef<DocumentActor>, Store) {
+    /// An actor over `data_dir` whose helper answers with `respond` (request line → output lines).
+    async fn actor_with(
+        data_dir: &Path,
+        respond: impl Fn(&str) -> Vec<String> + Send + Sync + 'static,
+    ) -> (ActorRef<DocumentActor>, Store) {
         let rt = Runtime::new(figment::Figment::new(), data_dir.to_path_buf());
+        let (tx, rx) = mpsc::unbounded_channel();
+        let helper = crate::helper::Helper::fake(tx, respond);
+        spawn_actor(data_dir, rt, helper, rx).await
+    }
+
+    /// The actor over `helper`; its events reach the actor as in the plugin.
+    async fn spawn_actor(
+        data_dir: &Path,
+        rt: Runtime,
+        helper: crate::helper::Helper,
+        mut rx: mpsc::UnboundedReceiver<crate::helper::HelperEvent>,
+    ) -> (ActorRef<DocumentActor>, Store) {
         let store = Store::open(data_dir).await.unwrap();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let helper = crate::helper::Helper::new(bin.to_path_buf(), tx, rt.shutdown.clone());
         let a = DocumentActor::spawn(DocumentActor::new(
             store.clone(),
             helper,
@@ -1239,38 +1255,23 @@ mod tests {
         (a, store)
     }
 
-    /// A `sh` helper: `edit` answers with one canned update (`update_b64`, a v1 update on the
+    /// A canned helper: `edit` answers with one canned update (`update_b64`, a v1 update on the
     /// document's `t` text) as the transaction and `inserted: [b1]`; `import` changes nothing; every
     /// other op is `ok`.
-    fn edit_helper(dir: &Path, update_b64: &str) -> std::path::PathBuf {
-        let p = dir.join("edit-helper.sh");
-        std::fs::write(
-            &p,
-            format!(
-                r#"#!/bin/sh
-if [ "$1" = --version ]; then echo "theuth-documents {}"; exit 0; fi
-while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
-  doc=$(printf '%s' "$line" | sed -n 's/.*"doc":"\([a-z0-9]*\)".*/\1/p')
-  case "$line" in
-    *'"op":"edit"'*)
-      printf '{{"ev":"update","doc":"%s","update":"{update_b64}","touched":["b1"],"req":%s}}\n' "$doc" "$id"
-      printf '{{"id":%s,"ok":true,"result":{{"inserted":["b1"],"removed":[],"touched":["b1"],"undo":[]}}}}\n' "$id" ;;
-    *'"op":"import"'*) printf '{{"id":%s,"ok":true,"result":{{"changed":0,"total":0}}}}\n' "$id" ;;
-    *) printf '{{"id":%s,"ok":true,"result":{{}}}}\n' "$id" ;;
-  esac
-done
-"#,
-                crate::helper::protocol_version()
-            ),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fn edit_helper(update_b64: &str) -> impl Fn(&str) -> Vec<String> + Send + Sync + 'static {
+        let update = update_b64.to_owned();
+        move |line| {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            let id = v["id"].as_u64().unwrap_or_default();
+            match v["op"].as_str() {
+                Some("edit") => vec![
+                    serde_json::json!({ "ev": "update", "doc": v["doc"], "update": update, "touched": ["b1"], "req": id }).to_string(),
+                    serde_json::json!({ "id": id, "ok": true, "result": { "inserted": ["b1"], "removed": [], "touched": ["b1"], "undo": [] } }).to_string(),
+                ],
+                Some("import") => vec![serde_json::json!({ "id": id, "ok": true, "result": { "changed": 0, "total": 0 } }).to_string()],
+                _ => vec![serde_json::json!({ "id": id, "ok": true, "result": {} }).to_string()],
+            }
         }
-        p
     }
 
     fn note(id: DocId) -> DocMeta {
@@ -1596,8 +1597,7 @@ done
         let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         // The canned transaction the fake helper answers every `edit` with.
         let typed_b64 = typed(&Doc::new(), "hello from the agent");
-        let bin = edit_helper(da.path(), &typed_b64);
-        let (a, store_a) = actor_with(da.path(), &bin).await;
+        let (a, store_a) = actor_with(da.path(), edit_helper(&typed_b64)).await;
         let (b, store_b) = actor(db.path()).await;
         register_hub(&a);
         a.tell(hub::Reconcile).await.unwrap();
@@ -1721,8 +1721,7 @@ done
         dir: &Path,
         cancel: &CancellationToken,
     ) -> (ActorRef<DocumentActor>, Store) {
-        let bin = edit_helper(dir, &typed(&Doc::new(), "x"));
-        let (a, store) = actor_with(dir, &bin).await;
+        let (a, store) = actor_with(dir, edit_helper(&typed(&Doc::new(), "x"))).await;
         a.tell(hub::SelfId(eid(name))).await.unwrap();
         a.tell(lease(holder)).await.unwrap();
         a.tell(SetTransport(t.clone())).await.unwrap();
@@ -2366,8 +2365,7 @@ done
     #[tokio::test]
     async fn a_lone_engine_creates_and_serves_as_before() {
         let dir = tempfile::tempdir().unwrap();
-        let bin = edit_helper(dir.path(), &typed(&Doc::new(), "x"));
-        let (a, store) = actor_with(dir.path(), &bin).await;
+        let (a, store) = actor_with(dir.path(), edit_helper(&typed(&Doc::new(), "x"))).await;
         let s = a
             .ask(crate::actor::CreateNote {
                 title: "n".into(),
