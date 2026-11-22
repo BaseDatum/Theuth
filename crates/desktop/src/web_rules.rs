@@ -1861,9 +1861,12 @@ pub(crate) mod call {
         Some((scale(width), scale(height)))
     }
 
-    /// Premultiplied RGBA (what a CoreGraphics bitmap holds) to straight RGBA (what PNG stores), in place.
-    pub(crate) fn unpremultiply(rgba: &mut [u8]) {
-        for px in rgba.chunks_exact_mut(4) {
+    /// Premultiplied RGBA (what a CoreGraphics bitmap holds) to straight RGBA (what PNG stores), in place,
+    /// with every painted pixel opaque: a view's snapshot is opaque, and the only partial alpha a downscale
+    /// makes is the filter's falloff at the image's edges, which would fade the border. Clear pixels stay
+    /// clear.
+    pub(crate) fn straighten(rgba: &mut [u8]) {
+        for px in rgba.as_chunks_mut::<4>().0 {
             let a = u32::from(px[3]);
             if a == 0 || a == 255 {
                 continue;
@@ -1871,6 +1874,7 @@ pub(crate) mod call {
             for c in &mut px[..3] {
                 *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
             }
+            px[3] = 255;
         }
     }
 
@@ -2111,19 +2115,19 @@ pub(crate) mod call {
         }
 
         #[test]
-        fn call_unpremultiply() {
+        fn call_straighten() {
             let mut px = [
                 10, 20, 30, 255, // opaque: unchanged
                 0, 0, 0, 0, // clear: unchanged
-                64, 32, 0, 128, // half: doubled
+                64, 32, 0, 128, // half: colour doubled, made opaque
                 200, 0, 0, 100, // over-bright input clamps
                 1, 2, 3, // a partial pixel is left alone
             ];
-            unpremultiply(&mut px);
+            straighten(&mut px);
             assert_eq!(
                 px,
                 [
-                    10, 20, 30, 255, 0, 0, 0, 0, 128, 64, 0, 128, 255, 0, 0, 100, 1, 2, 3
+                    10, 20, 30, 255, 0, 0, 0, 0, 128, 64, 0, 255, 255, 0, 0, 255, 1, 2, 3
                 ]
             );
         }

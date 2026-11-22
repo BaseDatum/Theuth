@@ -43,7 +43,7 @@ use crate::apple_cookies::{DROPPED, Late, recv_by};
 #[cfg(target_os = "ios")]
 use crate::ios_webview::WKWebView;
 use crate::web_rules::call::{
-    ARGS_NAME, SNAPSHOT_TIMEOUT, Script, World, failed, fit, reply, timed_out, unpremultiply,
+    ARGS_NAME, SNAPSHOT_TIMEOUT, Script, World, failed, fit, reply, straighten, timed_out,
 };
 use crate::web_rules::profile::AGENT_WORLD;
 
@@ -229,7 +229,7 @@ fn draw(image: &CGImage, width: usize, height: usize) -> Result<Vec<u8>, String>
         Some(image),
     );
     drop(context);
-    unpremultiply(&mut rgba);
+    straighten(&mut rgba);
     Ok(rgba)
 }
 
@@ -248,28 +248,19 @@ fn png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, String> {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use objc2_core_graphics::CGBitmapContextCreateImage;
+    use objc2_core_graphics::{
+        CGBitmapContextCreateImage, CGBitmapContextGetBytesPerRow, CGBitmapContextGetData,
+    };
 
     use super::*;
 
     /// A `width` × `height` opaque image, red in the top half and blue in the bottom half.
     fn halves(width: usize, height: usize) -> impl std::ops::Deref<Target = CGImage> {
-        let mut rgba = Vec::with_capacity(width * height * 4);
-        for row in 0..height {
-            let px = if row < height / 2 {
-                [255, 0, 0, 255]
-            } else {
-                [0, 0, 255, 255]
-            };
-            for _ in 0..width {
-                rgba.extend_from_slice(&px);
-            }
-        }
         let space = CGColorSpace::new_device_rgb().unwrap();
-        // SAFETY: `rgba` holds the rows and outlives the context.
+        // SAFETY: null data: the context owns its pixels, which the image copies.
         let context = unsafe {
             CGBitmapContextCreate(
-                rgba.as_mut_ptr().cast(),
+                null_mut(),
                 width,
                 height,
                 8,
@@ -279,6 +270,24 @@ mod tests {
             )
         }
         .unwrap();
+        let bytes_per_row = CGBitmapContextGetBytesPerRow(Some(&context));
+        // SAFETY: the context's own buffer, `height` rows of `bytes_per_row` bytes, alive with it.
+        let data = unsafe {
+            std::slice::from_raw_parts_mut(
+                CGBitmapContextGetData(Some(&context)).cast::<u8>(),
+                bytes_per_row * height,
+            )
+        };
+        for (row, line) in data.chunks_exact_mut(bytes_per_row).enumerate() {
+            let px = if row < height / 2 {
+                [255, 0, 0, 255]
+            } else {
+                [0, 0, 255, 255]
+            };
+            for out in line[..width * 4].as_chunks_mut::<4>().0 {
+                *out = px;
+            }
+        }
         CGBitmapContextCreateImage(Some(&context)).unwrap()
     }
 
