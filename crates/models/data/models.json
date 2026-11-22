@@ -23667,9 +23667,9 @@
           "output": 384000
         },
         "cost": {
-          "input": 0.3,
-          "output": 1.2,
-          "cache_read": 0.006
+          "input": 0.12,
+          "output": 0.48,
+          "cache_read": 0.0024
         },
         "reasoning": true,
         "tool_call": true,
@@ -24315,9 +24315,9 @@
           "output": 131072
         },
         "cost": {
-          "input": 1.4,
-          "output": 4.4,
-          "cache_read": 0.26
+          "input": 0.56,
+          "output": 1.76,
+          "cache_read": 0.104
         },
         "reasoning": true,
         "tool_call": true,
@@ -30090,11 +30090,12 @@
         "name": "Gemma 3 4B IT",
         "limit": {
           "context": 131072,
-          "output": 16384
+          "output": 117964
         },
         "cost": {
-          "input": 0.05,
-          "output": 0.1
+          "input": 0.04,
+          "output": 0.05,
+          "cache_read": 0.02
         },
         "reasoning": false,
         "tool_call": false,
@@ -30233,11 +30234,12 @@
         "name": "MythoMax L2 13B",
         "limit": {
           "context": 8192,
-          "output": 3686
+          "output": 7372
         },
         "cost": {
-          "input": 0.08,
-          "output": 0.11
+          "input": 0.3,
+          "output": 0.5,
+          "cache_read": 0.2
         },
         "reasoning": false,
         "tool_call": false,
@@ -33767,7 +33769,7 @@
         "cost": {
           "input": 0.07,
           "output": 0.5,
-          "cache_read": 0.006
+          "cache_read": 0.03
         },
         "reasoning": true,
         "tool_call": true,
@@ -34382,11 +34384,11 @@
         "name": "Qwen3.5 27B",
         "limit": {
           "context": 262144,
-          "output": 65536
+          "output": 81920
         },
         "cost": {
-          "input": 0.195,
-          "output": 1.56
+          "input": 0.26,
+          "output": 2.6
         },
         "reasoning": true,
         "tool_call": true,
@@ -34703,7 +34705,7 @@
         "name": "Qwen3.8 2.4T A95B",
         "limit": {
           "context": 1048576,
-          "output": 131072
+          "output": 65536
         },
         "cost": {
           "input": 2.0,
@@ -34731,12 +34733,12 @@
         "name": "Qwen3.8 27B",
         "limit": {
           "context": 1024000,
-          "output": 235929
+          "output": 131072
         },
         "cost": {
-          "input": 0.06,
-          "output": 1.96,
-          "cache_read": 0.059
+          "input": 0.035,
+          "output": 1.5,
+          "cache_read": 0.0175
         },
         "reasoning": true,
         "tool_call": true,
@@ -35364,12 +35366,12 @@
         "name": "Hy3",
         "limit": {
           "context": 262144,
-          "output": 128000
+          "output": 235929
         },
         "cost": {
-          "input": 0.132,
-          "output": 0.528,
-          "cache_read": 0.033
+          "input": 0.14,
+          "output": 0.58,
+          "cache_read": 0.035
         },
         "reasoning": true,
         "tool_call": true,
@@ -35561,9 +35563,9 @@
           "output": 65536
         },
         "cost": {
-          "input": 0.1,
-          "output": 0.4,
-          "cache_read": 0.02
+          "input": 0.075,
+          "output": 0.3,
+          "cache_read": 0.015
         },
         "reasoning": true,
         "tool_call": true,
@@ -36766,7 +36768,7 @@
           "output": 943718
         },
         "cost": {
-          "input": 0.1805,
+          "input": 0.1824,
           "output": 11.0055,
           "cache_read": 0.18
         },
