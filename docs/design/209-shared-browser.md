@@ -197,8 +197,8 @@ on iOS (`wt:ios_webview.rs`) and the desktop (`webview.rs`) with the same name, 
 |---|---|---|
 | `web_profile_read` | — | `Cookie[]` of the whole tile store (§4.1 shape, `partitioned` from `NSHTTPCookie` properties, else `false`). |
 | `web_profile_write` | `set: Cookie[]`, `remove: CookieKey[]` (`{name, domain, path}`) | Writes into the store; iOS/macOS with no view open, Windows/Linux only while a web view exists (else error `no web view`). P2. |
-| `web_profile_clear` | — | Removes every cookie and website data type of the tile store. P2. |
-| `web_storage_capture` | `label` | `{ origin, local_storage: [[k, v]] }` of the top-level origin, run in the isolated world. |
+| `web_profile_clear` | — | Removes every cookie of the tile store and its localStorage, sessionStorage and IndexedDB data (`WKWebsiteDataStore removeDataOfTypes:`). Ships in P1: the UI calls it on `stale-epoch`. |
+| `web_storage_capture` | `label` | `{ origin, local_storage: [[k, v]] }` of the top-level origin, run in the isolated world. A capture over the snapshot cap (96 KiB) is an error starting `storage too large`, never an empty or cut snapshot. |
 | `web_view_call` | `label`, `op`, `args` | Runs one tile op (§4.7); returns its JSON, or `{ png }` (base64) for `snapshot`. P3. |
 
 Tauri events: `web-profile://changed {}` — the store changed, debounced 2 s in the shell (iOS/macOS: a
@@ -214,6 +214,29 @@ calls `web_profile_read`, diffs against the last pushed list (key `(name, domain
 `web_view_close`), and `web_profile_push`; on `stale-epoch` it calls `web_profile_clear`. It
 also forwards each `web-view://state {label, url, title, loading}` (already emitted, `webview.rs:55`, `:302-318`;
 `wt:ios_webview.rs:435-450`) to `web_view_state` with the session that opened the tile, at most one per 500 ms per view.
+
+As built in P1 (the shell and UI review fixes):
+
+- **Platforms.** Every profile command answers `unsupported: the browser profile needs macOS 14 or iOS 17 and later`
+  on Windows and Linux (the Tauri `Webview::cookies()` route is not built) and on macOS < 14 / iOS < 17, where the
+  tiles use the app's default store; nothing is observed there.
+- **Callers.** Every profile command refuses a caller that is a tile (`web-*`) with an error starting `no access to
+  the browser profile from`; on iOS it also refuses anything but `main`. `web-profile://changed` is emitted to the `main`
+  window only.
+- **Host-only** is derived by `web_rules::profile::scope` from `NSHTTPCookie.domain` and its `properties`, first
+  rule that matches: (1) a `__Host-` name is host-only; (2) a domain that is an IP address is host-only; (3) a
+  leading `.` on `domain` or on the `Domain` property is domain-wide (WebKit's mark of `Domain=`); (4) no dot, but
+  the `OriginURL` property's host is a subdomain of the domain: domain-wide; (5) otherwise host-only. The domain is
+  stored lower case without the dot. A `tracing::debug!` line `web profile cookie scope` names the rule, never a
+  value.
+- **UI sync.** At start and after an engine switch, the first `web_profile_read` seeds the baseline and is not
+  pushed (cookies already in the store reach the profile when they next change). A cookie change pushes the cookie
+  diff only; storage is no longer captured on cookie changes, but on `web-view://state` with `loading: false` and
+  before `web_view_close`, pushed 2 s after the last capture, and what is still captured is pushed best-effort on
+  `pagehide` / `beforeunload`. One push in flight; a failed read or push keeps its delta and retries after 10 s,
+  doubling to at most 60 s. `profile: "off"` stops pushing to that connection, re-probed by the next change after
+  60 s. On `stale-epoch` the UI calls `web_profile_clear`; a client whose clear fails keeps its old epoch and stops
+  pushing on that connection, so its cookies never sign the profile back in.
 
 ### 4.6 Seam and target (crates/browser)
 
