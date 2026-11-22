@@ -4,7 +4,7 @@ import { useTileHost } from '@/components/tiles/host'
 import { openMediaTile, refreshMediaTiles } from '@/components/tiles/open'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { resolveDocument, resolveFile } from '@/lib/files'
+import { pin, resolveDocument, resolveFile, unpin } from '@/lib/files'
 import { privateOwner } from '@/lib/private'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
@@ -21,7 +21,8 @@ const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 export function useFileUrl(path: string, session?: string): string | null {
   const api = useApi()
   const active = useEngines((s) => s.active)
-  // The local case is synchronous, so the first paint already has the URL; the RPC case is cached, so the effect's call is the same promise.
+  // The local case is synchronous, so the first paint already has the URL; the RPC case is pinned below, so an LRU
+  // eviction cannot revoke it before the effect's <img> commits (the rail mounts more thumbs than the cache holds).
   const [src, setSrc] = useState<string | null>(() => {
     const r = resolveFile(api, path, active, session)
     return typeof r === 'string' ? r : null
@@ -34,12 +35,15 @@ export function useFileUrl(path: string, session?: string): string | null {
     }
     let live = true
     setSrc(null)
+    // Held until unmount: an LRU eviction cannot revoke the URL out from under the mounted <img>.
+    pin(path)
     r.then(
       (url) => live && setSrc(url),
       () => live && setSrc(''),
     )
     return () => {
       live = false
+      unpin(path)
     }
   }, [api, path, active, session])
   return src

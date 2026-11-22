@@ -65,8 +65,12 @@ export async function putAttachment(api: Api, file: Blob, ext: string, session?:
 export const isLocal = (active: string): boolean => isDesktop() && active === LOCAL
 
 const LRU_MAX = 50
-/** Blob URLs by engine path, insertion-ordered; re-inserted on hit so the oldest is first. */
-const lru = new Map<string, Promise<string>>()
+/** One cached blob: the URL's promise and how many mounted consumers (`pin`) still hold it. */
+type Entry = { p: Promise<string>; refs: number }
+/** Blob entries by engine path, insertion-ordered; re-inserted on hit so the oldest is first. */
+const lru = new Map<string, Entry>()
+/** Entries the LRU evicted while a consumer still held them — alive until the last `unpin` revokes them. */
+const held = new Map<string, Entry>()
 
 /** A private tree's scratch path (`agent/src/private.rs`: `theuth-private-<128 random bits>`). */
 const SCRATCH = /\/theuth-private-[0-9a-f]{32}\//
@@ -93,8 +97,9 @@ const fetchB64 = (api: Api, path: string, session: string | undefined): Promise<
 /** 51 §4.2: nothing private outlives the tree in the client — drop its cached blob URLs and texts. */
 export function forgetPrivate(): void {
   for (const path of owned) {
-    void lru.get(path)?.then(URL.revokeObjectURL, () => {})
+    void (lru.get(path) ?? held.get(path))?.p.then(URL.revokeObjectURL, () => {})
     lru.delete(path)
+    held.delete(path)
     texts.delete(path)
   }
   owned.clear()
@@ -104,28 +109,55 @@ export function forgetPrivate(): void {
  * A URL an `<img>` can load for `path` on the engine: `asset://` (synchronous)
  * when the file is on this machine (macOS shell, local daemon) and not private
  * (the asset scope is `data_dir` only), else the bytes come over RPC and live
- * in a blob URL. Failures are not cached.
+ * in a blob URL. Failures are not cached, and an eviction never revokes a URL
+ * a `pin` still holds — that revoke lands between the fetch's settle and the
+ * `<img>`'s commit, and it is how every remote rail thumb broke while the
+ * single fresh fetch of a selected artifact always worked.
  */
 export function resolveFile(api: Api, path: string, active: string, session?: string): string | Promise<string> {
   if (isLocal(active) && !ownerOf(path, session)) return convertFileSrc(path)
-  const hit = lru.get(path)
+  const hit = held.get(path) ?? lru.get(path)
   if (hit) {
+    // Held-again or a hit: either way (re-)enter the cache at the newest position.
+    held.delete(path)
     lru.delete(path)
     lru.set(path, hit)
-    return hit
+    return hit.p
   }
   const p = fetchB64(api, path, session).then((b64) => {
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
     return URL.createObjectURL(new Blob([bytes], { type: MIME[extOf(path)] ?? 'application/octet-stream' }))
   })
-  p.catch(() => lru.delete(path))
-  lru.set(path, p)
+  p.catch(() => {
+    lru.delete(path)
+    held.delete(path)
+  })
+  lru.set(path, { p, refs: 0 })
   if (lru.size > LRU_MAX) {
-    const [oldest, url] = lru.entries().next().value as [string, Promise<string>]
+    const [oldest, e] = lru.entries().next().value as [string, Entry]
     lru.delete(oldest)
-    void url.then(URL.revokeObjectURL, () => {})
+    if (e.refs > 0) held.set(oldest, e)
+    else void e.p.then(URL.revokeObjectURL, () => {})
   }
   return p
+}
+
+/**
+ * Keep `path`'s blob URL alive across an LRU eviction: the rail mounts more thumbnails than the cache holds
+ * (a stock engine's images and svg/pdf previews alone outnumber the 50), so an eviction during the mount would
+ * otherwise revoke the URL out from under the `<img>` that still holds it. Every `pin` pairs with an `unpin`.
+ */
+export function pin(path: string): void {
+  const e = lru.get(path) ?? held.get(path)
+  if (e) e.refs++
+}
+
+/** Release a `pin`; the last one revokes the URL at once when the LRU already evicted its entry. */
+export function unpin(path: string): void {
+  const e = lru.get(path) ?? held.get(path)
+  if (!e || e.refs === 0) return
+  e.refs--
+  if (e.refs === 0 && held.delete(path)) void e.p.then(URL.revokeObjectURL, () => {})
 }
 
 /** Bytes of an engine file via `get_attachment`; uncached (pdf.js transfers the buffer to its worker). */

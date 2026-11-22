@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { LOCAL } from '@/link/engines'
 import type { Api } from '@/rpc/bindings/client'
 import { type ConnState, RpcError } from '@/rpc/client'
-import { fmtBytes, forgetPrivate, readText, readTextOnline, resolveDocument, resolveFile } from './files'
+import { fmtBytes, forgetPrivate, pin, readText, readTextOnline, resolveDocument, resolveFile, unpin } from './files'
 import { usePrivate } from './private'
 
 // A local desktop shell: the one configuration where `resolveFile` hands out `asset://` URLs.
@@ -127,6 +127,34 @@ test('private paths: get_attachment names the owning session and never asset://;
   expect(get_attachment).toHaveBeenCalledTimes(4)
   // No owned tree any more: a session-less scratch read is session-less, and the engine refuses it.
   await expect(readText(api, `${scratch}/artifacts/jkl.md`)).rejects.toThrow('not an attachment')
+})
+
+test('an LRU eviction never revokes a pinned blob URL; the last unpin revokes it', async () => {
+  const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+  const api = { get_attachment: vi.fn(async (p: string) => btoa(`bytes of ${p}`)) } as unknown as Api
+  const ENG = 'remote-engine'
+  // 60 mounts against the 50-entry cache: an unpinned eviction still revokes, on settle.
+  const paths = Array.from({ length: 60 }, (_, i) => `/data/artifacts/pin${i}.png`)
+  const urls = await Promise.all(paths.map((p) => resolveFile(api, p, ENG)))
+  expect(revoke).toHaveBeenCalledWith(urls[0])
+  expect(revoke).not.toHaveBeenCalledWith(urls[59])
+
+  // A mounted consumer's pin: eviction keeps the URL alive and re-resolvable to the same URL.
+  pin(paths[10]!)
+  pin(paths[11]!)
+  await Promise.all(
+    Array.from({ length: 55 }, (_, i) => resolveFile(api, `/data/artifacts/pin-fresh${i}.png`, ENG)),
+  )
+  expect(revoke).not.toHaveBeenCalledWith(urls[10])
+  expect(revoke).not.toHaveBeenCalledWith(urls[11])
+  expect(await resolveFile(api, paths[10]!, ENG)).toBe(urls[10])
+
+  // The last holder's unpin revokes at once what the LRU already dropped; an entry back in the cache waits for its next eviction.
+  unpin(paths[11]!)
+  await Promise.resolve() // the last-unpin revoke rides the already-settled promise's microtask
+  expect(revoke).toHaveBeenCalledWith(urls[11])
+  unpin(paths[10]!)
+  expect(revoke).not.toHaveBeenCalledWith(urls[10])
 })
 
 test('fmtBytes: decimal units, one decimal below 10 kB and for MB/GB', () => {
