@@ -151,7 +151,7 @@ See [Search](/docs/workspace/search).
 | knowledge search looks stale | `knowledge.sqlite` is a derived index and can be deleted; it is rebuilt |
 | apps render as read-only source | the TUI, Slack, Signal and Telegram cannot run apps; open the session on desktop or web |
 | an app button shows a tool as unavailable | the tool is policy-denied, hidden, or its MCP server changed identity or schema since the app was built |
-| the documents helper is missing | debug builds find `packages/documents/dist/theuth-documents`; release layouts need `theuth-documents-<protocol>` beside `t` (`just install` copies it); `THEUTH_DOCUMENTS_HELPER=<path>` overrides |
+| `documents helper failed` / `did not answer within 30s` | the in-process editor backend stopped a conversion (crash, deadline, memory limit) and restarted; documents reconnect by themselves. A document that triggers it every time can be opened with **Open raw** |
 
 See [Documents](/docs/workspace/documents), [Knowledge](/docs/workspace/knowledge) and [Apps](/docs/workspace/apps).
 

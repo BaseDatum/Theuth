@@ -199,11 +199,9 @@ Text written by a member is marked as theirs. When the agent reads the document,
 
 ## Troubleshooting
 
-**`Helper missing at <path> — notes, knowledge editing and meeting notes are disabled.`** (Settings › General, Documents row) — documents are edited through a helper executable `theuth-documents-<version>` (currently `theuth-documents-59.5`; the suffix is the editor protocol version, not the release number) installed beside the `t` binary. Without it, `doc_create` and concept pages fail with `documents helper not found at <path>`, meetings start without a note, and concept pages fall back to read-only markdown with `live editing unavailable: …`. Reinstall or update theuth (`t --update`; see [Installation](/docs/getting-started/installation)) or run `just install` from a checkout — both place the helper beside `t`. `THEUTH_DOCUMENTS_HELPER=<path>` points at another executable for development.
+**`documents helper failed: …`** or **`documents helper did not answer within 30s`** in an error or the log — the editor backend runs inside `t` and stopped a conversion that crashed, ran past its deadline or hit its memory limit; it restarts by itself and open documents reconnect. If one document triggers it every time, open it with **Open raw**, and report it.
 
-**`documents helper speaks protocol <found>, this build needs <expected>`** in the log — a helper from another release is beside the binary. Install the matching one.
-
-**A concept page is empty although the file has a body** — its first import failed (usually the helper was missing at the time). Open **Open raw**, save once, and the file is re-imported; or restart the engine with the helper in place.
+**A concept page is empty although the file has a body** — its first import failed. Open **Open raw**, save once, and the file is re-imported.
 
 **`closed · document full (8 MiB); reload`** / **`closed · update too large (48 KiB); reload`** — see [Limits](#limits). Reload the page; move very large content (logs, data dumps) into an artifact or a file instead of a note.
 

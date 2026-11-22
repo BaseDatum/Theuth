@@ -1,27 +1,61 @@
 /**
- * `theuth-documents`: the headless BlockNote helper (design 59 §3.2).
- *
- * JSON lines on stdin → one JSON line per request on stdout, in order; `{"ev":"update"}`
- * lines are pushed whenever an `import`/`edit` transaction lands. Logs go to stderr only.
- * One `Y.Doc` per open document, a mirror of the harness authority: every update the
- * authority accepts arrives as `update`; our own transactions go back as `ev: update` and
- * the authority applies them like any client's. Nothing here touches disk.
- *
- *   theuth-documents --version      → "theuth-documents <protocol version>"
- *   printf '' | theuth-documents    → exit 0 on EOF
+ * The documents helper (design 59 §3.2) as an embeddable, runtime-neutral module (no Node, Bun or Deno APIs),
+ * run by the deno_core runtime inside `t` (crates/document-js). Wire: protocol.ts. `call(line)` takes one
+ * request line and resolves to the helper's output for it — any `{"ev":"update"}` lines first, then the
+ * reply — joined by "\n".
  */
 import * as Y from "yjs";
 import { EditFailure, edit, importMarkdown, isOurs, markdown, open, outline, type Open } from "./convert.ts";
 import { PROTOCOL_VERSION, type Edit, type Req, type Res } from "./protocol.ts";
 
-/** Largest request line accepted; the Rust side refuses longer ones before sending. */
-export const MAX_LINE_BYTES = 16 * 1024 * 1024;
-
 const docs: Record<string, Open> = {};
-const write = (r: Res) => process.stdout.write(`${JSON.stringify(r)}\n`);
-const b64 = (u: Uint8Array) => Buffer.from(u).toString("base64");
+let sink: string[] = [];
+const write = (r: Res) => sink.push(JSON.stringify(r));
 
-function parseRequest(line: string): Req | { id: number; ok: false; error: string } {
+const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_INDEX = new Uint8Array(128);
+for (let i = 0; i < B64.length; i++) B64_INDEX[B64.charCodeAt(i)] = i;
+
+function b64(u: Uint8Array): string {
+  const parts: string[] = [];
+  let chunk = "";
+  let i = 0;
+  for (; i + 2 < u.length; i += 3) {
+    const n = (u[i]! << 16) | (u[i + 1]! << 8) | u[i + 2]!;
+    chunk += B64[n >> 18]! + B64[(n >> 12) & 63]! + B64[(n >> 6) & 63]! + B64[n & 63]!;
+    if (chunk.length > 8192) {
+      parts.push(chunk);
+      chunk = "";
+    }
+  }
+  if (i < u.length) {
+    const n = (u[i]! << 16) | ((u[i + 1] ?? 0) << 8);
+    chunk += B64[n >> 18]! + B64[(n >> 12) & 63]! + (i + 1 < u.length ? B64[(n >> 6) & 63]! : "=") + "=";
+  }
+  parts.push(chunk);
+  return parts.join("");
+}
+
+function unb64(s: string): Uint8Array {
+  const clean = s.replace(/[^A-Za-z0-9+/]/g, "");
+  const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
+  let o = 0;
+  for (let i = 0; i < clean.length; i += 4) {
+    const n =
+      (B64_INDEX[clean.charCodeAt(i)]! << 18) |
+      (B64_INDEX[clean.charCodeAt(i + 1)]! << 12) |
+      ((i + 2 < clean.length ? B64_INDEX[clean.charCodeAt(i + 2)]! : 0) << 6) |
+      (i + 3 < clean.length ? B64_INDEX[clean.charCodeAt(i + 3)]! : 0);
+    out[o++] = n >> 16;
+    if (i + 2 < clean.length) out[o++] = (n >> 8) & 255;
+    if (i + 3 < clean.length) out[o++] = n & 255;
+  }
+  return out.subarray(0, o);
+}
+
+type Bad = { id: number; ok: false; error: string };
+
+function parseRequest(line: string): Req | Bad {
   let raw: unknown;
   try {
     raw = JSON.parse(line);
@@ -34,7 +68,8 @@ function parseRequest(line: string): Req | { id: number; ok: false; error: strin
   const op = "op" in raw ? raw.op : undefined;
   const doc = "doc" in raw && typeof raw.doc === "string" ? raw.doc : null;
   if (doc === null) return { id, ok: false, error: "missing string field doc" };
-  const str = (k: string): string | null => (k in raw && typeof (raw as Record<string, unknown>)[k] === "string" ? ((raw as Record<string, unknown>)[k] as string) : null);
+  const fields = raw as Record<string, unknown>;
+  const str = (k: string): string | null => (typeof fields[k] === "string" ? (fields[k] as string) : null);
   switch (op) {
     case "open": {
       const state = str("state");
@@ -72,7 +107,6 @@ function parseRequest(line: string): Req | { id: number; ok: false; error: strin
       const edits = "edits" in raw ? raw.edits : undefined;
       if (!Array.isArray(edits) || !edits.every((e) => typeof e === "object" && e !== null && "op" in e && typeof e.op === "string"))
         return { id, ok: false, error: "edits must be an array of {op, …} objects" };
-      // Shapes past `op` are checked by `edit` itself, which reports a structured error.
       return { id, op, doc, edits: edits as Edit[] };
     }
     default:
@@ -80,18 +114,15 @@ function parseRequest(line: string): Req | { id: number; ok: false; error: strin
   }
 }
 
-/** Id of the request being served; stamped on the update events it causes. */
 let current = 0;
 
-/** Serve one request. Throws never: every failure is an error line. */
-export async function handle(req: Req): Promise<Res> {
+async function handle(req: Req): Promise<Res> {
   const { id, doc } = req;
   current = id;
   try {
     if (req.op === "open") {
       docs[doc]?.ydoc.destroy();
-      const o = open(Buffer.from(req.state, "base64"), req.fragment);
-      // Our own transactions travel back to the authority; theirs (origin "authority") do not.
+      const o = open(unb64(req.state), req.fragment);
       o.ydoc.on("update", (update: Uint8Array, origin: unknown) => {
         if (isOurs(origin)) write({ ev: "update", doc, update: b64(update), touched: origin.touched, req: current, changed: origin.changed, total: origin.total });
       });
@@ -102,7 +133,7 @@ export async function handle(req: Req): Promise<Res> {
     if (!o) return { id, ok: false, error: `document ${doc} is not open` };
     switch (req.op) {
       case "update":
-        Y.applyUpdate(o.ydoc, Buffer.from(req.update, "base64"), "authority");
+        Y.applyUpdate(o.ydoc, unb64(req.update), "authority");
         return { id, ok: true };
       case "close":
         o.ydoc.destroy();
@@ -112,71 +143,29 @@ export async function handle(req: Req): Promise<Res> {
         return { id, ok: true, result: outline(o, req.depth) };
       case "markdown":
         return { id, ok: true, result: { markdown: await markdown(o, req.blocks, req.annotate ?? false, req.authors ?? {}) } };
-      case "import": {
-        const r = await importMarkdown(o, req.markdown, req.mode, req.frontmatter ?? false);
-        return { id, ok: true, result: r };
-      }
+      case "import":
+        return { id, ok: true, result: await importMarkdown(o, req.markdown, req.mode, req.frontmatter ?? false) };
       case "edit":
         return { id, ok: true, result: await edit(o, req.edits) };
     }
   } catch (e) {
-    // A structured edit failure travels as JSON in `error`; the Rust side decodes it for the model.
     if (e instanceof EditFailure) return { id, ok: false, error: e.message };
     return { id, ok: false, error: e instanceof Error ? (e.stack ?? e.message) : String(e) };
   }
 }
 
-// `import.meta.main` is false on Windows in an executable compiled through the `Bun.build()` API (Bun 1.4.2;
-// the CLI `bun build --compile` says true) — the binary then read stdin forever and `--version` printed nothing.
-// A compiled binary is always the entrypoint: Bun.main equals import.meta.path up to slash direction
-// (`B:/~BUN/root/x` vs `B:\\~BUN\\root\\x`), and argv[1] carries the virtual root (`/$bunfs/` or `~BUN`).
-const slashes = (p: string) => p.replaceAll("\\", "/");
-const isMain = import.meta.main || slashes(Bun.main) === slashes(import.meta.path) || /\$bunfs|~BUN/.test(process.argv[1] ?? "");
-if (isMain) {
-  const argv = process.argv.slice(2);
-  if (argv.includes("--version") || argv.includes("-V")) {
-    process.stdout.write(`theuth-documents ${PROTOCOL_VERSION}\n`);
-    process.exit(0);
-  }
-  if (argv.length) {
-    process.stderr.write(`theuth-documents: unknown arguments ${argv.join(" ")} (stdin JSON lines only; --version)\n`);
-    process.exit(2);
-  }
-
-  const decoder = new TextDecoder();
-  let pending = "";
-  let pendingBytes = 0;
-  let discarding = false;
-  for await (const chunk of Bun.stdin.stream()) {
-    if (discarding) {
-      const nl = chunk.indexOf(10);
-      if (nl === -1) continue;
-      discarding = false;
-      pending = decoder.decode(chunk.subarray(nl + 1), { stream: true });
-      pendingBytes = chunk.byteLength - nl - 1;
-    } else {
-      pending += decoder.decode(chunk, { stream: true });
-      pendingBytes += chunk.byteLength;
-    }
-    let nl: number;
-    while ((nl = pending.indexOf("\n")) !== -1) {
-      const line = pending.slice(0, nl).trim();
-      pending = pending.slice(nl + 1);
-      pendingBytes = new TextEncoder().encode(pending).byteLength;
-      if (!line) continue;
-      const req = parseRequest(line);
-      write("ok" in req ? req : await handle(req));
-    }
-    if (pendingBytes > MAX_LINE_BYTES) {
-      write({ id: 0, ok: false, error: `request line exceeds ${MAX_LINE_BYTES} bytes` });
-      pending = "";
-      pendingBytes = 0;
-      discarding = true;
-    }
-  }
-  const tail = pending.trim();
-  if (!discarding && tail) {
-    const req = parseRequest(tail);
-    write("ok" in req ? req : await handle(req));
-  }
+/** One request line in, the helper's output lines for it out (events first, reply last), "\n"-joined. */
+export async function call(line: string): Promise<string> {
+  sink = [];
+  const req = parseRequest(line);
+  write("ok" in req ? req : await handle(req));
+  const out = sink.join("\n");
+  sink = [];
+  return out;
 }
+
+export const version = `theuth-documents ${PROTOCOL_VERSION}`;
+
+// The embedder (crates/document-js) reaches the module through this one global; a classic script has no exports.
+const host = globalThis as { theuthDocuments?: { call: typeof call; version: string } };
+host.theuthDocuments = { call, version };

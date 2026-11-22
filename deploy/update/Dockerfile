@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
-# Linux `theuth` + `theuth-app-parser-<hash>` + `theuth-documents-<ver>` for the update bucket (design docs 39 §5.1, 46 §2.1, 59 §3.2). Build from the repo root:
+# Linux `theuth` + `theuth-app-parser-<hash>` for the update bucket (design docs 39 §5.1, 46 §2.1). Build from the repo root:
 #   docker build -f deploy/update/Dockerfile --output type=local,dest=target/linux-out .
-# The output stage is `FROM scratch` with three files, so `--output type=local` yields
-# `target/linux-out/t`, `target/linux-out/theuth-app-parser-<hash>` and `target/linux-out/theuth-documents-<ver>`.
+# The output stage is `FROM scratch` with two files, so `--output type=local` yields
+# `target/linux-out/t` and `target/linux-out/theuth-app-parser-<hash>` (the documents helper is compiled into `t`).
 #
 # The app-parser entry is the compatibility stub (crates/app-parser-stub; `t` validates apps in-process,
 # docs/design/apps-inproc-as-built-P1.md), built by cargo with `t`. The documents helper is a
@@ -78,18 +78,6 @@ RUN --mount=type=cache,id=theuth-update-cargo-registry-${TARGETARCH},target=/usr
  && "/theuth-app-parser-$hash" --version | grep -q "$hash" \
  && printf '' | "/theuth-app-parser-$hash"
 
-# Documents helper (59 §3.2): named by PROTOCOL_VERSION of packages/documents/src/protocol.ts,
-# which `theuth` embeds at compile time; `--version` must echo it.
-RUN --mount=type=cache,id=theuth-update-bun-${TARGETARCH},target=/root/.bun/install/cache \
-    cd packages/documents \
- && bun install --frozen-lockfile \
- && bun run build:helper \
- && ver="$(grep 'PROTOCOL_VERSION = ' src/protocol.ts | tr -dc '0-9.')" \
- && echo "$ver" | grep -Eqx '[0-9.]+' \
- && install -m 755 dist/theuth-documents "/theuth-documents-$ver" \
- && "/theuth-documents-$ver" --version | grep -qx "theuth-documents $ver" \
- && printf '' | "/theuth-documents-$ver"
-
 # ── output ────────────────────────────────────────────────────────────────────
 FROM scratch
-COPY --from=build /t /theuth-app-parser-* /theuth-documents-* /
+COPY --from=build /t /theuth-app-parser-* /

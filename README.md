@@ -30,8 +30,8 @@ just run -- --acp          # Agent Client Protocol on stdio: use theuth from Zed
 just ts                    # TypeScript bindings for the wire types → bindings/
 just helper                # theuth-app-parser compatibility stub (cargo) → target/release/theuth-app-parser-stub; shipped only for installed updaters
 just apps-bundle           # rebuild the in-process OpenUI validator bundle (bun) → crates/app-js/js; `just apps-bundle-check` says when it is stale
-just documents-helper      # BlockNote documents helper (bun build --compile) → packages/documents/dist/theuth-documents; debug `t` finds it there, release layouts beside `t` as theuth-documents-<protocol>
-just install               # release `t` + `theuth-app-parser-<hash>` + `theuth-documents-<protocol>` into ~/.cargo/bin; older helpers stay for any still-running t
+just documents-bundle      # rebuild the in-process documents bundle (bun) → crates/document-js/js; `just documents-bundle-check` says when it is stale
+just install               # release `t` + the `theuth-app-parser-<hash>` stub into ~/.cargo/bin; older helpers stay for any still-running t (app parser and documents run inside `t`)
 just desktop               # macOS menubar app in dev mode (Tauri + Vite); starts the daemon itself
 just package-macos         # theuth.app + dmg; ad-hoc unless THEUTH_SIGN_IDENTITY / .env.signing
 just package-linux         # .deb/.rpm/.AppImage with the `t` sidecar, on a Linux host; no meetings recorder there (53: macOS only)
@@ -43,10 +43,11 @@ just install-macos         # copy the packaged app to /Applications
 Build prerequisites: `cmake`, `clang`/`libclang` and `llvm-objcopy`/`llvm-nm` for the embedded browser's
 BoringSSL (`brew install cmake llvm` / `apt install cmake clang libclang-dev`),
 network on the first build for the prebuilt V8 archive (set
-`RUSTY_V8_ARCHIVE` to a local copy to build offline), and `bun` to *build* the
-app parser helper (`brew install oven-sh/bun/bun`) — the result is a standalone
-executable, so an installed `t` needs no Node or Bun at run time. The Homebrew
-formula and the self-updater install the helper with `t`.
+`RUSTY_V8_ARCHIVE` to a local copy to build offline). `bun`
+(`brew install oven-sh/bun/bun`) is needed only for the desktop UI and to rebuild
+the committed in-process TypeScript bundles (`just apps-bundle`, `just documents-bundle`);
+an installed `t` needs no Node or Bun at run time. The Homebrew formula and the
+self-updater install the `theuth-app-parser-<hash>` compatibility stub with `t`.
 
 macOS permissions: `computer_*` needs Screen Recording and Accessibility
 granted to the app that launched theuth — your terminal (Ghostty, iTerm,

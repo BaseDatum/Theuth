@@ -132,21 +132,18 @@ cargo build --release -p theuth
 
 echo "==> $HELPER"
 build_helper
-echo "==> $DOC_HELPER"
-build_doc_helper
 
 echo "==> $TGZ"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 install -m 755 "$ROOT/target/release/t" "$stage/t"
 install -m 755 "$HELPER_SRC" "$stage/$HELPER"
-install -m 755 "$DOC_HELPER_SRC" "$stage/$DOC_HELPER"
 mkdir -p "$DIST"
 rm -f "$TGZ"
-tar --no-xattrs -czf "$TGZ" -C "$stage" t "$HELPER" "$DOC_HELPER"
+tar --no-xattrs -czf "$TGZ" -C "$stage" t "$HELPER"
 
 listed="$(tar -tzf "$TGZ" | sed 's|^\./||' | sort | tr '\n' ' ')"
-[[ "$listed" == "t $HELPER $DOC_HELPER " ]] || die "$TGZ lists '$listed', expected 't $HELPER $DOC_HELPER'"
+[[ "$listed" == "t $HELPER " ]] || die "$TGZ lists '$listed', expected 't $HELPER'"
 ver_out="$("$stage/t" --version 2>&1)"
 [[ "$ver_out" == *"$VERSION"* ]] || die "t --version printed '$ver_out', expected $VERSION"
 

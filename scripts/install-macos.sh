@@ -14,10 +14,10 @@ DEST="$DEST_DIR/theuth.app"
   echo "error: $APP not found — run 'just package-macos' first" >&2
   exit 1
 }
-# The sidecar spawns theuth-documents-<version> (59 §3.2) from its own directory; theuth-app-parser-<hash> (46
-# §2.1) is now a compatibility stub for installed updaters (the parser runs in-process) but ships in every
-# bundle; a bundle without either is a half-packaged app, not something to install.
-for helper in theuth-app-parser theuth-documents; do
+# theuth-app-parser-<hash> (46 §2.1) is a compatibility stub for installed updaters (the parser and the
+# documents helper run inside `t`) but ships in every bundle; a bundle without it is a half-packaged app,
+# not something to install.
+for helper in theuth-app-parser; do
   compgen -G "$APP/Contents/MacOS/$helper-*" >/dev/null || {
     echo "error: $APP has no Contents/MacOS/$helper-* — rerun 'just package-macos'" >&2
     exit 1

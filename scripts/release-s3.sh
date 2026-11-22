@@ -8,8 +8,8 @@
 #                        pubkeys match, <ver>/ absent (immutability), every Linux tarball present, each Linux
 #                        tarball prints VERSION in a clean ubuntu:24.04 of its arch and its helper answers
 #                        `--version` with the library hash, every CLI tarball holds exactly
-#                        `t` + `theuth-app-parser-<hash>` + `theuth-documents-<ver>` and the Windows CLI zip the
-#                        same three as .exe (46 §2.1, 59 §3.2; scripts/app-parser-env.sh)
+#                        `t` + `theuth-app-parser-<hash>` and the Windows CLI zip the same two as .exe
+#                        (46 §2.1; scripts/app-parser-env.sh)
 #   dist/ first          Linux/Windows artifacts are read from dist/; staging/<ver>/ in the bucket is pulled
 #                        only for what dist/ lacks (tarballs required; AppImage/deb/rpm/-setup.exe/zip optional)
 #   sign                 cargo tauri signer sign  dist/theuth_<ver>_*.tar.gz, *.AppImage, *-setup.exe, *.zip → .sig
@@ -185,7 +185,7 @@ if [[ -n "$ADD" ]]; then
 elif [[ "$PRERELEASE" == "1" ]]; then
   echo "==> gates 2-3 skipped (THEUTH_RELEASE_PRERELEASE=1)"
 else
-  gate 2 "codesign shows a Developer ID (app, $HELPER and $DOC_HELPER)"
+  gate 2 "codesign shows a Developer ID (app and $HELPER)"
   # Capture, don't `grep -q` in a pipe: with pipefail, grep -q closes early,
   # codesign gets SIGPIPE (141), the gate fails even when Authority is present.
   signed_developer_id() {
@@ -194,12 +194,11 @@ else
     [[ "$out" == *"Authority=Developer ID"* ]]
   }
   signed_developer_id "$APP" || fail 2 "ad-hoc build (set THEUTH_SIGN_IDENTITY, rerun just package-macos)"
-  for h in "$HELPER" "$DOC_HELPER"; do
+  for h in "$HELPER"; do
     signed_developer_id "$APP/Contents/MacOS/$h" || fail 2 "$h not signed with a Developer ID (rerun just package-macos)"
   done
-  # The app-parser entry is a plain stub since the in-process parser (apps-inproc-as-built-P1.md): no JIT.
-  ents="$(codesign -d --entitlements - --xml "$APP/Contents/MacOS/$DOC_HELPER" 2>/dev/null)" || true
-  [[ "$ents" == *"com.apple.security.cs.allow-jit"* ]] || fail 2 "$DOC_HELPER lacks the JIT entitlement (scripts/entitlements-app-parser.plist)"
+  # No JIT-entitled helper is left: the app-parser entry is a plain stub (apps-inproc-as-built-P1.md) and the
+  # documents helper is compiled into `t` (documents-inproc-as-built-P3.md).
   gate 3 "spctl --assess (notarized)"
   spctl --assess --type execute "$APP" 2>/dev/null || fail 3 "not notarized (just notarize-macos)"
 fi
@@ -377,34 +376,32 @@ else
     # whole webkit stack: the gate still tests glibc, the tarball layout and the binary itself.
     SMOKE_DEPS='apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq --no-install-recommends libgbm1 libwayland-client0 libxcb1 libasound2t64 libpipewire-0.3-0 >/dev/null 2>&1 && '
     out="$(docker run --rm --platform "$plat" -v "$PWD/$DIST:/d:ro" ubuntu:24.04 \
-      bash -c "${SMOKE_DEPS}tar xzf /d/$f -C /tmp && /tmp/t --version && echo wants=\$(/tmp/t --app-parser-hash) && /tmp/$HELPER --version && printf '' | /tmp/$HELPER && /tmp/$DOC_HELPER --version && printf '' | /tmp/$DOC_HELPER" 2>&1)" || fail 7 "$f: $out"
+      bash -c "${SMOKE_DEPS}tar xzf /d/$f -C /tmp && /tmp/t --version && echo wants=\$(/tmp/t --app-parser-hash) && /tmp/$HELPER --version && printf '' | /tmp/$HELPER" 2>&1)" || fail 7 "$f: $out"
     [[ "$out" == *"$VERSION"* ]] || fail 7 "$f printed '$out', expected $VERSION"
     [[ "$out" == *"wants=$HELPER_HASH"* ]] || fail 7 "$f: t --app-parser-hash does not name $HELPER_HASH: '$out'"
     [[ "$out" == *"theuth-app-parser $HELPER_HASH"* ]] || fail 7 "$f: $HELPER --version printed '$out', expected 'theuth-app-parser $HELPER_HASH'"
-    [[ "$out" == *"theuth-documents $DOC_VERSION"* ]] || fail 7 "$f: $DOC_HELPER --version printed '$out', expected 'theuth-documents $DOC_VERSION'"
     echo "    $f: $(tr '\n' ' ' <<<"$out")($plat)"
   done
 fi
 
 CLI_TGZS=(${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"}); [[ -n "$ADD" ]] || CLI_TGZS=("$CLI_TGZ" ${LINUX_TGZ[@]+"${LINUX_TGZ[@]}"})
-gate 8 "every CLI tarball holds exactly t + $HELPER + $DOC_HELPER (the Windows zip: the same three .exe); the macOS helpers run here"
+gate 8 "every CLI tarball holds exactly t + $HELPER (the Windows zip: the same two .exe); the macOS helper runs here"
 for f in ${CLI_TGZS[@]+"${CLI_TGZS[@]}"}; do
   listed="$(tar -tzf "$DIST/$f" | sed 's|^\./||' | sort | tr '\n' ' ')"
-  [[ "$listed" == "t $HELPER $DOC_HELPER " ]] || fail 8 "$f lists '$listed', expected 't $HELPER $DOC_HELPER' (stale dist/ or staging from another library hash / protocol version)"
-  echo "    $f: t $HELPER $DOC_HELPER"
+  [[ "$listed" == "t $HELPER " ]] || fail 8 "$f lists '$listed', expected 't $HELPER' (stale dist/ or staging from another library hash)"
+  echo "    $f: t $HELPER"
 done
 if [[ -n "$WIN_ZIP" ]]; then
   need unzip
   listed="$(unzip -Z1 "$DIST/$WIN_ZIP" | sed 's|^\./||' | sort | tr '\n' ' ')"
-  [[ "$listed" == "t.exe $HELPER.exe $DOC_HELPER.exe " ]] || fail 8 "$WIN_ZIP lists '$listed', expected 't.exe $HELPER.exe $DOC_HELPER.exe' (stale dist/ from another library hash / protocol version)"
-  echo "    $WIN_ZIP: t.exe $HELPER.exe $DOC_HELPER.exe"
+  [[ "$listed" == "t.exe $HELPER.exe " ]] || fail 8 "$WIN_ZIP lists '$listed', expected 't.exe $HELPER.exe' (stale dist/ from another library hash)"
+  echo "    $WIN_ZIP: t.exe $HELPER.exe"
 fi
 if [[ -n "$ADD" ]]; then
   echo "    $ADD_LIST: foreign platforms — t --version / --app-parser-hash not run on this host (gate 7 covers Linux in Docker)"
 else
   mkdir -p "$WORK/cli" && tar -xzf "$DIST/$CLI_TGZ" -C "$WORK/cli"
   check_helper "$WORK/cli/$HELPER"
-  check_doc_helper "$WORK/cli/$DOC_HELPER"
   [[ "$("$WORK/cli/t" --version 2>&1)" == *"$VERSION"* ]] || fail 8 "$CLI_TGZ: t --version did not print $VERSION"
   [[ "$("$WORK/cli/t" --app-parser-hash 2>&1)" == "$HELPER_HASH" ]] || fail 8 "$CLI_TGZ: t --app-parser-hash does not name the shipped $HELPER (the updater refuses such a payload)"
 fi

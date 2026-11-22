@@ -4,7 +4,7 @@ description: Repository anatomy, the Rust and Bun toolchain, just recipes for ch
 ---
 
 theuth is a single Rust workspace of 46 crates plus three small Bun projects
-(the desktop UI, the app-parser helper, the documents helper) and this site.
+(the desktop UI and the app-parser and documents bundles compiled into `t`) and this site.
 This page is the map and the exact commands. Design rationale lives in the
 numbered design documents inside the repository; they are internal working
 notes and are not published here.
@@ -18,7 +18,7 @@ notes and are not published here.
 | `justfile` | every build, test, packaging and release recipe |
 | `scripts/` | packaging and release scripts, model fetching (`fetch-models.sh`), remote builds, smoke drivers under `scripts/apps/` and `scripts/tests/` |
 | `bindings/` | generated TypeScript wire types, `methods.json` (every RPC method name), `surface-catalog.json` |
-| `packages/apps`, `packages/documents` | TypeScript sources of the in-process app parser bundles (`crates/app-js/js`) and of `theuth-documents-<protocol>` |
+| `packages/apps`, `packages/documents` | TypeScript sources of the in-process bundles `t` embeds: the app parser (`crates/app-js/js`, `just apps-bundle`) and documents (`crates/document-js/js`, `just documents-bundle`) |
 | `deploy/relay`, `deploy/vm`, `deploy/update` | relay container and Kubernetes manifests; sandbox VM image; Linux CLI tarball builder |
 | `vendor/` | patched `libsqlite3-sys`, `pbjson-types`, `a2a-client` |
 | `site/` | this website: Vite + React marketing page and the docs under `site/content/docs/` |
@@ -67,8 +67,8 @@ builds `t`.
   prebuilt V8 archive; `RUSTY_V8_ARCHIVE` points at a local copy for offline
   builds. ONNX Runtime 1.27.0 is the pinned runtime for speech and decision
   models (`scripts/ort-version.env`).
-- Bun is needed only to *build* the helpers and the UIs; an installed `t`
-  needs neither Node nor Bun at run time.
+- Bun is needed only for the UIs and to rebuild the committed in-process
+  bundles; an installed `t` needs neither Node nor Bun at run time.
 - Cross-compiling to aarch64-linux uses `scripts/aarch64-linux-lld-cc.sh`
   as the linker (`.cargo/config.toml`).
 
@@ -107,8 +107,8 @@ just ts                         # TypeScript bindings → bindings/ (cargo test 
 just ts-desktop                 # the same plus a copy into crates/desktop/ui/src/rpc/bindings
 just helper                     # cargo → the theuth-app-parser-<hash> compatibility stub (updaters only)
 just apps-bundle                # bun → rebuild the in-process app parser bundles in crates/app-js/js
-just documents-helper           # → packages/documents/dist/theuth-documents
-just install                    # release t + theuth-documents + the app-parser stub into ~/.cargo/bin (or $THEUTH_INSTALL_BIN)
+just documents-bundle           # bun → rebuild the in-process documents bundle in crates/document-js/js
+just install                    # release t + the app-parser stub into ~/.cargo/bin (or $THEUTH_INSTALL_BIN)
 just models                     # refresh crates/models/data/models.json from models.dev
 just models-check               # fail when the committed catalog drifted
 just fetch-models [--check]     # every local model the daemon loads → $THEUTH_DATA_DIR/models
@@ -121,15 +121,17 @@ it:
 THEUTH_RPC__LISTEN=127.0.0.1:7791 ./target/debug/t --headless --data-dir /tmp/theuth-x
 ```
 
-The app parser runs inside `t` (its bundle is committed under `crates/app-js/js`;
-`just apps-bundle` rebuilds it after a `packages/apps` change). Debug builds find the
-documents helper at `packages/documents/dist/`; `THEUTH_DOCUMENTS_HELPER` overrides.
-Release layouts look beside `t` for `theuth-documents-<protocol>`.
+The app parser and the documents helper run inside `t`. Their bundles are
+committed under `crates/app-js/js` and `crates/document-js/js`; only a
+TypeScript change in `packages/apps` or `packages/documents` needs
+`just apps-bundle` / `just documents-bundle` (`just check` runs both
+`*-bundle-check` recipes). Release layouts still carry the
+`theuth-app-parser-<hash>` compatibility stub beside `t` for installed updaters.
 
 ### Desktop
 
 ```sh
-just desktop                    # bindings, documents helper, cargo build -p theuth, bun install, cargo tauri dev
+just desktop                    # bindings, cargo build -p theuth, bun install, cargo tauri dev
 just desktop-check              # cd crates/desktop/ui && bun run check && bun run test && bun run build
 just web-build                  # static browser UI → crates/desktop/ui/dist, served by theuth-relay --web
 just package-macos              # theuth.app + DMG (ad-hoc unless THEUTH_SIGN_IDENTITY or .env.signing)
