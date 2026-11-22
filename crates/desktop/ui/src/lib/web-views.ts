@@ -41,6 +41,7 @@ export const useWebViews = create<WebViewsStore>()((set, get) => ({
     set({ views: { ...get().views, [id]: { loading: false, ...old, id, session: session || old?.session || '', url, title, current: url } } })
   },
   close(id) {
+    placed.delete(id)
     if (!(id in get().views)) return
     const { [id]: _, ...rest } = get().views
     set({ views: rest })
@@ -89,6 +90,20 @@ export const WEB_TILE_MIN_WIDTH = 420
  */
 export function collapseSidebarFor(tile: { width: number; sidebarOpen: boolean; phone: boolean; ios: boolean }): boolean {
   return tile.ios && !tile.phone && tile.sidebarOpen && tile.width > 0 && tile.width < WEB_TILE_MIN_WIDTH
+}
+
+/** Frames whose placement already had its sidebar decision (209 D11): one per tile, so a sidebar the user reopens stays
+ * open across remounts; a frame closed and opened again decides again. */
+const placed = new Set<string>()
+
+/**
+ * 209 D11: frame `id` was placed (shown in this window) at `tile.width`: collapse the sidebar? Decided once per frame,
+ * and only from a real measurement: a width of 0 (a pane not laid out yet, a tile mounted hidden) decides nothing.
+ */
+export function placeTile(id: string, tile: { width: number; sidebarOpen: boolean; phone: boolean; ios: boolean }): boolean {
+  if (placed.has(id) || tile.width <= 0) return false
+  placed.add(id)
+  return collapseSidebarFor(tile)
 }
 
 /** One tile's state for the engine (209 D9): the params of `web_view_state`, `view` as `web:<id>`. */

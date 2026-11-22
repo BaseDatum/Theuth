@@ -14,7 +14,7 @@ import { popOutWeb, usePanes } from '@/lib/panes'
 import { canPopout, closePopout, isPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 import * as native from '@/lib/web-view-native'
-import { collapseSidebarFor, httpUrl, isLoopback, openInBrowser, useWebViews } from '@/lib/web-views'
+import { httpUrl, isLoopback, openInBrowser, placeTile, useWebViews } from '@/lib/web-views'
 
 /** Open things a native web view would draw over (it sits above all DOM): radix dialogs, sheets, menus, popovers,
  * selects, the modal backdrops and toasts. Tooltips are not among them: they come and go with the pointer. */
@@ -32,10 +32,6 @@ const OVERLAYS = [
 const isTooltip = (el: Element) => el.querySelector('[role="tooltip"],[data-slot="tooltip-content"]') !== null
 
 const intersects = (a: DOMRect, b: DOMRect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
-
-/** Frames whose placement already had its sidebar decision (209 D11): one per tile, so a sidebar the user reopens
- * stays open across remounts. */
-const placed = new Set<string>()
 
 /** A mutation inside the transcript's virtual rows (streaming text, cards) never opens an overlay. */
 const inTranscript = (n: Node) => (n instanceof Element ? n : n.parentElement)?.closest('[data-index]') != null
@@ -138,13 +134,20 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
     return () => void native.detach(id).catch(warn('web_view_visible'))
   }, [id, live, popped])
 
-  // 209 D11: a tile placed too narrow for its address field on the iPad folds the inline sidebar away, once.
+  // 209 D11: a tile placed too narrow for its address field on the iPad folds the inline sidebar away, once per frame,
+  // decided at its first real width (a pane not laid out yet measures 0).
   const shown = view !== undefined
   useEffect(() => {
     const el = ref.current
-    if (!shown || popped || !el || placed.has(id)) return
-    placed.add(id)
-    if (collapseSidebarFor({ width: el.getBoundingClientRect().width, sidebarOpen: open, phone: isMobile, ios: container() === 'ios' })) setOpen(false)
+    if (!shown || popped || !el) return
+    const decide = () => {
+      if (placeTile(id, { width: el.getBoundingClientRect().width, sidebarOpen: open, phone: isMobile, ios: container() === 'ios' })) setOpen(false)
+    }
+    decide()
+    if (typeof ResizeObserver !== 'function') return
+    const observer = new ResizeObserver(decide)
+    observer.observe(el)
+    return () => observer.disconnect()
   }, [id, shown, popped, open, isMobile, setOpen])
 
   // Hide under an overlay or a drag, show again once it is gone; the module sends only what changed.

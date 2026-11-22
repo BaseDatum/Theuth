@@ -8,6 +8,7 @@ import {
   httpUrl,
   isLoopback,
   isWeb,
+  placeTile,
   stateForwarder,
   useWebViews,
   webId,
@@ -159,4 +160,21 @@ test('209 D11: an iPad tile placed narrower than WEB_TILE_MIN_WIDTH with the sid
   expect(collapseSidebarFor({ ...ipad, phone: true })).toBe(false)
   expect(collapseSidebarFor({ ...ipad, ios: false })).toBe(false)
   expect(collapseSidebarFor({ ...ipad, width: 0 })).toBe(false)
+})
+
+test('209 D11: a frame decides on its first measured width, once; a width of 0 decides nothing; closing it forgets the decision', () => {
+  const ipad = { width: 300, sidebarOpen: true, phone: false, ios: true }
+  // Not laid out yet: no decision, so the real width still counts.
+  expect(placeTile('p1', { ...ipad, width: 0 })).toBe(false)
+  expect(placeTile('p1', ipad)).toBe(true)
+  // Decided: a remount (the user reopened the sidebar) does not fold it again.
+  expect(placeTile('p1', ipad)).toBe(false)
+  // A wide first placement decides too (nothing to fold), and later narrowing does not fold.
+  expect(placeTile('p2', { ...ipad, width: WEB_TILE_MIN_WIDTH + 100 })).toBe(false)
+  expect(placeTile('p2', ipad)).toBe(false)
+  useWebViews.getState().open({ id: 'p1', session: 's', url: 'https://a.example/', title: 'A' })
+  useWebViews.getState().close('p1')
+  expect(placeTile('p1', ipad)).toBe(true)
+  useWebViews.getState().close('p1')
+  useWebViews.getState().close('p2')
 })

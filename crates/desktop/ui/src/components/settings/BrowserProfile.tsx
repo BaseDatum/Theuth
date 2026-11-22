@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Dot, Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import {
   AlertDialog,
@@ -15,9 +15,8 @@ import {
 import { Button } from '@/components/ui/button'
 import { useEngines } from '@/link/engines'
 import { ago } from '@/lib/costs/format'
-import { deviceName } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { signedOutEverywhere, useWebProfileMode } from '@/lib/web-profile'
+import { profileDevice, signedOutEverywhere, useWebProfileMode } from '@/lib/web-profile'
 import type { ProfileMode, WebProfileSite } from '@/lib/web-profile-wire'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { on } from '@/store/sessions'
@@ -45,35 +44,64 @@ export function siteLines(sites: readonly WebProfileSite[], device: string, now:
     })
 }
 
-/** What the Sharing row says (209 D6): no RPC reads `browser.profile`, so it is what the engine last answered this
- * device's push or pull. */
-export function modeText(mode: ProfileMode | null): string {
-  if (mode === 'shared') return 'On: sign-ins in your web views reach the agents’ browsers on every engine, and theirs reach your web views. As the engine last reported to this device.'
-  if (mode === 'off') return 'Off (browser.profile: off in config.yaml): nothing is shared, loaded or listed; what the profile held stays until you sign out everywhere. As the engine last reported to this device.'
+/** What the Sharing row says (209 D6): `browser.profile` as `web_profile_status` answers it (`live`), else as the engine
+ * last answered this device's push or pull (an engine without `web_profile_status`). */
+export function modeText(mode: ProfileMode | null, live: boolean): string {
+  const said = live ? '' : ' As the engine last reported to this device.'
+  if (mode === 'shared') return `On: sign-ins in your web views reach the agents’ browsers on every engine, and theirs reach your web views.${said}`
+  if (mode === 'off') return `Off (browser.profile: off in config.yaml): nothing is shared, loaded or listed; what the profile held stays until you sign out everywhere.${said}`
   return 'Not known yet: the engine reports it when this device next syncs. Set browser.profile in config.yaml to shared or off.'
 }
+
+/** Relative times in the list move on: the time now, renewed every minute. */
+const TICK_MS = 60_000
 
 /** 209 §6, D6: Settings › Tools › Browser — the shared browser profile's sites, Forget and Sign out everywhere. */
 export function BrowserProfile() {
   const canList = useQuerySupport(['web_profile_sites'])
+  const canStatus = useQuerySupport(['web_profile_status'])
   const api = useApi()
   const qc = useQueryClient()
   const sites = useQuery({ queryKey: queryKeys.webProfileSites, queryFn: () => api.web_profile_sites(), enabled: canList })
-  useEffect(() => on('browser.web-profile-changed@1', 'WebProfileChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.webProfileSites })), [qc])
+  const status = useQuery({ queryKey: queryKeys.webProfileStatus, queryFn: () => api.web_profile_status(), enabled: canStatus })
+  useEffect(
+    () =>
+      on('browser.web-profile-changed@1', 'WebProfileChanged', () => {
+        void qc.invalidateQueries({ queryKey: queryKeys.webProfileSites })
+        void qc.invalidateQueries({ queryKey: queryKeys.webProfileStatus })
+      }),
+    [qc],
+  )
   const active = useEngines((s) => s.active)
-  const mode = useWebProfileMode((s) => (s.engine === active ? s.mode : null))
-  const forget = useAction((site: string) => api.web_profile_forget(site), { keys: [queryKeys.webProfileSites] })
+  const synced = useWebProfileMode((s) => (s.engine === active ? s.mode : null))
+  const mode = status.data?.profile ?? synced
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), TICK_MS)
+    return () => clearInterval(timer)
+  }, [])
+  const keys = [queryKeys.webProfileSites, queryKeys.webProfileStatus]
+  const forget = useAction((site: string) => api.web_profile_forget(site), { keys })
   const clear = useAction(() => api.web_profile_clear(), {
-    keys: [queryKeys.webProfileSites],
+    keys,
     onSuccess: (r) => signedOutEverywhere(r.epoch),
   })
-  const lines = sites.data ? siteLines(sites.data, deviceName(), Date.now()) : []
+  const lines = sites.data ? siteLines(sites.data, profileDevice(), now) : []
 
   return (
     <Section
       title="Shared browser profile"
       actions={
-        <Button variant="outline" size="sm" aria-label="Refresh signed-in sites" disabled={sites.isFetching} onClick={() => void sites.refetch()}>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label="Refresh signed-in sites"
+          disabled={sites.isFetching}
+          onClick={() => {
+            void sites.refetch()
+            if (canStatus) void status.refetch()
+          }}
+        >
           Refresh
         </Button>
       }
@@ -85,7 +113,7 @@ export function BrowserProfile() {
             Sharing
           </span>
         }
-        description={modeText(mode)}
+        description={modeText(mode, status.data !== undefined)}
       />
       {sites.isPending && canList && <Empty>Loading signed-in sites…</Empty>}
       {sites.isError && <Empty>Could not list the signed-in sites: {errorText(sites.error)}</Empty>}

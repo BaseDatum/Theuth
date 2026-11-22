@@ -15,14 +15,21 @@ const engine = vi.hoisted(() => ({
   web_profile_sites: vi.fn(),
   web_profile_forget: vi.fn(),
   web_profile_clear: vi.fn(),
+  web_profile_status: vi.fn(),
   changed: null as null | (() => void),
   signedOut: vi.fn(),
 }))
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
-  useApi: () => ({ web_profile_sites: engine.web_profile_sites, web_profile_forget: engine.web_profile_forget, web_profile_clear: engine.web_profile_clear }),
+  useApi: () => ({
+    web_profile_sites: engine.web_profile_sites,
+    web_profile_forget: engine.web_profile_forget,
+    web_profile_clear: engine.web_profile_clear,
+    web_profile_status: engine.web_profile_status,
+  }),
 }))
-vi.mock('@/rpc/capabilities', () => ({ useQuerySupport: () => true }))
+const support = vi.hoisted(() => ({ status: true }))
+vi.mock('@/rpc/capabilities', () => ({ useQuerySupport: (methods: string[]) => support.status || !methods.includes('web_profile_status') }))
 vi.mock('@/store/sessions', () => ({
   on: (_topic: string, _type: string, cb: () => void) => {
     engine.changed = cb
@@ -30,18 +37,18 @@ vi.mock('@/store/sessions', () => ({
   },
 }))
 vi.mock('@/lib/web-profile', () => ({
+  profileDevice: () => 'iPad-7f3a2b',
   signedOutEverywhere: engine.signedOut,
   useWebProfileMode: (pick: (s: { engine: string | null; mode: 'shared' | 'off' | null }) => unknown) => pick({ engine: 'e1', mode: 'shared' }),
 }))
 vi.mock('@/link/engines', () => ({ useEngines: (pick: (s: { active: string }) => unknown) => pick({ active: 'e1' }) }))
-vi.mock('@/lib/platform', async (original) => ({ ...(await original<object>()), deviceName: () => 'iPad' }))
 // React Query notifies observers on a macrotask by default; on a microtask they settle inside one `act`.
 notifyManager.setScheduler(queueMicrotask)
 
 const site = (s: string, updated_ms: number, writer: string, cookies = 2, origins = 0): WebProfileSite => ({ site: s, cookies, origins, updated_ms, writer })
 
 beforeEach(() => {
-  engine.sites = [site('example.com', NOW - 5 * MIN, 'tile:iPad'), site('github.com', NOW - MIN, 'obscura:studio', 1, 1)]
+  engine.sites = [site('example.com', NOW - 5 * MIN, 'tile:iPad-7f3a2b'), site('github.com', NOW - MIN, 'obscura:studio', 1, 1)]
   engine.web_profile_sites.mockReset().mockImplementation(async () => {
     if (engine.sites instanceof Error) throw engine.sites
     return engine.sites
@@ -54,6 +61,8 @@ beforeEach(() => {
     engine.sites = []
     return { epoch: 7 }
   })
+  engine.web_profile_status.mockReset().mockResolvedValue({ profile: 'off', epoch: 1, sites: 2, now_ms: NOW })
+  support.status = true
   engine.signedOut.mockReset()
   vi.spyOn(Date, 'now').mockReturnValue(NOW)
 })
@@ -73,7 +82,10 @@ const run = (fn: () => void) => act(async () => fn())
 const button = (label: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
 
 test('writers read as this device, an agent on its engine, or another device', () => {
-  expect(writerLabel('tile:iPad', 'iPad')).toBe('this device')
+  expect(writerLabel('tile:iPad-7f3a2b', 'iPad-7f3a2b')).toBe('this device')
+  // Another iPad is another install: the whole device string decides.
+  expect(writerLabel('tile:iPad-0c91de', 'iPad-7f3a2b')).toBe('another device')
+  expect(writerLabel('tile:iPad', 'iPad-7f3a2b')).toBe('another device')
   expect(writerLabel('tile:Mac', 'iPad')).toBe('another device')
   expect(writerLabel('obscura:studio', 'iPad')).toBe('agent on studio')
   expect(writerLabel('something-else', 'iPad')).toBe('another device')
@@ -81,8 +93,8 @@ test('writers read as this device, an agent on its engine, or another device', (
 
 test('the list is newest change first (then by site), with counts, relative time and writer; never a value', () => {
   const lines = siteLines(
-    [site('b.org', NOW - 3 * 3_600_000, 'tile:Mac', 1), site('example.com', NOW - 5 * MIN, 'tile:iPad', 3, 2), site('a.org', NOW - 3 * 3_600_000, 'obscura:studio', 4, 1)],
-    'iPad',
+    [site('b.org', NOW - 3 * 3_600_000, 'tile:Mac', 1), site('example.com', NOW - 5 * MIN, 'tile:iPad-7f3a2b', 3, 2), site('a.org', NOW - 3 * 3_600_000, 'obscura:studio', 4, 1)],
+    'iPad-7f3a2b',
     NOW,
   )
   expect(lines).toEqual([
@@ -90,8 +102,9 @@ test('the list is newest change first (then by site), with counts, relative time
     { site: 'a.org', detail: '4 cookies · storage of 1 origin · changed 3 h ago by agent on studio' },
     { site: 'b.org', detail: '1 cookie · changed 3 h ago by another device' },
   ])
-  expect(modeText(null)).toContain('Not known yet')
-  expect(modeText('off')).toContain('As the engine last reported to this device')
+  expect(modeText(null, false)).toContain('Not known yet')
+  expect(modeText('off', false)).toContain('As the engine last reported to this device')
+  expect(modeText('off', true)).not.toContain('last reported')
 })
 
 test('Forget calls web_profile_forget for its site and the list refreshes; WebProfileChanged refreshes it too', async () => {
@@ -134,4 +147,33 @@ test('a failed list says so', async () => {
   const { host, unmount } = await mount()
   await vi.waitFor(() => expect(host.textContent).toContain('Could not list the signed-in sites: profile unavailable'))
   await unmount()
+})
+
+test('the Sharing row reads browser.profile from web_profile_status, else from what the sync last heard', async () => {
+  const first = await mount()
+  await vi.waitFor(() => expect(first.host.textContent).toContain('Off (browser.profile: off in config.yaml)'))
+  expect(first.host.textContent).not.toContain('As the engine last reported')
+  await first.unmount()
+  document.body.innerHTML = ''
+
+  support.status = false
+  const second = await mount()
+  expect(engine.web_profile_status).toHaveBeenCalledTimes(1)
+  expect(second.host.textContent).toContain('On: sign-ins in your web views')
+  expect(second.host.textContent).toContain('As the engine last reported to this device')
+  await second.unmount()
+})
+
+test('relative times move on every minute without anything else re-rendering', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  try {
+    const { host, unmount } = await mount()
+    await vi.waitFor(() => expect(host.textContent).toContain('changed 5 min ago by this device'))
+    vi.mocked(Date.now).mockReturnValue(NOW + 2 * MIN)
+    await act(async () => vi.advanceTimersByTime(60_000))
+    expect(host.textContent).toContain('changed 7 min ago by this device')
+    await unmount()
+  } finally {
+    vi.useRealTimers()
+  }
 })

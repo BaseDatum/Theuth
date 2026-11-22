@@ -119,6 +119,8 @@ export const queryKeys = {
   computer: ['computer'] as const,
   /** `web_profile_sites()` (209 §6): Settings › Browser; refreshed on `WebProfileChanged`. */
   webProfileSites: ['web-profile-sites'] as const,
+  /** `web_profile_status()` (209 §4.4): Settings › Browser's Sharing row. */
+  webProfileStatus: ['web-profile-status'] as const,
   secrets: ['secrets'] as const,
   updateStatus: ['update-status'] as const,
   voice: ['voice'] as const,
