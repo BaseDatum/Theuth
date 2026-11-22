@@ -21,6 +21,14 @@ import { useAttentionBulk, useBulkPending } from './queries'
 
 export type Size = 'xs' | 'sm' | 'default'
 
+/**
+ * The detail pane's action colours (207 follow-up): affirmative answers are green, refusals red, Snooze amber; the
+ * list cards (xs) keep the quiet default/outline/ghost buttons. Navigation and submits keep their existing look.
+ */
+export const TONE_SUCCESS = 'border border-success-border bg-success-bg text-success hover:bg-success-bg/80 hover:text-success'
+export const TONE_DANGER = 'border border-danger-border bg-danger-bg text-danger hover:bg-danger-bg/80 hover:text-danger'
+export const paneTone = (size: Size, tone: 'success' | 'danger') => (size === 'xs' ? undefined : tone === 'success' ? TONE_SUCCESS : TONE_DANGER)
+
 /** The snooze presets of every card and the bulk bar (`hud/model.ts` `snoozeUntil`). */
 export const SNOOZE_PRESETS = [
   { preset: 'hour', label: 'For an hour' },
@@ -106,7 +114,7 @@ export function AllowOnce({ first, size, disabled, onClick }: { first: { contact
   const elsewhere = useFirstWaiting().data?.some((w) => w.elsewhere && w.contact === first.contact && w.export === first.exp) ?? false
   if (elsewhere) return null
   return (
-    <Button size={size} disabled={disabled} onClick={onClick}>
+    <Button size={size} className={paneTone(size, 'success')} disabled={disabled} onClick={onClick}>
       Allow once
     </Button>
   )
@@ -148,27 +156,27 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
               Open desktop
             </Button>
           )}
-          <Button size={size} variant={vm ? 'outline' : 'default'} disabled={busy} onClick={() => then(act.handoff.mutateAsync({ id: handoffId, outcome: 'done' }))}>
+          <Button size={size} variant={vm ? 'outline' : 'default'} className={paneTone(size, 'success')} disabled={busy} onClick={() => then(act.handoff.mutateAsync({ id: handoffId, outcome: 'done' }))}>
             Done
           </Button>
-          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.handoff.mutateAsync({ id: handoffId, outcome: 'cancelled' }))}>
+          <Button size={size} variant="outline" className={paneTone(size, 'danger')} disabled={busy} onClick={() => then(act.handoff.mutateAsync({ id: handoffId, outcome: 'cancelled' }))}>
             Cancel
           </Button>
         </>
       )}
       {item.kind === 'resume' && item.session && item.detail === null && (
         // 109 §8.3: under `resume: ask` the turn waits for this button; a report item (detail set) only needs reading.
-        <Button size={size} disabled={busy} onClick={() => then(act.resume.mutateAsync(item.session as string))}>
+        <Button size={size} className={paneTone(size, 'success')} disabled={busy} onClick={() => then(act.resume.mutateAsync(item.session as string))}>
           Resume
         </Button>
       )}
       {item.kind === 'secret' && <span className="text-xs text-fg-tertiary">{rows.isPending ? 'loading the request…' : `answer it in the session${item.detail ? ` on ${item.detail}` : ''}`}</span>}
       {item.kind === 'approval' && item.approval && (
         <>
-          <Button size={size} disabled={busy} onClick={() => then(act.approve.mutateAsync({ id: item.approval as NonNullable<typeof item.approval>, allow: true }))}>
+          <Button size={size} className={paneTone(size, 'success')} disabled={busy} onClick={() => then(act.approve.mutateAsync({ id: item.approval as NonNullable<typeof item.approval>, allow: true }))}>
             Allow
           </Button>
-          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.approve.mutateAsync({ id: item.approval as NonNullable<typeof item.approval>, allow: false }))}>
+          <Button size={size} variant="outline" className={paneTone(size, 'danger')} disabled={busy} onClick={() => then(act.approve.mutateAsync({ id: item.approval as NonNullable<typeof item.approval>, allow: false }))}>
             Deny
           </Button>
         </>
@@ -189,17 +197,17 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
       )}
       {item.kind === 'hire' && item.agent && (
         <>
-          <Button size={size} disabled={busy} onClick={() => then(act.hire.mutateAsync(item.agent as string))}>
+          <Button size={size} className={paneTone(size, 'success')} disabled={busy} onClick={() => then(act.hire.mutateAsync(item.agent as string))}>
             Hire
           </Button>
-          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.decline.mutateAsync(item.agent as string))}>
+          <Button size={size} variant="outline" className={paneTone(size, 'danger')} disabled={busy} onClick={() => then(act.decline.mutateAsync(item.agent as string))}>
             Decline
           </Button>
         </>
       )}
       {item.kind === 'review' && item.task && (
         <>
-          <Button size={size} disabled={busy} onClick={() => then(act.move.mutateAsync({ id: item.task as string, state: 'done' }))}>
+          <Button size={size} className={paneTone(size, 'success')} disabled={busy} onClick={() => then(act.move.mutateAsync({ id: item.task as string, state: 'done' }))}>
             Move done
           </Button>
           <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.move.mutateAsync({ id: item.task as string, state: 'doing' }))}>
@@ -222,10 +230,10 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
         // 183 W-27, C3 call 7: Allow once lets this task through and keeps asking; Always and Block are remembered.
         <>
           <AllowOnce first={first} size={size} disabled={busy} onClick={() => then(act.contactFirst.mutateAsync({ ...first, answer: 'ask' }))} />
-          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.contactFirst.mutateAsync({ ...first, answer: 'allow' }))}>
+          <Button size={size} variant="outline" className={paneTone(size, 'success')} disabled={busy} onClick={() => then(act.contactFirst.mutateAsync({ ...first, answer: 'allow' }))}>
             Always
           </Button>
-          <Button size={size} variant="outline" disabled={busy} onClick={() => then(act.contactFirst.mutateAsync({ ...first, answer: 'block' }))}>
+          <Button size={size} variant="outline" className={paneTone(size, 'danger')} disabled={busy} onClick={() => then(act.contactFirst.mutateAsync({ ...first, answer: 'block' }))}>
             Block
           </Button>
         </>
