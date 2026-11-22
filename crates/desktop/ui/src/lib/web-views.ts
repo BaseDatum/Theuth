@@ -42,9 +42,12 @@ export const useWebViews = create<WebViewsStore>()((set, get) => ({
   },
   close(id) {
     placed.delete(id)
-    if (!(id in get().views)) return
+    const old = get().views[id]
+    if (!old) return
     const { [id]: _, ...rest } = get().views
     set({ views: rest })
+    // 209 P3: the engine forgets the tile (no longer listed or attachable). A pop-out window knows no session.
+    if (old.session) sendState({ session: old.session, view: webLeaf(id), url: old.current, title: old.title, loading: false, closed: true })
     void native.close(id).catch((e: unknown) => console.warn('web_view_close', e))
   },
   patch(id, p) {
@@ -106,8 +109,9 @@ export function placeTile(id: string, tile: { width: number; sidebarOpen: boolea
   return collapseSidebarFor(tile)
 }
 
-/** One tile's state for the engine (209 D9): the params of `web_view_state`, `view` as `web:<id>`. */
-export type WebViewStateReport = { session: string; view: string; url: string; title: string; loading: boolean }
+/** One tile's state for the engine (209 D9): the params of `web_view_state`, `view` as `web:<id>`; `closed` once, when
+ * the tile is closed. */
+export type WebViewStateReport = { session: string; view: string; url: string; title: string; loading: boolean; closed?: boolean }
 
 /** 209 D9: at most one `web_view_state` per view in this many ms (209 §4.5). */
 export const STATE_EVERY_MS = 500
@@ -160,7 +164,10 @@ export function stateForwarder(send: (r: WebViewStateReport) => boolean) {
 function sendState(r: WebViewStateReport): boolean {
   const { api, state, discovery } = useConnection.getState()
   if (!api || state !== 'open' || discovery.phase === 'legacy' || !supports(discovery, { methods: ['web_view_state'] })) return false
-  void api.web_view_state(r.session, r.view, r.url, r.title, r.loading).catch(() => undefined)
+  const sent = r.closed
+    ? api.web_view_state(r.session, r.view, r.url, r.title, r.loading, true)
+    : api.web_view_state(r.session, r.view, r.url, r.title, r.loading)
+  void sent.catch(() => undefined)
   return true
 }
 

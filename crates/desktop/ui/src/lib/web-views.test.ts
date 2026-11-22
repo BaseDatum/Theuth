@@ -17,11 +17,15 @@ import {
 
 const native = vi.hoisted(() => ({ close: vi.fn(async () => {}) }))
 vi.mock('@/lib/web-view-native', async (original) => ({ ...(await original<object>()), close: native.close }))
+const engine = vi.hoisted(() => ({ web_view_state: vi.fn(async (..._params: unknown[]) => ({})) }))
+vi.mock('@/store/connection', () => ({ useConnection: { getState: () => ({ api: engine, state: 'open', discovery: { phase: 'ready' } }) } }))
+vi.mock('@/rpc/discovery', () => ({ supports: () => true }))
 
 const reset = () => {
   usePanes.setState({ root: null, focused: null, drag: null })
   useWebViews.setState({ views: {} })
   native.close.mockClear()
+  engine.web_view_state.mockClear()
 }
 afterEach(reset)
 
@@ -42,14 +46,20 @@ test('a web leaf is `web:<id>`; the same id opened again navigates the frame ins
   expect(views[ID]).toMatchObject({ session: 's1', url: 'http://localhost:3000/docs', current: 'http://localhost:3000/docs', title: 'docs', popped: true })
 })
 
-test('closing a frame forgets it and destroys its native web view; an unknown id is no call', () => {
+test('closing a frame forgets it, tells the engine once (`closed`) and destroys its native web view; an unknown id is no call', () => {
   reset()
   useWebViews.getState().open({ id: ID, session: 's1', url: 'https://example.com/', title: 'x' })
   useWebViews.getState().close(ID)
   expect(useWebViews.getState().views).toEqual({})
   expect(native.close).toHaveBeenCalledWith(ID)
+  expect(engine.web_view_state.mock.calls).toEqual([['s1', W, 'https://example.com/', 'x', false, true]])
   useWebViews.getState().close(ID)
   expect(native.close).toHaveBeenCalledTimes(1)
+  expect(engine.web_view_state).toHaveBeenCalledTimes(1)
+  // A pop-out window's frame knows no session: nothing for the engine.
+  useWebViews.getState().open({ id: ID, session: '', url: 'https://example.com/', title: 'x' })
+  useWebViews.getState().close(ID)
+  expect(engine.web_view_state).toHaveBeenCalledTimes(1)
 })
 
 test('a web tile opens right of its session without taking focus; the session-id consumers never see it', () => {

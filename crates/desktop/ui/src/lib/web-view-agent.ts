@@ -123,11 +123,10 @@ export const tileOf = (view: string): string | null => {
 
 /** 209 §9: this window may act for `e` on tile `id` only for the session that opened the tile: the tile's session is
  * unknown here (a pop-out window's store has none) or is `e.session`, or the engine marks the request `delegated` (the
- * asking session descends from the tile's). */
+ * asking session is another of the tile session's tree). */
 export function mayClaim(e: WebViewCallRequested, id: string): boolean {
   const owner = useWebViews.getState().views[id]?.session ?? ''
-  // `delegated` is the engine's addition (209 P3 review); bindings generated before it lack the field.
-  return owner === '' || owner === e.session || ('delegated' in e && e.delegated === true)
+  return owner === '' || owner === e.session || e.delegated
 }
 
 /** The `Done` answer of the shell's reply: `snapshot`'s `{ png }` moves to `png`. */
@@ -139,28 +138,25 @@ export function doneOf(op: string, value: unknown): WebViewCallAnswer {
   return { kind: 'done', result: value ?? null }
 }
 
-/** Calls this window claimed and has not answered yet: call id → tile id and the connection that asked. */
-const running = new Map<string, { id: string; api: Api }>()
-/** Every call this window saw and the engine has not resolved, for a tile a pop-out window of this app held when it
- * came (`popped`): call id → tile id and connection. When that view is destroyed (its window closed), no one else
- * answers it. */
-const away = new Map<string, { id: string; api: Api }>()
+/** Calls this window claimed and has not answered yet: call id → tile id, the connection that claimed (the engine
+ * takes `done` / `failed` only from it) and the asking session (the answer's routing). */
+type Running = { id: string; api: Api; session: string }
+const running = new Map<string, Running>()
 
-const answer = (api: Api, call: string, a: WebViewCallAnswer) => void api.answer_web_view_call(call, a).catch(() => undefined)
+const answer = (r: Omit<Running, 'id'>, call: string, a: WebViewCallAnswer) =>
+  void r.api.answer_web_view_call(call, a, r.session).catch(() => undefined)
 
 async function run(e: WebViewCallRequested): Promise<void> {
   const id = tileOf(e.view)
   if (id === null || running.has(e.id)) return
   const { api, discovery } = useConnection.getState()
   if (!api || !supports(discovery, { methods: ['answer_web_view_call'], topics: ['artifact.web-view-call-requested@1'] })) return
-  if (useWebViews.getState().views[id]?.popped) {
-    away.set(e.id, { id, api })
-    return
-  }
-  if (!native.holds(id) || !mayClaim(e, id)) return
-  if (refusing(id, useTileAgent.getState().tiles[id], Date.now())) return answer(api, e.id, { kind: 'failed', reason: STOPPED })
-  running.set(e.id, { id, api })
-  const won = await api.answer_web_view_call(e.id, { kind: 'claimed', client: profileDevice() }).catch(() => false)
+  if (useWebViews.getState().views[id]?.popped || !native.holds(id) || !mayClaim(e, id)) return
+  const r = { id, api, session: e.session }
+  // Unclaimed: the engine takes this one `failed` reason from any owner connection.
+  if (refusing(id, useTileAgent.getState().tiles[id], Date.now())) return answer(r, e.id, { kind: 'failed', reason: STOPPED })
+  running.set(e.id, r)
+  const won = await api.answer_web_view_call(e.id, { kind: 'claimed', client: profileDevice() }, e.session).catch(() => false)
   // Another client claimed first, the engine gave up, or Stop came while the claim was out.
   if (!won || running.get(e.id)?.id !== id) {
     running.delete(e.id)
@@ -177,22 +173,22 @@ async function run(e: WebViewCallRequested): Promise<void> {
   if (running.get(e.id)?.id !== id) return
   running.delete(e.id)
   update(id, (a) => ended(a, e.id, Date.now()))
-  answer(api, e.id, out)
+  answer(r, e.id, out)
 }
 
-/** Fail with `reason` each call of `calls` for which `pick` holds, and forget it. */
-function failAll(calls: Map<string, { id: string; api: Api }>, reason: string, pick: (id: string) => boolean = () => true): void {
-  for (const [call, r] of calls) {
+/** Fail with `reason` each running call for which `pick` holds, and forget it. */
+function failAll(reason: string, pick: (id: string) => boolean = () => true): void {
+  for (const [call, r] of running) {
     if (!pick(r.id)) continue
-    calls.delete(call)
-    answer(r.api, call, { kind: 'failed', reason })
+    running.delete(call)
+    answer(r, call, { kind: 'failed', reason })
   }
 }
 
 /** Stop the agent on tile `id`: its calls in flight fail with `STOPPED`, the shell's `stop` ends the page's loading
  * and the tile's waits ("Stopping…" until it settles), and its next calls are refused for `REFUSE_MS` in every window. */
 export function stopAgent(id: string): void {
-  failAll(running, STOPPED, (t) => t === id)
+  failAll(STOPPED, (t) => t === id)
   const now = Date.now()
   persistRefusal(id, now + REFUSE_MS)
   update(id, () => stopped(now))
@@ -221,11 +217,10 @@ export function useAgentActing(id: string): boolean {
 export function startWebViewAgent(): () => void {
   if (!native.nativeWebViews()) return () => {}
   let gone = false
-  const leave = () => failAll(running, WINDOW_CLOSED)
+  const leave = () => failAll(WINDOW_CLOSED)
   const offs = [
     on('artifact.web-view-call-requested@1', 'WebViewCallRequested', (e) => void run(e)),
     on('artifact.web-view-call-resolved@1', 'WebViewCallResolved', (e) => {
-      away.delete(e.id)
       const r = running.get(e.id)
       if (!r) return
       running.delete(e.id)
@@ -238,14 +233,7 @@ export function startWebViewAgent(): () => void {
     globalThis.removeEventListener?.('pagehide', leave)
     globalThis.removeEventListener?.('beforeunload', leave)
   })
-  void native
-    .onClosed((s) => {
-      native.release(s.label)
-      // The pop-out window that held the view closed: its calls in flight end here.
-      const id = s.label.replace(/^web-/, '')
-      failAll(away, WINDOW_CLOSED, (t) => t === id)
-    })
-    .then((off) => (gone ? off() : offs.push(off)))
+  void native.onClosed((s) => native.release(s.label)).then((off) => (gone ? off() : offs.push(off)))
   return () => {
     gone = true
     for (const off of offs) off()

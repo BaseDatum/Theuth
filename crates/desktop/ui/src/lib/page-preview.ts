@@ -68,7 +68,8 @@ function start(e: PagePreviewRequested, finished: () => void): () => void {
   const api = useConnection.getState().api
   if (!api) return () => {}
   const client = clientKind()
-  void api.answer_page_preview(e.id, { kind: 'started', client }).catch(() => {})
+  // The request's session routes the answer to its owner when this engine is a front door (209 P3).
+  void api.answer_page_preview(e.id, { kind: 'started', client }, e.session).catch(() => {})
 
   const appearance: Appearance = e.appearance ?? (document.documentElement.classList.contains('dark') ? 'dark' : 'light')
   const theme = pageThemeFor(appearance)
@@ -95,7 +96,7 @@ function start(e: PagePreviewRequested, finished: () => void): () => void {
   const finish = (a: PagePreviewAnswer) => {
     if (over) return
     teardown()
-    void api.answer_page_preview(e.id, a).catch(() => {})
+    void api.answer_page_preview(e.id, a, e.session).catch(() => {})
   }
   const schedule = () => {
     window.clearTimeout(timer)

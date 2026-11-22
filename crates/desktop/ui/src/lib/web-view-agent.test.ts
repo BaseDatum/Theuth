@@ -43,14 +43,17 @@ vi.mock('@/lib/web-view-native', () => ({
 }))
 const engine = vi.hoisted(() => ({
   answers: [] as [string, WebViewCallAnswer][],
+  /** The `session` each answer carried (routing to the session's owner). */
+  sessions: [] as (string | undefined)[],
   supports: true,
   /** What the engine answers a claim: `false` when another client claimed first. */
   wins: true,
   api: null as null | object,
 }))
 engine.api = {
-  answer_web_view_call: vi.fn(async (id: string, a: WebViewCallAnswer) => {
+  answer_web_view_call: vi.fn(async (id: string, a: WebViewCallAnswer, session?: string) => {
     engine.answers.push([id, a])
+    engine.sessions.push(session)
     return a.kind === 'claimed' ? engine.wins : true
   }),
 }
@@ -82,6 +85,7 @@ const request = (over: Partial<WebViewCallRequested> = {}): WebViewCallRequested
   type: 'WebViewCallRequested',
   id: `call-${++seq}`,
   session: 's1',
+  delegated: false,
   view: TILE,
   op: 'script',
   args: { world: 'isolated', source: 'return cmd', arguments: { cmd: 'read', params: {} }, timeout_ms: 1000 },
@@ -113,6 +117,7 @@ beforeEach(() => {
   shell.native = true
   shell.calls = []
   engine.answers = []
+  engine.sessions = []
   engine.supports = true
   engine.wins = true
   storage.clear()
@@ -144,6 +149,8 @@ test('a call for a tile this window holds is claimed at once, run in the shell o
     [e.id, { kind: 'done', result: { value: 1 } }],
   ])
   expect(useTileAgent.getState().tiles[TILE]).toMatchObject({ calls: [], endedAt: Date.now() })
+  // Both answers name the asking session, so a front door routes them to its owner.
+  expect(engine.sessions).toEqual(['s1', 's1'])
 })
 
 test('a lost claim (another device showing the same tile claimed first) runs nothing and shows no bar', async () => {
@@ -185,8 +192,8 @@ test('a window claims only tiles it holds: not another tile, not one popped out 
   shell.closed!({ label: `web-${TILE}` })
   events.requested!(request())
   await flush()
-  // Nothing claimed or run; only the call the pop-out held fails, once its view is gone.
-  expect(engine.answers).toEqual([[popped.id, { kind: 'failed', reason: WINDOW_CLOSED }]])
+  // Nothing claimed or run: the pop-out window holds it and answers for itself.
+  expect(engine.answers).toEqual([])
   expect(shell.calls).toEqual([])
 })
 
@@ -259,7 +266,7 @@ test('a window claims only for the session that opened the tile, unless the engi
   events.requested!(other)
   await flush()
   expect(engine.answers).toEqual([])
-  const delegated = { ...request({ session: 's2' }), delegated: true }
+  const delegated = request({ session: 's2', delegated: true })
   events.requested!(delegated)
   await flush()
   expect(engine.answers[0]).toEqual([delegated.id, { kind: 'claimed', client: 'iPad-abc123' }])
@@ -272,7 +279,7 @@ test('a window claims only for the session that opened the tile, unless the engi
   expect(engine.answers.filter(([id]) => id === popped.id).map(([, a]) => a.kind)).toEqual(['claimed'])
 })
 
-test('a window going away fails the calls it still runs; the main window fails those of a closed pop-out', async () => {
+test('a window going away fails the calls it still runs (the engine takes them from the claiming connection only)', async () => {
   const e = request()
   events.requested!(e)
   await flush()
@@ -289,22 +296,6 @@ test('a window going away fails the calls it still runs; the main window fails t
   stop()
   expect(engine.answers.at(-1)).toEqual([f.id, { kind: 'failed', reason: WINDOW_CLOSED }])
   stop = startWebViewAgent()
-
-  // The main window: a pop-out held the tile when the call came; its window closing destroys the view.
-  shell.held.clear()
-  useWebViews.getState().open({ id: TILE, session: 's1', url: 'https://example.com/', title: 'Example' })
-  useWebViews.getState().patch(TILE, { popped: true })
-  const g = request()
-  events.requested!(g)
-  const resolved = request()
-  events.requested!(resolved)
-  await flush()
-  events.resolved!({ type: 'WebViewCallResolved', id: resolved.id })
-  expect(engine.answers.filter(([id]) => id === g.id || id === resolved.id)).toEqual([])
-  shell.closed!({ label: 'web-fedcba9876543210' })
-  expect(engine.answers.filter(([id]) => id === g.id)).toEqual([])
-  shell.closed!({ label: `web-${TILE}` })
-  expect(engine.answers.filter(([id]) => id === g.id || id === resolved.id)).toEqual([[g.id, { kind: 'failed', reason: WINDOW_CLOSED }]])
 })
 
 test('the engine resolving a call ends it here; its late result is not answered', async () => {
