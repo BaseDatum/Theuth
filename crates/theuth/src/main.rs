@@ -2020,6 +2020,7 @@ fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::
         a2a::rpc_module(server.clone()),
         app::rpc_module(server.clone()),
         artifact::rpc_module(server.clone()),
+        browser::rpc_module(server.clone()),
         document::rpc_module(server.clone()),
         knowledge::rpc_module(server.clone()),
         link::rpc_module(server.clone()),

@@ -2669,11 +2669,13 @@ dependencies = [
  "js-runtime",
  "jsonrpsee",
  "kameo",
+ "lol_html",
  "obscura-js",
  "obscura-mcp",
  "parking_lot",
  "reqwest 0.13.5",
  "rpc-core",
+ "rpc-core-macros",
  "runtime",
  "schemars 1.2.3",
  "secrets",
@@ -2692,6 +2694,7 @@ dependencies = [
  "web",
  "webprofile",
  "wire",
+ "zeroize",
 ]
 
 [[package]]

@@ -108,6 +108,18 @@ async fn legacy_event_families() {
     family::<document::SourceEvent>(&rt, &mut stream, "document.sources").await;
     family::<agent::ask::NotebookAsk>(&rt, &mut stream, "agent.notebook-ask").await;
     family::<browser::BrowserEvent>(&rt, &mut stream, "browser.events").await;
+    family::<browser::show_element::ElementFormRequested>(
+        &rt,
+        &mut stream,
+        "browser.element-form-requested",
+    )
+    .await;
+    family::<browser::show_element::ElementFormResolved>(
+        &rt,
+        &mut stream,
+        "browser.element-form-resolved",
+    )
+    .await;
     family::<link::LinkEvent>(&rt, &mut stream, "link.events").await;
     family::<nodes::NodeEvent>(&rt, &mut stream, "nodes.events").await;
     family::<schedule::ScheduleEvent>(&rt, &mut stream, "schedule.events").await;

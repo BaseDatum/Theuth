@@ -502,6 +502,52 @@ async fn run(rt: &Runtime, session: SessionId, view: &str, delegated: bool, op: 
     }
 }
 
+/// Agent command `cmd` with `params` on tile `view` for `session`, its JSON result as the script
+/// returned it (209 P5: `serialize`, `fill_form`, `location`), or the reason it did not run. The
+/// address the answer named is remembered like [`call`]'s.
+pub(crate) async fn agent_json(
+    rt: &Runtime,
+    session: SessionId,
+    view: &str,
+    delegated: bool,
+    cmd: &'static str,
+    params: Value,
+) -> Result<Value, String> {
+    if is_stopped(view) {
+        return Err(stopped_text(view));
+    }
+    let op = Op::Agent {
+        cmd,
+        params,
+        timeout_ms: SCRIPT_MS,
+    };
+    let Some((name, args, work)) = op.request() else {
+        unreachable!("an agent op always has a request")
+    };
+    match webview::call(rt, session, view, delegated, name, args, work).await {
+        CallOutcome::Done { result, .. } => {
+            let url = result["url"].as_str().filter(|u| !u.is_empty());
+            seen(session, view, url.map(str::to_owned), None);
+            Ok(result)
+        }
+        CallOutcome::NoClient => Err(format!(
+            "no client holds tile web:{view} (the user may have closed it); {BACK_HOME}"
+        )),
+        CallOutcome::TimedOut => Err(format!(
+            "tile web:{view} did not finish `{cmd}` within {} s",
+            work.max(webview::OP_WAIT).as_secs()
+        )),
+        CallOutcome::Failed(reason) if reason == webview::STOPPED => {
+            STOPPED.lock().insert(
+                view.to_owned(),
+                tokio::time::Instant::now() + webview::STOP_HOLD,
+            );
+            Err(stopped_text(view))
+        }
+        CallOutcome::Failed(reason) => Err(reason),
+    }
+}
+
 /// A done op's result as the text obscura would have answered (209 §4.7: our format, close to
 /// obscura's).
 #[must_use]

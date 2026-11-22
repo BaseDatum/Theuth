@@ -9,6 +9,8 @@
 // What the user typed never leaves the page: a listing shows `value=` only for fields this agent
 // set, `value=[set]` for any other non-empty one, nothing for password and credential fields,
 // and the page text skips form controls and editable regions.
+// 209 P5: `serialize` and `fill_form` lift one element into the chat card and type the user's card
+// values back into it by index (`data-theuth-field`); neither returns a value of any field.
 // The engine replaces the VERSION line with the hash of this source (crates/browser/src/tile.rs).
 
 const VERSION = 1;
@@ -504,6 +506,269 @@ if (!agent || agent.version !== VERSION) {
         .filter((el) => !el.disabled && visible(el));
     }
 
+    // ---- 209 P5: one element of the page as a card in the chat ---------------------------
+    // `serialize` clones an element into an inert snapshot (computed styles inlined, no script,
+    // no address, no value) and stamps its controls `data-theuth-field="<n>"` in the live page;
+    // `fill_form` sets the values the user typed into the card by those indices and submits.
+    const FORM_ID = /^[0-9a-f-]{36}$/;
+    const MAX_SNAPSHOT = 256 * 1024;
+    // Dropped with their content: they run, load or embed something.
+    const DROPPED = new Set(['SCRIPT', 'NOSCRIPT', 'STYLE', 'LINK', 'META', 'BASE', 'HEAD', 'TITLE', 'TEMPLATE', 'IFRAME', 'FRAME', 'FRAMESET', 'OBJECT', 'EMBED', 'APPLET', 'CANVAS', 'VIDEO', 'AUDIO', 'SOURCE', 'TRACK', 'PORTAL', 'MATH', 'DIALOG']);
+    const VOID = new Set(['INPUT', 'BR', 'HR', 'IMG', 'WBR', 'COL', 'AREA']);
+    const SUBMIT = 'button:not([type]):not([disabled]), button[type=submit]:not([disabled]), input[type=submit]:not([disabled]), input[type=image]:not([disabled])';
+    // Inherited properties are written only where they differ from the parent's.
+    const INHERITED = ['color', 'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing', 'text-align', 'text-transform', 'text-indent', 'white-space', 'visibility', 'cursor', 'list-style-type'];
+    const OWN = ['display', 'position', 'top', 'right', 'bottom', 'left', 'z-index', 'float', 'clear', 'box-sizing',
+      'width', 'height', 'min-width', 'min-height', 'max-width', 'max-height',
+      'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+      'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+      'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+      'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+      'border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius',
+      'background-color', 'background-image', 'background-size', 'background-position', 'background-repeat',
+      'text-decoration-line', 'vertical-align', 'opacity', 'box-shadow', 'outline-width', 'outline-style', 'outline-color',
+      'flex-direction', 'flex-wrap', 'justify-content', 'align-items', 'align-content', 'align-self', 'flex-grow', 'flex-shrink', 'flex-basis', 'order',
+      'row-gap', 'column-gap', 'grid-template-columns', 'grid-template-rows', 'grid-column', 'grid-row',
+      'overflow-x', 'overflow-y', 'appearance', 'transform'];
+
+    const escText = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escAttr = (s) => escText(s).replace(/"/g, '&quot;');
+
+    // A value that loads nothing: a `url()` other than a `data:image/` one drops the property.
+    function inert(v) {
+      const all = String(v).toLowerCase().match(/url\(\s*['"]?[^'")\s]*/g) || [];
+      return all.every((u) => /url\(\s*['"]?data:image\//.test(u)) && !/image-set\(|image\(|\\/.test(String(v).toLowerCase());
+    }
+
+    // Computed styles of fresh elements: inside a closed shadow root under an `all: initial` host
+    // the page's own rules do not reach them, so they show the browser's defaults.
+    function defaultsOf() {
+      const cache = new Map();
+      let host = null;
+      let place = null;
+      try {
+        host = document.createElement('div');
+        host.setAttribute('style', 'all: initial; position: absolute; width: 0; height: 0; overflow: hidden; visibility: hidden');
+        place = typeof host.attachShadow === 'function' ? host.attachShadow({ mode: 'closed' }) : host;
+        (document.body || document.documentElement).appendChild(host);
+      } catch (_) {
+        host = null;
+      }
+      return {
+        get(el) {
+          const tag = el.tagName;
+          const type = tag === 'INPUT' ? (el.type || 'text').toLowerCase() : '';
+          const key = tag + ' ' + type;
+          if (cache.has(key)) return cache.get(key);
+          const out = {};
+          if (host) {
+            try {
+              const probe = document.createElement(tag.toLowerCase());
+              if (type) probe.setAttribute('type', type);
+              place.appendChild(probe);
+              const s = getComputedStyle(probe);
+              for (const p of OWN) out[p] = s.getPropertyValue(p);
+              for (const p of INHERITED) out[p] = s.getPropertyValue(p);
+              probe.remove();
+            } catch (_) {
+              // no defaults: every property counts as set
+            }
+          }
+          cache.set(key, out);
+          return out;
+        },
+        done() {
+          if (host) host.remove();
+        },
+      };
+    }
+
+    // `style="…"` of `el`: its own properties that differ from the default of its tag, and the
+    // inherited ones that differ from what its parent passes down.
+    function styleOf(el, defaults, inheritedFrom) {
+      const s = style(el);
+      const mine = {};
+      if (!s || typeof s.getPropertyValue !== 'function') return { css: '', inherited: inheritedFrom };
+      const d = defaults.get(el);
+      const parts = [];
+      for (const p of OWN) {
+        const v = s.getPropertyValue(p);
+        if (v && v !== d[p] && inert(v)) parts.push(p + ': ' + v);
+      }
+      for (const p of INHERITED) {
+        const v = s.getPropertyValue(p);
+        mine[p] = v;
+        const base = inheritedFrom ? inheritedFrom[p] : d[p];
+        if (v && v !== base && inert(v)) parts.push(p + ': ' + v);
+      }
+      return { css: parts.join('; '), inherited: mine };
+    }
+
+    function box(el) {
+      let w = 0;
+      let h = 0;
+      try {
+        const r = el.getBoundingClientRect();
+        w = Math.round(r.width);
+        h = Math.round(r.height);
+      } catch (_) {
+        // no layout
+      }
+      return { w, h };
+    }
+
+    // An empty box the size of `el`: what a cross-origin image or an inline SVG becomes.
+    function emptyBox(el) {
+      const b = box(el);
+      return '<span style="display: inline-block; width: ' + b.w + 'px; height: ' + b.h + 'px"></span>';
+    }
+
+    // A same-origin image as a `data:` URI (PNG through a canvas), else '' (a box then).
+    function imageData(img) {
+      try {
+        const src = img.currentSrc || img.src || '';
+        if (/^data:image\/(png|jpeg|gif|webp);base64,/i.test(src)) return src;
+        if (new URL(src, location.href).origin !== location.origin) return '';
+        if (!img.complete || !img.naturalWidth) return '';
+        const b = box(img);
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.min(img.naturalWidth, (b.w || img.naturalWidth) * 2));
+        c.height = Math.max(1, Math.min(img.naturalHeight, (b.h || img.naturalHeight) * 2));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        return c.toDataURL('image/png');
+      } catch (_) {
+        return '';
+      }
+    }
+
+    function isSubmit(el) {
+      const t = (el.getAttribute('type') || '').toLowerCase();
+      if (el.tagName === 'BUTTON') return t === '' || t === 'submit';
+      return el.tagName === 'INPUT' && (t === 'submit' || t === 'image');
+    }
+
+    // A control the card fills (`isSubmit` ones are stamped too, to submit a form-less widget).
+    function fillable(el) {
+      if (el.tagName === 'SELECT' || el.tagName === 'TEXTAREA') return true;
+      if (el.tagName !== 'INPUT') return false;
+      return !['hidden', 'submit', 'image', 'button', 'reset', 'file'].includes((el.type || 'text').toLowerCase());
+    }
+
+    function kindOf(el) {
+      if (isSubmit(el)) return 'submit';
+      if (el.tagName === 'INPUT') return (el.type || 'text').toLowerCase();
+      return el.tagName.toLowerCase();
+    }
+
+    // The words the page shows for a field: never anything the user typed into it.
+    function fieldLabel(el) {
+      if (isSubmit(el)) {
+        const t = el.tagName === 'INPUT' ? el.value || el.alt || '' : el.textContent;
+        return clip(t || el.getAttribute('aria-label') || 'Submit', 80);
+      }
+      const aria = el.getAttribute('aria-label');
+      if (aria && aria.trim()) return clip(aria, 80);
+      if (el.labels && el.labels.length) {
+        const t = Array.from(el.labels).map((l) => l.textContent).join(' ');
+        if (t.trim()) return clip(t, 80);
+      }
+      const wrap = el.closest && el.closest('label');
+      if (wrap && wrap.textContent.trim()) return clip(wrap.textContent, 80);
+      return clip(el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('name') || '', 80);
+    }
+
+    function frameOrigin(f) {
+      try {
+        const o = new URL(f.getAttribute('src') || f.getAttribute('data') || '', location.href).origin;
+        return o && o !== 'null' ? o : 'an unknown origin';
+      } catch (_) {
+        return 'an unknown origin';
+      }
+    }
+
+    function byteLength(s) {
+      try {
+        return new TextEncoder().encode(s).length;
+      } catch (_) {
+        return unescape(encodeURIComponent(s)).length;
+      }
+    }
+
+    // The snapshot of `root` as an HTML string, plus the live controls it stamps (in order).
+    function snapshot(root) {
+      const defaults = defaultsOf();
+      const stamps = [];
+      const out = [];
+      const attrs = (el, extra) => {
+        let a = '';
+        for (const n of ['id', 'class', 'name', 'placeholder', 'autocomplete', 'for', 'alt']) {
+          const v = el.getAttribute(n);
+          if (v !== null && v !== '') a += ' ' + n + '="' + escAttr(v) + '"';
+        }
+        if (el.disabled) a += ' disabled';
+        return a + (extra || '');
+      };
+      const walk = (el, inherited, isRoot) => {
+        if (DROPPED.has(el.tagName)) return;
+        if (el.tagName === 'INPUT' && (el.type || '').toLowerCase() === 'hidden') return;
+        if (!isRoot && !shown(el)) return;
+        const tag = el.tagName.toLowerCase();
+        if (el.namespaceURI && el.namespaceURI !== 'http://www.w3.org/1999/xhtml') {
+          out.push(emptyBox(el));
+          return;
+        }
+        const st = styleOf(el, defaults, inherited);
+        const css = st.css ? ' style="' + escAttr(st.css) + '"' : '';
+        if (tag === 'img') {
+          const data = imageData(el);
+          out.push(data ? '<img src="' + escAttr(data) + '"' + attrs(el) + css + '>' : emptyBox(el));
+          return;
+        }
+        let stamp = '';
+        if ((fillable(el) || isSubmit(el)) && visible(el)) {
+          stamp = ' data-theuth-field="' + stamps.length + '"';
+          stamps.push(el);
+        }
+        if (tag === 'input') {
+          const type = (el.type || 'text').toLowerCase();
+          if (type === 'submit' || type === 'image' || type === 'button' || type === 'reset') {
+            const t = type === 'submit' || type === 'image' ? 'submit' : 'button';
+            out.push('<button type="' + t + '"' + attrs(el, stamp) + css + '>' + escText(el.value || el.alt || 'Submit') + '</button>');
+            return;
+          }
+          const checked = (type === 'checkbox' || type === 'radio') && el.checked ? ' checked' : '';
+          out.push('<input type="' + escAttr(type) + '"' + attrs(el, stamp) + checked + css + '>');
+          return;
+        }
+        if (tag === 'option') {
+          out.push('<option' + attrs(el) + (el.selected ? ' selected' : '') + css + '>' + escText(el.text) + '</option>');
+          return;
+        }
+        if (tag === 'textarea') {
+          out.push('<textarea' + attrs(el, stamp) + css + '></textarea>');
+          return;
+        }
+        let type = '';
+        if (tag === 'button') type = ' type="' + (isSubmit(el) ? 'submit' : 'button') + '"';
+        out.push('<' + tag + type + attrs(el, stamp) + css + '>');
+        if (VOID.has(el.tagName)) return;
+        // An editable region holds the user's draft: its box, never its text.
+        if (!editableRegion(el)) {
+          for (let c = el.firstChild; c; c = c.nextSibling) {
+            if (c.nodeType === 3) out.push(escText(c.nodeValue));
+            else if (c.nodeType === 1) walk(c, st.inherited, false);
+          }
+        }
+        out.push('</' + tag + '>');
+      };
+      try {
+        walk(root, null, true);
+      } finally {
+        defaults.done();
+      }
+      return { html: out.join(''), stamps };
+    }
+
     // ---- commands -----------------------------------------------------------------------
     const commands = {
       async location() {
@@ -711,16 +976,107 @@ if (!agent || agent.version !== VERSION) {
           await sleep(250);
         }
       },
+
+      // 209 P5: `root` (ref or selector) as an inert snapshot for the chat card. Refuses a
+      // frame, an empty element and a snapshot over 256 KiB without stamping anything.
+      async serialize(p) {
+        const root = resolve(p);
+        const id = String(p.form || '');
+        if (!FORM_ID.test(id)) throw new Error('bad form id');
+        const frame = /^(IFRAME|FRAME|OBJECT|EMBED)$/.test(root.tagName) ? root : root.querySelector('iframe, frame, object, embed');
+        if (frame) return { refused: 'frame', origin: frameOrigin(frame) };
+        const snap = snapshot(root);
+        if (!snap.stamps.some(fillable)) return { refused: 'empty' };
+        const bytes = byteLength(snap.html);
+        if (bytes > MAX_SNAPSHOT) return { refused: 'size', kib: Math.ceil(bytes / 1024) };
+        for (const el of document.querySelectorAll('[data-theuth-field]')) el.removeAttribute('data-theuth-field');
+        for (const el of document.querySelectorAll('[data-theuth-form]')) el.removeAttribute('data-theuth-form');
+        snap.stamps.forEach((el, i) => el.setAttribute('data-theuth-field', String(i)));
+        root.setAttribute('data-theuth-form', id);
+        const fields = snap.stamps.map((el, i) => ({
+          index: i,
+          kind: kindOf(el),
+          name: clip(el.getAttribute('name') || '', 120),
+          label: fieldLabel(el),
+          masked: secret(el),
+        }));
+        const b = box(root);
+        return { html: snap.html, width: b.w, height: b.h, url: location.href, title: document.title, fields, doc: DOC };
+      },
+
+      // 209 P5: the user's values (`{ "<index>": string }`) into the controls `serialize`
+      // stamped, then submit; `{ stale }` and nothing typed when the page is not the one shown.
+      async fill_form(p) {
+        const id = String(p.form || '');
+        if (!FORM_ID.test(id)) throw new Error('bad form id');
+        const bare = (u) => String(u || '').split('#')[0];
+        if (bare(location.href) !== bare(p.url)) return { stale: 'address' };
+        const root = document.querySelector('[data-theuth-form="' + id + '"]');
+        if (!root) return { stale: 'form' };
+        const stamped = (root.hasAttribute('data-theuth-field') ? [root] : []).concat(Array.from(root.querySelectorAll('[data-theuth-field]')));
+        if (stamped.length !== p.count) return { stale: 'fields' };
+        const at = new Map(stamped.map((el) => [el.getAttribute('data-theuth-field'), el]));
+        const values = p.values || {};
+        const keys = Object.keys(values).filter((k) => /^\d+$/.test(k) && at.has(k)).sort((a, b) => a - b);
+        // Unchecked first, so a radio group ends on the one the user chose.
+        const order = keys.filter((k) => values[k] === 'false').concat(keys.filter((k) => values[k] !== 'false'));
+        const filled = [];
+        for (const k of order) {
+          const el = at.get(k);
+          const v = String(values[k] == null ? '' : values[k]);
+          if (el.disabled || isSubmit(el)) continue;
+          const type = (el.type || '').toLowerCase();
+          if (el.tagName === 'SELECT') {
+            const opts = Array.from(el.options);
+            const opt = opts.find((o) => o.value === v) || opts.find((o) => o.text.trim() === v.trim());
+            if (!opt) continue;
+            setNativeValue(el, opt.value);
+            opt.selected = true;
+          } else if (el.tagName === 'INPUT' && (type === 'checkbox' || type === 'radio')) {
+            const want = v === 'true';
+            if (el.checked === want) {
+              filled.push(Number(k));
+              continue;
+            }
+            el.checked = want;
+          } else if (editable(el) === 'value' && !el.readOnly) {
+            focus(el);
+            setNativeValue(el, v);
+          } else {
+            continue;
+          }
+          fire(el, 'input', { cancelable: false });
+          fire(el, 'change', { cancelable: false });
+          filled.push(Number(k));
+        }
+        filled.sort((a, b) => a - b);
+        const form = root.tagName === 'FORM' ? root : root.querySelector('form') || (root.closest && root.closest('form'));
+        return leaving(() => {
+          let submitted = '';
+          const button = form && form.querySelector(SUBMIT);
+          if (button) {
+            button.click();
+            submitted = 'button';
+          } else if (form && typeof form.requestSubmit === 'function') {
+            form.requestSubmit();
+            submitted = 'form';
+          } else {
+            const own = stamped.find((el) => isSubmit(el) && !el.disabled);
+            if (own) {
+              own.click();
+              submitted = 'field';
+            }
+          }
+          return { filled, submitted };
+        });
+      },
     };
 
     function scrollTo0(x, y) {
       try { window.scrollTo(x, y); } catch (_) { /* no layout */ }
     }
 
-    // Helpers for later commands (209 P5: serialise a form, fill fields by index).
-    const helpers = { resolve, describe, accessibleName, role, visible, secret, refOf, fire, setNativeValue, focus, scrollTo, editable, settled, markdown, bodyText, listing, formish };
-
-    return { version: VERSION, commands, helpers };
+    return { version: VERSION, commands };
   })();
   globalThis.__theuthAgent = agent;
 }
