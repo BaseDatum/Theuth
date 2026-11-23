@@ -36,7 +36,7 @@ import {
   useSessions,
 } from "@/store/sessions";
 import { type ArtifactProps, showArtifact } from "@/components/tiles/open";
-import { ArtifactMenu, PopoutButton, RevealButton } from "./ArtifactCard";
+import { ArtifactMenu, PopoutButton, RevealButton, artifactPopout } from "./ArtifactCard";
 
 const MIN_W = 360;
 const DEFAULT_W = 640;
@@ -73,11 +73,13 @@ function lineageDraft(
 }
 
 /** What `ArtifactContent` hands its container: the header's title and meta line, its controls (version, reveal,
- * pop-out, ⋯ menu) and the body. The sheet and the tile (`tiles/kinds/artifact`) each draw their own header. */
+ * pop-out unless `popOutApart`, ⋯ menu), Open in new window as `popOut` (absent where it cannot work) and the body.
+ * The sheet and the tile (`tiles/kinds/artifact`) each draw their own header. */
 export type ArtifactParts = {
   title: string;
   meta: string;
   controls: ReactNode;
+  popOut?: () => void;
   body: ReactNode;
 };
 
@@ -91,10 +93,13 @@ export type ArtifactParts = {
 export function ArtifactContent({
   session,
   callId,
+  popOutApart = false,
   children,
 }: {
   session: string;
   callId: string;
+  /** The container draws `popOut` in a slot of its own (the tile header's): `controls` leave it out. */
+  popOutApart?: boolean;
   children: (parts: ArtifactParts | null) => ReactNode;
 }) {
   const artifacts = useSessionField(session, "artifacts");
@@ -159,7 +164,7 @@ export function ArtifactContent({
         </Select>
       )}
       <RevealButton artifact={shown} />
-      <PopoutButton artifact={shown} />
+      {!popOutApart && <PopoutButton artifact={shown} />}
       <ArtifactMenu artifact={shown} />
     </>
   );
@@ -177,7 +182,7 @@ export function ArtifactContent({
       className="min-h-0 flex-1 overflow-auto"
     />
   ) : null;
-  return children({ title, meta, controls, body });
+  return children({ title, meta, controls, popOut: shown && artifactPopout(shown), body });
 }
 
 /** The sheet's header over the body. */

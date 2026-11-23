@@ -206,7 +206,8 @@ export function Header({
   session: string | null
   first?: boolean
   onClose?(): void
-  /** What "Open in new window" opens; the session's chat unless the host is another view of it (76: `talk`). */
+  /** What "Open in new window" opens; the session's chat unless the host is another view of it (76: `talk`) or there is
+   * no session yet (a draft: a New chat window). */
   popout?: PopoutTarget
 }) {
   const discovery = useConnection(s => s.discovery)
@@ -392,8 +393,8 @@ export function Header({
         </HeaderMenu>
       ),
     popout: (mode) => {
-      if (!session) return null
-      const target = popout ?? { kind: 'chat', session }
+      const target = popout ?? (session ? ({ kind: 'chat', session } as const) : null)
+      if (!target) return null
       return mode === 'row' ? (
         <MenuRow icon={AppWindow} label="Open in new window" onSelect={() => void openPopout(target)} />
       ) : (

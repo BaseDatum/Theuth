@@ -1,5 +1,5 @@
 import { AppWindow, X } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { createContext, type ReactNode, useContext } from 'react'
 import { SidebarToggle } from '@/components/chat/SidebarToggle'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
@@ -8,10 +8,13 @@ import { isMacDesktop } from '@/lib/hotkeys'
 import { canPopout, isPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 
+/** True under `PoppedTile`: the tile is its window's whole content (`routes/tile.$kind.$session`). */
+export const TileAlone = createContext(false)
+
 /**
  * Every generic tile's chrome: the 52 px header (the sidebar toggle and the traffic-light inset when `first`, like
  * `Header` and `WebFrame`; the title and its `meta` line; the kind's own `controls`; Open in new window when `popOut`
- * is given and this build has windows; Close) over the kind's body. The header is the tile's drag handle
+ * is given and this build has windows; Close — the last two not when the tile is its window alone, `TileAlone`) over the kind's body. The header is the tile's drag handle
  * (`usePaneDrag`); it moves the window instead only while the tree is the single chat, which a tile never is.
  */
 export function TileFrame({
@@ -36,6 +39,9 @@ export function TileFrame({
 }) {
   const { open, isMobile } = useSidebar()
   const mac = isMacDesktop()
+  // A tile alone in its own window (`PoppedTile`): no pop-out of itself, no Close (the OS title bar closes it). A tile
+  // beside a popped chat keeps both.
+  const popped = useContext(TileAlone)
   const nav = first && (!open || isMobile) && !isPopout()
   const drag = usePaneDrag(title)
   const region = (mac && drag.region) || undefined
@@ -59,14 +65,16 @@ export function TileFrame({
           )}
         </div>
         {controls}
-        {popOut && canPopout() && (
+        {popOut && canPopout() && !popped && (
           <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Open in new window" onClick={popOut}>
             <AppWindow className="size-5" />
           </Button>
         )}
-        <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Close pane" onClick={onClose}>
-          <X className="size-5" />
-        </Button>
+        {!popped && (
+          <Button variant="ghost" size="icon" className="rounded-lg text-fg-secondary" aria-label="Close pane" onClick={onClose}>
+            <X className="size-5" />
+          </Button>
+        )}
       </header>
       <div className={cn('relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t', className)}>{children}</div>
     </div>

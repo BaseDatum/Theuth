@@ -2,9 +2,14 @@
 // over the chat import these without pulling a kind's body (a VNC client, xterm, the CodeMap) into their module graph.
 
 import type { Item } from '@/components/chat/Attachments'
-import { openTile, openTileOf, tileable } from '@/lib/tiles'
+import { openPopout } from '@/lib/popout'
+import { openTile, openTileOf, type Tile, tileable } from '@/lib/tiles'
 import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
 import { useSessions } from '@/store/sessions'
+
+/** A tile kind's Open in new window when it has no window of its own (`TileFrame`'s `popOut`): the tile alone in
+ * the generic tile window (`lib/popout.ts` kind `tile`), drawn by the same kind over the same props. */
+export const popOutTile = (tile: Tile) => (): void => void openPopout({ kind: 'tile', tile: tile.kind, session: tile.session, props: tile.props })
 
 /** The artifact (or app draft) the session's one artifact tile shows. */
 export type ArtifactProps = { callId: string }

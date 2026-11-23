@@ -49,7 +49,14 @@ export const jobTerminalTile: TileKind = {
   render: ({ tile, first, close }) => {
     const { session, job, label } = tile.props as JobTerminalProps
     return (
-      <TileFrame first={first} onClose={close} title={`Terminal · ${job}`} meta={label} className="gap-2 p-2">
+      <TileFrame
+        first={first}
+        onClose={close}
+        title={`Terminal · ${job}`}
+        meta={label}
+        popOut={() => void openPopout({ kind: 'pty', session, job })}
+        className="gap-2 p-2"
+      >
         <Terminal session={session} job={job} label={label} />
       </TileFrame>
     )

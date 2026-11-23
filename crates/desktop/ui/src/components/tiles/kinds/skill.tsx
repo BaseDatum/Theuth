@@ -1,5 +1,5 @@
 import { SkillBody } from '@/components/library/Skills'
-import type { SkillProps } from '@/components/tiles/open'
+import { popOutTile, type SkillProps } from '@/components/tiles/open'
 import { TileFrame } from '@/components/tiles/TileFrame'
 import type { TileKind } from '@/components/tiles/types'
 
@@ -9,7 +9,7 @@ export const skillTile: TileKind = {
   render: ({ tile, first, close }) => {
     const { name } = tile.props as SkillProps
     return (
-      <TileFrame title={name} first={first} onClose={close} className="pt-4">
+      <TileFrame title={name} first={first} onClose={close} popOut={popOutTile(tile)} className="pt-4">
         <SkillBody name={name} />
       </TileFrame>
     )

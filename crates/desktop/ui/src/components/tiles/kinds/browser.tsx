@@ -1,5 +1,6 @@
 import { BrowserScreen } from '@/components/chat/BrowserLive'
 import { browserRequirements } from '@/components/chat/requirements'
+import { popOutTile } from '@/components/tiles/open'
 import { TileFrame } from '@/components/tiles/TileFrame'
 import type { TileKind } from '@/components/tiles/types'
 import { Capability } from '@/rpc/capabilities'
@@ -8,7 +9,7 @@ import { Capability } from '@/rpc/capabilities'
 export const browserTile: TileKind = {
   title: () => 'Live browser',
   render: ({ tile, first, close }) => (
-    <TileFrame first={first} onClose={close} title="Live browser" className="items-center justify-center bg-background p-2">
+    <TileFrame first={first} onClose={close} title="Live browser" popOut={popOutTile(tile)} className="items-center justify-center bg-background p-2">
       <Capability required={browserRequirements}>
         <BrowserScreen session={tile.session} fill />
       </Capability>

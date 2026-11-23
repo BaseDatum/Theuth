@@ -1,5 +1,7 @@
-import { closeTile, useTiles } from '@/lib/tiles'
-import { TileFrame } from './TileFrame'
+import { useEffect, useMemo } from 'react'
+import { closePopout } from '@/lib/popout'
+import { closeTile, type Tile, tileId, useTiles } from '@/lib/tiles'
+import { TileAlone, TileFrame } from './TileFrame'
 import type { TileKind } from './types'
 import { artifactTile } from './kinds/artifact'
 import { browserTile } from './kinds/browser'
@@ -50,4 +52,25 @@ export function TileLeaf({ id, first }: { id: string; first: boolean }) {
     )
   }
   return <>{kind.render({ tile, first, close })}</>
+}
+
+/** A tile alone in its own window (`routes/tile.$kind.$session`): the kind's renderer over `props`, outside the tiles
+ * store (the main window owns that); its Close closes the window. `props` is `undefined` when they are gone. */
+export function PoppedTile({ kind: name, session, props }: { kind: string; session: string; props: unknown }) {
+  const kind = TILE_KINDS[name]
+  const tile = useMemo<Tile>(() => ({ id: tileId(name, session), kind: name, session, props }), [name, session, props])
+  const title = kind && props !== undefined ? kind.title(tile) : 'Closed'
+  useEffect(() => {
+    document.title = title
+  }, [title])
+  if (!kind || props === undefined) {
+    return (
+      <TileAlone value>
+        <TileFrame title="Closed" first onClose={closePopout}>
+          <div className="flex flex-1 items-center justify-center text-sm text-fg-secondary">This tile is no longer available.</div>
+        </TileFrame>
+      </TileAlone>
+    )
+  }
+  return <TileAlone value>{kind.render({ tile, first: true, close: closePopout })}</TileAlone>
 }

@@ -1,6 +1,6 @@
 import { Original } from '@/components/chat/Attachments'
 import { RemoveButton } from '@/components/chat/MessageAssistant'
-import type { MediaProps } from '@/components/tiles/open'
+import { type MediaProps, popOutTile } from '@/components/tiles/open'
 import { TileFrame } from '@/components/tiles/TileFrame'
 import type { TileKind, TileRender } from '@/components/tiles/types'
 import { privateOwner } from '@/lib/private'
@@ -15,6 +15,7 @@ function MediaTile({ tile, first, close }: TileRender) {
       onClose={close}
       title={item.name}
       meta={removed ? 'Removed from context · archive only' : undefined}
+      popOut={popOutTile(tile)}
       controls={session && item.occurrence && !removed && <RemoveButton session={session} target={item.occurrence.target} active={active} />}
       className="items-center justify-center bg-background p-4"
     >

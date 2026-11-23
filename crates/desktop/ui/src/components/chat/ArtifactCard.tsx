@@ -293,6 +293,13 @@ export function RevealButton({ artifact: a }: { artifact: Artifact }) {
 }
 
 /** Open the artifact in its own window (`lib/popout.ts`); `size` matches the toolbar it sits in. Nothing where there are no second windows. */
+/** Open `a` in its own window, or `undefined` where that cannot work: no second window here (iOS), or a private
+ * tree's artifact (a second window is another peer: its bytes are served to their owner only, 51 §4.2). */
+export function artifactPopout(a: Artifact): (() => void) | undefined {
+  if (!canPopout() || isPrivate(a.session)) return undefined;
+  return () => void openPopout({ kind: "artifact", callId: a.call_id });
+}
+
 export function PopoutButton({
   artifact: a,
   className,
@@ -300,8 +307,8 @@ export function PopoutButton({
   artifact: Artifact;
   className?: string;
 }) {
-  // A second window is another peer: a private tree's bytes are served to its owner only (51 §4.2).
-  if (!canPopout() || isPrivate(a.session)) return null;
+  const pop = artifactPopout(a);
+  if (!pop) return null;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -314,7 +321,7 @@ export function PopoutButton({
             // Inside a card or a list row that is itself clickable.
             e.preventDefault();
             e.stopPropagation();
-            void openPopout({ kind: "artifact", callId: a.call_id });
+            pop();
           }}
         >
           <AppWindow className="size-4" />

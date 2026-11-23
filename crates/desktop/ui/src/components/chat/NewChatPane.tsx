@@ -22,6 +22,7 @@ import { useDraftTarget, useDrafts } from '@/lib/drafts'
 import { draftProject, newDraft, usePanes } from '@/lib/panes'
 import { promoteDraft } from '@/lib/tiles'
 import { useCompactorLabel } from '@/lib/endless'
+import { newChatPopout } from '@/lib/popout'
 import { VIEW, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
@@ -238,6 +239,8 @@ export function NewChat({
   onUncreated?(session: string): void
 }) {
   const canQuery2 = useSupported(endlessRequirements)
+  // The `/new` route's own window key (a draft pane keys on its draft id): one New chat window per page shown.
+  const [mountKey] = useState(() => crypto.randomUUID())
   const privateSupported = useSupported(privateRequirements)
   // 137 §11.3: the ∞ switch starts at `agent.endless.default_chat` and is remembered per draft only.
   const api = useApi()
@@ -256,7 +259,7 @@ export function NewChat({
   const draft: DraftCreate = { private: priv, project: project?.trim() || null, endless: endlessOn }
   return (
     <>
-      <Header session={null} first={first} onClose={onClose} />
+      <Header session={null} first={first} onClose={onClose} popout={newChatPopout(pane ?? mountKey, preset)} />
       <LinkBanner />
       <MachineBar priv={priv} />
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">

@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { type PopoutTarget, artifactsRail, canPopout, noteOpenMode, popoutLabel, popoutMeeting, popoutSession, popoutSize, popoutTarget, popoutUrl, soloPopout } from './popout'
+import { type PopoutTarget, TILE_STASH, artifactsRail, canPopout, noteOpenMode, popoutLabel, popoutMeeting, popoutSession, popoutSize, popoutTarget, popoutUrl, soloPopout, stashTileProps, tileProps, newChatPopout } from './popout'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -237,4 +237,69 @@ test('212: a show_diff diff pops out at /diff/$session with its spec JSON in the
   expect(popoutTarget('/diff/s1?spec=%7Bnope&window=x')).toBeNull()
   expect(popoutTarget('/diff/s1?spec=%5B%5D&window=x')).toBeNull()
   expect(popoutSession(t)).toBe('01J8ZK-abc')
+})
+
+/** A localStorage stand-in shared by "both windows". */
+function memoryStorage(): Storage & { keys(): string[] } {
+  const m = new Map<string, string>()
+  return {
+    get length() {
+      return m.size
+    },
+    keys: () => [...m.keys()],
+    clear: () => m.clear(),
+    getItem: (k) => m.get(k) ?? null,
+    key: (i) => [...m.keys()][i] ?? null,
+    removeItem: (k) => void m.delete(k),
+    setItem: (k, v) => void m.set(k, String(v)),
+  }
+}
+
+test('a generic tile pops out at /tile/$kind/$session with its props JSON in the query; the label keys on a hash of them', () => {
+  const t = { kind: 'tile', tile: 'media', session: '01J8-s', props: { item: { name: 'chart.png', path: '/tmp/a b.png', image: true }, active: true } } satisfies PopoutTarget
+  const label = popoutLabel(t)
+  expect(label).toMatch(/^popout-tile-media-01J8-s-[0-9a-f]{8}$/)
+  expect(popoutUrl(t)).toBe(`/tile/media/01J8-s?props=${encodeURIComponent(JSON.stringify(t.props))}&window=${label}`)
+  expect(popoutTarget(popoutUrl(t))).toEqual(t)
+  expect(popoutTarget(`tauri://localhost${popoutUrl(t)}`)).toEqual(t)
+  // Other props are another window; the same again focuses the open one. Props-less kinds (`jobs`) round-trip `{}`.
+  expect(popoutLabel({ ...t, props: { ...t.props, active: false } })).not.toBe(label)
+  const jobs = { kind: 'tile', tile: 'jobs', session: 's 1', props: {} } as const
+  expect(popoutTarget(popoutUrl(jobs))).toEqual(jobs)
+  expect(popoutTarget('/tile/media?window=x')).toBeNull()
+  // The owning session closes it; a draft's tile has no session yet.
+  expect(popoutSession(t)).toBe('01J8-s')
+  expect(popoutSession({ kind: 'tile', tile: 'memory', session: 'draft:abc', props: {} })).toBeNull()
+  expect(soloPopout(t)).toBe(true)
+})
+
+test('tile props too long for a URL ride in localStorage: the URL names a stash, the popped window reads it back', () => {
+  const store = memoryStorage()
+  vi.stubGlobal('localStorage', store)
+  const t = { kind: 'tile', tile: 'diagram', session: 's1', props: { svg: `<svg>${'x'.repeat(10_000)}</svg>`, name: 'n', label: 'Flow' } } satisfies PopoutTarget
+  const url = popoutUrl(t)
+  expect(url).toMatch(/^\/tile\/diagram\/s1\?stash=p[0-9a-f]{8}&window=popout-tile-diagram-s1-[0-9a-f]{8}$/)
+  // Not written yet: the window finds nothing (its route says the tile is gone).
+  expect(tileProps({ stash: new URL(url, 'http://x').searchParams.get('stash') })).toBeUndefined()
+  stashTileProps(t, store)
+  expect(popoutTarget(url)).toEqual(t)
+  // The router may hand inline props as the parsed object, or the JSON string.
+  expect(tileProps({ props: { a: 1 } })).toEqual({ a: 1 })
+  expect(tileProps({ props: '{"a":1}' })).toEqual({ a: 1 })
+  // Short props are never stashed; old stashes are dropped as new ones come.
+  stashTileProps({ kind: 'tile', tile: 'jobs', session: 's1', props: {} }, store)
+  for (let i = 0; i < 40; i++) stashTileProps({ ...t, props: { ...t.props, label: `v${i}` } }, store)
+  const kept = store.keys().filter((k) => k.startsWith(TILE_STASH))
+  expect(kept.length).toBeLessThanOrEqual(16)
+  expect(store.getItem(TILE_STASH + new URL(popoutUrl({ ...t, props: { ...t.props, label: 'v39' } }), 'http://x').searchParams.get('stash'))).not.toBeNull()
+})
+
+test("a draft pane pops out as a New chat window of its own, keyed on the draft, its project preset kept", () => {
+  const t = newChatPopout('draft:0f1e2d3c-aaaa-bbbb-cccc-000000000000?project=web')
+  expect(t).toEqual({ kind: 'page', path: '/new', key: '0f1e2d3c' })
+  expect(popoutLabel(t)).toBe('popout-page-new-0f1e2d3c')
+  const preset = newChatPopout('draft:0f1e2d3c-aaaa', 'my app')
+  expect(popoutUrl(preset)).toBe('/new?project=my%20app&window=popout-page-new_project_my_20app-0f1e2d3c')
+  // The window is a page window at /new (the preset rides the URL, the router reads it).
+  expect(popoutTarget(popoutUrl(preset))).toEqual({ kind: 'page', path: '/new' })
 })

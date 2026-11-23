@@ -1,7 +1,7 @@
 import { RotateCcw } from 'lucide-react'
 import { useState } from 'react'
 import { HOME, Surface, Tool, Tools } from '@/components/chat/DiagramFrame'
-import type { DiagramProps } from '@/components/tiles/open'
+import { type DiagramProps, popOutTile } from '@/components/tiles/open'
 import { TileFrame } from '@/components/tiles/TileFrame'
 import type { TileKind, TileRender } from '@/components/tiles/types'
 
@@ -18,6 +18,7 @@ function DiagramTile({ tile, first, close }: TileRender) {
       controls={
         <Tools markup={() => svg} name={name} size="icon" extra={<Tool icon={RotateCcw} label="Reset view" onClick={() => setView(HOME)} size="icon" />} />
       }
+      popOut={popOutTile(tile)}
       className="bg-background"
     >
       <div className="absolute inset-0">

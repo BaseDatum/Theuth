@@ -103,7 +103,22 @@ export function useNoteBody(live: LiveDocument, editing: boolean): { deleted: bo
  * meeting-note pop-out, and (D2) its chat is the meeting's own session: embedded, "Ask theuth…" prefills the
  * `LiveSession` composer beside the note and focuses it; popped, the chat panel is pinned to that session.
  */
-export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: { id: string; isNew?: boolean; nb?: string; embedded?: boolean; meeting?: string }) {
+export function NoteView({
+  id,
+  isNew = false,
+  nb,
+  embedded = false,
+  meeting,
+  hidePopout = false,
+}: {
+  id: string
+  isNew?: boolean
+  nb?: string
+  embedded?: boolean
+  meeting?: string
+  /** The host draws Open in new window itself (the note tile's header). */
+  hidePopout?: boolean
+}) {
   const canQuery1 = useQuerySupport(["meeting_get"])
   const api = useApi()
   const qc = useQueryClient()
@@ -203,7 +218,7 @@ export function NoteView({ id, isNew = false, nb, embedded = false, meeting }: {
           <Action label="Snapshots…" icon={HistoryIcon} onClick={() => setSnapshots(true)} disabled={deleted} />
           <ExportMenu id={id} title={title} disabled={deleted || !live.provider} />
           <UndoAgentAction provider={live.provider} />
-          {!popped && canPopout() && (
+          {!popped && !hidePopout && canPopout() && (
             <Action
               label="Open in new window"
               icon={AppWindow}
