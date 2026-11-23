@@ -936,8 +936,9 @@ impl Batch {
     }
 
     /// `summarize`'s text (`ToolRunCard.tsx:60-77`); a plain card is
-    /// `name · describe`.
-    fn title(&self) -> String {
+    /// `name · describe`. `status` is the agent's own line (212 §12): it
+    /// names a live thought instead of `thinking`.
+    fn title(&self, status: Option<&str>) -> String {
         if let Some(c) = self.plain() {
             let what = c.what();
             return truncate_chars(
@@ -960,7 +961,10 @@ impl Batch {
         );
         // A live thought is no line yet (see `settled_output`): the title says so.
         if self.open() {
-            return format!("thinking · {count}");
+            return truncate_chars(
+                &format!("{} · {count}", status.unwrap_or("thinking")),
+                TITLE_MAX,
+            );
         }
         let mut parts = vec![count];
         if let (Some(Some(start)), Some(Some(end))) = (
@@ -1032,13 +1036,17 @@ impl Batch {
     /// The stream-mode card (110 §4.2) with only the output Slack lacks,
     /// frozen by `close` in a message that closes, and its whole output for
     /// [`Shown::sent`].
-    fn chunk(&self, close: Option<Close>) -> (Chunk, String) {
+    fn chunk(&self, close: Option<Close>, status: Option<&str>) -> (Chunk, String) {
         let full = if self.plain().is_some() {
             String::new()
         } else {
             cap_output(&self.settled_output()).into_owned()
         };
-        let (mut title, mut status) = (self.title(), self.status());
+        // 212 §12: the agent's status names only the live card; a frozen one keeps `thinking`.
+        let (mut title, mut status) = (
+            self.title(status.filter(|_| close.is_none())),
+            self.status(),
+        );
         if self.open() {
             match close {
                 Some(Close::Rotate) => {
@@ -1065,10 +1073,10 @@ impl Batch {
     }
 
     /// The update-mode message (110 §4.6): header bold, list in a fence.
-    fn markdown(&self) -> String {
+    fn markdown(&self, status: Option<&str>) -> String {
         let mut md = format!(
             "**{}**\n```\n{}\n```",
-            self.title(),
+            self.title(status),
             self.lines().join("\n")
         );
         if !self.sources.is_empty() {
@@ -1162,10 +1170,14 @@ impl ReasoningRun {
     /// The live card with only the output Slack lacks ([`reasoning_settled`],
     /// so nothing is taken back), frozen in a message a rotation closes, and
     /// its whole output for [`Shown::sent`].
-    fn chunk(&self, close: Option<Close>) -> (Chunk, String) {
+    fn chunk(&self, close: Option<Close>, status: Option<&str>) -> (Chunk, String) {
         let full = cap_output(&reasoning_settled(self.text.raw())).into_owned();
         let (title, status) = match close {
-            None => ("thinking".to_owned(), TaskStatus::InProgress),
+            // 212 §12: the agent's own status line, while it has one, instead of `thinking`.
+            None => (
+                truncate_chars(status.unwrap_or("thinking"), TITLE_MAX),
+                TaskStatus::InProgress,
+            ),
             Some(_) => (continued("thinking"), TaskStatus::Complete),
         };
         let chunk = Chunk::Task {
@@ -1221,6 +1233,9 @@ pub struct Turn {
     stream_unsupported: bool,
     open_failures: u8,
     fallback_published: bool,
+    /// The agent's own status line (`StatusChanged`, 212 §12): the title of
+    /// the in-progress thinking card instead of `thinking`.
+    status: Option<String>,
 }
 
 impl Turn {
@@ -1255,6 +1270,7 @@ impl Turn {
             stream_unsupported: false,
             open_failures: 0,
             fallback_published: false,
+            status: None,
         }
     }
 
@@ -1331,6 +1347,21 @@ impl Turn {
     /// none is open).
     pub fn compacted(&mut self, epoch: u32) {
         self.compacted = Some(epoch);
+    }
+
+    /// `StatusChanged` (212 §12): the agent's own line titles the live
+    /// thinking card from now on; a card already showing `thinking` is
+    /// re-sent in place. No new post.
+    pub fn set_status(&mut self, status: String) {
+        self.status = Some(status);
+        if let Some(i) = self.open_batch()
+            && matches!(self.batches[i].items.last(), Some(Item::Thought(t)) if t.live)
+        {
+            self.touch(i);
+        }
+        if let Some(id) = self.reasoning_run.as_ref().map(|r| r.id.clone()) {
+            self.queue_card(id);
+        }
     }
 
     fn segment(&mut self) -> &mut Segment {
@@ -1642,8 +1673,10 @@ impl Turn {
             let (chunk, full) = match q {
                 Queued::Chunk { chunk, .. } => (chunk.clone(), String::new()),
                 Queued::Card(id) => match (self.batch(id), self.run(id)) {
-                    (Some(b), _) if emits(self.tools_mode, b) && b.due(last) => b.chunk(None),
-                    (None, Some(r)) => r.chunk(None),
+                    (Some(b), _) if emits(self.tools_mode, b) && b.due(last) => {
+                        b.chunk(None, self.status.as_deref())
+                    }
+                    (None, Some(r)) => r.chunk(None, self.status.as_deref()),
                     _ => continue,
                 },
             };
@@ -1677,8 +1710,12 @@ impl Turn {
             .batches
             .iter()
             .find(|b| b.open() && emits(self.tools_mode, b))
-            .map(|b| (&b.id, b.chunk(None)))
-            .or_else(|| self.reasoning_run.as_ref().map(|r| (&r.id, r.chunk(None))))?;
+            .map(|b| (&b.id, b.chunk(None, self.status.as_deref())))
+            .or_else(|| {
+                self.reasoning_run
+                    .as_ref()
+                    .map(|r| (&r.id, r.chunk(None, self.status.as_deref())))
+            })?;
         Some((chunk, (id.clone(), full)))
     }
 
@@ -1697,9 +1734,9 @@ impl Turn {
                         if emits(self.tools_mode, b)
                             && (b.last_sent.is_some() || !b.open() || close == Close::Finish) =>
                     {
-                        b.chunk(Some(close))
+                        b.chunk(Some(close), None)
                     }
-                    (None, Some(r)) if r.on_wire => r.chunk(Some(close)),
+                    (None, Some(r)) if r.on_wire => r.chunk(Some(close), None),
                     _ => continue,
                 },
             };
@@ -1708,7 +1745,7 @@ impl Turn {
         let queued = |id: &str| self.queue.iter().any(|q| queued_id(q) == Some(id));
         for b in &self.batches {
             if b.last_sent.is_some() && b.open() && emits(self.tools_mode, b) && !queued(&b.id) {
-                let (chunk, full) = b.chunk(Some(close));
+                let (chunk, full) = b.chunk(Some(close), None);
                 out.push((chunk, (b.id.clone(), full)));
             }
         }
@@ -1716,7 +1753,7 @@ impl Turn {
             && r.on_wire
             && !queued(&r.id)
         {
-            let (chunk, full) = r.chunk(Some(close));
+            let (chunk, full) = r.chunk(Some(close), None);
             out.push((chunk, (r.id.clone(), full)));
         }
         out
@@ -2390,7 +2427,7 @@ impl Turn {
                         continue;
                     }
                     let b = &mut self.batches[i];
-                    let md = b.markdown();
+                    let md = b.markdown(self.status.as_deref());
                     let result = match &b.card_ts {
                         None => api
                             .post_markdown(&t.channel, Some(&t.thread_ts), &md)
@@ -4696,6 +4733,35 @@ pub(crate) mod tests {
         assert_eq!(thought.status, TaskStatus::Complete);
         assert_eq!(thought.details, None, "the body once, not again as details");
         assert_eq!(thought.output.as_deref(), Some("Let me check"));
+    }
+
+    /// 212 §12: the agent's status replaces `thinking` as the live reasoning
+    /// card's title, re-sent in place on the same card; nothing new is posted.
+    #[tokio::test(start_paused = true)]
+    async fn status_changed_titles_the_live_thinking_card() {
+        let api = FakeApi::new();
+        let mut t = turn(&api, ToolCards::All);
+        t.reasoning("Let me check").await;
+        t.tick().await;
+        assert_eq!(last_card(&api, "reasoning-1").title, "thinking");
+        let posts = |api: &FakeApi| {
+            api.calls()
+                .iter()
+                .filter(|c| matches!(c, Call::Post { .. }))
+                .count()
+        };
+        let before = posts(&api);
+        t.set_status("reading the build lock code".into());
+        t.tick().await;
+        let card = last_card(&api, "reasoning-1");
+        assert_eq!(card.title, "reading the build lock code");
+        assert_eq!(card.status, TaskStatus::InProgress);
+        assert_eq!(posts(&api), before, "{:?}", api.calls());
+        assert!(
+            ids(&api).iter().all(|id| id == "reasoning-1"),
+            "{:?}",
+            ids(&api)
+        );
     }
 
     #[tokio::test(start_paused = true)]
