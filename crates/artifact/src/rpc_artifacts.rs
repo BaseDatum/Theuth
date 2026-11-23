@@ -290,7 +290,7 @@ impl ArtifactArtifactsApiServer for Server {
         let sink = pending.accept().await?;
         // One watcher per file, whichever spelling of its path the client sent.
         let path = std::fs::canonicalize(&path).unwrap_or(path);
-        let mut watch = artifact::codewatch::watch(&path);
+        let mut watch = artifact::codeview::watch::watch(&path);
         tokio::spawn(async move {
             loop {
                 let change = tokio::select! {

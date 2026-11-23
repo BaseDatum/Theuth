@@ -28,7 +28,6 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
 pub mod rpc_support;
 pub mod archive;
 pub mod codeview;
-pub mod codewatch;
 pub mod export;
 pub mod inline;
 pub mod kind;

@@ -27,9 +27,12 @@ pub const POLL: Duration = Duration::from_secs(2);
 /// Changes a slow subscriber may fall behind before it skips to newer ones.
 const BACKLOG: usize = 16;
 
-/// What keeps one path watched.
+/// What keeps one path watched (dropping it stops the watch).
 enum Source {
-    Notify(Debouncer<RecommendedWatcher, RecommendedCache>),
+    Notify(
+        #[expect(dead_code, reason = "held only: dropping the debouncer stops the watcher")]
+        Debouncer<RecommendedWatcher, RecommendedCache>,
+    ),
     Poll(tokio::task::JoinHandle<()>),
 }
 

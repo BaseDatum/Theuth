@@ -23,6 +23,8 @@ use tools::{Risk, Tool, ToolCx, ToolOutput};
 use crate::tileview::NO_APP;
 use crate::webview::clean_title;
 
+pub mod watch;
+
 /// Largest file `show_file` opens and `file_view_read` returns (and `show_diff` compares), in bytes.
 pub const MAX_FILE: u64 = 2 * 1024 * 1024;
 
@@ -1075,9 +1077,10 @@ fn file_stats(patch: &str) -> Vec<DiffFileStat> {
 /// `(old, new)` line counts of a hunk header after `@@ `.
 fn hunk_counts(h: &str) -> (u32, u32) {
     let mut it = h.split_whitespace();
+    // `-12,3` / `+5` (a missing count is 1).
     let count = |t: Option<&str>| {
-        t.map(|t| t[1..].split_once(',').map_or(Ok(1), |(_, n)| n.parse()))
-            .and_then(Result::ok)
+        t.and_then(|t| t.get(1..))
+            .and_then(|t| t.split_once(',').map_or(Some(1), |(_, n)| n.parse().ok()))
             .unwrap_or(0)
     };
     let old = count(it.next());
@@ -1462,7 +1465,7 @@ mod tests {
         assert_eq!((by["sub/new.rs"].status.as_str(), by["sub/new.rs"].added), ("?", 2));
         assert_eq!(by[".gitignore"].status, "?");
         assert!(d.text.contains("+++ b/sub/new.rs\n@@ -0,0 +1,2 @@\n+x\n+y\n\\ No newline at end of file\n"), "{}", d.text);
-        assert!(!d.text.contains("ignored.log"));
+        assert!(!d.text.contains("b/ignored.log"), "{}", d.text);
         assert_eq!(d.totals(), (3, 5, 1));
         // The index is untouched: nothing staged.
         assert_eq!(sh(&root, &["diff", "--cached", "--name-only"]), "");
