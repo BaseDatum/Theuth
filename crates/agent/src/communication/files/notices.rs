@@ -591,7 +591,17 @@ mod tests {
         assert!(!pending_has(over));
         assert!(a.ledger.pending_for_test(s).is_empty(), "no input, no turn");
         assert!(!a.store.notice_committed(s, over).await.unwrap());
-        assert!(a.store.errors(s).await.unwrap().is_empty());
+        // Other rows come from the real session actor the rig spawns (no registry, so
+        // its own turn errors); only the refused notice's ended-share row must be absent.
+        assert!(
+            a.store
+                .errors(s)
+                .await
+                .unwrap()
+                .iter()
+                .all(|(_, t)| !t.contains("has ended, so this was not given")),
+            "a refused notice must not leave an ended-share row"
+        );
         let opener = a.ledger.admit(s, InputOrigin::External, None);
         a.ledger.consumed(InputConsumed {
             session: s,

@@ -225,6 +225,54 @@ pub async fn open_pool(worker: &Path, max_processes: usize) -> Option<Arc<Pool>>
     }
 }
 
+/// Test-only: a pool on the first python worker that answers a real checkout and
+/// feed, so a stale `t`/`monty` on `PATH` (older worker protocol; `Pool::new` does
+/// not handshake) is skipped rather than failing the test at its first checkout.
+/// Candidates: `$THEUTH_WORKER`, `$THEUTH_MONTY_WORKER`, this build's own `t`
+/// (`target/<profile>/t`, beside the test exe's `deps/`), then every `monty` and
+/// `t` on `PATH`. `None` (noted on stderr) when none works, so the test skips.
+#[cfg(test)]
+pub(crate) async fn test_pool(max_processes: usize) -> Option<Arc<Pool>> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for var in ["THEUTH_WORKER", "THEUTH_MONTY_WORKER"] {
+        candidates.extend(std::env::var_os(var).map(PathBuf::from));
+    }
+    if let Some(own) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.join("t")))
+    {
+        candidates.push(own);
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for name in ["monty", "t"] {
+            candidates.extend(std::env::split_paths(&path).map(|d| d.join(name)));
+        }
+    }
+    for worker in candidates.into_iter().filter(|p| p.is_file()) {
+        let Some(pool) = open_pool(&worker, max_processes).await else {
+            continue;
+        };
+        let probe = async {
+            let mut c = pool.checkout(&ReplConfig::default()).await?;
+            let mut quiet = on_print_sync(|_, _| {});
+            let fed = c
+                .feed("None".to_owned(), Vec::new(), Vec::new(), false, &mut quiet)
+                .await;
+            let _ = c.finish().await;
+            fed.map(|_| ())
+        };
+        match probe.await {
+            Ok(()) => return Some(pool),
+            Err(e) => eprintln!(
+                "python worker {} unusable ({e}); build `t` (cargo build -p theuth --bin t) or set THEUTH_WORKER",
+                worker.display()
+            ),
+        }
+    }
+    eprintln!("no compatible python worker; skipping the scenarios that need one");
+    None
+}
+
 /// How long [`monty_sufficient`]'s type check may wait for a worker and answer.
 const SUFFICIENT_CHECK: Duration = Duration::from_secs(10);
 
