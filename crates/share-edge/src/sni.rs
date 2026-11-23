@@ -1,5 +1,6 @@
-//! The visitor path (210 §4.2): TCP accept, ClientHello peek with `rustls::server::Acceptor` keeping the raw
-//! bytes, routing on SNI, a PROXY v2 preamble on a fresh bi-stream of the engine's tunnel, then a byte splice.
+//! The visitor path (210 §4.2): TCP accept, an optional PROXY v1/v2 header from a trusted load balancer,
+//! ClientHello peek with `rustls::server::Acceptor` keeping the raw bytes, routing on SNI, a PROXY v2 preamble
+//! on a fresh bi-stream of the engine's tunnel, then a byte splice.
 //! The edge never presents a certificate: every refusal is a TCP reset.
 
 use std::io;
@@ -47,6 +48,72 @@ pub enum Refuse {
     AcmeTls,
     /// Not under `D`, the apex, deeper than one label, or a bad label.
     Host,
+    /// A trusted peer sent no valid PROXY header within 5 s and 4 KiB.
+    Proxy,
+}
+
+/// Longest PROXY header accepted from a trusted peer (v1 is at most 107 bytes; v2 may carry TLVs).
+pub const PROXY_HEADER_MAX: usize = 4096;
+/// Deadline for that header.
+pub const PROXY_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Read a PROXY v1 or v2 header from a trusted peer. Returns the visitor's address (the header's source; `peer`
+/// itself for v2 `LOCAL`, v1 `UNKNOWN` or a non-IP family) and the bytes read past the header, which begin
+/// the ClientHello. Anything else (no header, malformed, over [`PROXY_HEADER_MAX`], over
+/// [`PROXY_HEADER_TIMEOUT`]) is [`Refuse::Proxy`].
+pub async fn read_proxy_header<R: AsyncRead + Unpin>(
+    r: &mut R,
+    peer: SocketAddr,
+) -> Result<(SocketAddr, Vec<u8>), Refuse> {
+    use ppp::{HeaderResult, PartialResult as _, v1, v2};
+    let read = async {
+        let mut buf = Vec::with_capacity(256);
+        let mut chunk = [0u8; 1024];
+        loop {
+            let n = r.read(&mut chunk).await.map_err(|_| Refuse::Proxy)?;
+            if n == 0 {
+                return Err(Refuse::Proxy);
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            let parsed = HeaderResult::parse(&buf);
+            if parsed.is_incomplete() {
+                if buf.len() >= PROXY_HEADER_MAX {
+                    return Err(Refuse::Proxy);
+                }
+                continue;
+            }
+            let (src, len) = match parsed {
+                HeaderResult::V1(Ok(h)) => (
+                    match h.addresses {
+                        v1::Addresses::Tcp4(a) => Some(SocketAddr::from((a.source_address, a.source_port))),
+                        v1::Addresses::Tcp6(a) => Some(SocketAddr::from((a.source_address, a.source_port))),
+                        v1::Addresses::Unknown => None,
+                    },
+                    h.header.len(),
+                ),
+                HeaderResult::V2(Ok(h)) => (
+                    match (h.command, h.addresses) {
+                        (v2::Command::Proxy, v2::Addresses::IPv4(a)) => {
+                            Some(SocketAddr::from((a.source_address, a.source_port)))
+                        }
+                        (v2::Command::Proxy, v2::Addresses::IPv6(a)) => {
+                            Some(SocketAddr::from((a.source_address, a.source_port)))
+                        }
+                        _ => None,
+                    },
+                    h.len(),
+                ),
+                _ => return Err(Refuse::Proxy),
+            };
+            if len > PROXY_HEADER_MAX || len > buf.len() {
+                return Err(Refuse::Proxy);
+            }
+            return Ok((src.unwrap_or(peer), buf.split_off(len)));
+        }
+    };
+    tokio::time::timeout(PROXY_HEADER_TIMEOUT, read)
+        .await
+        .unwrap_or(Err(Refuse::Proxy))
 }
 
 /// Read until rustls parses a whole ClientHello (it may span segments), within 16 KiB and 5 s.
@@ -172,11 +239,21 @@ impl Drop for StreamSlot {
 }
 
 async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
-    let ip = net_key(peer.ip());
     // TODO(210-M3): per-tunnel new-connection rate and the byte shaping of §9.6.
     let Ok(_global) = edge.visitors.clone().try_acquire_owned() else {
         return reset(tcp);
     };
+    // Behind a trusted load balancer the PROXY header's source is the visitor (limits, conn_log, preamble);
+    // an untrusted peer is never parsed for one.
+    let (peer, early) = if edge.cfg.listen_proxy_protocol.trusts(peer.ip()) {
+        match read_proxy_header(&mut tcp, peer).await {
+            Ok(v) => v,
+            Err(_) => return reset(tcp),
+        }
+    } else {
+        (peer, Vec::new())
+    };
+    let ip = net_key(peer.ip());
     if edge.ip_rate.check_key(&ip).is_err() {
         return reset(tcp);
     }
@@ -192,7 +269,7 @@ async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
     let Ok(local) = tcp.local_addr() else {
         return reset(tcp);
     };
-    let peeked = match peek_client_hello(&mut tcp).await {
+    let peeked = match peek_client_hello(&mut early.as_slice().chain(&mut tcp)).await {
         Ok(p) => p,
         Err(_) => return reset(tcp),
     };
@@ -402,5 +479,92 @@ pub(crate) mod tests {
         assert!(tlvs.iter().any(
             |t| t.kind == TLV_CONN_ID && share_proto::proxy::conn_id_from(&t.value) == Some(42)
         ));
+    }
+
+    const LB: &str = "10.0.0.9:40000";
+
+    async fn proxied(bytes: &[u8]) -> Result<(SocketAddr, Vec<u8>), Refuse> {
+        let (mut a, mut b) = tokio::io::duplex(64 * 1024);
+        a.write_all(bytes).await.unwrap();
+        drop(a);
+        read_proxy_header(&mut b, LB.parse().unwrap()).await
+    }
+
+    /// The header, then a ClientHello whose bytes come through intact to the peek.
+    async fn through(header: &[u8], visitor: &str) {
+        let hello = client_hello("app.sky.tun.zip", &[b"h2"]);
+        let mut input = header.to_vec();
+        input.extend_from_slice(&hello);
+        let (src, early) = proxied(&input).await.unwrap();
+        assert_eq!(src, visitor.parse().unwrap());
+        assert!(hello.starts_with(&early));
+        let p = peek_client_hello(&mut early.as_slice().chain(&hello[early.len()..]))
+            .await
+            .unwrap();
+        assert_eq!(p.bytes, hello);
+    }
+
+    #[tokio::test]
+    async fn proxy_v1_source_is_the_visitor() {
+        through(b"PROXY TCP4 198.51.100.7 10.0.0.1 50000 443\r\n", "198.51.100.7:50000").await;
+        through(b"PROXY TCP6 2001:db8::7 2001:db8::1 50001 443\r\n", "[2001:db8::7]:50001").await;
+        // UNKNOWN keeps the load balancer's address.
+        through(b"PROXY UNKNOWN\r\n", LB).await;
+    }
+
+    #[tokio::test]
+    async fn proxy_v2_source_is_the_visitor() {
+        use ppp::v2::{Builder, Command, Protocol, Version};
+        let src: SocketAddr = "198.51.100.8:50002".parse().unwrap();
+        let dst: SocketAddr = "10.0.0.1:443".parse().unwrap();
+        let h = Builder::with_addresses(Version::Two | Command::Proxy, Protocol::Stream, (src, dst))
+            .write_tlv(TLV_AUTHORITY, b"app.sky.tun.zip")
+            .unwrap()
+            .build()
+            .unwrap();
+        through(&h, "198.51.100.8:50002").await;
+        let h = Builder::with_addresses(
+            Version::Two | Command::Proxy,
+            Protocol::Stream,
+            ("[2001:db8::8]:1".parse::<SocketAddr>().unwrap(), "[::1]:443".parse().unwrap()),
+        )
+        .build()
+        .unwrap();
+        through(&h, "[2001:db8::8]:1").await;
+        // LOCAL (a health check) keeps the load balancer's address.
+        let h = Builder::with_addresses(Version::Two | Command::Local, Protocol::Stream, (src, dst))
+            .build()
+            .unwrap();
+        through(&h, LB).await;
+    }
+
+    #[tokio::test]
+    async fn proxy_missing_or_malformed_is_refused() {
+        // A bare ClientHello from a trusted peer.
+        let hello = client_hello("app.sky.tun.zip", &[]);
+        assert_eq!(proxied(&hello).await.unwrap_err(), Refuse::Proxy);
+        for bad in [
+            &b"PROXY TCP4 198.51.100.7 10.0.0.1 50000\r\n"[..],
+            b"PROXY TCP4 999.1.1.1 10.0.0.1 1 2\r\n",
+            b"PROXY TCP9 1.1.1.1 2.2.2.2 1 2\r\n",
+            b"GET / HTTP/1.1\r\n\r\n",
+            // Truncated v2 (signature, then EOF).
+            b"\r\n\r\n\0\r\nQUIT\n\x21\x11\0\x0c\x01\x02",
+            // v1 without CRLF.
+            b"PROXY TCP4 198.51.100.7 10.0.0.1 50000 443",
+        ] {
+            assert_eq!(proxied(bad).await.unwrap_err(), Refuse::Proxy, "{bad:?}");
+        }
+        // An endless v1 line is cut at the cap, not read forever.
+        let mut long = b"PROXY TCP4 ".to_vec();
+        long.resize(PROXY_HEADER_MAX + 10, b'1');
+        assert_eq!(proxied(&long).await.unwrap_err(), Refuse::Proxy);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn proxy_header_times_out() {
+        let (_a, mut b) = tokio::io::duplex(1024);
+        let r = read_proxy_header(&mut b, LB.parse().unwrap()).await;
+        assert_eq!(r.unwrap_err(), Refuse::Proxy);
     }
 }

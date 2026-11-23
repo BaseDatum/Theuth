@@ -2,7 +2,7 @@
 //! `THEUTH_SHARE_EDGE_` and `__` as the nesting separator, env winning. Secrets (§8.3) come from exactly one of
 //! a file named in the config or an env var, never from the YAML itself.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -66,6 +66,10 @@ pub struct Config {
     pub dns: DnsConfig,
     /// §9.4 limits.
     pub limits: Limits,
+    /// PROXY protocol on the visitor listener from trusted load balancers (EDGE-K8S).
+    pub listen_proxy_protocol: ProxyProtocolIn,
+    /// Per-name Kubernetes objects (EDGE-K8S); off by default.
+    pub k8s: crate::k8s::K8sConfig,
 }
 
 impl Default for Config {
@@ -92,6 +96,8 @@ impl Default for Config {
             acme: AcmeConfig::default(),
             dns: DnsConfig::default(),
             limits: Limits::default(),
+            listen_proxy_protocol: ProxyProtocolIn::default(),
+            k8s: crate::k8s::K8sConfig::default(),
         }
     }
 }
@@ -299,6 +305,76 @@ impl Default for Limits {
     }
 }
 
+/// `listen_proxy_protocol:`. A visitor connection whose peer is in `trusted` must start with a PROXY v1 or v2
+/// header, whose source address then stands for the visitor; other peers are never parsed for one.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct ProxyProtocolIn {
+    /// Load balancer networks, as CIDRs (`10.0.0.0/8`, `fd00::/8`) or single addresses.
+    pub trusted: Vec<Cidr>,
+}
+
+impl ProxyProtocolIn {
+    /// Whether a connection from `peer` must carry a PROXY header.
+    pub fn trusts(&self, peer: IpAddr) -> bool {
+        self.trusted.iter().any(|c| c.contains(peer))
+    }
+}
+
+/// An IP network. A v4-mapped IPv6 address is matched as its IPv4 address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cidr {
+    net: IpAddr,
+    len: u8,
+}
+
+impl Cidr {
+    /// Whether `ip` is inside.
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        let ip = ip.to_canonical();
+        match (self.net, ip) {
+            (IpAddr::V4(n), IpAddr::V4(a)) => {
+                let mask = u32::MAX.checked_shl(32 - u32::from(self.len)).unwrap_or(0);
+                u32::from(n) & mask == u32::from(a) & mask
+            }
+            (IpAddr::V6(n), IpAddr::V6(a)) => {
+                let mask = u128::MAX.checked_shl(128 - u32::from(self.len)).unwrap_or(0);
+                u128::from(n) & mask == u128::from(a) & mask
+            }
+            _ => false,
+        }
+    }
+}
+
+impl std::str::FromStr for Cidr {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Cidr> {
+        let (addr, len) = s.split_once('/').map_or((s, None), |(a, l)| (a, Some(l)));
+        let net: IpAddr = addr
+            .parse()
+            .with_context(|| format!("CIDR {s:?}: address"))?;
+        let net = net.to_canonical();
+        let max = if net.is_ipv4() { 32 } else { 128 };
+        let len = match len {
+            Some(l) => l.parse::<u8>().with_context(|| format!("CIDR {s:?}: prefix"))?,
+            None => max,
+        };
+        if len > max {
+            bail!("CIDR {s:?}: prefix over {max}");
+        }
+        Ok(Cidr { net, len })
+    }
+}
+
+impl<'de> Deserialize<'de> for Cidr {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Cidr, D::Error> {
+        String::deserialize(d)?
+            .parse()
+            .map_err(|e: anyhow::Error| serde::de::Error::custom(format!("{e:#}")))
+    }
+}
+
 /// Where a secret comes from. `Debug` never shows an env value.
 #[derive(Clone, PartialEq, Eq)]
 pub enum SecretSource {
@@ -432,6 +508,7 @@ impl Config {
         if let Err(e) = self.min_client.parse::<share_proto::Version>() {
             bail!("`min_client`: {e:?}");
         }
+        self.k8s.validate(&self.domain)?;
         Ok(())
     }
 
@@ -478,7 +555,7 @@ impl Config {
 }
 
 /// Durations as `25h`, `30d` (humantime) or plain seconds.
-mod dur {
+pub(crate) mod dur {
     use std::time::Duration;
 
     use serde::{Deserialize, Deserializer};
@@ -554,5 +631,43 @@ mod tests {
     #[test]
     fn missing_domain_is_refused() {
         assert!(Config::from_yaml("listen: \"[::]:443\"\n", &no_env).is_err());
+    }
+
+    #[test]
+    fn proxy_protocol_cidrs() {
+        let yaml = format!(
+            "{BASE}listen_proxy_protocol: {{trusted: ['10.0.0.0/8', '192.0.2.7', 'fd00::/8']}}\n"
+        );
+        let (cfg, _) = Config::from_yaml(&yaml, &no_env).unwrap();
+        let p = &cfg.listen_proxy_protocol;
+        assert!(p.trusts("10.1.2.3".parse().unwrap()));
+        assert!(p.trusts("::ffff:10.9.9.9".parse().unwrap()));
+        assert!(p.trusts("192.0.2.7".parse().unwrap()));
+        assert!(!p.trusts("192.0.2.8".parse().unwrap()));
+        assert!(p.trusts("fd12::1".parse().unwrap()));
+        assert!(!p.trusts("2001:db8::1".parse().unwrap()));
+        assert!(!Config::default().listen_proxy_protocol.trusts("10.0.0.1".parse().unwrap()));
+        assert!("0.0.0.0/0".parse::<Cidr>().unwrap().contains("8.8.8.8".parse().unwrap()));
+        for bad in ["10.0.0.0/33", "10.0.0/8", "::/129", "x"] {
+            let yaml = format!("{BASE}listen_proxy_protocol: {{trusted: ['{bad}']}}\n");
+            assert!(Config::from_yaml(&yaml, &no_env).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn k8s_section_loads_and_is_checked() {
+        let (cfg, _) = Config::from_yaml(BASE, &no_env).unwrap();
+        assert!(!cfg.k8s.enabled);
+        let yaml = format!(
+            "{BASE}k8s:\n  enabled: true\n  resync: 2m\n  per_name:\n  - apiVersion: v1\n    kind: ConfigMap\n    \
+             metadata: {{name: 'share-${{slug}}'}}\n    data: {{host: '${{wildcard}}'}}\n"
+        );
+        let (cfg, _) = Config::from_yaml(&yaml, &no_env).unwrap();
+        assert_eq!(cfg.k8s.resync, Duration::from_secs(120));
+        assert_eq!(cfg.k8s.field_manager, "theuth-share-edge");
+        assert_eq!(cfg.k8s.per_name.len(), 1);
+        let bad = yaml.replace("${wildcard}", "${wild}");
+        let err = format!("{:#}", Config::from_yaml(&bad, &no_env).unwrap_err());
+        assert!(err.contains("${wild}"), "{err}");
     }
 }

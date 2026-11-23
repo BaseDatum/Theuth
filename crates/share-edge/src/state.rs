@@ -201,6 +201,8 @@ pub struct Edge {
     pub info_rate: DefaultKeyedRateLimiter<String>,
     /// Certificates (EDGE2); unset in an edge built without backends.
     pub certs: OnceLock<crate::certs::Certs>,
+    /// Per-name Kubernetes objects (EDGE-K8S); unset unless `k8s.enabled`.
+    pub k8s: OnceLock<Arc<crate::k8s::K8s>>,
     next_conn: AtomicU64,
 }
 
@@ -230,6 +232,7 @@ impl Edge {
             tunnels: DashMap::new(),
             next_conn: AtomicU64::new(1),
             certs: OnceLock::new(),
+            k8s: OnceLock::new(),
             brands,
             cfg,
             secrets,

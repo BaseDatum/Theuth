@@ -10,6 +10,7 @@ pub mod certs;
 pub mod config;
 pub mod control;
 pub mod dns;
+pub mod k8s;
 pub mod sni;
 pub mod state;
 pub mod store;
@@ -124,6 +125,12 @@ pub async fn start_with(
         // TODO(210-M4): re-check daily; at runtime a failure flips admission to `closed` and alerts.
         acme::require_caa(&*backends.caa, &cfg, std::slice::from_ref(&backends.ca)).await?;
     }
+    // Before binding anything: a k8s section that cannot run (no feature, no in-cluster config) fails start.
+    let k8s = if cfg.k8s.enabled {
+        Some(k8s_manager(&cfg).await?)
+    } else {
+        None
+    };
     platform::files::private_dir(&cfg.data_dir)
         .with_context(|| format!("data_dir {}", cfg.data_dir.display()))?;
     let key = load_or_create_key(&cfg.key_path())?;
@@ -161,6 +168,10 @@ pub async fn start_with(
     let mut tasks = JoinSet::new();
     tasks.spawn(sni::serve(edge.clone(), listener));
     tasks.spawn(certs::run(edge.clone()));
+    if let Some(k) = k8s {
+        let _ = edge.k8s.set(k.clone());
+        tasks.spawn(k8s::run(edge.clone(), k));
+    }
     let admin = admin::bind(&admin_socket)?;
     tasks.spawn(admin::serve(edge.clone(), admin, admin_socket));
     if !health.is_empty() {
@@ -184,12 +195,17 @@ async fn serve_health(edge: Arc<Edge>, listener: tokio::net::TcpListener) {
     let metrics = move || {
         let e = edge.clone();
         async move {
-            format!(
+            let mut m = format!(
                 "share_edge_tunnels {}\nshare_edge_routes {}\nshare_edge_conns {}\n",
                 e.tunnels.len(),
                 e.routes.len(),
                 e.cfg.limits.global_conns as usize - e.visitors.available_permits()
-            )
+            );
+            if let Some(k) = e.k8s.get() {
+                let n = k.errors.load(std::sync::atomic::Ordering::Relaxed);
+                m.push_str(&format!("share_edge_k8s_errors_total {n}\n"));
+            }
+            m
         }
     };
     let app = axum::Router::new()
@@ -198,6 +214,29 @@ async fn serve_health(edge: Arc<Edge>, listener: tokio::net::TcpListener) {
     if let Err(e) = axum::serve(listener, app).await {
         tracing::warn!("admin.http: {e}");
     }
+}
+
+/// The per-name object manager over the in-cluster client (`Config::infer`); the namespace is `k8s.namespace`
+/// or the inferred one (in a pod: its service-account namespace file).
+#[cfg(feature = "k8s")]
+async fn k8s_manager(cfg: &Config) -> anyhow::Result<Arc<k8s::K8s>> {
+    let (client, inferred) = k8s::client::KubeClient::infer(&cfg.k8s.field_manager).await?;
+    let ns = if cfg.k8s.namespace.is_empty() {
+        inferred
+    } else {
+        cfg.k8s.namespace.clone()
+    };
+    Ok(Arc::new(k8s::K8s::new(
+        cfg.k8s.clone(),
+        &cfg.domain,
+        &ns,
+        Arc::new(client),
+    )))
+}
+
+#[cfg(not(feature = "k8s"))]
+async fn k8s_manager(_: &Config) -> anyhow::Result<Arc<k8s::K8s>> {
+    anyhow::bail!("`k8s.enabled: true` needs a build with the cargo feature `k8s`")
 }
 
 /// `run`: start, wait for the stop signal, shut down.

@@ -521,7 +521,11 @@ async fn claim(c: &Ctx, s: &Session, name: &str, kind: NameKind) -> Result<(), A
         )
         .await?;
     match outcome {
-        Claimed::Granted | Claimed::AlreadyHeld => Ok(()),
+        Claimed::Granted | Claimed::AlreadyHeld => {
+            // Routing objects before the certificate job needs them; never blocks the claim.
+            crate::k8s::granted(&c.edge, name);
+            Ok(())
+        }
         Claimed::Banned => Err(err(ErrorCode::Banned)),
         Claimed::Taken => Err(err(ErrorCode::NameTaken)),
         Claimed::Quota => Err(err(ErrorCode::Quota)),
@@ -570,6 +574,7 @@ async fn release(Extension(c): Extension<Ctx>, Path(name): Path<String>) -> ApiR
         return Err(err(ErrorCode::NotOwner));
     };
     e.drop_routes(|_, route| route.name == name && route.mesh == s.mesh);
+    crate::k8s::gone(&c.edge, &name);
     // §6.3: revoke (`cessationOfOperation`), delete the D17 records, drop a queued job; in the background,
     // since DNS calls take seconds and reconciliation at start catches what a crash leaves.
     let edge = c.edge.clone();
