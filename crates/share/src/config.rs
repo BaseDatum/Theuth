@@ -89,11 +89,11 @@ impl ShareConfig {
 
 /// The shipped default edge (D15): live key first, cold standby second. The live key is tun.zip's
 /// edge (`theuth-share-edge ticket` on rwx-dev: endpoint 72f4d775…, home relay iroh.relay.theuth.io);
-/// a placeholder never parses, so it drops out of [`default_edges`].
-// TODO(210-M4): the operator pastes the cold standby key's ticket here.
+/// a placeholder never parses, so it drops out of [`default_edges`]. The standby key (8dc34c54…) is offline:
+/// its secret lives only in the owner's vault (`tunzip.edge.standby.key.b64`); the edge config carries `standby_public`.
 pub const DEFAULT_EDGE_TICKETS: [&str; 2] = [
     "theuthedgeabzpjv3v4geij2u6gslbt42qbetwihld3nt3fofa5yests3j3dqdqaiadvuhi5dqom5c6l3jojxwqltsmvwgc6joorugk5lunaxgs3zpaa",
-    "OPERATOR-FILL-ME: theuthedge… ticket of the cold standby key",
+    "theuthedgeacg4gtcusxihsfl3al7ydxn5i7pgrnqo7h2xt2dlxdk7wrwgocqhkaiadvuhi5dqom5c6l3jojxwqltsmvwgc6joorugk5lunaxgs3zpaa",
 ];
 
 /// The parsed default tickets; placeholders drop out.
@@ -157,10 +157,14 @@ mod tests {
     #[test]
     fn placeholders_never_parse_and_choice_roundtrips() {
         let edges = default_edges();
-        assert_eq!(edges.len(), 1, "the live ticket parses, the standby placeholder drops out");
+        assert_eq!(edges.len(), 2, "the live and the standby ticket both parse");
         assert_eq!(
             edges[0].addr.id.to_string(),
             "72f4d775e18884ea9e349619f3500927641d63db67b2b8a0ee0929cb69d8e038"
+        );
+        assert_eq!(
+            edges[1].addr.id.to_string(),
+            "8dc34c5495d079157b02ff81ddbd47de68b60ef9f579e86bb8d5fb46c670a075"
         );
         assert_eq!(EdgeChoice::parse("none").unwrap(), EdgeChoice::None);
         assert_eq!(
