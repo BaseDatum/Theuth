@@ -1,0 +1,15 @@
+# Own IP for the edge: TCP 443 → 8443 and UDP 7850. `Local` keeps visitor addresses for per-IP limits and the
+# PROXY preamble. If the cloud refuses mixed TCP/UDP on one LoadBalancer, split into two Services on one IP
+# (as deploy/relay/k8s/base/iroh-relay-service-quic.yaml) and list the UDP address in iroh.public_addrs.
+apiVersion: v1
+kind: Service
+metadata:
+  name: theuth-share-edge
+  labels: {app.kubernetes.io/name: theuth-share-edge, app.kubernetes.io/part-of: theuth}
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector: {app.kubernetes.io/name: theuth-share-edge}
+  ports:
+    - {name: tls, port: 443, targetPort: tls, protocol: TCP}
+    - {name: iroh, port: 7850, targetPort: iroh, protocol: UDP}

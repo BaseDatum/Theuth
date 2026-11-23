@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: theuth-share-edge
+  labels: {app.kubernetes.io/name: theuth-share-edge, app.kubernetes.io/part-of: theuth}
+spec:
+  replicas: 1                 # one writer of share-edge.sqlite and one holder of iroh.key; no HA in v1
+  strategy: {type: Recreate}  # RWO volume; two pods with one endpoint key would split clients
+  selector:
+    matchLabels: {app.kubernetes.io/name: theuth-share-edge}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: theuth-share-edge, app.kubernetes.io/part-of: theuth}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: edge
+          image: ghcr.io/skymoore/theuth/share-edge:latest   # pin a share-edge-v* tag
+          args: ["run", "--config", "/etc/theuth-share-edge/config.yaml"]
+          ports:
+            - {name: tls, containerPort: 8443, protocol: TCP}     # unprivileged; the Service maps 443
+            - {name: iroh, containerPort: 7850, protocol: UDP}
+            - {name: admin, containerPort: 9090, protocol: TCP}   # /healthz, /metrics
+          readinessProbe:
+            httpGet: {path: /healthz, port: admin}
+          livenessProbe:
+            httpGet: {path: /healthz, port: admin}
+            initialDelaySeconds: 10
+          resources:
+            requests: {cpu: 100m, memory: 64Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/theuth-share-edge}
+            - {name: config, mountPath: /etc/theuth-share-edge, readOnly: true}
+            - {name: secrets, mountPath: /run/secrets/theuth-share-edge, readOnly: true}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: theuth-share-edge-data}
+        - name: config
+          configMap: {name: theuth-share-edge}
+        # Created out of band, never committed (README). Group-readable via fsGroup.
+        - name: secrets
+          secret: {secretName: theuth-share-edge, defaultMode: 0440}

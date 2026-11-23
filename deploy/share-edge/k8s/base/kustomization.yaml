@@ -1,0 +1,14 @@
+# theuth-share-edge on Kubernetes (design doc 210 §8.4, appendix §8.4 option (a)).
+#   kubectl -n theuth create secret generic theuth-share-edge --from-file=dns.json=./dns.json
+#   kubectl apply -k deploy/share-edge/k8s/base
+# The namespace is deploy/relay/k8s/base's `theuth`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: theuth
+
+resources:
+  - deployment.yaml
+  - pvc.yaml
+  - service.yaml
+  - configmap.yaml

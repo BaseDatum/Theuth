@@ -1,0 +1,82 @@
+# theuth-share-edge config (design doc 210 §8.1; this is appendix §8.1 as P1 ships it).
+# Env overrides: THEUTH_SHARE_EDGE_<KEY>, `__` between levels (THEUTH_SHARE_EDGE_LIMITS__IDLE_SECS=600).
+# Secrets never go in this file (§8.3): dns.credential_file or THEUTH_SHARE_EDGE_DNS__CREDENTIAL, not both.
+# Keys of later milestones (acme budgets, most of limits) are accepted and not yet enforced.
+domain: tun.zip               # D, sent in /v1/info and welcome
+data_dir: /var/lib/theuth-share-edge   # share-edge.sqlite, iroh.key, acme/<ca>.json; persistent, backed up
+listen: "[::]:443"            # "[::]:8443" in k8s behind Service port 443
+listen_http: ""               # off; only for a D outside an HSTS-preloaded TLD
+proxy_protocol_in: false
+iroh: {listen: "[::]:7850", relay: https://iroh.relay.theuth.io, public_addrs: [], pkarr: true}
+admin: {socket: /var/lib/theuth-share-edge/admin.sock, http: "[::]:9090"}   # §8.5; /metrics, /healthz
+admission: open               # open | invite | closed; live via admin
+reserved_per_mesh: 1
+engines_per_mesh: 8
+delegation_max_ttl: 25h       # top-level, not under limits
+random_name_len: 6
+reclaim_cooldown: 30d
+reserved_words: []
+brand_blocklist_file: /etc/theuth-share-edge/brands.txt   # §9.4; reloadable
+terms_url: https://example.com/share-terms     # outside D
+terms_rev: "2026-11-23"
+abuse_url: https://example.com/share-abuse     # outside D
+abuse_contact: abuse@example.com
+require_caa: true             # cannot be false with admission open (§8.2)
+acme:
+  contact: mailto:ops@example.com
+  profile: classic
+  primary: letsencrypt        # P1
+  invite_share: 0.5
+  queue_max: 2000
+  cas:
+    letsencrypt:
+      directory: https://acme-staging-v02.api.letsencrypt.org/directory   # prod: https://acme-v02.api.letsencrypt.org/directory
+      validation: dns-01
+      orders_per_3h: 200
+      new_certs_per_week: 45
+    gts:                      # P2
+      enabled: false
+      directory: https://dv.acme-v02.api.pki.goog/directory   # staging: https://dv.acme-v02.test-api.pki.goog/directory
+      validation: dns-persist-01
+      eab_file: /run/secrets/theuth-share-edge/acme-gts-eab.json
+      orders_per_hour: 80
+dns:
+  provider: porkbun
+  zone: tun.zip
+  credential_file: /run/secrets/theuth-share-edge/dns.json
+  target: edge.tun.zip
+limits:                       # §9.4; "net" = IPv4 address or IPv6 /64
+  creates_per_net_hour: 30    # burst 10
+  new_meshes_per_net_day: 5
+  certs_per_net_week: 2       # open meshes only; invited meshes are not counted per network
+  queued_per_net: 2
+  reserved_per_net: 6
+  reserved_min_mesh_age: 0s
+  tunnels_per_net: 10
+  wide_net_factor: 4          # per IPv4 /24 and IPv6 /48
+  v6_32_factor: 16            # per IPv6 /32
+  asn_factor: 64              # per origin ASN
+  asn_db: /var/lib/theuth-share-edge/ip2asn.tsv   # optional; absent = ASN tier off
+  open_new_names_day: 500     # global, paced, open meshes only
+  relayed_new_meshes_day: 20  # paced 1/h, burst 4
+  names_max: 1200             # P1: Porkbun record bound (§6.4); counted at slot time
+  allocated_ttl: 1h           # an allocated name without a CSR is evicted
+  evict_unpublished_after: 7d
+  bytes_per_mesh_day: 20GiB
+  bytes_per_net_day: 50GiB
+  engine_keys_per_mesh_day: 8
+  tunnel_mbit: 50             # burst 64 MiB
+  throttle_mbit: 2            # non-invited tunnels while egress is over pace (§9.6)
+  egress_month: 10TiB         # the host's allowance; pace = allowance × fraction of month elapsed
+  new_conns_per_tunnel_sec: 50
+  conns_per_tunnel: 256
+  open_bi_timeout_secs: 5
+  conns_per_ip: 64
+  new_conns_per_ip_sec: 20
+  global_conns: 20000         # refuses to start with RLIMIT_NOFILE under 65536
+  pre_hello_conns: 256
+  hello_timeout_secs: 10
+  info_per_ip_min: 30
+  routes_per_tunnel: 64
+  idle_secs: 900
+min_client: "0.0.0"           # oldest theuth served; older clients get 426 client_too_old
