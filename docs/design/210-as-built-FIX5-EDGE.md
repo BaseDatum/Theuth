@@ -64,3 +64,50 @@ cargo tree -p share-edge -e normal | grep -E '\(/'
   `vendor/libsqlite3-sys`.
 - `Cargo.lock`: unchanged. `cargo fmt` not run: the crate is not rustfmt-clean at the default width (existing
   code); the new code follows the surrounding style.
+
+## FIX6-EDGE
+
+Regression N1 from R6. Files: `crates/share-edge/src/store.rs`, `src/queue.rs` (doc), `src/store/ops.rs` (test),
+`tests/mesh.rs` (test). No migration, no API signature change, no `Cargo.lock` change.
+
+### What was built
+
+- **N1.** `Store::prune_revoked(before_ms)` now deletes a revoked row only when it is older than `before_ms`
+  (still `now − REVOKE_WINDOW_MS` from `housekeeping`) **and** a rekey made it moot:
+  - its mesh was rekeyed away at or after the revocation (`meshes.rekeyed_ms >= revoked_ms`); `hello` on a
+    rekeyed mesh answers `409 mesh_rekeyed` before the revoke check, so the row refuses nothing; or
+  - its mesh was created by a rekey at or after the revocation (`mesh_rekeys.new = mesh AND ms >= revoked_ms`):
+    the revoked engine never held that key. `>=` because `Store::rekey` stamps a revoke-list entry new to the
+    list with the rekey time itself.
+  A revoked row of a mesh not rekeyed since its revocation is kept for good: the removed machine still holds
+  `mesh/share_key` and can sign itself a fresh delegation.
+- The revoke cap's window (`since_ms`) is unchanged: the cap stays a rate (`REVOKED_PER_MESH` per 25 h 5 min),
+  older revocations no longer count toward it but still refuse `hello`.
+
+### Tests
+
+- `store/ops.rs::unknown_engines_are_revoked_and_old_revocations_age_out`: no rekey → `prune_revoked` deletes 0
+  and the row stays revoked; after `rekey(m1 → m2, [lost, other])` it deletes 3 (m1: `lost`, `e1`; m2: `lost`,
+  which kept its t0 revocation); the recent `other` stays in m2.
+- `tests/mesh.rs::a_revocation_is_pruned_only_after_a_rekey`: revoke over the wire, `queue::housekeeping` at
+  now + 30 h keeps the row and the engine's `hello` is `403 revoked`; after `POST /v1/mesh/rekey m → m2` the same
+  housekeeping removes the row from both meshes and `hello` under `m` is `409 mesh_rekeyed`.
+
+### Deviations / doubts
+
+- Revoked rows of a mesh that never rekeys grow without bound, at most `REVOKED_PER_MESH` per window. Accepted:
+  dropping them is the N1 hole. TODO(210-M4): a per-mesh hard ceiling on revoked rows (refuse further revokes
+  with "rekey first") if growth shows up in ops.
+- A row in a rekey-created mesh revoked *after* the rekey is pruned only after the next rekey of that mesh
+  (the `meshes.rekeyed_ms` branch); correct, same reasoning as above.
+
+### Verification (after the last code edit, each under its own lock hold)
+
+```sh
+CARGO_BUILD_JOBS=6 cargo test -p share-edge --all-features
+CARGO_BUILD_JOBS=6 cargo clippy -p share-edge --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=6 cargo clippy -p share-edge --all-targets -- -D warnings
+```
+
+- `cargo test -p share-edge --all-features`: all pass. Suite counts: lib 46, then 0, 8, 15, 8 (mesh, +1), 2, 0.
+- Both clippy runs `-D warnings`: exit 0. `Cargo.lock`: unchanged.
