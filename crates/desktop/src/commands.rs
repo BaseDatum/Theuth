@@ -97,7 +97,7 @@ pub fn quit_ack(app: AppHandle) {
 }
 
 /// 210 §7.4 item 2: the webview's live public-share count; the tray menu shows "Stop public sharing (N)" while it
-/// is above zero. Its click comes back as the `share-stop-all` event (the webview owns the RPC connection).
+/// is above zero. Its click is handled in the shell (`share::stop_all`), without the webview.
 #[cfg(desktop)]
 #[tauri::command]
 pub fn share_tray(app: AppHandle, live: u32) -> Result<(), String> {

@@ -37,6 +37,8 @@ mod point;
 mod quit;
 #[cfg(desktop)]
 mod update;
+#[cfg(desktop)]
+mod share;
 #[cfg(any(desktop, target_os = "ios"))]
 mod web_rules;
 #[cfg(desktop)]
@@ -271,10 +273,9 @@ mod desktop {
         sharing: AtomicU32,
     }
 
-    /// Tray menu id of "Stop public sharing (N)"; the click goes to the webview as [`SHARE_STOP_ALL_EVENT`].
+    /// Tray menu id of "Stop public sharing (N)"; the shell calls the engine itself ([`crate::share::stop_all`]),
+    /// so it works with the main window hidden.
     const SHARE_STOP_ALL: &str = "share_stop_all";
-    /// The webview calls RPC `share_stop("all")` on it (the shell holds no RPC connection of its own).
-    const SHARE_STOP_ALL_EVENT: &str = "share-stop-all";
 
     /// 210 §7.4 item 2 (G4): the webview reports how many shares are live; the tray menu gains or loses
     /// "Stop public sharing (N)". The tray title is the webview's (`App.tsx` badge), so it stays one writer.
@@ -620,7 +621,7 @@ mod desktop {
             "meeting" => navigate(app, "/meetings/new"),
             "settings" => navigate(app, "/settings/general"),
             "quit" => quit::request(app),
-            SHARE_STOP_ALL => log_err(app.emit(SHARE_STOP_ALL_EVENT, ()), "emit share-stop-all"),
+            SHARE_STOP_ALL => crate::share::stop_all(app),
             #[cfg(target_os = "macos")]
             PASTE_PLAIN => paste_plain(app),
             _ => {}
