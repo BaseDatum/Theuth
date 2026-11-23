@@ -54,7 +54,15 @@ pub async fn ensure(store: &dyn NameKeyStore, domain: &str, name: &str) -> anyho
     }
     let (key_pem, csr_der) = name_key(name, domain)?;
     store
-        .create(domain, name, NameKey { r#gen: 1, key_pem, csr_der })
+        .create(
+            domain,
+            name,
+            NameKey {
+                r#gen: 1,
+                key_pem,
+                csr_der,
+            },
+        )
         .await
 }
 

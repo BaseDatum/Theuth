@@ -31,7 +31,11 @@ impl Mount {
         Self {
             share: s.id.clone(),
             host: s.host.clone(),
-            prefix: if s.path == "/" { String::new() } else { s.path.clone() },
+            prefix: if s.path == "/" {
+                String::new()
+            } else {
+                s.path.clone()
+            },
             source: s.source.clone(),
             access: s.access,
             interstitial: s.interstitial,
@@ -71,7 +75,7 @@ impl Table {
             }
             let list = next.entry(m.host.to_ascii_lowercase()).or_default();
             list.push(Arc::new(m.clone()));
-            list.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+            list.sort_by_key(|x| std::cmp::Reverse(x.prefix.len()));
             next.retain(|_, v| !v.is_empty());
             next
         });

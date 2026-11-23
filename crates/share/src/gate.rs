@@ -137,7 +137,11 @@ impl Gate {
 
     fn jar(headers: &HeaderMap) -> CookieJar {
         let mut jar = CookieJar::new();
-        for v in headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()) {
+        for v in headers
+            .get_all(header::COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+        {
             for c in Cookie::split_parse(v.to_owned()).flatten() {
                 jar.add_original(c);
             }
@@ -161,7 +165,11 @@ impl Gate {
                 .path("/")
                 .same_site(SameSite::Lax),
         );
-        let c = jar.delta().next().map(|c| c.to_string()).unwrap_or_default();
+        let c = jar
+            .delta()
+            .next()
+            .map(|c| c.to_string())
+            .unwrap_or_default();
         HeaderValue::from_str(&c).unwrap_or_else(|_| HeaderValue::from_static(""))
     }
 
@@ -182,7 +190,9 @@ impl Gate {
             && headers.get("sec-fetch-mode").and_then(|v| v.to_str().ok()) == Some("navigate");
         if m.access == Access::Password {
             let ok = match self.pass_value(&m.share) {
-                Some(want) => self.signed(headers, &pass_cookie(&m.share)).as_deref() == Some(&want),
+                Some(want) => {
+                    self.signed(headers, &pass_cookie(&m.share)).as_deref() == Some(&want)
+                }
                 None => false,
             };
             if !ok {
@@ -212,8 +222,10 @@ impl Gate {
             return text(StatusCode::FORBIDDEN, "cross-site request refused");
         }
         let mut r = redirect(&format!("{}/", m.prefix));
-        r.headers_mut()
-            .append(header::SET_COOKIE, self.set_cookie(seen_cookie(&m.share), "1".into()));
+        r.headers_mut().append(
+            header::SET_COOKIE,
+            self.set_cookie(seen_cookie(&m.share), "1".into()),
+        );
         r
     }
 
@@ -233,7 +245,10 @@ impl Gate {
             let e = a.entry(ip).or_insert((now, 0));
             e.1 += 1;
             if e.1 > ATTEMPTS_PER_MIN {
-                return text(StatusCode::TOO_MANY_REQUESTS, "too many attempts, wait a minute");
+                return text(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too many attempts, wait a minute",
+                );
             }
         }
         let Some(phc) = self.passwords.lock().get(&m.share).cloned() else {
@@ -260,19 +275,28 @@ impl Gate {
         }
         let mut r = redirect(&format!("{}/", m.prefix));
         if let Some(v) = self.pass_value(&m.share) {
-            r.headers_mut()
-                .append(header::SET_COOKIE, self.set_cookie(pass_cookie(&m.share), v));
+            r.headers_mut().append(
+                header::SET_COOKIE,
+                self.set_cookie(pass_cookie(&m.share), v),
+            );
         }
         r
     }
 
     fn interstitial_page(&self, m: &Mount) -> String {
         let op = self.operator.lock().clone();
-        let operator = if op.name.is_empty() { "the edge's operator".into() } else { escape(&op.name) };
+        let operator = if op.name.is_empty() {
+            "the edge's operator".into()
+        } else {
+            escape(&op.name)
+        };
         let report = if op.abuse_url.is_empty() {
             String::new()
         } else {
-            format!(r#" <a href="{}" rel="noopener">Report abuse ↗</a>"#, escape(&op.abuse_url))
+            format!(
+                r#" <a href="{}" rel="noopener">Report abuse ↗</a>"#,
+                escape(&op.abuse_url)
+            )
         };
         page(&format!(
             "<p>This is an app a theuth user is sharing from their own computer. Neither theuth nor \
@@ -287,7 +311,11 @@ fn password_page(m: &Mount, wrong: bool) -> String {
     page(&format!(
         "<p>{}</p><form method=post action=\"{}{LOGIN_PATH}\"><input type=password name=password \
          autofocus autocomplete=off><button>Open</button></form>",
-        if wrong { "Wrong password." } else { "This share needs a password." },
+        if wrong {
+            "Wrong password."
+        } else {
+            "This share needs a password."
+        },
         escape(&m.prefix)
     ))
 }
@@ -303,7 +331,10 @@ fn html(status: StatusCode, body: &str) -> Response<Body> {
     let mut r = Response::new(full(body.to_owned()));
     *r.status_mut() = status;
     let h = r.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"));
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     h.insert("x-frame-options", HeaderValue::from_static("DENY"));
     r
@@ -385,21 +416,37 @@ mod tests {
     async fn interstitial_then_password() {
         let g = Gate::new(Key::generate());
         let mount = m(Access::Public);
-        assert!(matches!(g.step(&mount, "/", &Method::GET, &nav()), Step::Respond(_)));
-        assert!(matches!(g.step(&mount, "/x.js", &Method::GET, &HeaderMap::new()), Step::Pass));
+        assert!(matches!(
+            g.step(&mount, "/", &Method::GET, &nav()),
+            Step::Respond(_)
+        ));
+        assert!(matches!(
+            g.step(&mount, "/x.js", &Method::GET, &HeaderMap::new()),
+            Step::Pass
+        ));
         let mut h = nav();
         h.insert("sec-fetch-site", HeaderValue::from_static("same-origin"));
         let r = g.proceed(&mount, &h);
         let set = r.headers()[header::SET_COOKIE].to_str().unwrap().to_owned();
-        assert!(set.starts_with("__Host-share-seen-s1=") && set.contains("Secure") && set.contains("Path=/"));
+        assert!(
+            set.starts_with("__Host-share-seen-s1=")
+                && set.contains("Secure")
+                && set.contains("Path=/")
+        );
         let pair = set.split(';').next().unwrap().to_owned();
         let mut h = nav();
         h.insert(header::COOKIE, HeaderValue::from_str(&pair).unwrap());
         assert!(matches!(g.step(&mount, "/", &Method::GET, &h), Step::Pass));
 
-        let pm = Mount { interstitial: false, ..m(Access::Password) };
+        let pm = Mount {
+            interstitial: false,
+            ..m(Access::Password)
+        };
         g.set_password("s1", Some(hash_password("hunter22").unwrap()));
-        assert!(matches!(g.step(&pm, "/", &Method::GET, &nav()), Step::Respond(_)));
+        assert!(matches!(
+            g.step(&pm, "/", &Method::GET, &nav()),
+            Step::Respond(_)
+        ));
         let req = |pw: &str, site: &'static str| {
             Request::builder()
                 .method(Method::POST)
@@ -409,17 +456,34 @@ mod tests {
                 .unwrap()
         };
         let ip: IpAddr = "198.51.100.1".parse().unwrap();
-        assert_eq!(g.login(&pm, ip, req("hunter22", "cross-site")).await.status(), StatusCode::FORBIDDEN);
-        assert_eq!(g.login(&pm, ip, req("nope", "same-origin")).await.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            g.login(&pm, ip, req("hunter22", "cross-site"))
+                .await
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            g.login(&pm, ip, req("nope", "same-origin")).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
         let ok = g.login(&pm, ip, req("hunter22", "same-origin")).await;
         assert_eq!(ok.status(), StatusCode::SEE_OTHER);
-        let pair = ok.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
+        let pair = ok.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
         let mut h = nav();
         h.insert(header::COOKIE, HeaderValue::from_str(&pair).unwrap());
         assert!(matches!(g.step(&pm, "/", &Method::GET, &h), Step::Pass));
         for _ in 0..ATTEMPTS_PER_MIN {
             let _ = g.login(&pm, ip, req("x", "same-origin")).await;
         }
-        assert_eq!(g.login(&pm, ip, req("x", "same-origin")).await.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            g.login(&pm, ip, req("x", "same-origin")).await.status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
     }
 }

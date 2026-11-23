@@ -71,7 +71,12 @@ pub trait EdgeDialer: Send + Sync {
 #[async_trait::async_trait]
 pub trait DelegationSource: Send + Sync {
     /// A delegation for this engine at `edge`/`domain`, `issued_ms = min(holder clock, edge_now_ms)`.
-    async fn delegate(&self, edge: PublicKey, domain: &str, edge_now_ms: u64) -> anyhow::Result<Signed>;
+    async fn delegate(
+        &self,
+        edge: PublicKey,
+        domain: &str,
+        edge_now_ms: u64,
+    ) -> anyhow::Result<Signed>;
 }
 
 /// M1: the engine holds `mesh/share_key` and signs for itself.
@@ -85,7 +90,12 @@ pub struct SelfHolder {
 
 #[async_trait::async_trait]
 impl DelegationSource for SelfHolder {
-    async fn delegate(&self, edge: PublicKey, domain: &str, edge_now_ms: u64) -> anyhow::Result<Signed> {
+    async fn delegate(
+        &self,
+        edge: PublicKey,
+        domain: &str,
+        edge_now_ms: u64,
+    ) -> anyhow::Result<Signed> {
         let d = share_proto::Delegation::new(
             domain.to_owned(),
             edge,
@@ -147,7 +157,13 @@ impl Control {
         Self { conn }
     }
 
-    async fn send(&self, method: http::Method, path: &str, body: Bytes, ctype: &str) -> Result<Resp, EdgeError> {
+    async fn send(
+        &self,
+        method: http::Method,
+        path: &str,
+        body: Bytes,
+        ctype: &str,
+    ) -> Result<Resp, EdgeError> {
         let stream = self.conn.open().await.map_err(anyhow::Error::from)?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
             .await
@@ -162,7 +178,10 @@ impl Control {
             .header(http::header::CONTENT_TYPE, ctype)
             .body(Full::new(body))
             .map_err(anyhow::Error::from)?;
-        let resp = sender.send_request(req).await.map_err(anyhow::Error::from)?;
+        let resp = sender
+            .send_request(req)
+            .await
+            .map_err(anyhow::Error::from)?;
         if resp.status().is_client_error() || resp.status().is_server_error() {
             let status = resp.status().as_u16();
             let bytes = read_limited(resp).await?;
@@ -176,7 +195,12 @@ impl Control {
         Ok(resp)
     }
 
-    async fn json<T: DeserializeOwned>(&self, method: http::Method, path: &str, body: Option<&impl serde::Serialize>) -> Result<(u16, T), EdgeError> {
+    async fn json<T: DeserializeOwned>(
+        &self,
+        method: http::Method,
+        path: &str,
+        body: Option<&impl serde::Serialize>,
+    ) -> Result<(u16, T), EdgeError> {
         let bytes = match body {
             Some(b) => Bytes::from(serde_json::to_vec(b).map_err(anyhow::Error::from)?),
             None => Bytes::new(),
@@ -195,12 +219,18 @@ impl Control {
 
     /// `GET /v1/info`.
     pub async fn info(&self) -> Result<Info, EdgeError> {
-        Ok(self.json(http::Method::GET, paths::INFO, None::<&()>).await?.1)
+        Ok(self
+            .json(http::Method::GET, paths::INFO, None::<&()>)
+            .await?
+            .1)
     }
 
     /// `POST /v1/hello`.
     pub async fn hello(&self, h: &Hello) -> Result<Welcome, EdgeError> {
-        Ok(self.json(http::Method::POST, paths::HELLO, Some(h)).await?.1)
+        Ok(self
+            .json(http::Method::POST, paths::HELLO, Some(h))
+            .await?
+            .1)
     }
 
     /// `PUT /v1/routes` with this engine's full set.
@@ -213,29 +243,53 @@ impl Control {
 
     /// `GET /v1/names/{name}`.
     pub async fn check_name(&self, name: &str) -> Result<share_proto::NameAvailability, EdgeError> {
-        Ok(self.json(http::Method::GET, &paths::name(name), None::<&()>).await?.1)
+        Ok(self
+            .json(http::Method::GET, &paths::name(name), None::<&()>)
+            .await?
+            .1)
     }
 
     /// `POST /v1/names {name}`: allocate a client-drawn random name.
     pub async fn allocate(&self, name: &str) -> Result<share_proto::NameGranted, EdgeError> {
-        let req = share_proto::NameRequest { name: name.to_owned() };
-        Ok(self.json(http::Method::POST, paths::NAMES, Some(&req)).await?.1)
+        let req = share_proto::NameRequest {
+            name: name.to_owned(),
+        };
+        Ok(self
+            .json(http::Method::POST, paths::NAMES, Some(&req))
+            .await?
+            .1)
     }
 
     /// `PUT /v1/names/{name}`: claim a reserved name.
     pub async fn claim(&self, name: &str) -> Result<share_proto::NameGranted, EdgeError> {
-        Ok(self.json(http::Method::PUT, &paths::name(name), None::<&()>).await?.1)
+        Ok(self
+            .json(http::Method::PUT, &paths::name(name), None::<&()>)
+            .await?
+            .1)
     }
 
     /// `DELETE /v1/names/{name}`.
     pub async fn release(&self, name: &str) -> Result<share_proto::NameReleased, EdgeError> {
-        Ok(self.json(http::Method::DELETE, &paths::name(name), None::<&()>).await?.1)
+        Ok(self
+            .json(http::Method::DELETE, &paths::name(name), None::<&()>)
+            .await?
+            .1)
     }
 
     /// `POST /v1/names/{name}/csr` with the CSR DER.
-    pub async fn csr(&self, name: &str, der: Vec<u8>, rotate: bool) -> Result<CsrAnswer, EdgeError> {
+    pub async fn csr(
+        &self,
+        name: &str,
+        der: Vec<u8>,
+        rotate: bool,
+    ) -> Result<CsrAnswer, EdgeError> {
         let resp = self
-            .send(http::Method::POST, &paths::name_csr(name, rotate), der.into(), "application/pkcs10")
+            .send(
+                http::Method::POST,
+                &paths::name_csr(name, rotate),
+                der.into(),
+                "application/pkcs10",
+            )
             .await?;
         let status = resp.status().as_u16();
         let bytes = read_limited(resp).await?;
@@ -248,23 +302,38 @@ impl Control {
 
     /// `GET /v1/names/{name}/cert`.
     pub async fn cert(&self, name: &str) -> Result<share_proto::CertChain, EdgeError> {
-        Ok(self.json(http::Method::GET, &paths::name_cert(name), None::<&()>).await?.1)
+        Ok(self
+            .json(http::Method::GET, &paths::name_cert(name), None::<&()>)
+            .await?
+            .1)
     }
 
     /// `POST /v1/mesh/stop`: Stop all (§7.4).
     pub async fn stop_all(&self) -> Result<share_proto::StopAll, EdgeError> {
-        Ok(self.json(http::Method::POST, paths::MESH_STOP, None::<&()>).await?.1)
+        Ok(self
+            .json(http::Method::POST, paths::MESH_STOP, None::<&()>)
+            .await?
+            .1)
     }
 
     /// `GET /v1/events`: SSE parsed into [`Event`]s on a channel; closes when the stream ends.
     pub async fn events(&self) -> Result<mpsc::Receiver<Event>, EdgeError> {
-        let resp = self.send(http::Method::GET, paths::EVENTS, Bytes::new(), "text/event-stream").await?;
+        let resp = self
+            .send(
+                http::Method::GET,
+                paths::EVENTS,
+                Bytes::new(),
+                "text/event-stream",
+            )
+            .await?;
         let (tx, rx) = mpsc::channel(64);
         tokio::spawn(async move {
             let mut body = resp.into_body();
             let mut parser = SseParser::default();
             while let Some(Ok(frame)) = body.frame().await {
-                let Ok(data) = frame.into_data() else { continue };
+                let Ok(data) = frame.into_data() else {
+                    continue;
+                };
                 for ev in parser.push(&data) {
                     if tx.send(ev).await.is_err() {
                         return;
@@ -370,7 +439,9 @@ impl Default for Timing {
             backoff,
             renew: RENEW,
             clock_retry: CLOCK_RETRY,
-            drain_redial: || Duration::from_millis(1000 + (uuid::Uuid::new_v4().as_u128() % 4000) as u64),
+            drain_redial: || {
+                Duration::from_millis(1000 + (uuid::Uuid::new_v4().as_u128() % 4000) as u64)
+            },
         }
     }
 }
@@ -454,7 +525,11 @@ impl Client {
         let Some(ticket) = self.tickets.first() else {
             return Next::Blocked(crate::config::NO_SHARING_EDGE.into());
         };
-        let conn = match self.dialer.dial(ticket.addr.clone(), share_proto::ALPNS).await {
+        let conn = match self
+            .dialer
+            .dial(ticket.addr.clone(), share_proto::ALPNS)
+            .await
+        {
             Ok(c) => c,
             Err(e) => {
                 tracing::debug!("share: dial {}: {e:#}", ticket.edge_id());
@@ -467,12 +542,19 @@ impl Client {
         next
     }
 
-    async fn attached(&self, ticket: &ShareEdgeTicket, conn: Arc<dyn EdgeConn>, attempt: &mut u32) -> Next {
+    async fn attached(
+        &self,
+        ticket: &ShareEdgeTicket,
+        conn: Arc<dyn EdgeConn>,
+        attempt: &mut u32,
+    ) -> Next {
         let control = Control::new(conn.clone());
         self.set(EdgeState::Info, None);
         let info = match control.info().await {
             Ok(i) => i,
-            Err(e) if e.code() == Some(ErrorCode::ClientTooOld) => return Next::Blocked("client_too_old".into()),
+            Err(e) if e.code() == Some(ErrorCode::ClientTooOld) => {
+                return Next::Blocked("client_too_old".into());
+            }
             Err(_) => return Next::Dial,
         };
         if info.edge_id != ticket.edge_id() {
@@ -483,7 +565,8 @@ impl Client {
             return Next::Blocked("client_too_old".into());
         }
         let skew = share_proto::Delegation::clock_skew_ms(platform::time::now_ms(), info.now_ms);
-        let clock = share_proto::Delegation::clock_off(platform::time::now_ms(), info.now_ms).then_some(skew);
+        let clock = share_proto::Delegation::clock_off(platform::time::now_ms(), info.now_ms)
+            .then_some(skew);
 
         // delegating → hello, repeated at renewal and after `delegation_expired`.
         let welcome = match self.hello(&control, &info, clock).await {
@@ -510,7 +593,10 @@ impl Client {
             })
         };
         let _abort = AbortOnDrop(accept);
-        let mut renew = tokio::time::interval_at(tokio::time::Instant::now() + self.timing.renew, self.timing.renew);
+        let mut renew = tokio::time::interval_at(
+            tokio::time::Instant::now() + self.timing.renew,
+            self.timing.renew,
+        );
         loop {
             tokio::select! {
                 ev = events.recv() => match ev {
@@ -540,9 +626,18 @@ impl Client {
     }
 
     /// `delegating` + `hello` with the §5.9 error mapping.
-    async fn hello(&self, control: &Control, info: &Info, clock: Option<i64>) -> Result<Welcome, Next> {
+    async fn hello(
+        &self,
+        control: &Control,
+        info: &Info,
+        clock: Option<i64>,
+    ) -> Result<Welcome, Next> {
         self.set(EdgeState::Delegating, clock);
-        let delegation = match self.delegation.delegate(info.edge_id, &info.domain, info.now_ms).await {
+        let delegation = match self
+            .delegation
+            .delegate(info.edge_id, &info.domain, info.now_ms)
+            .await
+        {
             Ok(d) => d,
             Err(e) => {
                 tracing::warn!("share: delegation: {e:#}");
@@ -553,7 +648,7 @@ impl Client {
         let hello = Hello {
             v: share_proto::PROTOCOL_MAJOR,
             delegation,
-            invite: self.tickets.first().and_then(|t| t.invite.clone()),
+            invite: self.tickets.first().and_then(|t| t.invite),
             client: share_proto::version::client_agent(platform::version::get()),
             terms_rev: self.terms_rev.borrow().clone(),
         };

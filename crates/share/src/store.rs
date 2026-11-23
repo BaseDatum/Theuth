@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use sqlx::Row as _;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteRow};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteRow,
+};
 
 use crate::config::EdgeChoice;
 use crate::model::{Access, Share, ShareState, Source, StoppedBy};
@@ -55,10 +57,12 @@ impl Store {
     }
 
     async fn setting(&self, key: &str) -> anyhow::Result<Option<String>> {
-        Ok(sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await?)
+        Ok(
+            sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
     }
 
     async fn set_setting(&self, key: &str, value: &str) -> anyhow::Result<()> {
@@ -80,7 +84,8 @@ impl Store {
 
     /// Write the master switch. The caller holds the approval for `true` (§7.2).
     pub async fn set_enabled(&self, on: bool) -> anyhow::Result<()> {
-        self.set_setting(keys::ENABLED, if on { "true" } else { "false" }).await
+        self.set_setting(keys::ENABLED, if on { "true" } else { "false" })
+            .await
     }
 
     /// The edge choice; the default edge when never set.
@@ -98,11 +103,13 @@ impl Store {
 
     /// The terms revision this machine accepted at `edge`.
     pub async fn terms_rev(&self, edge: &str) -> anyhow::Result<Option<String>> {
-        Ok(sqlx::query_scalar("SELECT terms_rev FROM edge_state WHERE edge = ?")
-            .bind(edge)
-            .fetch_optional(&self.pool)
-            .await?
-            .flatten())
+        Ok(
+            sqlx::query_scalar("SELECT terms_rev FROM edge_state WHERE edge = ?")
+                .bind(edge)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten(),
+        )
     }
 
     /// Record an accepted terms revision.

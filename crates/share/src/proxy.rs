@@ -70,7 +70,10 @@ fn is_upgrade(h: &HeaderMap) -> bool {
         && h.get_all(header::CONNECTION)
             .iter()
             .filter_map(|v| v.to_str().ok())
-            .any(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case("upgrade")))
+            .any(|v| {
+                v.split(',')
+                    .any(|t| t.trim().eq_ignore_ascii_case("upgrade"))
+            })
 }
 
 fn strip_hop(h: &mut HeaderMap, keep_upgrade: bool) {
@@ -94,7 +97,13 @@ fn strip_hop(h: &mut HeaderMap, keep_upgrade: bool) {
 }
 
 /// The request-side header policy (§5.6).
-pub fn request_headers(h: &mut HeaderMap, visitor: IpAddr, public_host: &str, prefix: &str, port: u16) {
+pub fn request_headers(
+    h: &mut HeaderMap,
+    visitor: IpAddr,
+    public_host: &str,
+    prefix: &str,
+    port: u16,
+) {
     let upgrade = is_upgrade(h);
     strip_hop(h, upgrade);
     for n in STRIPPED {
@@ -185,11 +194,20 @@ impl Proxy {
         }
         match &m.source {
             Source::Port(port) => self.forward(req, &m, *port, rest, visitor.ip()).await,
-            Source::Dir(root) => serve_dir(Path::new(root), &rest, req.method(), req.headers()).await,
+            Source::Dir(root) => {
+                serve_dir(Path::new(root), &rest, req.method(), req.headers()).await
+            }
         }
     }
 
-    async fn forward<B>(&self, mut req: Request<B>, m: &Mount, port: u16, rest: String, visitor: IpAddr) -> Response<Body>
+    async fn forward<B>(
+        &self,
+        mut req: Request<B>,
+        m: &Mount,
+        port: u16,
+        rest: String,
+        visitor: IpAddr,
+    ) -> Response<Body>
     where
         B: hyper::body::Body<Data = Bytes> + Send + 'static,
         B::Error: Into<BoxError>,
@@ -210,12 +228,19 @@ impl Proxy {
             Err(_) => return text(StatusCode::BAD_REQUEST, "bad path"),
         };
         parts.version = Version::HTTP_11;
-        request_headers(&mut parts.headers, visitor, &normalize_host(&m.host), &m.prefix, port);
+        request_headers(
+            &mut parts.headers,
+            visitor,
+            &normalize_host(&m.host),
+            &m.prefix,
+            port,
+        );
         let req = Request::from_parts(parts, body.map_err(Into::into).boxed_unsync());
-        let (mut sender, conn) = match hyper::client::conn::http1::handshake(TokioIo::new(stream)).await {
-            Ok(x) => x,
-            Err(e) => return text(StatusCode::BAD_GATEWAY, &e.to_string()),
-        };
+        let (mut sender, conn) =
+            match hyper::client::conn::http1::handshake(TokioIo::new(stream)).await {
+                Ok(x) => x,
+                Err(e) => return text(StatusCode::BAD_GATEWAY, &e.to_string()),
+            };
         tokio::spawn(async move {
             let _ = conn.with_upgrades().await;
         });
@@ -228,7 +253,9 @@ impl Proxy {
             let upstream_up = hyper::upgrade::on(&mut resp);
             tokio::spawn(async move {
                 if let (Ok(v), Ok(u)) = tokio::join!(visitor_up, upstream_up) {
-                    let _ = tokio::io::copy_bidirectional(&mut TokioIo::new(v), &mut TokioIo::new(u)).await;
+                    let _ =
+                        tokio::io::copy_bidirectional(&mut TokioIo::new(v), &mut TokioIo::new(u))
+                            .await;
                 }
             });
         }
@@ -238,7 +265,12 @@ impl Proxy {
 }
 
 /// Serve a file of a `dir` source (§5.6, F-m8): full bodies with an `ETag` from size and mtime.
-async fn serve_dir(root: &Path, rest: &str, method: &Method, headers: &HeaderMap) -> Response<Body> {
+async fn serve_dir(
+    root: &Path,
+    rest: &str,
+    method: &Method,
+    headers: &HeaderMap,
+) -> Response<Body> {
     if method != Method::GET && method != Method::HEAD {
         return text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
     }
@@ -277,7 +309,8 @@ async fn serve_dir(root: &Path, rest: &str, method: &Method, headers: &HeaderMap
     } else {
         let stream = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(f));
         StreamBody::new(futures::StreamExt::map(stream, |r| {
-            r.map(hyper::body::Frame::data).map_err(|e| Box::new(e) as BoxError)
+            r.map(hyper::body::Frame::data)
+                .map_err(|e| Box::new(e) as BoxError)
         }))
         .boxed_unsync()
     };
@@ -290,7 +323,10 @@ async fn serve_dir(root: &Path, rest: &str, method: &Method, headers: &HeaderMap
     if let Ok(v) = HeaderValue::from_str(&etag) {
         h.insert(header::ETAG, v);
     }
-    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    h.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
     r
 }
 
@@ -317,10 +353,19 @@ mod tests {
         h.insert("x-forwarded-for", HeaderValue::from_static("6.6.6.6"));
         h.insert("forwarded", HeaderValue::from_static("for=6.6.6.6"));
         h.insert("x-real-ip", HeaderValue::from_static("6.6.6.6"));
-        h.insert("connection", HeaderValue::from_static("keep-alive, x-secret"));
+        h.insert(
+            "connection",
+            HeaderValue::from_static("keep-alive, x-secret"),
+        );
         h.insert("x-secret", HeaderValue::from_static("1"));
         h.insert("host", HeaderValue::from_static("app.sky.tun.zip"));
-        request_headers(&mut h, "203.0.113.9".parse().unwrap(), "app.sky.tun.zip", "", 5173);
+        request_headers(
+            &mut h,
+            "203.0.113.9".parse().unwrap(),
+            "app.sky.tun.zip",
+            "",
+            5173,
+        );
         assert_eq!(h["x-forwarded-for"], "203.0.113.9");
         assert_eq!(h["x-forwarded-proto"], "https");
         assert_eq!(h["x-forwarded-host"], "app.sky.tun.zip");
@@ -377,7 +422,11 @@ mod tests {
         let tmp = tempfile::Builder::new().prefix("share").tempdir().unwrap();
         std::fs::write(tmp.path().join("index.html"), "<h1>hi</h1>").unwrap();
         let table = Arc::new(Table::default());
-        table.insert(mount("sky.tun.zip", "/docs", Source::Dir(tmp.path().to_str().unwrap().into())));
+        table.insert(mount(
+            "sky.tun.zip",
+            "/docs",
+            Source::Dir(tmp.path().to_str().unwrap().into()),
+        ));
 
         // An upstream that echoes the headers it saw and redirects to its own origin.
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -386,21 +435,23 @@ mod tests {
             loop {
                 let (s, _) = l.accept().await.unwrap();
                 tokio::spawn(async move {
-                    let svc = hyper::service::service_fn(|req: Request<hyper::body::Incoming>| async move {
-                        let seen = format!(
-                            "{}|{}|{}",
-                            req.headers()["host"].to_str().unwrap(),
-                            req.headers()["x-forwarded-for"].to_str().unwrap(),
-                            req.uri()
-                        );
-                        Ok::<_, std::convert::Infallible>(
-                            Response::builder()
-                                .status(302)
-                                .header("location", format!("http://localhost:{port}/next"))
-                                .body(Full::new(Bytes::from(seen)))
-                                .unwrap(),
-                        )
-                    });
+                    let svc = hyper::service::service_fn(
+                        |req: Request<hyper::body::Incoming>| async move {
+                            let seen = format!(
+                                "{}|{}|{}",
+                                req.headers()["host"].to_str().unwrap(),
+                                req.headers()["x-forwarded-for"].to_str().unwrap(),
+                                req.uri()
+                            );
+                            Ok::<_, std::convert::Infallible>(
+                                Response::builder()
+                                    .status(302)
+                                    .header("location", format!("http://localhost:{port}/next"))
+                                    .body(Full::new(Bytes::from(seen)))
+                                    .unwrap(),
+                            )
+                        },
+                    );
                     let _ = hyper::server::conn::http1::Builder::new()
                         .serve_connection(TokioIo::new(s), svc)
                         .await;
@@ -420,10 +471,14 @@ mod tests {
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
         let r = p.handle(get("sky.tun.zip", "/docs/"), v).await;
         assert_eq!(r.status(), StatusCode::OK);
-        assert_eq!(r.into_body().collect().await.unwrap().to_bytes(), "<h1>hi</h1>");
+        assert_eq!(
+            r.into_body().collect().await.unwrap().to_bytes(),
+            "<h1>hi</h1>"
+        );
 
         let mut req = get("app.sky.tun.zip", "/a?b=1");
-        req.headers_mut().insert("x-forwarded-for", HeaderValue::from_static("6.6.6.6"));
+        req.headers_mut()
+            .insert("x-forwarded-for", HeaderValue::from_static("6.6.6.6"));
         let r = p.handle(req, v).await;
         assert_eq!(r.status(), StatusCode::FOUND);
         assert_eq!(r.headers()["location"], "https://app.sky.tun.zip/next");

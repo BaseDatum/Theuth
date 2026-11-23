@@ -64,7 +64,11 @@ pub struct Plan {
 
 /// Validate `share_publish` arguments (§7.1, §5.6): one source; a port source has no path and
 /// gets a random label; labels, names and paths obey `share-proto`'s rules.
-pub fn plan(args: PublishArgs, default_expiry: Expiry, random: [u8; names::RANDOM_LEN]) -> Result<Plan, String> {
+pub fn plan(
+    args: PublishArgs,
+    default_expiry: Expiry,
+    random: [u8; names::RANDOM_LEN],
+) -> Result<Plan, String> {
     let source = match (args.source.port, args.source.dir) {
         (Some(_), Some(_)) => return Err("give either source.port or source.dir, not both".into()),
         (None, None) => return Err("source needs port or dir".into()),
@@ -190,7 +194,10 @@ impl Tool for ShareStopTool {
 
     async fn call(&self, args: StopArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let r = if args.id == "all" {
-            self.engine.stop_all().await.map(|n| format!("stopped {n} share(s)"))
+            self.engine
+                .stop_all()
+                .await
+                .map(|n| format!("stopped {n} share(s)"))
         } else {
             self.engine
                 .stop(&args.id, crate::model::StoppedBy::User)
@@ -254,10 +261,18 @@ mod tests {
     #[test]
     fn publish_argument_validation() {
         let r = [1u8; 6];
-        let p = plan(args(serde_json::json!({"source": {"port": 5173}})).unwrap(), Expiry::H8, r).unwrap();
+        let p = plan(
+            args(serde_json::json!({"source": {"port": 5173}})).unwrap(),
+            Expiry::H8,
+            r,
+        )
+        .unwrap();
         assert_eq!(p.source, Source::Port(5173));
         assert_eq!(p.label.as_deref().map(str::len), Some(6));
-        assert_eq!((p.path.as_str(), p.expiry, p.access), ("/", Expiry::H8, Access::Public));
+        assert_eq!(
+            (p.path.as_str(), p.expiry, p.access),
+            ("/", Expiry::H8, Access::Public)
+        );
 
         let p = plan(
             args(serde_json::json!({"source": {"dir": "/srv/site"}, "path": "/docs", "expiry": "7d", "access": "password"}))
@@ -266,17 +281,31 @@ mod tests {
             r,
         )
         .unwrap();
-        assert_eq!((p.label, p.path.as_str(), p.expiry, p.access), (None, "/docs", Expiry::D7, Access::Password));
+        assert_eq!(
+            (p.label, p.path.as_str(), p.expiry, p.access),
+            (None, "/docs", Expiry::D7, Access::Password)
+        );
 
         let bad = |v| plan(args(v).unwrap(), Expiry::H8, r).unwrap_err();
         assert!(bad(serde_json::json!({"source": {}})).contains("port or dir"));
         assert!(bad(serde_json::json!({"source": {"port": 1, "dir": "/x"}})).contains("not both"));
         assert!(bad(serde_json::json!({"source": {"dir": "rel"}})).contains("absolute"));
-        assert!(bad(serde_json::json!({"source": {"port": 80}, "path": "/x"})).contains("sub-label"));
-        assert!(bad(serde_json::json!({"source": {"dir": "/x"}, "path": "/A"})).starts_with("path"));
-        assert!(bad(serde_json::json!({"source": {"port": 80}, "label": "-x"})).starts_with("label"));
-        assert!(bad(serde_json::json!({"source": {"port": 80}, "name": "xn--a"})).starts_with("name"));
+        assert!(
+            bad(serde_json::json!({"source": {"port": 80}, "path": "/x"})).contains("sub-label")
+        );
+        assert!(
+            bad(serde_json::json!({"source": {"dir": "/x"}, "path": "/A"})).starts_with("path")
+        );
+        assert!(
+            bad(serde_json::json!({"source": {"port": 80}, "label": "-x"})).starts_with("label")
+        );
+        assert!(
+            bad(serde_json::json!({"source": {"port": 80}, "name": "xn--a"})).starts_with("name")
+        );
         assert!(args(serde_json::json!({"source": {"port": 1}, "expiry": "2h"})).is_err());
-        assert!(args(serde_json::json!({"source": {"port": 1}, "password": "x"})).is_err(), "no password argument");
+        assert!(
+            args(serde_json::json!({"source": {"port": 1}, "password": "x"})).is_err(),
+            "no password argument"
+        );
     }
 }

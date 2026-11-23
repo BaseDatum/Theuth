@@ -81,7 +81,8 @@ async fn h_routes(State(f): State<Arc<Fake>>, Json(r): Json<RoutesPut>) -> http:
 async fn h_events(State(f): State<Arc<Fake>>) -> axum::response::Response {
     let (tx, rx) = mpsc::channel(8);
     *f.sse.lock() = Some(tx);
-    let stream = futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|x| (x, rx)) });
+    let stream =
+        futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|x| (x, rx)) });
     (
         [(http::header::CONTENT_TYPE, "text/event-stream")],
         axum::body::Body::from_stream(stream),
@@ -157,7 +158,13 @@ impl Attachment for Att {
     }
 }
 
-fn run(too_old: bool) -> (Arc<Fake>, watch::Receiver<Vec<EdgeState>>, watch::Sender<bool>) {
+fn run(
+    too_old: bool,
+) -> (
+    Arc<Fake>,
+    watch::Receiver<Vec<EdgeState>>,
+    watch::Sender<bool>,
+) {
     let fake = Arc::new(Fake {
         edge: SecretKey::from_bytes(&[7; 32]),
         too_old,
@@ -207,10 +214,17 @@ async fn until(rx: &mut watch::Receiver<Vec<EdgeState>>, n: usize, s: EdgeState)
 async fn attaches_sends_routes_and_redials_after_drain() {
     let (fake, mut rx, need) = run(false);
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(fake.dials.load(Ordering::SeqCst), 0, "nothing dials without a need");
+    assert_eq!(
+        fake.dials.load(Ordering::SeqCst),
+        0,
+        "nothing dials without a need"
+    );
     need.send_replace(true);
     until(&mut rx, 1, EdgeState::Attached).await;
-    assert_eq!(fake.routes.lock().clone(), vec![vec!["app.sky.tun.zip".to_owned()]]);
+    assert_eq!(
+        fake.routes.lock().clone(),
+        vec![vec!["app.sky.tun.zip".to_owned()]]
+    );
     assert_eq!(fake.hellos.load(Ordering::SeqCst), 1);
     let order: Vec<EdgeState> = rx.borrow().clone();
     assert_eq!(
@@ -226,7 +240,9 @@ async fn attaches_sends_routes_and_redials_after_drain() {
     );
 
     let tx = fake.sse.lock().clone().unwrap();
-    tx.send(Ok(Bytes::from("event: drain\ndata: {\"secs\":0}\n\n"))).await.unwrap();
+    tx.send(Ok(Bytes::from("event: drain\ndata: {\"secs\":0}\n\n")))
+        .await
+        .unwrap();
     until(&mut rx, 1, EdgeState::Draining).await;
     until(&mut rx, 2, EdgeState::Attached).await;
     assert_eq!(fake.dials.load(Ordering::SeqCst), 2);
@@ -239,15 +255,26 @@ async fn attaches_sends_routes_and_redials_after_drain() {
 async fn client_too_old_blocks() {
     let (_fake, mut rx, need) = run(true);
     need.send_replace(true);
-    until(&mut rx, 1, EdgeState::Blocked { reason: "client_too_old".into() }).await;
+    until(
+        &mut rx,
+        1,
+        EdgeState::Blocked {
+            reason: "client_too_old".into(),
+        },
+    )
+    .await;
 }
 
 #[test]
 fn sse_parser_splits_records_and_skips_unknown() {
     let mut p = SseParser::default();
     assert!(p.push(b"event: cert\ndata: {\"name\":").is_empty());
-    let evs = p.push(b"\"sky\"}\n\nevent: future\ndata: {}\n\nevent: kill\ndata: {\"reason\":\"stop_all\"}\n\n");
+    let evs = p.push(
+        b"\"sky\"}\n\nevent: future\ndata: {}\n\nevent: kill\ndata: {\"reason\":\"stop_all\"}\n\n",
+    );
     assert_eq!(evs.len(), 2);
     assert!(matches!(&evs[0], Event::Cert(c) if c.name == "sky"));
-    assert!(matches!(&evs[1], Event::Kill(k) if k.reason == KillReason::StopAll && k.host.is_none()));
+    assert!(
+        matches!(&evs[1], Event::Kill(k) if k.reason == KillReason::StopAll && k.host.is_none())
+    );
 }

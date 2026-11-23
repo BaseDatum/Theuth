@@ -134,10 +134,9 @@ impl EdgeChoice {
         match s.trim() {
             "default" | "" => Ok(EdgeChoice::Default),
             "none" => Ok(EdgeChoice::None),
-            t => Ok(EdgeChoice::Ticket(Box::new(
-                t.parse()
-                    .map_err(|e| anyhow::anyhow!("not a share edge ticket: {e}"))?,
-            ))),
+            t => Ok(EdgeChoice::Ticket(Box::new(t.parse().map_err(|e| {
+                anyhow::anyhow!("not a share edge ticket: {e}")
+            })?))),
         }
     }
 
@@ -159,7 +158,10 @@ mod tests {
     fn placeholders_never_parse_and_choice_roundtrips() {
         assert!(default_edges().is_empty());
         assert_eq!(EdgeChoice::parse("none").unwrap(), EdgeChoice::None);
-        assert_eq!(EdgeChoice::parse("default").unwrap().to_setting(), "default");
+        assert_eq!(
+            EdgeChoice::parse("default").unwrap().to_setting(),
+            "default"
+        );
         assert!(EdgeChoice::parse("theuthedgeNOPE").is_err());
         let e: Expiry = serde_json::from_str("\"24h\"").unwrap();
         assert_eq!(e.duration().as_secs(), 86_400);

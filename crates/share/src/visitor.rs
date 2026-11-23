@@ -127,7 +127,8 @@ impl ResolvesServerCert for Certs {
 pub fn certified_key(chain_pem: &str, key_pem: &str) -> anyhow::Result<CertifiedKey> {
     use rustls::pki_types::pem::PemObject as _;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-    let chain = CertificateDer::pem_slice_iter(chain_pem.as_bytes()).collect::<Result<Vec<_>, _>>()?;
+    let chain =
+        CertificateDer::pem_slice_iter(chain_pem.as_bytes()).collect::<Result<Vec<_>, _>>()?;
     anyhow::ensure!(!chain.is_empty(), "empty certificate chain");
     let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())?;
     let signing = rustls::crypto::aws_lc_rs::sign::any_supported_type(&key)?;
@@ -144,12 +145,19 @@ pub fn acceptor(certs: Arc<Certs>) -> anyhow::Result<tokio_rustls::TlsAcceptor> 
         .with_safe_default_protocol_versions()?
         .with_no_client_auth()
         .with_cert_resolver(certs);
-    cfg.alpn_protocols = share_proto::proxy::VISITOR_ALPNS.iter().map(|a| a.to_vec()).collect();
+    cfg.alpn_protocols = share_proto::proxy::VISITOR_ALPNS
+        .iter()
+        .map(|a| a.to_vec())
+        .collect();
     Ok(tokio_rustls::TlsAcceptor::from(Arc::new(cfg)))
 }
 
 /// Serve one visitor stream to completion.
-pub async fn serve<S>(mut stream: S, tls: tokio_rustls::TlsAcceptor, proxy: Arc<Proxy>) -> anyhow::Result<()>
+pub async fn serve<S>(
+    mut stream: S,
+    tls: tokio_rustls::TlsAcceptor,
+    proxy: Arc<Proxy>,
+) -> anyhow::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -173,14 +181,16 @@ mod tests {
     #[tokio::test]
     async fn preamble_roundtrip_leaves_tls_bytes() {
         use ppp::v2::{Builder, Command, IPv4, Protocol, Version};
-        let addrs: ppp::v2::Addresses = IPv4::new([198, 51, 100, 7], [203, 0, 113, 1], 40000, 443).into();
-        let mut hdr = Builder::with_addresses(Version::Two | Command::Proxy, Protocol::Stream, addrs)
-            .write_tlv(TLV_AUTHORITY, b"app.sky.tun.zip")
-            .unwrap()
-            .write_tlv(TLV_CONN_ID, &share_proto::proxy::conn_id_bytes(42))
-            .unwrap()
-            .build()
-            .unwrap();
+        let addrs: ppp::v2::Addresses =
+            IPv4::new([198, 51, 100, 7], [203, 0, 113, 1], 40000, 443).into();
+        let mut hdr =
+            Builder::with_addresses(Version::Two | Command::Proxy, Protocol::Stream, addrs)
+                .write_tlv(TLV_AUTHORITY, b"app.sky.tun.zip")
+                .unwrap()
+                .write_tlv(TLV_CONN_ID, &share_proto::proxy::conn_id_bytes(42))
+                .unwrap()
+                .build()
+                .unwrap();
         hdr.extend_from_slice(b"\x16\x03\x01rest");
         let mut r = &hdr[..];
         let p = read_preamble(&mut r).await.unwrap();

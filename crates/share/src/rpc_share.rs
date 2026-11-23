@@ -64,7 +64,11 @@ pub trait ShareApi {
 
     /// Set the switch and/or the edge. On and edge changes need the approval row (§7.2).
     #[method(name = "share_settings_set", with_extensions)]
-    async fn share_settings_set(&self, enabled: Option<bool>, edge: Option<String>) -> RpcResult<ShareSettings>;
+    async fn share_settings_set(
+        &self,
+        enabled: Option<bool>,
+        edge: Option<String>,
+    ) -> RpcResult<ShareSettings>;
 
     /// `GET /v1/names/{name}` at the edge.
     #[method(name = "share_names_check")]
@@ -125,7 +129,9 @@ impl ShareApiServer for Server {
         let e = engine()?;
         if let Some(edge) = edge {
             let choice = EdgeChoice::parse(&edge).map_err(|e| failed(e.to_string()))?;
-            e.set_edge(&choice).await.map_err(|e| failed(e.to_string()))?;
+            e.set_edge(&choice)
+                .await
+                .map_err(|e| failed(e.to_string()))?;
         }
         if let Some(on) = enabled {
             e.set_enabled(on).await.map_err(|e| failed(e.to_string()))?;
@@ -144,7 +150,12 @@ impl ShareApiServer for Server {
             .map_err(|e| failed(format!("{e:#}")))
     }
 
-    async fn share_terms_accept(&self, ext: &Extensions, edge: String, terms_rev: String) -> RpcResult<()> {
+    async fn share_terms_accept(
+        &self,
+        ext: &Extensions,
+        edge: String,
+        terms_rev: String,
+    ) -> RpcResult<()> {
         owner(ext)?;
         engine()?
             .accept_terms(&edge, &terms_rev)

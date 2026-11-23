@@ -129,7 +129,9 @@ pub fn check_root(root: &str, data_dir: &Path, home: Option<&Path>) -> Result<Pa
         .ok()
         .filter(|c| c.is_dir())
         .ok_or_else(|| DirRefused::NotDir(root.to_owned()))?;
-    let data = data_dir.canonicalize().unwrap_or_else(|_| data_dir.to_owned());
+    let data = data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| data_dir.to_owned());
     if data.starts_with(&canon) || canon.starts_with(&data) {
         return Err(DirRefused::Protected(canon.display().to_string()));
     }
@@ -184,7 +186,10 @@ pub fn open_nofollow(canon: &Path) -> io::Result<File> {
     let opened = f.metadata()?;
     let named = std::fs::symlink_metadata(canon)?;
     if opened.dev() != named.dev() || opened.ino() != named.ino() || !opened.is_file() {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "path changed under the share"));
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "path changed under the share",
+        ));
     }
     Ok(f)
 }
@@ -229,14 +234,20 @@ mod tests {
 
         assert!(resolve(&root, "/").unwrap().ends_with("index.html"));
         assert!(resolve(&root, "/sub/a.txt").is_some());
-        assert!(resolve(&root, "/aws/key").is_none(), "symlinked dir escapes");
+        assert!(
+            resolve(&root, "/aws/key").is_none(),
+            "symlinked dir escapes"
+        );
         assert!(resolve(&root, "/k.txt").is_none(), "symlinked file escapes");
         assert!(resolve(&root, "/.env").is_none());
         assert!(resolve(&root, "/%2e%2e/secret/key").is_none());
         assert!(resolve(&root, "/sub/../../secret/key").is_none());
         let f = resolve(&root, "/sub/a.txt").unwrap();
         assert!(open_nofollow(&f).is_ok());
-        assert!(open_nofollow(&root.join("k.txt")).is_err(), "no-follow open of a link fails");
+        assert!(
+            open_nofollow(&root.join("k.txt")).is_err(),
+            "no-follow open of a link fails"
+        );
     }
 
     #[test]
@@ -245,12 +256,18 @@ mod tests {
         let data = tmp.path().join("d");
         std::fs::create_dir_all(data.join("x")).unwrap();
         let t = tmp.path().to_str().unwrap();
-        assert!(matches!(check_root(t, &data, None), Err(DirRefused::Protected(_))));
+        assert!(matches!(
+            check_root(t, &data, None),
+            Err(DirRefused::Protected(_))
+        ));
         assert!(matches!(
             check_root(data.join("x").to_str().unwrap(), &data, None),
             Err(DirRefused::Protected(_))
         ));
-        assert_eq!(check_root("rel/dir", &data, None), Err(DirRefused::Relative));
+        assert_eq!(
+            check_root("rel/dir", &data, None),
+            Err(DirRefused::Relative)
+        );
         assert_eq!(check_root("/a/.ssh", &data, None), Err(DirRefused::Dot));
         assert!(matches!(
             check_root(t, Path::new("/nonexistent"), Some(tmp.path())),
@@ -284,6 +301,9 @@ mod tests {
         let port = l.local_addr().unwrap().port();
         assert!(g.connect(port).await.is_ok());
         drop(l);
-        assert_eq!(g.connect(port).await.err(), Some(PortRefused::NotListening(port)));
+        assert_eq!(
+            g.connect(port).await.err(),
+            Some(PortRefused::NotListening(port))
+        );
     }
 }

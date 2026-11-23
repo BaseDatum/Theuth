@@ -182,7 +182,10 @@ impl Engine {
 
     async fn emit(&self, share: &Share) {
         if let Some(rt) = &self.rt {
-            rt.publish(ShareChanged { share: share.clone() }).await;
+            rt.publish(ShareChanged {
+                share: share.clone(),
+            })
+            .await;
         }
     }
 
@@ -198,7 +201,8 @@ impl Engine {
 
     async fn refresh_need(&self) {
         let busy = self.mine().await.map(|v| !v.is_empty()).unwrap_or(false);
-        self.need.send_if_modified(|n| std::mem::replace(n, busy) != busy);
+        self.need
+            .send_if_modified(|n| std::mem::replace(n, busy) != busy);
     }
 
     async fn wait_attached(&self) -> anyhow::Result<Arc<Link>> {
@@ -223,7 +227,10 @@ impl Engine {
     /// Publish (§7.6). The owner's approval has already passed in the registry or RPC layer.
     pub async fn publish(&self, plan: Plan, origin: CallOrigin) -> anyhow::Result<Published> {
         anyhow::ensure!(self.store.enabled().await?, SWITCH_OFF);
-        anyhow::ensure!(!self.store.edge().await?.tickets().is_empty(), NO_SHARING_EDGE);
+        anyhow::ensure!(
+            !self.store.edge().await?.tickets().is_empty(),
+            NO_SHARING_EDGE
+        );
         match &plan.source {
             Source::Port(p) => {
                 drop(self.ports.connect(*p).await?);
@@ -243,7 +250,11 @@ impl Engine {
         let name = self.pick_name(&link, plan.name.as_deref()).await?;
         let host = names::host(&name, plan.label.as_deref(), &domain);
         let url = names::share_url(&host, &plan.path);
-        let prefix = if plan.path == "/" { "" } else { plan.path.as_str() };
+        let prefix = if plan.path == "/" {
+            ""
+        } else {
+            plan.path.as_str()
+        };
         if let Lookup::Found(m, _) = self.table.lookup(&host, &plan.path)
             && m.prefix == prefix
         {
@@ -289,7 +300,11 @@ impl Engine {
                 approval_id: String::new(),
                 surface: String::new(),
             },
-            state: if have_cert { ShareState::Live } else { ShareState::Pending },
+            state: if have_cert {
+                ShareState::Live
+            } else {
+                ShareState::Pending
+            },
             stopped_ms: None,
             stopped_by: None,
         };
@@ -316,7 +331,9 @@ impl Engine {
                 .iter()
                 .find(|n| n.name == w)
                 .map(|n| n.name.clone())
-                .ok_or_else(|| anyhow::anyhow!("the mesh holds no name {w} at {}", link.info.domain));
+                .ok_or_else(|| {
+                    anyhow::anyhow!("the mesh holds no name {w} at {}", link.info.domain)
+                });
         }
         if let Some(n) = held
             .iter()
@@ -386,10 +403,7 @@ impl Engine {
             .iter()
             .any(|n| n.name == name && n.state == NameState::Valid);
         let chain = if valid {
-            match link.control.cert(name).await {
-                Ok(c) => Some(c),
-                Err(_) => None,
-            }
+            link.control.cert(name).await.ok()
         } else {
             None
         };
@@ -400,7 +414,8 @@ impl Engine {
                 CsrAnswer::Pending(_) => return Ok(false),
             },
         };
-        self.certs.install(&name_host, &chain.chain_pem, &key.key_pem)?;
+        self.certs
+            .install(&name_host, &chain.chain_pem, &key.key_pem)?;
         Ok(true)
     }
 
@@ -551,7 +566,10 @@ impl Attachment for Engine {
         if let Some(stop_all) = welcome.stop_all_ms
             && let Ok(mine) = self.mine().await
         {
-            for s in mine.iter().filter(|s| s.live_ms.is_some_and(|l| l < stop_all)) {
+            for s in mine
+                .iter()
+                .filter(|s| s.live_ms.is_some_and(|l| l < stop_all))
+            {
                 let _ = self.stop(&s.id, StoppedBy::User).await;
             }
         }
