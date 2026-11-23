@@ -1,6 +1,7 @@
 //! `theuth/share/1` (210 §5.3): the protocol handler that admits engine connections, and the control API, one
 //! HTTP/1.1 request per bi-stream the engine opens, served by axum through hyper as a2a's `serve_http` does.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,7 +28,7 @@ use share_proto::{
     NameKind, NameReleased, NameRequest, NameState, PROTOCOL_MAJOR, PublicKey, Rekey,
     RekeyAccepted, RekeyEntry, RevokeRequest, RevokeResult, RouteEntry, RoutesPut,
     SUPPORTED_MAJORS, SignedRekey, SpkiHash, StopAll, TransferAccepted, TransferRequest, Welcome,
-    WelcomeLimits, paths,
+    WelcomeLimits, paths, LimitKind, LimitScope,
 };
 use tower::ServiceExt as _;
 
@@ -63,7 +64,7 @@ impl ProtocolHandler for ShareProtocol {
             conn.close(4u32.into(), b"busy");
             return Ok(());
         };
-        let tunnel = Tunnel::new(conn, Some(permit));
+        let tunnel = Tunnel::new(conn, Some(permit), &edge.cfg.limits);
         serve(edge, tunnel).await;
         Ok(())
     }
@@ -252,8 +253,7 @@ async fn info(Extension(c): Extension<Ctx>) -> ApiResult {
             terms_url: e.cfg.terms_url.clone(),
             terms_rev: e.cfg.terms_rev.clone(),
             abuse_url: e.cfg.abuse_url.clone(),
-            // TODO(210-M3): `names_max` at slot time.
-            full: false,
+            full: e.full(),
         },
     )
 }
@@ -337,7 +337,15 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
                 invited = true;
             }
         }
-        // TODO(210-P2): `allowlist` admission. TODO(210-M3): per-network new-mesh limits, relayed newcomers.
+        // TODO(210-P2): `allowlist` admission.
+        // §9.4: meshes first seen per network tier per day, or the paced relayed-newcomer bucket; invited
+        // meshes leave every per-network onboarding count. TODO(210-M4): re-count a relayed newcomer against
+        // its network once a direct path appears.
+        if !invited {
+            crate::limits::new_mesh(&e, &c.tunnel.net, now)
+                .await?
+                .map_err(ApiError::from)?;
+        }
     }
     let others = e
         .mesh_tunnels(&d.mesh)
@@ -345,8 +353,10 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         .filter(|t| t.engine != d.engine)
         .count();
     if others >= e.cfg.engines_per_mesh as usize {
-        return Err(err(ErrorCode::EnginesQuota));
+        return Err(ErrorBody::limited(ErrorCode::EnginesQuota, LimitScope::Mesh, LimitKind::Engines).into());
     }
+    crate::limits::tunnels_ok(&e, &c.tunnel.net, &d.engine).map_err(ApiError::from)?;
+    let mesh_invited = invited || known.as_ref().is_some_and(|m| m.invited != 0);
     e.store
         .attach(&mesh, &engine, &c.tunnel.net, invited, now)
         .await?;
@@ -360,6 +370,10 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         hello_ms: now,
     });
     c.tunnel.pre_hello.lock().expect("permit lock").take();
+    // §9.6: shaping at `tunnel_mbit`, or `throttle_mbit` for a non-invited mesh while egress is over pace.
+    c.tunnel.invited.store(mesh_invited, Ordering::Relaxed);
+    c.tunnel.shaper.set_rate(e.meter.rate_for(&e, mesh_invited));
+    let throttled = !mesh_invited && e.meter.throttled.load(Ordering::Relaxed);
     // §5.3: one tunnel per engine key; a new one replaces the old.
     if let Some(old) = e.tunnels.insert(d.engine, c.tunnel.clone())
         && !Arc::ptr_eq(&old, &c.tunnel)
@@ -367,12 +381,20 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         e.detach(&old);
         old.conn.close(6u32.into(), b"replaced");
     }
+    let queue = match e.certs.get() {
+        Some(certs) => crate::queue::mesh_positions(&e, certs.ca.id(), &mesh, now).await?,
+        None => HashMap::new(),
+    };
     let names = e
         .store
         .held_names(c.domain(), &mesh)
         .await?
         .iter()
-        .map(name_info)
+        .map(|r| {
+            let mut n = name_info(r);
+            n.queue = queue.get(&r.name).copied();
+            n
+        })
         .collect();
     let stop_all_ms = known
         .and_then(|m| m.stop_all_ms)
@@ -411,17 +433,18 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
                 routes_per_tunnel: e.cfg.limits.routes_per_tunnel,
                 conns_per_tunnel: e.cfg.limits.conns_per_tunnel,
                 delegation_max_ttl_ms: max_ttl,
+                tunnel_mbit: e.cfg.limits.tunnel_mbit,
+                throttle_mbit: e.cfg.limits.throttle_mbit,
                 ..WelcomeLimits::default()
             },
             terms_url: e.cfg.terms_url.clone(),
             abuse_url: e.cfg.abuse_url.clone(),
             terms_rev: e.cfg.terms_rev.clone(),
             terms_ok,
-            full: false,
+            full: e.full(),
             // TODO(210-M4): `retire` when running on the standby key.
             retire: None,
-            // TODO(210-M3): the egress throttle state (§9.6).
-            throttled: false,
+            throttled,
         },
     )
 }
@@ -449,14 +472,14 @@ fn name_info(r: &NameRow) -> NameInfo {
             .and_then(|b| <[u8; 32]>::try_from(b).ok())
             .map(SpkiHash),
         not_after: r.not_after_ms.and_then(|v| u64::try_from(v).ok()),
-        // TODO(210-M3): the slot queue position.
+        // Filled by `hello` from the slot queue (§6.5).
         queue: None,
         transfer_to: r.transfer_to.as_deref().and_then(|t| t.parse().ok()),
         transfer_until_ms: r.transfer_until_ms.and_then(|v| u64::try_from(v).ok()),
     }
 }
 
-/// `GET /v1/names/{name}`. TODO(210-M3): per-network rate limit.
+/// `GET /v1/names/{name}`. TODO(210-M4): per-network rate limit of availability lookups.
 async fn availability(Extension(c): Extension<Ctx>, Path(name): Path<String>) -> ApiResult {
     let s = c.session()?;
     let reason = |r: &str| NameAvailability {
@@ -528,7 +551,22 @@ async fn claim(c: &Ctx, s: &Session, name: &str, kind: NameKind) -> Result<(), A
         return Err(err(ErrorCode::Banned));
     }
     let mesh = s.mesh.to_string();
-    // TODO(210-M3): paced bucket (`429 paced`), `edge_full`, per-network claim and quota limits.
+    // §9.4, §6.5: `edge_full`, the per-network claim rate and reserved holds, the paced open-names bucket.
+    // A re-claim of a name this mesh holds is idempotent and costs nothing.
+    let now = now_ms();
+    let mine = e
+        .store
+        .name(c.domain(), name)
+        .await?
+        .is_some_and(|r| r.held() && r.owner.as_deref() == Some(mesh.as_str()));
+    let taken = if mine {
+        crate::limits::Taken::default()
+    } else {
+        let invited = e.store.mesh(&mesh).await?.is_some_and(|m| m.invited != 0);
+        crate::limits::new_name(e, invited, &c.tunnel.net, kind, now)
+            .await?
+            .map_err(ApiError::from)?
+    };
     let outcome = e
         .store
         .claim(
@@ -547,6 +585,9 @@ async fn claim(c: &Ctx, s: &Session, name: &str, kind: NameKind) -> Result<(), A
             e.cfg.reserved_per_mesh,
         )
         .await?;
+    if !matches!(outcome, Claimed::Granted) {
+        taken.refund(e, now).await?;
+    }
     match outcome {
         Claimed::Granted | Claimed::AlreadyHeld => {
             // Routing objects before the certificate job needs them; never blocks the claim.
@@ -714,7 +755,17 @@ async fn put_routes(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         }
     }
     if req.hosts.len() > e.cfg.limits.routes_per_tunnel as usize {
-        return Err(err(ErrorCode::Quota));
+        return Err(ErrorBody::limited(ErrorCode::Quota, LimitScope::Tunnel, LimitKind::Routes).into());
+    }
+    // §9.6: a mesh or network over its day's bytes publishes nothing new until the UTC day rolls.
+    let mesh_s = s.mesh.to_string();
+    if !req.hosts.is_empty() && e.meter.over_budget(e, &mesh_s, &c.tunnel.net) {
+        let scope = if e.meter.over.contains_key(&format!("mesh:{mesh_s}")) {
+            LimitScope::Mesh
+        } else {
+            LimitScope::Net
+        };
+        return Err(ErrorBody::limited(ErrorCode::Quota, scope, LimitKind::Bytes).into());
     }
     let held: Vec<String> = e
         .store
@@ -757,12 +808,20 @@ async fn put_routes(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
     let tunnel = c.tunnel.clone();
     e.drop_routes(|h, r| Arc::ptr_eq(&r.tunnel, &tunnel) && !wanted.iter().any(|(w, _)| w == h));
     for (host, name) in wanted {
+        // The host's `stats` counters carry over a re-put by the same tunnel.
+        let stats = e
+            .routes
+            .get(&host)
+            .filter(|r| Arc::ptr_eq(&r.tunnel, &tunnel))
+            .map(|r| r.stats.clone())
+            .unwrap_or_default();
         let prev = e.routes.insert(
             host.clone(),
             Route {
                 name,
                 mesh: s.mesh,
                 tunnel: tunnel.clone(),
+                stats,
             },
         );
         if prev.is_none_or(|p| !Arc::ptr_eq(&p.tunnel, &tunnel)) {
@@ -799,7 +858,7 @@ async fn after_stop_all(e: &Edge, s: &Session) -> Result<(), ApiError> {
     }
 }
 
-/// `GET /v1/events`: SSE held for the connection. TODO(210-M3): `stats` every 30 s from the metering.
+/// `GET /v1/events`: SSE held for the connection; `stats` every 30 s come from the metering loop (§9.6).
 async fn events(
     Extension(c): Extension<Ctx>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, ApiError> {

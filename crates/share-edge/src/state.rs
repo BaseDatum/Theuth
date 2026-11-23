@@ -7,13 +7,13 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use dashmap::DashMap;
-use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter};
+use governor::{DefaultDirectRateLimiter, DefaultKeyedRateLimiter, Quota, RateLimiter};
 use iroh::endpoint::Connection;
 use share_proto::events::{KillEvent, RoutesEvent};
 use share_proto::{Admission, Event, KillReason, PublicKey, RouteEntry};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast};
 
-use crate::config::{Config, Secrets};
+use crate::config::{Config, Limits, Secrets};
 use crate::store::Store;
 
 /// The edge's version, sent as `theuth-share-edge/<ver>`.
@@ -85,16 +85,26 @@ pub struct Tunnel {
     pub streams: AtomicU32,
     /// Visitor connections ever routed.
     pub conns: AtomicU64,
-    /// Visitor bytes both ways.
+    /// Visitor bytes both ways, counted live by the splice.
     pub bytes: AtomicU64,
+    /// Of `bytes`, already folded into the mesh and network totals (§9.6).
+    pub folded: AtomicU64,
+    /// The mesh entered by invite (set at `hello`): exempt from the egress throttle.
+    pub invited: AtomicBool,
+    /// Per-tunnel byte shaping (`tunnel_mbit`, or `throttle_mbit` while throttled); unshaped before `hello`.
+    pub shaper: crate::meter::Shaper,
+    /// New visitor connections per second (`new_conns_per_tunnel_sec`, burst `new_conns_burst`).
+    pub conn_rate: DefaultDirectRateLimiter,
     /// Events for this connection's `GET /v1/events`.
     pub events: broadcast::Sender<Event>,
 }
 
 impl Tunnel {
     /// A connection before `hello`.
-    pub fn new(conn: Connection, pre_hello: Option<OwnedSemaphorePermit>) -> Arc<Tunnel> {
+    pub fn new(conn: Connection, pre_hello: Option<OwnedSemaphorePermit>, limits: &Limits) -> Arc<Tunnel> {
         let (events, _) = broadcast::channel(64);
+        let per_sec = NonZeroU32::new(limits.new_conns_per_tunnel_sec.max(1)).expect("nonzero");
+        let burst = NonZeroU32::new(limits.new_conns_burst.max(1)).expect("nonzero");
         Arc::new(Tunnel {
             engine: conn.remote_id(),
             net: conn_net(&conn),
@@ -104,6 +114,10 @@ impl Tunnel {
             streams: AtomicU32::new(0),
             conns: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
+            folded: AtomicU64::new(0),
+            invited: AtomicBool::new(false),
+            shaper: crate::meter::Shaper::new(0),
+            conn_rate: RateLimiter::direct(Quota::per_second(per_sec).allow_burst(burst)),
             events,
         })
     }
@@ -166,6 +180,8 @@ pub struct Route {
     pub mesh: PublicKey,
     /// The tunnel that registered the host.
     pub tunnel: Arc<Tunnel>,
+    /// The host's counters for the `stats` event (§9.6).
+    pub stats: Arc<crate::meter::HostStats>,
 }
 
 /// Shared edge state.
@@ -203,6 +219,12 @@ pub struct Edge {
     pub certs: OnceLock<crate::certs::Certs>,
     /// Per-name Kubernetes objects (EDGE-K8S); unset unless `k8s.enabled`.
     pub k8s: OnceLock<Arc<crate::k8s::K8s>>,
+    /// Origin-ASN table (`limits.asn_db`); empty = ASN tier off.
+    pub asn: crate::limits::AsnDb,
+    /// Byte totals, budgets and the egress throttle (§9.6).
+    pub meter: crate::meter::Meter,
+    /// `names_max` reached and nothing evictable: `edge_full`, `full: true` in `/v1/info` and `welcome`.
+    full: AtomicBool,
     next_conn: AtomicU64,
 }
 
@@ -218,6 +240,7 @@ impl Edge {
             _ => Vec::new(),
         };
         let per_sec = NonZeroU32::new(cfg.limits.new_conns_per_ip_sec.max(1)).expect("nonzero");
+        let asn = crate::limits::AsnDb::load(cfg.limits.asn_db.as_deref())?;
         Ok(Edge {
             admission: RwLock::new(cfg.admission),
             paused: AtomicBool::new(false),
@@ -233,6 +256,9 @@ impl Edge {
             next_conn: AtomicU64::new(1),
             certs: OnceLock::new(),
             k8s: OnceLock::new(),
+            asn,
+            meter: crate::meter::Meter::default(),
+            full: AtomicBool::new(false),
             brands,
             cfg,
             secrets,
@@ -244,6 +270,18 @@ impl Edge {
     /// Live admission mode.
     pub fn admission(&self) -> Admission {
         *self.admission.read().expect("admission lock")
+    }
+
+    /// The edge is full (§9.4): `names_max` reached and no never-published name to evict.
+    pub fn full(&self) -> bool {
+        self.full.load(Ordering::Relaxed)
+    }
+
+    /// Set by the slot queue.
+    pub fn set_full(&self, on: bool) {
+        if self.full.swap(on, Ordering::Relaxed) != on {
+            tracing::warn!(full = on, "edge full state");
+        }
     }
 
     /// A fresh visitor connection id (PROXY TLV `0xE0`).
@@ -305,6 +343,8 @@ impl Edge {
 
     /// A connection ended: drop its routes and its tunnel entry (if still the current one).
     pub fn detach(&self, tunnel: &Arc<Tunnel>) {
+        // Bytes since the last fold still count against the mesh and network (§9.6).
+        self.meter.fold_tunnel(self, tunnel);
         self.drop_routes(|_, r| Arc::ptr_eq(&r.tunnel, tunnel));
         self.tunnels
             .remove_if(&tunnel.engine, |_, t| Arc::ptr_eq(t, tunnel));

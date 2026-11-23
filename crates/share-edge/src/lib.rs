@@ -11,6 +11,9 @@ pub mod config;
 pub mod control;
 pub mod dns;
 pub mod k8s;
+pub mod limits;
+pub mod meter;
+pub mod queue;
 pub mod sni;
 pub mod state;
 pub mod store;
@@ -88,6 +91,14 @@ impl Running {
     pub async fn shutdown(mut self) {
         self.tasks.abort_all();
         let _ = self.router.shutdown().await;
+        // Today's bytes and the month's egress survive the restart (§9.6).
+        let tunnels: Vec<_> = self.edge.tunnels.iter().map(|t| t.value().clone()).collect();
+        for t in &tunnels {
+            self.edge.meter.fold_tunnel(&self.edge, t);
+        }
+        if let Err(e) = meter::flush(&self.edge, state::now_ms()).await {
+            tracing::warn!("meter flush at shutdown: {e:#}");
+        }
         self.edge.store.close().await;
     }
 }
@@ -159,6 +170,7 @@ pub async fn start_with(
     let admin_socket = cfg.admin_socket();
     let health = cfg.admin.http.clone();
     let edge = Arc::new(Edge::new(cfg, secrets, store.clone(), id)?);
+    meter::Meter::load(&edge, state::now_ms()).await?;
     let _ = edge.certs.set(certs::Certs::new(&backends, store, &edge.cfg));
     let mut rb = Router::builder(endpoint);
     for alpn in share_proto::ALPNS {
@@ -168,6 +180,7 @@ pub async fn start_with(
     let mut tasks = JoinSet::new();
     tasks.spawn(sni::serve(edge.clone(), listener));
     tasks.spawn(certs::run(edge.clone()));
+    tasks.spawn(meter::run(edge.clone()));
     if let Some(k) = k8s {
         let _ = edge.k8s.set(k.clone());
         tasks.spawn(k8s::run(edge.clone(), k));

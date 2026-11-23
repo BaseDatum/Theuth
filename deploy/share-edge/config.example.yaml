@@ -1,9 +1,11 @@
 # theuth-share-edge config (design doc 210 §8.1; this is appendix §8.1 as P1 ships it).
 # Env overrides: THEUTH_SHARE_EDGE_<KEY>, `__` between levels (THEUTH_SHARE_EDGE_LIMITS__IDLE_SECS=600).
 # Secrets never go in this file (§8.3): dns.credential_file or THEUTH_SHARE_EDGE_DNS__CREDENTIAL, not both.
-# Keys of later milestones (acme budgets, most of limits) are accepted and not yet enforced.
+# Not yet enforced (later milestones): acme.cas.letsencrypt.orders_per_3h, limits.reserved_min_mesh_age,
+# limits.engine_keys_per_mesh_day, the gts block (P2).
 domain: tun.zip               # D, sent in /v1/info and welcome
 data_dir: /var/lib/theuth-share-edge   # share-edge.sqlite, iroh.key, acme/<ca>.json; persistent, backed up
+db_journal: wal              # wal | delete; delete = data dir on NFS (DELETE journal, exclusive lock, one connection)
 listen: "[::]:443"            # "[::]:8443" in k8s behind Service port 443
 listen_http: ""               # off; only for a D outside an HSTS-preloaded TLD
 listen_proxy_protocol: {trusted: []}   # CIDRs whose connections must start with a PROXY v1/v2 header (an LB/ingress)
@@ -26,8 +28,9 @@ acme:
   contact: mailto:ops@example.com
   profile: classic
   primary: letsencrypt        # P1
-  invite_share: 0.5
-  queue_max: 2000
+  invite_share: 0.5           # invited share of every CA's weekly new-name certificates (invited 23, open 22 of 45);
+                              # an invited token unused for 24 h may go to the open queue (§6.5)
+  queue_max: 2000             # names waiting for a slot; beyond it new names and first CSRs: 503 edge_full
   renew_check: 6h             # ARI refresh and renewal scan (§6.3)
   propagation: 30s            # wait after writing a challenge TXT
   auth_gap: 60s               # between the two authorizations (§6.1)
@@ -50,30 +53,38 @@ dns:
   zone: tun.zip
   credential_file: /run/secrets/theuth-share-edge/dns.json
   target: edge.tun.zip
-limits:                       # §9.4; "net" = IPv4 address or IPv6 /64
-  creates_per_net_hour: 30    # burst 10
-  new_meshes_per_net_day: 5
+limits:                       # §9.4; "net" = IPv4 address or IPv6 /64; refusals carry {scope, limit}
+  creates_per_net_hour: 30    # claims and allocations, open meshes; per tier × factor
+  creates_burst: 10
+  new_meshes_per_net_day: 5   # meshes first seen per day (not invited)
   certs_per_net_week: 2       # open meshes only; invited meshes are not counted per network
-  queued_per_net: 2
-  reserved_per_net: 6
+  certs_per_mesh_week: 2      # new-name certificates per mesh per 7 days, every mesh
+  queued_per_net: 2           # open meshes only
+  reserved_per_net: 6         # reserved names held, open meshes only
   reserved_min_mesh_age: 0s
   tunnels_per_net: 10
   wide_net_factor: 4          # per IPv4 /24 and IPv6 /48
   v6_32_factor: 16            # per IPv6 /32
   asn_factor: 64              # per origin ASN
-  asn_db: /var/lib/theuth-share-edge/ip2asn.tsv   # optional; absent = ASN tier off
-  open_new_names_day: 500     # global, paced, open meshes only
-  relayed_new_meshes_day: 20  # paced 1/h, burst 4
+  asn_db: /var/lib/theuth-share-edge/ip2asn.tsv   # optional; iptoasn TSV (start end asn …) or "cidr asn" lines;
+                              # unset or missing file = ASN tier off
+  open_new_names_day: 500     # global, paced (burst 1/24 of it), open meshes only: 429 paced {retry_after_s}
+  relayed_new_meshes_day: 20  # relay-only newcomer meshes, edge-wide
+  relayed_every: 1h           # paced: one per relayed_every, burst relayed_burst
+  relayed_burst: 4
   names_max: 1200             # P1: Porkbun record bound (§6.4); counted at slot time
   allocated_ttl: 1h           # an allocated name without a CSR is evicted
-  evict_unpublished_after: 7d
-  bytes_per_mesh_day: 20GiB
-  bytes_per_net_day: 50GiB
+  evict_unpublished_after: 7d # at names_max, names never live this long after allocation are evicted first
+  bytes_per_mesh_day: 20GiB   # B, KiB…TiB, KB…TB or a plain count; over it: kill {budget}, routes refused to UTC midnight
+  bytes_per_net_day: 50GiB    # per tier × factor
   engine_keys_per_mesh_day: 8
-  tunnel_mbit: 50             # burst 64 MiB
+  tunnel_mbit: 50             # per-tunnel shaping; burst min(64 MiB, 10 s of rate)
   throttle_mbit: 2            # non-invited tunnels while egress is over pace (§9.6)
   egress_month: 10TiB         # the host's allowance; pace = allowance × fraction of month elapsed
   new_conns_per_tunnel_sec: 50
+  new_conns_burst: 200
+  write_stall: 5s             # a visitor that accepts no bytes this long is reset
+  conn_log_retention: 30d     # conn_log rows purged after this
   conns_per_tunnel: 256
   open_bi_timeout_secs: 5
   conns_per_ip: 64

@@ -138,6 +138,8 @@ pub enum Rekeyed {
 }
 
 mod certs;
+mod limits;
+pub use limits::{BucketSpec, CounterCheck};
 pub use certs::{CertRow, JobRow, RevocationRow};
 
 /// Longest rekey chain followed (§5.7 rekeys are rare; a cycle cannot be written).

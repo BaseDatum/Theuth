@@ -8,7 +8,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use rustls::server::Acceptor;
@@ -19,7 +19,10 @@ use share_proto::proxy::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::Sleep;
 
+use crate::limits::wide_key;
+use crate::meter::HostStats;
 use crate::state::{Edge, Tunnel, net_key, now_ms};
 
 /// The parts of a ClientHello the edge routes on, with the exact bytes read so far.
@@ -239,7 +242,7 @@ impl Drop for StreamSlot {
 }
 
 async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
-    // TODO(210-M3): per-tunnel new-connection rate and the byte shaping of §9.6.
+    // §9.4 per-tunnel new-connection rate and §9.6 shaping/metering are below, once the route is known.
     let Ok(_global) = edge.visitors.clone().try_acquire_owned() else {
         return reset(tcp);
     };
@@ -280,6 +283,10 @@ async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         return reset(tcp);
     };
     let tunnel = route.tunnel.clone();
+    // §9.4: new connections per tunnel, 50/s burst 200.
+    if tunnel.conn_rate.check().is_err() {
+        return reset(tcp);
+    }
     if tunnel.streams.fetch_add(1, Ordering::Relaxed) >= edge.cfg.limits.conns_per_tunnel {
         tunnel.streams.fetch_sub(1, Ordering::Relaxed);
         return reset(tcp);
@@ -297,15 +304,41 @@ async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         return reset(tcp);
     }
     tunnel.conns.fetch_add(1, Ordering::Relaxed);
-    let activity = Arc::new(AtomicU64::new(now_ms()));
-    let up = Arc::new(AtomicU64::new(peeked.bytes.len() as u64));
-    let down = Arc::new(AtomicU64::new(0));
-    let mut visitor = Metered {
-        inner: tcp,
-        read: up.clone(),
-        written: down.clone(),
-        activity: activity.clone(),
+    let stats = route.stats.clone();
+    stats.conns.fetch_add(1, Ordering::Relaxed);
+    stats.visitors.lock().expect("visitors").insert(ip);
+    let _open = OpenSlot::new(stats.clone());
+    let hello_len = peeked.bytes.len() as u64;
+    tunnel.bytes.fetch_add(hello_len, Ordering::Relaxed);
+    stats.bytes_in.fetch_add(hello_len, Ordering::Relaxed);
+    // §9.4: the name goes live on the first visitor stream from outside every network the mesh's tunnels
+    // use that carries at least 1 KiB from the engine.
+    let vnet = ip.to_string();
+    let vwide = wide_key(&vnet);
+    let outside = !edge
+        .mesh_tunnels(&route.mesh)
+        .iter()
+        .any(|t| t.net == vnet || wide_key(&t.net) == vwide);
+    let on_live: Option<Box<dyn FnOnce() + Send>> = if outside && !stats.live.load(Ordering::Relaxed) {
+        let (edge, name, stats) = (edge.clone(), route.name.clone(), stats.clone());
+        Some(Box::new(move || {
+            stats.live.store(true, Ordering::Relaxed);
+            tokio::spawn(async move {
+                if let Err(e) = edge.store.set_first_live(&edge.cfg.domain, &name, now_ms()).await {
+                    tracing::warn!(%name, "first_live_ms: {e:#}");
+                }
+            });
+        }))
+    } else {
+        None
     };
+    let activity = Arc::new(AtomicU64::new(now_ms()));
+    let up = Arc::new(AtomicU64::new(hello_len));
+    let down = Arc::new(AtomicU64::new(0));
+    let mut visitor = Metered::new(tcp, up.clone(), down.clone(), activity.clone(), edge.cfg.limits.write_stall);
+    visitor.tunnel = Some(tunnel.clone());
+    visitor.host = Some(stats);
+    visitor.on_live = on_live;
     let mut engine = tokio::io::join(recv, send);
     let idle = Duration::from_secs(edge.cfg.limits.idle_secs);
     let clean = tokio::select! {
@@ -313,9 +346,8 @@ async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         () = idle_watch(activity, idle) => false,
     };
     let (up, down) = (up.load(Ordering::Relaxed), down.load(Ordering::Relaxed));
-    tunnel.bytes.fetch_add(up + down, Ordering::Relaxed);
     if !clean {
-        // Stream reset ↔ TCP RST (§5.3).
+        // Stream reset ↔ TCP RST (§5.3); also a visitor that stopped reading (write stall).
         let (recv, mut send) = engine.into_inner();
         let _ = send.reset(0u32.into());
         drop(recv);
@@ -335,6 +367,22 @@ async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         .await;
 }
 
+/// Counts the host's open connections.
+struct OpenSlot(Arc<HostStats>);
+
+impl OpenSlot {
+    fn new(s: Arc<HostStats>) -> OpenSlot {
+        s.open.fetch_add(1, Ordering::Relaxed);
+        OpenSlot(s)
+    }
+}
+
+impl Drop for OpenSlot {
+    fn drop(&mut self) {
+        self.0.open.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 async fn idle_watch(activity: Arc<AtomicU64>, idle: Duration) {
     let idle_ms = u64::try_from(idle.as_millis()).unwrap_or(u64::MAX);
     loop {
@@ -347,44 +395,123 @@ async fn idle_watch(activity: Arc<AtomicU64>, idle: Duration) {
     }
 }
 
-/// Counts bytes both ways and stamps activity. TODO(210-M3): fold into tunnel, mesh and network budgets and
-/// await the per-tunnel `governor` byte limiter here (§9.6); a visitor that stops reading for 5 s is reset.
-struct Metered<T> {
+/// Engine bytes after which a stream makes its name live (§9.4).
+const LIVE_BYTES: u64 = 1024;
+
+/// The visitor side of the splice (§9.6): counts bytes both ways into the stream, its tunnel (folded into the
+/// mesh and network totals every second) and its host's `stats`; stamps activity; waits out the tunnel's
+/// byte shaper after each transfer; fails a write the visitor has not accepted for `stall_after` (5 s write
+/// stall → reset); fires `on_live` once the engine has sent 1 KiB.
+pub(crate) struct Metered<T> {
     inner: T,
     read: Arc<AtomicU64>,
     written: Arc<AtomicU64>,
     activity: Arc<AtomicU64>,
+    tunnel: Option<Arc<Tunnel>>,
+    host: Option<Arc<HostStats>>,
+    on_live: Option<Box<dyn FnOnce() + Send>>,
+    stall_after: Duration,
+    delay: Option<Pin<Box<Sleep>>>,
+    stall: Option<Pin<Box<Sleep>>>,
+}
+
+impl<T> Metered<T> {
+    pub(crate) fn new(
+        inner: T,
+        read: Arc<AtomicU64>,
+        written: Arc<AtomicU64>,
+        activity: Arc<AtomicU64>,
+        stall_after: Duration,
+    ) -> Metered<T> {
+        Metered {
+            inner,
+            read,
+            written,
+            activity,
+            tunnel: None,
+            host: None,
+            on_live: None,
+            stall_after,
+            delay: None,
+            stall: None,
+        }
+    }
+
+    /// Wait out the shaper's delay from the last transfer.
+    fn poll_delay(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if let Some(d) = self.delay.as_mut() {
+            ready!(d.as_mut().poll(cx));
+            self.delay = None;
+        }
+        Poll::Ready(())
+    }
+
+    fn charge(&mut self, n: usize) {
+        if let Some(t) = &self.tunnel {
+            let d = t.shaper.charge(n, tokio::time::Instant::now());
+            if !d.is_zero() {
+                self.delay = Some(Box::pin(tokio::time::sleep(d)));
+            }
+        }
+    }
 }
 
 impl<T: AsyncRead + Unpin> AsyncRead for Metered<T> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        ready!(this.poll_delay(cx));
         let before = buf.filled().len();
-        let r = Pin::new(&mut self.inner).poll_read(cx, buf);
+        let r = Pin::new(&mut this.inner).poll_read(cx, buf);
         let n = buf.filled().len() - before;
         if n > 0 {
-            self.read.fetch_add(n as u64, Ordering::Relaxed);
-            self.activity.store(now_ms(), Ordering::Relaxed);
+            this.read.fetch_add(n as u64, Ordering::Relaxed);
+            this.activity.store(now_ms(), Ordering::Relaxed);
+            if let Some(t) = &this.tunnel {
+                t.bytes.fetch_add(n as u64, Ordering::Relaxed);
+            }
+            if let Some(h) = &this.host {
+                h.bytes_in.fetch_add(n as u64, Ordering::Relaxed);
+            }
+            this.charge(n);
         }
         r
     }
 }
 
 impl<T: AsyncWrite + Unpin> AsyncWrite for Metered<T> {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        let r = Pin::new(&mut self.inner).poll_write(cx, buf);
-        if let Poll::Ready(Ok(n)) = r
-            && n > 0
-        {
-            self.written.fetch_add(n as u64, Ordering::Relaxed);
-            self.activity.store(now_ms(), Ordering::Relaxed);
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        ready!(this.poll_delay(cx));
+        let r = Pin::new(&mut this.inner).poll_write(cx, buf);
+        match &r {
+            Poll::Pending => {
+                let after = this.stall_after;
+                let stall = this
+                    .stall
+                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(after)));
+                if stall.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(Err(io::Error::new(io::ErrorKind::TimedOut, "visitor write stall")));
+                }
+            }
+            Poll::Ready(Ok(n)) if *n > 0 => {
+                let n = *n;
+                this.stall = None;
+                let total = this.written.fetch_add(n as u64, Ordering::Relaxed) + n as u64;
+                this.activity.store(now_ms(), Ordering::Relaxed);
+                if let Some(t) = &this.tunnel {
+                    t.bytes.fetch_add(n as u64, Ordering::Relaxed);
+                }
+                if let Some(h) = &this.host {
+                    h.bytes_out.fetch_add(n as u64, Ordering::Relaxed);
+                }
+                if total >= LIVE_BYTES
+                    && let Some(f) = this.on_live.take()
+                {
+                    f();
+                }
+                this.charge(n);
+            }
+            Poll::Ready(_) => this.stall = None,
         }
         r
     }
@@ -425,6 +552,50 @@ pub(crate) mod tests {
         let (mut a, mut b) = tokio::io::duplex(64 * 1024);
         a.write_all(bytes).await.unwrap();
         peek_client_hello(&mut b).await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_visitor_that_stops_reading_is_reset_after_the_write_stall() {
+        let (near, _far) = tokio::io::duplex(1024);
+        let (up, down, act) = (Arc::default(), Arc::new(AtomicU64::new(0)), Arc::default());
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut m = Metered::new(near, up, down.clone(), act, Duration::from_secs(5));
+        let f = fired.clone();
+        m.on_live = Some(Box::new(move || f.store(true, Ordering::Relaxed)));
+        let start = tokio::time::Instant::now();
+        // `_far` never reads: 1 KiB fits the pipe, then writes stall; paused time jumps to the 5 s deadline.
+        let err = m.write_all(&[0u8; 4096]).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(start.elapsed(), Duration::from_secs(5));
+        assert_eq!(down.load(Ordering::Relaxed), 1024);
+        // 1 KiB from the engine made the name live, once.
+        assert!(fired.load(Ordering::Relaxed));
+        assert!(m.on_live.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reading_visitor_never_trips_the_stall() {
+        let (near, mut far) = tokio::io::duplex(64);
+        let (up, down, act) = (Arc::default(), Arc::new(AtomicU64::new(0)), Arc::default());
+        let mut m = Metered::new(near, up, down.clone(), act, Duration::from_secs(5));
+        let reader = tokio::spawn(async move {
+            let mut sink = Vec::new();
+            // Slow but steady: 64 bytes every 4 s is under the 5 s stall.
+            let mut buf = [0u8; 64];
+            while let Ok(n) = far.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                sink.extend_from_slice(&buf[..n]);
+                tokio::time::sleep(Duration::from_secs(4)).await;
+            }
+            sink.len()
+        });
+        m.write_all(&[1u8; 256]).await.unwrap();
+        m.shutdown().await.unwrap();
+        drop(m);
+        assert_eq!(reader.await.unwrap(), 256);
+        assert_eq!(down.load(Ordering::Relaxed), 256);
     }
 
     #[tokio::test]

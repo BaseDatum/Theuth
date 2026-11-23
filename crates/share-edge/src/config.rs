@@ -180,6 +180,10 @@ pub struct AcmeConfig {
     /// recursors cache up to 60 s).
     #[serde(with = "dur")]
     pub auth_gap: Duration,
+    /// Share of every CA's weekly new-name certificates kept for invited meshes (§6.5), 0..=1.
+    pub invite_share: f64,
+    /// Names waiting for a slot, edge-wide; beyond it new names and first CSRs answer `503 edge_full`.
+    pub queue_max: u32,
 }
 
 impl Default for AcmeConfig {
@@ -194,6 +198,8 @@ impl Default for AcmeConfig {
             max_attempts: 12,
             propagation: Duration::from_secs(30),
             auth_gap: Duration::from_secs(60),
+            invite_share: 0.5,
+            queue_max: 2000,
         }
     }
 }
@@ -277,7 +283,9 @@ impl Default for DnsConfig {
     }
 }
 
-/// `limits:` (§9.4), the ones enforced in M1. TODO(210-M3): the per-network, bucket and byte limits.
+/// `limits:` (§9.4, §9.6). "net" = the IPv4 address or IPv6 /64 of a tunnel's direct path; every per-network
+/// limit also applies × `wide_net_factor` per IPv4 /24 and IPv6 /48, × `v6_32_factor` per IPv6 /32 and
+/// × `asn_factor` per origin ASN (when `asn_db` is set).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Limits {
@@ -301,6 +309,70 @@ pub struct Limits {
     pub new_conns_per_ip_sec: u32,
     /// `GET /v1/info` requests per minute per client network (IPv4, IPv6 /64, or relay URL).
     pub info_per_ip_min: u32,
+    /// Claims and allocations per hour per network (open meshes), burst `creates_burst`.
+    pub creates_per_net_hour: u32,
+    /// Burst of `creates_per_net_hour`.
+    pub creates_burst: u32,
+    /// Meshes first seen per day per network.
+    pub new_meshes_per_net_day: u32,
+    /// New-name certificates per 7 days per network (open meshes only).
+    pub certs_per_net_week: u32,
+    /// New-name certificates per 7 days per mesh (every mesh).
+    pub certs_per_mesh_week: u32,
+    /// Names waiting for a slot per network (open meshes only).
+    pub queued_per_net: u32,
+    /// Reserved names held per network (open meshes only).
+    pub reserved_per_net: u32,
+    /// Tunnels attached per network.
+    pub tunnels_per_net: u32,
+    /// Factor of the IPv4 /24 and IPv6 /48 tier.
+    pub wide_net_factor: u32,
+    /// Factor of the IPv6 /32 tier.
+    pub v6_32_factor: u32,
+    /// Factor of the ASN tier.
+    pub asn_factor: u32,
+    /// iptoasn-style TSV (`start end asn …`) or `cidr asn` lines; absent or unset = ASN tier off.
+    pub asn_db: Option<PathBuf>,
+    /// New names allocated per day by open meshes, edge-wide, paced (burst = a twenty-fourth).
+    pub open_new_names_day: u32,
+    /// Relay-only newcomer meshes per day, edge-wide.
+    pub relayed_new_meshes_day: u32,
+    /// Relay-only newcomers: one per `relayed_every`, burst `relayed_burst`.
+    #[serde(with = "dur")]
+    pub relayed_every: Duration,
+    /// Burst of the relayed newcomer bucket.
+    pub relayed_burst: u32,
+    /// Names holding a slot (`slotted` or `valid`), edge-wide; counted at slot time (F-M8).
+    pub names_max: u32,
+    /// An `allocated` name without a CSR this long is evicted.
+    #[serde(with = "dur")]
+    pub allocated_ttl: Duration,
+    /// At `names_max`, a name never live this long after allocation is evicted first.
+    #[serde(with = "dur")]
+    pub evict_unpublished_after: Duration,
+    /// Visitor bytes per mesh per UTC day, all engines.
+    #[serde(with = "bytes")]
+    pub bytes_per_mesh_day: u64,
+    /// Visitor bytes per network per UTC day (tiers as above).
+    #[serde(with = "bytes")]
+    pub bytes_per_net_day: u64,
+    /// Per-tunnel shaping rate, Mbit/s (burst 64 MiB).
+    pub tunnel_mbit: u32,
+    /// Rate of a non-invited tunnel while the month's egress is over pace.
+    pub throttle_mbit: u32,
+    /// The host's monthly egress allowance; pace = allowance × elapsed fraction of the UTC month.
+    #[serde(with = "bytes")]
+    pub egress_month: u64,
+    /// New visitor connections per second per tunnel (burst `new_conns_burst`).
+    pub new_conns_per_tunnel_sec: u32,
+    /// Burst of `new_conns_per_tunnel_sec`.
+    pub new_conns_burst: u32,
+    /// A visitor that accepts no bytes this long is reset.
+    #[serde(with = "dur")]
+    pub write_stall: Duration,
+    /// `conn_log` rows older than this are purged.
+    #[serde(with = "dur")]
+    pub conn_log_retention: Duration,
 }
 
 impl Default for Limits {
@@ -316,6 +388,34 @@ impl Default for Limits {
             conns_per_ip: 64,
             new_conns_per_ip_sec: 20,
             info_per_ip_min: 30,
+            creates_per_net_hour: 30,
+            creates_burst: 10,
+            new_meshes_per_net_day: 5,
+            certs_per_net_week: 2,
+            certs_per_mesh_week: 2,
+            queued_per_net: 2,
+            reserved_per_net: 6,
+            tunnels_per_net: 10,
+            wide_net_factor: 4,
+            v6_32_factor: 16,
+            asn_factor: 64,
+            asn_db: None,
+            open_new_names_day: 500,
+            relayed_new_meshes_day: 20,
+            relayed_every: Duration::from_secs(3600),
+            relayed_burst: 4,
+            names_max: 1200,
+            allocated_ttl: Duration::from_secs(3600),
+            evict_unpublished_after: Duration::from_secs(7 * 86_400),
+            bytes_per_mesh_day: 20 << 30,
+            bytes_per_net_day: 50 << 30,
+            tunnel_mbit: 50,
+            throttle_mbit: 2,
+            egress_month: 10 << 40,
+            new_conns_per_tunnel_sec: 50,
+            new_conns_burst: 200,
+            write_stall: Duration::from_secs(5),
+            conn_log_retention: Duration::from_secs(30 * 86_400),
         }
     }
 }
@@ -344,6 +444,16 @@ pub struct Cidr {
 }
 
 impl Cidr {
+    /// First and last address over IPv6 space (IPv4 as v4-mapped), for range tables.
+    pub fn range(&self) -> (u128, u128) {
+        let (base, host_bits) = match self.net {
+            IpAddr::V4(n) => (u128::from(n.to_ipv6_mapped()), 32 - u32::from(self.len)),
+            IpAddr::V6(n) => (u128::from(n), 128 - u32::from(self.len)),
+        };
+        let host = 1u128.checked_shl(host_bits).map_or(u128::MAX, |v| v - 1);
+        (base & !host, base | host)
+    }
+
     /// Whether `ip` is inside.
     pub fn contains(&self, ip: IpAddr) -> bool {
         let ip = ip.to_canonical();
@@ -586,6 +696,49 @@ pub(crate) mod dur {
         match Raw::deserialize(d)? {
             Raw::Secs(s) => Ok(Duration::from_secs(s)),
             Raw::Text(t) => humantime::parse_duration(&t).map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// A byte count: an integer, or a number with `B`, `KiB`, `MiB`, `GiB`, `TiB` (or `KB` … `TB`, decimal).
+pub(crate) mod bytes {
+    use serde::{Deserialize, Deserializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Count(u64),
+        Text(String),
+    }
+
+    /// Parse `20GiB`, `1.5TB`, `4096`.
+    pub fn parse(s: &str) -> Result<u64, String> {
+        let s = s.trim();
+        let split = s
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(s.len());
+        let (num, unit) = s.split_at(split);
+        let n: f64 = num.parse().map_err(|_| format!("byte size {s:?}"))?;
+        let mult: u64 = match unit.trim() {
+            "" | "B" => 1,
+            "KiB" => 1 << 10,
+            "MiB" => 1 << 20,
+            "GiB" => 1 << 30,
+            "TiB" => 1 << 40,
+            "KB" => 1_000,
+            "MB" => 1_000_000,
+            "GB" => 1_000_000_000,
+            "TB" => 1_000_000_000_000,
+            u => return Err(format!("byte size {s:?}: unit {u:?}")),
+        };
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Ok((n * mult as f64) as u64)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        match Raw::deserialize(d)? {
+            Raw::Count(n) => Ok(n),
+            Raw::Text(t) => parse(&t).map_err(serde::de::Error::custom),
         }
     }
 }

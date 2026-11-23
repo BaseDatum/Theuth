@@ -3,6 +3,7 @@
 //! the per-name CNAME records, ARI renewal, revocation, the new-certificate token bucket, and DNS
 //! reconciliation at start.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,9 +22,6 @@ use crate::dns::{self, DnsZone, Rtype};
 use crate::state::{Edge, now_ms};
 use crate::store::{CertRow, JobRow, Store};
 
-/// The bucket of new-name certificates (§6.5). TODO(210-M3): the invited/open split (`invite_share`), the
-/// per-mesh and per-network budgets, `orders_per_3h`, fairness order and the 24 h spill.
-pub const NEW_CERT_BUCKET: &str = "le_new";
 /// A name unattached this long is not renewed (§6.3).
 pub const NO_RENEW_AFTER_MS: u64 = 90 * 86_400_000;
 /// ETA per job ahead (§6.5: 3 min per order).
@@ -54,6 +52,8 @@ pub struct Certs {
     /// Wakes the runner (a new job).
     pub wake: Notify,
     last_scan_ms: Mutex<u64>,
+    /// Last `queue` event position per waiting job (§6.5 events on change only).
+    positions: Mutex<HashMap<String, u32>>,
     revoking: tokio::sync::Mutex<()>,
 }
 
@@ -74,6 +74,7 @@ impl Certs {
             },
             wake: Notify::new(),
             last_scan_ms: Mutex::new(0),
+            positions: Mutex::new(HashMap::new()),
             revoking: tokio::sync::Mutex::new(()),
         }
     }
@@ -211,11 +212,11 @@ async fn pending(edge: &Edge, job: &JobRow, slotted: bool) -> anyhow::Result<Sub
             queue_pos: None,
         }));
     }
-    // TODO(210-M3): the §6.5 ETA from the bucket's refill and the class order.
-    let pos = edge.store.queue_position(&job.id).await?;
+    let ca = edge.certs.get().map_or("letsencrypt", |c| c.ca.id());
+    let pos = crate::queue::position(edge, ca, job, now_ms()).await?;
     Ok(Submitted::Pending(CertPending {
-        eta_s: u64::from(pos) * ETA_PER_JOB_S,
-        queue_pos: Some(pos),
+        eta_s: pos.map_or(ETA_PER_JOB_S, |p| p.eta_s),
+        queue_pos: pos.map(|p| p.position),
     }))
 }
 
@@ -252,6 +253,14 @@ pub async fn submit(
     // refused by `store_chain` and revoked.
     let open = edge.store.open_job(domain, name).await?.filter(|j| j.mesh == mesh_s);
     let slotted = matches!(row.state.as_str(), "slotted" | "valid");
+    // §6.5, §9.4: a CSR that will queue for a slot passes `queue_max`, the mesh's and (open meshes) the
+    // network's weekly certificates and the network's queued names first.
+    if !slotted && open.is_none() && row.chain_pem.is_none() {
+        let invited = edge.store.mesh(&mesh_s).await?.is_some_and(|m| m.invited != 0);
+        if let Err(b) = crate::limits::cert_request(edge, &mesh_s, invited, &row.net, now).await? {
+            return Ok(Err(b));
+        }
+    }
     let answer = match row.csr.as_deref() {
         Some(stored) if stored == der => {
             if let (Some(chain), None) = (&row.chain_pem, &open) {
@@ -457,7 +466,7 @@ fn backoff(attempt: i64) -> Duration {
 
 /// Run due jobs and, every `acme.renew_check`, the renewal scan, as of `now`. The ms until the next due job, if
 /// any is waiting.
-pub async fn tick(edge: &Edge, now: u64) -> anyhow::Result<()> {
+pub async fn tick(edge: &Arc<Edge>, now: u64) -> anyhow::Result<()> {
     let Some(certs) = edge.certs.get() else { return Ok(()) };
     let scan_every = u64::try_from(edge.cfg.acme.renew_check.as_millis()).unwrap_or(u64::MAX);
     let due_scan = {
@@ -488,10 +497,11 @@ pub async fn tick(edge: &Edge, now: u64) -> anyhow::Result<()> {
             }
         }
     }
-    revoke_due(edge, certs, now).await
+    revoke_due(edge, certs, now).await?;
+    crate::queue::announce(edge, certs.ca.id(), now, &certs.positions).await
 }
 
-async fn process(edge: &Edge, certs: &Certs, job: &JobRow, now: u64) -> anyhow::Result<()> {
+async fn process(edge: &Arc<Edge>, certs: &Certs, job: &JobRow, now: u64) -> anyhow::Result<()> {
     let domain = edge.cfg.domain.as_str();
     let row = edge.store.cert_row(domain, &job.name).await?;
     let Some(row) = row.filter(|r| r.held() && r.owner.as_deref() == Some(job.mesh.as_str())) else {
@@ -507,25 +517,30 @@ async fn process(edge: &Edge, certs: &Certs, job: &JobRow, now: u64) -> anyhow::
         edge.store.finish_job(&job.id, "failed", Some(&format!("CSR: {e:?}"))).await?;
         return Ok(());
     }
+    // Only a first certificate of a name not yet slotted draws on the slot queue; renewals and rotations
+    // never do (§6.5).
     if job.kind == "new" && matches!(row.state.as_str(), "allocated" | "queued") {
-        let per_week = f64::from(edge.cfg.acme.cas.letsencrypt.new_certs_per_week.max(1));
-        let refill_ms = 7.0 * 86_400_000.0 / per_week;
-        if let Err(wait) = edge.store.bucket_take(NEW_CERT_BUCKET, per_week, refill_ms, now).await? {
-            edge.store.requeue_job(&job.id, now.saturating_add(wait), None, true).await?;
-            edge.store.set_name_state(domain, &job.name, "queued").await?;
-            let position = edge.store.queue_position(&job.id).await?;
-            if let Ok(mesh) = job.mesh.parse::<PublicKey>() {
-                for t in edge.mesh_tunnels(&mesh) {
-                    t.send(Event::Queue(QueueEvent {
-                        name: job.name.clone(),
-                        position,
-                        eta_s: wait / 1000 + u64::from(position) * ETA_PER_JOB_S,
-                    }));
+        match crate::queue::try_slot(edge, certs.ca.id(), job, now).await? {
+            crate::queue::Slot::Wait { pos, retry_ms } => {
+                edge.store.requeue_job(&job.id, now.saturating_add(retry_ms), None, true).await?;
+                edge.store.set_name_state(domain, &job.name, "queued").await?;
+                if let Ok(mesh) = job.mesh.parse::<PublicKey>() {
+                    for t in edge.mesh_tunnels(&mesh) {
+                        t.send(Event::Queue(QueueEvent {
+                            name: job.name.clone(),
+                            position: pos.position,
+                            eta_s: pos.eta_s,
+                        }));
+                    }
                 }
+                certs.positions.lock().expect("positions").insert(job.id.clone(), pos.position);
+                return Ok(());
             }
-            return Ok(());
+            crate::queue::Slot::Slotted => {
+                edge.store.set_name_state(domain, &job.name, "slotted").await?;
+                crate::limits::count_slot(edge, &job.mesh, job.class == "invited", &job.net, now).await?;
+            }
         }
-        edge.store.set_name_state(domain, &job.name, "slotted").await?;
     }
     if row.records == 0 {
         ensure_records(edge, certs, &job.name).await?;
@@ -615,7 +630,7 @@ async fn renewal_scan(edge: &Edge, certs: &Certs, now: u64) -> anyhow::Result<()
         if live {
             edge.store.touch_attached(&owner, now).await?;
         } else if now.saturating_sub(ms_u64(row.last_attach_ms)) > NO_RENEW_AFTER_MS {
-            // TODO(210-M3): inactivity expiry releases and revokes; here the certificate just runs out.
+            // TODO(210-M4): inactivity expiry releases and revokes; here the certificate just runs out.
             continue;
         }
         if edge.store.open_job(domain, &row.name).await?.is_some() {
