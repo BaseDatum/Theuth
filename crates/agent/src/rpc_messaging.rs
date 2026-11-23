@@ -667,8 +667,10 @@ mod tests {
     async fn a_file_notice_without_the_forwarded_marker_is_refused() {
         use super::AgentMessagingApiServer as _;
         let d = crate::test_dir("rpcnotice");
-        let server =
-            rpc_core::Server::new(runtime::Runtime::new(figment::Figment::new(), d.path().to_path_buf()));
+        let server = rpc_core::Server::new(runtime::Runtime::new(
+            figment::Figment::new(),
+            d.path().to_path_buf(),
+        ));
         let mut ext = jsonrpsee::Extensions::new();
         ext.insert(rpc_core::RpcPeer::internal());
         let e = server

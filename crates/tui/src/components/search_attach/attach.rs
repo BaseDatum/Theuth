@@ -62,7 +62,12 @@ pub fn from_hit(hit: &Hit) -> AttachRef {
             if let Some(p) = a.pages {
                 let _ = write!(meta, " · {p} pages");
             }
-            let _ = write!(meta, " · {} · {}", platform::fmt::bytes(a.bytes), date_secs(a.created_at));
+            let _ = write!(
+                meta,
+                " · {} · {}",
+                platform::fmt::bytes(a.bytes),
+                date_secs(a.created_at)
+            );
             AttachRef {
                 kind: Kind::Artifact,
                 id: a.call_id.clone(),
@@ -155,4 +160,3 @@ pub fn from_session(s: &SessionSummary) -> AttachRef {
         meta,
     }
 }
-

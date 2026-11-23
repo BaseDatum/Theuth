@@ -65,7 +65,9 @@ pub fn sidak_z(z: f64, k: usize) -> f64 {
         return z;
     }
     let n = std_normal();
-    n.inverse_cdf(n.cdf(z).powf(1.0 / k as f64)).max(z).min(z + 3.0)
+    n.inverse_cdf(n.cdf(z).powf(1.0 / k as f64))
+        .max(z)
+        .min(z + 3.0)
 }
 
 // ───────────────────────────── objectives and their values ─────────────────────────────

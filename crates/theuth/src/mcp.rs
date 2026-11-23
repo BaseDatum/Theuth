@@ -802,7 +802,13 @@ mod tests {
         engine.stopped().await;
         let why = tokio::time::timeout(
             Duration::from_secs(10),
-            keep_engine(scratch.path(), &listen, "s1".into(), tx, Duration::from_secs(1)),
+            keep_engine(
+                scratch.path(),
+                &listen,
+                "s1".into(),
+                tx,
+                Duration::from_secs(1),
+            ),
         )
         .await
         .expect("the bridge gave up");
