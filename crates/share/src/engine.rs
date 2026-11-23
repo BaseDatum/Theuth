@@ -33,6 +33,9 @@ use crate::visitor::{self, Certs};
 
 /// "Public sharing is off" (§7.1).
 pub const SWITCH_OFF: &str = "Public sharing is off in Settings › Sharing";
+/// A previewed publish whose shown name was claimed by someone else before the owner's
+/// `Allow` landed (FIX6 N3).
+pub const NAME_TAKEN_MEANWHILE: &str = "the name shown was taken meanwhile; publish again";
 /// How long a publish waits for the edge.
 pub const ATTACH_WAIT: Duration = Duration::from_secs(30);
 /// How long a publish waits for the certificate step (vault key, CSR) before answering
@@ -188,7 +191,7 @@ pub struct PublishPreview {
     /// The exact URL the share will have.
     pub url: String,
     /// The name was drawn locally and is not claimed yet: [`Engine::publish_previewed`] claims
-    /// it after the owner's `Allow` (a fresh draw if it was taken meanwhile).
+    /// it after the owner's `Allow` (and fails if it was taken meanwhile).
     pub drawn: bool,
 }
 
@@ -548,16 +551,24 @@ impl Engine {
 
     /// A share of this engine may be mounted (FIX4 #1): the switch is on and this engine's own
     /// consent path recorded exactly this share. Otherwise it is left unmounted and listed in
-    /// [`Self::unmounted`].
+    /// [`Self::unmounted`]. A store error decides nothing (FIX6 N2): the share is left as it
+    /// is, so a routed one stays routed and an unmounted one stays unmounted.
     async fn may_mount(&self, s: &Share) -> bool {
         let why = match (self.store.enabled().await, self.store.locally_approved(s).await) {
             (Ok(true), Ok(true)) => {
                 self.unmounted.lock().remove(&s.id);
                 return true;
             }
-            (Ok(false), _) => "public sharing is off".to_owned(),
-            (_, Ok(false)) => "no approval for it was given on this machine".to_owned(),
-            (Err(e), _) | (_, Err(e)) => format!("{e:#}"),
+            (Ok(false), _) => "public sharing is off",
+            (_, Ok(false)) => "no approval for it was given on this machine",
+            (Err(e), _) | (_, Err(e)) => {
+                let routed = self.table.routes(&s.id);
+                tracing::warn!(
+                    "share: mount check of {} failed, left as is (routed: {routed}): {e:#}",
+                    s.id
+                );
+                return routed;
+            }
         };
         tracing::warn!("share: {} left unmounted: {why}", s.id);
         self.table.remove(&s.id);
@@ -637,8 +648,8 @@ impl Engine {
     }
 
     /// Publish what the approval card showed ([`Self::publish_preview`]): a held name as is; a
-    /// drawn one is claimed now, after the owner's `Allow`, and replaced by a fresh draw when
-    /// the edge answers `name_taken` meanwhile (the answer carries the final URL).
+    /// drawn one is claimed now, after the owner's `Allow`. When the edge answers `name_taken`
+    /// meanwhile the publish fails and claims nothing (FIX6 N3): the owner approved that URL.
     pub async fn publish_previewed(
         &self,
         mut plan: Plan,
@@ -928,9 +939,9 @@ impl Engine {
     }
 
     /// The name for a publish (after the owner's approval): [`Self::held_pick`], else a random
-    /// name claimed at the edge after the terms — `candidate` (the one the card showed) first,
-    /// a fresh draw whenever the edge answers `name_taken`. The flag is `true` when this call
-    /// claimed the name.
+    /// name claimed at the edge after the terms: `candidate` (the one the card showed) exactly,
+    /// failing on `name_taken`; without one, a fresh draw whenever the edge answers
+    /// `name_taken`. The flag is `true` when this call claimed the name.
     async fn pick_name(
         &self,
         link: &Link,
@@ -944,17 +955,18 @@ impl Engine {
         if !link.welcome.terms_ok {
             self.rehello(link, accepted).await?;
         }
-        let mut next = candidate.map(str::to_owned);
         for _ in 0..3 {
-            let name = next
-                .take()
+            let name = candidate
+                .map(str::to_owned)
                 .unwrap_or_else(|| names::random_name(random_bytes()));
             match link.control.allocate(&name).await {
                 Ok(g) => {
                     self.fresh.lock().insert(g.name.clone());
                     return Ok((g.name, true));
                 }
-                Err(e) if e.code() == Some(ErrorCode::NameTaken) => continue,
+                Err(e) if e.code() == Some(ErrorCode::NameTaken) => {
+                    anyhow::ensure!(candidate.is_none(), NAME_TAKEN_MEANWHILE);
+                }
                 Err(e) => return Err(e.into()),
             }
         }
@@ -980,7 +992,7 @@ impl Engine {
     }
 
     /// A random name the edge reports free right now (a few draws); the check is advisory (the
-    /// claim after the approval redraws on `name_taken`), so a failed check keeps the draw.
+    /// claim after the approval fails on `name_taken`), so a failed check keeps the draw.
     async fn draw_name(link: &Link) -> String {
         let mut name = names::random_name(random_bytes());
         for _ in 0..3 {
@@ -997,13 +1009,23 @@ impl Engine {
     }
 
     /// Give back a name this run claimed for a publish that then failed or was dropped, unless
-    /// a stored share of this engine already uses it.
+    /// a share of the family not stopped (replicated rows included) uses it, or the store
+    /// cannot tell (FIX6 N4: a name in doubt stays claimed).
     async fn release_unused(&self, name: &str) {
         let host = |d: &str| names::host(name, None, d);
-        if let Ok(mine) = self.mine().await
-            && mine.iter().any(|s| name_host_of(&s.host, &s.domain) == host(&s.domain))
-        {
-            return;
+        match self.store.list(platform::time::now_ms()).await {
+            Ok(all) => {
+                if all.iter().any(|s| {
+                    s.state != ShareState::Stopped
+                        && name_host_of(&s.host, &s.domain) == host(&s.domain)
+                }) {
+                    return;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("share: name {name} kept claimed, shares unreadable: {e:#}");
+                return;
+            }
         }
         self.fresh.lock().remove(name);
         if let Err(e) = self.with_control(|c, _| async move { c.release(name).await }).await {
@@ -2347,8 +2369,9 @@ mod tests {
 
     /// FIX5 R2: the card's URL is known before the ask, but nothing is claimed for it: a held
     /// name is used as is; a first publish draws its random name locally (read-only check).
-    /// After the approval the publish claims it, draws again when it was taken meanwhile, and
-    /// gives the claimed name back when it then fails (or is dropped).
+    /// After the approval the publish claims exactly the shown name, fails without claiming
+    /// anything when it was taken meanwhile (FIX6 N3), and gives the claimed name back when it
+    /// then fails (or is dropped).
     #[tokio::test]
     async fn preview_claims_nothing_and_a_failed_publish_gives_its_claim_back() {
         let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2389,11 +2412,27 @@ mod tests {
         assert_eq!(*edge.checks.lock(), vec![p.name.clone()], "checked read-only");
         assert!(edge.claims.lock().is_empty(), "nothing claimed before the approval");
 
-        // Approved, but the shown name was taken meanwhile: a fresh draw is claimed; the
-        // publish then fails (this engine has no name keys) and the claim is given back.
+        // Approved, but the shown name was taken meanwhile: the publish fails, claims nothing
+        // and never publishes a URL other than the one the card showed.
         let shown = PublishPreview {
             name: "taken1".into(),
             url: "https://app.taken1.tun.zip/".into(),
+            drawn: true,
+        };
+        let err = e2
+            .publish_previewed(plan.clone(), CallOrigin::Settings, Consent::test(), shown)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), NAME_TAKEN_MEANWHILE);
+        assert_eq!(*edge.claims.lock(), vec!["taken1".to_owned()], "no fresh draw");
+        assert!(e2.fresh.lock().is_empty());
+        assert!(e2.store.list(platform::time::now_ms()).await.unwrap().is_empty());
+
+        // The shown name claimed, the publish then fails (this engine has no name keys): the
+        // claim is given back.
+        let shown = PublishPreview {
+            name: "free1".into(),
+            url: "https://app.free1.tun.zip/".into(),
             drawn: true,
         };
         let err = e2
@@ -2401,19 +2440,15 @@ mod tests {
             .await
             .unwrap_err();
         assert!(format!("{err:#}").contains("name keys"), "{err:#}");
-        let claims = edge.claims.lock().clone();
-        assert_eq!(claims.len(), 2, "{claims:?}");
-        assert_eq!(claims[0], "taken1");
-        let redrawn = claims[1].clone();
-        assert_ne!(redrawn, "taken1");
+        assert_eq!(*edge.claims.lock(), vec!["taken1".to_owned(), "free1".to_owned()]);
         tokio::time::timeout(Duration::from_secs(5), async {
-            while *edge.released.lock() != vec![redrawn.clone()] {
+            while *edge.released.lock() != vec!["free1".to_owned()] {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
         .expect("the claimed name is released");
-        assert!(!e2.fresh.lock().contains(&redrawn));
+        assert!(!e2.fresh.lock().contains("free1"));
 
         // A publish dropped after its claim releases it the same way.
         e2.fresh.lock().insert("dropped".into());
@@ -2429,6 +2464,68 @@ mod tests {
         .await
         .expect("a dropped claim is released");
         assert!(!e2.fresh.lock().contains("dropped"));
+    }
+
+    /// FIX6 N4: an unused claim is released only when no share of the family that is not
+    /// stopped uses the name (another engine's replicated row included), and never when the
+    /// shares cannot be read.
+    #[tokio::test]
+    async fn release_unused_keeps_names_in_use_or_in_doubt() {
+        let edge = Arc::new(NameEdge::default());
+        let (_d, e) = engine(8).await;
+        e.welcome(&name_edge(&edge), &test_info(), &test_welcome(&[])).await;
+        let other = Share {
+            engine: "other".into(),
+            host: "app.busy.tun.zip".into(),
+            ..share("o", 1, ShareState::Live, Access::Public)
+        };
+        e.store.put(&other).await.unwrap();
+        let stopped = Share {
+            host: "gone.tun.zip".into(),
+            state: ShareState::Stopped,
+            stopped_ms: Some(platform::time::now_ms()),
+            stopped_by: Some(StoppedBy::User),
+            ..share("s", 2, ShareState::Live, Access::Public)
+        };
+        e.store.put(&stopped).await.unwrap();
+        for n in ["busy", "gone", "doubt"] {
+            e.fresh.lock().insert(n.into());
+        }
+
+        e.release_unused("busy").await;
+        e.release_unused("gone").await;
+        assert_eq!(*edge.released.lock(), vec!["gone".to_owned()]);
+        assert!(e.fresh.lock().contains("busy"));
+
+        sqlx::query("DROP TABLE shares")
+            .execute(e.store.pool())
+            .await
+            .unwrap();
+        e.release_unused("doubt").await;
+        assert_eq!(*edge.released.lock(), vec!["gone".to_owned()], "released in doubt");
+        assert!(e.fresh.lock().contains("doubt"));
+    }
+
+    /// FIX6 N2: a store error in the mount check decides nothing: the tick keeps a routed share
+    /// routed, and a restore leaves an unmounted one unmounted (and unreported).
+    #[tokio::test]
+    async fn a_store_error_leaves_mounts_as_they_are() {
+        let (_d, e) = engine(8).await;
+        put_approved(&e, &share("x", 1, ShareState::Live, Access::Public)).await;
+        e.restore().await;
+        assert!(e.table.routes("x"));
+        put_approved(&e, &share("y", 2, ShareState::Live, Access::Public)).await;
+
+        sqlx::query("DROP TABLE share_approvals")
+            .execute(e.store.pool())
+            .await
+            .unwrap();
+        e.expire().await;
+        assert!(e.table.routes("x"), "unrouted on a store error");
+        e.restore().await;
+        assert!(e.table.routes("x"));
+        assert!(!e.table.routes("y"), "mounted without a readable approval");
+        assert!(e.unmounted().is_empty());
     }
 
     /// FIX5 R4: the local approval binds the expiry: a replicated edit extending it unbinds the
