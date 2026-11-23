@@ -50,7 +50,7 @@ crates/signal/
     approvals.rs  codes, message text, reaction/answer routing      (new, ~390 lines incl. tests)
     transport.rs  FROZEN  jarvis crates/jarvis-signal/src/transport.rs
     presage.rs    FROZEN  jarvis crates/jarvis-signal/src/presage.rs
-    text.rs       FROZEN  jarvis crates/jarvis-signal/src/text.rs
+    text.rs       re-exports `markdown::{plain, chunks}` as `markdown_to_plain` / `chunk_text` (was a frozen jarvis copy)
     error.rs      FROZEN  jarvis error.rs minus the `Core` variant and its `From`
     mock.rs       FROZEN  the `MockTransport` half of jarvis mock.rs (`#[cfg(test)]`)
 ~/.theuth/signal/
@@ -100,6 +100,11 @@ changes an existing branch.
    `recipients: Vec<Recipient>` parallel to `sent` (whose items carry only the
    number), read via `sent_recipients()`. Only so `channel` tests can assert
    that outbound sends keep the inbound ACI (§8.5). `mock.rs` only.
+
+Note: `text.rs` is no longer a frozen copy. Its two functions were
+token-identical to `markdown::plain` / `markdown::chunks` (only comments and
+tests differed), so `text.rs` re-exports those under the old names and
+`MAX_CHUNK_CHARS = 2000` stays here; edit the text shaping in `crates/markdown/src/plain.rs`.
 
 Everything else that touches the wire — linking, receive pump, resolution,
 CDSI/PNI handling, contact-sync requests, `OnNewIdentity::Trust`, the

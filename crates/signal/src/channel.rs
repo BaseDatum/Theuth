@@ -11,12 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent::{
-    AGENT_ACTOR, AgentEvent, Agents, Ancestors, ChannelChat, ChannelOrigin, ChannelVia,
-    NewRootSession, PeerScope, SendInput, Steer,
-};
+use agent::{AgentEvent, Ancestors, ChannelChat, ChannelOrigin, ChannelVia, PeerScope};
 use artifact::{ArtifactShown, snapshot};
 use async_trait::async_trait;
+use chat_common::{backoff_delay, extension_for, fmt_size, sniff};
 use futures::StreamExt;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
@@ -27,8 +25,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::Instant;
 use tools::{
-    APPROVAL_ACTOR, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalResolved, AskId,
-    AskRequested, AskResolved, Decision, Resolve,
+    Answer, ApprovalId, ApprovalRequested, ApprovalResolved, AskId, AskRequested, AskResolved,
+    Decision,
 };
 use uuid::Uuid;
 
@@ -55,12 +53,6 @@ pub const RETRY_DELAY: Duration = Duration::from_millis(200);
 pub const TYPING_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 /// A failed number → ACI lookup is not retried before this.
 pub const ACI_RESOLVE_COOLDOWN: Duration = Duration::from_secs(300);
-
-/// Reconnect backoff: `min(2^min(attempt, 6), 60)` seconds.
-#[must_use]
-pub fn backoff_delay(attempt: u32) -> Duration {
-    Duration::from_secs((1u64 << attempt.min(6)).min(60))
-}
 
 /// The 37 §7 line, plain text: where to enter a requested secret. Never answerable here.
 #[must_use]
@@ -313,20 +305,10 @@ trait Port: Send + Sync {
 /// [`Port`] over the registered `agent` and `approval` actors.
 struct Actors;
 
-fn agents() -> Result<ActorRef<Agents>, String> {
-    ActorRef::<Agents>::lookup(AGENT_ACTOR)
-        .ok()
-        .flatten()
-        .ok_or_else(|| "agent actor is not running".to_string())
-}
-
 #[async_trait]
 impl Port for Actors {
     async fn new_root(&self, scope: PeerScope) -> Result<SessionId, String> {
-        agents()?
-            .ask(NewRootSession { cwd: None, scope })
-            .await
-            .map_err(|e| e.to_string())
+        chat_common::port::new_root(scope).await
     }
 
     async fn send_input(
@@ -336,17 +318,7 @@ impl Port for Actors {
         files: Vec<PathBuf>,
         channel: ChannelOrigin,
     ) -> Result<SessionId, String> {
-        agents()?
-            .ask(SendInput {
-                session,
-                text,
-                files,
-                delivery: agent::Delivery::default(),
-                id: None,
-                channel: Some(channel),
-            })
-            .await
-            .map_err(|e| e.to_string())
+        chat_common::port::send_input(session, text, files, channel).await
     }
 
     async fn steer(
@@ -357,37 +329,19 @@ impl Port for Actors {
         files: Vec<PathBuf>,
         channel: ChannelOrigin,
     ) -> Result<(), String> {
-        agents()?
-            .ask(Steer {
-                session,
-                id,
-                text,
-                files,
-                delivery: agent::Delivery::default(),
-                channel: Some(channel),
-            })
-            .await
-            .map_err(|e| e.to_string())
+        chat_common::port::steer(session, id, text, files, channel).await
     }
 
     async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String> {
-        ActorRef::<Approval>::lookup(APPROVAL_ACTOR)
-            .ok()
-            .flatten()
-            .ok_or_else(|| "approval actor is not running".to_string())?
-            .ask(Resolve { id, decision })
-            .await
-            .map_err(|e| e.to_string())
+        chat_common::port::resolve(id, decision).await
     }
 
     async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> Result<bool, String> {
-        agent::answer_ask(id, answers)
-            .await
-            .map_err(|e| e.to_string())
+        chat_common::port::answer_ask(id, answers).await
     }
 
     async fn ancestors(&self, session: SessionId) -> Result<Vec<SessionId>, String> {
-        agents()?
+        chat_common::agents()?
             .ask(Ancestors { session })
             .await
             .map(|chain| chain.into_iter().map(|a| a.id).collect())
@@ -1975,44 +1929,6 @@ fn effective_mime(declared: &str, bytes: &[u8]) -> String {
         .to_owned()
 }
 
-fn sniff(b: &[u8]) -> Option<&'static str> {
-    if b.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
-        Some("image/png")
-    } else if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        Some("image/jpeg")
-    } else if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if b.len() >= 12 && b.starts_with(b"RIFF") && &b[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else if b.starts_with(b"%PDF") {
-        Some("application/pdf")
-    } else if b.starts_with(b"OggS") {
-        Some("audio/ogg")
-    } else {
-        None
-    }
-}
-
-fn extension_for(mime: &str) -> String {
-    match mime {
-        "image/jpeg" => "jpg".into(),
-        "text/plain" => "txt".into(),
-        "audio/mpeg" => "mp3".into(),
-        "audio/mp4" => "m4a".into(),
-        "application/octet-stream" => "bin".into(),
-        _ => {
-            let sub: String = mime
-                .rsplit('/')
-                .next()
-                .unwrap_or_default()
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric())
-                .collect();
-            if sub.is_empty() { "bin".into() } else { sub }
-        }
-    }
-}
-
 /// Where an inbound message goes (67 §10).
 enum Addressee {
     Theuth,
@@ -2034,18 +1950,6 @@ fn first_line(text: &str) -> String {
     match line.char_indices().nth(80) {
         Some((i, _)) => line[..i].to_owned(),
         None => line.to_owned(),
-    }
-}
-
-fn fmt_size(bytes: usize) -> String {
-    const KIB: usize = 1024;
-    const MIB: usize = KIB * 1024;
-    if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
-    } else if bytes >= KIB {
-        format!("{} KiB", bytes.div_ceil(KIB))
-    } else {
-        format!("{bytes} B")
     }
 }
 
@@ -2390,9 +2294,7 @@ mod tests {
     }
 
     #[test]
-    fn backoff_and_numbers() {
-        let secs: Vec<u64> = (0..8).map(|a| backoff_delay(a).as_secs()).collect();
-        assert_eq!(secs, [1, 2, 4, 8, 16, 32, 60, 60]);
+    fn normalizes_numbers() {
         assert_eq!(normalize_number(" +1 (409) 519-3333 "), "+14095193333");
         assert_eq!(normalize_number("14095193333"), "+14095193333");
         assert_eq!(normalize_number("bob"), "bob");
@@ -3418,10 +3320,5 @@ mod tests {
             effective_mime("application/octet-stream", b"zzz"),
             "application/octet-stream"
         );
-        assert_eq!(extension_for("image/jpeg"), "jpg");
-        assert_eq!(extension_for("application/pdf"), "pdf");
-        assert_eq!(extension_for("weird"), "weird");
-        assert_eq!(fmt_size(83_000), "82 KiB");
-        assert_eq!(fmt_size(3 * 1024 * 1024), "3.0 MiB");
     }
 }

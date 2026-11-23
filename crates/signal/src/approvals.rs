@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use chat_common::truncate;
 use kameo::actor::ActorRef;
 use runtime::SessionId;
 use tools::{ApprovalId, ApprovalRequested, ApprovalResolved, Decision};
@@ -176,13 +177,6 @@ pub fn message(req: &ApprovalRequested, code: &str) -> String {
         "👍 to allow · 👎 to deny · or /approve {code} · /deny {code}"
     ));
     out
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max) {
-        Some((i, _)) => format!("{}…", &s[..i]),
-        None => s.to_owned(),
-    }
 }
 
 /// 👍 ✅ 👌 → Allow, 👎 ❌ 🚫 → Deny; variation selectors and skin tones ignored.

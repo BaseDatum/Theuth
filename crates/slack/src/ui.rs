@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use agent::{AgentInfo, AgentState, LoginInfo, ModelInfo, SessionSummary, SkillMeta};
+use chat_common::short;
 use chrono::{DateTime, Utc};
 use runtime::SessionId;
 use serde_json::{Value, json};
@@ -687,12 +688,6 @@ fn chunks(text: &str, max: usize) -> impl Iterator<Item = String> + '_ {
 
 fn first_line(text: &str) -> String {
     clip(text.lines().next().unwrap_or(""), 200)
-}
-
-/// Last 8 hex chars, as the TUI shows ids; `resume` accepts them.
-pub(crate) fn short(id: SessionId) -> String {
-    let s = id.to_string();
-    s[s.len() - 8..].to_owned()
 }
 
 /// `12.3k`, `200k`, `1.0M`; `?` for 0.

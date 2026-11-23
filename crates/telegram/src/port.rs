@@ -9,11 +9,11 @@ use std::pin::pin;
 use std::time::Duration;
 
 use agent::{
-    AGENT_ACTOR, AgentInfo, Agents, Ancestors, Cancel, ChannelOrigin, ListAgents, ListSessions,
-    LoadSession, Loaded, NewRootSession, SendInput, SessionSummary, Steer,
-    communication::PeerScope,
+    AgentInfo, Ancestors, Cancel, ChannelOrigin, ListAgents, ListSessions, LoadSession, Loaded,
+    NewRootSession, SendInput, SessionSummary, Steer, communication::PeerScope,
 };
 use async_trait::async_trait;
+use chat_common::agents;
 use kameo::actor::ActorRef;
 use runtime::{InputId, SessionId};
 use tokio::time::Instant;
@@ -105,13 +105,6 @@ pub trait Port: Send + Sync {
 
 /// [`Port`] over the registered `agent` and `approval` actors.
 pub struct LivePort;
-
-fn agents() -> Result<ActorRef<Agents>, String> {
-    ActorRef::<Agents>::lookup(AGENT_ACTOR)
-        .ok()
-        .flatten()
-        .ok_or_else(|| "agent actor is not running".to_string())
-}
 
 #[async_trait]
 impl Port for LivePort {

@@ -33,6 +33,7 @@ cursor = { path = "crates/cursor" }
 signal = { path = "crates/signal" }
 slack = { path = "crates/slack" }
 telegram = { path = "crates/telegram" }
+chat-common = { path = "crates/chat-common" }  # helpers shared by the signal/slack/telegram adapters
 acp = { path = "crates/acp" }
 web = { path = "crates/web" }
 search-providers = { path = "crates/search-providers" }

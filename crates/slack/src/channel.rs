@@ -8,18 +8,19 @@
 //! use; the router sends it the session's `AgentEvent`s. [`Handle`] is what
 //! the `"slack"` actor in `lib.rs` talks to.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use agent::{
-    AGENT_ACTOR, AgentEvent, AgentInfo, Agents, Cancel, ChannelChat, ChannelOrigin, ChannelVia,
-    ListAgents, ListSessions, NewRootSession, ObservedMeta, SendInput, SessionSummary, Steer,
+    AgentEvent, AgentInfo, Cancel, ChannelChat, ChannelOrigin, ChannelVia, ListAgents,
+    ListSessions, ObservedMeta, SessionSummary,
     communication::{PeerDelivered, PeerScope},
 };
 use artifact::{Artifact, ArtifactShown};
 use async_trait::async_trait;
+use chat_common::{agents, fmt_size, secret_notice};
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -29,8 +30,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tools::{
-    APPROVAL_ACTOR, Answer, Approval, ApprovalId, ApprovalRequested, ApprovalResolved, AskId,
-    AskRequested, AskResolved, Decision, Resolve,
+    Answer, ApprovalId, ApprovalRequested, ApprovalResolved, AskId, AskRequested, AskResolved,
+    Decision,
 };
 
 use crate::api::{Api, ApiError, MARKDOWN_TEXT_MAX, SlackApi};
@@ -42,8 +43,6 @@ use crate::{
     socket, ui,
 };
 
-/// Dedup set size for `event_id` / `trigger_id` (21 §3.1).
-pub const RECENT_KEYS: usize = 1024;
 /// `agents.sessions.rename` title cap (21 §8.6).
 pub const TITLE_MAX: usize = 200;
 /// A child's task text cap in its `▸ **task**` line (21 §9.1).
@@ -57,37 +56,8 @@ pub fn threads_path(data_dir: &Path) -> PathBuf {
     data_dir.join("slack").join("threads.json")
 }
 
-/// The 37 §7 line: where to enter a requested secret. Never answerable here.
-#[must_use]
-pub fn secret_notice(name: &str, note: &str) -> String {
-    format!(
-        "theuth asks for secret `{name}` — {note}. Enter it in the desktop app, the TUI (/secrets add {name}) or `t --secret-set {name}`; it will not be read from this chat."
-    )
-}
-
 /// Bounded FIFO set of recently seen envelope keys.
-#[derive(Debug, Default)]
-pub struct RecentKeys {
-    order: VecDeque<String>,
-    set: HashSet<String>,
-}
-
-impl RecentKeys {
-    /// Records `key`; `true` when it was already present.
-    pub fn seen(&mut self, key: &str) -> bool {
-        if self.set.contains(key) {
-            return true;
-        }
-        if self.order.len() >= RECENT_KEYS
-            && let Some(old) = self.order.pop_front()
-        {
-            self.set.remove(&old);
-        }
-        self.order.push_back(key.to_owned());
-        self.set.insert(key.to_owned());
-        false
-    }
-}
+pub type RecentKeys = chat_common::RecentKeys<String>;
 
 /// The asks the channel makes of other plugins, behind a trait so the
 /// inbound/outbound paths are testable without live actors.
@@ -133,13 +103,6 @@ async fn routable() -> Vec<roster::Routable> {
     roster.ask(roster::RoutableAgents).await.unwrap_or_default()
 }
 
-fn agents() -> Result<ActorRef<Agents>, String> {
-    ActorRef::<Agents>::lookup(AGENT_ACTOR)
-        .ok()
-        .flatten()
-        .ok_or_else(|| "agent actor is not running".to_string())
-}
-
 #[async_trait]
 impl Port for Actors {
     async fn send_input(
@@ -149,24 +112,11 @@ impl Port for Actors {
         files: Vec<PathBuf>,
         channel: ChannelOrigin,
     ) -> Result<SessionId, String> {
-        agents()?
-            .ask(SendInput {
-                session,
-                text,
-                files,
-                delivery: agent::Delivery::default(),
-                id: None,
-                channel: Some(channel),
-            })
-            .await
-            .map_err(|e| e.to_string())
+        chat_common::port::send_input(session, text, files, channel).await
     }
 
     async fn new_root(&self, scope: PeerScope) -> Result<SessionId, String> {
-        agents()?
-            .ask(NewRootSession { cwd: None, scope })
-            .await
-            .map_err(|e| e.to_string())
+        chat_common::port::new_root(scope).await
     }
 
     async fn steer(
@@ -177,17 +127,7 @@ impl Port for Actors {
         files: Vec<PathBuf>,
         channel: ChannelOrigin,
     ) -> Result<(), String> {
-        agents()?
-            .ask(Steer {
-                session,
-                id,
-                text,
-                files,
-                delivery: agent::Delivery::default(),
-                channel: Some(channel),
-            })
-            .await
-            .map_err(|e| e.to_string())
+        chat_common::port::steer(session, id, text, files, channel).await
     }
 
     async fn cancel(&self, session: SessionId) -> Result<(), String> {
@@ -207,19 +147,11 @@ impl Port for Actors {
     }
 
     async fn resolve(&self, id: ApprovalId, decision: Decision) -> Result<bool, String> {
-        ActorRef::<Approval>::lookup(APPROVAL_ACTOR)
-            .ok()
-            .flatten()
-            .ok_or_else(|| "approval actor is not running".to_string())?
-            .ask(Resolve { id, decision })
-            .await
-            .map_err(|e| e.to_string())
+        chat_common::port::resolve(id, decision).await
     }
 
     async fn answer_ask(&self, id: AskId, answers: Option<Vec<Answer>>) -> Result<bool, String> {
-        agent::answer_ask(id, answers)
-            .await
-            .map_err(|e| e.to_string())
+        chat_common::port::answer_ask(id, answers).await
     }
 
     async fn list_agents(&self, session: SessionId) -> Result<Vec<AgentInfo>, String> {
@@ -619,7 +551,7 @@ async fn run(
             match api.auth_test().await {
                 Ok((bot_user, team, _url)) => break Some((bot_user, team)),
                 Err(e) => {
-                    let delay = socket::backoff_delay(attempt);
+                    let delay = chat_common::backoff_delay(attempt);
                     attempt = attempt.saturating_add(1);
                     tracing::warn!(error = %e, delay_s = delay.as_secs(), "slack auth.test failed; retrying");
                     chan.publish(SlackEvent::Disconnected {
@@ -814,7 +746,7 @@ impl Channel {
 
     /// Dedup: `true` when `key` was already seen (21 §3.1).
     pub fn recent_seen(&self, key: &str) -> bool {
-        self.lock().recent.seen(key)
+        !self.lock().recent.insert(key)
     }
 
     /// Queues an envelope for the ordered inbound worker.
@@ -3059,18 +2991,6 @@ pub(crate) fn clip(s: &str, max: usize) -> String {
     format!("{head}… ({} more chars)", n - keep)
 }
 
-fn fmt_size(bytes: usize) -> String {
-    const KIB: usize = 1024;
-    const MIB: usize = KIB * 1024;
-    if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
-    } else if bytes >= KIB {
-        format!("{} KiB", bytes.div_ceil(KIB))
-    } else {
-        format!("{bytes} B")
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use std::time::Duration;
@@ -4012,23 +3932,6 @@ pub(crate) mod tests {
             })))))
             .await;
         assert_eq!(f.stub.calls(), vec![Call::Cancel(f.stub.session)]);
-    }
-
-    #[test]
-    fn recent_keys_evict_the_oldest_past_the_cap() {
-        let mut r = RecentKeys::default();
-        assert!(!r.seen("k0"));
-        assert!(r.seen("k0"));
-        for i in 1..RECENT_KEYS {
-            assert!(!r.seen(&format!("k{i}")));
-        }
-        assert!(r.seen("k0"), "still present at exactly the cap");
-        assert!(!r.seen("k1024"));
-        assert!(r.seen("k1"), "second-oldest survives the 1025th key");
-        assert!(
-            !r.seen("k0"),
-            "evicted by the 1025th key (and re-inserted, evicting k1)"
-        );
     }
 
     #[test]

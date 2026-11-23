@@ -3,8 +3,8 @@
 //! reconnect with backoff.
 
 use std::sync::Arc;
-use std::time::Duration;
 
+use chat_common::backoff_delay;
 use slack_morphism::errors::{SlackClientError, SlackClientSystemError};
 use slack_morphism::prelude::*;
 use tokio_util::sync::CancellationToken;
@@ -13,12 +13,6 @@ use crate::SlackEvent;
 use crate::channel::{Channel, Inbound};
 
 type Connector = SlackClientHyperHttpsConnector;
-
-/// Reconnect backoff: `min(2^min(attempt, 6), 60)` seconds.
-#[must_use]
-pub fn backoff_delay(attempt: u32) -> Duration {
-    Duration::from_secs((1u64 << attempt.min(6)).min(60))
-}
 
 /// `Arc<Channel>` back out of morphism's user state.
 async fn chan(states: &SlackClientEventsUserState) -> Option<Arc<Channel>> {
@@ -167,18 +161,5 @@ pub async fn run(chan: Arc<Channel>, app_token: String, shutdown: CancellationTo
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn backoff_caps_at_a_minute() {
-        assert_eq!(backoff_delay(0), Duration::from_secs(1));
-        assert_eq!(backoff_delay(3), Duration::from_secs(8));
-        assert_eq!(backoff_delay(6), Duration::from_secs(60));
-        assert_eq!(backoff_delay(40), Duration::from_secs(60));
     }
 }

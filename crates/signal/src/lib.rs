@@ -483,7 +483,7 @@ pub async fn link_oneshot(
         let attempt = match t.link_device(&cfg.device_name).await {
             Ok(a) => a,
             Err(e) => {
-                let delay = channel::backoff_delay(faults);
+                let delay = chat_common::backoff_delay(faults);
                 faults += 1;
                 tracing::warn!(error = %e, retry_in = ?delay, "link_device failed");
                 tokio::time::sleep(delay).await;
