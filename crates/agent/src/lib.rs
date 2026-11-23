@@ -1161,6 +1161,18 @@ pub struct RenameSession {
     pub title: String,
 }
 
+/// `ask` → `Result<(), String>`: [`RenameSession`] by a human from a client (the
+/// `rename_session` RPC). Also marks the session `user_titled` (212 §11): from then on
+/// neither the title model nor `set_status` replaces the title. Harness renames use
+/// [`RenameSession`] and leave the guard alone.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UserRenameSession {
+    /// Target session.
+    pub session: SessionId,
+    /// New title.
+    pub title: String,
+}
+
 /// `ask` → `Result<(), String>`: pin or unpin a session; pinned rows lead
 /// [`ListSessions`].
 #[derive(Clone, Debug, Serialize, Deserialize)]

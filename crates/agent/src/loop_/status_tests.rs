@@ -267,8 +267,14 @@ impl Respond for CellScript {
             0 => sse_tool_call(
                 "call_py",
                 repl::NAME,
-                &json!({"code": "r = await set_status(status=\"mapping the harness\", title=\"Map the harness\")\nprint(r)"})
+                &json!({"code": "r = await set_status(status=\"mapping the harness\", title=\"Map the harness\")\nprint(r)\nr = await set_status(status=\"reading  the\\n loop\")\nprint(r)"})
                     .to_string(),
+            ),
+            // A cell without tool calls: `python` itself does not count (212 §10).
+            1 => sse_tool_call(
+                "call_py2",
+                repl::NAME,
+                &json!({"code": "print(1)"}).to_string(),
             ),
             _ => sse("done", "stop", (10, 5)),
         }
@@ -276,7 +282,7 @@ impl Respond for CellScript {
 }
 
 /// §13.5: `set_status` awaited in a cell updates the turn after the cell: state, counter,
-/// events, title, guard.
+/// events, title, guard; two calls in one cell apply in order, one `StatusChanged` each.
 async fn cell_call_updates_the_turn(pool: Arc<Pool>) {
     let mut h = Harness::new(CellScript).await;
     h.pool = Some(pool);
@@ -285,23 +291,33 @@ async fn cell_call_updates_the_turn(pool: Arc<Pool>) {
     let state = turn.run(tid, vec![h.input("go", false)]).await;
     let events = h.drain().await;
     let done = finished(&events);
-    let inner = done
-        .iter()
-        .find(|(id, _, _)| id == "call_py.1")
-        .unwrap_or_else(|| panic!("the cell's set_status did not finish: {done:?}"));
+    let inner = |id: &str| {
+        done.iter()
+            .find(|(i, _, _)| i == id)
+            .map(|(_, err, out)| (*err, out.clone()))
+            .unwrap_or_else(|| panic!("the cell's {id} did not finish: {done:?}"))
+    };
     assert_eq!(
-        (inner.1, inner.2.as_str()),
-        (false, "status set · title \"Map the harness\"")
+        inner("call_py.1"),
+        (false, "status set · title \"Map the harness\"".to_owned())
     );
+    assert_eq!(inner("call_py.2"), (false, "status set".to_owned()));
     assert_eq!(
         statuses(&events),
-        vec![(
-            "mapping the harness".to_owned(),
-            Some("Map the harness".to_owned())
-        )]
+        vec![
+            (
+                "mapping the harness".to_owned(),
+                Some("Map the harness".to_owned())
+            ),
+            ("reading the loop".to_owned(), None),
+        ]
     );
-    assert_eq!(state.status.as_deref(), Some("mapping the harness"));
-    assert_eq!(state.tool_calls_since_status, 0, "reset after the cell");
+    assert_eq!(state.status.as_deref(), Some("reading the loop"));
+    assert_eq!(
+        state.tool_calls_since_status, 0,
+        "reset after the cell; the bare cell adds nothing"
+    );
+    assert!(state.status_titled);
     assert!(shared.agent_titled.load(Relaxed));
     assert_eq!(stored_title(&h).await, "Map the harness");
 }

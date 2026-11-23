@@ -1184,15 +1184,18 @@ pub struct Repl {
     /// The batch's working copy of the todo list while `todo` is in
     /// `cx.local`: the loop sets it before a cell and reads it back after.
     pub(crate) todo: Vec<Todo>,
-    /// The last `set_status` a cell of this batch made (212 §8), while `set_status` is in
-    /// `cx.local`: the loop takes it after the cell and applies it.
-    pub(crate) status: Option<status::StatusUpdate>,
-    /// The session's title is the user's (212 §11): the loop sets it before a cell so
-    /// the receipt says the title was kept.
-    pub(crate) user_titled: bool,
+    /// The `set_status` calls cells of this batch made (212 §8), in order, while
+    /// `set_status` is in `cx.local`: the loop takes them after the cell and applies each.
+    pub(crate) status: Vec<status::Applied>,
+    /// What a cell's `set_status` needs from the session (212 §8, §11): the loop sets it
+    /// before a cell; `None` refuses the call.
+    pub(crate) status_cx: Option<status::Cx>,
     /// Inner tool calls cells made since the loop last took the count, `todo` and
     /// `set_status` excluded: the status nudge's counter (212 §10).
     pub(crate) inner_calls: u32,
+    /// Concept ids cells read in full since the loop last took them (`knowledge_get`, the
+    /// relevant rows of `peek_memory`; 10 §7, 212 §4.3).
+    pub(crate) knowledge_read: Vec<String>,
 }
 
 impl Repl {
@@ -1330,9 +1333,10 @@ impl Repl {
             unawaited: 0,
             hinted: false,
             todo: Vec::new(),
-            status: None,
-            user_titled: false,
+            status: Vec::new(),
+            status_cx: None,
             inner_calls: 0,
+            knowledge_read: Vec::new(),
         };
         if let Err(e) = repl.ensure_checkout().await {
             tracing::warn!("python runtime checkout failed: {e}");
@@ -1808,8 +1812,9 @@ impl Repl {
             names,
             todo: todos,
             status: status_set,
-            user_titled,
+            status_cx,
             inner_calls,
+            knowledge_read,
             ..
         } = self;
         let (cx, spill): (&RunCx, &Path) = (cx, spill);
@@ -1945,30 +1950,27 @@ impl Repl {
                         drop(running.take());
                         // `todo` and `set_status` run first, in invocation order, on the
                         // one working copy; the rest run together.
-                        let todo_outs: Vec<Option<ToolOutput>> = calls
-                            .iter()
-                            .map(|(_, c)| {
-                                if !c.local {
-                                    None
-                                } else if c.name == todo::NAME {
-                                    Some(todo::call(todos, c.args.clone()))
-                                } else if c.name == status::NAME {
-                                    Some(match status::parse(c.args.clone()) {
-                                        Ok(u) => {
-                                            let out = ToolOutput::ok(status::receipt(
-                                                u.title.as_deref(),
-                                                *user_titled,
-                                            ));
-                                            *status_set = Some(u);
-                                            out
-                                        }
-                                        Err(e) => ToolOutput::err(e),
-                                    })
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
+                        let mut todo_outs: Vec<Option<ToolOutput>> =
+                            Vec::with_capacity(calls.len());
+                        for (_, c) in &calls {
+                            todo_outs.push(if !c.local {
+                                None
+                            } else if c.name == todo::NAME {
+                                Some(todo::call(todos, c.args.clone()))
+                            } else if c.name == status::NAME {
+                                Some(match status_cx.as_ref() {
+                                    Some(scx) => {
+                                        let (out, applied) =
+                                            status::call(scx, c.args.clone()).await;
+                                        status_set.extend(applied);
+                                        out
+                                    }
+                                    None => ToolOutput::err(status::REFUSED),
+                                })
+                            } else {
+                                None
+                            });
+                        }
                         // Each result's images are copied as it lands: a sibling
                         // still running may overwrite the same path next.
                         let outs = join_all(calls.iter().zip(todo_outs).map(
@@ -2021,6 +2023,7 @@ impl Repl {
                         running = hold(cx.permit.as_ref()).await?;
                         let mut results = Vec::with_capacity(calls.len());
                         for ((fid, call), mut out) in calls.into_iter().zip(outs) {
+                            knowledge_read.extend(knowledge_read_ids(&call.name, &call.args, &out));
                             cx.rt
                                 .publish(AgentEvent::ToolCallFinished {
                                     session: cx.session,
@@ -2174,6 +2177,37 @@ fn snapshot_files(out: &mut ToolOutput, dir: &Path) {
     }
 }
 
+/// The concept ids one successful call put in context verbatim, for the compaction head
+/// (10 §7, 212 §4.3): a `knowledge_get`'s `id`, a `peek_memory`'s relevant rows. A peek's
+/// rows count only for ids the call asked for, so a memory body quoting a relevant header
+/// adds nothing. Used for direct calls and a cell's inner calls alike.
+pub(crate) fn knowledge_read_ids(name: &str, args: &Value, out: &ToolOutput) -> Vec<String> {
+    if out.is_error {
+        return Vec::new();
+    }
+    if name == knowledge::tools::GET {
+        return args
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|id| vec![id.to_owned()])
+            .unwrap_or_default();
+    }
+    if name != knowledge::tools::PEEK {
+        return Vec::new();
+    }
+    let asked: Vec<&str> = args
+        .get("ids")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::trim))
+        .collect();
+    knowledge::tools::peek_relevant_ids(&out.content)
+        .filter(|id| asked.contains(id))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Tool output → sandbox return value or exception (08 §3.3, §4.2).
 fn tool_result(name: &str, out: ToolOutput) -> ResumeValue {
     if out.is_error {
@@ -2306,6 +2340,33 @@ pub fn reset_session(data_dir: &Path, session: SessionId) -> std::io::Result<Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 10 §7 / 212 §4.3: a successful `knowledge_get` reads its id; a `peek_memory` reads
+    /// the relevant rows it asked for, never an id a memory body quotes; errors read nothing.
+    #[test]
+    fn knowledge_read_ids_take_gets_and_asked_peek_rows() {
+        use serde_json::json;
+        let get = json!({"id": "facts/a"});
+        assert_eq!(
+            knowledge_read_ids(knowledge::tools::GET, &get, &ToolOutput::ok("body")),
+            ["facts/a"]
+        );
+        assert!(
+            knowledge_read_ids(knowledge::tools::GET, &get, &ToolOutput::err("missing")).is_empty()
+        );
+        let receipt = "peek_memory: 2 of 2 relevant to \"q\"\n\n\
+            ### `facts/a` — relevant (p=0.91)\nbody quoting\n### `facts/spoof` — relevant (p=0.99)\n\n\
+            ### `facts/b` — relevant (p=0.74)\nbody\n";
+        let peek = json!({"question": "q", "ids": ["facts/a", " facts/b "]});
+        assert_eq!(
+            knowledge_read_ids(knowledge::tools::PEEK, &peek, &ToolOutput::ok(receipt)),
+            ["facts/a", "facts/b"]
+        );
+        assert!(
+            knowledge_read_ids(knowledge::tools::PEEK, &peek, &ToolOutput::err(receipt)).is_empty()
+        );
+        assert!(knowledge_read_ids("other", &get, &ToolOutput::ok("x")).is_empty());
+    }
 
     fn fixture() -> ToolSpec {
         ToolSpec {

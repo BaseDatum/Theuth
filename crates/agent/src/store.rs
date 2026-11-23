@@ -3435,6 +3435,11 @@ impl Store {
                 .bind(&sid)
                 .execute(&mut *tx)
                 .await?;
+            // 212 §11: the session's title guards.
+            sqlx::query("DELETE FROM session_title_guard WHERE session = ?")
+                .bind(&sid)
+                .execute(&mut *tx)
+                .await?;
             durability::delete_journal_in(&mut tx, &sid).await?;
             endless::delete_endless_in(&mut tx, &sid).await?;
             sqlx::query("DELETE FROM sessions WHERE id = ?")

@@ -1,16 +1,23 @@
 //! Loop-local `set_status` tool: the agent's own one-line status and, optionally, its
 //! session title (design 212 §8–§10).
 
+use runtime::SessionId;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tools::{Risk, ToolSpec};
+use tools::{Risk, ToolOutput, ToolSpec};
+
+use crate::store::Store;
 
 /// Tool name.
 pub const NAME: &str = "set_status";
-/// Longest status line, in chars, after trim; longer is cut at a word boundary with `…`.
+/// Longest status line, in chars, after whitespace is normalized; longer is cut at a word
+/// boundary with `…`.
 const STATUS_MAX: usize = 80;
-/// Longest title, in chars, after trim; longer is cut at a word boundary with `…`.
+/// Longest title, in chars, after whitespace is normalized; longer is cut at the last word
+/// boundary within it, without `…`.
 const TITLE_MAX: usize = 48;
+/// The refusal in a session that does not keep a status (the dreaming one).
+pub const REFUSED: &str = "set_status: not available in this session";
 /// Tool calls without a status before the first nudge of a turn (§10).
 pub const FIRST_NUDGE_AFTER: u32 = 2;
 /// The tool-guidance sentence of the system prompt (§10).
@@ -41,37 +48,103 @@ pub struct StatusUpdate {
     pub title: Option<String>,
 }
 
-/// Validate and normalize the arguments of one call (direct or from python).
+/// Validate and normalize the arguments of one call (direct or from python): runs of
+/// whitespace become one space before the checks and the cuts.
 pub fn parse(args: serde_json::Value) -> Result<StatusUpdate, String> {
     let a: StatusArgs =
         serde_json::from_value(args).map_err(|e| format!("set_status: bad arguments: {e}"))?;
-    let status = a.status.trim();
+    let status = normalize(&a.status);
     if status.is_empty() {
         return Err("set_status: status must not be empty".into());
     }
-    let title = match a.title.as_deref().map(str::trim) {
-        None | Some("") => None,
+    let title = match a.title.as_deref().map(normalize) {
+        None => None,
+        Some(t) if t.is_empty() => None,
         Some(t) => {
-            let words = t.split_whitespace().count();
+            let words = t.split(' ').count();
             if !(2..=6).contains(&words) {
                 return Err("set_status: title must be 3–5 words".into());
             }
-            Some(clip(t, TITLE_MAX))
+            Some(clip_words(&t, TITLE_MAX))
         }
     };
     Ok(StatusUpdate {
-        status: clip(status, STATUS_MAX),
+        status: clip(&status, STATUS_MAX),
         title,
     })
 }
 
-/// The result text of a successful call (§8). `title` is what the call asked for;
-/// `user_titled` = it was refused because the user named the session.
-pub fn receipt(title: Option<&str>, user_titled: bool) -> String {
+/// What one call did with the title it asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TitleOutcome {
+    /// No title was asked for.
+    None,
+    /// Written to the store.
+    Saved(String),
+    /// Refused: the user named the session.
+    Kept,
+    /// The store write failed.
+    NotSaved,
+}
+
+/// One applied call: the status line and its title's fate. The loop publishes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Applied {
+    /// The status line.
+    pub status: String,
+    /// The title's fate.
+    pub title: TitleOutcome,
+}
+
+/// What a `set_status` call needs from its session (212 §8): the store a title goes to
+/// and the session's state when the call runs.
+#[derive(Clone)]
+pub(crate) struct Cx {
+    /// The session's store.
+    pub store: Store,
+    /// The session.
+    pub session: SessionId,
+    /// The user named the session: a title is refused.
+    pub user_titled: bool,
+    /// The session keeps no status (the dreaming one): the call is refused.
+    pub off: bool,
+}
+
+/// Run one call: validate, write the title unless the user named the session, and answer
+/// with the receipt. `Some(applied)` for the loop to apply after a successful call.
+pub(crate) async fn call(cx: &Cx, args: serde_json::Value) -> (ToolOutput, Option<Applied>) {
+    if cx.off {
+        return (ToolOutput::err(REFUSED), None);
+    }
+    let u = match parse(args) {
+        Ok(u) => u,
+        Err(e) => return (ToolOutput::err(e), None),
+    };
+    let title = match u.title {
+        None => TitleOutcome::None,
+        Some(_) if cx.user_titled => TitleOutcome::Kept,
+        Some(t) => match cx.store.set_title(cx.session, &t).await {
+            Ok(()) => TitleOutcome::Saved(t),
+            Err(e) => {
+                tracing::warn!(session = %cx.session, "set_status: set_title: {e:#}");
+                TitleOutcome::NotSaved
+            }
+        },
+    };
+    let applied = Applied {
+        status: u.status,
+        title,
+    };
+    (ToolOutput::ok(receipt(&applied.title)), Some(applied))
+}
+
+/// The result text of a successful call (§8).
+pub fn receipt(title: &TitleOutcome) -> String {
     match title {
-        None => "status set".into(),
-        Some(_) if user_titled => "status set · title kept: the user named this session".into(),
-        Some(t) => format!("status set · title \"{t}\""),
+        TitleOutcome::None => "status set".into(),
+        TitleOutcome::Saved(t) => format!("status set · title \"{t}\""),
+        TitleOutcome::Kept => "status set · title kept: the user named this session".into(),
+        TitleOutcome::NotSaved => "status set · title not saved".into(),
     }
 }
 
@@ -97,17 +170,38 @@ pub fn nudge_text(user_titled: bool) -> String {
     }
 }
 
-/// `s` (already trimmed) cut to `max` chars at a word boundary, with `…` when cut.
+/// Runs of whitespace as one space, trimmed.
+fn normalize(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `s` (normalized) cut to `max` chars at a word boundary, with `…` when cut.
 fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_owned();
     }
     let head: String = s.chars().take(max - 1).collect();
-    let cut = match head.rfind(char::is_whitespace) {
+    let cut = match head.rfind(' ') {
         Some(i) if i > 0 => &head[..i],
         _ => &head[..],
     };
     format!("{}…", cut.trim_end())
+}
+
+/// `s` (normalized) cut to at most `max` chars at the last word boundary within them, no
+/// `…`; a single word longer than `max` is cut at `max`.
+fn clip_words(s: &str, max: usize) -> String {
+    let Some((end, _)) = s.char_indices().nth(max) else {
+        return s.to_owned();
+    };
+    // The last word ends exactly at the limit.
+    if s[end..].starts_with(' ') {
+        return s[..end].to_owned();
+    }
+    match s[..end].rfind(' ') {
+        Some(i) if i > 0 => s[..i].to_owned(),
+        _ => s[..end].to_owned(),
+    }
 }
 
 /// Spec of the loop-local `set_status` tool.
@@ -146,6 +240,26 @@ mod tests {
         assert!(u.status.ends_with("word…"), "{}", u.status);
         let u = parse(json!({"status": "x", "title": " Fix the build lock "})).unwrap();
         assert_eq!(u.title.as_deref(), Some("Fix the build lock"));
+        // Whitespace runs are one space before the checks and the cuts.
+        let u = parse(json!({"status": " reading\n\tthe   lock ", "title": "Fix\nthe \t lock"}))
+            .unwrap();
+        assert_eq!(u.status, "reading the lock");
+        assert_eq!(u.title.as_deref(), Some("Fix the lock"));
+        // A long title is cut at the last word boundary within 48 chars, no ellipsis.
+        let long = "Reconcile overlapping quarterly infrastructure procurement budgets";
+        let u = parse(json!({"status": "x", "title": long})).unwrap();
+        assert_eq!(
+            u.title.as_deref(),
+            Some("Reconcile overlapping quarterly infrastructure")
+        );
+        // A word ending exactly at the limit stays whole.
+        assert_eq!(
+            clip_words(&"abcd ".repeat(10), 49),
+            "abcd ".repeat(10).trim_end()
+        );
+        assert_eq!(clip_words("aaaa bbbb cccc", 9), "aaaa bbbb");
+        assert_eq!(clip_words("aaaa bbbb cccc", 8), "aaaa");
+        assert_eq!(clip_words("aaaaaaaaaa b", 4), "aaaa");
         assert_eq!(
             parse(json!({"status": "x", "title": "Lock"})).unwrap_err(),
             "set_status: title must be 3–5 words"
@@ -162,16 +276,67 @@ mod tests {
 
     #[test]
     fn receipts_are_exact() {
-        assert_eq!(receipt(None, false), "status set");
-        assert_eq!(receipt(None, true), "status set");
+        assert_eq!(receipt(&TitleOutcome::None), "status set");
         assert_eq!(
-            receipt(Some("Fix the lock"), false),
+            receipt(&TitleOutcome::Saved("Fix the lock".into())),
             "status set · title \"Fix the lock\""
         );
         assert_eq!(
-            receipt(Some("Fix the lock"), true),
+            receipt(&TitleOutcome::Kept),
             "status set · title kept: the user named this session"
         );
+        assert_eq!(
+            receipt(&TitleOutcome::NotSaved),
+            "status set · title not saved"
+        );
+    }
+
+    /// `call`: refused in the dreaming session with nothing applied; a user-named session
+    /// keeps its title; otherwise the title is stored before the receipt claims it.
+    #[tokio::test]
+    async fn call_refuses_keeps_and_saves() {
+        let scratch = crate::test_dir("status-call");
+        let store = Store::open(&scratch.path().join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        let session = SessionId::new();
+        store
+            .create_session(session, "m", None, None, None)
+            .await
+            .unwrap();
+        store.set_title(session, "Mine").await.unwrap();
+        let cx = |user_titled, off| Cx {
+            store: store.clone(),
+            session,
+            user_titled,
+            off,
+        };
+        let args = json!({"status": "mapping it", "title": "Map the harness"});
+        let title = || async { store.session(session).await.unwrap().unwrap().title };
+
+        let (out, applied) = call(&cx(false, true), args.clone()).await;
+        assert_eq!((out.is_error, out.content.as_str()), (true, REFUSED));
+        assert_eq!(applied, None);
+        assert_eq!(title().await, "Mine");
+
+        let (out, applied) = call(&cx(true, false), args.clone()).await;
+        assert_eq!(
+            out.content,
+            "status set · title kept: the user named this session"
+        );
+        assert_eq!(applied.unwrap().title, TitleOutcome::Kept);
+        assert_eq!(title().await, "Mine");
+
+        let (out, applied) = call(&cx(false, false), args).await;
+        assert_eq!(out.content, "status set · title \"Map the harness\"");
+        assert_eq!(
+            applied,
+            Some(Applied {
+                status: "mapping it".into(),
+                title: TitleOutcome::Saved("Map the harness".into()),
+            })
+        );
+        assert_eq!(title().await, "Map the harness");
     }
 
     #[test]

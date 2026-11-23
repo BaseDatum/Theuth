@@ -1,6 +1,6 @@
 use crate as agent;
 use agent::rpc_forward as forward;
-use agent::{AgentInfo, Agents, DeleteSession, ListAgents, ListSessions, LoadSession, Loaded, PinSession, RenameSession, SessionSummary, CloseResult, LeaveSession, ListProjectStyles, ProjectStyle, ResumePrivate, SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject, SpendReport, SpendReportQuery};
+use agent::{AgentInfo, Agents, DeleteSession, ListAgents, ListSessions, LoadSession, Loaded, PinSession, UserRenameSession, SessionSummary, CloseResult, LeaveSession, ListProjectStyles, ProjectStyle, ResumePrivate, SessionCost, SessionCostQuery, SessionOpen, SetProjectStyle, SetSessionProject, SpendReport, SpendReportQuery};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
@@ -211,7 +211,8 @@ impl AgentSessionsApiServer for Server {
         if let Some(r) = forward::route(ext, session, "rename_session", (session, &title)).await? {
             return Ok(r);
         }
-        ask::<Agents, _>(agent::AGENT_ACTOR, RenameSession { session, title }).await
+        // 212 §11: a human's rename; the title model and `set_status` leave it alone.
+        ask::<Agents, _>(agent::AGENT_ACTOR, UserRenameSession { session, title }).await
     }
 
     async fn pin_session(

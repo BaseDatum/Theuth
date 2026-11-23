@@ -495,8 +495,6 @@ pub fn baseline_dated(
         GUIDANCE_HEAD,
         if attended { REPORT_VISUALLY } else { "" },
         GUIDANCE_TAIL,
-        "\n",
-        crate::status::PROMPT,
     ]
     .concat();
     [

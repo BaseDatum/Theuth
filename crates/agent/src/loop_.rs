@@ -395,6 +395,10 @@ pub struct ResumedTurn;
 /// replace it with the input placeholder.
 pub struct Titled;
 
+/// `tell` (212 §11): the user renamed the session; neither the title model nor
+/// `set_status` replaces its title. The caller persisted the guard.
+pub struct UserTitled;
+
 /// `tell`: switch the model; takes effect on the next model call, mid-turn included.
 pub struct SwitchModel(pub Resolved);
 
@@ -611,6 +615,9 @@ pub struct SessionState {
     pub tool_calls_since_status: u32,
     /// No `set_status` and no status nudge yet this turn: the first nudge comes early.
     pub status_quiet: bool,
+    /// A `set_status` title was written this turn (212 §8.3): the session counts as titled
+    /// on handback. In memory only.
+    pub status_titled: bool,
     /// Concept ids hinted this epoch (10 §4.2); cleared by compaction, not persisted.
     pub hinted: BTreeSet<String>,
     /// Round of this turn in which the last `<knowledge>` check ran.
@@ -708,6 +715,7 @@ impl SessionState {
             status: None,
             tool_calls_since_status: 0,
             status_quiet: true,
+            status_titled: false,
             hinted: BTreeSet::new(),
             knowledge_hinted_round: 0,
             knowledge_read: BTreeSet::new(),
@@ -2655,7 +2663,13 @@ impl Message<Titled> for Session {
 
     async fn handle(&mut self, _: Titled, _: &mut Context<Self, Self::Reply>) {
         self.titled = true;
-        // 212 §11: `RenameSession` persisted the guard; the live session follows.
+    }
+}
+
+impl Message<UserTitled> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, _: UserTitled, _: &mut Context<Self, Self::Reply>) {
         self.shared
             .user_titled
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2900,7 +2914,15 @@ impl Message<TurnDone> for Session {
     /// the next queued batch (50 §6.3: the oldest input's scope and what it
     /// admits), whose tickets stayed pending meanwhile. A batch of nothing
     /// but suppressed peer input starts no turn; the next batch is tried.
-    async fn handle(&mut self, TurnDone(state): TurnDone, ctx: &mut Context<Self, Self::Reply>) {
+    async fn handle(
+        &mut self,
+        TurnDone(mut state): TurnDone,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) {
+        // 212 §8.3: a `set_status` title stands like a rename.
+        if std::mem::take(&mut state.status_titled) {
+            self.titled = true;
+        }
         self.state = Some(state);
         self.inflight = None;
         self.resumed = None;
@@ -4111,43 +4133,56 @@ impl Turn {
             self.state.status_quiet,
             every,
         ) && self.tools.iter().any(|t| t.name.as_str() == status::NAME)
-            && !self
-                .knowledge()
-                .is_some_and(|k| k.is_consolidating_session(self.shared.id))
+            && !self.consolidating()
     }
 
-    /// 212 §8: apply one `set_status` call (direct or from a cell): the status line and
-    /// its event, the title unless the user named the session, and the persisted
-    /// `agent_titled` guard on the first call.
-    async fn apply_status(&mut self, u: status::StatusUpdate) {
+    /// This is the knowledge store's consolidating (dreaming) session: it keeps no status.
+    fn consolidating(&self) -> bool {
+        self.knowledge()
+            .is_some_and(|k| k.is_consolidating_session(self.shared.id))
+    }
+
+    /// 212 §8: what a `set_status` call needs from this session right now.
+    fn status_cx(&self) -> status::Cx {
+        status::Cx {
+            store: self.shared.store.clone(),
+            session: self.shared.id,
+            user_titled: self
+                .shared
+                .user_titled
+                .load(std::sync::atomic::Ordering::Relaxed),
+            off: self.consolidating(),
+        }
+    }
+
+    /// 212 §8: apply one successful `set_status` call (direct or from a cell; its title is
+    /// already stored): the status line and its event, `TitleChanged` for a saved title,
+    /// and the persisted `agent_titled` guard until it is stored once.
+    async fn apply_status(&mut self, a: status::Applied) {
         let session = self.shared.id;
         let relaxed = std::sync::atomic::Ordering::Relaxed;
-        self.state.status = Some(u.status.clone());
+        self.state.status = Some(a.status.clone());
         self.state.tool_calls_since_status = 0;
         self.state.status_quiet = false;
-        if !self.shared.agent_titled.swap(true, relaxed)
-            && let Err(e) = self.shared.store.set_agent_titled(session).await
-        {
-            tracing::warn!(session = %session, "set_agent_titled: {e:#}");
+        // The live guard follows the stored one: a failed write is retried next call.
+        if !self.shared.agent_titled.load(relaxed) {
+            match self.shared.store.set_agent_titled(session).await {
+                Ok(()) => self.shared.agent_titled.store(true, relaxed),
+                Err(e) => tracing::warn!(session = %session, "set_agent_titled: {e:#}"),
+            }
         }
-        let title = u.title.filter(|_| !self.shared.user_titled.load(relaxed));
-        let title = match title {
-            Some(t) => match self.shared.store.set_title(session, &t).await {
-                Ok(()) => Some(t),
-                Err(e) => {
-                    tracing::warn!(session = %session, "set_title: {e:#}");
-                    None
-                }
-            },
-            None => None,
+        let title = match a.title {
+            status::TitleOutcome::Saved(t) => Some(t),
+            _ => None,
         };
         self.publish(AgentEvent::StatusChanged {
             session,
-            status: u.status,
+            status: a.status,
             title: title.clone(),
         })
         .await;
         if let Some(title) = title {
+            self.state.status_titled = true;
             // The title only; the event repeats the stored tags (as `RenameSession`).
             let tags = self
                 .shared
@@ -5737,6 +5772,25 @@ impl Turn {
             .ask(tools::ContactScoped(self.shared.id))
             .await
             .unwrap_or(true);
+        // 183 Z3-R2: a contact session's allowlist covers the loop's own tools as well (an
+        // error admits none of them).
+        let locals: Vec<String> = [
+            todo::NAME,
+            status::NAME,
+            repl::NAME,
+            advisor::advise::NAME,
+            advisor::consult::NAME,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(endless_tools::specs().into_iter().map(|s| s.name))
+        .collect();
+        let admitted = registry
+            .ask(tools::Allowlisted(self.shared.id, locals.clone()))
+            .await
+            .unwrap_or_default();
+        let local_ok =
+            |name: &str| !locals.iter().any(|n| n == name) || admitted.iter().any(|n| n == name);
         let mut baseline = if advisor {
             let identity = identity.unwrap_or_else(|| {
                 advisor::identity::identity(
@@ -5765,6 +5819,16 @@ impl Turn {
                 !endless,
                 &self.cwd,
             );
+            // 212 §10: the status sentence only where `set_status` is offered; constant
+            // per session, so the prompt stays cache-stable.
+            if toolset
+                .as_ref()
+                .is_none_or(|t| t.tools.iter().any(|n| n == status::NAME))
+                && local_ok(status::NAME)
+            {
+                b.push('\n');
+                b.push_str(status::PROMPT);
+            }
             // R1-D1: a native child of an endless parent opens with the parent's view.
             if self.shared.parent_view {
                 b.push_str("\n\n");
@@ -5772,25 +5836,6 @@ impl Turn {
             }
             b
         };
-        // 183 Z3-R2: a contact session's allowlist covers the loop's own tools as well (an
-        // error admits none of them).
-        let locals: Vec<String> = [
-            todo::NAME,
-            status::NAME,
-            repl::NAME,
-            advisor::advise::NAME,
-            advisor::consult::NAME,
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .chain(endless_tools::specs().into_iter().map(|s| s.name))
-        .collect();
-        let admitted = registry
-            .ask(tools::Allowlisted(self.shared.id, locals.clone()))
-            .await
-            .unwrap_or_default();
-        let local_ok =
-            |name: &str| !locals.iter().any(|n| n == name) || admitted.iter().any(|n| n == name);
         // The index and the bridge set come from one filter over one `ListTools`:
         // a name hidden this turn (risk cap, communication off, flapping MCP) is
         // in neither.
@@ -7942,11 +7987,11 @@ impl Turn {
         // 47 §5.1: `todo` operations run against a working copy; the list is
         // canonical only once it commits with this batch's tool message below.
         let mut plan: Option<Vec<todo::Todo>> = None;
-        // 212 §10: every call counts toward the status nudge but `todo` and `set_status`;
-        // a cell's inner calls are added after it runs.
+        // 212 §10: every call counts toward the status nudge but `todo`, `set_status` and
+        // `python` itself; a cell's inner calls are added after it runs.
         self.state.tool_calls_since_status += calls
             .iter()
-            .filter(|c| c.fn_name != todo::NAME && c.fn_name != status::NAME)
+            .filter(|c| ![todo::NAME, status::NAME, repl::NAME].contains(&c.fn_name.as_str()))
             .count() as u32;
         for (i, call) in calls.iter().enumerate() {
             if cancelled || outputs[i].is_some() {
@@ -7992,18 +8037,12 @@ impl Turn {
                     None => ToolOutput::err("fractal context is not available in this process"),
                 }
             } else if call.fn_name == status::NAME {
-                match status::parse(call.fn_arguments.clone()) {
-                    Ok(u) => {
-                        let user_titled = self
-                            .shared
-                            .user_titled
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                        let out = ToolOutput::ok(status::receipt(u.title.as_deref(), user_titled));
-                        self.apply_status(u).await;
-                        out
-                    }
-                    Err(e) => ToolOutput::err(e),
+                let (out, applied) =
+                    status::call(&self.status_cx(), call.fn_arguments.clone()).await;
+                if let Some(a) = applied {
+                    self.apply_status(a).await;
                 }
+                out
             } else if call.fn_name == todo::NAME {
                 self.state.todo_touched_round = round;
                 let work = plan.get_or_insert_with(|| self.state.todos.clone());
@@ -8343,21 +8382,14 @@ impl Turn {
         }
         self.calls += calls.len() as u32;
         // 10 §7: the ids the model held verbatim this epoch, for the compaction head;
-        // 212 §4.3: a `peek_memory` holds the ids it judged relevant.
-        self.state.knowledge_read.extend(
-            calls
-                .iter()
-                .filter(|c| c.fn_name == knowledge::tools::GET)
-                .filter_map(|c| c.fn_arguments.get("id")?.as_str().map(str::to_owned)),
-        );
-        for (_, out) in calls
-            .iter()
-            .zip(&outs)
-            .filter(|(c, o)| c.fn_name == knowledge::tools::PEEK && !o.is_error)
-        {
-            self.state
-                .knowledge_read
-                .extend(knowledge::tools::peek_relevant_ids(&out.content).map(str::to_owned));
+        // 212 §4.3: a `peek_memory` holds the ids it judged relevant. A cell's inner calls
+        // are added after it runs.
+        for (c, out) in calls.iter().zip(&outs) {
+            self.state.knowledge_read.extend(repl::knowledge_read_ids(
+                &c.fn_name,
+                &c.fn_arguments,
+                out,
+            ));
         }
         if cancelled {
             return Round::Stop("cancelled".into());
@@ -8403,21 +8435,23 @@ impl Turn {
                 Repl::open(pool, self.shared.id, &self.shared.resources.root, cx).await
             }
         };
+        let status_cx = self.status_cx();
         let repl = self.repl.insert(repl);
         let committed = plan.as_ref().unwrap_or(&self.state.todos);
         repl.todo.clone_from(committed);
-        repl.user_titled = self
-            .shared
-            .user_titled
-            .load(std::sync::atomic::Ordering::Relaxed);
+        repl.status_cx = Some(status_cx);
         let out = repl.run(&call.call_id, &code).await;
         if repl.todo != *plan.as_ref().unwrap_or(&self.state.todos) {
             *plan = Some(std::mem::take(&mut repl.todo));
             self.state.todo_touched_round = round;
         }
         self.state.tool_calls_since_status += std::mem::take(&mut repl.inner_calls);
-        if let Some(u) = repl.status.take() {
-            self.apply_status(u).await;
+        self.state
+            .knowledge_read
+            .extend(std::mem::take(&mut repl.knowledge_read));
+        // Each call of the cell in order, one `StatusChanged` each.
+        for a in std::mem::take(&mut repl.status) {
+            self.apply_status(a).await;
         }
         out
     }

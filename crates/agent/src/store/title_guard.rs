@@ -111,5 +111,8 @@ mod tests {
                 user_titled: true
             }
         );
+        // Deleting the session takes its guards along.
+        store.delete_session(a).await.unwrap();
+        assert_eq!(store.title_guard(a).await.unwrap(), TitleGuard::default());
     }
 }
