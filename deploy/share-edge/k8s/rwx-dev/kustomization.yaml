@@ -40,6 +40,11 @@ patches:
       - op: add
         path: /spec/template/spec/serviceAccountName
         value: theuth-share-edge
+      # nfs-csi: no WAL on NFS (owner 2026-11-23); single writer, exclusive lock.
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - {name: THEUTH_SHARE_EDGE_DB_JOURNAL, value: delete}
       # Admin socket off the NFS data volume (configmap.yaml admin.socket).
       - op: add
         path: /spec/template/spec/volumes/-

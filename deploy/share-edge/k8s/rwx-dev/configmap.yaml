@@ -9,7 +9,6 @@ data:
   config.yaml: |
     domain: tun.zip
     data_dir: /var/lib/theuth-share-edge
-    db_journal: delete   # nfs-csi: no WAL on NFS (owner 2026-11-23); single writer, exclusive lock
     listen: "[::]:8443"
     # The Ingresses below send PROXY v2 (haproxy.org/send-proxy-protocol); HAProxy pods connect from the pod network
     # (kubeadm podSubnet 10.244.0.0/16; the controller DaemonSet is not hostNetwork).
