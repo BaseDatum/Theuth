@@ -1,23 +1,10 @@
 //! Human-readable sizes and ages, once: every surface prints the same string.
 
-/// `n` bytes in decimal SI units (199 UI-2: one unit system): `512 B`,
-/// `1.5 kB`, `24.1 MB`, `2 GB`. At most one decimal.
+/// `n` bytes in decimal SI units with one decimal (199 UI-2: one unit system), as
+/// `bytesize` prints them: `512 B`, `1.5 kB`, `24.1 MB`, `2.0 GB`.
 #[must_use]
 pub fn bytes(n: u64) -> String {
-    const UNITS: [&str; 3] = ["kB", "MB", "GB"];
-    if n < 1000 {
-        return format!("{n} B");
-    }
-    #[allow(clippy::cast_precision_loss)] // display only
-    let mut v = n as f64 / 1e3;
-    let mut unit = 0;
-    // `999_950 B` rounds to one decimal as 1000.0: print it in the next unit.
-    while v >= 999.95 && unit + 1 < UNITS.len() {
-        v /= 1e3;
-        unit += 1;
-    }
-    let s = format!("{v:.1}");
-    format!("{} {}", s.strip_suffix(".0").unwrap_or(&s), UNITS[unit])
+    bytesize::ByteSize(n).display().si().to_string()
 }
 
 /// A span of `secs` seconds, coarse and floored: `48s`, `3m`, `2h`, `3d`.
@@ -39,13 +26,16 @@ mod tests {
     fn byte_sizes() {
         assert_eq!(bytes(0), "0 B");
         assert_eq!(bytes(999), "999 B");
-        assert_eq!(bytes(1_000), "1 kB");
+        assert_eq!(bytes(1_000), "1.0 kB");
         assert_eq!(bytes(1_536), "1.5 kB");
+        assert_eq!(bytes(83_000), "83.0 kB");
         assert_eq!(bytes(999_949), "999.9 kB");
-        assert_eq!(bytes(999_950), "1 MB");
+        // The unit is picked before rounding: just under 1 MB prints as 1000.0 kB.
+        assert_eq!(bytes(999_950), "1000.0 kB");
+        assert_eq!(bytes(3 * 1024 * 1024), "3.1 MB");
         assert_eq!(bytes(24_100_000), "24.1 MB");
-        assert_eq!(bytes(5_000_000_000), "5 GB");
-        assert_eq!(bytes(u64::MAX), "18446744073.7 GB");
+        assert_eq!(bytes(5_000_000_000), "5.0 GB");
+        assert_eq!(bytes(u64::MAX), "18.4 EB");
     }
 
     #[test]

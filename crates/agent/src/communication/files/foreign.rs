@@ -1033,7 +1033,7 @@ mod queue {
             max_bytes: 10,
             ..local.clone()
         };
-        let too_large = Err(Failure::Fatal("too large: over 5 GB".into()));
+        let too_large = Err(Failure::Fatal("too large: over 5.0 GB".into()));
         let cases: [(&str, &DownloadOpts, Result<Got, Failure>); 8] = [
             ("/to-http", &local, not_public.clone()),
             ("/to-private", &local, not_public.clone()),
@@ -1042,7 +1042,7 @@ mod queue {
             (
                 "/stream",
                 &small,
-                Err(Failure::Fatal("too large: over 10 bytes".into())),
+                Err(Failure::Fatal("too large: over 10 B".into())),
             ),
             ("/hang", &local, Err(Failure::Retry { idle: true })),
             ("/busy", &local, Err(Failure::Retry { idle: false })),

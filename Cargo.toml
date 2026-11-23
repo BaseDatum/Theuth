@@ -266,6 +266,8 @@ prost-build = "0.14"
 protox = "0.10"
 bytes = "1"
 h2 = "0.4"
+# Human byte sizes (`platform::fmt::bytes`, decimal SI), the one size format.
+bytesize = "2.7"
 # Web search/fetch (design doc 16): one HTML parser for markdown and text; wiremock for provider contract tests.
 html-to-markdown-rs = { version = "3.12", default-features = false }
 # HTML entity decoding (`web::engines::decode_entities`), the one decoder.

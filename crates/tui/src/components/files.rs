@@ -529,7 +529,7 @@ mod tests {
         notes.done = 456_000;
         changed(&mut model, notes.clone());
         assert!(matches!(&model.entries[2..], [Entry::Card { .. }, Entry::Card { .. }, Entry::Info(_)]), "{:?}", model.entries);
-        assert_eq!(titles(&model)[1..], ["drawings.pdf · 24.1 MB · application/pdf · offered", "notes.md · 1.2 MB · text/markdown · sending 38% · 456 kB"]);
+        assert_eq!(titles(&model)[1..], ["drawings.pdf · 24.1 MB · application/pdf · offered", "notes.md · 1.2 MB · text/markdown · sending 38% · 456.0 kB"]);
         notes.state = FileState::Out(OutState::Sent);
         changed(&mut model, notes);
         let mut lost = pdf(FileState::Out(OutState::Failed));

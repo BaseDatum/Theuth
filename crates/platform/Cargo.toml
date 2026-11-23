@@ -13,6 +13,7 @@ sha2 = { workspace = true }  # `sha256`: the `<file>.sha256` sidecar shared by `
 hex = { workspace = true }
 tracing = { workspace = true }
 shlex = { workspace = true }  # `shell::quote`
+bytesize = { workspace = true }  # `fmt::bytes`
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }  # killpg / kill / setsid / access / getppid; 126: getloadavg / statvfs / sysctlbyname
