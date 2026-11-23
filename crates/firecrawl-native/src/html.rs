@@ -108,15 +108,11 @@ fn get_node_signature(node: &kuchikiki::NodeRef, mode: SignatureMode) -> String 
         return signature;
     }
 
-    use sha2::{Digest as _, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(signature);
-    let hash = hasher.finalize();
     format!(
         "v{}:{}:{}",
         SIGNATURE_VERSION,
         <SignatureMode as Into<String>>::into(mode),
-        hex::encode(hash)
+        platform::sha256::hex(signature.as_bytes())
     )
 }
 

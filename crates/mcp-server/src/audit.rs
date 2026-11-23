@@ -7,7 +7,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::AuditLine;
 
@@ -74,7 +73,7 @@ impl Audit {
 /// the same whatever order the client sent its keys in.
 pub fn args_sha256(args: &Value) -> String {
     let canonical = serde_json::to_vec(&sorted(args)).unwrap_or_default();
-    hex::encode(Sha256::digest(canonical))
+    platform::sha256::hex(&canonical)
 }
 
 fn sorted(v: &Value) -> Value {

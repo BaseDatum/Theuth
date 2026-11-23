@@ -5,7 +5,6 @@ use anyhow::{Result, ensure};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
-use sha2::{Digest, Sha256};
 use crate::{Audience, Discovery};
 
 /// The document-member methods admitted by the mode-2 transport, plus discovery.
@@ -87,7 +86,7 @@ pub fn canonical_document(document: &Value) -> Result<Vec<u8>> {
 
 /// Content identity shared by the exporter, server and receiving cache.
 pub fn document_hash(document: &Value) -> Result<String> {
-    Ok(hex::encode(Sha256::digest(canonical_document(document)?)))
+    Ok(platform::sha256::hex(&canonical_document(document)?))
 }
 
 impl Discovery {
@@ -121,7 +120,7 @@ impl DiscoveryDocument {
     pub fn new(discovery: &Discovery, view: DiscoveryView, server_version: &str) -> Result<Self> {
         let document = discovery.document_for(view)?;
         let bytes = canonical_document(&document)?;
-        let schema_hash = hex::encode(Sha256::digest(&bytes));
+        let schema_hash = platform::sha256::hex(&bytes);
         let plugins = document["x-theuth"]["plugins"].as_array().expect("declared plugins").iter()
             .map(|name| DeclaredPlugin { name: name.as_str().expect("plugin name").to_owned() }).collect();
         Ok(Self {

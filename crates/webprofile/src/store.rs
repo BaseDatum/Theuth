@@ -35,7 +35,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::Context as _;
 use base64::Engine as _;
@@ -70,9 +70,7 @@ const SEAL_OVERHEAD: u64 = 40;
 
 /// Unix ms now.
 pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+    platform::time::now_ms()
 }
 
 /// HMAC-SHA256 (RFC 2104).

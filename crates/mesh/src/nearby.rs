@@ -423,10 +423,7 @@ fn local_addrs(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
 
 /// `s` cut to at most `max` bytes, on a char boundary.
 fn cut(s: &str, max: usize) -> String {
-    let mut end = s.len().min(max);
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = s.floor_char_boundary(max);
     s[..end].to_owned()
 }
 

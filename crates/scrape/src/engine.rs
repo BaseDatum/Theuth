@@ -559,10 +559,7 @@ fn parse_navigated(reply: &str) -> Option<(&str, Option<&str>)> {
 
 /// First [`HEAD_BYTES`] of `body`, ASCII-lowercased, cut on a char boundary.
 fn head(body: &str) -> String {
-    let mut end = body.len().min(HEAD_BYTES);
-    while !body.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = body.floor_char_boundary(HEAD_BYTES);
     body[..end].to_ascii_lowercase()
 }
 

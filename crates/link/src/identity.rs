@@ -102,9 +102,7 @@ pub fn unb64(s: &str) -> Option<Vec<u8>> {
 
 /// Unix milliseconds now.
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    platform::time::now_ms()
 }
 
 #[cfg(test)]

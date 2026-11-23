@@ -945,8 +945,6 @@ mod tests {
         BlobResourceContents, EmbeddedResource, ImageContent, TextContent,
     };
 
-    use sha2::{Digest, Sha256};
-
     use super::*;
 
     #[test]
@@ -1127,8 +1125,8 @@ mod tests {
             blob("AAAA", "application/zip", "file:///r.zip"),
         ];
         let (text, files) = prompt_parts(&blocks, &dir);
-        let hex = hex::encode(Sha256::digest(bytes));
-        let pdf_hex = hex::encode(Sha256::digest(pdf));
+        let hex = platform::sha256::hex(bytes);
+        let pdf_hex = platform::sha256::hex(pdf);
         assert_eq!(
             files,
             [

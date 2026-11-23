@@ -433,11 +433,8 @@ impl Mirror {
     /// Write `bytes` to `<dir>/<name>` atomically (dotfile temp, then rename).
     fn write_file(&self, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
         let file = self.dir.join(name);
-        let tmp = self
-            .dir
-            .join(format!(".{name}.tmp-{}", uuid::Uuid::now_v7()));
-        std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
-        std::fs::rename(&tmp, &file).with_context(|| format!("rename to {}", file.display()))?;
+        platform::files::write_atomic(&file, bytes)
+            .with_context(|| format!("write {}", file.display()))?;
         self.on_disk.lock().insert(name.to_owned());
         Ok(())
     }

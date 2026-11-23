@@ -11,6 +11,7 @@ rpc-core-macros = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 replica = { workspace = true }
+platform = { workspace = true }
 secrets = { workspace = true }
 sqlx = { workspace = true }
 kameo = { workspace = true }

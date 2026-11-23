@@ -17,6 +17,7 @@ use anyhow::Context as _;
 use futures::{SinkExt as _, StreamExt as _};
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
+use platform::time::now_ms;
 use replica::{ALPN_SESSIONS, PeerId, Transport};
 use runtime::{Runtime, SessionId};
 
@@ -865,12 +866,6 @@ pub async fn sweep_orphans(
             () = tokio::time::sleep(Duration::from_secs(3600)) => {}
         }
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 #[cfg(test)]
