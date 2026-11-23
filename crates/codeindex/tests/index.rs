@@ -2143,9 +2143,12 @@ async fn map_and_symbol() {
         t.elapsed(),
         personalised.iterations
     );
+    // The 0.5 s budget is for an optimised build; a debug test binary on a busy machine
+    // measured 0.8 s over 2781 nodes (2026-11-23), so it gets 4x and still catches a blow-up.
+    let budget_ms = if cfg!(debug_assertions) { 2000 } else { 500 };
     assert!(
-        cold.as_millis() < 500,
-        "rank persist must be < 0.5 s: {cold:?}"
+        cold.as_millis() < budget_ms,
+        "rank persist must be < {budget_ms} ms: {cold:?}"
     );
 }
 
