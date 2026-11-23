@@ -23,7 +23,7 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, fsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: register
-          image: ghcr.io/skymoore/theuth/share-edge:share-edge-387c4ec28
+          image: ghcr.io/skymoore/theuth/share-edge:share-edge-c34eaa580
           args: ["acme", "register", "--ca", "letsencrypt", "--config", "/etc/theuth-share-edge/config.yaml"]
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
           volumeMounts:
