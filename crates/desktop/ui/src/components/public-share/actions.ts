@@ -3,10 +3,21 @@
 
 import { toast } from 'sonner'
 import { type Stopped, shareApi } from '@/components/public-share/wire'
-import { usePublicShares } from '@/store/public-shares'
+import { supports } from '@/rpc/discovery'
+import { useConnection } from '@/store/connection'
+import { type Machines, usePublicShares } from '@/store/public-shares'
 
 export async function loadShares(): Promise<void> {
   usePublicShares.getState().replace(await shareApi().share_list())
+}
+
+/** The mesh's machine names for shares on other machines (§7.4 item 1): `mesh_status`, when the engine has it. */
+export async function loadMachines(): Promise<void> {
+  if (!supports(useConnection.getState().discovery, { methods: ['mesh_status'] })) return usePublicShares.getState().setMachines(null)
+  const m = await shareApi().mesh_status()
+  const names: Machines['names'] = { [m.self_id]: m.self_name }
+  for (const p of m.peers) names[p.id] = p.name
+  usePublicShares.getState().setMachines({ self: m.self_id, hub: m.lease.holder, names })
 }
 
 /** The toast for a `share_stop` result: a pending edge stop is not "stopped" (FIX-A M7). */

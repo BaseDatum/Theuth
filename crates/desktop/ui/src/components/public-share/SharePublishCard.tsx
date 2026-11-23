@@ -11,7 +11,7 @@ import { type Share, shareApi } from '@/components/public-share/wire'
 import { Button } from '@/components/ui/button'
 import { openExternal } from '@/lib/platform'
 import type { Entry } from '@/store/sessions'
-import { type TermsAsk, edgePendingLabel, parseTermsError, sourceLabel, stateLabel, timeLeft, usePublicShares } from '@/store/public-shares'
+import { type TermsAsk, edgePendingLabel, machineLabel, parseTermsError, sourceLabel, stateLabel, timeLeft, usePublicShares } from '@/store/public-shares'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 
@@ -34,6 +34,7 @@ export function SharePublishCard({ tool, session }: { tool: Tool; session: strin
   const share = usePublicShares((s) => shareOfCall(s.shares, session, tool.callId, url))
   const traffic = usePublicShares((s) => (share ? s.traffic[share.id] : undefined))
   const terms = tool.result?.isError ? parseTermsError(tool.result.output) : null
+  const machines = usePublicShares((s) => s.machines)
   const now = useNow(share?.state === 'live' || share?.state === 'offline')
   const running = !tool.interrupted && (tool.pending || !tool.result)
   // The tool output never carries the password (the model must not see it): the owner gets it once by `share_password`.
@@ -62,7 +63,10 @@ export function SharePublishCard({ tool, session }: { tool: Tool; session: strin
       {share && (
         <dl className="mt-1 grid grid-cols-[max-content_1fr] gap-x-3 text-xs text-fg-secondary">
           <dt>Source</dt>
-          <dd className="truncate font-mono">{sourceLabel(share.source)}</dd>
+          <dd className="truncate font-mono">
+            {sourceLabel(share.source)}
+            {machines && share.engine !== machines.self && <span className="font-sans"> on {machineLabel(share.engine, machines)}</span>}
+          </dd>
           <dt>Access</dt>
           <dd>{share.access === 'password' ? 'Password' : 'Anyone with the link'}</dd>
           <dt>State</dt>

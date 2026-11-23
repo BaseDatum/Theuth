@@ -5,13 +5,14 @@
 import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import { stopAllShares } from '@/components/public-share/actions'
-import { edgePendingLabel, stripLabel, summarize, usePublicShares } from '@/store/public-shares'
+import { edgePendingLabel, machineBreakdown, stripLabel, summarize, usePublicShares } from '@/store/public-shares'
 
 export function PublicShareStrip() {
   const shares = usePublicShares((s) => s.shares)
   const traffic = usePublicShares((s) => s.traffic)
   const edgePending = usePublicShares((s) => s.edgePending)
-  const label = stripLabel(summarize(shares, traffic)) ?? (edgePending !== null ? edgePendingLabel(edgePending) : null)
+  const machines = usePublicShares((s) => s.machines)
+  const label = stripLabel(summarize(shares, traffic), machineBreakdown(shares, machines)) ?? (edgePending !== null ? edgePendingLabel(edgePending) : null)
   const [busy, setBusy] = useState(false)
   if (label === null) return null
   const stopAll = async () => {

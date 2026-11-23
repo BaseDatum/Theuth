@@ -3,18 +3,18 @@
 // Stop and Stop all, defaults, terms, history and the disclosures.
 
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { stopAllShares, stopShare } from '@/components/public-share/actions'
 import { PasswordOnce, useSharePassword } from '@/components/public-share/PasswordOnce'
-import { type EdgeState, type Expiry, type PublishArgs, reserveName, shareApi, useShareMethod } from '@/components/public-share/wire'
-import { Empty, Row, Section, useAction } from '@/components/settings/shared'
+import { type EdgeState, type Expiry, type HeldName, type NameAvailability, type PublishArgs, checkName, isNotOnEngine, namesApi, shareApi, useShareMethod } from '@/components/public-share/wire'
+import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { openExternal } from '@/lib/platform'
 import { useConnection } from '@/store/connection'
-import { activeShares, edgePendingLabel, sourceLabel, stateLabel, timeLeft, usePublicShares } from '@/store/public-shares'
+import { type Machines, activeShares, edgePendingLabel, machineLabel, servedBy, sourceLabel, stateLabel, timeLeft, usePublicShares } from '@/store/public-shares'
 
 const SETTINGS_KEY = ['share-settings'] as const
 
@@ -59,6 +59,7 @@ export function SharingTab() {
     .sort((a, b) => (b.stopped_ms ?? 0) - (a.stopped_ms ?? 0))
   const now = Date.now()
   const edgeName = status?.domain ?? 'the edge'
+  const machines = usePublicShares((s) => s.machines)
 
   if (!supported) return <Empty>This engine has no public sharing (the share plugin is not running).</Empty>
   const enabled = settings.data?.enabled ?? false
@@ -90,6 +91,8 @@ export function SharingTab() {
 
       <NameSection />
 
+      <MachinesSection />
+
       {enabled && <PublishForm />}
 
       <Section title="Live shares" actions={active.length > 0 && <Button size="sm" variant="destructive" onClick={() => void stopAllShares()}>Stop all</Button>}>
@@ -104,7 +107,7 @@ export function SharingTab() {
               <Row
                 key={s.id}
                 label={<button type="button" className="font-mono text-fg-accent hover:underline wrap-anywhere" onClick={() => openExternal(s.url)}>{s.url}</button>}
-                description={[sourceLabel(s.source), stateLabel(s), left && `${left} left`, t && `${t.visitors} visitors`].filter(Boolean).join(' · ')}
+                description={[sourceLabel(s.source), machines && s.engine !== machines.self ? `on ${machineLabel(s.engine, machines)}` : null, stateLabel(s), left && `${left} left`, t && `${t.visitors} visitors`].filter(Boolean).join(' · ')}
               >
                 <Button size="sm" variant="destructive" onClick={() => void stopShare(s.id)}>
                   Stop
@@ -150,40 +153,251 @@ export function SharingTab() {
           <p>Shared apps are public: anyone with the link can open them. The edge ({edgeName}) forwards encrypted connections and sees which address was visited and from where, not the pages.</p>
           <p>The edge also sees which of your machines share under your name.</p>
           {/* D22 (§5.7): said on every machine, whatever its switch. */}
-          <p>When a machine is removed from your mesh, the hub contacts {edgeName} to revoke it there, even if sharing is off on the hub.</p>
+          <p>{d22Text(edgeName, machines)}</p>
         </div>
       </Section>
     </>
   )
 }
 
-function NameSection() {
+/** Built-in reserved words of §5.2 (the edge adds its operator's list and brand blocklist; its answer decides). */
+const RESERVED_WORDS: Record<string, true> = Object.fromEntries(['www', 'api', 'admin', 'login', 'mail', 'abuse', 'status', 'support', 'secure', 'account', 'theuth', 'edge', 'ns1', 'ns2'].map((w) => [w, true]))
+
+/** §5.2 reserved-name rule, client side, so a bad name never reaches the edge: `null` = well-formed. */
+export function nameProblem(name: string): string | null {
+  if (name.length < 3) return 'At least 3 characters'
+  if (name.length > 32) return 'At most 32 characters'
+  if (!/^[a-z0-9-]+$/.test(name)) return 'Only a–z, 0–9 and -'
+  if (name.startsWith('-') || name.endsWith('-')) return 'No - at the start or end'
+  if (name.startsWith('xn--')) return 'No xn-- names'
+  if (Object.hasOwn(RESERVED_WORDS, name)) return 'Reserved by the edge'
+  return null
+}
+
+const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+
+/** The availability line under the field; `cooldown` shows when the name can be claimed again (§5.2). */
+export function availabilityText(name: string, r: NameAvailability, now: number): { ok: boolean; text: string } {
+  if (r.available) return { ok: true, text: `${name} is free` }
+  if (r.reason === 'cooldown' || r.reclaim_after_ms != null) {
+    const at = r.reclaim_after_ms
+    return { ok: false, text: at != null && at > now ? `${name} was released recently: free again on ${day(at)}` : `${name} was released recently and is cooling down` }
+  }
+  const why = r.reason ? r.reason.replace(/_/g, ' ') : null
+  return { ok: false, text: why && why !== 'name taken' ? `${name} is not available: ${why}` : `${name} is taken` }
+}
+
+/** §7.4 item 4: a held name's certificate state. */
+export function heldStateText(n: HeldName): string {
+  if (n.transfer_to) return `Offered to mesh ${n.transfer_to.slice(0, 8)}…${n.transfer_until_ms ? ` until ${day(n.transfer_until_ms)}` : ''}`
+  switch (n.state) {
+    case 'valid':
+      return 'Ready'
+    case 'queued':
+      return n.queue_position != null ? `Waiting for a certificate slot — position ${n.queue_position}${n.queue_eta_s != null ? `, about ${eta(n.queue_eta_s)}` : ''}` : 'Waiting for a certificate slot'
+    case 'allocated':
+    case 'slotted':
+      return 'Getting a certificate…'
+    case 'banned':
+      return 'Banned by the edge'
+    case 'released':
+      return 'Released'
+    default:
+      return 'No certificate yet'
+  }
+}
+
+function eta(s: number): string {
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min`
+  if (s < 2 * 86_400) return `${Math.round(s / 3600)} h`
+  return `${Math.round(s / 86_400)} days`
+}
+
+const NAMES_KEY = ['share-names'] as const
+
+/** The availability of `name` as the owner types (debounced), `null` while not asked yet. */
+function useNameCheck(name: string): { name: string; result: NameAvailability | null; error: unknown } | null {
+  const [state, setState] = useState<{ name: string; result: NameAvailability | null; error: unknown } | null>(null)
+  useEffect(() => {
+    if (!name || nameProblem(name)) return setState(null)
+    let live = true
+    const t = setTimeout(() => {
+      checkName(name).then(
+        (result) => live && setState({ name, result, error: null }),
+        (error: unknown) => live && setState({ name, result: null, error }),
+      )
+    }, 350)
+    return () => {
+      live = false
+      clearTimeout(t)
+    }
+  }, [name])
+  return state?.name === name ? state : null
+}
+
+/** §7.4 item 4, §5.2, D20: Your name — Reserve (checked as you type), and per held name Make primary, Rotate key,
+ * Release and Transfer to another mesh. Methods the engine lacks answer "not available on this engine". */
+export function NameSection() {
   const [name, setName] = useState('')
-  const [checked, setChecked] = useState<{ name: string; available: boolean; reason: string | null } | null>(null)
-  const canReserve = useShareMethod('share_names_reserve')
-  const check = useAction((n: string) => shareApi().share_names_check(n), { onSuccess: (r, n) => setChecked({ name: n, ...r }) })
-  const reserve = useAction((n: string) => reserveName(n), { onSuccess: (_r, n) => toast.success(`Reserved ${n}`) })
+  const domain = usePublicShares((s) => s.status?.domain ?? null)
   const trimmed = name.trim().toLowerCase()
-  const ok = checked?.name === trimmed && checked.available
+  const problem = trimmed ? nameProblem(trimmed) : null
+  const check = useNameCheck(trimmed)
+  const names = useQuery({ queryKey: NAMES_KEY, queryFn: () => namesApi.list(), retry: false })
+  const reserve = useAction((n: string) => namesApi.reserve(n), {
+    keys: [NAMES_KEY],
+    onSuccess: (_r, n) => {
+      setName('')
+      toast.success(`Reserved ${n}`)
+    },
+  })
+  const avail = check?.result ? availabilityText(domain ? `${trimmed}.${domain}` : trimmed, check.result, Date.now()) : null
   return (
     <Section title="Your name">
-      <Row
-        label="Name"
-        description="Your shares live under <name>.<edge domain>. Leave it empty and the first publish picks a random name."
-        wide
-      >
+      <Row label="Reserve a name" description={`Your mesh's shares live under ${domain ? `<name>.${domain}` : '<name>.<edge domain>'}. Without one, the first publish picks a random name. Reserving asks for your approval.`} wide>
         <Input value={name} placeholder="sky" className="max-w-56" onChange={(e) => setName(e.target.value)} aria-label="Name" />
-        <Button size="sm" variant="outline" disabled={!trimmed || check.isPending} onClick={() => check.mutate(trimmed)}>
-          Check
-        </Button>
-        {/* TODO(210-M2): `share_names_reserve` is not on the engine yet; the button turns on when discovery lists it. */}
-        <Button size="sm" disabled={!ok || !canReserve || reserve.isPending} title={canReserve ? undefined : 'Reserving a name comes with the next sharing update'} onClick={() => reserve.mutate(trimmed)}>
-          Reserve
+        <Button size="sm" disabled={!avail?.ok || reserve.isPending} onClick={() => reserve.mutate(trimmed)}>
+          {reserve.isPending ? 'Waiting for approval…' : 'Reserve'}
         </Button>
       </Row>
-      {checked?.name === trimmed && (
-        <p className={`pb-2 text-sm ${checked.available ? 'text-success' : 'text-danger'}`}>{checked.available ? `${trimmed} is free` : `${trimmed} is taken${checked.reason ? `: ${checked.reason}` : ''}`}</p>
+      {trimmed && (
+        <p data-name-check="" className={`pb-2 text-sm ${problem || (avail && !avail.ok) ? 'text-danger' : avail?.ok ? 'text-success' : 'text-fg-secondary'}`}>
+          {problem ?? (avail ? avail.text : check?.error ? (isNotOnEngine(check.error) ? 'Checking names is not available on this engine' : errorText(check.error)) : 'Checking…')}
+        </p>
       )}
+      {reserve.error && isNotOnEngine(reserve.error) && <p className="pb-2 text-sm text-danger">Reserving a name is not available on this engine.</p>}
+      {names.isError ? (
+        <Empty>{isNotOnEngine(names.error) ? 'Your names: not available on this engine.' : `Your names could not be read: ${errorText(names.error)}`}</Empty>
+      ) : (names.data ?? []).length === 0 ? (
+        <Empty>{names.isLoading ? 'Loading…' : 'No name yet.'}</Empty>
+      ) : (
+        names.data!.map((n) => <HeldNameRow key={`${n.domain}/${n.name}`} n={n} />)
+      )}
+    </Section>
+  )
+}
+
+type Confirm = 'release' | 'rotate' | 'transfer' | null
+
+function HeldNameRow({ n }: { n: HeldName }) {
+  const [confirm, setConfirm] = useState<Confirm>(null)
+  const [to, setTo] = useState('')
+  const done = (text: string) => () => {
+    setConfirm(null)
+    setTo('')
+    toast.success(text)
+  }
+  const fqdn = `${n.name}.${n.domain}`
+  const primary = useAction(() => namesApi.primary(n.name), { keys: [NAMES_KEY], onSuccess: done(`New shares use ${fqdn}`) })
+  const rotate = useAction(() => namesApi.rotate(n.name), { keys: [NAMES_KEY], onSuccess: done(`Rotating the key of ${fqdn}`) })
+  const release = useAction(() => namesApi.release(n.name), { keys: [NAMES_KEY], onSuccess: done(`Released ${fqdn}`) })
+  const transfer = useAction((mesh: string) => namesApi.transfer(n.name, mesh), { keys: [NAMES_KEY], onSuccess: done(`${fqdn} offered for 7 days`) })
+  const busy = primary.isPending || rotate.isPending || release.isPending || transfer.isPending
+  const missing = [primary, rotate, release, transfer].some((a) => a.error && isNotOnEngine(a.error))
+  return (
+    <div data-held-name={n.name} className="border-b border-border-subtle py-2 last:border-b-0">
+      <Row
+        label={
+          <span className="font-mono">
+            {fqdn}
+            {n.primary && <span className="ml-2 rounded bg-bg-subtle px-1.5 py-0.5 font-sans text-xs text-fg-secondary">primary</span>}
+          </span>
+        }
+        description={`${n.kind === 'reserved' ? 'Reserved' : 'Random'} · ${heldStateText(n)}`}
+        wide
+      >
+        {!n.primary && (
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => primary.mutate(undefined)}>
+            Make primary
+          </Button>
+        )}
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => setConfirm(confirm === 'rotate' ? null : 'rotate')}>
+          Rotate key
+        </Button>
+        {n.kind === 'reserved' && (
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => setConfirm(confirm === 'transfer' ? null : 'transfer')}>
+            Transfer…
+          </Button>
+        )}
+        <Button size="sm" variant="destructive" disabled={busy} onClick={() => setConfirm(confirm === 'release' ? null : 'release')}>
+          Release
+        </Button>
+      </Row>
+      {confirm === 'rotate' && (
+        <ConfirmLine text={`A new key and certificate for ${fqdn}; the old certificate is revoked. Shares stay up.`} action="Rotate key" busy={busy} onYes={() => rotate.mutate(undefined)} onNo={() => setConfirm(null)} />
+      )}
+      {confirm === 'release' && (
+        <ConfirmLine
+          danger
+          text={`Release ${fqdn}? Its shares stop on every machine and its certificate is revoked. Only your mesh can claim it again until ${day(Date.now() + 30 * 86_400_000)} at the earliest (the 30-day cooldown, longer while its certificate is valid).`}
+          action="Release"
+          busy={busy}
+          onYes={() => release.mutate(undefined)}
+          onNo={() => setConfirm(null)}
+        />
+      )}
+      {confirm === 'transfer' && (
+        <div className="flex flex-wrap items-center gap-2 pb-1 text-sm">
+          <span className="text-fg-secondary">To another mesh (paste its mesh id or ticket; it claims the name within 7 days):</span>
+          <Input value={to} placeholder="mesh id or ticket" className="max-w-72 font-mono" onChange={(e) => setTo(e.target.value)} aria-label="Target mesh" />
+          <Button size="sm" variant="destructive" disabled={busy || !to.trim()} onClick={() => transfer.mutate(to.trim())}>
+            {transfer.isPending ? 'Waiting for approval…' : 'Offer transfer'}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setConfirm(null)}>
+            Cancel
+          </Button>
+        </div>
+      )}
+      {missing && <p className="pb-1 text-sm text-danger">Not available on this engine.</p>}
+    </div>
+  )
+}
+
+/** The UI confirmation release and rotate take (§7.2 table). */
+function ConfirmLine({ text, action, busy, danger, onYes, onNo }: { text: string; action: string; busy: boolean; danger?: boolean; onYes: () => void; onNo: () => void }) {
+  return (
+    <div role="alert" className="flex flex-wrap items-center gap-2 pb-1 text-sm">
+      <span className={danger ? 'text-danger' : 'text-fg-secondary'}>{text}</span>
+      <Button size="sm" variant={danger ? 'destructive' : 'default'} disabled={busy} onClick={onYes}>
+        {action}
+      </Button>
+      <Button size="sm" variant="ghost" onClick={onNo}>
+        Cancel
+      </Button>
+    </div>
+  )
+}
+
+/** D22 (§5.7), with the hub's name when the mesh is known. */
+export function d22Text(edge: string, machines: Machines | null): string {
+  const hub = machines?.hub ? (machines.hub === machines.self ? 'the hub (this machine)' : `the hub (${machineLabel(machines.hub, machines)})`) : 'the hub'
+  return `When a machine is removed from your mesh, ${hub} contacts ${edge} to revoke it there, even if sharing is off on the hub.`
+}
+
+/** The mesh's machines and what each serves publicly (§7.4 item 4, G6). */
+export function MachinesSection() {
+  const machines = usePublicShares((s) => s.machines)
+  const shares = usePublicShares((s) => s.shares)
+  if (!machines) return null
+  const served = servedBy(shares)
+  const ids = Object.keys(machines.names).sort((a, b) => (a === machines.self ? -1 : b === machines.self ? 1 : (machines.names[a] ?? '').localeCompare(machines.names[b] ?? '')))
+  // A share from an engine the mesh no longer lists (removed) still shows, under its id.
+  for (const e of Object.keys(served)) if (!ids.includes(e)) ids.push(e)
+  return (
+    <Section title="Your machines">
+      {ids.map((id) => (
+        <Row
+          key={id}
+          label={
+            <span>
+              {machines.names[id] ?? machineLabel(id, machines)}
+              {id === machines.self && <span className="text-fg-secondary"> (this machine)</span>}
+              {id === machines.hub && <span className="ml-2 rounded bg-bg-subtle px-1.5 py-0.5 text-xs text-fg-secondary">hub</span>}
+            </span>
+          }
+          description={served[id]?.length ? `Serves ${served[id]!.join(', ')}` : 'Nothing public'}
+        />
+      ))}
     </Section>
   )
 }
@@ -259,7 +473,7 @@ function PublishForm() {
     <Section title="Publish">
       <Row label="Source" description="A local port (5173) or a folder to serve. You approve the publish in the approval that appears." wide>
         <Input value={source} placeholder="5173 or /path/to/site" className="max-w-64" onChange={(e) => setSource(e.target.value)} aria-label="Source" />
-        <select aria-label="Expiry" value={expiry} onChange={(e) => setExpiry(e.target.value as Expiry)} className="h-8 rounded-md border border-border-subtle bg-transparent px-2 text-sm">
+        <select aria-label="Expiry" value={expiry} onChange={(e) => setExpiry(e.target.value as Expiry)} className="h-8 rounded-md border border-border-subtle bg-transparent px-2 text-base md:text-sm">
           {EXPIRIES.map(([v, l]) => (
             <option key={v} value={v}>
               {l}

@@ -4,7 +4,7 @@
 // Mounted once, in the main window's shell.
 
 import { useEffect } from 'react'
-import { applyStopped, loadShares } from '@/components/public-share/actions'
+import { applyStopped, loadMachines, loadShares } from '@/components/public-share/actions'
 import { notifyIfHidden } from '@/lib/notify'
 import { isDesktop } from '@/lib/platform'
 import { onShareStoppedAll, shareTray } from '@/lib/tauri'
@@ -21,11 +21,17 @@ export function PublicShareHost() {
     usePublicShares.getState().reset()
     // Listen first, then seed: a change between the two lands after the baseline or in it, never lost.
     const offs = [
-      onTopic('share.changed@1', (e) => usePublicShares.getState().changed(e.share)),
+      onTopic('share.changed@1', (e) => {
+        const st = usePublicShares.getState()
+        st.changed(e.share)
+        // A share from a machine this webview has no name for (paired since): read the mesh again.
+        if (st.machines && !(e.share.engine in st.machines.names)) void loadMachines().catch(() => undefined)
+      }),
       onTopic('share.traffic@1', (e) => usePublicShares.getState().setTraffic(e)),
       onTopic('share.status@1', (e) => usePublicShares.getState().setStatus(e)),
     ]
     void loadShares().catch(() => undefined)
+    void loadMachines().catch(() => undefined)
     return () => {
       for (const off of offs) off()
     }

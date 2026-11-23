@@ -10,6 +10,10 @@ import type { Share, ShareSource, ShareStatus, ShareTraffic } from '@/components
 /** An edge's terms the engine asked for (parsed from a refused publish, §7.6 step 3). */
 export type TermsAsk = { edge: string; url: string; rev: string }
 
+/** The mesh's machines by engine endpoint id (`mesh_status`: `self_id`/`self_name`, `peers[].{id,name}`, the lease
+ * holder as `hub`), so a share's `engine` reads as a machine name. `null` on an engine without `mesh_status`. */
+export type Machines = { self: string; hub: string | null; names: Record<string, string> }
+
 export type PublicSharesState = {
   shares: Record<string, Share>
   traffic: Record<string, ShareTraffic>
@@ -20,16 +24,18 @@ export type PublicSharesState = {
   /** The last Stop all's `edge_pending`: the mesh-wide stop the edge has not taken yet. The engine sends it again at
    * its next welcome, so it clears when the edge connection (re)attaches. */
   edgePending: string | null
+  machines: Machines | null
   replace(list: readonly Share[]): void
   changed(share: Share): void
   setTraffic(t: ShareTraffic): void
   setStatus(s: ShareStatus): void
   askTerms(t: TermsAsk | null): void
   setEdgePending(why: string | null): void
+  setMachines(m: Machines | null): void
   reset(): void
 }
 
-const EMPTY = { shares: {}, traffic: {}, status: null, loaded: false, terms: null, edgePending: null }
+const EMPTY = { shares: {}, traffic: {}, status: null, loaded: false, terms: null, edgePending: null, machines: null }
 
 export const usePublicShares = create<PublicSharesState>()((set) => ({
   ...EMPTY,
@@ -40,6 +46,7 @@ export const usePublicShares = create<PublicSharesState>()((set) => ({
     set((st) => ({ status, edgePending: status.state.state === 'attached' && st.status?.state.state !== 'attached' ? null : st.edgePending })),
   askTerms: (terms) => set({ terms }),
   setEdgePending: (edgePending) => set({ edgePending }),
+  setMachines: (machines) => set({ machines }),
   // A webview reconnect is not an edge reattach: the pending edge stop stays until the edge attaches.
   reset: () => set((st) => ({ ...EMPTY, edgePending: st.edgePending })),
 }))
@@ -65,14 +72,50 @@ export function summarize(shares: Record<string, Share>, traffic: Record<string,
   return { live, pending, visitors }
 }
 
-/** `Sharing publicly · 2 live · 1 pending · 14 visitors`; `null` when nothing is active (no strip). */
-export function stripLabel(sum: Summary): string | null {
+/** `Sharing publicly · 2 live (1 on this machine, 1 on Studio) · 1 pending · 14 visitors`; `null` when nothing is
+ * active (no strip). `machines` = `machineBreakdown`, after the counts. */
+export function stripLabel(sum: Summary, machines: string | null = null): string | null {
   if (sum.live + sum.pending === 0) return null
-  const parts = [sum.live > 0 ? 'Sharing publicly' : 'Going public']
-  if (sum.live > 0) parts.push(`${sum.live} live`)
-  if (sum.pending > 0) parts.push(`${sum.pending} pending`)
+  const counts: string[] = []
+  if (sum.live > 0) counts.push(`${sum.live} live`)
+  if (sum.pending > 0) counts.push(`${sum.pending} pending`)
+  if (machines) counts[counts.length - 1] += ` (${machines})`
+  const parts = [sum.live > 0 ? 'Sharing publicly' : 'Going public', ...counts]
   if (sum.visitors !== null) parts.push(sum.visitors === 1 ? '1 visitor' : `${sum.visitors} visitors`)
   return parts.join(' · ')
+}
+
+/** A share's machine: "this machine", the peer's name, or the id's first 8 characters when the mesh does not list it
+ * (a removed machine, or no `mesh_status`). */
+export function machineLabel(engine: string, machines: Machines | null): string {
+  if (machines?.self === engine) return 'this machine'
+  return machines?.names[engine] ?? `machine ${engine.slice(0, 8)}`
+}
+
+/** `1 on this machine, 1 on Studio`: active shares per machine, this one first; `null` while every active share is
+ * here or the machines are unknown (nothing to tell apart). */
+export function machineBreakdown(shares: Record<string, Share>, machines: Machines | null): string | null {
+  if (!machines) return null
+  const by = new Map<string, number>()
+  for (const s of Object.values(shares)) if (isActive(s)) by.set(s.engine, (by.get(s.engine) ?? 0) + 1)
+  if ([...by.keys()].every((e) => e === machines.self)) return null
+  return [...by.entries()]
+    .sort(([a], [b]) => (a === machines.self ? -1 : b === machines.self ? 1 : machineLabel(a, machines).localeCompare(machineLabel(b, machines))))
+    .map(([e, n]) => `${n} on ${machineLabel(e, machines)}`)
+    .join(', ')
+}
+
+/** Per machine, the hosts its active shares serve (`app.sky.tun.zip`, `sky.tun.zip/docs`), sorted. */
+export function servedBy(shares: Record<string, Share>): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const s of Object.values(shares)) {
+    if (!isActive(s)) continue
+    const at = s.path && s.path !== '/' ? `${s.host}${s.path}` : s.host
+    const list = (out[s.engine] ??= [])
+    if (!list.includes(at)) list.push(at)
+  }
+  for (const list of Object.values(out)) list.sort()
+  return out
 }
 
 /** What the strip and the cards say while a Stop all has not reached the edge: not "stopped" (FIX-A M7). */

@@ -131,3 +131,14 @@ test('FIX-A M9: the password comes from share_password once per share, then neve
   useConnection.setState({ api: { share_password: async () => Promise.reject(new Error('owner only')) } as unknown as Api })
   expect(await takePassword('s3')).toBeNull()
 })
+
+test('210 M2: the strip names the machines while a share runs on another one', async () => {
+  engine([live('a'), { ...live('b'), engine: 'e2' }, { ...live('c'), engine: 'e2', state: 'pending' }], null)
+  usePublicShares.getState().setMachines({ self: 'e1', hub: 'e2', names: { e1: 'MacBook', e2: 'Studio' } })
+  await mount()
+  expect(strip()?.textContent).toContain('Sharing publicly · 2 live · 1 pending (1 on this machine, 2 on Studio)')
+  // All on this machine: no breakdown.
+  await act(async () => usePublicShares.getState().replace([live('a')]))
+  expect(strip()?.textContent).toContain('Sharing publicly · 1 live')
+  expect(strip()?.textContent).not.toContain('on this machine')
+})
