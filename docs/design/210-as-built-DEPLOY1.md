@@ -101,9 +101,11 @@ from the image labels of digest `sha256:d90f628d…f5ae`. Installed CRDs: only `
 1. Router: public 443 → 192.168.8.99 already serves HAProxy; `edge.tun.zip` must resolve to that public address.
 2. Router UDP forward for 7850 → NodePort 30785.
 3. **SQLite on NFS.** The only StorageClass is `nfs-csi` (nfs.rwx.dev, NFSv4.1; not marked default, so the PVC
-   pins it). `share-edge.sqlite` in WAL mode on NFS relies on NFS byte-range locks and a shared-memory `-shm`
-   file that SQLite documents as unsafe over network filesystems. One writer (`replicas: 1`, `Recreate`) limits the
-   damage, but a local-path/RBD class would be safer. `iroh.key` and `acme/` are fine on NFS.
+   pins it). *Updated (FIX4-EDGE #22):* the overlay now sets `THEUTH_SHARE_EDGE_DB_JOURNAL=delete` (owner
+   2026-11-23): rollback journal instead of WAL, so no shared-memory `-shm` file on NFS; `Store::open` with
+   `DbJournal::Delete` takes `locking_mode=EXCLUSIVE` and a one-connection pool, so the single writer
+   (`replicas: 1`, `Recreate`) holds the file lock for its lifetime. It still relies on NFSv4 byte-range locks; a
+   local-path/RBD class would remain safer. `iroh.key` and `acme/` are fine on NFS.
 4. Terms/abuse URLs and contact, then the prod directory.
 
 ## First start (owner, in order)
@@ -129,7 +131,7 @@ build has it too is unchecked.
 
 - The rustls blocker above. Until it is fixed the image starts, loads the config and stops at the ACME account
   check; nothing past that has been exercised.
-- SQLite WAL on NFS (owner decision 3).
+- SQLite on NFS (owner decision 3): delete journal + exclusive lock since FIX4-EDGE; still NFS locking.
 - Per-name Ingress churn reloads HAProxy on 13 controller pods [INFERENCE].
 - The base Deployment's probes use `/healthz` on 9090. While the pod has no ACME account it exits, so it
   CrashLoops until the Job has run; expected.

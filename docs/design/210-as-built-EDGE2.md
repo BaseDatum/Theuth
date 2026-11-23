@@ -136,8 +136,12 @@ design's `ensure_cname`/`delete_name`/`set_txt`/`clear_txt` are `dns::ensure`/`d
   certificates has no use in P1; a `Certs`-less `Edge` (built by hand) still answers `501` on the CSR endpoint.
 - **TTL**: zone-update sends 300 s; the design plans 600 s (`TODO(210-M1)` in `dns.rs`, P0-1 decides).
 - **Ledger instead of a zone listing**: zone-update cannot list records, so reconciliation covers what the
-  `dns_records` ledger names (written before every create). A record created by hand or by another tool is never
-  touched.
+  `dns_records` ledger names (written before every create). *Correction (FIX4-EDGE #5):* the original claim that "a
+  record created by hand or by another tool is never touched" was false as built here: `dns::ensure` deleted any
+  different value (and every record on a read error) at a host it was about to write, and `dns::remove` deleted
+  every record of the type at a ledger host. Since FIX4-EDGE both compare the live value with the ledger's values
+  for that host: `ensure` fails the step on a foreign value or a read error, `remove` leaves a foreign value in place
+  (logged), and nothing is deleted at a host with no ledger row.
 - **`Validator::parallel`** is reported but `AcmeCa` always serializes (Path P is P2).
 - **Rotation passes `replaces`** too (same identifier set). Let's Encrypt may refuse `replaces` for a certificate
   already replaced; then the job retries and fails. [INFERENCE: not observed; no CA was contacted.]
