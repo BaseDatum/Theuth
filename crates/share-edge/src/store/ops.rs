@@ -292,4 +292,48 @@ mod tests {
         assert_eq!(s.unattached_names("tun.zip", t0 + 1).await.unwrap(), vec!["one".to_string()]);
         assert!(s.unattached_names("tun.zip", t0).await.unwrap().is_empty());
     }
+
+    /// FIX4-EDGE #2, #7, #18, #20, #22.
+    #[tokio::test]
+    async fn bans_unhold_revokes_stay_known_pause_persists_invites_spend_with_attach() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("e.sqlite");
+        let s = Store::open(&path, DbJournal::Wal).await.unwrap();
+        let t0 = 1_000_000u64;
+        s.attach("m1", "e1", "192.0.2.1", false, t0).await.unwrap();
+        for domain in ["tun.zip", "other.zip"] {
+            let n = NewName { domain, name: "sky", kind: "reserved", owner: "m1", now_ms: ms(t0), net: "n" };
+            assert_eq!(s.claim(n, 3).await.unwrap(), crate::store::Claimed::Granted);
+        }
+        // #2: a banned name is not held, under its domain only (#22).
+        s.ban("tun.zip", "name", "sky", "abuse", t0).await.unwrap();
+        assert!(s.held_names("tun.zip", "m1").await.unwrap().is_empty());
+        assert!(!s.name("tun.zip", "sky").await.unwrap().unwrap().held());
+        assert_eq!(s.held_names("other.zip", "m1").await.unwrap().len(), 1, "other domain untouched");
+        assert!(s.unban("tun.zip", "name", "sky").await.unwrap());
+        assert_eq!(s.held_names("tun.zip", "m1").await.unwrap().len(), 1);
+
+        // #7: only engines the mesh has seen, at most `cap` revoked.
+        s.attach("m1", "e2", "192.0.2.1", false, t0).await.unwrap();
+        let ids = |v: &[&str]| v.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
+        assert_eq!(s.revoke("m1", &ids(&["e2", "made-up"]), 4, t0).await.unwrap(), Some(ids(&["e2"])));
+        assert_eq!(s.engines("m1").await.unwrap().len(), 2, "no row for an unknown engine");
+        assert_eq!(s.revoke("m1", &ids(&["e1"]), 1, t0).await.unwrap(), None, "over the cap");
+        assert!(s.revoked("m1", "e1").await.unwrap().is_none());
+
+        // #20: the invite is spent by the attach that uses it, and only once.
+        s.mint_invite(&[0xab; 32], 1, t0 + 10, None, t0).await.unwrap();
+        assert!(s.invite_live(&[0xab; 32], t0).await.unwrap());
+        assert!(s.attach_invited("m2", "e3", "n", &[0xab; 32], t0).await.unwrap());
+        assert!(!s.attach_invited("m3", "e4", "n", &[0xab; 32], t0).await.unwrap());
+        assert!(s.mesh("m3").await.unwrap().is_none(), "a refused attach writes nothing");
+        assert_eq!(s.mesh("m2").await.unwrap().unwrap().invited, 1);
+
+        // #18: pause survives a reopen.
+        assert!(!s.paused().await.unwrap());
+        s.set_paused(true).await.unwrap();
+        s.close().await;
+        let s = Store::open(&path, DbJournal::Wal).await.unwrap();
+        assert!(s.paused().await.unwrap());
+    }
 }

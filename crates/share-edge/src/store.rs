@@ -41,12 +41,14 @@ pub struct NameRow {
     pub transfer_to: Option<String>,
     /// The transfer offer lapses then.
     pub transfer_until_ms: Option<i64>,
+    /// Set by `admin ban name` (json `{reason, ms, by}`); a banned name is not held whatever its `state`.
+    pub banned: Option<String>,
 }
 
 impl NameRow {
-    /// Held (not released or banned).
+    /// Held: not released, not banned (same rule as [`CertRow::held`]).
     pub fn held(&self) -> bool {
-        !matches!(self.state.as_str(), "released" | "banned")
+        !matches!(self.state.as_str(), "released" | "banned") && self.banned.is_none()
     }
 }
 
@@ -85,6 +87,25 @@ type ClaimRow = (
     Option<String>,
     Option<i64>,
 );
+
+/// One `conn_log` row.
+#[derive(Debug, Clone)]
+pub struct ConnLogRow {
+    /// Unix ms at close.
+    pub ms: u64,
+    /// The SNI host.
+    pub sni: String,
+    /// Visitor IP.
+    pub visitor: String,
+    /// Mesh id.
+    pub mesh: String,
+    /// Engine id.
+    pub engine: String,
+    /// Visitor → engine bytes.
+    pub up: u64,
+    /// Engine → visitor bytes.
+    pub down: u64,
+}
 
 /// Columns of a new or re-claimed name.
 pub struct NewName<'a> {
@@ -214,8 +235,46 @@ impl Store {
         invited: bool,
         now_ms: u64,
     ) -> anyhow::Result<()> {
+        self.attach_tx(mesh, engine, net, invited, None, now_ms).await.map(|_| ())
+    }
+
+    /// [`Store::attach`] of a mesh admitted with an invite: one use of `invite` is consumed in the same
+    /// transaction, so a failed attach spends nothing and a spent invite attaches nothing. False (nothing
+    /// written) when the invite is unknown, used up or expired.
+    pub async fn attach_invited(
+        &self,
+        mesh: &str,
+        engine: &str,
+        net: &str,
+        invite: &[u8],
+        now_ms: u64,
+    ) -> anyhow::Result<bool> {
+        self.attach_tx(mesh, engine, net, true, Some(invite), now_ms).await
+    }
+
+    async fn attach_tx(
+        &self,
+        mesh: &str,
+        engine: &str,
+        net: &str,
+        invited: bool,
+        invite: Option<&[u8]>,
+        now_ms: u64,
+    ) -> anyhow::Result<bool> {
         let now = ms(now_ms);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        if let Some(hash) = invite {
+            let r = sqlx::query(
+                "UPDATE invites SET uses_left = uses_left - 1 WHERE hash = ? AND uses_left > 0 AND expires_ms > ?",
+            )
+            .bind(hash)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+            if r.rows_affected() != 1 {
+                return Ok(false);
+            }
+        }
         sqlx::query(
             "INSERT INTO meshes (mesh, created_ms, net, invited) VALUES (?, ?, ?, ?)
              ON CONFLICT(mesh) DO UPDATE SET invited = MAX(invited, excluded.invited)",
@@ -246,7 +305,7 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(())
+        Ok(true)
     }
 
     /// A live tunnel of `mesh` counts as an attach: stamp its held names (renewal scan).
@@ -295,25 +354,52 @@ impl Store {
         .await?)
     }
 
-    /// Append `engines` to the mesh's revoke list (§5.7).
-    pub async fn revoke(&self, mesh: &str, engines: &[String], now_ms: u64) -> anyhow::Result<()> {
-        let mut tx = self.pool.begin().await?;
+    /// Append `engines` to the mesh's revoke list (§5.7). Only engines the mesh already has a `mesh_engines` row
+    /// for (seen at a `hello`) are revoked; unknown ids are skipped, so a delegated engine cannot grow the table
+    /// with made-up keys. `Ok(None)` when the mesh would hold more than `cap` revoked rows (nothing written);
+    /// else the engines now revoked by this call or before.
+    pub async fn revoke(
+        &self,
+        mesh: &str,
+        engines: &[String],
+        cap: u64,
+        now_ms: u64,
+    ) -> anyhow::Result<Option<Vec<String>>> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut fresh = Vec::new();
+        let mut known = Vec::new();
         for e in engines {
-            sqlx::query(
-                "INSERT INTO mesh_engines (mesh, engine, first_ms, last_ms, net, revoked_ms)
-                 VALUES (?, ?, ?, ?, '', ?)
-                 ON CONFLICT(mesh, engine) DO UPDATE SET revoked_ms = COALESCE(revoked_ms, excluded.revoked_ms)",
-            )
-            .bind(mesh)
-            .bind(e)
-            .bind(ms(now_ms))
-            .bind(ms(now_ms))
-            .bind(ms(now_ms))
-            .execute(&mut *tx)
-            .await?;
+            let row: Option<Option<i64>> =
+                sqlx::query_scalar("SELECT revoked_ms FROM mesh_engines WHERE mesh = ? AND engine = ?")
+                    .bind(mesh)
+                    .bind(e)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            match row {
+                Some(Some(_)) => known.push(e.clone()),
+                Some(None) if !fresh.contains(e) => fresh.push(e.clone()),
+                _ => {}
+            }
+        }
+        let have: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM mesh_engines WHERE mesh = ? AND revoked_ms IS NOT NULL")
+                .bind(mesh)
+                .fetch_one(&mut *tx)
+                .await?;
+        if u64::try_from(have).unwrap_or(0).saturating_add(fresh.len() as u64) > cap {
+            return Ok(None);
+        }
+        for e in &fresh {
+            sqlx::query("UPDATE mesh_engines SET revoked_ms = ? WHERE mesh = ? AND engine = ? AND revoked_ms IS NULL")
+                .bind(ms(now_ms))
+                .bind(mesh)
+                .bind(e)
+                .execute(&mut *tx)
+                .await?;
         }
         tx.commit().await?;
-        Ok(())
+        known.extend(fresh);
+        Ok(Some(known))
     }
 
     /// Set the mesh's Stop all time.
@@ -330,7 +416,7 @@ impl Store {
     pub async fn name(&self, domain: &str, name: &str) -> anyhow::Result<Option<NameRow>> {
         Ok(sqlx::query_as::<_, NameRow>(
             "SELECT name, kind, owner, state, created_ms, reclaim_after_ms, ca, csr_spki, not_after_ms,
-               transfer_to, transfer_until_ms
+               transfer_to, transfer_until_ms, banned
              FROM names WHERE domain = ? AND name = ?",
         )
         .bind(domain)
@@ -339,12 +425,13 @@ impl Store {
         .await?)
     }
 
-    /// Names `mesh` holds under `domain`.
+    /// Names `mesh` holds under `domain` (banned names are not held).
     pub async fn held_names(&self, domain: &str, mesh: &str) -> anyhow::Result<Vec<NameRow>> {
         Ok(sqlx::query_as::<_, NameRow>(
             "SELECT name, kind, owner, state, created_ms, reclaim_after_ms, ca, csr_spki, not_after_ms,
-               transfer_to, transfer_until_ms
+               transfer_to, transfer_until_ms, banned
              FROM names WHERE domain = ? AND owner = ? AND state IN ('allocated','queued','slotted','valid')
+               AND banned IS NULL
              ORDER BY created_ms",
         )
         .bind(domain)
@@ -357,7 +444,7 @@ impl Store {
     pub async fn all_names(&self) -> anyhow::Result<Vec<NameRow>> {
         Ok(sqlx::query_as::<_, NameRow>(
             "SELECT name, kind, owner, state, created_ms, reclaim_after_ms, ca, csr_spki, not_after_ms,
-               transfer_to, transfer_until_ms
+               transfer_to, transfer_until_ms, banned
              FROM names ORDER BY created_ms",
         )
         .fetch_all(&self.pool)
@@ -423,7 +510,7 @@ impl Store {
         }
         let kinds: Vec<String> = sqlx::query_scalar(
             "SELECT kind FROM names WHERE domain = ? AND owner = ?
-             AND state IN ('allocated','queued','slotted','valid')",
+             AND state IN ('allocated','queued','slotted','valid') AND banned IS NULL",
         )
         .bind(n.domain)
         .bind(n.owner)
@@ -722,6 +809,18 @@ impl Store {
         .is_some_and(|v| v != 0))
     }
 
+    /// Whether an invite is live (known, uses left, unexpired); consumes nothing ([`Store::attach_invited`] does).
+    pub async fn invite_live(&self, hash: &[u8], now_ms: u64) -> anyhow::Result<bool> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM invites WHERE hash = ? AND uses_left > 0 AND expires_ms > ?",
+        )
+        .bind(hash)
+        .bind(ms(now_ms))
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n > 0)
+    }
+
     /// Consume one use of an invite; false when unknown, used up or expired.
     pub async fn consume_invite(&self, hash: &[u8], now_ms: u64) -> anyhow::Result<bool> {
         let r = sqlx::query(
@@ -745,9 +844,10 @@ impl Store {
         )
     }
 
-    /// Add a ban; a name ban also marks the name row, a mesh ban the mesh row (§9.3).
+    /// Add a ban; a name ban also marks the name row under `domain`, a mesh ban the mesh row (§9.3).
     pub async fn ban(
         &self,
+        domain: &str,
         kind: &str,
         value: &str,
         reason: &str,
@@ -767,8 +867,9 @@ impl Store {
         let mark = serde_json::json!({"reason": reason, "ms": now_ms, "by": "admin"}).to_string();
         match kind {
             "name" => {
-                sqlx::query("UPDATE names SET banned = ? WHERE name = ?")
+                sqlx::query("UPDATE names SET banned = ? WHERE domain = ? AND name = ?")
                     .bind(&mark)
+                    .bind(domain)
                     .bind(value)
                     .execute(&mut *tx)
                     .await?;
@@ -786,8 +887,8 @@ impl Store {
         Ok(())
     }
 
-    /// Remove a ban; false when there was none.
-    pub async fn unban(&self, kind: &str, value: &str) -> anyhow::Result<bool> {
+    /// Remove a ban (a name ban's mark under `domain`); false when there was none.
+    pub async fn unban(&self, domain: &str, kind: &str, value: &str) -> anyhow::Result<bool> {
         let mut tx = self.pool.begin().await?;
         let r = sqlx::query("DELETE FROM bans WHERE kind = ? AND value = ?")
             .bind(kind)
@@ -796,7 +897,8 @@ impl Store {
             .await?;
         match kind {
             "name" => {
-                sqlx::query("UPDATE names SET banned = NULL WHERE name = ?")
+                sqlx::query("UPDATE names SET banned = NULL WHERE domain = ? AND name = ?")
+                    .bind(domain)
                     .bind(value)
                     .execute(&mut *tx)
                     .await?;
@@ -840,28 +942,43 @@ impl Store {
         Ok(())
     }
 
-    /// One visitor connection for abuse handling (§9.2). TODO(210-M3): the 30-day purge.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn conn_log(
-        &self,
-        now_ms: u64,
-        sni: &str,
-        visitor: &str,
-        mesh: &str,
-        engine: &str,
-        up: u64,
-        down: u64,
-    ) -> anyhow::Result<()> {
+    /// Visitor connections for abuse handling (§9.2), one transaction per batch ([`crate::state::ConnLog`]'s
+    /// writer). The 30-day purge is `purge_conn_log`, run by the hourly slot-queue sweep.
+    pub async fn conn_log_batch(&self, rows: &[ConnLogRow]) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for r in rows {
+            sqlx::query(
+                "INSERT INTO conn_log (ms, sni, visitor, mesh, engine, bytes_up, bytes_down) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(ms(r.ms))
+            .bind(&r.sni)
+            .bind(&r.visitor)
+            .bind(&r.mesh)
+            .bind(&r.engine)
+            .bind(ms(r.up))
+            .bind(ms(r.down))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// `admin pause` as last set (persisted, so a restart stays paused).
+    pub async fn paused(&self) -> anyhow::Result<bool> {
+        Ok(sqlx::query_scalar::<_, String>("SELECT value FROM edge_state WHERE key = 'paused'")
+            .fetch_optional(&self.pool)
+            .await?
+            .is_some_and(|v| v == "1"))
+    }
+
+    /// Persist `admin pause` / `admin resume`.
+    pub async fn set_paused(&self, on: bool) -> anyhow::Result<()> {
         sqlx::query(
-            "INSERT INTO conn_log (ms, sni, visitor, mesh, engine, bytes_up, bytes_down) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO edge_state (key, value) VALUES ('paused', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         )
-        .bind(ms(now_ms))
-        .bind(sni)
-        .bind(visitor)
-        .bind(mesh)
-        .bind(engine)
-        .bind(ms(up))
-        .bind(ms(down))
+        .bind(if on { "1" } else { "0" })
         .execute(&self.pool)
         .await?;
         Ok(())

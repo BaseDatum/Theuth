@@ -115,7 +115,8 @@ impl Validator for Dns01 {
             self.store
                 .dns_add(&host, Rtype::Txt.as_str(), value, ident, now_ms())
                 .await?;
-            dns::ensure(&*self.zone, Rtype::Txt, &host, value).await?;
+            let ours = self.store.dns_values(&host, Rtype::Txt.as_str()).await?;
+            dns::ensure(&*self.zone, Rtype::Txt, &host, value, &ours).await?;
             // FIX-EDGE m9: poll the authoritative servers up to `acme.propagation` (the old fixed wait). A value
             // still missing at the deadline is logged and the CA asked anyway, as before; the CA retries its own
             // lookups for a while and a failed authorization fails the attempt, which backs off.
@@ -139,7 +140,8 @@ impl Validator for Dns01 {
     fn cleanup<'a>(&'a self, ident: &'a str) -> BoxFuture<'a, anyhow::Result<()>> {
         async move {
             let host = dns::challenge_host(ident, &self.dns_zone)?;
-            let r = dns::remove(&*self.zone, Rtype::Txt, &host).await;
+            let ours = self.store.dns_values(&host, Rtype::Txt.as_str()).await?;
+            let r = dns::remove(&*self.zone, Rtype::Txt, &host, &ours).await;
             *self.last_cleanup.lock().expect("cleanup lock") = Some(tokio::time::Instant::now());
             r?;
             self.store.dns_del(&host, Rtype::Txt.as_str()).await
@@ -342,19 +344,36 @@ pub async fn chain(edge: &Edge, mesh: &PublicKey, name: &str) -> anyhow::Result<
     })
 }
 
-async fn ensure_records(edge: &Edge, certs: &Certs, name: &str) -> anyhow::Result<()> {
+/// The D17 CNAMEs of `name` for `mesh`. Ownership is read again right before each write (FIX4-EDGE #14): a
+/// name released or banned while the job ran gets no record, which its `retire` would never delete.
+async fn ensure_records(edge: &Edge, certs: &Certs, name: &str, mesh: &str) -> anyhow::Result<()> {
     let target = edge.cfg.dns_target();
     for host in dns::name_hosts(name, &edge.cfg.domain, edge.cfg.dns_zone())? {
+        anyhow::ensure!(still_held(edge, name, mesh).await?, "{name} is no longer held by {mesh}");
         edge.store
             .dns_add(&host, Rtype::Cname.as_str(), &target, name, now_ms())
             .await?;
-        dns::ensure(&*certs.zone, Rtype::Cname, &host, &target).await?;
+        let ours = edge.store.dns_values(&host, Rtype::Cname.as_str()).await?;
+        dns::ensure(&*certs.zone, Rtype::Cname, &host, &target, &ours).await?;
     }
     edge.store.set_records(&edge.cfg.domain, name, true).await
 }
 
+async fn still_held(edge: &Edge, name: &str, mesh: &str) -> anyhow::Result<bool> {
+    Ok(edge
+        .store
+        .cert_row(&edge.cfg.domain, name)
+        .await?
+        .is_some_and(|r| r.held() && r.owner.as_deref() == Some(mesh)))
+}
+
+/// Delete what the ledger says the edge wrote at `host` (never another value, FIX4-EDGE #5), then forget it.
 async fn remove_host(edge: &Edge, certs: &Certs, rtype: Rtype, host: &str) -> anyhow::Result<()> {
-    dns::remove(&*certs.zone, rtype, host).await?;
+    let ours = edge.store.dns_values(host, rtype.as_str()).await?;
+    if ours.is_empty() {
+        return Ok(());
+    }
+    dns::remove(&*certs.zone, rtype, host, &ours).await?;
     edge.store.dns_del(host, rtype.as_str()).await
 }
 
@@ -391,9 +410,12 @@ async fn retire_inner(
     // A release moved the chain already; a ban moves it here.
     edge.store.retire_chain(domain, name, reason.as_str(), now).await?;
     revoke_due(edge, certs, now).await?;
-    if edge.store.cert_row(domain, name).await?.is_some_and(|r| r.held()) {
+    match edge.store.cert_row(domain, name).await? {
+        // No row: the edge never wrote records for it (a ban on an unclaimed label); nothing to delete.
+        None => return Ok(()),
         // Re-claimed (by its previous owner) since the release: its jobs and records are the new holder's.
-        return Ok(());
+        Some(r) if r.held() => return Ok(()),
+        Some(_) => {}
     }
     edge.store.drop_jobs(domain, name).await?;
     remove_records(edge, certs, name).await
@@ -424,12 +446,21 @@ pub async fn revoke_due(edge: &Edge, certs: &Certs, now: u64) -> anyhow::Result<
     Ok(())
 }
 
-/// At start: release every lease (one runner per edge) and delete every ledger record that no held name
-/// needs; challenge TXTs never outlive an order. A held name's CNAMEs stay even when `records` is 0 (a job
-/// that failed between ledger and flag): its next attempt re-ensures them idempotently.
+/// At start: release every lease (one runner per edge), then [`reconcile_dns`].
 pub async fn reconcile(edge: &Edge) -> anyhow::Result<()> {
-    let Some(certs) = edge.certs.get() else { return Ok(()) };
+    if edge.certs.get().is_none() {
+        return Ok(());
+    }
     edge.store.reset_leases().await?;
+    reconcile_dns(edge).await
+}
+
+/// Delete every ledger record that no held name needs; challenge TXTs never outlive an order. A held name's
+/// CNAMEs stay even when `records` is 0 (a job that failed between ledger and flag): its next attempt
+/// re-ensures them idempotently. Runs at start and hourly from the runner, between ticks, so no order of
+/// this runner has a challenge TXT out while it runs (FIX4-EDGE #14).
+pub async fn reconcile_dns(edge: &Edge) -> anyhow::Result<()> {
+    let Some(certs) = edge.certs.get() else { return Ok(()) };
     let mut rows = edge.store.dns_all().await?;
     // `<n>` before `*.<n>`, as `remove_records` (see `dns::name_hosts`).
     rows.sort_by_key(|(host, ..)| host.starts_with("*."));
@@ -570,7 +601,7 @@ async fn process(edge: &Arc<Edge>, certs: &Certs, job: &JobRow, now: u64) -> any
         return Ok(());
     }
     if row.records == 0 {
-        ensure_records(edge, certs, &job.name).await?;
+        ensure_records(edge, certs, &job.name, &job.mesh).await?;
     }
     let sans = share_proto::expected_sans(&job.name, domain);
     let old = row.chain_pem.clone().filter(|_| job.kind != "new");
@@ -688,15 +719,26 @@ async fn renewal_scan(edge: &Edge, certs: &Certs, now: u64) -> anyhow::Result<()
     Ok(())
 }
 
-/// The runner: reconcile once, then run due jobs whenever woken and at least every minute.
+/// How often the runner re-runs [`reconcile_dns`] after the one at start.
+const DNS_RECONCILE_EVERY: Duration = Duration::from_secs(3600);
+
+/// The runner: reconcile once, then run due jobs whenever woken and at least every minute; DNS reconciliation
+/// again every hour.
 pub async fn run(edge: Arc<Edge>) {
     if let Err(e) = reconcile(&edge).await {
         tracing::warn!("DNS reconciliation: {e:#}");
     }
     let Some(certs) = edge.certs.get() else { return };
+    let mut next_dns = tokio::time::Instant::now() + DNS_RECONCILE_EVERY;
     loop {
         if let Err(e) = tick(&edge, now_ms()).await {
             tracing::warn!("certificate runner: {e:#}");
+        }
+        if tokio::time::Instant::now() >= next_dns {
+            next_dns = tokio::time::Instant::now() + DNS_RECONCILE_EVERY;
+            if let Err(e) = reconcile_dns(&edge).await {
+                tracing::warn!("DNS reconciliation: {e:#}");
+            }
         }
         tokio::select! {
             () = certs.wake.notified() => {}

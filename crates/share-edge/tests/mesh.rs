@@ -517,3 +517,38 @@ async fn rekey_races_first_valid_wins_and_the_chain_heals() {
         .await;
     assert_eq!((status, err(&body).code), (400, ErrorCode::Invalid));
 }
+
+/// FIX4-EDGE #2 and #4: a route another mesh left on a name this mesh holds is evicted, not a conflict; a banned
+/// name loses its routes, cannot be routed or ordered again, and is not in `welcome.names`; a ban needs a label.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_banned_name_is_not_held_and_a_stale_route_is_evicted() {
+    use share_proto::admin::{AdminCommand, AdminRequest, BanKind};
+    let rig = Rig::new().await;
+    let [ma, mb, ka, kb] = keys();
+    let (a, _) = rig.attach(&ka, &ma).await;
+    let (_b, _) = rig.attach(&kb, &mb).await;
+    assert_eq!(a.call("PUT", &paths::name("sky"), None).await.0, 200);
+    let h = host(None, "sky");
+    let tb = rig.run.edge.tunnels.get(&kb.public()).unwrap().clone();
+    rig.run.edge.routes.insert(
+        h.clone(),
+        share_edge::state::Route { name: "sky".into(), mesh: mb.public(), tunnel: tb, stats: Default::default() },
+    );
+    assert_eq!(a.send("PUT", paths::ROUTES, &routes(std::slice::from_ref(&h))).await.0, 204);
+    assert_eq!(rig.route_of(&h), Some(ka.public()), "stale route of another mesh evicted");
+
+    let ban = |value: &str| AdminRequest {
+        id: 1,
+        command: AdminCommand::Ban { kind: BanKind::Name, value: value.into(), reason: "test".into() },
+        reference: None,
+    };
+    assert!(!share_edge::admin::handle(&rig.run.edge, ban("Not A Label")).await.ok);
+    assert!(share_edge::admin::handle(&rig.run.edge, ban("sky")).await.ok);
+    assert_eq!(rig.route_of(&h), None, "ban drops the live route");
+    let (status, body) = a.send("PUT", paths::ROUTES, &routes(std::slice::from_ref(&h))).await;
+    assert_eq!((status, err(&body).code), (403, ErrorCode::NotOwner));
+    let (status, body) = a.call("POST", &paths::name_csr("sky", false), Some(csr("sky"))).await;
+    assert_eq!(err(&body).code, ErrorCode::Banned, "{status}");
+    let (_a2, w) = rig.attach(&ka, &ma).await;
+    assert!(w.names.is_empty(), "a banned name is not in welcome.names");
+}

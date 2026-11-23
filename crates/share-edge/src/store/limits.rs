@@ -460,8 +460,16 @@ mod tests {
         assert!(s.name("tun.zip", "old").await.unwrap().is_none(), "evicted: no row, no cooldown");
         assert_eq!(s.slotted_count("tun.zip").await.unwrap(), 1);
         // conn_log: 30-day retention.
-        s.conn_log(DAY, "a.tun.zip", "192.0.2.1", "m", "e", 1, 2).await.unwrap();
-        s.conn_log(40 * DAY, "a.tun.zip", "192.0.2.1", "m", "e", 1, 2).await.unwrap();
+        let row = |ms| crate::store::ConnLogRow {
+            ms,
+            sni: "a.tun.zip".into(),
+            visitor: "192.0.2.1".into(),
+            mesh: "m".into(),
+            engine: "e".into(),
+            up: 1,
+            down: 2,
+        };
+        s.conn_log_batch(&[row(DAY), row(40 * DAY)]).await.unwrap();
         assert_eq!(s.purge_conn_log(40 * DAY - 30 * DAY).await.unwrap(), 1);
         assert_eq!(s.conn_log_count().await.unwrap(), 1);
     }

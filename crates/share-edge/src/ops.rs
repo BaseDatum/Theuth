@@ -287,6 +287,7 @@ pub async fn render(edge: &Edge, now_ms: u64) -> String {
         "conns",
         (edge.cfg.limits.global_conns as usize).saturating_sub(edge.visitors.available_permits()) as u64,
     );
+    g(&mut m, "conn_log_dropped_total", edge.conn_log.dropped.load(Ordering::Relaxed));
     let _ = writeln!(m, "share_edge_bytes_total{{dir=\"in\"}} {}", edge.ops.bytes.inbound.load(Ordering::Relaxed));
     let _ = writeln!(m, "share_edge_bytes_total{{dir=\"out\"}} {}", edge.ops.bytes.outbound.load(Ordering::Relaxed));
     g(&mut m, "egress_month_bytes", edge.meter.month_bytes.load(Ordering::Relaxed));

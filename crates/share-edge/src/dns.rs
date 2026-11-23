@@ -86,13 +86,25 @@ fn same(rtype: Rtype, a: &str, b: &str) -> bool {
     }
 }
 
-/// Make `host` hold exactly `value`, then read it back.
-pub async fn ensure(zone: &dyn DnsZone, rtype: Rtype, host: &str, value: &str) -> anyhow::Result<()> {
-    match contain(zone.get(rtype, host.into())).await {
-        Ok(Some(v)) if same(rtype, &v, value) => return Ok(()),
-        Ok(None) => {}
-        // A different value, or several (zone-update refuses to read those): clear and write.
-        Ok(Some(_)) | Err(_) => remove(zone, rtype, host).await?,
+/// Make `host` hold exactly `value`, then read it back. `ours` are the values the `dns_records` ledger holds
+/// for `host` (the edge wrote them): a different value already there is replaced only when it is one of
+/// `ours`; a foreign value, or a read error (several records: zone-update refuses to read those), fails the
+/// step and deletes nothing (FIX4-EDGE #5).
+pub async fn ensure(
+    zone: &dyn DnsZone,
+    rtype: Rtype,
+    host: &str,
+    value: &str,
+    ours: &[String],
+) -> anyhow::Result<()> {
+    match contain(zone.get(rtype, host.into()))
+        .await
+        .with_context(|| format!("read {rtype} {host} before writing it"))?
+    {
+        Some(v) if same(rtype, &v, value) => return Ok(()),
+        None => {}
+        Some(v) if ours.iter().any(|o| same(rtype, &v, o)) => remove(zone, rtype, host, ours).await?,
+        Some(v) => bail!("{rtype} {host} holds {v:?}, which this edge did not write; left alone"),
     }
     contain(zone.create(rtype, host.into(), value.into())).await?;
     match contain(zone.get(rtype, host.into())).await? {
@@ -101,8 +113,21 @@ pub async fn ensure(zone: &dyn DnsZone, rtype: Rtype, host: &str, value: &str) -
     }
 }
 
-/// Delete every `rtype` record at `host`, then read back that none is left (Porkbun deletes are unchecked).
-pub async fn remove(zone: &dyn DnsZone, rtype: Rtype, host: &str) -> anyhow::Result<()> {
+/// Delete the `rtype` record at `host` when its value is one of `ours` (the ledger's values for it), then read
+/// back that none is left (Porkbun deletes are unchecked). Nothing there is done; a foreign value is left in
+/// place (logged, `Ok`); a read error (several records) fails and deletes nothing (FIX4-EDGE #5).
+pub async fn remove(zone: &dyn DnsZone, rtype: Rtype, host: &str, ours: &[String]) -> anyhow::Result<()> {
+    match contain(zone.get(rtype, host.into()))
+        .await
+        .with_context(|| format!("read {rtype} {host} before deleting it"))?
+    {
+        None => return Ok(()),
+        Some(v) if ours.iter().any(|o| same(rtype, &v, o)) => {}
+        Some(v) => {
+            tracing::warn!(%rtype, %host, value = %v, "DNS record not written by this edge; not deleted");
+            return Ok(());
+        }
+    }
     contain(zone.delete_all(rtype, host.into())).await?;
     match contain(zone.get(rtype, host.into())).await? {
         None => Ok(()),
@@ -457,6 +482,58 @@ fn is_global_v6(a: Ipv6Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One host's records; `get` fails while `broken` or with more than one record (as zone-update does).
+    #[derive(Debug, Default)]
+    struct OneHost {
+        recs: std::sync::Mutex<Vec<String>>,
+        broken: std::sync::atomic::AtomicBool,
+    }
+
+    impl DnsZone for OneHost {
+        fn get(&self, _: Rtype, _: String) -> BoxFuture<'_, anyhow::Result<Option<String>>> {
+            let r = self.recs.lock().unwrap().clone();
+            let broken = self.broken.load(std::sync::atomic::Ordering::Relaxed);
+            async move {
+                anyhow::ensure!(!broken && r.len() <= 1, "several records");
+                Ok(r.into_iter().next())
+            }
+            .boxed()
+        }
+        fn create(&self, _: Rtype, _: String, value: String) -> BoxFuture<'_, anyhow::Result<()>> {
+            self.recs.lock().unwrap().push(value);
+            async { Ok(()) }.boxed()
+        }
+        fn delete_all(&self, _: Rtype, _: String) -> BoxFuture<'_, anyhow::Result<()>> {
+            self.recs.lock().unwrap().clear();
+            async { Ok(()) }.boxed()
+        }
+    }
+
+    /// FIX4-EDGE #5: only values the ledger holds are replaced or deleted; a read error deletes nothing.
+    #[tokio::test]
+    async fn only_ledger_values_are_replaced_or_deleted() {
+        let z = OneHost::default();
+        let ours = vec!["edge.tun.zip".to_string()];
+        z.recs.lock().unwrap().push("someone-else.example".into());
+        assert!(ensure(&z, Rtype::Cname, "sky", "edge.tun.zip", &ours).await.is_err());
+        remove(&z, Rtype::Cname, "sky", &ours).await.unwrap();
+        assert_eq!(*z.recs.lock().unwrap(), ["someone-else.example"], "foreign record kept");
+
+        z.recs.lock().unwrap().clear();
+        z.recs.lock().unwrap().push("old.tun.zip".into());
+        let ledger = vec!["old.tun.zip".to_string(), "edge.tun.zip".to_string()];
+        ensure(&z, Rtype::Cname, "sky", "edge.tun.zip", &ledger).await.unwrap();
+        assert_eq!(*z.recs.lock().unwrap(), ["edge.tun.zip"], "our old value replaced");
+
+        z.broken.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(ensure(&z, Rtype::Cname, "sky", "x.tun.zip", &ledger).await.is_err());
+        assert!(remove(&z, Rtype::Cname, "sky", &ledger).await.is_err());
+        assert_eq!(*z.recs.lock().unwrap(), ["edge.tun.zip"], "nothing deleted on a read error");
+        z.broken.store(false, std::sync::atomic::Ordering::Relaxed);
+        remove(&z, Rtype::Cname, "sky", &ledger).await.unwrap();
+        assert!(z.recs.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn hosts_are_relative_to_the_zone() {

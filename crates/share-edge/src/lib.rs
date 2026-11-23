@@ -237,6 +237,11 @@ pub async fn start_with(
     let health = cfg.admin.http.clone();
     let edge = Arc::new(Edge::new(cfg, secrets, store.clone(), id)?);
     meter::Meter::load(&edge, state::now_ms()).await?;
+    // FIX4-EDGE #18: `admin pause` survives a restart.
+    if edge.store.paused().await? {
+        tracing::warn!("starting paused (admin pause); `admin resume` re-opens");
+        edge.paused.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let _ = edge.certs.set(certs::Certs::new(&backends, store, &edge.cfg));
     let _ = edge.standby.set(standby);
     if let Some(r) = retire {
@@ -252,6 +257,8 @@ pub async fn start_with(
     tasks.spawn(certs::run(edge.clone()));
     tasks.spawn(meter::run(edge.clone()));
     tasks.spawn(ops::run_brake(edge.clone()));
+    tasks.spawn(state::ConnLog::run(edge.clone()));
+    tasks.spawn(state::sweep_limiters(edge.clone()));
     if edge.cfg.require_caa {
         tasks.spawn(caa_daily(edge.clone()));
     }

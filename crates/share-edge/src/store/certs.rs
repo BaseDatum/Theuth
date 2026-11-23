@@ -551,6 +551,15 @@ impl Store {
         Ok(())
     }
 
+    /// The values the ledger holds for `host`/`rtype`: the only values the edge may delete there (FIX4-EDGE #5).
+    pub async fn dns_values(&self, host: &str, rtype: &str) -> anyhow::Result<Vec<String>> {
+        Ok(sqlx::query_scalar::<_, String>("SELECT value FROM dns_records WHERE host = ? AND type = ?")
+            .bind(host)
+            .bind(rtype)
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
     /// The whole ledger as `(host, type, value, name)`.
     pub async fn dns_all(&self) -> anyhow::Result<Vec<(String, String, String, Option<String>)>> {
         Ok(sqlx::query_as::<_, (String, String, String, Option<String>)>(

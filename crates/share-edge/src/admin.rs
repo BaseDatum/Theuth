@@ -157,8 +157,13 @@ async fn run(edge: &Arc<Edge>, cmd: AdminCommand) -> AdminResult {
             reason,
         } => {
             let k = kind_str(kind);
+            // FIX4-EDGE #5: a name ban's value reaches DNS and k8s deletes; only a valid label may.
+            if kind == BanKind::Name {
+                share_proto::names::check_label(&value)
+                    .map_err(|e| (ErrorCode::Invalid, format!("name: {}", e.reason())))?;
+            }
             edge.store
-                .ban(k, &value, &reason, now)
+                .ban(&edge.cfg.domain, k, &value, &reason, now)
                 .await
                 .map_err(internal)?;
             let closed = apply_ban(edge, kind, &value);
@@ -167,7 +172,7 @@ async fn run(edge: &Arc<Edge>, cmd: AdminCommand) -> AdminResult {
         AdminCommand::Unban { kind, value } => {
             if edge
                 .store
-                .unban(kind_str(kind), &value)
+                .unban(&edge.cfg.domain, kind_str(kind), &value)
                 .await
                 .map_err(internal)?
             {
@@ -185,6 +190,7 @@ async fn run(edge: &Arc<Edge>, cmd: AdminCommand) -> AdminResult {
             typed(&AdmissionResult { admission: mode })
         }
         AdminCommand::Pause => {
+            edge.store.set_paused(true).await.map_err(internal)?;
             edge.paused.store(true, Ordering::Relaxed);
             let n = edge.tunnels.len();
             for t in edge
@@ -199,6 +205,7 @@ async fn run(edge: &Arc<Edge>, cmd: AdminCommand) -> AdminResult {
             typed(&ClosedTunnels { closed_tunnels: n as u64 })
         }
         AdminCommand::Resume => {
+            edge.store.set_paused(false).await.map_err(internal)?;
             edge.paused.store(false, Ordering::Relaxed);
             Ok(json!({}))
         }

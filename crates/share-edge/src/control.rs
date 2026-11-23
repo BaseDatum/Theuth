@@ -122,6 +122,10 @@ async fn serve_stream(
         let (api, edge, tunnel, flag) = (api.clone(), edge.clone(), tunnel.clone(), flag.clone());
         async move {
             let mut req = req.map(Body::new);
+            // FIX4-EDGE #7: control requests per tunnel; every endpoint counts, `GET /v1/events` included.
+            if tunnel.control_rate.check().is_err() {
+                return Ok::<_, Infallible>(err(ErrorCode::RateLimited).into_response());
+            }
             if req.uri().path() == paths::EVENTS {
                 flag.store(true, Ordering::Relaxed);
             }
@@ -347,18 +351,22 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         return Err(err(ErrorCode::Revoked));
     }
     let mut invited = false;
+    // Checked here, consumed in the attach transaction below (FIX4-EDGE #20): a refusal in between spends no use.
+    let mut invite_hash = None;
     if known.is_none() {
         match e.admission() {
             Admission::Open => {}
             Admission::Closed => return Err(err(ErrorCode::AdmissionClosed)),
             Admission::Invite => {
-                let ok = match &h.invite {
-                    Some(inv) => e.store.consume_invite(&inv.hash(), now).await?,
+                let hash = h.invite.as_ref().map(|inv| inv.hash());
+                let ok = match &hash {
+                    Some(hash) => e.store.invite_live(hash, now).await?,
                     None => false,
                 };
                 if !ok {
                     return Err(err(ErrorCode::InviteRequired));
                 }
+                invite_hash = hash;
                 invited = true;
             }
         }
@@ -402,9 +410,15 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         return Err(b.into());
     }
     let mesh_invited = invited || known.as_ref().is_some_and(|m| m.invited != 0);
-    e.store
-        .attach(&mesh, &engine, &c.tunnel.net, invited, now)
-        .await?;
+    match &invite_hash {
+        Some(hash) => {
+            if !e.store.attach_invited(&mesh, &engine, &c.tunnel.net, hash, now).await? {
+                // Spent or expired since the check above (a concurrent `hello` took the last use).
+                return Err(err(ErrorCode::InviteRequired));
+            }
+        }
+        None => e.store.attach(&mesh, &engine, &c.tunnel.net, invited, now).await?,
+    }
     // An edge without terms needs no acceptance.
     let terms_ok =
         e.live().terms_rev.is_empty() || h.terms_rev.as_deref() == Some(e.live().terms_rev.as_str());
@@ -849,6 +863,9 @@ async fn put_routes(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
             wanted.push((host, parts.name));
         }
     }
+    // FIX4-EDGE #4: a host routed by another mesh's tunnel is stale (this mesh holds the name now, e.g. after
+    // a transfer whose route drop raced a re-put): evict it instead of refusing the owner.
+    e.drop_routes(|h, r| r.mesh != s.mesh && wanted.iter().any(|(w, _)| w == h));
     let conflicts: Vec<RouteEntry> = wanted
         .iter()
         .filter_map(|(h, _)| {
@@ -892,6 +909,19 @@ async fn put_routes(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
     if let Err(stale) = after_stop_all(e, &s).await {
         e.drop_routes(|_, r| Arc::ptr_eq(&r.tunnel, &tunnel));
         return Err(stale);
+    }
+    // FIX4-EDGE #4, same pattern: a release, ban or transfer that landed while this request ran writes the store
+    // before dropping routes, so either its drop removed what was inserted above, or this read sees it.
+    let still: Vec<String> = e
+        .store
+        .held_names(c.domain(), &mesh_s)
+        .await?
+        .into_iter()
+        .map(|r| r.name)
+        .collect();
+    let lost = e.drop_routes(|_, r| Arc::ptr_eq(&r.tunnel, &tunnel) && !still.contains(&r.name));
+    if !lost.is_empty() {
+        return Err(err(ErrorCode::NotOwner));
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -1016,20 +1046,27 @@ async fn mesh_revoke(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
     let s = c.session()?;
     let e = &c.edge;
     let req: RevokeRequest = parse(&body)?;
+    let cap = crate::state::REVOKED_PER_MESH;
+    if req.engines.len() as u64 > cap {
+        return Err(ErrorBody::invalid("engines").into());
+    }
     let ids: Vec<String> = req.engines.iter().map(ToString::to_string).collect();
-    e.store.revoke(&s.mesh.to_string(), &ids, now_ms()).await?;
+    // FIX4-EDGE #7: only engines the mesh has seen; at most `REVOKED_PER_MESH` revoked rows per mesh.
+    let Some(done) = e.store.revoke(&s.mesh.to_string(), &ids, cap, now_ms()).await? else {
+        return Err(ErrorBody::limited(ErrorCode::Quota, LimitScope::Mesh, LimitKind::Engines).into());
+    };
+    let revoked: Vec<PublicKey> = req
+        .engines
+        .into_iter()
+        .filter(|k| done.contains(&k.to_string()))
+        .collect();
     for t in e.mesh_tunnels(&s.mesh) {
-        if req.engines.contains(&t.engine) {
+        if revoked.contains(&t.engine) {
             e.detach(&t);
             t.kill(None, KillReason::Revoked);
         }
     }
-    json(
-        StatusCode::OK,
-        &RevokeResult {
-            revoked: req.engines,
-        },
-    )
+    json(StatusCode::OK, &RevokeResult { revoked })
 }
 
 /// `POST /v1/mesh/rekey` (§5.7): a `Rekey` signed by the old and the new mesh key. Answered with or without a

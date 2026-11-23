@@ -482,9 +482,14 @@ impl K8s {
         Ok(())
     }
 
-    /// Delete every managed object labelled with `name`, whatever template made it.
-    pub async fn delete_name(&self, name: &str) -> anyhow::Result<()> {
+    /// Delete every managed object labelled with `name`, whatever template made it, if `still_gone` (checked
+    /// under the lock) says the name still cannot serve: a name claimed again since keeps its objects
+    /// (FIX4-EDGE #14).
+    pub async fn delete_name(&self, name: &str, still_gone: impl Future<Output = bool>) -> anyhow::Result<()> {
         let _g = self.lock.lock().await;
+        if !still_gone.await {
+            return Ok(());
+        }
         let selector = self.selector(Some(name));
         for (t, ns) in self.scopes().await? {
             for l in self.api.list(&t, ns.as_deref(), &selector).await? {
@@ -553,11 +558,21 @@ pub fn gone(edge: &Arc<Edge>, name: &str) {
     let Some(k) = edge.k8s.get().cloned() else {
         return;
     };
-    let name = name.to_string();
+    let (edge, name) = (edge.clone(), name.to_string());
     tokio::spawn(async move {
         let mut delays = retry();
         loop {
-            match k.delete_name(&name).await {
+            // A store error counts as "still gone": the reconcile loop re-applies a name that can serve.
+            let gone = async {
+                !edge
+                    .store
+                    .name(&edge.cfg.domain, &name)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|r| r.held())
+            };
+            match k.delete_name(&name, gone).await {
                 Ok(()) => return,
                 Err(e) => k.failed(&format!("delete name {name}"), &e),
             }
@@ -866,12 +881,15 @@ spec:
         // Claim and release.
         k.apply_name("blue", async { true }).await.unwrap();
         assert_eq!(fake.objs.lock().unwrap().len(), 6);
-        k.delete_name("sky").await.unwrap();
+        k.delete_name("sky", async { true }).await.unwrap();
         let keys: Vec<String> =
             fake.objs.lock().unwrap().keys().map(|k| k.name.clone()).collect();
         assert_eq!(keys, ["share-blue", "share-zzz", "r-blue", "wild"]);
         // A name released before its apply ran is not applied.
         k.apply_name("late", async { false }).await.unwrap();
+        assert_eq!(fake.objs.lock().unwrap().len(), 4);
+        // A name claimed again before its delete ran keeps its objects (FIX4-EDGE #14).
+        k.delete_name("blue", async { false }).await.unwrap();
         assert_eq!(fake.objs.lock().unwrap().len(), 4);
         // Apply failures are counted, not fatal to the pass.
         *fake.fail_apply.lock().unwrap() = true;

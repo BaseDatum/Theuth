@@ -243,7 +243,7 @@ impl Drop for StreamSlot {
 
 async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
     // §9.4 per-tunnel new-connection rate and §9.6 shaping/metering are below, once the route is known.
-    let Ok(_global) = edge.visitors.clone().try_acquire_owned() else {
+    let Ok(global) = edge.visitors.clone().try_acquire_owned() else {
         return reset(tcp);
     };
     // Behind a trusted load balancer the PROXY header's source is the visitor (limits, conn_log, preamble);
@@ -268,7 +268,7 @@ async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         }
         *n += 1;
     }
-    let _ip_slot = IpSlot(&edge, ip);
+    let ip_slot = IpSlot(&edge, ip);
     let Ok(local) = tcp.local_addr() else {
         return reset(tcp);
     };
@@ -291,7 +291,7 @@ async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         tunnel.streams.fetch_sub(1, Ordering::Relaxed);
         return reset(tcp);
     }
-    let _stream_slot = StreamSlot(tunnel.clone());
+    let stream_slot = StreamSlot(tunnel.clone());
     let open = Duration::from_secs(edge.live().limits.open_bi_timeout_secs);
     let Ok(Ok((mut send, recv))) = tokio::time::timeout(open, tunnel.conn.open_bi()).await else {
         return reset(tcp);
@@ -307,7 +307,7 @@ async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
     let stats = route.stats.clone();
     stats.conns.fetch_add(1, Ordering::Relaxed);
     stats.visitors.lock().expect("visitors").insert(ip);
-    let _open = OpenSlot::new(stats.clone());
+    let open_slot = OpenSlot::new(stats.clone());
     let hello_len = peeked.bytes.len() as u64;
     tunnel.bytes.fetch_add(hello_len, Ordering::Relaxed);
     stats.bytes_in.fetch_add(hello_len, Ordering::Relaxed);
@@ -355,18 +355,20 @@ async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
         drop(recv);
         reset(visitor.inner);
     }
-    let _ = edge
-        .store
-        .conn_log(
-            now_ms(),
-            &host,
-            &peer.ip().to_string(),
-            &route.mesh.to_string(),
-            &tunnel.engine.to_string(),
-            up,
-            down,
-        )
-        .await;
+    // The visitor's slots go before the log row is handed over (FIX4-EDGE #9); the row never waits on SQLite.
+    drop(open_slot);
+    drop(stream_slot);
+    drop(ip_slot);
+    drop(global);
+    edge.conn_log.push(crate::store::ConnLogRow {
+        ms: now_ms(),
+        sni: host,
+        visitor: peer.ip().to_string(),
+        mesh: route.mesh.to_string(),
+        engine: tunnel.engine.to_string(),
+        up,
+        down,
+    });
 }
 
 /// Counts the host's open connections.

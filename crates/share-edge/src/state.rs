@@ -19,6 +19,59 @@ use crate::store::Store;
 /// The edge's version, sent as `theuth-share-edge/<ver>`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Control requests one tunnel may open per second; beyond the burst, `429 rate_limited` (FIX4-EDGE #7).
+pub const CONTROL_PER_SEC: u32 = 20;
+/// Burst of [`CONTROL_PER_SEC`].
+pub const CONTROL_BURST: u32 = 100;
+/// Most engines one mesh's revoke list holds (`POST /v1/mesh/revoke` past it is `429 quota`).
+pub const REVOKED_PER_MESH: u64 = 256;
+/// `conn_log` rows queued for the writer; a full queue drops the row and counts it (FIX4-EDGE #9).
+pub const CONN_LOG_QUEUE: usize = 4096;
+/// Rows the `conn_log` writer inserts per transaction at most.
+const CONN_LOG_BATCH: usize = 256;
+
+/// The `conn_log` writer's queue: visitors hand their row over without waiting on SQLite; one task inserts in
+/// batches ([`ConnLog::run`]).
+#[derive(Debug)]
+pub struct ConnLog {
+    tx: tokio::sync::mpsc::Sender<crate::store::ConnLogRow>,
+    rx: Mutex<Option<tokio::sync::mpsc::Receiver<crate::store::ConnLogRow>>>,
+    /// Rows dropped because the queue was full (`share_edge_conn_log_dropped_total`).
+    pub dropped: AtomicU64,
+}
+
+impl ConnLog {
+    fn new(cap: usize) -> ConnLog {
+        let (tx, rx) = tokio::sync::mpsc::channel(cap);
+        ConnLog {
+            tx,
+            rx: Mutex::new(Some(rx)),
+            dropped: AtomicU64::new(0),
+        }
+    }
+
+    /// Queue one row; never waits. A full queue (or no writer) drops it and counts the drop.
+    pub fn push(&self, row: crate::store::ConnLogRow) {
+        if self.tx.try_send(row).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// The writer: batches of up to 256 rows, one transaction each. Runs once per edge (takes the receiver).
+    pub async fn run(edge: Arc<Edge>) {
+        let Some(mut rx) = edge.conn_log.rx.lock().expect("conn_log lock").take() else {
+            return;
+        };
+        let mut batch = Vec::with_capacity(CONN_LOG_BATCH);
+        while rx.recv_many(&mut batch, CONN_LOG_BATCH).await > 0 {
+            if let Err(e) = edge.store.conn_log_batch(&batch).await {
+                tracing::warn!(rows = batch.len(), "conn_log: {e:#}");
+            }
+            batch.clear();
+        }
+    }
+}
+
 /// Unix ms now.
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -98,6 +151,8 @@ pub struct Tunnel {
     pub shaper: crate::meter::Shaper,
     /// New visitor connections per second (`new_conns_per_tunnel_sec`, burst `new_conns_burst`).
     pub conn_rate: DefaultDirectRateLimiter,
+    /// Control requests (bi-streams) per second ([`CONTROL_PER_SEC`], burst [`CONTROL_BURST`]).
+    pub control_rate: DefaultDirectRateLimiter,
     /// Events for this connection's `GET /v1/events`.
     pub events: broadcast::Sender<Event>,
 }
@@ -121,6 +176,10 @@ impl Tunnel {
             invited: AtomicBool::new(false),
             shaper: crate::meter::Shaper::new(0),
             conn_rate: RateLimiter::direct(Quota::per_second(per_sec).allow_burst(burst)),
+            control_rate: RateLimiter::direct(
+                Quota::per_second(NonZeroU32::new(CONTROL_PER_SEC).expect("nonzero"))
+                    .allow_burst(NonZeroU32::new(CONTROL_BURST).expect("nonzero")),
+            ),
             events,
         })
     }
@@ -228,6 +287,8 @@ pub struct Edge {
     pub ip_rate: DefaultKeyedRateLimiter<IpAddr>,
     /// `GET /v1/info` per client network ([`Tunnel::net`]).
     pub info_rate: DefaultKeyedRateLimiter<String>,
+    /// The `conn_log` writer's queue.
+    pub conn_log: ConnLog,
     /// Certificates (EDGE2); unset in an edge built without backends.
     pub certs: OnceLock<crate::certs::Certs>,
     /// Per-name Kubernetes objects (EDGE-K8S); unset unless `k8s.enabled`.
@@ -259,6 +320,7 @@ impl Edge {
             )),
             routes: DashMap::new(),
             tunnels: DashMap::new(),
+            conn_log: ConnLog::new(CONN_LOG_QUEUE),
             next_conn: AtomicU64::new(1),
             certs: OnceLock::new(),
             k8s: OnceLock::new(),
@@ -362,6 +424,15 @@ impl Edge {
         out
     }
 
+    /// Forget idle keys of the keyed rate limiters and give the memory back (FIX4-EDGE #8; every minute from
+    /// [`sweep_limiters`]).
+    pub fn sweep_limiters(&self) {
+        self.ip_rate.retain_recent();
+        self.ip_rate.shrink_to_fit();
+        self.info_rate.retain_recent();
+        self.info_rate.shrink_to_fit();
+    }
+
     /// A connection ended: drop its routes and its tunnel entry (if still the current one).
     pub fn detach(&self, tunnel: &Arc<Tunnel>) {
         // Bytes since the last fold still count against the mesh and network (§9.6).
@@ -421,5 +492,14 @@ impl Live {
             brake: cfg.brake.clone(),
             admission: cfg.admission,
         })
+    }
+}
+
+/// [`Edge::sweep_limiters`] every minute.
+pub async fn sweep_limiters(edge: Arc<Edge>) {
+    let mut every = tokio::time::interval(Duration::from_secs(60));
+    loop {
+        every.tick().await;
+        edge.sweep_limiters();
     }
 }
