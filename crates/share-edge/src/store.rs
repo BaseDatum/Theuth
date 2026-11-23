@@ -261,16 +261,19 @@ impl Store {
         .await?)
     }
 
-    /// Insert or re-claim a name as `allocated` (lazy allocation, §5.2). Clears every per-holder column.
+    /// Insert or re-claim a name as `allocated` (lazy allocation, §5.2). Clears every per-holder column; the
+    /// claim itself is an attach (it arrives over a live tunnel, after the `hello`), so `last_attach_ms` starts
+    /// at the claim and the §6.3 "unattached for 90 days" rule counts from there.
     pub async fn claim(&self, n: NewName<'_>) -> anyhow::Result<()> {
         sqlx::query(
-            "INSERT INTO names (domain, name, kind, owner, state, created_ms, net)
-             VALUES (?, ?, ?, ?, 'allocated', ?, ?)
+            "INSERT INTO names (domain, name, kind, owner, state, created_ms, net, last_attach_ms)
+             VALUES (?1, ?2, ?3, ?4, 'allocated', ?5, ?6, ?5)
              ON CONFLICT(domain, name) DO UPDATE SET kind = excluded.kind, owner = excluded.owner,
                state = 'allocated', created_ms = excluded.created_ms, net = excluded.net,
-               last_attach_ms = NULL, first_live_ms = NULL, transfer_to = NULL, transfer_until_ms = NULL,
-               released_ms = NULL, reclaim_after_ms = NULL, csr = NULL, csr_spki = NULL, ca = NULL,
-               chain_pem = NULL, not_after_ms = NULL, ari_start_ms = NULL, ari_end_ms = NULL, banned = NULL",
+               last_attach_ms = excluded.last_attach_ms, first_live_ms = NULL, transfer_to = NULL,
+               transfer_until_ms = NULL, released_ms = NULL, reclaim_after_ms = NULL, csr = NULL, csr_spki = NULL,
+               ca = NULL, chain_pem = NULL, not_after_ms = NULL, ari_start_ms = NULL, ari_end_ms = NULL,
+               banned = NULL",
         )
         .bind(n.domain)
         .bind(n.name)

@@ -189,6 +189,29 @@ async fn sqlx_clear_ari(r: &Rig) {
 }
 
 #[tokio::test]
+async fn renewal_runs_while_the_new_cert_bucket_is_empty() {
+    // One token a week: `sky` takes it, `fog` waits for the next one. No `hello` after the claims: the claim
+    // itself counts as the last attach.
+    let r = rig(", cas: {letsencrypt: {new_certs_per_week: 1}}").await;
+    let (_, _) = issue(&r, "sky").await;
+    let first = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap().chain_pem.unwrap();
+    let mesh = claim(&r.edge, "fog").await;
+    let p = certs::submit(&r.edge, &mesh, "fog", &csr("fog"), false).await.unwrap().unwrap();
+    assert!(matches!(&p, Submitted::Pending(p) if p.queue_pos == Some(1)), "{p:?}");
+    let t0 = now_ms() + 7 * HOUR;
+    certs::tick(&r.edge, t0).await.unwrap();
+    assert_eq!(r.edge.store.cert_row("tun.zip", "fog").await.unwrap().unwrap().state, "queued");
+
+    *r.f.ca.ari.lock().unwrap() = Some(Window { start_ms: t0, end_ms: t0 + DAY });
+    certs::tick(&r.edge, t0 + 7 * HOUR).await.unwrap();
+    assert_eq!(r.f.ca.issued.load(Ordering::SeqCst), 2, "the renewal ran without a token");
+    assert_eq!(r.f.ca.replaces.lock().unwrap()[1].as_deref(), Some(first.as_str()));
+    assert_eq!(r.edge.store.cert_row("tun.zip", "fog").await.unwrap().unwrap().state, "queued", "fog still waits");
+    let job = r.edge.store.open_job("tun.zip", "fog").await.unwrap().unwrap();
+    assert!(job.next_at_ms as u64 > t0 + 6 * DAY, "the renewal did not touch the new-name queue");
+}
+
+#[tokio::test]
 async fn release_revokes_and_deletes_records() {
     let r = rig("").await;
     let (_, _) = issue(&r, "sky").await;
