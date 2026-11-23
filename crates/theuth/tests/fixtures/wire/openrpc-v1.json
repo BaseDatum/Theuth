@@ -13994,6 +13994,10 @@
       "event.browser_2eelement_2dform_2drequested.output.ElementFormRequested": {
         "description": "Event: an agent session shows one element of its page as a card (209 D13, §4.4, §4.10).\nNo field value, ever.",
         "properties": {
+          "action_origin": {
+            "description": "Where the form posts, `scheme://host[:port]` in ASCII: the submit button's `formaction`,\nelse the form's `action`, resolved against the page; [`origin`](Self::origin) when there\nis neither or it is not http(s) (209 §4.10).",
+            "type": "string"
+          },
           "call_id": {
             "description": "The `browser_show_element` call the card belongs to.",
             "type": "string"
@@ -14063,6 +14067,7 @@
           "session",
           "call_id",
           "origin",
+          "action_origin",
           "url",
           "source",
           "title",
@@ -14122,6 +14127,10 @@
       "event.browser_2eelement_2dform_2drequested.receiver.ElementFormRequested": {
         "description": "Event: an agent session shows one element of its page as a card (209 D13, §4.4, §4.10).\nNo field value, ever.",
         "properties": {
+          "action_origin": {
+            "description": "Where the form posts, `scheme://host[:port]` in ASCII: the submit button's `formaction`,\nelse the form's `action`, resolved against the page; [`origin`](Self::origin) when there\nis neither or it is not http(s) (209 §4.10).",
+            "type": "string"
+          },
           "call_id": {
             "description": "The `browser_show_element` call the card belongs to.",
             "type": "string"
@@ -14191,6 +14200,7 @@
           "session",
           "call_id",
           "origin",
+          "action_origin",
           "url",
           "source",
           "title",
@@ -73423,6 +73433,11 @@
         "format": "uuid",
         "type": "string"
       },
+      "method.browser.input.WebViewCallId": {
+        "description": "Correlates a [`WebViewCallRequested`] with its answers (209 D8).",
+        "format": "uuid",
+        "type": "string"
+      },
       "method.browser.output.ElementFormField": {
         "description": "One control of the card (209 §4.4): `index` is its `data-theuth-field`.",
         "properties": {
@@ -73466,6 +73481,10 @@
       "method.browser.output.ElementFormRequested": {
         "description": "Event: an agent session shows one element of its page as a card (209 D13, §4.4, §4.10).\nNo field value, ever.",
         "properties": {
+          "action_origin": {
+            "description": "Where the form posts, `scheme://host[:port]` in ASCII: the submit button's `formaction`,\nelse the form's `action`, resolved against the page; [`origin`](Self::origin) when there\nis neither or it is not http(s) (209 §4.10).",
+            "type": "string"
+          },
           "call_id": {
             "description": "The `browser_show_element` call the card belongs to.",
             "type": "string"
@@ -73535,6 +73554,7 @@
           "session",
           "call_id",
           "origin",
+          "action_origin",
           "url",
           "source",
           "title",
@@ -73594,6 +73614,10 @@
       "method.browser.receiver.ElementFormRequested": {
         "description": "Event: an agent session shows one element of its page as a card (209 D13, §4.4, §4.10).\nNo field value, ever.",
         "properties": {
+          "action_origin": {
+            "description": "Where the form posts, `scheme://host[:port]` in ASCII: the submit button's `formaction`,\nelse the form's `action`, resolved against the page; [`origin`](Self::origin) when there\nis neither or it is not http(s) (209 §4.10).",
+            "type": "string"
+          },
           "call_id": {
             "description": "The `browser_show_element` call the card belongs to.",
             "type": "string"
@@ -73663,6 +73687,7 @@
           "session",
           "call_id",
           "origin",
+          "action_origin",
           "url",
           "source",
           "title",
@@ -133175,6 +133200,102 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "agent"
+    },
+    {
+      "name": "element_form_shown",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.browser.input.ElementFormId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.browser.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "browser"
+    },
+    {
+      "name": "element_form_values",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "call_id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.browser.input.WebViewCallId"
+          },
+          "x-theuth-aliases": [
+            "callId"
+          ]
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.browser.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "browser"
     },
     {
       "name": "element_forms_pending",
