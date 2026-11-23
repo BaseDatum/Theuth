@@ -25,6 +25,8 @@ voice = { workspace = true }
 roster = { workspace = true }
 tasks = { workspace = true }
 mesh = { workspace = true }
+# 210 §7.4: live-share status message and `/theuth share`.
+share = { workspace = true }
 slack-morphism = { workspace = true }
 reqwest = { workspace = true }
 # Both `ring` (reqwest) and `aws-lc-rs` (morphism's hyper-rustls) are linked; rustls

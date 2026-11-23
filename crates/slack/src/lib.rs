@@ -41,6 +41,7 @@ pub mod commands;
 mod forward;
 pub mod plan;
 mod prompt;
+pub mod public_share;
 pub mod setup;
 pub mod socket;
 pub mod threads;

@@ -329,6 +329,8 @@ mod tests {
             th.touch("C1:1.000");
             let newest = th.file.threads["C1:1.000"].updated_at;
             th.file.threads.get_mut("C1:2.000").unwrap().updated_at = newest - 1;
+            // Persist it: a tie in the same millisecond would make the newest arbitrary.
+            th.save();
         }
         let th = Threads::load(&path);
         let got = th.get("C1:1.000").expect("bound");

@@ -179,6 +179,12 @@ enum Event {
     Predicted(double::DoublePredicted),
     /// 126 §10: the double answered a card at L2.
     DoubleAnswered(double::DoubleAnswered),
+    /// 210 §7.4: a share record changed (local or replicated).
+    Share(Box<share::model::ShareChanged>),
+    /// 210 §7.4: the engine's share list at start.
+    Shares(Vec<share::model::Share>),
+    /// Once a minute: the live message's countdowns.
+    ShareTick,
 }
 
 /// Bus subscriber: forwards into the ordered router.
@@ -263,6 +269,13 @@ impl Message<mesh::MeshEvent> for Bus {
         if let mesh::MeshEvent::Lease(l) = m {
             let _ = self.tx.send(Event::Lease(l));
         }
+    }
+}
+
+impl Message<share::model::ShareChanged> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: share::model::ShareChanged, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Share(Box::new(m)));
     }
 }
 
@@ -394,6 +407,8 @@ struct State {
     socket: Option<CancellationToken>,
     /// Set once identity resolved: the socket may open.
     app_token: Option<String>,
+    /// 210 §7.4: the owner-DM live-share message.
+    live: crate::public_share::LiveMessage,
 }
 
 /// Everything shared by the listener callbacks, the inbound worker, the
@@ -503,6 +518,8 @@ async fn run(
     mut inbound_rx: mpsc::UnboundedReceiver<Inbound>,
 ) {
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Event>();
+    let share_tx = ev_tx.clone();
+    let resync_tx = ev_tx.clone();
     let bus = Bus::spawn_with_mailbox(Bus { tx: ev_tx }, runtime::subscriber_mailbox());
     chan.rt.subscribe::<Bus, AgentEvent>(&bus).await;
     chan.rt.subscribe::<Bus, ApprovalRequested>(&bus).await;
@@ -517,6 +534,32 @@ async fn run(
         .subscribe::<Bus, double::DoublePredicted>(&bus)
         .await;
     chan.rt.subscribe::<Bus, double::DoubleAnswered>(&bus).await;
+    chan.rt
+        .subscribe::<Bus, share::model::ShareChanged>(&bus)
+        .await;
+    // 210 §7.4: seed from the share engine once it runs (it may start after
+    // this plugin), then tick the live message's countdowns.
+    let shares = tokio::spawn(async move {
+        let mut seeded = false;
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            if !seeded && let Ok(engine) = share::rpc_support::engine() {
+                match engine.list().await {
+                    Ok(rows) => {
+                        seeded = true;
+                        let _ = share_tx.send(Event::Shares(rows));
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "share list for the slack live message failed")
+                    }
+                }
+            }
+            if share_tx.send(Event::ShareTick).is_err() {
+                return;
+            }
+        }
+    });
     // 67 §4.7: learn our engine id once the mesh is up; the lease resolves then.
     let me = {
         let chan = Arc::clone(&chan);
@@ -582,6 +625,8 @@ async fn run(
                 team,
                 owner_dm,
             });
+            // 210 §7.4: through the router, the live message's only writer.
+            let _ = resync_tx.send(Event::ShareTick);
             // 21 §11: streams a previous process left open.
             let stale = chan.lock().threads.take_streams();
             for (channel, ts) in stale {
@@ -601,6 +646,7 @@ async fn run(
         }
     }
     me.abort();
+    shares.abort();
     inbound.abort();
     router.abort();
     bus.kill();
@@ -660,6 +706,7 @@ impl Channel {
                 follower: roster::lease::Follower::default(),
                 socket: None,
                 app_token: None,
+                live: crate::public_share::LiveMessage::default(),
             }),
             inbound_tx,
             rt,
@@ -965,7 +1012,9 @@ impl Channel {
             let cx = chan.command_cx(&user, &channel);
             let out = commands::action(&action, value.as_deref(), cx).await;
             let reply = chan.after_command(out, &channel, &user, &team).await;
-            chan.respond(&url, reply, true).await;
+            // 210 §7.4: the live message is the status holder's; answer beside it.
+            let replace = !action.starts_with("cmd:share:");
+            chan.respond(&url, reply, replace).await;
         });
     }
 
@@ -1904,10 +1953,58 @@ impl Channel {
             Event::Lease(lease) => {
                 self.lock().follower.observe(&lease);
                 self.sync_socket().await;
+                self.sync_live_share().await;
             }
             Event::Peer(p) => {
                 if let Some((key, thread)) = self.bound(p.session) {
                     let _ = self.worker(&key, &thread).send(Out::Peer(Box::new(p)));
+                }
+            }
+            Event::Share(m) => {
+                self.lock().live.observe(m.share);
+                self.sync_live_share().await;
+            }
+            Event::Shares(rows) => {
+                {
+                    let mut s = self.lock();
+                    for row in rows {
+                        s.live.observe(row);
+                    }
+                }
+                self.sync_live_share().await;
+            }
+            Event::ShareTick => self.sync_live_share().await,
+        }
+    }
+
+    /// 210 §7.4 item 9: post, update in place or end the owner-DM live-share
+    /// message. Only the router calls it, so one call is in flight at a time.
+    async fn sync_live_share(&self) {
+        use crate::public_share::{LiveOp, ended_blocks, now_ms};
+        let Some(dm) = self.identity.get().and_then(|i| i.owner_dm.clone()) else {
+            return;
+        };
+        let op = {
+            let mut s = self.lock();
+            let holding = s.follower.holding;
+            s.live.next(now_ms(), holding)
+        };
+        match op {
+            None => {}
+            Some(LiveOp::Post { text, blocks }) => {
+                match self.api.post_blocks(&dm, None, blocks).await {
+                    Ok(ts) => self.lock().live.posted(ts, text),
+                    Err(e) => tracing::warn!(error = %e, "slack live-share message not posted"),
+                }
+            }
+            Some(LiveOp::Update { ts, blocks }) => {
+                if let Err(e) = self.api.update_blocks(&dm, &ts, blocks).await {
+                    tracing::warn!(error = %e, "slack live-share message not updated");
+                }
+            }
+            Some(LiveOp::End { ts, text }) => {
+                if let Err(e) = self.api.update_blocks(&dm, &ts, ended_blocks(&text)).await {
+                    tracing::debug!(error = %e, "slack live-share message not ended");
                 }
             }
         }
@@ -4204,6 +4301,42 @@ pub(crate) mod tests {
         assert!(f.stub.calls().is_empty());
         f.until(|calls| calls.contains(&format!("ephemeral {DM} {STRANGER} not allowed")))
             .await;
+    }
+
+    #[tokio::test]
+    async fn live_share_message_in_the_owner_dm() {
+        use crate::public_share::tests::share as row;
+        use share::model::{ShareChanged, ShareState};
+        let f = fixture();
+        let changed = |state| {
+            Event::Share(Box::new(ShareChanged {
+                share: row("s1", "app.sky.tun.zip", state, None),
+            }))
+        };
+        f.chan.route(changed(ShareState::Live)).await;
+        f.chan.route(Event::ShareTick).await;
+        f.chan.route(changed(ShareState::Offline)).await;
+        f.chan.route(changed(ShareState::Stopped)).await;
+        f.chan.route(Event::ShareTick).await;
+        assert_eq!(
+            f.api.calls(),
+            [
+                format!("post_blocks {OWNER_DM} - 2 blocks"),
+                format!("update_blocks {OWNER_DM} 7.7"),
+                format!("update_blocks {OWNER_DM} 7.7"),
+            ]
+        );
+        let blocks = f.api.blocks();
+        assert!(
+            blocks[1][0]["text"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("offline")
+        );
+        assert_eq!(
+            blocks[2][0]["text"]["text"],
+            crate::public_share::STOPPED_TEXT
+        );
     }
 
     #[tokio::test]

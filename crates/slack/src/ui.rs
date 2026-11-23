@@ -103,6 +103,7 @@ pub fn help() -> Reply {
                 "requests",
                 "a2a",
                 "slack",
+                "share",
             ],
         ),
     ];
