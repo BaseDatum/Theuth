@@ -36,6 +36,10 @@ pub trait EdgeConn: Send + Sync {
     async fn accept(&self) -> Option<Stream>;
     /// Close the connection.
     fn close(&self);
+    /// The connection is gone (closed by either side); a control request on it would fail.
+    fn is_closed(&self) -> bool {
+        false
+    }
 }
 
 #[async_trait::async_trait]
@@ -61,6 +65,10 @@ impl EdgeConn for iroh::endpoint::Connection {
 
     fn close(&self) {
         iroh::endpoint::Connection::close(self, 0u32.into(), b"share: closed");
+    }
+
+    fn is_closed(&self) -> bool {
+        self.close_reason().is_some()
     }
 }
 
@@ -162,6 +170,16 @@ impl Control {
     /// Over `conn`.
     pub fn new(conn: Arc<dyn EdgeConn>) -> Self {
         Self { conn }
+    }
+
+    /// The connection under this client is gone (e.g. the edge closed it after `stop_all`).
+    pub fn is_closed(&self) -> bool {
+        self.conn.is_closed()
+    }
+
+    /// Close the connection; the state machine sees its events end and redials when needed.
+    pub fn close(&self) {
+        self.conn.close();
     }
 
     async fn send(
@@ -678,10 +696,10 @@ impl Client {
                 return Next::Dial;
             }
         };
-        let next = self.attached(ticket, conn.clone(), attempt).await;
-        conn.close();
-        self.attachment.lost();
-        next
+        // Also when `run` drops this future (nothing needs the edge any more): the attachment
+        // must not keep a control client on a connection nobody reads (E2E1 finding 4).
+        let _lost = Lost(conn.clone(), self.attachment.clone());
+        self.attached(ticket, conn, attempt).await
     }
 
     async fn attached(
@@ -834,6 +852,16 @@ struct AbortOnDrop(tokio::task::JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+/// Closes the connection and tells the attachment, on every way out of a session.
+struct Lost(Arc<dyn EdgeConn>, Arc<dyn Attachment>);
+
+impl Drop for Lost {
+    fn drop(&mut self) {
+        self.0.close();
+        self.1.lost();
     }
 }
 

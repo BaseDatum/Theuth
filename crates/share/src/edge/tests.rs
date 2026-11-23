@@ -95,6 +95,10 @@ async fn h_events(State(f): State<Arc<Fake>>) -> axum::response::Response {
 pub(crate) struct FakeConn {
     app: Router,
     closed: tokio::sync::Notify,
+    is_closed: std::sync::atomic::AtomicBool,
+    /// Requests fail at the transport while `is_closed` still says no (a peer close not yet
+    /// observed).
+    dead: bool,
 }
 
 impl FakeConn {
@@ -103,6 +107,18 @@ impl FakeConn {
         Arc::new(Self {
             app,
             closed: tokio::sync::Notify::new(),
+            is_closed: Default::default(),
+            dead: false,
+        })
+    }
+
+    /// A connection the peer already dropped, not yet seen as closed.
+    pub(crate) fn dead() -> Arc<Self> {
+        Arc::new(Self {
+            app: Router::new(),
+            closed: tokio::sync::Notify::new(),
+            is_closed: Default::default(),
+            dead: true,
         })
     }
 }
@@ -110,6 +126,9 @@ impl FakeConn {
 #[async_trait::async_trait]
 impl EdgeConn for FakeConn {
     async fn open(&self) -> io::Result<Stream> {
+        if self.dead || self.is_closed() {
+            return Err(io::Error::new(io::ErrorKind::ConnectionReset, "closed by peer: stop_all"));
+        }
         let (client, server) = tokio::io::duplex(64 * 1024);
         let svc = hyper_util::service::TowerToHyperService::new(self.app.clone());
         tokio::spawn(async move {
@@ -126,7 +145,12 @@ impl EdgeConn for FakeConn {
     }
 
     fn close(&self) {
+        self.is_closed.store(true, Ordering::SeqCst);
         self.closed.notify_waiters();
+    }
+
+    fn is_closed(&self) -> bool {
+        self.is_closed.load(Ordering::SeqCst)
     }
 }
 
@@ -150,6 +174,7 @@ impl EdgeDialer for FakeDialer {
 
 struct Att {
     states: watch::Sender<Vec<EdgeState>>,
+    lost: Arc<AtomicU32>,
 }
 
 #[async_trait::async_trait]
@@ -160,7 +185,9 @@ impl Attachment for Att {
     async fn welcome(&self, _: &Control, _: &Info, _: &Welcome) {}
     async fn event(&self, _: &Control, _: Event) {}
     fn visitor(&self, _: Stream) {}
-    fn lost(&self) {}
+    fn lost(&self) {
+        self.lost.fetch_add(1, Ordering::SeqCst);
+    }
     async fn removed(&self) {}
     fn state(&self, s: &EdgeState, _: Option<i64>) {
         self.states.send_modify(|v| v.push(s.clone()));
@@ -173,6 +200,7 @@ fn run(
     Arc<Fake>,
     watch::Receiver<Vec<EdgeState>>,
     watch::Sender<bool>,
+    Arc<AtomicU32>,
 ) {
     let fake = Arc::new(Fake {
         edge: SecretKey::from_bytes(&[7; 32]),
@@ -185,6 +213,7 @@ fn run(
     let mesh = SecretKey::from_bytes(&[1; 32]);
     let states = watch::channel(Vec::new()).0;
     let rx = states.subscribe();
+    let lost = Arc::new(AtomicU32::new(0));
     let client = Client {
         dialer: Arc::new(FakeDialer(fake.clone())),
         delegation: Arc::new(SelfHolder {
@@ -196,7 +225,10 @@ fn run(
             invite: None,
         }],
         terms_rev: watch::channel(None).1,
-        attachment: Arc::new(Att { states }),
+        attachment: Arc::new(Att {
+            states,
+            lost: lost.clone(),
+        }),
         timing: Timing {
             backoff: |_| Duration::from_millis(10),
             renew: Duration::from_secs(3600),
@@ -206,7 +238,7 @@ fn run(
     };
     let need = watch::channel(false).0;
     tokio::spawn(client.run(need.subscribe()));
-    (fake, rx, need)
+    (fake, rx, need, lost)
 }
 
 async fn until(rx: &mut watch::Receiver<Vec<EdgeState>>, n: usize, s: EdgeState) {
@@ -221,7 +253,7 @@ async fn until(rx: &mut watch::Receiver<Vec<EdgeState>>, n: usize, s: EdgeState)
 
 #[tokio::test]
 async fn attaches_sends_routes_and_redials_after_drain() {
-    let (fake, mut rx, need) = run(false);
+    let (fake, mut rx, need, lost) = run(false);
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
         fake.dials.load(Ordering::SeqCst),
@@ -255,14 +287,24 @@ async fn attaches_sends_routes_and_redials_after_drain() {
     until(&mut rx, 1, EdgeState::Draining).await;
     until(&mut rx, 2, EdgeState::Attached).await;
     assert_eq!(fake.dials.load(Ordering::SeqCst), 2);
+    assert_eq!(lost.load(Ordering::SeqCst), 1, "the drained connection was reported lost");
 
+    // Nothing needs the edge: the session is dropped mid-attach, and the attachment still
+    // hears that the connection is gone (it must not keep a control client on it).
     need.send_replace(false);
     until(&mut rx, 2, EdgeState::Idle).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while lost.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("lost() after going idle");
 }
 
 #[tokio::test]
 async fn client_too_old_blocks() {
-    let (_fake, mut rx, need) = run(true);
+    let (_fake, mut rx, need, _) = run(true);
     need.send_replace(true);
     until(
         &mut rx,

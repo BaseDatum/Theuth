@@ -114,7 +114,8 @@ pub fn request_headers(
             h.insert(n, v);
         }
     };
-    set(h, "x-forwarded-for", &visitor.to_string());
+    // A v4-mapped address (`::ffff:a.b.c.d`) is written as plain IPv4 (E2E1 finding 6).
+    set(h, "x-forwarded-for", &visitor.to_canonical().to_string());
     set(h, "x-forwarded-proto", "https");
     set(h, "x-forwarded-host", public_host);
     if !prefix.is_empty() {
@@ -405,6 +406,13 @@ mod tests {
         request_headers(&mut up, "::1".parse().unwrap(), "h", "/p", 1);
         assert_eq!(up["upgrade"], "websocket");
         assert_eq!(up["x-forwarded-prefix"], "/p");
+
+        let mut mapped = HeaderMap::new();
+        request_headers(&mut mapped, "::ffff:188.251.216.205".parse().unwrap(), "h", "", 1);
+        assert_eq!(mapped["x-forwarded-for"], "188.251.216.205");
+        let mut v6 = HeaderMap::new();
+        request_headers(&mut v6, "2001:db8::7".parse().unwrap(), "h", "", 1);
+        assert_eq!(v6["x-forwarded-for"], "2001:db8::7");
     }
 
     #[test]

@@ -158,8 +158,9 @@ impl Store {
 /// name becomes primary (§5.2).
 pub async fn reserve(engine: &Engine, name: &str) -> anyhow::Result<HeldName> {
     share_proto::names::check_reserved::<&str>(name, &[]).map_err(|e| anyhow::anyhow!(e.reason()))?;
-    let (control, info) = engine.attached_control().await?;
-    let granted = control.claim(name).await?;
+    let (granted, info) = engine
+        .with_control(|c, info| async move { Ok((c.claim(name).await?, info)) })
+        .await?;
     let edge = info.edge_id.to_string();
     let id = engine
         .store
@@ -171,14 +172,17 @@ pub async fn reserve(engine: &Engine, name: &str) -> anyhow::Result<HeldName> {
 
 /// `share_names_release`: stop the name's shares on every machine, then `DELETE` it.
 pub async fn release(engine: &Engine, name: &str) -> anyhow::Result<share_proto::NameReleased> {
-    let (control, info) = engine.attached_control().await?;
+    let (_, info) = engine.attached_control().await?;
     let suffix = format!("{name}.{}", info.domain);
     for s in engine.store.list(platform::time::now_ms()).await? {
         if s.state != ShareState::Stopped && (s.host == suffix || s.host.ends_with(&format!(".{suffix}"))) {
             engine.stop(&s.id, StoppedBy::User).await?;
         }
     }
-    let r = control.release(name).await?;
+    // Redials once when the edge closed the tunnel under us (after Stop all, E2E1 finding 4).
+    let r = engine
+        .with_control(|c, _| async move { c.release(name).await })
+        .await?;
     let id = format!("{}/{}/{name}", info.edge_id, info.domain);
     engine.store.release_name(&id, platform::time::now_ms()).await?;
     Ok(r)
@@ -204,8 +208,9 @@ pub async fn primary(engine: &Engine, name: &str) -> anyhow::Result<HeldName> {
 /// `share_names_transfer` (D20): `POST /v1/names/{name}/transfer {to_mesh}`.
 pub async fn transfer(engine: &Engine, name: &str, to_mesh: &str) -> anyhow::Result<u64> {
     let to = parse_mesh(to_mesh)?;
-    let (control, _) = engine.attached_control().await?;
-    Ok(control.transfer(name, to).await?.transfer_until_ms)
+    engine
+        .with_control(|c, _| async move { Ok(c.transfer(name, to).await?.transfer_until_ms) })
+        .await
 }
 
 /// `share_names_rotate` (§6.3): only the lease holder rotates (a non-holder forwards the

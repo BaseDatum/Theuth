@@ -152,6 +152,15 @@ impl Tool for SharePublishTool {
         match self.engine.publish(plan, origin, consent).await {
             Ok(p) => {
                 let mut text = format!("Published {} ({})", p.share.url, p.share.state.as_str());
+                if let Some(w) = &p.pending {
+                    text.push_str("; it goes live once its certificate is issued");
+                    if let Some(q) = w.queue_pos {
+                        text.push_str(&format!(", queue position {q}"));
+                    }
+                    if let Some(eta) = w.eta_s {
+                        text.push_str(&format!(", about {eta} s"));
+                    }
+                }
                 if p.password.is_some() {
                     // The password goes to the owner's surfaces (`share_password`), never to
                     // the model.
@@ -163,6 +172,7 @@ impl Tool for SharePublishTool {
                 Ok(ToolOutput {
                     structured: Some(serde_json::json!({
                         "id": p.share.id, "url": p.share.url, "expires_ms": p.share.expires_ms,
+                        "state": p.share.state.as_str(), "pending": p.pending,
                     })),
                     ..ToolOutput::ok(text)
                 })

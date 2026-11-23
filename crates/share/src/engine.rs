@@ -17,7 +17,7 @@ use share_proto::{
 use tokio::sync::watch;
 
 use crate::config::{EdgeChoice, NO_SHARING_EDGE, ShareConfig};
-use crate::edge::{Attachment, Control, CsrAnswer, DelegationSource, EdgeDialer, Stream};
+use crate::edge::{Attachment, Control, CsrAnswer, DelegationSource, EdgeDialer, EdgeError, Stream};
 use crate::gate::{self, Gate, Operator};
 use crate::keys::{self, NameKeyStore};
 use crate::model::{
@@ -35,6 +35,10 @@ use crate::visitor::{self, Certs};
 pub const SWITCH_OFF: &str = "Public sharing is off in Settings › Sharing";
 /// How long a publish waits for the edge.
 pub const ATTACH_WAIT: Duration = Duration::from_secs(30);
+/// How long a publish waits for the certificate step (vault key, CSR) before answering
+/// `pending`; the step goes on in the background and the share goes live via `share.changed`
+/// (E2E1 finding 9: a fresh name key settles for `REKEY_SETTLE_SECS`).
+pub const PUBLISH_CERT_WAIT: Duration = Duration::from_millis(1500);
 
 /// Who asked for a publish.
 #[derive(Clone, Debug)]
@@ -127,6 +131,26 @@ pub struct Published {
     pub share: Share,
     /// The generated password.
     pub password: Option<String>,
+    /// While `share.state` is `pending`: where the certificate stands, as far as known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<PendingCert>,
+}
+
+/// A pending share's certificate: the edge's queue position and estimate when it answered in
+/// time, both `None` while the certificate step still runs.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct PendingCert {
+    /// Position in the edge's certificate queue.
+    pub queue_pos: Option<u32>,
+    /// Estimated seconds to a certificate.
+    pub eta_s: Option<u64>,
+}
+
+/// Where [`Engine::ensure_cert`] left a name.
+enum CertStep {
+    Installed,
+    Pending(PendingCert),
 }
 
 /// Seams other crates implement (see the as-built doc).
@@ -151,6 +175,7 @@ struct Link {
 
 /// The service.
 pub struct Engine {
+    me: std::sync::Weak<Self>,
     /// Config defaults.
     pub cfg: ShareConfig,
     /// `share.sqlite`.
@@ -208,7 +233,8 @@ impl Engine {
             gate: gate.clone(),
         });
         let tls = visitor::acceptor(certs.clone())?;
-        Ok(Arc::new(Self {
+        Ok(Arc::new_cyclic(|me| Self {
+            me: me.clone(),
             cfg,
             store,
             data_dir,
@@ -294,14 +320,57 @@ impl Engine {
             .send_if_modified(|n| std::mem::replace(n, busy) != busy);
     }
 
+    /// The current link, dropping it first when its connection is gone (the edge closes the
+    /// tunnel on `stop_all`, E2E1 finding 4): a control call never goes out on a dead connection.
+    fn live_link(&self) -> Option<Arc<Link>> {
+        let mut link = self.link.lock();
+        if link.as_ref().is_some_and(|l| l.control.is_closed()) {
+            *link = None;
+            self.attached.send_replace(false);
+        }
+        link.clone()
+    }
+
+    /// Forget `stale` (if it is still the current link) and close its connection, so the state
+    /// machine sees its events end and dials again.
+    fn drop_link(&self, stale: &Arc<Link>) {
+        let mut link = self.link.lock();
+        if link.as_ref().is_some_and(|l| Arc::ptr_eq(l, stale)) {
+            *link = None;
+            self.attached.send_replace(false);
+        }
+        drop(link);
+        stale.control.close();
+    }
+
     async fn wait_attached(&self) -> anyhow::Result<Arc<Link>> {
         self.need.send_replace(true);
+        if let Some(l) = self.live_link() {
+            return Ok(l);
+        }
         let mut rx = self.attached.subscribe();
         let _ = tokio::time::timeout(ATTACH_WAIT, rx.wait_for(|a| *a)).await;
-        self.link
-            .lock()
-            .clone()
+        self.live_link()
             .ok_or_else(|| anyhow::anyhow!("Can't reach the sharing edge; see Settings › Sharing"))
+    }
+
+    /// One control call on the attached edge; a transport failure (the connection died under
+    /// it) drops the link, waits for the redial and tries once more. For idempotent calls.
+    pub(crate) async fn with_control<T, F, Fut>(&self, call: F) -> anyhow::Result<T>
+    where
+        F: Fn(Control, Info) -> Fut,
+        Fut: Future<Output = Result<T, EdgeError>>,
+    {
+        let link = self.wait_attached().await?;
+        match call(link.control.clone(), link.info.clone()).await {
+            Err(EdgeError::Transport(e)) => {
+                tracing::info!("share: edge connection failed ({e:#}); redialing once");
+                self.drop_link(&link);
+                let link = self.wait_attached().await?;
+                Ok(call(link.control.clone(), link.info.clone()).await?)
+            }
+            r => Ok(r?),
+        }
     }
 
     async fn push_routes(&self) {
@@ -474,6 +543,13 @@ impl Engine {
             anyhow::bail!("{url} is already shared ({})", m.share);
         }
         let id = uuid::Uuid::now_v7().to_string();
+        // The certificate step runs on its own task: a fresh name key waits for the vault to
+        // settle (about a minute), which a publish must not block on (E2E1 finding 9).
+        let mut cert = {
+            let me = self.me.upgrade().context("the share service is shutting down")?;
+            let (link, name) = (link.clone(), name.clone());
+            tokio::spawn(async move { me.ensure_cert(&link, &name, false).await })
+        };
         // Hash first (nothing stored), store it only once the share row is certain (m6).
         let password = match plan.access {
             Access::Password => {
@@ -487,7 +563,11 @@ impl Engine {
             }
             Access::Public => None,
         };
-        let have_cert = self.ensure_cert(&link, &name, false).await?;
+        let step = match tokio::time::timeout(PUBLISH_CERT_WAIT, &mut cert).await {
+            Ok(joined) => Some(joined.context("certificate step")??),
+            Err(_) => None,
+        };
+        let have_cert = matches!(step, Some(CertStep::Installed));
         let now = platform::time::now_ms();
         let expiry_ms = plan.expiry.duration().as_millis() as u64;
         let share = Share {
@@ -545,21 +625,87 @@ impl Engine {
             self.push_routes().await;
         }
         self.emit(&share).await;
+        let pending = match step {
+            Some(CertStep::Installed) => None,
+            Some(CertStep::Pending(p)) => Some(p),
+            None => {
+                self.finish_cert_later(cert, name);
+                Some(PendingCert::default())
+            }
+        };
         Ok(Published {
             share,
             password: password.map(|(pw, _)| pw),
+            pending,
         })
+    }
+
+    /// The rest of a publish's certificate step, after the share row is stored: an installed
+    /// chain takes the name's pending shares live (`share.changed`); a queued one waits for
+    /// the edge's `cert` event like any pending share.
+    fn finish_cert_later(
+        &self,
+        cert: tokio::task::JoinHandle<anyhow::Result<CertStep>>,
+        name: String,
+    ) {
+        let Some(me) = self.me.upgrade() else { return };
+        tokio::spawn(async move {
+            match cert.await {
+                Ok(Ok(CertStep::Installed)) => me.after_cert(&name, false).await,
+                Ok(Ok(CertStep::Pending(_))) => {}
+                // TODO(210-M3): surface a failed background certificate step on the share
+                // (it stays `pending`; the next `cert` event or welcome retries it).
+                Ok(Err(e)) => tracing::warn!("share: certificate for {name}: {e:#}"),
+                Err(e) => tracing::warn!("share: certificate task for {name}: {e}"),
+            }
+        });
+    }
+
+    /// The names a publish may use without allocating: held at the edge, not released/banned.
+    fn held_names(link: &Link) -> Vec<&NameInfo> {
+        link.welcome
+            .names
+            .iter()
+            .filter(|n| !matches!(n.state, NameState::Released | NameState::Banned))
+            .collect()
+    }
+
+    /// The accepted terms revision when it is the edge's current one (`info.terms_rev`); else
+    /// the refusal the owner's surfaces parse (`accept the terms of … first (<url>, revision
+    /// <rev>)`).
+    async fn current_terms(&self, link: &Link) -> anyhow::Result<Option<String>> {
+        let accepted = self.store.terms_rev(&link.info.edge_id.to_string()).await?;
+        if accepted.as_deref() != Some(link.info.terms_rev.as_str()) {
+            anyhow::bail!(
+                "accept the terms of {} first ({}, revision {}): Settings › Sharing or the first-run card",
+                link.info.domain,
+                link.info.terms_url,
+                link.info.terms_rev
+            );
+        }
+        Ok(accepted)
+    }
+
+    /// What a publish can be refused for before the owner is asked (E2E1 finding 8): sharing
+    /// off, no edge, the edge unreachable, or — when it would allocate a fresh name — terms not
+    /// accepted at the edge's current revision. Run it before raising the approval row.
+    pub async fn publish_precheck(&self, want: Option<&str>) -> anyhow::Result<()> {
+        anyhow::ensure!(self.store.enabled().await?, SWITCH_OFF);
+        anyhow::ensure!(
+            !self.store.edge().await?.tickets().is_empty(),
+            NO_SHARING_EDGE
+        );
+        let link = self.wait_attached().await?;
+        if want.is_none() && Self::held_names(&link).is_empty() {
+            self.current_terms(&link).await?;
+        }
+        Ok(())
     }
 
     /// The name for a publish: the requested held one, else the primary (newest reserved, else
     /// random), else a fresh random allocation after the terms (§5.2, §7.6).
     async fn pick_name(&self, link: &Link, want: Option<&str>) -> anyhow::Result<String> {
-        let held: Vec<_> = link
-            .welcome
-            .names
-            .iter()
-            .filter(|n| !matches!(n.state, NameState::Released | NameState::Banned))
-            .collect();
+        let held = Self::held_names(link);
         if let Some(w) = want {
             return held
                 .iter()
@@ -577,16 +723,7 @@ impl Engine {
             return Ok(n.name.clone());
         }
         // First publish: terms, then a client-drawn random name.
-        let edge = link.info.edge_id.to_string();
-        let accepted = self.store.terms_rev(&edge).await?;
-        if accepted.as_deref() != Some(link.info.terms_rev.as_str()) {
-            anyhow::bail!(
-                "accept the terms of {} first ({}, revision {}): Settings › Sharing or the first-run card",
-                link.info.domain,
-                link.info.terms_url,
-                link.info.terms_rev
-            );
-        }
+        let accepted = self.current_terms(link).await?;
         if !link.welcome.terms_ok {
             self.rehello(link, accepted).await?;
         }
@@ -620,10 +757,10 @@ impl Engine {
         Ok(())
     }
 
-    /// Have `<name>.D`'s pair installed: fetch the chain, or post the CSR. `false` = pending.
+    /// Have `<name>.D`'s pair installed: fetch the chain, or post the CSR.
     /// `renew` (a `cert` event) fetches and installs over the current chain (B2); without it a
     /// chain is fetched again when the welcome's `not_after`/SPKI differ from the installed one.
-    async fn ensure_cert(&self, link: &Link, name: &str, renew: bool) -> anyhow::Result<bool> {
+    async fn ensure_cert(&self, link: &Link, name: &str, renew: bool) -> anyhow::Result<CertStep> {
         let domain = &link.info.domain;
         let name_host = names::host(name, None, domain);
         let seen = link.welcome.names.iter().find(|n| n.name == name);
@@ -631,7 +768,7 @@ impl Engine {
             seen.is_none_or(|n| n.not_after == i.not_after && n.spki == i.spki)
         });
         if !renew && current && self.certs.lookup(&name_host).is_some() {
-            return Ok(true);
+            return Ok(CertStep::Installed);
         }
         let Some(store) = &self.hooks.name_keys else {
             anyhow::bail!("name keys are not available on this engine");
@@ -651,7 +788,12 @@ impl Engine {
             Some(c) => c,
             None => match link.control.csr(name, key.csr_der.clone(), false).await? {
                 CsrAnswer::Issued(c) => c,
-                CsrAnswer::Pending(_) => return Ok(false),
+                CsrAnswer::Pending(p) => {
+                    return Ok(CertStep::Pending(PendingCert {
+                        queue_pos: p.queue_pos,
+                        eta_s: Some(p.eta_s),
+                    }));
+                }
             },
         };
         self.certs
@@ -659,7 +801,7 @@ impl Engine {
         if let Some(n) = seen {
             self.installed.lock().insert(name_host, n.clone());
         }
-        Ok(true)
+        Ok(CertStep::Installed)
     }
 
     /// Drop `<name>.D`'s chain when no share of this engine is left under it.
@@ -941,16 +1083,16 @@ impl Engine {
     /// `GET /v1/names/{name}` through the current connection.
     pub async fn check_name(&self, name: &str) -> anyhow::Result<share_proto::NameAvailability> {
         names::check_reserved::<&str>(name, &[]).map_err(|e| anyhow::anyhow!(e.reason()))?;
-        let link = self.wait_attached().await?;
-        Ok(link.control.check_name(name).await?)
+        self.with_control(|c, _| async move { c.check_name(name).await })
+            .await
     }
 
     async fn after_cert(&self, name: &str, renew: bool) {
         let link = self.link.lock().clone();
         let Some(link) = link else { return };
         match self.ensure_cert(&link, name, renew).await {
-            Ok(true) => {}
-            Ok(false) => return,
+            Ok(CertStep::Installed) => {}
+            Ok(CertStep::Pending(_)) => return,
             Err(e) => {
                 tracing::warn!("share: certificate for {name}: {e:#}");
                 return;
@@ -1445,6 +1587,230 @@ mod tests {
             );
             assert!(e.store.pin(id).await.unwrap().is_none(), "{id}'s pin is forgotten");
         }
+    }
+
+    fn test_info() -> Info {
+        Info {
+            v: 1,
+            edge: "theuth-share-edge/0.1.0".into(),
+            domain: "tun.zip".into(),
+            edge_id: share_proto::SecretKey::from_bytes(&[7; 32]).public(),
+            now_ms: platform::time::now_ms(),
+            min_client: "0.0.1".into(),
+            admission: share_proto::Admission::Open,
+            terms_url: "https://tun.zip/terms".into(),
+            terms_rev: "2026-11-23".into(),
+            abuse_url: String::new(),
+            full: false,
+        }
+    }
+
+    fn test_welcome(names: &[(&str, NameState)]) -> Welcome {
+        Welcome {
+            v: 1,
+            now_ms: platform::time::now_ms(),
+            min_client: "0.0.1".into(),
+            mesh: share_proto::SecretKey::from_bytes(&[1; 32]).public(),
+            names: names
+                .iter()
+                .map(|(n, state)| NameInfo {
+                    name: (*n).into(),
+                    kind: NameKind::Random,
+                    state: *state,
+                    ca: None,
+                    spki: None,
+                    not_after: None,
+                    queue: None,
+                    transfer_to: None,
+                    transfer_until_ms: None,
+                })
+                .collect(),
+            routes: vec![],
+            revoked: vec![],
+            stop_all_ms: None,
+            domain: "tun.zip".into(),
+            limits: share_proto::WelcomeLimits::default(),
+            terms_url: String::new(),
+            abuse_url: String::new(),
+            terms_rev: "2026-11-23".into(),
+            terms_ok: true,
+            full: false,
+            retire: None,
+            throttled: false,
+        }
+    }
+
+    /// An edge serving `GET /v1/info`.
+    fn info_edge() -> Control {
+        let app = axum::Router::new().route(
+            share_proto::paths::INFO,
+            axum::routing::get(|| async { axum::Json(test_info()) }),
+        );
+        Control::new(crate::edge::tests::FakeConn::new(app))
+    }
+
+    /// E2E1 finding 4: a control call never goes out on a connection the edge closed (after
+    /// Stop all); one that fails at the transport drops the link and is tried once more after
+    /// the redial.
+    #[tokio::test]
+    async fn control_calls_redial_a_closed_connection() {
+        let (_d, e) = engine(8).await;
+        let (info, welcome) = (test_info(), test_welcome(&[]));
+        let closed = Control::new(crate::edge::tests::FakeConn::new(axum::Router::new()));
+        closed.close();
+        for stale in [closed, Control::new(crate::edge::tests::FakeConn::dead())] {
+            e.welcome(&stale, &info, &welcome).await;
+            // The state machine's redial, here by hand.
+            let redial = tokio::spawn({
+                let (e, info, welcome) = (e.clone(), info.clone(), welcome.clone());
+                async move {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    e.welcome(&info_edge(), &info, &welcome).await;
+                }
+            });
+            let got = tokio::time::timeout(
+                Duration::from_secs(5),
+                e.with_control(|c, _| async move { c.info().await }),
+            )
+            .await
+            .expect("answers after the redial")
+            .unwrap();
+            assert_eq!(got.domain, "tun.zip");
+            assert!(!e.link.lock().as_ref().unwrap().control.is_closed());
+            redial.await.unwrap();
+        }
+    }
+
+    /// E2E1 finding 8: terms are checked against the edge's current revision before the owner
+    /// is asked; a held name (or a requested one) needs no fresh allocation and no terms.
+    #[tokio::test]
+    async fn publish_precheck_refuses_unaccepted_terms_before_the_ask() {
+        let (_d, e) = engine(8).await;
+        let info = test_info();
+        assert!(
+            e.publish_precheck(None)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("Public sharing is off")
+        );
+        e.store.set_enabled(true).await.unwrap();
+        e.welcome(&info_edge(), &info, &test_welcome(&[])).await;
+        let err = e.publish_precheck(None).await.unwrap_err().to_string();
+        assert!(
+            err.contains("accept the terms of tun.zip first (https://tun.zip/terms, revision 2026-11-23)"),
+            "{err}"
+        );
+        e.publish_precheck(Some("sky")).await.unwrap();
+        e.store
+            .set_terms_rev(&info.edge_id.to_string(), "2026-01-01")
+            .await
+            .unwrap();
+        assert!(e.publish_precheck(None).await.is_err(), "an older revision is not enough");
+        e.store
+            .set_terms_rev(&info.edge_id.to_string(), "2026-11-23")
+            .await
+            .unwrap();
+        e.publish_precheck(None).await.unwrap();
+
+        let (_d2, e2) = engine(8).await;
+        e2.store.set_enabled(true).await.unwrap();
+        e2.welcome(&info_edge(), &info, &test_welcome(&[("sky", NameState::Allocated)]))
+            .await;
+        e2.publish_precheck(None).await.unwrap();
+    }
+
+    /// A name key that is minted only when `release` is notified (the vault settle).
+    struct SlowKeys {
+        key: keys::NameKey,
+        release: tokio::sync::Notify,
+        made: Mutex<bool>,
+    }
+
+    #[async_trait::async_trait]
+    impl NameKeyStore for SlowKeys {
+        async fn get(&self, _: &str, _: &str) -> anyhow::Result<Option<keys::NameKey>> {
+            Ok(self.made.lock().then(|| self.key.clone()))
+        }
+        async fn create(&self, _: &str, _: &str, _: keys::NameKey) -> anyhow::Result<keys::NameKey> {
+            self.release.notified().await;
+            *self.made.lock() = true;
+            Ok(self.key.clone())
+        }
+    }
+
+    /// E2E1 finding 9: a cold publish (the name key still settling) answers `pending` within
+    /// [`PUBLISH_CERT_WAIT`], and the share goes live by itself once the certificate step ends.
+    #[tokio::test]
+    async fn cold_publish_answers_pending_promptly_and_goes_live_later() {
+        use axum::routing::{get, post};
+
+        let (key_pem, csr_der) = keys::name_key("sky", "tun.zip").unwrap();
+        let chain = {
+            let key = rcgen::KeyPair::from_pem(&key_pem).unwrap();
+            let p = rcgen::CertificateParams::new(keys::sans("sky", "tun.zip")).unwrap();
+            share_proto::CertChain {
+                chain_pem: p.self_signed(&key).unwrap().pem(),
+                not_after: u64::MAX / 2,
+            }
+        };
+        let (c1, c2) = (chain.clone(), chain);
+        let app = axum::Router::new()
+            .route(
+                &share_proto::paths::name_csr("sky", false),
+                post(move || async move { axum::Json(c1) }),
+            )
+            .route(
+                &share_proto::paths::name_cert("sky"),
+                get(move || async move { axum::Json(c2) }),
+            );
+        let slow = Arc::new(SlowKeys {
+            key: keys::NameKey {
+                r#gen: 1,
+                key_pem,
+                csr_der,
+            },
+            release: tokio::sync::Notify::new(),
+            made: Mutex::new(false),
+        });
+        let (_d, e) = engine_with(8, Some(slow.clone() as Arc<dyn NameKeyStore>)).await;
+        e.store.set_enabled(true).await.unwrap();
+        let control = Control::new(crate::edge::tests::FakeConn::new(app));
+        e.welcome(&control, &test_info(), &test_welcome(&[("sky", NameState::Allocated)]))
+            .await;
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let plan = Plan {
+            source: Source::Port(upstream.local_addr().unwrap().port()),
+            label: Some("app".into()),
+            name: None,
+            path: "/".into(),
+            expiry: Expiry::H1,
+            access: Access::Public,
+        };
+        let started = tokio::time::Instant::now();
+        let p = e
+            .publish(plan, CallOrigin::Settings, Consent::test())
+            .await
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+        assert_eq!(p.share.state, ShareState::Pending);
+        assert_eq!(p.pending, Some(PendingCert::default()));
+
+        slow.release.notify_one();
+        let live = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let s = e.store.get(&p.share.id).await.unwrap().unwrap();
+                if s.state == ShareState::Live {
+                    break s;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the share goes live once the certificate step ends");
+        assert!(live.expires_ms.is_some());
+        assert!(e.certs.lookup("app.sky.tun.zip").is_some());
+        assert!(matches!(e.table.lookup("app.sky.tun.zip", "/"), Lookup::Found(..)));
     }
 
     #[test]

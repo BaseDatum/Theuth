@@ -55,7 +55,10 @@ pub async fn read_preamble<S: AsyncRead + Unpin>(s: &mut S) -> anyhow::Result<Pr
     let h = ppp::v2::Header::try_from(&buf[..]).map_err(|e| anyhow::anyhow!("PROXY v2: {e:?}"))?;
     let visitor = match h.addresses {
         ppp::v2::Addresses::IPv4(a) => SocketAddr::from((a.source_address, a.source_port)),
-        ppp::v2::Addresses::IPv6(a) => SocketAddr::from((a.source_address, a.source_port)),
+        // HAProxy on a dual-stack socket reports IPv4 visitors v4-mapped: keep them IPv4.
+        ppp::v2::Addresses::IPv6(a) => {
+            SocketAddr::new(IpAddr::V6(a.source_address).to_canonical(), a.source_port)
+        }
         _ => SocketAddr::from((IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)),
     };
     let (mut sni, mut conn_id) = (None, None);
@@ -227,6 +230,19 @@ mod tests {
         assert_eq!(p.sni.as_deref(), Some("app.sky.tun.zip"));
         assert_eq!(p.conn_id, Some(42));
         assert_eq!(r, b"\x16\x03\x01rest");
+    }
+
+    #[tokio::test]
+    async fn preamble_v4_mapped_visitor_is_ipv4() {
+        use ppp::v2::{Builder, Command, IPv6, Protocol, Version};
+        let mapped = std::net::Ipv4Addr::new(188, 251, 216, 205).to_ipv6_mapped();
+        let addrs: ppp::v2::Addresses =
+            IPv6::new(mapped, std::net::Ipv6Addr::LOCALHOST, 40000, 443).into();
+        let hdr = Builder::with_addresses(Version::Two | Command::Proxy, Protocol::Stream, addrs)
+            .build()
+            .unwrap();
+        let p = read_preamble(&mut &hdr[..]).await.unwrap();
+        assert_eq!(p.visitor, "188.251.216.205:40000".parse().unwrap());
     }
 
     #[test]

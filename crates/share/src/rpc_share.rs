@@ -201,6 +201,10 @@ impl ShareApiServer for Server {
         let e = engine()?;
         let card = serde_json::to_value(&args).map_err(|e| failed(e.to_string()))?;
         let p = plan(args, e.cfg.default_expiry, crate::engine::random_bytes()).map_err(failed)?;
+        // Refusals the owner cannot approve away (terms, switch, edge) answer before the card.
+        e.publish_precheck(p.name.as_deref())
+            .await
+            .map_err(|e| failed(format!("{e:#}")))?;
         let consent = Consent::ask("share_publish", card)
             .await
             .map_err(|e| failed(format!("{e:#}")))?;
