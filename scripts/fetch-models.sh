@@ -95,11 +95,14 @@ origin_of() {
 
 # shellcheck source=load-signing-env.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/load-signing-env.sh"   # THEUTH_S3_* overrides; no-op when already loaded
+# shellcheck source=lib/common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"   # size_of
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # `repo:` origins
 MODELS_DIR="${THEUTH_MODELS_DIR:-${MODELS_DIR:-${THEUTH_DATA_DIR:-$HOME/.theuth}/models}}"
 DRY_RUN="${THEUTH_S3_DRY_RUN:-${MODELS_DRY_RUN:-${DRY_RUN:-0}}}"
 HF_BASE="${HF_BASE:-https://huggingface.co}"; HF_BASE="${HF_BASE%/}"
-ENDPOINT="${THEUTH_S3_ENDPOINT:-https://s3.rwx.dev}"; ENDPOINT="${ENDPOINT%/}"
+# shellcheck source=lib/s3-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/s3-env.sh"   # ENDPOINT
 BUCKET="${THEUTH_S3_BUCKET:-theuth}"
 PREFIX="${THEUTH_S3_PREFIX:-releases}"; PREFIX="${PREFIX#/}"; PREFIX="${PREFIX%/}"
 PUBLIC_BASE="${THEUTH_S3_PUBLIC_BASE_URL:-${ENDPOINT}/${BUCKET}/${PREFIX}}"; PUBLIC_BASE="${PUBLIC_BASE%/}"
@@ -116,7 +119,6 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-size_of() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; } # GNU first: BSD `-f %z` is a valid *filesystem* query on GNU and returns garbage
 sha256_of() { shasum -a 256 "$1" | awk '{print $1}'; }
 blob_sha1_of() { { printf 'blob %s\0' "$(size_of "$1")"; cat "$1"; } | shasum -a 1 | awk '{print $1}'; }
 # $1's identity in the form origin etag $2 uses: sha256 for an LFS file (64 hex), git blob sha1 for a

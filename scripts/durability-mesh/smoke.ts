@@ -13,6 +13,7 @@
 import { Database } from "bun:sqlite";
 import type { Subprocess } from "bun";
 import { mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
+import { isObj, log, makeWaitFor, now, rawRpc, rpcResult, sleep, subscribeEvents, type Ev, type Json, type Obj } from "../lib/harness.ts";
 
 const ROOT = process.env.SMOKE_DIR ?? "/tmp/139-z";
 const T_BIN = process.env.T_BIN ?? "target/debug/t";
@@ -22,23 +23,6 @@ const RELEASE_WAIT_SECS = 6;
 const DRAIN_SECS = 10;
 const HERE = import.meta.dir;
 
-type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
-type Obj = { [k: string]: Json };
-type Ev = { at: number; ev: Obj };
-type RpcError = { code: number; message: string; data?: Json };
-
-const sleep = (ms: number) => {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
-};
-const now = () => Date.now();
-const T0 = now();
-const ts = () => `${((now() - T0) / 1000).toFixed(1).padStart(6)}s`;
-function log(msg: string) {
-  console.log(`[${ts()}] ${msg}`);
-}
-
 const results: { row: string; name: string; ok: boolean; detail: string }[] = [];
 let currentRow = "setup";
 function check(name: string, ok: boolean, detail = "") {
@@ -46,19 +30,8 @@ function check(name: string, ok: boolean, detail = "") {
   log(`${ok ? "PASS" : "FAIL"} ${currentRow} ${name}${detail ? ` — ${detail}` : ""}`);
 }
 
-async function waitFor<T>(what: string, f: () => T | Promise<T>, timeoutMs = 20_000, every = 100): Promise<NonNullable<T>> {
-  const end = now() + timeoutMs;
-  for (;;) {
-    const v = await f();
-    if (v) return v as NonNullable<T>;
-    if (now() > end) throw new Error(`timeout waiting for ${what}`);
-    await sleep(every);
-  }
-}
+const waitFor = makeWaitFor(20_000, 100);
 
-function isObj(v: unknown): v is Obj {
-  return !!v && typeof v === "object" && !Array.isArray(v);
-}
 function str(v: Json | undefined): string {
   return typeof v === "string" ? v : JSON.stringify(v);
 }
@@ -120,52 +93,19 @@ class Engine {
     log(`${this.name} up: pid ${this.pid}, rpc :${this.port}, id ${this.id}`);
   }
 
-  async raw(method: string, params: Json[]): Promise<{ result?: Json; error?: RpcError }> {
-    try {
-      const res = await fetch(`http://127.0.0.1:${this.port}/`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-        signal: AbortSignal.timeout(60_000),
-      });
-      const j: unknown = await res.json();
-      if (!isObj(j)) return { error: { code: -1, message: `bad reply ${JSON.stringify(j)}` } };
-      if (isObj(j.error)) return { error: j.error as unknown as RpcError };
-      return { result: j.result as Json };
-    } catch (e) {
-      return { error: { code: -2, message: String(e) } };
-    }
+  raw(method: string, params: Json[]) {
+    return rawRpc(this.port, this.token, method, params);
   }
 
   async rpc(method: string, params: Json[]): Promise<Json> {
-    const r = await this.raw(method, params);
-    if (r.error) throw new Error(`${this.name} ${method}: ${r.error.code} ${r.error.message}`);
-    return r.result ?? null;
+    return rpcResult(await this.raw(method, params), method, `${this.name} `);
   }
 
   /// All events of every session; kept for the whole run.
   async subscribe() {
     this.ws?.close();
     this.events = [];
-    const ws = new WebSocket(`ws://127.0.0.1:${this.port}/`, { headers: { authorization: `Bearer ${this.token}` } });
-    this.ws = ws;
-    const { promise, resolve, reject } = Promise.withResolvers<void>();
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "subscribe_events", params: [null, true] }));
-      resolve();
-    };
-    ws.onerror = (e) => reject(new Error(`ws ${this.name}: ${String(e)}`));
-    await promise;
-    ws.onmessage = (m) => {
-      try {
-        const j: unknown = JSON.parse(String(m.data));
-        if (isObj(j) && isObj(j.params) && isObj(j.params.result) && typeof j.params.result.type === "string") {
-          this.events.push({ at: now(), ev: j.params.result });
-        }
-      } catch {
-        /* snapshot or non-JSON frame */
-      }
-    };
+    this.ws = await subscribeEvents(this.port, this.token, `ws ${this.name}`, (ev) => this.events.push({ at: now(), ev }));
   }
 
   evs(session: string, type: string): Obj[] {

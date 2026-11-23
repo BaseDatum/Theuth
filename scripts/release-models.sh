@@ -59,13 +59,16 @@ source "$ROOT/scripts/ort-version.env"
 # shellcheck source=fetch-models.sh
 source "$ROOT/scripts/fetch-models.sh"   # REQUIRED, origin_of, fetch_models, record_field, bucket_manifest, MODELS_DIR, DRY_RUN, CHECK, size_of, sha256_of
 
-need() { command -v "$1" >/dev/null 2>&1 || { echo "error: $1 required${2:+ ($2)}" >&2; exit 1; }; }
+# shellcheck source=lib/common.sh
+source "$ROOT/scripts/lib/common.sh"   # need
+# shellcheck source=lib/s3-env.sh
+source "$ROOT/scripts/lib/s3-env.sh"   # s3_export_aws_env, s3_have_creds (ENDPOINT is already set by fetch-models.sh, same value)
 need aws "brew install awscli"
 need jq
 need curl
 need shasum
 need unzip
-[[ "$CHECK" == 1 || ( -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ) ]] \
+[[ "$CHECK" == 1 ]] || s3_have_creds \
   || { echo "error: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY unset (see .env.signing.example)" >&2; exit 1; }
 
 # Runtime platforms: Microsoft's archive name → rust target triple, archive kind and member, on-disk
@@ -85,12 +88,7 @@ NUPKG_URL="https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.ep.we
 # ENDPOINT / BUCKET / PREFIX / PUBLIC_BASE / PUB_MODELS come from fetch-models.sh (same env, same defaults).
 S3_MODELS="s3://${BUCKET}/${PREFIX}/models"
 
-# rustfs: path-style, no mandatory checksums, no IMDS probe (release-s3.sh).
-export AWS_S3_FORCE_PATH_STYLE=true
-export AWS_REQUEST_CHECKSUM_CALCULATION="${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}"
-export AWS_RESPONSE_CHECKSUM_VALIDATION="${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}"
-export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-export AWS_EC2_METADATA_DISABLED=true
+s3_export_aws_env
 AWS=(aws --endpoint-url "$ENDPOINT")
 
 fetch_models

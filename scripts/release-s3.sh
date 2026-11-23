@@ -76,7 +76,10 @@ cd "$ROOT"
 # shellcheck source=app-parser-env.sh
 source "$ROOT/scripts/app-parser-env.sh"
 
-need() { command -v "$1" >/dev/null 2>&1 || { echo "error: $1 required${2:+ ($2)}" >&2; exit 1; }; }
+# shellcheck source=lib/common.sh
+source "$ROOT/scripts/lib/common.sh"   # need
+# shellcheck source=lib/s3-env.sh
+source "$ROOT/scripts/lib/s3-env.sh"   # ENDPOINT, s3_export_aws_env, s3_have_creds
 need aws "brew install awscli"
 need jq
 need curl
@@ -84,12 +87,12 @@ need git
 need shasum
 need cargo 'export PATH="$(just toolchain):$PATH"'
 cargo tauri --version >/dev/null 2>&1 || { echo "error: cargo tauri required (cargo install tauri-cli)" >&2; exit 1; }
-[[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] \
+s3_have_creds \
   || { echo "error: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY unset (see .env.signing.example)" >&2; exit 1; }
 [[ -n "${THEUTH_UPDATE_KEY:-}" ]] \
   || { echo "error: THEUTH_UPDATE_KEY unset (cargo tauri signer generate -w ~/.tauri/theuth.key; see .env.signing.example)" >&2; exit 1; }
 
-ENDPOINT="${THEUTH_S3_ENDPOINT:-https://s3.rwx.dev}"; ENDPOINT="${ENDPOINT%/}"
+# ENDPOINT (from lib/s3-env.sh, sourced above)
 BUCKET="${THEUTH_S3_BUCKET:-theuth}"
 PREFIX="${THEUTH_S3_PREFIX:-releases}"; PREFIX="${PREFIX#/}"; PREFIX="${PREFIX%/}"
 PUBLIC_BASE="${THEUTH_S3_PUBLIC_BASE_URL:-${ENDPOINT}/${BUCKET}/${PREFIX}}"; PUBLIC_BASE="${PUBLIC_BASE%/}"
@@ -111,12 +114,7 @@ if [[ -n "$ADD" && "$ADD" != auto ]]; then
   done
 fi
 
-# rustfs: path-style, no mandatory checksums, no IMDS probe (jarvis release-s3.sh:164-174).
-export AWS_S3_FORCE_PATH_STYLE=true
-export AWS_REQUEST_CHECKSUM_CALCULATION="${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}"
-export AWS_RESPONSE_CHECKSUM_VALIDATION="${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}"
-export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-export AWS_EC2_METADATA_DISABLED=true
+s3_export_aws_env
 AWS=(aws --endpoint-url "$ENDPOINT")
 
 # Signing key → the env the tauri CLI reads (path or contents). An unset password makes

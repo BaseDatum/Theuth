@@ -12,6 +12,7 @@
 import { Database } from "bun:sqlite";
 import type { Subprocess } from "bun";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { isObj, log, makeWaitFor, now, rawRpc, rpcResult, sleep, subscribeEvents, type Ev, type Json, type Obj } from "../lib/harness.ts";
 
 const ROOT = process.env.SMOKE_DIR ?? "/tmp/146-smoke";
 const T_BIN = process.env.T_BIN ?? "target/debug/t";
@@ -25,39 +26,16 @@ const DIR = `${ROOT}/engine`;
 const WT = `${ROOT}/wt`;
 const SLEEP_SECS = Number(process.env.CHILD_SLEEP_SECS ?? 150);
 
-type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
-type Obj = { [k: string]: Json };
-type RpcError = { code: number; message: string; data?: Json };
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-const now = () => Date.now();
-const T0 = now();
-const ts = () => `${((now() - T0) / 1000).toFixed(1).padStart(6)}s`;
-function log(msg: string) {
-  console.log(`[${ts()}] ${msg}`);
-}
 const results: { proof: string; name: string; ok: boolean; detail: string }[] = [];
 let current = "setup";
 function check(name: string, ok: boolean, detail = "") {
   results.push({ proof: current, name, ok, detail });
   log(`${ok ? "✓" : "✗"} ${current} ${name}${detail ? ` — ${detail}` : ""}`);
 }
-async function waitFor<T>(what: string, f: () => T | Promise<T>, timeoutMs = 30_000, every = 200): Promise<NonNullable<T>> {
-  const deadline = now() + timeoutMs;
-  for (;;) {
-    const v = await f();
-    if (v) return v as NonNullable<T>;
-    if (now() > deadline) throw new Error(`timeout waiting for ${what}`);
-    await sleep(every);
-  }
-}
-function isObj(v: unknown): v is Obj {
-  return !!v && typeof v === "object" && !Array.isArray(v);
-}
+const waitFor = makeWaitFor(30_000, 200);
 
 // ---- the engine ---------------------------------------------------------------
 
-type Ev = { at: number; ev: Obj };
 class Engine {
   proc: Subprocess | null = null;
   token = "";
@@ -123,50 +101,17 @@ class Engine {
     log(`engine up: pid ${this.pid}, rpc :${PORT}`);
   }
 
-  async raw(method: string, params: Json[]): Promise<{ result?: Json; error?: RpcError }> {
-    try {
-      const res = await fetch(`http://127.0.0.1:${PORT}/`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-        signal: AbortSignal.timeout(60_000),
-      });
-      const j: unknown = await res.json();
-      if (!isObj(j)) return { error: { code: -1, message: `bad reply ${JSON.stringify(j)}` } };
-      if (isObj(j.error)) return { error: j.error as unknown as RpcError };
-      return { result: j.result as Json };
-    } catch (e) {
-      return { error: { code: -2, message: String(e) } };
-    }
+  raw(method: string, params: Json[]) {
+    return rawRpc(PORT, this.token, method, params);
   }
   async rpc(method: string, params: Json[]): Promise<Json> {
-    const r = await this.raw(method, params);
-    if (r.error) throw new Error(`${method}: ${r.error.code} ${r.error.message}`);
-    return r.result ?? null;
+    return rpcResult(await this.raw(method, params), method);
   }
 
   async subscribe() {
     this.ws?.close();
     this.events = [];
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/`, { headers: { authorization: `Bearer ${this.token}` } });
-    this.ws = ws;
-    const { promise, resolve, reject } = Promise.withResolvers<void>();
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "subscribe_events", params: [null, true] }));
-      resolve();
-    };
-    ws.onerror = (e) => reject(new Error(`ws: ${String(e)}`));
-    await promise;
-    ws.onmessage = (m) => {
-      try {
-        const j: unknown = JSON.parse(String(m.data));
-        if (isObj(j) && isObj(j.params) && isObj(j.params.result) && typeof j.params.result.type === "string") {
-          this.events.push({ at: now(), ev: j.params.result });
-        }
-      } catch {
-        /* snapshot or non-JSON frame */
-      }
-    };
+    this.ws = await subscribeEvents(PORT, this.token, "ws", (ev) => this.events.push({ at: now(), ev }));
   }
 
   sql<T extends Obj>(q: string, ...params: (string | number)[]): T[] {

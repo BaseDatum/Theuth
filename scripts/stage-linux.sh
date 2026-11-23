@@ -38,15 +38,11 @@ fi
 command -v cargo >/dev/null 2>&1 || { echo "error: cargo not on PATH (export PATH=\"\$(just toolchain):\$PATH\")" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "error: jq required" >&2; exit 1; }
 
-ENDPOINT="${THEUTH_S3_ENDPOINT:-https://s3.rwx.dev}"; ENDPOINT="${ENDPOINT%/}"
+# shellcheck source=lib/s3-env.sh
+source "$ROOT/scripts/lib/s3-env.sh"   # ENDPOINT, s3_export_aws_env, s3_have_creds
 BUCKET="${THEUTH_S3_BUCKET:-theuth}"
 DRY_RUN="${THEUTH_S3_DRY_RUN:-0}"
-# rustfs: path-style, no mandatory checksums, no IMDS probe (jarvis release-s3.sh:164-174).
-export AWS_S3_FORCE_PATH_STYLE=true
-export AWS_REQUEST_CHECKSUM_CALCULATION="${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}"
-export AWS_RESPONSE_CHECKSUM_VALIDATION="${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}"
-export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-export AWS_EC2_METADATA_DISABLED=true
+s3_export_aws_env
 
 VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="theuth") | .version')"
 ARCH="${THEUTH_LINUX_ARCH:-$(uname -m | sed s/arm64/aarch64/)}"
@@ -89,7 +85,7 @@ elif [[ "$DRY_RUN" == "1" ]]; then
   echo "    DRY_RUN: aws --endpoint-url $ENDPOINT s3 cp $TGZ $DEST"
 else
   command -v aws >/dev/null 2>&1 || { echo "error: aws CLI v2 required (brew install awscli)" >&2; exit 1; }
-  [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || { echo "error: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY unset" >&2; exit 1; }
+  s3_have_creds || { echo "error: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY unset" >&2; exit 1; }
   aws --endpoint-url "$ENDPOINT" s3 cp "$TGZ" "$DEST" --content-type application/gzip
 fi
 
