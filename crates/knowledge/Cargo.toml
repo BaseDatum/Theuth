@@ -18,6 +18,7 @@ mesh = { workspace = true }  # 185 B6: `is_hub` in the sync manifest
 platform = { workspace = true }
 tools = { workspace = true }
 document = { workspace = true }
+decision = { workspace = true }  # 212: peek_memory's local judge
 search = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

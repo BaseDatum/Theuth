@@ -8194,13 +8194,23 @@ impl Turn {
             .await;
         }
         self.calls += calls.len() as u32;
-        // 10 §7: the ids the model held verbatim this epoch, for the compaction head.
+        // 10 §7: the ids the model held verbatim this epoch, for the compaction head;
+        // 212 §4.3: a `peek_memory` holds the ids it judged relevant.
         self.state.knowledge_read.extend(
             calls
                 .iter()
                 .filter(|c| c.fn_name == knowledge::tools::GET)
                 .filter_map(|c| c.fn_arguments.get("id")?.as_str().map(str::to_owned)),
         );
+        for (_, out) in calls
+            .iter()
+            .zip(&outs)
+            .filter(|(c, o)| c.fn_name == knowledge::tools::PEEK && !o.is_error)
+        {
+            self.state
+                .knowledge_read
+                .extend(knowledge::tools::peek_relevant_ids(&out.content).map(str::to_owned));
+        }
         if cancelled {
             return Round::Stop("cancelled".into());
         }

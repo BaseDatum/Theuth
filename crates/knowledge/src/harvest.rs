@@ -98,7 +98,7 @@ pub fn instruction(related: &[Meta], cwd: &str) -> String {
 /// clipped at `HINT_DESCRIPTION_CHARS`.
 pub fn render_hints(metas: &[Meta]) -> String {
     let mut s = String::from(
-        "Concepts that may be relevant; read one with `await knowledge_get(id)` in python before relying on it:\n",
+        "Concepts that may be relevant; not sure one helps? `await peek_memory(question=\"…\", ids=[…])` checks them against your question locally and returns only those that answer it; `await knowledge_get(id)` reads one outright (python):\n",
     );
     for m in metas {
         line(&mut s, m);
@@ -300,7 +300,7 @@ mod tests {
         let mut lines = s.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "Concepts that may be relevant; read one with `await knowledge_get(id)` in python before relying on it:"
+            "Concepts that may be relevant; not sure one helps? `await peek_memory(question=\"…\", ids=[…])` checks them against your question locally and returns only those that answer it; `await knowledge_get(id)` reads one outright (python):"
         );
         let clipped = lines.next().unwrap();
         assert_eq!(

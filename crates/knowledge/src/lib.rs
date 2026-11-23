@@ -84,6 +84,11 @@ pub struct KnowledgeConfig {
     /// `knowledge.lifetimes` (136 §5.2, days). The rank reads these; dreaming's
     /// `lifetimes` mirror is for its archive/verify sampling only.
     pub lifetimes: Lifetimes,
+    /// 212: minimum P(true) for `peek_memory` to call a memory relevant. The
+    /// gliner Bool is uncalibrated; 0.5 means "the model said yes".
+    pub peek_threshold: f32,
+    /// 212: decision checkpoint `peek_memory` judges with.
+    pub peek_checkpoint: String,
 }
 
 impl Default for KnowledgeConfig {
@@ -92,6 +97,8 @@ impl Default for KnowledgeConfig {
             enabled: true,
             sync_secs: 300,
             lifetimes: Lifetimes::default(),
+            peek_threshold: 0.5,
+            peek_checkpoint: "gliner".into(),
         }
     }
 }
@@ -633,7 +640,7 @@ impl runtime::Plugin for KnowledgePlugin {
         let rt = rt.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await {
-                crate::tools::register(&reg, k).await;
+                crate::tools::register(&reg, k, &cfg).await;
             }
         });
         Ok(())

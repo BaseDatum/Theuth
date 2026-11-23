@@ -921,6 +921,8 @@ agent:
 #     fact: 30
 #     procedure: 90
 #     entity: 60
+#   peek_threshold: 0.5      # 212: P(true) peek_memory needs to call a memory relevant (the gliner Bool is uncalibrated)
+#   peek_checkpoint: gliner  # 212: the decision checkpoint peek_memory judges with
 
 # documents:                 # design doc 59; Yjs documents under <data_dir>/documents/, the BlockNote editor
 #   enabled: true            # false: no store, no helper, no doc_* methods; concepts open as raw text
