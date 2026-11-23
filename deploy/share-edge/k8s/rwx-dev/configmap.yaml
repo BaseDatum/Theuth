@@ -1,0 +1,37 @@
+# P0 smoke config: admission closed, Let's Encrypt STAGING. Replaces the base's config.yaml whole.
+# Before production: the prod directory, a real acme.contact, terms/abuse pages, require_caa: true with the
+# CAA records of the production account (§8.2; the edge refuses to start without them), admission open|invite.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: theuth-share-edge
+data:
+  config.yaml: |
+    domain: tun.zip
+    data_dir: /var/lib/theuth-share-edge
+    listen: "[::]:8443"
+    # public_addrs empty: no UDP path into the cluster yet (service-iroh-udp.yaml), clients reach the edge via the relay.
+    iroh: {listen: "[::]:7850", relay: https://iroh.relay.theuth.io, public_addrs: []}
+    # Socket on the emptyDir the overlay mounts, not on the NFS data volume.
+    admin: {socket: /run/theuth-share-edge/admin.sock, http: "[::]:9090"}
+    admission: closed
+    terms_url: https://example.com/share-terms     # TBD before admission opens (§9.5)
+    terms_rev: "2026-11-23"
+    abuse_url: https://example.com/share-abuse     # TBD
+    abuse_contact: abuse@example.com               # TBD
+    # false is accepted only with admission closed|invite. A staging account's URI would not match the
+    # production accounturi CAA line anyway.
+    require_caa: false
+    acme:
+      contact: mailto:EMAIL_TBD
+      profile: classic
+      primary: letsencrypt
+      cas:
+        letsencrypt:
+          directory: https://acme-staging-v02.api.letsencrypt.org/directory   # prod: https://acme-v02.api.letsencrypt.org/directory
+        gts: {enabled: false}
+    dns:
+      provider: porkbun
+      zone: tun.zip
+      credential_file: /run/secrets/theuth-share-edge/dns.json
+      target: edge.tun.zip

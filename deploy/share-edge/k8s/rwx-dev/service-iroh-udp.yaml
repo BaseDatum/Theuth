@@ -1,0 +1,20 @@
+# NOT in kustomization.yaml: owner decision pending.
+# The edge's own iroh endpoint on UDP 7850. The cluster has no LoadBalancer controller, so the only way in is a
+# NodePort plus a router UDP forward (public :7850 → <node IP>:30785). Until then iroh.public_addrs stays empty and
+# clients reach the edge through iroh.relay.theuth.io (slower, but works). When enabling:
+#   1. pick the node(s) the router forwards to; with externalTrafficPolicy: Local only a node running the pod answers,
+#      so either pin the Deployment to that node or use Cluster (source IP lost, harmless for iroh: it authenticates
+#      by endpoint key);
+#   2. uncomment the resource in kustomization.yaml;
+#   3. add "<public IP>:7850" to iroh.public_addrs in configmap.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: theuth-share-edge-iroh
+  labels: {app.kubernetes.io/name: theuth-share-edge, app.kubernetes.io/part-of: theuth}
+spec:
+  type: NodePort
+  externalTrafficPolicy: Cluster
+  selector: {app.kubernetes.io/name: theuth-share-edge}
+  ports:
+    - {name: iroh, port: 7850, targetPort: iroh, nodePort: 30785, protocol: UDP}
