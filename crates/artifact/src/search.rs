@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{Artifact, Kind, kind};
+use crate::{Artifact, Kind};
 use ::search::{Coverage, FuzzyMatcher, SearchNotice, SearchPage, SearchText, TextMatch};
 use kameo::actor::ActorRef;
 use parking_lot::Mutex;
