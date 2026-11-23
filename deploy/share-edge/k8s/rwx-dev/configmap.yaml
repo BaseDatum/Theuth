@@ -1,5 +1,5 @@
 # P0 smoke config: admission closed, Let's Encrypt STAGING. Replaces the base's config.yaml whole.
-# Before production: the prod directory, a real acme.contact, terms/abuse pages, require_caa: true with the
+# Before production: the prod directory, terms/abuse pages, require_caa: true with the
 # CAA records of the production account (§8.2; the edge refuses to start without them), admission open|invite.
 apiVersion: v1
 kind: ConfigMap
@@ -26,7 +26,7 @@ data:
     # production accounturi CAA line anyway.
     require_caa: false
     acme:
-      contact: mailto:EMAIL_TBD
+      contact: mailto:sky@rwx.dev   # passed verbatim as the ACME account contact URI
       profile: classic
       primary: letsencrypt
       cas:
