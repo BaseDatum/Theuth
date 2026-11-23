@@ -69,7 +69,7 @@ test('withOwner patches only the named row and leaves a foreign list alone', () 
 })
 
 const rows = (...r: [id: string, owner: string, here: boolean][]) => r.map(([id, owner, here]) => ({ id, owner, here }) as SessionSummary)
-const ap = (id: string, session: string) => ({ type: 'ApprovalRequested' as const, id, session, tool: 'shell', args: {}, risk: 'mutating' as const })
+const ap = (id: string, session: string) => ({ type: 'ApprovalRequested' as const, id, session, tool: 'shell', args: {}, risk: 'mutating' as const, human_only: false })
 const ask = (id: string, session: string) => ({ type: 'AskRequested' as const, id, session, questions: [] })
 
 test('183 R1: withdrawRelayed drops a session\'s approvals and asks and leaves the rest', () => {

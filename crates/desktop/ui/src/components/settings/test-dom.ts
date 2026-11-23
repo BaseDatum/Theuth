@@ -18,3 +18,35 @@ for (let o = window; o && o !== Object.prototype; o = Object.getPrototypeOf(o))
         get: () => (typeof window[k] === 'function' && !/^[A-Z]/.test(k) ? window[k].bind(window) : window[k]),
         set: (value) => Object.defineProperty(globalThis, k, { value, writable: true, configurable: true }),
       })
+// Node ≥ 22 has `localStorage`/`sessionStorage` globals that are `undefined` without `--localstorage-file`, so the loop
+// above skips them, and jsdom's own throw on its opaque `about:blank` origin: an in-memory Storage each, per test file.
+class MemoryStorage {
+  #m = new Map<string, string>()
+  get length() {
+    return this.#m.size
+  }
+  key(i: number) {
+    return [...this.#m.keys()][i] ?? null
+  }
+  getItem(k: string) {
+    return this.#m.get(String(k)) ?? null
+  }
+  setItem(k: string, v: string) {
+    this.#m.set(String(k), String(v))
+  }
+  removeItem(k: string) {
+    this.#m.delete(String(k))
+  }
+  clear() {
+    this.#m.clear()
+  }
+}
+for (const k of ['localStorage', 'sessionStorage'] as const) {
+  let ok = false
+  try {
+    ok = (globalThis as Record<string, unknown>)[k] != null
+  } catch {
+    ok = false
+  }
+  if (!ok) Object.defineProperty(globalThis, k, { value: new MemoryStorage(), writable: true, configurable: true })
+}

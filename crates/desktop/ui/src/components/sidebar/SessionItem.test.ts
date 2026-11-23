@@ -100,9 +100,9 @@ test("a child's quiet terminal puts no terminal glyph on the root row", async ()
 
 test('only an approval in this subtree turns the network glyph warning; resolving restores malachite', async () => {
   await mount()
-  await act(async () => useApprovals.getState().add({ type: 'ApprovalRequested', id: 'other', session: 'unrelated', tool: 'shell', args: {}, risk: 'mutating' }))
+  await act(async () => useApprovals.getState().add({ type: 'ApprovalRequested', id: 'other', session: 'unrelated', tool: 'shell', args: {}, risk: 'mutating', human_only: false }))
   expect(glyph('1 subagent running').getAttribute('class')).toContain('text-project-malachite')
-  await act(async () => useApprovals.getState().add({ type: 'ApprovalRequested', id: 'approval', session: 'child', tool: 'shell', args: {}, risk: 'mutating' }))
+  await act(async () => useApprovals.getState().add({ type: 'ApprovalRequested', id: 'approval', session: 'child', tool: 'shell', args: {}, risk: 'mutating', human_only: false }))
   expect(glyph('1 subagent running').getAttribute('class')).toContain('text-warning')
   expect(glyph('1 subagent running').getAttribute('class')).toContain('animate-pulse')
   await act(async () => useApprovals.getState().resolve('approval'))

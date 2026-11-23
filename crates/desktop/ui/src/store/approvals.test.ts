@@ -28,7 +28,7 @@ test('resolve drops the card by id and a late Requested for it is ignored', () =
 
 test('PendingPrompts replaces the pending set with what the engine reports', () => {
   const st = scope('test-asksync')
-  dispatch([{key: 'tools.ask-requested@1', event: ask('stale')}, {key: 'tools.approval-requested@1', event: { type: 'ApprovalRequested', id: 'ap', session: 's1', tool: 'shell', args: {}, risk: 'mutating' }}], st)
+  dispatch([{key: 'tools.ask-requested@1', event: ask('stale')}, {key: 'tools.approval-requested@1', event: { type: 'ApprovalRequested', id: 'ap', session: 's1', tool: 'shell', args: {}, risk: 'mutating', human_only: false }}], st)
   expect(st.asks.getState().pending.map((p) => p.id)).toEqual(['stale'])
   expect(st.approvals.getState().pending.map((p) => p.id)).toEqual(['ap'])
   // Resubscribe: the engine has one other ask and no approvals; a secrets `Changed` is not a prompt.
