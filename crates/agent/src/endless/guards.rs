@@ -369,11 +369,7 @@ fn clean(line: &str) -> String {
 
 /// Cut `s` to at most `max` bytes at a char boundary.
 pub fn cut_utf8(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    let end = s.floor_char_boundary(max);
-    &s[..end]
+    platform::text::cut_bytes(s, max)
 }
 
 /// R1 Q2: `s` cut to at most `max` bytes at a word boundary (when one falls

@@ -172,7 +172,7 @@ async fn generate(
 ) -> Result<String, String> {
     let md = markdown(ctx, source, false).await?;
     let own = strip_insights(&md);
-    let input = cut(own, ctx.cfg.insight_input_tokens as usize * 4);
+    let input = platform::text::head_chars(own, ctx.cfg.insight_input_tokens as usize * 4);
     if input.trim().is_empty() {
         return Err("the source has no text".to_owned());
     }
@@ -521,14 +521,6 @@ pub fn strip_insights(markdown: &str) -> &str {
         at += line.len();
     }
     markdown
-}
-
-/// `s` cut to at most `chars` characters on a char boundary.
-fn cut(s: &str, chars: usize) -> &str {
-    match s.char_indices().nth(chars) {
-        Some((i, _)) => &s[..i],
-        None => s,
-    }
 }
 
 /// Annotated markdown → `(block id, block markdown)` in order.

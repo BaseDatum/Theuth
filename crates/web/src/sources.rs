@@ -284,11 +284,7 @@ fn html_md(html: &str) -> String {
 
 /// First `n` chars of `s`, with an ellipsis when cut.
 fn head(s: &str, n: usize) -> String {
-    let mut out: String = s.trim().chars().take(n).collect();
-    if out.len() < s.trim().len() {
-        out.push('…');
-    }
-    out
+    platform::text::clip_then_ellipsis(s.trim(), n).into_owned()
 }
 
 /// `a · b · c` of the present parts.

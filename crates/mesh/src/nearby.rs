@@ -423,8 +423,7 @@ fn local_addrs(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
 
 /// `s` cut to at most `max` bytes, on a char boundary.
 fn cut(s: &str, max: usize) -> String {
-    let end = s.floor_char_boundary(max);
-    s[..end].to_owned()
+    platform::text::cut_bytes(s, max).to_owned()
 }
 
 /// A browse result: keep it (bounded, oldest out) or drop it, then publish the list. An advert

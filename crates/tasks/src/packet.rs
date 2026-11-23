@@ -696,12 +696,7 @@ pub fn head(text: &str) -> String {
         .unwrap_or_default()
         .trim_start_matches('#')
         .trim();
-    if line.chars().count() <= HEAD_MAX {
-        return line.to_owned();
-    }
-    let mut s: String = line.chars().take(HEAD_MAX - 1).collect();
-    s.push('…');
-    s
+    platform::text::ellipsize(line, HEAD_MAX).into_owned()
 }
 
 /// 132 D1: `text`'s first non-blank line (`#` stripped) cut to `budget` chars —

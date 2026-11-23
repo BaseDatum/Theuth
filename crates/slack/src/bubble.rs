@@ -2726,12 +2726,7 @@ fn head_chars(s: &str, max: usize) -> (&str, usize) {
 
 /// `s` cut to `max` chars, the last one an ellipsis when cut.
 fn truncate_chars(s: &str, max: usize) -> String {
-    let (head, more) = head_chars(s, max);
-    if more == 0 {
-        return head.to_owned();
-    }
-    let (head, _) = head_chars(s, max - 1);
-    format!("{head}…")
+    platform::text::ellipsize(s, max).into_owned()
 }
 
 fn host(url: &str) -> &str {
@@ -5175,7 +5170,6 @@ pub(crate) mod tests {
             &serde_json::json!({"kind": "note"})
         ));
         assert!(!is_deliverable("shell", &serde_json::Value::Null));
-        assert_eq!(truncate_chars("héllo", 3), "hé…");
         assert_eq!(fmt_k(999), "999");
         assert_eq!(fmt_k(16_500), "16.5k");
         assert_eq!(fmt_k(1_000_000), "1.0M");

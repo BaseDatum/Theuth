@@ -248,7 +248,10 @@ pub async fn review(
         Err(reason) => return Ok(ReviewVerdict::Error { reason }),
     };
     Ok(parse(&second).unwrap_or_else(|| ReviewVerdict::Error {
-        reason: format!("malformed reply twice: {:?}", excerpt(&second, 160)),
+        reason: format!(
+            "malformed reply twice: {:?}",
+            platform::text::clip_then_ellipsis(second.trim(), 160)
+        ),
     }))
 }
 
@@ -266,15 +269,6 @@ fn keep_diff(study: &StudyRecord, e: &ExperimentRecord) -> Result<String> {
         .as_deref()
         .ok_or_else(|| Error::refused(format!("experiment #{} has no commit", e.n)))?;
     crate::git::diff_text(Path::new(worktree), &e.parent_sha, commit, usize::MAX)
-}
-
-fn excerpt(s: &str, n: usize) -> String {
-    let t = s.trim();
-    if t.chars().count() <= n {
-        t.to_owned()
-    } else {
-        format!("{}…", t.chars().take(n).collect::<String>())
-    }
 }
 
 const ADVISOR_SYSTEM: &str = "You advise an automated optimisation loop that has plateaued. Answer only with the requested lines.";
@@ -480,7 +474,7 @@ pub async fn advise(
     if ideas.is_empty() {
         return Err(Error::refused(format!(
             "advisor reply had no ideas: {:?}",
-            excerpt(&reply, 160)
+            platform::text::clip_then_ellipsis(reply.trim(), 160)
         )));
     }
     Ok(ideas)

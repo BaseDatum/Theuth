@@ -39,15 +39,6 @@ type SessionRow = (
 /// Ancestor walks stop here (a cycle in persisted topology).
 const LINEAGE_MAX: usize = 64;
 
-/// `s` clipped to at most `max` bytes on a char boundary.
-fn clip(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_owned();
-    }
-    let cut = s.floor_char_boundary(max);
-    s[..cut].to_owned()
-}
-
 /// The ids a `<knowledge>` note lists (`- `id` — …` lines, 10 §4.1).
 pub fn hinted_ids(note: &str) -> impl Iterator<Item = &str> {
     note.lines().filter_map(|l| {
@@ -400,7 +391,7 @@ impl Store {
                 session: listed[i].id,
                 seq,
                 at: at.clone(),
-                text: clip(&redact(text), MAX_TEXT_BYTES),
+                text: platform::text::cut_bytes(&redact(text), MAX_TEXT_BYTES).to_owned(),
             };
             if text.starts_with("[app ") {
                 ledger.app_presses.push(row(text));
@@ -716,9 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn clip_and_hinted_ids() {
-        assert_eq!(clip("héllo", 2), "h");
-        assert_eq!(clip("abc", 3), "abc");
+    fn hinted_ids_lists_the_ids() {
         let ids: Vec<&str> =
             hinted_ids("lead\n- `a/b` — T [fact]: d\n- not an id\n- `c/d` — U\n").collect();
         assert_eq!(ids, ["a/b", "c/d"]);

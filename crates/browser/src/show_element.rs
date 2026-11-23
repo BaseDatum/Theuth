@@ -835,11 +835,7 @@ async fn evaluate(ctx: &Ctx, session: SessionId, body: &str) -> Result<Value, St
 /// One line, at most 120 characters.
 fn one_line(s: &str) -> String {
     let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() > 120 {
-        format!("{}…", flat.chars().take(119).collect::<String>())
-    } else {
-        flat
-    }
+    platform::text::ellipsize(&flat, 120).into_owned()
 }
 
 /// `url` without its query and fragment (a GET form puts its values in the query).

@@ -420,7 +420,11 @@ impl Ledger {
                             id,
                             unit: u.i,
                             section,
-                            text: cap(crate::clock::strip(u.text).trim(), SUGGESTION_CHARS),
+                            text: platform::text::clip_then_ellipsis(
+                                crate::clock::strip(u.text).trim(),
+                                SUGGESTION_CHARS,
+                            )
+                            .into_owned(),
                             created: gen_,
                         });
                     }
@@ -672,13 +676,6 @@ pub fn marker_of(line: &str) -> (Option<Section>, &str) {
         }
     }
     (None, line)
-}
-
-fn cap(s: &str, n: usize) -> String {
-    match s.char_indices().nth(n) {
-        Some((at, _)) => format!("{}…", &s[..at]),
-        None => s.to_owned(),
-    }
 }
 
 /// R3-6: an entry's text cut to [`ENTRY_CHARS`] at a word boundary, with an

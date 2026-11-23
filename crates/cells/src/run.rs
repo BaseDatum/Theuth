@@ -57,7 +57,7 @@ pub fn summary(text: &str, expect: &[ExpectResult]) -> Option<String> {
     if picked.is_empty() {
         return None;
     }
-    Some(cap(picked, 80))
+    Some(platform::text::ellipsize(picked, 80).into_owned())
 }
 
 /// Terraform's `Plan:` line, else pulumi's `N to <verb>` counts summed per verb.
@@ -113,16 +113,6 @@ fn met_lines(text: &str, expect: &[ExpectResult]) -> Option<String> {
         .map(str::trim)
         .collect();
     (!lines.is_empty()).then(|| lines.join(" · "))
-}
-
-/// At most `max` chars; a cut ends in `…`.
-fn cap(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_owned();
-    }
-    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-    out.push('…');
-    out
 }
 
 /// §7.6: `Some` when `gate` (the named cell's latest run) succeeded, ran `current_code_sha`,

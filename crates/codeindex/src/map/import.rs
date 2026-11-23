@@ -149,17 +149,6 @@ fn path_like(s: &str) -> Option<String> {
     .then(|| s.to_owned())
 }
 
-/// Clip to `n` chars with a trailing `…`.
-fn clip(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_owned()
-    } else {
-        let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
-        out.push('…');
-        out
-    }
-}
-
 impl Writer<'_> {
     /// `path` (a file or a directory prefix) is in `files` now.
     async fn indexed(&mut self, path: &str) -> anyhow::Result<bool> {
@@ -223,8 +212,14 @@ impl Writer<'_> {
                         }
                         ids.insert(n.id.clone(), nid.clone());
                         n.id = nid;
-                        n.label = clip(if label.is_empty() { &n.id } else { &label }, 80);
-                        n.sub = second.as_deref().map(|s| clip(s, 40));
+                        n.label = platform::text::ellipsize(
+                            if label.is_empty() { &n.id } else { &label },
+                            80,
+                        )
+                        .into_owned();
+                        n.sub = second
+                            .as_deref()
+                            .map(|s| platform::text::ellipsize(s, 40).into_owned());
                         n.r#ref = p;
                     }
                     for ed in &mut g.edges {

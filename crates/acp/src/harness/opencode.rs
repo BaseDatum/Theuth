@@ -263,7 +263,8 @@ pub mod task_v1 {
             a.title = Some("task".to_owned());
         }
         if let Some(prompt) = str_of(input, "prompt") {
-            a.description = Some(head(&prompt));
+            a.description =
+                Some(platform::text::clip_then_ellipsis(&prompt, DESCRIPTION_HEAD).into_owned());
         }
         if let Some(agent) = str_of(input, "subagent_type") {
             a.detail.insert("agent".into(), agent.into());
@@ -321,13 +322,6 @@ pub mod task_v1 {
         let start = text.find(open)? + open.len();
         let end = text[start..].find(close)? + start;
         Some(text[start..end].trim())
-    }
-
-    fn head(s: &str) -> String {
-        match s.char_indices().nth(DESCRIPTION_HEAD) {
-            Some((i, _)) => format!("{}…", &s[..i]),
-            None => s.to_owned(),
-        }
     }
 }
 

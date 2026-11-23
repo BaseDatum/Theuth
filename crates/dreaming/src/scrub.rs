@@ -55,12 +55,7 @@ pub fn scrub_value(v: &mut serde_json::Value) {
 
 /// The first `max` chars of `text` (char boundary safe), with `…` when cut.
 pub fn clip(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_owned();
-    }
-    let mut s: String = text.chars().take(max.saturating_sub(1)).collect();
-    s.push('…');
-    s
+    platform::text::ellipsize(text, max).into_owned()
 }
 
 #[cfg(test)]
@@ -84,7 +79,5 @@ mod tests {
         scrub_value(&mut v);
         assert_eq!(v["a"][0], "[redacted]");
         assert_eq!(v["b"]["c"], "[secret]");
-        assert_eq!(clip("héllo", 3), "hé…");
-        assert_eq!(clip("hi", 3), "hi");
     }
 }

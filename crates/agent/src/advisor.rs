@@ -230,20 +230,12 @@ fn clip_answer(text: &str) -> String {
     if text.is_empty() {
         return NO_OBJECTION.to_owned();
     }
-    let mut out = text
+    let out = text
         .lines()
         .take(ANSWER_LINES)
         .collect::<Vec<_>>()
         .join("\n");
-    if out.chars().count() > ANSWER_CHARS {
-        let cut = out
-            .char_indices()
-            .nth(ANSWER_CHARS)
-            .map_or(out.len(), |(i, _)| i);
-        out.truncate(cut);
-        out.push('…');
-    }
-    out
+    platform::text::clip_then_ellipsis(&out, ANSWER_CHARS).into_owned()
 }
 
 /// Marker the renderer puts before a `### Consultation` block.

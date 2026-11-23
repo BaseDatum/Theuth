@@ -396,12 +396,7 @@ fn common_prefix_dir(a: &str, b: &str) -> String {
 
 /// `s` cut to `n` characters with a trailing `…`.
 pub fn cut(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        return s.to_owned();
-    }
-    let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
-    out.push('…');
-    out
+    platform::text::ellipsize(s, n).into_owned()
 }
 
 /// `symbols` row: `(id, moniker, name, path, line_start, line_end, signature)`.

@@ -559,8 +559,7 @@ fn parse_navigated(reply: &str) -> Option<(&str, Option<&str>)> {
 
 /// First [`HEAD_BYTES`] of `body`, ASCII-lowercased, cut on a char boundary.
 fn head(body: &str) -> String {
-    let end = body.floor_char_boundary(HEAD_BYTES);
-    body[..end].to_ascii_lowercase()
+    platform::text::cut_bytes(body, HEAD_BYTES).to_ascii_lowercase()
 }
 
 fn html_looks_like_html(body: &str) -> bool {

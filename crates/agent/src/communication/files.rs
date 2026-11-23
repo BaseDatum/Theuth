@@ -284,15 +284,6 @@ fn reserved(name: &str) -> bool {
     }
 }
 
-/// The longest prefix of `s` within `max` bytes, cut at a character boundary.
-fn cut(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    let end = s.floor_char_boundary(max);
-    &s[..end]
-}
-
 /// A declared file name (or a contact's display name, for its folder) as saved: the
 /// six steps of Storage and sanitisation. Never empty, never a path, never hidden.
 pub fn sanitise(declared: &str) -> String {
@@ -324,7 +315,7 @@ pub fn sanitise(declared: &str) -> String {
             Some(i) if i > 0 && name.len() - i <= EXT_MAX => &name[i..],
             _ => "",
         };
-        let stem = cut(&name[..name.len() - ext.len()], NAME_MAX - ext.len());
+        let stem = platform::text::cut_bytes(&name[..name.len() - ext.len()], NAME_MAX - ext.len());
         name = trim(&format!("{stem}{ext}")).to_owned();
     }
     name
