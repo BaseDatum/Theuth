@@ -162,3 +162,44 @@ export function wordChanges(before: string, after: string): [WordPart[], WordPar
   const rows = rowsOf(a, b)
   return [rows.filter((r) => r.op !== '+').map((r) => ({ text: r.text, changed: r.op === '-' })), rows.filter((r) => r.op !== '-').map((r) => ({ text: r.text, changed: r.op === '+' }))]
 }
+
+/** One row of a side-by-side diff, as indices into the file's `DiffRow`s: a hunk header or note across both sides,
+ * or a line pair — `left` the old side (context or removal), `right` the new (context or addition); `null` is the
+ * filler cell where the other side has no counterpart. A context row is the same index on both sides. */
+export type SplitRow = { kind: 'hunk' | 'note'; row: number } | { kind: 'line'; left: number | null; right: number | null }
+
+/**
+ * Align `rows` side by side: context lines pair with themselves; a run of removals pairs in order with the run of
+ * additions right after it (never across context or a hunk header), the longer run's rest against filler. Notes
+ * inside a run (`\ No newline at end of file`) follow the run's pairs.
+ */
+export function splitRows(rows: readonly DiffRow[]): SplitRow[] {
+  const out: SplitRow[] = []
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!
+    if (row.kind !== 'line') { out.push({ kind: row.kind, row: i }); continue }
+    if (row.op !== '-' && row.op !== '+') { out.push({ kind: 'line', left: i, right: i }); continue }
+    const removed: number[] = [], added: number[] = [], notes: number[] = []
+    const take = (op: '-' | '+', into: number[]) => {
+      for (; i < rows.length && (rows[i]!.op === op || rows[i]!.kind === 'note'); i++) (rows[i]!.kind === 'note' ? notes : into).push(i)
+    }
+    take('-', removed)
+    take('+', added)
+    i--
+    for (let n = 0; n < Math.max(removed.length, added.length); n++) out.push({ kind: 'line', left: removed[n] ?? null, right: added[n] ?? null })
+    for (const note of notes) out.push({ kind: 'note', row: note })
+  }
+  return out
+}
+
+/** The changed words of each paired removal/addition (`splitRows`' pairs), by row index; unpaired rows have none. */
+export function marksOf(rows: readonly DiffRow[]): Map<number, WordPart[]> {
+  const marks = new Map<number, WordPart[]>()
+  for (const s of splitRows(rows)) {
+    if (s.kind !== 'line' || s.left === null || s.right === null || s.left === s.right) continue
+    const [before, after] = wordChanges(rows[s.left]!.text, rows[s.right]!.text)
+    marks.set(s.left, before)
+    marks.set(s.right, after)
+  }
+  return marks
+}

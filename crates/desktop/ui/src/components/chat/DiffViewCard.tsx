@@ -1,6 +1,6 @@
 import { ChevronDown, FileDiff, PanelRight } from 'lucide-react'
 import { useState } from 'react'
-import { DiffBody, INLINE_ROW_CAP } from '@/components/code/DiffBody'
+import { DiffBody, DiffLayoutToggle, INLINE_ROW_CAP, useDiffLayout } from '@/components/code/DiffBody'
 import { openDiffTile } from '@/components/tiles/open'
 import { useTileHost } from '@/components/tiles/host'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,7 @@ import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
 import type { Entry } from '@/store/sessions'
 import { DiffStats } from './DiffView'
 import { ToolSpinner } from './Indicators'
+import { PopoutButton } from './PopoutButton'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 /** `id` and `spec` come from the receipt (`null` while pending or failed); `stats` from its counts line, `none` for
@@ -83,13 +84,23 @@ export function DiffViewCard({ tool, session }: { tool: Tool; session: string })
             Open
           </Button>
         )}
+        {id && spec && <PopoutButton target={{ kind: 'diff', session, spec }} />}
       </div>
-      {spec && inline && (
-        <div className="mt-2 overflow-hidden rounded-md border">
-          <DiffBody session={session} spec={spec} cap={INLINE_ROW_CAP} className="max-h-96" />
-        </div>
-      )}
+      {spec && inline && <Inline session={session} spec={spec} />}
       {failed && <p className="mt-2 text-xs text-destructive wrap-anywhere">{tool.result?.output}</p>}
+    </div>
+  )
+}
+
+/** The card's inline diff (no tile here), Unified | Split above it; Split by default only when the card is wide. */
+function Inline({ session, spec }: { session: string; spec: DiffSpec }) {
+  const { layout, choose, ref } = useDiffLayout()
+  return (
+    <div ref={ref} className="mt-2 flex flex-col gap-2">
+      <DiffLayoutToggle layout={layout} onChange={choose} className="self-end" />
+      <div className="overflow-hidden rounded-md border">
+        <DiffBody session={session} spec={spec} cap={INLINE_ROW_CAP} layout={layout} className="max-h-96" />
+      </div>
     </div>
   )
 }

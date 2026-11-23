@@ -1,5 +1,5 @@
-// A chat, an artifact, a note, a notebook, a meeting or a PTY in its own desktop window: the same bundle at the same
-// route with `?window=<label>`. The label (`popout-<kind>-<id>`) is what the Tauri host keys the window on
+// A chat, an artifact, a note, a notebook, a meeting, a PTY, a file or a diff in its own desktop window: the same
+// bundle at the same route with `?window=<label>`. The label (`popout-<kind>-<id>`) is what the Tauri host keys the window on
 // (focus-if-open, remembered size/position, the `popout-*` capability); in a browser it is the `window.open` name.
 
 import { invoke } from '@tauri-apps/api/core'
@@ -7,6 +7,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { container } from '@/lib/platform'
 import { isTauri } from '@/lib/tauri'
+import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
 
 export type PopoutTarget =
   | { kind: 'chat'; session: string }
@@ -34,10 +35,23 @@ export type PopoutTarget =
   | { kind: 'page'; path: string; key?: string }
   /** `/web/$id?url=…&title=…` (205 D6): one web view frame alone; it hosts the shell's `web-<id>` child web view. */
   | { kind: 'web'; id: string; url: string; title: string }
+  /** `/file/$session?path=…&line=…&end_line=…` (212): one `show_file` file alone, following the disk. */
+  | { kind: 'file'; session: string; path: string; line?: number; end_line?: number }
+  /** `/diff/$session?spec=<DiffSpec JSON>` (212): one `show_diff` diff alone; the label keys on a hash of the spec. */
+  | { kind: 'diff'; session: string; spec: DiffSpec }
+
+/** FNV-1a of `s`, 8 hex digits: a diff spec's short, label-safe name. */
+function fnv(s: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193)
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
 
 const idOf = (t: PopoutTarget): string =>
   t.kind === 'page' ? `${t.path.replace(/^\//, '')}${t.key ? `-${t.key}` : ''}` :
   t.kind === 'web' ? t.id :
+  t.kind === 'file' ? `${t.session}-${t.path}` :
+  t.kind === 'diff' ? `${t.session}-${fnv(JSON.stringify(t.spec))}` :
   t.kind === 'chat' || t.kind === 'talk'
     ? t.session
     : t.kind === 'artifact'
@@ -57,6 +71,8 @@ const idOf = (t: PopoutTarget): string =>
 const pathOf = (t: PopoutTarget): string =>
   t.kind === 'page' ? t.path :
   t.kind === 'web' ? `/web/${encodeURIComponent(t.id)}?url=${encodeURIComponent(t.url)}&title=${encodeURIComponent(t.title)}` :
+  t.kind === 'file' ? `/file/${encodeURIComponent(t.session)}?path=${encodeURIComponent(t.path)}${t.line === undefined ? '' : `&line=${t.line}`}${t.end_line === undefined ? '' : `&end_line=${t.end_line}`}` :
+  t.kind === 'diff' ? `/diff/${encodeURIComponent(t.session)}?spec=${encodeURIComponent(JSON.stringify(t.spec))}` :
   t.kind === 'chat' || t.kind === 'talk'
     ? `/${t.kind === 'chat' ? 'c' : 'talk'}/${encodeURIComponent(t.session)}`
     : t.kind === 'artifact'
@@ -86,6 +102,27 @@ export const popoutUrl = (t: PopoutTarget): string => {
 /** 143 D3: where a just-created note opens — its own window on a desktop (or a browser), the page itself on a phone or iOS. */
 export const noteOpenMode = (isMobile: boolean, canPopout: boolean): 'popout' | 'navigate' => (!isMobile && canPopout ? 'popout' : 'navigate')
 
+/** A popped file's `line`/`end_line` search value (a string from the URL, a number from the router's JSON reading):
+ * a positive integer, else none. */
+export function lineParam(v: unknown): number | undefined {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v !== '' ? Number(v) : NaN
+  return Number.isInteger(n) && n > 0 ? n : undefined
+}
+
+/** A popped diff's `spec` search value: its JSON (from the URL) or the object the router already parsed it into;
+ * `null` when it is not a `DiffSpec`. */
+export function specParam(v: unknown): DiffSpec | null {
+  let spec = v
+  if (typeof v === 'string') {
+    try {
+      spec = JSON.parse(v)
+    } catch {
+      return null
+    }
+  }
+  return spec !== null && typeof spec === 'object' && !Array.isArray(spec) && typeof (spec as DiffSpec).mode === 'string' ? (spec as DiffSpec) : null
+}
+
 /** What a window at `href` shows alone, or `null` for the ordinary shell (no `?window=` or a route that has no popped form). */
 export function popoutTarget(href: string): PopoutTarget | null {
   const url = new URL(href, 'http://x')
@@ -97,6 +134,16 @@ export function popoutTarget(href: string): PopoutTarget | null {
   if (head === 'pty') return sub ? { kind: 'pty', session: decodeURIComponent(id), job: decodeURIComponent(sub) } : null
   if (head === 'codemap') return sub ? { kind: 'codemap', session: decodeURIComponent(id), root: decodeURIComponent(sub) } : null
   if (head === 'web') return { kind: 'web', id: decodeURIComponent(id), url: url.searchParams.get('url') ?? '', title: url.searchParams.get('title') ?? '' }
+  if (head === 'file') {
+    const path = url.searchParams.get('path')
+    if (!path) return null
+    const line = lineParam(url.searchParams.get('line')), end = lineParam(url.searchParams.get('end_line'))
+    return { kind: 'file', session: decodeURIComponent(id), path, ...(line === undefined ? {} : { line }), ...(end === undefined ? {} : { end_line: end }) }
+  }
+  if (head === 'diff') {
+    const spec = specParam(url.searchParams.get('spec'))
+    return spec ? { kind: 'diff', session: decodeURIComponent(id), spec } : null
+  }
   if (head === 'c') return { kind: 'chat', session: decodeURIComponent(id) }
   if (head === 'talk') return { kind: 'talk', session: decodeURIComponent(id) }
   if (head === 'vm') return { kind: 'vm', name: decodeURIComponent(id) }
@@ -135,9 +182,10 @@ export const artifactsRail = (t: PopoutTarget | null): boolean => t?.kind !== 'a
 export const popoutMeeting = (t: PopoutTarget | null): string | null =>
   t !== null && (t.kind === 'meeting' || t.kind === 'meeting-note') ? t.meeting : null
 
-/** The session a popped window belongs to (`chat`, or the PTY's owning session), else `null`: `SessionDeleted` for it closes the window. */
+/** The session a popped window belongs to (`chat`, or the PTY's, map's, file's or diff's owning session), else `null`:
+ * `SessionDeleted` for it closes the window. */
 export const popoutSession = (t: PopoutTarget | null): string | null =>
-  t !== null && (t.kind === 'chat' || t.kind === 'talk' || t.kind === 'pty' || t.kind === 'codemap') ? t.session : null
+  t !== null && (t.kind === 'chat' || t.kind === 'talk' || t.kind === 'pty' || t.kind === 'codemap' || t.kind === 'file' || t.kind === 'diff') ? t.session : null
 
 /**
  * Whether this container can open a second window at all: a desktop shell (`open_window`) or a plain browser

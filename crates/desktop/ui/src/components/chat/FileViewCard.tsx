@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { Entry } from '@/store/sessions'
 import { ToolSpinner } from './Indicators'
+import { PopoutButton } from './PopoutButton'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 /** `id`: the descriptor id from the receipt, `null` while pending or failed. `path` is absolute once received. */
@@ -73,6 +74,7 @@ export function FileViewCard({ tool, session }: { tool: Tool; session: string })
             Open
           </Button>
         )}
+        {id && call.path && <PopoutButton target={{ kind: 'file', session, path: call.path, ...lines(call.line, call.end_line) }} />}
       </div>
       {id && inline && <Inline session={session} call={call} />}
       {failed && <p className="mt-2 text-xs text-destructive wrap-anywhere">{tool.result?.output}</p>}

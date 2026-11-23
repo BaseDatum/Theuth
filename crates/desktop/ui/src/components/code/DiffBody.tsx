@@ -1,9 +1,11 @@
-// 212 §4: the diff renderer shared by an edit card's `DiffView` (capped, inside the card) and the `show_diff` tile and
-// card (`DiffBody`, every file, collapsible, fetched with `diff_view_read`).
+// 212 §4: the diff renderer shared by an edit card's `DiffView` (capped, inside the card) and the `show_diff` tile,
+// card and popped window (`DiffBody`, every file, collapsible, fetched with `diff_view_read`), unified or split.
 import { useQuery } from '@tanstack/react-query'
 import { ChevronRight } from 'lucide-react'
-import { useMemo, useState } from 'react'
-import { type DiffFile, type DiffRow, type WordPart, parseUnified, wordChanges } from '@/lib/editDiff'
+import { useCallback, useMemo, useRef, useState } from 'react'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { type DiffLayout, diffLayout, useDiffLayoutChoice } from '@/lib/diff-layout'
+import { type DiffFile, type DiffRow, type WordPart, marksOf, parseUnified, splitRows } from '@/lib/editDiff'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
@@ -11,23 +13,13 @@ import type { DiffFileStat, DiffViewText } from '@/rpc/bindings/method.artifact.
 import { Unavailable, useQuerySupport } from '@/rpc/capabilities'
 
 const ROW = { ' ': 'text-fg-secondary', '-': 'bg-danger-bg', '+': 'bg-success-bg' }
+const NUM = 'select-none px-1.5 text-right align-top text-fg-tertiary'
 
-/** Pair adjacent removal/addition runs, without crossing context or hunk boundaries. */
-function marksOf(rows: DiffRow[]): Map<number, WordPart[]> {
-  const marks = new Map<number, WordPart[]>()
-  for (let i = 0; i < rows.length; i++) {
-    if (rows[i]?.op !== '-') continue
-    const removed: number[] = [], added: number[] = []
-    while (rows[i]?.op === '-' || rows[i]?.kind === 'note') { if (rows[i]?.op === '-') removed.push(i); i++ }
-    while (rows[i]?.op === '+' || rows[i]?.kind === 'note') { if (rows[i]?.op === '+') added.push(i); i++ }
-    for (let n = 0; n < Math.min(removed.length, added.length); n++) {
-      const a = removed[n]!, b = added[n]!
-      const [before, after] = wordChanges(rows[a]!.text, rows[b]!.text)
-      marks.set(a, before); marks.set(b, after)
-    }
-    i--
-  }
-  return marks
+/** `row`'s text, its changed words (`marksOf`) marked. */
+function Words({ row, parts }: { row: DiffRow; parts: WordPart[] | undefined }) {
+  return <>{parts?.map((part, n) => !part.changed ? part.text : row.op === '+'
+    ? <ins key={n} className="rounded-sm bg-success/25 no-underline">{part.text}</ins>
+    : <del key={n} className="rounded-sm bg-danger/25 no-underline">{part.text}</del>) ?? row.text}</>
 }
 
 /** One file's hunk headers, notes and numbered lines, changed words marked. */
@@ -37,14 +29,41 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
     {rows.map((row, i) => row.kind !== 'line' ? <tr key={i}>
       <td colSpan={4} className={cn('px-3 whitespace-pre text-fg-tertiary', row.kind === 'hunk' && 'bg-project-slate/10')}>{row.text}</td>
     </tr> : <tr key={i} className={ROW[row.op ?? ' ']}>
-      <td className="w-px min-w-9 select-none px-1.5 text-right align-top text-fg-tertiary">{row.old}</td>
-      <td className="w-px min-w-9 select-none px-1.5 text-right align-top text-fg-tertiary">{row.next}</td>
+      <td className={cn('w-px min-w-9', NUM)}>{row.old}</td>
+      <td className={cn('w-px min-w-9', NUM)}>{row.next}</td>
       <td className={cn('w-px select-none px-1 align-top', row.op === '+' ? 'text-success' : row.op === '-' ? 'text-danger' : '')}>{row.op === '-' ? '−' : row.op}</td>
-      <td className="w-full pr-3 whitespace-pre">{marks.get(i)?.map((part, n) => !part.changed ? part.text : row.op === '+'
-        ? <ins key={n} className="rounded-sm bg-success/25 no-underline">{part.text}</ins>
-        : <del key={n} className="rounded-sm bg-danger/25 no-underline">{part.text}</del>) ?? row.text}</td>
+      <td className="w-full pr-3 whitespace-pre"><Words row={row} parts={marks.get(i)} /></td>
     </tr>)}
   </tbody></table>
+}
+
+/** One side's cells of a split row: its line number and text, or filler where the other side has no counterpart. */
+function Side({ rows, at, side, marks }: { rows: DiffRow[]; at: number | null; side: 'old' | 'new'; marks: Map<number, WordPart[]> }) {
+  const edge = side === 'old' && 'border-r border-border-subtle'
+  const row = at === null ? undefined : rows[at]
+  if (at === null || !row) return <td colSpan={2} className={cn('bg-layer-2/60', edge)} data-filler="" />
+  const tint = ROW[row.op ?? ' ']
+  return <>
+    <td className={cn(NUM, tint)}>{side === 'old' ? row.old : row.next}</td>
+    <td className={cn('pr-3 pl-1 align-top whitespace-pre-wrap wrap-anywhere', tint, edge)}><Words row={row} parts={marks.get(at)} /></td>
+  </>
+}
+
+/** One file side by side (`splitRows`): old on the left, new on the right, each side wrapping its long lines so a row
+ * stays one aligned row and neither side scrolls out of view. */
+function SplitTable({ rows }: { rows: DiffRow[] }) {
+  const marks = marksOf(rows)
+  return <table className="w-full table-fixed border-collapse">
+    <colgroup><col className="w-12" /><col /><col className="w-12" /><col /></colgroup>
+    <tbody>
+      {splitRows(rows).map((s, n) => s.kind !== 'line' ? <tr key={n}>
+        <td colSpan={4} className={cn('px-3 whitespace-pre-wrap wrap-anywhere text-fg-tertiary', s.kind === 'hunk' && 'bg-project-slate/10')}>{rows[s.row]!.text}</td>
+      </tr> : <tr key={n}>
+        <Side rows={rows} at={s.left} side="old" marks={marks} />
+        <Side rows={rows} at={s.right} side="new" marks={marks} />
+      </tr>)}
+    </tbody>
+  </table>
 }
 
 export type FileStat = Pick<DiffFileStat, 'status' | 'added' | 'removed'>
@@ -53,14 +72,15 @@ export type FileStat = Pick<DiffFileStat, 'status' | 'added' | 'removed'>
  * Files of a parsed patch, each a section under a sticky header, drawing at most `cap` rows across all files (then
  * Show all, when `onShowAll` is given). The caller's `className` is the chrome (an edit card's capped strip, a tile's
  * full height). With `stats` (the `diff_view_read` per-file counts, by path) a header is a fold button carrying the
- * file's status and `+N −M` instead of the hunk count.
+ * file's status and `+N −M` instead of the hunk count. `layout` `split` draws each file side by side.
  */
-export function DiffSections({ files, cap = Infinity, onShowAll, className, stats }: {
+export function DiffSections({ files, cap = Infinity, onShowAll, className, stats, layout = 'unified' }: {
   files: DiffFile[]
   cap?: number
   onShowAll?: () => void
   className?: string
   stats?: Map<string, FileStat>
+  layout?: DiffLayout
 }) {
   const [folded, setFolded] = useState<ReadonlySet<number>>(() => new Set())
   const fold = (f: number) => setFolded((s) => {
@@ -94,7 +114,7 @@ export function DiffSections({ files, cap = Infinity, onShowAll, className, stat
           </div>
         )}
         {!shut && !file.rows.length && <div className="px-3 py-1 text-fg-tertiary">{stat ? 'No text changes' : 'No changes'}</div>}
-        {!shut && <DiffTable rows={visible} />}
+        {!shut && (layout === 'split' ? <SplitTable rows={visible} /> : <DiffTable rows={visible} />)}
       </section>
     })}
     {onShowAll && total > cap && <button type="button" className="sticky left-0 w-full border-t border-border-subtle bg-layer-1 px-3 py-1 text-project-lapis" onClick={onShowAll}>Show all {total} lines</button>}
@@ -126,13 +146,56 @@ export function useDiffView(session: string, spec: DiffSpec) {
   return { ...query, supported }
 }
 
+/** The tile and popped window's meta line: `N files +A −R`, and whether the diff is cut short. */
+export const diffMeta = (data: Pick<DiffViewText, 'files' | 'added' | 'removed' | 'truncated'>): string =>
+  `${data.files.length} ${data.files.length === 1 ? 'file' : 'files'} +${data.added} −${data.removed}${data.truncated ? ' · truncated' : ''}`
+
+/** What a diff `spec` shows, for a window that has only the spec (a popped diff): `staged`, `commit abc1234`, … */
+export function diffTitle(spec: DiffSpec): string {
+  const short = (sha: string | null | undefined) => (sha ?? '').slice(0, 7)
+  const base = (p: string | null | undefined) => (p ?? '').split(/[\\/]/).pop() ?? ''
+  const what = spec.mode === 'staged' ? 'staged'
+    : spec.mode === 'commit' ? `commit ${short(spec.a)}`
+    : spec.mode === 'range' ? `${short(spec.a)}${spec.three_dot ? '...' : '..'}${short(spec.b)}`
+    : spec.mode === 'files' ? `${base(spec.a)} ↔ ${base(spec.b)}`
+    : 'working tree'
+  return spec.paths?.length ? `${what} · ${spec.paths.join(' ')}` : what
+}
+
+/** The diff layout a box draws in (`lib/diff-layout.ts`): the remembered choice, else by the width of the element
+ * `ref` is put on; `choose` remembers an explicit choice for every diff. */
+export function useDiffLayout(): { layout: DiffLayout; choose(layout: DiffLayout): void; ref(el: HTMLElement | null): void } {
+  const { chosen, choose } = useDiffLayoutChoice()
+  const [width, setWidth] = useState(0)
+  const watch = useRef<ResizeObserver | null>(null)
+  const ref = useCallback((el: HTMLElement | null) => {
+    watch.current?.disconnect()
+    watch.current = null
+    if (!el) return
+    setWidth(el.getBoundingClientRect().width)
+    watch.current = new ResizeObserver(([e]) => e && setWidth(e.contentRect.width))
+    watch.current.observe(el)
+  }, [])
+  return { layout: diffLayout(chosen, width), choose, ref }
+}
+
+/** The Unified | Split switch of a diff tile, card or popped window. */
+export function DiffLayoutToggle({ layout, onChange, className }: { layout: DiffLayout; onChange(layout: DiffLayout): void; className?: string }) {
+  return (
+    <ToggleGroup type="single" variant="outline" size="sm" value={layout} aria-label="Diff layout" className={className} onValueChange={(v) => (v === 'unified' || v === 'split') && onChange(v)}>
+      <ToggleGroupItem value="unified" className="px-2 text-xs">Unified</ToggleGroupItem>
+      <ToggleGroupItem value="split" className="px-2 text-xs">Split</ToggleGroupItem>
+    </ToggleGroup>
+  )
+}
+
 /** Rows drawn before Show all: an inline card keeps the edit card's cap, a tile draws far more. */
 export const INLINE_ROW_CAP = 400
 export const TILE_ROW_CAP = 5000
 
-/** A `show_diff` diff (212 §4): every file a collapsible section with its status and `+N −M`, unified view. `className`
- * is the chrome: the tile's full height, or the card's capped strip. */
-export function DiffBody({ session, spec, cap = TILE_ROW_CAP, className }: { session: string; spec: DiffSpec; cap?: number; className?: string }) {
+/** A `show_diff` diff (212 §4): every file a collapsible section with its status and `+N −M`, in `layout`.
+ * `className` is the chrome: the tile's full height, or the card's capped strip. */
+export function DiffBody({ session, spec, cap = TILE_ROW_CAP, layout = 'unified', className }: { session: string; spec: DiffSpec; cap?: number; layout?: DiffLayout; className?: string }) {
   const q = useDiffView(session, spec)
   const [all, setAll] = useState(false)
   const parsed = useMemo(() => (q.data ? diffFiles(q.data) : null), [q.data])
@@ -146,7 +209,7 @@ export function DiffBody({ session, spec, cap = TILE_ROW_CAP, className }: { ses
   }
   if (!parsed.files.length) return <div className={cn(box, 'p-3 text-fg-tertiary')}>No changes</div>
   return <div className={cn(box, 'flex flex-col')}>
-    <DiffSections files={parsed.files} stats={parsed.stats} cap={all ? Infinity : cap} onShowAll={() => setAll(true)} />
+    <DiffSections files={parsed.files} stats={parsed.stats} layout={layout} cap={all ? Infinity : cap} onShowAll={() => setAll(true)} />
     {q.data.truncated && <div className="border-t border-border-subtle px-3 py-1 text-fg-tertiary">The diff is truncated; the files above are not all of it.</div>}
   </div>
 }

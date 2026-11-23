@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { artifactsRail, canPopout, noteOpenMode, popoutLabel, popoutMeeting, popoutSession, popoutSize, popoutTarget, popoutUrl, soloPopout } from './popout'
+import { type PopoutTarget, artifactsRail, canPopout, noteOpenMode, popoutLabel, popoutMeeting, popoutSession, popoutSize, popoutTarget, popoutUrl, soloPopout } from './popout'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -199,4 +199,42 @@ test('205 D6: a web view pops out at /web/$id with its address and title in the 
   expect(soloPopout(t)).toBe(true)
   expect(popoutSession(t)).toBeNull()
   expect(popoutTarget('/web/0123456789abcdef')).toBeNull()
+})
+
+test('212: a show_file file pops out at /file/$session with its path and lines in the query; the session closes it', () => {
+  const t = { kind: 'file', session: '01J8ZK-abc', path: '/Users/sky/My Code/a&b.rs', line: 12, end_line: 40 } as const
+  expect(popoutLabel(t)).toBe('popout-file-01J8ZK-abc-_Users_sky_My_Code_a_b_rs')
+  expect(popoutUrl(t)).toBe('/file/01J8ZK-abc?path=%2FUsers%2Fsky%2FMy%20Code%2Fa%26b.rs&line=12&end_line=40&window=popout-file-01J8ZK-abc-_Users_sky_My_Code_a_b_rs')
+  expect(popoutTarget(popoutUrl(t))).toEqual(t)
+  expect(popoutTarget(`tauri://localhost${popoutUrl(t)}`)).toEqual(t)
+  // Lines are optional and leave the label alone: the same file is one window wherever it was scrolled to.
+  const bare = { kind: 'file', session: 's1', path: '/a.rs' } as const
+  expect(popoutUrl(bare)).toBe('/file/s1?path=%2Fa.rs&window=popout-file-s1-_a_rs')
+  expect(popoutTarget(popoutUrl(bare))).toEqual(bare)
+  expect(popoutLabel({ ...bare, line: 3 })).toBe(popoutLabel(bare))
+  expect(popoutTarget(popoutUrl({ kind: 'file', session: 's1', path: '/a.rs', line: 7 }))).toEqual({ kind: 'file', session: 's1', path: '/a.rs', line: 7 })
+  // No path is no file window; a bad line is dropped.
+  expect(popoutTarget('/file/s1?window=x')).toBeNull()
+  expect(popoutTarget('/file/s1?path=%2Fa&line=zero&end_line=0&window=x')).toEqual({ kind: 'file', session: 's1', path: '/a' })
+  expect(popoutSession(t)).toBe('01J8ZK-abc')
+  expect(soloPopout(t)).toBe(true)
+})
+
+test('212: a show_diff diff pops out at /diff/$session with its spec JSON in the query; the label keys on a short hash of it', () => {
+  const t = { kind: 'diff', session: '01J8ZK-abc', spec: { mode: 'range', root: '/Users/sky/repo', a: 'a'.repeat(40), b: 'b'.repeat(40), three_dot: true, paths: ['src/a b.rs'] } } satisfies PopoutTarget
+  const label = popoutLabel(t)
+  expect(label).toMatch(/^popout-diff-01J8ZK-abc-[0-9a-f]{8}$/)
+  expect(popoutUrl(t)).toBe(`/diff/01J8ZK-abc?spec=${encodeURIComponent(JSON.stringify(t.spec))}&window=${label}`)
+  expect(popoutTarget(popoutUrl(t))).toEqual(t)
+  expect(popoutTarget(`tauri://localhost${popoutUrl(t)}`)).toEqual(t)
+  // Another spec of the same session is another window; the same spec again focuses the open one.
+  const staged = { kind: 'diff', session: '01J8ZK-abc', spec: { mode: 'staged', root: '/Users/sky/repo' } } as const
+  expect(popoutLabel(staged)).not.toBe(label)
+  expect(popoutLabel({ ...t, spec: { ...t.spec } })).toBe(label)
+  expect(popoutTarget(popoutUrl(staged))).toEqual(staged)
+  // A missing or broken spec is no diff window.
+  expect(popoutTarget('/diff/s1?window=x')).toBeNull()
+  expect(popoutTarget('/diff/s1?spec=%7Bnope&window=x')).toBeNull()
+  expect(popoutTarget('/diff/s1?spec=%5B%5D&window=x')).toBeNull()
+  expect(popoutSession(t)).toBe('01J8ZK-abc')
 })
