@@ -36,12 +36,13 @@ pub fn bind(path: &Path) -> anyhow::Result<UnixListener> {
         std::fs::remove_file(path).with_context(|| format!("remove stale {}", path.display()))?;
     }
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let staging = parent.join(format!(".admin-bind-{}-{:016x}", std::process::id(), rand::random::<u64>()));
+    // Short names: the staging path must fit SUN_LEN (104 on macOS) wherever the final socket does.
+    let staging = parent.join(format!(".ab{:08x}", rand::random::<u32>()));
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(&staging)
         .with_context(|| format!("create {}", staging.display()))?;
-    let tmp = staging.join("admin.sock");
+    let tmp = staging.join("s");
     let bound = bind_private(&tmp, path);
     let _ = std::fs::remove_file(&tmp);
     let _ = std::fs::remove_dir(&staging);
@@ -268,6 +269,7 @@ fn apply_ban(edge: &Arc<Edge>, kind: BanKind, value: &str) -> usize {
                 crate::certs::retire(&e, &n, crate::acme::Reason::CessationOfOperation).await;
             });
             let removed = edge.drop_routes(|_, r| r.name == value);
+            crate::k8s::gone(edge, value);
             let mut touched: Vec<_> = Vec::new();
             for (host, r) in removed {
                 r.tunnel.kill(Some(host), KillReason::EdgeBan);

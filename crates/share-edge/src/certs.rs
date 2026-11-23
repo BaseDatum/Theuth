@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context as _, bail};
+use anyhow::bail;
 use backon::BackoffBuilder as _;
 use futures::FutureExt as _;
 use futures::future::BoxFuture;

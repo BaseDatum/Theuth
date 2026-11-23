@@ -68,6 +68,9 @@ pub struct EngineRow {
     pub revoked_ms: Option<i64>,
 }
 
+/// `state, owner, reclaim_after_ms, banned` of a name, as [`Store::claim`] reads it.
+type ClaimRow = (String, Option<String>, Option<i64>, Option<String>);
+
 /// Columns of a new or re-claimed name.
 pub struct NewName<'a> {
     /// `D`.
@@ -194,6 +197,17 @@ impl Store {
         Ok(())
     }
 
+    /// Names under `domain` that can serve: held and not banned (EDGE-K8S desired set).
+    pub async fn serving_names(&self, domain: &str) -> anyhow::Result<Vec<String>> {
+        Ok(sqlx::query_scalar::<_, String>(
+            "SELECT name FROM names WHERE domain = ? AND banned IS NULL
+             AND state IN ('allocated','queued','slotted','valid') ORDER BY name",
+        )
+        .bind(domain)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     /// The revocation time of `engine` in `mesh`.
     pub async fn revoked(&self, mesh: &str, engine: &str) -> anyhow::Result<Option<i64>> {
         Ok(sqlx::query_scalar::<_, Option<i64>>(
@@ -303,7 +317,7 @@ impl Store {
     /// `last_attach_ms` starts at the claim and the §6.3 "unattached for 90 days" rule counts from there.
     pub async fn claim(&self, n: NewName<'_>, reserved_max: u32) -> anyhow::Result<Claimed> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let row: Option<(String, Option<String>, Option<i64>, Option<String>)> = sqlx::query_as(
+        let row: Option<ClaimRow> = sqlx::query_as(
             "SELECT state, owner, reclaim_after_ms, banned FROM names WHERE domain = ? AND name = ?",
         )
         .bind(n.domain)
