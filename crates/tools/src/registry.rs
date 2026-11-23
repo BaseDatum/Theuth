@@ -29,9 +29,9 @@ use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::journal::{InstallJournal, Journal, NoopJournal, QuestionRow};
 use crate::resources::{CloseAck, CloseTree, SessionResources, TreeOpened};
 use crate::{
-    APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, REGISTRY_ACTOR, Risk, ToolCall,
-    ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, edit, fs, glob, jobs, pty, reminder,
-    schema, shell,
+    APPROVAL_ACTOR, ASK_ACTOR, DynTool, Policy, PolicyAction, PreviewCx, REGISTRY_ACTOR, Risk,
+    ToolCall, ToolCx, ToolOutput, ToolSource, ToolSpec, ToolsConfig, edit, fs, glob, jobs, pty,
+    reminder, schema, shell,
 };
 
 /// [`CloseTreeAll`]'s wait on one participant before its ack is `timeout`.
@@ -2430,10 +2430,26 @@ async fn invoke(
     let suspend = || gate.as_ref().and_then(|g| g.suspend(session));
     let mut approved = None;
     if let Some(approval) = approval {
+        // 210 §7.3: the tool's own card details (`share_publish`: the exact URL) join the args
+        // the card shows; `call` keeps the model's args. A refusal here raises no card.
+        let mut args = call.args.clone();
+        let preview = PreviewCx {
+            session,
+            call_id: call_id.clone(),
+        };
+        match tool.approval_preview(&call.args, preview).await {
+            Ok(Some(extra)) => {
+                if let Some(o) = args.as_object_mut() {
+                    o.extend(extra);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => return ToolOutput::err(format!("{}: {e:#}", spec.name)),
+        }
         let req = RequestApproval {
             session: call.session,
             tool: spec.name.clone(),
-            args: call.args.clone(),
+            args,
             risk: spec.risk,
             call_id: Some(call_id.clone()),
         };
@@ -5566,6 +5582,114 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(i.action, PolicyAction::Ask);
+    }
+
+    /// A human-only tool with a card preview: it keeps what it showed under the call's key and
+    /// publishes exactly that.
+    #[derive(Default)]
+    struct Previewing {
+        previews: std::sync::atomic::AtomicUsize,
+        shown: Mutex<HashMap<(SessionId, String), String>>,
+        published: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for Arc<Previewing> {
+        const NAME: &'static str = "publish";
+        const RISK: Risk = Risk::Destructive;
+        const HUMAN_ONLY: bool = true;
+        const APPROVAL_PREVIEW: bool = true;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn approval_preview(
+            &self,
+            args: Self::Args,
+            cx: PreviewCx,
+        ) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
+            let n = self
+                .previews
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            anyhow::ensure!(args.get("refuse").is_none(), "switched off");
+            let url = format!("https://n{n}.tun.zip/");
+            lock(&self.shown).insert((cx.session, cx.call_id), url.clone());
+            let mut m = serde_json::Map::new();
+            m.insert("url".into(), url.into());
+            Ok(Some(m))
+        }
+        async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+            assert!(args.get("url").is_none(), "the card's keys reached the call");
+            let url = lock(&self.shown)
+                .remove(&(cx.session, cx.call_id))
+                .ok_or_else(|| anyhow::anyhow!("no preview"))?;
+            lock(&self.published).push(url.clone());
+            Ok(ToolOutput::ok(url))
+        }
+    }
+
+    /// Answers every card with one decision and records the card's args.
+    #[derive(kameo::Actor)]
+    struct Answer(ActorRef<Approval>, Decision, Arc<Mutex<Vec<serde_json::Value>>>);
+
+    impl Message<crate::approval::ApprovalRequested> for Answer {
+        type Reply = ();
+        async fn handle(
+            &mut self,
+            m: crate::approval::ApprovalRequested,
+            _: &mut Context<Self, ()>,
+        ) {
+            lock(&self.2).push(m.args);
+            let _ = self
+                .0
+                .ask(crate::approval::Resolve {
+                    id: m.id,
+                    decision: self.1,
+                })
+                .await;
+        }
+    }
+
+    /// 210 §7.3: the registry awaits the tool's preview once before the card, the card carries
+    /// its keys, `call` gets the model's args and acts on the previewed value; a denied card
+    /// never runs the call; a failed preview raises no card.
+    #[tokio::test]
+    async fn approval_preview_fills_the_card_and_binds_the_call() {
+        for decision in [Decision::Allow, Decision::Deny] {
+            let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+            let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(5)));
+            let tool = Arc::new(Previewing::default());
+            let reg = ToolRegistry::spawn(ToolRegistry {
+                approval: Some(approval.clone()),
+                ..build(vec![Arc::new(tool.clone())], None)
+            });
+            let cards = Arc::<Mutex<Vec<serde_json::Value>>>::default();
+            let answer = Answer::spawn(Answer(approval.clone(), decision, cards.clone()));
+            rt.subscribe::<Answer, crate::approval::ApprovalRequested>(&answer)
+                .await;
+            let session = SessionId::new();
+            let mut c = call("publish", session);
+            c.args = serde_json::json!({"source": 8080});
+            let out = reg.ask(Invoke(c)).await.unwrap();
+            assert_eq!(tool.previews.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(
+                *lock(&cards),
+                [serde_json::json!({"source": 8080, "url": "https://n0.tun.zip/"})]
+            );
+            if decision == Decision::Allow {
+                assert_eq!(out.content, "https://n0.tun.zip/", "{out:?}");
+                assert_eq!(*lock(&tool.published), ["https://n0.tun.zip/"]);
+            } else {
+                assert_eq!(out.content, "publish: denied by user");
+                assert!(lock(&tool.published).is_empty());
+            }
+
+            let mut c = call("publish", session);
+            c.args = serde_json::json!({"refuse": true});
+            let out = reg.ask(Invoke(c)).await.unwrap();
+            assert_eq!(out.content, "publish: switched off");
+            assert_eq!(lock(&cards).len(), 1, "a refused preview raised a card");
+        }
     }
 
     /// 210 §7.2: policy `deny` still denies a human-only tool; an app press never answers
