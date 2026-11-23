@@ -20,6 +20,7 @@ import {
   createSecretRequests,
 } from './approvals'
 import { type ConnectionApi, createConnection } from './connection'
+import { type ElementFormsApi, createElementForms } from './element-forms'
 import { type SessionsApi, createSessions } from './sessions'
 
 /** One engine's stores and query cache. */
@@ -29,6 +30,8 @@ export type Stores = {
   approvals: ApprovalsApi
   asks: AsksApi
   secretRequests: SecretRequestsApi
+  /** 209 §4.10: the form cards of `browser_show_element`. */
+  elementForms: ElementFormsApi
   connection: ConnectionApi
   qc: QueryClient
   /** Transient search state: remembered categories, last view, origin of a search-opened screen (49 §7). */
@@ -49,6 +52,7 @@ export function scope(id: string): Stores {
       approvals: createApprovals(),
       asks: createAsks(),
       secretRequests: createSecretRequests(),
+      elementForms: createElementForms(),
       connection: createConnection(),
       search: createSearchState(),
       qc: new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, retry: (count, error) => !(error instanceof UnsupportedCapability || error instanceof RpcError && error.code === -32601) && count < 1 } } }),

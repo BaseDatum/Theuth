@@ -34,8 +34,9 @@
 //! of the stream.
 //!
 //! 209 §4.4: the owner also relays the [`WIRE_RELAYED`] topics of its own wire feed (`show_web`
-//! tiles, page previews, tile calls) as `Bus` frames of the event's `type`, so a client on a front
-//! door can open a remote-owned session's tile and answer its tile calls.
+//! tiles, page previews, tile calls, `browser_show_element` cards) as `Bus` frames of the event's
+//! `type`, so a client on a front door can open a remote-owned session's tile, answer its tile
+//! calls and fill its cards.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
@@ -115,11 +116,11 @@ impl wire::WireEvent for FollowState {
 }
 
 /// 209 §4.4: wire events of a session that the owner relays from its own wire feed by topic,
-/// as `(kind, topic)`: `show_web` tiles, page previews and tile calls raised on the owner reach a
-/// client attached to a front door. Their owner (`artifact`) declares them, so the relay needs no
-/// dependency on it. A frame without a `session` (the `*Resolved` events) goes to the session its
-/// request named. Only topics every engine declares belong here: a front door drops a relayed
-/// frame whose topic it has not declared (P5 adds its element-form pair with its declaration).
+/// as `(kind, topic)`: `show_web` tiles, page previews, tile calls and `browser_show_element`
+/// cards raised on the owner reach a client attached to a front door. Their owners (`artifact`,
+/// `browser`) declare them, so the relay needs no dependency on either. A frame without a
+/// `session` (the `*Resolved` events) goes to the session its request named. Only topics every
+/// engine declares belong here: a front door drops a relayed frame whose topic it has not declared.
 pub const WIRE_RELAYED: &[(&str, &str)] = &[
     ("WebViewOpened", "artifact.web-view-opened"),
     ("PtyViewOpened", "artifact.pty-view-opened"),
@@ -128,6 +129,8 @@ pub const WIRE_RELAYED: &[(&str, &str)] = &[
     ("PagePreviewResolved", "artifact.page-preview-resolved"),
     ("WebViewCallRequested", "artifact.web-view-call-requested"),
     ("WebViewCallResolved", "artifact.web-view-call-resolved"),
+    ("ElementFormRequested", "browser.element-form-requested"),
+    ("ElementFormResolved", "browser.element-form-resolved"),
 ];
 
 /// The topic a [`WIRE_RELAYED`] kind is declared under, for the front door's re-publication.
@@ -1359,10 +1362,10 @@ mod tests {
         t.stores.1.close().await;
     }
 
-    /// 209 §4.4: the forward list names the tile-call pair, `show_web`'s event and the
-    /// page-preview pair, each under its declared topic; nothing undeclared (P5's forms).
+    /// 209 §4.4: the forward list names the tile-call pair, `show_web`'s event, the page-preview
+    /// pair and the element-form pair (P5), each under its declared topic.
     #[test]
-    fn the_relay_forwards_tile_calls_tiles_and_previews() {
+    fn the_relay_forwards_tile_calls_tiles_previews_and_forms() {
         for (kind, topic) in [
             ("WebViewCallRequested", "artifact.web-view-call-requested"),
             ("WebViewCallResolved", "artifact.web-view-call-resolved"),
@@ -1371,11 +1374,83 @@ mod tests {
             ("NoteViewOpened", "artifact.note-view-opened"),
             ("PagePreviewRequested", "artifact.page-preview-requested"),
             ("PagePreviewResolved", "artifact.page-preview-resolved"),
+            ("ElementFormRequested", "browser.element-form-requested"),
+            ("ElementFormResolved", "browser.element-form-resolved"),
         ] {
             assert_eq!(wire_topic(kind), Some(topic), "{kind}");
         }
         assert_eq!(wire_topic("ApprovalRequested"), None);
-        assert_eq!(wire_topic("ElementFormRequested"), None);
+    }
+
+    /// A `browser_show_element` card (as `browser` declares it) for the wire-relay test.
+    #[derive(Clone, serde::Serialize, schemars::JsonSchema)]
+    #[serde(tag = "type", rename = "ElementFormRequested")]
+    struct FormRequested {
+        id: uuid::Uuid,
+        session: SessionId,
+        origin: String,
+    }
+
+    impl wire::WireEvent for FormRequested {
+        const TOPIC: &'static str = "browser.element-form-requested";
+    }
+
+    /// Its resolution, which names no session.
+    #[derive(Clone, serde::Serialize, schemars::JsonSchema)]
+    #[serde(tag = "type", rename = "ElementFormResolved")]
+    struct FormResolved {
+        id: uuid::Uuid,
+        outcome: String,
+    }
+
+    impl wire::WireEvent for FormResolved {
+        const TOPIC: &'static str = "browser.element-form-resolved";
+    }
+
+    /// 209 §4.4 (P5): a card raised on the owner reaches the viewer's bus, and its resolution
+    /// follows the request's id to the same session.
+    #[tokio::test]
+    async fn an_element_form_on_the_owner_is_relayed_with_its_resolution() {
+        use wire::RuntimeWire as _;
+        let mut t = two(false).await;
+        t.rt_o.register_wire_event::<FormRequested>().await.unwrap();
+        t.rt_o.register_wire_event::<FormResolved>().await.unwrap();
+        let (tap_tx, mut tapped) = mpsc::unbounded_channel();
+        let tap =
+            RelayTap::spawn_with_mailbox(RelayTap(tap_tx, None), runtime::subscriber_mailbox());
+        t.rt_f.subscribe::<RelayTap, Relayed>(&tap).await;
+        t.front.tell(Follow(t.session)).await.unwrap();
+        assert_eq!(t.seen.recv().await, Some("watch"));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let id = uuid::Uuid::now_v7();
+        t.rt_o
+            .publish(FormRequested {
+                id,
+                session: t.session,
+                origin: "https://example.com".into(),
+            })
+            .await;
+        t.rt_o
+            .publish(FormResolved {
+                id,
+                outcome: "submitted".into(),
+            })
+            .await;
+        let got = relayed(&mut tapped).await;
+        assert_eq!(
+            (got.session, got.kind.as_str()),
+            (t.session, "ElementFormRequested")
+        );
+        assert_eq!(got.event["origin"], "https://example.com");
+        let got = relayed(&mut tapped).await;
+        assert_eq!(
+            (got.session, got.kind.as_str()),
+            (t.session, "ElementFormResolved")
+        );
+        assert_eq!(got.event["outcome"], "submitted");
+        t.stores.0.close().await;
+        t.stores.1.close().await;
     }
 
     /// A tile call's request (as `artifact` declares it) for the wire-relay test.

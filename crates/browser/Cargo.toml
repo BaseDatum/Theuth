@@ -34,6 +34,13 @@ unjar = { workspace = true }
 webprofile = { workspace = true }
 # 209 D8: the tile target's round trip (`WebViewCallRequested` / `answer_web_view_call`).
 artifact = { workspace = true }
+# 209 P5: `answer_element_form` / `element_forms_pending`, values held in `Zeroizing` strings,
+# and the allowlist sanitiser of the card's snapshot (lol_html, BSD-3-Clause, already in the lock).
+jsonrpsee = { workspace = true }
+rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
+zeroize = { workspace = true }
+lol_html = "2.9"
 ts-rs = { workspace = true, optional = true }
 
 [features]
@@ -49,5 +56,3 @@ figment = { workspace = true }
 tempfile = "3"
 secrets = { workspace = true }
 tracing-subscriber = { workspace = true }
-jsonrpsee = { workspace = true }
-rpc-core = { workspace = true }

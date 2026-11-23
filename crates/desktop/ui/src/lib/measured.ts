@@ -158,6 +158,7 @@ const estimated = new WeakMap<object, { width: number; px: number }>()
 export function estimateRow(row: Row, contentWidth: number): number {
   if ('gap' in row) return FLOOR
   if ('prompt' in row) return 160
+  if ('form' in row) return 360
   if ('run' in row) return FLOOR
   const e = row.entry
   const hit = estimated.get(e)

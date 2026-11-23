@@ -1,0 +1,84 @@
+[
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "session": "00000000-0000-0000-0000-000000000002",
+      "call_id": "call-7",
+      "origin": "https://accounts.example.com",
+      "action_origin": "https://accounts.example.com",
+      "url": "https://accounts.example.com/login",
+      "source": "web:0123456789abcdef",
+      "title": "Sign in",
+      "html": "<form><input type=\"email\" name=\"email\" data-theuth-field=\"0\"><input type=\"password\" name=\"pw\" data-theuth-field=\"1\"><button type=\"submit\" data-theuth-field=\"2\">Sign in</button></form>",
+      "width": 360,
+      "height": 240,
+      "fields": [
+        {
+          "index": 0,
+          "kind": "email",
+          "name": "email",
+          "label": "Email",
+          "masked": false
+        },
+        {
+          "index": 1,
+          "kind": "password",
+          "name": "pw",
+          "label": "Password",
+          "masked": true
+        },
+        {
+          "index": 2,
+          "kind": "submit",
+          "name": "",
+          "label": "Sign in",
+          "masked": false
+        }
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ElementFormRequested",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "session": "00000000-0000-0000-0000-000000000002",
+          "call_id": "call-7",
+          "origin": "https://accounts.example.com",
+          "action_origin": "https://accounts.example.com",
+          "url": "https://accounts.example.com/login",
+          "source": "web:0123456789abcdef",
+          "title": "Sign in",
+          "html": "<form><input type=\"email\" name=\"email\" data-theuth-field=\"0\"><input type=\"password\" name=\"pw\" data-theuth-field=\"1\"><button type=\"submit\" data-theuth-field=\"2\">Sign in</button></form>",
+          "width": 360,
+          "height": 240,
+          "fields": [
+            {
+              "index": 0,
+              "kind": "email",
+              "name": "email",
+              "label": "Email",
+              "masked": false
+            },
+            {
+              "index": 1,
+              "kind": "password",
+              "name": "pw",
+              "label": "Password",
+              "masked": true
+            },
+            {
+              "index": 2,
+              "kind": "submit",
+              "name": "",
+              "label": "Sign in",
+              "masked": false
+            }
+          ]
+        }
+      }
+    }
+  }
+]

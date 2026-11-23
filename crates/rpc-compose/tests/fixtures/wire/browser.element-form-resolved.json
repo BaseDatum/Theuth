@@ -1,0 +1,74 @@
+[
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "outcome": "submitted"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ElementFormResolved",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "outcome": "submitted"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "outcome": "cancelled"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ElementFormResolved",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "outcome": "cancelled"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "outcome": "stale"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ElementFormResolved",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "outcome": "stale"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "outcome": "timeout"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ElementFormResolved",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "outcome": "timeout"
+        }
+      }
+    }
+  }
+]

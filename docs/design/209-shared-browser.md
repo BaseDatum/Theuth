@@ -1,6 +1,6 @@
 # 209 — One browser profile for the user's web view and the agent's browser
 
-Status: design 2026-11-22, approved to build (three builders per phase in one worktree, as 205); this is the build contract; P1–P4 built, P5 (D13, form in the chat) dropped on 2026-11-22 and kept as a follow-up · extends 205 (web view tile, incl. §9 iOS shell on `feat/205-ios-web-view`), 23
+Status: design 2026-11-22, approved to build (three builders per phase in one worktree, as 205); this is the build contract; P1–P5 built (P5, D13 form in the chat, was dropped on 2026-11-22 and taken back in the same day) · extends 205 (web view tile, incl. §9 iOS shell on `feat/205-ios-web-view`), 23
 (obscura browser), 122 §5 (cookie rule), 67 §5.1 (replica), 37/67 §5.4 (vault), 68/183 (front door, event relay)
 
 Evidence: two reports, both read in full. Code recon, session `01a2007d-94f1-7532-add0-2b2aab26d032` (cited
@@ -57,7 +57,7 @@ The owner's requirements (2026-11-21):
 | D10 | The agent's own browser shown to the user stays what `browser_show` does today: a 500 ms screenshot poll, watch-only (`crates/desktop/ui/src/components/chat/BrowserLive.tsx:14`; tool text `tools.rs:691`). Out of scope. |
 | D11 | iOS: iPad keeps the tile beside the chat (205 §9) and collapses the sidebar when the tile would be narrower than 420 px. iPhone gets a full-screen page with a toolbar and a minimise control that leaves a pill above the composer (§7). |
 | D12 | The prompt's "The two share nothing" sentence is replaced when P1 lands (§4.9). |
-| D13 | **Follow-up, not built (P5 dropped 2026-11-22).** `browser_show_element { ref?, selector?, title? }` (crates/browser, either backend of D8) lifts one element of the page — typically a sign-in form — into a transcript card rendered in the sandboxed inline-page frame of 120 (`crates/desktop/src/pages.rs:1-8`, `components/chat/HtmlPage.tsx:1-6`). The app draws the origin, the source browser and Submit/Cancel around the frame. Submit sends the values with the RPC `answer_element_form`; the engine fills the real controls by field index and submits the real form; the agent gets a receipt without values (§4.10). |
+| D13 | `browser_show_element { ref?, selector?, title? }` (crates/browser, either backend of D8) lifts one element of the page — typically a sign-in form — into a transcript card rendered in the sandboxed inline-page frame of 120 (`crates/desktop/src/pages.rs:1-8`, `components/chat/HtmlPage.tsx:1-6`). The app draws the origin, the source browser and Submit/Cancel around the frame. Submit sends the values with the RPC `answer_element_form`; the engine fills the real controls by field index and submits the real form; the agent gets a receipt without values (§4.10). |
 | D14 | Acting `browser_*` calls are raised to `Mutating` for the approval gate when they act on a site that has profile cookies, and always on a tile. Tool risk is a per-type constant today (`crates/tools/src/lib.rs:356-357`, every browser tool `Risk::ReadOnly` at `tools.rs:226`) and the registry's only per-call input is the secret-placeholder flag (`crates/tools/src/registry.rs:1484-1485`), so this needs a new per-call hook (§9). |
 
 ## 4. The contract
@@ -219,8 +219,10 @@ Change: export `host_only` from the entry, read an optional `host_only` on impor
 | `web_profile_clear` | `{}` | `{ epoch }` (the new one) | P2. Bumps the epoch (the highest seen plus one, §4.1) and tombstones every row; publishes `WebProfileChanged` with the sites that were live and the new epoch. Owner connections only. Works with `browser.profile: off`. |
 | `web_view_state` | `(session, view, url, title, loading, closed?)` | `{}` | D9. Forwarded to the session's owner by `rpc_forward::route` (`crates/agent/src/rpc_forward.rs:1-10`). `closed: true` (P3 review): the user closed the tile; the engine forgets it (`web_views`, the reply prefix, `browser_attach`). |
 | `answer_web_view_call` | `(id, answer, session?)` | `bool` (still pending and taken) | D8. `session` is the request's: an id this engine did not issue is forwarded to that session's owner like `web_view_state` (without it, the session the engine's feed carried for the id). The first `claimed` binds the call to the claiming RPC connection (a forwarded answer: to the forwarding engine, which binds it to its own connection); `done` / `failed` are taken only from it. Before any claim only `failed` with reason `"stopped by the user"` or `"window closed"` is taken, from any owner connection. |
-| `answer_element_form` | `(id, answer)`; `answer` = `{ submit: { values: { "<index>": String } } }` \| `{ cancel: {} }` | `bool` (still pending) | D13, P5. Forwarded to the owner. Values handled as in §4.10. |
-| `element_forms_pending` | `{}` | `ElementFormRequested[]` | D13, P5. Pending cards for a client that attached late (like `secret_requests_list`, `crates/secrets/src/rpc.rs:41-45`). |
+| `answer_element_form` | `(id, answer, session?)`; `answer` = `{ submit: { values: { "<index>": String } } }` \| `{ cancel: {} }` (the bare string `"cancel"` is taken too) | `bool` (still pending and taken; the first answer wins) | D13, P5. Owner connections only. `session` is the request's: an id this engine does not hold is forwarded to that session's owner (like `answer_web_view_call`). Values handled as in §4.10. The client sends only the controls the user changed (an `input` / `change` fired) plus every checkbox's and radio's state; the engine fills only the keys sent. A `submit` naming no field the card fills (no key, only submit buttons, only unknown indices) is refused (`false`) and the card stays pending. |
+| `element_form_shown` | `(id, session?)` | `bool` (the card waits) | D13, P5 review. The client calls it once when the card is on screen. A card no client showed within 120 s ends: the tool answers `no app showed the form; ask the user to open theuth` and `ElementFormResolved { outcome: "cancelled" }`. Owner connections only; forwarded like `answer_element_form`. |
+| `element_form_values` | `(call_id, session?)`; `call_id` = a `WebViewCallRequested` id | `{ "<index>": String } \| null` | D13, P5 review. A tile's `fill_form` op carries no values: its `args.arguments.params` has `values_from: "element_form_values"`. The connection whose `claimed` the call took fetches them once with this method and puts them into `params.values` before it runs the script; any other connection, a second fetch, or a fetch after the call ended gets `null`. A front door forwards it to the session's owner only from the local connection whose forwarded claim was taken (`webview::relayed_claim_by`), and the owner binds it to the front door as for `answer_web_view_call`. Owner connections only. |
+| `element_forms_pending` | `(session?)` | `ElementFormRequested[]` | D13, P5. Pending cards for a client that attached late (like `secret_requests_list`, `crates/secrets/src/rpc.rs:41-45`): every card waiting on this engine, or with `session` that session's, forwarded to its owner. Owner connections only. |
 
 Every method is declared with `audience = "owner"` as the credentials API is (`crates/secrets/src/rpc.rs:8`).
 
@@ -237,9 +239,10 @@ Events (`wire::WireEvent`, registered in `declare_wire`, mirrored like 205 §4.2
   for a tile it holds that `session` opened, or when `delegated` is set.
 - `WebViewCallAnswer` = `Claimed { client }` | `Done { result: Value, png?: String }` | `Failed { reason }`
   (`client` is free text for logs; the binding is the connection).
-- `ElementFormRequested { id: Uuid, session, call_id, origin, url, source, title, html, width, height, fields: [{ index, kind, name, label, masked }] }`,
+- `ElementFormRequested { id: Uuid, session, call_id, origin, action_origin, url, source, title, html, width, height, fields: [{ index, kind, name, label, masked }] }`,
   topic `browser.element-form-requested`, and `ElementFormResolved { id, outcome: "submitted" | "cancelled" | "stale" | "timeout" }`,
-  topic `browser.element-form-resolved`. `source` is `"obscura:<engine>"` or `"web:<id>"`. No field values, ever.
+  topic `browser.element-form-resolved`. `source` is `"obscura:<engine>"` or `"web:<id>"`. `action_origin` (P5 review)
+  is where the form posts, `scheme://host[:port]` in ASCII (§4.10). No field values, ever.
 
 A session owned by another engine reaches a front-door client only through the event relay, which forwards
 `AgentEvent`s and, on a `Watch` stream, `ApprovalRequested`, `ApprovalResolved`, `AskRequested`, `AskResolved`,
@@ -247,10 +250,11 @@ A session owned by another engine reaches a front-door client only through the e
 `WebViewCallResolved`, `ElementFormRequested` and `ElementFormResolved` join that list. As read, `WebViewOpened` (205) and `PagePreviewRequested` are not on it,
 so `show_web` from a remote-owned session does not open a tile on a front-door client today (§11 Q4).
 As built in P3 (§11 Q4, after the review): the owner's relay also forwards `WebViewOpened`, `PagePreviewRequested`,
-`PagePreviewResolved`, `WebViewCallRequested` and `WebViewCallResolved` (`sessionsync::events::WIRE_RELAYED`;
-P5 adds `ElementFormRequested` / `ElementFormResolved` together with their declaration, since a front door drops a
-relayed frame whose topic it has not declared). It reads them from its own wire feed by topic, not as bus types, so
-`sessionsync` gains no dependency on `artifact`; a `*Resolved` (no `session`) follows its request's id. The front
+`PagePreviewResolved`, `WebViewCallRequested` and `WebViewCallResolved`, and since P5 `ElementFormRequested` /
+`ElementFormResolved` (`sessionsync::events::WIRE_RELAYED`; `browser::declare_wire` declares the pair on every engine,
+also with the browser off, since a front door drops a relayed frame whose topic it has not declared). It reads them
+from its own wire feed by topic, not as bus types, so `sessionsync` gains no dependency on `artifact` or `browser`; a
+`*Resolved` (no `session`) follows its request's id. The front
 door re-publishes each under its declared topic (`sessionsync` `declare_wire`). An `answer_web_view_call` reaching
 a front door is forwarded to the owner of the `session` it names; `answer_page_preview(id, answer, session?)` is
 forwarded the same way when the client names the request's `session`.
@@ -490,7 +494,7 @@ In `crates/artifact/src/tools.rs:60`, replace from "The two share nothing:" to "
 The clause "and a site you sign into works in their tile" lands with P2, `browser_attach` with P3, the last sentence
 with P5; each phase ships the text its tools support.
 
-### 4.10 `browser_show_element` (D13) · follow-up, not built (see P5)
+### 4.10 `browser_show_element` (D13)
 
 ```
 browser_show_element { ref?: String, selector?: String, title?: String }   // DIRECT, Risk::Mutating, APPROVED_BY_CARD, not promotable
@@ -504,16 +508,27 @@ browser_show_element { ref?: String, selector?: String, title?: String }   // DI
   `object`, `embed`, `svg <use>` with external refs, every `on*` attribute, `href`, `action`, `formaction`, `src` that
   is not `data:`, and `url()` in styles that is not `data:image`. Never copy a control's current value; keep
   `checked` and the selected option. Hidden inputs are dropped from the clone and stay in the real form. Each
-  visible control and each submit button gets `data-theuth-field="<n>"` in the clone and in the live page, and the
-  root gets `data-theuth-form="<id>"` in the live page. Returned with the root's rendered `width` and `height`, the
-  page `origin` (`location.origin`) and `url`.
+  visible control and each submit button gets `data-theuth-field="<n>"` in the clone; in the live page the card marks
+  them `data-theuth-field-<id hex>="<n>"` and the root `data-theuth-form-<id hex>` (P5 review: per card, so a second
+  card of the same page leaves the first valid; `fill_form` removes them). Returned with the root's rendered `width`
+  and `height`, the page `origin` (`location.origin`), `url`, and `action` (the submitting button's `formaction`, else
+  the form's `action`, resolved against `document.baseURI`, else the page address). The engine publishes
+  `action_origin` from it (an http(s) origin, else the page's) and refuses a snapshot whose `data-theuth-field` stamps
+  are not exactly the fields' indices `0..n` (each field's `index` is the page's own).
 - **Refuse** with `ToolOutput::err`: the subtree contains any `iframe` — "the form contains a frame from <origin> (a
   CAPTCHA or a sign-in provider); it can only be used in the page itself: show it to the user with show_web or
   browser_attach to their tile"; the clone is over 256 KiB — "element too large to show (N KiB > 256 KiB); pick a
   smaller element"; no visible control; a capped contact turn (as every browser tool, `tools.rs:237-239`).
 - The engine re-sanitises the HTML with an allowlist (tags of forms and text, attributes `style`, `type`, `name`,
   `placeholder`, `autocomplete`, `checked`, `selected`, `disabled`, `for`, `id`, `class`, `data-theuth-field`) before
-  publishing `ElementFormRequested`; the client trusts nothing in it.
+  publishing `ElementFormRequested`; the client trusts nothing in it. The lists are checked in as
+  `crates/browser/src/show_element.allow.json` (a Rust test pins them to the code; the client's test compares its own).
+  In a `style` value the engine decodes `&amp;` `&quot;` `&lt;` `&gt;` `&apos;` and numeric references before looking
+  for `url(`, keeps any other `&` as written, and escapes every `&` once on output.
+- **Shown**: the card calls `element_form_shown(id)` once it is on screen. A card no client showed within 120 s ends
+  as `cancelled` with "no app showed the form; ask the user to open theuth" (an unattended session does not wait
+  `tools.ask_timeout_secs` for a card nobody sees). The card shows "Sends to <action_origin>" and, when it differs
+  from `origin`, a visible warning line.
 - **Card** (`components/chat/ElementFormCard.tsx`, UI): app chrome above the frame shows a lock glyph, the origin
   as `scheme://host[:port]` in ASCII (punycode, never Unicode, so a homograph shows as `xn--`), and the source ("your
   web view" for `web:<id>`, "agent browser on <engine>" for obscura); below it **Submit** and **Cancel**. The frame is
@@ -524,18 +539,26 @@ browser_show_element { ref?: String, selector?: String, title?: String }   // DI
   `formBootstrap()`), then the snapshot. The bootstrap answers `theuth/collect` with `{ "<index>": value }` by
   `postMessage`, turns a submit inside the frame (Enter) into `theuth/submit-request`, and reports size. Password
   inputs stay `type=password` and render masked.
-- **Submit**: `answerElementForm(id, values)` calls `answer_element_form`. The engine (in the owning session's
-  `Ctx`) checks the browser is still on `url` (fragment ignored) and `[data-theuth-form="<id>"]` exists with the same
-  field count; else `ElementFormResolved { outcome: "stale" }` and the tool returns "the page changed since the form
-  was shown; nothing was typed". Then, per index: native value setter plus `input`/`change` (as `browser_fill`),
-  `checked` for checkbox and radio, `value` for select; then the form's first submit button `click()`, else
-  `form.requestSubmit()`, else the clone's submit-button index. It waits for a navigation or a 10 s settle.
+- **Submit**: `answerElementForm(id, values)` calls `answer_element_form` with only the controls the user changed
+  (plus every checkbox's and radio's state); a submit with nothing the card fills is refused and the card stays.
+  The engine (in the owning session's `Ctx`) has the agent script check the browser is still on `url` (fragment
+  ignored), the card's root mark exists, and its marked controls are exactly the card's fields, each with the same
+  `name` and `kind`; else `ElementFormResolved { outcome: "stale" }` and the tool returns "the page changed since the
+  form was shown; nothing was typed". Then, per index sent: native value setter plus `input`/`change` (as
+  `browser_fill`), `checked` for checkbox and radio, `value` for select; then the form's first submit button
+  `click()`, else `form.requestSubmit()`, else the element's own submit button. It polls the page's address every
+  500 ms with a small location script (not the agent script) for a navigation, at most 10 s.
 - **Receipt** (the only thing the model sees): `submitted · <origin> · filled 0 email, 1 password · now <url> — <title>`
   or `… · the page did not change within 10 s`; `cancelled`; `no answer` after `tools.ask_timeout_secs`
-  (`crates/tools/src/lib.rs:562`). Field labels and names, never values.
+  (`crates/tools/src/lib.rs:562`); `no app showed the form; ask the user to open theuth`. Field labels and names,
+  never values.
 - **Values** are handled like `answer_secret`'s (`crates/secrets/src/rpc.rs:29-40`): they live only in the RPC
   params, in `Zeroizing<String>` while filling, and in the page. Not in the transcript, `ToolOutput`, events, `tracing`
-  fields or `sessions.sqlite`; the scrub of §9 adds them for the rest of the session.
+  fields or `sessions.sqlite`. On a tile the `fill_form` op's event carries none: the claiming client fetches them
+  with `element_form_values` (§4.4). The scrub of §9 then replaces them in the session's later browser replies, with
+  these limits (P5 review): it lives in the engine process's memory, so an engine restart, or the session continuing
+  on another engine of the mesh, ends it; it keeps the last 32 values per session; it ignores values under 6
+  characters (checkbox, radio and select values are never kept); it ends when the session is deleted.
 - **What "exactly like the site" means.** A static clone with computed styles and no site JavaScript: client-side
   validation, show-password toggles, dependent fields, autocomplete widgets and web fonts do not run or load. A
   multi-step sign-in (username, then password, then a code) is one call per step; the receipt says the page changed.
@@ -647,12 +670,19 @@ dialog; **Sign out everywhere** asks in an alert dialog, then clears this device
   for 60 s. What the user typed into the page (field values, textareas, editable regions) is not read (§4.7).
 - **D13, phishing and injection.** A page the agent reads (or an injected instruction) may ask it to "show the login
   form" of another site, or a hostile page may draw a fake sign-in. The origin in the card is the app's, read from
-  the browser at serialise time, not from the snapshot; values go only to the element stamped `data-theuth-form` on
-  the page that was serialised, re-checked at submit, and nowhere else. The snapshot cannot draw outside the frame,
+  the browser at serialise time, not from the snapshot; the card also names where the form posts (`action_origin`)
+  and warns when that is another origin. Values go only to the controls this card marked on the page that was
+  serialised, re-checked at submit (address, element, each control's name and kind), and nowhere else; on a tile
+  they reach the client by `element_form_values`, never in an event. The snapshot cannot draw outside the frame,
   run script, load anything or submit (CSP `default-src 'none'; form-action 'none'`, sandbox without
   `allow-same-origin` or `allow-top-navigation`). The user's Submit is the approval; a `read_only` subagent cannot
   see the tool. What the user cannot be protected from here is a real page of the right origin that is itself
-  hostile: the card shows the origin, the user decides.
+  hostile: the card shows the origin, the user decides. On obscura the agent script runs in the page's own world
+  (obscura has no isolated one): it binds the natives it relies on (`getComputedStyle`, `querySelector`,
+  `getAttribute`, …, and the wrapper's `JSON.stringify`) when it is built, so page code that runs later (a handler
+  the fill fires) cannot swap them, but a page that replaced them before the agent's first command can forge the
+  snapshot, its fields and `action`; it cannot change the address, which `location` reads. The tile runs it in the
+  isolated world. The §4.10 scrub of what was typed lasts only as long as the engine process (§4.10).
 - **Off switch and forget** (§6). `browser.profile: off` takes effect at once for new loads; isolates already
   loaded keep their cookies until dropped.
 
@@ -830,18 +860,11 @@ What the P3 engine differs in from the text above or adds to it; §4.4, §4.6 an
 - Tests: minimise/restore keeps the view (no `web_view_close`); a `show_web` while the composer has focus becomes the
   pill. iPhone simulator: minimise, send a message, restore: same scroll position and history.
 
-### P5 — a form of the page in the chat (D13) · FOLLOW-UP, not built
+### P5 — a form of the page in the chat (D13)
 
-**Dropped from this build by the owner on 2026-11-22 (10:25) and kept as a follow-up.** P1–P4 ship without it; no
-code of D13 exists on the branch (no `browser_show_element`, no `ElementForm*` events, no `answer_element_form` /
-`element_forms_pending`, no `APPROVED_BY_CARD`; the relay does not list the `ElementForm*` topics, P3 review finding
-20). Sections 3 (D13), 4.4 (its rows), 4.10 and 9 (D13 bullet) stay as the design for that follow-up. What P3 left
-that it can build on: the tile op `script` in the isolated world, `agent.js` (one source, obscura and tile), the
-claim-bound answer pattern of `answer_web_view_call` (owner-only, bound to the claiming connection, `session` in the
-params), and the inline-page frame of design 120. Before building it, settle Q6 (sanitiser) and Q7
-(`APPROVED_BY_CARD`, accepted in principle on 2026-11-22) again against the code as it is then.
-
-The original P5 plan follows unchanged.
+Dropped from the build by the owner on 2026-11-22 (10:25) and taken back in the same day on branch `feat/209-p5`,
+after P1–P4 were merged. Q6 settled on `lol_html` (already in the lock, BSD-3-Clause) and Q7 (`APPROVED_BY_CARD`)
+accepted; the engine as built is below the plan.
 
 | Engine | Shell | UI |
 |---|---|---|
@@ -857,6 +880,125 @@ The original P5 plan follows unchanged.
 - iPad simulator: a login form served from the Mac (HTTP test server on the LAN); the agent, attached to the tile and
   separately on obscura, calls `browser_show_element`; the user types in the card and presses Submit; the server logs
   the posted fields and the receipt names the post-login page.
+
+#### P5 as built (engine)
+
+What the P5 engine differs in from the text above or adds to it; §4.4 already says the RPC and relay shapes:
+
+- **Where.** The tool, both events, the answer and the pending list live in `browser::show_element`; the two RPCs
+  in `browser::rpc` (`browser::rpc_module`, owner audience, registered in `crates/theuth/src/main.rs`);
+  `browser::declare_wire` declares the pair, so every engine declares it even with the browser off. Shapes:
+  `ElementFormId` (uuid, transparent), `ElementFormRequested { id, session, call_id, origin, url, source, title, html,
+  width, height, fields }` with `ElementFormField { index, kind, name, label, masked }`, `ElementFormResolved { id,
+  outcome }` with `ElementFormOutcome` (`submitted` | `cancelled` | `stale` | `timeout`), `ElementFormAnswer`
+  (`{ submit: { values } }` | `{ cancel: {} }`; the bare `"cancel"` is accepted; its `Debug` prints a count, never a
+  value). `kind` is the lower-case input type, `textarea`, `select` or `submit`; `masked` is a password field or a
+  secret `autocomplete` (`password`, `one-time-code`, `cc-*`, `csc`). `source` is `obscura:<engine id>` (`local` on
+  a lone engine) or `web:<tile id>`. `width` / `height` fall back to 400 × 320 where the browser has no layout.
+- **Gate.** `Tool::APPROVED_BY_CARD` and `ErasedTool::approved_by_card`; `ToolRegistry::effective` checks the cap
+  against the tool's risk, then looks the policy up for `ReadOnly` (a secret placeholder still raises it to `Ask`).
+  The tool is `Mutating`, direct, not promotable, so a `read_only` cap hides and refuses it and no prompt precedes
+  the card.
+- **Serialise** (`agent.js` `serialize`). Computed styles: about 80 visual properties, each written when it differs
+  from the tag's default (read from a fresh element inside a closed shadow root under an `all: initial` host), the
+  inherited ones only when they differ from the parent's; a value with a `url()` other than `data:image/`, or with
+  `image-set(`, `image(` or a backslash, is dropped. Images: a same-origin `<img>` becomes a PNG `data:` URI through a
+  canvas, any other image and any SVG an empty box of its size. `<input type=submit|image|button|reset>` becomes a
+  `<button>` with its label (the allowlist has no `value`). Elements not shown are left out; an editable region keeps
+  its box, never its text; `textarea` and every input are copied without a value, checkboxes and radios with
+  `checked`, options with `selected`. Stamps: every shown fillable control (input other than hidden, submit,
+  image, button, reset, file; `select`; `textarea`) and every submit button gets `data-theuth-field` in the clone
+  and the live page, in document order; earlier stamps of the page are removed first. The walk stops once the
+  snapshot passes 256 KiB, and the refusal names the larger of the snapshot and the element's `outerHTML`. A frame
+  is looked for as `iframe`, `frame`, `object` or `embed`.
+- **Sanitiser** (Q6): `lol_html` 2.9 (BSD-3-Clause), already in the lock through `merman-core`; no new crate in the
+  lock. Elements outside the form-and-text list are unwrapped (content kept), `script`, `style`, `iframe`, `svg`,
+  `math`, `template`, media and the like removed with their content, comments removed. Attributes: §4.10's list;
+  **added**: `img` keeps `alt` and a `src` that is a base64 `data:image/` PNG, JPEG, GIF or WebP, since the serialiser
+  inlines same-origin images and the list had no `src`. `style` is decoded (`&amp;`-style and numeric references; any
+  other reference drops it), split into declarations outside quotes and parentheses, and keeps only those without a
+  non-`data:image/` `url()`, `image-set(`, `image(`, `expression(`, `-moz-binding`, `behavior`, `javascript:`,
+  `@import`, `src(` or a backslash. `data-theuth-field` must be digits.
+- **Waiting.** The tool waits `tools.ask_timeout_secs` (default 1800 s) for the answer; a cancelled turn or a call
+  the registry drops closes the card as `cancelled` (a non-blocking publish, like P3's unresolved tile call).
+  `answer_element_form` takes the first answer from any owner connection (there is no claim to bind it to, unlike
+  `answer_web_view_call`); with `session` it is forwarded to the owner when this engine does not hold the card.
+- **Fill** (`agent.js` `fill_form`): unchecked checkboxes and radios first, so a radio group ends on the chosen one;
+  a `select` matches the option's value, then its text (the card sends the clone's value, which is the option text);
+  a disabled or read-only control and the submit fields are skipped. The fill never marks a field as the agent's,
+  so `browser_elements` shows it as `value=[set]`. Submit: the form's first enabled submit button `click()`, else
+  `requestSubmit()`, else the first stamped submit button; with none of them the receipt says nothing was sent. The
+  stale check compares the address without the fragment, finds `[data-theuth-form]` and counts its stamps. Then the
+  page is polled every 500 ms for 10 s until its address or document changed.
+- **Receipt**: `submitted · <origin> · filled 0 email, 1 pw · now <url> — <title>` (the field's name, else label,
+  else kind; the URL without query and fragment, since a GET form puts the values there), `… · the page did not
+  change within 10 s`; `cancelled · <origin> · the user closed the form; nothing was typed`; `no answer · <origin> ·
+  the user did not fill the form within N min; nothing was typed`; stale: the error "the page changed since the form
+  was shown; nothing was typed". A tile call that fails before the fill closes the card as `stale` too.
+- **Values.** The RPC's strings move into `Zeroizing<String>` at once; the obscura expression is built in a
+  `Zeroizing` buffer (the copies inside `serde_json::Value` on the way are not zeroized). Typed values of four or
+  more characters (not checkbox, radio or select ones), raw and URL-encoded, are replaced by `[typed value]` in every
+  later browser reply of the session (the §9 scrub, `profile::scrub`), until the session ends. (Superseded by the
+  review below: a tile's values no longer ride the event, the scrub keeps values of six or more characters, at
+  most 32, and `html5ever` is held at INFO in the engine's log filter.)
+- **Prompt**: §4.9's last sentence is in `crates/artifact/src/tools.rs`.
+- **Tests**: the sanitiser allowlist, both cancel forms and the value-free `Debug`, the refusal texts, the ASCII
+  origin and the scrub (`browser::show_element` unit tests); `APPROVED_BY_CARD` in the registry (no prompt under
+  `mutating: Ask`, hidden and refused under a `read_only` cap); end to end on obscura with a loopback sign-in page
+  (`crates/browser/tests/show_element.rs`): the refusals (two targets, a frame, an oversize element) publish
+  nothing; the card has no script, handler, address or value and keeps `type=password`; `element_forms_pending`
+  lists it; a guest can neither list nor answer; the answer through the real `answer_element_form` fills by index
+  and the server receives email, password, checkbox and the untouched hidden field; a second answer is refused;
+  the password the page shows reads back as `[typed value]`; a page reloaded before the answer gives `stale` and
+  nothing typed; cancel; the password is in no wire event, tool output, log line (every target at debug) or file
+  under the data dir. The relay of the pair in `sessionsync`; the wire goldens in `rpc-compose`.
+- **Not done / not tested**: the tile path end to end (it runs the same agent script through the P3 round trip;
+  the fake tile client of `tests/tile.rs` is not reused here); `sessions.sqlite` itself (the tool's arguments and
+  output, which the journal stores, carry no value); a two-engine forward of `answer_element_form`; the shell's
+  WebKit world running `serialize` (computed styles, canvas, `checkVisibility`) and how close the copy looks.
+
+#### P5 review fixes (engine)
+
+Decided by the orchestrator after the P5 review; supersedes the as-built list above where they differ (§4.4, §4.10
+and §9 already say it):
+
+- **Tile values** (ruling A): the `fill_form` op's `args.arguments.params` carries `values_from:
+  "element_form_values"` and the fields' `{ name, kind }`, never a value. The values wait in the engine
+  (`Zeroizing`, keyed by the `WebViewCallRequested` id, dropped when the call ends) until the claiming connection
+  fetches them once with `element_form_values` (`artifact::webview::claimed_by`; a front door checks
+  `relayed_claim_by` before forwarding). `artifact::webview::call_as` lets the tool key them to the call id before
+  the event is published.
+- **Only what the user changed** (ruling B): `fill_form` fills only the keys sent; `answer_element_form` refuses a
+  submit naming no fillable field and leaves the card pending.
+- **Stale check**: `fill_form` gets the fields' `{ name, kind }` as `serialize` reported them and returns
+  `{ stale: "fields" }` unless the marked controls are exactly those, in index order. A `fill_form` that answers
+  `{ error }` (no values, a bad id) closes the card as `stale` with "the form could not be filled (…)".
+- **Per-card marks**: `data-theuth-field-<id hex>` / `data-theuth-form-<id hex>` in the live page (`fill_form`
+  removes its own after filling); two cards on one page are both valid.
+- **Index and stamps**: a field's `index` is the page's; the engine refuses a snapshot whose stamps are not exactly
+  `0..n` matching the fields ("the element's snapshot does not match its fields; nothing was shown").
+- **`action_origin`** (ruling C) on `ElementFormRequested`, from `serialize`'s `action`.
+- **Shown** (ruling D): `element_form_shown(id, session?)`; 120 s without it ends the card as `cancelled` with "no app
+  showed the form; ask the user to open theuth".
+- **Session end**: `show_element::forget` (a deleted session, a closed tree) also wakes the session's cards, which
+  close as `cancelled` and leave `element_forms_pending`.
+- **Scrub**: values of 6 or more characters, the last 32 per session, in this process only (§4.10).
+- **Style `&`**: an unknown reference or a bare `&` stays literal (escaped once) instead of dropping the `style`.
+- **Settle poll**: a small location script (`tile::LOCATION_JS`, a few hundred bytes) instead of the 48 KiB agent
+  script per 500 ms poll.
+- **Logs**: `html5ever`, `markup5ever` and `markup5ever_rcdom` are held at INFO by `theuth::logs::engine_filter`
+  (a `RUST_LOG` naming a longer target such as `html5ever::tokenizer=debug` still wins, as for jsonrpsee).
+- **Allowlist**: `crates/browser/src/show_element.allow.json`, pinned to `TAGS` / `DROPPED` / `ATTRS` by a unit test.
+- **Tests added**: per-field index and stamp check, `action_origin`, the literal `&`, the allowlist file, the scrub
+  cap, a fill-less submit staying pending, a refused value fetch (unit); on obscura a second card of the same form
+  leaving the first valid, `element_form_shown`, a fill-less submit refused, the session's end closing a card, and
+  the data dir holding the session store with every tool output (no password in it); on the tile (`tests/tile.rs`)
+  the whole card round trip, with the fake client fetching the values after its claim, a second owner connection
+  and a second fetch refused, and no value in any `WebViewCallRequested`; `html5ever` held at INFO
+  (`theuth::logs`).
+- **Not tested**: the 120 s unseen timeout (real time; no paused-clock harness for the tool); the two-engine
+  forward of `element_form_values` / `element_form_shown`; the `sessionsync` relay test still uses stand-in
+  structs (pulling `browser` into its dev-dependencies would build obscura there).
 
 ## 11. Open questions
 

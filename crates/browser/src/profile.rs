@@ -389,8 +389,10 @@ pub(crate) fn site_of_url(url: &str) -> Option<String> {
 }
 
 /// 209 §9: every profile or imported cookie value of [`SCRUB_MIN`] or more characters the session
-/// holds is replaced by `[cookie <name>]` in `text`.
+/// holds is replaced by `[cookie <name>]` in `text`, and every value it submitted through a
+/// `browser_show_element` card by `[typed value]` ([`crate::show_element::scrub`]).
 pub(crate) fn scrub(session: SessionId, text: &mut String) {
+    crate::show_element::scrub(session, text);
     let sessions = SESSIONS.lock();
     let Some(l) = sessions.get(&session) else {
         return;

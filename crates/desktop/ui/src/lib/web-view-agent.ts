@@ -146,6 +146,26 @@ const running = new Map<string, Running>()
 const answer = (r: Omit<Running, 'id'>, call: string, a: WebViewCallAnswer) =>
   void r.api.answer_web_view_call(call, a, r.session).catch(() => undefined)
 
+/** `Failed` reason of a `fill_form` whose values the engine no longer has (not the claiming connection, fetched once,
+ * or the card is over). */
+export const NO_VALUES = 'the form values are gone'
+const noValues = new Error(NO_VALUES)
+
+/**
+ * 209 §4.10, ruling A: a `fill_form` op arrives without the user's values (an event reaches every viewer and the
+ * relay; its params say `values_from: "element_form_values"`); the claiming connection fetches them once with
+ * `element_form_values(call id, session)` and they go only into the shell call's arguments. Any other op passes
+ * through as it came.
+ */
+export async function withFormValues(api: Api, e: WebViewCallRequested): Promise<unknown> {
+  const args = e.args as { arguments?: { cmd?: unknown; params?: Record<string, unknown> } } | null
+  if (e.op !== 'script' || args?.arguments?.cmd !== 'fill_form') return e.args
+  const values = await api.element_form_values(e.id, e.session).catch(() => null)
+  if (!values || typeof values !== 'object') throw noValues
+  const { values_from: _, ...params } = args.arguments.params ?? {}
+  return { ...args, arguments: { ...args.arguments, params: { ...params, values } } }
+}
+
 async function run(e: WebViewCallRequested): Promise<void> {
   const id = tileOf(e.view)
   if (id === null || running.has(e.id)) return
@@ -165,9 +185,9 @@ async function run(e: WebViewCallRequested): Promise<void> {
   update(id, (a) => started(a, e.id))
   let out: WebViewCallAnswer
   try {
-    out = doneOf(e.op, await native.viewCall(id, e.op, e.args))
+    out = doneOf(e.op, await native.viewCall(id, e.op, await withFormValues(api, e)))
   } catch (err) {
-    out = { kind: 'failed', reason: String(err) }
+    out = { kind: 'failed', reason: err === noValues ? NO_VALUES : String(err) }
   }
   // Stopped or resolved by the engine meanwhile: already answered, or nobody waits.
   if (running.get(e.id)?.id !== id) return

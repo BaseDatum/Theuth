@@ -86,4 +86,16 @@ async fn feature_golden_parity() {
     family::<app::AppCallChanged>(&rt, &mut feed, "app.calls").await;
     family::<secrets::SecretsEvent>(&rt, &mut feed, "secrets.events").await;
     family::<browser::BrowserEvent>(&rt, &mut feed, "browser.events").await;
+    family::<browser::show_element::ElementFormRequested>(
+        &rt,
+        &mut feed,
+        "browser.element-form-requested",
+    )
+    .await;
+    family::<browser::show_element::ElementFormResolved>(
+        &rt,
+        &mut feed,
+        "browser.element-form-resolved",
+    )
+    .await;
 }
