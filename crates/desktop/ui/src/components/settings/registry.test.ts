@@ -22,8 +22,8 @@ test('tab ids are unique across categories, and TAB_IDS lists them in column ord
   expect(ids).toEqual([...TAB_IDS])
 })
 
-test('188: eleven categories in column order (#3 Prompt suffixes after Agent), each with 1 to 6 tabs', () => {
-  expect(CATEGORIES.map((category) => category.id)).toEqual(['general', 'models', 'agent', 'suffixes', 'learning', 'voice', 'meetings', 'calendar', 'network', 'channels', 'tools'])
+test('188: twelve categories in column order (#3 Prompt suffixes after Agent, 210 Sharing after Network), each with 1 to 6 tabs', () => {
+  expect(CATEGORIES.map((category) => category.id)).toEqual(['general', 'models', 'agent', 'suffixes', 'learning', 'voice', 'meetings', 'calendar', 'network', 'sharing', 'channels', 'tools'])
   for (const category of CATEGORIES) {
     expect(category.tabs.length).toBeGreaterThanOrEqual(1)
     expect(category.tabs.length).toBeLessThanOrEqual(6)

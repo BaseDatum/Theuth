@@ -55,3 +55,37 @@ export function resultLine(output: string): string {
   const first = output.split('\n', 1)[0] ?? ''
   return n <= 1 ? first : `${first}  (+${n - 1} lines)`
 }
+
+const EXPIRY: Record<string, { label: string; ms: number }> = {
+  '1h': { label: '1 hour', ms: 3_600_000 },
+  '8h': { label: '8 hours', ms: 8 * 3_600_000 },
+  '24h': { label: '24 hours', ms: 24 * 3_600_000 },
+  '7d': { label: '7 days', ms: 7 * 24 * 3_600_000 },
+}
+
+/** 210 §7.3: what a `share_publish` approval card shows. `url` is the exact URL when the engine put it in the
+ * arguments, else `null` (the card says the edge assigns it); `expiry` reads "in 8 hours (18:40)". */
+export type SharePublishAsk = { url: string | null; source: string; access: string; expiry: string; expiryLabel: string; name: string | null; label: string | null; path: string | null }
+
+export function describeSharePublish(args: unknown, now: number): SharePublishAsk | null {
+  if (typeof args !== 'object' || args === null || Array.isArray(args)) return null
+  const a = args as Record<string, unknown>
+  const src = (typeof a.source === 'object' && a.source !== null ? a.source : {}) as Record<string, unknown>
+  const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null)
+  const source = typeof src.port === 'number' ? `localhost:${src.port} on this machine` : typeof src.dir === 'string' ? `files in ${src.dir}` : 'unknown source'
+  const key = str(a.expiry) ?? '8h'
+  const e = EXPIRY[key]
+  const at = e ? new Date(now + e.ms).toLocaleString(undefined, { weekday: e.ms > 86_400_000 ? 'short' : undefined, hour: '2-digit', minute: '2-digit' }) : null
+  return {
+    // TODO(210-M1, crates share + tools): the engine computes the exact URL before the ask (§7.3) and should add it
+    // to the approval's arguments as `url`; until then the card cannot show it.
+    url: str(a.url),
+    source,
+    access: a.access === 'password' ? 'Password (theuth generates it and shows it to you)' : 'Anyone with the link',
+    expiry: e ? `in ${e.label}${a.expiry === undefined ? ' (default)' : ''} (${at})` : key,
+    expiryLabel: e?.label ?? key,
+    name: str(a.name),
+    label: str(a.label),
+    path: str(a.path),
+  }
+}

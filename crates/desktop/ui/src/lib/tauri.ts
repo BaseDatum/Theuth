@@ -57,6 +57,11 @@ const on = <T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> =>
 export const onLaunchLog = (cb: (chunk: string) => void) => on<string>('launch-log', cb)
 /** Tray menu / app menu: show the window and go to `path` (`/`, `/knowledge`, `/settings/appearance`). */
 export const onNavigate = (cb: (path: string) => void) => on<string>('navigate', cb)
+/** 210 §7.4 item 2: the tray's "Stop public sharing (N)" item, shown while `live > 0` (`commands::share_tray`). */
+export const shareTray = (live: number): Promise<void> =>
+  isTauri() ? invoke<void>('share_tray', { live }) : Promise.resolve()
+/** The tray's "Stop public sharing" was clicked: the webview calls `share_stop("all")`. */
+export const onShareStopAll = (cb: () => void) => on<null>('share-stop-all', () => cb())
 /** `quit::Requested`: `restart` on Settings › Install and restart. */
 export type QuitRequested = { restart: boolean }
 /** `quit::Progress`: one per quit-worker step (163 D4); a second `engine` with `forced` when the daemon was killed. */

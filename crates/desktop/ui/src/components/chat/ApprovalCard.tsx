@@ -21,6 +21,7 @@ import type { Risk } from "@/rpc/bindings/method.agent.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { useApprovals } from '@/store/approvals'
 import { DoubleCard, DoubleChip, preselect, useDoubleCard } from './DoubleChip'
+import { SharePublishApproval } from '@/components/public-share/SharePublishApproval'
 
 const RISK: Record<Risk, string> = {
   read_only: 'read-only',
@@ -76,6 +77,8 @@ export const ApprovalCard = memo(function ApprovalCard({
       setBusy(false)
     }
   }
+  // 210 §7.3: human-only, so no double chip; the share layout replaces the generic argument dump.
+  if (approval.tool === 'share_publish') return <SharePublishApproval args={approval.args} busy={busy} decide={(d) => void decide(d)} />
   return (
     <DoubleCard ids={[approval.id]} className="my-2 rounded-xl border border-warning-border bg-warning-bg px-4 py-3 text-sm">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">

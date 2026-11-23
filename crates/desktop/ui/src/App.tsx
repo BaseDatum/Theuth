@@ -74,6 +74,7 @@ import { routerMounted, useConnection, watchDrops } from '@/store/connection'
 import { EngineProvider, type Stores, dropScope, scope } from '@/store/engine-scope'
 import { hydrateMeeting, installMeetingListeners } from '@/store/meeting'
 import { dispatch, on, useSessions } from '@/store/sessions'
+import { activeShares, trayBadge, usePublicShares } from '@/store/public-shares'
 
 /** 03 §0.1: the island webview loads the same bundle and lives at `/island`; the browser history cannot read a window label. */
 const ISLAND = isIsland()
@@ -539,12 +540,17 @@ function useEventSideEffects(st: Stores): void {
     let companion = false
     // 134 W6: Windows shows no tray title, so the count also goes into the tooltip, worded like the companion's.
     // 163 D6: once a quit is under way the shell owns the tray ("theuth — shutting down…"); nothing is written.
-    const badge = (n: number) =>
+    // 210 §7.4 item 2: the live public-share count rides in the same title ("◉ LIVE N"), even while the companion owns the count.
+    let attention = 0
+    const badge = (n: number) => {
+      attention = n
+      const { title, tooltip } = trayBadge(n, activeShares(usePublicShares.getState().shares).length)
       void TrayIcon.getById('main').then((t) => {
         if (useQuit.getState().state) return
-        void t?.setTitle(n ? `●${n}` : null)
-        void t?.setTooltip(n === 0 ? 'theuth · nothing needs you' : n === 1 ? 'theuth · 1 needs you' : `theuth · ${n} need you`)
+        void t?.setTitle(title)
+        void t?.setTooltip(tooltip)
       })
+    }
     const setCompanion = (alive: boolean) => {
       if (alive === companion) return
       companion = alive
@@ -555,6 +561,9 @@ function useEventSideEffects(st: Stores): void {
     const alerts = new AlertNotifier((title, body) => void notifyIfHidden(title, body), visible)
     const offs = [
       onCompanionAlive(setCompanion),
+      usePublicShares.subscribe((next, prev) => {
+        if (isDesktop() && next.shares !== prev.shares && activeShares(next.shares).length !== activeShares(prev.shares).length) badge(attention)
+      }),
       on("rpc.stream@1", 'Lagged', () => {
         resyncs.call()
         toasts.call()
