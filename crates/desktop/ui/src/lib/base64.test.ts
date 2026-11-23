@@ -22,7 +22,7 @@ test('a payload over 64 KiB round-trips', () => {
 })
 
 test('utf8ToB64 and b64ToUtf8 round-trip multi-byte text', () => {
-  const s = 'héllo ✓ 日本 😀'
+  const s = 'héllo ß 日本 𝄞'
   expect(utf8ToB64(s)).toBe(Buffer.from(s).toString('base64'))
   expect(b64ToUtf8(utf8ToB64(s))).toBe(s)
 })
