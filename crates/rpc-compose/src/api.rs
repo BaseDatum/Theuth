@@ -304,7 +304,6 @@ impl CompositionApiServer for Server {
         crate::sharing::revoke(self, ext, kind, id, sub).await
     }
 
-
     async fn subscribe_events(
         &self,
         pending: PendingSubscriptionSink,

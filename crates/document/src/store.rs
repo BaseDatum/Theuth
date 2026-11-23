@@ -262,11 +262,6 @@ impl Store {
                 return Err(e).context(what);
             }
         }
-        let added_links_n = match sqlx::query(ADD_LINKS_N).execute(&db).await {
-            Ok(_) => true,
-            Err(e) if e.to_string().contains("duplicate column") => false,
-            Err(e) => return Err(e).context("docs.links_n"),
-        };
         fs::create_dir_all(root.join(MIRROR))?;
         let store = Self {
             root,
@@ -276,34 +271,41 @@ impl Store {
             vault: None,
         };
         store.migrate_ids().await?;
-        if added_links_n {
-            store.backfill_links_n().await?;
-        }
+        store.add_links_n().await?;
         Ok(store)
     }
 
-    /// 213: `links_n` for every live row of an index from before the column, from its `meta.json`
-    /// (a row whose directory is missing or unreadable stays 0). Only rows with links are written.
-    async fn backfill_links_n(&self) -> anyhow::Result<()> {
+    /// 213: add `links_n` and backfill it from every live row's `meta.json` in one transaction, so a
+    /// crash in between leaves no column and the next open does both again. Links are counted on the
+    /// raw JSON, so a pre-SEAL `meta.json` counts too; a missing or unreadable file stays 0.
+    async fn add_links_n(&self) -> anyhow::Result<()> {
+        let mut tx = self.db.begin().await?;
+        match sqlx::query(ADD_LINKS_N).execute(&mut *tx).await {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column") => return Ok(()),
+            Err(e) => return Err(e).context("docs.links_n"),
+        }
         let ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM docs WHERE deleted_ms IS NULL")
-            .fetch_all(&self.db)
+            .fetch_all(&mut *tx)
             .await?;
         for (id,) in ids {
             let Ok(bytes) = fs::read(self.dir(&DocId(id.clone())).join(META)) else {
                 continue;
             };
-            let Ok(meta) = serde_json::from_slice::<DocMeta>(&bytes) else {
-                continue;
-            };
-            if meta.links.is_empty() {
+            let n = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| v.get("links")?.as_array().map(Vec::len))
+                .unwrap_or(0);
+            if n == 0 {
                 continue;
             }
             sqlx::query("UPDATE docs SET links_n = ? WHERE id = ?")
-                .bind(meta.links.len() as i64)
+                .bind(n as i64)
                 .bind(&id)
-                .execute(&self.db)
+                .execute(&mut *tx)
                 .await?;
         }
+        tx.commit().await?;
         Ok(())
     }
 
