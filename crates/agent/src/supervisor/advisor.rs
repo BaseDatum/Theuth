@@ -39,6 +39,7 @@ fn advisor_toolset() -> Toolset {
         prompts: Vec::new(),
         runtime: false,
         hint_limit: Some(0),
+        status_every: Some(0),
     }
 }
 

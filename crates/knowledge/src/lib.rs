@@ -84,6 +84,14 @@ pub struct KnowledgeConfig {
     /// `knowledge.lifetimes` (136 §5.2, days). The rank reads these; dreaming's
     /// `lifetimes` mirror is for its archive/verify sampling only.
     pub lifetimes: Lifetimes,
+    /// 212 §15: `false` leaves `peek_memory` out of new sessions' tool lists, prompt
+    /// and hint sentence, and refuses its calls. Settings changes it without a restart.
+    pub peek: bool,
+    /// 212: minimum P(true) for `peek_memory` to call a memory relevant. The
+    /// gliner Bool is uncalibrated; 0.5 means "the model said yes".
+    pub peek_threshold: f32,
+    /// 212: decision checkpoint `peek_memory` judges with.
+    pub peek_checkpoint: String,
 }
 
 impl Default for KnowledgeConfig {
@@ -92,6 +100,9 @@ impl Default for KnowledgeConfig {
             enabled: true,
             sync_secs: 300,
             lifetimes: Lifetimes::default(),
+            peek: true,
+            peek_threshold: 0.5,
+            peek_checkpoint: "gliner".into(),
         }
     }
 }
@@ -157,7 +168,14 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
 #[derive(kameo::Actor)]
 pub struct KnowledgeActor {
     k: Arc<Knowledge>,
+    /// 212 §15: what `peek_memory` reads on every call; Settings writes it.
+    peek: Arc<crate::tools::PeekSettings>,
 }
+
+/// `ask` → `Arc<PeekSettings>`: the live `knowledge.peek` and `knowledge.peek_threshold`
+/// `peek_memory` reads, for Settings to read and change (212 §15).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PeekHandle;
 
 /// `ask` → `Arc<Knowledge>`: the loop's hot path (hint/sync/put per round, no mailbox hop).
 #[derive(Clone, Copy, Debug, Default)]
@@ -459,6 +477,14 @@ impl Message<Handle> for KnowledgeActor {
     }
 }
 
+impl Message<PeekHandle> for KnowledgeActor {
+    type Reply = Arc<crate::tools::PeekSettings>;
+
+    async fn handle(&mut self, _: PeekHandle, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.peek.clone()
+    }
+}
+
 impl Message<Search> for KnowledgeActor {
     type Reply = Result<Vec<Hit>, String>;
 
@@ -620,8 +646,15 @@ impl runtime::Plugin for KnowledgePlugin {
             }
         };
         document::memory::install(Arc::new(MemoryDocuments(k.clone(), rt.clone())));
+        let peek = Arc::new(crate::tools::PeekSettings::new(
+            cfg.peek,
+            cfg.peek_threshold,
+        ));
         let actor = KnowledgeActor::spawn_with_mailbox(
-            KnowledgeActor { k: k.clone() },
+            KnowledgeActor {
+                k: k.clone(),
+                peek: peek.clone(),
+            },
             runtime::subscriber_mailbox(),
         );
         actor.register(KNOWLEDGE_ACTOR)?;
@@ -633,7 +666,7 @@ impl runtime::Plugin for KnowledgePlugin {
         let rt = rt.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt.lookup_when::<ToolRegistry>(REGISTRY_ACTOR).await {
-                crate::tools::register(&reg, k).await;
+                crate::tools::register(&reg, k, &cfg, peek).await;
             }
         });
         Ok(())

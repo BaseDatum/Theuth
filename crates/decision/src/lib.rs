@@ -13,6 +13,7 @@
 /// Provider-owned RPC extension contracts.
 pub mod rpc_support;
 pub mod candle;
+pub mod classify;
 pub mod embed;
 pub mod engine;
 pub mod escalate;
@@ -261,7 +262,7 @@ impl Device {
 const BATCH_FORWARD: bool = false;
 
 /// `decision:` config section (57 §2). Every field has a default; the section may be absent.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, kameo::Reply)]
 #[serde(default)]
 pub struct DecisionConfig {
     /// `false`: the actor answers every `Ask` with `Escalate(Disabled)`.

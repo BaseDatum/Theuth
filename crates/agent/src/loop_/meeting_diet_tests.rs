@@ -82,6 +82,7 @@ async fn diet_scenarios() {
             prompts: vec![],
             runtime: false,
             hint_limit,
+            status_every: None,
         })
     };
     // 136 §5.3: every `<knowledge>` note records one impression per id shown,

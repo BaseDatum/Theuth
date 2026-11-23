@@ -395,6 +395,68 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         );
     }
 
+    /// 212 §15: the three loop switches read their section's default (on), report the file
+    /// value as running (no restart, whatever the boot config says), and `set` writes the
+    /// key and still asks for no restart.
+    #[tokio::test]
+    async fn config_flag_loop_switches_apply_without_restart() {
+        let flag = |key: &str, on: bool| serde_json::json!({ "key": key, "enabled": on, "running": on, "restart_required": false });
+        let keys = ["agent.status_tool", "agent.auto_title", "knowledge.peek"];
+        for key in keys {
+            let (v, _dir) =
+                config_flag_call("", None, "config_flag_get", &format!(r#"["{key}"]"#)).await;
+            assert_eq!(v["result"], flag(key, true), "{key} default: {v}");
+        }
+        let boot = "agent:\n  status_tool: true\n  auto_title: true\nknowledge:\n  peek: true\n";
+        let file = "agent:\n  model: x  # keep\n  status_tool: false\n  auto_title: false\nknowledge:\n  peek: false\n";
+        for key in keys {
+            let (v, _dir) =
+                config_flag_call(boot, Some(file), "config_flag_get", &format!(r#"["{key}"]"#))
+                    .await;
+            assert_eq!(v["result"], flag(key, false), "{key}: {v}");
+        }
+        let (v, dir) = config_flag_call(
+            boot,
+            Some("agent:\n  model: x  # keep\n"),
+            "config_flag_set",
+            r#"["agent.auto_title", false]"#,
+        )
+        .await;
+        assert_eq!(v["result"], flag("agent.auto_title", false), "{v}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
+            "agent:\n  auto_title: false\n  model: x  # keep\n"
+        );
+        let (v, dir) =
+            config_flag_call(boot, None, "config_flag_set", r#"["knowledge.peek", false]"#).await;
+        assert_eq!(v["result"], flag("knowledge.peek", false), "{v}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
+            "knowledge:\n  peek: false\n"
+        );
+    }
+
+    /// 212 §15: `set_peek_threshold` writes `knowledge.peek_threshold` inside 0.05–0.95 and
+    /// refuses anything else with the Settings message, writing nothing.
+    #[tokio::test]
+    async fn set_peek_threshold_writes_within_the_range() {
+        let (v, dir) = config_flag_call("", None, "set_peek_threshold", "[0.65]").await;
+        assert_eq!(v["result"], serde_json::Value::Null, "{v}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
+            "knowledge:\n  peek_threshold: 0.65\n"
+        );
+        for bad in ["[0.01]", "[1.0]"] {
+            let (v, dir) = config_flag_call("", None, "set_peek_threshold", bad).await;
+            assert_eq!(v["error"]["code"], -32602, "{v}");
+            assert_eq!(
+                v["error"]["message"],
+                "peek threshold must be between 0.05 and 0.95"
+            );
+            assert!(!dir.path().join("config.yaml").exists());
+        }
+    }
+
     /// 188: only the known keys parse; anything else is `INVALID_PARAMS` naming them,
     /// and nothing is written.
     #[tokio::test]

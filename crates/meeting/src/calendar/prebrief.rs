@@ -571,6 +571,7 @@ async fn private_turn(cx: &Ctx, project: &str, prompt: String) -> Result<String,
                     prompts: vec!["meeting".into(), "knowledge".into()],
                     runtime: false,
                     hint_limit: Some(0),
+                    status_every: Some(0),
                 }),
             })
             .await

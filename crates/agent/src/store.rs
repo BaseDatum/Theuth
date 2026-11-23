@@ -69,6 +69,7 @@ pub mod harness;
 mod knowledge_harvester;
 mod moved;
 pub mod suffixes;
+pub mod title_guard;
 pub mod turn_usage;
 pub use capture::ATTACHED;
 pub use durability::Scope;
@@ -3431,6 +3432,11 @@ impl Store {
                 .await?;
             // read-file-images: the session's remembered image refusals.
             sqlx::query("DELETE FROM image_refusals WHERE session = ?")
+                .bind(&sid)
+                .execute(&mut *tx)
+                .await?;
+            // 212 §11: the session's title guards.
+            sqlx::query("DELETE FROM session_title_guard WHERE session = ?")
                 .bind(&sid)
                 .execute(&mut *tx)
                 .await?;

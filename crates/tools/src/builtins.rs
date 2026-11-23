@@ -198,7 +198,7 @@ pub const CATEGORIES: &[CategoryDef] = &[
         id: "knowledge",
         label: "Knowledge and search",
         description: "Search and maintain the knowledge base and past sessions",
-        exact: &["search", "session_read"],
+        exact: &["search", "session_read", "peek_memory"],
         prefixes: &["knowledge_"],
     },
     CategoryDef {
@@ -451,7 +451,10 @@ mod tests {
                 ],
             ),
             ("sandbox", &["sandbox_create"]),
-            ("knowledge", &["knowledge_search", "search", "session_read"]),
+            (
+                "knowledge",
+                &["knowledge_search", "search", "session_read", "peek_memory"],
+            ),
             (
                 "documents",
                 &[

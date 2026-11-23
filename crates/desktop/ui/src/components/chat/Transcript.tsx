@@ -16,6 +16,7 @@ import {
   type Activity,
   freshness,
   shownActivity,
+  statusLine,
   useEntries,
   useSessionField,
 } from '@/store/sessions'
@@ -168,6 +169,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
   const running = useSessionField(session, 'running')
   const activity = shownActivity(useSessionField(session, 'activity'), useSessionField(session, 'harvesting'))
   const visionStatus = useSessionField(session, 'visionStatus')
+  const statusText = useSessionField(session, 'statusText')
   const children = useSessionField(session, 'children')
   // This engine's store, read after the await: a page landing after a switch must not touch another engine's slice.
   const { sessions: store } = useScope()
@@ -552,7 +554,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
         {(running || activity !== 'idle') && (
           <div className={cn('flex w-full items-center gap-2 py-3 text-sm text-fg-secondary', compact ? 'px-4' : 'mx-auto md:max-w-[768px] px-8')}>
             <ActivityIndicator activity={activity} />
-            {(activity === 'vision' && visionStatus) || WORD[activity]}
+            {statusLine(activity, statusText, visionStatus) || WORD[activity]}
           </div>
         )}
       </div>

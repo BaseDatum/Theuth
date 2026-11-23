@@ -48,7 +48,7 @@ async fn family<E: WireEvent + DeserializeOwned>(
                     assert_eq!(expected, EventPolicy::default());
                 }
                 "TextDelta" | "ReasoningDelta" => expected.delta = Delta::AppendText,
-                "ToolCallProgress" | "VisionProgress" => expected.delta = Delta::Replace,
+                "ToolCallProgress" | "VisionProgress" | "StatusChanged" => expected.delta = Delta::Replace,
                 _ => {}
             }
         } else if topic == "agent.communication" || topic == "agent.graph" {

@@ -3,26 +3,100 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use decision::classify::{BoolItem, BoolVerdict};
 use kameo::actor::ActorRef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tools::registry::ToolRegistry;
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
+use crate::KnowledgeConfig;
 use crate::store::Knowledge;
-use crate::types::{Meta, Put, Source, Visibility};
+use crate::types::{AgentScope, Concept, Meta, Put, Source, Visibility};
 
 /// Name of [`GetTool`]; the loop counts its calls for harvest cadence (10 §5.1).
 pub const GET: &str = "knowledge_get";
 
+/// Name of [`PeekTool`]; the loop collects its relevant ids for the compaction head (212 §4.3).
+pub const PEEK: &str = "peek_memory";
+
+macro_rules! prompt_base {
+    () => {
+        "Durable facts about the user's machines, projects, accounts and decisions belong in the knowledge base: \
+check <knowledge> hints and `knowledge_search()` before assuming, record with `knowledge_put()` (both python)."
+    };
+}
+
 /// The plugin's system-prompt block (07 §4 part 7, 10 §4.3): when to reach for
 /// the knowledge base. Static, so it never busts the system cache.
-pub const PROMPT: &str = "Durable facts about the user's machines, projects, accounts and decisions belong in the knowledge base: \
-check <knowledge> hints and `knowledge_search()` before assuming, record with `knowledge_put()` (both python).";
+pub const PROMPT: &str = concat!(
+    prompt_base!(),
+    " Before reading hinted concepts you are unsure of, `peek_memory(question, ids)` (python) asks the local model which of them answer your question and returns only those in full."
+);
 
-/// Register every `knowledge_*` tool and the prompt block on `reg`.
-pub async fn register(reg: &ActorRef<ToolRegistry>, knowledge: Arc<Knowledge>) {
+/// [`PROMPT`] without the `peek_memory` sentence: a session started with `knowledge.peek`
+/// off gets this block instead (212 §15), constant for that session.
+pub const PROMPT_WITHOUT_PEEK: &str = prompt_base!();
+
+/// 212 §15: `knowledge.peek` and `knowledge.peek_threshold` as this engine runs them now.
+/// Settings changes both without a restart: `peek_memory` reads them on every call.
+#[derive(Debug)]
+pub struct PeekSettings {
+    on: AtomicBool,
+    /// `f32::to_bits` of the threshold.
+    threshold: AtomicU32,
+}
+
+impl PeekSettings {
+    /// From `knowledge.peek` and `knowledge.peek_threshold`.
+    pub fn new(on: bool, threshold: f32) -> Self {
+        Self {
+            on: AtomicBool::new(on),
+            threshold: AtomicU32::new(threshold.to_bits()),
+        }
+    }
+
+    /// `peek_memory` answers; off, it refuses with `peek_memory: turned off in Settings`.
+    pub fn on(&self) -> bool {
+        self.on.load(Ordering::Relaxed)
+    }
+
+    /// Minimum P(true) for "relevant".
+    pub fn threshold(&self) -> f32 {
+        f32::from_bits(self.threshold.load(Ordering::Relaxed))
+    }
+
+    /// Turn `peek_memory` on or off from the next call.
+    pub fn set_on(&self, on: bool) {
+        self.on.store(on, Ordering::Relaxed);
+    }
+
+    /// The threshold the next call applies.
+    pub fn set_threshold(&self, threshold: f32) {
+        self.threshold.store(threshold.to_bits(), Ordering::Relaxed);
+    }
+}
+
+/// The `knowledge.peek_threshold` Settings accepts (212 §15).
+pub fn check_peek_threshold(value: f32) -> Result<f32, String> {
+    // A client stepping by 0.05 may send 0.9500000000000001.
+    if (0.05 - 1e-6..=0.95 + 1e-6).contains(&value) {
+        Ok(value)
+    } else {
+        Err("peek threshold must be between 0.05 and 0.95".into())
+    }
+}
+
+/// Register every `knowledge_*` tool, `peek_memory` and the prompt block on `reg`.
+/// `peek` is the live switch and threshold the plugin actor shares with Settings.
+pub async fn register(
+    reg: &ActorRef<ToolRegistry>,
+    knowledge: Arc<Knowledge>,
+    cfg: &KnowledgeConfig,
+    peek: Arc<PeekSettings>,
+) {
     let _ = reg
         .ask(RegisterPrompt {
             plugin: "knowledge",
@@ -55,6 +129,16 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, knowledge: Arc<Knowledge>) {
     let _ = reg
         .ask(RegisterTool(Arc::new(RetitleTool(k.clone()))))
         .await;
+    // 212: check memories against a question with the local decision model. Always
+    // registered; a session started with `knowledge.peek` off leaves it out of its list.
+    let peek = PeekTool {
+        knowledge: k.clone(),
+        judge: Arc::new(DecisionJudge {
+            checkpoint: cfg.peek_checkpoint.clone(),
+        }),
+        settings: peek,
+    };
+    let _ = reg.ask(RegisterTool(Arc::new(peek))).await;
 }
 
 /// Text for the transcript, the same data as a Python value for the runtime.
@@ -191,35 +275,333 @@ impl Tool for GetTool {
             )));
         }
         let c = k.get(&a.id).await?;
-        // 136 §5.3: every read is a vote for the hint shelf — except the
-        // night's own (R-28): Tidy reads hundreds of entries and would make
-        // `opened == 0` unreachable for anything it touched.
-        if !k.is_consolidating_session(cx.session)
-            && let Err(e) = k.record_opened(&c.meta.id, chrono::Utc::now()).await
-        {
-            tracing::debug!(id = %c.meta.id, "record_opened: {e:#}");
+        record_open(&k, &c.meta.id, cx.session).await;
+        Ok(ToolOutput::ok(render_concept(c)))
+    }
+}
+
+/// 136 §5.3: every read is a vote for the hint shelf — except the night's own
+/// (R-28): Tidy reads hundreds of entries and would make `opened == 0`
+/// unreachable for anything it touched.
+async fn record_open(k: &Knowledge, id: &str, session: runtime::SessionId) {
+    if !k.is_consolidating_session(session)
+        && let Err(e) = k.record_opened(id, chrono::Utc::now()).await
+    {
+        tracing::debug!(id = %id, "record_opened: {e:#}");
+    }
+}
+
+/// What `knowledge_get` returns for a concept, shared with `peek_memory`: the
+/// file verbatim, then the `Links:` and `Cited by:` lines, each only when non-empty.
+fn render_concept(c: Concept) -> String {
+    let mut s = c.text;
+    if !c.links.is_empty() {
+        s.push_str("\nLinks: ");
+        let links: Vec<String> = c
+            .links
+            .iter()
+            .map(|(t, ok)| {
+                if *ok {
+                    t.clone()
+                } else {
+                    format!("{t} → missing")
+                }
+            })
+            .collect();
+        s.push_str(&links.join(", "));
+        s.push('\n');
+    }
+    if !c.cited_by.is_empty() {
+        s.push_str("Cited by: ");
+        s.push_str(&c.cited_by.join(", "));
+        s.push('\n');
+    }
+    s
+}
+
+/// Max chars of a `peek_memory` question (212 §3).
+const PEEK_QUESTION_CHARS: usize = 500;
+/// Max distinct ids per `peek_memory` call.
+const PEEK_MAX_IDS: usize = 12;
+/// Bytes of a memory the judge reads (title, description, body).
+const PEEK_STATE_BYTES: usize = 4096;
+/// Question chars quoted in the receipt's headline.
+const PEEK_HEADLINE_CHARS: usize = 80;
+/// Decision family the judge runs under (an unconfigured `tool.<x>` behaves as `tool`).
+const PEEK_FAMILY: &str = "tool.memory";
+/// Per-chunk budget of the judge.
+const PEEK_BUDGET_MS: u64 = 3000;
+
+/// Judges memories yes/no against a question (212 §3); the test seam of [`PeekTool`].
+#[async_trait::async_trait]
+pub trait MemoryJudge: Send + Sync + 'static {
+    /// One verdict per item, in input order.
+    async fn judge(&self, items: Vec<BoolItem>) -> anyhow::Result<Vec<BoolVerdict>>;
+}
+
+/// The real judge: the local decision model's `Bool` question.
+pub struct DecisionJudge {
+    /// Decision checkpoint (`knowledge.peek_checkpoint`).
+    pub checkpoint: String,
+}
+
+#[async_trait::async_trait]
+impl MemoryJudge for DecisionJudge {
+    async fn judge(&self, items: Vec<BoolItem>) -> anyhow::Result<Vec<BoolVerdict>> {
+        decision::classify::classify_bools(&self.checkpoint, PEEK_FAMILY, items, PEEK_BUDGET_MS)
+            .await
+    }
+}
+
+/// Arguments for [`PeekTool`].
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PeekArgs {
+    /// What you want to know (1–500 characters).
+    pub question: String,
+    /// Concept ids from a `<knowledge>` hint or `knowledge_search()` (1–12).
+    pub ids: Vec<String>,
+}
+
+/// `peek_memory` (212): the local decision model filters memories against a
+/// question; only the relevant ones come back in full.
+pub struct PeekTool {
+    /// The bundle.
+    pub knowledge: Arc<Knowledge>,
+    /// Who answers "does this memory help".
+    pub judge: Arc<dyn MemoryJudge>,
+    /// `knowledge.peek` and `knowledge.peek_threshold`, read on every call (212 §15).
+    pub settings: Arc<PeekSettings>,
+}
+
+/// One requested id's outcome.
+enum Peeked {
+    /// Absent, or not visible to this session (same text: never reveal existence).
+    Missing,
+    /// An `@commit` revision.
+    Revision,
+    /// Read and judged.
+    Judged(Box<Concept>, Verdict),
+}
+
+enum Verdict {
+    Relevant(f32),
+    NotRelevant(Option<f32>),
+    Undecided(String),
+}
+
+impl Verdict {
+    fn of(v: &BoolVerdict, threshold: f32) -> Self {
+        if let Some(e) = &v.error {
+            return Self::Undecided(e.clone());
         }
-        let mut s = c.text;
-        if !c.links.is_empty() {
-            s.push_str("\nLinks: ");
-            let links: Vec<String> = c
-                .links
-                .iter()
-                .map(|(t, ok)| {
-                    if *ok {
-                        t.clone()
-                    } else {
-                        format!("{t} → missing")
+        match (v.choice, v.p_true) {
+            (Some(true), Some(p)) if p >= threshold => Self::Relevant(p),
+            (Some(_), p) => Self::NotRelevant(p),
+            (None, _) => Self::Undecided("no answer".into()),
+        }
+    }
+}
+
+/// The judge's view of a memory: title, description (unless it repeats the title) and body
+/// (no frontmatter), cut to [`PEEK_STATE_BYTES`].
+fn peek_state(c: &Concept) -> String {
+    let body = okf::Document::parse(&c.text).map_or_else(|_| c.text.clone(), |d| d.body);
+    let (title, description) = (c.meta.title.trim(), c.meta.description.trim());
+    let s = if description.is_empty() || description == title {
+        format!("{title}\n\n{}", body.trim())
+    } else {
+        format!("{title}\n{description}\n\n{}", body.trim())
+    };
+    platform::text::cut_bytes(&s, PEEK_STATE_BYTES).to_owned()
+}
+
+/// Prefix of the judge errors that mean the model cannot answer at all (`decision::classify`).
+const PEEK_UNAVAILABLE: &str = "decision model unavailable";
+
+/// The ids a `peek_memory` receipt returned in full (its `` ### `id` — relevant `` lines),
+/// for the loop's compaction head (212 §4.3).
+pub fn peek_relevant_ids(receipt: &str) -> impl Iterator<Item = &str> {
+    receipt.lines().filter_map(|l| {
+        l.strip_prefix("### `")?
+            .split_once("` — relevant")
+            .map(|(id, _)| id)
+    })
+}
+
+#[async_trait::async_trait]
+impl Tool for PeekTool {
+    const NAME: &'static str = PEEK;
+    const RISK: Risk = Risk::ReadOnly;
+    const RETURNS: &'static str = "str";
+    const CONSUMES_SECRETS: bool = false;
+    type Args = PeekArgs;
+
+    fn description(&self) -> String {
+        "Check memories against a question before pulling them into context: the local decision model \
+         reads each named concept and answers yes/no \"does this help answer the question\"; only the \
+         relevant ones come back in full, the rest as one line each. Use it on <knowledge> hint ids or \
+         knowledge_search() results when you are not sure a memory is worth reading; use \
+         knowledge_get(id) when you already know you need it."
+            .into()
+    }
+
+    async fn call(&self, a: PeekArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        // 212 §15: a session started before Settings turned it off still lists it.
+        anyhow::ensure!(self.settings.on(), "peek_memory: turned off in Settings");
+        let question = a.question.trim();
+        anyhow::ensure!(
+            (1..=PEEK_QUESTION_CHARS).contains(&question.chars().count()),
+            "peek_memory: question must be 1–500 characters"
+        );
+        let mut ids: Vec<&str> = Vec::with_capacity(a.ids.len());
+        for id in a.ids.iter().map(|i| i.trim()) {
+            if !id.is_empty() && !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        anyhow::ensure!(
+            (1..=PEEK_MAX_IDS).contains(&ids.len()),
+            "peek_memory: give 1–12 ids"
+        );
+        let k = self.knowledge.for_session(cx.session).await?;
+        let scope = k.scope_for(Some(cx.session));
+
+        // Read what this session may see; everything else is `missing`.
+        let mut found: Vec<Option<Concept>> = Vec::with_capacity(ids.len());
+        let mut items = Vec::new();
+        for id in &ids {
+            let c = if id.contains('@') {
+                None
+            } else {
+                k.get(id)
+                    .await
+                    .ok()
+                    .filter(|c| AgentScope::sees(scope.as_ref(), &c.meta.owner, c.meta.visibility))
+            };
+            if let Some(c) = &c {
+                items.push(BoolItem {
+                    statement: format!("This memory helps answer the question: {question}"),
+                    state: peek_state(c),
+                });
+            }
+            found.push(c);
+        }
+
+        // Fail closed: a row without an answer is undecided, never pulled in.
+        let n = items.len();
+        let answers = if items.is_empty() {
+            Ok(Vec::new())
+        } else {
+            self.judge.judge(items).await
+        };
+        let (verdicts, judge_failed): (Vec<Verdict>, bool) = match answers {
+            Ok(v) => (
+                v.iter()
+                    .map(|v| Verdict::of(v, self.settings.threshold()))
+                    .collect(),
+                false,
+            ),
+            Err(e) => {
+                let e = format!("{e:#}");
+                (
+                    (0..n).map(|_| Verdict::Undecided(e.clone())).collect(),
+                    true,
+                )
+            }
+        };
+        let mut verdicts = verdicts.into_iter();
+        let rows: Vec<(&str, Peeked)> = ids
+            .iter()
+            .zip(found)
+            .map(|(id, c)| {
+                let row = match c {
+                    Some(c) => Peeked::Judged(
+                        Box::new(c),
+                        verdicts
+                            .next()
+                            .unwrap_or_else(|| Verdict::Undecided("no answer".into())),
+                    ),
+                    None if id.contains('@') => Peeked::Revision,
+                    None => Peeked::Missing,
+                };
+                (*id, row)
+            })
+            .collect();
+
+        let (mut judged, mut relevant, mut undecided, mut unavailable_rows) = (0, 0, 0, 0);
+        for (_, row) in &rows {
+            if let Peeked::Judged(_, v) = row {
+                judged += 1;
+                match v {
+                    Verdict::Relevant(_) => relevant += 1,
+                    Verdict::Undecided(e) => {
+                        undecided += 1;
+                        if e.starts_with(PEEK_UNAVAILABLE) {
+                            unavailable_rows += 1;
+                        }
                     }
-                })
-                .collect();
-            s.push_str(&links.join(", "));
-            s.push('\n');
+                    Verdict::NotRelevant(_) => {}
+                }
+            }
         }
-        if !c.cited_by.is_empty() {
-            s.push_str("Cited by: ");
-            s.push_str(&c.cited_by.join(", "));
-            s.push('\n');
+        // Nothing answered: name why, so the model knows whether a retry can help.
+        let all_undecided = judged > 0 && undecided == judged;
+        let unavailable = all_undecided && (judge_failed || unavailable_rows == undecided);
+
+        let mut s = format!(
+            "peek_memory: {relevant} of {} relevant to \"{}\"\n\n",
+            rows.len(),
+            platform::text::clip_then_ellipsis(&question.replace('\n', " "), PEEK_HEADLINE_CHARS)
+        );
+        if relevant == 0 {
+            s.push_str("No memory was judged relevant.\n");
+        }
+        let mut rest = String::new();
+        let mut first = true;
+        for (id, row) in rows {
+            match row {
+                Peeked::Judged(c, Verdict::Relevant(p)) => {
+                    record_open(&k, &c.meta.id, cx.session).await;
+                    if !first {
+                        s.push('\n');
+                    }
+                    first = false;
+                    s.push_str(&format!("### `{id}` — relevant (p={p:.2})\n"));
+                    s.push_str(&render_concept(*c));
+                    if !s.ends_with('\n') {
+                        s.push('\n');
+                    }
+                }
+                Peeked::Judged(c, Verdict::NotRelevant(p)) => {
+                    rest.push_str(&format!("- `{id}` — {} — not relevant", c.meta.title));
+                    if let Some(p) = p {
+                        rest.push_str(&format!(" (p={p:.2})"));
+                    }
+                    rest.push('\n');
+                }
+                Peeked::Judged(c, Verdict::Undecided(e)) => rest.push_str(&format!(
+                    "- `{id}` — {} — undecided ({}); knowledge_get(id) reads it anyway\n",
+                    c.meta.title,
+                    e.replace('\n', " ")
+                )),
+                Peeked::Revision => rest.push_str(&format!(
+                    "- `{id}` — not peekable: revisions are read with knowledge_get\n"
+                )),
+                Peeked::Missing => rest.push_str(&format!("- `{id}` — missing\n")),
+            }
+        }
+        if !rest.is_empty() {
+            s.push_str("\nNot pulled in:\n");
+            s.push_str(&rest);
+        }
+        if unavailable {
+            s.push_str(
+                "The local decision model is unavailable; read with knowledge_get(id) instead.\n",
+            );
+        } else if all_undecided {
+            s.push_str(
+                "The local decision model did not answer in time; try again or read with knowledge_get(id).\n",
+            );
         }
         Ok(ToolOutput::ok(s))
     }
@@ -1188,5 +1570,427 @@ mod tests {
         assert_eq!(m.evidence.len(), 6, "{:?}", m.evidence);
         assert_eq!(m.evidence[5], "meeting:06");
         assert_eq!(m.status, crate::types::Status::Stale);
+    }
+
+    /// Answers in order, or fails the whole call when `answers` is `None`.
+    struct FakeJudge {
+        answers: Option<Vec<BoolVerdict>>,
+        seen: parking_lot::Mutex<Vec<BoolItem>>,
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryJudge for FakeJudge {
+        async fn judge(&self, items: Vec<BoolItem>) -> anyhow::Result<Vec<BoolVerdict>> {
+            self.seen.lock().extend(items);
+            self.answers.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "decision model unavailable: checkpoint engine `gliner` is not running"
+                )
+            })
+        }
+    }
+
+    fn said(choice: bool, p: f32) -> BoolVerdict {
+        BoolVerdict {
+            p_true: Some(p),
+            choice: Some(choice),
+            truncated: false,
+            error: None,
+        }
+    }
+
+    fn peek_tool(
+        k: &Arc<Knowledge>,
+        answers: Option<Vec<BoolVerdict>>,
+    ) -> (PeekTool, Arc<FakeJudge>) {
+        let judge = Arc::new(FakeJudge {
+            answers,
+            seen: parking_lot::Mutex::new(Vec::new()),
+        });
+        let tool = PeekTool {
+            knowledge: k.clone(),
+            judge: judge.clone(),
+            settings: Arc::new(PeekSettings::new(true, 0.5)),
+        };
+        (tool, judge)
+    }
+
+    fn peek_args(question: &str, ids: &[&str]) -> PeekArgs {
+        PeekArgs {
+            question: question.into(),
+            ids: ids.iter().map(|&i| i.to_owned()).collect(),
+        }
+    }
+
+    async fn peek_bundle(tag: &str) -> (tempfile::TempDir, Arc<Knowledge>) {
+        let scratch = crate::test_dir(tag);
+        let dir = scratch.path().to_path_buf();
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
+        let k = Knowledge::open(&dir, rt).await.unwrap();
+        k.set_scoper(Arc::new(Main));
+        for (id, title) in [("facts/a", "A"), ("facts/b", "B"), ("facts/c", "C")] {
+            k.put(
+                Put {
+                    id: id.into(),
+                    title: title.into(),
+                    body: format!("body of {title}"),
+                    ..put()
+                },
+                Source::Model,
+            )
+            .await
+            .unwrap();
+        }
+        (scratch, k)
+    }
+
+    async fn opened(k: &Knowledge, ids: &[&str]) -> Vec<u64> {
+        let ids: Vec<String> = ids.iter().map(|&i| i.to_owned()).collect();
+        let stats = k.stats(&ids).await.unwrap();
+        stats.iter().map(|s| s.opened).collect()
+    }
+
+    /// 212 §5.1: relevant rows in full (as `knowledge_get` renders them, in
+    /// request order, each an open), the rest one line each; the loop's
+    /// parser finds exactly the relevant ids.
+    #[tokio::test]
+    async fn peek_returns_relevant_in_full_and_the_rest_as_lines() {
+        let (_scratch, k) = peek_bundle("kpeek").await;
+        let answers = vec![said(true, 0.91), said(false, 0.12), said(true, 0.74)];
+        let (tool, judge) = peek_tool(&k, Some(answers));
+        let out = tool
+            .call(
+                peek_args(
+                    "how is the build lock acquired",
+                    &["facts/a", " facts/c", "facts/nope", "facts/b", "facts/a"],
+                ),
+                cx(false),
+            )
+            .await
+            .unwrap();
+        let a = render_concept(k.get("facts/a").await.unwrap());
+        let b = render_concept(k.get("facts/b").await.unwrap());
+        let want = format!(
+            "peek_memory: 2 of 4 relevant to \"how is the build lock acquired\"\n\
+             \n\
+             ### `facts/a` — relevant (p=0.91)\n{a}\
+             \n\
+             ### `facts/b` — relevant (p=0.74)\n{b}\
+             \n\
+             Not pulled in:\n\
+             - `facts/c` — C — not relevant (p=0.12)\n\
+             - `facts/nope` — missing\n"
+        );
+        assert_eq!(out.content, want);
+        assert!(out.structured.is_none());
+        let seen = judge.seen.lock();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(
+            seen[0].statement,
+            "This memory helps answer the question: how is the build lock acquired"
+        );
+        // No description given: the store fills in the title, which the judge reads once.
+        assert_eq!(seen[0].state, "A\n\nbody of A");
+        drop(seen);
+        assert_eq!(
+            opened(&k, &["facts/a", "facts/b", "facts/c"]).await,
+            [1, 1, 0]
+        );
+        assert_eq!(
+            peek_relevant_ids(&out.content).collect::<Vec<_>>(),
+            ["facts/a", "facts/b"]
+        );
+    }
+
+    /// 212 §5.2: no model → every row undecided, nothing pulled in or opened.
+    #[tokio::test]
+    async fn peek_fails_closed_when_the_judge_is_unavailable() {
+        let (_scratch, k) = peek_bundle("kpeek").await;
+        let (tool, _) = peek_tool(&k, None);
+        let out = tool
+            .call(peek_args("q", &["facts/a", "facts/b"]), cx(false))
+            .await
+            .unwrap();
+        let undecided = "undecided (decision model unavailable: checkpoint engine `gliner` is not running); knowledge_get(id) reads it anyway";
+        assert_eq!(
+            out.content,
+            format!(
+                "peek_memory: 0 of 2 relevant to \"q\"\n\
+                 \n\
+                 No memory was judged relevant.\n\
+                 \n\
+                 Not pulled in:\n\
+                 - `facts/a` — A — {undecided}\n\
+                 - `facts/b` — B — {undecided}\n\
+                 The local decision model is unavailable; read with knowledge_get(id) instead.\n"
+            )
+        );
+        assert!(peek_relevant_ids(&out.content).next().is_none());
+        assert_eq!(opened(&k, &["facts/a", "facts/b"]).await, [0, 0]);
+    }
+
+    fn failed(error: &str) -> BoolVerdict {
+        BoolVerdict {
+            p_true: None,
+            choice: None,
+            truncated: false,
+            error: Some(error.into()),
+        }
+    }
+
+    /// The closing line says why nothing answered: unavailable (the call failed, or every
+    /// row says so) vs. not in time (timeouts; a retry can help).
+    #[tokio::test]
+    async fn peek_tells_unavailable_from_timed_out() {
+        let (_scratch, k) = peek_bundle("kpeek").await;
+        let unavailable =
+            "The local decision model is unavailable; read with knowledge_get(id) instead.\n";
+        let late = "The local decision model did not answer in time; try again or read with knowledge_get(id).\n";
+        let missing = "decision model unavailable: checkpoint not installed";
+        let slow = "the local model did not answer within 3000 ms (it may still be loading)";
+        let ids = ["facts/a", "facts/b"];
+        for (answers, tail) in [
+            (vec![failed(missing), failed(missing)], unavailable),
+            (vec![failed(slow), failed(slow)], late),
+            (vec![failed(missing), failed(slow)], late),
+        ] {
+            let (tool, _) = peek_tool(&k, Some(answers));
+            let out = tool.call(peek_args("q", &ids), cx(false)).await.unwrap();
+            assert!(out.content.ends_with(tail), "{}", out.content);
+            let other = if tail == late { unavailable } else { late };
+            assert!(!out.content.contains(other), "{}", out.content);
+        }
+        // One row answered: no closing line at all.
+        let (tool, _) = peek_tool(&k, Some(vec![said(false, 0.1), failed(slow)]));
+        let out = tool.call(peek_args("q", &ids), cx(false)).await.unwrap();
+        assert!(out.content.ends_with("knowledge_get(id) reads it anyway\n"));
+    }
+
+    /// The judge's state: the description line only when it says more than the title; a
+    /// multi-byte body is cut at 4096 bytes on a char boundary. The headline puts a
+    /// multi-line question on one line.
+    #[tokio::test]
+    async fn peek_state_and_headline() {
+        let (_scratch, k) = peek_bundle("kpeek").await;
+        for (id, description, body) in [
+            ("facts/same", Some("D"), "short".to_owned()),
+            ("facts/desc", Some("what d says"), "short".to_owned()),
+            ("facts/long", None, "é".repeat(3000)),
+        ] {
+            k.put(
+                Put {
+                    id: id.into(),
+                    title: "D".into(),
+                    description: description.map(Into::into),
+                    body,
+                    ..put()
+                },
+                Source::Model,
+            )
+            .await
+            .unwrap();
+        }
+        let (tool, judge) = peek_tool(&k, Some(vec![said(false, 0.1); 3]));
+        let out = tool
+            .call(
+                peek_args(
+                    "how is\nthe lock\ntaken",
+                    &["facts/same", "facts/desc", "facts/long"],
+                ),
+                cx(false),
+            )
+            .await
+            .unwrap();
+        let seen = judge.seen.lock();
+        assert_eq!(seen[0].state, "D\n\nshort");
+        assert_eq!(seen[1].state, "D\nwhat d says\n\nshort");
+        // "D\n\n" is 3 bytes, each "é" 2: 2046 of them fit under 4096.
+        assert_eq!(seen[2].state.len(), 4095);
+        assert_eq!(seen[2].state, format!("D\n\n{}", "é".repeat(2046)));
+        assert_eq!(
+            out.content.lines().next().unwrap(),
+            "peek_memory: 0 of 3 relevant to \"how is the lock taken\""
+        );
+    }
+
+    /// 212 §5.3: argument limits; dedupe keeps request order.
+    #[tokio::test]
+    async fn peek_validates_question_and_ids() {
+        let (_scratch, k) = peek_bundle("kpeek").await;
+        let (tool, judge) = peek_tool(&k, Some(vec![said(false, 0.1), said(false, 0.2)]));
+        let tool = &tool;
+        let err = |a| async move { tool.call(a, cx(false)).await.unwrap_err().to_string() };
+        let q = "peek_memory: question must be 1–500 characters";
+        assert_eq!(err(peek_args("  ", &["facts/a"])).await, q);
+        assert_eq!(err(peek_args(&"x".repeat(501), &["facts/a"])).await, q);
+        let n = "peek_memory: give 1–12 ids";
+        assert_eq!(err(peek_args("q", &[])).await, n);
+        assert_eq!(err(peek_args("q", &[" ", ""])).await, n);
+        let thirteen: Vec<String> = (0..13).map(|i| format!("facts/x{i}")).collect();
+        let thirteen: Vec<&str> = thirteen.iter().map(String::as_str).collect();
+        assert_eq!(err(peek_args("q", &thirteen)).await, n);
+        assert!(judge.seen.lock().is_empty());
+        let out = tool
+            .call(
+                peek_args(&"é".repeat(500), &["facts/b", "facts/a", "facts/b "]),
+                cx(false),
+            )
+            .await
+            .unwrap();
+        let seen = judge.seen.lock();
+        let titles: Vec<&str> = seen.iter().map(|i| &i.state[..1]).collect();
+        assert_eq!(titles, ["B", "A"]);
+        // The headline quotes 80 chars of the question, then `…`.
+        let head = out.content.lines().next().unwrap();
+        assert_eq!(
+            head,
+            format!("peek_memory: 0 of 2 relevant to \"{}…\"", "é".repeat(80))
+        );
+    }
+
+    /// Puts its sessions in fixed scopes; unknown sessions are the user's.
+    struct Scopes(Vec<(runtime::SessionId, crate::AgentScope)>);
+
+    #[async_trait::async_trait]
+    impl crate::Scoper for Scopes {
+        fn scope_for(&self, s: runtime::SessionId) -> Option<crate::AgentScope> {
+            self.0
+                .iter()
+                .find(|(id, _)| *id == s)
+                .map(|(_, a)| a.clone())
+        }
+        async fn bundle_for(
+            &self,
+            _: runtime::SessionId,
+        ) -> std::result::Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+
+    /// 212 §5.4: another owner's private concept reads as `missing`, exactly
+    /// like an absent one; the judge never sees it.
+    #[tokio::test]
+    async fn peek_hides_what_the_session_may_not_see() {
+        let (_scratch, k) = peek_bundle("kpeek").await;
+        let (bob, alice) = (cx(false), cx(false));
+        let scope = |name: &str| crate::AgentScope {
+            owner: format!("agent:{name}"),
+            line: Default::default(),
+        };
+        k.set_scoper(Arc::new(Scopes(vec![
+            (bob.session, scope("bob")),
+            (alice.session, scope("alice")),
+        ])));
+        k.put_for(
+            Put {
+                id: "facts/secret".into(),
+                title: "Secret".into(),
+                ..put()
+            },
+            Source::Model,
+            Some(bob.session),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            k.get("facts/secret").await.unwrap().meta.visibility,
+            Visibility::Private
+        );
+        let (tool, judge) = peek_tool(&k, Some(vec![said(true, 0.9)]));
+        let out = tool
+            .call(peek_args("q", &["facts/secret", "facts/nope"]), alice)
+            .await
+            .unwrap();
+        assert!(
+            out.content.ends_with(
+                "Not pulled in:\n- `facts/secret` — missing\n- `facts/nope` — missing\n"
+            ),
+            "{}",
+            out.content
+        );
+        assert!(judge.seen.lock().is_empty());
+        let out = tool
+            .call(peek_args("q", &["facts/secret"]), bob)
+            .await
+            .unwrap();
+        assert!(
+            out.content
+                .contains("### `facts/secret` — relevant (p=0.90)")
+        );
+    }
+
+    /// 212 §5.5–6: an `@commit` id is refused per row; `choice=true` under the
+    /// threshold is not relevant.
+    #[tokio::test]
+    async fn peek_refuses_revisions_and_applies_the_threshold() {
+        let (_scratch, k) = peek_bundle("kpeek").await;
+        let (tool, judge) = peek_tool(&k, Some(vec![said(true, 0.4)]));
+        let out = tool
+            .call(peek_args("q", &["facts/a@abc1234", "facts/a"]), cx(false))
+            .await
+            .unwrap();
+        assert_eq!(
+            out.content,
+            "peek_memory: 0 of 2 relevant to \"q\"\n\
+             \n\
+             No memory was judged relevant.\n\
+             \n\
+             Not pulled in:\n\
+             - `facts/a@abc1234` — not peekable: revisions are read with knowledge_get\n\
+             - `facts/a` — A — not relevant (p=0.40)\n"
+        );
+        assert_eq!(judge.seen.lock().len(), 1);
+        assert_eq!(opened(&k, &["facts/a"]).await, [0]);
+    }
+
+    /// 212 §15: Settings' switch refuses the next call without asking the judge, and a
+    /// threshold change applies to the next call, both on the registered tool (no restart).
+    #[tokio::test]
+    async fn peek_follows_the_live_settings() {
+        let (_scratch, k) = peek_bundle("kpeeklive").await;
+        let (tool, judge) = peek_tool(&k, Some(vec![said(true, 0.4)]));
+        let headline = |out: ToolOutput| out.content.lines().next().unwrap().to_owned();
+        let out = tool.call(peek_args("q", &["facts/a"]), cx(false)).await;
+        assert_eq!(
+            headline(out.unwrap()),
+            "peek_memory: 0 of 1 relevant to \"q\""
+        );
+        tool.settings.set_threshold(0.3);
+        let out = tool.call(peek_args("q", &["facts/a"]), cx(false)).await;
+        assert_eq!(
+            headline(out.unwrap()),
+            "peek_memory: 1 of 1 relevant to \"q\""
+        );
+        tool.settings.set_on(false);
+        let e = tool
+            .call(peek_args("q", &["facts/a"]), cx(false))
+            .await
+            .unwrap_err();
+        assert_eq!(e.to_string(), "peek_memory: turned off in Settings");
+        assert_eq!(judge.seen.lock().len(), 2);
+    }
+
+    /// 212 §15: the Settings range, with room for a client's float steps.
+    #[test]
+    fn peek_threshold_range() {
+        assert_eq!(check_peek_threshold(0.05), Ok(0.05));
+        assert_eq!(check_peek_threshold(0.950_000_1), Ok(0.950_000_1));
+        for bad in [0.0, 0.04, 0.96, 1.0] {
+            assert_eq!(
+                check_peek_threshold(bad),
+                Err("peek threshold must be between 0.05 and 0.95".into())
+            );
+        }
+    }
+
+    /// 212 §15: the block a session without peek gets is the full one minus its sentence.
+    #[test]
+    fn prompt_without_peek_drops_only_the_peek_sentence() {
+        assert!(!PROMPT_WITHOUT_PEEK.contains("peek_memory"));
+        let rest = PROMPT.strip_prefix(PROMPT_WITHOUT_PEEK).unwrap();
+        assert!(
+            rest.starts_with(" Before reading hinted concepts"),
+            "{rest}"
+        );
     }
 }

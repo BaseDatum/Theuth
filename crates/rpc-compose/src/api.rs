@@ -106,17 +106,24 @@ pub trait CompositionApi {
     #[method(name = "set_event_focus", with_extensions)]
     async fn set_event_focus(&self, sessions: Vec<SessionId>) -> RpcResult<()>;
     /// 188: one [`ConfigFlagKey`] (`decision.enabled`, `a2a.enabled`, `computer.enabled`,
-    /// `double.enabled`, `web.allow_private_network`, `browser.allow_private_network`) as
+    /// `double.enabled`, `web.allow_private_network`, `browser.allow_private_network`,
+    /// and 212 §15's `agent.status_tool`, `agent.auto_title`, `knowledge.peek`) as
     /// config.yaml holds it and as this engine started with it. Node-level, never
     /// forwarded; any other key is `INVALID_PARAMS` naming them.
     #[method(name = "config_flag_get")]
     fn config_flag_get(&self, key: ConfigFlagKey) -> RpcResult<ConfigFlag>;
-    /// 188: write only that one key (`<section>.enabled` or
-    /// `<section>.allow_private_network`) into config.yaml (every other line,
-    /// comments included, untouched). Nothing changes live: the plugin keeps its boot
-    /// state until theuth restarts, so the reply's `restart_required` says whether one is due.
+    /// 188: write only that one key (`<section>.enabled`,
+    /// `<section>.allow_private_network`, …) into config.yaml (every other line,
+    /// comments included, untouched). A plugin flag changes nothing live: the plugin keeps
+    /// its boot state until theuth restarts, so the reply's `restart_required` says whether
+    /// one is due. A 212 §15 switch applies to sessions started from now on (and
+    /// `knowledge.peek` off refuses `peek_memory` calls at once): never a restart.
     #[method(name = "config_flag_set")]
-    fn config_flag_set(&self, key: ConfigFlagKey, on: bool) -> RpcResult<ConfigFlag>;
+    async fn config_flag_set(&self, key: ConfigFlagKey, on: bool) -> RpcResult<ConfigFlag>;
+    /// 212 §15: persist `knowledge.peek_threshold` and apply it to the next `peek_memory`
+    /// call, no restart. Outside 0.05–0.95: `peek threshold must be between 0.05 and 0.95`.
+    #[method(name = "set_peek_threshold")]
+    async fn set_peek_threshold(&self, value: f32) -> RpcResult<()>;
 }
 
 #[async_trait]
@@ -135,6 +142,8 @@ impl CompositionApiServer for Server {
             max_salvages,
             communication,
             advisor,
+            status_every,
+            hint_limit,
         } = ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetInfoDefaults).await?;
         let approvals =
             ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetApprovals { session: None }).await?;
@@ -171,6 +180,9 @@ impl CompositionApiServer for Server {
             max_tool_rounds,
             stream_idle_secs,
             max_salvages,
+            status_every,
+            hint_limit,
+            peek_threshold: peek_threshold(&self.rt).await,
             pty_idle_secs,
             name,
             communication,
@@ -320,13 +332,56 @@ impl CompositionApiServer for Server {
         Ok(self.config_flag(key))
     }
 
-    fn config_flag_set(&self, key: ConfigFlagKey, on: bool) -> RpcResult<ConfigFlag> {
+    async fn config_flag_set(&self, key: ConfigFlagKey, on: bool) -> RpcResult<ConfigFlag> {
         let path = self.rt.data_dir.join("config.yaml");
         let (section, field) = key.path();
         runtime::write_config_value(&path, section, field, if on { "true" } else { "false" })
             .map_err(|e| failed(format!("config.yaml: {e}")))?;
+        // 212 §15: new sessions copy the supervisor's config; `peek_memory` reads its switch
+        // per call. A plugin that is not running has nothing live to change.
+        if let Some(flag) = key.live() {
+            if let Err(e) =
+                ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetLoopFlag { flag, on }).await
+            {
+                tracing::debug!("config_flag_set {section}.{field}: agent: {e:?}");
+            }
+            if key == ConfigFlagKey::KnowledgePeek
+                && let Ok(k) = knowledge()
+                && let Ok(peek) = send(&k, knowledge::PeekHandle).await
+            {
+                peek.set_on(on);
+            }
+        }
         Ok(self.config_flag(key))
     }
+
+    async fn set_peek_threshold(&self, value: f32) -> RpcResult<()> {
+        let value = knowledge::tools::check_peek_threshold(value).map_err(|e| {
+            ErrorObjectOwned::owned(jsonrpsee::types::error::INVALID_PARAMS_CODE, e, None::<()>)
+        })?;
+        let path = self.rt.data_dir.join("config.yaml");
+        runtime::write_config_value(&path, "knowledge", "peek_threshold", &value.to_string())
+            .map_err(|e| failed(format!("config.yaml: {e}")))?;
+        if let Ok(k) = knowledge()
+            && let Ok(peek) = send(&k, knowledge::PeekHandle).await
+        {
+            peek.set_threshold(value);
+        }
+        Ok(())
+    }
+}
+
+/// 212 §15: the threshold `peek_memory` applies now; the boot config's when knowledge is
+/// not running.
+async fn peek_threshold(rt: &runtime::Runtime) -> f32 {
+    if let Ok(k) = knowledge()
+        && let Ok(peek) = send(&k, knowledge::PeekHandle).await
+    {
+        return peek.threshold();
+    }
+    rt.section::<knowledge::KnowledgeConfig>("knowledge")
+        .unwrap_or_default()
+        .peek_threshold
 }
 
 async fn subscribe(
@@ -577,10 +632,15 @@ pub(super) trait SettingsConfigExt {
 
 impl SettingsConfigExt for Server {
     /// 188: `key` in config.yaml now (read fresh) and in the boot config (never re-read).
+    /// 212 §15: a loop switch runs what the file holds (applied to new sessions at once).
     fn config_flag(&self, key: ConfigFlagKey) -> ConfigFlag {
         use figment::providers::{Format, Yaml};
         let file = figment::Figment::from(Yaml::file_exact(self.rt.data_dir.join("config.yaml")));
-        let (enabled, running) = (key.read(&file), key.read(&self.rt.config));
+        let enabled = key.read(&file);
+        let running = match key.live() {
+            Some(_) => enabled,
+            None => key.read(&self.rt.config),
+        };
         ConfigFlag {
             key,
             enabled,

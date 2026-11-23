@@ -102,7 +102,8 @@ use crate::{
     SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel,
     SetSubagentTimeout, SetTalk, SetTitleModel, SetToolset, SetVisionModel, ShowPrompt, SideCall,
     SideCallable, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TALK_COALESCE_MS,
-    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, Withdraw, effort_of,
+    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, UserRenameSession, Withdraw,
+    effort_of,
 };
 use crate::{
     AdvisorConfig, DurableStore, GetPolishModel, ModelRole, Polish, PolishReply, Rewrite,
@@ -4646,6 +4647,62 @@ impl Message<GetMaxSalvages> for Agents {
 
     async fn handle(&mut self, _: GetMaxSalvages, _: &mut Context<Self, Self::Reply>) -> u32 {
         self.cfg.max_salvages
+    }
+}
+
+impl Message<crate::SetStatusEvery> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SetStatusEvery,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        Arc::make_mut(&mut self.cfg).status_every = m.count;
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) =
+            runtime::write_config_value(&path, "agent", "status_every", &m.count.to_string())
+        {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(())
+    }
+}
+
+impl Message<crate::SetHintLimit> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SetHintLimit,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        Arc::make_mut(&mut self.cfg).knowledge.hint_limit = m.count;
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) = runtime::write_nested_config_value(
+            &path,
+            "agent",
+            "knowledge",
+            "hint_limit",
+            &m.count.to_string(),
+        ) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(())
+    }
+}
+
+impl Message<crate::SetLoopFlag> for Agents {
+    type Reply = ();
+
+    /// 212 §15: config.yaml is the caller's; sessions started from now on copy this.
+    async fn handle(&mut self, m: crate::SetLoopFlag, _: &mut Context<Self, Self::Reply>) {
+        let cfg = Arc::make_mut(&mut self.cfg);
+        match m.flag {
+            crate::LoopFlag::StatusTool => cfg.status_tool = m.on,
+            crate::LoopFlag::AutoTitle => cfg.auto_title = m.on,
+            crate::LoopFlag::KnowledgePeek => cfg.knowledge_peek = m.on,
+        }
     }
 }
 
@@ -9961,18 +10018,50 @@ impl Message<RenameSession> for Agents {
         m: RenameSession,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<(), String> {
-        let title: String = m.title.trim().chars().take(200).collect();
+        self.rename(m.session, &m.title, false).await
+    }
+}
+
+impl Message<UserRenameSession> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: UserRenameSession,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        self.rename(m.session, &m.title, true).await
+    }
+}
+
+impl Agents {
+    /// [`RenameSession`]; `by_user` (a human's rename, [`UserRenameSession`]) also marks
+    /// the session `user_titled` (212 §11), stored and live.
+    async fn rename(
+        &mut self,
+        session: SessionId,
+        title: &str,
+        by_user: bool,
+    ) -> Result<(), String> {
+        let title: String = title.trim().chars().take(200).collect();
         if title.is_empty() {
             return Err("empty title".into());
         }
-        let store = self.store_for(m.session);
+        let store = self.store_for(session);
         store
-            .set_title(m.session, &title)
+            .set_title(session, &title)
             .await
             .map_err(|e| e.to_string())?;
+        // 212 §11: the title model never overwrites a user's name, nor does `set_status`.
+        if by_user {
+            store
+                .set_user_titled(session)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
         // A rename changes the title only; the event repeats the stored tags.
         let tags = store
-            .session(m.session)
+            .session(session)
             .await
             .ok()
             .flatten()
@@ -9988,13 +10077,16 @@ impl Message<RenameSession> for Agents {
         if let Some(Live {
             actor: LiveActor::Native(a),
             ..
-        }) = self.sessions.get(&m.session)
+        }) = self.sessions.get(&session)
         {
             let _ = a.tell(crate::loop_::Titled).await;
+            if by_user {
+                let _ = a.tell(crate::loop_::UserTitled).await;
+            }
         }
         self.rt
             .publish(AgentEvent::TitleChanged {
-                session: m.session,
+                session,
                 title,
                 tags,
             })
@@ -10458,6 +10550,8 @@ impl Message<crate::GetInfoDefaults> for Agents {
                 .state(None)
                 .map_err(|e| e.to_string())?,
             advisor: self.advisor_cfg.defaults(),
+            status_every: self.cfg.status_every,
+            hint_limit: self.cfg.knowledge.hint_limit,
         })
     }
 }
@@ -12363,6 +12457,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     if rt.config.contains("acp") {
         cfg.acp = rt.section("acp")?;
     }
+    // 212 §15: `knowledge.peek`, carried on `cfg` so each session snapshots it.
+    cfg.knowledge_peek = rt
+        .section::<knowledge::KnowledgeConfig>("knowledge")
+        .map_or(true, |k| k.peek);
     let cfg = Arc::new(cfg);
     // 68 §2: `sessions.owner` is this engine's mesh id. The mesh plugin
     // starts after us, so read (or create) the identity file directly.
@@ -18567,6 +18665,37 @@ pub(crate) mod tests {
             "deleted session served after delete replied: {next:?}"
         );
         assert_eq!(settled("release").await.hits.len(), 0);
+    }
+
+    /// 212 §11: a harness rename (`RenameSession`) leaves the title guard alone; only a
+    /// user's (`UserRenameSession`, the `rename_session` RPC) sets `user_titled`.
+    #[tokio::test]
+    async fn only_a_user_rename_guards_the_title() {
+        let (_scratch, a) = agents().await;
+        let store = a.store.clone();
+        let agents = Agents::spawn(a);
+        let id = SessionId::new();
+        store
+            .create_session(id, "m", None, None, None)
+            .await
+            .unwrap();
+        agents
+            .ask(RenameSession {
+                session: id,
+                title: "Harness title".into(),
+            })
+            .await
+            .unwrap();
+        assert!(!store.title_guard(id).await.unwrap().user_titled);
+        agents
+            .ask(UserRenameSession {
+                session: id,
+                title: " Mine ".into(),
+            })
+            .await
+            .unwrap();
+        assert!(store.title_guard(id).await.unwrap().user_titled);
+        assert_eq!(store.session(id).await.unwrap().unwrap().title, "Mine");
     }
 
     /// The handler's `Err(String)` of an `ask` (kameo lifts it into

@@ -66,6 +66,7 @@ pub fn toolset(parallel: u8) -> agent::Toolset {
         ],
         runtime: false,
         hint_limit: Some(0),
+        status_every: Some(0),
     }
 }
 

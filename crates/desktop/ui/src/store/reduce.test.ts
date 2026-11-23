@@ -6,7 +6,7 @@ import type { TodoSnapshot } from "@/rpc/bindings/method.agent.output"
 import type { UiEvent as WireEvent } from '@/store/ui-events'
 import type { Loaded as LoadedPage, VisionNote, VisionSource } from "@/rpc/bindings/method.agent.output"
 import { adopt, apply as applyWire, empty, fromHistory as fromWireHistory, fromHistoryPage, lastOpenedBy, resumeFromLoaded as resumeFromWireLoaded, route as routeWire, settleCompacting, type Ctx } from './reduce'
-import { type Entry, type Freshness, type SessionSlice, browserBusy, foldCells, freshness, shownActivity, useSessions } from './sessions'
+import { type Entry, type Freshness, type SessionSlice, browserBusy, foldCells, freshness, shownActivity, statusLine, useSessions } from './sessions'
 import type { CodeToolRan } from '@/lib/codemap/types'
 import codemapEvents from '@/components/codemap/__fixtures__/events.json'
 import { runningSubagents } from '@/components/sidebar/SessionItem'
@@ -896,6 +896,35 @@ test('VisionProgress: questioning/inspecting set the status line; the terminal s
   const failed = apply(looking, { type: 'VisionProgress', session: S, turn: T, stage: 'failed', model: 'v/eyes', sources: [sources[0]!], seq: 5 }, ctx())
   expect(failed.entries[1]).toMatchObject({ kind: 'vision', failed: true, seq: 5 })
   expect(failed.activity).toBe('thinking')
+})
+
+test('StatusChanged: sets the status line; TurnFinished, Error, TurnResumed and the next TurnStarted clear it', () => {
+  const started = run([{ type: 'TurnStarted', session: S, turn: T, text: 'go', turn_seq: 1, model: 'm' }])
+  const set = apply(started, { type: 'StatusChanged', session: S, status: 'reading the build lock code', title: 'Fix build lock' }, ctx())
+  expect(set).toMatchObject({ statusText: 'reading the build lock code', activity: 'thinking', running: true })
+  const plain = apply(set, { type: 'StatusChanged', session: S, status: 'running the tests' }, ctx())
+  expect(plain.statusText).toBe('running the tests')
+  const finished = apply(plain, { type: 'TurnFinished', session: S, turn: T, stop_reason: 'stop', usage, context: 15 }, ctx())
+  expect(finished).toMatchObject({ statusText: undefined, activity: 'idle' })
+  const resumed = apply(plain, { type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: '2026-11-23T00:00:00Z', resumed_at: '2026-11-23T00:00:01Z', partial_dropped: false, cause: 'crash' }, ctx())
+  expect(resumed).toMatchObject({ statusText: undefined, running: true })
+  expect(apply(plain, { type: 'Error', session: S, turn: T, message: 'boom' }, ctx()).statusText).toBeUndefined()
+  const next = apply(plain, { type: 'TurnStarted', session: S, turn: T, text: 'again', turn_seq: 2, model: 'm' }, ctx())
+  expect(next.statusText).toBeUndefined()
+})
+
+test('StatusChanged: a frame for a session not running (a replay after the turn ended) leaves no line', () => {
+  const idle = run([{ type: 'TurnStarted', session: S, turn: T, text: 'go', turn_seq: 1, model: 'm' }, { type: 'TurnFinished', session: S, turn: T, stop_reason: 'stop', usage, context: 15 }])
+  const replayed = apply(idle, { type: 'StatusChanged', session: S, status: 'running the tests' }, ctx())
+  expect(replayed.statusText).toBeUndefined()
+})
+
+test('statusLine: compacting outranks the agent status; otherwise status, then the vision line, then the activity word', () => {
+  expect(statusLine('compacting', 'running the tests')).toBeUndefined()
+  expect(statusLine('vision', 'running the tests', 'v/eyes inspecting 2 images…')).toBe('running the tests')
+  expect(statusLine('vision', undefined, 'v/eyes inspecting 2 images…')).toBe('v/eyes inspecting 2 images…')
+  expect(statusLine('tool', undefined, 'stale vision')).toBeUndefined()
+  expect(statusLine('tool', 'running the tests')).toBe('running the tests')
 })
 
 test('fromHistory: a row with a vision note is a vision card carrying the note, never a user bubble; the live card adopts its id', () => {

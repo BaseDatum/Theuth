@@ -2748,6 +2748,12 @@ impl Worker {
                 Some(t) => t.compacted(epoch),
                 None => self.compacted = Some(epoch),
             },
+            // 212 §12: the agent's own line titles the live thinking card; no post.
+            AgentEvent::StatusChanged { status, .. } => {
+                if let Some(t) = &mut self.turn {
+                    t.set_status(status);
+                }
+            }
             // 110 §5: the plan message.
             AgentEvent::TodoChanged { snapshot, .. } => {
                 if self.chan.plan && self.plan.update(snapshot) {

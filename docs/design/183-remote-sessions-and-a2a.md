@@ -902,6 +902,10 @@ CREATE INDEX vault_key_id ON vault(key_id);
 | `a2a_exports` / `a2a_export_put` / `a2a_export_remove` | **new**; `Export.target` is an agent or a chat (D9) | `() → Vec<Export>` / `(Export) → ()` / `(name) → ()` | here |
 | `contact_first_answer` | **new** | `(contact: String, export: String, answer: FirstContact) → ()` | here (the Attention item) |
 | `contact_deliver` | **new** (Phase 3), `Forwarded` only (W-40) | `(envelope: ContactEnvelope) → PeerReceipt` | owner of `envelope.to` |
+| `config_flag_get` / `config_flag_set` | 212 §15: `+ agent.status_tool`, `agent.auto_title`, `knowledge.peek`; these apply to new sessions at once (`restart_required: false`) | `(key) → ConfigFlag` / `(key, on) → ConfigFlag` | here |
+| `set_status_every` | **new** (212 §15) | `(count: u32) → ()` writes `agent.status_every` | here |
+| `set_hint_limit` | **new** (212 §15) | `(count: u32) → ()` writes `agent.knowledge.hint_limit` | here |
+| `set_peek_threshold` | **new** (212 §15) | `(value: f32) → ()` writes `knowledge.peek_threshold` (0.05–0.95) and applies it to the next `peek_memory` call | here |
 
 ### 10.2 Wire
 

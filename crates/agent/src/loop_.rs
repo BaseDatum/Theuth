@@ -91,7 +91,7 @@ use crate::vision::{self, VisionImage, VisionSource, VisionStatus};
 use crate::{
     AGENT_ACTOR, Advisory, AgentConfig, AgentEvent, Agents, AppendAdvisory, CompactStyle,
     QueuedInput, SessionKind, SetAdvisorOn, SurfaceConfig, Toolset, Usage, VisionStage, attach,
-    clock, compact, skills, spill, todo,
+    clock, compact, skills, spill, status, todo,
 };
 
 /// Characters of tool output shown in [`AgentEvent::ToolCallFinished`] (and
@@ -395,6 +395,10 @@ pub struct ResumedTurn;
 /// replace it with the input placeholder.
 pub struct Titled;
 
+/// `tell` (212 §11): the user renamed the session; neither the title model nor
+/// `set_status` replaces its title. The caller persisted the guard.
+pub struct UserTitled;
+
 /// `tell`: switch the model; takes effect on the next model call, mid-turn included.
 pub struct SwitchModel(pub Resolved);
 
@@ -604,6 +608,16 @@ pub struct SessionState {
     pub todo_version: u64,
     /// Round of this turn in which `todo` was last called or reminded.
     pub todo_touched_round: u32,
+    /// The agent's own status line this turn (212 §8); `None` until it calls `set_status`.
+    pub status: Option<String>,
+    /// Tool calls since the last `set_status` or status nudge (212 §10); `todo` and
+    /// `set_status` do not count.
+    pub tool_calls_since_status: u32,
+    /// No `set_status` and no status nudge yet this turn: the first nudge comes early.
+    pub status_quiet: bool,
+    /// A `set_status` title was written this turn (212 §8.3): the session counts as titled
+    /// on handback. In memory only.
+    pub status_titled: bool,
     /// Concept ids hinted this epoch (10 §4.2); cleared by compaction, not persisted.
     pub hinted: BTreeSet<String>,
     /// Round of this turn in which the last `<knowledge>` check ran.
@@ -698,6 +712,10 @@ impl SessionState {
             todos: Vec::new(),
             todo_version: 0,
             todo_touched_round: 0,
+            status: None,
+            tool_calls_since_status: 0,
+            status_quiet: true,
+            status_titled: false,
             hinted: BTreeSet::new(),
             knowledge_hinted_round: 0,
             knowledge_read: BTreeSet::new(),
@@ -792,6 +810,15 @@ impl Actor for Session {
     type Error = Infallible;
 
     async fn on_start(session: Self, _: ActorRef<Self>) -> Result<Self, Infallible> {
+        // 212 §11: the title guards persist across engine restarts.
+        match session.shared.store.title_guard(session.shared.id).await {
+            Ok(g) => {
+                let relaxed = std::sync::atomic::Ordering::Relaxed;
+                session.shared.agent_titled.store(g.agent_titled, relaxed);
+                session.shared.user_titled.store(g.user_titled, relaxed);
+            }
+            Err(e) => tracing::warn!(session = %session.shared.id, "title_guard: {e:#}"),
+        }
         Ok(session)
     }
 
@@ -828,6 +855,11 @@ struct Shared {
     toolset: Arc<parking_lot::RwLock<Option<Toolset>>>,
     /// [`SetTitlePin`] (`meetings/06-live-toolset.md` §1.7); shared with the running turn.
     title_pinned: Arc<std::sync::atomic::AtomicBool>,
+    /// 212 §11: the agent named this session with `set_status`; the title model stays off.
+    agent_titled: Arc<std::sync::atomic::AtomicBool>,
+    /// 212 §11: the user renamed this session; neither the title model nor `set_status`
+    /// replaces it.
+    user_titled: Arc<std::sync::atomic::AtomicBool>,
     /// Model for title calls (07 §15); `None` = the session's model. Shared with the supervisor.
     title_model: Arc<RwLock<Option<Resolved>>>,
     /// Vision fallback (52 §3.1); `None` = no fallback. Shared with the
@@ -925,6 +957,17 @@ struct Shared {
     /// Test hook: the view an endless turn renders instead of asking the service.
     #[cfg(test)]
     test_view: Arc<parking_lot::Mutex<Option<ViewRender>>>,
+}
+
+impl Shared {
+    /// The title model leaves this session's title alone (06 §1.7, 212 §11): pinned,
+    /// named by the agent with `set_status`, or renamed by the user.
+    fn title_held(&self) -> bool {
+        let relaxed = std::sync::atomic::Ordering::Relaxed;
+        self.title_pinned.load(relaxed)
+            || self.agent_titled.load(relaxed)
+            || self.user_titled.load(relaxed)
+    }
 }
 
 /// A vision fallback that failed in this session (read-file-images §3):
@@ -1047,6 +1090,8 @@ impl Session {
                 compaction: Arc::default(),
                 toolset: Arc::default(),
                 title_pinned: Arc::default(),
+                agent_titled: Arc::default(),
+                user_titled: Arc::default(),
                 title_model,
                 vision_model,
                 image_refusals: Arc::default(),
@@ -2621,6 +2666,16 @@ impl Message<Titled> for Session {
     }
 }
 
+impl Message<UserTitled> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, _: UserTitled, _: &mut Context<Self, Self::Reply>) {
+        self.shared
+            .user_titled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 impl Message<SwitchModel> for Session {
     type Reply = ();
 
@@ -2859,7 +2914,15 @@ impl Message<TurnDone> for Session {
     /// the next queued batch (50 §6.3: the oldest input's scope and what it
     /// admits), whose tickets stayed pending meanwhile. A batch of nothing
     /// but suppressed peer input starts no turn; the next batch is tried.
-    async fn handle(&mut self, TurnDone(state): TurnDone, ctx: &mut Context<Self, Self::Reply>) {
+    async fn handle(
+        &mut self,
+        TurnDone(mut state): TurnDone,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) {
+        // 212 §8.3: a `set_status` title stands like a rename.
+        if std::mem::take(&mut state.status_titled) {
+            self.titled = true;
+        }
         self.state = Some(state);
         self.inflight = None;
         self.resumed = None;
@@ -3908,6 +3971,7 @@ pub(crate) fn direct_specs(
     runtime_only: bool,
     subagents: bool,
     toolset: Option<&Toolset>,
+    status_tool: bool,
 ) -> Vec<ToolSpec> {
     let runtime = runtime && toolset.is_none_or(|t| t.runtime);
     let floor = runtime && runtime_only && toolset.is_none();
@@ -3923,6 +3987,10 @@ pub(crate) fn direct_specs(
     if listed(todo::NAME) {
         specs.push(todo::spec());
     }
+    // 212 §15: `agent.status_tool` off offers no `set_status` (nor its nudge or sentence).
+    if status_tool && listed(status::NAME) {
+        specs.push(status::spec());
+    }
     if runtime {
         specs.push(repl::spec());
     }
@@ -3930,10 +3998,23 @@ pub(crate) fn direct_specs(
     specs
 }
 
+/// 212 §15: a session started with `knowledge.peek` off lists no `peek_memory` (direct
+/// tool, runtime index or bridge), and its knowledge prompt block drops the peek sentence.
+pub(crate) fn without_peek(specs: &mut Vec<ToolSpec>, prompts: &mut [(&'static str, String)]) {
+    specs.retain(|s| s.name != knowledge::tools::PEEK);
+    for (plugin, block) in prompts {
+        if *plugin == "knowledge" && block == knowledge::tools::PROMPT {
+            *block = knowledge::tools::PROMPT_WITHOUT_PEEK.to_owned();
+        }
+    }
+}
+
 /// The loop-local direct tools a python cell can await too (the repl answers
 /// them, 08 §3.1); every other loop-local one is in [`repl::DIRECT_ONLY`].
 pub(crate) fn awaitable_locals() -> impl Iterator<Item = ToolSpec> {
-    std::iter::once(todo::spec()).chain(endless_tools::specs())
+    [todo::spec(), status::spec()]
+        .into_iter()
+        .chain(endless_tools::specs())
 }
 
 /// The plugins' prompt blocks for [`frame::baseline`]; a `toolset` keeps only
@@ -4048,6 +4129,90 @@ impl Turn {
 
     async fn publish(&self, event: AgentEvent) {
         self.shared.rt.publish(event).await;
+    }
+
+    /// 212 §10: the round prelude asks for `set_status` now — the tool is in this
+    /// turn's array, the cadence is on for this session, and it is not the dreaming one.
+    fn status_nudge_due(&self) -> bool {
+        let every = self
+            .shared
+            .toolset
+            .read()
+            .as_ref()
+            .and_then(|t| t.status_every)
+            .unwrap_or(self.shared.cfg.status_every);
+        status::nudge_due(
+            self.state.tool_calls_since_status,
+            self.state.status_quiet,
+            every,
+        ) && self.tools.iter().any(|t| t.name.as_str() == status::NAME)
+            && !self.consolidating()
+    }
+
+    /// This is the knowledge store's consolidating (dreaming) session: it keeps no status.
+    fn consolidating(&self) -> bool {
+        self.knowledge()
+            .is_some_and(|k| k.is_consolidating_session(self.shared.id))
+    }
+
+    /// 212 §8: what a `set_status` call needs from this session right now.
+    fn status_cx(&self) -> status::Cx {
+        status::Cx {
+            store: self.shared.store.clone(),
+            session: self.shared.id,
+            user_titled: self
+                .shared
+                .user_titled
+                .load(std::sync::atomic::Ordering::Relaxed),
+            off: self.consolidating(),
+        }
+    }
+
+    /// 212 §8: apply one successful `set_status` call (direct or from a cell; its title is
+    /// already stored): the status line and its event, `TitleChanged` for a saved title,
+    /// and the persisted `agent_titled` guard until it is stored once.
+    async fn apply_status(&mut self, a: status::Applied) {
+        let session = self.shared.id;
+        let relaxed = std::sync::atomic::Ordering::Relaxed;
+        self.state.status = Some(a.status.clone());
+        self.state.tool_calls_since_status = 0;
+        self.state.status_quiet = false;
+        // The live guard follows the stored one: a failed write is retried next call.
+        if !self.shared.agent_titled.load(relaxed) {
+            match self.shared.store.set_agent_titled(session).await {
+                Ok(()) => self.shared.agent_titled.store(true, relaxed),
+                Err(e) => tracing::warn!(session = %session, "set_agent_titled: {e:#}"),
+            }
+        }
+        let title = match a.title {
+            status::TitleOutcome::Saved(t) => Some(t),
+            _ => None,
+        };
+        self.publish(AgentEvent::StatusChanged {
+            session,
+            status: a.status,
+            title: title.clone(),
+        })
+        .await;
+        if let Some(title) = title {
+            self.state.status_titled = true;
+            // The title only; the event repeats the stored tags (as `RenameSession`).
+            let tags = self
+                .shared
+                .store
+                .session(session)
+                .await
+                .ok()
+                .flatten()
+                .map(|s| s.tags)
+                .unwrap_or_default();
+            self.publish(AgentEvent::TitleChanged {
+                session,
+                title,
+                tags,
+            })
+            .await;
+        }
     }
 
     /// 125 §4.1 item 4 / §4.12: tell the `Advisors` actor one agent-core step
@@ -5547,7 +5712,7 @@ impl Turn {
         };
         // Read before `ListTools`: a hide landing in between moves it again.
         self.hidden_epoch = registry.ask(HiddenEpoch).await.ok();
-        let specs = match registry.ask(ListTools(Some(self.shared.id))).await {
+        let mut specs = match registry.ask(ListTools(Some(self.shared.id))).await {
             Ok(specs) => specs,
             Err(e) => {
                 self.error(format!("list tools: {e}")).await;
@@ -5571,7 +5736,10 @@ impl Turn {
             self.shared.store.effective_notebook(self.shared.id).await,
             Ok(Some(_))
         );
-        let prompts = registry.ask(ListPrompts).await.unwrap_or_default();
+        let mut prompts = registry.ask(ListPrompts).await.unwrap_or_default();
+        if !self.shared.cfg.knowledge_peek {
+            without_peek(&mut specs, &mut prompts);
+        }
         // 171 §9.2: the `<cell_error>` pass runs where the `## User cells` block is taught.
         self.cells_on = attended
             && self.shared.kind != SessionKind::Advisor
@@ -5620,6 +5788,25 @@ impl Turn {
             .ask(tools::ContactScoped(self.shared.id))
             .await
             .unwrap_or(true);
+        // 183 Z3-R2: a contact session's allowlist covers the loop's own tools as well (an
+        // error admits none of them).
+        let locals: Vec<String> = [
+            todo::NAME,
+            status::NAME,
+            repl::NAME,
+            advisor::advise::NAME,
+            advisor::consult::NAME,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(endless_tools::specs().into_iter().map(|s| s.name))
+        .collect();
+        let admitted = registry
+            .ask(tools::Allowlisted(self.shared.id, locals.clone()))
+            .await
+            .unwrap_or_default();
+        let local_ok =
+            |name: &str| !locals.iter().any(|n| n == name) || admitted.iter().any(|n| n == name);
         let mut baseline = if advisor {
             let identity = identity.unwrap_or_else(|| {
                 advisor::identity::identity(
@@ -5648,6 +5835,17 @@ impl Turn {
                 !endless,
                 &self.cwd,
             );
+            // 212 §10: the status sentence only where `set_status` is offered; constant
+            // per session, so the prompt stays cache-stable.
+            if self.shared.cfg.status_tool
+                && toolset
+                    .as_ref()
+                    .is_none_or(|t| t.tools.iter().any(|n| n == status::NAME))
+                && local_ok(status::NAME)
+            {
+                b.push('\n');
+                b.push_str(status::PROMPT);
+            }
             // R1-D1: a native child of an endless parent opens with the parent's view.
             if self.shared.parent_view {
                 b.push_str("\n\n");
@@ -5655,24 +5853,6 @@ impl Turn {
             }
             b
         };
-        // 183 Z3-R2: a contact session's allowlist covers the loop's own tools as well (an
-        // error admits none of them).
-        let locals: Vec<String> = [
-            todo::NAME,
-            repl::NAME,
-            advisor::advise::NAME,
-            advisor::consult::NAME,
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .chain(endless_tools::specs().into_iter().map(|s| s.name))
-        .collect();
-        let admitted = registry
-            .ask(tools::Allowlisted(self.shared.id, locals.clone()))
-            .await
-            .unwrap_or_default();
-        let local_ok =
-            |name: &str| !locals.iter().any(|n| n == name) || admitted.iter().any(|n| n == name);
         // The index and the bridge set come from one filter over one `ListTools`:
         // a name hidden this turn (risk cap, communication off, flapping MCP) is
         // in neither.
@@ -5715,6 +5895,7 @@ impl Turn {
             self.shared.cfg.runtime_only,
             self.shared.depth < self.shared.cfg.subagents.max_depth,
             toolset.as_ref(),
+            self.shared.cfg.status_tool,
         );
         // 125 §4.1: the advisor gets `advise` and no `todo`; R1.3: an advised
         // Chat session (or a subagent under one) gets `consult`.
@@ -6629,6 +6810,9 @@ impl Turn {
                     None => None,
                 };
                 self.state.todo_touched_round = 0;
+                self.state.status = None;
+                self.state.tool_calls_since_status = 0;
+                self.state.status_quiet = true;
                 self.state.knowledge_hinted_round = 0;
                 self.state.surface_rounds = 0;
                 self.state.cell_rounds = 0;
@@ -6821,12 +7005,10 @@ impl Turn {
     /// closed generation lands. Diagnostics never carry prompt/reply/title
     /// content; for a private tree not even their lengths.
     async fn maybe_title(&mut self) {
-        // 06 §1.7: a pinned title (a recording meeting's) is never regenerated.
-        if self
-            .shared
-            .title_pinned
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        // 06 §1.7: a pinned title (a recording meeting's) is never regenerated; 212 §11:
+        // nor one the agent (`set_status`) or the user named; 212 §15: nor any while
+        // `agent.auto_title` was off when the session started.
+        if self.shared.title_held() || !self.shared.cfg.auto_title {
             return;
         }
         let epoch_changed = self.state.epoch != self.state.title_epoch;
@@ -7176,6 +7358,16 @@ impl Turn {
             self.note("todo", &list).await;
             self.state.todo_touched_round = round;
         }
+        // 212 §10: a `<nudge>` asking for `set_status` every few tool calls.
+        if chat && self.status_nudge_due() {
+            let user_titled = self
+                .shared
+                .user_titled
+                .load(std::sync::atomic::Ordering::Relaxed);
+            self.note("nudge", &status::nudge_text(user_titled)).await;
+            self.state.tool_calls_since_status = 0;
+            self.state.status_quiet = false;
+        }
         // 144 §5.3 / 157 D2: a bound chat gets its `<notebook>` block once per epoch (the manifest after a
         // compaction, D5) and a `<notebook_changes>` note when the notebook moved since, after the user's
         // `[attached …]` lines and before the knowledge hints. A retried round 0 already has either.
@@ -7280,8 +7472,9 @@ impl Turn {
                     .await
                 {
                     Ok(metas) if !metas.is_empty() => {
-                        self.note("knowledge", &knowledge::harvest::render_hints(&metas))
-                            .await;
+                        let peek = self.shared.cfg.knowledge_peek;
+                        let hints = knowledge::harvest::render_hints(&metas, peek);
+                        self.note("knowledge", &hints).await;
                         // 136 §5.3: every id shown is an impression (`uses.shown`).
                         let ids: Vec<String> = metas.into_iter().map(|m| m.id).collect();
                         if let Err(e) = knowledge.record_shown(&ids, chrono::Utc::now()).await {
@@ -7733,6 +7926,7 @@ impl Turn {
         let endless = self.endless_listed;
         let local = |name: &str| {
             name == todo::NAME
+                || name == status::NAME
                 || name == repl::NAME
                 || (advisor && name == advisor::advise::NAME)
                 || (consulting && name == advisor::consult::NAME)
@@ -7813,6 +8007,12 @@ impl Turn {
         // 47 §5.1: `todo` operations run against a working copy; the list is
         // canonical only once it commits with this batch's tool message below.
         let mut plan: Option<Vec<todo::Todo>> = None;
+        // 212 §10: every call counts toward the status nudge but `todo`, `set_status` and
+        // `python` itself; a cell's inner calls are added after it runs.
+        self.state.tool_calls_since_status += calls
+            .iter()
+            .filter(|c| ![todo::NAME, status::NAME, repl::NAME].contains(&c.fn_name.as_str()))
+            .count() as u32;
         for (i, call) in calls.iter().enumerate() {
             if cancelled || outputs[i].is_some() {
                 continue;
@@ -7856,6 +8056,13 @@ impl Turn {
                     )),
                     None => ToolOutput::err("fractal context is not available in this process"),
                 }
+            } else if call.fn_name == status::NAME {
+                let (out, applied) =
+                    status::call(&self.status_cx(), call.fn_arguments.clone()).await;
+                if let Some(a) = applied {
+                    self.apply_status(a).await;
+                }
+                out
             } else if call.fn_name == todo::NAME {
                 self.state.todo_touched_round = round;
                 let work = plan.get_or_insert_with(|| self.state.todos.clone());
@@ -8194,13 +8401,16 @@ impl Turn {
             .await;
         }
         self.calls += calls.len() as u32;
-        // 10 §7: the ids the model held verbatim this epoch, for the compaction head.
-        self.state.knowledge_read.extend(
-            calls
-                .iter()
-                .filter(|c| c.fn_name == knowledge::tools::GET)
-                .filter_map(|c| c.fn_arguments.get("id")?.as_str().map(str::to_owned)),
-        );
+        // 10 §7: the ids the model held verbatim this epoch, for the compaction head;
+        // 212 §4.3: a `peek_memory` holds the ids it judged relevant. A cell's inner calls
+        // are added after it runs.
+        for (c, out) in calls.iter().zip(&outs) {
+            self.state.knowledge_read.extend(repl::knowledge_read_ids(
+                &c.fn_name,
+                &c.fn_arguments,
+                out,
+            ));
+        }
         if cancelled {
             return Round::Stop("cancelled".into());
         }
@@ -8245,13 +8455,23 @@ impl Turn {
                 Repl::open(pool, self.shared.id, &self.shared.resources.root, cx).await
             }
         };
+        let status_cx = self.status_cx();
         let repl = self.repl.insert(repl);
         let committed = plan.as_ref().unwrap_or(&self.state.todos);
         repl.todo.clone_from(committed);
+        repl.status_cx = Some(status_cx);
         let out = repl.run(&call.call_id, &code).await;
         if repl.todo != *plan.as_ref().unwrap_or(&self.state.todos) {
             *plan = Some(std::mem::take(&mut repl.todo));
             self.state.todo_touched_round = round;
+        }
+        self.state.tool_calls_since_status += std::mem::take(&mut repl.inner_calls);
+        self.state
+            .knowledge_read
+            .extend(std::mem::take(&mut repl.knowledge_read));
+        // Each call of the cell in order, one `StatusChanged` each.
+        for a in std::mem::take(&mut repl.status) {
+            self.apply_status(a).await;
         }
         out
     }
@@ -10284,6 +10504,10 @@ mod budget_tests;
 #[cfg(test)]
 mod runtime_bridge_tests;
 
+/// 212 §13: `set_status` state, events, title guards, nudge cadence and the python bridge.
+#[cfg(test)]
+mod status_tests;
+
 #[cfg(test)]
 mod mcp_live_tests;
 
@@ -10395,6 +10619,7 @@ mod tests {
     fn runtime_sentence_names_exactly_the_unbound_direct_tools() {
         let loop_local: BTreeSet<String> = [
             todo::spec(),
+            status::spec(),
             repl::spec(),
             advisor::advise::spec(),
             advisor::consult::spec(),
@@ -10453,9 +10678,17 @@ mod tests {
             prompts: vec!["meeting".into(), "web".into()],
             runtime: false,
             hint_limit: None,
+            status_every: None,
         };
         assert_eq!(
-            names(direct_specs(registry(), true, true, true, Some(&live))),
+            names(direct_specs(
+                registry(),
+                true,
+                true,
+                true,
+                Some(&live),
+                true
+            )),
             ["brief_search", "meeting_topic"]
         );
         // Listed `todo`, `runtime: true` with a pool → both loop-local tools back.
@@ -10464,6 +10697,7 @@ mod tests {
             prompts: vec![],
             runtime: true,
             hint_limit: None,
+            status_every: None,
         };
         assert_eq!(
             names(direct_specs(
@@ -10471,7 +10705,8 @@ mod tests {
                 true,
                 true,
                 true,
-                Some(&with_locals)
+                Some(&with_locals),
+                true
             )),
             ["ask_user", "python", "todo"]
         );
@@ -10482,7 +10717,8 @@ mod tests {
                 false,
                 true,
                 true,
-                Some(&with_locals)
+                Some(&with_locals),
+                true
             )),
             ["ask_user", "todo"]
         );
@@ -10492,11 +10728,46 @@ mod tests {
             prompts: vec![],
             runtime: false,
             hint_limit: None,
+            status_every: None,
         };
-        assert!(names(direct_specs(registry(), true, true, false, Some(&spawn))).is_empty());
-        // `None`: the floor with the runtime on, everything plus `todo` without.
+        assert!(
+            names(direct_specs(
+                registry(),
+                true,
+                true,
+                false,
+                Some(&spawn),
+                true
+            ))
+            .is_empty()
+        );
+        // `None`: the floor with the runtime on, everything plus `todo` and `set_status` without.
         assert_eq!(
-            names(direct_specs(registry(), true, true, true, None)),
+            names(direct_specs(registry(), true, true, true, None, true)),
+            [
+                "ask_user",
+                "meeting_topic",
+                "python",
+                "set_status",
+                "spawn_subagent",
+                "todo"
+            ]
+        );
+        assert_eq!(
+            names(direct_specs(registry(), false, true, true, None, true)),
+            [
+                "ask_user",
+                "brief_search",
+                "meeting_topic",
+                "set_status",
+                "shell",
+                "spawn_subagent",
+                "todo"
+            ]
+        );
+        // 212 §15: `agent.status_tool` off — no `set_status`, listed or not.
+        assert_eq!(
+            names(direct_specs(registry(), true, true, true, None, false)),
             [
                 "ask_user",
                 "meeting_topic",
@@ -10505,16 +10776,20 @@ mod tests {
                 "todo"
             ]
         );
+        let with_status = Toolset {
+            tools: vec![status::NAME.into()],
+            ..with_locals.clone()
+        };
         assert_eq!(
-            names(direct_specs(registry(), false, true, true, None)),
-            [
-                "ask_user",
-                "brief_search",
-                "meeting_topic",
-                "shell",
-                "spawn_subagent",
-                "todo"
-            ]
+            names(direct_specs(
+                registry(),
+                true,
+                true,
+                true,
+                Some(&with_status),
+                false
+            )),
+            ["python"]
         );
 
         let blocks = || {
@@ -10538,6 +10813,38 @@ mod tests {
         );
     }
 
+    /// 212 §15: `knowledge.peek` off — `peek_memory` leaves the list and the knowledge block
+    /// loses only its peek sentence; any other plugin's block is untouched.
+    #[test]
+    fn without_peek_drops_the_tool_and_its_sentence() {
+        let spec = |name: &str| ToolSpec {
+            name: name.into(),
+            description: String::new(),
+            schema: serde_json::json!({"type": "object"}),
+            risk: tools::Risk::ReadOnly,
+            direct: false,
+            returns: "str".into(),
+        };
+        let mut specs = vec![spec(knowledge::tools::GET), spec(knowledge::tools::PEEK)];
+        let mut prompts = vec![
+            ("knowledge", knowledge::tools::PROMPT.to_owned()),
+            ("web", "W peek_memory".to_owned()),
+        ];
+        without_peek(&mut specs, &mut prompts);
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, [knowledge::tools::GET]);
+        assert_eq!(
+            prompts,
+            [
+                (
+                    "knowledge",
+                    knowledge::tools::PROMPT_WITHOUT_PEEK.to_owned()
+                ),
+                ("web", "W peek_memory".to_owned()),
+            ]
+        );
+    }
+
     /// 171 §10.6: the `## User cells` block is in an attended frame exactly once, gone for
     /// an unattended one (a subagent, a scheduler-opened root) and for a toolset that does
     /// not list it; a constant block leaves the frame byte-identical across turns.
@@ -10558,6 +10865,7 @@ mod tests {
             prompts: vec!["agent".into()],
             runtime: false,
             hint_limit: None,
+            status_every: None,
         };
         assert_eq!(prompt_blocks(blocks(), Some(&live), true), "A");
     }

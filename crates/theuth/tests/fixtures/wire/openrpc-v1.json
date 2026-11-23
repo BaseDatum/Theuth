@@ -2575,6 +2575,40 @@
             "type": "object"
           },
           {
+            "description": "The agent's own one-line status (design 212 §9); replaces the generic activity word\nin clients until the turn ends.",
+            "properties": {
+              "session": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.output.SessionId"
+                  }
+                ],
+                "description": "Session."
+              },
+              "status": {
+                "description": "What the agent says it is doing now (≤ 80 chars).",
+                "type": "string"
+              },
+              "title": {
+                "description": "The new title, when this call retitled the session.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "StatusChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
             "description": "The root's metadata changed (51 §3): `project` is the new effective\nvalue for the whole tree. Published after the commit.",
             "properties": {
               "project": {
@@ -5905,6 +5939,40 @@
               "stage",
               "model",
               "sources"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The agent's own one-line status (design 212 §9); replaces the generic activity word\nin clients until the turn ends.",
+            "properties": {
+              "session": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.receiver.SessionId"
+                  }
+                ],
+                "description": "Session."
+              },
+              "status": {
+                "description": "What the agent says it is doing now (≤ 80 chars).",
+                "type": "string"
+              },
+              "title": {
+                "description": "The new title, when this call retitled the session.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "StatusChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "status"
             ],
             "type": "object"
           },
@@ -108941,7 +109009,7 @@
         ]
       },
       "method.rpc_2dcompose.input.ConfigFlagKey": {
-        "description": "188: the flags Settings had no write path for: four `<section>.enabled` and\nthe two `allow_private_network` keys behind Network's \"Local network\naccess\" (16 §5, amended 2026-11-11). Any other string fails to\ndeserialize, an `INVALID_PARAMS` error listing these.",
+        "description": "188: the flags Settings had no write path for: four `<section>.enabled` and\nthe two `allow_private_network` keys behind Network's \"Local network\naccess\" (16 §5, amended 2026-11-11), and 212 §15's three switches, which\napply to new sessions without a restart. Any other string fails to\ndeserialize, an `INVALID_PARAMS` error listing these.",
         "oneOf": [
           {
             "const": "decision.enabled",
@@ -108971,6 +109039,21 @@
           {
             "const": "browser.allow_private_network",
             "description": "`browser.allow_private_network`: the browser reaches the local network.",
+            "type": "string"
+          },
+          {
+            "const": "agent.status_tool",
+            "description": "`agent.status_tool` (212 §15): new sessions get `set_status`, its prompt\nsentence and its reminders. Applies to new sessions, no restart.",
+            "type": "string"
+          },
+          {
+            "const": "agent.auto_title",
+            "description": "`agent.auto_title` (212 §15): the title model names and renames new sessions.\nApplies to new sessions, no restart.",
+            "type": "string"
+          },
+          {
+            "const": "knowledge.peek",
+            "description": "`knowledge.peek` (212 §15): new sessions list `peek_memory` and its hint and\nprompt sentences; off, its calls are refused at once. No restart.",
             "type": "string"
           }
         ]
@@ -109605,11 +109688,11 @@
             "description": "Which flag."
           },
           "restart_required": {
-            "description": "`enabled != running`: the saved value applies after theuth restarts.",
+            "description": "`enabled != running`: the saved value applies after theuth restarts. Always\n`false` for a 212 §15 switch.",
             "type": "boolean"
           },
           "running": {
-            "description": "The value this process started with (its boot config); plugins keep it until a restart.",
+            "description": "The value this process started with (its boot config); plugins keep it until a\nrestart. A 212 §15 switch (`agent.status_tool`, `agent.auto_title`, `knowledge.peek`)\nruns what the file holds: Settings applies it to new sessions at once.",
             "type": "boolean"
           }
         },
@@ -109622,7 +109705,7 @@
         "type": "object"
       },
       "method.rpc_2dcompose.output.ConfigFlagKey": {
-        "description": "188: the flags Settings had no write path for: four `<section>.enabled` and\nthe two `allow_private_network` keys behind Network's \"Local network\naccess\" (16 §5, amended 2026-11-11). Any other string fails to\ndeserialize, an `INVALID_PARAMS` error listing these.",
+        "description": "188: the flags Settings had no write path for: four `<section>.enabled` and\nthe two `allow_private_network` keys behind Network's \"Local network\naccess\" (16 §5, amended 2026-11-11), and 212 §15's three switches, which\napply to new sessions without a restart. Any other string fails to\ndeserialize, an `INVALID_PARAMS` error listing these.",
         "oneOf": [
           {
             "const": "decision.enabled",
@@ -109652,6 +109735,21 @@
           {
             "const": "browser.allow_private_network",
             "description": "`browser.allow_private_network`: the browser reaches the local network.",
+            "type": "string"
+          },
+          {
+            "const": "agent.status_tool",
+            "description": "`agent.status_tool` (212 §15): new sessions get `set_status`, its prompt\nsentence and its reminders. Applies to new sessions, no restart.",
+            "type": "string"
+          },
+          {
+            "const": "agent.auto_title",
+            "description": "`agent.auto_title` (212 §15): the title model names and renames new sessions.\nApplies to new sessions, no restart.",
+            "type": "string"
+          },
+          {
+            "const": "knowledge.peek",
+            "description": "`knowledge.peek` (212 §15): new sessions list `peek_memory` and its hint and\nprompt sentences; off, its calls are refused at once. No restart.",
             "type": "string"
           }
         ]
@@ -110005,6 +110103,13 @@
             },
             "type": "array"
           },
+          "hint_limit": {
+            "default": 0,
+            "description": "`agent.knowledge.hint_limit` (212 §15): concepts per memory hint for new\nsessions; `0` = no hints. `0` from an older harness.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "home_offline_ask_secs": {
             "default": 0,
             "description": "`tasks.home_offline_ask_secs` (182 D9): how long a task's home machine may be\noffline, with tasks waiting on it, before the Attention item asks. `0` from an older harness.",
@@ -110028,6 +110133,12 @@
             "description": "Harness display name (`link.name`, else the hostname): what a linked\ndevice shows in its harness switcher (31 §6.4).",
             "type": "string"
           },
+          "peek_threshold": {
+            "default": 0.0,
+            "description": "`knowledge.peek_threshold` (212 §15): the live minimum P(true) for\n`peek_memory` to call a memory relevant. `0` from an older harness.",
+            "format": "float",
+            "type": "number"
+          },
           "platform": {
             "description": "Host OS (`std::env::consts::OS`: `linux`, `macos`, `windows`, …); a\nparent shows it beside a node's name (32 §6.2).",
             "type": "string"
@@ -110042,6 +110153,13 @@
             "default": 0,
             "description": "`schedule.run_timeout_secs` (88): seconds a routine run may take before it is\ncancelled and its history row says `timeout`; a routine's own `run_timeout:`\noverrides it. `0` from an older harness.",
             "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status_every": {
+            "default": 0,
+            "description": "`agent.status_every` (212 §15): tool calls between status reminders for new\nsessions; `0` = off. `0` from an older harness.",
+            "format": "uint32",
             "minimum": 0,
             "type": "integer"
           },
@@ -110077,6 +110195,9 @@
           "max_tool_rounds",
           "stream_idle_secs",
           "max_salvages",
+          "status_every",
+          "hint_limit",
+          "peek_threshold",
           "pty_idle_secs",
           "name",
           "communication",
@@ -111958,11 +112079,11 @@
             "description": "Which flag."
           },
           "restart_required": {
-            "description": "`enabled != running`: the saved value applies after theuth restarts.",
+            "description": "`enabled != running`: the saved value applies after theuth restarts. Always\n`false` for a 212 §15 switch.",
             "type": "boolean"
           },
           "running": {
-            "description": "The value this process started with (its boot config); plugins keep it until a restart.",
+            "description": "The value this process started with (its boot config); plugins keep it until a\nrestart. A 212 §15 switch (`agent.status_tool`, `agent.auto_title`, `knowledge.peek`)\nruns what the file holds: Settings applies it to new sessions at once.",
             "type": "boolean"
           }
         },
@@ -111975,7 +112096,7 @@
         "type": "object"
       },
       "method.rpc_2dcompose.receiver.ConfigFlagKey": {
-        "description": "188: the flags Settings had no write path for: four `<section>.enabled` and\nthe two `allow_private_network` keys behind Network's \"Local network\naccess\" (16 §5, amended 2026-11-11). Any other string fails to\ndeserialize, an `INVALID_PARAMS` error listing these.",
+        "description": "188: the flags Settings had no write path for: four `<section>.enabled` and\nthe two `allow_private_network` keys behind Network's \"Local network\naccess\" (16 §5, amended 2026-11-11), and 212 §15's three switches, which\napply to new sessions without a restart. Any other string fails to\ndeserialize, an `INVALID_PARAMS` error listing these.",
         "oneOf": [
           {
             "const": "decision.enabled",
@@ -112005,6 +112126,21 @@
           {
             "const": "browser.allow_private_network",
             "description": "`browser.allow_private_network`: the browser reaches the local network.",
+            "type": "string"
+          },
+          {
+            "const": "agent.status_tool",
+            "description": "`agent.status_tool` (212 §15): new sessions get `set_status`, its prompt\nsentence and its reminders. Applies to new sessions, no restart.",
+            "type": "string"
+          },
+          {
+            "const": "agent.auto_title",
+            "description": "`agent.auto_title` (212 §15): the title model names and renames new sessions.\nApplies to new sessions, no restart.",
+            "type": "string"
+          },
+          {
+            "const": "knowledge.peek",
+            "description": "`knowledge.peek` (212 §15): new sessions list `peek_memory` and its hint and\nprompt sentences; off, its calls are refused at once. No restart.",
             "type": "string"
           }
         ]
@@ -112355,6 +112491,13 @@
             },
             "type": "array"
           },
+          "hint_limit": {
+            "default": 0,
+            "description": "`agent.knowledge.hint_limit` (212 §15): concepts per memory hint for new\nsessions; `0` = no hints. `0` from an older harness.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "home_offline_ask_secs": {
             "default": 0,
             "description": "`tasks.home_offline_ask_secs` (182 D9): how long a task's home machine may be\noffline, with tasks waiting on it, before the Attention item asks. `0` from an older harness.",
@@ -112378,6 +112521,12 @@
             "description": "Harness display name (`link.name`, else the hostname): what a linked\ndevice shows in its harness switcher (31 §6.4).",
             "type": "string"
           },
+          "peek_threshold": {
+            "default": 0.0,
+            "description": "`knowledge.peek_threshold` (212 §15): the live minimum P(true) for\n`peek_memory` to call a memory relevant. `0` from an older harness.",
+            "format": "float",
+            "type": "number"
+          },
           "platform": {
             "description": "Host OS (`std::env::consts::OS`: `linux`, `macos`, `windows`, …); a\nparent shows it beside a node's name (32 §6.2).",
             "type": "string"
@@ -112392,6 +112541,13 @@
             "default": 0,
             "description": "`schedule.run_timeout_secs` (88): seconds a routine run may take before it is\ncancelled and its history row says `timeout`; a routine's own `run_timeout:`\noverrides it. `0` from an older harness.",
             "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status_every": {
+            "default": 0,
+            "description": "`agent.status_every` (212 §15): tool calls between status reminders for new\nsessions; `0` = off. `0` from an older harness.",
+            "format": "uint32",
             "minimum": 0,
             "type": "integer"
           },
@@ -143495,6 +143651,34 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "set_hint_limit",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "count",
+          "required": true,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "set_input_devices",
       "paramStructure": "by-position",
       "params": [
@@ -143991,6 +144175,33 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_peek_threshold",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "value",
+          "required": true,
+          "schema": {
+            "format": "float",
+            "type": "number"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "rpc-compose"
     },
     {
       "name": "set_peer_scope",
@@ -144656,6 +144867,34 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "talk"
+    },
+    {
+      "name": "set_status_every",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "count",
+          "required": true,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
     },
     {
       "name": "set_stream_idle",

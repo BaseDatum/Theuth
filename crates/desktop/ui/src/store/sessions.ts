@@ -229,6 +229,13 @@ export function shownActivity(activity: Activity | undefined, harvesting: boolea
   return a === "idle" && harvesting ? "harvesting" : a;
 }
 
+/** 212 §12: the agent's status line outranks the activity word and the vision line, but not `compacting…` (as in the
+ * TUI). `undefined` = show the activity word. */
+export function statusLine(activity: Activity, statusText: string | undefined, visionStatus?: string): string | undefined {
+  if (activity === "compacting") return undefined;
+  return statusText || (activity === "vision" ? visionStatus : undefined) || undefined;
+}
+
 /** Everything the transcript and sidebar need for one session. */
 export type SessionSlice = {
   id: string;
@@ -241,6 +248,8 @@ export type SessionSlice = {
   harvesting: boolean;
   /** Status line while `activity === 'vision'` (52 §6): which model is asking or inspecting how many images. */
   visionStatus?: string;
+  /** 212 §12: the agent's own one-line status (`StatusChanged`); replaces the activity word until the turn ends. */
+  statusText?: string;
   model?: string;
   effort?: string | null;
   usage?: Usage;

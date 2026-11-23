@@ -15,7 +15,7 @@ use super::*;
 
 /// A pool over a python worker (see [`crate::repl::test_pool`]); `None` when
 /// there is none so the bridged scenarios skip.
-async fn worker_pool() -> Option<Arc<Pool>> {
+pub(super) async fn worker_pool() -> Option<Arc<Pool>> {
     crate::repl::test_pool(1).await
 }
 

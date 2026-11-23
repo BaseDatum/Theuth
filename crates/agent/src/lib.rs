@@ -122,6 +122,7 @@ pub mod skills;
 pub mod snap;
 pub mod spill;
 pub mod store;
+pub mod status;
 pub mod supervisor;
 pub mod title;
 pub mod todo;
@@ -710,6 +711,9 @@ pub struct Toolset {
     /// §1.5, 81): `None` = the configured `knowledge.hint_limit`; `Some(0)` = no
     /// hints, no knowledge search at turn start.
     pub hint_limit: Option<u32>,
+    /// Tool calls between `set_status` nudges for this session (212 §10): `None` =
+    /// the configured `agent.status_every`; `Some(0)` = no nudge.
+    pub status_every: Option<u32>,
 }
 
 /// `ask` → `Result<(), String>`: one session's toolset override, in memory
@@ -782,6 +786,42 @@ pub struct SetMaxSalvages {
 /// `ask` → `u32`: the live `agent.max_salvages`.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetMaxSalvages;
+
+/// `ask` → `Result<(), String>`: persist `agent.status_every` and use it for new sessions (212 §15).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetStatusEvery {
+    /// Tool calls between status nudges; `0` turns the nudge off (the tool stays).
+    pub count: u32,
+}
+
+/// `ask` → `Result<(), String>`: persist `agent.knowledge.hint_limit` and use it for new
+/// sessions (212 §15).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetHintLimit {
+    /// Lines per `<knowledge>` note; `0` turns hints off.
+    pub count: u32,
+}
+
+/// A switch Settings flips for sessions started from now on (212 §15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoopFlag {
+    /// `agent.status_tool`.
+    StatusTool,
+    /// `agent.auto_title`.
+    AutoTitle,
+    /// `knowledge.peek` as the loop reads it ([`AgentConfig::knowledge_peek`]).
+    KnowledgePeek,
+}
+
+/// `ask` → `()`: set a [`LoopFlag`] on the live config new sessions copy. The caller
+/// writes config.yaml; this only changes what the running engine hands new sessions.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetLoopFlag {
+    /// Which switch.
+    pub flag: LoopFlag,
+    /// Its new value.
+    pub on: bool,
+}
 
 /// `ask` → `Result<Option<ModelInfo>, String>`: persist `agent.title_model` and
 /// use it for every session's next title call; `None` clears it (session model).
@@ -1151,6 +1191,18 @@ pub struct SessionRead {
 /// as [`AgentEvent::TitleChanged`]. Trimmed, cut at 200 chars; `Err("empty title")`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RenameSession {
+    /// Target session.
+    pub session: SessionId,
+    /// New title.
+    pub title: String,
+}
+
+/// `ask` → `Result<(), String>`: [`RenameSession`] by a human from a client (the
+/// `rename_session` RPC). Also marks the session `user_titled` (212 §11): from then on
+/// neither the title model nor `set_status` replaces the title. Harness renames use
+/// [`RenameSession`] and leave the guard alone.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UserRenameSession {
     /// Target session.
     pub session: SessionId,
     /// New title.
@@ -2467,6 +2519,10 @@ pub struct InfoDefaults {
     pub communication: CommunicationState,
     /// [`GetAdvisorDefaults`].
     pub advisor: AdvisorDefaults,
+    /// `agent.status_every` (212 §15).
+    pub status_every: u32,
+    /// `agent.knowledge.hint_limit` (212 §15).
+    pub hint_limit: u32,
 }
 
 /// `ask` → `Result<Vec<String>, String>`: star or unstar a model (127 §1).
@@ -3895,6 +3951,18 @@ pub enum AgentEvent {
         #[cfg_attr(feature = "ts", ts(type = "number | null"))]
         seq: Option<i64>,
     },
+    /// The agent's own one-line status (design 212 §9); replaces the generic activity word
+    /// in clients until the turn ends.
+    StatusChanged {
+        /// Session.
+        session: SessionId,
+        /// What the agent says it is doing now (≤ 80 chars).
+        status: String,
+        /// The new title, when this call retitled the session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        title: Option<String>,
+    },
     /// The root's metadata changed (51 §3): `project` is the new effective
     /// value for the whole tree. Published after the commit.
     SessionMetadataChanged {
@@ -4056,7 +4124,9 @@ impl wire::WireEvent for AgentEvent {
         match json.get("type").and_then(serde_json::Value::as_str) {
             Some("SubagentSpawned" | "ObservedChildChanged") => policy.announces_child = true,
             Some("TextDelta" | "ReasoningDelta") => policy.delta = wire::Delta::AppendText,
-            Some("ToolCallProgress" | "VisionProgress") => policy.delta = wire::Delta::Replace,
+            Some("ToolCallProgress" | "VisionProgress" | "StatusChanged") => {
+                policy.delta = wire::Delta::Replace
+            }
             _ => {}
         }
         policy
@@ -4096,6 +4166,7 @@ impl AgentEvent {
             | Self::ContextChanged { session, .. }
             | Self::TodoChanged { session, .. }
             | Self::VisionProgress { session, .. }
+            | Self::StatusChanged { session, .. }
             | Self::SessionMetadataChanged { session, .. }
             | Self::Error { session, .. }
             | Self::ModelUsageChanged { session, .. }
@@ -4158,6 +4229,15 @@ pub struct AgentConfig {
     /// Interrupted-reply recoveries per turn — a stalled stream or the output
     /// token cap — before the turn stops with an error (36 §2.4, §2.6).
     pub max_salvages: u32,
+    /// Tool calls between harness "status check" nudges asking the model to call
+    /// `set_status` (212 §10); the first nudge comes after 2 calls. `0` = off.
+    pub status_every: u32,
+    /// 212 §15: `false` offers no `set_status` tool, prompt sentence or status nudge to
+    /// sessions started from now on (each keeps the value it started with).
+    pub status_tool: bool,
+    /// 212 §15: `false` stops the title model for sessions started from now on; the
+    /// first-message placeholder title still lands.
+    pub auto_title: bool,
     /// Max characters of tool output sent back to the model.
     pub max_tool_output_chars: usize,
     /// With the runtime on, only `python` and the tools that talk to the user
@@ -4232,6 +4312,11 @@ pub struct AgentConfig {
     /// the way `surface` is — not part of `agent:`.
     #[serde(skip)]
     pub acp: AcpConfig,
+    /// `knowledge.peek` (212 §15), filled by `supervisor::start` the way `surface` is
+    /// and kept current by Settings: a session started with it off lists no
+    /// `peek_memory`, and its prompt and hint sentence do not name it.
+    #[serde(skip)]
+    pub knowledge_peek: bool,
 }
 
 impl Default for AgentConfig {
@@ -4244,6 +4329,9 @@ impl Default for AgentConfig {
             max_tool_rounds: 32,
             stream_idle_secs: 120,
             max_salvages: 2,
+            status_every: 8,
+            status_tool: true,
+            auto_title: true,
             max_tool_output_chars: 32_000,
             runtime_only: true,
             communication: None,
@@ -4268,6 +4356,7 @@ impl Default for AgentConfig {
             durability: durability::DurabilityConfig::default(),
             advisor: AdvisorConfig::default(),
             acp: AcpConfig::default(),
+            knowledge_peek: true,
         }
     }
 }

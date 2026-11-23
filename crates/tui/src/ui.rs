@@ -588,8 +588,8 @@ fn App(mut hooks: Hooks) -> impl Into<AnyElement<'static>> {
             }
             // Activity and steers not yet in the context sit under the
             // transcript, in view whatever you scrolled to.
-            #(m.waiting().then(|| element!(View(margin_top: 1) {
-                Text(content: format!("{} thinking…", m.spinner()), color: SAND, italic: true)
+            #(m.trailing().map(|a| element!(View(margin_top: 1) {
+                Text(content: format!("{} {a}", m.spinner()), color: SAND, italic: true)
             })))
             #(m.queued.iter().map(|q| element! {
                 View(flex_direction: FlexDirection::Column, border_style: BorderStyle::Round, border_color: SAND, padding_left: 1, padding_right: 1, margin_top: 1) {
@@ -918,7 +918,7 @@ fn path_box(m: &Model, width: u16) -> Option<AnyElement<'static>> {
 /// step, never the pinned bottom.
 fn view_rows(m: &Model, height: u16, input: &str, fixed: usize) -> usize {
     let editor = 2 + input.lines().count().max(1);
-    let activity = if m.waiting() { 2 } else { 0 };
+    let activity = if m.trailing().is_some() { 2 } else { 0 };
     let queued: usize = m
         .queued
         .iter()

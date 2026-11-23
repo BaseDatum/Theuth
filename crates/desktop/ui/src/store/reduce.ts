@@ -937,6 +937,8 @@ export function apply(
         running: true,
         waiting: true,
         activity: "thinking",
+        // 212 §12: the replayed turn reports its status afresh.
+        statusText: undefined,
         resume: {
           turn: e.turn,
           kind: e.kind,
@@ -1210,6 +1212,8 @@ function turn(
         contextEditable: false,
         // 109 §8.2: one banner, for the resumed turn only; the next turn clears it.
         resume: s.resume?.turn === e.turn ? s.resume : undefined,
+        // 212 §12: the agent's status belongs to the turn that reported it.
+        statusText: undefined,
       };
     }
     // The steer enters the context now: its card moves from the queue to
@@ -1400,12 +1404,14 @@ function turn(
         waiting: false,
         activity: "idle",
         turnBy: undefined,
+        statusText: undefined,
       };
     }
     case "Error":
       return {
         ...s,
         activity: idle,
+        statusText: undefined,
         entries: [
           ...s.entries,
           { id: nextId(), kind: "error", text: e.message },
@@ -1471,6 +1477,10 @@ function turn(
           text: `knowledge +${e.added} ~${e.updated}`,
         },
       );
+    // 212 §12: the agent's own status line until the turn ends; the title arrives via `TitleChanged`. A replayed
+    // frame for a session no longer running must not leave a stale line.
+    case "StatusChanged":
+      return s.running ? { ...s, statusText: e.status } : s;
     // 52 §6: the consultation's status line while it runs; its committed note becomes a card once it ends. The live
     // card knows the sources and the model only; the settled reload supplies the body text and per-source statuses.
     case "VisionProgress": {
@@ -1608,8 +1618,8 @@ export function reseedRunning(
   const own = running(s.id);
   if (own !== undefined && own !== s.running) {
     next = own
-      ? { ...next, running: true, waiting: true, activity: "thinking" }
-      : { ...next, running: false, waiting: false, activity: "idle" };
+      ? { ...next, running: true, waiting: true, activity: "thinking", statusText: undefined }
+      : { ...next, running: false, waiting: false, activity: "idle", statusText: undefined };
   }
   let children: Record<string, AgentInfo> | undefined;
   for (const [id, row] of Object.entries(s.children)) {

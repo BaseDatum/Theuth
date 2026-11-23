@@ -95,11 +95,14 @@ pub fn instruction(related: &[Meta], cwd: &str) -> String {
 
 /// Body of a `<knowledge>` note (10 §4.1): the lead sentence plus one
 /// `` - `id` — title [type]: description `` line per meta, description
-/// clipped at `HINT_DESCRIPTION_CHARS`.
-pub fn render_hints(metas: &[Meta]) -> String {
-    let mut s = String::from(
-        "Concepts that may be relevant; read one with `await knowledge_get(id)` in python before relying on it:\n",
-    );
+/// clipped at `HINT_DESCRIPTION_CHARS`. `peek` (`knowledge.peek`, 212 §15): the lead
+/// sentence offers `peek_memory`; off, it names `knowledge_get` only.
+pub fn render_hints(metas: &[Meta], peek: bool) -> String {
+    let mut s = String::from(if peek {
+        "Concepts that may be relevant; not sure one helps? `await peek_memory(question=\"…\", ids=[…])` checks them against your question locally and returns only those that answer it; `await knowledge_get(id)` reads one outright (python):\n"
+    } else {
+        "Concepts that may be relevant; read one with `await knowledge_get(id)` in python before relying on it:\n"
+    });
     for m in metas {
         line(&mut s, m);
     }
@@ -296,11 +299,11 @@ mod tests {
     #[test]
     fn hints_clip_description_and_omit_empty() {
         let long = "x".repeat(200);
-        let s = render_hints(&[meta("facts/long", &long), meta("facts/empty", "")]);
+        let s = render_hints(&[meta("facts/long", &long), meta("facts/empty", "")], true);
         let mut lines = s.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "Concepts that may be relevant; read one with `await knowledge_get(id)` in python before relying on it:"
+            "Concepts that may be relevant; not sure one helps? `await peek_memory(question=\"…\", ids=[…])` checks them against your question locally and returns only those that answer it; `await knowledge_get(id)` reads one outright (python):"
         );
         let clipped = lines.next().unwrap();
         assert_eq!(
@@ -313,6 +316,17 @@ mod tests {
         assert_eq!(lines.next().unwrap(), "- `facts/empty` — T [fact]");
         assert_eq!(lines.next(), None);
         assert_eq!(render_related(&[]), "none");
+    }
+
+    /// 212 §15: with `knowledge.peek` off the lead sentence is the pre-212 one, no `peek_memory`.
+    #[test]
+    fn hints_without_peek_name_knowledge_get_only() {
+        let s = render_hints(&[meta("facts/a", "d")], false);
+        assert_eq!(
+            s,
+            "Concepts that may be relevant; read one with `await knowledge_get(id)` in python before relying on it:\n\
+             - `facts/a` — T [fact]: d\n"
+        );
     }
 
     #[test]
