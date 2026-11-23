@@ -329,8 +329,8 @@ fn daemon_command(data_dir: &Path, log: &Mutex<Vec<u8>>) -> (PathBuf, Vec<String
     }
     let script = format!(
         "exec {} --headless --data-dir {}",
-        platform::shell::quote(&bin.to_string_lossy()),
-        platform::shell::quote(&data_dir.to_string_lossy())
+        platform::shell::single_quote(&bin.to_string_lossy()),
+        platform::shell::single_quote(&data_dir.to_string_lossy())
     );
     (
         shell(log),
@@ -621,6 +621,11 @@ mod tests {
         assert!(out.contains("TERM=xterm-256color"), "{out}");
         assert!(out.contains("THEUTH_LAUNCH=1"), "{out}");
         assert!(out.contains("THEUTH_RPC__LISTEN=127.0.0.1:7802"), "{out}");
+    }
+
+    #[test]
+    fn single_quote_escapes() {
+        assert_eq!(platform::shell::single_quote("a'b"), r"'a'\''b'");
     }
 
     #[test]

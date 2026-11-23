@@ -372,7 +372,7 @@ impl Sandbox for DockerSandbox {
         let mk = self
             .exec(
                 h,
-                Cmd::new(format!("mkdir -p {}", platform::shell::quote(dir))),
+                Cmd::new(format!("mkdir -p {}", platform::shell::single_quote(dir))),
             )
             .await?;
         if !mk.ok() {

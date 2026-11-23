@@ -27,7 +27,7 @@ use crate::vm::{
     VmSnapshotInfo, VmStatus,
 };
 use crate::{Progress, Target, make_engine};
-use platform::shell::quote;
+use platform::shell::single_quote as quote;
 
 /// Vault prefix of a VM's rows: `sandbox/<name>/vnc`.
 pub const VAULT_PREFIX: &str = "sandbox/";

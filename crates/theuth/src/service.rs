@@ -179,8 +179,8 @@ fn shell_argv((shell, interactive): &(PathBuf, bool), exe: &Path, data_dir: &Pat
     v.push("-c".to_owned());
     v.push(format!(
         "exec {} --headless --data-dir {}",
-        platform::shell::quote(&exe.display().to_string()),
-        platform::shell::quote(&data_dir.display().to_string())
+        platform::shell::single_quote(&exe.display().to_string()),
+        platform::shell::single_quote(&data_dir.display().to_string())
     ));
     v
 }
@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(&a[..4], ["/bin/zsh", "-l", "-i", "-c"]);
         assert_eq!(
             a[4],
-            r#"exec '/Applications/My Tools/t' --headless --data-dir "/Users/me/it's here/.theuth""#
+            r"exec '/Applications/My Tools/t' --headless --data-dir '/Users/me/it'\''s here/.theuth'"
         );
     }
 

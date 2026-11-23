@@ -23,7 +23,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use crate::{Cmd, DaemonKind, ExecOutput, Handle, Progress, Sandbox};
-use platform::shell::quote;
+use platform::shell::single_quote as quote;
 
 /// `[user@]host[:port]`. What was not given stays `None`: the system `ssh`
 /// then takes `User`/`Port` from `~/.ssh/config`; the built-in client uses
