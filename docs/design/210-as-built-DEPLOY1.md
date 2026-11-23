@@ -5,25 +5,36 @@ was applied to the cluster; kubectl use was read-only (`get`, `logs`, `kustomize
 
 ## Image
 
-BUILD_RESULT
+**`ghcr.io/skymoore/theuth/share-edge:share-edge-387c4ec28`** (also `:latest`), index digest
+`sha256:d24411f11a23246a9b5679065ce479126e3c9aebb7dfb0f0c02a348a063b27de`: `linux/amd64`
+(`sha256:a3fecbe0…`) and `linux/arm64` (`sha256:119183ca…`), built with `--build-arg FEATURES=k8s` from
+`git archive 387c4ec28` (EDGE-K8S code + its committed Cargo.lock). Build time 538 s with both platforms
+compiled in parallel on the arm64 Mac (amd64 cross-compiled, no QEMU); not counting the build-lock wait.
+The first attempt (6f6c70bd2, no features) failed in 30 s at the libsqlite3-sys pin (below); fixed in f431ef768.
 
-`deploy/share-edge/Dockerfile` (commit 6f6c70bd2), rewritten from EDGE1's `rust:1-alpine` stage:
+`deploy/share-edge/Dockerfile` (6f6c70bd2, f431ef768, `FEATURES` arg 94a4f2057), rewritten from EDGE1's
+`rust:1-alpine` stage:
 
 - **Cross-compiled, no emulation.** The build stage is `FROM --platform=$BUILDPLATFORM rust:1-bookworm`; it maps
   `$TARGETARCH` to `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` and builds with
   `cargo zigbuild` (zig as C compiler and linker for aws-lc-sys and the bundled SQLite). Zig and
   cargo-zigbuild come from PyPI, pinned (`ziglang==0.13.0`, `cargo-zigbuild==0.24.1`). Output is still a static
   musl binary in `FROM scratch`, uid 65532, same ports/entrypoint as EDGE1.
-- **Reproducible against the repo lock.** Only `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
+- **Reproducible from the committed lock.** Only `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
   `crates/{share-edge,share-proto,platform}` are copied. The workspace is trimmed to those three members and the
   `[patch.crates-io]` block (and everything after it) is cut, as for the relay. The one patched crate the edge
-  reaches is `libsqlite3-sys` (through sqlx): without the patch cargo uses stock crates.io `libsqlite3-sys`,
-  pinned with `cargo update -p libsqlite3-sys --precise 0.36.0` (the version `vendor/libsqlite3-sys` forks), built
-  with its `bundled` SQLite; the vendored copy only adds SQLCipher-over-BoringSSL for the Signal store, which the
-  edge does not use. The build then runs `--locked`, so any other drift from `Cargo.lock` fails the build.
-- **Clean context.** The push was built from `git archive 6f6c70bd2` of exactly those paths plus the Dockerfile
-  (`/tmp/share-edge-ctx-6f6c70bd2`), not the shared working tree, so other builders' uncommitted edits cannot leak
-  into the image. `just share-edge-docker-push` still works but builds from the working tree.
+  reaches is `libsqlite3-sys` (through sqlx). With the patch gone the lock's path entry is orphaned, so
+  `cargo update -p libsqlite3-sys` alone fails ("did not match any packages"); the Dockerfile first runs
+  `cargo metadata` (cargo keeps every existing lock entry and adds crates.io `libsqlite3-sys` 0.37.0), then
+  `cargo update -p libsqlite3-sys --precise 0.36.0` (the version `vendor/libsqlite3-sys` forks; build log:
+  `Adding libsqlite3-sys v0.37.0`, `Downgrading libsqlite3-sys v0.37.0 -> v0.36.0`). Checked on the host with
+  the same steps: no name/version pair in the trimmed lock that was not in the repo lock (only pruning and
+  libsqlite3-sys path → registry). Built with its `bundled` SQLite; the vendored copy only adds
+  SQLCipher-over-BoringSSL for the Signal store, which the edge does not use. The build then runs `--locked`.
+- **Clean context.** The push was built from `git archive 387c4ec28` of exactly those paths plus the Dockerfile,
+  not the shared working tree, so other builders' uncommitted edits cannot leak into the image.
+  `just share-edge-docker-push` still works but builds from the working tree and without `FEATURES`; use
+  `docker buildx build --build-arg FEATURES=k8s …` (Verification) for the rwx-dev image.
 
 ## Manifests — `deploy/share-edge/k8s/rwx-dev/`
 
@@ -33,6 +44,7 @@ BUILD_RESULT
 | `rbac.yaml` | yes | ServiceAccount, Role (`networking.k8s.io` `ingresses`: get, list, watch, create, update, patch, delete), RoleBinding; namespace `theuth` |
 | `configmap.yaml` | yes (patch) | full `config.yaml`: `domain: tun.zip`, `admission: closed`, LE **staging** directory, `acme.contact: mailto:sky@rwx.dev` (sent verbatim as the ACME contact URI, `acme.rs` `register`), terms/abuse `example.com` placeholders, `require_caa: false`, `dns: porkbun / tun.zip / edge.tun.zip`, credential `/run/secrets/theuth-share-edge/dns.json` (existing Secret `theuth-share-edge`, key `dns.json`; not created or committed), `admin.socket` on the emptyDir, `listen_proxy_protocol.trusted: [10.244.0.0/16]`, `k8s:` templates (below) |
 | `service-iroh-udp.yaml` | no (commented) | NodePort 30785/UDP → 7850, with the enable steps |
+| `acme-register-job.yaml` | no (one-off) | Job `acme register --ca letsencrypt` on the data PVC; see “First start” |
 
 Ingresses are not committed: per the owner's 13:53 decision the edge (cargo feature `k8s`, EDGE-K8S) creates them
 from `k8s.static` (one `share-edge-static`, host `*.tun.zip`) and `k8s.per_name` (`share-edge-name-${slug}`, host
@@ -94,10 +106,61 @@ from the image labels of digest `sha256:d90f628d…f5ae`. Installed CRDs: only `
    damage, but a local-path/RBD class would be safer. `iroh.key` and `acme/` are fine on NFS.
 4. Terms/abuse URLs and contact, then the prod directory.
 
+## First start (owner, in order)
+
+`run` refuses to start without `<data_dir>/acme/letsencrypt.json` (seen in the smoke run below), and
+`acme register` writes that file only if it is absent, so it cannot run as an initContainer (the scratch image has
+no shell to guard a re-run). Steps are in the header of `acme-register-job.yaml`: apply the overlay, scale to 0, run
+the Job, scale to 1. **Blocked by the rustls bug below:** the Job panics today.
+
+## Blocker found: rustls CryptoProvider panic (crates/share-edge, not DEPLOY1's)
+
+`acme register` in the built image (`--network none`) panics before any I/O:
+`Could not automatically determine the process-level CryptoProvider from Rustls crate features … make sure exactly
+one of the 'aws-lc-rs' and 'ring' features is enabled` (rustls 0.23.46, `crypto/mod.rs:249`). In the trimmed lock
+of 387c4ec28 `rustls` depends on both `aws-lc-rs` and `ring`, so some dependency of the edge's own graph turns on
+`ring` [INFERENCE: which one is unchecked; `cargo tree -e features -i rustls` in the trimmed workspace will say].
+The host tests do not see it because the full workspace's feature set differs. `run` will hit the same panic at
+its first rustls client (ACME, kube) [INFERENCE]. Fix (share-edge owner): at the top of `main`,
+`rustls::crypto::aws_lc_rs::default_provider().install_default()`, then rebuild the image. Whether the non-k8s
+build has it too is unchecked.
+
 ## Doubts
 
-DOUBTS
+- The rustls blocker above. Until it is fixed the image starts, loads the config and stops at the ACME account
+  check; nothing past that has been exercised.
+- SQLite WAL on NFS (owner decision 3).
+- Per-name Ingress churn reloads HAProxy on 13 controller pods [INFERENCE].
+- The base Deployment's probes use `/healthz` on 9090. While the pod has no ACME account it exits, so it
+  CrashLoops until the Job has run; expected.
+- `latest` now points at a `FEATURES=k8s` image; a plain-host user pulling `latest` gets the k8s client too
+  (harmless while `k8s.enabled: false`).
 
 ## Verification
 
-VERIFICATION
+```
+# image (under /tmp/theuth-build.lock)
+git archive 387c4ec28 Cargo.toml Cargo.lock rust-toolchain.toml crates/share-edge crates/share-proto \
+  crates/platform deploy/share-edge/Dockerfile | tar -x -C /tmp/share-edge-ctx-387c4ec28
+docker buildx build --builder desktop-linux --platform linux/amd64,linux/arm64 --build-arg FEATURES=k8s \
+  -f /tmp/share-edge-ctx-387c4ec28/deploy/share-edge/Dockerfile \
+  -t ghcr.io/skymoore/theuth/share-edge:share-edge-387c4ec28 -t ghcr.io/skymoore/theuth/share-edge:latest \
+  --push /tmp/share-edge-ctx-387c4ec28                                       # rc=0, 538 s
+docker buildx imagetools inspect ghcr.io/skymoore/theuth/share-edge:share-edge-387c4ec28
+                                                     # linux/amd64 + linux/arm64 (+ attestation manifests)
+# smoke, no network (no Let's Encrypt / Porkbun), rendered overlay config + fake dns.json
+docker run --rm --network none --platform linux/arm64 … share-edge-387c4ec28
+                                                     # config + k8s templates accepted; stops: "no ACME account for letsencrypt"
+docker run --rm --network none --platform linux/arm64 … share-edge-387c4ec28 acme register --ca letsencrypt
+                                                     # rustls CryptoProvider panic (above)
+docker run --rm --network none --platform linux/amd64 --entrypoint /theuth-share-edge … --help   # runs
+# manifests (read-only cluster access)
+kubectl kustomize deploy/share-edge/k8s/rwx-dev      # renders; image share-edge-387c4ec28
+kubectl apply --dry-run=client -n theuth -f <render> -f service-iroh-udp.yaml -f acme-register-job.yaml   # accepted
+# k8s templates with ${slug}/${name}=sky through kubectl apply --dry-run=client: share-edge-static, share-edge-name-sky
+```
+
+Cluster facts used (read-only): HAProxy DaemonSet image labels (v3.2.14), `kubectl get nodes -L kubernetes.io/arch`,
+`kubeadm-config` podSubnet 10.244.0.0/16, `get sc` (nfs-csi only), `get secret theuth-share-edge` (key `dns.json`),
+`get svc` in `theuth` (iroh-relay-quic LoadBalancer `<pending>`), no NodePort 30785 in use, no existing `tun.zip`
+Ingress.
