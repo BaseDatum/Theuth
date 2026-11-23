@@ -1091,7 +1091,7 @@ fn hunk_counts(h: &str) -> (u32, u32) {
 /// The path of `a/X b/Y` (git's header): the new side; equal halves split exactly.
 fn git_header_path(rest: &str) -> String {
     let n = rest.len();
-    if n >= 5 && (n - 5) % 2 == 0 {
+    if n >= 5 && (n - 5).is_multiple_of(2) {
         let half = (n - 5) / 2;
         if let Some(p) = rest.get(2..2 + half)
             && rest == format!("a/{p} b/{p}")
