@@ -1003,7 +1003,7 @@ pub fn derive(inputs: &Inputs, states: &HashMap<String, State>, now_ms: u64) -> 
                 Some(format!(
                     "{} \u{b7} {} \u{b7} v{}",
                     s.kind,
-                    human_bytes(s.bytes),
+                    platform::fmt::bytes(s.bytes),
                     s.version
                 )),
                 s.at_ms,
@@ -1663,22 +1663,6 @@ fn stamp(ms: u64) -> String {
     )
 }
 
-/// `12 B` · `3.4 KB` · `1.2 MB` · `2.0 GB`.
-fn human_bytes(n: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut v = n as f64;
-    let mut i = 0;
-    while v >= 1000.0 && i < UNITS.len() - 1 {
-        v /= 1000.0;
-        i += 1;
-    }
-    if i == 0 {
-        format!("{n} B")
-    } else {
-        format!("{v:.1} {}", UNITS[i])
-    }
-}
-
 /// 146 D4: "Restarted 14:12 · 3 sessions resumed · 2 subagents back · 1 restarted fresh · 1 waiting · 3 lost (a, b, c)".
 pub fn boot_title(b: &agent::durability::BootPass) -> String {
     let plural = |n: u32, one: &str, many: &str| {
@@ -2235,7 +2219,10 @@ impl Attention {
         stop_reason: String,
     ) {
         let text = self.texts.remove(&session).unwrap_or_default();
-        let error = self.errors.remove(&session).map(|e| clip(&e, SUMMARY_MAX));
+        let error = self
+            .errors
+            .remove(&session)
+            .map(|e| platform::text::ellipsize(e.trim(), SUMMARY_MAX).into_owned());
         let Some(outcome) = stop_card(&stop_reason) else {
             return;
         };
@@ -2274,18 +2261,6 @@ impl Attention {
             tracing::warn!("attention: record finished {session}: {e:#}");
         }
         self.recheck_quietly().await;
-    }
-}
-
-/// `s` trimmed and cut to `max` chars (an ellipsis replaces the cut).
-fn clip(s: &str, max: usize) -> String {
-    let s = s.trim();
-    if s.chars().count() <= max {
-        s.to_owned()
-    } else {
-        let mut out: String = s.chars().take(max - 1).collect();
-        out.push('\u{2026}');
-        out
     }
 }
 

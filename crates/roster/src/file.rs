@@ -254,10 +254,10 @@ pub fn render(f: &AgentFile) -> String {
     s
 }
 
-/// Double-quoted YAML scalar: backslashes and quotes escaped, so a `:`, `#` or
+/// Double-quoted YAML scalar (a JSON string is one), so a `:`, `#` or
 /// leading `~` survive.
 fn yaml_str(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    serde_json::to_string(s).expect("a str serialises to JSON")
 }
 
 /// Rewrite one `key:` line inside the front matter, byte-for-byte elsewhere

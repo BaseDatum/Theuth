@@ -8,6 +8,7 @@ description = "Helpers the Signal, Slack and Telegram adapters share: command fo
 [dependencies]
 agent = { workspace = true }
 runtime = { workspace = true }
+platform = { workspace = true }
 tools = { workspace = true }
 kameo = { workspace = true }
 anyhow = { workspace = true }

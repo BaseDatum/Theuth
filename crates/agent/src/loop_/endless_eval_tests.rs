@@ -100,8 +100,8 @@ impl Respond for ScriptRef {
 
 /// A registry for `rebase`'s `ListTools`; process-global, so one per scenario.
 async fn registry() -> (crate::TestDir, ActorRef<ToolRegistry>) {
-    let scratch = crate::TestDir::new("endless-eval-reg");
-    let reg_rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let scratch = crate::test_dir("endless-eval-reg");
+    let reg_rt = Runtime::new(figment::Figment::new(), scratch.path().to_path_buf());
     let reg = tools::registry::start(&reg_rt).await.unwrap();
     (scratch, reg)
 }
@@ -695,9 +695,9 @@ fn eval_s5_images_ride_the_tail_then_leave_as_named_lines_and_zoom_back() {
 /// loop sends the screenshot again; units before the images keep their rows.
 async fn s5() {
     let (_reg_dir, _reg) = registry().await;
-    let pics = crate::TestDir::new("eval-pics");
-    let photo = pics.0.join("evalphoto.png");
-    let shot = pics.0.join("evalshot.png");
+    let pics = crate::test_dir("eval-pics");
+    let photo = pics.path().join("evalphoto.png");
+    let shot = pics.path().join("evalshot.png");
     let (red, blue) = (png_bytes([255, 0, 0]), png_bytes([0, 0, 255]));
     std::fs::write(&photo, &red).unwrap();
     std::fs::write(&shot, &blue).unwrap();

@@ -539,10 +539,10 @@ mod tests {
     use crate::types::{Put, Source};
 
     /// Guard first in the tuple: it is declared first, so it drops last.
-    async fn bundle() -> (crate::TestDir, Arc<Knowledge>) {
-        let dir = crate::TestDir::new("ksync");
-        let rt = runtime::Runtime::new(figment::Figment::new(), dir.0.clone());
-        let k = Knowledge::open(&dir.0, rt).await.unwrap();
+    async fn bundle() -> (tempfile::TempDir, Arc<Knowledge>) {
+        let dir = crate::test_dir("ksync");
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let k = Knowledge::open(dir.path(), rt).await.unwrap();
         (dir, k)
     }
 
@@ -642,7 +642,7 @@ mod tests {
         a.delete("facts/only-b").await.unwrap();
         sync_pair(&a, &b).await;
         assert_eq!(ids(&b).await, ["facts/only-a"]);
-        assert!(!db.0.join("facts/only-b.md").exists());
+        assert!(!db.path().join("facts/only-b.md").exists());
         // …and the deletion does not come back from B on the next round.
         sync_pair(&b, &a).await;
         assert_eq!(ids(&a).await, ["facts/only-a"]);
@@ -716,9 +716,9 @@ mod tests {
 
     /// Two bundles that agree on `facts/shared` (v0): the base is recorded.
     async fn agreed() -> (
-        crate::TestDir,
+        tempfile::TempDir,
         Arc<Knowledge>,
-        crate::TestDir,
+        tempfile::TempDir,
         Arc<Knowledge>,
     ) {
         let (dh, hub) = bundle().await;

@@ -1265,8 +1265,8 @@ mod tests {
     #[tokio::test]
     async fn commit_refuses_stale_files_and_rolls_back_created_ones() {
         use std::os::unix::fs::PermissionsExt as _;
-        let scratch = crate::TestDir::new("commit");
-        let a = scratch.0.join("a.txt");
+        let scratch = crate::test_dir("commit");
+        let a = scratch.path().join("a.txt");
         std::fs::write(&a, "old\n").unwrap();
         let stale = Planned {
             path: a.clone(),
@@ -1285,10 +1285,10 @@ mod tests {
         if unsafe { libc::geteuid() } == 0 {
             return;
         }
-        let ro = scratch.0.join("ro");
+        let ro = scratch.path().join("ro");
         std::fs::create_dir(&ro).unwrap();
         std::fs::write(ro.join("b.txt"), "b\n").unwrap();
-        let created = scratch.0.join("new/c.txt");
+        let created = scratch.path().join("new/c.txt");
         let plan = [
             Planned {
                 path: created.clone(),

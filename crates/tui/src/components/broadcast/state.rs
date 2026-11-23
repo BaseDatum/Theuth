@@ -71,13 +71,7 @@ pub fn age(t: Option<chrono::DateTime<chrono::Utc>>) -> String {
 
 /// `48s`, `3m`, `2h`, `3d`.
 pub fn since(d: chrono::Duration) -> String {
-    let s = d.num_seconds().max(0);
-    match s {
-        0..60 => format!("{s}s"),
-        60..3600 => format!("{}m", s / 60),
-        3600..86_400 => format!("{}h", s / 3600),
-        _ => format!("{}d", s / 86_400),
-    }
+    platform::fmt::age(u64::try_from(d.num_seconds()).unwrap_or(0))
 }
 
 /// Row glyph for a state; `spinner` is the running glyph.

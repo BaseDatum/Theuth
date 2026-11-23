@@ -1162,7 +1162,11 @@ mod tests {
             assert!(!out.is_error, "{}", out.content);
             assert_eq!(
                 out.content,
-                format!("[read_url {}{p}: image/png 5\u{d7}3, 1 KB]", server.uri())
+                format!(
+                    "[read_url {}{p}: image/png 5\u{d7}3, {}]",
+                    server.uri(),
+                    platform::fmt::bytes(png.len() as u64)
+                )
             );
             assert_eq!(out.files.len(), 1);
             assert_eq!(std::fs::read(&out.files[0]).unwrap(), png);

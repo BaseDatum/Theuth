@@ -82,8 +82,8 @@ fn guessed_direct_calls_are_bridged_or_refused() {
 }
 
 async fn scenarios() {
-    let scratch = crate::TestDir::new("bridge-reg");
-    let reg_dir = scratch.0.clone();
+    let scratch = crate::test_dir("bridge-reg");
+    let reg_dir = scratch.path().to_path_buf();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     let registry = tools::registry::start(&reg_rt).await.unwrap();
 

@@ -90,7 +90,7 @@ pub enum DownloadError {
     #[error("refused: not a public address")]
     NotPublic,
     /// Over `max`: by `Content-Length` (`declared`, nothing read) or by the streamed count.
-    #[error("too large: over {}", human(*max))]
+    #[error("too large: over {}", platform::fmt::bytes(*max))]
     TooLarge {
         /// The limit.
         max: u64,
@@ -118,17 +118,6 @@ pub enum DownloadError {
     /// Connect, TLS or read failure.
     #[error("failed: {0}")]
     Transport(String),
-}
-
-/// `5 GB`, `1.5 MB`, `10 bytes` (decimal units).
-fn human(n: u64) -> String {
-    #[allow(clippy::cast_precision_loss)] // display only
-    let f = n as f64;
-    match n {
-        1_000_000_000.. => format!("{} GB", f / 1e9),
-        1_000_000.. => format!("{} MB", f / 1e6),
-        _ => format!("{n} bytes"),
-    }
 }
 
 /// GET `url` into a new file `dest` (created exclusively, mode 0600), hashing as it streams.

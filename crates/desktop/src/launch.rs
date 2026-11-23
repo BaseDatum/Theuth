@@ -329,8 +329,8 @@ fn daemon_command(data_dir: &Path, log: &Mutex<Vec<u8>>) -> (PathBuf, Vec<String
     }
     let script = format!(
         "exec {} --headless --data-dir {}",
-        sq(&bin.to_string_lossy()),
-        sq(&data_dir.to_string_lossy())
+        platform::shell::single_quote(&bin.to_string_lossy()),
+        platform::shell::single_quote(&data_dir.to_string_lossy())
     );
     (
         shell(log),
@@ -397,11 +397,6 @@ fn cli_bin() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(t))
 }
 
-/// POSIX single-quote for `sh -c`.
-fn sq(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
 /// Master → ring + `launch-log` events until EOF/EIO (the daemon exited).
 fn drain(mut reader: Box<dyn Read + Send>, log: &Mutex<Vec<u8>>, app: &AppHandle) {
     let mut buf = [0u8; 4096];
@@ -462,52 +457,10 @@ fn wait_ready(addr: SocketAddr, child: &mut Child, log: &Mutex<Vec<u8>>) -> anyh
 /// two-byte escapes) and stray C0 bytes: conhost's pseudo-console handshake
 /// (`\x1b[?9001h`, `\x1b]0;…\x07`, `\x1b[6n`) is not something a shell said.
 fn strip_controls(bytes: &[u8]) -> String {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        i += 1;
-        if b != 0x1b {
-            if b >= 0x20 || matches!(b, b'\n' | b'\r' | b'\t') {
-                out.push(b);
-            }
-            continue;
-        }
-        match bytes.get(i) {
-            // CSI: parameters/intermediates 0x20..=0x3f, final byte 0x40..=0x7e.
-            Some(b'[') => {
-                i += 1;
-                while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
-                    i += 1;
-                }
-                i += 1;
-            }
-            // OSC/DCS/PM/APC: string until BEL or ST (`ESC \`).
-            Some(b']' | b'P' | b'^' | b'_') => {
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == 0x07 {
-                        i += 1;
-                        break;
-                    }
-                    if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            // `ESC <intermediates> <final>` (e.g. `ESC ( B`, `ESC =`).
-            Some(_) => {
-                while i < bytes.len() && (0x20..=0x2f).contains(&bytes[i]) {
-                    i += 1;
-                }
-                i += 1;
-            }
-            None => {}
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    let mut text =
+        String::from_utf8_lossy(&anstream::adapter::strip_bytes(bytes).into_vec()).into_owned();
+    text.retain(|c| c >= ' ' || matches!(c, '\n' | '\r' | '\t'));
+    text
 }
 
 /// A prompt left hanging: the stripped transcript ends in a partial line
@@ -672,7 +625,7 @@ mod tests {
 
     #[test]
     fn single_quote_escapes() {
-        assert_eq!(sq("a'b"), r"'a'\''b'");
+        assert_eq!(platform::shell::single_quote("a'b"), r"'a'\''b'");
     }
 
     #[test]

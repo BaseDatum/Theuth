@@ -8,6 +8,7 @@ description = "Local scrape/crawl/map tools on vendored firecrawl-native (design
 [dependencies]
 firecrawl-native = { workspace = true }
 runtime = { workspace = true }
+platform = { workspace = true }
 tools = { workspace = true }
 web = { workspace = true }
 browser = { workspace = true }

@@ -600,11 +600,7 @@ fn root_relative(log: &Path) -> String {
 
 fn clip(s: &str) -> String {
     let one: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one.chars().count() <= CLIP {
-        one
-    } else {
-        one.chars().take(CLIP).collect::<String>() + "…"
-    }
+    platform::text::clip_then_ellipsis(&one, CLIP).into_owned()
 }
 
 fn crash(

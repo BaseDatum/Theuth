@@ -26,7 +26,8 @@ use crate::vm::{
     ResourceChange, Resources, RuntimeState, SnapshotId, VirtState, VmHandle, VmMetrics, VmRuntime,
     VmSnapshotInfo, VmStatus,
 };
-use crate::{Progress, Target, make_engine, sq};
+use crate::{Progress, Target, make_engine};
+use platform::shell::single_quote as quote;
 
 /// Vault prefix of a VM's rows: `sandbox/<name>/vnc`.
 pub const VAULT_PREFIX: &str = "sandbox/";
@@ -1547,8 +1548,8 @@ impl Message<Terminal> for SandboxActor {
             .ok_or("the microsandbox runtime is not installed")?;
         let command = format!(
             "{} exec --tty {} -- sh -c 'if command -v runuser >/dev/null 2>&1; then exec runuser -u engine -- bash -l; else exec bash -l; fi'",
-            sq(&msb.display().to_string()),
-            sq(&vm.runtime_name)
+            quote(&msb.display().to_string()),
+            quote(&vm.runtime_name)
         );
         let jobs = ActorRef::<tools::Jobs>::lookup(tools::JOBS_ACTOR)
             .ok()

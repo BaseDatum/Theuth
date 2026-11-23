@@ -288,9 +288,7 @@ fn on_path(name: &str) -> Option<PathBuf> {
     if name.contains('/') {
         return None;
     }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|d| d.join(name))
-        .find(|p| p.is_file())
+    platform::shell::which(name)
 }
 
 fn bin_dir(data_dir: &Path, id: &str) -> PathBuf {

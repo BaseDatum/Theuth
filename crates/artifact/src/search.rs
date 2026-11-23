@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{Artifact, Kind, kind};
+use crate::{Artifact, Kind};
 use ::search::{Coverage, FuzzyMatcher, SearchNotice, SearchPage, SearchText, TextMatch};
 use kameo::actor::ActorRef;
 use parking_lot::Mutex;
@@ -191,7 +191,7 @@ async fn convert(
     if a.bytes > ::tools::doc::MAX_BYTES as u64 {
         return Ok(Body::Unavailable(format!(
             "{} exceeds the {} MB conversion cap",
-            kind::human(a.bytes),
+            platform::fmt::bytes(a.bytes),
             ::tools::doc::MAX_BYTES >> 20
         )));
     }
@@ -595,6 +595,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::kind;
 
     fn art(dir: &Path, call_id: &str, name: &str, version: u32, created_at: i64) -> Artifact {
         let id = format!("{name}-blob");

@@ -680,20 +680,11 @@ fn unlink(path: &Path) {
 mod tests {
     use super::*;
 
-    struct Tmp(PathBuf);
-
-    impl Tmp {
-        fn new() -> Tmp {
-            let p = std::env::temp_dir().join(format!("voice-history-{}", uuid::Uuid::now_v7()));
-            std::fs::create_dir_all(&p).unwrap();
-            Tmp(p)
-        }
-    }
-
-    impl Drop for Tmp {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
+    fn tmp() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("voice-history-")
+            .tempdir()
+            .unwrap()
     }
 
     fn row(started_ms: u64, shaped: &str) -> HistoryRow {
@@ -725,9 +716,9 @@ mod tests {
     /// Migrations apply on a fresh dir; a row round-trips through record/list/audio/forget.
     #[tokio::test]
     async fn round_trip() {
-        let tmp = Tmp::new();
-        let store = Store::open(&tmp.0).await.unwrap();
-        assert!(tmp.0.join("voice.db").is_file());
+        let tmp = tmp();
+        let store = Store::open(tmp.path()).await.unwrap();
+        assert!(tmp.path().join("voice.db").is_file());
         let r = row(1_000, "Hello World");
         // audio streams before the finished row lands, two utterances
         store.attach_audio(r.id, 0, &[1, 2, 3]).await.unwrap();
@@ -764,7 +755,7 @@ mod tests {
         assert!(again.has_audio);
         // reopen: the schema is already there, the row survives
         drop(store);
-        let store = Store::open(&tmp.0).await.unwrap();
+        let store = Store::open(tmp.path()).await.unwrap();
         assert_eq!(store.list(10).await.unwrap().len(), 1);
         store.forget(Some(r.id)).await.unwrap();
         assert!(store.list(10).await.unwrap().is_empty());
@@ -778,9 +769,9 @@ mod tests {
 
     #[tokio::test]
     async fn budget_evicts_audio_first_then_rows() {
-        let tmp = Tmp::new();
+        let tmp = tmp();
         // 3 rows, 5 000 bytes of audio; each dictation brings 2 000 bytes.
-        let store = Store::open(&tmp.0).await.unwrap().with_budget(3, 5_000);
+        let store = Store::open(tmp.path()).await.unwrap().with_budget(3, 5_000);
         let mut ids = Vec::new();
         for i in 0..3u64 {
             let r = row(1_000 * (i + 1), "a");
@@ -826,8 +817,8 @@ mod tests {
     /// Per-dictation audio is capped at `PCM_RETENTION_BYTES`.
     #[tokio::test]
     async fn audio_capped_at_retention() {
-        let tmp = Tmp::new();
-        let store = Store::open(&tmp.0).await.unwrap();
+        let tmp = tmp();
+        let store = Store::open(tmp.path()).await.unwrap();
         let r = row(1_000, "a");
         let samples = (PCM_RETENTION_BYTES / 2) as usize;
         store
@@ -851,8 +842,8 @@ mod tests {
 
     #[tokio::test]
     async fn suggestion_flow_cooldown_never_ignores() {
-        let tmp = Tmp::new();
-        let store = Store::open(&tmp.0).await.unwrap();
+        let tmp = tmp();
+        let store = Store::open(tmp.path()).await.unwrap();
         let mut dict = Dictionary::default();
         let day = 24 * 60 * 60 * 1000;
         set_now(&store, 100 * day);

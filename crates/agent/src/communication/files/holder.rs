@@ -163,8 +163,8 @@ mod tests {
     use super::*;
 
     async fn fixture() -> (Store, crate::TestDir, Render) {
-        let d = crate::TestDir::new("holder");
-        let store = Store::open(&d.0.join("sessions.sqlite"), None)
+        let d = crate::test_dir("holder");
+        let store = Store::open(&d.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let r = Render {
@@ -203,11 +203,11 @@ mod tests {
     #[tokio::test]
     async fn thumbnails_are_bounded_and_fall_back() {
         let (store, d, r) = fixture().await;
-        let pic = d.0.join("p.png");
+        let pic = d.path().join("p.png");
         std::fs::write(&pic, png()).unwrap();
-        let text = d.0.join("t.txt");
+        let text = d.path().join("t.txt");
         std::fs::write(&text, b"hello").unwrap();
-        let big = d.0.join("big.png");
+        let big = d.path().join("big.png");
         std::fs::File::create(&big)
             .unwrap()
             .set_len(THUMB_READ_MAX + 1)
@@ -246,14 +246,14 @@ mod tests {
     async fn export_never_clobbers() {
         use std::os::unix::fs::PermissionsExt as _;
         let (store, d, r) = fixture().await;
-        let src = d.0.join("report.pdf");
+        let src = d.path().join("report.pdf");
         std::fs::write(&src, b"ours").unwrap();
         let row = saved(&"4".repeat(32), &src, 4);
         store
             .insert_contact_files(std::slice::from_ref(&row))
             .await
             .unwrap();
-        let out = d.0.join("out");
+        let out = d.path().join("out");
         std::fs::create_dir(&out).unwrap();
         let dest = out.join("out.pdf");
         assert_eq!(

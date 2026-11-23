@@ -181,7 +181,7 @@ impl Progress {
             .assignment
             .as_deref()
             .or(self.task.as_deref())
-            .map(|s| head(s, DESCRIPTION_CHARS).to_owned());
+            .map(|s| platform::text::head_chars(s, DESCRIPTION_CHARS).to_owned());
         a.cost_rule = Some(if frame.background {
             CostRule::Counted
         } else {
@@ -272,11 +272,6 @@ impl Progress {
         put("batch", frame.batch_state.clone().map(Value::from));
         d
     }
-}
-
-/// The first `n` chars of `s`, on a char boundary.
-fn head(s: &str, n: usize) -> &str {
-    s.char_indices().nth(n).map_or(s, |(i, _)| &s[..i])
 }
 
 /// The task frame in `update`, if it is one: any `tool_call` /

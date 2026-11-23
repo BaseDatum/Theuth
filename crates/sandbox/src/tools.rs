@@ -123,6 +123,7 @@ fn mib(m: u32) -> String {
     }
 }
 
+/// Live usage in the configured resources' unit (GiB), so `memory=1.6 GiB/2 GiB` compares.
 fn gib_bytes(b: u64) -> String {
     format!("{:.1} GiB", b as f64 / f64::from(1u32 << 30))
 }

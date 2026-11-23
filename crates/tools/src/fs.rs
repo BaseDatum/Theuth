@@ -156,7 +156,7 @@ impl Tool for ReadFile {
     type Args = ReadFileArgs;
 
     fn description(&self) -> String {
-        "Read a text file, an image (returned as a picture you can see) or a document (PDF, Office, ODF, RTF, EPUB) as Markdown. Paths are relative to the working directory, `~` is not expanded. An image (PNG, JPEG, GIF or WebP, detected from its bytes) comes back as a picture you can look at, with the one-line header `[read_file <path>: image/png W×H, N KB]` (`; scaled to W×H` when it was downscaled to fit); `offset`/`limit`/`tail`/`ranges`/`outline` are refused for an image. A text-only model gets a description from the vision fallback model instead, or a note that nobody has looked at it. A document is rendered from PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB. For text, line 1 is always a header `[read_file <path>: N lines, B bytes, @<id>; showing lines a–b]`, then each line as `N<tab>text` (`cat -n`) — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`, or pass `numbers=false` for raw text. `@<id>` names this read's snapshot: line refs take it (`path#L40-L52@<id>` in move_text, copy_text, clip; `L40-L52@<id>` in edit's `range` and indent), and they keep pointing at the same lines after your own later edits elsewhere in the file (documents and files over 4 MiB get no id). By default the first 2000 lines are shown and a `[read_file: N more lines …]` footer names the rest; select with `offset`/`limit` (1-based line window), `tail=N` (last N lines), `ranges=[[a,b],…]` (several windows, each under an `@@ lines a–b @@` line), or `outline=true` for the code_outline symbol view of an indexed source file. Lines over 2000 chars are cut with ` …[+K chars]` and output is hard-capped at 64 KiB; both are noted in the header. Never write a read result back as file content: the header, numbers and cut markers are not the file's text.".into()
+        "Read a text file, an image (returned as a picture you can see) or a document (PDF, Office, ODF, RTF, EPUB) as Markdown. Paths are relative to the working directory, `~` is not expanded. An image (PNG, JPEG, GIF or WebP, detected from its bytes) comes back as a picture you can look at, with the one-line header `[read_file <path>: image/png W×H, N kB]` (`; scaled to W×H` when it was downscaled to fit); `offset`/`limit`/`tail`/`ranges`/`outline` are refused for an image. A text-only model gets a description from the vision fallback model instead, or a note that nobody has looked at it. A document is rendered from PDF / Word / PowerPoint / Excel / ODF / RTF / EPUB. For text, line 1 is always a header `[read_file <path>: N lines, B bytes, @<id>; showing lines a–b]`, then each line as `N<tab>text` (`cat -n`) — strip the `N<tab>` prefix before reusing text in `edit`/`write_file`, or pass `numbers=false` for raw text. `@<id>` names this read's snapshot: line refs take it (`path#L40-L52@<id>` in move_text, copy_text, clip; `L40-L52@<id>` in edit's `range` and indent), and they keep pointing at the same lines after your own later edits elsewhere in the file (documents and files over 4 MiB get no id). By default the first 2000 lines are shown and a `[read_file: N more lines …]` footer names the rest; select with `offset`/`limit` (1-based line window), `tail=N` (last N lines), `ranges=[[a,b],…]` (several windows, each under an `@@ lines a–b @@` line), or `outline=true` for the code_outline symbol view of an indexed source file. Lines over 2000 chars are cut with ` …[+K chars]` and output is hard-capped at 64 KiB; both are noted in the header. Never write a read result back as file content: the header, numbers and cut markers are not the file's text.".into()
     }
 
     async fn call(&self, a: ReadFileArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -837,9 +837,9 @@ fn grep(
 mod tests {
     use super::*;
 
-    fn scratch(content: &str) -> (crate::TestDir, PathBuf) {
-        let dir = crate::TestDir::new("edit");
-        let path = dir.0.join("f.txt");
+    fn scratch(content: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = crate::test_dir("edit");
+        let path = dir.path().join("f.txt");
         std::fs::write(&path, content).unwrap();
         (dir, path)
     }
@@ -953,8 +953,8 @@ mod tests {
     #[tokio::test]
     async fn seated_session_resolves_relative_paths_and_confines_writes() {
         // Drop guard (141 R4): the scratch dir goes when the test ends, pass or fail.
-        let scratch = crate::TestDir::new("seat-fs");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("seat-fs");
+        let dir = scratch.path().to_path_buf();
         let wt = dir.join("worktree");
         std::fs::create_dir_all(&wt).unwrap();
         std::fs::write(wt.join("a.txt"), "in\n").unwrap();
@@ -1194,8 +1194,8 @@ mod tests {
     // this one test: the unregistered error first, then Some/None.
     #[tokio::test]
     async fn read_outline_uses_the_registered_hook() {
-        let guard = crate::TestDir::new("outline");
-        let dir = guard.0.clone();
+        let guard = crate::test_dir("outline");
+        let dir = guard.path().to_path_buf();
         let rs = dir.join("a.rs");
         std::fs::write(&rs, "fn a() {}\nfn b() {}\n").unwrap();
         let outline = |p: &Path| {
@@ -1260,9 +1260,9 @@ mod tests {
     async fn read_image_attaches_a_fitted_picture() {
         use crate::images::tests::encoded;
         use image::ImageFormat;
-        let dir = crate::TestDir::new("read-image");
+        let dir = crate::test_dir("read-image");
         let small = encoded(ImageFormat::Png, 4, 3, 7);
-        let p = dir.0.join("small.png");
+        let p = dir.path().join("small.png");
         std::fs::write(&p, &small).unwrap();
         let out = Tool::call(&ReadFile, args(&p, None, None), cx())
             .await
@@ -1270,7 +1270,11 @@ mod tests {
         assert!(!out.is_error);
         assert_eq!(
             out.content,
-            format!("[read_file {}: image/png 4\u{d7}3, 1 KB]", p.display())
+            format!(
+                "[read_file {}: image/png 4\u{d7}3, {}]",
+                p.display(),
+                platform::fmt::bytes(small.len() as u64)
+            )
         );
         assert_eq!(out.files.len(), 1);
         assert_eq!(
@@ -1280,7 +1284,7 @@ mod tests {
         );
 
         // A JPEG named `.txt`, wider than MAX_EDGE: detected, scaled, still JPEG.
-        let p = dir.0.join("photo.txt");
+        let p = dir.path().join("photo.txt");
         std::fs::write(&p, encoded(ImageFormat::Jpeg, 3136, 100, 9)).unwrap();
         let out = Tool::call(&ReadFile, args(&p, None, None), cx())
             .await
@@ -1307,13 +1311,13 @@ mod tests {
         );
 
         // PNG magic, garbage after it: a text error.
-        let p = dir.0.join("broken.png");
+        let p = dir.path().join("broken.png");
         std::fs::write(&p, &small[..small.len() / 2]).unwrap();
         let e = read_err(args(&p, None, None)).await;
         assert!(e.contains("invalid image/png"), "{e}");
 
         // A known format no provider takes: one line, never mojibake.
-        let p = dir.0.join("old.bmp");
+        let p = dir.path().join("old.bmp");
         let bmp = [
             b"BM".as_slice(),
             &[0x46, 0, 0, 0, 0, 0, 0, 0, 0x36, 0, 0, 0, 40, 0],
@@ -1501,8 +1505,8 @@ mod tests {
 
     #[tokio::test]
     async fn write_creates_with_parents() {
-        let guard = crate::TestDir::new("write");
-        let dir = guard.0.clone();
+        let guard = crate::test_dir("write");
+        let dir = guard.path().to_path_buf();
         let p = dir.join("a/b/new.txt");
         let out = write(&p, "hello\n").await.unwrap();
         let id = crate::textref::snapshot_id(b"hello\n");
@@ -1560,8 +1564,8 @@ mod tests {
             0o700
         );
 
-        let guard = crate::TestDir::new("write-ro");
-        let dir = guard.0.clone();
+        let guard = crate::test_dir("write-ro");
+        let dir = guard.path().to_path_buf();
         let p = dir.join("f.txt");
         std::fs::write(&p, "old").unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
@@ -1573,9 +1577,9 @@ mod tests {
     }
 
     /// Temp tree with a `.git` marker so `.gitignore` files are honoured.
-    fn grep_tree(files: &[(&str, &str)]) -> (crate::TestDir, PathBuf) {
-        let guard = crate::TestDir::new("grep");
-        let root = guard.0.clone();
+    fn grep_tree(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
+        let guard = crate::test_dir("grep");
+        let root = guard.path().to_path_buf();
         std::fs::create_dir_all(root.join(".git")).unwrap();
         for (f, content) in files {
             let p = root.join(f);
@@ -1632,8 +1636,8 @@ mod tests {
     /// the rest of the data dir is not.
     #[tokio::test]
     async fn cell_records_are_refused_to_the_file_tools() {
-        let guard = crate::TestDir::new("cell-records");
-        let data = guard.0.clone();
+        let guard = crate::test_dir("cell-records");
+        let data = guard.path().to_path_buf();
         let run = data.join("cells/runs/r_1");
         let jobs = data.join("jobs/s1");
         for d in [&run, &jobs, &data.join("briefs")] {

@@ -938,8 +938,8 @@ mod tests {
     /// (a replica re-arms nothing of the owner's — `Scope::Here`).
     #[tokio::test]
     async fn rebuild_waits_for_one_session_leaves_others() {
-        let scratch = crate::TestDir::new("139");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("139");
+        let dir = scratch.path().to_path_buf();
         let a = crate::store::Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("a".into())),

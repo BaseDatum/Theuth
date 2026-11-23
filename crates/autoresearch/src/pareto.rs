@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use statrs::distribution::{ContinuousCDF, Normal};
 use tokio_util::sync::CancellationToken;
 
 use crate::actor::Env;
@@ -46,40 +47,27 @@ pub const KIND: &str = "front";
 
 // ───────────────────────────── thresholds (159 §4) ─────────────────────────────
 
-/// Upper tail of the standard normal, `P(Z > z)` (Abramowitz–Stegun 7.1.26, |ε| < 1.5e-7).
+/// The standard normal.
+fn std_normal() -> Normal {
+    Normal::new(0.0, 1.0).expect("N(0, 1) is a valid normal")
+}
+
+/// Upper tail of the standard normal, `P(Z > z)`.
 fn norm_tail(z: f64) -> f64 {
-    let x = z.abs() / std::f64::consts::SQRT_2;
-    let t = 1.0 / (1.0 + 0.327_591_1 * x);
-    let poly = t
-        * (0.254_829_592
-            + t * (-0.284_496_736
-                + t * (1.421_413_741 + t * (-1.453_152_027 + t * 1.061_405_429))));
-    let erfc = poly * (-x * x).exp();
-    if z >= 0.0 {
-        erfc / 2.0
-    } else {
-        1.0 - erfc / 2.0
-    }
+    std_normal().sf(z)
 }
 
 /// Šidák's per-objective threshold for `k` competing objectives: the `z_k` whose one-sided tail
 /// is `1 − (1 − tail(z))^(1/k)`, so the family-wise false-keep rate stays at one objective's
-/// (159 §4 table: 2.00 → 2.28, 2.43, 2.53, 2.61 for k = 2…5).
+/// (159 §4 table: 2.00 → 2.28, 2.43, 2.53, 2.61 for k = 2…5). Searched in `[z, z + 3]`.
 pub fn sidak_z(z: f64, k: usize) -> f64 {
-    if k <= 1 {
+    if k <= 1 || z.is_nan() {
         return z;
     }
-    let target = 1.0 - (1.0 - norm_tail(z)).powf(1.0 / k as f64);
-    let (mut lo, mut hi) = (z, z + 3.0);
-    for _ in 0..60 {
-        let mid = (lo + hi) / 2.0;
-        if norm_tail(mid) > target {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    (lo + hi) / 2.0
+    let n = std_normal();
+    n.inverse_cdf(n.cdf(z).powf(1.0 / k as f64))
+        .max(z)
+        .min(z + 3.0)
 }
 
 // ───────────────────────────── objectives and their values ─────────────────────────────

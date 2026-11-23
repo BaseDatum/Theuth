@@ -287,7 +287,10 @@ pub fn channel_id(s: &str) -> Result<String, String> {
 
 /// A list as a single-line YAML flow list of quoted strings.
 fn yaml_list(items: &[String]) -> String {
-    let quoted: Vec<String> = items.iter().map(|s| format!("{s:?}")).collect();
+    let quoted: Vec<String> = items
+        .iter()
+        .map(|s| serde_json::to_string(s).expect("a str serialises to JSON"))
+        .collect();
     format!("[{}]", quoted.join(", "))
 }
 
@@ -615,6 +618,13 @@ mod tests {
         assert_eq!(l, r#"["U1", "U2"]"#);
         let v: Vec<String> = serde_yaml::from_str(&l).unwrap();
         assert_eq!(v[1], "U2");
+    }
+
+    #[test]
+    fn yaml_list_round_trips_quote_backslash_newline() {
+        let s = "a \"q\" \\ b\nc";
+        let v: Vec<String> = serde_yaml::from_str(&yaml_list(&[s.into()])).unwrap();
+        assert_eq!(v, [s]);
     }
 
     #[test]

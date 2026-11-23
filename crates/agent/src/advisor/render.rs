@@ -112,11 +112,7 @@ pub fn fingerprint(e: &HistoryEntry) -> u64 {
 
 /// Char-boundary-safe prefix of `max` chars with `…` when cut.
 fn preview(s: &str, max: usize) -> String {
-    let s = s.trim();
-    match s.char_indices().nth(max) {
-        Some((i, _)) => format!("{}…", &s[..i]),
-        None => s.to_owned(),
-    }
+    platform::text::clip_then_ellipsis(s.trim(), max).into_owned()
 }
 
 /// `text` capped at [`RESULT_BYTES`] / [`RESULT_LINES`] with the middle elided.

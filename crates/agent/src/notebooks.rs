@@ -745,7 +745,10 @@ fn description_block(id: &str, description: &str, budget: Budget) -> String {
     let mut out = format!("<description s=\"{}\">", sha8(description));
     let desc_tokens = tokens(description);
     if desc_tokens > budget.description_tokens {
-        out.push_str(cut(description, budget.description_tokens as usize * 4));
+        out.push_str(platform::text::head_chars(
+            description,
+            budget.description_tokens as usize * 4,
+        ));
         out.push_str(&format!(
             "\n[truncated: {} of {desc_tokens} tokens shown; the rest with doc_read(\"notebook:{id}\")]",
             budget.description_tokens
@@ -780,14 +783,6 @@ pub(crate) fn attr(s: &str) -> String {
         .replace('<', "&lt;")
 }
 
-/// `s` cut to at most `chars` characters on a char boundary.
-pub(crate) fn cut(s: &str, chars: usize) -> &str {
-    match s.char_indices().nth(chars) {
-        Some((i, _)) => &s[..i],
-        None => s,
-    }
-}
-
 /// The longest prefix of `body` made of whole `<!-- id -->` blocks within `chars`, and the first omitted
 /// block's id; `None` when not even the first block fits. A body without block marks is cut on a line.
 pub(crate) fn cut_blocks(body: &str, chars: usize) -> Option<(&str, Option<String>)> {
@@ -797,7 +792,7 @@ pub(crate) fn cut_blocks(body: &str, chars: usize) -> Option<(&str, Option<Strin
         .filter(|&i| i == 0 || body.as_bytes()[i - 1] == b'\n')
         .collect();
     if starts.len() < 2 {
-        let end = body[..cut(body, chars).len()].rfind('\n')?;
+        let end = body[..platform::text::head_chars(body, chars).len()].rfind('\n')?;
         return (end > 0).then(|| (&body[..end], None));
     }
     let mut end = None;

@@ -1172,8 +1172,8 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let dir = crate::TestDir::new("limits-refresh");
-        let auth = Auth::stub(&dir.0);
+        let dir = crate::test_dir("limits-refresh");
+        let auth = Auth::stub(dir.path());
         let old = oauth::Tokens {
             access_token: "a1".into(),
             refresh_token: Some("r1".into()),

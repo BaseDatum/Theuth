@@ -797,9 +797,9 @@ pub(crate) async fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()
 mod tests {
     use super::*;
 
-    fn scratch(content: &str) -> (crate::TestDir, PathBuf) {
-        let dir = crate::TestDir::new("edit");
-        let path = dir.0.join("f.txt");
+    fn scratch(content: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = crate::test_dir("edit");
+        let path = dir.path().join("f.txt");
         std::fs::write(&path, content).unwrap();
         (dir, path)
     }

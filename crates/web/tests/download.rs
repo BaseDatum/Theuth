@@ -248,7 +248,7 @@ async fn static_refusals_write_nothing() {
         max: 5_000_000_000,
         declared: None,
     };
-    assert_eq!(big.to_string(), "too large: over 5 GB");
+    assert_eq!(big.to_string(), "too large: over 5.0 GB");
     let idle = DownloadError::IdleTimeout(Duration::from_secs(60));
     assert_eq!(idle.to_string(), "stalled: no data for 60 s");
 }

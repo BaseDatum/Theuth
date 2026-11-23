@@ -173,13 +173,6 @@ fn top_reply(user: &Value, label: &str, extra_edge: Option<(&str, &str, Option<&
 
 // --- scratch index ----------------------------------------------------------------
 
-struct TempDir(PathBuf);
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
 fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for e in std::fs::read_dir(from).unwrap() {
@@ -207,8 +200,8 @@ impl kameo::message::Message<CodeindexEvent> for Sink {
 }
 
 struct Scratch {
-    data: TempDir,
-    _repo: TempDir,
+    data: tempfile::TempDir,
+    _repo: tempfile::TempDir,
     root: PathBuf,
     ix: Arc<Codeindex>,
     ri: Arc<RootIndex>,
@@ -254,20 +247,19 @@ async fn scratch() -> Scratch {
 async fn scratch_with(fill: impl FnOnce(&Path)) -> Scratch {
     use kameo::actor::Spawn;
     install();
-    let data = TempDir(std::env::temp_dir().join(format!("codemap-gen-{}", new_id())));
-    let repo = TempDir(std::env::temp_dir().join(format!("codemap-gen-repo-{}", new_id())));
-    std::fs::create_dir_all(&data.0).unwrap();
-    fill(&repo.0);
-    let rt = Runtime::new(figment::Figment::new(), data.0.clone());
+    let data = crate::test_dir("codemap-gen");
+    let repo = crate::test_dir("codemap-gen-repo");
+    fill(repo.path());
+    let rt = Runtime::new(figment::Figment::new(), data.path().to_path_buf());
     let seen: Seen = Arc::default();
     let sink = Sink::spawn(Sink(seen.clone()));
     rt.subscribe::<Sink, CodeindexEvent>(&sink).await;
     let ix = Arc::new(
-        Codeindex::new(crate::CodeindexConfig::default(), &data.0)
+        Codeindex::new(crate::CodeindexConfig::default(), data.path())
             .unwrap()
             .with_runtime(rt),
     );
-    let root = repo.0.canonicalize().unwrap();
+    let root = repo.path().canonicalize().unwrap();
     let ri = ix.open_root(&root).await.unwrap();
     let r = ix.reconcile(&ri, false).await.unwrap();
     assert!(r.reparsed > 0, "{r:?}");
@@ -1080,7 +1072,7 @@ async fn orphan_job_is_interrupted_on_open() {
             .is_some()
     );
     // A new process: a fresh `Codeindex` over the same data dir.
-    let ix2 = Arc::new(Codeindex::new(crate::CodeindexConfig::default(), &s.data.0).unwrap());
+    let ix2 = Arc::new(Codeindex::new(crate::CodeindexConfig::default(), s.data.path()).unwrap());
     let ri2 = ix2.open_root(&s.root).await.unwrap();
     let pool2 = ix2.map_pool(&ri2).await.unwrap();
     assert!(

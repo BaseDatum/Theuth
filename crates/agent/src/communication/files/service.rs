@@ -1217,8 +1217,8 @@ mod tests {
     }
 
     async fn rig() -> Rig {
-        let dir = crate::TestDir::new("fsvc");
-        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+        let dir = crate::test_dir("fsvc");
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let session = SessionId::new();
@@ -1227,7 +1227,7 @@ mod tests {
             .await
             .unwrap();
         let (fake, door) = (Arc::new(Fake::default()), Arc::new(Door::default()));
-        let mut svc = FileService::new(store, dir.0.clone(), None, door.clone());
+        let mut svc = FileService::new(store, dir.path().to_path_buf(), None, door.clone());
         let s = Arc::get_mut(&mut svc).unwrap();
         s.fetcher = Some(fake.clone());
         s.backoff = Duration::from_millis(20);

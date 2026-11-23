@@ -49,8 +49,8 @@ fn correction_round_separates_the_replies_and_salvage_does_not() {
 }
 
 async fn scenario() {
-    let scratch = crate::TestDir::new("fence-round-reg");
-    let reg_rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let scratch = crate::test_dir("fence-round-reg");
+    let reg_rt = Runtime::new(figment::Figment::new(), scratch.path().to_path_buf());
     tools::registry::start(&reg_rt).await.unwrap();
 
     let mut h = Harness::new(Provider).await;

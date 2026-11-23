@@ -206,8 +206,8 @@ mod tests {
 
     #[test]
     fn cap_spills_head_marker_tail() {
-        let scratch = crate::TestDir::new("spill");
-        let dir = scratch.0.join("spill");
+        let scratch = crate::test_dir("spill");
+        let dir = scratch.path().join("spill");
         let session = SessionId::new();
         // Multibyte chars so char/byte boundaries differ.
         let content: String = (0..3000)
@@ -245,8 +245,8 @@ mod tests {
 
     #[test]
     fn epoch_writes_transcript_and_summary() {
-        let scratch = crate::TestDir::new("spill");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("spill");
+        let dir = scratch.path().to_path_buf();
         let session = SessionId::new();
         let folded = [
             ChatMessage::user("what time is it"),

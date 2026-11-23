@@ -59,18 +59,6 @@ pub fn install(data_dir: &Path) -> std::io::Result<bool> {
 mod tests {
     use super::*;
 
-    struct TempDir(std::path::PathBuf);
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    fn tempdir() -> TempDir {
-        let d = std::env::temp_dir().join(format!("theuth-skill-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&d).unwrap();
-        TempDir(d)
-    }
-
     #[test]
     fn skill_text_has_front_matter_and_the_map_section() {
         assert!(CODEINDEX_SKILL.starts_with("---\nname: codeindex\n"));
@@ -80,27 +68,28 @@ mod tests {
 
     #[test]
     fn skill_install_never_overwrites_user_copy() {
-        let d = tempdir();
-        let path = d.0.join(SKILL_PATH);
+        let dir = crate::test_dir("skill");
+        let d = dir.path();
+        let path = d.join(SKILL_PATH);
         // Absent → written and stamped; a second install is a no-op.
-        assert!(install(&d.0).unwrap());
+        assert!(install(d).unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), CODEINDEX_SKILL);
-        assert!(!install(&d.0).unwrap());
+        assert!(!install(d).unwrap());
         // The user edits it → never overwritten, even with a stale stamp.
         let mine = format!("{CODEINDEX_SKILL}\n## Mine\nkeep this\n");
         std::fs::write(&path, &mine).unwrap();
-        assert!(!install(&d.0).unwrap());
+        assert!(!install(d).unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), mine);
         // The pre-147 copy (a prefix of the shipped text) with no stamp → upgraded.
         let old = CODEINDEX_SKILL.split("\n## The map").next().unwrap();
         std::fs::write(&path, old).unwrap();
-        std::fs::remove_file(d.0.join(STAMP_PATH)).unwrap();
-        assert!(install(&d.0).unwrap());
+        std::fs::remove_file(d.join(STAMP_PATH)).unwrap();
+        assert!(install(d).unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), CODEINDEX_SKILL);
         // A foreign file with no stamp and no shared prefix → left alone.
         std::fs::write(&path, "---\nname: codeindex\n---\nmy own notes\n").unwrap();
-        std::fs::remove_file(d.0.join(STAMP_PATH)).unwrap();
-        assert!(!install(&d.0).unwrap());
+        std::fs::remove_file(d.join(STAMP_PATH)).unwrap();
+        assert!(!install(d).unwrap());
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "---\nname: codeindex\n---\nmy own notes\n"

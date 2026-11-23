@@ -1719,8 +1719,8 @@ mod tests {
     use super::*;
 
     async fn fresh() -> (Store, crate::TestDir) {
-        let scratch = crate::TestDir::new("acct");
-        let store = Store::open(&scratch.0.join("sessions.sqlite"), None)
+        let scratch = crate::test_dir("acct");
+        let store = Store::open(&scratch.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         (store, scratch)
@@ -2477,8 +2477,8 @@ mod tests {
     /// every call; a second open changes nothing.
     #[tokio::test]
     async fn repair_backfills_orphans() {
-        let dir = crate::TestDir::new("acct-repair");
-        let path = dir.0.join("sessions.sqlite");
+        let dir = crate::test_dir("acct-repair");
+        let path = dir.path().join("sessions.sqlite");
         let store = Store::open(&path, None).await.unwrap();
         let (r, c) = (SessionId::new(), SessionId::new());
         store
@@ -2642,7 +2642,7 @@ mod tests {
         store: &Store,
         dir: &crate::TestDir,
     ) -> (std::sync::Arc<replica::Engine>, replica::ReplicaHandle) {
-        let engine = replica::Engine::open(&dir.0.join("replica.sqlite"))
+        let engine = replica::Engine::open(&dir.path().join("replica.sqlite"))
             .await
             .unwrap();
         let handle = engine
@@ -2686,14 +2686,11 @@ mod tests {
     /// overwrites the stand-in in place.
     #[tokio::test]
     async fn record_child_owner_before_its_parent_still_lands() {
-        let (da, db) = (
-            crate::TestDir::new("acct-rec-a"),
-            crate::TestDir::new("acct-rec-b"),
-        );
-        let a = Store::open(&da.0.join("sessions.sqlite"), None)
+        let (da, db) = (crate::test_dir("acct-rec-a"), crate::test_dir("acct-rec-b"));
+        let a = Store::open(&da.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
-        let b = Store::open(&db.0.join("sessions.sqlite"), None)
+        let b = Store::open(&db.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let (ea, ha) = replicated(&a, &da).await;
@@ -2736,13 +2733,13 @@ mod tests {
     #[tokio::test]
     async fn stand_in_replaced_by_the_real_row_keeps_remote_turns() {
         let (da, db) = (
-            crate::TestDir::new("acct-turn-a"),
-            crate::TestDir::new("acct-turn-b"),
+            crate::test_dir("acct-turn-a"),
+            crate::test_dir("acct-turn-b"),
         );
-        let a = Store::open(&da.0.join("sessions.sqlite"), None)
+        let a = Store::open(&da.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
-        let b = Store::open(&db.0.join("sessions.sqlite"), None)
+        let b = Store::open(&db.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let s = SessionId::new();

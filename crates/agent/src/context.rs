@@ -3191,8 +3191,8 @@ mod tests {
 
     #[test]
     fn save_blob_names_by_content_hash() {
-        let scratch = crate::TestDir::new("blob");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("blob");
+        let dir = scratch.path().to_path_buf();
         let p = save_blob(b"hello", "png", &dir).unwrap();
         let hex = hex::encode(Sha256::digest(b"hello"));
         assert_eq!(

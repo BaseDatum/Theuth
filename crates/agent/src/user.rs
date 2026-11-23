@@ -409,8 +409,8 @@ mod tests {
 
     #[tokio::test]
     async fn validation_refuses_bad_input() {
-        let scratch = crate::TestDir::new("user");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("user");
+        let dir = scratch.path().to_path_buf();
         let png = dir.join("shot.png");
         std::fs::write(&png, b"12").unwrap();
 

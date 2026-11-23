@@ -14,7 +14,7 @@ use agent::{
     AgentEvent, ChannelChat, ChannelOrigin, ChannelVia, ObservedMeta, ObservedSource, ObservedState,
 };
 use artifact::ArtifactShown;
-use chat_common::{extension_for, fmt_size, secret_notice, sniff};
+use chat_common::{extension_for, secret_notice, sniff};
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -1680,7 +1680,7 @@ impl Channel {
                 lines.push(format!("[attachment: {label} — save failed: {e}]"));
                 continue;
             }
-            let mut detail = format!("{mime}, {}", fmt_size(bytes.len()));
+            let mut detail = format!("{mime}, {}", platform::fmt::bytes(bytes.len() as u64));
             let spoken = matches!(
                 a.kind,
                 MediaKind::Voice | MediaKind::VideoNote | MediaKind::Audio
@@ -2790,14 +2790,7 @@ fn strip_mention(text: &str, username: &str) -> String {
 
 /// `s` cut to `max` chars, the last one an ellipsis when cut.
 fn cut(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_owned();
-    }
-    let end = s
-        .char_indices()
-        .nth(max.saturating_sub(1))
-        .map_or(s.len(), |(i, _)| i);
-    format!("{}…", &s[..end])
+    platform::text::ellipsize(s, max).into_owned()
 }
 
 /// `s` cut to `max` chars with an `… (n more chars)` tail when it was longer.

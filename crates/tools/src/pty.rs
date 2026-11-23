@@ -830,12 +830,6 @@ fn style_of(c: &vt100::Cell) -> Style {
     }
 }
 
-/// First ≤ [`CELL_BYTES`] bytes on a char boundary.
-fn clip(t: &str) -> &str {
-    let n = t.floor_char_boundary(t.len().min(CELL_BYTES));
-    &t[..n]
-}
-
 /// 51 §7.2–7.3: page the retained buffer (`0` = oldest scrollback row,
 /// `retained` = live top), build the logical text of the whole buffer —
 /// soft-wrapped rows joined, others `\n`-separated, wide continuations
@@ -896,7 +890,7 @@ fn render(
             let continuation = cell.is_some_and(vt100::Cell::is_wide_continuation);
             if !continuation {
                 match cell.map(vt100::Cell::contents).filter(|t| !t.is_empty()) {
-                    Some(t) => text.push_str(clip(t)),
+                    Some(t) => text.push_str(platform::text::cut_bytes(t, CELL_BYTES)),
                     None => text.push(' '),
                 }
             }

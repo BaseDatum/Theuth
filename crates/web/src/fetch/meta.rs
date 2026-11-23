@@ -159,7 +159,7 @@ fn title(html: &str, lower: &str) -> Option<String> {
     let open = lower.find("<title")?;
     let start = open + lower[open..].find('>')? + 1;
     let end = start + lower[start..].find("</title")?;
-    let t = super::collapse_ws(&unescape(&html[start..end]));
+    let t = super::collapse_ws(&crate::engines::decode_entities(&html[start..end]));
     (!t.is_empty()).then_some(t)
 }
 
@@ -243,7 +243,7 @@ fn attrs(s: &str) -> Vec<(String, String)> {
             }
         }
         if !name.is_empty() {
-            out.push((name, unescape(&value)));
+            out.push((name, crate::engines::decode_entities(&value)));
         }
     }
     out
@@ -255,20 +255,6 @@ fn attr(attrs: &[(String, String)], name: &str) -> Option<String> {
         .find(|(k, _)| k == name)
         .map(|(_, v)| v.clone())
         .filter(|v| !v.trim().is_empty())
-}
-
-/// The handful of entities that reach `<head>` text.
-fn unescape(s: &str) -> String {
-    if !s.contains('&') {
-        return s.to_owned();
-    }
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-        .replace("&nbsp;", " ")
 }
 
 #[cfg(test)]

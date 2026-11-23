@@ -238,8 +238,8 @@ pub(crate) mod tests {
     pub(crate) async fn b_holding_a_turn(
         communication: bool,
     ) -> (crate::TestDir, Agents, SessionId, TurnId) {
-        let scratch = crate::TestDir::new("139");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("139");
+        let dir = scratch.path().to_path_buf();
         let a = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("a".into())),

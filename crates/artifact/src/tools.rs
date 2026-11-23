@@ -225,7 +225,7 @@ impl Tool for ReadTool {
                 files: vec![art.path.clone()],
                 ..ToolOutput::ok(format!(
                     "[artifact_read {shown}: image, {}]",
-                    kind::human(art.bytes)
+                    platform::fmt::bytes(art.bytes)
                 ))
             }),
             Kind::Archive => {
@@ -236,7 +236,7 @@ impl Tool for ReadTool {
                 let mut s = format!(
                     "[artifact_read {shown}: archive, {} entries, {} unpacked{}]\n",
                     listing.total_entries,
-                    kind::human(listing.total_size),
+                    platform::fmt::bytes(listing.total_size),
                     if listing.truncated {
                         ", listing truncated"
                     } else {
@@ -250,7 +250,7 @@ impl Tool for ReadTool {
                             s.push('/');
                         }
                     } else {
-                        s.push_str(&format!("\t{}", kind::human(e.size)));
+                        s.push_str(&format!("\t{}", platform::fmt::bytes(e.size)));
                     }
                     s.push('\n');
                 }
@@ -264,7 +264,7 @@ impl Tool for ReadTool {
                 if note.is_none() && text.contains('\u{FFFD}') && art.kind == Kind::File {
                     return Ok(ToolOutput::ok(format!(
                         "[artifact_read {shown}: binary, {}; not readable as text]",
-                        kind::human(art.bytes)
+                        platform::fmt::bytes(art.bytes)
                     )));
                 }
                 let args = ReadFileArgs {
@@ -311,7 +311,7 @@ fn header(
         a.name,
         a.version,
         a.kind.as_str(),
-        kind::human(a.bytes)
+        platform::fmt::bytes(a.bytes)
     );
     if let Some(p) = a.pages {
         s.push_str(&format!(", {p} pages"));

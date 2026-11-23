@@ -193,8 +193,8 @@ async fn harness(
     cfg: EndlessConfig,
     c: Arc<EvalCompactor>,
 ) -> (crate::TestDir, Endless, Store, SessionId) {
-    let scratch = crate::TestDir::new("endless-eval");
-    let dir = scratch.0.clone();
+    let scratch = crate::test_dir("endless-eval");
+    let dir = scratch.path().to_path_buf();
     let store = Store::open(&dir.join("sessions.sqlite"), None)
         .await
         .unwrap();

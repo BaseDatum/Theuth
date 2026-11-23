@@ -193,17 +193,6 @@ pub fn brand(ctx: &WorkerCtx, md: &str) -> String {
     }
 }
 
-/// `s` cut to `max` chars, the last one an ellipsis when cut.
-fn truncate_chars(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max) {
-        Some(_) => {
-            let cut = s.char_indices().nth(max - 1).map_or(0, |(i, _)| i);
-            format!("{}…", &s[..cut])
-        }
-        None => s.to_owned(),
-    }
-}
-
 /// `TurnStarted..TurnFinished` (98 §8).
 struct Turn {
     started: Instant,
@@ -639,7 +628,7 @@ impl Worker {
             Some(n) => format!("↳ {n} · {title}"),
             None => title.clone(),
         };
-        let name = truncate_chars(&name, TITLE_MAX);
+        let name = platform::text::ellipsize(&name, TITLE_MAX).into_owned();
         match self
             .ctx
             .api

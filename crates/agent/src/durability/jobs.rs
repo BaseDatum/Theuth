@@ -360,7 +360,7 @@ mod tests {
     use runtime::TurnId;
 
     fn temp() -> crate::TestDir {
-        crate::TestDir::new("109-w2")
+        crate::test_dir("109-w2")
     }
 
     /// 139 Z-fix: a bridged call's job (`<call_id>.<n>`) is that call's; a
@@ -409,7 +409,7 @@ mod tests {
     #[tokio::test]
     async fn reaper_kills_leaked_group() {
         let scratch = temp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let path = dir.join("sessions.sqlite");
         let store = Arc::new(Store::open(&path, None).await.unwrap());
         let session = session(&store).await;
@@ -534,7 +534,7 @@ mod tests {
     #[tokio::test]
     async fn reaper_skips_nothing() {
         let scratch = temp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -632,7 +632,7 @@ mod tests {
     #[tokio::test]
     async fn reaper_ignores_foreign_engine_rows() {
         let scratch = temp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("b".into())),
@@ -678,7 +678,7 @@ mod tests {
     #[tokio::test]
     async fn settle_transferred_never_signals() {
         let scratch = temp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("b".into())),
@@ -789,7 +789,7 @@ mod tests {
     #[tokio::test]
     async fn job_rule_notes() {
         let scratch = temp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -924,7 +924,7 @@ mod tests {
     #[tokio::test]
     async fn reaper_never_reports_a_cell_kernel() {
         let scratch = temp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -1027,7 +1027,7 @@ mod tests {
     #[tokio::test]
     async fn a_killed_kernels_private_screen_reaches_no_model_input() {
         let scratch = temp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();

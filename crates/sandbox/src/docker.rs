@@ -370,7 +370,10 @@ impl Sandbox for DockerSandbox {
     async fn put(&self, h: &Handle, path: &str, bytes: Bytes, mode: u32) -> anyhow::Result<()> {
         let (dir, name) = path.rsplit_once('/').unwrap_or((".", path));
         let mk = self
-            .exec(h, Cmd::new(format!("mkdir -p {}", crate::sq(dir))))
+            .exec(
+                h,
+                Cmd::new(format!("mkdir -p {}", platform::shell::single_quote(dir))),
+            )
             .await?;
         if !mk.ok() {
             anyhow::bail!("put {path}: {}", mk.reason());

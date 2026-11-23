@@ -20,7 +20,7 @@ use agent::{
 };
 use artifact::{Artifact, ArtifactShown};
 use async_trait::async_trait;
-use chat_common::{agents, fmt_size, secret_notice};
+use chat_common::{agents, secret_notice};
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -1582,7 +1582,7 @@ impl Channel {
                                 lines.push(format!(
                                     "[attachment: {} ({mime}, {})] (transcription unavailable)",
                                     path.display(),
-                                    fmt_size(len)
+                                    platform::fmt::bytes(len as u64)
                                 ));
                             }
                         }
@@ -1591,7 +1591,7 @@ impl Channel {
                     lines.push(format!(
                         "[attachment: {} ({mime}, {})]",
                         path.display(),
-                        fmt_size(len)
+                        platform::fmt::bytes(len as u64)
                     ));
                     if mime.starts_with("image/") || mime == "application/pdf" {
                         paths.push(path);
@@ -3102,6 +3102,8 @@ pub(crate) mod tests {
         status_warnings: Mutex<Vec<String>>,
         /// Every file of every `upload_file`, in call order.
         uploads: Mutex<Vec<crate::api::UploadFile>>,
+        /// The text of every `update_markdown`, in call order (the call line omits it).
+        markdown_edits: Mutex<Vec<String>>,
     }
 
     impl FakeApi {
@@ -3210,8 +3212,14 @@ pub(crate) mod tests {
             ));
             Ok("8.8".into())
         }
-        async fn update_markdown(&self, channel: &str, ts: &str, _: &str) -> Result<(), ApiError> {
+        async fn update_markdown(
+            &self,
+            channel: &str,
+            ts: &str,
+            text: &str,
+        ) -> Result<(), ApiError> {
             self.record(format!("update_markdown {channel} {ts}"));
+            self.markdown_edits.lock().unwrap().push(text.to_owned());
             Ok(())
         }
         async fn post_blocks(
@@ -4456,15 +4464,21 @@ pub(crate) mod tests {
                 observed: observed(agent::ObservedState::Running, None),
             }))
             .await;
+        // The board posts on the worker's first tick after the child's event; the
+        // grandchild's row lands in that post or, when the tick fell between the
+        // two events, in the next edit (`BOARD_MIN_GAP` later).
         let board = format!("post_markdown {DM} 100.1 **agents**");
+        let (row, grand_row) = (
+            "◎ ReadA          running   watch · omp task · Reading first line",
+            "  ◎ ReadA.b        running   watch · omp task",
+        );
         f.until(|calls| {
-            calls.iter().any(|c| {
-                c.starts_with(&board)
-                    && c.contains(
-                        "◎ ReadA          running   watch · omp task · Reading first line",
-                    )
-                    && c.contains("  ◎ ReadA.b        running   watch · omp task")
-            })
+            let Some(post) = calls.iter().find(|c| c.starts_with(&board)) else {
+                return false;
+            };
+            let edits = f.api.markdown_edits.lock().unwrap();
+            let latest = edits.last().map_or(post.as_str(), String::as_str);
+            post.contains(row) && latest.contains(row) && latest.contains(grand_row)
         })
         .await;
         {

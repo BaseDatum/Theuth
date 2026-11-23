@@ -10,6 +10,7 @@ rpc-core = { workspace = true }
 rpc-core-macros = { workspace = true }
 jsonrpsee = { workspace = true }
 runtime = { workspace = true }
+platform = { workspace = true }
 wire = { workspace = true }
 agent = { workspace = true }
 chat-common = { workspace = true }

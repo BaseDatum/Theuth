@@ -274,7 +274,7 @@ async fn run(
 ) -> Result<Run> {
     let resolved = resolve(command, req.slug, req.evaluator);
     let script = match wrapper {
-        Some(w) => format!("{w} /bin/bash -lc {}", quote(&resolved)),
+        Some(w) => format!("{w} /bin/bash -lc {}", platform::shell::quote(&resolved)),
         None => resolved,
     };
     let mut cmd = tokio::process::Command::new("/bin/bash");
@@ -429,17 +429,12 @@ fn resolve(command: &str, slug: &str, evaluator: &Path) -> String {
         .split(' ')
         .map(|tok| match crate::custody::command_path(tok, &drafts) {
             Some(p) if evaluator.join(p.rel()).is_file() => {
-                quote(&evaluator.join(p.rel()).to_string_lossy())
+                platform::shell::quote(&evaluator.join(p.rel()).to_string_lossy())
             }
             _ => tok.to_owned(),
         })
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// Single-quote `s` for `bash -c`.
-fn quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// `<slug>/runs/<n>/…` from the absolute log path (the `samples.log_path`
@@ -746,7 +741,10 @@ mod tests {
             let r = resolve("bash ./bench.sh --n 3", "toy", &evaluator);
             assert_eq!(
                 r,
-                format!("bash '{}' --n 3", evaluator.join("bench.sh").display())
+                format!(
+                    "bash {} --n 3",
+                    platform::shell::quote(&evaluator.join("bench.sh").to_string_lossy())
+                )
             );
         }
     }
@@ -852,6 +850,10 @@ mod tests {
         assert_eq!(parse_duration("600s").unwrap(), Duration::from_secs(600));
         assert_eq!(parse_duration(" 20m ").unwrap(), Duration::from_secs(1200));
         assert!(parse_duration("soon").is_err());
-        assert_eq!(quote("echo 'hi' there"), "'echo '\\''hi'\\'' there'");
+        assert_eq!(
+            platform::shell::quote("echo 'hi' there"),
+            "\"echo 'hi' there\""
+        );
+        assert_eq!(platform::shell::quote("a'$b"), r#""a'"'$b'"#);
     }
 }

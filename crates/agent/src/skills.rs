@@ -881,7 +881,7 @@ mod tests {
     use super::*;
 
     fn tmp() -> crate::TestDir {
-        crate::TestDir::new("skills")
+        crate::test_dir("skills")
     }
 
     fn names(skills: &[SkillMeta]) -> Vec<&str> {
@@ -891,7 +891,7 @@ mod tests {
     #[test]
     fn walk_rules_and_bodies() {
         let scratch = tmp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         std::fs::create_dir_all(dir.join("a")).unwrap();
         std::fs::write(
             dir.join("a/one.md"),
@@ -991,7 +991,7 @@ mod tests {
     #[test]
     fn several_skills_make_one_input_in_order() {
         let scratch = tmp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         std::fs::write(dir.join("caveman.md"), "Grunt short.\n").unwrap();
         std::fs::write(dir.join("ponytail.md"), "Tie it back.\n").unwrap();
         let names = ["ponytail".to_owned(), "caveman".to_owned()];
@@ -1019,7 +1019,7 @@ mod tests {
     #[test]
     fn always_skills_are_inlined_not_indexed() {
         let scratch = tmp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         std::fs::write(
             dir.join("rules.md"),
             "---\nalways: true\n---\nAlways rule.\n",
@@ -1039,7 +1039,7 @@ mod tests {
     #[test]
     fn learned_sidecar_rides_every_read_and_dreaming_dirs_are_not_skills() {
         let scratch = tmp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         std::fs::write(dir.join("zeta.md"), "Zeta skill\nbody z\n").unwrap();
         std::fs::write(
             dir.join("rules.md"),
@@ -1081,7 +1081,7 @@ mod tests {
         );
         // ACP materialisation.
         let scratch_cwd = tmp();
-        let cwd = scratch_cwd.0.clone();
+        let cwd = scratch_cwd.path().to_path_buf();
         let m = materialise(
             &dir,
             &cwd,
@@ -1101,7 +1101,7 @@ mod tests {
     #[test]
     fn learned_sidecar_name_is_sanitised() {
         let scratch = tmp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         assert_eq!(
             learned_path(Path::new("/s"), "pdf-2"),
             Some(PathBuf::from("/s/learned/pdf-2.md"))
@@ -1142,7 +1142,7 @@ mod tests {
     #[test]
     fn add_remove_round_trip() {
         let scratch = tmp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let skills_dir = dir.join("skills"); // not yet created: add must create it
         let meta = add(
             &skills_dir,
@@ -1187,7 +1187,7 @@ mod tests {
     #[tokio::test]
     async fn repo_skills_from_a_local_bare_repo() {
         let scratch = tmp();
-        let root = scratch.0.clone();
+        let root = scratch.path().to_path_buf();
         let src = root.join("src");
         let bare = root.join("bare.git");
         let dir = root.join("skills");
@@ -1272,7 +1272,7 @@ mod tests {
     #[test]
     fn materialise_writes_excludes_and_removes() {
         let scratch = tmp();
-        let root = scratch.0.clone();
+        let root = scratch.path().to_path_buf();
         let dir = root.join("skills");
         std::fs::create_dir_all(dir.join("pack")).unwrap();
         std::fs::write(

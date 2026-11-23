@@ -325,11 +325,6 @@ fn write_rc(rc: &Path) -> Result<()> {
     Ok(())
 }
 
-/// POSIX single-quoted.
-fn sh_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
 /// PowerShell single-quoted.
 fn pwsh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
@@ -346,9 +341,9 @@ fn run_file_text(kind: ShellKind, req: &ExecuteRequest) -> String {
                 out.push_str(&format!("$env:{k} = {}\n", pwsh_quote(v)));
             }
         } else {
-            out.push_str(&format!("cd -- {}\n", sh_quote(&cwd)));
+            out.push_str(&format!("cd -- {}\n", platform::shell::single_quote(&cwd)));
             for (k, v) in &req.env {
-                out.push_str(&format!("export {k}={}\n", sh_quote(v)));
+                out.push_str(&format!("export {k}={}\n", platform::shell::single_quote(v)));
             }
         }
     }
@@ -375,7 +370,7 @@ pub(crate) fn run_line(kind: ShellKind, file: &Path) -> String {
     } else {
         format!(
             r#"printf '\033]133;C\007'; . {}; __theuth_x=$?; (umask 077; {{ printf '%s\0' "$PWD"; env -0; }} >"${SNAP_VAR}") 2>/dev/null; printf '\033]133;D;%s\007\033]7;file://%s%s\007' "$__theuth_x" "$(hostname)" "$PWD""#,
-            sh_quote(&f)
+            platform::shell::single_quote(&f)
         )
     }
 }
@@ -835,7 +830,7 @@ pub(crate) fn program(
             let p = if p.is_absolute() {
                 p
             } else {
-                search_path(&p.to_string_lossy(), &path_var).unwrap_or(p)
+                platform::shell::which_in(&p.to_string_lossy(), path_var.as_ref()).unwrap_or(p)
             };
             if !p.is_file() {
                 return Err(CellsError::NoInterpreter(format!(
@@ -851,7 +846,9 @@ pub(crate) fn program(
                 ShellKind::Sh => &["sh"],
                 ShellKind::Pwsh => &["pwsh", "powershell"],
             };
-            let found = names.iter().find_map(|n| search_path(n, &path_var));
+            let found = names
+                .iter()
+                .find_map(|n| platform::shell::which_in(n, path_var.as_ref()));
             match found {
                 Some(p) => (p, "first on your login PATH".to_owned()),
                 None => {
@@ -931,15 +928,6 @@ fn expand_home(s: &str, home: Option<&str>) -> PathBuf {
         _ if s == "~" => home.map_or_else(|| PathBuf::from(s), PathBuf::from),
         _ => PathBuf::from(s),
     }
-}
-
-fn search_path(name: &str, path_var: &str) -> Option<PathBuf> {
-    let exts: &[&str] = if cfg!(windows) { &[".exe", ""] } else { &[""] };
-    std::env::split_paths(path_var).find_map(|dir| {
-        exts.iter()
-            .map(|e| dir.join(format!("{name}{e}")))
-            .find(|p| p.is_file())
-    })
 }
 
 fn source_of(path: &Path) -> String {

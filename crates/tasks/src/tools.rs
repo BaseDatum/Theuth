@@ -383,15 +383,9 @@ pub struct TaskWaitingOnUserArgs {
 /// `task_waiting_on_user` (132 D5): what of the caller's line already waits on the user.
 pub struct TaskWaitingOnUserTool;
 
-/// `3 d` | `5 h` | `12 min` | `40 s` since `then_ms`.
+/// `3d` | `5h` | `12m` | `40s` since `then_ms`.
 fn age(now_ms: u64, then_ms: u64) -> String {
-    let s = now_ms.saturating_sub(then_ms) / 1000;
-    match s {
-        0..=59 => format!("{s} s"),
-        60..=3599 => format!("{} min", s / 60),
-        3600..=86_399 => format!("{} h", s / 3600),
-        _ => format!("{} d", s / 86_400),
-    }
+    platform::fmt::age(now_ms.saturating_sub(then_ms) / 1000)
 }
 
 #[async_trait::async_trait]

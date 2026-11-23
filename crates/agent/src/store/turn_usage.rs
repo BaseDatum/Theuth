@@ -135,8 +135,8 @@ mod tests {
     use super::*;
 
     async fn fresh() -> (Store, crate::TestDir) {
-        let scratch = crate::TestDir::new("turns");
-        let store = Store::open(&scratch.0.join("sessions.sqlite"), None)
+        let scratch = crate::test_dir("turns");
+        let store = Store::open(&scratch.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         (store, scratch)

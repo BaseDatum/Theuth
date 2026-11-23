@@ -40,8 +40,8 @@ fn regenerate_replays_the_stamp_to_the_model_only() {
 }
 
 async fn scenario() {
-    let scratch = crate::TestDir::new("regen-stamp-reg");
-    let reg_dir = scratch.0.clone();
+    let scratch = crate::test_dir("regen-stamp-reg");
+    let reg_dir = scratch.path().to_path_buf();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
 

@@ -1606,6 +1606,7 @@ dependencies = [
  "jsonrpsee",
  "kameo",
  "knowledge",
+ "libm",
  "mesh",
  "parking_lot",
  "platform",
@@ -1620,6 +1621,7 @@ dependencies = [
  "serde_yaml",
  "sha2 0.11.1",
  "sqlx",
+ "statrs",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -2670,6 +2672,7 @@ dependencies = [
  "obscura-js",
  "obscura-mcp",
  "parking_lot",
+ "platform",
  "reqwest 0.13.5",
  "rpc-core",
  "rpc-core-macros",
@@ -2897,6 +2900,12 @@ dependencies = [
  "bytes",
  "either",
 ]
+
+[[package]]
+name = "bytesize"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7354288c522e7e980fafd2075d63d1285794c3a6a16cdd492f189ea406e5f18b"
 
 [[package]]
 name = "bzip2"
@@ -3413,6 +3422,7 @@ dependencies = [
  "agent",
  "anyhow",
  "kameo",
+ "platform",
  "runtime",
  "serde_json",
  "tools",
@@ -3652,6 +3662,7 @@ dependencies = [
  "sha2 0.11.1",
  "sqlx",
  "surface",
+ "tempfile",
  "tokio",
  "toml 1.1.8+spec-1.1.0",
  "tools",
@@ -5087,6 +5098,7 @@ dependencies = [
 name = "desktop"
 version = "2.25.6"
 dependencies = [
+ "anstream",
  "anyhow",
  "base64 0.23.1",
  "block2",
@@ -6043,6 +6055,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "statrs",
  "tempfile",
  "tokio",
 ]
@@ -8144,6 +8157,30 @@ dependencies = [
  "log",
  "xml-rs",
 ]
+
+[[package]]
+name = "glam"
+version = "0.30.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
+
+[[package]]
+name = "glam"
+version = "0.31.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "556f6b2ea90b8d15a74e0e7bb41671c9bdf38cd9f78c284d750b9ce58a2b5be7"
+
+[[package]]
+name = "glam"
+version = "0.32.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
+
+[[package]]
+name = "glam"
+version = "0.33.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37bfe73dc8ec21f54d181e5a60554327ec3f1c600c455a75ccbfc65d2106a6c4"
 
 [[package]]
 name = "glib"
@@ -10780,11 +10817,11 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sqlx",
+ "tempfile",
  "tokio",
  "tools",
  "tracing",
  "ts-rs",
- "uuid",
  "wire",
 ]
 
@@ -13354,6 +13391,25 @@ dependencies = [
  "n0-error",
  "n0-future",
  "slotmap",
+]
+
+[[package]]
+name = "nalgebra"
+version = "0.35.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adc43a60c217b0c6ff46e47f26911015ad8d2e5a8be1af668c67e370d99a4346"
+dependencies = [
+ "approx",
+ "glam 0.30.10",
+ "glam 0.31.1",
+ "glam 0.32.1",
+ "glam 0.33.12",
+ "matrixmultiply",
+ "num-complex",
+ "num-rational",
+ "num-traits",
+ "simba",
+ "typenum",
 ]
 
 [[package]]
@@ -16017,6 +16073,7 @@ name = "platform"
 version = "2.22.2"
 dependencies = [
  "anyhow",
+ "bytesize",
  "dirs 7.0.0",
  "hex",
  "libc",
@@ -16024,6 +16081,7 @@ dependencies = [
  "objc2-foundation",
  "self-replace",
  "sha2 0.11.1",
+ "shlex 2.0.1",
  "tokio",
  "tracing",
  "windows-sys 0.61.2",
@@ -18703,6 +18761,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bd85992a680de788217d9c70b74aa7685b108cf1aba02f728fb27f1b27199ad1"
 
 [[package]]
+name = "safe_arch"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "safetensors"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18976,6 +19043,7 @@ dependencies = [
  "futures",
  "html-to-markdown-rs",
  "kameo",
+ "platform",
  "reqwest 0.13.5",
  "runtime",
  "schemars 1.2.3",
@@ -19947,6 +20015,7 @@ dependencies = [
  "link",
  "markdown",
  "mesh",
+ "platform",
  "presage",
  "presage-store-sqlite",
  "roster",
@@ -20060,6 +20129,18 @@ checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
 dependencies = [
  "digest 0.11.3",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "simba"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1a7200d82ff1c7b4235efd12f11e2537a402c91cf83a5cb97ce80eef787fde7"
+dependencies = [
+ "approx",
+ "num-complex",
+ "num-traits",
+ "wide",
 ]
 
 [[package]]
@@ -20185,6 +20266,7 @@ dependencies = [
  "kameo",
  "markdown",
  "mesh",
+ "platform",
  "reqwest 0.13.5",
  "roster",
  "rpc-core",
@@ -20822,6 +20904,19 @@ name = "static_vcruntime"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff7589a1859b09232522bb9edf076ca7fcf14ded96685d3fa629db73023ffbb7"
+
+[[package]]
+name = "statrs"
+version = "0.19.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1837f9a1bd13dabbdbb04489c39451482d3cdd35a6e1a0d0f3570dea2b8c8be"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "num-traits",
+ "rand 0.10.3",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "strck"
@@ -22079,6 +22174,7 @@ dependencies = [
  "mesh",
  "mime_guess",
  "parking_lot",
+ "platform",
  "roster",
  "rpc-core",
  "rpc-core-macros",
@@ -22315,6 +22411,7 @@ dependencies = [
  "talk",
  "tasks",
  "telegram",
+ "tempfile",
  "tokio",
  "tools",
  "tracing",
@@ -22892,6 +22989,7 @@ dependencies = [
  "serde_yaml",
  "similar 3.2.1",
  "sqlx",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
@@ -23239,6 +23337,7 @@ dependencies = [
  "a2a",
  "acp",
  "agent",
+ "anstream",
  "anyhow",
  "arboard",
  "artifact",
@@ -24727,6 +24826,7 @@ dependencies = [
  "sqlx",
  "strsim",
  "symphonia",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tools",
@@ -25094,6 +25194,7 @@ dependencies = [
  "figment",
  "flate2",
  "futures",
+ "html-escape",
  "html-to-markdown-rs",
  "image",
  "jsonrpsee",
@@ -25375,6 +25476,16 @@ dependencies = [
  "objc2-system-configuration",
  "wasite",
  "web-sys",
+]
+
+[[package]]
+name = "wide"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d920ac99c3c8edce110cb8d07dbb324d6d026011dce85b1e9355b70f0adacc4f"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
 ]
 
 [[package]]

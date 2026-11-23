@@ -3243,12 +3243,8 @@ fn state_of(inner: &Inner, session: SessionId) -> Option<Arc<State>> {
 
 /// `s` on one line (whitespace runs → one space), at most `max` chars.
 fn one_line(s: &str, max: usize) -> String {
-    s.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(max)
-        .collect()
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    platform::text::head_chars(&flat, max).to_owned()
 }
 
 /// 201 P1 (D5): no turn waits on the summary model — every unit has a line

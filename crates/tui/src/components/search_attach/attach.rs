@@ -35,24 +35,6 @@ fn date_secs(s: i64) -> String {
     DateTime::from_timestamp(s, 0).map(date).unwrap_or_default()
 }
 
-/// Decimal `kB`/`MB` (199 UI-2: one unit system), one decimal below 10.
-pub fn size(bytes: u64) -> String {
-    const K: f64 = 1000.0;
-    let b = bytes as f64;
-    let (n, unit) = if b < K {
-        return format!("{bytes} B");
-    } else if b < K * K {
-        (b / K, "kB")
-    } else {
-        (b / K / K, "MB")
-    };
-    if n < 10.0 {
-        format!("{n:.1} {unit}")
-    } else {
-        format!("{n:.0} {unit}")
-    }
-}
-
 /// The reference a search hit attaches as.
 pub fn from_hit(hit: &Hit) -> AttachRef {
     match hit {
@@ -80,7 +62,12 @@ pub fn from_hit(hit: &Hit) -> AttachRef {
             if let Some(p) = a.pages {
                 let _ = write!(meta, " · {p} pages");
             }
-            let _ = write!(meta, " · {} · {}", size(a.bytes), date_secs(a.created_at));
+            let _ = write!(
+                meta,
+                " · {} · {}",
+                platform::fmt::bytes(a.bytes),
+                date_secs(a.created_at)
+            );
             AttachRef {
                 kind: Kind::Artifact,
                 id: a.call_id.clone(),
@@ -128,7 +115,7 @@ pub fn from_hit(hit: &Hit) -> AttachRef {
                 meta: format!(
                     "note · updated {} · {}",
                     date_ms(d.updated_ms),
-                    size(d.bytes.max(0) as u64)
+                    platform::fmt::bytes(d.bytes.max(0) as u64)
                 ),
             }
         }
@@ -173,4 +160,3 @@ pub fn from_session(s: &SessionSummary) -> AttachRef {
         meta,
     }
 }
-

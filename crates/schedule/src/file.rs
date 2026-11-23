@@ -1155,10 +1155,10 @@ impl ScheduleFile {
     }
 }
 
-/// YAML double-quoted scalar: `\` and `"` escaped, so `:`, `#`, `$(…)` and a
+/// YAML double-quoted scalar (a JSON string is one), so `:`, `#`, `$(…)` and a
 /// leading `~` survive.
 fn yaml_str(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    serde_json::to_string(s).expect("a str serialises to JSON")
 }
 
 /// Render the file text: front matter with only the keys present, a blank

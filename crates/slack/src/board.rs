@@ -296,11 +296,7 @@ fn first_arg<'a>(name: &str, args: &'a serde_json::Value) -> &'a str {
 
 /// `s` cut to `max` chars, the last one an ellipsis when cut.
 fn cut(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_owned();
-    }
-    let end = s.char_indices().nth(max - 1).map_or(s.len(), |(i, _)| i);
-    format!("{}…", &s[..end])
+    platform::text::ellipsize(s, max).into_owned()
 }
 
 #[cfg(test)]

@@ -62,24 +62,24 @@ fn note(id: &str, body: &str) -> crate::Put {
 }
 #[tokio::test]
 async fn native_memory_paths_never_cross_bundles_and_parked_rpc_inspection_resumes() {
-    let dir = crate::TestDir::new("isolated-memory");
-    let rt = runtime::Runtime::new(figment::Figment::new(), dir.0.clone());
-    let main = Knowledge::open(&dir.0, rt).await.unwrap();
+    let dir = crate::test_dir("isolated-memory");
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let main = Knowledge::open(dir.path(), rt).await.unwrap();
     let (isolated, missing, plain) = (SessionId::new(), SessionId::new(), SessionId::new());
     main.set_scoper(Arc::new(Routes { isolated, missing }));
-    std::fs::create_dir_all(dir.0.join("agents")).unwrap();
-    let file = dir.0.join("agents/ops.md");
+    std::fs::create_dir_all(dir.path().join("agents")).unwrap();
+    let file = dir.path().join("agents/ops.md");
     std::fs::write(&file, "---\nisolated_memory: true\n---\nOps.").unwrap();
     main.put(note("facts/main", "mainonly sentinel"), Source::User)
         .await
         .unwrap();
-    let cx = context(isolated, &dir.0);
+    let cx = context(isolated, dir.path());
     PutTool(main.clone())
         .call(note("facts/secret", "isolatedonly galaxy"), cx.clone())
         .await
         .unwrap();
     let own = main.for_session(isolated).await.unwrap();
-    assert_eq!(own.root(), dir.0.join("agent-memory/ops/knowledge"));
+    assert_eq!(own.root(), dir.path().join("agent-memory/ops/knowledge"));
     let meta = own.get("facts/secret").await.unwrap().meta;
     assert_eq!(
         (meta.owner.as_str(), meta.visibility),
@@ -92,7 +92,7 @@ async fn native_memory_paths_never_cross_bundles_and_parked_rpc_inspection_resum
                     query: query.into(),
                     limit: None,
                 },
-                context(session, &dir.0),
+                context(session, dir.path()),
             )
             .await
             .unwrap();
@@ -100,7 +100,7 @@ async fn native_memory_paths_never_cross_bundles_and_parked_rpc_inspection_resum
         let selected = main.for_session(session).await.unwrap();
         assert!(
             selected
-                .hint_for(query, &dir.0, &Default::default(), 10, Some(session))
+                .hint_for(query, dir.path(), &Default::default(), 10, Some(session))
                 .await
                 .unwrap()
                 .is_empty()
@@ -123,7 +123,7 @@ async fn native_memory_paths_never_cross_bundles_and_parked_rpc_inspection_resum
                 IdArgs {
                     id: "facts/secret".into()
                 },
-                context(plain, &dir.0)
+                context(plain, dir.path())
             )
             .await
             .is_err()
@@ -268,8 +268,8 @@ async fn native_memory_paths_never_cross_bundles_and_parked_rpc_inspection_resum
         "parked bundle remains owner-readable"
     );
     main.remove_bundle("ops").await.unwrap();
-    assert!(!dir.0.join("agent-memory/ops").exists());
-    let removed = std::fs::read_dir(dir.0.join("agent-memory/.removed"))
+    assert!(!dir.path().join("agent-memory/ops").exists());
+    let removed = std::fs::read_dir(dir.path().join("agent-memory/.removed"))
         .unwrap()
         .next()
         .unwrap()
@@ -286,22 +286,22 @@ async fn native_memory_paths_never_cross_bundles_and_parked_rpc_inspection_resum
             .is_err(),
         "a later hire is empty"
     );
-    assert!(!dir.0.join("knowledge/facts/secret.md").exists());
+    assert!(!dir.path().join("knowledge/facts/secret.md").exists());
 }
 
 #[tokio::test]
 async fn owner_rpc_bundle_parameter_defaults_to_main_and_rejects_unknown_bundles() {
     use crate::rpc_concepts::KnowledgeConceptsApiServer;
     use kameo::actor::Spawn;
-    let dir = crate::TestDir::new("isolated-rpc");
-    let rt = runtime::Runtime::new(figment::Figment::new(), dir.0.clone());
-    let k = Knowledge::open(&dir.0, rt.clone()).await.unwrap();
+    let dir = crate::test_dir("isolated-rpc");
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let k = Knowledge::open(dir.path(), rt.clone()).await.unwrap();
     k.put(note("facts/main", "mainonly sentinel"), Source::User)
         .await
         .unwrap();
-    std::fs::create_dir_all(dir.0.join("agents")).unwrap();
+    std::fs::create_dir_all(dir.path().join("agents")).unwrap();
     std::fs::write(
-        dir.0.join("agents/ops.md"),
+        dir.path().join("agents/ops.md"),
         "---\nisolated_memory: true\n---\nOps.",
     )
     .unwrap();
@@ -369,9 +369,9 @@ async fn owner_rpc_bundle_parameter_defaults_to_main_and_rejects_unknown_bundles
 
 #[tokio::test]
 async fn unresolved_identity_and_unopenable_bundle_fail_closed() {
-    let dir = crate::TestDir::new("isolated-unavailable");
-    let rt = runtime::Runtime::new(figment::Figment::new(), dir.0.clone());
-    let main = Knowledge::open(&dir.0, rt).await.unwrap();
+    let dir = crate::test_dir("isolated-unavailable");
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let main = Knowledge::open(dir.path(), rt).await.unwrap();
     let (isolated, missing) = (SessionId::new(), SessionId::new());
     main.put(note("facts/main", "mainonly sentinel"), Source::User)
         .await
@@ -385,8 +385,8 @@ async fn unresolved_identity_and_unopenable_bundle_fail_closed() {
             .starts_with("isolated memory unavailable here:")
     );
     main.set_scoper(Arc::new(Routes { isolated, missing }));
-    std::fs::create_dir_all(dir.0.join("agent-memory")).unwrap();
-    std::fs::write(dir.0.join("agent-memory/ops"), "not a directory").unwrap();
+    std::fs::create_dir_all(dir.path().join("agent-memory")).unwrap();
+    std::fs::write(dir.path().join("agent-memory/ops"), "not a directory").unwrap();
     for session in [isolated, missing] {
         let e = SearchTool(main.clone())
             .call(
@@ -394,7 +394,7 @@ async fn unresolved_identity_and_unopenable_bundle_fail_closed() {
                     query: "mainonly".into(),
                     limit: None,
                 },
-                context(session, &dir.0),
+                context(session, dir.path()),
             )
             .await
             .unwrap_err();
@@ -408,9 +408,9 @@ async fn unresolved_identity_and_unopenable_bundle_fail_closed() {
 
 #[tokio::test]
 async fn boot_window_waits_for_late_scoper() {
-    let dir = crate::TestDir::new("knowledge-boot-late");
-    let rt = runtime::Runtime::new(figment::Figment::new(), dir.0.clone());
-    let main = Knowledge::open(&dir.0, rt).await.unwrap();
+    let dir = crate::test_dir("knowledge-boot-late");
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let main = Knowledge::open(dir.path(), rt).await.unwrap();
     tokio::time::pause();
     let started = tokio::time::Instant::now();
     let installing = main.clone();
@@ -426,9 +426,9 @@ async fn boot_window_waits_for_late_scoper() {
 
 #[tokio::test]
 async fn boot_window_never_ready_fails_closed_at_five_seconds() {
-    let dir = crate::TestDir::new("knowledge-boot-absent");
-    let rt = runtime::Runtime::new(figment::Figment::new(), dir.0.clone());
-    let main = Knowledge::open(&dir.0, rt).await.unwrap();
+    let dir = crate::test_dir("knowledge-boot-absent");
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let main = Knowledge::open(dir.path(), rt).await.unwrap();
     tokio::time::pause();
     let started = tokio::time::Instant::now();
     let error = main.for_session(SessionId::new()).await.err().unwrap();
@@ -446,9 +446,9 @@ async fn boot_window_never_ready_fails_closed_at_five_seconds() {
 
 #[tokio::test]
 async fn boot_window_shares_deadline_with_identity_service() {
-    let dir = crate::TestDir::new("knowledge-boot-service");
-    let rt = runtime::Runtime::new(figment::Figment::new(), dir.0.clone());
-    let main = Knowledge::open(&dir.0, rt).await.unwrap();
+    let dir = crate::test_dir("knowledge-boot-service");
+    let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+    let main = Knowledge::open(dir.path(), rt).await.unwrap();
     tokio::time::pause();
     let started = tokio::time::Instant::now();
     let installing = main.clone();

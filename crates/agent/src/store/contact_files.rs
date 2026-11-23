@@ -1028,8 +1028,8 @@ mod tests {
     use runtime::SessionId;
 
     async fn fresh() -> (Store, SessionId, crate::TestDir) {
-        let scratch = crate::TestDir::new("cfiles");
-        let store = Store::open(&scratch.0.join("sessions.sqlite"), None)
+        let scratch = crate::test_dir("cfiles");
+        let store = Store::open(&scratch.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let id = SessionId::new();

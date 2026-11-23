@@ -230,13 +230,6 @@ pub fn local_part(email: &str) -> &str {
     email.split('@').next().unwrap_or(email)
 }
 
-fn head(s: &str, chars: usize) -> &str {
-    match s.char_indices().nth(chars) {
-        Some((i, _)) => &s[..i],
-        None => s,
-    }
-}
-
 impl CalEvent {
     /// The manifest-side view (§8.3): description capped at [`DESCRIPTION_CHARS`].
     pub fn to_ref(&self) -> EventRef {
@@ -253,7 +246,11 @@ impl CalEvent {
             description: self
                 .description
                 .as_deref()
-                .map(|d| head(d, DESCRIPTION_CHARS).trim().to_owned())
+                .map(|d| {
+                    platform::text::head_chars(d, DESCRIPTION_CHARS)
+                        .trim()
+                        .to_owned()
+                })
                 .filter(|d| !d.is_empty()),
         }
     }

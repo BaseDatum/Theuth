@@ -166,7 +166,7 @@ posts (§5.4) are counted in a small chip in the toolbar (`2 errors`) that expan
 `info` and `warning` never reach the reader. The same messages are what the preview hook returns to the
 agent (§11). While loading: the `bg-layer-2` pulse the PDF frame uses (`Viewer.tsx:273`).
 
-**The receipt (§3.9).** `shown chart.html (v1 · 212 lines · 48 KB · 2 images inlined · height 600)` +
+**The receipt (§3.9).** `shown chart.html (v1 · 212 lines · 48.0 kB · 2 images inlined · height 600)` +
 `live page in the theuth app (desktop, web, phone); Slack/Telegram/Signal get the file; TUI the source.
 Check it with page_preview when it has scripts.` — one line of harness text, no claim about which client
 is connected (the engine does not know).

@@ -9,6 +9,7 @@ description = "Embedded obscura headless browser: per-session isolates, browser_
 obscura-mcp = { workspace = true }
 obscura-js = { workspace = true }
 runtime = { workspace = true }
+platform = { workspace = true }
 wire = { workspace = true }
 tools = { workspace = true }
 decision = { workspace = true }

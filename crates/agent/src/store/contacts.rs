@@ -741,8 +741,8 @@ mod tests {
     use crate::store::communication::A2aScope;
 
     async fn fresh() -> (Store, SessionId, crate::TestDir) {
-        let scratch = crate::TestDir::new("contacts");
-        let store = Store::open(&scratch.0.join("sessions.sqlite"), None)
+        let scratch = crate::test_dir("contacts");
+        let store = Store::open(&scratch.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let id = SessionId::new();
@@ -846,9 +846,9 @@ mod tests {
     /// engine (no mesh id) owns its own `''` rows.
     #[tokio::test]
     async fn only_a_row_this_engine_owns_is_owned_here() {
-        let scratch = crate::TestDir::new("contacts");
+        let scratch = crate::test_dir("contacts");
         let store = Store::open(
-            &scratch.0.join("sessions.sqlite"),
+            &scratch.path().join("sessions.sqlite"),
             Some(mesh::EngineId("me-engine".into())),
         )
         .await
@@ -1080,9 +1080,9 @@ mod tests {
     /// stay (it still holds them).
     #[tokio::test]
     async fn boot_clears_only_this_engines_hold_rows() {
-        let scratch = crate::TestDir::new("contacts");
+        let scratch = crate::test_dir("contacts");
         let store = Store::open(
-            &scratch.0.join("sessions.sqlite"),
+            &scratch.path().join("sessions.sqlite"),
             Some(mesh::EngineId("me-engine".into())),
         )
         .await
@@ -1110,9 +1110,9 @@ mod tests {
     /// SQL: 600 other machines' rows that sort first never push ours past the 512 cap.
     #[tokio::test]
     async fn the_own_hold_read_back_is_never_crowded_out() {
-        let scratch = crate::TestDir::new("contacts");
+        let scratch = crate::test_dir("contacts");
         let store = Store::open(
-            &scratch.0.join("sessions.sqlite"),
+            &scratch.path().join("sessions.sqlite"),
             Some(mesh::EngineId("me-engine".into())),
         )
         .await
@@ -1146,11 +1146,11 @@ mod tests {
     #[tokio::test]
     async fn a_hold_row_and_its_deletion_ride_the_record_replica() {
         let open = |name: &'static str| async move {
-            let dir = crate::TestDir::new(name);
-            let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+            let dir = crate::test_dir(name);
+            let store = Store::open(&dir.path().join("sessions.sqlite"), None)
                 .await
                 .unwrap();
-            let engine = replica::Engine::open(&dir.0.join("replica.sqlite"))
+            let engine = replica::Engine::open(&dir.path().join("replica.sqlite"))
                 .await
                 .unwrap();
             let handle = engine.attach(&store.write, &RECORD_TABLES).await.unwrap();

@@ -70,16 +70,16 @@ impl Syntax for Fake {
 struct T {
     dir: PathBuf,
     cx: ToolCx,
-    _scratch: crate::TestDir,
+    _scratch: tempfile::TempDir,
 }
 
 fn t() -> T {
     crate::textref::set_syntax(Arc::new(Fake));
-    let scratch = crate::TestDir::new("text");
+    let scratch = crate::test_dir("text");
     // An `.editorconfig` above the temp dir must not leak into tests.
-    std::fs::write(scratch.0.join(".editorconfig"), "root = true\n").unwrap();
+    std::fs::write(scratch.path().join(".editorconfig"), "root = true\n").unwrap();
     T {
-        dir: scratch.0.clone(),
+        dir: scratch.path().to_path_buf(),
         cx: ToolCx {
             session: crate::SessionId::new(),
             call_id: String::new(),

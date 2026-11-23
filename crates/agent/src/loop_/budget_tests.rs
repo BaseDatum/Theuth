@@ -21,8 +21,8 @@ fn stop_reason(events: &[AgentEvent]) -> Option<&str> {
 }
 
 async fn scenario() {
-    let scratch = crate::TestDir::new("budget-reg");
-    let reg_dir = scratch.0.clone();
+    let scratch = crate::test_dir("budget-reg");
+    let reg_dir = scratch.path().to_path_buf();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
 

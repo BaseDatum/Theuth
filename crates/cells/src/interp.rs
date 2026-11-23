@@ -377,14 +377,7 @@ fn which(name: &str, env: &BTreeMap<String, String>) -> Option<PathBuf> {
         .get("PATH")
         .map(std::ffi::OsString::from)
         .or_else(|| std::env::var_os("PATH"))?;
-    let exe = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-    std::env::split_paths(&path)
-        .map(|d| d.join(&exe))
-        .find(|p| p.is_file())
+    platform::shell::which_in(name, &path)
 }
 
 fn home(env: &BTreeMap<String, String>) -> Option<PathBuf> {

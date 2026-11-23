@@ -39,17 +39,6 @@ pub(crate) fn text(s: &str) -> String {
     s.chars().filter(|c| !c.is_control() && !matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')).collect()
 }
 
-/// Decimal sizes (UI-2, as the desktop and the 5 GB limit): `12 kB`, `24.1 MB`, `1.2 GB`.
-fn size(n: u64) -> String {
-    let f = n as f64;
-    match n {
-        0..1_000 => format!("{n} B"),
-        1_000..1_000_000 => format!("{:.0} kB", f / 1e3),
-        1_000_000..1_000_000_000 => format!("{:.1} MB", f / 1e6),
-        _ => format!("{:.1} GB", f / 1e9),
-    }
-}
-
 /// The card group of a file line the engine's notice row (or ended-share row) drew; the
 /// message's own placeholder lines are `"file"` (UI-1: those are the live lines).
 const NOTICE_GROUP: &str = "file-notice";
@@ -83,7 +72,7 @@ impl Line {
             FileState::In(InState::Publishing) => "saving".into(),
             FileState::In(InState::Saved | InState::Received) => "saved".into(),
             FileState::Out(OutState::Queued) => "offered".into(),
-            FileState::Out(OutState::Sending) if self.done > 0 => format!("sending{} · {}", pct(), size(self.done)),
+            FileState::Out(OutState::Sending) if self.done > 0 => format!("sending{} · {}", pct(), platform::fmt::bytes(self.done)),
             FileState::Out(OutState::Sending) => "sending".into(),
             FileState::Out(OutState::Sent) => "sent".into(),
             FileState::In(InState::Failed) | FileState::Out(OutState::Failed) => failed(),
@@ -92,7 +81,7 @@ impl Line {
     /// `name · size · type · state`, and the ended-share label.
     pub(crate) fn title(&self, ended: bool) -> String {
         let mut title = self.name.clone();
-        if let Some(n) = self.bytes { title.push_str(&format!(" · {}", size(n))); }
+        if let Some(n) = self.bytes { title.push_str(&format!(" · {}", platform::fmt::bytes(n))); }
         if !self.media_type.is_empty() { title.push_str(&format!(" · {}", self.media_type)); }
         title.push_str(&format!(" · {}", self.status()));
         if ended { title.push_str(ENDED); }
@@ -540,7 +529,7 @@ mod tests {
         notes.done = 456_000;
         changed(&mut model, notes.clone());
         assert!(matches!(&model.entries[2..], [Entry::Card { .. }, Entry::Card { .. }, Entry::Info(_)]), "{:?}", model.entries);
-        assert_eq!(titles(&model)[1..], ["drawings.pdf · 24.1 MB · application/pdf · offered", "notes.md · 1.2 MB · text/markdown · sending 38% · 456 kB"]);
+        assert_eq!(titles(&model)[1..], ["drawings.pdf · 24.1 MB · application/pdf · offered", "notes.md · 1.2 MB · text/markdown · sending 38% · 456.0 kB"]);
         notes.state = FileState::Out(OutState::Sent);
         changed(&mut model, notes);
         let mut lost = pdf(FileState::Out(OutState::Failed));

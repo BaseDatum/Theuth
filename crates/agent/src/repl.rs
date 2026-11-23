@@ -2328,9 +2328,18 @@ mod tests {
                 "{line}"
             );
         }
-        let scratch = crate::TestDir::new("image-guidance");
-        let prompt =
-            crate::frame::baseline(&scratch.0, None, "", "", None, None, false, false, false);
+        let scratch = crate::test_dir("image-guidance");
+        let prompt = crate::frame::baseline(
+            scratch.path(),
+            None,
+            "",
+            "",
+            None,
+            None,
+            false,
+            false,
+            false,
+        );
         let guidance = prompt.split("## Guidance").nth(1).unwrap_or_default();
         assert!(
             guidance.contains("To look at an image") && guidance.contains("`read_file(path)`"),
@@ -2683,14 +2692,14 @@ mod tests {
                 return;
             };
             let dir = tempdir();
-            let cx = mcp_live_cx(&dir.0).await;
-            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let cx = mcp_live_cx(dir.path()).await;
+            let mut repl = Repl::open(&pool, cx.session, dir.path(), cx.clone()).await;
             let out = repl
                 .run(
                     "write",
                     &format!(
                         "marker = 'kept'\nawait write_file(path={:?}, content={:?})",
-                        dir.0.join("mcp/watched.json").to_string_lossy(),
+                        dir.path().join("mcp/watched.json").to_string_lossy(),
                         mcp_live_entry().to_string()
                     ),
                 )
@@ -2732,7 +2741,7 @@ mod tests {
                 return;
             };
             let dir = tempdir();
-            let cx = mcp_live_cx(&dir.0).await;
+            let cx = mcp_live_cx(dir.path()).await;
             ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)
                 .unwrap()
                 .unwrap()
@@ -2742,7 +2751,7 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let mut repl = Repl::open(&pool, cx.session, dir.path(), cx.clone()).await;
             let out = repl
                 .run(
                     "before",
@@ -2782,7 +2791,7 @@ mod tests {
                 return;
             };
             let dir = tempdir();
-            let cx = run_cx(&dir.0).await;
+            let cx = run_cx(dir.path()).await;
             let parent = SessionId::new();
             cx.registry
                 .tell(tools::SetParent {
@@ -2791,17 +2800,17 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            std::fs::write(dir.0.join("seen.txt"), "x").unwrap();
+            std::fs::write(dir.path().join("seen.txt"), "x").unwrap();
             let listing = format!(
                 "reply = await list_dir(path={:?})\nprint(marker, reply)",
-                dir.0.to_string_lossy()
+                dir.path().to_string_lossy()
             );
             let hide = |hidden: bool| tools::SetHidden {
                 session: parent,
                 tools: vec!["list_dir".into()],
                 hidden,
             };
-            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let mut repl = Repl::open(&pool, cx.session, dir.path(), cx.clone()).await;
             let out = repl
                 .run("before", &format!("marker = 'kept'\n{listing}"))
                 .await;
@@ -2843,17 +2852,17 @@ mod tests {
                 return;
             };
             let dir = tempdir();
-            let cx = run_cx(&dir.0).await;
-            std::fs::write(dir.0.join("seen.txt"), "x").unwrap();
+            let cx = run_cx(dir.path()).await;
+            std::fs::write(dir.path().join("seen.txt"), "x").unwrap();
             let listing = format!(
                 "reply = await list_dir(path={:?})\nprint(marker, reply)",
-                dir.0.to_string_lossy()
+                dir.path().to_string_lossy()
             );
             let switch = |disabled: bool| tools::SetBuiltinsDisabled {
                 names: vec![tools::category_key("files")],
                 disabled,
             };
-            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let mut repl = Repl::open(&pool, cx.session, dir.path(), cx.clone()).await;
             let out = repl
                 .run("before", &format!("marker = 'kept'\n{listing}"))
                 .await;
@@ -2895,7 +2904,7 @@ mod tests {
                 return;
             };
             let dir = tempdir();
-            let cx = mcp_live_cx(&dir.0).await;
+            let cx = mcp_live_cx(dir.path()).await;
             let parent = SessionId::new();
             cx.registry
                 .tell(tools::SetParent {
@@ -2922,7 +2931,7 @@ mod tests {
             let all = cx.registry.ask(ListTools(None)).await.unwrap();
             assert!(all.iter().any(|s| s.name == "live_echo"), "registered");
             assert!(!prompt_block(&specs(&cx).await, true).contains("async def live_echo("));
-            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let mut repl = Repl::open(&pool, cx.session, dir.path(), cx.clone()).await;
             let out = repl.run("hidden", "await live_echo(value='x')").await;
             assert!(
                 out.is_error && out.content.contains("live_echo"),
@@ -2956,14 +2965,18 @@ mod tests {
                 return;
             };
             let dir = tempdir();
-            std::fs::create_dir_all(dir.0.join("mcp")).unwrap();
+            std::fs::create_dir_all(dir.path().join("mcp")).unwrap();
             std::fs::write(
-                dir.0.join("mcp/config.yaml"),
+                dir.path().join("mcp/config.yaml"),
                 "servers:\n  live:\n    risk: off\n",
             )
             .unwrap();
-            std::fs::write(dir.0.join("mcp/live.json"), mcp_live_entry().to_string()).unwrap();
-            let cx = mcp_live_cx(&dir.0).await;
+            std::fs::write(
+                dir.path().join("mcp/live.json"),
+                mcp_live_entry().to_string(),
+            )
+            .unwrap();
+            let cx = mcp_live_cx(dir.path()).await;
             let parent = SessionId::new();
             cx.registry
                 .tell(tools::SetParent {
@@ -2980,7 +2993,7 @@ mod tests {
                 tool: None,
                 gate,
             };
-            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let mut repl = Repl::open(&pool, cx.session, dir.path(), cx.clone()).await;
             let out = repl.run("off", "await live_echo(value='x')").await;
             assert!(out.is_error, "{}", out.content);
 
@@ -3035,8 +3048,8 @@ mod tests {
                 return;
             };
             let dir = tempdir();
-            let cx = mcp_live_cx(&dir.0).await;
-            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx.clone()).await;
+            let cx = mcp_live_cx(dir.path()).await;
+            let mut repl = Repl::open(&pool, cx.session, dir.path(), cx.clone()).await;
             let payload = hex::encode((0..=255u8).collect::<Vec<_>>());
             let seed = format!(
                 "import json\npayload = bytes.fromhex({payload:?})\nrows = [{{'text': 'naïve\\n\\u0000', 'n': 123456789012345}}]\nalias = rows\nfactor = 7\ndef scale(value: int) -> int:\n    return value * factor"
@@ -3078,7 +3091,7 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let mut repl = Repl::open(&pool, cx.session, &dir.0, cx).await;
+            let mut repl = Repl::open(&pool, cx.session, dir.path(), cx).await;
             let reopened = repl.run("reopened", &format!(
                 "assert (await later__live_echo(value='reopened')).startswith('live:reopened:')\n{probe}"
             )).await;
@@ -3109,7 +3122,7 @@ mod tests {
             return;
         };
         let scratch = tempdir();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         std::fs::write(dir.join("a.txt"), "hello mount").unwrap();
         let cx = run_cx(&dir).await;
         let session = cx.session;
@@ -3260,7 +3273,7 @@ mod tests {
         // Same process-wide registry (`start` registers a global actor name),
         // fresh session and data dir.
         let scratch = tempdir();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         inner_images_survive_overwrite_and_errors(
             &pool,
             &dir,
@@ -3438,7 +3451,7 @@ mod tests {
                 return;
             };
             let scratch = tempdir();
-            let dir = scratch.0.clone();
+            let dir = scratch.path().to_path_buf();
             let cx = run_cx(&dir).await;
             cx.registry
                 .ask(tools::registry::RegisterTool(Arc::new(Shot(dir.clone()))))
@@ -3505,7 +3518,7 @@ mod tests {
     }
 
     fn tempdir() -> crate::TestDir {
-        crate::TestDir::new("repl")
+        crate::test_dir("repl")
     }
 
     /// A module imported in one cell is known to the checker in the next
@@ -3517,7 +3530,7 @@ mod tests {
                 return;
             };
             let scratch = tempdir();
-            let dir = scratch.0.clone();
+            let dir = scratch.path().to_path_buf();
             let cx = run_cx(&dir).await;
             let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
             let out = repl.run("c1", "import re\nre.compile('a').pattern").await;
@@ -3555,7 +3568,7 @@ mod tests {
                 return;
             };
             let scratch = tempdir();
-            let dir = scratch.0.clone();
+            let dir = scratch.path().to_path_buf();
             let cx = run_cx(&dir).await;
             let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
             let out = repl.run("c1", "import re\nm = re.match('a', 'a')").await;
@@ -3601,7 +3614,7 @@ mod tests {
                 return;
             };
             let scratch = tempdir();
-            let dir = scratch.0.clone();
+            let dir = scratch.path().to_path_buf();
             let cx = run_cx(&dir).await;
             let mut repl = Repl::open(&pool, cx.session, &dir, cx.clone()).await;
             let start = std::time::Instant::now();
@@ -3629,7 +3642,7 @@ mod tests {
                 return;
             };
             let scratch = tempdir();
-            let dir = scratch.0.clone();
+            let dir = scratch.path().to_path_buf();
             let cx = run_cx(&dir).await;
             let session = cx.session;
             let runtime = dir.join("runtime");
@@ -3714,7 +3727,7 @@ mod tests {
                 return;
             };
             let scratch = tempdir();
-            let dir = scratch.0.clone();
+            let dir = scratch.path().to_path_buf();
             let cx = run_cx(&dir).await;
             let session = cx.session;
             let runtime = dir.join("runtime");
@@ -3758,7 +3771,7 @@ mod tests {
                 return;
             };
             let scratch = tempdir();
-            let dir = scratch.0.clone();
+            let dir = scratch.path().to_path_buf();
             let cx = run_cx(&dir).await;
             let mut repl =
                 Repl::open_with(&pool, cx.session, &dir, cx.clone(), MAX_MEMORY, 1).await;
@@ -3785,7 +3798,7 @@ mod tests {
     #[test]
     fn reset_session_removes_dump_names_and_sidecar() {
         let scratch = tempdir();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let runtime = dir.join("runtime");
         std::fs::create_dir_all(&runtime).unwrap();
         let (s1, s2) = (SessionId::new(), SessionId::new());
@@ -3823,7 +3836,7 @@ mod tests {
                 return;
             };
             let scratch = tempdir();
-            let dir = scratch.0.clone();
+            let dir = scratch.path().to_path_buf();
             let cx = run_cx(&dir).await;
             let runtime = dir.join("runtime");
             std::fs::create_dir_all(&runtime).unwrap();
@@ -3869,7 +3882,7 @@ mod tests {
             let limit = env_mb("THEUTH_KNEE_LIMIT_MB", MAX_MEMORY);
             let chunk = env_mb("THEUTH_KNEE_CHUNK_MB", 8 << 20);
             let scratch = tempdir();
-            let dir = scratch.0.clone();
+            let dir = scratch.path().to_path_buf();
             let cx = run_cx(&dir).await;
             let mut repl =
                 Repl::open_with(&pool, cx.session, &dir, cx.clone(), limit, u64::MAX).await;

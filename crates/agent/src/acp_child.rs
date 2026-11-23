@@ -3389,8 +3389,8 @@ pub(crate) mod tests {
     /// authoritative empty list, not a missing one.
     #[tokio::test]
     async fn stored_acp_plan_keeps_source_status_and_reopens() {
-        let scratch = TestDir::new("acp-plan");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("acp-plan");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -3757,8 +3757,8 @@ pub(crate) mod tests {
             tune: impl FnOnce(&mut AcpChild),
             handshake: bool,
         ) -> Self {
-            let scratch = TestDir::new("acp-rig");
-            let dir = scratch.0.clone();
+            let scratch = crate::test_dir("acp-rig");
+            let dir = scratch.path().to_path_buf();
             let rt = Runtime::new(figment::Figment::new(), dir.clone());
             let (etx, events) = unbounded_channel();
             let (atx, approvals) = unbounded_channel();
@@ -6171,8 +6171,8 @@ pub(crate) mod tests {
     /// A throwaway omp home for the `Fake`'s session `s1` (141 §6.4 feed 2
     /// layout): `(home, artifacts dir)`; the parent transcript is empty.
     fn omp_home() -> (TestDir, std::path::PathBuf) {
-        let home = TestDir::new("acp-omp");
-        let cwd = home.0.join(".omp/agent/sessions/--tmp-x--");
+        let home = crate::test_dir("acp-omp");
+        let cwd = home.path().join(".omp/agent/sessions/--tmp-x--");
         let art = cwd.join("2026-10-08T16-00-00-000Z_s1");
         std::fs::create_dir_all(&art).unwrap();
         std::fs::write(cwd.join("2026-10-08T16-00-00-000Z_s1.jsonl"), "").unwrap();
@@ -6243,7 +6243,7 @@ pub(crate) mod tests {
             v["params"]["sessionId"] = json!("s1");
             v
         };
-        let h = home.0.clone();
+        let h = home.path().to_path_buf();
         let mut rig = Rig::build(
             Duration::from_secs(3600),
             Vec::new(),
@@ -6371,7 +6371,7 @@ pub(crate) mod tests {
     async fn aborted_omp_child_is_cancelled_not_completed_after_a_restart() {
         use agent_client_protocol::schema::v1::Implementation;
         let (home, art) = omp_home();
-        let h = home.0.clone();
+        let h = home.path().to_path_buf();
         let mut rig = Rig::build(
             Duration::from_secs(3600),
             Vec::new(),
@@ -6429,7 +6429,7 @@ pub(crate) mod tests {
             Vec::new(),
         );
         child.remote = false;
-        child.omp_home = home.0.clone();
+        child.omp_home = home.path().to_path_buf();
         let actor = AcpChild::spawn(child);
         fake.handshake(Vec::new(), Some(Implementation::new("oh-my-pi", "18.3.1")))
             .await;
@@ -6480,7 +6480,7 @@ pub(crate) mod tests {
     async fn omp_tail_cost_survives_an_engine_restart() {
         use agent_client_protocol::schema::v1::Implementation;
         let (home, art) = omp_home();
-        let h = home.0.clone();
+        let h = home.path().to_path_buf();
         let mut rig = Rig::build(
             Duration::from_secs(3600),
             Vec::new(),
@@ -6539,7 +6539,7 @@ pub(crate) mod tests {
             Vec::new(),
         );
         child.remote = false;
-        child.omp_home = home.0.clone();
+        child.omp_home = home.path().to_path_buf();
         let actor = AcpChild::spawn(child);
         fake.handshake(Vec::new(), Some(Implementation::new("oh-my-pi", "18.3.1")))
             .await;

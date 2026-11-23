@@ -141,7 +141,11 @@ pub fn serialise(head: Option<&ChatMessage>, folded: &[ChatMessage], cols: usize
                 ContentPart::Binary(_) => wrap("[image frame omitted]", cols, &mut out),
                 ContentPart::ToolCall(c) => {
                     names.insert(&c.call_id, &c.fn_name);
-                    let args = cap(&c.fn_arguments.to_string(), CALL_ARGS_CAP);
+                    let args = platform::text::clip_then_ellipsis(
+                        &c.fn_arguments.to_string(),
+                        CALL_ARGS_CAP,
+                    )
+                    .into_owned();
                     wrap(&format!("[tool_call {} {args}]", c.fn_name), cols, &mut out);
                 }
                 ContentPart::ToolResponse(r) => {
@@ -248,14 +252,6 @@ fn wrap(text: &str, cols: usize, out: &mut Vec<String>) {
                 break;
             }
         }
-    }
-}
-
-/// First `n` chars, `…` appended when cut.
-fn cap(s: &str, n: usize) -> String {
-    match s.char_indices().nth(n) {
-        Some((i, _)) => format!("{}…", &s[..i]),
-        None => s.to_owned(),
     }
 }
 

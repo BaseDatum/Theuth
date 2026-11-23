@@ -161,9 +161,9 @@ fn unit() -> Step {
 /// placeholder key (`Authorization: Bearer local`).
 #[tokio::test]
 async fn zero_limits_send_no_max_tokens_and_keyless_sends_placeholder_key() {
-    let dir = crate::TestDir::new("local-e1");
+    let dir = crate::test_dir("local-e1");
     let (server, seen) = omlx(true).await;
-    let auth = auth_with(&dir.0, "mlx", &server);
+    let auth = auth_with(dir.path(), "mlx", &server);
     let model = zero_model("mlx");
     let backend = Backend::for_model(&model, &genai::Client::builder().build().unwrap(), &auth);
     let tools = [genai::chat::Tool::new("echo")];
@@ -208,9 +208,9 @@ async fn zero_limits_send_no_max_tokens_and_keyless_sends_placeholder_key() {
 /// window still refuses locally.
 #[tokio::test]
 async fn assumed_window_sizes_memory_but_never_refuses() {
-    let dir = crate::TestDir::new("local-r1");
+    let dir = crate::test_dir("local-r1");
     let (server, seen) = omlx(true).await;
-    let auth = auth_with(&dir.0, "mlx", &server);
+    let auth = auth_with(dir.path(), "mlx", &server);
     let mut model = zero_model("mlx");
     model.model.as_mut().unwrap().limit.assumed = ASSUMED_CONTEXT;
     assert_eq!(crate::tokens::window(&model), crate::tokens::UNKNOWN_WINDOW);
@@ -284,8 +284,8 @@ async fn assumed_window_sizes_memory_but_never_refuses() {
 /// goes to the provider's URL; with no provider of that name genai resolves it.
 #[test]
 fn local_provider_named_omlx_shadows_the_adapter() {
-    let dir = crate::TestDir::new("local-e4");
-    let auth = crate::supervisor::Auth::stub(&dir.0);
+    let dir = crate::test_dir("local-e4");
+    let auth = crate::supervisor::Auth::stub(dir.path());
     let model = zero_model("omlx");
     assert!(crate::backend::target_for(&model, &auth).is_none());
     auth.gateways.write().unwrap().insert(
@@ -309,9 +309,9 @@ fn local_provider_named_omlx_shadows_the_adapter() {
 /// cloud gateway's request does not.
 #[tokio::test]
 async fn local_summary_call_switches_thinking_off_by_chat_template() {
-    let dir = crate::TestDir::new("local-e2");
+    let dir = crate::test_dir("local-e2");
     let (server, seen) = omlx(true).await;
-    let auth = auth_with(&dir.0, "mlx", &server);
+    let auth = auth_with(dir.path(), "mlx", &server);
     let c = compactor_for(zero_model("mlx"), &auth);
     let built = compactor::build(
         &c,
@@ -363,9 +363,9 @@ async fn local_summary_call_switches_thinking_off_by_chat_template() {
 #[tokio::test]
 async fn local_compactor_off_is_the_kwargs_and_a_pick_rides() {
     use genai::chat::ReasoningEffort;
-    let dir = crate::TestDir::new("local-194");
+    let dir = crate::test_dir("local-194");
     let (server, seen) = omlx(true).await;
-    let auth = auth_with(&dir.0, "mlx", &server);
+    let auth = auth_with(dir.path(), "mlx", &server);
     let mut bodies = Vec::new();
     for pick in [
         None,
@@ -407,9 +407,9 @@ async fn local_compactor_off_is_the_kwargs_and_a_pick_rides() {
 /// that honours the kwargs answers on the first call.
 #[tokio::test]
 async fn reply_spent_on_thinking_retries_once_at_twice_the_cap() {
-    let dir = crate::TestDir::new("local-e3");
+    let dir = crate::test_dir("local-e3");
     let (server, seen) = omlx(false).await;
-    let auth = auth_with(&dir.0, "mlx", &server);
+    let auth = auth_with(dir.path(), "mlx", &server);
     let c = compactor_for(zero_model("mlx"), &auth);
     let f = compactor::build(
         &c,
@@ -442,7 +442,7 @@ async fn reply_spent_on_thinking_retries_once_at_twice_the_cap() {
     assert_eq!(caps, [2048, 4096]);
 
     let (server, seen) = omlx(true).await;
-    let auth = auth_with(&dir.0, "mlx", &server);
+    let auth = auth_with(dir.path(), "mlx", &server);
     let c = compactor_for(zero_model("mlx"), &auth);
     let b = compactor::build(
         &c,
@@ -462,9 +462,9 @@ async fn reply_spent_on_thinking_retries_once_at_twice_the_cap() {
 /// cannot grow the cap, the thinking error comes at once (one call).
 #[tokio::test]
 async fn forced_retry_never_exceeds_the_output_limit() {
-    let dir = crate::TestDir::new("local-r24");
+    let dir = crate::test_dir("local-r24");
     let (server, seen) = omlx(false).await;
-    let auth = auth_with(&dir.0, "mlx", &server);
+    let auth = auth_with(dir.path(), "mlx", &server);
     let mut model = zero_model("mlx");
     model.model.as_mut().unwrap().limit.output = 2048;
     let c = compactor_for(model, &auth);
@@ -487,7 +487,7 @@ async fn forced_retry_never_exceeds_the_output_limit() {
     assert_eq!(seen.lock().len(), 1, "no retry that could not ask for more");
     // With room (output 3000), the retry asks for 3000, not 4096.
     let (server, seen) = omlx(false).await;
-    let auth = auth_with(&dir.0, "mlx", &server);
+    let auth = auth_with(dir.path(), "mlx", &server);
     let mut model = zero_model("mlx");
     model.model.as_mut().unwrap().limit.output = 3000;
     let c = compactor_for(model, &auth);
@@ -514,8 +514,8 @@ async fn forced_retry_never_exceeds_the_output_limit() {
 /// preset or a loopback host does.
 #[test]
 fn lan_gateway_is_local_but_gets_no_thinking_kwargs() {
-    let dir = crate::TestDir::new("local-r25");
-    let auth = crate::supervisor::Auth::stub(&dir.0);
+    let dir = crate::test_dir("local-r25");
+    let auth = crate::supervisor::Auth::stub(dir.path());
     let lan = Gateway {
         base_url: "http://10.0.0.5:4000/v1/".into(),
         key: "sk".into(),
@@ -850,18 +850,18 @@ fn private_url_vectors() {
 #[tokio::test]
 async fn test_summary_call_ok_and_thinking_failure() {
     for honour in [true, false] {
-        let dir = crate::TestDir::new("local-e9");
+        let dir = crate::test_dir("local-e9");
         let (server, _seen) = omlx(honour).await;
-        let auth = auth_with(&dir.0, "omlx", &server);
-        let store = crate::store::Store::open(&dir.0.join("sessions.sqlite"), None)
+        let auth = auth_with(dir.path(), "omlx", &server);
+        let store = crate::store::Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let endless = crate::endless::Endless::new(
             store,
-            runtime::Runtime::new(figment::Figment::new(), dir.0.clone()),
+            runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf()),
             genai::Client::builder().build().unwrap(),
             auth,
-            Arc::new(models::Catalog::load(&dir.0)),
+            Arc::new(models::Catalog::load(dir.path())),
             crate::endless::EndlessConfig::default(),
             None,
         );
@@ -889,12 +889,12 @@ async fn test_summary_call_ok_and_thinking_failure() {
         }
     }
     // A server that is not running (a closed loopback port): an error and the hint.
-    let dir = crate::TestDir::new("local-e9b");
+    let dir = crate::test_dir("local-e9b");
     let closed = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         l.local_addr().unwrap().port()
     };
-    let auth = crate::supervisor::Auth::stub(&dir.0);
+    let auth = crate::supervisor::Auth::stub(dir.path());
     auth.gateways.write().unwrap().insert(
         "omlx".into(),
         Gateway {
@@ -902,15 +902,15 @@ async fn test_summary_call_ok_and_thinking_failure() {
             ..Default::default()
         },
     );
-    let store = crate::store::Store::open(&dir.0.join("sessions.sqlite"), None)
+    let store = crate::store::Store::open(&dir.path().join("sessions.sqlite"), None)
         .await
         .unwrap();
     let endless = crate::endless::Endless::new(
         store,
-        runtime::Runtime::new(figment::Figment::new(), dir.0.clone()),
+        runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf()),
         genai::Client::builder().build().unwrap(),
         auth,
-        Arc::new(models::Catalog::load(&dir.0)),
+        Arc::new(models::Catalog::load(dir.path())),
         crate::endless::EndlessConfig::default(),
         None,
     );

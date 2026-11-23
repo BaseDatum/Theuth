@@ -266,45 +266,13 @@ fn strip_tags(input: &str) -> String {
     out
 }
 
-/// Decode the named and numeric entities that search APIs actually emit;
-/// unknown `&…;` sequences are kept verbatim.
-pub(crate) fn decode_entities(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut rest = input;
-    while let Some(amp) = rest.find('&') {
-        out.push_str(&rest[..amp]);
-        rest = &rest[amp..];
-        if let Some(end) = rest.find(';')
-            && let Some(ch) = decode_entity(&rest[..=end])
-        {
-            out.push(ch);
-            rest = &rest[end + 1..];
-            continue;
-        }
-        out.push('&');
-        rest = &rest[1..];
+/// Decode HTML entities, one level (`&amp;lt;` → `&lt;`); unknown or
+/// `;`-less sequences are kept verbatim. `&nbsp;` becomes a plain space.
+pub fn decode_entities(input: &str) -> String {
+    if !input.contains('&') {
+        return input.to_owned();
     }
-    out.push_str(rest);
-    out
-}
-
-fn decode_entity(entity: &str) -> Option<char> {
-    match entity {
-        "&amp;" => Some('&'),
-        "&lt;" => Some('<'),
-        "&gt;" => Some('>'),
-        "&quot;" => Some('"'),
-        "&apos;" | "&#39;" | "&#039;" => Some('\''),
-        "&nbsp;" => Some(' '),
-        _ => {
-            let num = entity.strip_prefix("&#")?.strip_suffix(';')?;
-            let code = match num.strip_prefix(['x', 'X']) {
-                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-                None => num.parse().ok()?,
-            };
-            char::from_u32(code)
-        }
-    }
+    html_escape::decode_html_entities(&input.replace("&nbsp;", " ")).into_owned()
 }
 
 #[cfg(test)]
@@ -318,6 +286,14 @@ mod tests {
             "Rust & a < b 'x'"
         );
         assert_eq!(plain_text("a < b &unknown; c"), "a < b &unknown; c");
+    }
+
+    #[test]
+    fn decode_entities_is_one_level_and_nbsp_is_a_space() {
+        assert_eq!(
+            decode_entities("&amp;lt; &copy; a&nbsp;b &amp"),
+            "&lt; © a b &amp"
+        );
     }
 
     #[test]

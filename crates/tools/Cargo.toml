@@ -60,6 +60,7 @@ workspace = true
 
 [dev-dependencies]
 figment = { workspace = true }
+tempfile = "3"
 axum = { workspace = true }  # in-process MCP servers for the lifecycle tests (175)
 sqlx = { workspace = true }  # 187: a replica row naming another writer, for the home derivation test
 tracing-subscriber = { workspace = true }  # 187: count log lines per state change

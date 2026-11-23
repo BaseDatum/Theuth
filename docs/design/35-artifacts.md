@@ -227,8 +227,8 @@ cache-safe):
 What the model gets back (`ToolOutput.content`, one line each):
 
 ```
-shown report.pdf (v1 · 3 pages · 84 KB) · source report.md
-shown notes.md (v2 · 118 lines · 6 KB)
+shown report.pdf (v1 · 3 pages · 84.2 kB) · source report.md
+shown notes.md (v2 · 118 lines · 6.1 kB)
 shown chart.svg (v1 · 1200×640)
 ```
 
@@ -498,7 +498,7 @@ A `Tool` entry whose `name == "show"` renders as an artifact card
 `▣` in the tool colour):
 
 ```
-╭ ▣ report.pdf · v2 · 3 pages · 84 KB ────────────────────────────╮
+╭ ▣ report.pdf · v2 · 3 pages · 84.2 kB ──────────────────────────╮
 │ Quarterly summary                                                 │
 │ ~/.theuth/artifacts/3f9a1c2e7b04d5aa.pdf          o open · ctrl+o   │
 ╰───────────────────────────────────────────────────────────────────╯
@@ -880,7 +880,7 @@ fixtures: 1280×720; a 4000-wide chart scaled to 1568×196.
   only; the tool card knows its turn.
 - **`descendants`** for `List` asks `agent::ListAgents` for the subtree
   (cheap, exists); no new agent message.
-- **Image receipts carry no W×H** (`shown x.png (v1 · N KB)`): no image
+- **Image receipts carry no W×H** (`shown x.png (v1 · N kB)`): no image
   header parser in the crate; `ponytail:` add one when it matters.
 - **`ToolCallProgress` on Anthropic is one event per call.** Without the
   `fine-grained-tool-streaming` beta, Anthropic buffers a tool's input and
@@ -953,7 +953,7 @@ fixtures: 1280×720; a 4000-wide chart scaled to 1568×196.
   9 lines · 406 B)`, `shown towns.csv (v1 · 4 rows × 3 cols · 130 B)`;
   `ArtifactShown` for each; blobs under `artifacts/<sha16>.<ext>`.
 - Turn 2 (38 s, four `show`s in one assistant message): `report.pdf` from
-  markdown with front matter → `v1 · 3 pages · 42 KB · source <sha>.md`,
+  markdown with front matter → `v1 · 3 pages · 42.0 kB · source <sha>.md`,
   page-1 PNG on `files` (title block, author/date line, contents page,
   `1 / 3` footer — viewed); `chart.svg` → `1200×600` + preview;
   `show{path: config.yaml}` → text v1; `notes.md` again → **v2**. Three

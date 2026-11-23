@@ -289,7 +289,7 @@ pub fn save_fitted(f: &Fitted<'_>, dir: &Path) -> anyhow::Result<PathBuf> {
 /// The result of `tool` reading image `bytes` (`read_file`, `read_url`):
 /// [`fit`] to [`MAX_EDGE`], saved under `dir` ([`save_fitted`]) and
 /// attached as the tool's picture; the text is one header line,
-/// `[<tool> <shown>: image/png 1600×1100, 12 KB]` plus `; scaled to W×H`
+/// `[<tool> <shown>: image/png 1600×1100, 12.3 kB]` plus `; scaled to W×H`
 /// when it was downscaled (or `; re-encoded as <mime>` when only the bytes
 /// changed). An undecodable or still-oversize image is the error. Blocking.
 pub fn tool_output(
@@ -304,7 +304,7 @@ pub fn tool_output(
     let (w, h) = f.source;
     let mut text = format!(
         "[{tool} {shown}: {source_mime} {w}\u{d7}{h}, {}",
-        human(bytes.len())
+        platform::fmt::bytes(bytes.len() as u64)
     );
     match f.scaled {
         Some((w, h)) => text.push_str(&format!("; scaled to {w}\u{d7}{h}")),
@@ -316,15 +316,6 @@ pub fn tool_output(
         files: vec![path],
         ..crate::ToolOutput::ok(text)
     })
-}
-
-/// `n` bytes as `12 KB` / `3.4 MB`.
-fn human(n: usize) -> String {
-    if n < 1024 * 1024 {
-        format!("{} KB", n.div_ceil(1024).max(1))
-    } else {
-        format!("{:.1} MB", n as f64 / (1024.0 * 1024.0))
-    }
 }
 
 fn write_blob(bytes: &[u8], mime: &str, dir: &Path) -> anyhow::Result<PathBuf> {
@@ -401,9 +392,9 @@ pub(crate) mod tests {
         out.into_inner()
     }
 
-    fn tmp() -> (crate::TestDir, PathBuf) {
-        let guard = crate::TestDir::new("images");
-        let dir = guard.0.clone();
+    fn tmp() -> (tempfile::TempDir, PathBuf) {
+        let guard = crate::test_dir("images");
+        let dir = guard.path().to_path_buf();
         (guard, dir)
     }
 

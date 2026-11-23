@@ -1,6 +1,7 @@
 //! Approval cards and their presses (design doc 98 §10.1). Pure: text and
 //! keyboards in, parsed presses out; the channel posts, edits and resolves.
 
+use chat_common::truncate;
 use runtime::SessionId;
 use tools::{ApprovalId, ApprovalRequested, Decision};
 
@@ -127,15 +128,6 @@ pub fn parse(data: &str) -> Option<(ApprovalId, Decision)> {
         _ => return None,
     };
     Some((ApprovalId(id.parse().ok()?), decision))
-}
-
-/// `s` cut to `max` chars with a trailing `…` when it was longer.
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_owned();
-    }
-    let end = s.char_indices().nth(max).map_or(s.len(), |(i, _)| i);
-    format!("{}…", &s[..end])
 }
 
 #[cfg(test)]

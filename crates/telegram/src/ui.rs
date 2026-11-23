@@ -504,7 +504,7 @@ pub fn model(models: &[ModelInfo], current: &str, page: usize) -> Reply {
     for m in slice {
         // The id, cut to what fits; `/model <prefix>` completes it.
         let data = format!("cmd:model:{}", m.id);
-        let data = cut(&data, DATA_MAX);
+        let data = platform::text::cut_bytes(&data, DATA_MAX);
         let label = if m.id == current {
             format!("• {}", m.name)
         } else {
@@ -694,7 +694,7 @@ fn push_more(buttons: &mut Vec<Button>, panel: &str, more: Option<usize>) {
 fn cb(text: &str, data: &str) -> Button {
     Button::Callback {
         text: text.to_owned(),
-        data: cut(data, DATA_MAX).to_owned(),
+        data: platform::text::cut_bytes(data, DATA_MAX).to_owned(),
     }
 }
 
@@ -720,36 +720,15 @@ fn fit(rows: Vec<Vec<Button>>) -> Keyboard {
     }
 }
 
-/// `s` cut at a char boundary to at most `max` bytes.
-fn cut(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    let end = s.floor_char_boundary(max);
-    &s[..end]
-}
-
-/// `s` cut to `max` chars with a `…` when it was longer, one line.
+/// `s`'s first line cut to `max` chars, the last one `…` when it was longer.
 fn clip(s: &str, max: usize) -> String {
-    let s = s.lines().next().unwrap_or("");
-    if s.chars().count() <= max {
-        return s.to_owned();
-    }
-    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-    out.push('…');
-    out
+    platform::text::ellipsize(s.lines().next().unwrap_or(""), max).into_owned()
 }
 
 /// `5s`, `12m`, `3h`, `2d` since `t`.
 #[must_use]
 pub fn age(t: DateTime<Utc>) -> String {
-    let s = (Utc::now() - t).num_seconds().max(0);
-    match s {
-        ..60 => format!("{s}s"),
-        60..3600 => format!("{}m", s / 60),
-        3600..86400 => format!("{}h", s / 3600),
-        _ => format!("{}d", s / 86400),
-    }
+    platform::fmt::age(u64::try_from((Utc::now() - t).num_seconds()).unwrap_or(0))
 }
 
 /// `12.3k`, `200k`, `1.0M`; `?` for 0.
@@ -1023,7 +1002,6 @@ mod tests {
         assert_eq!(k(1_000_000), "1.0M");
         assert_eq!(clip("a\nb", 5), "a");
         assert_eq!(clip("abcdef", 3), "ab…");
-        assert_eq!(cut("héllo", 2), "h");
         assert_eq!(age(Utc::now()), "0s");
     }
 }

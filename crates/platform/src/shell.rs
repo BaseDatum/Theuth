@@ -49,7 +49,7 @@ impl ShellKind {
 pub fn pty_command(command: &str, override_shell: Option<&Path>) -> (PathBuf, Vec<String>) {
     if cfg!(windows) {
         let program = override_shell.map(Path::to_path_buf).unwrap_or_else(|| {
-            PathBuf::from(if on_path("pwsh.exe") {
+            PathBuf::from(if which("pwsh").is_some() {
                 "pwsh.exe"
             } else {
                 "powershell.exe"
@@ -69,10 +69,39 @@ pub fn pty_command(command: &str, override_shell: Option<&Path>) -> (PathBuf, Ve
     }
 }
 
-/// Whether `exe` resolves through `PATH`.
-fn on_path(exe: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(exe).is_file()))
+/// `s` as one POSIX `sh` word. Bytes pass through unchanged, a NUL included
+/// (a shell truncates there; refusing would make every caller fallible).
+/// Uses `"…"` for a word with an apostrophe or backslash: only for a script
+/// that `sh`, `bash` or `zsh` runs; a script for `$SHELL` or a remote login
+/// shell takes [`single_quote`].
+pub fn quote(s: &str) -> String {
+    shlex::Quoter::new()
+        .allow_nul(true)
+        .quote(s)
+        .expect("NUL is allowed")
+        .into_owned()
+}
+
+/// `s` single-quoted, a `'` as `'\''`: one word in every shell a user may
+/// have as `$SHELL` (POSIX sh, csh/tcsh, fish), where [`quote`]'s `"…"`
+/// would keep csh's backslashes.
+pub fn single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// The first `PATH` entry holding the file `name` (`name.exe` before `name` on Windows).
+pub fn which(name: &str) -> Option<PathBuf> {
+    which_in(name, &std::env::var_os("PATH")?)
+}
+
+/// [`which`] over an explicit `PATH` value (a login environment's, say).
+pub fn which_in(name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    let exts: &[&str] = if cfg!(windows) { &[".exe", ""] } else { &[""] };
+    std::env::split_paths(path).find_map(|dir| {
+        exts.iter()
+            .map(|e| dir.join(format!("{name}{e}")))
+            .find(|p| p.is_file())
+    })
 }
 
 #[cfg(test)]
@@ -101,5 +130,36 @@ mod tests {
             cmd.as_std().get_args().collect::<Vec<_>>(),
             ["-lc", "echo hi"]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quote_round_trips_through_sh() {
+        for s in [
+            "plain",
+            "",
+            "a b",
+            "it's",
+            "$HOME `x` \"q\" \\ ! ^ ~ # * ?",
+            "a\nb",
+            "é ü",
+        ] {
+            for q in [quote(s), single_quote(s)] {
+                let out = std::process::Command::new("/bin/sh")
+                    .arg("-c")
+                    .arg(format!("printf %s {q}"))
+                    .output()
+                    .unwrap();
+                assert_eq!(String::from_utf8_lossy(&out.stdout), s, "{s:?} as {q}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn which_in_finds_a_file_on_the_given_path_only() {
+        let found = which_in("sh", std::ffi::OsStr::new("/nonexistent:/bin"));
+        assert_eq!(found, Some(PathBuf::from("/bin/sh")));
+        assert_eq!(which_in("sh", std::ffi::OsStr::new("/nonexistent")), None);
     }
 }

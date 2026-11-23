@@ -179,15 +179,10 @@ fn shell_argv((shell, interactive): &(PathBuf, bool), exe: &Path, data_dir: &Pat
     v.push("-c".to_owned());
     v.push(format!(
         "exec {} --headless --data-dir {}",
-        sq(exe),
-        sq(data_dir)
+        platform::shell::single_quote(&exe.display().to_string()),
+        platform::shell::single_quote(&data_dir.display().to_string())
     ));
     v
-}
-
-/// Single-quote for `sh -c`; a literal `'` becomes `'\''`.
-fn sq(p: &Path) -> String {
-    format!("'{}'", p.display().to_string().replace('\'', r"'\''"))
 }
 
 #[cfg(test)]

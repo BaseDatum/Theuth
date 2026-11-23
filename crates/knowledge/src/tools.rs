@@ -883,8 +883,8 @@ mod tests {
 
     #[tokio::test]
     async fn private_session_refuses_mutations_durable_writes() {
-        let scratch = crate::TestDir::new("ktools");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("ktools");
+        let dir = scratch.path().to_path_buf();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let k = Knowledge::open(&dir, rt).await.unwrap();
         k.set_scoper(Arc::new(Main));
@@ -914,8 +914,8 @@ mod tests {
     /// `knowledge_get` records an open.
     #[tokio::test]
     async fn search_marks_archived_and_get_records_an_open() {
-        let scratch = crate::TestDir::new("ktools");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("ktools");
+        let dir = scratch.path().to_path_buf();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let k = Knowledge::open(&dir, rt).await.unwrap();
         k.set_scoper(Arc::new(Main));
@@ -975,8 +975,8 @@ mod tests {
     /// allows; `knowledge_stats` answers anywhere.
     #[tokio::test]
     async fn consolidation_tools_need_owner_root_or_unattended() {
-        let scratch = crate::TestDir::new("ktools");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("ktools");
+        let dir = scratch.path().to_path_buf();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
         let k = Knowledge::open(&dir, rt).await.unwrap();
         k.set_scoper(Arc::new(Main));
@@ -1093,8 +1093,8 @@ mod tests {
     #[tokio::test]
     async fn verify_needs_evidence_from_a_read() {
         use crate::types::VerifyOutcome::{Ok as VOk, Stale};
-        let scratch = crate::TestDir::new("ktools");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("ktools");
+        let dir = scratch.path().to_path_buf();
         std::fs::create_dir_all(dir.join("conf")).unwrap();
         std::fs::write(dir.join("conf/pg.toml"), "port = 5432\n").unwrap();
         let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());

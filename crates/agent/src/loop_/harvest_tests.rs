@@ -35,8 +35,8 @@ fn harvest_runs_detached_from_the_turn() {
 }
 
 async fn harvest_scenarios() {
-    let scratch = crate::TestDir::new("harvest-reg");
-    let reg_dir = scratch.0.clone();
+    let scratch = crate::test_dir("harvest-reg");
+    let reg_dir = scratch.path().to_path_buf();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
     // The knowledge bundle every turn's `rebase` finds (12 §9.2).

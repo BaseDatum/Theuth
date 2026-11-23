@@ -275,9 +275,9 @@ mod tests {
 
     #[tokio::test]
     async fn history_survives_restart_merges_live_and_excludes_cells() {
-        let dir = crate::TestDir::new("job-history");
-        let path = dir.0.join("sessions.sqlite");
-        let logfile = dir.0.join("j.log");
+        let dir = crate::test_dir("job-history");
+        let path = dir.path().join("sessions.sqlite");
+        let logfile = dir.path().join("j.log");
         std::fs::write(&logfile, "earlier\nfinished\n").unwrap();
         let session = SessionId::new();
         {
@@ -297,13 +297,13 @@ mod tests {
                 match marker {
                     "name" => cell.name = Some("cell:private".into()),
                     "command" => cell.command.push_str(tools::jobs::CELL_COMMAND),
-                    _ => cell.log = Some(dir.0.join("j.cell.log")),
+                    _ => cell.log = Some(dir.path().join("j.cell.log")),
                 }
                 store.job_put(&cell).await.unwrap();
             }
         }
         let store = Store::open(&path, None).await.unwrap();
-        let rt = runtime::Runtime::new(figment::Figment::new(), dir.0.clone());
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
         let actor = Jobs::spawn(Jobs::new(
             rt,
             Duration::from_millis(10),
@@ -387,8 +387,8 @@ mod tests {
 
     #[tokio::test]
     async fn history_cursor_pages_equal_start_times_without_skips_or_duplicates() {
-        let dir = crate::TestDir::new("job-history-cursor");
-        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+        let dir = crate::test_dir("job-history-cursor");
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let session = SessionId::new();
@@ -396,7 +396,7 @@ mod tests {
             .create_session(session, "m", None, None, None)
             .await
             .unwrap();
-        let log = dir.0.join("j.log");
+        let log = dir.path().join("j.log");
         for (id, started_ms) in [
             ("j1", 1000),
             ("j4", 1000),
@@ -429,8 +429,8 @@ mod tests {
 
     #[test]
     fn log_pages_keep_utf8_offsets_and_caps() {
-        let dir = crate::TestDir::new("job-log-pages");
-        let path = dir.0.join("j.log");
+        let dir = crate::test_dir("job-log-pages");
+        let path = dir.path().join("j.log");
         let content = "aé𐍈z".repeat(20_000);
         std::fs::write(&path, &content).unwrap();
         let tail = read_log(&path, None, None).unwrap();
@@ -456,8 +456,8 @@ mod tests {
 
     #[test]
     fn log_redacts_secrets_including_page_edges() {
-        let dir = crate::TestDir::new("job-log-secrets");
-        let path = dir.0.join("j.log");
+        let dir = crate::test_dir("job-log-secrets");
+        let path = dir.path().join("j.log");
         let secret = "private-token";
         std::fs::write(&path, format!("é𐍈 {secret} tail {secret}")).unwrap();
         let spans = |s: &str| {

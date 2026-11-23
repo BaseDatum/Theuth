@@ -367,8 +367,8 @@ mod tests {
     fn rearm_reminders_for_arms_one_sessions_rows_here_only() {
         crate::with_test_registry(async {
             use crate::store::{ReminderRow, Store};
-            let scratch = crate::TestDir::new("139r2");
-            let dir = scratch.0.clone();
+            let scratch = crate::test_dir("139r2");
+            let dir = scratch.path().to_path_buf();
             let far = chrono::Utc::now().timestamp() + 600;
             let row = |session, id: &str| ReminderRow {
                 id: id.into(),

@@ -554,9 +554,9 @@ fn touching<'r>(
 mod tests {
     use super::*;
 
-    fn tmp() -> (crate::TestDir, PathBuf) {
-        let guard = crate::TestDir::new("repo");
-        let dir = guard.0.clone();
+    fn tmp() -> (tempfile::TempDir, PathBuf) {
+        let guard = crate::test_dir("repo");
+        let dir = guard.path().to_path_buf();
         (guard, dir)
     }
 

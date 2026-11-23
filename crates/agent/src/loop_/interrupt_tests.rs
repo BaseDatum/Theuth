@@ -136,8 +136,8 @@ struct Harness {
 impl Harness {
     /// A session actor on a fresh store whose model is the gateway at `base_url`.
     async fn new(base_url: String) -> Self {
-        let scratch = crate::TestDir::new("interrupt");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("interrupt");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -324,8 +324,8 @@ fn cancel_with_keep_persists_the_heard_prefix_then_a_plain_cancel_drops() {
 }
 
 async fn scenarios() {
-    let scratch = crate::TestDir::new("interrupt-reg");
-    let reg_dir = scratch.0.clone();
+    let scratch = crate::test_dir("interrupt-reg");
+    let reg_dir = scratch.path().to_path_buf();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
 
@@ -370,8 +370,8 @@ fn trim_rewrites_the_finished_reply_to_the_heard_prefix() {
 
 /// 76 §7, the post-turn case: `TrimTurn` on a reply that finished streaming.
 async fn trim_scenarios() {
-    let scratch = crate::TestDir::new("trim-reg");
-    let reg_dir = scratch.0.clone();
+    let scratch = crate::test_dir("trim-reg");
+    let reg_dir = scratch.path().to_path_buf();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
 

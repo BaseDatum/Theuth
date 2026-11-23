@@ -1278,15 +1278,6 @@ fn project(task: &A2aTask, history_length: Option<i32>, artifacts: bool) -> Task
     t
 }
 
-/// Cut `text` to at most `max` bytes on a char boundary.
-fn cut(text: &str, max: usize) -> &str {
-    if text.len() <= max {
-        return text;
-    }
-    let end = text.floor_char_boundary(max);
-    &text[..end]
-}
-
 /// Validate one inbound message (§6.2 text profile, §8 bounds) and return
 /// its redacted text. ProtoJSON leaves absent fields as empty defaults, so
 /// every identity field is checked for presence, not just shape.
@@ -2194,7 +2185,7 @@ impl Agents {
                 .map(str::len)
                 .sum();
             let room = ARTIFACT_BYTES_MAX.saturating_sub(used);
-            let mut art = text_artifact(cut(text, room));
+            let mut art = text_artifact(platform::text::cut_bytes(text, room));
             if text.len() > room {
                 art.description = Some(format!(
                     "truncated: output exceeded the {ARTIFACT_BYTES_MAX}-byte artifact budget"
@@ -2212,8 +2203,13 @@ impl Agents {
                 metadata: None,
             }));
         }
-        let message =
-            message.map(|t| agent_message(cut(t, PEER_TEXT_MAX), &task.id, &task.context_id));
+        let message = message.map(|t| {
+            agent_message(
+                platform::text::cut_bytes(t, PEER_TEXT_MAX),
+                &task.id,
+                &task.context_id,
+            )
+        });
         if let Some(m) = &message {
             snap.history.get_or_insert_with(Vec::new).push(m.clone());
         }
@@ -4419,7 +4415,9 @@ fn preview_of(task: &A2aTask) -> String {
         .as_deref()
         .and_then(|h| h.first())
         .and_then(|m| parts_text(&m.parts))
-        .map(|t| cut(t.lines().next().unwrap_or_default().trim(), 200).to_owned())
+        .map(|t| {
+            platform::text::cut_bytes(t.lines().next().unwrap_or_default().trim(), 200).to_owned()
+        })
         .unwrap_or_default()
 }
 
@@ -4887,7 +4885,11 @@ impl Agents {
             }
             TaskState::Failed | TaskState::Canceled | TaskState::Rejected => {
                 self.network.outbound.remove(&exchange);
-                let why = format!("remote task {:?}: {}", t.status.state, cut(&text, 512));
+                let why = format!(
+                    "remote task {:?}: {}",
+                    t.status.state,
+                    platform::text::cut_bytes(&text, 512)
+                );
                 match self.store.fail_exchange(exchange, &why).await {
                     Ok(r) => self.peer_changed(&r).await,
                     Err(e) => tracing::warn!(exchange = %exchange, "a2a: remote failure: {e:#}"),
@@ -4986,7 +4988,7 @@ impl Agents {
             reply_to: Some(exchange),
             request_scope: None,
             generation: o.generation.revision() as i64,
-            body: cut(text, PEER_TEXT_MAX),
+            body: platform::text::cut_bytes(text, PEER_TEXT_MAX),
         };
         let reply = match self.store.accept_exchange(&a).await {
             Ok(r) => r,
@@ -5075,7 +5077,7 @@ impl Agents {
             reply_to: None,
             request_scope: None,
             generation: generation.revision() as i64,
-            body: cut(text, PEER_TEXT_MAX),
+            body: platform::text::cut_bytes(text, PEER_TEXT_MAX),
         };
         let q = match self.store.accept_exchange(&a).await {
             Ok(r) => r,
@@ -5306,7 +5308,6 @@ mod tests {
         assert_eq!(task_text(&t), "which one?");
         t.artifacts = Some(vec![text_artifact("A"), text_artifact("B")]);
         assert_eq!(task_text(&t), "A\nB");
-        assert_eq!(cut("héllo", 2), "h");
         assert_eq!(status_of(&TaskState::Unspecified), None);
         assert_eq!(
             status_of(&TaskState::Canceled),
@@ -6765,10 +6766,10 @@ mod tests {
     #[test]
     fn a_contact_turn_in_a_chat_spawns_nothing_at_the_registry() {
         crate::with_test_registry(async {
-            let reg_dir = crate::TestDir::new("spawn-reg");
+            let reg_dir = crate::test_dir("spawn-reg");
             let reg = tools::registry::start(&runtime::Runtime::new(
                 figment::Figment::new(),
-                reg_dir.0.clone(),
+                reg_dir.path().to_path_buf(),
             ))
             .await
             .unwrap();
@@ -7419,8 +7420,8 @@ mod tests {
     /// yet, none stored) runs capped from its first admission too.
     #[tokio::test]
     async fn an_inbox_is_capped_and_default_deny_at_every_actor_start() {
-        let scratch = crate::TestDir::new("z3r2");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("z3r2");
+        let dir = scratch.path().to_path_buf();
         let mut a = crate::supervisor::tests::agents_on(dir.clone(), None, true).await;
         let inbox = a
             .handle_inbox(ContactInbox {
@@ -7488,8 +7489,8 @@ mod tests {
                 })
             }
         }
-        let scratch = crate::TestDir::new("z3r3");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("z3r3");
+        let dir = scratch.path().to_path_buf();
         let mut a = crate::supervisor::tests::agents_on(dir.clone(), None, true).await;
         a.identity = Some(std::sync::Arc::new(Roster));
         let inbox = a
@@ -8714,9 +8715,13 @@ mod tests {
     /// nothing accepted; this engine's own is served.
     #[tokio::test]
     async fn the_return_route_serves_only_a_session_strictly_owned_here() {
-        let scratch = crate::TestDir::new("agents");
-        let mut a =
-            crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true).await;
+        let scratch = crate::test_dir("agents");
+        let mut a = crate::supervisor::tests::agents_on(
+            scratch.path().to_path_buf(),
+            Some("me-engine"),
+            true,
+        )
+        .await;
         let binding = a
             .store
             .bind_peer("bob/proj", &contact_endpoint("bob-endpoint"))
@@ -8790,9 +8795,13 @@ mod tests {
     /// still in the insert-only `inboxes` set never short-circuits the check.
     #[tokio::test]
     async fn a_contact_message_into_a_session_not_strictly_ours_is_never_delivered() {
-        let scratch = crate::TestDir::new("agents");
-        let mut a =
-            crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true).await;
+        let scratch = crate::test_dir("agents");
+        let mut a = crate::supervisor::tests::agents_on(
+            scratch.path().to_path_buf(),
+            Some("me-engine"),
+            true,
+        )
+        .await;
         let binding = a
             .store
             .bind_peer("bob", &contact_endpoint("bob-endpoint"))
@@ -8850,9 +8859,13 @@ mod tests {
     /// even for a session in the insert-only `inboxes` set.
     #[tokio::test]
     async fn an_unreadable_owner_refuses_every_contact_path() {
-        let scratch = crate::TestDir::new("agents");
-        let mut a =
-            crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true).await;
+        let scratch = crate::test_dir("agents");
+        let mut a = crate::supervisor::tests::agents_on(
+            scratch.path().to_path_buf(),
+            Some("me-engine"),
+            true,
+        )
+        .await;
         let binding = a
             .store
             .bind_peer("bob", &contact_endpoint("bob-endpoint"))
@@ -9058,7 +9071,7 @@ mod full_inbox_tests {
             let (scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
             let reg = tools::registry::start(&runtime::Runtime::new(
                 figment::Figment::new(),
-                scratch.0.clone(),
+                scratch.path().to_path_buf(),
             ))
             .await
             .unwrap();
@@ -9708,10 +9721,13 @@ mod full_inbox_tests {
     #[tokio::test]
     async fn an_empty_owner_on_a_mesh_engine_is_never_here() {
         let setup = || async {
-            let scratch = crate::TestDir::new("agents");
-            let mut a =
-                crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true)
-                    .await;
+            let scratch = crate::test_dir("agents");
+            let mut a = crate::supervisor::tests::agents_on(
+                scratch.path().to_path_buf(),
+                Some("me-engine"),
+                true,
+            )
+            .await;
             assert_eq!(a.store.engine(), "me-engine");
             a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
             let binding = a

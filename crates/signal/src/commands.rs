@@ -1145,13 +1145,7 @@ fn k(n: u32) -> String {
 
 /// `5s`, `12m`, `3h`, `2d` since `t`.
 fn age(t: DateTime<Utc>) -> String {
-    let s = (Utc::now() - t).num_seconds().max(0);
-    match s {
-        ..60 => format!("{s}s"),
-        60..3600 => format!("{}m", s / 60),
-        3600..86400 => format!("{}h", s / 3600),
-        _ => format!("{}d", s / 86400),
-    }
+    platform::fmt::age(u64::try_from((Utc::now() - t).num_seconds()).unwrap_or(0))
 }
 
 /// `parent/name` from the asked session down: a depth-1 child is its bare

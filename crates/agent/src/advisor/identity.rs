@@ -61,8 +61,8 @@ mod tests {
 
     #[test]
     fn assembles_prompt_project_context_and_attention() {
-        let scratch = crate::TestDir::new("adv-id");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("adv-id");
+        let dir = scratch.path().to_path_buf();
         std::fs::write(dir.join("prompt.md"), "Always run the check.\n").unwrap();
         let bare = identity(&dir, 4);
         assert!(bare.starts_with("<conventions>"));

@@ -13960,8 +13960,8 @@ pub(crate) mod tests {
     /// `open_router` adapter. Env fallbacks are not exercised (process-global).
     #[tokio::test]
     async fn builtin_keys_configure_opencode_and_openrouter_by_either_name() {
-        let scratch = crate::TestDir::new("builtin");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("builtin");
+        let dir = scratch.path().to_path_buf();
         let vault = Arc::new(
             secrets::Vault::open(&dir, secrets::KeyStore::File)
                 .await
@@ -14438,8 +14438,8 @@ pub(crate) mod tests {
                 ),
             },
         ];
-        let scratch = crate::TestDir::new("preview");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("preview");
+        let dir = scratch.path().to_path_buf();
         materialize(&mut history, &messages, &epochs, &dir);
         let paths: Vec<Option<String>> = history
             .iter()
@@ -14849,8 +14849,8 @@ pub(crate) mod tests {
 
     #[test]
     fn check_files_rejects_what_a_provider_would() {
-        let scratch = crate::TestDir::new("attach");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("attach");
+        let dir = scratch.path().to_path_buf();
         let png = dir.join("shot.png");
         std::fs::write(&png, b"\x89PNG").unwrap();
         let txt = dir.join("notes.txt");
@@ -14908,8 +14908,8 @@ pub(crate) mod tests {
     /// [`agents`] with `agent.communication` preset. Shared with the network
     /// module's tests, which drive the same value through its hooks.
     pub(crate) async fn agents_with(communication: bool) -> (crate::TestDir, Agents) {
-        let scratch = crate::TestDir::new("agents");
-        let a = agents_on(scratch.0.clone(), None, communication).await;
+        let scratch = crate::test_dir("agents");
+        let a = agents_on(scratch.path().to_path_buf(), None, communication).await;
         (scratch, a)
     }
 
@@ -14940,9 +14940,9 @@ pub(crate) mod tests {
         ) -> c_int {
             libsqlite3_sys::SQLITE_CHANGESET_REPLACE
         }
-        let scratch = crate::TestDir::new("0065");
+        let scratch = crate::test_dir("0065");
         let a = Store::open(
-            &scratch.0.join("a.sqlite"),
+            &scratch.path().join("a.sqlite"),
             Some(mesh::EngineId("A".into())),
         )
         .await
@@ -14979,7 +14979,7 @@ pub(crate) mod tests {
             .origin();
         assert_eq!(want.contact_mode, Some(ShareMode::Full));
 
-        let b = agents_on(scratch.0.join("b"), Some("B"), false).await;
+        let b = agents_on(scratch.path().join("b"), Some("B"), false).await;
         for row in a.log_after(0).await.unwrap() {
             let mut tx = b.store.begin_apply().await.unwrap();
             let rc = tx
@@ -15082,8 +15082,8 @@ pub(crate) mod tests {
     /// bare ids are rejected; a unique bare id canonicalises.
     #[test]
     fn vision_candidate_requires_exact_image_capable_entry() {
-        let scratch = crate::TestDir::new("vision");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("vision");
+        let dir = scratch.path().to_path_buf();
         let catalog = vision_catalog(&dir);
         let only_test = |ns: &str| ns == "testvis";
         let both = |ns: &str| ns == "testvis" || ns == "othervis";
@@ -16676,8 +16676,8 @@ pub(crate) mod tests {
     /// with an image-capable catalog sibling reports `false`.
     #[test]
     fn model_info_image_is_effective_support() {
-        let scratch = crate::TestDir::new("vision");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("vision");
+        let dir = scratch.path().to_path_buf();
         let catalog = vision_catalog(&dir);
         let (p, m) = catalog.get("testvis/eyes").unwrap();
         assert!(ModelInfo::new(&p.id, m).image);
@@ -17292,8 +17292,8 @@ pub(crate) mod tests {
         use crate::communication::files::NoticeAdmission;
         use crate::communication::files::notices::{AdmitNotice, claim};
         use crate::store::contacts::{Cell, RecordTable, RecordWrite};
-        let d = crate::TestDir::new("notice-full");
-        let mut a = agents_on(d.0.clone(), Some("A"), true).await;
+        let d = crate::test_dir("notice-full");
+        let mut a = agents_on(d.path().to_path_buf(), Some("A"), true).await;
         let root = SessionId::new();
         a.store
             .create_session(root, "m", None, None, None)
@@ -17409,8 +17409,8 @@ pub(crate) mod tests {
         use crate::communication::files::notices::{AdmitNotice, claim, clear};
         use crate::communication::network::SettledCards;
         use crate::store::contacts::{Cell, RecordTable, RecordWrite};
-        let d = crate::TestDir::new("notice-sec2001");
-        let mut a = agents_on(d.0.clone(), Some("A"), true).await;
+        let d = crate::test_dir("notice-sec2001");
+        let mut a = agents_on(d.path().to_path_buf(), Some("A"), true).await;
         let root = SessionId::new();
         a.store
             .create_session(root, "m", None, None, None)
@@ -17948,8 +17948,8 @@ pub(crate) mod tests {
     /// write into an unwritable location changes nothing.
     #[test]
     fn global_switch_write_is_atomic_and_line_preserving() {
-        let scratch = crate::TestDir::new("cfg");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("cfg");
+        let dir = scratch.path().to_path_buf();
         let path = dir.join("config.yaml");
         std::fs::write(&path, "agent:\n  model: x # keep\n  communication: false\n").unwrap();
         write_config_atomic(&path, "agent", "communication", "true").unwrap();
@@ -18765,12 +18765,12 @@ pub(crate) mod tests {
             },
             peer: None,
         };
-        let here = scratch.0.join("proj");
+        let here = scratch.path().join("proj");
         std::fs::create_dir_all(&here).unwrap();
         let s = agents.ask(create(&here)).await.unwrap().session;
         assert_eq!(tools::seat::cwd(s).unwrap(), here);
         let gone = agents
-            .ask(create(&scratch.0.join("missing")))
+            .ask(create(&scratch.path().join("missing")))
             .await
             .unwrap()
             .session;
@@ -19431,8 +19431,8 @@ pub(crate) mod tests {
     /// [`two_engines`] under other engine ids (a test that sets the process-wide
     /// `mesh.messaging_off` must not touch the others' `a` and `b`).
     async fn two_engines_as(na: &str, nb: &str) -> TwoEngines {
-        let scratch = crate::TestDir::new("69p");
-        let (dir_a, dir_b) = (scratch.0.join("a"), scratch.0.join("b"));
+        let scratch = crate::test_dir("69p");
+        let (dir_a, dir_b) = (scratch.path().join("a"), scratch.path().join("b"));
         std::fs::create_dir_all(&dir_a).unwrap();
         std::fs::create_dir_all(&dir_b).unwrap();
         let (a_root, b_root) = (SessionId::new(), SessionId::new());
@@ -19745,8 +19745,8 @@ pub(crate) mod tests {
     /// never moved by the paired set.
     #[tokio::test]
     async fn absent_communication_is_on_with_a_paired_machine_and_explicit_false_wins() {
-        let scratch = crate::TestDir::new("183md");
-        let mut a = agents_on(scratch.0.clone(), None, false).await;
+        let scratch = crate::test_dir("183md");
+        let mut a = agents_on(scratch.path().to_path_buf(), None, false).await;
         a.communication.0.write().set_global(false, "default");
         let state = |a: &Agents| {
             let s = a.communication.0.read().state(None).unwrap();
@@ -19777,8 +19777,8 @@ pub(crate) mod tests {
     /// a contact has messaging on; it goes off with its last contact.
     #[tokio::test]
     async fn absent_communication_counts_contacts_on_a_lone_engine() {
-        let scratch = crate::TestDir::new("183mdc");
-        let mut a = agents_on(scratch.0.clone(), None, false).await;
+        let scratch = crate::test_dir("183mdc");
+        let mut a = agents_on(scratch.path().to_path_buf(), None, false).await;
         a.communication.0.write().set_global(false, "default");
         let on = |a: &Agents| a.communication.0.read().state(None).unwrap().global;
         a.mesh_default(Some(0)).await;
@@ -20118,7 +20118,7 @@ pub(crate) mod tests {
         // Any member writes an alias: a newer root engine `c` minted as `ops@b` is not b's desk.
         // (Written and closed first: two open handles on one file keep separate log counters.)
         let as_c = Store::open(
-            &_scratch.0.join("a").join("sessions.sqlite"),
+            &_scratch.path().join("a").join("sessions.sqlite"),
             Some(mesh::EngineId("c".into())),
         )
         .await
@@ -20133,7 +20133,7 @@ pub(crate) mod tests {
         as_c.close().await;
         // B named its desk; the row replicated here (written as `b`, which owns it).
         let as_b = Store::open(
-            &_scratch.0.join("a").join("sessions.sqlite"),
+            &_scratch.path().join("a").join("sessions.sqlite"),
             Some(mesh::EngineId("b".into())),
         )
         .await
@@ -21736,13 +21736,13 @@ pub(crate) mod tests {
     async fn acp_child_seat_is_its_spawn_cwd_with_the_parents_write_root() {
         let (_scratch, a) = agents().await;
         let mut fake = node(&a, "box");
-        let (da, db) = (crate::TestDir::new("seat-a"), crate::TestDir::new("seat-b"));
+        let (da, db) = (crate::test_dir("seat-a"), crate::test_dir("seat-b"));
         let (agents, p) = rooted(a).await;
-        tools::seat::set_cwd(p, Some(da.0.clone()));
-        tools::seat::set_write_root(p, Some(da.0.clone()));
+        tools::seat::set_cwd(p, Some(da.path().to_path_buf()));
+        tools::seat::set_write_root(p, Some(da.path().to_path_buf()));
         let (_, c, _) = agents
             .ask(SpawnChild {
-                cwd: Some(db.0.clone()),
+                cwd: Some(db.path().to_path_buf()),
                 ..spawn_on(p, "box", "seated", "go")
             })
             .await
@@ -21750,8 +21750,8 @@ pub(crate) mod tests {
         fake.handshake(Vec::new(), None).await;
         // `ask` returned: `acp_session` (which seats the child) ran before the spawn answered.
         let seat = tools::seat::seat_of(c);
-        assert_eq!(seat.cwd, Some(db.0.clone()));
-        assert_eq!(seat.write_root, Some(da.0.clone()));
+        assert_eq!(seat.cwd, Some(db.path().to_path_buf()));
+        assert_eq!(seat.write_root, Some(da.path().to_path_buf()));
     }
 
     /// 109 LIVE: a child whose open turn is resumed after a restart
@@ -22304,8 +22304,8 @@ pub(crate) mod tests {
     /// item — while another agent's resume.
     #[tokio::test]
     async fn resume_scan_skips_a_paused_agents_sessions() {
-        let scratch = crate::TestDir::new("179-scan");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("179-scan");
+        let dir = scratch.path().to_path_buf();
         std::fs::create_dir_all(dir.join("agents")).unwrap();
         std::fs::write(
             dir.join("agents").join("nap.md"),
@@ -22363,8 +22363,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn boot_resume_waits_for_first_sync() {
         for peers in [true, false] {
-            let scratch = crate::TestDir::new("182-sync-hold");
-            let dir = scratch.0.clone();
+            let scratch = crate::test_dir("182-sync-hold");
+            let dir = scratch.path().to_path_buf();
             std::fs::create_dir_all(dir.join("agents")).unwrap();
             std::fs::write(dir.join("agents").join("ops.md"), "Ops.\n").unwrap();
             if peers {
@@ -22614,8 +22614,8 @@ pub(crate) mod tests {
     /// restart accounting; after the restart it is delivered at the un-pause.
     #[tokio::test]
     async fn peer_message_to_a_paused_tree_survives_a_restart() {
-        let scratch = crate::TestDir::new("179-peer");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("179-peer");
+        let dir = scratch.path().to_path_buf();
         let (a, desk, child) = paused_desk(&dir).await;
         // The admission counter moves (any policy change); a restart resets it.
         a.communication.0.write().set_global(true, "command");
@@ -22735,8 +22735,8 @@ pub(crate) mod tests {
     #[test]
     fn boot_holds_a_paused_desk_without_an_open_turn() {
         crate::with_test_registry(async {
-            let scratch = crate::TestDir::new("179-boot");
-            let dir = scratch.0.clone();
+            let scratch = crate::test_dir("179-boot");
+            let dir = scratch.path().to_path_buf();
             let (a, desk, child) = paused_desk(&dir).await;
             let past = Utc::now().timestamp() - 60;
             a.store
@@ -22862,7 +22862,7 @@ done
     ) {
         let (scratch, mut a) = agents().await;
         Arc::make_mut(&mut a.cfg).durability.drain_secs = 2;
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let script = dir.join("hang-acp.sh");
         std::fs::write(
             &script,
@@ -22907,7 +22907,7 @@ done
 
     /// How many prompts the harness of [`acp_mid_turn`] has read.
     fn prompts(scratch: &crate::TestDir) -> usize {
-        std::fs::read_to_string(scratch.0.join("methods"))
+        std::fs::read_to_string(scratch.path().join("methods"))
             .unwrap_or_default()
             .lines()
             .filter(|l| *l == "session/prompt")
@@ -22975,7 +22975,7 @@ done
             .unwrap();
         assert_eq!(model_rows(&a, p).await, rows("openai/gpt-6.1-sol"));
         drop(a);
-        let a = agents_on(scratch.0.clone(), None, false).await;
+        let a = agents_on(scratch.path().to_path_buf(), None, false).await;
         assert!(a.requested_models.is_empty());
         assert_eq!(model_rows(&a, p).await, rows("openai/gpt-6.1-sol"));
     }
@@ -22988,7 +22988,7 @@ done
     #[tokio::test]
     async fn spawned_children_announce_their_model() {
         let (scratch, a) = agents().await;
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let script = dir.join("model-acp.sh");
         let options = r#""configOptions":[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"fake/m1","options":[{"value":"fake/m1","name":"M1"}]}]"#;
         std::fs::write(
@@ -23430,7 +23430,7 @@ done
     #[tokio::test]
     async fn idle_acp_child_parks_and_resumes() {
         let (scratch, a) = agents().await;
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let script = dir.join("fake-acp.sh");
         std::fs::write(
             &script,

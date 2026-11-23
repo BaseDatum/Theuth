@@ -659,7 +659,7 @@ impl Preview {
                 artifact.name,
                 artifact.version,
                 artifact.kind.as_str(),
-                crate::components::artifacts_apps::bytes_label(artifact.bytes),
+                platform::fmt::bytes(artifact.bytes),
                 if *panel { " · matched text" } else { "" },
                 if *panel {
                     "  m content"

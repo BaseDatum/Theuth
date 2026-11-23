@@ -49,14 +49,10 @@ mod tests {
     use agent::attach::marker;
     use agent::{SessionSummary, attach::{AttachRef, Kind}};
     use chrono::Utc;
-    use crate::components::search_attach::attach::{date, from_session, size};
+    use crate::components::search_attach::attach::{date, from_session};
 
     #[test]
     fn sizes_and_display() {
-        assert_eq!(size(512), "512 B");
-        assert_eq!(size(1536), "1.5 kB");
-        assert_eq!(size(84 * 1024), "86 kB");
-        assert_eq!(size(3 * 1024 * 1024 + 300_000), "3.4 MB");
         let r = AttachRef {
             kind: Kind::Artifact,
             id: "toolu_01".into(),

@@ -24,14 +24,9 @@ fn labels(labels: &[String]) -> String {
     }
 }
 
-/// How long ago `at` was, as `Nd` / `Nh` / `Nm` (05 §0.7: staleness is visible, not automatic).
+/// How long ago `at` was, as `Nd` / `Nh` / `Nm` / `Ns` (05 §0.7: staleness is visible, not automatic).
 pub fn age(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let mins = now.signed_duration_since(at).num_minutes().max(0);
-    match mins {
-        m if m >= 24 * 60 => format!("{}d", m / (24 * 60)),
-        m if m >= 60 => format!("{}h", m / 60),
-        m => format!("{m}m"),
-    }
+    platform::fmt::age(u64::try_from(now.signed_duration_since(at).num_seconds()).unwrap_or(0))
 }
 
 /// `age` of an RFC 3339 stamp; unparseable → `?`.
@@ -279,7 +274,7 @@ mod tests {
         assert_eq!(age_of("2026-09-20T11:48:30Z", now), "11m");
         assert_eq!(
             age_of("2026-09-21T00:00:00Z", now),
-            "0m",
+            "0s",
             "a future stamp is not negative"
         );
         assert_eq!(age_of("garbage", now), "?");

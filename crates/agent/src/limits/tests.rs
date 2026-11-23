@@ -379,8 +379,8 @@ fn presence_unavailable_and_not_configured_rows() {
 
 #[test]
 fn snapshot_round_trip_serves_stale_until_refreshed() {
-    let dir = crate::TestDir::new("limits-snap");
-    let path = dir.0.join("limits").join("snapshot.json");
+    let dir = crate::test_dir("limits-snap");
+    let path = dir.path().join("limits").join("snapshot.json");
     let mut st = State::default();
     st.observe(
         "anthropic",
@@ -441,7 +441,7 @@ fn snapshot_round_trip_serves_stale_until_refreshed() {
         row(&restored.render(NOW + 3), "anthropic:api_key").status,
         LimitStatus::Ok
     );
-    assert!(load(&dir.0.join("missing.json")).is_none());
+    assert!(load(&dir.path().join("missing.json")).is_none());
 }
 
 // region: window history
@@ -570,8 +570,8 @@ fn header_and_poll_share_one_history() {
 
 #[test]
 fn history_survives_the_snapshot_and_an_old_snapshot_loads() {
-    let dir = crate::TestDir::new("limits-history");
-    let path = dir.0.join("limits").join("snapshot.json");
+    let dir = crate::test_dir("limits-history");
+    let path = dir.path().join("limits").join("snapshot.json");
     let mut st = State::default();
     st.apply_poll(
         Source::Codex,
@@ -688,11 +688,11 @@ fn auth_modes() {
 #[ignore = "live: one paid Anthropic call"]
 async fn live_backend_call_fills_anthropic_rows() {
     use futures::StreamExt;
-    let dir = crate::TestDir::new("limits-live");
+    let dir = crate::test_dir("limits-live");
     let client = genai::Client::builder().build().unwrap();
     let backend = crate::backend::Backend::Genai {
         client,
-        auth: crate::supervisor::Auth::stub(&dir.0),
+        auth: crate::supervisor::Auth::stub(dir.path()),
     };
     let resolved = models::Resolved {
         id: "anthropic/claude-haiku-5-5".into(),

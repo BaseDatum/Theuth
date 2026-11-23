@@ -160,8 +160,8 @@ mod tests {
 
     #[tokio::test]
     async fn clone_pull_and_list_against_a_local_bare_repo() {
-        let guard = crate::TestDir::new("git");
-        let root = guard.0.clone();
+        let guard = crate::test_dir("git");
+        let root = guard.path().to_path_buf();
         let src = root.join("src");
         let bare = root.join("bare.git");
         let dir = root.join("skills");

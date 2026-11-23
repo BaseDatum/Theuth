@@ -221,7 +221,7 @@ export type AttachRef = {
   kind: Kind
   id: string          // DocId | concept id[@commit] | artifact call_id | SessionId | MeetingId
   title: string       // what the user saw (§8); never empty
-  meta: string        // "pdf v2 · 3 pages · 84 KB · Sep 21" — display-only, may be ""
+  meta: string        // "pdf v2 · 3 pages · 84.2 kB · Sep 21" — display-only, may be ""
 }
 ```
 
@@ -326,11 +326,11 @@ The wire is unchanged: `send_input(session, "<markers>\n<body>", files)`.
 ### 5.1 Per message — exactly the marker lines, in the user turn
 
 ```
-[attached artifact toolu_01HZ3v7Q "Q3 pipeline report" · pdf v2 · 3 pages · 84 KB · Sep 21]
+[attached artifact toolu_01HZ3v7Q "Q3 pipeline report" · pdf v2 · 3 pages · 84.2 kB · Sep 21]
 [attached session 0192a4c1-7e3b-7c0e-9c1f-2b6d1e8f4a10 "Fix relay reconnect loop" · chat · theuth · updated Sep 19]
 [attached meeting 0192b0f2-0a1d-7e55-8d3a-6f2c9e1b7d44 "Weekly planning" · Sep 23 · 42 min]
 [attached knowledge decisions/prod-dr-scale-to-zero@3f2a9c1 "ICD prod DR — scale to zero" · revision of Sep 12]
-[attached note agqmlbgmk57ybm2rdgyj7kcery "Groceries" · updated Sep 24 · 1 KB]
+[attached note agqmlbgmk57ybm2rdgyj7kcery "Groceries" · updated Sep 24 · 1.2 kB]
 can you fold the meeting's action items into the note and check the report's numbers against what that chat concluded?
 ```
 
@@ -469,9 +469,9 @@ arrives with no natural reader.
 │──────────────────────────────────────────────────────────│ │  (preview.png)   │ │
 │ RECENT                                                   │ └──────────────────┘ │
 │ ▸ ⎘ Groceries                        note · updated 2 h  │ PDF · v2 of 3        │
-│   ▣ Q3 pipeline report            pdf · v2 · 84 KB · Sep 21│ 3 pages · 84 KB      │
+│   ▣ Q3 pipeline report          pdf · v2 · 84.2 kB · Sep 21│ 3 pages · 84.2 kB    │
 │ IN THIS CHAT                                             │ shown Sep 21 in      │
-│   ▣ relay-timings.csv              csv · 12 KB · Sep 24  │ "Q3 planning"        │
+│   ▣ relay-timings.csv              csv · 12.3 kB · Sep 24│ "Q3 planning"        │
 │   ☷ Fix relay reconnect loop        chat · theuth · Sep 19│                      │
 │ NOTES                                                    │ Attached to 2 chats  │
 │   ⎘ Meeting notes — Weekly planning  note · Sep 23        │                      │
@@ -499,10 +499,10 @@ With a query, RECENT / IN THIS CHAT disappear and the type groups show hits.
 │ ⎘ Groceries                     ○    │  44 px rows, tap = toggle
 │   note · updated 2 h                 │
 │ ▣ Q3 pipeline report            ●    │
-│   pdf · v2 · 84 KB · Sep 21          │
+│   pdf · v2 · 84.2 kB · Sep 21        │
 │ IN THIS CHAT                         │
 │ ▣ relay-timings.csv             ○    │
-│   csv · 12 KB · today                │
+│   csv · 12.3 kB · today              │
 │ …                                    │
 │──────────────────────────────────────│
 │              Attach 1                │  sticky above the keyboard

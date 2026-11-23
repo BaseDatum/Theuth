@@ -1917,8 +1917,8 @@ mod tests {
     use super::*;
 
     async fn fresh() -> (Store, SessionId, crate::TestDir) {
-        let scratch = crate::TestDir::new("dur");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("dur");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -2590,8 +2590,8 @@ mod tests {
     /// wait — reopened by engine `b` (the shape of
     /// `store::tests::writes_on_a_foreign_session_are_refused_until_taken`).
     async fn reopened_by_b() -> (Store, SessionId, TurnId, crate::TestDir) {
-        let scratch = crate::TestDir::new("dur-ab");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("dur-ab");
+        let dir = scratch.path().to_path_buf();
         let path = dir.join("sessions.sqlite");
         let a = Store::open(&path, Some(mesh::EngineId("a".into())))
             .await

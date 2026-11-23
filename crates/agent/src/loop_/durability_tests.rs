@@ -289,8 +289,8 @@ fn journal_and_resume_contract() {
 }
 
 async fn scenarios() {
-    let scratch = crate::TestDir::new("109-reg");
-    let reg_dir = scratch.0.clone();
+    let scratch = crate::test_dir("109-reg");
+    let reg_dir = scratch.path().to_path_buf();
     let hits = reg_dir.join("hits");
     let (registry, holds) = registry(&reg_dir, &hits, false).await;
 
@@ -1322,8 +1322,8 @@ fn drain_suspends_and_the_next_start_resumes() {
 }
 
 async fn suspended_scenarios() {
-    let scratch = crate::TestDir::new("109-w6-reg");
-    let reg_dir = scratch.0.clone();
+    let scratch = crate::test_dir("109-w6-reg");
+    let reg_dir = scratch.path().to_path_buf();
     let hits = reg_dir.join("hits");
     let (registry, holds) = registry(&reg_dir, &hits, false).await;
     let reference = normal_turn_journals_every_write_point(&registry, &hits).await;
@@ -1345,8 +1345,8 @@ fn resume_slots_and_bounds_contract() {
 }
 
 async fn slot_scenarios() {
-    let scratch = crate::TestDir::new("178-reg");
-    let reg_dir = scratch.0.clone();
+    let scratch = crate::test_dir("178-reg");
+    let reg_dir = scratch.path().to_path_buf();
     let hits = reg_dir.join("hits");
     let (registry, holds) = registry(&reg_dir, &hits, false).await;
     resume_slot_is_released_after_the_first_round(&registry, &hits, &holds).await;
@@ -2154,9 +2154,9 @@ async fn relaunched_turn_is_marked_while_it_runs(
 #[test]
 fn diff_carrier_resume_model_receipts_survive_restart() {
     crate::with_test_registry(async {
-        let dir = crate::TestDir::new("diff-carrier-resume");
-        let hits = dir.0.join("hits");
-        let (registry, _holds) = registry(&dir.0, &hits, false).await;
+        let dir = crate::test_dir("diff-carrier-resume");
+        let hits = dir.path().join("hits");
+        let (registry, _holds) = registry(dir.path(), &hits, false).await;
         let mut h = Harness::new(BatchFake).await;
         journal(&registry, &h.store).await;
         let turn_id = TurnId::new();

@@ -239,11 +239,11 @@ mod tests {
 
     #[test]
     fn a_missing_cwd_lands_at_home_and_says_so() {
-        let scratch = crate::TestDir::new("land");
+        let scratch = crate::test_dir("land");
         let s = SessionId::new();
-        let here = land(s, &scratch.0);
-        assert_eq!((here.cwd.as_path(), here.was), (scratch.0.as_path(), None));
-        let gone = scratch.0.join("gone");
+        let here = land(s, scratch.path());
+        assert_eq!((here.cwd.as_path(), here.was), (scratch.path(), None));
+        let gone = scratch.path().join("gone");
         let there = land(s, &gone);
         assert_eq!(Some(there.cwd.clone()), std::env::home_dir());
         assert_eq!(there.was, Some(gone));
@@ -272,8 +272,8 @@ mod tests {
     #[test]
     fn writes_stay_inside_the_root() {
         // Drop guard (141 R4): the scratch dir goes when the test ends, pass or fail.
-        let scratch = crate::TestDir::new("seat");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("seat");
+        let dir = scratch.path().to_path_buf();
         let root = dir.join("wt");
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/a.rs"), "x").unwrap();

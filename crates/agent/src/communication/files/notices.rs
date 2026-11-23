@@ -486,8 +486,9 @@ mod tests {
     /// machine is refused (`NOT_OWNER`).
     #[tokio::test]
     async fn admission_dedups_records_ended_shares_and_checks_the_owner() {
-        let d = crate::TestDir::new("notice");
-        let mut a = crate::supervisor::tests::agents_on(d.0.clone(), Some("A"), true).await;
+        let d = crate::test_dir("notice");
+        let mut a =
+            crate::supervisor::tests::agents_on(d.path().to_path_buf(), Some("A"), true).await;
         let s = SessionId::new();
         a.store
             .create_session(s, "m", None, None, None)
@@ -521,7 +522,7 @@ mod tests {
         clear(held);
         // A chat the other machine owns.
         let b = crate::store::Store::open(
-            &d.0.join("sessions.sqlite"),
+            &d.path().join("sessions.sqlite"),
             Some(mesh::EngineId("B".into())),
         )
         .await
@@ -614,8 +615,9 @@ mod tests {
     #[tokio::test]
     async fn a_foreign_notice_whose_authority_ended_starts_no_turn() {
         use super::super::foreign;
-        let d = crate::TestDir::new("notice-foreign");
-        let mut a = crate::supervisor::tests::agents_on(d.0.clone(), Some("A"), true).await;
+        let d = crate::test_dir("notice-foreign");
+        let mut a =
+            crate::supervisor::tests::agents_on(d.path().to_path_buf(), Some("A"), true).await;
         let s = SessionId::new();
         a.store
             .create_session(s, "m", None, None, None)

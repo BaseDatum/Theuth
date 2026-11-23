@@ -66,8 +66,8 @@ mod tests {
     /// A pick survives a reopen of the database (an engine restart); a reset deletes it.
     #[tokio::test]
     async fn session_knowledge_harvester_persists_and_resets() {
-        let scratch = crate::TestDir::new("knowledge-harvester");
-        let path = scratch.0.join("sessions.sqlite");
+        let scratch = crate::test_dir("knowledge-harvester");
+        let path = scratch.path().join("sessions.sqlite");
         let store = Store::open(&path, None).await.unwrap();
         let (a, b) = (SessionId::new(), SessionId::new());
         for id in [a, b] {

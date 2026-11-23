@@ -657,12 +657,7 @@ fn esc(s: &str) -> String {
 
 /// `s` cut to `max` chars with a `…` when it was longer.
 pub(crate) fn clip(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_owned();
-    }
-    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-    out.push('…');
-    out
+    platform::text::ellipsize(s, max).into_owned()
 }
 
 /// `text` split at line breaks into pieces of ≤ `max` chars (a longer line
@@ -702,13 +697,7 @@ pub(crate) fn k(n: u32) -> String {
 
 /// `5s`, `12m`, `3h`, `2d` since `t`.
 pub(crate) fn age(t: DateTime<Utc>) -> String {
-    let s = (Utc::now() - t).num_seconds().max(0);
-    match s {
-        ..60 => format!("{s}s"),
-        60..3600 => format!("{}m", s / 60),
-        3600..86400 => format!("{}h", s / 3600),
-        _ => format!("{}d", s / 86400),
-    }
+    platform::fmt::age(u64::try_from((Utc::now() - t).num_seconds()).unwrap_or(0))
 }
 
 #[cfg(test)]

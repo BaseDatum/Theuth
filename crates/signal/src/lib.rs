@@ -203,7 +203,7 @@ pub fn e164(s: &str) -> Result<String, String> {
 
 /// YAML value for a string key: double-quoted (`+1…` would otherwise parse as an int).
 fn yaml_str(s: &str) -> String {
-    format!("{s:?}")
+    serde_json::to_string(s).expect("a str serialises to JSON")
 }
 
 /// `signal.allowed` as a single-line YAML flow list of quoted strings.
@@ -712,5 +712,12 @@ mod tests {
         assert_eq!(l, r#"["+15551234567", "+14445556666"]"#);
         let v: Vec<String> = serde_yaml::from_str(&l).unwrap();
         assert_eq!(v[0], "+15551234567");
+    }
+
+    #[test]
+    fn yaml_str_round_trips_quote_backslash_newline() {
+        let s = "a \"q\" \\ b\nc";
+        let v: String = serde_yaml::from_str(&yaml_str(s)).unwrap();
+        assert_eq!(v, s);
     }
 }

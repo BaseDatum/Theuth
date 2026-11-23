@@ -20,9 +20,10 @@ use tools::registry::{RegisterTool, ToolRegistry};
 use tools::{REGISTRY_ACTOR, Risk, Tool, ToolCx, ToolOutput};
 
 use crate::lifecycle::{CreateSession, CreateSessionOptions};
-use crate::notebooks::{self, Budget, Item, cut, cut_blocks, invoke, tokens};
+use crate::notebooks::{self, Budget, Item, cut_blocks, invoke, tokens};
 use crate::supervisor::Agents;
 use crate::{AGENT_ACTOR, skills};
+use platform::text::head_chars;
 
 /// The four dial positions, least to most (§5.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -554,14 +555,14 @@ fn teaser(body: &str) -> String {
             let head_start = prev_comment.unwrap_or(at);
             let head_end = at + line.len();
             let rest = &body[head_end..];
-            return format!("{}{}", &body[head_start..head_end], cut(rest, 400))
+            return format!("{}{}", &body[head_start..head_end], head_chars(rest, 400))
                 .trim_end()
                 .to_owned();
         }
         prev_comment = t.starts_with("<!-- ").then_some(at);
         at += line.len();
     }
-    cut(body, 400).trim_end().to_owned()
+    head_chars(body, 400).trim_end().to_owned()
 }
 
 // ---- 157 D3: the baseline in the history, and what changed since --------------------------------

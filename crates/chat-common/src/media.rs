@@ -1,5 +1,4 @@
-//! Inbound attachment helpers: magic-byte MIME sniffing, extension from a MIME,
-//! and a human size.
+//! Inbound attachment helpers: magic-byte MIME sniffing and the extension for a MIME.
 
 /// The MIME of the formats chats send, from their magic bytes.
 #[must_use]
@@ -43,20 +42,6 @@ pub fn extension_for(mime: &str) -> String {
     }
 }
 
-/// `83 KiB`, `3.0 MiB`, `12 B`.
-#[must_use]
-pub fn fmt_size(bytes: usize) -> String {
-    const KIB: usize = 1024;
-    const MIB: usize = KIB * 1024;
-    if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
-    } else if bytes >= KIB {
-        format!("{} KiB", bytes.div_ceil(KIB))
-    } else {
-        format!("{bytes} B")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,7 +53,5 @@ mod tests {
         assert_eq!(extension_for("image/jpeg"), "jpg");
         assert_eq!(extension_for("application/pdf"), "pdf");
         assert_eq!(extension_for("weird"), "weird");
-        assert_eq!(fmt_size(83_000), "82 KiB");
-        assert_eq!(fmt_size(3 * 1024 * 1024), "3.0 MiB");
     }
 }

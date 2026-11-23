@@ -446,7 +446,7 @@ pub fn apply_settings(
 }
 
 fn yaml_str(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    serde_json::to_string(s).expect("a str serialises to JSON")
 }
 
 /// Persist `cfg` under `search_providers:` in `path`, one scalar per line
@@ -750,19 +750,6 @@ pub(crate) fn site_query(q: &web::Query) -> String {
         Some(site) => format!("site:{site} {}", q.text),
         None => q.text.clone(),
     }
-}
-
-/// Undo the handful of HTML entities Brave leaves in plain-text snippets.
-pub(crate) fn unescape(s: &str) -> String {
-    if !s.contains('&') {
-        return s.to_string();
-    }
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#x27;", "'")
-        .replace("&#39;", "'")
 }
 
 /// `Some` only for non-empty, trimmed text.

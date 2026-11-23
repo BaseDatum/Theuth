@@ -2286,41 +2286,29 @@ mod tests {
         }
     }
 
-    struct TempDir(PathBuf);
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    fn tempdir() -> TempDir {
-        let d = std::env::temp_dir().join(format!("theuth-overview-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&d).unwrap();
-        TempDir(d)
-    }
-
     /// `code_overview` is a `code_*` call: one `CodeToolRan { tool: "code_overview" }`
     /// per call, success or error, and the call never writes the map.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn code_overview_publishes_code_tool_ran() {
         use kameo::actor::Spawn;
-        let data = tempdir();
-        let repo = tempdir();
-        std::fs::create_dir_all(repo.0.join("src")).unwrap();
+        let data = crate::test_dir("overview");
+        let repo = crate::test_dir("overview");
+        std::fs::create_dir_all(repo.path().join("src")).unwrap();
         std::fs::write(
-            repo.0.join("src/lib.rs"),
+            repo.path().join("src/lib.rs"),
             "pub fn a() {}\npub fn b() { a() }\n",
         )
         .unwrap();
-        let rt = runtime::Runtime::new(figment::Figment::new(), data.0.clone());
+        let rt = runtime::Runtime::new(figment::Figment::new(), data.path().to_path_buf());
         let seen: Seen = Arc::default();
         let sink = Sink::spawn(Sink(seen.clone()));
         rt.subscribe::<Sink, CodeindexEvent>(&sink).await;
         let ix = Arc::new(
-            Codeindex::new(crate::CodeindexConfig::default(), &data.0)
+            Codeindex::new(crate::CodeindexConfig::default(), data.path())
                 .unwrap()
                 .with_runtime(rt),
         );
-        let root = repo.0.canonicalize().unwrap();
+        let root = repo.path().canonicalize().unwrap();
         let out = CodeOverviewTool(ix.clone())
             .call(
                 CodeOverviewArgs {
@@ -2333,7 +2321,7 @@ mod tests {
                     session: runtime::SessionId::new(),
                     call_id: "toolu_ov".to_owned(),
                     quiet: false,
-                    resources: tools::SessionResources::durable_arc(&data.0),
+                    resources: tools::SessionResources::durable_arc(data.path()),
                     cancel: tools::CancellationToken::new(),
                     promote_after: None,
                 },

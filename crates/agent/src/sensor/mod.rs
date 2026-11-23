@@ -782,8 +782,8 @@ mod tests {
     /// A scratch data dir (its guard) with a fresh runner; `pool` when a
     /// Monty test needs one.
     fn runner(name: &str, pool: Option<Arc<Pool>>) -> (crate::TestDir, SensorRunner) {
-        let scratch = crate::TestDir::new(&format!("sensor-{name}"));
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir(&format!("sensor-{name}"));
+        let dir = scratch.path().to_path_buf();
         let r = SensorRunner::new(dir, pool, None, SensorProfile::default());
         r.install_builtins().unwrap();
         (scratch, r)
@@ -1457,12 +1457,17 @@ mod tests {
                 format!("IP address `{}` is not allowed", server.address().ip()),
             ),
         ] {
-            let scratch = crate::TestDir::new(&format!("sensor-lan-{on}"));
+            let scratch = crate::test_dir(&format!("sensor-lan-{on}"));
             let profile = SensorProfile {
                 allow_private_network: on,
                 ..SensorProfile::default()
             };
-            let r = SensorRunner::new(scratch.0.clone(), Some(Arc::clone(&pool)), None, profile);
+            let r = SensorRunner::new(
+                scratch.path().to_path_buf(),
+                Some(Arc::clone(&pool)),
+                None,
+                profile,
+            );
             r.install_builtins().unwrap();
             let meta = put(&r, "lan.py", &src);
             let run = r

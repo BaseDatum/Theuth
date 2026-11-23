@@ -730,26 +730,13 @@ mod tests {
     }
 
     /// A scratch data dir with the bearer token `connect` reads.
-    struct Scratch(std::path::PathBuf);
-
-    impl Scratch {
-        fn new(tag: &str) -> Self {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let dir =
-                std::env::temp_dir().join(format!("176-{tag}-{}-{nanos}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("token"), "t").unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
+    fn scratch(tag: &str) -> tempfile::TempDir {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("176-{tag}-"))
+            .tempdir()
+            .unwrap();
+        std::fs::write(dir.path().join("token"), "t").unwrap();
+        dir
     }
 
     /// A fake engine on `addr` whose `session_owner` knows `s1` or not.
@@ -777,12 +764,12 @@ mod tests {
     /// ends the bridge.
     #[tokio::test]
     async fn bridge_redials_then_exits_on_unknown_session() {
-        let scratch = Scratch::new("redial");
+        let scratch = scratch("redial");
         let (listen, first) = engine("127.0.0.1:0", true).await;
-        let client = dial_with(&scratch.0, &listen, None).await.unwrap();
+        let client = dial_with(scratch.path(), &listen, None).await.unwrap();
         assert!(!no_such_session(&client, "s1").await);
         let (tx, mut rx) = watch::channel(Arc::new(client));
-        let (dir, at) = (scratch.0.clone(), listen.clone());
+        let (dir, at) = (scratch.path().to_path_buf(), listen.clone());
         let keep = tokio::spawn(async move {
             keep_engine(&dir, &at, "s1".into(), tx, Duration::from_secs(30)).await
         });
@@ -807,15 +794,21 @@ mod tests {
     /// 176 A3 (d): an engine that stays away past the limit ends the bridge.
     #[tokio::test]
     async fn bridge_exits_after_engine_down_limit() {
-        let scratch = Scratch::new("down");
+        let scratch = scratch("down");
         let (listen, engine) = engine("127.0.0.1:0", true).await;
-        let client = dial_with(&scratch.0, &listen, None).await.unwrap();
+        let client = dial_with(scratch.path(), &listen, None).await.unwrap();
         let (tx, _rx) = watch::channel(Arc::new(client));
         engine.stop().unwrap();
         engine.stopped().await;
         let why = tokio::time::timeout(
             Duration::from_secs(10),
-            keep_engine(&scratch.0, &listen, "s1".into(), tx, Duration::from_secs(1)),
+            keep_engine(
+                scratch.path(),
+                &listen,
+                "s1".into(),
+                tx,
+                Duration::from_secs(1),
+            ),
         )
         .await
         .expect("the bridge gave up");
