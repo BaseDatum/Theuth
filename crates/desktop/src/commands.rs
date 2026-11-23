@@ -104,6 +104,14 @@ pub fn share_tray(app: AppHandle, live: u32) -> Result<(), String> {
     crate::desktop::set_sharing(&app, live).map_err(|e| e.to_string())
 }
 
+/// 210 §7.4 item 6: the island's `● LIVE N · Stop` — the tray's native Stop all ([`crate::share::stop_all`]), so the
+/// outcome (notification, `share-stopped-all`) is the same and no webview's connection is involved.
+#[cfg(desktop)]
+#[tauri::command]
+pub fn share_stop_all(app: AppHandle) {
+    crate::share::stop_all(&app);
+}
+
 #[cfg(desktop)]
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> anyhow::Result<T> + Send + 'static,

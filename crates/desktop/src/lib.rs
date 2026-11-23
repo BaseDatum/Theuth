@@ -362,6 +362,7 @@ mod desktop {
             commands::relaunch,
             commands::quit_ack,
             commands::share_tray,
+            commands::share_stop_all,
             commands::open_window,
             update::check_update,
             update::install_update,
