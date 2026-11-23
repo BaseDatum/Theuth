@@ -2,7 +2,7 @@
 // model limits, the pickers' local tags and Settings › Memory's Test summary call. Dev only, behind
 // `localStorage.local-fixture` (or `VITE_LOCAL_FIXTURE`): `"1"` — the test call succeeds; `"fail"` — it fails on thinking.
 // Every other call is the engine's; an omlx provider `mlx` (Sky's setup) is added to its providers and models.
-// 191 D8: Network › Contacts answers from `contacts` below (a sound contact with a machine that left, an alert, a
+// 191 D8: Sharing › Contacts answers from `contacts` below (a sound contact with a machine that left, an alert, a
 // refused and a waiting record); `dev/contacts-fixture.html` renders them with no engine.
 // 194: the new effort RPCs (`*_effort` / `set_*_effort`, `set_advisor_default_model`) answered from `efforts` below, so a
 // chip pick round-trips (the setter stores, the getter returns it); `dev/effort-fixture.html` renders every picker.

@@ -130,7 +130,7 @@ export function contactFirstOf(id: string): { contact: string; exp: string } | n
   return m ? { contact: m[1] as string, exp: m[2] as string } : null
 }
 
-/** 188: `?focus=access:<contact name>` on Settings › Network › Contacts scrolls to that contact's Access row. */
+/** 188: `?focus=access:<contact name>` on Settings › Sharing › Contacts scrolls to that contact's Access row. */
 const ACCESS_FOCUS = 'access:'
 export const accessFocus = (contact: string): string => `${ACCESS_FOCUS}${contact}`
 /** The contact an `accessFocus` value names; `null` for any other `?focus=` (or none). */

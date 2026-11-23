@@ -104,7 +104,7 @@ export function MessagingTab() {
 
 /**
  * 50 §6.1/§10: A2A over HTTP — its switch, `a2a_status` with the HTTP peers, the exports, the error and `reload_a2a`.
- * 183 §7: a contact is listed under Network › Contacts, never here as an HTTP peer with roots.
+ * 183 §7: a contact is listed under Sharing › Contacts (213), never here as an HTTP peer with roots.
  */
 export function A2aSection({ state }: { state: CommunicationState | undefined }) {
   const canQuery2 = useQuerySupport(["a2a_status"])
@@ -154,6 +154,12 @@ export function A2aSection({ state }: { state: CommunicationState | undefined })
         label="A2A over HTTP"
         description="An HTTP listener, client and credential for agents outside theuth. Contacts don't need it: they reach this machine over theuth/a2a/1."
       />
+      {/* 213 §2: what contacts may reach is managed with the other shared items. */}
+      <Row label="Contacts and what they may reach" description="Settings › Sharing › Contacts">
+        <Button variant="outline" size="sm" className={TOUCH} onClick={() => void navigate({ to: '/settings/$tab', params: { tab: 'contacts' } })}>
+          Open Contacts
+        </Button>
+      </Row>
       {status.isPending && <Empty>Loading…</Empty>}
       {status.isError && <p className="py-2 text-sm text-destructive">{errorText(status.error)}</p>}
       {a && (

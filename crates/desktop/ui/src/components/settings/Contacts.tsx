@@ -54,7 +54,7 @@ const FIRST: [FirstContact, string][] = [
   ['allow', 'Always allow'],
   ['block', 'Block'],
 ]
-/** 188: Settings › Network › Contacts, scrolled to `contact`'s Access row when one is named. */
+/** 188, 213: Settings › Sharing › Contacts, scrolled to `contact`'s Access row when one is named. */
 const toContacts = (contact?: string) => ({ to: '/settings/$tab', params: { tab: 'contacts' }, search: contact ? { focus: accessFocus(contact) } : {} }) as const
 /** 191 D8: the alert's way out may be to unpair one of ours. */
 const toMachines = { to: '/settings/$tab', params: { tab: 'machines' } } as const
@@ -200,7 +200,7 @@ export function ExportChip({ name, exp, on }: { name: string; exp: Export | unde
 }
 
 /** 191: the machine a shared chat lives on when it is not this one (`null` here, for an agent, or unknown), from the sessions list. */
-function useChatMachine(): (exp: Export | undefined) => string | null {
+export function useChatMachine(): (exp: Export | undefined) => string | null {
   const canQuery = useQuerySupport(['list_sessions'])
   const api = useApi()
   const mesh = useMesh()
@@ -213,7 +213,7 @@ function useChatMachine(): (exp: Export | undefined) => string | null {
   }
 }
 
-/** 188 Settings › Network › Contacts: the contacts, then what each may reach; `?focus=access:<name>` scrolls to one. */
+/** 188 Settings › Sharing › Contacts (213: moved from Network): the contacts, then what each may reach; `?focus=access:<name>` scrolls to one. */
 export function ContactsTab({ focus }: TabProps) {
   return (
     <>

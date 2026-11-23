@@ -1,5 +1,5 @@
 // 191 D8 visual check, dev only: `bunx vite` then open `/src/dev/contacts-fixture.html` (`?theme=dark`; `?unpair`
-// shows the unpair dialog). The real Network › Contacts against `dev/local-fixture.ts`'s contacts (turned on here), no
+// shows the unpair dialog). The real Sharing › Contacts against `dev/local-fixture.ts`'s contacts (turned on here), no
 // engine: every other call fails.
 import '@/styles.css'
 import { QueryClientProvider } from '@tanstack/react-query'
