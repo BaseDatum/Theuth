@@ -172,6 +172,12 @@ pub struct Stats {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AllStats;
 
+/// `ask` → [`DecisionConfig`]: the engine's live config (modes as last set), for in-process
+/// callers that resolve a family and its batch size without the `decide` tool
+/// ([`crate::classify::classify_bools`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GetConfig;
+
 /// `ask` → [`ModeInfo`]: the switch position for the families under `prefix` (57 §3.4).
 #[derive(Clone, Debug)]
 pub struct GetMode {
@@ -1247,6 +1253,14 @@ impl Message<AllStats> for Engine {
             .keys()
             .map(|k| self.family_stats(&Family(k.clone())))
             .collect()
+    }
+}
+
+impl Message<GetConfig> for Engine {
+    type Reply = DecisionConfig;
+
+    async fn handle(&mut self, _: GetConfig, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        self.cfg.clone()
     }
 }
 

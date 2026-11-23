@@ -20,7 +20,7 @@ use tools::registry::ToolRegistry;
 use tools::{RegisterPrompt, RegisterTool, Risk, Tool, ToolCx, ToolOutput};
 
 use crate::engine::{AskMany, NONE_ID, Release};
-use crate::gate::Mode;
+use crate::gate::{FamilyGate, Mode};
 use crate::question::{Ask, Candidate, Decision, Disposition, LogId, Question, Reason};
 use crate::training::{Amend, Amendment, Asked, Example, ExampleId, Row, Store, Verdict};
 use crate::{DecisionConfig, Engine, TOOL_FAMILY, actor_name};
@@ -37,6 +37,80 @@ pub fn is_tool_family(family: &str) -> bool {
         || family
             .strip_prefix(TOOL_FAMILY)
             .is_some_and(|rest| rest.starts_with('.'))
+}
+
+/// 92 §2: the configured gate for `asked` (`tool` or `tool.<task>`); an unconfigured
+/// sub-family falls back to `tool` with a note. Errs for a non-tool family or a gate that is off.
+pub(crate) fn resolve_tool_family(
+    cfg: &DecisionConfig,
+    asked: &str,
+) -> Result<(String, FamilyGate, Option<String>), String> {
+    if !is_tool_family(asked) {
+        return Err(format!(
+            "family must be `{TOOL_FAMILY}` or `{TOOL_FAMILY}.<task>`, not `{asked}`"
+        ));
+    }
+    let (family, gate, note) = match cfg.families.get(asked) {
+        Some(g) => (asked.to_owned(), g.clone(), None),
+        None => {
+            let g = cfg
+                .families
+                .get(TOOL_FAMILY)
+                .ok_or_else(|| format!("no `{TOOL_FAMILY}` decision family is configured"))?;
+            (
+                TOOL_FAMILY.to_owned(),
+                g.clone(),
+                Some(format!(
+                    "family `{asked}` is not configured; answered as `{TOOL_FAMILY}`"
+                )),
+            )
+        }
+    };
+    if gate.mode == Mode::Off {
+        return Err(format!(
+            "decision family `{family}` is off (decision.families.{family}.mode)"
+        ));
+    }
+    Ok((family, gate, note))
+}
+
+/// Whether a live family other than the tool's runs on `checkpoint` (57 §2.1): then a tool
+/// call must not release it.
+pub(crate) fn held_by_others(cfg: &DecisionConfig, checkpoint: &str) -> bool {
+    cfg.families
+        .iter()
+        .any(|(k, g)| !is_tool_family(k) && g.mode != Mode::Off && g.checkpoint() == checkpoint)
+}
+
+/// Why a tool-family decision has no answer, as the row's `error` text; `None` when accepted.
+/// A shadow decision is read through to the inner one.
+pub(crate) fn escalation_text(d: &Decision, budget: Duration) -> Option<String> {
+    let disposition = match &d.disposition {
+        Disposition::Shadow(inner) => &inner.disposition,
+        other => other,
+    };
+    match disposition {
+        Disposition::Accept => None,
+        Disposition::Escalate(reason) => Some(match reason {
+            Reason::LowTop1 | Reason::LowMargin => {
+                unreachable!("tool gates have no thresholds")
+            }
+            Reason::HardError(s) => s.clone(),
+            Reason::Truncated => {
+                "truncated: the labels or the state did not fit the model window — shorten them"
+                    .to_owned()
+            }
+            Reason::Timeout => format!(
+                "budget: the batch did not finish in {} ms — raise budget_ms or pass fewer rows",
+                budget.as_millis()
+            ),
+            Reason::Disabled => "the decision family is off".to_owned(),
+            Reason::ModelMissing => {
+                "checkpoint not installed — scripts/fetch-models.sh downloads it".to_owned()
+            }
+        }),
+        Disposition::Shadow(_) => unreachable!("a shadow is never nested"),
+    }
 }
 
 /// One question as the model writes it (92 §1.1). `state` is the item — discriminating text
@@ -247,32 +321,7 @@ impl RowOut {
 
     /// The engine's decision mapped back onto the caller's keys.
     fn from_decision(d: &Decision, keys: &[String], budget: Duration) -> Self {
-        let disposition = match &d.disposition {
-            Disposition::Shadow(inner) => &inner.disposition,
-            other => other,
-        };
-        let error = match disposition {
-            Disposition::Accept => None,
-            Disposition::Escalate(reason) => Some(match reason {
-                Reason::LowTop1 | Reason::LowMargin => {
-                    unreachable!("tool gates have no thresholds")
-                }
-                Reason::HardError(s) => s.clone(),
-                Reason::Truncated => {
-                    "truncated: the labels or the state did not fit the model window — shorten them"
-                        .to_owned()
-                }
-                Reason::Timeout => format!(
-                    "budget: the batch did not finish in {} ms — raise budget_ms or pass fewer rows",
-                    budget.as_millis()
-                ),
-                Reason::Disabled => "the decision family is off".to_owned(),
-                Reason::ModelMissing => {
-                    "checkpoint not installed — scripts/fetch-models.sh downloads it".to_owned()
-                }
-            }),
-            Disposition::Shadow(_) => unreachable!("unwrapped above"),
-        };
+        let error = escalation_text(d, budget);
         let key = |label: &str| -> String {
             if label == NONE_ID {
                 return NONE_ID.to_owned();
@@ -390,32 +439,7 @@ impl Decide {
         budget_ms: Option<u64>,
     ) -> Result<Target, String> {
         let asked = family.unwrap_or(TOOL_FAMILY);
-        if !is_tool_family(asked) {
-            return Err(format!(
-                "family must be `{TOOL_FAMILY}` or `{TOOL_FAMILY}.<task>`, not `{asked}`"
-            ));
-        }
-        let (family, gate, note) = match self.cfg.families.get(asked) {
-            Some(g) => (asked.to_owned(), g.clone(), None),
-            None => {
-                let g =
-                    self.cfg.families.get(TOOL_FAMILY).ok_or_else(|| {
-                        format!("no `{TOOL_FAMILY}` decision family is configured")
-                    })?;
-                (
-                    TOOL_FAMILY.to_owned(),
-                    g.clone(),
-                    Some(format!(
-                        "family `{asked}` is not configured; answered as `{TOOL_FAMILY}`"
-                    )),
-                )
-            }
-        };
-        if gate.mode == Mode::Off {
-            return Err(format!(
-                "decision family `{family}` is off (decision.families.{family}.mode)"
-            ));
-        }
+        let (family, gate, note) = resolve_tool_family(&self.cfg, asked)?;
         let checkpoint = checkpoint.unwrap_or_else(|| gate.checkpoint()).to_owned();
         let engine = ActorRef::<Engine>::lookup(actor_name(&checkpoint).as_str())
             .ok()
@@ -437,10 +461,7 @@ impl Decide {
     /// Whether a live family other than the tool's runs on `checkpoint` (57 §2.1): then the
     /// tool must not release it.
     fn held_by_others(&self, checkpoint: &str) -> bool {
-        self.cfg
-            .families
-            .iter()
-            .any(|(k, g)| !is_tool_family(k) && g.mode != Mode::Off && g.checkpoint() == checkpoint)
+        held_by_others(&self.cfg, checkpoint)
     }
 
     /// `capture` → the `tool.<task>` prefix (`"mail"` and `"tool.mail"` both work).
