@@ -1,4 +1,4 @@
-# 212 — peek_memory: check memories against a question before pulling them into context
+# 212 — peek_memory and set_status: memory peeks and a self-reported status line
 
 Status: contract for the build (2026-11-23). This document is the fixed contract between the builders. Names, signatures, strings and file ownership below do not change without the orchestrator.
 
@@ -169,3 +169,100 @@ Where `state.knowledge_read` collects ids from `knowledge_get` calls (filtered o
 - Capturing peek verdicts for `decide_label` training (`tool.memory` family) so the judge learns from what the model then actually used.
 - Calibrating `peek_threshold` on a labelled sample of real hint→question pairs.
 - Auto-peek: the harness running the judge on its own hints against the turn's question before showing them.
+
+
+---
+
+# Part 2 — set_status: the agent keeps its own status line and title
+
+Added 2026-11-23 at the owner's request (same contract rules as above). The model reports what it is doing in a short status line that replaces the generic "thinking…/running tool…" word above the composer. It may also retitle its session in 3–5 words. A harness nudge reminds it every few tool calls. Once a session's agent has used `set_status`, the title model never regenerates that session's title again.
+
+```
+tool calls ──► counter ≥ status_every ──► <nudge> "status check …"
+model ──► set_status(status, title?) ──► state.status, store title, agent_titled=1
+      ──► AgentEvent::StatusChanged ──► desktop footer / TUI activity / Slack task line
+      ──► AgentEvent::TitleChanged (existing) ──► sidebar, header
+title model (maybe_title) ──► returns early when agent_titled or user_titled
+```
+
+## 7. Ownership (part 2)
+
+| Builder | Owns |
+|---|---|
+| C (engine) | `crates/agent/**` (including `loop_.rs`, but only after builder B's `loop_.rs` commit is in `git log -- crates/agent/src/loop_.rs`; until then build everything else), the `Toolset` literals in `crates/autoresearch/src/binding.rs`, `crates/meeting/src/lib.rs`, `crates/meeting/src/calendar/prebrief.rs`, `crates/rpc-compose/tests/**` + `crates/rpc-core/src/stream_tests.rs` (fixtures/Replace lists), `crates/theuth/src/main.rs` (DEFAULT_CONFIG comment only), `crates/theuth/harness.md` (one line, after B's line), `crates/theuth/tests/fixtures/wire/openrpc-v1.json` (via `just wire-schema-accept`) |
+| D (clients) | `crates/desktop/ui/src/**`, `crates/tui/**`, `crates/slack/**`, `crates/telegram/**`, `crates/signal/**`, and any other crate whose exhaustive `match` on `AgentEvent` breaks (ignore arm only) except `crates/agent` |
+
+`graph.rs` and `roster` matches inside `crates/agent` are C's. D codes against the event in §9 before C lands it; D compiles once C's first commit (the event variant) exists.
+
+## 8. The tool — loop-local, like `todo`
+
+`set_status` is a loop-local direct tool (same shape as `todo`: spec in a new `crates/agent/src/status.rs`, listed via `listed(status::NAME)`, dispatched in the batch executor, bridged into python like `repl.todo`). It is direct because the nudge asks for it by name and it must be cheap; it is also callable from python as `set_status(...)`.
+
+- `NAME = "set_status"`, read-only (it changes only this session's own presentation).
+- Args:
+  - `status: String` — what you are doing right now, 3–12 words, ≤ 80 chars after trim (longer is cut at a word boundary with `…`; empty is an error `set_status: status must not be empty`).
+  - `title: Option<String>` — the session's overall task in 3–5 words, ≤ 48 chars after trim; omit unless the task changed or the current title no longer says it. Fewer than 2 or more than 6 words → error `set_status: title must be 3–5 words`.
+- Description: `Update the one-line status the user sees above the chat input while you work (3–12 words, what you are doing now), and optionally retitle this session (3–5 words, the overall task). Call it when you start a new phase of work and whenever the harness asks for a status check.`
+- Effect:
+  1. `state.status = Some(status)`; `status_touched` counter reset (§10).
+  2. Publish `AgentEvent::StatusChanged { session, status, title }` (§9).
+  3. If `title` is given and the session is not `user_titled`: `store.set_title(...)` keeping tags, publish the existing `AgentEvent::TitleChanged`, mark `Session.titled = true`.
+  4. Set `agent_titled = 1` for the session (persisted, §11) on the first call, whether or not a title was given.
+- Result text (exact): `status set` or `status set · title "<title>"` or `status set · title kept: the user named this session`.
+- Python bridge: like `todo`, a call from a cell updates the loop state after the cell and counts as touched.
+
+## 9. Wire event
+
+New variant on `AgentEvent` (topic `agent.events`):
+
+```rust
+/// The agent's own one-line status (design 212 §9); replaces the generic activity word
+/// in clients until the turn ends.
+StatusChanged {
+    session: SessionId,
+    status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+},
+```
+
+- `policy()` → `Delta::Replace` (like `VisionProgress`); `session()` arm; every exhaustive match in `crates/agent` gets an arm (graph `activity_sessions` treats it as activity; roster ignores it).
+- Fixtures: extend `crates/rpc-compose/tests/fixtures/wire/agent.events.json`, the Replace lists in `wire_parity_inc4.rs` and `rpc-core/src/stream_tests.rs`; `just ts-desktop`; `just wire-schema-accept`; `cargo test -p theuth --test wire_schema_snapshot`.
+
+## 10. The nudge
+
+- Counter `state.tool_calls_since_status: u32`: +1 per direct tool call and +1 per python inner tool call in a batch (`set_status` itself and `todo` excluded); reset to 0 by `set_status` and at turn start, along with `state.status = None`.
+- In the round prelude (next to the `<todo>` reminder), when the session gets the nudge (below):
+  - **first nudge:** no `set_status` yet this turn and `tool_calls_since_status >= 2`;
+  - **then:** `tool_calls_since_status >= status_every`;
+  - at most one status nudge per round; after a nudge the counter is reset so an ignored nudge repeats only after another `status_every` calls.
+- Note: `self.note("nudge", text)` (the `nudge` kind is already a harness note everywhere). Text (exact):
+  - `Status check: call set_status(status="…") with what you are doing now, 3–12 words. Add title="…" (3–5 words) if this session's overall task changed or its title no longer says it.`
+  - when `user_titled`: the first sentence only.
+- Who gets it: `chat` sessions (any depth) where `set_status` is listed, `status_every > 0`, not a consolidating (dreaming) session.
+- Config: `agent.status_every: u32`, default `8`, `0` = off (field on the agent config struct, serde default). `Toolset.status_every: Option<u32>` overrides per session; `Some(0)` in the advisor, autoresearch, prebrief and meeting-live toolsets.
+- Prompt: one constant sentence in the agent's tool guidance: `Keep the user informed: call set_status when you start a new phase of work; the harness reminds you every few tool calls.`
+
+## 11. Title guards (persisted)
+
+- Migration `crates/agent/migrations/0076_session_title_guard.sql`: engine-local side table `session_title_guard(session TEXT PRIMARY KEY, agent_titled INTEGER NOT NULL DEFAULT 0, user_titled INTEGER NOT NULL DEFAULT 0)` — not in `capture::ATTACHED`, so the replicated `sessions` schema does not change.
+- Loaded at session load into `shared` atomics next to `title_pinned`.
+- `agent_titled`: set by the first `set_status` call (§8). **`maybe_title` returns early when `agent_titled`** (next to the `title_pinned` check), so the title model stops for that session for good, including after an engine restart.
+- `user_titled`: set by the `RenameSession` handler. `maybe_title` also returns early when `user_titled` (fixes the title model overwriting a user rename), and `set_status` never replaces a user's title.
+
+## 12. Clients (builder D)
+
+- **Desktop:** `SessionSlice.statusText?: string`, `statusTitle?` set by `StatusChanged`; cleared on `TurnStarted`, `TurnFinished`, `Error` and reseed. The footer in `Transcript.tsx` renders `statusText ?? (vision line) ?? WORD[activity]` with the existing `ActivityIndicator` glyph; `activity` is unchanged. The sidebar `SessionItem` activity glyph's tooltip/aria-label shows `statusText` when set.
+- **TUI:** `model/status.rs` `activity()` returns the status first (after `compacting…`); the trailing row in `ui.rs` shows it while the turn runs (keep the spinner).
+- **Slack:** the in-progress task title of the live bubble shows the status instead of `thinking`; no new posts.
+- **Telegram / Signal / others:** ignore arm.
+- Tests: reducer test (set, cleared on TurnFinished), TUI status test, slack bubble test for the task title.
+
+## 13. Tests (builder C)
+
+1. `set_status` sets state, publishes `StatusChanged`, sets `agent_titled`, writes title + `TitleChanged` when given.
+2. `user_titled` session: title ignored, result text `title kept`.
+3. `maybe_title` returns early for `agent_titled` and for `user_titled` (unit test on the guard).
+4. Nudge cadence: first nudge after 2 calls without status; then every `status_every`; reset by `set_status`; none when `status_every = 0`, toolset `Some(0)`, or tool not listed.
+5. Python bridge: a cell calling `set_status` updates state and resets the counter.
+6. Wire: fixture + schema snapshot green.
