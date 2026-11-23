@@ -174,7 +174,7 @@ pub fn resolve(root: &Path, url_path: &str) -> Option<PathBuf> {
 pub fn open_nofollow(canon: &Path) -> io::Result<File> {
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
     #[cfg(target_os = "macos")]
-    const FLAGS: i32 = libc::O_NOFOLLOW | 0x2000_0000; // O_NOFOLLOW_ANY
+    const FLAGS: i32 = libc::O_NOFOLLOW_ANY; // with O_NOFOLLOW the kernel answers EINVAL
     #[cfg(not(target_os = "macos"))]
     const FLAGS: i32 = libc::O_NOFOLLOW;
     let f = std::fs::OpenOptions::new()
