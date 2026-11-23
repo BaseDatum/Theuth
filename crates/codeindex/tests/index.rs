@@ -1878,7 +1878,7 @@ async fn map_and_symbol() {
     // the top: #16 after CI-RANK, when its 131 `pub use` rows made it a
     // barrel whose `<import>` edges are damped (its `refs` edges are not).
     // Relative to the repository's size, which grows: top 2%, floor 20.
-    // rank was #16 of ~N on <date>
+    // rank was #17 of 2781 ranked rows on 2026-11-23 (bound: #55)
     let n = paths.len();
     let pos = paths
         .iter()
