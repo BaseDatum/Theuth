@@ -243,7 +243,16 @@ impl Control {
     /// `PUT /v1/routes` with this engine's full set.
     pub async fn put_routes(&self, hosts: Vec<String>) -> Result<(), EdgeError> {
         let _: (u16, serde_json::Value) = self
-            .json(http::Method::PUT, paths::ROUTES, Some(&RoutesPut { hosts }))
+            // TODO(210-M2): `published_ms` per host (the share's `live_ms`) for the edge's
+            // `stopped_all` check; absent hosts are judged by the `hello` time, as before.
+            .json(
+                http::Method::PUT,
+                paths::ROUTES,
+                Some(&RoutesPut {
+                    hosts,
+                    published_ms: Default::default(),
+                }),
+            )
             .await?;
         Ok(())
     }

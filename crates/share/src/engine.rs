@@ -932,8 +932,13 @@ impl Attachment for Engine {
                     }
                 }
             }
-            // TODO(210-M3): `queue` events feed the slot-queue UI; `stats` feed `share.traffic`.
-            Event::Queue(_) | Event::Stats(_) | Event::Routes(_) | Event::Drain(_) => {}
+            // TODO(210-M3): `queue` events feed the slot-queue UI; `stats` feed `share.traffic`;
+            // `throttle` feeds the throttled badge.
+            Event::Queue(_)
+            | Event::Stats(_)
+            | Event::Throttle(_)
+            | Event::Routes(_)
+            | Event::Drain(_) => {}
         }
     }
 
@@ -1080,6 +1085,8 @@ mod tests {
                 spki: None,
                 not_after: Some(u64::MAX / 2),
                 queue: None,
+                transfer_to: None,
+                transfer_until_ms: None,
             }],
             routes: vec![],
             revoked: vec![],
@@ -1092,6 +1099,7 @@ mod tests {
             terms_ok: true,
             full: false,
             retire: None,
+            throttled: false,
         };
         let leaf_of = |e: &Engine| {
             e.certs
