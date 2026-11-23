@@ -381,9 +381,16 @@ fn quoted(label: &str) -> String {
     )
 }
 
-/// A YAML double-quoted scalar (a JSON string is one).
+/// A YAML double-quoted scalar on one line: newlines become spaces and nothing else is escaped
+/// beyond `\` and `"`, because `import::yaml_scalar` reads `meta.yaml` line by line and does not
+/// unescape (a JSON string's `\n`/`\t` would come back literally).
 fn yq(s: &str) -> String {
-    serde_json::to_string(s).expect("a str serialises to JSON")
+    format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', " ")
+    )
 }
 
 fn yaml_list(key: &str, items: &[String]) -> String {
