@@ -311,7 +311,10 @@ async fn owner_rpc_bundle_parameter_defaults_to_main_and_rejects_unknown_bundles
         .put(note("facts/secret", "isolatedonly galaxy"), Source::Model)
         .await
         .unwrap();
-    let actor = crate::KnowledgeActor::spawn(crate::KnowledgeActor { k });
+    let actor = crate::KnowledgeActor::spawn(crate::KnowledgeActor {
+        k,
+        peek: Arc::new(crate::tools::PeekSettings::new(true, 0.5)),
+    });
     actor.register(crate::KNOWLEDGE_ACTOR).unwrap();
     let rpc = rpc_core::Server::new(rt);
     assert!(

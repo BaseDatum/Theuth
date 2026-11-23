@@ -554,6 +554,16 @@ impl Harness {
 
     /// A turn over the session's current frame, as `Session::start_turn` builds one.
     pub(super) async fn turn(&self, main: &str, cancel: CancellationToken) -> (Turn, TurnId) {
+        self.turn_with(main, cancel, AgentConfig::default()).await
+    }
+
+    /// [`Harness::turn`] of a session started under `cfg`.
+    pub(super) async fn turn_with(
+        &self,
+        main: &str,
+        cancel: CancellationToken,
+        cfg: AgentConfig,
+    ) -> (Turn, TurnId) {
         let (epoch, head, history) = self.store.frame(self.id).await.unwrap();
         let mut session = Session::new(
             self.id,
@@ -561,7 +571,7 @@ impl Harness {
             (self.resolve(main), None),
             None,
             SessionState::resume(epoch, head, history),
-            Arc::new(AgentConfig::default()),
+            Arc::new(cfg),
             Arc::default(),
             Arc::default(),
             self.vision_model.clone(),

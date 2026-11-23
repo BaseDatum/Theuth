@@ -31,6 +31,14 @@ pub trait AgentSettingsApi {
     /// Persist `agent.max_salvages`; new sessions use it.
     #[method(name = "set_max_salvages")]
     async fn set_max_salvages(&self, count: u32) -> RpcResult<()>;
+    /// 212 §15: persist `agent.status_every`; sessions started from now on use it.
+    /// `0` turns the status reminder off; `set_status` stays available.
+    #[method(name = "set_status_every")]
+    async fn set_status_every(&self, count: u32) -> RpcResult<()>;
+    /// 212 §15: persist `agent.knowledge.hint_limit`; sessions started from now on use it.
+    /// `0` turns memory hints off.
+    #[method(name = "set_hint_limit")]
+    async fn set_hint_limit(&self, count: u32) -> RpcResult<()>;
     /// The live title model (`agent.title_model`), if set.
     #[method(name = "title_model")]
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>>;
@@ -348,6 +356,14 @@ impl AgentSettingsApiServer for Server {
 
     async fn set_max_salvages(&self, count: u32) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetMaxSalvages { count }).await
+    }
+
+    async fn set_status_every(&self, count: u32) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetStatusEvery { count }).await
+    }
+
+    async fn set_hint_limit(&self, count: u32) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetHintLimit { count }).await
     }
 
     async fn title_model(&self) -> RpcResult<Option<ModelInfo>> {

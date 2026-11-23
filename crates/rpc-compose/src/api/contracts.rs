@@ -49,6 +49,18 @@ pub struct Info {
     pub stream_idle_secs: u64,
     /// `agent.max_salvages`: interrupted-reply recoveries per turn before it stops with an error.
     pub max_salvages: u32,
+    /// `agent.status_every` (212 §15): tool calls between status reminders for new
+    /// sessions; `0` = off. `0` from an older harness.
+    #[serde(default)]
+    pub status_every: u32,
+    /// `agent.knowledge.hint_limit` (212 §15): concepts per memory hint for new
+    /// sessions; `0` = no hints. `0` from an older harness.
+    #[serde(default)]
+    pub hint_limit: u32,
+    /// `knowledge.peek_threshold` (212 §15): the live minimum P(true) for
+    /// `peek_memory` to call a memory relevant. `0` from an older harness.
+    #[serde(default)]
+    pub peek_threshold: f32,
     /// `tools.pty_idle_secs`: quiet-screen seconds before a PTY job wakes the model with `<job_idle>` (61); `0` = never.
     pub pty_idle_secs: u64,
     /// Harness display name (`link.name`, else the hostname): what a linked
@@ -149,7 +161,8 @@ impl wire::WireEvent for StreamControl {
 
 /// 188: the flags Settings had no write path for: four `<section>.enabled` and
 /// the two `allow_private_network` keys behind Network's "Local network
-/// access" (16 §5, amended 2026-11-11). Any other string fails to
+/// access" (16 §5, amended 2026-11-11), and 212 §15's three switches, which
+/// apply to new sessions without a restart. Any other string fails to
 /// deserialize, an `INVALID_PARAMS` error listing these.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum ConfigFlagKey {
@@ -172,6 +185,18 @@ pub enum ConfigFlagKey {
     /// `browser.allow_private_network`: the browser reaches the local network.
     #[serde(rename = "browser.allow_private_network")]
     BrowserPrivateNetwork,
+    /// `agent.status_tool` (212 §15): new sessions get `set_status`, its prompt
+    /// sentence and its reminders. Applies to new sessions, no restart.
+    #[serde(rename = "agent.status_tool")]
+    AgentStatusTool,
+    /// `agent.auto_title` (212 §15): the title model names and renames new sessions.
+    /// Applies to new sessions, no restart.
+    #[serde(rename = "agent.auto_title")]
+    AgentAutoTitle,
+    /// `knowledge.peek` (212 §15): new sessions list `peek_memory` and its hint and
+    /// prompt sentences; off, its calls are refused at once. No restart.
+    #[serde(rename = "knowledge.peek")]
+    KnowledgePeek,
 }
 
 impl ConfigFlagKey {
@@ -184,6 +209,9 @@ impl ConfigFlagKey {
             Self::Double => ("double", "enabled"),
             Self::WebPrivateNetwork => ("web", "allow_private_network"),
             Self::BrowserPrivateNetwork => ("browser", "allow_private_network"),
+            Self::AgentStatusTool => ("agent", "status_tool"),
+            Self::AgentAutoTitle => ("agent", "auto_title"),
+            Self::KnowledgePeek => ("knowledge", "peek"),
         }
     }
 
@@ -216,6 +244,28 @@ impl ConfigFlagKey {
                 let c: browser::BrowserConfig = config.extract_inner(s).unwrap_or_default();
                 c.allow_private_network
             }
+            Self::AgentStatusTool | Self::AgentAutoTitle => {
+                let c: agent::AgentConfig = config.extract_inner(s).unwrap_or_default();
+                match self {
+                    Self::AgentStatusTool => c.status_tool,
+                    _ => c.auto_title,
+                }
+            }
+            Self::KnowledgePeek => {
+                let c: knowledge::KnowledgeConfig = config.extract_inner(s).unwrap_or_default();
+                c.peek
+            }
+        }
+    }
+
+    /// 212 §15: the switch the running engine applies to new sessions at once (no
+    /// restart); `None` for the plugin flags that wait for one.
+    pub(super) fn live(self) -> Option<agent::LoopFlag> {
+        match self {
+            Self::AgentStatusTool => Some(agent::LoopFlag::StatusTool),
+            Self::AgentAutoTitle => Some(agent::LoopFlag::AutoTitle),
+            Self::KnowledgePeek => Some(agent::LoopFlag::KnowledgePeek),
+            _ => None,
         }
     }
 }
@@ -227,9 +277,12 @@ pub struct ConfigFlag {
     pub key: ConfigFlagKey,
     /// The value `<data_dir>/config.yaml` holds now (the section's default when absent).
     pub enabled: bool,
-    /// The value this process started with (its boot config); plugins keep it until a restart.
+    /// The value this process started with (its boot config); plugins keep it until a
+    /// restart. A 212 §15 switch (`agent.status_tool`, `agent.auto_title`, `knowledge.peek`)
+    /// runs what the file holds: Settings applies it to new sessions at once.
     pub running: bool,
-    /// `enabled != running`: the saved value applies after theuth restarts.
+    /// `enabled != running`: the saved value applies after theuth restarts. Always
+    /// `false` for a 212 §15 switch.
     pub restart_required: bool,
 }
 

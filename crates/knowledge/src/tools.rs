@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use decision::classify::{BoolItem, BoolVerdict};
 use kameo::actor::ActorRef;
@@ -21,17 +22,80 @@ pub const GET: &str = "knowledge_get";
 /// Name of [`PeekTool`]; the loop collects its relevant ids for the compaction head (212 §4.3).
 pub const PEEK: &str = "peek_memory";
 
+macro_rules! prompt_base {
+    () => {
+        "Durable facts about the user's machines, projects, accounts and decisions belong in the knowledge base: \
+check <knowledge> hints and `knowledge_search()` before assuming, record with `knowledge_put()` (both python)."
+    };
+}
+
 /// The plugin's system-prompt block (07 §4 part 7, 10 §4.3): when to reach for
 /// the knowledge base. Static, so it never busts the system cache.
-pub const PROMPT: &str = "Durable facts about the user's machines, projects, accounts and decisions belong in the knowledge base: \
-check <knowledge> hints and `knowledge_search()` before assuming, record with `knowledge_put()` (both python). \
-Before reading hinted concepts you are unsure of, `peek_memory(question, ids)` (python) asks the local model which of them answer your question and returns only those in full.";
+pub const PROMPT: &str = concat!(
+    prompt_base!(),
+    " Before reading hinted concepts you are unsure of, `peek_memory(question, ids)` (python) asks the local model which of them answer your question and returns only those in full."
+);
+
+/// [`PROMPT`] without the `peek_memory` sentence: a session started with `knowledge.peek`
+/// off gets this block instead (212 §15), constant for that session.
+pub const PROMPT_WITHOUT_PEEK: &str = prompt_base!();
+
+/// 212 §15: `knowledge.peek` and `knowledge.peek_threshold` as this engine runs them now.
+/// Settings changes both without a restart: `peek_memory` reads them on every call.
+#[derive(Debug)]
+pub struct PeekSettings {
+    on: AtomicBool,
+    /// `f32::to_bits` of the threshold.
+    threshold: AtomicU32,
+}
+
+impl PeekSettings {
+    /// From `knowledge.peek` and `knowledge.peek_threshold`.
+    pub fn new(on: bool, threshold: f32) -> Self {
+        Self {
+            on: AtomicBool::new(on),
+            threshold: AtomicU32::new(threshold.to_bits()),
+        }
+    }
+
+    /// `peek_memory` answers; off, it refuses with `peek_memory: turned off in Settings`.
+    pub fn on(&self) -> bool {
+        self.on.load(Ordering::Relaxed)
+    }
+
+    /// Minimum P(true) for "relevant".
+    pub fn threshold(&self) -> f32 {
+        f32::from_bits(self.threshold.load(Ordering::Relaxed))
+    }
+
+    /// Turn `peek_memory` on or off from the next call.
+    pub fn set_on(&self, on: bool) {
+        self.on.store(on, Ordering::Relaxed);
+    }
+
+    /// The threshold the next call applies.
+    pub fn set_threshold(&self, threshold: f32) {
+        self.threshold.store(threshold.to_bits(), Ordering::Relaxed);
+    }
+}
+
+/// The `knowledge.peek_threshold` Settings accepts (212 §15).
+pub fn check_peek_threshold(value: f32) -> Result<f32, String> {
+    // A client stepping by 0.05 may send 0.9500000000000001.
+    if (0.05 - 1e-6..=0.95 + 1e-6).contains(&value) {
+        Ok(value)
+    } else {
+        Err("peek threshold must be between 0.05 and 0.95".into())
+    }
+}
 
 /// Register every `knowledge_*` tool, `peek_memory` and the prompt block on `reg`.
+/// `peek` is the live switch and threshold the plugin actor shares with Settings.
 pub async fn register(
     reg: &ActorRef<ToolRegistry>,
     knowledge: Arc<Knowledge>,
     cfg: &KnowledgeConfig,
+    peek: Arc<PeekSettings>,
 ) {
     let _ = reg
         .ask(RegisterPrompt {
@@ -65,13 +129,14 @@ pub async fn register(
     let _ = reg
         .ask(RegisterTool(Arc::new(RetitleTool(k.clone()))))
         .await;
-    // 212: check memories against a question with the local decision model.
+    // 212: check memories against a question with the local decision model. Always
+    // registered; a session started with `knowledge.peek` off leaves it out of its list.
     let peek = PeekTool {
         knowledge: k.clone(),
         judge: Arc::new(DecisionJudge {
             checkpoint: cfg.peek_checkpoint.clone(),
         }),
-        threshold: cfg.peek_threshold,
+        settings: peek,
     };
     let _ = reg.ask(RegisterTool(Arc::new(peek))).await;
 }
@@ -304,8 +369,8 @@ pub struct PeekTool {
     pub knowledge: Arc<Knowledge>,
     /// Who answers "does this memory help".
     pub judge: Arc<dyn MemoryJudge>,
-    /// Minimum P(true) for "relevant" (`knowledge.peek_threshold`).
-    pub threshold: f32,
+    /// `knowledge.peek` and `knowledge.peek_threshold`, read on every call (212 §15).
+    pub settings: Arc<PeekSettings>,
 }
 
 /// One requested id's outcome.
@@ -381,6 +446,8 @@ impl Tool for PeekTool {
     }
 
     async fn call(&self, a: PeekArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        // 212 §15: a session started before Settings turned it off still lists it.
+        anyhow::ensure!(self.settings.on(), "peek_memory: turned off in Settings");
         let question = a.question.trim();
         anyhow::ensure!(
             (1..=PEEK_QUESTION_CHARS).contains(&question.chars().count()),
@@ -429,7 +496,9 @@ impl Tool for PeekTool {
         };
         let (verdicts, judge_failed): (Vec<Verdict>, bool) = match answers {
             Ok(v) => (
-                v.iter().map(|v| Verdict::of(v, self.threshold)).collect(),
+                v.iter()
+                    .map(|v| Verdict::of(v, self.settings.threshold()))
+                    .collect(),
                 false,
             ),
             Err(e) => {
@@ -1541,7 +1610,7 @@ mod tests {
         let tool = PeekTool {
             knowledge: k.clone(),
             judge: judge.clone(),
-            threshold: 0.5,
+            settings: Arc::new(PeekSettings::new(true, 0.5)),
         };
         (tool, judge)
     }
@@ -1872,5 +1941,56 @@ mod tests {
         );
         assert_eq!(judge.seen.lock().len(), 1);
         assert_eq!(opened(&k, &["facts/a"]).await, [0]);
+    }
+
+    /// 212 §15: Settings' switch refuses the next call without asking the judge, and a
+    /// threshold change applies to the next call, both on the registered tool (no restart).
+    #[tokio::test]
+    async fn peek_follows_the_live_settings() {
+        let (_scratch, k) = peek_bundle("kpeeklive").await;
+        let (tool, judge) = peek_tool(&k, Some(vec![said(true, 0.4)]));
+        let headline = |out: ToolOutput| out.content.lines().next().unwrap().to_owned();
+        let out = tool.call(peek_args("q", &["facts/a"]), cx(false)).await;
+        assert_eq!(
+            headline(out.unwrap()),
+            "peek_memory: 0 of 1 relevant to \"q\""
+        );
+        tool.settings.set_threshold(0.3);
+        let out = tool.call(peek_args("q", &["facts/a"]), cx(false)).await;
+        assert_eq!(
+            headline(out.unwrap()),
+            "peek_memory: 1 of 1 relevant to \"q\""
+        );
+        tool.settings.set_on(false);
+        let e = tool
+            .call(peek_args("q", &["facts/a"]), cx(false))
+            .await
+            .unwrap_err();
+        assert_eq!(e.to_string(), "peek_memory: turned off in Settings");
+        assert_eq!(judge.seen.lock().len(), 2);
+    }
+
+    /// 212 §15: the Settings range, with room for a client's float steps.
+    #[test]
+    fn peek_threshold_range() {
+        assert_eq!(check_peek_threshold(0.05), Ok(0.05));
+        assert_eq!(check_peek_threshold(0.950_000_1), Ok(0.950_000_1));
+        for bad in [0.0, 0.04, 0.96, 1.0] {
+            assert_eq!(
+                check_peek_threshold(bad),
+                Err("peek threshold must be between 0.05 and 0.95".into())
+            );
+        }
+    }
+
+    /// 212 §15: the block a session without peek gets is the full one minus its sentence.
+    #[test]
+    fn prompt_without_peek_drops_only_the_peek_sentence() {
+        assert!(!PROMPT_WITHOUT_PEEK.contains("peek_memory"));
+        let rest = PROMPT.strip_prefix(PROMPT_WITHOUT_PEEK).unwrap();
+        assert!(
+            rest.starts_with(" Before reading hinted concepts"),
+            "{rest}"
+        );
     }
 }

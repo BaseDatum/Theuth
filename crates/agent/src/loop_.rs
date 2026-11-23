@@ -3971,6 +3971,7 @@ pub(crate) fn direct_specs(
     runtime_only: bool,
     subagents: bool,
     toolset: Option<&Toolset>,
+    status_tool: bool,
 ) -> Vec<ToolSpec> {
     let runtime = runtime && toolset.is_none_or(|t| t.runtime);
     let floor = runtime && runtime_only && toolset.is_none();
@@ -3986,7 +3987,8 @@ pub(crate) fn direct_specs(
     if listed(todo::NAME) {
         specs.push(todo::spec());
     }
-    if listed(status::NAME) {
+    // 212 §15: `agent.status_tool` off offers no `set_status` (nor its nudge or sentence).
+    if status_tool && listed(status::NAME) {
         specs.push(status::spec());
     }
     if runtime {
@@ -3994,6 +3996,17 @@ pub(crate) fn direct_specs(
     }
     specs.sort_by(|a, b| a.name.cmp(&b.name));
     specs
+}
+
+/// 212 §15: a session started with `knowledge.peek` off lists no `peek_memory` (direct
+/// tool, runtime index or bridge), and its knowledge prompt block drops the peek sentence.
+pub(crate) fn without_peek(specs: &mut Vec<ToolSpec>, prompts: &mut [(&'static str, String)]) {
+    specs.retain(|s| s.name != knowledge::tools::PEEK);
+    for (plugin, block) in prompts {
+        if *plugin == "knowledge" && block == knowledge::tools::PROMPT {
+            *block = knowledge::tools::PROMPT_WITHOUT_PEEK.to_owned();
+        }
+    }
 }
 
 /// The loop-local direct tools a python cell can await too (the repl answers
@@ -5699,7 +5712,7 @@ impl Turn {
         };
         // Read before `ListTools`: a hide landing in between moves it again.
         self.hidden_epoch = registry.ask(HiddenEpoch).await.ok();
-        let specs = match registry.ask(ListTools(Some(self.shared.id))).await {
+        let mut specs = match registry.ask(ListTools(Some(self.shared.id))).await {
             Ok(specs) => specs,
             Err(e) => {
                 self.error(format!("list tools: {e}")).await;
@@ -5723,7 +5736,10 @@ impl Turn {
             self.shared.store.effective_notebook(self.shared.id).await,
             Ok(Some(_))
         );
-        let prompts = registry.ask(ListPrompts).await.unwrap_or_default();
+        let mut prompts = registry.ask(ListPrompts).await.unwrap_or_default();
+        if !self.shared.cfg.knowledge_peek {
+            without_peek(&mut specs, &mut prompts);
+        }
         // 171 §9.2: the `<cell_error>` pass runs where the `## User cells` block is taught.
         self.cells_on = attended
             && self.shared.kind != SessionKind::Advisor
@@ -5821,9 +5837,10 @@ impl Turn {
             );
             // 212 §10: the status sentence only where `set_status` is offered; constant
             // per session, so the prompt stays cache-stable.
-            if toolset
-                .as_ref()
-                .is_none_or(|t| t.tools.iter().any(|n| n == status::NAME))
+            if self.shared.cfg.status_tool
+                && toolset
+                    .as_ref()
+                    .is_none_or(|t| t.tools.iter().any(|n| n == status::NAME))
                 && local_ok(status::NAME)
             {
                 b.push('\n');
@@ -5878,6 +5895,7 @@ impl Turn {
             self.shared.cfg.runtime_only,
             self.shared.depth < self.shared.cfg.subagents.max_depth,
             toolset.as_ref(),
+            self.shared.cfg.status_tool,
         );
         // 125 §4.1: the advisor gets `advise` and no `todo`; R1.3: an advised
         // Chat session (or a subagent under one) gets `consult`.
@@ -6988,8 +7006,9 @@ impl Turn {
     /// content; for a private tree not even their lengths.
     async fn maybe_title(&mut self) {
         // 06 §1.7: a pinned title (a recording meeting's) is never regenerated; 212 §11:
-        // nor one the agent (`set_status`) or the user named.
-        if self.shared.title_held() {
+        // nor one the agent (`set_status`) or the user named; 212 §15: nor any while
+        // `agent.auto_title` was off when the session started.
+        if self.shared.title_held() || !self.shared.cfg.auto_title {
             return;
         }
         let epoch_changed = self.state.epoch != self.state.title_epoch;
@@ -7453,8 +7472,9 @@ impl Turn {
                     .await
                 {
                     Ok(metas) if !metas.is_empty() => {
-                        self.note("knowledge", &knowledge::harvest::render_hints(&metas))
-                            .await;
+                        let peek = self.shared.cfg.knowledge_peek;
+                        let hints = knowledge::harvest::render_hints(&metas, peek);
+                        self.note("knowledge", &hints).await;
                         // 136 §5.3: every id shown is an impression (`uses.shown`).
                         let ids: Vec<String> = metas.into_iter().map(|m| m.id).collect();
                         if let Err(e) = knowledge.record_shown(&ids, chrono::Utc::now()).await {
@@ -10599,6 +10619,7 @@ mod tests {
     fn runtime_sentence_names_exactly_the_unbound_direct_tools() {
         let loop_local: BTreeSet<String> = [
             todo::spec(),
+            status::spec(),
             repl::spec(),
             advisor::advise::spec(),
             advisor::consult::spec(),
@@ -10660,7 +10681,14 @@ mod tests {
             status_every: None,
         };
         assert_eq!(
-            names(direct_specs(registry(), true, true, true, Some(&live))),
+            names(direct_specs(
+                registry(),
+                true,
+                true,
+                true,
+                Some(&live),
+                true
+            )),
             ["brief_search", "meeting_topic"]
         );
         // Listed `todo`, `runtime: true` with a pool → both loop-local tools back.
@@ -10677,7 +10705,8 @@ mod tests {
                 true,
                 true,
                 true,
-                Some(&with_locals)
+                Some(&with_locals),
+                true
             )),
             ["ask_user", "python", "todo"]
         );
@@ -10688,7 +10717,8 @@ mod tests {
                 false,
                 true,
                 true,
-                Some(&with_locals)
+                Some(&with_locals),
+                true
             )),
             ["ask_user", "todo"]
         );
@@ -10700,10 +10730,20 @@ mod tests {
             hint_limit: None,
             status_every: None,
         };
-        assert!(names(direct_specs(registry(), true, true, false, Some(&spawn))).is_empty());
+        assert!(
+            names(direct_specs(
+                registry(),
+                true,
+                true,
+                false,
+                Some(&spawn),
+                true
+            ))
+            .is_empty()
+        );
         // `None`: the floor with the runtime on, everything plus `todo` and `set_status` without.
         assert_eq!(
-            names(direct_specs(registry(), true, true, true, None)),
+            names(direct_specs(registry(), true, true, true, None, true)),
             [
                 "ask_user",
                 "meeting_topic",
@@ -10714,7 +10754,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            names(direct_specs(registry(), false, true, true, None)),
+            names(direct_specs(registry(), false, true, true, None, true)),
             [
                 "ask_user",
                 "brief_search",
@@ -10724,6 +10764,32 @@ mod tests {
                 "spawn_subagent",
                 "todo"
             ]
+        );
+        // 212 §15: `agent.status_tool` off — no `set_status`, listed or not.
+        assert_eq!(
+            names(direct_specs(registry(), true, true, true, None, false)),
+            [
+                "ask_user",
+                "meeting_topic",
+                "python",
+                "spawn_subagent",
+                "todo"
+            ]
+        );
+        let with_status = Toolset {
+            tools: vec![status::NAME.into()],
+            ..with_locals.clone()
+        };
+        assert_eq!(
+            names(direct_specs(
+                registry(),
+                true,
+                true,
+                true,
+                Some(&with_status),
+                false
+            )),
+            ["python"]
         );
 
         let blocks = || {
@@ -10744,6 +10810,38 @@ mod tests {
         assert_eq!(
             prompt_blocks(blocks(), None, false),
             format!("A\n\nM\n\n{}\n\nW", frame::UNATTENDED_LINE)
+        );
+    }
+
+    /// 212 §15: `knowledge.peek` off — `peek_memory` leaves the list and the knowledge block
+    /// loses only its peek sentence; any other plugin's block is untouched.
+    #[test]
+    fn without_peek_drops_the_tool_and_its_sentence() {
+        let spec = |name: &str| ToolSpec {
+            name: name.into(),
+            description: String::new(),
+            schema: serde_json::json!({"type": "object"}),
+            risk: tools::Risk::ReadOnly,
+            direct: false,
+            returns: "str".into(),
+        };
+        let mut specs = vec![spec(knowledge::tools::GET), spec(knowledge::tools::PEEK)];
+        let mut prompts = vec![
+            ("knowledge", knowledge::tools::PROMPT.to_owned()),
+            ("web", "W peek_memory".to_owned()),
+        ];
+        without_peek(&mut specs, &mut prompts);
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, [knowledge::tools::GET]);
+        assert_eq!(
+            prompts,
+            [
+                (
+                    "knowledge",
+                    knowledge::tools::PROMPT_WITHOUT_PEEK.to_owned()
+                ),
+                ("web", "W peek_memory".to_owned()),
+            ]
         );
     }
 

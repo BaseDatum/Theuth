@@ -897,7 +897,9 @@ agent:
                              # unset: inherits title_model, then the session's model. Must be a catalog `provider/model`. /escalate or Settings → Agent loop
   # stream_idle_secs: 120     # seconds without a stream event before a model call is abandoned (36 §2.3); Settings → Agent loop
   # max_salvages: 2           # interrupted-reply recoveries per turn (stalled stream or output cap) before the turn errors (36 §2.4); 0 = off
-  # status_every: 8           # tool calls between harness nudges asking the model to call set_status (212 §10); the first comes after 2; 0 = off
+  # status_every: 8           # tool calls between harness nudges asking the model to call set_status (212 §10); the first comes after 2; 0 = off; Settings → Agent loop
+  # status_tool: true         # false: new sessions get no set_status tool, status prompt line or reminders (212 §15); Settings → Agent loop
+  # auto_title: true          # false: the title model never names or renames new sessions (212 §15); Settings → Agent loop
   # aws_profile: work          # Bedrock inference for every session; /aws or Settings → Connections
   # openrouter:               # built-in OpenRouter provider (85 §0.6); key = secret `openrouter` or OPENROUTER_API_KEY
   #   provider: {order: [anthropic], allow_fallbacks: false}  # OpenRouter `provider` preferences, sent verbatim when set
@@ -910,7 +912,7 @@ agent:
   #   max_runtime_secs: 600
   #   reply_timeout_secs: 120
   # knowledge:                # loop policy (design doc 10 §5); the store itself is `knowledge:` below
-  #   hint_limit: 5            # lines per <knowledge> note
+  #   hint_limit: 5            # lines per <knowledge> note; 0 = no hints; Settings → Agent loop
   #   hint_rounds: 4           # mid-turn hint cadence in rounds
   #   harvest_every: 3         # tool-using root turns per harvest; 0 disables harvest
   #   harvest_max: 8           # documents accepted per harvest
@@ -922,7 +924,8 @@ agent:
 #     fact: 30
 #     procedure: 90
 #     entity: 60
-#   peek_threshold: 0.5      # 212: P(true) peek_memory needs to call a memory relevant (the gliner Bool is uncalibrated)
+#   peek: true               # 212 §15: false = new sessions list no peek_memory and the hints do not offer it; Settings → Agent loop
+#   peek_threshold: 0.5      # 212: P(true) peek_memory needs to call a memory relevant (the gliner Bool is uncalibrated); Settings → Agent loop
 #   peek_checkpoint: gliner  # 212: the decision checkpoint peek_memory judges with
 
 # documents:                 # design doc 59; Yjs documents under <data_dir>/documents/, the BlockNote editor

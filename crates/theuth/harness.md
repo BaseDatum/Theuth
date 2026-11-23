@@ -51,6 +51,8 @@ agent:
   stream_idle_secs: 120                # seconds without a stream event before a model call is abandoned as a dead socket (36 §2.3)
   max_salvages: 2                      # interrupted-reply recoveries per turn (stalled stream or output cap) before the turn errors; 0 = off
   status_every: 8                      # tool calls between "status check" nudges asking for set_status (its line above the composer; 212); 0 = off
+  status_tool: true                    # false: new sessions get no set_status, status prompt line or reminders (212 §15)
+  auto_title: true                     # false: the title model never names new sessions (212 §15)
   max_tool_output_chars: 32000
   runtime_only: true                   # false: every tool is also a direct definition, not just python + user/agent tools
   compact_at: 0.8                      # auto-compact at this fraction of the context window; 0 = off
@@ -66,7 +68,7 @@ rpc: {listen: 127.0.0.1:7777}
 web: {enabled: true, engines: [google, bing, brave, qwant, duckduckgo, wikipedia, arxiv, github], fetch_max_chars: 4000, read_top: 5, accept_language: en-US,en;q=0.9, header_ladder: true, impersonate: always}
 search_providers: {firecrawl: {base_url: https://api.firecrawl.dev}}   # key = the `firecrawl` secret in the vault
 secrets: {key_store: auto, tools: true, request_timeout_secs: 1800}   # encrypted vault; key_store auto = OS keychain, else secrets.key; tools false = no secret_* tools and `{{secret:…}}` stays literal (37)
-knowledge: {enabled: true, peek_threshold: 0.5, peek_checkpoint: gliner}   # peek_memory: P(true) a memory needs to count as relevant; the decision checkpoint that judges (212)
+knowledge: {enabled: true, peek: true, peek_threshold: 0.5, peek_checkpoint: gliner}   # peek false = no peek_memory for new sessions; P(true) a memory needs to count as relevant; the decision checkpoint that judges (212)
 surface: {enabled: true, correct: true}   # replies may draw mermaid / json-render; correct = one fix-up round on invalid json-render
 artifact: {enabled: true, fonts: []}   # the `show` tool; fonts = extra directories searched when compiling PDFs (35)
 app: {enabled: true}   # the `app` tool, `/apps`, `get_app`/`app_*` RPC and the parser helper; false = none of those, published apps stay readable as source (46)

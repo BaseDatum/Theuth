@@ -75,6 +75,7 @@ async fn scenarios() {
     user_named_session_keeps_its_title().await;
     title_model_is_held_by_either_guard().await;
     nudge_cadence().await;
+    status_tool_off().await;
     if let Some(pool) = worker_pool().await {
         cell_call_updates_the_turn(pool).await;
     }
@@ -141,12 +142,18 @@ async fn user_named_session_keeps_its_title() {
 }
 
 /// §13.3: a title-due turn runs the title model, unless the agent or the user named the
-/// session.
+/// session, or (212 §15) the session started with `agent.auto_title` off.
 async fn title_model_is_held_by_either_guard() {
     let input = "Walk me through the datacenter failover drill.";
-    let titled = |agent: bool, user: bool| async move {
+    let titled = |agent: bool, user: bool, auto_title: bool| async move {
         let mut h = Harness::new(Fake::harvest_held(Duration::ZERO)).await;
-        let (mut turn, tid) = h.turn("openai/textonly", CancellationToken::new()).await;
+        let cfg = AgentConfig {
+            auto_title,
+            ..AgentConfig::default()
+        };
+        let (mut turn, tid) = h
+            .turn_with("openai/textonly", CancellationToken::new(), cfg)
+            .await;
         // `Session::start_turn` counts the user's chars; the harness bypasses it.
         turn.state.title_chars = input.len();
         turn.shared.agent_titled.store(agent, Relaxed);
@@ -163,9 +170,26 @@ async fn title_model_is_held_by_either_guard() {
         };
         (state.title_model, ran)
     };
-    assert_eq!(titled(false, false).await, (true, true), "unguarded: ran");
-    assert_eq!(titled(true, false).await, (false, false), "agent_titled");
-    assert_eq!(titled(false, true).await, (false, false), "user_titled");
+    assert_eq!(
+        titled(false, false, true).await,
+        (true, true),
+        "unguarded: ran"
+    );
+    assert_eq!(
+        titled(true, false, true).await,
+        (false, false),
+        "agent_titled"
+    );
+    assert_eq!(
+        titled(false, true, true).await,
+        (false, false),
+        "user_titled"
+    );
+    assert_eq!(
+        titled(false, false, false).await,
+        (false, false),
+        "auto_title off"
+    );
 }
 
 /// The main model's script, by tool results so far: `steps[n]` is the call after `n`
@@ -205,6 +229,48 @@ async fn nudges(steps: Vec<Option<(&'static str, Value)>>, toolset: Option<Tools
         .filter(|b| system(b).contains("## Guidance"))
         .map(|b| b["messages"].to_string().matches(NUDGE).count())
         .collect()
+}
+
+/// 212 §15: a session started with `agent.status_tool` off has no `set_status` in its tool
+/// array, no status sentence in its prompt and no nudge, though its toolset lists the tool.
+async fn status_tool_off() {
+    let other = || Some(("nope_tool", json!({})));
+    let mut h = Harness::new(Script {
+        steps: vec![other(), other(), other(), other(), None],
+    })
+    .await;
+    let cfg = AgentConfig {
+        status_tool: false,
+        ..AgentConfig::default()
+    };
+    let (turn, tid) = h
+        .turn_with("openai/textonly", CancellationToken::new(), cfg)
+        .await;
+    *turn.shared.toolset.write() = Some(Toolset {
+        tools: vec![status::NAME.to_owned()],
+        prompts: vec![],
+        runtime: false,
+        hint_limit: Some(0),
+        status_every: Some(1),
+    });
+    turn.run(tid, vec![h.input("go", false)]).await;
+    h.drain().await;
+    let main: Vec<Value> = h
+        .requests()
+        .await
+        .into_iter()
+        .filter(|b| system(b).contains("## Guidance"))
+        .collect();
+    assert_eq!(main.len(), 5);
+    for b in &main {
+        assert!(
+            !b["tools"].to_string().contains(status::NAME),
+            "{}",
+            b["tools"]
+        );
+        assert!(!system(b).contains(status::PROMPT));
+        assert!(!b["messages"].to_string().contains(NUDGE));
+    }
 }
 
 /// §13.4: the first nudge after 2 calls without a status, then every `status_every`;

@@ -4650,6 +4650,62 @@ impl Message<GetMaxSalvages> for Agents {
     }
 }
 
+impl Message<crate::SetStatusEvery> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SetStatusEvery,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        Arc::make_mut(&mut self.cfg).status_every = m.count;
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) =
+            runtime::write_config_value(&path, "agent", "status_every", &m.count.to_string())
+        {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(())
+    }
+}
+
+impl Message<crate::SetHintLimit> for Agents {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: crate::SetHintLimit,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        Arc::make_mut(&mut self.cfg).knowledge.hint_limit = m.count;
+        let path = self.rt.data_dir.join("config.yaml");
+        if let Err(e) = runtime::write_nested_config_value(
+            &path,
+            "agent",
+            "knowledge",
+            "hint_limit",
+            &m.count.to_string(),
+        ) {
+            tracing::warn!("config.yaml: {e}");
+        }
+        Ok(())
+    }
+}
+
+impl Message<crate::SetLoopFlag> for Agents {
+    type Reply = ();
+
+    /// 212 §15: config.yaml is the caller's; sessions started from now on copy this.
+    async fn handle(&mut self, m: crate::SetLoopFlag, _: &mut Context<Self, Self::Reply>) {
+        let cfg = Arc::make_mut(&mut self.cfg);
+        match m.flag {
+            crate::LoopFlag::StatusTool => cfg.status_tool = m.on,
+            crate::LoopFlag::AutoTitle => cfg.auto_title = m.on,
+            crate::LoopFlag::KnowledgePeek => cfg.knowledge_peek = m.on,
+        }
+    }
+}
+
 impl Message<SetTitleModel> for Agents {
     type Reply = Result<Option<ModelInfo>, String>;
 
@@ -10494,6 +10550,8 @@ impl Message<crate::GetInfoDefaults> for Agents {
                 .state(None)
                 .map_err(|e| e.to_string())?,
             advisor: self.advisor_cfg.defaults(),
+            status_every: self.cfg.status_every,
+            hint_limit: self.cfg.knowledge.hint_limit,
         })
     }
 }
@@ -12399,6 +12457,10 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     if rt.config.contains("acp") {
         cfg.acp = rt.section("acp")?;
     }
+    // 212 §15: `knowledge.peek`, carried on `cfg` so each session snapshots it.
+    cfg.knowledge_peek = rt
+        .section::<knowledge::KnowledgeConfig>("knowledge")
+        .map_or(true, |k| k.peek);
     let cfg = Arc::new(cfg);
     // 68 §2: `sessions.owner` is this engine's mesh id. The mesh plugin
     // starts after us, so read (or create) the identity file directly.
