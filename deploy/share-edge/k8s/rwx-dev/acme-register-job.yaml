@@ -26,6 +26,7 @@ spec:
           image: ghcr.io/skymoore/theuth/share-edge:share-edge-a0c7a86e8
           args: ["acme", "register", "--ca", "letsencrypt", "--config", "/etc/theuth-share-edge/config.yaml"]
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+          env: [{name: THEUTH_SHARE_EDGE_DB_JOURNAL, value: delete}]
           volumeMounts:
             - {name: data, mountPath: /var/lib/theuth-share-edge}
             - {name: config, mountPath: /etc/theuth-share-edge, readOnly: true}
