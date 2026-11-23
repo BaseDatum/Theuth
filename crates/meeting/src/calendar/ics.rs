@@ -32,15 +32,15 @@ pub const JOIN_HOSTS: &[(&str, &str)] = &[
 ];
 
 /// The user's zone for floating (zone-less) times, so a date across a DST change keeps its wall
-/// clock. `TZ` first because chrono's `Local` honours it on Unix; a fixed offset only when the
-/// zone cannot be named.
+/// clock. A set `TZ` decides (chrono's `Local` honours it on Unix), else the system zone; a fixed
+/// offset only when the zone cannot be named (a POSIX `TZ` rule, an empty `TZ`).
 fn local_tz() -> Tz {
-    std::env::var("TZ")
-        .ok()
-        .map(|s| s.trim_start_matches(':').to_owned())
-        .or_else(|| iana_time_zone::get_timezone().ok())
-        .and_then(|n| n.parse::<chrono_tz::Tz>().ok())
-        .map_or_else(|| Tz::Fixed(*chrono::Local::now().offset()), Tz::Tz)
+    match std::env::var("TZ") {
+        Ok(s) => Some(s.trim_start_matches(':').to_owned()),
+        Err(_) => iana_time_zone::get_timezone().ok(),
+    }
+    .and_then(|n| n.parse::<chrono_tz::Tz>().ok())
+    .map_or_else(|| Tz::Fixed(*chrono::Local::now().offset()), Tz::Tz)
 }
 
 /// Parse `text` (one VCALENDAR) and expand every VEVENT into the instances that overlap
