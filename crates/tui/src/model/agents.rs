@@ -336,6 +336,7 @@ impl Model {
                 ..
             } => {
                 self.model_id = model;
+                self.status = None;
                 self.turn_seq = Some(turn_seq);
                 // An owner may already have presented the input, by sequence or wrapper.
                 if self.components.turn_hidden(turn_seq)
@@ -454,6 +455,7 @@ impl Model {
                 self.context_estimated = false;
                 self.compacting = false;
                 self.vision = None;
+                self.status = None;
                 self.resume_note = None;
             }
             // The gauge moves per round, with the cost (51 §6.4).
@@ -530,6 +532,7 @@ impl Model {
             AgentEvent::Error { message, .. } => {
                 self.compacting = false;
                 self.vision = None;
+                self.status = None;
                 self.entries.push(crate::components::files::ended(&message).unwrap_or_else(|| Entry::Error(message)));
                 crate::components::files::fold_notices(&mut self.entries);
             }
@@ -550,6 +553,8 @@ impl Model {
             | AgentEvent::DefaultEffortChanged { .. }
             | AgentEvent::FavoriteModelsChanged { .. }
             | AgentEvent::SkillsChanged { .. } => {}
+            // 212 §12: the agent's own status replaces the activity word until the turn ends.
+            AgentEvent::StatusChanged { status, .. } => self.status = Some(status),
             // The consultation's steps in the status line; the settled note
             // is one collapsed card naming the sources (52 §6). Its body text
             // arrives with the reloaded transcript, not on the wire.

@@ -6518,6 +6518,46 @@
         ));
     }
 
+    /// 212 §12: the agent's status replaces the activity word and the
+    /// trailing row's `thinking…` while the turn runs; the turn's end clears it.
+    #[test]
+    fn status_changed_names_the_activity_until_the_turn_ends() {
+        let mut m = Model::new("m".into(), true);
+        let s = SessionId::new();
+        let turn = TurnId::new();
+        m.session = Some(s);
+        m.streaming = true;
+        assert_eq!(m.trailing().as_deref(), Some("thinking…"));
+        m.apply_agent(AgentEvent::StatusChanged {
+            session: s,
+            status: "reading the build lock code".into(),
+            title: Some("Fix build lock".into()),
+        });
+        assert_eq!(m.activity().as_deref(), Some("reading the build lock code"));
+        assert_eq!(m.trailing().as_deref(), Some("reading the build lock code"));
+        assert!(m.status().contains("reading the build lock code"));
+        // Another session's status does not touch the shown one.
+        m.apply_agent(AgentEvent::StatusChanged {
+            session: SessionId::new(),
+            status: "elsewhere".into(),
+            title: None,
+        });
+        assert_eq!(m.activity().as_deref(), Some("reading the build lock code"));
+        m.compacting = true;
+        assert_eq!(m.activity().as_deref(), Some("compacting…"));
+        assert_eq!(m.trailing(), None);
+        m.compacting = false;
+        m.apply_agent(AgentEvent::TurnFinished {
+            session: s,
+            turn,
+            stop_reason: "stop".into(),
+            usage: Usage::default(),
+            context: 0,
+        });
+        assert!(m.status.is_none());
+        assert_eq!(m.trailing(), None);
+    }
+
     /// 183 §5.3, §11.2: a Moved row is a `Moved` card, and a resumed tool
     /// result's leading `<engine_restart/>` becomes its own card.
     #[test]

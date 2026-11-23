@@ -57,6 +57,10 @@ impl Model {
         if self.compacting {
             return Some("compacting…".into());
         }
+        // 212 §12: the agent's own status line outranks the generic word.
+        if let Some(s) = &self.status {
+            return Some(s.clone());
+        }
         if let Some(v) = &self.vision {
             return Some(v.clone());
         }
@@ -88,6 +92,15 @@ impl Model {
     /// model with nothing else showing progress in place.
     pub fn waiting(&self) -> bool {
         self.activity().is_some_and(|a| a == "thinking…")
+    }
+
+    /// The trailing activity row's text: the agent's status while its turn
+    /// runs (212 §12), else `thinking…` while waiting on the model.
+    pub fn trailing(&self) -> Option<String> {
+        if self.streaming && !self.compacting && let Some(s) = &self.status {
+            return Some(s.clone());
+        }
+        self.waiting().then(|| "thinking…".to_owned())
     }
 
     /// Current spinner glyph.

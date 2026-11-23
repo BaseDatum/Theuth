@@ -155,6 +155,9 @@ pub struct Model {
     /// The shown session's vision consultation step in flight
     /// (`VisionProgress`, 52 §6): the status-line text until it settles.
     pub vision: Option<String>,
+    /// The agent's own one-line status for the shown session's running turn
+    /// (`StatusChanged`, 212 §12); cleared when a turn starts or ends.
+    pub status: Option<String>,
     /// The user asked to leave.
     pub quit: bool,
     /// First visible transcript row while scrolled up: `(entry, rows into
