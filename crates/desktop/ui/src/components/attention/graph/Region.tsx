@@ -223,7 +223,8 @@ export function GraphRegion({ items, live, highlight, focus, subtree, onSubtree,
   return (
     <div
       ref={regionRef}
-      className={full ? 'fixed inset-0 z-40 flex flex-col bg-background' : 'relative flex shrink-0 flex-col border-b border-border-subtle'}
+      // Full screen sits under the phone's status bar and home indicator: pad by the safe area so the back button is reachable.
+      className={full ? 'fixed inset-0 z-40 flex flex-col bg-background pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]' : 'relative flex shrink-0 flex-col border-b border-border-subtle'}
       style={!full && open ? { height } : undefined}
       role="region"
       aria-label={full ? 'Agent graph, full screen' : 'Agent graph'}
