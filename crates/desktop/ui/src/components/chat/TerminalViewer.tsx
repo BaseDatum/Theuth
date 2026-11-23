@@ -11,6 +11,7 @@ import { openTerminalsTile } from '@/components/tiles/open'
 import { PtyIcon } from './Indicators'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { decode, utf8ToB64 } from '@/lib/base64'
 import { isApple } from '@/lib/chord'
 import { runsElsewhere } from '@/lib/front-door'
 import { useEngineLabel } from '@/lib/owner'
@@ -77,10 +78,6 @@ type JobRef = { session: string; job: string }
 /** Where a `Terminal`'s bytes come from: an agent PTY job, or a cell run's kernel PTY (171 §11.1 output). */
 export type TerminalSource = { kind: 'pty'; session: string; job: string } | { kind: 'cell'; run: CellRunId }
 
-const bytes = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
-/** Base64 of a string's UTF-8 bytes (`cell_input` takes base64). */
-const utf8b64 = (s: string) => btoa(Array.from(new TextEncoder().encode(s), (b) => String.fromCharCode(b)).join(''))
-
 /**
  * The wire between one source and an xterm (171 §7.4): bytes stream in (`subscribe_pty` / `cell_attach`), keystrokes
  * go out one call at a time in typing order (`pty_input` / `cell_input`), nothing is sent after `exit`. Hook-free so
@@ -97,7 +94,7 @@ export function attachSource(
 ) {
   let ended = false
   let lane: Promise<unknown> = Promise.resolve()
-  const call = src.kind === 'pty' ? (d: string) => api.pty_input(src.session, src.job, d, null) : (d: string) => api.cell_input(src.run, utf8b64(d))
+  const call = src.kind === 'pty' ? (d: string) => api.pty_input(src.session, src.job, d, null) : (d: string) => api.cell_input(src.run, utf8ToB64(d))
   const send = (d: string) => {
     if (ended) return
     lane = lane.then(() => call(d).catch(() => undefined))
@@ -119,10 +116,10 @@ export function attachSource(
       case 'reset':
         term.reset()
         if (term.rows !== c.rows || term.cols !== c.cols) term.resize(c.cols, c.rows)
-        term.write(bytes(c.data))
+        term.write(decode(c.data))
         break
       case 'data':
-        term.write(bytes(c.data))
+        term.write(decode(c.data))
         break
       case 'exit':
         // Once: a reconnect replays the stream, exit included.

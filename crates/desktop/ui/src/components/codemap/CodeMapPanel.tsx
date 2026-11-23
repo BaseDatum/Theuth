@@ -9,7 +9,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AppWindow } from 'lucide-react'
-import { type CSSProperties, type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { type CSSProperties, type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { appendDraft, prefillDraft } from '@/components/chat/Composer'
 import { DiagramFrame } from '@/components/chat/DiagramFrame'
@@ -26,7 +26,7 @@ import type { ChangeLens, CodeMapChanged, CodeMapProgress, CodemapApi, FitLens, 
 import { diagramTokens } from '@/lib/diagram-theme'
 import { canPopout, isPopout, openPopout } from '@/lib/popout'
 import { createRenderQueue, type RenderQueue } from '@/lib/render-queue'
-import { subscribeDark } from '@/lib/theme'
+import { useDark } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import { useConnection } from '@/store/connection'
 import { dispatch, on, useSessionField, useSessions } from '@/store/sessions'
@@ -123,7 +123,7 @@ export function CodeMapPanel({
   const bodyRef = useRef<HTMLDivElement>(null)
   const width = useWidth(bodyRef)
   const graphs = !mobile && width >= GRAPH_MIN_W
-  const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'))
+  const dark = useDark()
   const tokens = useMemo(diagramTokens, [dark])
 
   // §12 Q4: a history-loaded `"?"` root resolves to the engine's default root through `codeindex_stats(null)`.

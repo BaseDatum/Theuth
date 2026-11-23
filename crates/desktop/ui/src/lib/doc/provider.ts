@@ -10,6 +10,7 @@ import type { Who } from "@/rpc/bindings/method.document.output"
 import { RpcError, type RpcClient } from '@/rpc/client'
 import { ready, supports, UnsupportedCapability } from '@/rpc/discovery'
 import { DocStore, type Pending } from './queue'
+import { decode, encode } from '../base64'
 
 /** Origin tag of every change the engine sent us; never echoed back. */
 const ENGINE = 'engine'
@@ -82,13 +83,8 @@ function isAgentState(state: unknown): state is AgentState {
   )
 }
 
-function b64(bytes: Uint8Array): string {
-  // Spreading a multi-MiB state into `fromCharCode` overflows the argument limit.
-  let s = ''
-  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  return btoa(s)
-}
-const unb64 = (s: string): Uint8Array => Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
+const b64 = encode
+const unb64 = decode
 
 /** The structs (client, clock, length) an update carries; `Y.encodeStateVectorFromUpdate` is empty for one that does not start at clock 0. */
 const structs = (update: Uint8Array) => Y.decodeUpdate(update).structs as Array<{ id: { client: number; clock: number }; length: number }>

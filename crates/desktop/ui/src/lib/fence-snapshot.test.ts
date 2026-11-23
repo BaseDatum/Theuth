@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { IDLE, MAX_FRAME, MAX_PNG_BYTES, QUIET_MS, SETTLE_MS, admit, base64, fitPng, frameFor, pngSize, release, scales, settleAt } from './fence-snapshot'
+import { IDLE, MAX_FRAME, MAX_PNG_BYTES, QUIET_MS, SETTLE_MS, admit, fitPng, frameFor, pngSize, release, scales, settleAt } from './fence-snapshot'
 
 test('two render at a time, the rest wait in arrival order and move up as slots free', () => {
   let r = admit(IDLE, 'a')
@@ -74,13 +74,10 @@ test('fitPng lowers the scale for sides over 8000 px and for PNGs over 4 MB, and
   expect(fat).toEqual({ reason: expect.stringContaining('bytes exceeds') })
 })
 
-test('pngSize reads IHDR; base64 is standard with no prefix, across the chunk boundary', () => {
+test('pngSize reads IHDR', () => {
   const png = new Uint8Array(24)
   png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52])
   new DataView(png.buffer).setUint32(16, 1120)
   new DataView(png.buffer).setUint32(20, 70000)
   expect(pngSize(png)).toEqual({ width: 1120, height: 70000 })
-  const big = new Uint8Array(0x8000 * 2 + 5).map((_, i) => (i * 31) & 0xff)
-  expect(base64(big)).toBe(Buffer.from(big).toString('base64'))
-  expect(base64(new Uint8Array([0xfb, 0xff]))).toBe('+/8=')
 })

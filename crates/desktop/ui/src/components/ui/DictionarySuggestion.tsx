@@ -7,6 +7,7 @@ import { Play } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { decode } from '@/lib/base64'
 import { type Suggestion, clearSuggestion } from '@/lib/dictation'
 import type { Api } from '@/rpc/bindings/client'
 import type { SuggestionAnswer } from '@/rpc/bindings/method.talk.input'
@@ -17,7 +18,7 @@ const RATE = 16_000
 
 /** Base64 little-endian i16 PCM → samples in [-1, 1). */
 export function pcmSamples(b64: string): Float32Array<ArrayBuffer> {
-  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+  const bytes = decode(b64)
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength - (bytes.byteLength % 2))
   const out = new Float32Array(new ArrayBuffer(view.byteLength * 2))
   for (let i = 0; i < out.length; i++) out[i] = view.getInt16(i * 2, true) / 32768

@@ -1,15 +1,14 @@
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
 import { languages } from '@codemirror/language-data'
 import CodeMirror, { EditorView } from '@uiw/react-codemirror'
-import { useSyncExternalStore } from 'react'
-import { subscribeDark } from '@/lib/theme'
+import { useDark } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 
 const extensions = [markdown({ base: markdownLanguage, codeLanguages: languages }), EditorView.lineWrapping]
 
 /** Markdown editor for a charter body (the knowledge Editor's CodeMirror setup, without front matter or save keys). */
 export function CharterEditor({ value, onChange, readOnly, className }: { value: string; onChange?: (v: string) => void; readOnly?: boolean; className?: string }) {
-  const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'))
+  const dark = useDark()
   return (
     <CodeMirror
       value={value}

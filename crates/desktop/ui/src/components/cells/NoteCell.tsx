@@ -9,6 +9,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { machineName, inMesh } from '@/components/notes/machine'
 import { useMesh } from '@/components/tasks/queries'
 import { LOCAL, LOCAL_NAME, useEngines } from '@/link/engines'
+import { b64ToUtf8, utf8ToB64 } from '@/lib/base64'
 import { isApple } from '@/lib/chord'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey, useDisclosure } from '@/lib/tool-runs'
@@ -147,8 +148,6 @@ export function UnsureRun({ server, onRun, onCancel }: { server: string; onRun()
   )
 }
 
-const decode = (b64: string) => new TextDecoder().decode(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
-
 type PmSelection = BlockNoteEditor<any, any, any>['prosemirrorState']['selection']
 
 /** Start of block `id`'s code text when `$pos` is inside it, else `null`. */
@@ -195,7 +194,7 @@ function lineTop(slot: HTMLElement | null, offset: number): number {
 function MemberReview({ run, code }: { run: string | null; code: string }) {
   const canQuery1 = useQuerySupport(["cell_output_file"])
   const api = useApi()
-  const q = useQuery({ queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run as string, 'code')), enabled: canQuery1 && (run !== null), staleTime: Infinity })
+  const q = useQuery({ queryKey: ['cells', 'code', run], queryFn: async () => b64ToUtf8(await api.cell_output_file(run as string, 'code')), enabled: canQuery1 && (run !== null), staleTime: Infinity })
   if (q.error) return <div className="px-3 py-1 text-xs text-danger">{errorText(q.error)}</div>
   const rows = run === null ? code.split('\n').map((line) => ({ op: '+' as const, line })) : q.data === undefined ? null : lineDiff(q.data.replace(/\n$/, ''), code)
   if (!rows) return <div className="px-3 py-1 text-xs text-fg-tertiary">loading the code of your last run…</div>
@@ -214,7 +213,7 @@ function MemberReview({ run, code }: { run: string | null; code: string }) {
 function RanCode({ run, lang }: { run: string; lang: string }) {
   const canQuery2 = useQuerySupport(["cell_output_file"])
   const api = useApi()
-  const q = useQuery({ enabled: canQuery2, queryKey: ['cells', 'code', run], queryFn: async () => decode(await api.cell_output_file(run, 'code')), staleTime: Infinity })
+  const q = useQuery({ enabled: canQuery2, queryKey: ['cells', 'code', run], queryFn: async () => b64ToUtf8(await api.cell_output_file(run, 'code')), staleTime: Infinity })
   if (q.error) return <div className="px-3 py-1 text-xs text-danger">{errorText(q.error)}</div>
   return <pre className="mx-3 mb-2 max-h-64 overflow-auto rounded-md border border-border-subtle px-2 py-1 font-mono text-xs text-fg-secondary">{q.data === undefined ? 'loading…' : <CodeTokens code={q.data} lang={lang} />}</pre>
 }
@@ -341,7 +340,7 @@ export function NoteCell({ doc, key_, cell, code, editor, editable, block, block
   const callbacks = {
     onRun: run,
     onStop: (kill: boolean) => latest && act(() => api.cell_stop(latest.id, kill)),
-    onInput: (data: string) => latest && act(() => api.cell_input(latest.id, btoa(Array.from(new TextEncoder().encode(data), (b) => String.fromCharCode(b)).join('')))),
+    onInput: (data: string) => latest && act(() => api.cell_input(latest.id, utf8ToB64(data))),
     onAsk: () => latest && act(() => api.cell_ask(latest.id)),
     // The note is the text: edits go through BlockNote, never through the cell.
     onEdit: () => undefined,

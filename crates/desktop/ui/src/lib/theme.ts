@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from 'react'
+
 /** Settings › General › Appearance theme; `system` follows `prefers-color-scheme`. */
 export type Theme = 'light' | 'dark' | 'system'
 
@@ -34,3 +36,6 @@ export function subscribeDark(cb: () => void): () => void {
   o.observe(document.documentElement, { attributeFilter: ['class'] })
   return () => o.disconnect()
 }
+
+/** Whether `<html>` carries `.dark` (the resolved theme), re-rendering when it changes. */
+export const useDark = (): boolean => useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'))

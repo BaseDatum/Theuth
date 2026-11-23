@@ -3,19 +3,13 @@
 // The engine cuts the WAV (`meeting_segment_audio`); this file only pads the range, decodes the bytes and keeps
 // the one-at-a-time play/stop state. Pure parts are exported for tests; the player takes its context lazily.
 
+import { decode } from './base64'
+
 /** Padding on each side of a segment, so clipped consonants at the boundaries are heard. */
 export const PAD_MS = 150
 
 /** `[t0 - pad, t1 + pad]` clamped at zero. */
 export const padRange = (t0: number, t1: number, pad = PAD_MS): [number, number] => [Math.max(0, t0 - pad), t1 + pad]
-
-/** Base64 → bytes in their own `ArrayBuffer` (what `decodeAudioData` wants). */
-export function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
-  const bin = atob(b64)
-  const out = new Uint8Array(new ArrayBuffer(bin.length))
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
-}
 
 /** The slice of `AudioContext` the player uses, so tests can stub it. */
 export type PlayerContext = Pick<AudioContext, 'resume' | 'decodeAudioData' | 'createBufferSource' | 'destination'>
@@ -78,7 +72,7 @@ export class SegmentPlayer {
       const [p0, p1] = padRange(t0, t1)
       const b64 = await fetch(p0, p1)
       if (seq !== this.seq) return
-      const buffer = await ctx.decodeAudioData(base64ToBytes(b64).buffer)
+      const buffer = await ctx.decodeAudioData(decode(b64).buffer)
       if (seq !== this.seq) return
       const src = ctx.createBufferSource()
       src.buffer = buffer

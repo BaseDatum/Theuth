@@ -11,6 +11,7 @@ import { QuitSheet } from '@/components/cells/QuitSheet'
 import { refKey } from '@/components/cells/store'
 import { MessageAssistant } from '@/components/chat/MessageAssistant'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { utf8ToB64 as b64 } from '@/lib/base64'
 import type { Api } from '@/rpc/bindings/client'
 import type { CellRef } from "@/rpc/bindings/method.cells.output"
 import type { CellRun } from "@/rpc/bindings/method.cells.output"
@@ -207,7 +208,6 @@ const api = new Proxy({} as Api, {
       }
     },
 })
-const b64 = (s: string) => btoa(Array.from(new TextEncoder().encode(s), (b) => String.fromCharCode(b)).join(''))
 const client = {
   stream: async (_m: string, _p: unknown[], _u: string, onItem: (c: unknown) => void) => {
     setTimeout(() => onItem({ type: 'reset', data: b64(PROMPT), rows: 30, cols: 100 }), 50)

@@ -3,7 +3,7 @@ import { yamlFrontmatter } from '@codemirror/lang-yaml'
 import { languages } from '@codemirror/language-data'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import CodeMirror, { EditorView } from '@uiw/react-codemirror'
-import { type Ref, useImperativeHandle, useState, useSyncExternalStore } from 'react'
+import { type Ref, useImperativeHandle, useState } from 'react'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { subscribeDark } from '@/lib/theme'
+import { useDark } from '@/lib/theme'
 import type { Meta } from "@/rpc/bindings/method.knowledge.output"
 
 const extensions = [yamlFrontmatter({ content: markdown({ base: markdownLanguage, codeLanguages: languages }) }), EditorView.lineWrapping]
@@ -37,7 +37,7 @@ type Props = {
 export function Editor({ id, initial, onSaved, onCancel, ref }: Props) {
   const api = useApi()
   const qc = useQueryClient()
-  const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'))
+  const dark = useDark()
   const [text, setText] = useState(initial)
   const [error, setError] = useState<string | null>(null)
   const [confirmDiscard, setConfirmDiscard] = useState(false)

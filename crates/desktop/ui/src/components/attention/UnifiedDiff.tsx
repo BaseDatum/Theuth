@@ -1,6 +1,42 @@
 import { ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { type DiffFile, parseUnifiedDiff } from './diff'
+import { parseUnified } from '@/lib/editDiff'
+
+type Row = { op: ' ' | '+' | '-'; text: string; old: number | null; new: number | null }
+type Hunk = { header: string; rows: Row[] }
+type DiffFile = { path: string; hunks: Hunk[]; added: number; removed: number }
+
+/**
+ * `lib/editDiff`'s parser (hunk lengths tell a file header from a removed `-- x`) in the shape this view renders. Files
+ * without a hunk are dropped, so `[]` means "not a diff" and the caller shows the raw text. A hunk with no `---`/`+++`
+ * pair before it is named after the first `diff --git a/x b/x` line.
+ */
+export function unifiedFiles(text: string): DiffFile[] {
+  const fallback = /^diff --git a\/.+? b\/([^\r\n]+)$/m.exec(text)?.[1] ?? ''
+  const files: DiffFile[] = []
+  for (const f of parseUnified(text, fallback).files) {
+    const file: DiffFile = { path: f.path, hunks: [], added: 0, removed: 0 }
+    for (const r of f.rows) {
+      if (r.kind === 'hunk') {
+        file.hunks.push({ header: r.text, rows: [] })
+        continue
+      }
+      const hunk = file.hunks.at(-1)
+      if (!hunk) continue
+      if (r.kind === 'note') {
+        // `\ No newline at end of file`: informational, no line numbers.
+        hunk.rows.push({ op: ' ', text: r.text, old: null, new: null })
+        continue
+      }
+      const op = r.op ?? ' '
+      hunk.rows.push({ op, text: r.text, old: r.old ?? null, new: r.next ?? null })
+      if (op === '+') file.added++
+      if (op === '-') file.removed++
+    }
+    if (file.hunks.length > 0) files.push(file)
+  }
+  return files
+}
 
 /**
  * 101 D10: a `diff` pointer's `text` as files → hunks → +/− rows. Each file is a native `<details>` (open by default) whose
@@ -8,7 +44,7 @@ import { type DiffFile, parseUnifiedDiff } from './diff'
  * word. Text that parses to no file falls back to a plain `<pre>`.
  */
 export function UnifiedDiff({ text }: { text: string }) {
-  const files = parseUnifiedDiff(text)
+  const files = unifiedFiles(text)
   if (files.length === 0) {
     return <pre className="overflow-x-auto rounded-md border bg-layer-2 p-3 font-mono text-xs leading-5 break-normal wrap-normal whitespace-pre">{text}</pre>
   }

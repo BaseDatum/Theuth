@@ -11,6 +11,7 @@ import type { FenceSnapshotAnswer } from '@/rpc/bindings/method.artifact.input'
 import type { FenceSnapshotRequested } from "@/rpc/bindings/event.artifact_2efence_2dsnapshot_2drequested.output"
 import { useConnection } from '@/store/connection'
 import { on } from '@/store/sessions'
+import { encode } from './base64'
 
 /** Renders at a time; the rest wait in arrival order. */
 export const MAX_RUNNING = 2
@@ -100,14 +101,6 @@ export async function fitPng(
   return { reason: `picture too large at scale 1: ${last}` }
 }
 
-/** Standard base64, no `data:` prefix. */
-export function base64(bytes: Uint8Array): string {
-  let s = ''
-  // Chunks keep `fromCharCode`'s argument list under the engines' limits.
-  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  return btoa(s)
-}
-
 /** One render's answer: `done`/`failed` without the client, which the runner adds. */
 export type Outcome = { png: Uint8Array } | { reason: string }
 
@@ -153,7 +146,7 @@ export function installFenceSnapshot(): () => void {
     queue = next.queue
     if (o) {
       const client = clientKind()
-      if ('png' in o) answer(id, { kind: 'done', png: base64(o.png), ...pngSize(o.png), client })
+      if ('png' in o) answer(id, { kind: 'done', png: encode(o.png), ...pngSize(o.png), client })
       else answer(id, { kind: 'failed', reason: o.reason, client })
     }
     run(next.start)

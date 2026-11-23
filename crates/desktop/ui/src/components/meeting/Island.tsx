@@ -23,10 +23,11 @@ import {
   onScreensChanged,
   setHiddenFromCapture,
 } from '@/lib/tauri'
+import { mmss } from '@/lib/time-format'
 import { cn } from '@/lib/utils'
 import type { MeetingState } from "@/rpc/bindings/method.meeting.output"
 import type { OracleDecision } from "@/rpc/bindings/event.meeting_2eevents.output"
-import { captureBadge, captureWarning, current, elapsed, live, liveBadges, mmss, oracleSummary, useMeeting } from '@/store/meeting'
+import { captureBadge, captureWarning, current, elapsed, live, liveBadges, oracleSummary, useMeeting } from '@/store/meeting'
 import { on } from '@/store/sessions'
 
 

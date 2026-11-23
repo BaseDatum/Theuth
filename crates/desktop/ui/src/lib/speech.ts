@@ -17,6 +17,7 @@ import type { FinishReason } from "@/rpc/bindings/event.voice_2eevents.output"
 import type { ModelState } from "@/rpc/bindings/method.talk.output"
 import { useConnection } from '@/store/connection'
 import { on, useSessions } from '@/store/sessions'
+import { decode } from './base64'
 
 /** PCM rate `ptts` produces and the packets decode to (43 §0.5). */
 const SAMPLE_RATE = 24_000
@@ -223,7 +224,7 @@ export function push(speech: string, b64: string, seq = -1): void {
   // promise keeps packet order, and lets the first packets of an utterance queue behind it.
   void d.ready.then(() => {
     if (dec !== d || !ctx || !out) return
-    const { channelData } = d.decodeFrame(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
+    const { channelData } = d.decodeFrame(decode(b64))
     const pcm = channelData[0]
     if (!pcm?.length) return
     const buf = ctx.createBuffer(1, pcm.length, rate)

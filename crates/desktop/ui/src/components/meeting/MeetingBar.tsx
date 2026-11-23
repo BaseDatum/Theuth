@@ -12,12 +12,8 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { mmss } from '@/lib/time-format'
 import { elapsed, live, useMeeting } from '@/store/meeting'
-
-const mmss = (ms: number): string => {
-  const s = Math.floor(ms / 1000)
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
-}
 
 export function MeetingBar() {
   const api = useApi()

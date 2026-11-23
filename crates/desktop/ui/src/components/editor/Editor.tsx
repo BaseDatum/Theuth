@@ -23,7 +23,7 @@ import { BlockNoteView } from '@blocknote/shadcn'
 import '@blocknote/shadcn/style.css'
 import { FRAGMENT, createDocumentSchema, links } from '@theuth/documents/schema'
 import { GripVertical, Sparkles, SquareTerminal, Workflow } from 'lucide-react'
-import { type SyntheticEvent, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { type SyntheticEvent, useEffect, useMemo, useState } from 'react'
 import { cellOf } from '@/components/cells/grammar'
 import { NoteHost } from '@/components/cells/note-context'
 import { CELL_STARTER, makeCell, makePlain, runnableLang } from '@/components/cells/note-edit'
@@ -39,7 +39,7 @@ import type { AgentPresence, DocStatus, EngineProvider } from '@/lib/doc/provide
 import type { Api } from '@/rpc/bindings/client'
 import { usePointerCoarse } from '@/lib/mobile'
 import { deviceName } from '@/lib/platform'
-import { subscribeDark } from '@/lib/theme'
+import { useDark } from '@/lib/theme'
 import { cn } from 'cn'
 
 /**
@@ -177,7 +177,7 @@ export function Editor({
   /** 171 §13: a share-link member's api — note cells show the replicated latest run and never run. */
   guest?: Api
 }) {
-  const dark = useSyncExternalStore(subscribeDark, () => document.documentElement.classList.contains('dark'))
+  const dark = useDark()
   // 59 §10: fingers get the fixed toolbar instead of BlockNote's floating menus; labels on remote cursors need no hover.
   const coarse = usePointerCoarse()
   const [toolbar, setToolbar] = useState(false)
