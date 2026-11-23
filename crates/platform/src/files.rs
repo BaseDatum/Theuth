@@ -356,7 +356,7 @@ mod tests {
         let d = scratch("atomic-race");
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join("f");
-        let handles: Vec<_> = [b'a', b'b']
+        let handles: Vec<_> = (*b"ab")
             .into_iter()
             .map(|c| {
                 let p = p.clone();
