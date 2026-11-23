@@ -40,8 +40,17 @@ pub trait EdgeConn: Send + Sync {
 
 #[async_trait::async_trait]
 impl EdgeConn for iroh::endpoint::Connection {
+    /// A control stream; `open_bi` waits at most [`limits::OPEN_BI_TIMEOUT_MS`] for stream
+    /// credit (§5.3), so a stalled edge fails the request instead of hanging it.
     async fn open(&self) -> io::Result<Stream> {
-        let (send, recv) = self.open_bi().await.map_err(io::Error::other)?;
+        let open = tokio::time::timeout(
+            Duration::from_millis(limits::OPEN_BI_TIMEOUT_MS),
+            self.open_bi(),
+        );
+        let (send, recv) = open
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "open_bi to the edge timed out"))?
+            .map_err(io::Error::other)?;
         Ok(Box::new(tokio::io::join(recv, send)))
     }
 
@@ -55,11 +64,9 @@ impl EdgeConn for iroh::endpoint::Connection {
     }
 }
 
-/// Dials an edge from the engine's mesh endpoint (D18). Implemented by `mesh`'s
-/// `Net::dial_alpn(addr, alpn, transport) -> Connection` with `max_concurrent_bidi_streams` of
-/// [`limits::VISITOR_STREAMS_PER_TUNNEL`] and no `join_network` (§5.3).
-// TODO(210-M1, crates mesh + rpc-compose): `Net::dial_alpn`, and the wiring adapter
-// `impl EdgeDialer for <mesh Net handle>` that returns the `iroh::endpoint::Connection`.
+/// Dials an edge from the engine's mesh endpoint (D18). The engine's implementation is
+/// [`crate::wiring::MeshDialer`] over `mesh`'s `Net::dial_alpn` with
+/// [`crate::wiring::tunnel_transport`] and no `join_network` (§5.3).
 #[async_trait::async_trait]
 pub trait EdgeDialer: Send + Sync {
     /// Dial `addr` offering `alpns` (newest first).
@@ -79,8 +86,8 @@ pub trait DelegationSource: Send + Sync {
     ) -> anyhow::Result<Signed>;
 }
 
-/// M1: the engine holds `mesh/share_key` and signs for itself.
-// TODO(210-M1, crate secrets): the wiring reads or mints `mesh/share_key` in the vault and passes it.
+/// A fixed key signing for this engine (tests, tools). The engine uses
+/// [`crate::wiring::MeshDelegation`], which reads or mints `mesh/share_key` per call.
 pub struct SelfHolder {
     /// The mesh share key.
     pub mesh_key: share_proto::SecretKey,

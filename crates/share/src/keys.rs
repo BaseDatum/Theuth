@@ -21,10 +21,9 @@ pub struct NameKey {
     pub csr_der: Vec<u8>,
 }
 
-/// Where name keys live. M1: the local vault; M2: through `share.name_key.ensure` on the lease
-/// holder with the settle rule (§6.2 step 1).
-// TODO(210-M1, crate secrets): the `share/` prefix in `writable_name` and an adapter over
-// `set_if_version`; TODO(210-M2): `share.name_key.ensure` on the lease holder.
+/// Where name keys live. M1: the local vault ([`crate::wiring::VaultNameKeys`]); M2: through
+/// `share.name_key.ensure` on the lease holder with the settle rule (§6.2 step 1).
+// TODO(210-M2): `share.name_key.ensure` on the lease holder.
 #[async_trait::async_trait]
 pub trait NameKeyStore: Send + Sync {
     /// The current row, if any.

@@ -40,6 +40,8 @@ pub enum CallOrigin {
         session: String,
         /// Call id.
         call_id: String,
+        /// The approval row the call passed; `None` outside the registry (tests).
+        approved: Option<ApprovedBy>,
     },
     /// Settings or the card.
     Settings,
@@ -148,15 +150,16 @@ impl Engine {
     }
 
     /// Start the edge state machine for the configured edge (one per edge, §5.9) and the expiry
-    /// ticker. Without a dialer or delegation source nothing runs and publishing says so.
+    /// ticker. Without a dialer, a delegation source or a ticket to dial (edge `none`, or the
+    /// default while its tickets are placeholders) no client runs and publishing says so.
     pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
         let choice = self.store.edge().await?;
-        if let (Some(dialer), Some(delegation)) = (&self.hooks.dialer, &self.hooks.delegation) {
-            let tickets = choice.tickets();
-            if let Some(t) = tickets.first() {
-                let rev = self.store.terms_rev(&t.edge_id().to_string()).await?;
-                self.terms.send_replace(rev);
-            }
+        let tickets = choice.tickets();
+        if let (Some(dialer), Some(delegation), Some(t)) =
+            (&self.hooks.dialer, &self.hooks.delegation, tickets.first())
+        {
+            let rev = self.store.terms_rev(&t.edge_id().to_string()).await?;
+            self.terms.send_replace(rev);
             let client = crate::edge::Client {
                 dialer: dialer.clone(),
                 delegation: delegation.clone(),
@@ -166,6 +169,8 @@ impl Engine {
                 timing: Default::default(),
             };
             tokio::spawn(client.run(self.need.subscribe()));
+        } else if tickets.is_empty() {
+            tracing::info!("share: {NO_SHARING_EDGE}");
         }
         let me = Arc::downgrade(self);
         tokio::spawn(async move {
@@ -291,14 +296,21 @@ impl Engine {
             created_ms: now,
             live_ms: have_cert.then_some(now),
             expires_ms: have_cert.then(|| now + plan.expiry.duration().as_millis() as u64),
-            created_by: match origin {
-                CallOrigin::Call { session, call_id } => CreatedBy::Call { session, call_id },
-                CallOrigin::Settings => CreatedBy::Settings("settings".into()),
+            approved_by: match &origin {
+                CallOrigin::Call {
+                    approved: Some(a), ..
+                } => a.clone(),
+                // TODO(210-M1): the RPC path (Settings, card) resolves its own owner-only row.
+                _ => ApprovedBy {
+                    approval_id: String::new(),
+                    surface: String::new(),
+                },
             },
-            // TODO(210-M1, crate tools): the approval row's id and surface.
-            approved_by: ApprovedBy {
-                approval_id: String::new(),
-                surface: String::new(),
+            created_by: match origin {
+                CallOrigin::Call {
+                    session, call_id, ..
+                } => CreatedBy::Call { session, call_id },
+                CallOrigin::Settings => CreatedBy::Settings("settings".into()),
             },
             state: if have_cert {
                 ShareState::Live

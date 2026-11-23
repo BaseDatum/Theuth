@@ -14,6 +14,9 @@ runtime = { workspace = true }
 wire = { workspace = true }
 tools = { workspace = true }
 platform = { workspace = true }
+# 210 WIRE1: the engine adapters (`wiring`): `Net::dial_alpn`, `mesh/share_key`, the vault's `share/` rows.
+mesh = { workspace = true }
+secrets = { workspace = true }
 iroh = { workspace = true }
 iroh-base = { workspace = true }
 rcgen = { workspace = true }

@@ -22,6 +22,10 @@ pub struct ShareSettings {
     pub enabled: bool,
     /// `default`, `none` or a ticket.
     pub edge: String,
+    /// The choice has a ticket to dial. `false` for `none` and for `default` while the shipped
+    /// tickets are placeholders: Settings shows [`crate::config::NO_SHARING_EDGE`] and publishing
+    /// is refused with it.
+    pub configured: bool,
 }
 
 /// `share_stop` answer.
@@ -115,6 +119,7 @@ impl ShareApiServer for Server {
         let edge = e.store.edge().await.map_err(|e| failed(e.to_string()))?;
         Ok(ShareSettings {
             enabled,
+            configured: !edge.tickets().is_empty(),
             edge: edge.to_setting(),
         })
     }

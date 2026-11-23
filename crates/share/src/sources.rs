@@ -10,8 +10,6 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 
 /// Ports theuth itself listens on (§5.6): the own-listener registry.
-// TODO(210-M1, crate runtime): a registry `rpc-compose::bootstrap::serve` and every listening
-// plugin write into; the wiring passes an adapter over it.
 pub trait OwnPorts: Send + Sync {
     /// `true` when `port` is one of theuth's own listeners.
     fn is_own(&self, port: u16) -> bool;
@@ -23,6 +21,26 @@ pub struct NoOwnPorts;
 impl OwnPorts for NoOwnPorts {
     fn is_own(&self, _: u16) -> bool {
         false
+    }
+}
+
+static OWN_LISTENERS: parking_lot::RwLock<std::collections::BTreeSet<u16>> =
+    parking_lot::RwLock::new(std::collections::BTreeSet::new());
+
+/// Record a TCP port this process listens on (the RPC listener from `rpc-compose`'s `serve`).
+/// Process-wide: an engine is one process.
+// TODO(210-M1): every other plugin binding a TCP listener (a2a HTTP, browser debug port, …)
+// registers here too; the process-tree check covers the rest once it exists.
+pub fn register_own_port(port: u16) {
+    OWN_LISTENERS.write().insert(port);
+}
+
+/// [`OwnPorts`] over [`register_own_port`]'s registry.
+pub struct OwnListeners;
+
+impl OwnPorts for OwnListeners {
+    fn is_own(&self, port: u16) -> bool {
+        OWN_LISTENERS.read().contains(&port)
     }
 }
 

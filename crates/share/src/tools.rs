@@ -11,12 +11,6 @@ use crate::config::Expiry;
 use crate::engine::{CallOrigin, Engine};
 use crate::model::{Access, Source};
 
-/// Tools that only the owner in person may approve (§7.2). `share_publish` sets the trait's
-/// `HUMAN_ONLY` once `crates/tools` has it.
-// TODO(210-M1, crate tools): `const HUMAN_ONLY: bool = true;` on [`SharePublishTool`] when the
-// `Tool` trait gains the const; until then the registry can read this list.
-pub const HUMAN_ONLY_TOOLS: &[&str] = &[SharePublishTool::NAME];
-
 /// The source argument: exactly one of `port` or `dir`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +113,8 @@ impl Tool for SharePublishTool {
     const RISK: Risk = Risk::Destructive;
     const RETURNS: &'static str = "dict";
     const DIRECT: bool = true;
+    /// §7.2: only the owner, in person, approves a publish.
+    const HUMAN_ONLY: bool = true;
     type Args = PublishArgs;
 
     fn description(&self) -> String {
@@ -142,11 +138,14 @@ impl Tool for SharePublishTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::err(format!("share_publish: {e}"))),
         };
-        // TODO(210-M1, crate tools): the approval id and surface of the human-only row this call
-        // passed; the registry does not hand it to the tool yet.
+        // The human-only row this call passed (the registry scopes the body with it).
         let origin = CallOrigin::Call {
             session: cx.session.to_string(),
             call_id: cx.call_id.clone(),
+            approved: ::tools::approved().map(|a| crate::model::ApprovedBy {
+                approval_id: a.id.0.to_string(),
+                surface: a.surface.to_owned(),
+            }),
         };
         match self.engine.publish(plan, origin).await {
             Ok(p) => {

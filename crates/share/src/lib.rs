@@ -23,6 +23,7 @@ pub mod sources;
 pub mod store;
 pub mod tools;
 pub mod visitor;
+pub mod wiring;
 
 use std::sync::{Arc, OnceLock};
 
@@ -68,10 +69,22 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
 /// The plugin: reads `share`, opens `<data_dir>/share.sqlite`, attaches the replicated tables,
 /// starts the [`Engine`] and registers the three tools.
 pub struct SharePlugin {
-    /// This engine's endpoint id (the mesh identity's public key).
+    /// This engine's endpoint id (the mesh identity's public key); empty = read it from `mesh`
+    /// at start.
     pub engine_id: String,
     /// Seams the wiring fills.
     pub hooks: Hooks,
+}
+
+impl SharePlugin {
+    /// The engine's plugin: every seam on the mesh and vault adapters of [`wiring`], the
+    /// engine id from the mesh identity. List it after `mesh::MeshPlugin`.
+    pub fn engine() -> Self {
+        Self {
+            engine_id: String::new(),
+            hooks: wiring::engine_hooks(),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -94,7 +107,18 @@ impl runtime::Plugin for SharePlugin {
         if let Err(e) = replica::attach(store.pool(), &store::REPLICATED).await {
             tracing::warn!("share: replicated tables not attached: {e:#}");
         }
-        let SharePlugin { engine_id, hooks } = *self;
+        let SharePlugin {
+            mut engine_id,
+            hooks,
+        } = *self;
+        if engine_id.is_empty() {
+            engine_id = mesh::self_id()
+                .or_else(|| mesh::stored_self_id(&rt.data_dir))
+                .unwrap_or_default();
+            if engine_id.is_empty() {
+                tracing::warn!("share: no mesh identity; sharing cannot attach to an edge");
+            }
+        }
         let engine = Engine::new(cfg, store, rt.data_dir.clone(), engine_id, hooks, Some(rt.clone()))?;
         engine.start().await?;
         let _ = ENGINE.set(engine.clone());
