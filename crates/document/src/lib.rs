@@ -226,6 +226,7 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     use wire::RuntimeWire as _;
     rt.register_wire_event::<DocumentChanged>().await?;
     rt.register_wire_event::<CellLatestChanged>().await?;
+    rt.register_wire_event::<DocumentSharing>().await?;
     rt.register_wire_event::<SourceEvent>().await
 }
 

@@ -389,12 +389,15 @@ impl DocumentActor {
         }
     }
 
-    /// Save and tell every subscriber the room changed.
+    /// Save, tell every subscriber the room changed, and the bus (213 §4 `document.sharing@1`).
     async fn members_changed(&mut self, doc: &DocId) {
         self.save_members(doc).await;
         if let Ok(Members { members, links }) = self.members_of(doc) {
             self.fan_out(doc, DocEvent::Members { members, links }, None);
         }
+        self.rt
+            .publish(crate::meta::DocumentSharing { doc: doc.clone() })
+            .await;
     }
 
     /// `pub_`'s subscriptions to every note/source item of `notebook` that they hold only through it
