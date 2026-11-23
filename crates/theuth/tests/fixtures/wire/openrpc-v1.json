@@ -119742,6 +119742,88 @@
         ],
         "description": "Who asked for the share: a tool call or Settings."
       },
+      "method.share.output.HeldName": {
+        "description": "`share_names_list` item: a name of the mesh, the replicated `share_names` row joined with\nthe edge's `NameInfo` from the last `welcome` (§5.2).",
+        "properties": {
+          "domain": {
+            "description": "The edge's domain.",
+            "type": "string"
+          },
+          "edge": {
+            "description": "The edge's endpoint id.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "description": "`reserved` | `random`.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The name.",
+            "type": "string"
+          },
+          "primary": {
+            "description": "New shares use it (`share_names.is_primary`).",
+            "type": "boolean"
+          },
+          "queue_eta_s": {
+            "description": "Seconds until the slot.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "queue_position": {
+            "description": "Slot queue position while `queued`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "The edge's state: `allocated` · `queued` · `slotted` · `valid` · `released` · `banned`;\n`None` when this machine has not seen the edge's view of it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transfer_to": {
+            "description": "Pending transfer (D20): the receiving mesh id.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transfer_until_ms": {
+            "description": "End of the transfer offer.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "domain",
+          "edge",
+          "kind",
+          "primary",
+          "state",
+          "queue_position",
+          "queue_eta_s",
+          "transfer_to",
+          "transfer_until_ms"
+        ],
+        "type": "object"
+      },
       "method.share.output.NameCheck": {
         "description": "`share_names_check` answer: the edge's `GET /v1/names/{name}`.",
         "properties": {
@@ -119755,11 +119837,42 @@
               "string",
               "null"
             ]
+          },
+          "reclaim_after_ms": {
+            "default": null,
+            "description": "With reason `cooldown`: when the name is free again.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
           "available",
-          "reason"
+          "reason",
+          "reclaim_after_ms"
+        ],
+        "type": "object"
+      },
+      "method.share.output.NameReleasedInfo": {
+        "description": "`share_names_release` answer.",
+        "properties": {
+          "name": {
+            "description": "The released name.",
+            "type": "string"
+          },
+          "reclaim_after_ms": {
+            "description": "Until then only this mesh may claim it again.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "reclaim_after_ms"
         ],
         "type": "object"
       },
@@ -119944,12 +120057,21 @@
           "enabled": {
             "description": "\"Allow public sharing\" on this machine.",
             "type": "boolean"
+          },
+          "mesh_id": {
+            "default": null,
+            "description": "The mesh's share identity (the public half of `mesh/share_key`): what another mesh pastes\ninto `share_names_transfer`. `None` until the key exists.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "enabled",
           "edge",
-          "configured"
+          "configured",
+          "mesh_id"
         ],
         "type": "object"
       },
@@ -120015,6 +120137,14 @@
       "method.share.output.Stopped": {
         "description": "`share_stop` answer.",
         "properties": {
+          "edge_pending": {
+            "default": null,
+            "description": "Stop all only: why the edge has not confirmed the mesh-wide stop yet (detached, or the\nedge refused); it is sent again at the next attach. `None` = done.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "stopped": {
             "description": "Shares stopped.",
             "format": "uint32",
@@ -120023,7 +120153,8 @@
           }
         },
         "required": [
-          "stopped"
+          "stopped",
+          "edge_pending"
         ],
         "type": "object"
       },
@@ -120122,6 +120253,82 @@
         ],
         "description": "Who asked for the share: a tool call or Settings."
       },
+      "method.share.receiver.HeldName": {
+        "description": "`share_names_list` item: a name of the mesh, the replicated `share_names` row joined with\nthe edge's `NameInfo` from the last `welcome` (§5.2).",
+        "properties": {
+          "domain": {
+            "description": "The edge's domain.",
+            "type": "string"
+          },
+          "edge": {
+            "description": "The edge's endpoint id.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "description": "`reserved` | `random`.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The name.",
+            "type": "string"
+          },
+          "primary": {
+            "description": "New shares use it (`share_names.is_primary`).",
+            "type": "boolean"
+          },
+          "queue_eta_s": {
+            "description": "Seconds until the slot.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "queue_position": {
+            "description": "Slot queue position while `queued`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "The edge's state: `allocated` · `queued` · `slotted` · `valid` · `released` · `banned`;\n`None` when this machine has not seen the edge's view of it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transfer_to": {
+            "description": "Pending transfer (D20): the receiving mesh id.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transfer_until_ms": {
+            "description": "End of the transfer offer.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "domain",
+          "kind",
+          "primary"
+        ],
+        "type": "object"
+      },
       "method.share.receiver.NameCheck": {
         "description": "`share_names_check` answer: the edge's `GET /v1/names/{name}`.",
         "properties": {
@@ -120135,10 +120342,40 @@
               "string",
               "null"
             ]
+          },
+          "reclaim_after_ms": {
+            "default": null,
+            "description": "With reason `cooldown`: when the name is free again.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
           "available"
+        ],
+        "type": "object"
+      },
+      "method.share.receiver.NameReleasedInfo": {
+        "description": "`share_names_release` answer.",
+        "properties": {
+          "name": {
+            "description": "The released name.",
+            "type": "string"
+          },
+          "reclaim_after_ms": {
+            "description": "Until then only this mesh may claim it again.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "reclaim_after_ms"
         ],
         "type": "object"
       },
@@ -120318,6 +120555,14 @@
           "enabled": {
             "description": "\"Allow public sharing\" on this machine.",
             "type": "boolean"
+          },
+          "mesh_id": {
+            "default": null,
+            "description": "The mesh's share identity (the public half of `mesh/share_key`): what another mesh pastes\ninto `share_names_transfer`. `None` until the key exists.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -120389,6 +120634,14 @@
       "method.share.receiver.Stopped": {
         "description": "`share_stop` answer.",
         "properties": {
+          "edge_pending": {
+            "default": null,
+            "description": "Stop all only: why the edge has not confirmed the mesh-wide stop yet (detached, or the\nedge refused); it is sent again at the next attach. `None` = done.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "stopped": {
             "description": "Shares stopped.",
             "format": "uint32",
@@ -146070,6 +146323,56 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "share_delegate",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "engine",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "edge",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "domain",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "edge_now_ms",
+          "required": true,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": [
+            "edgeNowMs"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": true,
+        "x-theuth-receiverSchema": true
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "share"
+    },
+    {
       "name": "share_list",
       "paramStructure": "by-position",
       "params": [],
@@ -146086,6 +146389,40 @@
             "$ref": "#/components/schemas/method.share.receiver.Share"
           },
           "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "share"
+    },
+    {
+      "name": "share_name_key_ensure",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "domain",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "string"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "string"
         }
       },
       "x-theuth-audience": "owner",
@@ -146112,6 +146449,209 @@
         },
         "x-theuth-receiverSchema": {
           "$ref": "#/components/schemas/method.share.receiver.NameCheck"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "share"
+    },
+    {
+      "name": "share_names_list",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.share.output.HeldName"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.share.receiver.HeldName"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "share"
+    },
+    {
+      "name": "share_names_primary",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.share.output.HeldName"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.share.receiver.HeldName"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "share"
+    },
+    {
+      "name": "share_names_release",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.share.output.NameReleasedInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.share.receiver.NameReleasedInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "share"
+    },
+    {
+      "name": "share_names_reserve",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.share.output.HeldName"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.share.receiver.HeldName"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "share"
+    },
+    {
+      "name": "share_names_rotate",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "x-theuth-receiverSchema": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "share"
+    },
+    {
+      "name": "share_names_transfer",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "to_mesh",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": [
+            "toMesh"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "x-theuth-receiverSchema": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "share"
+    },
+    {
+      "name": "share_password",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "x-theuth-audience": "owner",
