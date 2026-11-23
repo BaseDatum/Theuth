@@ -10884,6 +10884,317 @@
           }
         ]
       },
+      "event.artifact_2ediff_2dview_2dopened.output.DiffMode": {
+        "description": "Which diff a [`DiffSpec`] names.",
+        "oneOf": [
+          {
+            "const": "worktree",
+            "description": "Working tree and index against HEAD, untracked files included.",
+            "type": "string"
+          },
+          {
+            "const": "staged",
+            "description": "The index against HEAD.",
+            "type": "string"
+          },
+          {
+            "const": "commit",
+            "description": "`a` against its first parent (a root commit against the empty tree).",
+            "type": "string"
+          },
+          {
+            "const": "range",
+            "description": "`a..b` (or `a...b` with `three_dot`).",
+            "type": "string"
+          },
+          {
+            "const": "files",
+            "description": "File `a` against file `b`.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.artifact_2ediff_2dview_2dopened.output.DiffSpec": {
+        "description": "What a diff tile shows and re-requests through `diff_view_read` (212 §1).",
+        "properties": {
+          "a": {
+            "description": "`commit`/`range`: a full sha; `files`: the old file's absolute path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "b": {
+            "description": "`range`: a full sha; `files`: the new file's absolute path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2ediff_2dview_2dopened.output.DiffMode"
+              }
+            ],
+            "description": "Which diff."
+          },
+          "paths": {
+            "default": [],
+            "description": "Pathspecs relative to `root` (git modes).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "root": {
+            "description": "Repository root (absolute) for the git modes; `null` for `files`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "three_dot": {
+            "default": false,
+            "description": "`range`: `a...b` (from the merge base).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "mode",
+          "root",
+          "a",
+          "b",
+          "three_dot",
+          "paths"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2ediff_2dview_2dopened.output.DiffViewOpened": {
+        "description": "Event: a `show_diff` call opened a diff tile (212 §1).\nWire shape `{ \"type\": \"DiffViewOpened\", \"session\", \"call_id\", \"id\", \"title\", \"spec\", \"files\",\n\"added\", \"removed\" }`.",
+        "properties": {
+          "added": {
+            "description": "Lines added at call time.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "files": {
+            "description": "Files changed at call time.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Tile id: 16 hex of sha256(session + \"\\n\" + the spec's JSON); the same diff reuses its tile.",
+            "type": "string"
+          },
+          "removed": {
+            "description": "Lines removed at call time.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2ediff_2dview_2dopened.output.SessionId"
+              }
+            ],
+            "description": "Calling session."
+          },
+          "spec": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2ediff_2dview_2dopened.output.DiffSpec"
+              }
+            ],
+            "description": "What the tile fetches with `diff_view_read`."
+          },
+          "title": {
+            "description": "Tile and card title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "DiffViewOpened",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "id",
+          "title",
+          "spec",
+          "files",
+          "added",
+          "removed",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2ediff_2dview_2dopened.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2ediff_2dview_2dopened.receiver.DiffMode": {
+        "description": "Which diff a [`DiffSpec`] names.",
+        "oneOf": [
+          {
+            "const": "worktree",
+            "description": "Working tree and index against HEAD, untracked files included.",
+            "type": "string"
+          },
+          {
+            "const": "staged",
+            "description": "The index against HEAD.",
+            "type": "string"
+          },
+          {
+            "const": "commit",
+            "description": "`a` against its first parent (a root commit against the empty tree).",
+            "type": "string"
+          },
+          {
+            "const": "range",
+            "description": "`a..b` (or `a...b` with `three_dot`).",
+            "type": "string"
+          },
+          {
+            "const": "files",
+            "description": "File `a` against file `b`.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.artifact_2ediff_2dview_2dopened.receiver.DiffSpec": {
+        "description": "What a diff tile shows and re-requests through `diff_view_read` (212 §1).",
+        "properties": {
+          "a": {
+            "description": "`commit`/`range`: a full sha; `files`: the old file's absolute path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "b": {
+            "description": "`range`: a full sha; `files`: the new file's absolute path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2ediff_2dview_2dopened.receiver.DiffMode"
+              }
+            ],
+            "description": "Which diff."
+          },
+          "paths": {
+            "default": [],
+            "description": "Pathspecs relative to `root` (git modes).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "root": {
+            "description": "Repository root (absolute) for the git modes; `null` for `files`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "three_dot": {
+            "default": false,
+            "description": "`range`: `a...b` (from the merge base).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2ediff_2dview_2dopened.receiver.DiffViewOpened": {
+        "description": "Event: a `show_diff` call opened a diff tile (212 §1).\nWire shape `{ \"type\": \"DiffViewOpened\", \"session\", \"call_id\", \"id\", \"title\", \"spec\", \"files\",\n\"added\", \"removed\" }`.",
+        "properties": {
+          "added": {
+            "description": "Lines added at call time.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "files": {
+            "description": "Files changed at call time.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "description": "Tile id: 16 hex of sha256(session + \"\\n\" + the spec's JSON); the same diff reuses its tile.",
+            "type": "string"
+          },
+          "removed": {
+            "description": "Lines removed at call time.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2ediff_2dview_2dopened.receiver.SessionId"
+              }
+            ],
+            "description": "Calling session."
+          },
+          "spec": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2ediff_2dview_2dopened.receiver.DiffSpec"
+              }
+            ],
+            "description": "What the tile fetches with `diff_view_read`."
+          },
+          "title": {
+            "description": "Tile and card title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "DiffViewOpened",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "id",
+          "title",
+          "spec",
+          "files",
+          "added",
+          "removed",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2ediff_2dview_2dopened.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
       "event.artifact_2efence_2dsnapshot_2drequested.output.Appearance": {
         "description": "The appearance the page is rendered under.",
         "oneOf": [
@@ -11135,6 +11446,176 @@
           "type"
         ],
         "type": "object"
+      },
+      "event.artifact_2efile_2dview_2dopened.output.FileViewOpened": {
+        "description": "Event: a `show_file` call opened a file tile (212 §1).\nWire shape `{ \"type\": \"FileViewOpened\", \"session\", \"call_id\", \"id\", \"path\", \"title\", \"lang\",\n\"line\", \"end_line\", \"size\", \"lines\" }`.",
+        "properties": {
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "end_line": {
+            "description": "Last marked line.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Tile id: 16 hex of sha256(session + \"\\n\" + path); the same file reuses its tile.",
+            "type": "string"
+          },
+          "lang": {
+            "description": "Lowercase extension, or a well-known file name (`Dockerfile`); empty when neither.",
+            "type": "string"
+          },
+          "line": {
+            "description": "First marked line (1-based).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lines": {
+            "description": "Lines at call time.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Absolute (canonical) path; what `file_view_read` takes.",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2efile_2dview_2dopened.output.SessionId"
+              }
+            ],
+            "description": "Calling session."
+          },
+          "size": {
+            "description": "Bytes at call time.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Tile and card title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "FileViewOpened",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "id",
+          "path",
+          "title",
+          "lang",
+          "line",
+          "end_line",
+          "size",
+          "lines",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2efile_2dview_2dopened.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2efile_2dview_2dopened.receiver.FileViewOpened": {
+        "description": "Event: a `show_file` call opened a file tile (212 §1).\nWire shape `{ \"type\": \"FileViewOpened\", \"session\", \"call_id\", \"id\", \"path\", \"title\", \"lang\",\n\"line\", \"end_line\", \"size\", \"lines\" }`.",
+        "properties": {
+          "call_id": {
+            "description": "The tool call (joins the card).",
+            "type": "string"
+          },
+          "end_line": {
+            "description": "Last marked line.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Tile id: 16 hex of sha256(session + \"\\n\" + path); the same file reuses its tile.",
+            "type": "string"
+          },
+          "lang": {
+            "description": "Lowercase extension, or a well-known file name (`Dockerfile`); empty when neither.",
+            "type": "string"
+          },
+          "line": {
+            "description": "First marked line (1-based).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lines": {
+            "description": "Lines at call time.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Absolute (canonical) path; what `file_view_read` takes.",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2efile_2dview_2dopened.receiver.SessionId"
+              }
+            ],
+            "description": "Calling session."
+          },
+          "size": {
+            "description": "Bytes at call time.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Tile and card title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "FileViewOpened",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "call_id",
+          "id",
+          "path",
+          "title",
+          "lang",
+          "size",
+          "lines",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2efile_2dview_2dopened.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
       },
       "event.artifact_2enote_2dview_2dopened.output.NoteViewOpened": {
         "description": "Event: a `show_note` call opened a note tile (211 §1).\nWire shape `{ \"type\": \"NoteViewOpened\", \"session\", \"call_id\", \"doc\", \"kind\", \"title\", \"block\" }`.",
@@ -59737,6 +60218,87 @@
         ],
         "type": "object"
       },
+      "method.artifact.input.DiffMode": {
+        "description": "Which diff a [`DiffSpec`] names.",
+        "oneOf": [
+          {
+            "const": "worktree",
+            "description": "Working tree and index against HEAD, untracked files included.",
+            "type": "string"
+          },
+          {
+            "const": "staged",
+            "description": "The index against HEAD.",
+            "type": "string"
+          },
+          {
+            "const": "commit",
+            "description": "`a` against its first parent (a root commit against the empty tree).",
+            "type": "string"
+          },
+          {
+            "const": "range",
+            "description": "`a..b` (or `a...b` with `three_dot`).",
+            "type": "string"
+          },
+          {
+            "const": "files",
+            "description": "File `a` against file `b`.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.artifact.input.DiffSpec": {
+        "description": "What a diff tile shows and re-requests through `diff_view_read` (212 §1).",
+        "properties": {
+          "a": {
+            "description": "`commit`/`range`: a full sha; `files`: the old file's absolute path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "b": {
+            "description": "`range`: a full sha; `files`: the new file's absolute path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.artifact.input.DiffMode"
+              }
+            ],
+            "description": "Which diff."
+          },
+          "paths": {
+            "default": [],
+            "description": "Pathspecs relative to `root` (git modes).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "root": {
+            "description": "Repository root (absolute) for the git modes; `null` for `files`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "three_dot": {
+            "default": false,
+            "description": "`range`: `a...b` (from the merge base).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
       "method.artifact.input.DocId": {
         "description": "A document id: 26 lowercase base32 characters (§4.1). Bound documents (knowledge, artifact,\nmeeting note) render uuid v5 of the binding key under [`DocId::NAMESPACE`], so every engine of a\nmesh mints the same id for the same thing (69 §5); notes, which have no natural key, render uuid v7.",
         "type": "string"
@@ -60307,6 +60869,78 @@
           }
         ]
       },
+      "method.artifact.output.DiffFileStat": {
+        "description": "One file of a [`DiffViewText`].",
+        "properties": {
+          "added": {
+            "description": "Lines added.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Path (the new one for a rename), relative to the repository root; `files`: file_b.",
+            "type": "string"
+          },
+          "removed": {
+            "description": "Lines removed.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "description": "`A` added, `M` modified, `D` deleted, `R` renamed, `?` untracked.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "status",
+          "added",
+          "removed"
+        ],
+        "type": "object"
+      },
+      "method.artifact.output.DiffViewText": {
+        "description": "Result of `diff_view_read` (212 §2).",
+        "properties": {
+          "added": {
+            "description": "Lines added over the whole patch.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "files": {
+            "description": "Every file of the whole patch, in patch order.",
+            "items": {
+              "$ref": "#/components/schemas/method.artifact.output.DiffFileStat"
+            },
+            "type": "array"
+          },
+          "removed": {
+            "description": "Lines removed over the whole patch.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "description": "The unified patch (at most 1 MiB, then a `[diff truncated at N bytes]` line).",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "`text` stops at the cap.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "text",
+          "files",
+          "added",
+          "removed",
+          "truncated"
+        ],
+        "type": "object"
+      },
       "method.artifact.output.ExportResult": {
         "description": "What an export produced.",
         "properties": {
@@ -60439,6 +61073,88 @@
             "type": "string"
           }
         ]
+      },
+      "method.artifact.output.FileViewChange": {
+        "description": "One `subscribe_file_view` item (212 §6): the file settled after a change.",
+        "properties": {
+          "deleted": {
+            "description": "The file is gone; a later item with `deleted: false` means it is back.",
+            "type": "boolean"
+          },
+          "mtime_ms": {
+            "description": "Modification time, ms since the epoch (0 when deleted).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "size": {
+            "description": "Size in bytes (0 when deleted).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mtime_ms",
+          "size",
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "method.artifact.output.FileViewText": {
+        "description": "Result of `file_view_read` (212 §2, §6).",
+        "properties": {
+          "lang": {
+            "description": "As [`FileViewOpened::lang`].",
+            "type": "string"
+          },
+          "lines": {
+            "description": "Lines in `text`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lossy": {
+            "description": "The file is not UTF-8; invalid bytes became U+FFFD.",
+            "type": "boolean"
+          },
+          "mtime_ms": {
+            "description": "Modification time, ms since the epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "size": {
+            "description": "The file's size in bytes.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "description": "The content (at most 2 MiB, cut on a character boundary); empty when `unchanged`.",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "`text` stops at the cap.",
+            "type": "boolean"
+          },
+          "unchanged": {
+            "default": false,
+            "description": "`if_mtime_ms` matched: nothing changed, `text` is empty.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "text",
+          "size",
+          "lines",
+          "mtime_ms",
+          "truncated",
+          "lossy",
+          "lang",
+          "unchanged"
+        ],
+        "type": "object"
       },
       "method.artifact.output.Kind": {
         "description": "How an artifact renders; derived from the extension at show time (35 §3.2).",
@@ -60795,6 +61511,78 @@
           }
         ]
       },
+      "method.artifact.receiver.DiffFileStat": {
+        "description": "One file of a [`DiffViewText`].",
+        "properties": {
+          "added": {
+            "description": "Lines added.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Path (the new one for a rename), relative to the repository root; `files`: file_b.",
+            "type": "string"
+          },
+          "removed": {
+            "description": "Lines removed.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "description": "`A` added, `M` modified, `D` deleted, `R` renamed, `?` untracked.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "status",
+          "added",
+          "removed"
+        ],
+        "type": "object"
+      },
+      "method.artifact.receiver.DiffViewText": {
+        "description": "Result of `diff_view_read` (212 §2).",
+        "properties": {
+          "added": {
+            "description": "Lines added over the whole patch.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "files": {
+            "description": "Every file of the whole patch, in patch order.",
+            "items": {
+              "$ref": "#/components/schemas/method.artifact.receiver.DiffFileStat"
+            },
+            "type": "array"
+          },
+          "removed": {
+            "description": "Lines removed over the whole patch.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "description": "The unified patch (at most 1 MiB, then a `[diff truncated at N bytes]` line).",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "`text` stops at the cap.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "text",
+          "files",
+          "added",
+          "removed",
+          "truncated"
+        ],
+        "type": "object"
+      },
       "method.artifact.receiver.ExportResult": {
         "description": "What an export produced.",
         "properties": {
@@ -60919,6 +61707,87 @@
             "type": "string"
           }
         ]
+      },
+      "method.artifact.receiver.FileViewChange": {
+        "description": "One `subscribe_file_view` item (212 §6): the file settled after a change.",
+        "properties": {
+          "deleted": {
+            "description": "The file is gone; a later item with `deleted: false` means it is back.",
+            "type": "boolean"
+          },
+          "mtime_ms": {
+            "description": "Modification time, ms since the epoch (0 when deleted).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "size": {
+            "description": "Size in bytes (0 when deleted).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mtime_ms",
+          "size",
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "method.artifact.receiver.FileViewText": {
+        "description": "Result of `file_view_read` (212 §2, §6).",
+        "properties": {
+          "lang": {
+            "description": "As [`FileViewOpened::lang`].",
+            "type": "string"
+          },
+          "lines": {
+            "description": "Lines in `text`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lossy": {
+            "description": "The file is not UTF-8; invalid bytes became U+FFFD.",
+            "type": "boolean"
+          },
+          "mtime_ms": {
+            "description": "Modification time, ms since the epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "size": {
+            "description": "The file's size in bytes.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "description": "The content (at most 2 MiB, cut on a character boundary); empty when `unchanged`.",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "`text` stops at the cap.",
+            "type": "boolean"
+          },
+          "unchanged": {
+            "default": false,
+            "description": "`if_mtime_ms` matched: nothing changed, `text` is empty.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "text",
+          "size",
+          "lines",
+          "mtime_ms",
+          "truncated",
+          "lossy",
+          "lang"
+        ],
+        "type": "object"
       },
       "method.artifact.receiver.Kind": {
         "description": "How an artifact renders; derived from the extension at show time (35 §3.2).",
@@ -131602,6 +132471,40 @@
       "x-theuth-owner": "talk"
     },
     {
+      "name": "diff_view_read",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.artifact.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "spec",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.artifact.input.DiffSpec"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.artifact.output.DiffViewText"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.artifact.receiver.DiffViewText"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "artifact"
+    },
+    {
       "name": "doc_awareness",
       "paramStructure": "by-position",
       "params": [
@@ -133773,6 +134676,55 @@
         },
         "x-theuth-receiverSchema": {
           "$ref": "#/components/schemas/method.artifact.receiver.FenceSnapshotReply"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "artifact"
+    },
+    {
+      "name": "file_view_read",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.artifact.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "if_mtime_ms",
+          "required": false,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": [
+            "ifMtimeMs"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.artifact.output.FileViewText"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.artifact.receiver.FileViewText"
         }
       },
       "x-theuth-audience": "owner",
@@ -144749,6 +145701,46 @@
       "x-theuth-owner": "rpc-compose"
     },
     {
+      "name": "subscribe_file_view",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.artifact.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "artifact"
+    },
+    {
       "name": "subscribe_pty",
       "paramStructure": "by-position",
       "params": [
@@ -145874,6 +146866,34 @@
       "x-theuth-owner": "rpc-compose"
     },
     {
+      "name": "unsubscribe_file_view",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "subscription_id",
+          "required": true,
+          "schema": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": false,
+      "x-theuth-owner": "artifact"
+    },
+    {
       "name": "unsubscribe_pty",
       "paramStructure": "by-position",
       "params": [
@@ -146742,6 +147762,16 @@
       },
       {
         "receiverSchema": {
+          "$ref": "#/components/schemas/event.artifact_2ediff_2dview_2dopened.receiver.DiffViewOpened"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.artifact_2ediff_2dview_2dopened.output.DiffViewOpened"
+        },
+        "topic": "artifact.diff-view-opened",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
           "$ref": "#/components/schemas/event.artifact_2efence_2dsnapshot_2drequested.receiver.FenceSnapshotRequested"
         },
         "schema": {
@@ -146758,6 +147788,16 @@
           "$ref": "#/components/schemas/event.artifact_2efence_2dsnapshot_2dresolved.output.FenceSnapshotResolved"
         },
         "topic": "artifact.fence-snapshot-resolved",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.artifact_2efile_2dview_2dopened.receiver.FileViewOpened"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.artifact_2efile_2dview_2dopened.output.FileViewOpened"
+        },
+        "topic": "artifact.file-view-opened",
         "version": 1
       },
       {
@@ -147418,6 +148458,37 @@
         "receiverSchema": true,
         "subscribe": "subscribe_events",
         "unsubscribe": "unsubscribe_events",
+        "unsubscribeAliases": []
+      },
+      {
+        "aliases": [],
+        "itemSchema": {
+          "$ref": "#/components/schemas/method.artifact.output.FileViewChange"
+        },
+        "notification": "subscribe_file_view",
+        "params": [
+          {
+            "name": "session",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/method.artifact.input.SessionId"
+            },
+            "x-theuth-aliases": []
+          },
+          {
+            "name": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-theuth-aliases": []
+          }
+        ],
+        "receiverSchema": {
+          "$ref": "#/components/schemas/method.artifact.receiver.FileViewChange"
+        },
+        "subscribe": "subscribe_file_view",
+        "unsubscribe": "unsubscribe_file_view",
         "unsubscribeAliases": []
       },
       {

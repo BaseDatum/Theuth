@@ -54,6 +54,8 @@ typst-layout = { workspace = true }
 typst-pdf = { workspace = true }
 typst-render = { workspace = true }
 resvg = { workspace = true }
+similar = { workspace = true }  # 212: show_diff file_a/file_b
+notify-debouncer-full = { workspace = true }  # 212 §6: show_file tiles follow the file
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]

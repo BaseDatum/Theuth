@@ -1052,6 +1052,7 @@ dependencies = [
  "kameo",
  "markdown",
  "mime_guess",
+ "notify-debouncer-full",
  "parking_lot",
  "platform",
  "postcard",
@@ -1065,6 +1066,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "similar 3.2.1",
  "sqlx",
  "surface",
  "tar",
@@ -6254,6 +6256,15 @@ dependencies = [
  "serde_yaml",
  "uncased",
  "version_check",
+]
+
+[[package]]
+name = "file-id"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1fc6a637b6dc58414714eddd9170ff187ecb0933d4c7024d1abbd23a3cc26e9"
+dependencies = [
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -13876,6 +13887,19 @@ dependencies = [
  "objc2-core-services",
  "walkdir",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "notify-debouncer-full"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c02b49179cfebc9932238d04d6079912d26de0379328872846118a0fa0dbb302"
+dependencies = [
+ "file-id",
+ "log",
+ "notify",
+ "notify-types",
+ "walkdir",
 ]
 
 [[package]]

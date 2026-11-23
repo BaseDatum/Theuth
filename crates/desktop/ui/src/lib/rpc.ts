@@ -75,6 +75,10 @@ export const queryKeys = {
   jobs: (id: string) => ['jobs', id] as const,
   jobHistory: (id: string, mode: 'page' | 'infinite') => ['jobs', id, 'history', mode] as const,
   prompt: (id: string) => ['prompt', id] as const,
+  /** 212 §2: `file_view_read(session, path)` of a `show_file` tile or card; refetched only by its Refresh. */
+  fileView: (session: string, path: string) => ['file-view', session, path] as const,
+  /** 212 §2: `diff_view_read(session, spec)` of a `show_diff` tile or card; refetched only by its Refresh. */
+  diffView: (session: string, spec: unknown) => ['diff-view', session, spec] as const,
   knowledge: ['knowledge'] as const,
   knowledgeList: ['knowledge', 'list'] as const,
   knowledgeDoc: (id: string) => ['knowledge', 'doc', id] as const,

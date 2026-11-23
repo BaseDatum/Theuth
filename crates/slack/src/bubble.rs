@@ -632,6 +632,8 @@ fn is_deliverable(name: &str, args: &serde_json::Value) -> bool {
             | "show_web"
             | "show_pty"
             | "show_note"
+            | "show_file"
+            | "show_diff"
             | "app"
             | "agent_draft"
             | "task_draft"
