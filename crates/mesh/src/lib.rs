@@ -23,6 +23,7 @@ pub mod lease;
 pub mod nearby;
 pub mod net;
 pub mod pairing;
+pub mod share;
 pub mod stats;
 pub mod store;
 pub mod tools;
@@ -127,15 +128,35 @@ pub fn is_hub() -> bool {
 /// starts `false` until every connected peer's first replica exchange landed.
 static SYNCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
+/// Wakes [`wait_synced`] when [`set_synced`] sets the flag.
+static SYNCED_NOTIFY: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
 /// The mesh plugin flips this at start and once the first sync is done.
 pub fn set_synced(done: bool) {
     SYNCED.store(done, std::sync::atomic::Ordering::Relaxed);
+    if done {
+        SYNCED_NOTIFY.notify_waiters();
+    }
 }
 
 /// Task work (dispatch, sweeps, owner writes, desk-turn resumes) may run on this
 /// engine's rows: the first sync is done (182 M2a).
 pub fn synced() -> bool {
     SYNCED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Returns once [`synced`] holds (at once when it already does).
+// TODO(210-M2): the settle rule of 210 §5.7 (`mesh/share_key` and `share/*` rows) waits on it.
+pub async fn wait_synced() {
+    loop {
+        let notified = SYNCED_NOTIFY.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if synced() {
+            return;
+        }
+        notified.await;
+    }
 }
 
 /// 182 M1: re-announce `table`'s rows matching `filter` (one `?`, bound to

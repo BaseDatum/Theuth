@@ -46,7 +46,7 @@ use tokio::sync::oneshot;
 
 pub use vault::{
     KEEP, KeyInfo, KeyStore, MESH_PREFIX, OAUTH_PREFIX, RetireHold, RotationPeer, RotationPhase,
-    RotationState, SecretInfo, SecretsList, Vault, VersionInfo, WireKey,
+    RotationState, SHARE_PREFIX, SecretInfo, SecretsList, Vault, VersionInfo, WireKey,
 };
 
 /// How often the plugin looks for rows written by others (a peer's batch

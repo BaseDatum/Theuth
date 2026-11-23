@@ -255,16 +255,37 @@ pub const MESH_PREFIX: &str = "mesh/";
 /// rules as `mesh/`; the segments after the prefix are each a `valid_name`.
 pub const SANDBOX_PREFIX: &str = "sandbox/";
 
+/// Prefix of public sharing's name-key rows (210 §8.3): `share/<domain>/<name>/tls`, e.g.
+/// `share/tun.zip/sky/tls`. `sandbox/`'s rules: written only through
+/// [`Vault::set_if_version`], never listed, never expandable, every segment a `valid_name`.
+pub const SHARE_PREFIX: &str = "share/";
+
 /// `valid_name`, or one of the `/` families a local caller may write
-/// ([`Vault::set_if_version`]): `oauth/<ns>`, `mesh/<name>`, `sandbox/<vm>/<key>`.
+/// ([`Vault::set_if_version`]): `oauth/<ns>`, `mesh/<name>`, `sandbox/<vm>/<key>`,
+/// `share/<domain>/<name>/<key>`.
 fn writable_name(name: &str) -> bool {
     valid_name(name)
         || [OAUTH_PREFIX, MESH_PREFIX]
             .iter()
             .any(|p| name.strip_prefix(p).is_some_and(valid_name))
-        || name
-            .strip_prefix(SANDBOX_PREFIX)
-            .is_some_and(|rest| rest.split('/').all(valid_name))
+        || [SANDBOX_PREFIX, SHARE_PREFIX].iter().any(|p| {
+            name.strip_prefix(p)
+                .is_some_and(|rest| rest.split('/').all(valid_name))
+        })
+}
+
+/// A 32-byte key row's value (base64url, no padding); `name` labels the errors.
+fn decode_key32(name: &str, v: &str) -> anyhow::Result<Zeroizing<[u8; 32]>> {
+    let bytes = Zeroizing::new(
+        URL_SAFE_NO_PAD
+            .decode(v)
+            .with_context(|| format!("{name}: not base64url"))?,
+    );
+    let key: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .with_context(|| format!("{name}: expected 32 bytes"))?;
+    Ok(Zeroizing::new(key))
 }
 
 #[derive(Deserialize)]
@@ -438,16 +459,64 @@ impl Vault {
     }
 
     fn decode_mesh_key(v: &str) -> anyhow::Result<Zeroizing<[u8; 32]>> {
-        let bytes = Zeroizing::new(
-            URL_SAFE_NO_PAD
-                .decode(v)
-                .context("mesh/device_key: not base64url")?,
-        );
-        let key: [u8; 32] = bytes
-            .as_slice()
-            .try_into()
-            .context("mesh/device_key: expected 32 bytes")?;
-        Ok(Zeroizing::new(key))
+        decode_key32(Self::MESH_DEVICE_KEY, v)
+    }
+
+    /// 210 §5.7: vault name of the mesh share key, the Ed25519 secret (32 bytes, base64url, no
+    /// padding) whose public half is the mesh id at every share edge.
+    pub const MESH_SHARE_KEY: &'static str = "mesh/share_key";
+
+    /// The `mesh/share_key` row's current version and its 32 bytes — no minting. `Ok(None)` = no
+    /// row yet.
+    pub fn mesh_share_key_if_set(&self) -> anyhow::Result<Option<(u32, Zeroizing<[u8; 32]>)>> {
+        self.get_versioned(Self::MESH_SHARE_KEY)
+            .map(|(v, s)| Ok((v, decode_key32(Self::MESH_SHARE_KEY, &s)?)))
+            .transpose()
+    }
+
+    /// 210 §5.7: the mesh share key, minted when missing only when `holder` — the caller's
+    /// synced lease-holder predicate. The lease, not the compare-and-set, keeps two engines from
+    /// minting: `set_if_version` is a local check. Without a row a non-holder gets an error and
+    /// writes nothing. The holder writes with `set_if_version(…, None)` and returns the row as
+    /// read back, so a row that replicated in meanwhile wins.
+    // TODO(210-M2): the settle rule's wait (`synced()`, then `rekey_settle_secs`) before the
+    // re-read that a dual-holder window needs; M1 is one engine as its own holder.
+    pub async fn mesh_share_key(&self, holder: bool) -> anyhow::Result<(u32, Zeroizing<[u8; 32]>)> {
+        if let Some(k) = self.mesh_share_key_if_set()? {
+            return Ok(k);
+        }
+        if !holder {
+            anyhow::bail!("mesh/share_key: only the mesh's lease holder creates it");
+        }
+        let fresh: Zeroizing<[u8; 32]> = Zeroizing::new(rand::random());
+        let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(*fresh));
+        let wrote = self
+            .set_if_version(Self::MESH_SHARE_KEY, &encoded, "share", None)
+            .await
+            .map_err(|e| anyhow::anyhow!("mesh/share_key: {e}"))?;
+        if wrote.is_none() {
+            // Another writer (a replicated row, a concurrent task) was first: load its row.
+            self.refresh().await?;
+        }
+        self.mesh_share_key_if_set()?
+            .ok_or_else(|| anyhow::anyhow!("mesh/share_key: written but no row"))
+    }
+
+    /// 210 §5.7 `writing`: put `fresh` as the next version of `mesh/share_key` only while the
+    /// current version is `expected`. `Ok(Some(v))` = the new version; `Ok(None)` = another
+    /// writer moved the row (the rekey drops `fresh` from its stash and settles on the winner).
+    // TODO(210-M2): the share plugin's rekey state machine is the caller.
+    pub async fn replace_mesh_share_key(
+        &self,
+        fresh: &[u8; 32],
+        expected: u32,
+    ) -> anyhow::Result<Option<u32>> {
+        let encoded = Zeroizing::new(URL_SAFE_NO_PAD.encode(fresh));
+        Ok(self
+            .set_if_version(Self::MESH_SHARE_KEY, &encoded, "share", Some(expected))
+            .await
+            .map_err(|e| anyhow::anyhow!("mesh/share_key: {e}"))?
+            .map(|i| i.current))
     }
 
     /// The mesh's own X25519 static private key (69 decision 1), 32 bytes:
@@ -714,7 +783,8 @@ impl Vault {
         if !writable_name(name) {
             return Err(format!("invalid secret name {name:?}"));
         }
-        self.write(name, value, None, source, Some(expected), None).await
+        self.write(name, value, None, source, Some(expected), None)
+            .await
     }
 
     /// Copy version `back` (1..=4) to the top as a new version, source `restore vN`.
@@ -911,9 +981,9 @@ impl Vault {
             g.entries.get(name).map(|e| {
                 (
                     e.versions.first().map(|v| v.v),
-                    e.versions
-                        .first()
-                        .is_some_and(|cur| cur.value.as_str() == value && cur.expires_ms == expires_ms),
+                    e.versions.first().is_some_and(|cur| {
+                        cur.value.as_str() == value && cur.expires_ms == expires_ms
+                    }),
                     e.note.clone(),
                 )
             })
@@ -1699,6 +1769,94 @@ mod tests {
         assert!(!writable_name("sandbox/lab/"));
     }
 
+    /// 210 §8.3: `share/<domain>/<name>/<key>` rows follow `sandbox/`'s rules: every segment a
+    /// `valid_name`, written only through `set_if_version` (versioned), never listed, and no
+    /// placeholder names them.
+    #[tokio::test]
+    async fn share_rows_are_versioned_hidden_and_unexpandable() {
+        assert!(writable_name("share/tun.zip/sky/tls"));
+        assert!(!writable_name("share/"));
+        assert!(!writable_name("share/tun.zip//tls"));
+        assert!(!writable_name("share/tun zip/sky/tls"));
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.set("tok", "user-token-value", None, "user")
+            .await
+            .unwrap();
+        let row = "share/tun.zip/sky/tls";
+        assert!(
+            v.set(row, "x", None, "u").await.is_err(),
+            "`/` names only via set_if_version"
+        );
+        let first = r#"{"gen":1,"key_pem":"k1","csr_der":"c1"}"#;
+        let i = v
+            .set_if_version(row, first, "share", None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(i.current, 1);
+        assert!(
+            v.set_if_version(row, "other", "share", None)
+                .await
+                .unwrap()
+                .is_none(),
+            "a second first write loses"
+        );
+        let second = r#"{"gen":2,"key_pem":"k2","csr_der":"c2"}"#;
+        assert_eq!(
+            v.set_if_version(row, second, "share", Some(1))
+                .await
+                .unwrap()
+                .unwrap()
+                .current,
+            2
+        );
+        assert_eq!(v.get_versioned(row).unwrap().0, 2);
+        assert_eq!(
+            v.list().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["tok"],
+            "never listed"
+        );
+        let mut args = serde_json::json!({"a": "{{secret:share/tun.zip/sky/tls}}"});
+        assert_eq!(v.expand(&mut args).unwrap(), 0, "never expanded");
+        assert_eq!(args["a"], "{{secret:share/tun.zip/sky/tls}}");
+        let (names, _) = v.names_written_by(None);
+        assert_eq!(names, ["tok"], "not in the unpair preview");
+    }
+
+    /// 210 §5.7: only the lease holder mints `mesh/share_key`; anyone reads the row once it
+    /// exists; a rekey write is a compare-and-set on its version.
+    #[tokio::test]
+    async fn share_key_is_minted_only_by_the_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        assert!(
+            v.mesh_share_key(false).await.is_err(),
+            "a non-holder never mints"
+        );
+        assert!(
+            v.mesh_share_key_if_set().unwrap().is_none(),
+            "nothing written"
+        );
+        let (ver, key) = v.mesh_share_key(true).await.unwrap();
+        assert_eq!(ver, 1);
+        let (ver2, key2) = v.mesh_share_key(false).await.unwrap();
+        assert_eq!((ver2, *key2), (1, *key), "a non-holder reads the row");
+        let (ver3, key3) = v.mesh_share_key(true).await.unwrap();
+        assert_eq!((ver3, *key3), (1, *key), "the holder mints once");
+        assert!(v.list().is_empty(), "never listed");
+
+        let fresh = [9u8; 32];
+        assert_eq!(v.replace_mesh_share_key(&fresh, 1).await.unwrap(), Some(2));
+        assert_eq!(
+            v.replace_mesh_share_key(&[8u8; 32], 1).await.unwrap(),
+            None,
+            "a stale version loses"
+        );
+        let (ver, key) = v.mesh_share_key_if_set().unwrap().unwrap();
+        assert_eq!((ver, *key), (2, fresh));
+    }
+
     /// 69 decision 1: `mesh/*` rows are written only through `set_if_version`,
     /// hidden from every list (as `oauth/*` now is too) and no placeholder can
     /// name them.
@@ -1892,10 +2050,16 @@ mod tests {
         assert_eq!(b.expires_ms("tok"), Some(at));
         assert_eq!(b.list()[0].expires.as_deref(), Some(rfc3339(at).as_str()));
 
-        b.set("tok", "second-value-long", None, "user").await.unwrap();
+        b.set("tok", "second-value-long", None, "user")
+            .await
+            .unwrap();
         pump(&hb, &ea).await;
         a.refresh().await.unwrap();
-        assert_eq!(a.expires_ms("tok"), None, "a plain replace on the peer clears it");
+        assert_eq!(
+            a.expires_ms("tok"),
+            None,
+            "a plain replace on the peer clears it"
+        );
 
         a.set_expiring("tok", "third-value-long", None, "user", Some(now_ms() - 1))
             .await
@@ -1903,7 +2067,11 @@ mod tests {
         pump(&ha, &eb).await;
         b.refresh().await.unwrap();
         let mut args = serde_json::json!({"h": "{{secret:tok:-1}}"});
-        assert!(b.expand(&mut args).unwrap_err().starts_with("secret tok expired at "));
+        assert!(
+            b.expand(&mut args)
+                .unwrap_err()
+                .starts_with("secret tok expired at ")
+        );
         assert!(a.delete_expired("tok", now_ms()).await.unwrap());
         pump(&ha, &eb).await;
         b.refresh().await.unwrap();

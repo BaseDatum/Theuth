@@ -17,7 +17,9 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use data_encoding::BASE32_NOPAD;
-use iroh::endpoint::{Connection, RecvStream, SendStream, presets};
+use iroh::endpoint::{
+    ConnectOptions, Connection, QuicTransportConfig, RecvStream, SendStream, presets,
+};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
@@ -450,6 +452,10 @@ pub struct Net {
     discovery: bool,
     /// `join_network` ran.
     joined: AtomicBool,
+    /// `relays` are in the endpoint's relay map (`join_network`, or 210 `dial_alpn` without it).
+    relays_in: AtomicBool,
+    /// 210 §5.7: tombstoned engines as this engine's paired set drops them ([`Net::subscribe_removals`]).
+    removals: broadcast::Sender<EngineId>,
     hub_pref: Mutex<HubPref>,
     pending: Mutex<Option<Pending>>,
     paired: Arc<RwLock<HashSet<EndpointId>>>,
@@ -604,6 +610,8 @@ impl Net {
                 relays,
                 discovery: opts.discovery,
                 joined: AtomicBool::new(false),
+                relays_in: AtomicBool::new(false),
+                removals: broadcast::channel(64).0,
                 hub_pref: Mutex::new(hub_pref),
                 pending: Mutex::new(None),
                 paired: Arc::new(RwLock::new(paired)),
@@ -756,9 +764,7 @@ impl Net {
         if self.joined.swap(true, Ordering::Relaxed) {
             return;
         }
-        for cfg in self.relays.relays::<Vec<_>>() {
-            self.endpoint.insert_relay(cfg.url.clone(), cfg).await;
-        }
+        self.insert_relays().await;
         if self.discovery
             && let Ok(services) = self.endpoint.address_lookup()
         {
@@ -789,10 +795,62 @@ impl Net {
         );
     }
 
+    /// `mesh.relay`'s relays into the endpoint's relay map, once ([`Net::join_network`],
+    /// [`Net::dial_alpn`]).
+    async fn insert_relays(&self) {
+        if self.relays_in.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        for cfg in self.relays.relays::<Vec<_>>() {
+            self.endpoint.insert_relay(cfg.url.clone(), cfg).await;
+        }
+    }
+
+    /// 210 D18 (§5.3): one connection to `addr` on a non-mesh ALPN (`theuth/share/1`) from this
+    /// engine's endpoint, with a per-connection `transport` config (the share client allows the
+    /// streams the edge opens; the endpoint's own config is untouched). Unlike
+    /// [`Net::join_network`] it publishes nothing (no pkarr, n0 DNS or mDNS): it inserts only
+    /// `mesh.relay`'s relays and dials `addr`'s own relay URL and direct addresses (a relay URL
+    /// outside the map is dialed as a non-home relay). The caller owns the connection: no
+    /// tracking, reuse, inbound handler or paired-peer check.
+    // TODO(210-M4): offer the previous major as well (`ConnectOptions::with_additional_alpns`)
+    // once `share_proto::ALPNS` holds two.
+    pub async fn dial_alpn(
+        &self,
+        addr: EndpointAddr,
+        alpn: &[u8],
+        transport: QuicTransportConfig,
+    ) -> anyhow::Result<Connection> {
+        self.insert_relays().await;
+        let id = addr.id;
+        let opts = ConnectOptions::new().with_transport_config(transport);
+        let dial = async {
+            let connecting = self.endpoint.connect_with_opts(addr, alpn, opts).await?;
+            anyhow::Ok(connecting.await?)
+        };
+        tokio::time::timeout(CONNECT_TIMEOUT, dial)
+            .await
+            .context("dial timed out")?
+            .with_context(|| {
+                format!(
+                    "dial {} on {}",
+                    id.fmt_short(),
+                    String::from_utf8_lossy(alpn)
+                )
+            })
+    }
+
     // --- small state -----------------------------------------------------
 
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// 210 §5.7: engines that left this engine's paired set because they were tombstoned (an
+    /// unpair here or a replicated one), not quarantined. Only drops seen while running: a
+    /// subscriber reconciles against [`crate::RemovedPeers`] at start.
+    pub fn subscribe_removals(&self) -> broadcast::Receiver<EngineId> {
+        self.removals.subscribe()
     }
 
     /// Connect/disconnect events (the [`Transport::subscribe`] channel).
@@ -1346,6 +1404,19 @@ impl Net {
         if changed {
             // 187: a server homed on an engine that left runs on one still here; a re-pair gives it back.
             ::tools::peers_changed();
+        }
+        if !gone.is_empty() && self.removals.receiver_count() > 0 {
+            match self.store.removed_peers().await {
+                Ok(removed) => {
+                    for id in removed
+                        .into_iter()
+                        .filter(|r| gone.iter().any(|g| g.to_string() == r.0))
+                    {
+                        let _ = self.removals.send(id);
+                    }
+                }
+                Err(e) => tracing::warn!("mesh: removal events: {e:#}"),
+            }
         }
         for id in gone {
             self.close_conns(&id).await;
@@ -2978,5 +3049,92 @@ pub(crate) mod tests {
         old_ep.close().await;
         stranger_ep.close().await;
         a.shutdown().await;
+    }
+
+    /// 210 D18: `dial_alpn` reaches a plain endpoint on a non-mesh ALPN with the caller's
+    /// per-connection transport config (here at most two bidi streams the remote opens), and
+    /// never joins the network: with discovery on, no address-lookup service (pkarr, n0 DNS,
+    /// mDNS) is installed after the dial.
+    #[tokio::test]
+    async fn dial_alpn_uses_its_config_and_publishes_nothing() {
+        const TEST_ALPN: &[u8] = b"theuth/test-share/1";
+        let dir = tempfile::tempdir().unwrap();
+        let secret = SecretKey::generate();
+        let store = Store::open(
+            &dir.path().join("mesh.sqlite"),
+            EngineId(secret.public().to_string()),
+        )
+        .await
+        .unwrap();
+        let net = Net::bind(
+            BindOpts {
+                secret,
+                relay: String::new(),
+                discovery: true,
+                bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+                storm_frames_per_sec: 50,
+                first_seen_ms: 1_000,
+                vault: None,
+                mdns: None,
+            },
+            store,
+            "a".into(),
+            HubPref::Eligible,
+        )
+        .await
+        .unwrap();
+        let edge = Endpoint::builder(presets::Minimal)
+            .secret_key(SecretKey::generate())
+            .alpns(vec![TEST_ALPN.to_vec()])
+            .relay_mode(RelayMode::Disabled)
+            .bind_addr("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let accepting = edge.clone();
+        let accepted =
+            tokio::spawn(async move { accepting.accept().await.unwrap().await.unwrap() });
+
+        let transport = QuicTransportConfig::builder()
+            .max_concurrent_bidi_streams(2u32.into())
+            .build();
+        let conn = net
+            .dial_alpn(edge.addr(), TEST_ALPN, transport)
+            .await
+            .unwrap();
+        assert_eq!(conn.alpn(), TEST_ALPN);
+        assert_eq!(conn.remote_id(), edge.id());
+        let theirs = accepted.await.unwrap();
+
+        // The edge opens visitor streams: two fit under this connection's limit, a third waits.
+        let mut open = Vec::new();
+        for _ in 0..2 {
+            let (mut send, recv) = theirs.open_bi().await.unwrap();
+            send.write_all(b"v").await.unwrap();
+            open.push((send, recv));
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), theirs.open_bi())
+                .await
+                .is_err(),
+            "the per-connection stream limit applies"
+        );
+        let (_send, mut recv) = conn.accept_bi().await.unwrap();
+        let mut one = [0u8; 1];
+        recv.read_exact(&mut one).await.unwrap();
+        assert_eq!(&one, b"v");
+
+        assert!(
+            !net.joined.load(Ordering::Relaxed),
+            "join_network never ran"
+        );
+        assert!(
+            net.endpoint.address_lookup().unwrap().is_empty(),
+            "nothing publishes this engine"
+        );
+        conn.close(0u32.into(), b"done");
+        edge.close().await;
+        net.shutdown().await;
     }
 }
