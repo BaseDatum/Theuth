@@ -846,9 +846,14 @@ mod tests {
     }
 
     #[test]
-    fn durations_parse() {
+    fn durations_and_quoting() {
         assert_eq!(parse_duration("600s").unwrap(), Duration::from_secs(600));
         assert_eq!(parse_duration(" 20m ").unwrap(), Duration::from_secs(1200));
         assert!(parse_duration("soon").is_err());
+        assert_eq!(
+            platform::shell::quote("echo 'hi' there"),
+            "\"echo 'hi' there\""
+        );
+        assert_eq!(platform::shell::quote("a'$b"), r#""a'"'$b'"#);
     }
 }
