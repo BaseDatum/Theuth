@@ -1,9 +1,9 @@
 // 104 A6: the kinds whose screen is the row's facts laid out large — hand-off, secret, hire, budget, node, blocked.
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Streamdown } from 'streamdown'
 import { useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { afterFirstLine, finalResponse } from './final-text'
+import { PacketMarkdown } from './PacketMarkdown'
 import type { ReactNode } from 'react'
 import { SecretRequestCard, eventFields } from '@/components/chat/SecretRequestCard'
 import { KindActions } from './actions'
@@ -238,7 +238,7 @@ const FINAL_PAGE = 40
 
 /**
  * The rest of the turn's final response — everything below the summary line, text only (no tool calls, no reasoning),
- * as markdown in its own scroll area. Read from the session's newest page; nothing shows while it loads or when the
+ * in its own scroll area, through the chat's renderers (json-render, openui and mermaid fences draw). Read from the session's newest page; nothing shows while it loads or when the
  * response was a single line.
  */
 function FinalResponse({ item }: { item: AttentionItem }) {
@@ -257,7 +257,7 @@ function FinalResponse({ item }: { item: AttentionItem }) {
   return (
     <Fact label="Response">
       <div className="max-h-[50vh] overflow-y-auto rounded-md border border-border-subtle bg-layer-1 px-3 py-2 text-sm">
-        <Streamdown>{rest}</Streamdown>
+        <PacketMarkdown text={rest} />
       </div>
     </Fact>
   )
