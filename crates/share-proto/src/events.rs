@@ -33,7 +33,7 @@ pub struct RoutesEvent {
 }
 
 /// `stats`: every 30 s per host of this tunnel (§9.6); the edge's numbers are authoritative.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatsEvent {
     /// The host.
     pub host: String,
@@ -41,6 +41,31 @@ pub struct StatsEvent {
     pub conns: u64,
     /// Bytes both ways in the period.
     pub bytes: u64,
+    /// Bytes from visitors to the engine in the period (`bytes = bytes_in + bytes_out` on an M3 edge).
+    #[serde(default)]
+    pub bytes_in: u64,
+    /// Bytes from the engine to visitors in the period.
+    #[serde(default)]
+    pub bytes_out: u64,
+    /// Distinct visitor addresses (/64 for IPv6) in the period.
+    #[serde(default)]
+    pub visitors: u64,
+    /// Visitor connections open at the end of the period.
+    #[serde(default)]
+    pub open: u64,
+    /// Length of the period, seconds (30 on an M3 edge; 0 = unknown, an older edge).
+    #[serde(default)]
+    pub period_s: u64,
+}
+
+/// `throttle`: the mesh's tunnels moved to or from `throttle_mbit` (egress above or back under the month's pace,
+/// §9.6). The state at `hello` is `welcome.throttled`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThrottleEvent {
+    /// Throttled now.
+    pub throttled: bool,
+    /// The per-tunnel rate now in force, Mbit/s.
+    pub mbit: u32,
 }
 
 /// `drain`: the edge is restarting; keep serving, close at the deadline and redial after 1–5 s (§5.9).
@@ -66,6 +91,10 @@ pub enum KillReason {
     MeshRekeyed,
     /// The delegation expired without a renewed `hello`.
     DelegationExpired,
+    /// `admin pause`: every tunnel closed, `hello` refused until `resume` (§9.3).
+    Paused,
+    /// A Safe Browsing or Search Console hit on the host, pending review (§9.5).
+    Flagged,
     /// A reason this build does not know.
     #[serde(other)]
     Unknown,
@@ -96,6 +125,8 @@ pub enum Event {
     Drain(DrainEvent),
     /// `kill`.
     Kill(KillEvent),
+    /// `throttle`.
+    Throttle(ThrottleEvent),
 }
 
 impl Event {
@@ -108,6 +139,7 @@ impl Event {
             Event::Stats(_) => "stats",
             Event::Drain(_) => "drain",
             Event::Kill(_) => "kill",
+            Event::Throttle(_) => "throttle",
         }
     }
 
@@ -120,6 +152,7 @@ impl Event {
             Event::Stats(e) => serde_json::to_string(e),
             Event::Drain(e) => serde_json::to_string(e),
             Event::Kill(e) => serde_json::to_string(e),
+            Event::Throttle(e) => serde_json::to_string(e),
         };
         r.expect("event payloads always serialise")
     }
@@ -133,6 +166,7 @@ impl Event {
             "stats" => Event::Stats(serde_json::from_str(data)?),
             "drain" => Event::Drain(serde_json::from_str(data)?),
             "kill" => Event::Kill(serde_json::from_str(data)?),
+            "throttle" => Event::Throttle(serde_json::from_str(data)?),
             _ => return Ok(None),
         }))
     }
@@ -159,11 +193,24 @@ mod tests {
                 host: "app.sky.tun.zip".into(),
                 conns: 2,
                 bytes: 1024,
+                bytes_in: 24,
+                bytes_out: 1000,
+                visitors: 1,
+                open: 1,
+                period_s: 30,
+            }),
+            Event::Throttle(ThrottleEvent {
+                throttled: true,
+                mbit: 2,
             }),
             Event::Drain(DrainEvent { secs: 30 }),
             Event::Kill(KillEvent {
                 host: None,
                 reason: KillReason::StopAll,
+            }),
+            Event::Kill(KillEvent {
+                host: Some("a.sky.tun.zip".into()),
+                reason: KillReason::Flagged,
             }),
         ];
         for e in evs {
@@ -187,6 +234,28 @@ mod tests {
             })
             .data(),
             r#"{"host":"a.sky.tun.zip","reason":"edge_ban"}"#
+        );
+
+        // An M1 edge's `stats` (no M3 fields) still decodes.
+        let old = Event::parse("stats", r#"{"host":"h","conns":1,"bytes":5}"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            old,
+            Event::Stats(StatsEvent {
+                host: "h".into(),
+                conns: 1,
+                bytes: 5,
+                ..StatsEvent::default()
+            })
+        );
+        assert_eq!(
+            Event::Kill(KillEvent {
+                host: None,
+                reason: KillReason::Paused
+            })
+            .data(),
+            r#"{"reason":"paused"}"#
         );
     }
 }

@@ -156,6 +156,7 @@ async fn visitor_hello_reaches_the_engine_behind_proxy_v2() {
     // A host under a name the mesh does not hold is refused, and nothing is applied.
     let bad = RoutesPut {
         hosts: vec![format!("x.{name}.tun.zip"), "x.other1.tun.zip".into()],
+        ..Default::default()
     };
     let (status, _) = call(
         &conn,
@@ -169,6 +170,7 @@ async fn visitor_hello_reaches_the_engine_behind_proxy_v2() {
     let host = format!("x.{name}.tun.zip");
     let routes = RoutesPut {
         hosts: vec![host.clone()],
+        ..Default::default()
     };
     let (status, body) = call(
         &conn,
@@ -311,6 +313,7 @@ async fn control_gates() {
     assert_eq!(call(&conn, "POST", paths::NAMES, Some(req)).await.0, 201);
     let routes = serde_json::to_vec(&RoutesPut {
         hosts: vec![format!("x.{name}.tun.zip")],
+        ..Default::default()
     })
     .unwrap();
     assert_eq!(call(&conn, "PUT", paths::ROUTES, Some(routes.clone())).await.0, 204);

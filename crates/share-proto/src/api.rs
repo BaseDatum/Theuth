@@ -2,6 +2,8 @@
 //! Times are Unix milliseconds (`*_ms`, and `not_after`), durations seconds (`*_s`, `secs`). Every struct ignores
 //! unknown fields, and fields added later must be `#[serde(default)]` (the versioning rule, [`crate::version`]).
 
+use std::collections::BTreeMap;
+
 use iroh_base::PublicKey;
 use serde::{Deserialize, Serialize};
 
@@ -114,6 +116,12 @@ pub struct NameInfo {
     /// Queue position while `queued`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<QueuePos>,
+    /// A pending transfer offer of this name to another mesh (§5.2, D20).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_to: Option<PublicKey>,
+    /// When that offer lapses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_until_ms: Option<u64>,
 }
 
 /// `{host, engine}`: a route and the engine holding it (`welcome.routes`, `route_conflict.conflicts`).
@@ -162,6 +170,10 @@ pub struct WelcomeLimits {
     pub conns_per_tunnel: u32,
     /// `delegation_max_ttl` (25 h).
     pub delegation_max_ttl_ms: u64,
+    /// Per-tunnel bandwidth while not throttled, Mbit/s (`tunnel_mbit`, 50; §9.6).
+    pub tunnel_mbit: u32,
+    /// Per-tunnel bandwidth of non-invited meshes while monthly egress is above pace (`throttle_mbit`, 2; §9.6).
+    pub throttle_mbit: u32,
 }
 
 impl Default for WelcomeLimits {
@@ -178,6 +190,8 @@ impl Default for WelcomeLimits {
             routes_per_tunnel: 64,
             conns_per_tunnel: crate::limits::VISITOR_STREAMS_PER_TUNNEL,
             delegation_max_ttl_ms: crate::limits::DELEGATION_MAX_TTL_MS,
+            tunnel_mbit: 50,
+            throttle_mbit: 2,
         }
     }
 }
@@ -220,6 +234,10 @@ pub struct Welcome {
     /// Sent by an edge running on its standby key: a signed [`crate::Retire`] of the old live key (§5.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retire: Option<Signed>,
+    /// This mesh's tunnels run at `limits.throttle_mbit` now (egress above the month's pace, §9.6); live changes
+    /// arrive as `throttle` events.
+    #[serde(default)]
+    pub throttled: bool,
 }
 
 /// `GET /v1/names/{name}` answer.
@@ -230,6 +248,9 @@ pub struct NameAvailability {
     /// Why not (`taken`, `cooldown`, or a [`crate::NameError::reason`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// With `reason: cooldown`: when the previous owner's cooldown ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reclaim_after_ms: Option<u64>,
 }
 
 /// `POST /v1/names` body: a client-drawn random candidate ([`crate::names::random_name`]).
@@ -274,6 +295,23 @@ pub struct TransferAccepted {
 pub struct RoutesPut {
     /// Hosts, each `<name>.D` or `<label>.<name>.D` of a held name.
     pub hosts: Vec<String>,
+    /// Per host, when its share went live on this engine (`shares.live_ms`). The edge refuses a host whose time is
+    /// at or before the mesh's `stop_all_ms` with `409 stopped_all` (§7.4). A host absent here is checked only
+    /// against the session's `hello` time, as before.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub published_ms: BTreeMap<String, u64>,
+}
+
+impl RoutesPut {
+    /// The hosts the edge must refuse with `stopped_all`: those whose `published_ms` is at or before the mesh's
+    /// last Stop all. Hosts without a time are not judged here.
+    pub fn stopped_hosts(&self, stop_all_ms: u64) -> Vec<String> {
+        self.hosts
+            .iter()
+            .filter(|h| self.published_ms.get(*h).is_some_and(|&t| t <= stop_all_ms))
+            .cloned()
+            .collect()
+    }
 }
 
 /// Query of `POST /v1/names/{name}/csr` (body: CSR DER).
@@ -282,6 +320,10 @@ pub struct CsrQuery {
     /// A rotation to a new key (§6.3).
     #[serde(default)]
     pub rotate: bool,
+    /// With `rotate`: the old key may be compromised (a removed engine held it), so the edge revokes the old
+    /// certificate with `keyCompromise` instead of `superseded` (§6.3). Wire: `?rotate=true&compromised=true`.
+    #[serde(default)]
+    pub compromised: bool,
 }
 
 /// `200` of the CSR post and of `GET /v1/names/{name}/cert`.
@@ -329,6 +371,24 @@ pub struct MeshStatus {
     /// Last Stop all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_all_ms: Option<u64>,
+    /// The mesh's revoke list (replaced by each rekey, §5.7).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revoked: Vec<PublicKey>,
+    /// Rekeys the edge applied to this mesh, oldest first; the last `new` is `mesh`. A client in `confirming`
+    /// polls until `mesh` equals its settled key (§5.7).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rekeys: Vec<RekeyEntry>,
+}
+
+/// One applied rekey in `GET /v1/mesh`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RekeyEntry {
+    /// The mesh id before.
+    pub old: PublicKey,
+    /// The mesh id after.
+    pub new: PublicKey,
+    /// Edge time the rekey was applied.
+    pub ms: u64,
 }
 
 /// `200` of `POST /v1/mesh/stop`.
@@ -357,4 +417,112 @@ pub struct RevokeResult {
 pub struct RekeyAccepted {
     /// The new mesh id.
     pub mesh: PublicKey,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iroh_base::SecretKey;
+
+    fn pk(b: u8) -> PublicKey {
+        SecretKey::from_bytes(&[b; 32]).public()
+    }
+
+    #[test]
+    fn routes_put_published_ms_and_old_json() {
+        let old: RoutesPut = serde_json::from_str(r#"{"hosts":["a.sky.tun.zip"]}"#).unwrap();
+        assert!(old.published_ms.is_empty());
+        assert_eq!(serde_json::to_string(&old).unwrap(), r#"{"hosts":["a.sky.tun.zip"]}"#);
+        assert!(old.stopped_hosts(u64::MAX).is_empty());
+
+        let r = RoutesPut {
+            hosts: vec!["a.sky.tun.zip".into(), "b.sky.tun.zip".into(), "c.sky.tun.zip".into()],
+            published_ms: [("a.sky.tun.zip".to_owned(), 100), ("b.sky.tun.zip".to_owned(), 200)].into(),
+        };
+        let j = serde_json::to_string(&r).unwrap();
+        assert_eq!(serde_json::from_str::<RoutesPut>(&j).unwrap(), r);
+        // Stop all at 100: `a` went live at 100 (stopped), `b` after, `c` has no time.
+        assert_eq!(r.stopped_hosts(100), vec!["a.sky.tun.zip".to_owned()]);
+        assert!(r.stopped_hosts(99).is_empty());
+    }
+
+    #[test]
+    fn mesh_status_rekeys_and_old_json() {
+        let old = format!(
+            r#"{{"mesh":"{}","engines":[{{"engine":"{}","attached":true,"last_ms":5}}],"routes":[]}}"#,
+            pk(1),
+            pk(2)
+        );
+        let m: MeshStatus = serde_json::from_str(&old).unwrap();
+        assert!(m.revoked.is_empty() && m.rekeys.is_empty() && m.stop_all_ms.is_none());
+        let m = MeshStatus {
+            revoked: vec![pk(3)],
+            rekeys: vec![RekeyEntry {
+                old: pk(4),
+                new: pk(1),
+                ms: 9,
+            }],
+            ..m
+        };
+        let j = serde_json::to_string(&m).unwrap();
+        assert_eq!(serde_json::from_str::<MeshStatus>(&j).unwrap(), m);
+    }
+
+    #[test]
+    fn welcome_and_names_old_json() {
+        let old = format!(
+            r#"{{"v":1,"now_ms":1,"min_client":"2.0.0","mesh":"{}","names":[{{"name":"sky","kind":"reserved","state":"queued","queue":{{"position":2,"eta_s":60}}}}],
+            "routes":[],"revoked":[],"domain":"tun.zip","limits":{{"interstitial":"required"}},"terms_url":"t","abuse_url":"a","terms_rev":"1","terms_ok":true,"full":false}}"#,
+            pk(1)
+        );
+        let w: Welcome = serde_json::from_str(&old).unwrap();
+        assert!(!w.throttled);
+        assert_eq!((w.limits.tunnel_mbit, w.limits.throttle_mbit), (50, 2));
+        assert_eq!(w.limits.interstitial, InterstitialRule::Required);
+        let n = &w.names[0];
+        assert_eq!(n.queue, Some(QueuePos { position: 2, eta_s: 60 }));
+        assert_eq!((n.transfer_to, n.transfer_until_ms), (None, None));
+
+        let mut w2 = w.clone();
+        w2.throttled = true;
+        w2.names[0].transfer_to = Some(pk(7));
+        w2.names[0].transfer_until_ms = Some(77);
+        let j = serde_json::to_string(&w2).unwrap();
+        assert_eq!(serde_json::from_str::<Welcome>(&j).unwrap(), w2);
+
+        let a: NameAvailability =
+            serde_json::from_str(r#"{"available":false,"reason":"cooldown"}"#).unwrap();
+        assert_eq!(a.reclaim_after_ms, None);
+    }
+
+    #[test]
+    fn csr_query_and_paths() {
+        let q: CsrQuery = serde_json::from_str(r#"{"rotate":true}"#).unwrap();
+        assert!(q.rotate && !q.compromised);
+        assert_eq!(
+            crate::paths::name_csr_query("sky", &CsrQuery { rotate: true, compromised: true }),
+            "/v1/names/sky/csr?rotate=true&compromised=true"
+        );
+        assert_eq!(
+            crate::paths::name_csr_query("sky", &q),
+            crate::paths::name_csr("sky", true)
+        );
+        assert_eq!(
+            crate::paths::name_csr_query("sky", &CsrQuery::default()),
+            "/v1/names/sky/csr"
+        );
+    }
+
+    #[test]
+    fn queue_eta_rule() {
+        let r = 7 * 86_400 / 22; // open bucket refill interval
+        // Position 1 with a token free: only its own order.
+        assert_eq!(crate::queue_eta_s(1, 1, r, 500), 0);
+        // Position 1, no token: the next token.
+        assert_eq!(crate::queue_eta_s(1, 0, r, 500), 500);
+        // Position 3, one token: two short → one full interval + next token + 2 orders ahead.
+        assert_eq!(crate::queue_eta_s(3, 1, r, 500), r + 500 + 2 * 180);
+        assert!(crate::version::protocol_ok(crate::PROTOCOL_MAJOR));
+        assert!(!crate::version::protocol_ok(crate::PROTOCOL_MAJOR + 1));
+    }
 }

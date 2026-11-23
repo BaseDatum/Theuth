@@ -417,6 +417,8 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
             full: false,
             // TODO(210-M4): `retire` when running on the standby key.
             retire: None,
+            // TODO(210-M3): the egress throttle state (§9.6).
+            throttled: false,
         },
     )
 }
@@ -446,6 +448,9 @@ fn name_info(r: &NameRow) -> NameInfo {
         not_after: r.not_after_ms.and_then(|v| u64::try_from(v).ok()),
         // TODO(210-M3): the slot queue position.
         queue: None,
+        // TODO(210-M2): fill from the row's transfer_to / transfer_until_ms.
+        transfer_to: None,
+        transfer_until_ms: None,
     }
 }
 
@@ -455,6 +460,7 @@ async fn availability(Extension(c): Extension<Ctx>, Path(name): Path<String>) ->
     let reason = |r: &str| NameAvailability {
         available: false,
         reason: Some(r.into()),
+        reclaim_after_ms: None,
     };
     if names::check_random(&name).is_err()
         && let Err(e) = names::check_reserved(&name, &c.edge.cfg.reserved_words)
@@ -469,17 +475,20 @@ async fn availability(Extension(c): Extension<Ctx>, Path(name): Path<String>) ->
         None => NameAvailability {
             available: true,
             reason: None,
+            reclaim_after_ms: None,
         },
         Some(r) if r.state == "banned" => reason("banned"),
         Some(r) if r.owner.as_deref() == Some(mesh.as_str()) => NameAvailability {
             available: true,
             reason: None,
+            reclaim_after_ms: None,
         },
         Some(r) if r.held() => reason("taken"),
         Some(r) if r.reclaim_after_ms.is_some_and(|t| t > now_i64()) => reason("cooldown"),
         Some(_) => NameAvailability {
             available: true,
             reason: None,
+            reclaim_after_ms: None,
         },
     };
     json(StatusCode::OK, &answer)
@@ -773,6 +782,9 @@ async fn mesh_status(Extension(c): Extension<Ctx>) -> ApiResult {
             engines,
             routes: e.mesh_routes(&s.mesh),
             stop_all_ms,
+            // TODO(210-M2): the revoke list and rekey history.
+            revoked: Vec::new(),
+            rekeys: Vec::new(),
         },
     )
 }

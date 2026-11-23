@@ -67,6 +67,12 @@ pub enum ErrorCode {
     TooLarge,
     /// Not in the design's tables: an edge-side failure.
     Internal,
+    /// `Hello.v` is a protocol major this edge does not serve (HTTP 426); carries `supported`. Distinct from
+    /// `client_too_old`, which stays the `min_client` refusal (§5.3 versioning).
+    ProtocolMismatch,
+    /// `PUT /v1/routes` named a host whose `published_ms` is at or before the mesh's last Stop all (§7.4, FIX-EDGE
+    /// M7); carries `stop_all_ms` and the refused `hosts`. Nothing was applied.
+    StoppedAll,
     /// A code this build does not know (added by a later edge).
     #[serde(other)]
     Unknown,
@@ -94,9 +100,9 @@ impl ErrorCode {
             | BadSignature
             | HelloRequired => 403,
             NotFound => 404,
-            MeshRekeyed | NameTaken | Cooldown | RouteConflict | CsrMismatch => 409,
+            MeshRekeyed | NameTaken | Cooldown | RouteConflict | CsrMismatch | StoppedAll => 409,
             TooLarge => 413,
-            ClientTooOld => 426,
+            ClientTooOld | ProtocolMismatch => 426,
             Paced | RateLimited => 429,
             Internal | Unknown => 500,
             EdgeFull => 503,
@@ -135,6 +141,8 @@ impl ErrorCode {
             RateLimited => "rate_limited",
             TooLarge => "too_large",
             Internal => "internal",
+            ProtocolMismatch => "protocol_mismatch",
+            StoppedAll => "stopped_all",
             Unknown => "unknown",
         }
     }
@@ -144,6 +152,67 @@ impl std::fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+/// Which counter a `quota`, `network_quota`, `engines_quota`, `paced` or `edge_full` refusal hit (§9.4): the
+/// client words its message from it. Additive; unknown scopes decode as [`LimitScope::Unknown`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitScope {
+    /// Per mesh.
+    Mesh,
+    /// Per engine key.
+    Engine,
+    /// Per tunnel.
+    Tunnel,
+    /// Per client network (IPv4 address, IPv6 /64).
+    Net,
+    /// Per IPv4 /24 or IPv6 /48 (× `wide_net_factor`).
+    NetWide,
+    /// Per IPv6 /32.
+    Net32,
+    /// Per origin ASN.
+    Asn,
+    /// The shared bucket of relay-only newcomer meshes.
+    Relayed,
+    /// Edge-wide (`names_max`, `queue_max`, `open_new_names_day`).
+    Global,
+    /// A scope this build does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Which limit of §9.4 / §6.5 a refusal hit. Additive; unknown limits decode as [`LimitKind::Unknown`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitKind {
+    /// Random or reserved names held.
+    Names,
+    /// Reserved names held.
+    Reserved,
+    /// Claims and allocations per hour.
+    Claims,
+    /// New-name certificates per 7 days.
+    Certs,
+    /// Names waiting for a slot.
+    Queued,
+    /// Meshes first seen per day.
+    Meshes,
+    /// Engines attached, or engine keys first seen per day.
+    Engines,
+    /// Tunnels.
+    Tunnels,
+    /// Routes per tunnel.
+    Routes,
+    /// Bytes per day.
+    Bytes,
+    /// Names holding a slot (`names_max`).
+    NamesMax,
+    /// The slot queue (`queue_max`).
+    QueueMax,
+    /// A limit this build does not know.
+    #[serde(other)]
+    Unknown,
 }
 
 /// The body of every non-2xx answer: `{code, …}` plus the code's own fields.
@@ -175,6 +244,21 @@ pub struct ErrorBody {
     /// Human-readable detail for logs; clients show their own text per code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Which counter a quota-like refusal hit (`quota`, `network_quota`, `engines_quota`, `paced`, `edge_full`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<LimitScope>,
+    /// Which limit within `scope`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<LimitKind>,
+    /// The protocol majors this edge serves (`protocol_mismatch`), newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported: Vec<u32>,
+    /// The mesh's last Stop all (`stopped_all`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_all_ms: Option<u64>,
+    /// The refused hosts (`stopped_all`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<String>,
 }
 
 impl ErrorBody {
@@ -190,6 +274,11 @@ impl ErrorBody {
             spki: None,
             reclaim_after_ms: None,
             message: None,
+            scope: None,
+            limit: None,
+            supported: Vec::new(),
+            stop_all_ms: None,
+            hosts: Vec::new(),
         }
     }
 
@@ -241,6 +330,37 @@ impl ErrorBody {
         }
     }
 
+    /// A quota-like refusal (`quota`, `network_quota`, `engines_quota`, `edge_full`) naming the counter hit.
+    pub fn limited(code: ErrorCode, scope: LimitScope, limit: LimitKind) -> Self {
+        ErrorBody {
+            scope: Some(scope),
+            limit: Some(limit),
+            ..Self::new(code)
+        }
+    }
+
+    /// `edge_full`: `names_max` or `queue_max` reached (§9.4, §6.5).
+    pub fn edge_full(limit: LimitKind) -> Self {
+        Self::limited(ErrorCode::EdgeFull, LimitScope::Global, limit)
+    }
+
+    /// `protocol_mismatch` listing the majors this edge serves.
+    pub fn protocol_mismatch(supported: Vec<u32>) -> Self {
+        ErrorBody {
+            supported,
+            ..Self::new(ErrorCode::ProtocolMismatch)
+        }
+    }
+
+    /// `stopped_all`: hosts published at or before the mesh's Stop all.
+    pub fn stopped_all(stop_all_ms: u64, hosts: Vec<String>) -> Self {
+        ErrorBody {
+            stop_all_ms: Some(stop_all_ms),
+            hosts,
+            ..Self::new(ErrorCode::StoppedAll)
+        }
+    }
+
     /// The HTTP status for this body.
     pub fn status(&self) -> u16 {
         self.code.status()
@@ -271,5 +391,31 @@ mod tests {
         assert_eq!(ErrorCode::ClientTooOld.status(), 426);
         assert_eq!(ErrorCode::EdgeFull.status(), 503);
         assert_eq!(ErrorCode::RouteConflict.status(), 409);
+    }
+
+    #[test]
+    fn new_codes_and_fields() {
+        let b = ErrorBody::limited(ErrorCode::NetworkQuota, LimitScope::Asn, LimitKind::Certs);
+        let j = serde_json::to_string(&b).unwrap();
+        assert_eq!(j, r#"{"code":"network_quota","scope":"asn","limit":"certs"}"#);
+        assert_eq!(serde_json::from_str::<ErrorBody>(&j).unwrap(), b);
+        let f: ErrorBody = serde_json::from_str(r#"{"code":"edge_full","scope":"galaxy","limit":"stars"}"#).unwrap();
+        assert_eq!((f.scope, f.limit), (Some(LimitScope::Unknown), Some(LimitKind::Unknown)));
+        assert_eq!(ErrorBody::edge_full(LimitKind::QueueMax).status(), 503);
+
+        let p = ErrorBody::protocol_mismatch(vec![2, 1]);
+        assert_eq!(p.status(), 426);
+        assert_eq!(serde_json::to_string(&p).unwrap(), r#"{"code":"protocol_mismatch","supported":[2,1]}"#);
+        assert_ne!(ErrorCode::ProtocolMismatch, ErrorCode::ClientTooOld);
+
+        let s = ErrorBody::stopped_all(7, vec!["a.sky.tun.zip".into()]);
+        assert_eq!(s.status(), 409);
+        let j = serde_json::to_string(&s).unwrap();
+        assert_eq!(j, r#"{"code":"stopped_all","stop_all_ms":7,"hosts":["a.sky.tun.zip"]}"#);
+        assert_eq!(serde_json::from_str::<ErrorBody>(&j).unwrap(), s);
+
+        // An old body without any new field.
+        let old: ErrorBody = serde_json::from_str(r#"{"code":"quota"}"#).unwrap();
+        assert_eq!(old, ErrorBody::new(ErrorCode::Quota));
     }
 }

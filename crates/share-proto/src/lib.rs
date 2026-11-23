@@ -19,15 +19,17 @@ pub mod version;
 
 pub use api::*;
 pub use csr::{CsrError, CsrInfo, SpkiHash, check_csr, expected_sans};
-pub use error::{ErrorBody, ErrorCode};
-pub use events::{Event, KillReason};
+pub use admin::{AdminCommand, AdminRequest, AdminResponse, RevokeReason};
+pub use error::{ErrorBody, ErrorCode, LimitKind, LimitScope};
+pub use events::{Event, KillReason, ThrottleEvent};
 pub use iroh_base::{EndpointAddr, PublicKey, SecretKey};
 pub use names::{HostParts, NameError, NameKind};
 pub use signed::{
-    Delegation, DelegationError, EdgeIdentity, Rekey, RekeyError, Retire, Signed, SignedRekey,
+    Delegation, DelegationError, EdgeIdentity, EdgePins, Rekey, RekeyConflict, RekeyError, Retire,
+    RetireError, Signed, SignedRekey, rekey_conflict,
 };
 pub use ticket::{Invite, ShareEdgeTicket};
-pub use version::{ALPN, ALPNS, PROTOCOL_MAJOR, Version};
+pub use version::{ALPN, ALPNS, PROTOCOL_MAJOR, SUPPORTED_MAJORS, Version};
 
 /// Path constants of the control API (§5.3). `{name}` is the axum path-parameter syntax.
 pub mod paths {
@@ -74,6 +76,14 @@ pub mod paths {
             format!("/v1/names/{name}/csr")
         }
     }
+    /// `/v1/names/<name>/csr` with the query of `q` (`rotate`, `compromised`).
+    pub fn name_csr_query(name: &str, q: &crate::CsrQuery) -> String {
+        match (q.rotate, q.compromised) {
+            (false, _) => format!("/v1/names/{name}/csr"),
+            (true, false) => format!("/v1/names/{name}/csr?rotate=true"),
+            (true, true) => format!("/v1/names/{name}/csr?rotate=true&compromised=true"),
+        }
+    }
     /// `/v1/names/<name>/cert`.
     pub fn name_cert(name: &str) -> String {
         format!("/v1/names/{name}/cert")
@@ -98,4 +108,38 @@ pub mod limits {
     pub const DELEGATION_RENEW_MS: u64 = 12 * 3_600_000;
     /// Above this holder-versus-edge clock difference the client shows "clock is off" (§5.7).
     pub const CLOCK_WARN_MS: u64 = 5 * 60_000;
+    /// `rekey_settle_secs`: after writing `mesh/share_key`, wait for `synced()` and this long, then re-read the
+    /// row; its value is the settled key (§5.7, P0-6).
+    pub const REKEY_SETTLE_SECS: u64 = 60;
+    /// `rekey_heal_secs`: a `contested` rekey waits this long for a chain heal before the operator (§5.7).
+    pub const REKEY_HEAL_SECS: u64 = 3_600;
+    /// Rekey retry backoff against an unreachable edge: from this, doubling (§5.7).
+    pub const REKEY_BACKOFF_MIN_MS: u64 = 60_000;
+    /// … up to this.
+    pub const REKEY_BACKOFF_MAX_MS: u64 = 3_600_000;
+    /// A transfer offer lapses after this (§5.2, D20).
+    pub const TRANSFER_TTL_MS: u64 = 7 * 86_400_000;
+    /// An allocated name without a CSR is evicted after this (`allocated_ttl`, §9.4).
+    pub const ALLOCATED_TTL_MS: u64 = 3_600_000;
+    /// The client dials the pinned standby after the live key was unreachable this long (§5.5).
+    pub const STANDBY_AFTER_MS: u64 = 10 * 60_000;
+    /// `stats` events are sent every this many seconds (§5.3).
+    pub const STATS_PERIOD_S: u64 = 30;
+    /// Per-order time added to a queue ETA for every job ahead (§6.5).
+    pub const ORDER_ETA_S: u64 = 180;
+}
+
+/// The ETA of §6.5 for queue position `position` (1-based) with `tokens` whole tokens available, a bucket refill
+/// interval of `refill_s` and `next_token_s` until the next token. With `short = max(0, p − t)`:
+/// `(short == 0 ? 0 : (short − 1) × r + next_token) + 3 min × (p − 1)`. The design writes `short × r + next_token`,
+/// which counts the next token twice; this is the same rule without that.
+pub fn queue_eta_s(position: u32, tokens: u32, refill_s: u64, next_token_s: u64) -> u64 {
+    let p = u64::from(position.max(1));
+    let short = p.saturating_sub(u64::from(tokens));
+    let wait = if short == 0 {
+        0
+    } else {
+        (short - 1) * refill_s + next_token_s
+    };
+    wait + (p - 1) * limits::ORDER_ETA_S
 }

@@ -18,6 +18,16 @@ pub const ALPNS: &[&[u8]] = &[ALPN];
 /// The protocol major, the `v` of `/v1/info`, `hello` and `welcome`.
 pub const PROTOCOL_MAJOR: u32 = 1;
 
+/// Every protocol major this build serves, newest first (the `supported` of `426 protocol_mismatch`); parallel
+/// to [`ALPNS`].
+pub const SUPPORTED_MAJORS: &[u32] = &[PROTOCOL_MAJOR];
+
+/// Whether a `hello` with `v` is served; else `426 protocol_mismatch` (`client_too_old` stays the `min_client`
+/// refusal).
+pub fn protocol_ok(v: u32) -> bool {
+    SUPPORTED_MAJORS.contains(&v)
+}
+
 /// Prefix of `/v1/info`'s `edge` field: `theuth-share-edge/<ver>`.
 pub const EDGE_AGENT_PREFIX: &str = "theuth-share-edge/";
 

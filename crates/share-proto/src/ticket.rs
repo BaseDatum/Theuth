@@ -25,6 +25,11 @@ impl Invite {
     pub fn hash(&self) -> [u8; 32] {
         Sha256::digest(self.0).into()
     }
+
+    /// Lowercase hex of [`Invite::hash`]: the operator-facing invite id (`admin invite list` / `invite revoke`).
+    pub fn hash_hex(&self) -> String {
+        data_encoding::HEXLOWER.encode(&self.hash())
+    }
 }
 
 impl fmt::Debug for Invite {
