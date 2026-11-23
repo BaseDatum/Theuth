@@ -109,9 +109,13 @@ impl runtime::Plugin for SharePlugin {
         }
         let cfg: ShareConfig = rt.section("share").unwrap_or_default();
         let store = store::Store::open(&rt.data_dir.join("share.sqlite")).await?;
-        if let Err(e) = replica::attach(store.pool(), &store::REPLICATED).await {
-            tracing::warn!("share: replicated tables not attached: {e:#}");
-        }
+        let replica = match replica::attach(store.pool(), &store::REPLICATED).await {
+            Ok(h) => Some(h),
+            Err(e) => {
+                tracing::warn!("share: replicated tables not attached: {e:#}");
+                None
+            }
+        };
         let SharePlugin {
             mut engine_id,
             hooks,
@@ -131,6 +135,10 @@ impl runtime::Plugin for SharePlugin {
         let engine = Engine::new(cfg, store, rt.data_dir.clone(), engine_id, hooks, Some(rt.clone()))?;
         engine.start().await?;
         let _ = ENGINE.set(engine.clone());
+        if let Some(h) = replica {
+            tokio::spawn(announce_replicated(engine.clone(), h));
+        }
+        tokio::spawn(csr_heal_timer(engine.clone()));
         let rt = rt.clone();
         tokio::spawn(async move {
             if let Some(reg) = rt
@@ -153,5 +161,45 @@ impl runtime::Plugin for SharePlugin {
             }
         });
         Ok(())
+    }
+}
+
+/// `share.changed` for `shares` rows another machine wrote, as they arrive by replication
+/// (local writes announce themselves).
+async fn announce_replicated(engine: Arc<Engine>, h: replica::ReplicaHandle) {
+    let mut rx = h.subscribe();
+    loop {
+        let batch = match rx.recv().await {
+            Ok(b) => b,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        };
+        if &batch.origin == h.origin() {
+            continue;
+        }
+        let ids: std::collections::BTreeSet<&str> = batch
+            .changes
+            .iter()
+            .filter(|c| c.table == "shares")
+            .map(|c| c.pk.as_str())
+            .collect();
+        for id in ids {
+            if let Ok(Some(s)) = engine.store.get(id).await {
+                engine.emit(&s).await;
+            }
+        }
+    }
+}
+
+/// The holder's `csr_mismatch` heal timer (§6.2, P0-6), once a minute.
+async fn csr_heal_timer(engine: Arc<Engine>) {
+    let mut since = std::collections::HashMap::new();
+    let mut posted = std::collections::HashMap::new();
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+    loop {
+        tick.tick().await;
+        engine
+            .csr_heal_tick(&mut since, &mut posted, platform::time::now_ms())
+            .await;
     }
 }

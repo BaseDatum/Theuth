@@ -269,7 +269,7 @@ impl Engine {
         Ok(())
     }
 
-    async fn emit(&self, share: &Share) {
+    pub(crate) async fn emit(&self, share: &Share) {
         if let Some(rt) = &self.rt {
             rt.publish(ShareChanged {
                 share: share.clone(),
@@ -857,7 +857,6 @@ impl Engine {
         Ok(())
     }
 
-    /// `GET /v1/names/{name}` through the current connection.
     /// The attached edge's control client and info (attaching first, §5.2 "a name operation").
     pub(crate) async fn attached_control(&self) -> anyhow::Result<(Control, Info)> {
         let link = self.wait_attached().await?;
@@ -890,6 +889,56 @@ impl Engine {
         }
     }
 
+    /// The `csr_mismatch` heal timer (§6.2, P0-6), one pass on the lease holder: a welcome name
+    /// whose edge SPKI differs from the vault row for [`crate::holder::CSR_HEAL_MS`] gets the
+    /// row's CSR posted with `?rotate=true`. `since` keeps first-seen times between passes;
+    /// `posted` the SPKIs already posted, so a stale welcome does not post again.
+    pub(crate) async fn csr_heal_tick(
+        &self,
+        since: &mut HashMap<String, u64>,
+        posted: &mut HashMap<String, share_proto::SpkiHash>,
+        now: u64,
+    ) {
+        let (Some((_, domain, seen)), Some(store)) = (self.welcome_names(), &self.hooks.name_keys) else {
+            return;
+        };
+        if !matches!(crate::family::holder().await, Ok(crate::family::Holder::Me)) {
+            since.clear();
+            return;
+        }
+        since.retain(|n, _| seen.iter().any(|i| &i.name == n));
+        for n in &seen {
+            let Ok(Some(row)) = store.get(&domain, &n.name).await else { continue };
+            let Ok(row_spki) = crate::holder::row_spki(&row, &n.name, &domain) else { continue };
+            let edge = match n.spki {
+                Some(e) if e != row_spki && posted.get(&n.name) == Some(&row_spki) => Some(row_spki),
+                e => e,
+            };
+            let at = since.get(&n.name).copied();
+            match crate::holder::csr_heal(edge.as_ref(), &row_spki, at, now, crate::holder::CSR_HEAL_MS) {
+                crate::holder::CsrHeal::InSync => {
+                    since.remove(&n.name);
+                    if n.spki == Some(row_spki) {
+                        posted.remove(&n.name);
+                    }
+                }
+                crate::holder::CsrHeal::Wait { since: s } => {
+                    since.insert(n.name.clone(), s);
+                }
+                crate::holder::CsrHeal::Rotate => {
+                    since.remove(&n.name);
+                    match self.rotate_cert(&n.name, &row).await {
+                        Ok(_) => {
+                            posted.insert(n.name.clone(), row_spki);
+                        }
+                        Err(e) => tracing::warn!("share: csr heal of {}: {e:#}", n.name),
+                    }
+                }
+            }
+        }
+    }
+
+    /// `GET /v1/names/{name}` through the current connection.
     pub async fn check_name(&self, name: &str) -> anyhow::Result<share_proto::NameAvailability> {
         names::check_reserved::<&str>(name, &[]).map_err(|e| anyhow::anyhow!(e.reason()))?;
         let link = self.wait_attached().await?;

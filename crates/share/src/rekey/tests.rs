@@ -376,7 +376,7 @@ async fn rekey_runs_with_the_hub_switch_off_only_where_registered() {
 async fn removal_with_a_failed_vault_rotation_waits_and_resumes() {
     let mesh = Arc::new(Mesh::default());
     let edge = Edge::new(fresh_secret().public());
-    let hub = Engine::new(&mesh, &[edge.clone()]).await;
+    let hub = Engine::new(&mesh, std::slice::from_ref(&edge)).await;
     let removed = fresh_secret().public().to_string();
     let k = mint(&mesh, &hub.vault, &[&hub.id, &removed]);
     edge.st.lock().unwrap().mesh = k.public();
@@ -416,8 +416,8 @@ async fn removal_with_a_failed_vault_rotation_waits_and_resumes() {
 async fn rekey_after_a_partition_heal_with_two_holders_chains() {
     let mesh = Arc::new(Mesh::default());
     let edge = Edge::new(fresh_secret().public());
-    let a = Engine::new(&mesh, &[edge.clone()]).await;
-    let b = Engine::new(&mesh, &[edge.clone()]).await;
+    let a = Engine::new(&mesh, std::slice::from_ref(&edge)).await;
+    let b = Engine::new(&mesh, std::slice::from_ref(&edge)).await;
     let removed = fresh_secret().public().to_string();
     let k = mint(&mesh, &a.vault, &[&a.id, &b.id]);
     b.vault.sync();
@@ -472,8 +472,8 @@ async fn rekey_after_a_partition_heal_with_two_holders_chains() {
 async fn rekey_loser_confirms_the_winners_key() {
     let mesh = Arc::new(Mesh::default());
     let edge = Edge::new(fresh_secret().public());
-    let a = Engine::new(&mesh, &[edge.clone()]).await;
-    let b = Engine::new(&mesh, &[edge.clone()]).await;
+    let a = Engine::new(&mesh, std::slice::from_ref(&edge)).await;
+    let b = Engine::new(&mesh, std::slice::from_ref(&edge)).await;
     let removed = fresh_secret().public().to_string();
     let k = mint(&mesh, &a.vault, &[&a.id, &b.id]);
     b.vault.sync();
