@@ -278,3 +278,47 @@ fn sse_parser_splits_records_and_skips_unknown() {
         matches!(&evs[1], Event::Kill(k) if k.reason == KillReason::StopAll && k.host.is_none())
     );
 }
+
+#[test]
+fn sse_parser_keeps_split_multibyte_and_caps_sizes() {
+    let mut p = SseParser::default();
+    let rec = "event: cert\ndata: {\"name\":\"é\"}\n\n".as_bytes();
+    let cut = rec.iter().position(|&b| b == 0xC3).unwrap() + 1;
+    assert!(p.push(&rec[..cut]).is_empty());
+    let evs = p.push(&rec[cut..]);
+    assert!(matches!(&evs[..], [Event::Cert(c)] if c.name == "é"));
+
+    // An over-long line is dropped whole, across chunks, and the parser recovers.
+    let long = vec![b'x'; SSE_MAX_LINE + 1];
+    assert!(p.push(b"data: ").is_empty());
+    assert!(p.push(&long).is_empty());
+    assert!(p.push(&long).is_empty());
+    let evs = p.push(b"tail\n\nevent: cert\ndata: {\"name\":\"ok\"}\n\n");
+    assert!(matches!(&evs[..], [Event::Cert(c)] if c.name == "ok"));
+
+    // An event whose data outgrows the cap is dropped, the next one parses.
+    let chunk = format!("data: {}\n", "y".repeat(SSE_MAX_LINE - 16));
+    let mut big = String::from("event: cert\n");
+    while big.len() <= SSE_MAX_DATA {
+        big.push_str(&chunk);
+    }
+    big.push_str("\nevent: cert\ndata: {\"name\":\"after\"}\n\n");
+    let evs = p.push(big.as_bytes());
+    assert!(matches!(&evs[..], [Event::Cert(c)] if c.name == "after"));
+}
+
+#[test]
+fn protocol_versions_are_checked() {
+    use crate::edge::{Incompatible, compat};
+    let me = "theuth/2.26.0";
+    assert_eq!(compat(share_proto::PROTOCOL_MAJOR, "2.0.0", me), Ok(()));
+    assert_eq!(
+        compat(share_proto::PROTOCOL_MAJOR + 1, "2.0.0", me),
+        Err(Incompatible::Protocol {
+            edge: share_proto::PROTOCOL_MAJOR + 1,
+            ours: share_proto::PROTOCOL_MAJOR
+        })
+    );
+    let e = compat(share_proto::PROTOCOL_MAJOR, "3.0.0", me).unwrap_err();
+    assert!(e.to_string().starts_with("client_too_old"));
+}

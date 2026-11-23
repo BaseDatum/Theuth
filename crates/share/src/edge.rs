@@ -360,40 +360,116 @@ async fn read_limited(resp: Resp) -> Result<Bytes, EdgeError> {
         .to_bytes())
 }
 
-/// Incremental `text/event-stream` parser for `event:` + `data:` records.
+/// Longest SSE line kept; a longer one is dropped whole (m1).
+pub const SSE_MAX_LINE: usize = 64 * 1024;
+/// Largest `data` of one event; a larger event is dropped whole (m1).
+pub const SSE_MAX_DATA: usize = limits::MAX_JSON_BODY;
+
+/// Incremental `text/event-stream` parser for `event:` + `data:` records. Bytes are split on
+/// `\n` before decoding, so a multibyte character split across chunks survives; line and data
+/// sizes are capped.
 #[derive(Default)]
 pub struct SseParser {
-    buf: String,
+    buf: Vec<u8>,
+    /// Inside an over-long line: drop bytes up to the next `\n`.
+    skipping: bool,
     event: Option<String>,
     data: String,
+    /// The current event outgrew [`SSE_MAX_DATA`]: drop it at the blank line.
+    oversize: bool,
 }
 
 impl SseParser {
     /// Feed bytes; returns the complete, known events. Unknown names are skipped (additive rule).
-    pub fn push(&mut self, bytes: &[u8]) -> Vec<Event> {
-        self.buf.push_str(&String::from_utf8_lossy(bytes));
+    pub fn push(&mut self, mut bytes: &[u8]) -> Vec<Event> {
         let mut out = Vec::new();
-        while let Some(i) = self.buf.find('\n') {
-            let line: String = self.buf.drain(..=i).collect();
-            let line = line.trim_end_matches(['\n', '\r']);
-            if line.is_empty() {
-                if let Some(name) = self.event.take()
-                    && let Ok(Some(ev)) = Event::parse(&name, &self.data)
-                {
-                    out.push(ev);
-                }
-                self.data.clear();
-            } else if let Some(v) = line.strip_prefix("event:") {
-                self.event = Some(v.trim().to_owned());
-            } else if let Some(v) = line.strip_prefix("data:") {
-                if !self.data.is_empty() {
-                    self.data.push('\n');
-                }
-                self.data.push_str(v.trim_start());
+        while let Some(i) = bytes.iter().position(|&b| b == b'\n') {
+            let (head, tail) = (&bytes[..i], &bytes[i + 1..]);
+            bytes = tail;
+            if std::mem::take(&mut self.skipping) {
+                self.buf.clear();
+                continue;
+            }
+            if self.buf.len() + head.len() > SSE_MAX_LINE {
+                self.buf.clear();
+                continue;
+            }
+            self.buf.extend_from_slice(head);
+            let raw = std::mem::take(&mut self.buf);
+            let line = String::from_utf8_lossy(&raw);
+            self.line(line.trim_end_matches('\r'), &mut out);
+        }
+        if !self.skipping {
+            if self.buf.len() + bytes.len() > SSE_MAX_LINE {
+                self.buf.clear();
+                self.skipping = true;
+            } else {
+                self.buf.extend_from_slice(bytes);
             }
         }
         out
     }
+
+    fn line(&mut self, line: &str, out: &mut Vec<Event>) {
+        if line.is_empty() {
+            if let Some(name) = self.event.take()
+                && !std::mem::take(&mut self.oversize)
+                && let Ok(Some(ev)) = Event::parse(&name, &self.data)
+            {
+                out.push(ev);
+            }
+            self.oversize = false;
+            self.data.clear();
+        } else if let Some(v) = line.strip_prefix("event:") {
+            self.event = Some(v.trim().to_owned());
+        } else if let Some(v) = line.strip_prefix("data:") {
+            let v = v.trim_start();
+            if self.oversize || self.data.len() + v.len() + 1 > SSE_MAX_DATA {
+                self.oversize = true;
+                self.data.clear();
+                return;
+            }
+            if !self.data.is_empty() {
+                self.data.push('\n');
+            }
+            self.data.push_str(v);
+        }
+    }
+}
+
+/// The edge speaks a protocol this build cannot (M11); shown as `blocked` in `share.status`.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum Incompatible {
+    /// Another protocol major.
+    #[error("protocol_mismatch: the edge speaks v{edge}, this theuth v{ours}")]
+    Protocol {
+        /// The edge's `v`.
+        edge: u32,
+        /// [`share_proto::PROTOCOL_MAJOR`].
+        ours: u32,
+    },
+    /// This build is older than the edge's `min_client`.
+    #[error("client_too_old: the edge needs theuth {min} or newer")]
+    ClientTooOld {
+        /// The edge's `min_client`.
+        min: String,
+    },
+}
+
+/// Check an `info` or `welcome` (`v`, `min_client`) against this build's agent `me`.
+pub fn compat(v: u32, min_client: &str, me: &str) -> Result<(), Incompatible> {
+    if v != share_proto::PROTOCOL_MAJOR {
+        return Err(Incompatible::Protocol {
+            edge: v,
+            ours: share_proto::PROTOCOL_MAJOR,
+        });
+    }
+    if !share_proto::version::client_ok(me, min_client) {
+        return Err(Incompatible::ClientTooOld {
+            min: min_client.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// What the state machine asks of the rest of the plugin while attached.
@@ -568,8 +644,8 @@ impl Client {
             return Next::Blocked("the edge's key differs from the ticket".into());
         }
         let me = share_proto::version::client_agent(platform::version::get());
-        if !share_proto::version::client_ok(&me, &info.min_client) {
-            return Next::Blocked("client_too_old".into());
+        if let Err(e) = compat(info.v, &info.min_client, &me) {
+            return Next::Blocked(e.to_string());
         }
         let skew = share_proto::Delegation::clock_skew_ms(platform::time::now_ms(), info.now_ms);
         let clock = share_proto::Delegation::clock_off(platform::time::now_ms(), info.now_ms)
@@ -580,6 +656,9 @@ impl Client {
             Ok(w) => w,
             Err(n) => return n,
         };
+        if let Err(e) = compat(welcome.v, &welcome.min_client, &me) {
+            return Next::Blocked(e.to_string());
+        }
         *attempt = 0;
         self.attachment.welcome(&control, &info, &welcome).await;
         let mut events = match control.events().await {

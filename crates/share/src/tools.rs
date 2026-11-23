@@ -8,7 +8,7 @@ use share_proto::names;
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
 use crate::config::Expiry;
-use crate::engine::{CallOrigin, Engine};
+use crate::engine::{CallOrigin, Consent, Engine};
 use crate::model::{Access, Source};
 
 /// The source argument: exactly one of `port` or `dir`.
@@ -138,21 +138,27 @@ impl Tool for SharePublishTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::err(format!("share_publish: {e}"))),
         };
-        // The human-only row this call passed (the registry scopes the body with it).
+        // The human-only row this call passed (the registry scopes the body with it); none =
+        // the gate was bypassed, so refuse (m7).
+        let Some(consent) = Consent::of_call() else {
+            return Ok(ToolOutput::err(
+                "share_publish: refused: this call carries no owner approval",
+            ));
+        };
         let origin = CallOrigin::Call {
             session: cx.session.to_string(),
             call_id: cx.call_id.clone(),
-            approved: ::tools::approved().map(|a| crate::model::ApprovedBy {
-                approval_id: a.id.0.to_string(),
-                surface: a.surface.to_owned(),
-            }),
         };
-        match self.engine.publish(plan, origin).await {
+        match self.engine.publish(plan, origin, consent).await {
             Ok(p) => {
                 let mut text = format!("Published {} ({})", p.share.url, p.share.state.as_str());
                 if p.password.is_some() {
-                    // The password goes to the owner's surfaces (RPC result), never to the model.
-                    text.push_str("; password access: the user sees the password, you do not");
+                    // The password goes to the owner's surfaces (`share_password`), never to
+                    // the model.
+                    text.push_str(
+                        "; password access: the user sees the password in Settings › Sharing, \
+                         you do not",
+                    );
                 }
                 Ok(ToolOutput {
                     structured: Some(serde_json::json!({
@@ -193,10 +199,14 @@ impl Tool for ShareStopTool {
 
     async fn call(&self, args: StopArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
         let r = if args.id == "all" {
-            self.engine
-                .stop_all()
-                .await
-                .map(|n| format!("stopped {n} share(s)"))
+            self.engine.stop_all().await.map(|o| match o.edge_pending {
+                None => format!("stopped {} share(s)", o.stopped),
+                Some(why) => format!(
+                    "stopped {} share(s) on this machine; the mesh-wide stop at the edge is \
+                     pending ({why}) and is sent again on reconnect",
+                    o.stopped
+                ),
+            })
         } else {
             self.engine
                 .stop(&args.id, crate::model::StoppedBy::User)

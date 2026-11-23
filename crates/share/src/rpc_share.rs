@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::config::EdgeChoice;
-use crate::engine::{CallOrigin, Published};
+use crate::engine::{CallOrigin, Consent, Published};
 use crate::model::Share;
 use crate::rpc_support::engine;
 use crate::tools::{PublishArgs, plan};
@@ -34,6 +34,10 @@ pub struct ShareSettings {
 pub struct Stopped {
     /// Shares stopped.
     pub stopped: u32,
+    /// Stop all only: why the edge has not confirmed the mesh-wide stop yet (detached, or the
+    /// edge refused); it is sent again at the next attach. `None` = done.
+    #[serde(default)]
+    pub edge_pending: Option<String>,
 }
 
 /// `share_names_check` answer: the edge's `GET /v1/names/{name}`.
@@ -81,11 +85,16 @@ pub trait ShareApi {
     /// Accept an edge's terms revision (first-run card).
     #[method(name = "share_terms_accept", with_extensions)]
     async fn share_terms_accept(&self, edge: String, terms_rev: String) -> RpcResult<()>;
+
+    /// The password generated for a password share in this run of the engine, for the owner's
+    /// surfaces (never the model). `None` after a restart or for a public share.
+    #[method(name = "share_password", with_extensions)]
+    async fn share_password(&self, id: String) -> RpcResult<Option<String>>;
 }
 
-// TODO(210-M1, crate tools): `share_publish`, `share_settings_set {enabled: true | edge}` and
-// `share_terms_accept` resolve the owner-only approval row before acting; today they check only
-// that the caller is the owner. TODO(210-M2): `share_extend`, `share_set_access`,
+// §7.2: `share_publish`, `share_settings_set {enabled: true | edge}` and `share_terms_accept`
+// raise a human-only approval row ([`Consent::ask`]) and act only on the owner's `Allow`;
+// stopping and switching off are never gated. TODO(210-M2): `share_extend`, `share_set_access`,
 // `share_names_reserve|release|primary|rotate|transfer`, `share_delegate`, `share_name_key_ensure`.
 #[async_trait]
 impl ShareApiServer for Server {
@@ -95,20 +104,34 @@ impl ShareApiServer for Server {
 
     async fn share_stop(&self, id: String) -> RpcResult<Stopped> {
         let e = engine()?;
-        let n = if id == "all" {
-            e.stop_all().await
-        } else {
-            e.stop(&id, crate::model::StoppedBy::User).await.map(|_| 1)
-        };
-        n.map(|n| Stopped { stopped: n as u32 })
+        if id == "all" {
+            return e
+                .stop_all()
+                .await
+                .map(|o| Stopped {
+                    stopped: o.stopped as u32,
+                    edge_pending: o.edge_pending,
+                })
+                .map_err(|e| failed(format!("{e:#}")));
+        }
+        e.stop(&id, crate::model::StoppedBy::User)
+            .await
+            .map(|_| Stopped {
+                stopped: 1,
+                edge_pending: None,
+            })
             .map_err(|e| failed(format!("{e:#}")))
     }
 
     async fn share_publish(&self, ext: &Extensions, args: PublishArgs) -> RpcResult<Published> {
         owner(ext)?;
         let e = engine()?;
+        let card = serde_json::to_value(&args).map_err(|e| failed(e.to_string()))?;
         let p = plan(args, e.cfg.default_expiry, crate::engine::random_bytes()).map_err(failed)?;
-        e.publish(p, CallOrigin::Settings)
+        let consent = Consent::ask("share_publish", card)
+            .await
+            .map_err(|e| failed(format!("{e:#}")))?;
+        e.publish(p, CallOrigin::Settings, consent)
             .await
             .map_err(|e| failed(format!("{e:#}")))
     }
@@ -132,14 +155,30 @@ impl ShareApiServer for Server {
     ) -> RpcResult<ShareSettings> {
         owner(ext)?;
         let e = engine()?;
-        if let Some(edge) = edge {
-            let choice = EdgeChoice::parse(&edge).map_err(|e| failed(e.to_string()))?;
-            e.set_edge(&choice)
-                .await
-                .map_err(|e| failed(e.to_string()))?;
+        let choice = edge
+            .as_deref()
+            .map(EdgeChoice::parse)
+            .transpose()
+            .map_err(|e| failed(e.to_string()))?;
+        // Off is never gated and applies first, before any ask.
+        if enabled == Some(false) {
+            e.disable().await.map_err(|e| failed(e.to_string()))?;
         }
-        if let Some(on) = enabled {
-            e.set_enabled(on).await.map_err(|e| failed(e.to_string()))?;
+        if choice.is_some() || enabled == Some(true) {
+            let consent = Consent::ask(
+                "share_settings_set",
+                serde_json::json!({ "enabled": enabled, "edge": edge }),
+            )
+            .await
+            .map_err(|e| failed(format!("{e:#}")))?;
+            if let Some(choice) = &choice {
+                e.set_edge(choice, &consent)
+                    .await
+                    .map_err(|e| failed(e.to_string()))?;
+            }
+            if enabled == Some(true) {
+                e.enable(&consent).await.map_err(|e| failed(e.to_string()))?;
+            }
         }
         self.share_settings_get().await
     }
@@ -162,10 +201,21 @@ impl ShareApiServer for Server {
         terms_rev: String,
     ) -> RpcResult<()> {
         owner(ext)?;
-        engine()?
-            .accept_terms(&edge, &terms_rev)
+        let e = engine()?;
+        let consent = Consent::ask(
+            "share_terms_accept",
+            serde_json::json!({ "edge": edge, "terms_rev": terms_rev }),
+        )
+        .await
+        .map_err(|e| failed(format!("{e:#}")))?;
+        e.accept_terms(&edge, &terms_rev, &consent)
             .await
             .map_err(|e| failed(e.to_string()))
+    }
+
+    async fn share_password(&self, ext: &Extensions, id: String) -> RpcResult<Option<String>> {
+        owner(ext)?;
+        Ok(engine()?.password(&id))
     }
 }
 

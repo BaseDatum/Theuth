@@ -1,14 +1,18 @@
 //! The hosting engine's share service (210 §5.1, §5.9, §7.4, §7.6): publish, stop, Stop all,
 //! the routing table and certificates, and the [`Attachment`] side of the edge state machine.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use share_proto::{ErrorCode, Event, Hello, Info, KillReason, NameKind, NameState, Welcome, names};
+use share_proto::{
+    ErrorCode, Event, Hello, Info, KillReason, NameInfo, NameKind, NameState, Welcome, names,
+};
 use tokio::sync::watch;
 
 use crate::config::{EdgeChoice, NO_SHARING_EDGE, ShareConfig};
@@ -40,11 +44,78 @@ pub enum CallOrigin {
         session: String,
         /// Call id.
         call_id: String,
-        /// The approval row the call passed; `None` outside the registry (tests).
-        approved: Option<ApprovedBy>,
     },
     /// Settings or the card.
     Settings,
+}
+
+/// Proof that the owner, in person, approved an act through a human-only row (§7.2): the only
+/// way to publish, switch sharing on, change the edge or accept terms. Built from the tool
+/// registry's scope ([`Consent::of_call`]) or by raising the row ([`Consent::ask`]); an empty or
+/// non-owner row is refused, so the ask cannot be skipped.
+#[derive(Clone, Debug)]
+pub struct Consent(ApprovedBy);
+
+impl Consent {
+    fn from_approved(a: ::tools::Approved) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !a.id.0.is_nil() && a.surface == "owner",
+            "this needs the owner's own approval"
+        );
+        Ok(Self(ApprovedBy {
+            approval_id: a.id.0.to_string(),
+            surface: a.surface.to_owned(),
+        }))
+    }
+
+    /// The human-only row the running tool call passed; `None` outside a gated body.
+    pub fn of_call() -> Option<Self> {
+        ::tools::approved().and_then(|a| Self::from_approved(a).ok())
+    }
+
+    /// Raise a human-only row for `what` (an RPC acting for the owner) and wait for `Allow`.
+    pub async fn ask(what: &str, args: serde_json::Value) -> anyhow::Result<Self> {
+        let a = ::tools::ask_human_only(::tools::approval::RequestApproval {
+            session: runtime::SessionId(uuid::Uuid::nil()),
+            tool: what.to_owned(),
+            args,
+            risk: ::tools::Risk::Destructive,
+            call_id: None,
+        })
+        .await?;
+        Self::from_approved(a)
+    }
+
+    /// The row, for `approved_by`.
+    pub fn approved_by(&self) -> &ApprovedBy {
+        &self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test() -> Self {
+        Self::from_approved(::tools::Approved {
+            id: ::tools::ApprovalId(uuid::Uuid::now_v7()),
+            surface: "owner",
+        })
+        .unwrap()
+    }
+}
+
+/// The outcome of Stop all: local shares stopped, and whether the edge confirmed the mesh-wide
+/// stop (`edge_pending` = not yet; it is sent again at the next attach).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StopAllOutcome {
+    /// Local shares stopped.
+    pub stopped: usize,
+    /// Why the edge has not confirmed the stop yet.
+    pub edge_pending: Option<String>,
+}
+
+/// The `<name>.D` a share's host is under (`app.sky.D` → `sky.D`).
+pub fn name_host_of(host: &str, domain: &str) -> String {
+    let rest = host.strip_suffix(domain).unwrap_or(host).trim_end_matches('.');
+    let name = rest.rsplit('.').next().unwrap_or(rest);
+    names::host(name, None, domain)
 }
 
 /// A publish result; `password` only for `access: password`, for the owner's surfaces.
@@ -97,6 +168,13 @@ pub struct Engine {
     terms: watch::Sender<Option<String>>,
     link: Mutex<Option<Arc<Link>>>,
     attached: watch::Sender<bool>,
+    /// Publishes admitted but not yet stored; read with the store under `admit` (m6).
+    reserved: AtomicU32,
+    admit: tokio::sync::Mutex<()>,
+    /// `<name>.D` → the welcome's `(not_after, spki)` of the installed chain (B2).
+    installed: Mutex<HashMap<String, NameInfo>>,
+    /// Generated passwords of this run, for the owner's `share_password` (M9); never logged.
+    passwords: Mutex<HashMap<String, String>>,
 }
 
 /// Six random bytes (names, labels).
@@ -146,6 +224,10 @@ impl Engine {
             terms: watch::channel(None).0,
             link: Mutex::new(None),
             attached: watch::channel(false).0,
+            reserved: AtomicU32::new(0),
+            admit: tokio::sync::Mutex::new(()),
+            installed: Mutex::new(HashMap::new()),
+            passwords: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -153,6 +235,7 @@ impl Engine {
     /// ticker. Without a dialer, a delegation source or a ticket to dial (edge `none`, or the
     /// default while its tickets are placeholders) no client runs and publishing says so.
     pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
+        self.restore().await;
         let choice = self.store.edge().await?;
         let tickets = choice.tickets();
         if let (Some(dialer), Some(delegation), Some(t)) =
@@ -229,8 +312,49 @@ impl Engine {
         }
     }
 
-    /// Publish (§7.6). The owner's approval has already passed in the registry or RPC layer.
-    pub async fn publish(&self, plan: Plan, origin: CallOrigin) -> anyhow::Result<Published> {
+    /// Restore this engine's shares from the store into the route table and the password gate
+    /// (M9): at start and at every `welcome`. A password share whose hash is gone can never be
+    /// opened and is stopped.
+    async fn restore(&self) {
+        let Ok(mine) = self.mine().await else { return };
+        for s in mine
+            .into_iter()
+            .filter(|s| matches!(s.state, ShareState::Live | ShareState::Offline))
+        {
+            if s.access == Access::Password {
+                match self.store.secret(&s.id).await {
+                    Ok(Some(phc)) => self.gate.set_password(&s.id, Some(phc)),
+                    Ok(None) => {
+                        tracing::warn!("share: {} lost its password hash; stopping it", s.id);
+                        let _ = self.stop(&s.id, StoppedBy::User).await;
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!("share: password of {}: {e:#}", s.id);
+                        continue;
+                    }
+                }
+            }
+            self.table.insert(Mount::of(&s));
+        }
+    }
+
+    /// The password generated for `id` in this run; for the owner's surfaces only.
+    pub fn password(&self, id: &str) -> Option<String> {
+        self.passwords.lock().get(id).cloned()
+    }
+
+    /// Publish (§7.6) under the owner's [`Consent`].
+    pub async fn publish(
+        &self,
+        plan: Plan,
+        origin: CallOrigin,
+        consent: Consent,
+    ) -> anyhow::Result<Published> {
+        anyhow::ensure!(
+            !consent.0.approval_id.is_empty(),
+            "this needs the owner's own approval"
+        );
         anyhow::ensure!(self.store.enabled().await?, SWITCH_OFF);
         anyhow::ensure!(
             !self.store.edge().await?.tickets().is_empty(),
@@ -244,11 +368,32 @@ impl Engine {
                 sources::check_root(d, &self.data_dir, std::env::home_dir().as_deref())?;
             }
         }
-        let live = self.mine().await?.len();
+        self.reserve().await?;
+        let r = self.publish_admitted(plan, origin, consent).await;
+        let _g = self.admit.lock().await;
+        self.reserved.fetch_sub(1, Ordering::SeqCst);
+        r
+    }
+
+    /// `share.max_live` as one step with the store (m6): the count and the reservation happen
+    /// under `admit`, and a reservation is released only after its row is stored.
+    async fn reserve(&self) -> anyhow::Result<()> {
+        let _g = self.admit.lock().await;
+        let live = self.mine().await?.len() as u32 + self.reserved.load(Ordering::SeqCst);
         anyhow::ensure!(
-            (live as u32) < self.cfg.max_live,
+            live < self.cfg.max_live,
             "{live} shares are live on this machine (share.max_live): stop one first"
         );
+        self.reserved.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn publish_admitted(
+        &self,
+        plan: Plan,
+        origin: CallOrigin,
+        consent: Consent,
+    ) -> anyhow::Result<Published> {
         let link = self.wait_attached().await?;
         let domain = link.info.domain.clone();
         let edge = link.info.edge_id.to_string();
@@ -266,6 +411,7 @@ impl Engine {
             anyhow::bail!("{url} is already shared ({})", m.share);
         }
         let id = uuid::Uuid::now_v7().to_string();
+        // Hash first (nothing stored), store it only once the share row is certain (m6).
         let password = match plan.access {
             Access::Password => {
                 let pw = gate::generate_password();
@@ -274,14 +420,13 @@ impl Engine {
                     move || gate::hash_password(&pw)
                 })
                 .await??;
-                self.store.put_secret(&id, &phc).await?;
-                self.gate.set_password(&id, Some(phc));
-                Some(pw)
+                Some((pw, phc))
             }
             Access::Public => None,
         };
-        let have_cert = self.ensure_cert(&link, &name).await?;
+        let have_cert = self.ensure_cert(&link, &name, false).await?;
         let now = platform::time::now_ms();
+        let expiry_ms = plan.expiry.duration().as_millis() as u64;
         let share = Share {
             id,
             engine: self.engine_id.clone(),
@@ -295,21 +440,10 @@ impl Engine {
             interstitial: self.cfg.interstitial,
             created_ms: now,
             live_ms: have_cert.then_some(now),
-            expires_ms: have_cert.then(|| now + plan.expiry.duration().as_millis() as u64),
-            approved_by: match &origin {
-                CallOrigin::Call {
-                    approved: Some(a), ..
-                } => a.clone(),
-                // TODO(210-M1): the RPC path (Settings, card) resolves its own owner-only row.
-                _ => ApprovedBy {
-                    approval_id: String::new(),
-                    surface: String::new(),
-                },
-            },
+            expires_ms: have_cert.then_some(now + expiry_ms),
+            approved_by: consent.0,
             created_by: match origin {
-                CallOrigin::Call {
-                    session, call_id, ..
-                } => CreatedBy::Call { session, call_id },
+                CallOrigin::Call { session, call_id } => CreatedBy::Call { session, call_id },
                 CallOrigin::Settings => CreatedBy::Settings("settings".into()),
             },
             state: if have_cert {
@@ -320,13 +454,34 @@ impl Engine {
             stopped_ms: None,
             stopped_by: None,
         };
-        self.store.put(&share).await?;
+        if let Some((_, phc)) = &password {
+            self.store.put_secret(&share.id, phc).await?;
+        }
+        let stored = async {
+            if !have_cert {
+                self.store.put_request(&share.id, expiry_ms).await?;
+            }
+            self.store.put(&share).await
+        }
+        .await;
+        if let Err(e) = stored {
+            let _ = self.store.delete_secret(&share.id).await;
+            let _ = self.store.delete_request(&share.id).await;
+            return Err(e);
+        }
+        if let Some((pw, phc)) = &password {
+            self.gate.set_password(&share.id, Some(phc.clone()));
+            self.passwords.lock().insert(share.id.clone(), pw.clone());
+        }
         if have_cert {
             self.table.insert(Mount::of(&share));
             self.push_routes().await;
         }
         self.emit(&share).await;
-        Ok(Published { share, password })
+        Ok(Published {
+            share,
+            password: password.map(|(pw, _)| pw),
+        })
     }
 
     /// The name for a publish: the requested held one, else the primary (newest reserved, else
@@ -399,10 +554,16 @@ impl Engine {
     }
 
     /// Have `<name>.D`'s pair installed: fetch the chain, or post the CSR. `false` = pending.
-    async fn ensure_cert(&self, link: &Link, name: &str) -> anyhow::Result<bool> {
+    /// `renew` (a `cert` event) fetches and installs over the current chain (B2); without it a
+    /// chain is fetched again when the welcome's `not_after`/SPKI differ from the installed one.
+    async fn ensure_cert(&self, link: &Link, name: &str, renew: bool) -> anyhow::Result<bool> {
         let domain = &link.info.domain;
         let name_host = names::host(name, None, domain);
-        if self.certs.lookup(&name_host).is_some() {
+        let seen = link.welcome.names.iter().find(|n| n.name == name);
+        let current = self.installed.lock().get(&name_host).is_some_and(|i| {
+            seen.is_none_or(|n| n.not_after == i.not_after && n.spki == i.spki)
+        });
+        if !renew && current && self.certs.lookup(&name_host).is_some() {
             return Ok(true);
         }
         let Some(store) = &self.hooks.name_keys else {
@@ -414,7 +575,7 @@ impl Engine {
             .names
             .iter()
             .any(|n| n.name == name && n.state == NameState::Valid);
-        let chain = if valid {
+        let chain = if valid || renew {
             link.control.cert(name).await.ok()
         } else {
             None
@@ -428,7 +589,23 @@ impl Engine {
         };
         self.certs
             .install(&name_host, &chain.chain_pem, &key.key_pem)?;
+        if let Some(n) = seen {
+            self.installed.lock().insert(name_host, n.clone());
+        }
         Ok(true)
+    }
+
+    /// Drop `<name>.D`'s chain when no share of this engine is left under it.
+    async fn release_cert_if_unused(&self, host: &str, domain: &str) {
+        let name_host = name_host_of(host, domain);
+        let Ok(mine) = self.mine().await else { return };
+        if !mine
+            .iter()
+            .any(|s| name_host_of(&s.host, &s.domain) == name_host)
+        {
+            self.certs.remove(&name_host);
+            self.installed.lock().remove(&name_host);
+        }
     }
 
     /// Stop one of this engine's shares.
@@ -449,34 +626,75 @@ impl Engine {
             s.stopped_by = Some(by);
             self.store.put(&s).await?;
             self.gate.set_password(id, None);
+            self.passwords.lock().remove(id);
+            let _ = self.store.delete_secret(id).await;
+            let _ = self.store.delete_request(id).await;
             if self.table.remove(id) {
                 self.push_routes().await;
             }
+            self.release_cert_if_unused(&s.host, &s.domain).await;
             self.emit(&s).await;
         }
         self.refresh_need().await;
         Ok(s)
     }
 
-    /// Stop all (§7.4): `POST /v1/mesh/stop` on the current connection, then every local share.
-    pub async fn stop_all(&self) -> anyhow::Result<usize> {
-        let link = self.link.lock().clone();
-        if let Some(l) = link
-            && let Err(e) = l.control.stop_all().await
-        {
-            tracing::warn!("share: POST /v1/mesh/stop: {e}");
-        }
+    /// Stop all (§7.4): every local share created before now, then `POST /v1/mesh/stop` with
+    /// retries. Detached or refused, the edge stop stays pending (sent again at the next
+    /// `welcome`) and the outcome says so. Shares created before it never go live (M7).
+    pub async fn stop_all(&self) -> anyhow::Result<StopAllOutcome> {
+        let now = platform::time::now_ms();
+        self.store.stop_all_at(now).await?;
+        let stopped = self.stop_local(StoppedBy::User, Some(now)).await;
         // TODO(210-M2): attach first when detached; forward `share.stop all` to reachable
         // engines; hand Stop all to the lease holder when this engine cannot reach the edge.
-        self.stop_local(StoppedBy::User).await
+        let edge_pending = match self.send_stop_all().await {
+            Ok(()) => None,
+            Err(e) => {
+                tracing::warn!("share: POST /v1/mesh/stop: {e:#}");
+                Some(format!("{e:#}"))
+            }
+        };
+        let stopped = stopped?;
+        Ok(StopAllOutcome {
+            stopped,
+            edge_pending,
+        })
     }
 
-    async fn stop_local(&self, by: StoppedBy) -> anyhow::Result<usize> {
-        let mine = self.mine().await?;
-        for s in &mine {
-            self.stop(&s.id, by).await?;
+    /// `POST /v1/mesh/stop`, three tries; clears the pending mark on success.
+    async fn send_stop_all(&self) -> anyhow::Result<()> {
+        let mut last = anyhow::anyhow!("not attached to the sharing edge");
+        for wait in [0u64, 500, 2000] {
+            tokio::time::sleep(Duration::from_millis(wait)).await;
+            let control = self.link.lock().as_ref().map(|l| l.control.clone());
+            let Some(c) = control else { continue };
+            match c.stop_all().await {
+                Ok(_) => return self.store.stop_all_sent().await,
+                Err(e) => last = e.into(),
+            }
         }
-        Ok(mine.len())
+        Err(last)
+    }
+
+    /// Stop every local share (created before `before`, when given), continuing past errors;
+    /// the first error is returned after the rest were tried.
+    async fn stop_local(&self, by: StoppedBy, before: Option<u64>) -> anyhow::Result<usize> {
+        let mut n = 0;
+        let mut first = None;
+        for s in self.mine().await? {
+            if before.is_some_and(|b| s.created_ms > b) {
+                continue;
+            }
+            match self.stop(&s.id, by).await {
+                Ok(_) => n += 1,
+                Err(e) => {
+                    tracing::warn!("share: stop {}: {e:#}", s.id);
+                    first.get_or_insert(e);
+                }
+            }
+        }
+        first.map_or(Ok(n), Err)
     }
 
     async fn expire(&self) {
@@ -494,23 +712,26 @@ impl Engine {
         self.store.list(platform::time::now_ms()).await
     }
 
-    /// The master switch; off stops this machine's shares (`switch_off`).
-    pub async fn set_enabled(&self, on: bool) -> anyhow::Result<()> {
-        self.store.set_enabled(on).await?;
-        if !on {
-            self.stop_local(StoppedBy::SwitchOff).await?;
-        }
+    /// Switch sharing on, under the owner's [`Consent`] (§7.2).
+    pub async fn enable(&self, _consent: &Consent) -> anyhow::Result<()> {
+        self.store.set_enabled(true).await
+    }
+
+    /// Switch sharing off and stop this machine's shares (`switch_off`). Never gated.
+    pub async fn disable(&self) -> anyhow::Result<()> {
+        self.store.set_enabled(false).await?;
+        self.stop_local(StoppedBy::SwitchOff, None).await?;
         Ok(())
     }
 
-    /// Change the edge; takes effect at the next start.
+    /// Change the edge under the owner's [`Consent`]; takes effect at the next start.
     // TODO(210-M1): restart the state machine live on an edge change.
-    pub async fn set_edge(&self, edge: &EdgeChoice) -> anyhow::Result<()> {
+    pub async fn set_edge(&self, edge: &EdgeChoice, _consent: &Consent) -> anyhow::Result<()> {
         self.store.set_edge(edge).await
     }
 
-    /// Record accepted terms for `edge`.
-    pub async fn accept_terms(&self, edge: &str, rev: &str) -> anyhow::Result<()> {
+    /// Record accepted terms for `edge` under the owner's [`Consent`].
+    pub async fn accept_terms(&self, edge: &str, rev: &str, _consent: &Consent) -> anyhow::Result<()> {
         self.store.set_terms_rev(edge, rev).await?;
         self.terms.send_replace(Some(rev.to_owned()));
         Ok(())
@@ -523,10 +744,10 @@ impl Engine {
         Ok(link.control.check_name(name).await?)
     }
 
-    async fn after_cert(&self, name: &str) {
+    async fn after_cert(&self, name: &str, renew: bool) {
         let link = self.link.lock().clone();
         let Some(link) = link else { return };
-        match self.ensure_cert(&link, name).await {
+        match self.ensure_cert(&link, name, renew).await {
             Ok(true) => {}
             Ok(false) => return,
             Err(e) => {
@@ -536,22 +757,48 @@ impl Engine {
         }
         let name_host = names::host(name, None, &link.info.domain);
         let now = platform::time::now_ms();
+        let stop_all = self.store.stop_all_ms().await.ok().flatten();
         let Ok(mine) = self.mine().await else { return };
-        for mut s in mine {
-            let under = s.host == name_host || s.host.ends_with(&format!(".{name_host}"));
-            if under && s.state == ShareState::Pending {
-                s.state = ShareState::Live;
-                s.live_ms = Some(now);
-                s.expires_ms = Some(now + self.cfg.default_expiry.duration().as_millis() as u64);
-                // TODO(210-M1): keep the expiry the owner approved instead of the default.
-                if self.store.put(&s).await.is_ok() {
-                    self.table.insert(Mount::of(&s));
-                    self.emit(&s).await;
+        for s in mine {
+            let under = name_host_of(&s.host, &s.domain) == name_host;
+            if !under || s.state != ShareState::Pending {
+                continue;
+            }
+            // M7: a share asked for before a Stop all never goes live after it.
+            if stop_all.is_some_and(|b| s.created_ms <= b) {
+                let _ = self.stop(&s.id, StoppedBy::User).await;
+                continue;
+            }
+            let expiry = match self.store.request_expiry(&s.id).await {
+                Ok(Some(ms)) => ms,
+                _ => self.cfg.default_expiry.duration().as_millis() as u64,
+            };
+            let s = go_live(s, now, expiry);
+            if s.access == Access::Password {
+                match self.store.secret(&s.id).await {
+                    Ok(Some(phc)) => self.gate.set_password(&s.id, Some(phc)),
+                    _ => {
+                        let _ = self.stop(&s.id, StoppedBy::User).await;
+                        continue;
+                    }
                 }
+            }
+            if self.store.put(&s).await.is_ok() {
+                let _ = self.store.delete_request(&s.id).await;
+                self.table.insert(Mount::of(&s));
+                self.emit(&s).await;
             }
         }
         self.push_routes().await;
     }
+}
+
+/// A pending share goes live with the lifetime the owner approved (M8).
+fn go_live(mut s: Share, now: u64, expiry_ms: u64) -> Share {
+    s.state = ShareState::Live;
+    s.live_ms = Some(now);
+    s.expires_ms = Some(now + expiry_ms);
+    s
 }
 
 #[async_trait::async_trait]
@@ -575,18 +822,30 @@ impl Attachment for Engine {
             info: info.clone(),
             welcome: welcome.clone(),
         }));
-        if let Some(stop_all) = welcome.stop_all_ms
-            && let Ok(mine) = self.mine().await
-        {
-            for s in mine
-                .iter()
-                .filter(|s| s.live_ms.is_some_and(|l| l < stop_all))
-            {
-                let _ = self.stop(&s.id, StoppedBy::User).await;
-            }
+        if let Some(stop_all) = welcome.stop_all_ms {
+            // Every share asked for before it, pending ones included (M7).
+            let _ = self.stop_local(StoppedBy::User, Some(stop_all.saturating_sub(1))).await;
         }
+        if self.store.stop_all_pending().await.ok().flatten().is_some()
+            && let Err(e) = control.stop_all().await
+        {
+            tracing::warn!("share: pending Stop all, POST /v1/mesh/stop: {e}");
+        } else {
+            let _ = self.store.stop_all_sent().await;
+        }
+        // Released or banned names lose their chain (B2).
+        for n in welcome
+            .names
+            .iter()
+            .filter(|n| matches!(n.state, NameState::Released | NameState::Banned))
+        {
+            let name_host = names::host(&n.name, None, &info.domain);
+            self.certs.remove(&name_host);
+            self.installed.lock().remove(&name_host);
+        }
+        self.restore().await;
         for n in welcome.names.iter().filter(|n| n.state == NameState::Valid) {
-            self.after_cert(&n.name).await;
+            self.after_cert(&n.name, false).await;
         }
         // Restore routes of shares that were live before a reconnect.
         if let Ok(mine) = self.mine().await {
@@ -603,7 +862,7 @@ impl Attachment for Engine {
 
     async fn event(&self, _control: &Control, event: Event) {
         match event {
-            Event::Cert(c) => self.after_cert(&c.name).await,
+            Event::Cert(c) => self.after_cert(&c.name, true).await,
             Event::Kill(k) => {
                 let by = match k.reason {
                     KillReason::EdgeBan => StoppedBy::EdgeBan,
@@ -638,7 +897,7 @@ impl Attachment for Engine {
     }
 
     async fn removed(&self) {
-        let _ = self.stop_local(StoppedBy::User).await;
+        let _ = self.stop_local(StoppedBy::User, None).await;
         // TODO(210-M2): delete the stale `mesh/share_key` and `share/*` vault rows.
     }
 
@@ -655,5 +914,147 @@ impl Attachment for Engine {
             clock_off_ms,
         };
         tokio::spawn(async move { rt.publish(ev).await });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Expiry;
+    use crate::sources::{NoProcessCheck, OwnListeners};
+
+    async fn engine(max_live: u32) -> (tempfile::TempDir, Arc<Engine>) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("share.sqlite")).await.unwrap();
+        let cfg = ShareConfig {
+            max_live,
+            ..ShareConfig::default()
+        };
+        let hooks = Hooks {
+            dialer: None,
+            delegation: None,
+            name_keys: None,
+            own_ports: Arc::new(OwnListeners),
+            process: Arc::new(NoProcessCheck),
+        };
+        let e = Engine::new(cfg, store, dir.path().to_path_buf(), "me".into(), hooks, None).unwrap();
+        (dir, e)
+    }
+
+    fn share(id: &str, created_ms: u64, state: ShareState, access: Access) -> Share {
+        Share {
+            id: id.into(),
+            engine: "me".into(),
+            edge: "x".into(),
+            domain: "tun.zip".into(),
+            host: format!("{id}.sky.tun.zip"),
+            path: "/".into(),
+            url: format!("https://{id}.sky.tun.zip/"),
+            source: Source::Port(5173),
+            access,
+            interstitial: true,
+            created_ms,
+            live_ms: (state == ShareState::Live).then_some(created_ms),
+            expires_ms: (state == ShareState::Live).then_some(u64::MAX / 2),
+            created_by: CreatedBy::Settings("settings".into()),
+            approved_by: Consent::test().0,
+            state,
+            stopped_ms: None,
+            stopped_by: None,
+        }
+    }
+
+    /// B1: only a human-only (`owner`) row with an id is consent; a publish never runs without.
+    #[test]
+    fn consent_needs_an_owner_row() {
+        let id = ::tools::ApprovalId(uuid::Uuid::now_v7());
+        assert!(Consent::from_approved(::tools::Approved { id, surface: "human" }).is_err());
+        let nil = ::tools::ApprovalId(uuid::Uuid::nil());
+        assert!(
+            Consent::from_approved(::tools::Approved {
+                id: nil,
+                surface: "owner"
+            })
+            .is_err()
+        );
+        assert!(Consent::of_call().is_none(), "no row outside a gated call");
+        let c = Consent::from_approved(::tools::Approved { id, surface: "owner" }).unwrap();
+        assert_eq!(c.approved_by().approval_id, id.0.to_string());
+    }
+
+    /// M7: Stop all stops pending shares too, keeps going past them, and reports a detached
+    /// edge stop as pending (kept for the next attach).
+    #[tokio::test]
+    async fn stop_all_stops_pending_and_reports_the_edge_pending() {
+        let (_d, e) = engine(8).await;
+        e.store
+            .put(&share("p", 1, ShareState::Pending, Access::Public))
+            .await
+            .unwrap();
+        e.store
+            .put(&share("l", 2, ShareState::Live, Access::Public))
+            .await
+            .unwrap();
+        let o = e.stop_all().await.unwrap();
+        assert_eq!(o.stopped, 2);
+        assert!(o.edge_pending.is_some());
+        assert!(e.mine().await.unwrap().is_empty());
+        assert!(e.store.stop_all_pending().await.unwrap().is_some());
+    }
+
+    /// M8: a pending share goes live with the lifetime the owner approved.
+    #[tokio::test]
+    async fn pending_share_keeps_the_approved_expiry() {
+        let (_d, e) = engine(8).await;
+        let week = Expiry::D7.duration().as_millis() as u64;
+        e.store.put_request("p", week).await.unwrap();
+        let ms = e.store.request_expiry("p").await.unwrap().unwrap();
+        let s = go_live(share("p", 1, ShareState::Pending, Access::Public), 100, ms);
+        assert_eq!((s.state, s.expires_ms), (ShareState::Live, Some(100 + week)));
+    }
+
+    /// M9: after a restart live shares are routed again; a password share without its hash is
+    /// stopped instead of serving 401 to everyone.
+    #[tokio::test]
+    async fn restore_remounts_live_shares_and_stops_hashless_password_shares() {
+        let (_d, e) = engine(8).await;
+        e.store
+            .put(&share("a", 1, ShareState::Live, Access::Password))
+            .await
+            .unwrap();
+        e.store.put_secret("a", "$argon2id$x").await.unwrap();
+        e.store
+            .put(&share("b", 2, ShareState::Live, Access::Password))
+            .await
+            .unwrap();
+        e.restore().await;
+        assert!(matches!(
+            e.table.lookup("a.sky.tun.zip", "/"),
+            Lookup::Found(m, _) if m.share == "a"
+        ));
+        assert!(!matches!(
+            e.table.lookup("b.sky.tun.zip", "/"),
+            Lookup::Found(..)
+        ));
+        let b = e.store.get("b").await.unwrap().unwrap();
+        assert_eq!(b.state, ShareState::Stopped);
+    }
+
+    /// m6: the `max_live` count and the reservation are one step.
+    #[tokio::test]
+    async fn max_live_reservations_are_counted() {
+        let (_d, e) = engine(2).await;
+        e.store
+            .put(&share("l", 1, ShareState::Live, Access::Public))
+            .await
+            .unwrap();
+        e.reserve().await.unwrap();
+        assert!(e.reserve().await.unwrap_err().to_string().contains("max_live"));
+    }
+
+    #[test]
+    fn name_host_of_strips_the_label() {
+        assert_eq!(name_host_of("app.sky.tun.zip", "tun.zip"), "sky.tun.zip");
+        assert_eq!(name_host_of("sky.tun.zip", "tun.zip"), "sky.tun.zip");
     }
 }

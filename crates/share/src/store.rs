@@ -23,6 +23,10 @@ pub mod keys {
     pub const ENABLED: &str = "enabled";
     /// [`crate::config::EdgeChoice`] stored form.
     pub const EDGE: &str = "edge";
+    /// The newest local Stop all, Unix ms: no share created before it may go live (§7.4).
+    pub const STOP_ALL: &str = "stop_all_ms";
+    /// A Stop all the edge has not confirmed yet, Unix ms; sent again at the next `welcome`.
+    pub const STOP_ALL_PENDING: &str = "stop_all_pending_ms";
 }
 
 /// The plugin's store.
@@ -215,6 +219,78 @@ impl Store {
                 .fetch_optional(&self.pool)
                 .await?,
         )
+    }
+
+    /// Drop a share's password hash (stop, or a publish that failed after hashing).
+    pub async fn delete_secret(&self, share: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM share_secrets WHERE share = ?")
+            .bind(share)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Record the approved lifetime of a share that is not live yet (M8).
+    pub async fn put_request(&self, share: &str, expiry_ms: u64) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO share_requests (share, expiry_ms) VALUES (?, ?) \
+             ON CONFLICT(share) DO UPDATE SET expiry_ms = excluded.expiry_ms",
+        )
+        .bind(share)
+        .bind(expiry_ms as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The approved lifetime of a pending share.
+    pub async fn request_expiry(&self, share: &str) -> anyhow::Result<Option<u64>> {
+        Ok(
+            sqlx::query_scalar::<_, i64>("SELECT expiry_ms FROM share_requests WHERE share = ?")
+                .bind(share)
+                .fetch_optional(&self.pool)
+                .await?
+                .map(|v| v as u64),
+        )
+    }
+
+    /// Forget a share's request once it is live or stopped.
+    pub async fn delete_request(&self, share: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM share_requests WHERE share = ?")
+            .bind(share)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn ms_setting(&self, key: &str) -> anyhow::Result<Option<u64>> {
+        Ok(self.setting(key).await?.and_then(|v| v.parse().ok()))
+    }
+
+    /// The newest local Stop all.
+    pub async fn stop_all_ms(&self) -> anyhow::Result<Option<u64>> {
+        self.ms_setting(keys::STOP_ALL).await
+    }
+
+    /// Record a Stop all at `ms`, pending at the edge until [`Store::stop_all_sent`].
+    pub async fn stop_all_at(&self, ms: u64) -> anyhow::Result<()> {
+        self.set_setting(keys::STOP_ALL, &ms.to_string()).await?;
+        self.set_setting(keys::STOP_ALL_PENDING, &ms.to_string())
+            .await
+    }
+
+    /// A Stop all the edge has not confirmed.
+    pub async fn stop_all_pending(&self) -> anyhow::Result<Option<u64>> {
+        self.ms_setting(keys::STOP_ALL_PENDING).await
+    }
+
+    /// The edge confirmed the Stop all.
+    pub async fn stop_all_sent(&self) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM settings WHERE key = ?")
+            .bind(keys::STOP_ALL_PENDING)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 
