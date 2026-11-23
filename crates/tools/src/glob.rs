@@ -268,9 +268,9 @@ mod tests {
 
     /// Temp tree with a `.git` marker so `.gitignore` is honoured (the walker
     /// only reads it inside a repository).
-    fn tree(files: &[&str]) -> (crate::TestDir, PathBuf) {
-        let guard = crate::TestDir::new("glob");
-        let root = guard.0.clone();
+    fn tree(files: &[&str]) -> (tempfile::TempDir, PathBuf) {
+        let guard = crate::test_dir("glob");
+        let root = guard.path().to_path_buf();
         std::fs::create_dir_all(root.join(".git")).unwrap();
         for f in files {
             let p = root.join(f);

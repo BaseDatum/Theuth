@@ -487,10 +487,10 @@ mod tests {
 
     /// An executable script standing in for the login shell.
     #[cfg(unix)]
-    fn fake_shell(body: &str) -> (crate::TestDir, PathBuf) {
+    fn fake_shell(body: &str) -> (tempfile::TempDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
-        let dir = crate::TestDir::new("shell");
-        let p = dir.0.join("sh");
+        let dir = crate::test_dir("shell");
+        let p = dir.path().join("sh");
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         (dir, p)

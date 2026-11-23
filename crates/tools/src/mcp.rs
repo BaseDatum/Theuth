@@ -2598,8 +2598,8 @@ mod tests {
     #[test]
     fn output_turns_image_blocks_into_files_in_source_order() {
         use image::ImageFormat;
-        let guard = crate::TestDir::new("mcp-img");
-        let dir = guard.0.clone();
+        let guard = crate::test_dir("mcp-img");
+        let dir = guard.path().to_path_buf();
         let (png, jpg) = (
             b64(&images::tests::encoded(ImageFormat::Png, 2, 2, 1)),
             b64(&images::tests::encoded(ImageFormat::Jpeg, 2, 2, 1)),
@@ -2658,8 +2658,8 @@ mod tests {
     fn output_rejects_malformed_images_without_echoing_them() {
         use image::ImageFormat;
         // Uncreated on purpose: the test asserts a rejected image leaves no dir.
-        let guard = crate::TestDir::path("mcp-bad");
-        let dir = guard.0.clone();
+        let guard = crate::test_dir("mcp-bad");
+        let dir = guard.path().join("out");
         let png = images::tests::encoded(ImageFormat::Png, 2, 2, 1);
         let check = |data: String, mime: &str, needle: &str| {
             let out = output(
@@ -2839,8 +2839,8 @@ mod tests {
 
     #[test]
     fn repo_detected_from_cwd_inside_a_clone() {
-        let guard = crate::TestDir::new("mcp");
-        let dir = guard.0.clone();
+        let guard = crate::test_dir("mcp");
+        let dir = guard.path().to_path_buf();
         std::fs::create_dir_all(dir.join("repos/srv/.git")).unwrap();
         std::fs::create_dir_all(dir.join("repos/plain")).unwrap();
         let spec = |cwd: &str| {
@@ -3276,7 +3276,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_connect_runs_discover_at_the_latest_version() {
-        let dir = crate::TestDir::new("mcp-modern");
+        let dir = crate::test_dir("mcp-modern");
         let server = TestServer::default();
         let mut spec = serve_mcp(server.clone()).await;
         // The hand-auth path; the OAuth path is the legacy case below.
@@ -3285,7 +3285,7 @@ mod tests {
         };
         headers.insert("Authorization".into(), "Bearer t".into());
         assert_eq!(
-            connect_list_call(&spec, &dir.0).await,
+            connect_list_call(&spec, dir.path()).await,
             ProtocolVersion::V_2026_07_28
         );
         assert_eq!(server.asked.get(), None, "sent initialize");
@@ -3293,7 +3293,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_connect_falls_back_to_initialize_for_a_legacy_server() {
-        let dir = crate::TestDir::new("mcp-legacy");
+        let dir = crate::test_dir("mcp-legacy");
         let server = TestServer {
             legacy: true,
             ..TestServer::default()
@@ -3301,7 +3301,7 @@ mod tests {
         let spec = serve_mcp(server.clone()).await;
         let started = std::time::Instant::now();
         assert_eq!(
-            connect_list_call(&spec, &dir.0).await,
+            connect_list_call(&spec, dir.path()).await,
             ProtocolVersion::V_2025_11_25
         );
         // D3: the fallback asks for the newest version with a handshake, not LATEST.
@@ -3315,7 +3315,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_401_on_the_discover_probe_is_login_required() {
-        let dir = crate::TestDir::new("mcp-401");
+        let dir = crate::test_dir("mcp-401");
         let app = axum::Router::new().route(
             "/mcp",
             axum::routing::any(|| async {
@@ -3329,9 +3329,9 @@ mod tests {
         let Transport::Http { url, .. } = &spec.transport else {
             unreachable!()
         };
-        let mcp = actor(&dir.0, None);
+        let mcp = actor(dir.path(), None);
         let entry = serde_json::json!({ "url": url });
-        std::fs::write(dir.0.join("mcp/s.json"), entry.to_string()).unwrap();
+        std::fs::write(dir.path().join("mcp/s.json"), entry.to_string()).unwrap();
         mcp.ask(Reconcile).await.unwrap();
         settled(&mcp, "s").await;
         let s = listed(&mcp, "s").await;
@@ -3355,7 +3355,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "live: api.githubcopilot.com with `gh auth token`"]
     async fn github_mcp_live_negotiates_the_latest_version() {
-        let dir = crate::TestDir::new("mcp-live");
+        let dir = crate::test_dir("mcp-live");
         let spec = ServerSpec {
             transport: Transport::Http {
                 url: "https://api.githubcopilot.com/mcp/".into(),
@@ -3367,7 +3367,7 @@ mod tests {
             },
         };
         // `{e:#}`, never `{e:?}`: no chance of a header in the panic.
-        let service = connect("github", &spec, &dir.0)
+        let service = connect("github", &spec, dir.path())
             .await
             .unwrap_or_else(|e| panic!("connect: {e:#}"));
         let protocol = service.peer_info().unwrap().protocol_version.clone();
@@ -3379,7 +3379,7 @@ mod tests {
             .call_tool(CallToolRequestParams::new("get_me"))
             .await
             .unwrap_or_else(|e| panic!("get_me: {e:#}"));
-        let me = output(me, &dir.0);
+        let me = output(me, dir.path());
         assert!(!me.is_error, "get_me failed");
         let login = serde_json::from_str::<Value>(&me.content)
             .ok()
@@ -3400,7 +3400,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "live: gitmcp.io"]
     async fn legacy_mcp_live_falls_back_fast() {
-        let dir = crate::TestDir::new("mcp-live-legacy");
+        let dir = crate::test_dir("mcp-live-legacy");
         let spec = ServerSpec {
             transport: Transport::Http {
                 url: "https://gitmcp.io/docs".into(),
@@ -3409,7 +3409,7 @@ mod tests {
             },
         };
         let started = std::time::Instant::now();
-        let service = connect("gitmcp", &spec, &dir.0)
+        let service = connect("gitmcp", &spec, dir.path())
             .await
             .unwrap_or_else(|e| panic!("connect: {e:#}"));
         let connected = started.elapsed();
@@ -3431,8 +3431,8 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_live_add_has_a_bounded_connect_wait() {
-        let root = crate::TestDir::new("mcp-live-timeout");
-        let mcp = actor(&root.0, None);
+        let root = crate::test_dir("mcp-live-timeout");
+        let mcp = actor(root.path(), None);
         let started = std::time::Instant::now();
         let error = mcp
             .ask(AddServer {
@@ -3454,15 +3454,15 @@ mod tests {
             "connect wait was not bounded"
         );
         assert!(
-            !root.0.join("mcp/slow.json").exists(),
+            !root.path().join("mcp/slow.json").exists(),
             "a timed-out add must not leave a half-added server"
         );
     }
 
     #[tokio::test]
     async fn mcp_live_reconnect_preserves_the_saved_entry_and_its_siblings() {
-        let root = crate::TestDir::new("mcp-live-wrapper");
-        let mcp = actor(&root.0, None);
+        let root = crate::test_dir("mcp-live-wrapper");
+        let mcp = actor(root.path(), None);
         let spec = serve_mcp(TestServer::default()).await;
         let Transport::Http { url, .. } = spec.transport else {
             unreachable!()
@@ -3471,7 +3471,7 @@ mod tests {
             "live": {"url": url},
             "sibling": {"command": MISSING, "disabled": true}
         }});
-        let path = root.0.join("mcp/bundle.json");
+        let path = root.path().join("mcp/bundle.json");
         write_json(&path, &saved).unwrap();
         mcp.ask(Reconcile).await.unwrap();
         settled(&mcp, "live").await;
@@ -3488,7 +3488,7 @@ mod tests {
         assert!(reply.unwrap().connected);
         assert_eq!(read_json(&path).unwrap(), saved);
         assert!(
-            !root.0.join("mcp/live.json").exists(),
+            !root.path().join("mcp/live.json").exists(),
             "reconnect must not create a duplicate entry"
         );
     }
@@ -3500,16 +3500,16 @@ mod tests {
     #[tokio::test]
     async fn mcp_live_switch_starts_and_stops_a_server_for_every_chat() {
         use crate::registry::{SetHidden, SetParent};
-        let root = crate::TestDir::new("mcp-live-switch");
-        std::fs::create_dir_all(root.0.join("mcp")).unwrap();
+        let root = crate::test_dir("mcp-live-switch");
+        std::fs::create_dir_all(root.path().join("mcp")).unwrap();
         let registry = crate::registry::tests::registry(Vec::new(), None);
         let mcp = Mcp::spawn(Mcp {
             state: State::default(),
-            dir: root.0.join("mcp"),
-            auth_dir: root.0.join("oauth"),
+            dir: root.path().join("mcp"),
+            auth_dir: root.path().join("oauth"),
             registry: registry.clone(),
             policy: Policy::default(),
-            rt: Runtime::new(figment::Figment::new(), root.0.clone()),
+            rt: Runtime::new(figment::Figment::new(), root.path().to_path_buf()),
             machine: None,
             origin: None,
             paired: || None,
@@ -3518,9 +3518,9 @@ mod tests {
             concat!(env!("CARGO_MANIFEST_DIR"), "/tests/mcp_live.py")
         ]})
         .to_string();
-        std::fs::write(root.0.join("mcp/live.json"), &entry).unwrap();
+        std::fs::write(root.path().join("mcp/live.json"), &entry).unwrap();
         std::fs::write(
-            root.0.join("mcp/config.yaml"),
+            root.path().join("mcp/config.yaml"),
             "servers:\n  live:\n    risk: off\n",
         )
         .unwrap();
@@ -3574,7 +3574,7 @@ mod tests {
         }
         start().await.unwrap();
         assert_eq!(
-            std::fs::read_to_string(root.0.join("mcp/live.json")).unwrap(),
+            std::fs::read_to_string(root.path().join("mcp/live.json")).unwrap(),
             entry
         );
 
@@ -3780,8 +3780,8 @@ mod tests {
 
     #[tokio::test]
     async fn add_stamps_this_engine_as_home_and_other_engines_list_it_unstarted() {
-        let a_root = crate::TestDir::new("mcp-home-add-a");
-        let a = actor(&a_root.0, Some(engine("a")));
+        let a_root = crate::test_dir("mcp-home-add-a");
+        let a = actor(a_root.path(), Some(engine("a")));
         let spec = serve_mcp(TestServer::default()).await;
         let Transport::Http { url, .. } = &spec.transport else {
             unreachable!()
@@ -3805,20 +3805,26 @@ mod tests {
             (McpState::Running, Some("a"), Some("box-a"), true, false)
         );
         assert_eq!(
-            load_homes(&a_root.0.join("mcp")).unwrap().engine("remote"),
+            load_homes(&a_root.path().join("mcp"))
+                .unwrap()
+                .engine("remote"),
             Some("a")
         );
         // The entry itself stays as given: third-party readers see their own shape.
         let file: Value =
-            serde_json::from_slice(&std::fs::read(a_root.0.join("mcp/remote.json")).unwrap())
+            serde_json::from_slice(&std::fs::read(a_root.path().join("mcp/remote.json")).unwrap())
                 .unwrap();
         assert_eq!(file, entry);
 
         // Engine b holds the replicated files: listed with its home, not started, no tools.
-        let b_root = crate::TestDir::new("mcp-home-add-b");
-        let b = actor(&b_root.0, Some(engine("b")));
+        let b_root = crate::test_dir("mcp-home-add-b");
+        let b = actor(b_root.path(), Some(engine("b")));
         for f in ["remote.json", HOMES] {
-            std::fs::copy(a_root.0.join("mcp").join(f), b_root.0.join("mcp").join(f)).unwrap();
+            std::fs::copy(
+                a_root.path().join("mcp").join(f),
+                b_root.path().join("mcp").join(f),
+            )
+            .unwrap();
         }
         b.ask(Reconcile).await.unwrap();
         let s = listed(&b, "remote").await;
@@ -3835,11 +3841,11 @@ mod tests {
 
     #[tokio::test]
     async fn only_the_home_starts_a_server_unless_it_runs_everywhere() {
-        let root = crate::TestDir::new("mcp-home-place");
-        let mcp = actor(&root.0, Some(engine("a")));
-        missing(&root.0, "gone", &[]);
+        let root = crate::test_dir("mcp-home-place");
+        let mcp = actor(root.path(), Some(engine("a")));
+        missing(root.path(), "gone", &[]);
         homes(
-            &root.0,
+            root.path(),
             "servers:\n  gone:\n    engine: b\n    name: box-b\n",
         );
         mcp.ask(Reconcile).await.unwrap();
@@ -3887,7 +3893,7 @@ mod tests {
             (McpState::UnavailableHere, Some("a"), true, false)
         );
         assert_eq!(
-            load_homes(&root.0.join("mcp")).unwrap().servers["gone"],
+            load_homes(&root.path().join("mcp")).unwrap().servers["gone"],
             Home {
                 engine: Some("a".into()),
                 name: Some("box-a".into()),
@@ -3897,10 +3903,10 @@ mod tests {
         );
 
         // No mesh: a lone engine runs everything and has no homes to set.
-        let lone_root = crate::TestDir::new("mcp-home-lone");
-        let lone = actor(&lone_root.0, None);
-        missing(&lone_root.0, "gone", &[]);
-        homes(&lone_root.0, "servers:\n  gone:\n    engine: b\n");
+        let lone_root = crate::test_dir("mcp-home-lone");
+        let lone = actor(lone_root.path(), None);
+        missing(lone_root.path(), "gone", &[]);
+        homes(lone_root.path(), "servers:\n  gone:\n    engine: b\n");
         lone.ask(Reconcile).await.unwrap();
         settled(&lone, "gone").await;
         assert_eq!(listed(&lone, "gone").await.state, McpState::UnavailableHere);
@@ -3921,12 +3927,12 @@ mod tests {
     async fn homeless_servers_are_claimed_by_their_last_writer() {
         use sqlx::ConnectOptions as _;
         let (lines, _log) = capture();
-        let root = crate::TestDir::new("mcp-home-claim");
-        let engine_a = replica::Engine::open(&root.0.join(replica::DB))
+        let root = crate::test_dir("mcp-home-claim");
+        let engine_a = replica::Engine::open(&root.path().join(replica::DB))
             .await
             .unwrap();
         let mut rows = sqlx::sqlite::SqliteConnectOptions::new()
-            .filename(root.0.join("mcp.sqlite"))
+            .filename(root.path().join("mcp.sqlite"))
             .create_if_missing(true)
             .connect()
             .await
@@ -3955,13 +3961,13 @@ mod tests {
         let peer = replica::PeerId("replica-of-b".into());
         row(&mut rows, "mine.json", engine_a.origin()).await;
         row(&mut rows, "theirs.json", &peer).await;
-        let mcp = actor(&root.0, Some(engine("a")));
+        let mcp = actor(root.path(), Some(engine("a")));
         for name in ["local", "mine", "theirs"] {
-            missing(&root.0, name, &[]);
+            missing(root.path(), name, &[]);
         }
         mcp.ask(Reconcile).await.unwrap();
         mcp.ask(Reconcile).await.unwrap();
-        let homes_now = load_homes(&root.0.join("mcp")).unwrap();
+        let homes_now = load_homes(&root.path().join("mcp")).unwrap();
         assert_eq!(homes_now.engine("local"), Some("a"), "no row: written here");
         assert_eq!(homes_now.engine("mine"), Some("a"), "our row");
         assert_eq!(homes_now.engine("theirs"), None, "b claims its own");
@@ -3972,12 +3978,12 @@ mod tests {
         assert_eq!(lines.count("mcp: theirs home is not claimed yet"), 1);
 
         // b's claim replicates in; a later edit of `mine` on b does not move its home.
-        let mut text = std::fs::read_to_string(root.0.join("mcp").join(HOMES)).unwrap();
+        let mut text = std::fs::read_to_string(root.path().join("mcp").join(HOMES)).unwrap();
         text.push_str("  theirs:\n    engine: b\n    name: box-b\n");
-        homes(&root.0, &text);
+        homes(root.path(), &text);
         row(&mut rows, "mine.json", &peer).await;
         mcp.ask(Reconcile).await.unwrap();
-        let homes_now = load_homes(&root.0.join("mcp")).unwrap();
+        let homes_now = load_homes(&root.path().join("mcp")).unwrap();
         assert_eq!(homes_now.engine("theirs"), Some("b"));
         assert_eq!(homes_now.engine("mine"), Some("a"), "the first claim holds");
         assert_eq!(lines.count("mcp: theirs home is box-b"), 1);
@@ -3990,10 +3996,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn missing_command_backs_off_without_a_hot_loop() {
         let (lines, _log) = capture();
-        let root = crate::TestDir::new("mcp-home-enoent");
-        let mcp = actor(&root.0, Some(engine("a")));
-        missing(&root.0, "gone", &[]);
-        homes(&root.0, "servers:\n  gone:\n    engine: a\n");
+        let root = crate::test_dir("mcp-home-enoent");
+        let mcp = actor(root.path(), Some(engine("a")));
+        missing(root.path(), "gone", &[]);
+        homes(root.path(), "servers:\n  gone:\n    engine: a\n");
         let fails = async || mcp.ask(Failures("gone")).await.unwrap();
         let wait = |secs: u64| tokio::time::sleep(Duration::from_secs(secs));
         mcp.ask(Reconcile).await.unwrap();
@@ -4025,7 +4031,7 @@ mod tests {
         }
 
         // A changed entry starts at once, the count starts over.
-        missing(&root.0, "gone", &["--v2"]);
+        missing(root.path(), "gone", &["--v2"]);
         mcp.ask(Reconcile).await.unwrap();
         wait(1).await;
         assert_eq!(fails().await, Some(1));
@@ -4042,11 +4048,11 @@ mod tests {
     #[tokio::test]
     async fn a_broken_homes_file_is_kept_and_never_written_over() {
         let (lines, _log) = capture();
-        let root = crate::TestDir::new("mcp-home-broken");
-        let mcp = actor(&root.0, Some(engine("a")));
-        missing(&root.0, "gone", &[]);
+        let root = crate::test_dir("mcp-home-broken");
+        let mcp = actor(root.path(), Some(engine("a")));
+        missing(root.path(), "gone", &[]);
         homes(
-            &root.0,
+            root.path(),
             "servers:\n  gone:\n    engine: b\n    everywhere: true\n",
         );
         mcp.ask(Reconcile).await.unwrap();
@@ -4054,12 +4060,12 @@ mod tests {
         assert_eq!(listed(&mcp, "gone").await.state, McpState::UnavailableHere);
 
         let broken = "servers: [this is: not\n";
-        homes(&root.0, broken);
-        missing(&root.0, "fresh", &[]);
+        homes(root.path(), broken);
+        missing(root.path(), "fresh", &[]);
         for _ in 0..3 {
             mcp.ask(Reconcile).await.unwrap();
         }
-        let on_disk = std::fs::read_to_string(root.0.join("mcp").join(HOMES)).unwrap();
+        let on_disk = std::fs::read_to_string(root.path().join("mcp").join(HOMES)).unwrap();
         assert_eq!(on_disk, broken, "nothing claimed over it");
         let s = listed(&mcp, "gone").await;
         assert!(s.everywhere, "the last good homes stay in force");
@@ -4084,9 +4090,12 @@ mod tests {
             })
             .await;
         assert!(format!("{rm:?}").contains("is invalid"), "{rm:?}");
-        assert!(root.0.join("mcp/fresh.json").exists(), "nothing removed");
+        assert!(
+            root.path().join("mcp/fresh.json").exists(),
+            "nothing removed"
+        );
         assert_eq!(
-            std::fs::read_to_string(root.0.join("mcp").join(HOMES)).unwrap(),
+            std::fs::read_to_string(root.path().join("mcp").join(HOMES)).unwrap(),
             broken
         );
         assert_eq!(lines.count("homes kept as they were"), 1);
@@ -4098,13 +4107,15 @@ mod tests {
 
         // Fixed: read again, and the homeless server is claimed.
         homes(
-            &root.0,
+            root.path(),
             "servers:\n  gone:\n    engine: b\n    everywhere: true\n",
         );
         mcp.ask(Reconcile).await.unwrap();
         assert_eq!(lines.count("mcp homes: readable again"), 1);
         assert_eq!(
-            load_homes(&root.0.join("mcp")).unwrap().engine("fresh"),
+            load_homes(&root.path().join("mcp"))
+                .unwrap()
+                .engine("fresh"),
             Some("a")
         );
     }
@@ -4113,19 +4124,24 @@ mod tests {
     #[tokio::test]
     async fn an_unreadable_replica_claims_nothing() {
         let (lines, _log) = capture();
-        let root = crate::TestDir::new("mcp-home-locked");
-        let mcp = actor(&root.0, Some(engine("a")));
-        std::fs::write(root.0.join("mcp.sqlite"), b"not a database").unwrap();
-        missing(&root.0, "theirs", &[]);
+        let root = crate::test_dir("mcp-home-locked");
+        let mcp = actor(root.path(), Some(engine("a")));
+        std::fs::write(root.path().join("mcp.sqlite"), b"not a database").unwrap();
+        missing(root.path(), "theirs", &[]);
         mcp.ask(Reconcile).await.unwrap();
         mcp.ask(Reconcile).await.unwrap();
-        assert!(!root.0.join("mcp").join(HOMES).exists(), "nothing claimed");
+        assert!(
+            !root.path().join("mcp").join(HOMES).exists(),
+            "nothing claimed"
+        );
         assert_eq!(listed(&mcp, "theirs").await.state, McpState::Elsewhere);
         assert_eq!(lines.count("mcp.sqlite unreadable"), 1);
-        std::fs::remove_file(root.0.join("mcp.sqlite")).unwrap();
+        std::fs::remove_file(root.path().join("mcp.sqlite")).unwrap();
         mcp.ask(Reconcile).await.unwrap();
         assert_eq!(
-            load_homes(&root.0.join("mcp")).unwrap().engine("theirs"),
+            load_homes(&root.path().join("mcp"))
+                .unwrap()
+                .engine("theirs"),
             Some("a")
         );
     }
@@ -4146,12 +4162,12 @@ mod tests {
     #[tokio::test]
     async fn an_unpaired_home_runs_here_unwritten_and_a_re_pair_restores_it() {
         let (lines, _log) = capture();
-        let root = crate::TestDir::new("mcp-home-adopt");
-        let mcp = actor_paired(&root.0, Some(engine("a")), a_peers);
-        missing(&root.0, "mikrotik", &[]);
+        let root = crate::test_dir("mcp-home-adopt");
+        let mcp = actor_paired(root.path(), Some(engine("a")), a_peers);
+        missing(root.path(), "mikrotik", &[]);
         let yaml = "servers:\n  mikrotik:\n    engine: b\n    name: box-b\n";
-        homes(&root.0, yaml);
-        let on_disk = || std::fs::read_to_string(root.0.join("mcp").join(HOMES)).unwrap();
+        homes(root.path(), yaml);
+        let on_disk = || std::fs::read_to_string(root.path().join("mcp").join(HOMES)).unwrap();
         mcp.ask(Reconcile).await.unwrap();
         assert_eq!(listed(&mcp, "mikrotik").await.state, McpState::Elsewhere);
 
@@ -4190,27 +4206,27 @@ mod tests {
     /// nothing is dropped while a file fails to parse.
     #[tokio::test]
     async fn own_lines_of_undefined_servers_are_dropped() {
-        let root = crate::TestDir::new("mcp-home-prune");
-        let mcp = actor(&root.0, Some(engine("a")));
+        let root = crate::test_dir("mcp-home-prune");
+        let mcp = actor(root.path(), Some(engine("a")));
         let entry =
             serde_json::json!({"mcpServers": {"paused": {"command": MISSING, "disabled": true}}});
-        std::fs::write(root.0.join("mcp/paused.json"), entry.to_string()).unwrap();
-        std::fs::write(root.0.join("mcp/broken.json"), "{ not json").unwrap();
+        std::fs::write(root.path().join("mcp/paused.json"), entry.to_string()).unwrap();
+        std::fs::write(root.path().join("mcp/broken.json"), "{ not json").unwrap();
         homes(
-            &root.0,
+            root.path(),
             "servers:\n  stale:\n    engine: a\n  paused:\n    engine: a\n    everywhere: true\n  peers:\n    engine: b\n",
         );
         mcp.ask(Reconcile).await.unwrap();
-        let h = load_homes(&root.0.join("mcp")).unwrap();
+        let h = load_homes(&root.path().join("mcp")).unwrap();
         assert_eq!(
             h.engine("stale"),
             Some("a"),
             "a file failed to parse: nothing dropped"
         );
 
-        std::fs::remove_file(root.0.join("mcp/broken.json")).unwrap();
+        std::fs::remove_file(root.path().join("mcp/broken.json")).unwrap();
         mcp.ask(Reconcile).await.unwrap();
-        let h = load_homes(&root.0.join("mcp")).unwrap();
+        let h = load_homes(&root.path().join("mcp")).unwrap();
         assert_eq!(
             (h.engine("stale"), h.engine("paused"), h.engine("peers")),
             (None, Some("a"), Some("b"))

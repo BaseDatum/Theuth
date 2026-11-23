@@ -392,8 +392,8 @@ pub(crate) mod tests {
         out.into_inner()
     }
 
-    fn tmp() -> (crate::TestDir, PathBuf) {
-        let guard = crate::TestDir::new("images");
+    fn tmp() -> (tempfile::TempDir, PathBuf) {
+        let guard = crate::test_dir("images");
         let dir = guard.path().to_path_buf();
         (guard, dir)
     }

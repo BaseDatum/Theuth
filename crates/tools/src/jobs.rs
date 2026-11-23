@@ -2632,7 +2632,7 @@ pub(crate) mod tests {
         /// Every [`crate::ReminderEvent`] published on this fixture's bus.
         pub(crate) reminder_events: Arc<Mutex<Vec<crate::ReminderEvent>>>,
         /// Removes `dir` on drop; last field so it drops last.
-        _guard: crate::TestDir,
+        _guard: tempfile::TempDir,
     }
 
     #[derive(kameo::Actor)]
@@ -2656,8 +2656,8 @@ pub(crate) mod tests {
     }
 
     pub(crate) async fn fixture(grace: Duration, timeout: Duration) -> Fx {
-        let guard = crate::TestDir::new("jobs");
-        let dir = guard.0.clone();
+        let guard = crate::test_dir("jobs");
+        let dir = guard.path().to_path_buf();
         let rt = Runtime::new(figment::Figment::new(), dir.clone());
         let events = Arc::new(Mutex::new(Vec::new()));
         let rec = Recorder::spawn_with_mailbox(
@@ -3820,8 +3820,8 @@ pub(crate) mod tests {
         let got = scan_marks(&mut carry, 0, redacted);
         assert_eq!(got, [mark(MarkKind::End, Some(0), None, 19)]);
 
-        let guard = crate::TestDir::new("cell-log");
-        let path = guard.0.join("j1.log");
+        let guard = crate::test_dir("cell-log");
+        let path = guard.path().join("j1.log");
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let mut log = Log::new(Some(std::fs::File::create(&path).unwrap()));
         log.scan_marks_to(tx);

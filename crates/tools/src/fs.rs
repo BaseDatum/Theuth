@@ -837,8 +837,8 @@ fn grep(
 mod tests {
     use super::*;
 
-    fn scratch(content: &str) -> (crate::TestDir, PathBuf) {
-        let dir = crate::TestDir::new("edit");
+    fn scratch(content: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = crate::test_dir("edit");
         let path = dir.path().join("f.txt");
         std::fs::write(&path, content).unwrap();
         (dir, path)
@@ -953,7 +953,7 @@ mod tests {
     #[tokio::test]
     async fn seated_session_resolves_relative_paths_and_confines_writes() {
         // Drop guard (141 R4): the scratch dir goes when the test ends, pass or fail.
-        let scratch = crate::TestDir::new("seat-fs");
+        let scratch = crate::test_dir("seat-fs");
         let dir = scratch.path().to_path_buf();
         let wt = dir.join("worktree");
         std::fs::create_dir_all(&wt).unwrap();
@@ -1194,7 +1194,7 @@ mod tests {
     // this one test: the unregistered error first, then Some/None.
     #[tokio::test]
     async fn read_outline_uses_the_registered_hook() {
-        let guard = crate::TestDir::new("outline");
+        let guard = crate::test_dir("outline");
         let dir = guard.path().to_path_buf();
         let rs = dir.join("a.rs");
         std::fs::write(&rs, "fn a() {}\nfn b() {}\n").unwrap();
@@ -1260,7 +1260,7 @@ mod tests {
     async fn read_image_attaches_a_fitted_picture() {
         use crate::images::tests::encoded;
         use image::ImageFormat;
-        let dir = crate::TestDir::new("read-image");
+        let dir = crate::test_dir("read-image");
         let small = encoded(ImageFormat::Png, 4, 3, 7);
         let p = dir.path().join("small.png");
         std::fs::write(&p, &small).unwrap();
@@ -1505,7 +1505,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_creates_with_parents() {
-        let guard = crate::TestDir::new("write");
+        let guard = crate::test_dir("write");
         let dir = guard.path().to_path_buf();
         let p = dir.join("a/b/new.txt");
         let out = write(&p, "hello\n").await.unwrap();
@@ -1564,7 +1564,7 @@ mod tests {
             0o700
         );
 
-        let guard = crate::TestDir::new("write-ro");
+        let guard = crate::test_dir("write-ro");
         let dir = guard.path().to_path_buf();
         let p = dir.join("f.txt");
         std::fs::write(&p, "old").unwrap();
@@ -1577,8 +1577,8 @@ mod tests {
     }
 
     /// Temp tree with a `.git` marker so `.gitignore` files are honoured.
-    fn grep_tree(files: &[(&str, &str)]) -> (crate::TestDir, PathBuf) {
-        let guard = crate::TestDir::new("grep");
+    fn grep_tree(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
+        let guard = crate::test_dir("grep");
         let root = guard.path().to_path_buf();
         std::fs::create_dir_all(root.join(".git")).unwrap();
         for (f, content) in files {
@@ -1636,7 +1636,7 @@ mod tests {
     /// the rest of the data dir is not.
     #[tokio::test]
     async fn cell_records_are_refused_to_the_file_tools() {
-        let guard = crate::TestDir::new("cell-records");
+        let guard = crate::test_dir("cell-records");
         let data = guard.path().to_path_buf();
         let run = data.join("cells/runs/r_1");
         let jobs = data.join("jobs/s1");
