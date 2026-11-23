@@ -266,3 +266,46 @@ StatusChanged {
 4. Nudge cadence: first nudge after 2 calls without status; then every `status_every`; reset by `set_status`; none when `status_every = 0`, toolset `Some(0)`, or tool not listed.
 5. Python bridge: a cell calling `set_status` updates state and resets the counter.
 6. Wire: fixture + schema snapshot green.
+
+
+---
+
+# Part 3 — Settings: every 212 behaviour can be turned off
+
+Added 2026-11-23 at the owner's request. One new section, **"Memory and status"**, on the existing Settings › Agent › Agent loop tab (`components/settings/Loop.tsx`). Each row writes `config.yaml` via `runtime::write_config_value` / `write_nested_config_value` (comments preserved) and applies to **new sessions** unless marked restart.
+
+## 14. Rows (exact labels)
+
+| Row label | Control | Config key | Default | Applies |
+|---|---|---|---|---|
+| Memory peeks | Switch | `knowledge.peek` (bool) | on | new sessions |
+| Peek relevance threshold | Count, step 0.05, 0.05–0.95 | `knowledge.peek_threshold` | 0.5 | new sessions |
+| Memory hints per nudge | Count, 0 = off | `agent.knowledge.hint_limit` | 5 | new sessions |
+| Status updates | Switch | `agent.status_tool` (bool) | on | new sessions |
+| Status reminder every N tool calls | Count, 0 = off | `agent.status_every` | 8 | new sessions |
+| Automatic titles | Switch | `agent.auto_title` (bool) | on | new sessions |
+
+Descriptions (one line each, exact):
+- Memory peeks: `Lets the agent check hinted memories against its question with the local decision model before reading them. Off removes peek_memory and its mention from the hints.`
+- Peek relevance threshold: `How sure the local model must be that a memory answers the question. Higher pulls in fewer memories.`
+- Memory hints per nudge: `How many related memories the harness suggests at a time. 0 turns memory hints off.`
+- Status updates: `Lets the agent set the status line above the chat input and retitle its session. Off removes set_status and its reminders.`
+- Status reminder every N tool calls: `How often the harness reminds the agent to update its status. 0 turns the reminder off; the tool stays available.`
+- Automatic titles: `Lets the title model name and rename sessions. Off keeps the first-message title until you or the agent rename it.`
+
+## 15. Engine
+
+- `agent.status_tool: bool` (serde default true) on `AgentConfig`. When false: `status::spec()` is not added in `direct_specs`, not in `awaitable_locals`, `status::PROMPT` is not appended, no nudge. (Session snapshot of cfg; constant per session — prompt cache safe.)
+- `agent.auto_title: bool` (default true): `maybe_title` returns early when false (next to `title_held()`); the first-turn placeholder seed still runs.
+- `knowledge.peek: bool` (default true) on `KnowledgeConfig`. Must be **live for new sessions, not restart**: the knowledge plugin always registers `peek_memory`, and per-session availability is decided where the session's tool list is built: when off, the session hides `peek_memory` the same way `tools.builtins.disabled` hides a builtin (reuse that mechanism if a per-session hide is available; otherwise check the flag at call time and return `peek_memory: turned off in Settings` AND drop the tool from the listing). `render_hints` gets a `peek: bool` and uses the OLD lead sentence (``Concepts that may be relevant; read one with `await knowledge_get(id)` in python before relying on it:``) when off; `knowledge::tools::PROMPT` drops the peek sentence when off (choose at session start; constant per session).
+- `knowledge.peek_threshold` becomes live: `PeekTool` reads the current value from a shared `Arc<AtomicU32>`/`RwLock<f32>` updated by the setter (no restart).
+- RPC: one method per numeric row, booleans via new `ConfigFlagKey` variants (`AgentStatusTool`, `AgentAutoTitle`, `KnowledgePeek`) with `path()`/`read()` arms. Because `config_flag_get` reports `restart_required = file != boot`, these three variants must instead report `restart_required: false` and also update the live `Agents.cfg` / knowledge flag (so new sessions pick them up without restart). Numeric setters: `set_status_every(count: u32)`, `set_hint_limit(count: u32)`, `set_peek_threshold(value: f32)` (reject outside 0.05–0.95 with `peek threshold must be between 0.05 and 0.95`). Values surface in `Info` (`status_every`, `hint_limit`, `peek_threshold`).
+- `peek_checkpoint` stays config-file only (no UI).
+
+## 16. Tests
+
+- rpc-compose api tests: the three new flag keys get/set, restart_required false.
+- agent: status_tool=false → no set_status spec, no prompt line, no nudge; auto_title=false → maybe_title skipped.
+- knowledge: peek=false → old hint sentence, PROMPT without peek sentence, call refused; threshold change applies to the next call.
+- UI: `Loop.test.ts` (new) in the `Memory.test.ts` pattern — the six rows render with current values and call the right RPCs.
+- Wire: `just ts-desktop`, `just wire-schema-accept`, `wire_schema_snapshot` green; `docs/design/183` RPC rows for the three new methods; `registry.ts` `required.methods` literal for the loop tab.
