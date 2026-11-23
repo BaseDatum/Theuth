@@ -13,6 +13,7 @@ use sqlx::sqlite::{
 
 use crate::config::EdgeChoice;
 use crate::model::{Access, Share, ShareState, Source, StoppedBy};
+use crate::sources::DirPin;
 
 /// Tables handed to `replica::attach` (§5.8).
 pub const REPLICATED: [&str; 4] = ["shares", "share_names", "share_edges", "share_rekeys"];
@@ -257,6 +258,48 @@ impl Store {
     /// Forget a share's request once it is live or stopped.
     pub async fn delete_request(&self, share: &str) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM share_requests WHERE share = ?")
+            .bind(share)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Record a dir share's root as approved (M1): canonical path, device, inode. Local only.
+    pub async fn put_pin(&self, share: &str, pin: &DirPin) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO share_pins (share, canon, dev, ino) VALUES (?, ?, ?, ?) \
+             ON CONFLICT(share) DO UPDATE SET canon = excluded.canon, dev = excluded.dev, \
+             ino = excluded.ino",
+        )
+        .bind(share)
+        .bind(pin.canon.to_string_lossy().into_owned())
+        .bind(pin.dev() as i64)
+        .bind(pin.ino() as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// A dir share's stored pin.
+    pub async fn pin(&self, share: &str) -> anyhow::Result<Option<DirPin>> {
+        Ok(
+            sqlx::query("SELECT canon, dev, ino FROM share_pins WHERE share = ?")
+                .bind(share)
+                .fetch_optional(&self.pool)
+                .await?
+                .map(|r| {
+                    DirPin::from_parts(
+                        r.get::<String, _>(0).into(),
+                        r.get::<i64, _>(1) as u64,
+                        r.get::<i64, _>(2) as u64,
+                    )
+                }),
+        )
+    }
+
+    /// Forget a share's pin once it is stopped.
+    pub async fn delete_pin(&self, share: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM share_pins WHERE share = ?")
             .bind(share)
             .execute(&self.pool)
             .await?;

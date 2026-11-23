@@ -25,7 +25,7 @@ use crate::model::{
 };
 use crate::proxy::Proxy;
 use crate::routes::{Lookup, Mount, Table};
-use crate::sources::{self, OwnPorts, PortGuard, ProcessCheck};
+use crate::sources::{self, DirPin, OwnPorts, PortGuard, ProcessCheck};
 use crate::store::Store;
 use crate::tools::Plan;
 use crate::visitor::{self, Certs};
@@ -335,8 +335,49 @@ impl Engine {
                     }
                 }
             }
-            self.table.insert(Mount::of(&s));
+            if let Some(m) = self.mount(&s).await {
+                self.table.insert(m);
+            }
         }
+    }
+
+    /// The mount for one of this engine's shares (M1). A `dir` share is served from the pin
+    /// stored at publish, never re-pinned: when its path no longer names that directory (device
+    /// and inode), now leads elsewhere, or now falls under a protected place (this engine's data
+    /// dir, `$HOME`, a dot dir), or no pin was stored, the share stops as `source_gone`.
+    async fn mount(&self, s: &Share) -> Option<Mount> {
+        let Source::Dir(d) = &s.source else {
+            return Some(Mount::of(s, None));
+        };
+        let why = match self.store.pin(&s.id).await {
+            Ok(Some(pin)) => match self.recheck(&pin) {
+                Ok(()) => return Some(Mount::of(s, Some(pin))),
+                Err(why) => why,
+            },
+            Ok(None) => "no pinned folder was stored at publish".to_owned(),
+            Err(e) => {
+                tracing::warn!("share: pin of {}: {e:#}", s.id);
+                return None;
+            }
+        };
+        tracing::warn!("share {}: {d}: {why}; stopping it", s.id);
+        let _ = self.stop(&s.id, StoppedBy::SourceGone).await;
+        None
+    }
+
+    /// A stored pin still names the approved, allowed directory.
+    fn recheck(&self, pin: &DirPin) -> Result<(), String> {
+        let canon = sources::check_root(
+            &pin.canon.to_string_lossy(),
+            &self.data_dir,
+            std::env::home_dir().as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+        if canon != pin.canon {
+            return Err(format!("the path now leads to {}", canon.display()));
+        }
+        pin.check()
+            .map_err(|e| format!("not the folder approved at publish ({e})"))
     }
 
     /// The password generated for `id` in this run; for the owner's surfaces only.
@@ -360,16 +401,19 @@ impl Engine {
             !self.store.edge().await?.tickets().is_empty(),
             NO_SHARING_EDGE
         );
-        match &plan.source {
+        let pin = match &plan.source {
             Source::Port(p) => {
                 drop(self.ports.connect(*p).await?);
+                None
             }
-            Source::Dir(d) => {
-                sources::check_root(d, &self.data_dir, std::env::home_dir().as_deref())?;
-            }
-        }
+            Source::Dir(d) => Some(sources::pin_root(
+                d,
+                &self.data_dir,
+                std::env::home_dir().as_deref(),
+            )?),
+        };
         self.reserve().await?;
-        let r = self.publish_admitted(plan, origin, consent).await;
+        let r = self.publish_admitted(plan, origin, consent, pin).await;
         let _g = self.admit.lock().await;
         self.reserved.fetch_sub(1, Ordering::SeqCst);
         r
@@ -393,6 +437,7 @@ impl Engine {
         plan: Plan,
         origin: CallOrigin,
         consent: Consent,
+        pin: Option<DirPin>,
     ) -> anyhow::Result<Published> {
         let link = self.wait_attached().await?;
         let domain = link.info.domain.clone();
@@ -461,12 +506,16 @@ impl Engine {
             if !have_cert {
                 self.store.put_request(&share.id, expiry_ms).await?;
             }
+            if let Some(pin) = &pin {
+                self.store.put_pin(&share.id, pin).await?;
+            }
             self.store.put(&share).await
         }
         .await;
         if let Err(e) = stored {
             let _ = self.store.delete_secret(&share.id).await;
             let _ = self.store.delete_request(&share.id).await;
+            let _ = self.store.delete_pin(&share.id).await;
             return Err(e);
         }
         if let Some((pw, phc)) = &password {
@@ -474,7 +523,7 @@ impl Engine {
             self.passwords.lock().insert(share.id.clone(), pw.clone());
         }
         if have_cert {
-            self.table.insert(Mount::of(&share));
+            self.table.insert(Mount::of(&share, pin));
             self.push_routes().await;
         }
         self.emit(&share).await;
@@ -629,6 +678,7 @@ impl Engine {
             self.passwords.lock().remove(id);
             let _ = self.store.delete_secret(id).await;
             let _ = self.store.delete_request(id).await;
+            let _ = self.store.delete_pin(id).await;
             if self.table.remove(id) {
                 self.push_routes().await;
             }
@@ -783,9 +833,12 @@ impl Engine {
                     }
                 }
             }
+            let Some(m) = self.mount(&s).await else {
+                continue;
+            };
             if self.store.put(&s).await.is_ok() {
                 let _ = self.store.delete_request(&s.id).await;
-                self.table.insert(Mount::of(&s));
+                self.table.insert(m);
                 self.emit(&s).await;
             }
         }
@@ -851,8 +904,11 @@ impl Attachment for Engine {
         if let Ok(mine) = self.mine().await {
             for mut s in mine.into_iter().filter(|s| s.state == ShareState::Offline) {
                 s.state = ShareState::Live;
+                let Some(m) = self.mount(&s).await else {
+                    continue;
+                };
                 if self.store.put(&s).await.is_ok() {
-                    self.table.insert(Mount::of(&s));
+                    self.table.insert(m);
                     self.emit(&s).await;
                 }
             }
@@ -924,7 +980,15 @@ mod tests {
     use crate::sources::{NoProcessCheck, OwnListeners};
 
     async fn engine(max_live: u32) -> (tempfile::TempDir, Arc<Engine>) {
-        let dir = tempfile::tempdir().unwrap();
+        engine_with(max_live, None).await
+    }
+
+    async fn engine_with(
+        max_live: u32,
+        name_keys: Option<Arc<dyn NameKeyStore>>,
+    ) -> (tempfile::TempDir, Arc<Engine>) {
+        // No dot in the path: a dir share inside it must fail on the data-dir rule, not the dot rule.
+        let dir = tempfile::Builder::new().prefix("data").tempdir().unwrap();
         let store = Store::open(&dir.path().join("share.sqlite")).await.unwrap();
         let cfg = ShareConfig {
             max_live,
@@ -933,12 +997,118 @@ mod tests {
         let hooks = Hooks {
             dialer: None,
             delegation: None,
-            name_keys: None,
+            name_keys,
             own_ports: Arc::new(OwnListeners),
             process: Arc::new(NoProcessCheck),
         };
         let e = Engine::new(cfg, store, dir.path().to_path_buf(), "me".into(), hooks, None).unwrap();
         (dir, e)
+    }
+
+    /// One name key in memory.
+    struct MemKeys(Mutex<Option<keys::NameKey>>);
+
+    #[async_trait::async_trait]
+    impl NameKeyStore for MemKeys {
+        async fn get(&self, _: &str, _: &str) -> anyhow::Result<Option<keys::NameKey>> {
+            Ok(self.0.lock().clone())
+        }
+        async fn create(&self, _: &str, _: &str, k: keys::NameKey) -> anyhow::Result<keys::NameKey> {
+            Ok(self.0.lock().get_or_insert(k).clone())
+        }
+    }
+
+    /// B2: a `cert` event fetches the edge's new chain and replaces the installed certificate.
+    #[tokio::test]
+    async fn cert_event_replaces_the_installed_chain() {
+        use axum::routing::get;
+
+        let (key_pem, csr_der) = keys::name_key("sky", "tun.zip").unwrap();
+        let leaf = |serial: u64| {
+            let key = rcgen::KeyPair::from_pem(&key_pem).unwrap();
+            let mut p = rcgen::CertificateParams::new(keys::sans("sky", "tun.zip")).unwrap();
+            p.serial_number = Some(serial.into());
+            let c = p.self_signed(&key).unwrap();
+            (c.pem(), c.der().to_vec())
+        };
+        let ((pem1, der1), (pem2, der2)) = (leaf(1), leaf(2));
+        let chain = Arc::new(Mutex::new(pem1));
+        let served = chain.clone();
+        let app = axum::Router::new().route(
+            &share_proto::paths::name_cert("sky"),
+            get(move || {
+                let pem = served.lock().clone();
+                async move {
+                    axum::Json(share_proto::CertChain {
+                        chain_pem: pem,
+                        not_after: u64::MAX / 2,
+                    })
+                }
+            }),
+        );
+        let control = Control::new(crate::edge::tests::FakeConn::new(app));
+        let keys = MemKeys(Mutex::new(Some(keys::NameKey {
+            r#gen: 1,
+            key_pem: key_pem.clone(),
+            csr_der,
+        })));
+        let (_d, e) = engine_with(8, Some(Arc::new(keys))).await;
+        let edge_id = share_proto::SecretKey::from_bytes(&[7; 32]).public();
+        let info = Info {
+            v: 1,
+            edge: "theuth-share-edge/0.1.0".into(),
+            domain: "tun.zip".into(),
+            edge_id,
+            now_ms: platform::time::now_ms(),
+            min_client: "0.0.1".into(),
+            admission: share_proto::Admission::Open,
+            terms_url: String::new(),
+            terms_rev: "1".into(),
+            abuse_url: String::new(),
+            full: false,
+        };
+        let welcome = Welcome {
+            v: 1,
+            now_ms: platform::time::now_ms(),
+            min_client: "0.0.1".into(),
+            mesh: share_proto::SecretKey::from_bytes(&[1; 32]).public(),
+            names: vec![NameInfo {
+                name: "sky".into(),
+                kind: NameKind::Random,
+                state: NameState::Valid,
+                ca: None,
+                spki: None,
+                not_after: Some(u64::MAX / 2),
+                queue: None,
+            }],
+            routes: vec![],
+            revoked: vec![],
+            stop_all_ms: None,
+            domain: "tun.zip".into(),
+            limits: share_proto::WelcomeLimits::default(),
+            terms_url: String::new(),
+            abuse_url: String::new(),
+            terms_rev: "1".into(),
+            terms_ok: true,
+            full: false,
+            retire: None,
+        };
+        let leaf_of = |e: &Engine| {
+            e.certs
+                .lookup("app.sky.tun.zip")
+                .map(|ck| ck.cert[0].as_ref().to_vec())
+        };
+
+        e.welcome(&control, &info, &welcome).await;
+        assert_eq!(leaf_of(&e), Some(der1), "welcome installs the valid name's chain");
+
+        *chain.lock() = pem2;
+        e.event(
+            &control,
+            Event::Cert(share_proto::events::CertEvent { name: "sky".into() }),
+        )
+        .await;
+        assert_eq!(leaf_of(&e), Some(der2), "the renewed chain replaced the old one");
     }
 
     fn share(id: &str, created_ms: u64, state: ShareState, access: Access) -> Share {
@@ -1050,6 +1220,57 @@ mod tests {
             .unwrap();
         e.reserve().await.unwrap();
         assert!(e.reserve().await.unwrap_err().to_string().contains("max_live"));
+    }
+
+    /// M1 after a restart: a dir share is mounted from the pin stored at publish; a folder
+    /// swapped while the engine was down, a root inside this engine's own data dir, or a share
+    /// without a pin stops (`source_gone`) instead of being pinned again.
+    #[tokio::test]
+    async fn restore_mounts_dirs_from_the_stored_pin_and_stops_swapped_roots() {
+        let (data, e) = engine(8).await;
+        let tmp = tempfile::Builder::new().prefix("share").tempdir().unwrap();
+        let elsewhere = tmp.path().join("elsewhere");
+        let (kept, swapped) = (tmp.path().join("kept"), tmp.path().join("swapped"));
+        let inside = data.path().join("site");
+        for d in [&kept, &swapped, &inside, &elsewhere] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let dir_share = |id: &str, root: &std::path::Path| Share {
+            source: Source::Dir(root.to_str().unwrap().into()),
+            ..share(id, 1, ShareState::Live, Access::Public)
+        };
+        for (id, root) in [("a", &kept), ("b", &swapped), ("c", &inside)] {
+            e.store.put(&dir_share(id, root)).await.unwrap();
+            // `c` was pinned against another data dir (the platform default, say).
+            let pin = sources::pin_root(root.to_str().unwrap(), &elsewhere, None).unwrap();
+            e.store.put_pin(id, &pin).await.unwrap();
+        }
+        e.store.put(&dir_share("d", &kept)).await.unwrap();
+        std::fs::rename(&swapped, tmp.path().join("old")).unwrap();
+        std::fs::create_dir(&swapped).unwrap();
+
+        e.restore().await;
+        let Lookup::Found(m, _) = e.table.lookup("a.sky.tun.zip", "/") else {
+            panic!("a is not routed");
+        };
+        assert!(m.dir.is_some());
+        assert_eq!(m.dir, e.store.pin("a").await.unwrap());
+        for id in ["b", "c", "d"] {
+            assert!(
+                !matches!(
+                    e.table.lookup(&format!("{id}.sky.tun.zip"), "/"),
+                    Lookup::Found(..)
+                ),
+                "{id} is routed"
+            );
+            let s = e.store.get(id).await.unwrap().unwrap();
+            assert_eq!(
+                (s.state, s.stopped_by),
+                (ShareState::Stopped, Some(StoppedBy::SourceGone)),
+                "{id}"
+            );
+            assert!(e.store.pin(id).await.unwrap().is_none(), "{id}'s pin is forgotten");
+        }
     }
 
     #[test]

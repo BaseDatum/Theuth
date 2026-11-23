@@ -777,4 +777,4 @@ impl Drop for AbortOnDrop {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

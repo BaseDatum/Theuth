@@ -269,6 +269,21 @@ pub fn pin_root(root: &str, data_dir: &Path, home: Option<&Path>) -> Result<DirP
 }
 
 impl DirPin {
+    /// A pin read back from the store (`share_pins`).
+    pub fn from_parts(canon: PathBuf, dev: u64, ino: u64) -> Self {
+        Self { canon, dev, ino }
+    }
+
+    /// The pinned device.
+    pub fn dev(&self) -> u64 {
+        self.dev
+    }
+
+    /// The pinned inode.
+    pub fn ino(&self) -> u64 {
+        self.ino
+    }
+
     /// Open the canonical root without following links (every component on macOS, the last
     /// elsewhere) and require the pinned device and inode.
     pub fn check(&self) -> io::Result<()> {

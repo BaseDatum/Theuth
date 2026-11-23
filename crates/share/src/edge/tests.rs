@@ -90,9 +90,20 @@ async fn h_events(State(f): State<Arc<Fake>>) -> axum::response::Response {
         .into_response()
 }
 
-struct FakeConn {
+/// An in-process edge connection: every bi-stream is one HTTP/1.1 connection to `app`.
+pub(crate) struct FakeConn {
     app: Router,
     closed: tokio::sync::Notify,
+}
+
+impl FakeConn {
+    /// A connection serving `app`.
+    pub(crate) fn new(app: Router) -> Arc<Self> {
+        Arc::new(Self {
+            app,
+            closed: tokio::sync::Notify::new(),
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -132,10 +143,7 @@ impl EdgeDialer for FakeDialer {
             .route(paths::ROUTES, put(h_routes))
             .route(paths::EVENTS, get(h_events))
             .with_state(self.0.clone());
-        Ok(Arc::new(FakeConn {
-            app,
-            closed: tokio::sync::Notify::new(),
-        }))
+        Ok(FakeConn::new(app))
     }
 }
 

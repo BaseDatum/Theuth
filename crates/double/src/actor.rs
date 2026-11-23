@@ -956,7 +956,8 @@ impl Message<ApprovalRequested> for Double {
     type Reply = ();
 
     async fn handle(&mut self, m: ApprovalRequested, ctx: &mut Context<Self, ()>) {
-        if !self.cfg.capture.approvals {
+        // 210 §7.2: a human-only card (share consent) is never trained on or predicted.
+        if m.human_only || !self.cfg.capture.approvals {
             return;
         }
         let mcp = self.is_mcp(m.session, &m.tool).await;
@@ -2343,6 +2344,36 @@ mod tests {
         })
         .await;
         assert_eq!(ev.class, "approval:shell:mutating:git status:root");
+        h.stop().await;
+    }
+
+    /// 210 §7.2: a human-only approval gets no card in the double: no prediction, no example.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn human_only_cards_are_never_seen() {
+        let h = Harness::new(oracle(0.8), 30).await;
+        let s = SessionId::new();
+        h.approval
+            .tell(tools::RequestHumanOnly(RequestApproval {
+                session: s,
+                tool: "share_publish".into(),
+                args: serde_json::json!({"name": "demo"}),
+                risk: Risk::Mutating,
+                call_id: None,
+            }))
+            .await
+            .unwrap();
+        // The bus delivers in order: the human-only card was handled before this one.
+        let id = h
+            .raise(s, "shell", serde_json::json!({"command": "git push"}))
+            .await;
+        let predicted: Vec<String> = h
+            .probe
+            .predicted
+            .lock()
+            .iter()
+            .map(|p| p.question_id.clone())
+            .collect();
+        assert_eq!(predicted, vec![id.0.to_string()]);
         h.stop().await;
     }
 }
