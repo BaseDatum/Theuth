@@ -8,32 +8,43 @@ type DiffFile = { path: string; hunks: Hunk[]; added: number; removed: number }
 
 /**
  * `lib/editDiff`'s parser (hunk lengths tell a file header from a removed `-- x`) in the shape this view renders. Files
- * without a hunk are dropped, so `[]` means "not a diff" and the caller shows the raw text. A hunk with no `---`/`+++`
- * pair before it is named after the first `diff --git a/x b/x` line.
+ * without a hunk are dropped, so `[]` means "not a diff" and the caller shows the raw text. Each `diff --git a/x b/x`
+ * section is parsed on its own so a hunk with no `---`/`+++` pair before it is named after its own section. An empty
+ * line inside a hunk is a context line (an editor stripped its space); a `[diff truncated: …]` line ends the hunk
+ * unrendered.
  */
 export function unifiedFiles(text: string): DiffFile[] {
-  const fallback = /^diff --git a\/.+? b\/([^\r\n]+)$/m.exec(text)?.[1] ?? ''
+  const sections: { name: string; lines: string[] }[] = [{ name: '', lines: [] }]
+  text.split('\n').forEach((line, i, all) => {
+    if (line.startsWith('diff --git ')) sections.push({ name: /^diff --git a\/.+? b\/(.+)$/.exec(line)?.[1] ?? '', lines: [] })
+    // The `''` after the final newline is not a line.
+    sections.at(-1)!.lines.push(line === '' && i < all.length - 1 ? ' ' : line)
+  })
   const files: DiffFile[] = []
-  for (const f of parseUnified(text, fallback).files) {
-    const file: DiffFile = { path: f.path, hunks: [], added: 0, removed: 0 }
-    for (const r of f.rows) {
-      if (r.kind === 'hunk') {
-        file.hunks.push({ header: r.text, rows: [] })
-        continue
+  for (const section of sections) {
+    for (const f of parseUnified(section.lines.join('\n'), section.name).files) {
+      const file: DiffFile = { path: f.path, hunks: [], added: 0, removed: 0 }
+      let hunk: Hunk | undefined
+      for (const r of f.rows) {
+        if (r.kind === 'hunk') {
+          hunk = { header: r.text, rows: [] }
+          file.hunks.push(hunk)
+          continue
+        }
+        if (!hunk) continue
+        if (r.kind === 'note') {
+          if (r.text.startsWith('[diff truncated:')) hunk = undefined
+          // `\ No newline at end of file`: informational, no line numbers.
+          else hunk.rows.push({ op: ' ', text: r.text, old: null, new: null })
+          continue
+        }
+        const op = r.op ?? ' '
+        hunk.rows.push({ op, text: r.text, old: r.old ?? null, new: r.next ?? null })
+        if (op === '+') file.added++
+        if (op === '-') file.removed++
       }
-      const hunk = file.hunks.at(-1)
-      if (!hunk) continue
-      if (r.kind === 'note') {
-        // `\ No newline at end of file`: informational, no line numbers.
-        hunk.rows.push({ op: ' ', text: r.text, old: null, new: null })
-        continue
-      }
-      const op = r.op ?? ' '
-      hunk.rows.push({ op, text: r.text, old: r.old ?? null, new: r.next ?? null })
-      if (op === '+') file.added++
-      if (op === '-') file.removed++
+      if (file.hunks.length > 0) files.push(file)
     }
-    if (file.hunks.length > 0) files.push(file)
   }
   return files
 }

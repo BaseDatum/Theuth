@@ -58,6 +58,32 @@ test('a removed line starting with `-- ` is a row, not a file header', () => {
   expect([files[0]?.added, files[0]?.removed]).toEqual([1, 1])
 })
 
+test('an empty line inside a hunk is a context row and keeps the numbering', () => {
+  const files = unifiedFiles('--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n\n-b\n+c\n')
+  expect(files[0]?.hunks[0]?.rows.map((r) => [r.op, r.text, r.old, r.new])).toEqual([
+    [' ', 'a', 1, 1],
+    [' ', '', 2, 2],
+    ['-', 'b', 3, null],
+    ['+', 'c', null, 3],
+  ])
+})
+
+test('hunks without ---/+++ take the name of their own diff --git line', () => {
+  const files = unifiedFiles('diff --git a/one.rs b/one.rs\n@@ -1 +1 @@\n-x\n+y\ndiff --git a/two.rs b/two.rs\n@@ -1 +1 @@\n-p\n+q\n')
+  expect(files.map((f) => [f.path, f.added, f.removed])).toEqual([
+    ['one.rs', 1, 1],
+    ['two.rs', 1, 1],
+  ])
+})
+
+test('a `[diff truncated:` line is not rendered and ends the hunk', () => {
+  const files = unifiedFiles('--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n-a\n+b\n[diff truncated: 4 more lines]\n')
+  expect(files[0]?.hunks[0]?.rows.map((r) => [r.op, r.text])).toEqual([
+    ['-', 'a'],
+    ['+', 'b'],
+  ])
+})
+
 test('no hunk → no files, so the renderer falls back to the raw text', () => {
   expect(unifiedFiles('not a diff\njust text')).toEqual([])
   expect(unifiedFiles('')).toEqual([])
