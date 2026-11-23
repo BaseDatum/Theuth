@@ -2428,6 +2428,7 @@ async fn invoke(
     let session = call.session;
     let call_id = call.id.clone();
     let suspend = || gate.as_ref().and_then(|g| g.suspend(session));
+    let mut approved = None;
     if let Some(approval) = approval {
         let req = RequestApproval {
             session: call.session,
@@ -2437,7 +2438,8 @@ async fn invoke(
             call_id: Some(call_id.clone()),
         };
         let suspended = suspend();
-        let answer = if tool.human_only() {
+        let human_only = tool.human_only();
+        let answer = if human_only {
             approval
                 .ask(RequestHumanOnly(req))
                 .await
@@ -2446,7 +2448,12 @@ async fn invoke(
             approval.ask(req).await.map_err(|e| e.to_string())
         };
         match answer {
-            Ok(r) if r.decision == Decision::Allow => {}
+            Ok(r) if r.decision == Decision::Allow => {
+                approved = Some(crate::approval::Approved {
+                    id: r.id,
+                    surface: if human_only { "owner" } else { "human" },
+                });
+            }
             // Denied / timed out / unavailable: the suspension drops
             // unresumed and nothing runs.
             // 207: left to the agent (Attention dismiss): not run.
@@ -2509,7 +2516,10 @@ async fn invoke(
     // and the web tools read the session's `egress::lan()`.
     let body = activity.scope(communication::scope(
         admitted,
-        crate::egress::scope(lan, async move { tool.call(call.args, cx).await }),
+        crate::egress::scope(
+            lan,
+            crate::approval::approved_scope(approved, async move { tool.call(call.args, cx).await }),
+        ),
     ));
     let key = (session, call_id.clone());
     lock(&inflight).insert(key.clone(), cancel.clone());

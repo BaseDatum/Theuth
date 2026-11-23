@@ -23,6 +23,38 @@ use crate::journal::{
 #[serde(transparent)]
 pub struct ApprovalId(pub uuid::Uuid);
 
+/// 210 §7.2: the approval row a gated call passed, visible to the tool body it admitted (a
+/// share records it as `approved_by`). `surface` says who could answer: `owner` for a
+/// human-only row (only the owner in person resolves it), `human` otherwise.
+// TODO(210-M2): the surface that actually answered (desktop, web, tui, slack, …); `Resolve`
+// does not carry it yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Approved {
+    /// The approval row.
+    pub id: ApprovalId,
+    /// `owner` or `human`.
+    pub surface: &'static str,
+}
+
+tokio::task_local! {
+    static APPROVED: Approved;
+}
+
+/// Run `fut` under the approval it passed; `None` runs it bare. Task-locals do not cross
+/// `spawn`: wrap the future you spawn.
+pub async fn approved_scope<F: Future>(approved: Option<Approved>, fut: F) -> F::Output {
+    match approved {
+        Some(a) => APPROVED.scope(a, fut).await,
+        None => fut.await,
+    }
+}
+
+/// The approval the running tool call passed; `None` for an ungated call or outside a body.
+#[must_use]
+pub fn approved() -> Option<Approved> {
+    APPROVED.try_with(Clone::clone).ok()
+}
+
 /// Human answer. A `kameo::Reply` so [`crate::ExternalApproval`] can answer with it directly.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
