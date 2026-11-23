@@ -30,10 +30,7 @@ export function finalResponse(history: readonly HistoryEntry[], summary: string 
   const rows = history.filter((h): h is Extract<HistoryEntry, { role: 'assistant' }> => h.role === 'assistant' && h.text.trim() !== '')
   if (rows.length === 0) return null
   const want = summary ? stem(summary) : ''
-  if (want) {
-    for (let i = rows.length - 1; i >= 0; i--) {
-      if (firstLine(rows[i].text).startsWith(want)) return rows[i].text
-    }
-  }
-  return rows[rows.length - 1].text
+  const newest = [...rows].reverse()
+  const hit = want ? newest.find((r) => firstLine(r.text).startsWith(want)) : undefined
+  return (hit ?? newest[0])?.text ?? null
 }
