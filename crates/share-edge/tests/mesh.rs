@@ -569,6 +569,36 @@ async fn an_engine_revoked_before_its_first_hello_cannot_attach() {
     assert_eq!(err(&body).code, ErrorCode::Revoked);
 }
 
+/// FIX6-EDGE N1: a revocation outlives the delegation window while the mesh has not been rekeyed (the removed
+/// machine still holds the share key and can sign itself a fresh delegation): housekeeping 30 h later keeps the
+/// row and `hello` is still refused. After a rekey the row is pruned.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revocation_is_pruned_only_after_a_rekey() {
+    let rig = Rig::new().await;
+    let [m, m2, ka, gone] = keys();
+    let edge = &rig.run.edge;
+    let (a, _) = rig.attach(&ka, &m).await;
+    let req = RevokeRequest { engines: vec![gone.public()] };
+    assert_eq!(a.send("POST", paths::MESH_REVOKE, &req).await.0, 200);
+    let later = now_ms() + 30 * 3_600_000;
+    share_edge::queue::housekeeping(edge, later).await.unwrap();
+    assert!(edge.store.revoked(&m.public().to_string(), &gone.public().to_string()).await.unwrap().is_some());
+    let (status, body) = rig.dial(&gone).await.hello(&rig, &m).await;
+    assert_eq!((status, err(&body).code), (403, ErrorCode::Revoked));
+
+    let (status, body) = a
+        .call("POST", paths::MESH_REKEY, Some(rig.signed_rekey(&m, &m2, vec![gone.public()])))
+        .await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    share_edge::queue::housekeeping(edge, later).await.unwrap();
+    for mesh in [&m, &m2] {
+        let row = edge.store.revoked(&mesh.public().to_string(), &gone.public().to_string()).await.unwrap();
+        assert!(row.is_none(), "pruned after the rekey");
+    }
+    let (status, body) = rig.dial(&gone).await.hello(&rig, &m).await;
+    assert_eq!((status, err(&body).code), (409, ErrorCode::MeshRekeyed), "the old key is dead");
+}
+
 /// FIX5-EDGE R3: the eviction re-reads the owner. A route of another mesh on a name this mesh no longer holds
 /// (released since its `held` read) stays; on a name it holds, it is evicted.
 #[tokio::test(flavor = "multi_thread")]

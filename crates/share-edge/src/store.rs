@@ -358,8 +358,9 @@ impl Store {
     /// row with `first_ms = 0` (FIX5-EDGE R1: a machine removed before its first `hello` cannot attach with the
     /// delegation it already holds); such a row never counts toward the per-day engine quota (`first_ms` is
     /// before every day start). `Ok(None)` when the mesh would hold more than `cap` revoked rows newer than
-    /// `since_ms` (nothing written; FIX5-EDGE R6: older revocations outlived every delegation and are pruned by
-    /// [`Store::prune_revoked`]); else the engines now revoked by this call or before.
+    /// `since_ms` (nothing written; FIX5-EDGE R6: the cap is a rate, older revocations still refuse `hello`
+    /// until [`Store::prune_revoked`] drops them after a rekey); else the engines now revoked by this call or
+    /// before.
     pub async fn revoke(
         &self,
         mesh: &str,
@@ -423,13 +424,23 @@ impl Store {
         Ok(Some(known))
     }
 
-    /// Delete revoked `mesh_engines` rows revoked before `before_ms` (FIX5-EDGE R6): every delegation that
-    /// existed at their revocation has expired, so the row no longer refuses anything. Returns the rows deleted.
+    /// Delete revoked `mesh_engines` rows revoked before `before_ms` whose revocation a rekey has made moot
+    /// (FIX6-EDGE N1): the row's mesh was rekeyed away at or after the revocation (`hello` on it answers
+    /// `moved` before the revoke check), or the row's mesh was created by a rekey at or after the revocation
+    /// (the revoked engine never held that mesh's key). A revoked row of a mesh not rekeyed since stays: the
+    /// removed machine still holds the share key and can sign itself a fresh delegation. Returns the rows
+    /// deleted.
     pub async fn prune_revoked(&self, before_ms: u64) -> anyhow::Result<u64> {
-        let r = sqlx::query("DELETE FROM mesh_engines WHERE revoked_ms IS NOT NULL AND revoked_ms < ?")
-            .bind(ms(before_ms))
-            .execute(&self.pool)
-            .await?;
+        let r = sqlx::query(
+            "DELETE FROM mesh_engines WHERE revoked_ms IS NOT NULL AND revoked_ms < ?1 AND (
+               EXISTS (SELECT 1 FROM meshes m WHERE m.mesh = mesh_engines.mesh
+                       AND m.rekeyed_ms IS NOT NULL AND m.rekeyed_ms >= mesh_engines.revoked_ms)
+               OR EXISTS (SELECT 1 FROM mesh_rekeys r WHERE r.new = mesh_engines.mesh
+                          AND r.ms >= mesh_engines.revoked_ms))",
+        )
+        .bind(ms(before_ms))
+        .execute(&self.pool)
+        .await?;
         Ok(r.rows_affected())
     }
 

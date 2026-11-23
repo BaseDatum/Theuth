@@ -364,12 +364,21 @@ mod tests {
         // Re-revoking is idempotent and adds nothing to the count.
         assert_eq!(s.revoke("m1", &ids(&["lost"]), 2, 0, t0).await.unwrap(), Some(ids(&["lost"])));
 
-        // R6: revocations before `since` do not count; prune deletes them and nothing newer.
+        // R6: revocations before `since` do not count toward the cap.
         let later = t0 + 2 * day;
         assert_eq!(s.revoke("m1", &ids(&["other"]), 2, t0 + 1, later).await.unwrap(), Some(ids(&["other"])));
-        assert_eq!(s.prune_revoked(t0 + 1).await.unwrap(), 2);
+        // FIX6-EDGE N1: without a rekey the removed machines still hold the share key; nothing is pruned.
+        assert_eq!(s.prune_revoked(t0 + 1).await.unwrap(), 0);
+        assert!(s.revoked("m1", "lost").await.unwrap().is_some());
+        // After a rekey m1 → m2 (keeping `lost` and `other` revoked) the old rows go from both meshes.
+        assert!(matches!(
+            s.rekey("m1", "m2", &ids(&["lost", "other"]), later + 1).await.unwrap(),
+            crate::store::Rekeyed::Applied
+        ));
+        // m1: `lost` and `e1` (revoked at t0); m2: `lost` (kept its t0 revocation, older than m2's key).
+        assert_eq!(s.prune_revoked(t0 + 1).await.unwrap(), 3);
         assert!(s.revoked("m1", "lost").await.unwrap().is_none());
-        assert!(!s.engine_known("m1", "lost").await.unwrap());
-        assert!(s.revoked("m1", "other").await.unwrap().is_some(), "a recent revocation stays");
+        assert!(!s.engine_known("m2", "lost").await.unwrap());
+        assert!(s.revoked("m2", "other").await.unwrap().is_some(), "a recent revocation stays");
     }
 }
