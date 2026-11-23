@@ -1,3 +1,124 @@
-//! Public web sharing, the client plugin (design doc 210): dials the share edge on `theuth/share/1`, terminates
-//! visitors' TLS with the mesh's name key, proxies to a loopback port or a directory, and owns the share store,
-//! tools, RPC and consent. Wire types come from `share-proto`. Stub: later phases fill it.
+//! Public web sharing, the client plugin (design doc 210): dials the share edge on `theuth/share/1`,
+//! terminates visitors' TLS with the mesh's name key, proxies to a loopback port or a directory, and
+//! owns the share store, tools, RPC and consent. Wire types come from `share-proto`.
+//!
+//! Public surface:
+//! - [`SharePlugin`] (registration), [`rpc_module`] (the share RPC), [`declare_wire`]
+//! - events [`model::ShareChanged`] (`share.changed`), [`model::ShareTraffic`]
+//!   (`share.traffic`), [`model::ShareStatus`] (`share.status`)
+//! - tools `share_publish` (destructive, human-only), `share_stop`, `share_list`
+//! - seams for other crates: [`edge::EdgeDialer`], [`edge::DelegationSource`],
+//!   [`keys::NameKeyStore`], [`sources::OwnPorts`], [`sources::ProcessCheck`]
+
+pub mod config;
+pub mod edge;
+pub mod engine;
+pub mod gate;
+pub mod keys;
+pub mod model;
+pub mod proxy;
+pub mod routes;
+pub mod rpc_share;
+pub mod sources;
+pub mod store;
+pub mod tools;
+pub mod visitor;
+
+use std::sync::{Arc, OnceLock};
+
+use runtime::Runtime;
+
+pub use config::{EdgeChoice, Expiry, ShareConfig};
+pub use engine::{Engine, Hooks, Published};
+pub use model::{Share, ShareChanged, ShareStatus, ShareTraffic};
+
+/// Assemble this plugin's RPC methods.
+pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
+    rpc_share::rpc_module(server)
+}
+
+static ENGINE: OnceLock<Arc<Engine>> = OnceLock::new();
+
+/// The running service for RPC handlers.
+pub mod rpc_support {
+    use std::sync::Arc;
+
+    use jsonrpsee::core::RpcResult;
+    use jsonrpsee::types::ErrorObjectOwned;
+    use rpc_core::NOT_RUNNING;
+
+    /// The share engine; `NOT_RUNNING` when the plugin is not started.
+    pub fn engine() -> RpcResult<Arc<crate::Engine>> {
+        super::ENGINE
+            .get()
+            .cloned()
+            .ok_or_else(|| ErrorObjectOwned::owned(NOT_RUNNING, "sharing is not running", None::<()>))
+    }
+}
+
+/// Declare the share wire contracts.
+pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
+    use wire::RuntimeWire as _;
+    rt.register_wire_event::<ShareChanged>().await?;
+    rt.register_wire_event::<ShareTraffic>().await?;
+    rt.register_wire_event::<ShareStatus>().await?;
+    Ok(())
+}
+
+/// The plugin: reads `share`, opens `<data_dir>/share.sqlite`, attaches the replicated tables,
+/// starts the [`Engine`] and registers the three tools.
+pub struct SharePlugin {
+    /// This engine's endpoint id (the mesh identity's public key).
+    pub engine_id: String,
+    /// Seams the wiring fills.
+    pub hooks: Hooks,
+}
+
+#[async_trait::async_trait]
+impl runtime::Plugin for SharePlugin {
+    fn name(&self) -> &'static str {
+        "share"
+    }
+
+    async fn declare_wire(&mut self, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await
+    }
+
+    async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()> {
+        declare_wire(rt).await?;
+        if let Ok(raw) = rt.section::<serde_json::Value>("share") {
+            ShareConfig::warn_ignored(&raw);
+        }
+        let cfg: ShareConfig = rt.section("share").unwrap_or_default();
+        let store = store::Store::open(&rt.data_dir.join("share.sqlite")).await?;
+        if let Err(e) = replica::attach(store.pool(), &store::REPLICATED).await {
+            tracing::warn!("share: replicated tables not attached: {e:#}");
+        }
+        let SharePlugin { engine_id, hooks } = *self;
+        let engine = Engine::new(cfg, store, rt.data_dir.clone(), engine_id, hooks, Some(rt.clone()))?;
+        engine.start().await?;
+        let _ = ENGINE.set(engine.clone());
+        let rt = rt.clone();
+        tokio::spawn(async move {
+            if let Some(reg) = rt
+                .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
+                .await
+            {
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(tools::SharePublishTool {
+                        engine: engine.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(tools::ShareStopTool {
+                        engine: engine.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(tools::ShareListTool { engine })))
+                    .await;
+            }
+        });
+        Ok(())
+    }
+}
