@@ -1,0 +1,18 @@
+[package]
+name = "share-edge"
+version = "0.1.0"  # its own version and `share-edge-v*` tags, released apart from theuth (210 §8.4)
+edition.workspace = true
+publish.workspace = true
+description = "theuth-share-edge: blind SNI edge for public web sharing, ACME and name registry (design doc 210)"
+
+[[bin]]
+name = "theuth-share-edge"
+path = "src/main.rs"
+
+# 210 §4.3: never `runtime`, `mesh`, `secrets`, `replica` or a plugin crate.
+[dependencies]
+share-proto = { workspace = true }
+clap = { workspace = true }
+
+[lints]
+workspace = true
