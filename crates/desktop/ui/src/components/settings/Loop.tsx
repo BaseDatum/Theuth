@@ -1,8 +1,9 @@
+import { ConfigFlagRow } from '@/components/settings/ConfigFlagRow'
 import { Count, Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
 import { useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
 
-/** Settings › Agent › Loop (188 A8): how a turn runs — model calls, recovery, routine run time. */
+/** Settings › Agent › Loop (188 A8): how a turn runs — model calls, recovery, routine run time; 212 §14: memory peeks, hints, status and titles. */
 export function Loop() {
   const api = useApi()
   const info = useConnection((s) => s.info)
@@ -23,6 +24,15 @@ export function Loop() {
   )
   const setPtyIdle = useAction((seconds: number) =>
     api.set_pty_idle(seconds).then(() => refreshInfo(api)),
+  )
+  const setPeekThreshold = useAction((value: number) =>
+    api.set_peek_threshold(value).then(() => refreshInfo(api)),
+  )
+  const setHintLimit = useAction((count: number) =>
+    api.set_hint_limit(count).then(() => refreshInfo(api)),
+  )
+  const setStatusEvery = useAction((count: number) =>
+    api.set_status_every(count).then(() => refreshInfo(api)),
   )
 
   return (
@@ -66,6 +76,51 @@ export function Loop() {
         >
           <Count value={info?.schedule_run_timeout_secs || undefined} min={30} action={setScheduleRunTimeout} />
         </Row>
+      </Section>
+      <Section title="Memory and status">
+        <ConfigFlagRow
+          flag="knowledge.peek"
+          name="Memory peeks"
+          label="Memory peeks"
+          description="Lets the agent check hinted memories against its question with the local decision model before reading them. Off removes peek_memory and its mention from the hints."
+        />
+        <Row
+          label="Peek relevance threshold"
+          description="How sure the local model must be that a memory answers the question. Higher pulls in fewer memories."
+        >
+          <Count
+            aria-label="Peek relevance threshold"
+            value={info?.peek_threshold || undefined}
+            min={0.05}
+            max={0.95}
+            step={0.05}
+            action={setPeekThreshold}
+          />
+        </Row>
+        <Row
+          label="Memory hints per nudge"
+          description="How many related memories the harness suggests at a time. 0 turns memory hints off."
+        >
+          <Count aria-label="Memory hints per nudge" value={info?.hint_limit} min={0} action={setHintLimit} />
+        </Row>
+        <ConfigFlagRow
+          flag="agent.status_tool"
+          name="Status updates"
+          label="Status updates"
+          description="Lets the agent set the status line above the chat input and retitle its session. Off removes set_status and its reminders."
+        />
+        <Row
+          label="Status reminder every N tool calls"
+          description="How often the harness reminds the agent to update its status. 0 turns the reminder off; the tool stays available."
+        >
+          <Count aria-label="Status reminder every N tool calls" value={info?.status_every} min={0} action={setStatusEvery} />
+        </Row>
+        <ConfigFlagRow
+          flag="agent.auto_title"
+          name="Automatic titles"
+          label="Automatic titles"
+          description="Lets the title model name and rename sessions. Off keeps the first-message title until you or the agent rename it."
+        />
       </Section>
     </>
   )

@@ -13,7 +13,7 @@ export const agent: SettingsCategory = {
   label: 'Agent',
   icon: Bot,
   tabs: [
-    { required: {"methods":["set_max_salvages","set_max_tool_rounds","set_pty_idle","set_schedule_run_timeout","set_stream_idle","set_subagent_timeout"],"topics":[]}, id: 'loop', label: 'Loop', icon: RefreshCw, Component: Loop },
+    { required: {"methods":["config_flag_get","config_flag_set","set_hint_limit","set_max_salvages","set_max_tool_rounds","set_peek_threshold","set_pty_idle","set_schedule_run_timeout","set_status_every","set_stream_idle","set_subagent_timeout"],"topics":[]}, id: 'loop', label: 'Loop', icon: RefreshCw, Component: Loop },
     { required: {"methods":["endless_settings_get","endless_settings_set","list_models","set_compact_style","set_model_favorite","test_summary_call","title_model"],"topics":[]}, id: 'memory', label: 'Context', icon: InfinityIcon, Component: Memory },
     { required: {"methods":["set_approvals"],"topics":[]}, id: 'approvals', label: 'Approvals', icon: ShieldCheck, Component: Approvals },
     { required: {"methods":["list_models","set_advisor_default_effort","set_advisor_default_model","set_advisor_immune_turns","set_advisor_max_consults","set_advisor_notes_per_update","set_advisor_sync_backlog","set_model_favorite"],"topics":[]}, id: 'advisor', label: 'Advisor', icon: Eye, Component: Advisor },
