@@ -557,7 +557,9 @@ if (!agent || agent.version !== VERSION) {
     }
 
     // Computed styles of fresh elements: inside a closed shadow root under an `all: initial` host
-    // the page's own rules do not reach them, so they show the browser's defaults.
+    // the page's own rules do not reach them, so they show the browser's defaults. A form's default
+    // submit button (`:default`) is probed as one, inside a form: WebKit gives it its own colours,
+    // radius and weight, and its native look is lost once those are written inline (209 P5 proof).
     function defaultsOf() {
       const cache = new Map();
       let host = null;
@@ -570,25 +572,42 @@ if (!agent || agent.version !== VERSION) {
       } catch (_) {
         host = null;
       }
+      const isDefault = (el) => {
+        try {
+          return isSubmit(el) && el.matches(':default');
+        } catch (_) {
+          return false;
+        }
+      };
       return {
         get(el) {
           const tag = el.tagName;
           const type = tag === 'INPUT' ? (el.type || 'text').toLowerCase() : '';
-          const key = tag + ' ' + type;
+          const dflt = isDefault(el);
+          const key = tag + ' ' + type + (dflt ? ' default' : '');
           if (cache.has(key)) return cache.get(key);
           const out = {};
           if (host) {
+            let holder = null;
             try {
               const probe = document.createElement(tag.toLowerCase());
               if (type) probe.setAttribute('type', type);
-              place.appendChild(probe);
+              else if (dflt) probe.setAttribute('type', 'submit');
+              if (dflt) {
+                holder = document.createElement('form');
+                holder.appendChild(probe);
+                place.appendChild(holder);
+              } else {
+                holder = probe;
+                place.appendChild(probe);
+              }
               const s = getComputedStyle(probe);
               for (const p of OWN) out[p] = s.getPropertyValue(p);
               for (const p of INHERITED) out[p] = s.getPropertyValue(p);
-              probe.remove();
             } catch (_) {
               // no defaults: every property counts as set
             }
+            if (holder) holder.remove();
           }
           cache.set(key, out);
           return out;
@@ -599,15 +618,29 @@ if (!agent || agent.version !== VERSION) {
       };
     }
 
+    // What makes WebKit paint a control with the author's style instead of its native look: a
+    // background or border other than the default (border radii count too, and WebKit reports a
+    // native button's adjusted radius, which differs from a fresh one's).
+    const PAINT = ['background-color', 'background-image',
+      'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+      'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+      'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color'];
+    const RADII = new Set(['border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius']);
+
     // `style="…"` of `el`: its own properties that differ from the default of its tag, and the
-    // inherited ones that differ from what its parent passes down.
+    // inherited ones that differ from what its parent passes down. A control the page leaves with
+    // its native look (an `appearance` other than `none`, background and borders the defaults)
+    // gets no radius either, so the copy keeps that look (209 P5 proof).
     function styleOf(el, defaults, inheritedFrom) {
       const s = style(el);
       const mine = {};
       if (!s || typeof s.getPropertyValue !== 'function') return { css: '', inherited: inheritedFrom };
       const d = defaults.get(el);
+      const look = s.getPropertyValue('appearance') || s.getPropertyValue('-webkit-appearance');
+      const native = !!look && look !== 'none' && PAINT.every((p) => s.getPropertyValue(p) === d[p]);
       const parts = [];
       for (const p of OWN) {
+        if (native && RADII.has(p)) continue;
         const v = s.getPropertyValue(p);
         if (v && v !== d[p] && inert(v)) parts.push(p + ': ' + v);
       }

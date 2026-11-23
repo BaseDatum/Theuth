@@ -12,6 +12,8 @@
 import { Ban, CircleCheck, Clock, Lock, LockOpen, TriangleAlert, Users } from 'lucide-react'
 import { type RefObject, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
+import { engines } from '@/components/tasks/home'
+import { useMesh } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import {
   type ElementFormRequested,
@@ -27,6 +29,7 @@ import {
   originLabel,
   outcomeOfReceipt,
   readFrameMessage,
+  receiptLine,
   reloadSession,
   sourceLabel,
   useCanAnswer,
@@ -97,7 +100,7 @@ export function ElementFormOutcome({ outcome, origin, receipt, focus }: { outcom
         <Icon className={cn('size-4 shrink-0', outcome === 'submitted' ? 'text-success' : 'text-fg-secondary')} aria-hidden="true" />
         <span className="wrap-anywhere">{outcomeText(outcome, origin)}</span>
       </div>
-      {receipt && <span className="font-mono text-xs wrap-anywhere text-fg-secondary">{receipt.split('\n')[0]}</span>}
+      {receipt && <span className="font-mono text-xs wrap-anywhere text-fg-secondary">{receiptLine(receipt)}</span>}
     </div>
   )
 }
@@ -196,6 +199,7 @@ export function ElementFormPanel({ form, onAnswered }: { form: ElementFormReques
   const [late, setLate] = useState(false)
   const waiting = useRef<HTMLDivElement>(null)
   const origin = originLabel(form.origin)
+  const mesh = useMesh().data
   const action = originLabel(form.action_origin || form.origin)
   const crossOrigin = !!origin && !!action && action.text !== origin.text
 
@@ -261,7 +265,7 @@ export function ElementFormPanel({ form, onAnswered }: { form: ElementFormReques
         </div>
         {/* The title is the model's (or the page's) word, not the app's: it is quoted and attributed. */}
         <span className="truncate text-xs text-fg-secondary">
-          {form.title ? `the agent calls it “${form.title}” · ` : ''}in {sourceLabel(form.source)}
+          {form.title ? `the agent calls it “${form.title}” · ` : ''}in {sourceLabel(form.source, (id) => engines(mesh).find((e) => e.id === id)?.name)}
         </span>
       </header>
       {sent ? (
@@ -333,7 +337,8 @@ export function ElementFormCard({ tool, session, readOnly }: { tool: Tool; sessi
   /** This window answered it: the outcome line takes the focus when it comes. */
   const [answered, setAnswered] = useState(false)
   const result = tool.result
-  const receipt = result && !result.isError ? result.output : undefined
+  // The receipt, or the stale error (`isError`): both name the outcome on their first line (§4.10).
+  const receipt = result?.output
   const fromReceipt = receipt ? outcomeOfReceipt(receipt) : null
   // The receipt is final; `elsewhere` only stands in until the engine's outcome or the receipt arrives.
   const outcome = done?.outcome === 'elsewhere' ? (fromReceipt ?? 'elsewhere') : (done?.outcome ?? fromReceipt)
@@ -356,7 +361,7 @@ export function ElementFormCard({ tool, session, readOnly }: { tool: Tool; sessi
       <div className={cn(SHELL, 'flex min-w-0 items-center gap-2 px-4 py-3')}>
         <Lock className="size-4 shrink-0 text-fg-secondary" aria-hidden="true" />
         <span className={cn('min-w-0 flex-1 wrap-anywhere', result?.isError ? 'text-danger' : 'text-fg-secondary')}>
-          {result ? result.output.split('\n')[0] : readOnly && form ? 'A form is waiting for an answer' : 'Waiting for the form…'}
+          {result ? receiptLine(result.output) : readOnly && form ? 'A form is waiting for an answer' : 'Waiting for the form…'}
         </span>
         {running && <ToolSpinner />}
       </div>

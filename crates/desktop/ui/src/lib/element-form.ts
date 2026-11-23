@@ -267,17 +267,32 @@ export function originLabel(origin: string): OriginLabel | null {
   return { text, host: u.host, secure: u.protocol === 'https:', head: text.slice(0, text.length - tail.length), tail }
 }
 
-/** Which browser holds the page: the user's tile or an agent browser of an engine. */
-export function sourceLabel(source: string): string {
+/** Which browser holds the page: the user's tile or an agent browser of an engine. `nameOf` turns the engine id of
+ * `obscura:<engine>` into its name (the mesh's); never a raw id: an engine it does not know is "an agent browser". */
+export function sourceLabel(source: string, nameOf?: (engine: string) => string | undefined): string {
   if (source.startsWith('web:')) return 'your web view'
-  if (source.startsWith('obscura:')) return `agent browser on ${source.slice('obscura:'.length) || 'this engine'}`
+  if (source.startsWith('obscura:')) {
+    const engine = source.slice('obscura:'.length)
+    if (!engine || engine === 'local') return 'agent browser on this engine'
+    const name = nameOf?.(engine)
+    return name ? `agent browser on ${name}` : 'an agent browser'
+  }
   return source
 }
 
-/** The outcome read back from the tool's receipt (§4.10) once the event is gone (a reload), from its first line:
- * `null` when it says none. */
+/** A browser reply on a tile starts with `[tile web:<id> · <host>]` on its own line (209 §4.6). */
+const TILE_PREFIX = /^\[tile web:[0-9a-f]+ \u00b7 [^\]\n]*\]\n/
+
+/** The receipt's own first line (§4.10): the tool's output without the `ERROR: ` the transcript puts on a failed call
+ * (the stale error) and the tile prefix a tile's reply carries. */
+export function receiptLine(output: string): string {
+  return output.trimStart().replace(/^ERROR: /, '').replace(TILE_PREFIX, '').split('\n', 1)[0] ?? ''
+}
+
+/** The outcome read back from the tool's output (§4.10; the receipt, or the stale error) once the event is gone (a
+ * reload), from its first line after a tile prefix: `null` when it says none. */
 export function outcomeOfReceipt(output: string): FormOutcome | null {
-  const line = output.trimStart().split('\n', 1)[0] ?? ''
+  const line = receiptLine(output)
   if (line.startsWith('submitted')) return 'submitted'
   if (line.startsWith('cancelled') || line.startsWith('no app showed the form')) return 'cancelled'
   if (line.startsWith('the page changed')) return 'stale'
