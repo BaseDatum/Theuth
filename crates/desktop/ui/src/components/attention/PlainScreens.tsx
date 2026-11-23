@@ -1,5 +1,9 @@
 // 104 A6: the kinds whose screen is the row's facts laid out large — hand-off, secret, hire, budget, node, blocked.
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Streamdown } from 'streamdown'
+import { useApi } from '@/lib/rpc'
+import { useQuerySupport } from '@/rpc/capabilities'
+import { afterFirstLine, finalResponse } from './final-text'
 import type { ReactNode } from 'react'
 import { SecretRequestCard, eventFields } from '@/components/chat/SecretRequestCard'
 import { KindActions } from './actions'
@@ -229,6 +233,36 @@ export function DoubleScreen({ item }: { item: AttentionItem }) {
   )
 }
 
+/** How many history rows to read back for the final response: the turn's last rows are on the newest page. */
+const FINAL_PAGE = 40
+
+/**
+ * The rest of the turn's final response — everything below the summary line, text only (no tool calls, no reasoning),
+ * as markdown in its own scroll area. Read from the session's newest page; nothing shows while it loads or when the
+ * response was a single line.
+ */
+function FinalResponse({ item }: { item: AttentionItem }) {
+  const api = useApi()
+  const can = useQuerySupport(['load_session'])
+  const session = item.session
+  const page = useQuery({
+    enabled: can && session !== null,
+    queryKey: ['attention-final', session, item.at_ms],
+    queryFn: () => api.load_session(session as string, null, FINAL_PAGE),
+    staleTime: 5 * 60_000,
+  })
+  const full = page.data ? finalResponse(page.data.history, item.summary) : null
+  const rest = full ? afterFirstLine(full) : ''
+  if (!rest) return null
+  return (
+    <Fact label="Response">
+      <div className="max-h-[50vh] overflow-y-auto rounded-md border border-border-subtle bg-layer-1 px-3 py-2 text-sm">
+        <Streamdown>{rest}</Streamdown>
+      </div>
+    </Fact>
+  )
+}
+
 /**
  * 207 R4: a stopped session — the outcome word, the error when the turn failed or timed out, the summary, the agent's
  * `## Next` steps and the reply that starts the next turn; Snooze · Dismiss in the bar.
@@ -251,6 +285,7 @@ export function FinishedScreen({ item }: { item: AttentionItem }) {
         </Fact>
       )}
       {item.summary && item.summary !== error && <Fact label="Summary">{item.summary}</Fact>}
+      <FinalResponse item={item} />
       <Fact label="Reply">
         <Reply item={item} size="sm" />
       </Fact>
