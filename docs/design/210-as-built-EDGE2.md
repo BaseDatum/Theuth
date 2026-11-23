@@ -208,3 +208,38 @@ Unit tests: `dns` host helpers and both credential spellings; `acme` CAA lines r
   `hickory-resolver`, `hickory-net`, `resolv-conf`, `prefix-trie`, `moka`, `tagptr`; `backon` 1.6.0 (already
   locked) becomes a direct dependency of `share-edge`.
 - No `share-proto` change needed.
+
+## Fix 1 — renewal skipped for freshly claimed names
+
+**Symptom (gate).** `cargo test -p share-edge --test certs` → `renewal_follows_ari_then_falls_back_to_two_thirds`
+panicked at `tests/certs.rs:163` (`issued` 1, expected 2): the renewal inside the ARI window issued nothing.
+
+**Root cause.** Not the new-certificate bucket: `certs::process` draws on `le_new` only for `kind == "new"`;
+`renew` and `rotate` jobs never touch it. The real cause: `Store::claim` inserted the name with
+`last_attach_ms` NULL (and reset it to NULL on re-claim). `Store::attach` stamps only the names the mesh
+already holds, and a `hello` always comes before a claim, so a name claimed over a live tunnel had no attach
+time until the next `hello`. `renewal_scan` reads NULL as 0, so `now - 0 > NO_RENEW_AFTER_MS` held and the
+name was skipped as "unattached for 90 days" (§6.3). The test was correct: its claim helper calls
+`attach` and then `claim`, which is the production order (`control.rs` hello → claim). In production, an engine
+that stays connected after claiming would have lost its certificate at expiry.
+
+**Fix.** `crates/share-edge/src/store.rs` `Store::claim`: `last_attach_ms` is set to the claim time on insert
+and on re-claim. The claim arrives over a live tunnel, so it counts as an attach.
+
+**Test added.** `tests/certs.rs` `renewal_runs_while_the_new_cert_bucket_is_empty`: `new_certs_per_week: 1`,
+`sky` issued (takes the only token), `fog` submitted and left queued for the next token. Inside an ARI
+window, `sky` renews with `replaces` while `fog` stays `queued` with its job still about a week out. No
+`hello` after the claims.
+
+**Doubt (not fixed, not in scope).** `last_attach_ms` moves only on `hello` and on claim. A mesh whose
+tunnel stays up for more than 90 days without reconnecting would still be read as unattached by the renewal
+scan and by the future inactivity expiry. TODO(210-M3): count a live tunnel as attached (refresh on
+heartbeat or check `Edge::mesh_tunnels` in the scan).
+
+**Verification (after the last code edit, each under its own lock hold):**
+- `cargo test -p share-edge`: all pass. Unit tests 12/12, `certs` 9/9 (including both renewal tests),
+  `visitor` 1/1, doc-tests 0.
+- `cargo clippy -p share-edge --all-targets -- -D warnings`: clean (exit 0).
+- `cargo tree -p share-edge -e normal`: the only path crates are `share-edge`, `share-proto`, `platform` and
+  `vendor/libsqlite3-sys`.
+- No `Cargo.lock` change.
