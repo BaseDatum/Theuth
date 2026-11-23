@@ -2,7 +2,7 @@ use crate as talk;
 use agent::{Agents, GetPolishModel};
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
-use rpc_core::{Server, ask, send};
+use rpc_core::{ask, send, Server};
 use talk::rpc_support::dictation;
 
 /// Hub RPC methods owned by this plugin.
@@ -26,6 +26,7 @@ pub trait TalkHubApi {
 
 #[async_trait]
 impl TalkHubApiServer for Server {
+
     async fn voice_settings(&self) -> RpcResult<voice::VoiceSettings> {
         let mut settings = send(&dictation()?, voice::CurrentSettings).await?;
         // The live slot (`set_polish_model`), not the one read at startup.
