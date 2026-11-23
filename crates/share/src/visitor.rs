@@ -22,10 +22,16 @@ use crate::proxy::Proxy;
 pub const PREAMBLE_MAX: usize = 1024;
 /// Time to read the preamble.
 pub const PREAMBLE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Time a visitor has to send a complete HTTP/1.1 request head (slowloris).
+/// Time a visitor has to send a complete request head (slowloris), on HTTP/1.1 and HTTP/2: counted
+/// from the moment its connection has no request in flight (accept, or the last response done).
 pub const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// Largest request head accepted (HTTP/1.1 read buffer, HTTP/2 header list).
 pub const MAX_HEADER_BYTES: usize = 64 * 1024;
+/// Most HTTP/2 streams one visitor connection may have open at once.
+pub const MAX_STREAMS: u32 = 100;
+/// After the head deadline's graceful close (GOAWAY, or no keep-alive on HTTP/1.1), time a
+/// connection that still has no request in flight gets before it is dropped.
+pub const CLOSE_GRACE: Duration = Duration::from_secs(2);
 
 /// What the edge told us of the visitor.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,10 +165,9 @@ pub fn acceptor(certs: Arc<Certs>) -> anyhow::Result<tokio_rustls::TlsAcceptor> 
     Ok(tokio_rustls::TlsAcceptor::from(Arc::new(cfg)))
 }
 
-/// The visitor HTTP server: a request head must arrive within [`HEADER_READ_TIMEOUT`] and fit in
-/// [`MAX_HEADER_BYTES`].
-// TODO(210-M2): HTTP/2 has no head-read deadline in hyper; an h2 connection that opens no stream
-// lives until the edge's idle timeout.
+/// The visitor HTTP server: an HTTP/1.1 request head must arrive within [`HEADER_READ_TIMEOUT`];
+/// heads fit in [`MAX_HEADER_BYTES`]; an HTTP/2 connection has at most [`MAX_STREAMS`] open
+/// streams. The HTTP/2 head deadline is enforced by [`serve_http`] (hyper has none).
 pub fn http_server() -> hyper_util::server::conn::auto::Builder<TokioExecutor> {
     let mut b = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
     b.http1()
@@ -171,8 +176,99 @@ pub fn http_server() -> hyper_util::server::conn::auto::Builder<TokioExecutor> {
         .max_buf_size(MAX_HEADER_BYTES);
     b.http2()
         .timer(TokioTimer::new())
-        .max_header_list_size(MAX_HEADER_BYTES as u32);
+        .max_header_list_size(MAX_HEADER_BYTES as u32)
+        .max_concurrent_streams(MAX_STREAMS);
     b
+}
+
+/// Requests in flight on one connection; a request counts from its head's arrival until its
+/// response body is dropped (finished, failed or reset).
+#[derive(Default)]
+struct InFlight {
+    n: std::sync::atomic::AtomicUsize,
+    changed: tokio::sync::Notify,
+}
+
+struct InFlightGuard(Arc<InFlight>);
+
+impl InFlight {
+    fn enter(self: &Arc<Self>) -> InFlightGuard {
+        self.n.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.changed.notify_one();
+        InFlightGuard(self.clone())
+    }
+
+    fn idle(&self) -> bool {
+        self.n.load(std::sync::atomic::Ordering::Acquire) == 0
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.n.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.0.changed.notify_one();
+    }
+}
+
+/// Serve HTTP on one visitor connection with [`http_server`] and the head deadline on both
+/// protocols: whenever the connection has no request in flight for [`HEADER_READ_TIMEOUT`] (no
+/// stream opened, a dribbled `HEADERS`/`CONTINUATION`, an idle keep-alive) it is closed gracefully,
+/// and dropped if still idle [`CLOSE_GRACE`] later (a peer that ignores `GOAWAY` and its `PING`).
+/// A long response or upload is never cut: it is in flight.
+pub async fn serve_http<I, H, F>(io: I, handler: H) -> anyhow::Result<()>
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    H: Fn(http::Request<hyper::body::Incoming>) -> F + Send + Sync + 'static,
+    F: Future<Output = http::Response<crate::proxy::Body>> + Send + 'static,
+{
+    use http_body_util::BodyExt as _;
+    let busy = Arc::new(InFlight::default());
+    let svc = {
+        let busy = busy.clone();
+        hyper::service::service_fn(move |req| {
+            let guard = busy.enter();
+            let res = handler(req);
+            async move {
+                let res = res.await.map(move |b| {
+                    b.map_frame(move |f| {
+                        let _ = &guard;
+                        f
+                    })
+                });
+                Ok::<_, std::convert::Infallible>(res)
+            }
+        })
+    };
+    let server = http_server();
+    let conn = server.serve_connection_with_upgrades(TokioIo::new(io), svc);
+    tokio::pin!(conn);
+    let mut closing = false;
+    loop {
+        let wait = if !busy.idle() {
+            None
+        } else if closing {
+            Some(CLOSE_GRACE)
+        } else {
+            Some(HEADER_READ_TIMEOUT)
+        };
+        let deadline = async {
+            match wait {
+                Some(d) => tokio::time::sleep(d).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            r = conn.as_mut() => return r.map_err(|e| anyhow::anyhow!("visitor connection: {e}")),
+            () = busy.changed.notified() => {}
+            () = deadline => {
+                if closing {
+                    anyhow::bail!("visitor connection: no request head within the deadline");
+                }
+                conn.as_mut().graceful_shutdown();
+                closing = true;
+            }
+        }
+    }
 }
 
 /// Serve one visitor stream to completion. Requests are checked against the TLS SNI (the
@@ -196,14 +292,11 @@ where
         .or(pre.sni)
         .unwrap_or_default()
         .into();
-    let svc = hyper::service::service_fn(move |req| {
+    serve_http(tls, move |req| {
         let (proxy, sni) = (proxy.clone(), sni.clone());
-        async move { Ok::<_, std::convert::Infallible>(proxy.handle(req, visitor, &sni).await) }
-    });
-    http_server()
-        .serve_connection_with_upgrades(TokioIo::new(tls), svc)
-        .await
-        .map_err(|e| anyhow::anyhow!("visitor connection: {e}"))
+        async move { proxy.handle(req, visitor, &sni).await }
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -307,5 +400,116 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut out)).await;
         let head = String::from_utf8_lossy(&out);
         assert!(head.starts_with("HTTP/1.1 431"), "{head}");
+    }
+
+    async fn answer(_req: http::Request<hyper::body::Incoming>) -> http::Response<crate::proxy::Body> {
+        crate::proxy::text(http::StatusCode::OK, "ok")
+    }
+
+    /// Serve `server` with `serve_http`; resolves to the time the connection ended.
+    fn served<H, F>(server: tokio::io::DuplexStream, h: H) -> tokio::task::JoinHandle<Duration>
+    where
+        H: Fn(http::Request<hyper::body::Incoming>) -> F + Send + Sync + 'static,
+        F: Future<Output = http::Response<crate::proxy::Body>> + Send + 'static,
+    {
+        let t0 = tokio::time::Instant::now();
+        tokio::spawn(async move {
+            let _ = serve_http(server, h).await;
+            t0.elapsed()
+        })
+    }
+
+    const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+    /// An HTTP/2 connection that opens no stream is closed after the head deadline.
+    #[tokio::test(start_paused = true)]
+    async fn h2_connection_without_a_stream_is_dropped() {
+        use tokio::io::AsyncWriteExt as _;
+        let (mut client, server) = tokio::io::duplex(1 << 20);
+        let conn = served(server, answer);
+        client.write_all(H2_PREFACE).await.unwrap();
+        client.write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).await.unwrap(); // empty SETTINGS
+        let took = tokio::time::timeout(HEADER_READ_TIMEOUT * 3, conn)
+            .await
+            .expect("the h2 connection outlived the head deadline")
+            .unwrap();
+        assert!(took >= HEADER_READ_TIMEOUT, "closed early: {took:?}");
+        assert!(took <= HEADER_READ_TIMEOUT + CLOSE_GRACE + Duration::from_secs(1), "{took:?}");
+        drop(client);
+    }
+
+    /// A slow writer that starts a request head (`HEADERS` without `END_HEADERS`) and never
+    /// finishes it is dropped after the head deadline, though it never answers `GOAWAY`/`PING`.
+    #[tokio::test(start_paused = true)]
+    async fn h2_dribbled_head_is_dropped() {
+        use tokio::io::AsyncWriteExt as _;
+        let (mut client, server) = tokio::io::duplex(1 << 20);
+        let conn = served(server, answer);
+        client.write_all(H2_PREFACE).await.unwrap();
+        client.write_all(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).await.unwrap();
+        // HEADERS, stream 1, no END_HEADERS: `:method GET`, then the block stays open.
+        client.write_all(&[0, 0, 1, 1, 0, 0, 0, 0, 1, 0x82]).await.unwrap();
+        for _ in 0..3 {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            // CONTINUATION, stream 1, still no END_HEADERS: `accept-encoding: gzip, deflate`.
+            let _ = client.write_all(&[0, 0, 1, 9, 0, 0, 0, 0, 1, 0x90]).await;
+        }
+        let took = tokio::time::timeout(HEADER_READ_TIMEOUT * 3, conn)
+            .await
+            .expect("the dribbling h2 connection outlived the head deadline")
+            .unwrap();
+        assert!(took >= HEADER_READ_TIMEOUT, "closed early: {took:?}");
+        assert!(took <= HEADER_READ_TIMEOUT + CLOSE_GRACE + Duration::from_secs(1), "{took:?}");
+        drop(client);
+    }
+
+    /// A response slower than the head deadline is not cut; once it is done and nothing else is
+    /// in flight, the deadline runs again. Open streams per connection are capped.
+    #[tokio::test(start_paused = true)]
+    async fn h2_in_flight_requests_are_kept_and_streams_are_capped() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (client, server) = tokio::io::duplex(1 << 20);
+        let (now, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (n, m) = (now.clone(), most.clone());
+        let conn = served(server, move |req| {
+            let (n, m) = (n.clone(), m.clone());
+            async move {
+                let cur = n.fetch_add(1, Ordering::SeqCst) + 1;
+                m.fetch_max(cur, Ordering::SeqCst);
+                let wait = if req.uri().path() == "/slow" { 30 } else { 1 };
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                n.fetch_sub(1, Ordering::SeqCst);
+                crate::proxy::text(http::StatusCode::OK, "ok")
+            }
+        });
+        let (send, driver) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+            .timer(TokioTimer::new())
+            .handshake::<_, http_body_util::Empty<bytes::Bytes>>(TokioIo::new(client))
+            .await
+            .unwrap();
+        tokio::spawn(driver);
+        let get = |path: &str| {
+            let mut send = send.clone();
+            let req = http::Request::get(format!("https://a{path}"))
+                .body(http_body_util::Empty::new())
+                .unwrap();
+            async move {
+                let res = send.send_request(req).await.unwrap();
+                use http_body_util::BodyExt as _;
+                let status = res.status();
+                res.into_body().collect().await.unwrap();
+                status
+            }
+        };
+        assert_eq!(get("/slow").await, http::StatusCode::OK);
+        let burst = (0..MAX_STREAMS as usize + 50).map(|_| get("/"));
+        let all = futures::future::join_all(burst).await;
+        assert!(all.iter().all(|s| *s == http::StatusCode::OK));
+        assert_eq!(most.load(Ordering::SeqCst), MAX_STREAMS as usize);
+        let took = tokio::time::timeout(Duration::from_secs(60), conn)
+            .await
+            .expect("the idle connection was kept")
+            .unwrap();
+        assert!(took >= Duration::from_secs(30) + HEADER_READ_TIMEOUT, "{took:?}");
     }
 }
