@@ -538,6 +538,38 @@ pub async fn pending_human_only() -> bool {
     approval.ask(PendingHumanOnly).await.unwrap_or(false)
 }
 
+/// 210 §7.2: raise a human-only row outside the tool registry (an RPC that acts for the owner:
+/// share publish, switch-on, edge change, terms) on `approval`, wait for the answer, and return
+/// the row as [`Approved`] on `Allow`. A deny, a dismissal or a timeout is an error.
+pub async fn ask_human_only_on(
+    approval: &kameo::actor::ActorRef<Approval>,
+    req: RequestApproval,
+) -> anyhow::Result<Approved> {
+    let tool = req.tool.clone();
+    let r = approval
+        .ask(RequestHumanOnly(req))
+        .await
+        .map_err(|e| anyhow::anyhow!("{tool}: the approval could not be asked: {e}"))?;
+    match (r.decision, r.timed_out, r.dismissed) {
+        (Decision::Allow, _, _) => Ok(Approved {
+            id: r.id,
+            surface: "owner",
+        }),
+        (_, true, _) => anyhow::bail!("{tool}: nobody answered the approval in time"),
+        (_, _, true) => anyhow::bail!("{tool}: the approval was dismissed"),
+        _ => anyhow::bail!("{tool}: the owner denied it"),
+    }
+}
+
+/// [`ask_human_only_on`] on the registered approval actor; an error when none runs.
+pub async fn ask_human_only(req: RequestApproval) -> anyhow::Result<Approved> {
+    let Ok(Some(approval)) = kameo::actor::ActorRef::<Approval>::lookup(crate::APPROVAL_ACTOR)
+    else {
+        anyhow::bail!("{}: no approval service is running", req.tool);
+    };
+    ask_human_only_on(&approval, req).await
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::sync::Mutex;
@@ -897,5 +929,48 @@ pub(crate) mod tests {
             (Decision::Deny, false, true)
         );
         assert!(journal.questions().is_empty(), "no second question");
+    }
+
+    /// 210 §7.2 (B1): an RPC-raised human-only row is a `human_only` card; the double cannot
+    /// answer it, the owner's `Allow` yields the row as `Approved {surface: owner}`, a deny is an
+    /// error.
+    #[tokio::test]
+    async fn ask_human_only_waits_for_the_owner() {
+        let (_rt, actor, _journal) = actor(Duration::from_secs(5)).await;
+        for decision in [Decision::Allow, Decision::Deny] {
+            let asked = tokio::spawn({
+                let actor = actor.clone();
+                async move { ask_human_only_on(&actor, request(SessionId::new(), None)).await }
+            });
+            let row = loop {
+                if let Some(r) = actor.ask(PendingApprovals).await.unwrap().first().cloned() {
+                    break r;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            };
+            assert!(row.human_only);
+            assert!(
+                !actor
+                    .ask(ResolveBy {
+                        id: row.id,
+                        decision: Decision::Allow,
+                        by: Answerer::Double,
+                    })
+                    .await
+                    .unwrap()
+            );
+            assert!(actor.ask(Resolve { id: row.id, decision }).await.unwrap());
+            let r = asked.await.unwrap();
+            match decision {
+                Decision::Allow => assert_eq!(
+                    r.unwrap(),
+                    Approved {
+                        id: row.id,
+                        surface: "owner"
+                    }
+                ),
+                Decision::Deny => assert!(r.unwrap_err().to_string().contains("denied")),
+            }
+        }
     }
 }
