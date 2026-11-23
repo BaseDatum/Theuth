@@ -201,7 +201,8 @@ impl AcmeCa {
             new = new.profile(&self.profile);
         }
         if let Some(der) = &old {
-            new = new.replaces(CertificateIdentifier::try_from(der)?.into_owned());
+            let id = CertificateIdentifier::try_from(der).map_err(|e| anyhow!("ARI id: {e}"))?;
+            new = new.replaces(id.into_owned());
         }
         let mut order = self.account.new_order(&new).await.context("newOrder")?;
         // One authorization at a time (§6.1): zone-update cannot hold two TXT values at one name.

@@ -4,10 +4,19 @@ use sqlx::FromRow;
 
 use super::{Store, ms};
 
-const CERT_COLS: &str = "name, owner, state, csr, csr_spki, ca, chain_pem, not_after_ms, ari_start_ms, \
-                         ari_end_ms, records, last_attach_ms, net, banned";
-const JOB_COLS: &str = "id, domain, name, kind, state, class, mesh, net, first_of_mesh, enqueued_ms, attempts, \
-                        next_at_ms, last_error";
+// Macros, not consts: sqlx takes only `'static` SQL, and `concat!` needs literals.
+macro_rules! cert_cols {
+    () => {
+        "name, owner, state, csr, csr_spki, ca, chain_pem, not_after_ms, ari_start_ms, ari_end_ms, records, \
+         last_attach_ms, net, banned"
+    };
+}
+macro_rules! job_cols {
+    () => {
+        "id, domain, name, kind, state, class, mesh, net, first_of_mesh, enqueued_ms, attempts, next_at_ms, \
+         last_error"
+    };
+}
 
 /// The certificate columns of a `names` row.
 #[derive(Debug, Clone, FromRow)]
@@ -83,8 +92,10 @@ pub struct JobRow {
 impl Store {
     /// The certificate columns of a name.
     pub async fn cert_row(&self, domain: &str, name: &str) -> anyhow::Result<Option<CertRow>> {
-        Ok(sqlx::query_as::<_, CertRow>(&format!(
-            "SELECT {CERT_COLS} FROM names WHERE domain = ? AND name = ?"
+        Ok(sqlx::query_as::<_, CertRow>(concat!(
+            "SELECT ",
+            cert_cols!(),
+            " FROM names WHERE domain = ? AND name = ?"
         ))
         .bind(domain)
         .bind(name)
@@ -94,8 +105,10 @@ impl Store {
 
     /// Names in `valid` with a chain (renewal scan).
     pub async fn valid_names(&self, domain: &str) -> anyhow::Result<Vec<CertRow>> {
-        Ok(sqlx::query_as::<_, CertRow>(&format!(
-            "SELECT {CERT_COLS} FROM names WHERE domain = ? AND state = 'valid' AND chain_pem IS NOT NULL"
+        Ok(sqlx::query_as::<_, CertRow>(concat!(
+            "SELECT ",
+            cert_cols!(),
+            " FROM names WHERE domain = ? AND state = 'valid' AND chain_pem IS NOT NULL"
         ))
         .bind(domain)
         .fetch_all(&self.pool)
@@ -203,8 +216,10 @@ impl Store {
 
     /// The queued or running job of a name.
     pub async fn open_job(&self, domain: &str, name: &str) -> anyhow::Result<Option<JobRow>> {
-        Ok(sqlx::query_as::<_, JobRow>(&format!(
-            "SELECT {JOB_COLS} FROM cert_jobs WHERE domain = ? AND name = ? AND state IN ('queued','ordering')
+        Ok(sqlx::query_as::<_, JobRow>(concat!(
+            "SELECT ",
+            job_cols!(),
+            " FROM cert_jobs WHERE domain = ? AND name = ? AND state IN ('queued','ordering')
              ORDER BY enqueued_ms LIMIT 1"
         ))
         .bind(domain)
@@ -215,8 +230,10 @@ impl Store {
 
     /// Every job of a name, oldest first.
     pub async fn jobs(&self, domain: &str, name: &str) -> anyhow::Result<Vec<JobRow>> {
-        Ok(sqlx::query_as::<_, JobRow>(&format!(
-            "SELECT {JOB_COLS} FROM cert_jobs WHERE domain = ? AND name = ? ORDER BY enqueued_ms, id"
+        Ok(sqlx::query_as::<_, JobRow>(concat!(
+            "SELECT ",
+            job_cols!(),
+            " FROM cert_jobs WHERE domain = ? AND name = ? ORDER BY enqueued_ms, id"
         ))
         .bind(domain)
         .bind(name)
@@ -250,8 +267,10 @@ impl Store {
     pub async fn lease_job(&self, now_ms: u64, lease_until_ms: u64) -> anyhow::Result<Option<JobRow>> {
         let now = ms(now_ms);
         let mut tx = self.pool.begin().await?;
-        let job = sqlx::query_as::<_, JobRow>(&format!(
-            "SELECT {JOB_COLS} FROM cert_jobs j
+        let job = sqlx::query_as::<_, JobRow>(concat!(
+            "SELECT ",
+            job_cols!(),
+            " FROM cert_jobs j
              WHERE ((state = 'queued' AND next_at_ms <= ?1) OR (state = 'ordering' AND lease_until_ms < ?1))
                AND NOT EXISTS (SELECT 1 FROM cert_jobs o WHERE o.domain = j.domain AND o.name = j.name
                  AND o.id != j.id AND o.state = 'ordering' AND o.lease_until_ms >= ?1)
