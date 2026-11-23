@@ -241,6 +241,10 @@ export type SessionSlice = {
   harvesting: boolean;
   /** Status line while `activity === 'vision'` (52 §6): which model is asking or inspecting how many images. */
   visionStatus?: string;
+  /** 212 §12: the agent's own one-line status (`StatusChanged`); replaces the activity word until the turn ends. */
+  statusText?: string;
+  /** 212 §12: the title the agent gave with its last `StatusChanged`, if any (the sidebar follows `TitleChanged`). */
+  statusTitle?: string;
   model?: string;
   effort?: string | null;
   usage?: Usage;

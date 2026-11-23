@@ -898,6 +898,19 @@ test('VisionProgress: questioning/inspecting set the status line; the terminal s
   expect(failed.activity).toBe('thinking')
 })
 
+test('StatusChanged: sets the status line and title; TurnFinished, Error and the next TurnStarted clear it', () => {
+  const started = run([{ type: 'TurnStarted', session: S, turn: T, text: 'go', turn_seq: 1, model: 'm' }])
+  const set = apply(started, { type: 'StatusChanged', session: S, status: 'reading the build lock code', title: 'Fix build lock' }, ctx())
+  expect(set).toMatchObject({ statusText: 'reading the build lock code', statusTitle: 'Fix build lock', activity: 'thinking', running: true })
+  const plain = apply(set, { type: 'StatusChanged', session: S, status: 'running the tests' }, ctx())
+  expect(plain).toMatchObject({ statusText: 'running the tests', statusTitle: undefined })
+  const finished = apply(plain, { type: 'TurnFinished', session: S, turn: T, stop_reason: 'stop', usage, context: 15 }, ctx())
+  expect(finished).toMatchObject({ statusText: undefined, statusTitle: undefined, activity: 'idle' })
+  expect(apply(plain, { type: 'Error', session: S, turn: T, message: 'boom' }, ctx()).statusText).toBeUndefined()
+  const next = apply(plain, { type: 'TurnStarted', session: S, turn: T, text: 'again', turn_seq: 2, model: 'm' }, ctx())
+  expect(next.statusText).toBeUndefined()
+})
+
 test('fromHistory: a row with a vision note is a vision card carrying the note, never a user bubble; the live card adopts its id', () => {
   const note: VisionNote = {
     version: 1,
