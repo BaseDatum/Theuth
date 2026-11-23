@@ -17,6 +17,7 @@ import {
   outcomeOfReceipt,
   pickValues,
   readFrameMessage,
+  receiptLine,
   sanitizeSnapshot,
   sourceLabel,
   startElementForms,
@@ -143,7 +144,12 @@ test('the origin is shown in ASCII with its registrable end apart: a homograph i
   expect(originLabel('null')).toBeNull()
   expect(originLabel('javascript:alert(1)')).toBeNull()
   expect(sourceLabel('web:0123456789abcdef')).toBe('your web view')
-  expect(sourceLabel('obscura:studio')).toBe('agent browser on studio')
+  // The engine is named from the mesh, never by its raw id.
+  const names = (id: string) => (id === '46848e711be10b99' ? 'studio' : undefined)
+  expect(sourceLabel('obscura:46848e711be10b99', names)).toBe('agent browser on studio')
+  expect(sourceLabel('obscura:9f00aa11bb22cc33', names)).toBe('an agent browser')
+  expect(sourceLabel('obscura:46848e711be10b99')).toBe('an agent browser')
+  expect(sourceLabel('obscura:local', names)).toBe('agent browser on this engine')
 })
 
 /** The form document in its own window, running the bootstrap as the frame would; what it posts to its parent is in `posted`. */
@@ -238,6 +244,17 @@ test('a resolved card keeps its outcome and origin; the receipt answers after a 
   expect(outcomeOfReceipt('no answer')).toBe('timeout')
   expect(outcomeOfReceipt('element too large to show (300 KiB > 256 KiB); pick a smaller element')).toBeNull()
   expect(outcomeOfReceipt('see below\nsubmitted')).toBeNull()
+  // A reply on the user's tile carries the tile prefix line first (§4.6).
+  const tile = '[tile web:6f89b3e8a682b436 · tile.example:8443]\nsubmitted · http://tile.example:8443 · filled 0 user, 1 password · now http://tile.example:8443/ — Home'
+  expect(outcomeOfReceipt(tile)).toBe('submitted')
+  expect(receiptLine(tile)).toBe('submitted · http://tile.example:8443 · filled 0 user, 1 password · now http://tile.example:8443/ — Home')
+  expect(outcomeOfReceipt('[tile web:6f89b3e8a682b436 · page not reported]\nthe page changed since the form was shown; nothing was typed')).toBe('stale')
+  // A failed call reads back with the transcript's `ERROR: ` first, before any tile prefix.
+  expect(outcomeOfReceipt('ERROR: the page changed since the form was shown; nothing was typed')).toBe('stale')
+  expect(receiptLine('ERROR: [tile web:6f89b3e8a682b436 · t.example]\nthe page changed since the form was shown; nothing was typed')).toBe(
+    'the page changed since the form was shown; nothing was typed',
+  )
+  expect(receiptLine('cancelled · https://a.example · the user closed the form; nothing was typed')).toBe('cancelled · https://a.example · the user closed the form; nothing was typed')
 })
 
 test('a session\'s reload forgets its own calls and outcomes the engine no longer lists, and leaves other sessions alone', () => {
