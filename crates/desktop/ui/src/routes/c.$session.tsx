@@ -19,7 +19,6 @@ import { OrphansBanner } from '@/components/chat/OrphansBanner'
 import { ResumeBanner } from '@/components/chat/ResumeBanner'
 import { Panes } from '@/components/chat/Panes'
 import { SearchSession } from '@/components/chat/SearchSession'
-import { SubagentStrip } from '@/components/chat/SubagentStrip'
 import { BackgroundArea } from '@/components/chat/BackgroundArea'
 import { relistReminders, relistTerminals } from '@/components/chat/background'
 import { Transcript } from '@/components/chat/Transcript'
@@ -200,8 +199,7 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
       )}
       <Transcript key={`t:${session}`} session={session} />
       {lost && <UnreachableCard session={session} machine={lost} />}
-      <SubagentStrip session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
-      <BackgroundArea key={`d:${session}`} session={session} />
+      <BackgroundArea key={`d:${session}`} session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
       <WebPill session={session} />
       {aboveComposer}
       {watching ? (

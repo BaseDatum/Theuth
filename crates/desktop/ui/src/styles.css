@@ -464,6 +464,20 @@ body.voice-hold {
 .subagent-blink {
   animation: subagent-blink 380ms ease-out both;
 }
+/* The strip's dash grows out of the grabber bar's end (its wrapper carries `origin-right` on the left side). */
+.subagent-dash-in {
+  animation: subagent-dash-in 160ms ease-out both;
+}
+@keyframes subagent-dash-in {
+  from {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+}
+:is(a, button):is(:hover, :focus-visible) > .activity-dash {
+  opacity: 1;
+  height: 6px;
+}
 @keyframes subagent-in {
   from {
     opacity: 0;
@@ -482,7 +496,8 @@ body.voice-hold {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .subagent-dot-in {
+  .subagent-dot-in,
+  .subagent-dash-in {
     animation: none;
   }
   .subagent-blink {

@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { Fragment, type ReactNode, useMemo } from 'react'
+import { type ReactNode, useMemo } from 'react'
 import { toast } from 'sonner'
 import { dotLabel } from '@/components/agents/sessions'
 import { useSessionDrag } from '@/components/chat/Panes'
@@ -11,11 +11,25 @@ import type { AgentInfo } from '@/store/ui-events'
 import { useScope } from '@/store/engine-scope'
 import { useSessionField } from '@/store/sessions'
 
-/** One row of category dots, independently capped; the Advisor pill remains last. */
-export function SubagentStrip({ session, trailing }: { session: string; trailing?: ReactNode }) {
-  const { sessions: store } = useScope()
+/** Each dash keeps a full-height hit target; the visible dash is the bar's 4px. */
+const DASH_HIT = 'group/dash flex h-6 shrink-0 items-center rounded px-px outline-none focus-visible:ring-2 focus-visible:ring-ring'
+
+/** The subagent dashes, right-aligned against the grabber's left end; the "+N" sits at the outer (left) end. */
+export function SubagentDashes({ session }: { session: string }) {
   const children = useSessionField(session, 'children')
   const { shown, more } = useMemo(() => stripRows(children ?? {}), [children])
+  if (!shown.length) return null
+  return (
+    <div className="flex shrink-0 items-center gap-px" aria-label={`${shown.length + more} subagents running`}>
+      {more > 0 && <span className="mr-1 shrink-0 tabular-nums">+{more}</span>}
+      {shown.map((row) => <SubagentLink key={row.id} row={row} className={cn(DASH_HIT, 'subagent-dash-in origin-right')}><ActivityDash color={backgroundColors[row.state.state === 'approval' ? 'approval' : 'subagents'].bg} beat={row.beat} /></SubagentLink>)}
+    </div>
+  )
+}
+
+/** Jobs, terminals then reminders, left-aligned against the grabber's right end; each category's "+N" at its outer (right) end. */
+export function BackgroundDashes({ session }: { session: string }) {
+  const { sessions: store } = useScope()
   const jobs = useSessionField(session, 'jobs')
   const ptys = useSessionField(session, 'ptys')
   const terminals = useSessionField(session, 'terminals')
@@ -28,12 +42,6 @@ export function SubagentStrip({ session, trailing }: { session: string; trailing
     store.getState().setBackgroundExpanded(session, card, true)
   }
   const groups: ReactNode[] = []
-  if (shown.length) groups.push(
-    <div className="flex items-center" aria-label={`${shown.length + more} subagents running`}>
-      {shown.map((row) => <SubagentLink key={row.id} row={row} className="subagent-dot-in flex size-6 shrink-0 items-center justify-center"><ActivityDot color={backgroundColors[row.state.state === 'approval' ? 'approval' : 'subagents'].bg} beat={row.beat} /></SubagentLink>)}
-      {more > 0 && <span className="shrink-0 tabular-nums">+{more}</span>}
-    </div>,
-  )
   for (const [category, ids, color] of [
     ['Jobs', jobs, backgroundColors.jobs.bg],
     ['Terminals', terminalIds, backgroundColors.terminals.bg],
@@ -41,27 +49,24 @@ export function SubagentStrip({ session, trailing }: { session: string; trailing
   ] as const) {
     if (!ids?.size) continue
     groups.push(
-      <div className="flex items-center" aria-label={`${ids.size} ${category.toLowerCase()}`}>
+      <div key={category} className="flex shrink-0 items-center gap-px" aria-label={`${ids.size} ${category.toLowerCase()}`}>
         {[...ids].slice(0, STRIP_CAP).map((id) => {
           const label = category === 'Reminders' ? `Reminder ${id} · ${details?.get(id)?.message ?? 'pending'}` : `${category === 'Jobs' ? 'Job' : 'Terminal'} ${id} · ${category === 'Jobs' ? 'show running jobs' : 'open terminal'}`
-          const dot = <ActivityDot color={color} beat={category === 'Reminders' ? undefined : beats?.[id]} />
+          const dash = <ActivityDash color={color} beat={category === 'Reminders' ? undefined : beats?.[id]} />
           return category === 'Terminals'
-            ? <TerminalLink key={id} session={session} job={id} label={label} className="flex size-6 shrink-0 items-center justify-center">{dot}</TerminalLink>
-            : <button key={id} type="button" title={label} aria-label={label} className="flex size-6 shrink-0 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => reveal(category === 'Jobs' ? 'jobs' : 'reminders')}>{dot}</button>
+            ? <TerminalLink key={id} session={session} job={id} label={label} className={DASH_HIT}>{dash}</TerminalLink>
+            : <button key={id} type="button" title={label} aria-label={label} className={DASH_HIT} onClick={() => reveal(category === 'Jobs' ? 'jobs' : 'reminders')}>{dash}</button>
         })}
-        {ids.size > STRIP_CAP && <span className="shrink-0 tabular-nums">+{ids.size - STRIP_CAP}</span>}
+        {ids.size > STRIP_CAP && <span className="ml-1 shrink-0 tabular-nums">+{ids.size - STRIP_CAP}</span>}
       </div>,
     )
   }
-  if (!groups.length && !trailing) return null
-  return (
-    <div className="mx-auto flex min-h-7 w-full shrink-0 select-none items-center justify-center gap-3 px-4 text-xs text-fg-tertiary md:max-w-[768px]">
-      {groups.length > 0 && <div className="flex min-w-0 items-center gap-2 overflow-x-auto">
-        {groups.map((group, i) => <Fragment key={i}>{i > 0 && <span role="separator" className="h-3 w-px shrink-0 bg-border" />}{group}</Fragment>)}
-      </div>}
-      {trailing}
-    </div>
-  )
+  return groups.length ? <>{groups}</> : null
+}
+
+/** The strip's dash: as thick as the grabber bar, coloured and blinking like the dot it replaces. */
+export function ActivityDash({ color, beat }: { color: string; beat?: number }) {
+  return <span key={beat ?? 0} className={cn('subagent-dot activity-dash h-1 w-3 shrink-0 rounded-full transition-[height,opacity]', color, beat !== undefined && 'subagent-blink')} />
 }
 
 export function ActivityDot({ color, beat }: { color: string; beat?: number }) {

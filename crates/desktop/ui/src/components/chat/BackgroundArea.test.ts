@@ -11,7 +11,6 @@ import type { JobView } from '@/rpc/bindings/method.agent.output'
 import { useSessions } from '@/store/sessions'
 import type { UiEvent } from '@/store/ui-events'
 import { BackgroundArea, countdown } from './BackgroundArea'
-import { SubagentStrip } from './SubagentStrip'
 
 const navigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
@@ -197,30 +196,43 @@ test('reminder countdown ticks to due now and Cancel removes it; /todos toggles 
   expect(body()).not.toContain('Reminders')
 })
 
-test('dots group in palette order, cap each category, blink on output and target the right surfaces', async () => {
+test('dashes flank the grabber in palette order, cap each category, blink on output and target the right surfaces', async () => {
   populate()
   const st = useSessions.getState()
   st.setChildren('s1', Array.from({ length: 26 }, (_, i) => child(`child${i}`, i === 0 ? 'approval' : 'running')))
   useSessions.setState((s) => ({ sessions: { ...s.sessions, s1: { ...s.sessions.s1!, jobs: new Set(Array.from({ length: 27 }, (_, i) => `j${i}`)), terminals: new Set(), ptys: new Set(Array.from({ length: 25 }, (_, i) => `pty${i}`)), reminders: new Set(Array.from({ length: 28 }, (_, i) => `r${i}`)) } } }))
-  await mount(createElement(SubagentStrip, { session: 's1', trailing: createElement('span', null, 'Advisor idle') }))
+  await mount(createElement(BackgroundArea, { session: 's1', trailing: createElement('span', null, 'Advisor idle') }))
   const groups = [...document.querySelectorAll('div[aria-label]')]
   expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['26 subagents running', '27 jobs', '25 terminals', '28 reminders'])
   expect(groups.map((g) => g.querySelectorAll('a,button').length)).toEqual([24, 24, 24, 24])
-  expect(groups.map((g) => g.lastElementChild?.textContent)).toEqual(['+2', '+3', '+1', '+4'])
-  expect(groups.map((g) => g.querySelector('.subagent-dot')?.className)).toEqual([expect.stringContaining('bg-warning'), expect.stringContaining('bg-project-lapis'), expect.stringContaining('bg-project-faience'), expect.stringContaining('bg-project-plum')])
+  // "+N" at each side's outer end: left of the subagents, right of each right-side category.
+  expect(groups[0]?.firstElementChild?.textContent).toBe('+2')
+  expect(groups.slice(1).map((g) => g.lastElementChild?.textContent)).toEqual(['+3', '+1', '+4'])
+  expect(groups.map((g) => g.querySelector('.activity-dash')?.className)).toEqual([expect.stringContaining('bg-warning'), expect.stringContaining('bg-project-lapis'), expect.stringContaining('bg-project-faience'), expect.stringContaining('bg-project-plum')])
+  expect(groups.every((g) => [...g.querySelectorAll('.activity-dash')].every((d) => /\bh-1\b/.test(d.className) && /\bw-3\b/.test(d.className)))).toBe(true)
   expect(groups[0]?.querySelectorAll('.bg-project-malachite').length).toBe(23)
-  expect(document.querySelectorAll('[role="separator"]')).toHaveLength(3)
-  expect(document.body.lastElementChild?.textContent).toContain('Advisor idle')
+  expect(document.querySelectorAll('[role="separator"]')).toHaveLength(0)
+  // One row: [subagents] [grabber] [jobs · terminals · reminders, then the Advisor pill].
+  const grabber = button('Show background activity')
+  const row = grabber.parentElement!
+  expect([...row.children].indexOf(grabber)).toBe(1)
+  expect(row.children[0]?.contains(groups[0]!)).toBe(true)
+  expect(groups.slice(1).every((g) => row.children[2]?.contains(g))).toBe(true)
+  expect(row.children[2]?.lastElementChild?.textContent).toBe('Advisor idle')
   expect(document.querySelector('a[aria-label^="child0"]')?.getAttribute('href')).toBe('/c/child0')
+  expect(document.querySelector('a[aria-label^="child0"]')?.className).toContain('subagent-dash-in')
   await click('Job j1 · show running jobs')
   expect(useSessions.getState().sessions.s1).toMatchObject({ todosShown: true, jobsExpanded: true, remindersExpanded: false })
+  // The panel opens above the row.
+  const panel = document.getElementById('background-s1')!
+  expect(panel.nextElementSibling).toBe(row)
   await click('Reminder r1 · check the build')
   expect(useSessions.getState().sessions.s1?.remindersExpanded).toBe(true)
   await run(() => (document.querySelector('a[aria-label^="Terminal pty0"]') as HTMLAnchorElement).click())
   expect(openPopout).toHaveBeenCalledWith({ kind: 'pty', session: 's1', job: 'pty0' })
-  const before = groups[1]?.querySelector('button[aria-label^="Job j1 "] .subagent-dot')
+  const before = groups[1]?.querySelector('button[aria-label^="Job j1 "] .activity-dash')
   await run(() => st.applyEvents([{ type: 'JobOutput', session: 's1', id: 'j1', chunk: 'output' }]))
-  const after = groups[1]?.querySelector('button[aria-label^="Job j1 "] .subagent-dot')
+  const after = groups[1]?.querySelector('button[aria-label^="Job j1 "] .activity-dash')
   expect(after).not.toBe(before)
   expect(after?.className).toContain('subagent-blink')
   expect(groups[3]?.querySelector('.subagent-blink')).toBeNull()
@@ -230,14 +242,14 @@ test.each([[60, 0, '1:00'], [3601, 0, '1:00:01'], [61, 500, '1:01'], [1, 1001, '
   expect(countdown(Number(at), Number(now))).toBe(expected)
 })
 
-test('a quiet terminal keeps its dot until exit; the Advisor pill can render alone', async () => {
+test('a quiet terminal keeps its dash until exit; the Advisor pill can render alone', async () => {
   populate()
-  await mount(createElement(SubagentStrip, { session: 's1', trailing: createElement('span', null, 'Advisor idle') }))
+  await mount(createElement(BackgroundArea, { session: 's1', trailing: createElement('span', null, 'Advisor idle') }))
   await run(() => useSessions.getState().applyEvents([{ type: 'JobIdle', session: 's1', id: 'j2', command: 'python3 -q', name: null, nudge: 1, quiet_secs: 1, secs: 2, user_typed_secs: null, why: '', output: '' }]))
   expect(document.querySelector('a[aria-label="Terminal j2 · open terminal"]')).not.toBeNull()
   await run(() => useSessions.getState().applyEvents([{ type: 'JobFinished', session: 's1', id: 'j2', command: 'python3 -q', kind: 'pty', exit: 'killed', secs: 2, output: '', inline: false, pty: true }]))
   expect(document.querySelector('a[aria-label="Terminal j2 · open terminal"]')).toBeNull()
   await run(() => useSessions.setState({ sessions: {} }))
   expect(body()).toBe('Advisor idle')
-  expect(document.querySelector('[role="separator"]')).toBeNull()
+  expect(document.querySelector('button')).toBeNull()
 })
