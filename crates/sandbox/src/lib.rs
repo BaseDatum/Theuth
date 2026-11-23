@@ -281,11 +281,6 @@ pub fn parse_arch(s: &str) -> Option<String> {
     }
 }
 
-/// Single-quote for `sh`; a literal `'` becomes `'\''`.
-pub fn sq(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
 /// What `t mesh add --ssh|--docker` asks for; the actor's [`MakeEngine`] payload.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "backend", rename_all = "lowercase")]

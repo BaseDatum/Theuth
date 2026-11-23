@@ -1223,10 +1223,7 @@ fn repo_scripts(command: &str, wt: &Path, drafts: &Path) -> String {
             Some(crate::custody::CommandPath::Repo(rel))
                 if !drafts.join(rel).is_file() && wt.join(rel).is_file() =>
             {
-                format!(
-                    "'{}'",
-                    wt.join(rel).to_string_lossy().replace('\'', "'\\''")
-                )
+                platform::shell::quote(&wt.join(rel).to_string_lossy())
             }
             _ => tok.to_owned(),
         })

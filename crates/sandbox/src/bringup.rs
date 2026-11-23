@@ -12,7 +12,8 @@ use bytes::Bytes;
 use crate::record::{Computer, Setup, Store, VM_STEPS};
 use crate::types::SandboxState;
 use crate::vm::{ImageRef, Init, Mount, Port, PrebootFile, VmRuntime, VmSpec};
-use crate::{Cmd, DaemonKind, ExecOutput, Handle, Progress, Sandbox, release, sq};
+use crate::{Cmd, DaemonKind, ExecOutput, Handle, Progress, Sandbox, release};
+use platform::shell::quote;
 
 /// How this engine's mesh is reached for the pair and verify steps: the mesh
 /// actor in-process ([`crate::ActorJoin`]) or JSON-RPC from the CLI.
@@ -139,7 +140,7 @@ pub async fn run(
                 .exec(
                     &h,
                     t(
-                        &format!("--install-service --no-pair --name {}", sq(&spec.name)),
+                        &format!("--install-service --no-pair --name {}", quote(&spec.name)),
                         spec.step_timeout,
                     ),
                 )

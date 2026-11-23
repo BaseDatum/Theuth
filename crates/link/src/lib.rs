@@ -106,9 +106,9 @@ pub struct LinkActor {
 /// Terminal-mode answer when the uplink is off.
 const DISABLED: &str = "link is disabled";
 
-/// YAML value for a string key: double-quoted.
+/// YAML value for a string key: double-quoted (a JSON string is one).
 fn yaml_str(s: &str) -> String {
-    format!("{s:?}")
+    serde_json::to_string(s).expect("a str serialises to JSON")
 }
 
 impl LinkActor {
@@ -638,6 +638,13 @@ mod tests {
         let key = super::pairing::build("wss://relay.example", &[1; 32], &[2; 32], "Mac", None);
         let q = super::qr(&key);
         assert!(q.lines().count() > 10, "{q}");
+    }
+
+    #[test]
+    fn yaml_str_round_trips_quote_backslash_newline() {
+        let s = "a \"q\" \\ b\nc";
+        let v: String = serde_yaml::from_str(&super::yaml_str(s)).unwrap();
+        assert_eq!(v, s);
     }
 }
 

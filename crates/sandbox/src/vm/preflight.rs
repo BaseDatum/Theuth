@@ -58,7 +58,7 @@ pub fn probe(cfg: &VmConfig) -> Facts {
             .open("/dev/kvm")
             .is_ok(),
         glibc: glibc_version(),
-        docker_on_path: on_path("docker"),
+        docker_on_path: platform::shell::which("docker").is_some(),
     }
 }
 
@@ -269,11 +269,6 @@ fn glibc_version() -> Option<(u32, u32)> {
     let ver = first.rsplit(' ').next()?;
     let (major, minor) = ver.split_once('.')?;
     Some((major.parse().ok()?, minor.trim().parse().ok()?))
-}
-
-fn on_path(bin: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
 }
 
 #[cfg(test)]

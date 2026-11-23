@@ -121,9 +121,9 @@ pub fn text(
     s
 }
 
-/// A double-quoted YAML scalar.
+/// A double-quoted YAML scalar (a JSON string is one).
 fn yaml_str(v: &str) -> String {
-    format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+    serde_json::to_string(v).expect("a str serialises to JSON")
 }
 
 /// `run_timeout` = `(crash_retries + confirm_runs + 2) × bench.timeout + checks.timeout + bench.wait + 15m`, at least 30 m.
@@ -466,5 +466,12 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn yaml_str_round_trips_quote_backslash_newline() {
+        let s = "a \"q\" \\ b\nc";
+        let v: String = serde_yaml::from_str(&yaml_str(s)).unwrap();
+        assert_eq!(v, s);
     }
 }

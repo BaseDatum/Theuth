@@ -12,7 +12,8 @@ use web::{
     Query, RawResult, Recency,
 };
 
-use crate::{http_error, non_empty, parse, site_query, unescape};
+use crate::{http_error, non_empty, parse, site_query};
+use web::engines::decode_entities;
 
 /// Hosted endpoint.
 pub const SEARCH_URL: &str = "https://api.search.brave.com/res/v1/web/search";
@@ -101,7 +102,7 @@ impl Hit {
     fn snippet(&self) -> String {
         self.description
             .as_deref()
-            .map(unescape)
+            .map(decode_entities)
             .unwrap_or_default()
     }
 
@@ -231,7 +232,7 @@ fn map(body: Response) -> (Vec<RawResult>, Vec<Feature>) {
             .filter_map(|f| {
                 Some(FeatureItem {
                     title: non_empty(f.question)?,
-                    text: f.answer.as_deref().map(unescape).unwrap_or_default(),
+                    text: f.answer.as_deref().map(decode_entities).unwrap_or_default(),
                     url: non_empty(f.url),
                     date: None,
                 })

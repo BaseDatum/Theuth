@@ -292,19 +292,7 @@ fn login_shell() -> String {
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "/bin/zsh".into());
-    format!("exec {} -l", shell_quote(&shell))
-}
-
-/// `s` as one POSIX shell word.
-fn shell_quote(s: &str) -> String {
-    if s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c))
-    {
-        s.to_owned()
-    } else {
-        format!("'{}'", s.replace('\'', r"'\''"))
-    }
+    format!("exec {} -l", platform::shell::quote(&shell))
 }
 
 /// `base`, else `base-2`, `base-3`, … — the first name no running job of the session holds
@@ -804,9 +792,6 @@ mod tests {
         // A finished `shell` does not hold the name.
         let done = job("j1", Some("shell"), "zsh", "exited 0", true);
         assert_eq!(free_name(&[done], "shell"), "shell");
-        assert_eq!(shell_quote("/bin/zsh"), "/bin/zsh");
-        assert_eq!(shell_quote("/opt/my shell/fish"), "'/opt/my shell/fish'");
-        assert_eq!(shell_quote("/a'b"), r"'/a'\''b'");
         assert!(login_shell().starts_with("exec ") && login_shell().ends_with(" -l"));
     }
 

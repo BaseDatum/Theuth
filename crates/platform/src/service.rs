@@ -235,7 +235,7 @@ pub fn plist(argv: &[String], data_dir: &Path) -> String {
 /// The systemd user unit for `argv`, whose last element is the `-c` script.
 pub fn systemd_unit(argv: &[String]) -> String {
     // systemd's double-quoted word: `"` and `\` escaped, `'` literal, so the
-    // shell sees `'\''` for an apostrophe in a path.
+    // shell sees the script (and any `"…"` in it) unchanged.
     let (shell, cmd) = argv.split_at(argv.len() - 1);
     let cmd = cmd[0].replace('\\', r"\\").replace('"', r#"\""#);
     format!(
