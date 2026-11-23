@@ -290,19 +290,25 @@ function PdfFrame({ a }: { a: Artifact }) {
 /** pdf.js pages under a finger, the native viewer under a mouse. */
 const Pdf = ({ a }: { a: Artifact }) => (touch() ? <PdfPages path={a.path} session={privateOwner(a.session)} /> : <PdfFrame a={a} />)
 
-/** The viewer for one artifact by kind (35 §3.2); the panel and the explorer both render through it. */
-export function ArtifactView({ artifact, className }: { artifact: Artifact; className?: string }) {
+/** The viewer for one artifact by kind (35 §3.2); the panel and the explorer both render through it. `fill`: the view is a tile, sheet or window body of definite height, so a `text` artifact's code block fills it and
+ * scrolls inside instead of keeping streamdown's 400 px cap (an inline card or preview leaves it off). */
+export function ArtifactView({ artifact, className, fill = false }: { artifact: Artifact; className?: string; fill?: boolean }) {
   return (
     <div className={className}>
-      <Body a={artifact} />
+      <Body a={artifact} fill={fill} />
     </div>
   )
 }
 
-/** The stored bytes fenced for Streamdown: the `text` kind's view, and a page's `Source`. */
-const Fenced = ({ text, lang }: { text: string; lang: string }) => (
-  <div className="p-4 [&_pre]:text-xs">
-    <Streamdown mode="static" plugins={plugins} shikiTheme={shikiTheme}>
+/** The `fill` chain: streamdown's root → its code block → the block's body, each a flex column filling the rest. */
+const FILL =
+  'flex min-h-0 flex-1 flex-col [&>[data-streamdown=code-block]]:my-0 [&>[data-streamdown=code-block]]:min-h-0 [&>[data-streamdown=code-block]]:flex-1 [&_[data-streamdown=code-block-body]]:min-h-0 [&_[data-streamdown=code-block-body]]:flex-1 [&_[data-streamdown=code-block-body]]:overflow-y-auto'
+
+/** The stored bytes fenced for Streamdown: the `text` kind's view, and a page's `Source`. `fill` drops streamdown's
+ * code-block height cap and stretches the block over the parent's height (`ArtifactView`'s `fill`). */
+const Fenced = ({ text, lang, fill = false }: { text: string; lang: string; fill?: boolean }) => (
+  <div className={cn('p-4 [&_pre]:text-xs', fill && 'flex h-full min-h-0 flex-col')}>
+    <Streamdown mode="static" plugins={plugins} shikiTheme={shikiTheme} {...(fill && { codeBlockMaxHeight: 'none', className: FILL })}>
       {fenced(text, lang)}
     </Streamdown>
   </div>
@@ -347,7 +353,7 @@ function HtmlBody({ a, text }: { a: Artifact; text: string | null }) {
   )
 }
 
-function Body({ a }: { a: Artifact }) {
+function Body({ a, fill }: { a: Artifact; fill: boolean }) {
   const api = useApi()
   const active = useEngines((s) => s.active)
   const owner = privateOwner(a.session)
@@ -389,7 +395,7 @@ function Body({ a }: { a: Artifact }) {
     case 'mermaid':
       return <MermaidView text={text} />
     case 'text':
-      return <Fenced text={text} lang={extOf(a.name)} />
+      return <Fenced text={text} lang={extOf(a.name)} fill={fill} />
     case 'csv':
       return <Csv text={text} tsv={extOf(a.name) === 'tsv'} />
     default:
@@ -511,7 +517,7 @@ export function Viewer() {
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col overflow-auto">
           {matched && <Matched a={a} query={matched.query} />}
-          <ArtifactView artifact={a} className={textual ? 'mx-auto w-full max-w-[768px]' : 'min-h-0 flex-1'} />
+          <ArtifactView artifact={a} fill className={textual ? cn('mx-auto w-full max-w-[768px]', a.kind === 'text' && 'min-h-0 flex-1') : 'min-h-0 flex-1'} />
           {/* Under `lg` the details have no room beside the body; they follow it instead, toggled by the same action. */}
           {railOpen && (
             <section className="border-t border-border-subtle lg:hidden">

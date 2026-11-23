@@ -173,6 +173,7 @@ export function ArtifactContent({
   ) : shown ? (
     <ArtifactView
       artifact={shown}
+      fill
       className="min-h-0 flex-1 overflow-auto"
     />
   ) : null;
