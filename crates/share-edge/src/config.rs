@@ -73,6 +73,36 @@ pub struct Config {
     pub listen_proxy_protocol: ProxyProtocolIn,
     /// Per-name Kubernetes objects (EDGE-K8S); off by default.
     pub k8s: crate::k8s::K8sConfig,
+    /// On SIGTERM: `drain {secs}` to every tunnel, then wait up to this long for them to leave.
+    pub drain_secs: u64,
+    /// The automatic brake (§9.5).
+    pub brake: BrakeConfig,
+}
+
+/// `brake:` (§9.5). Every threshold of 0 is off. With `auto`, a holding condition flips `admission: open` to
+/// `invite` live (never back: back to `open` is the operator's, after 7 clear days).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct BrakeConfig {
+    /// Flip admission to `invite` when a condition holds.
+    pub auto: bool,
+    /// Limit refusals (`network_quota`, `paced`, `quota`, `engines_quota`, `edge_full`) in the last minute.
+    pub refusals_per_min: u32,
+    /// Meshes first seen in the last minute.
+    pub new_meshes_per_min: u32,
+    /// Queue ETA above this many hours holds `queue_eta`.
+    pub queue_eta_hours: u64,
+}
+
+impl Default for BrakeConfig {
+    fn default() -> Self {
+        BrakeConfig {
+            auto: false,
+            refusals_per_min: 0,
+            new_meshes_per_min: 0,
+            queue_eta_hours: 72,
+        }
+    }
 }
 
 /// `db_journal:`.
@@ -113,6 +143,8 @@ impl Default for Config {
             limits: Limits::default(),
             listen_proxy_protocol: ProxyProtocolIn::default(),
             k8s: crate::k8s::K8sConfig::default(),
+            drain_secs: 30,
+            brake: BrakeConfig::default(),
         }
     }
 }
@@ -127,7 +159,8 @@ pub struct IrohConfig {
     pub relay: String,
     /// Public addresses put into the ticket (a LoadBalancer's IP).
     pub public_addrs: Vec<SocketAddr>,
-    /// Publish to pkarr. TODO(210-M4): wire a pkarr publisher; today nothing is published.
+    /// Publish to pkarr. Not built: the ticket carries the relay URL and `public_addrs`, so clients dial without
+    /// discovery (§5.5, P0-3 "no pkarr or mDNS publication"); `TODO(210-P2)` if a release ever needs it.
     pub pkarr: bool,
 }
 
@@ -222,6 +255,8 @@ pub struct LeConfig {
     pub directory: String,
     /// New-name certificates per 7 days, one token bucket refilled continuously (§6.5).
     pub new_certs_per_week: u32,
+    /// New orders (any kind) per 3 hours; a job beyond it waits for the window to roll.
+    pub orders_per_3h: u32,
 }
 
 impl Default for LeConfig {
@@ -229,6 +264,7 @@ impl Default for LeConfig {
         LeConfig {
             directory: "https://acme-v02.api.letsencrypt.org/directory".into(),
             new_certs_per_week: 45,
+            orders_per_3h: 200,
         }
     }
 }
@@ -373,6 +409,19 @@ pub struct Limits {
     /// `conn_log` rows older than this are purged.
     #[serde(with = "dur")]
     pub conn_log_retention: Duration,
+    /// Engine keys first seen per mesh per UTC day (`engines_quota {scope: mesh, limit: engines}`).
+    pub engine_keys_per_mesh_day: u32,
+    /// A mesh younger than this may not claim a reserved name (`quota {scope: mesh, limit: reserved}`).
+    #[serde(with = "dur")]
+    pub reserved_min_mesh_age: Duration,
+    /// A held name whose mesh has not attached for this long expires (records, certificate, k8s objects gone).
+    #[serde(with = "dur")]
+    pub unattached_expiry: Duration,
+    /// Failed authorizations of one name before its job pauses for `name_fail_cooldown`.
+    pub name_fail_max: u32,
+    /// Pause of a name's certificate job after `name_fail_max` failed authorizations.
+    #[serde(with = "dur")]
+    pub name_fail_cooldown: Duration,
 }
 
 impl Default for Limits {
@@ -416,6 +465,11 @@ impl Default for Limits {
             new_conns_burst: 200,
             write_stall: Duration::from_secs(5),
             conn_log_retention: Duration::from_secs(30 * 86_400),
+            engine_keys_per_mesh_day: 8,
+            reserved_min_mesh_age: Duration::ZERO,
+            unattached_expiry: Duration::from_secs(90 * 86_400),
+            name_fail_max: 2,
+            name_fail_cooldown: Duration::from_secs(3600),
         }
     }
 }
@@ -653,6 +707,16 @@ impl Config {
     /// The endpoint key file.
     pub fn key_path(&self) -> PathBuf {
         self.data_dir.join("iroh.key")
+    }
+
+    /// `<data_dir>/iroh.standby.key`: the standby endpoint key (§5.5), created at first start.
+    pub fn standby_key_path(&self) -> PathBuf {
+        self.data_dir.join("iroh.standby.key")
+    }
+
+    /// `<data_dir>/retire.json`: the signed [`share_proto::Retire`] an edge promoted to its standby key sends.
+    pub fn retire_path(&self) -> PathBuf {
+        self.data_dir.join("retire.json")
     }
 
     /// The DNS zone the records live in.

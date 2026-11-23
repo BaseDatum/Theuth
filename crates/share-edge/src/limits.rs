@@ -223,7 +223,7 @@ pub fn open_names_bucket(l: &Limits) -> BucketSpec {
 /// `hello` of a mesh the edge has not seen, admitted open (§9.4): meshes first seen per day per network tier,
 /// or, for a relay-only engine, the paced relayed-newcomer bucket and its day cap. Invited meshes skip it.
 pub async fn new_mesh(edge: &Edge, net: &str, now_ms: u64) -> anyhow::Result<Result<(), ErrorBody>> {
-    let l = &edge.cfg.limits;
+    let l = &edge.live().limits;
     if is_relayed(net) {
         let day = CounterCheck {
             scope: "meshes:relayed".into(),
@@ -261,7 +261,7 @@ pub async fn new_mesh(edge: &Edge, net: &str, now_ms: u64) -> anyhow::Result<Res
 
 /// Tunnels attached per network tier (§9.4 `tunnels_per_net`), counted over the live tunnels: the refusal, if any.
 pub fn tunnels_refusal(edge: &Edge, net: &str, engine: &share_proto::PublicKey) -> Option<ErrorBody> {
-    let l = &edge.cfg.limits;
+    let l = &edge.live().limits;
     let mine = tiers(net, l, &edge.asn);
     let nets: Vec<String> = edge
         .tunnels
@@ -304,12 +304,12 @@ pub async fn new_name(
     kind: NameKind,
     now_ms: u64,
 ) -> anyhow::Result<Result<Taken, ErrorBody>> {
-    let l = &edge.cfg.limits;
+    let l = &edge.live().limits;
     if edge.full() {
         return Ok(Err(ErrorBody::edge_full(LimitKind::NamesMax)));
     }
     let domain = edge.cfg.domain.as_str();
-    if edge.store.slot_jobs(domain).await?.len() as u64 >= u64::from(edge.cfg.acme.queue_max) {
+    if edge.store.slot_jobs(domain).await?.len() as u64 >= u64::from(edge.live().queue_max) {
         return Ok(Err(ErrorBody::edge_full(LimitKind::QueueMax)));
     }
     if invited {
@@ -350,7 +350,7 @@ pub async fn new_name(
 }
 
 fn cert_counters(edge: &Edge, mesh: &str, invited: bool, net: &str, now_ms: u64) -> Vec<CounterCheck> {
-    let l = &edge.cfg.limits;
+    let l = &edge.live().limits;
     let mut v = vec![CounterCheck {
         scope: "certs:mesh".into(),
         key: mesh.to_string(),
@@ -374,9 +374,9 @@ pub async fn cert_request(
     net: &str,
     now_ms: u64,
 ) -> anyhow::Result<Result<(), ErrorBody>> {
-    let l = &edge.cfg.limits;
+    let l = &edge.live().limits;
     let jobs = edge.store.slot_jobs(&edge.cfg.domain).await?;
-    if jobs.len() as u64 >= u64::from(edge.cfg.acme.queue_max) {
+    if jobs.len() as u64 >= u64::from(edge.live().queue_max) {
         return Ok(Err(ErrorBody::edge_full(LimitKind::QueueMax)));
     }
     let checks = cert_counters(edge, mesh, invited, net, now_ms);

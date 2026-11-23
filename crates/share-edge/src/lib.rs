@@ -13,6 +13,7 @@ pub mod dns;
 pub mod k8s;
 pub mod limits;
 pub mod meter;
+pub mod ops;
 pub mod queue;
 pub mod sni;
 pub mod state;
@@ -58,6 +59,7 @@ pub fn load_or_create_key(path: &Path) -> anyhow::Result<SecretKey> {
 }
 
 /// The ticket clients paste into `share.edge` (§5.5): the endpoint id, the home relay and `iroh.public_addrs`.
+/// An invite is added by `admin invite new`.
 pub fn ticket(cfg: &Config, id: share_proto::PublicKey) -> anyhow::Result<ShareEdgeTicket> {
     let mut addr = EndpointAddr::new(id);
     if !cfg.iroh.relay.is_empty() {
@@ -66,8 +68,70 @@ pub fn ticket(cfg: &Config, id: share_proto::PublicKey) -> anyhow::Result<ShareE
     for a in &cfg.iroh.public_addrs {
         addr = addr.with_ip_addr(*a);
     }
-    // TODO(210-M4): `--standby <pubkey>` two-key form and invites.
     Ok(ShareEdgeTicket { addr, invite: None })
+}
+
+/// The standby ticket (`ticket --standby`): the standby key with the live ticket's relay and addresses, what a
+/// release pins beside the live one (§5.5, D15). Creates the standby key when there is none.
+pub fn standby_ticket(cfg: &Config) -> anyhow::Result<ShareEdgeTicket> {
+    let standby = load_or_create_key(&cfg.standby_key_path())?;
+    ticket(cfg, standby.public())
+}
+
+/// `retire` (§5.5): sign a [`share_proto::Retire`] of the live key with the standby key, write it to
+/// `retire.json`, and promote the standby key to `iroh.key` (the old key is kept as `iroh.key.retired`). The edge
+/// must be stopped; the next `run` serves on the former standby key and sends the notice in every `welcome`.
+pub fn retire(cfg: &Config, now_ms: u64) -> anyhow::Result<share_proto::Signed> {
+    let live_path = cfg.key_path();
+    let standby_path = cfg.standby_key_path();
+    anyhow::ensure!(standby_path.exists(), "no standby key at {}", standby_path.display());
+    let live = load_or_create_key(&live_path)?;
+    let standby = load_or_create_key(&standby_path)?;
+    let notice = share_proto::Retire {
+        v: share_proto::Retire::VERSION,
+        edge: standby.public(),
+        retired: live.public(),
+        issued_ms: now_ms,
+    };
+    let signed = notice.sign(&standby).map_err(|e| anyhow::anyhow!("{e}"))?;
+    platform::files::create_private(&cfg.retire_path(), &serde_json::to_vec(&signed)?)
+        .with_context(|| format!("write {}", cfg.retire_path().display()))?;
+    let retired = live_path.with_extension("key.retired");
+    std::fs::rename(&live_path, &retired).with_context(|| format!("move {}", live_path.display()))?;
+    std::fs::rename(&standby_path, &live_path).with_context(|| format!("move {}", standby_path.display()))?;
+    Ok(signed)
+}
+
+/// The retire notice in `retire.json`, when it verifies as signed by `id` (the key this edge runs on).
+fn load_retire(cfg: &Config, id: &share_proto::PublicKey) -> anyhow::Result<Option<share_proto::Signed>> {
+    let path = cfg.retire_path();
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+    };
+    let signed: share_proto::Signed = serde_json::from_slice(&bytes).context("retire.json")?;
+    match share_proto::Retire::verify(&signed, id) {
+        Ok(_) => Ok(Some(signed)),
+        Err(e) => {
+            tracing::warn!("retire.json ignored: {e}");
+            Ok(None)
+        }
+    }
+}
+
+/// Drain (§5.3, §5.9): refuse `hello`, send `drain {secs}` to every tunnel and wait until they have left or
+/// `secs` passed. Returns the tunnels still attached at the deadline.
+pub async fn drain(edge: &Edge, secs: u64) -> usize {
+    edge.draining.store(true, std::sync::atomic::Ordering::Relaxed);
+    for t in edge.tunnels.iter() {
+        t.send(share_proto::Event::Drain(share_proto::events::DrainEvent { secs }));
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(secs);
+    while !edge.tunnels.is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    edge.tunnels.len()
 }
 
 /// A running edge.
@@ -87,7 +151,7 @@ impl Running {
         self.router.endpoint().addr()
     }
 
-    /// Stop accepting, close every tunnel and the store. TODO(210-M4): `drain {secs}` before closing.
+    /// Stop accepting, close every tunnel and the store (after [`drain`] on SIGTERM, see [`run`]).
     pub async fn shutdown(mut self) {
         self.tasks.abort_all();
         let _ = self.router.shutdown().await;
@@ -133,7 +197,6 @@ pub async fn start_with(
     backends: certs::Backends,
 ) -> anyhow::Result<Running> {
     if cfg.require_caa {
-        // TODO(210-M4): re-check daily; at runtime a failure flips admission to `closed` and alerts.
         acme::require_caa(&*backends.caa, &cfg, std::slice::from_ref(&backends.ca)).await?;
     }
     // Before binding anything: a k8s section that cannot run (no feature, no in-cluster config) fails start.
@@ -145,6 +208,9 @@ pub async fn start_with(
     platform::files::private_dir(&cfg.data_dir)
         .with_context(|| format!("data_dir {}", cfg.data_dir.display()))?;
     let key = load_or_create_key(&cfg.key_path())?;
+    // §5.5: the standby key, created once beside the live one; `ticket --standby` prints it, `retire` promotes it.
+    let standby = load_or_create_key(&cfg.standby_key_path())?.public();
+    let retire = load_retire(&cfg, &key.public())?;
     let store = Store::open(&cfg.db_path(), cfg.db_journal).await?;
     let relay_mode = if cfg.iroh.relay.is_empty() {
         RelayMode::Disabled
@@ -153,7 +219,7 @@ pub async fn start_with(
             RelayUrl::from_str(&cfg.iroh.relay).context("iroh.relay")?,
         ))
     };
-    // TODO(210-M4): pkarr publication when `iroh.pkarr`.
+    // §5.5: no pkarr publication; the tickets carry the relay URL and public addresses.
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(key)
         .alpns(share_proto::ALPNS.iter().map(|a| a.to_vec()).collect())
@@ -172,6 +238,10 @@ pub async fn start_with(
     let edge = Arc::new(Edge::new(cfg, secrets, store.clone(), id)?);
     meter::Meter::load(&edge, state::now_ms()).await?;
     let _ = edge.certs.set(certs::Certs::new(&backends, store, &edge.cfg));
+    let _ = edge.standby.set(standby);
+    if let Some(r) = retire {
+        let _ = edge.retire.set(r);
+    }
     let mut rb = Router::builder(endpoint);
     for alpn in share_proto::ALPNS {
         rb = rb.accept(*alpn, control::ShareProtocol { edge: edge.clone() });
@@ -181,6 +251,10 @@ pub async fn start_with(
     tasks.spawn(sni::serve(edge.clone(), listener));
     tasks.spawn(certs::run(edge.clone()));
     tasks.spawn(meter::run(edge.clone()));
+    tasks.spawn(ops::run_brake(edge.clone()));
+    if edge.cfg.require_caa {
+        tasks.spawn(caa_daily(edge.clone()));
+    }
     if let Some(k) = k8s {
         let _ = edge.k8s.set(k.clone());
         tasks.spawn(k8s::run(edge.clone(), k));
@@ -202,24 +276,26 @@ pub async fn start_with(
     })
 }
 
-/// `/healthz` and `/metrics`. TODO(210-M4): the full metric set of appendix §8.4.
+/// §8.2: the CAA set re-checked every 24 h; a failure flips admission to `closed` (logged as an error).
+async fn caa_daily(edge: Arc<Edge>) {
+    let mut every = tokio::time::interval(std::time::Duration::from_secs(86_400));
+    every.tick().await;
+    loop {
+        every.tick().await;
+        match admin::caa_check(&edge, state::now_ms()).await {
+            Ok(r) if !r.ok => tracing::error!(missing = ?r.missing, "daily CAA check failed"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("daily CAA check: {e:#}"),
+        }
+    }
+}
+
+/// `/healthz` and `/metrics` (appendix §8.4, §9.5 monitoring; [`ops::render`]).
 async fn serve_health(edge: Arc<Edge>, listener: tokio::net::TcpListener) {
     use axum::routing::get;
     let metrics = move || {
         let e = edge.clone();
-        async move {
-            let mut m = format!(
-                "share_edge_tunnels {}\nshare_edge_routes {}\nshare_edge_conns {}\n",
-                e.tunnels.len(),
-                e.routes.len(),
-                e.cfg.limits.global_conns as usize - e.visitors.available_permits()
-            );
-            if let Some(k) = e.k8s.get() {
-                let n = k.errors.load(std::sync::atomic::Ordering::Relaxed);
-                m.push_str(&format!("share_edge_k8s_errors_total {n}\n"));
-            }
-            m
-        }
+        async move { ops::render(&e, state::now_ms()).await }
     };
     let app = axum::Router::new()
         .route("/healthz", get(|| async { "ok" }))
@@ -252,10 +328,14 @@ async fn k8s_manager(_: &Config) -> anyhow::Result<Arc<k8s::K8s>> {
     anyhow::bail!("`k8s.enabled: true` needs a build with the cargo feature `k8s`")
 }
 
-/// `run`: start, wait for the stop signal, shut down.
-pub async fn run(cfg: Config, secrets: Secrets) -> anyhow::Result<()> {
+/// `run`: start, wait for the stop signal (SIGTERM/SIGINT), drain, shut down. `config_path` is what
+/// `admin reload` re-reads.
+pub async fn run(cfg: Config, secrets: Secrets, config_path: std::path::PathBuf) -> anyhow::Result<()> {
     let running = start(cfg, secrets).await?;
+    let _ = running.edge.config_path.set(config_path);
     platform::process::stop_signal().await?;
+    let left = drain(&running.edge, running.edge.cfg.drain_secs).await;
+    tracing::info!(left, "drained");
     running.shutdown().await;
     Ok(())
 }

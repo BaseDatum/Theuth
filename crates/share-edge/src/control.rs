@@ -64,7 +64,7 @@ impl ProtocolHandler for ShareProtocol {
             conn.close(4u32.into(), b"busy");
             return Ok(());
         };
-        let tunnel = Tunnel::new(conn, Some(permit), &edge.cfg.limits);
+        let tunnel = Tunnel::new(conn, Some(permit), &edge.live().limits);
         serve(edge, tunnel).await;
         Ok(())
     }
@@ -74,7 +74,7 @@ impl ProtocolHandler for ShareProtocol {
 async fn serve(edge: Arc<Edge>, tunnel: Arc<Tunnel>) {
     let api = api();
     let hello_deadline =
-        tokio::time::Instant::now() + Duration::from_secs(edge.cfg.limits.hello_timeout_secs);
+        tokio::time::Instant::now() + Duration::from_secs(edge.live().limits.hello_timeout_secs);
     loop {
         let wake = match tunnel.session.lock().expect("session lock").as_ref() {
             None => hello_deadline,
@@ -125,8 +125,12 @@ async fn serve_stream(
             if req.uri().path() == paths::EVENTS {
                 flag.store(true, Ordering::Relaxed);
             }
-            req.extensions_mut().insert(Ctx { edge, tunnel });
-            Ok::<_, Infallible>(api.oneshot(req).await.unwrap_or_else(|e| match e {}))
+            req.extensions_mut().insert(Ctx { edge: edge.clone(), tunnel });
+            let resp = api.oneshot(req).await.unwrap_or_else(|e| match e {});
+            if let Some(Refused(b)) = resp.extensions().get::<Refused>() {
+                edge.ops.refused(b, now_ms());
+            }
+            Ok::<_, Infallible>(resp)
         }
     });
     let conn = hyper::server::conn::http1::Builder::new()
@@ -183,13 +187,34 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
+/// The error body of an answer, for the refusal counters (§9.5 monitoring, the brake).
+#[derive(Clone)]
+struct Refused(ErrorBody);
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = self.1.unwrap_or_else(|| {
             StatusCode::from_u16(self.0.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
         });
-        (status, axum::Json(self.0)).into_response()
+        let refused = crate::ops::is_limit_refusal(self.0.code).then(|| Refused((*self.0).clone()));
+        let mut resp = (status, axum::Json(self.0)).into_response();
+        if let Some(r) = refused {
+            resp.extensions_mut().insert(r);
+        }
+        resp
     }
+}
+
+/// §7.6: name and CSR requests need the live terms revision accepted at `hello`; else `403 terms_required`
+/// with the terms URL as the message.
+fn terms(e: &Edge, s: &Session) -> Result<(), ApiError> {
+    let live = e.live();
+    if live.terms_rev.is_empty() || s.terms_rev.as_deref() == Some(live.terms_rev.as_str()) {
+        return Ok(());
+    }
+    let mut b = ErrorBody::new(ErrorCode::TermsRequired);
+    b.message = Some(live.terms_url.clone());
+    Err(b.into())
 }
 
 fn err(code: ErrorCode) -> ApiError {
@@ -250,9 +275,9 @@ async fn info(Extension(c): Extension<Ctx>) -> ApiResult {
             now_ms: now_ms(),
             min_client: e.cfg.min_client.clone(),
             admission: e.admission(),
-            terms_url: e.cfg.terms_url.clone(),
-            terms_rev: e.cfg.terms_rev.clone(),
-            abuse_url: e.cfg.abuse_url.clone(),
+            terms_url: e.live().terms_url.clone(),
+            terms_rev: e.live().terms_rev.clone(),
+            abuse_url: e.live().abuse_url.clone(),
             full: e.full(),
         },
     )
@@ -297,7 +322,7 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         // A connection is bound to one mesh; a different mesh needs a new connection.
         return Err(err(ErrorCode::BadDelegation));
     }
-    if e.paused.load(Ordering::Relaxed) {
+    if e.paused.load(Ordering::Relaxed) || e.draining.load(Ordering::Relaxed) {
         return Err(err(ErrorCode::AdmissionClosed));
     }
     let mesh = d.mesh.to_string();
@@ -339,13 +364,31 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         }
         // TODO(210-P2): `allowlist` admission.
         // §9.4: meshes first seen per network tier per day, or the paced relayed-newcomer bucket; invited
-        // meshes leave every per-network onboarding count. TODO(210-M4): re-count a relayed newcomer against
-        // its network once a direct path appears.
+        // meshes leave every per-network onboarding count.
         if !invited {
             crate::limits::new_mesh(&e, &c.tunnel.net, now)
                 .await?
                 .map_err(ApiError::from)?;
         }
+        e.ops.new_mesh(now);
+    } else if !known.as_ref().is_some_and(|m| m.invited != 0)
+        && !crate::limits::is_relayed(&c.tunnel.net)
+        && e.store.rehome_relayed(&mesh, &c.tunnel.net).await?
+    {
+        // §9.4: a relayed newcomer that now shows a direct path is counted against that network. It is already
+        // admitted, so an exhausted network count is logged, not answered.
+        if let Err(b) = crate::limits::new_mesh(&e, &c.tunnel.net, now).await? {
+            tracing::info!(%mesh, net = %c.tunnel.net, code = %b.code, "relayed mesh re-counted over its network's limit");
+        }
+    }
+    // §9.4: engine keys first seen per mesh per UTC day.
+    if !e.store.engine_known(&mesh, &engine).await?
+        && e.store
+            .engines_first_seen_since(&mesh, crate::limits::day_start(now))
+            .await?
+            >= u64::from(e.live().limits.engine_keys_per_mesh_day)
+    {
+        return Err(ErrorBody::limited(ErrorCode::EnginesQuota, LimitScope::Mesh, LimitKind::Engines).into());
     }
     let others = e
         .mesh_tunnels(&d.mesh)
@@ -364,11 +407,12 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         .await?;
     // An edge without terms needs no acceptance.
     let terms_ok =
-        e.cfg.terms_rev.is_empty() || h.terms_rev.as_deref() == Some(e.cfg.terms_rev.as_str());
+        e.live().terms_rev.is_empty() || h.terms_rev.as_deref() == Some(e.live().terms_rev.as_str());
     *c.tunnel.session.lock().expect("session lock") = Some(Session {
         mesh: d.mesh,
         expires_ms: d.expires_ms,
         terms_ok,
+        terms_rev: h.terms_rev.clone(),
         hello_ms: now,
     });
     c.tunnel.pre_hello.lock().expect("permit lock").take();
@@ -432,26 +476,26 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
                     .unwrap_or(u64::MAX),
                 reserved_per_mesh: e.cfg.reserved_per_mesh,
                 engines_per_mesh: e.cfg.engines_per_mesh,
-                routes_per_tunnel: e.cfg.limits.routes_per_tunnel,
-                conns_per_tunnel: e.cfg.limits.conns_per_tunnel,
+                routes_per_tunnel: e.live().limits.routes_per_tunnel,
+                conns_per_tunnel: e.live().limits.conns_per_tunnel,
                 delegation_max_ttl_ms: max_ttl,
-                tunnel_mbit: e.cfg.limits.tunnel_mbit,
-                throttle_mbit: e.cfg.limits.throttle_mbit,
+                tunnel_mbit: e.live().limits.tunnel_mbit,
+                throttle_mbit: e.live().limits.throttle_mbit,
                 ..WelcomeLimits::default()
             },
-            terms_url: e.cfg.terms_url.clone(),
-            abuse_url: e.cfg.abuse_url.clone(),
-            terms_rev: e.cfg.terms_rev.clone(),
+            terms_url: e.live().terms_url.clone(),
+            abuse_url: e.live().abuse_url.clone(),
+            terms_rev: e.live().terms_rev.clone(),
             terms_ok,
             full: e.full(),
-            // TODO(210-M4): `retire` when running on the standby key.
-            retire: None,
+            // §5.5: an edge promoted to its standby key retires the old live key.
+            retire: e.retire.get().cloned(),
             throttled,
         },
     )
 }
 
-fn name_info(r: &NameRow) -> NameInfo {
+pub(crate) fn name_info(r: &NameRow) -> NameInfo {
     NameInfo {
         name: r.name.clone(),
         kind: if r.kind == "reserved" {
@@ -490,7 +534,7 @@ async fn availability(Extension(c): Extension<Ctx>, Path(name): Path<String>) ->
         reclaim_after_ms: None,
     };
     if names::check_random(&name).is_err()
-        && let Err(e) = names::check_reserved(&name, &c.edge.cfg.reserved_words)
+        && let Err(e) = names::check_reserved(&name, &c.edge.live().reserved_words)
     {
         return json(StatusCode::OK, &reason(e.reason()));
     }
@@ -545,9 +589,7 @@ fn now_i64() -> i64 {
 /// idempotent. Ban, owner, cooldown and quota are decided by [`crate::store::Store::claim`] in one transaction
 /// (FIX-EDGE M5).
 async fn claim(c: &Ctx, s: &Session, name: &str, kind: NameKind) -> Result<(), ApiError> {
-    if !s.terms_ok {
-        return Err(err(ErrorCode::TermsRequired));
-    }
+    terms(&c.edge, s)?;
     let e = &c.edge;
     if e.store.ban_reason("name", name).await?.is_some() {
         return Err(err(ErrorCode::Banned));
@@ -564,6 +606,20 @@ async fn claim(c: &Ctx, s: &Session, name: &str, kind: NameKind) -> Result<(), A
     let taken = if mine {
         crate::limits::Taken::default()
     } else {
+        let min_age = u64::try_from(e.live().limits.reserved_min_mesh_age.as_millis()).unwrap_or(u64::MAX);
+        if kind == NameKind::Reserved && min_age > 0 {
+            let created = e
+                .store
+                .mesh_detail(&mesh)
+                .await?
+                .map_or(now, |m| u64::try_from(m.created_ms).unwrap_or(now));
+            let ready = created.saturating_add(min_age);
+            if ready > now {
+                let mut b = ErrorBody::limited(ErrorCode::Quota, LimitScope::Mesh, LimitKind::Reserved);
+                b.retry_after_s = Some((ready - now).div_ceil(1000));
+                return Err(b.into());
+            }
+        }
         let invited = e.store.mesh(&mesh).await?.is_some_and(|m| m.invited != 0);
         crate::limits::new_name(e, invited, &c.tunnel.net, kind, now)
             .await?
@@ -631,8 +687,8 @@ async fn allocate_random(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult
 /// `PUT /v1/names/{name}`: claim a reserved name. TODO(210-P2): `{handover}` body.
 async fn claim_reserved(Extension(c): Extension<Ctx>, Path(name): Path<String>) -> ApiResult {
     let s = c.session()?;
-    names::check_reserved(&name, &c.edge.cfg.reserved_words)
-        .and_then(|()| names::check_brand(&name, &c.edge.brands))
+    names::check_reserved(&name, &c.edge.live().reserved_words)
+        .and_then(|()| names::check_brand(&name, &c.edge.live().brands))
         .map_err(|e| ApiError::from(ErrorBody::invalid(e.reason())))?;
     // TODO(210-M2): an online transfer (`transfer_to` = this mesh) skips the cooldown and revokes the old cert.
     claim(&c, &s, &name, NameKind::Reserved).await?;
@@ -712,6 +768,7 @@ async fn csr(
     body: Bytes,
 ) -> ApiResult {
     let s = c.session()?;
+    terms(&c.edge, &s)?;
     if c.edge.certs.get().is_none() {
         return Err(not_yet("certificate issuance"));
     }
@@ -756,7 +813,7 @@ async fn put_routes(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
             return Err(ErrorBody::stopped_all(stop, stopped).into());
         }
     }
-    if req.hosts.len() > e.cfg.limits.routes_per_tunnel as usize {
+    if req.hosts.len() > e.live().limits.routes_per_tunnel as usize {
         return Err(ErrorBody::limited(ErrorCode::Quota, LimitScope::Tunnel, LimitKind::Routes).into());
     }
     // §9.6: a mesh or network over its day's bytes publishes nothing new until the UTC day rolls.

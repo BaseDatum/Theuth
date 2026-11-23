@@ -47,6 +47,8 @@ pub struct Certs {
     pub zone: Arc<dyn DnsZone>,
     /// The CA.
     pub ca: Arc<dyn Ca>,
+    /// CAA resolution (`admin caa-check`, the daily re-check).
+    pub caa: Arc<dyn CaaLookup>,
     /// The `dns-01` validator over `zone`.
     pub validator: Dns01,
     /// Wakes the runner (a new job).
@@ -63,6 +65,7 @@ impl Certs {
         Certs {
             zone: b.zone.clone(),
             ca: b.ca.clone(),
+            caa: b.caa.clone(),
             validator: Dns01 {
                 zone: b.zone.clone(),
                 store,
@@ -486,13 +489,20 @@ pub async fn tick(edge: &Arc<Edge>, now: u64) -> anyhow::Result<()> {
             Ok(()) => {}
             Err(e) => {
                 let msg = format!("{e:#}");
+                edge.ops.cert_failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let limits = &edge.live().limits;
                 if job.attempts >= i64::from(edge.cfg.acme.max_attempts) {
                     tracing::error!(name = %job.name, "certificate job failed for good: {msg}");
                     edge.store.finish_job(&job.id, "failed", Some(&msg)).await?;
                 } else {
-                    let next = now.saturating_add(u64::try_from(backoff(job.attempts).as_millis()).unwrap_or(0));
+                    let mut wait = u64::try_from(backoff(job.attempts).as_millis()).unwrap_or(0);
+                    // A name that failed `name_fail_max` times in a row pauses for `name_fail_cooldown` (§9.4).
+                    if edge.ops.name_failed(&job.name, limits.name_fail_max) {
+                        wait = wait.max(u64::try_from(limits.name_fail_cooldown.as_millis()).unwrap_or(u64::MAX));
+                        tracing::warn!(name = %job.name, "certificate job: failure cool-down");
+                    }
                     tracing::warn!(name = %job.name, attempt = job.attempts, "certificate job: {msg}");
-                    edge.store.requeue_job(&job.id, next, Some(&msg), false).await?;
+                    edge.store.requeue_job(&job.id, now.saturating_add(wait), Some(&msg), false).await?;
                 }
             }
         }
@@ -542,6 +552,18 @@ async fn process(edge: &Arc<Edge>, certs: &Certs, job: &JobRow, now: u64) -> any
             }
         }
     }
+    // The CA's order rate (`orders_per_3h`, a bucket refilled continuously over 3 h): a job beyond it waits for
+    // a token without spending an attempt.
+    let per_3h = edge.cfg.acme.cas.letsencrypt.orders_per_3h.max(1);
+    let orders = crate::store::BucketSpec {
+        name: format!("{}_orders", certs.ca.id()),
+        cap: f64::from(per_3h),
+        refill_ms: (3.0 * 3_600_000.0) / f64::from(per_3h),
+    };
+    if let Err((_, wait_ms)) = edge.store.buckets_take(&[orders], now).await? {
+        edge.store.requeue_job(&job.id, now.saturating_add(wait_ms.max(1000)), None, true).await?;
+        return Ok(());
+    }
     if row.records == 0 {
         ensure_records(edge, certs, &job.name).await?;
     }
@@ -589,6 +611,7 @@ async fn process(edge: &Arc<Edge>, certs: &Certs, job: &JobRow, now: u64) -> any
         return Ok(());
     }
     edge.store.finish_job(&job.id, "done", None).await?;
+    edge.ops.name_failures.remove(&job.name);
     if let Ok(mesh) = job.mesh.parse::<PublicKey>() {
         for t in edge.mesh_tunnels(&mesh) {
             t.send(Event::Cert(CertEvent {

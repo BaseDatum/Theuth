@@ -9,9 +9,15 @@ db_journal: wal              # wal | delete; delete = data dir on NFS (DELETE jo
 listen: "[::]:443"            # "[::]:8443" in k8s behind Service port 443
 listen_http: ""               # off; only for a D outside an HSTS-preloaded TLD
 listen_proxy_protocol: {trusted: []}   # CIDRs whose connections must start with a PROXY v1/v2 header (an LB/ingress)
-iroh: {listen: "[::]:7850", relay: https://iroh.relay.theuth.io, public_addrs: [], pkarr: true}
+iroh: {listen: "[::]:7850", relay: https://iroh.relay.theuth.io, public_addrs: [], pkarr: true}   # pkarr: not published (tickets carry relay + addrs)
 admin: {socket: /var/lib/theuth-share-edge/admin.sock, http: "[::]:9090"}   # §8.5; /metrics, /healthz
-admission: open               # open | invite | closed; live via admin
+admission: open               # open | invite | closed; live via admin; `admin reload` applies a changed value
+drain_secs: 30                # SIGTERM: drain {secs} to every tunnel, wait up to this long, then stop
+brake:                        # §9.5; 0 = threshold off. auto: a holding condition flips open → invite (never back)
+  auto: false
+  refusals_per_min: 0         # limit refusals (network_quota, paced, quota, engines_quota, edge_full) in the last minute
+  new_meshes_per_min: 0       # meshes first seen in the last minute
+  queue_eta_hours: 72         # longest queue ETA above this holds queue_eta
 reserved_per_mesh: 1
 engines_per_mesh: 8
 delegation_max_ttl: 25h       # top-level, not under limits
@@ -61,7 +67,7 @@ limits:                       # §9.4; "net" = IPv4 address or IPv6 /64; refusal
   certs_per_mesh_week: 2      # new-name certificates per mesh per 7 days, every mesh
   queued_per_net: 2           # open meshes only
   reserved_per_net: 6         # reserved names held, open meshes only
-  reserved_min_mesh_age: 0s
+  reserved_min_mesh_age: 0s   # a younger mesh's reserved claim: 429 quota {scope: mesh, limit: reserved, retry_after_s}
   tunnels_per_net: 10
   wide_net_factor: 4          # per IPv4 /24 and IPv6 /48
   v6_32_factor: 16            # per IPv6 /32
@@ -77,7 +83,10 @@ limits:                       # §9.4; "net" = IPv4 address or IPv6 /64; refusal
   evict_unpublished_after: 7d # at names_max, names never live this long after allocation are evicted first
   bytes_per_mesh_day: 20GiB   # B, KiB…TiB, KB…TB or a plain count; over it: kill {budget}, routes refused to UTC midnight
   bytes_per_net_day: 50GiB    # per tier × factor
-  engine_keys_per_mesh_day: 8
+  engine_keys_per_mesh_day: 8 # engine keys first seen per mesh per UTC day: 403 engines_quota {scope: mesh}
+  unattached_expiry: 90d      # held names of a mesh not attached this long expire (records, cert, k8s objects gone)
+  name_fail_max: 2            # failed certificate attempts of a name in a row …
+  name_fail_cooldown: 1h      # … pause its job this long
   tunnel_mbit: 50             # per-tunnel shaping; burst min(64 MiB, 10 s of rate)
   throttle_mbit: 2            # non-invited tunnels while egress is over pace (§9.6)
   egress_month: 10TiB         # the host's allowance; pace = allowance × fraction of month elapsed

@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use share_edge::config::{Config, DEFAULT_CONFIG};
-use share_proto::Admission;
-use share_proto::admin::{AdminCommand, AdminRequest, BanKind, ListWhat};
+use share_proto::admin::{AdminCommand, AdminRequest, BanKind, InviteMinted, ListWhat, RevokeReason};
+use share_proto::{Admission, PublicKey};
 
 /// Public web sharing edge: routes visitors by SNI to hosting engines over iroh (`theuth/share/1`), never
 /// decrypting; issues name certificates over ACME.
@@ -39,8 +39,14 @@ enum Cmd {
         #[command(subcommand)]
         cmd: AcmeCmd,
     },
-    /// Print the edge ticket for `share.edge`.
-    Ticket,
+    /// Print the edge ticket for `share.edge`; `--standby` prints the standby key's ticket (§5.5).
+    Ticket {
+        #[arg(long)]
+        standby: bool,
+    },
+    /// With the edge stopped: sign a retire notice of the live key with the standby key, write `retire.json`
+    /// and promote the standby key to `iroh.key` (§5.5).
+    Retire,
 }
 
 #[derive(Subcommand)]
@@ -75,6 +81,56 @@ enum AdminCmd {
     Pause,
     /// Undo `pause`.
     Resume,
+    /// The certificate slot queue.
+    Queue,
+    /// One mesh: names, engines, revoke list, rekey history.
+    Mesh { id: PublicKey },
+    /// Release a name (cooldown for anyone but its holder; certificate revoked).
+    Release { name: String },
+    /// Evict names never live `evict_unpublished_after` after allocation.
+    EvictUnpublished,
+    /// Move a name, or every name of a mesh, to another mesh (operator judgement, §5.7; pass `--ref`).
+    Recover {
+        target: String,
+        #[arg(long = "to-mesh")]
+        to_mesh: PublicKey,
+    },
+    /// Invites: `mint`, `list`, `revoke`.
+    Invite {
+        #[command(subcommand)]
+        cmd: InviteCmd,
+    },
+    /// Resolve and check the CAA set now; a failure closes admission under `require_caa`.
+    CaaCheck,
+    /// Revoke a name's certificate.
+    RevokeCert {
+        name: String,
+        #[arg(value_parser = ["unspecified", "key_compromise", "superseded", "cessation_of_operation"])]
+        reason: Option<String>,
+    },
+    /// Re-read the reloadable config (limits, brand file, terms, admission, brake).
+    Reload,
+    /// Which brake conditions hold.
+    BrakeStatus,
+}
+
+#[derive(Subcommand)]
+enum InviteCmd {
+    /// Mint an invite and print the ticket carrying it.
+    #[command(alias = "new")]
+    Mint {
+        #[arg(long)]
+        uses: Option<u32>,
+        /// Lifetime, e.g. `7d`.
+        #[arg(long, value_parser = humantime::parse_duration)]
+        expires: Option<std::time::Duration>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Live invites (hashes only).
+    List,
+    /// Revoke an invite by its hash (or a unique prefix of 8+ hex characters).
+    Revoke { hash: String },
 }
 
 #[derive(Subcommand)]
@@ -127,6 +183,32 @@ fn admin_command(cmd: AdminCmd) -> AdminCommand {
         },
         AdminCmd::Pause => AdminCommand::Pause,
         AdminCmd::Resume => AdminCommand::Resume,
+        AdminCmd::Queue => AdminCommand::Queue,
+        AdminCmd::Mesh { id } => AdminCommand::Mesh { id },
+        AdminCmd::Release { name } => AdminCommand::Release { name },
+        AdminCmd::EvictUnpublished => AdminCommand::EvictUnpublished,
+        AdminCmd::Recover { target, to_mesh } => AdminCommand::Recover { target, to_mesh },
+        AdminCmd::Invite { cmd } => match cmd {
+            InviteCmd::Mint { uses, expires, note } => AdminCommand::InviteNew {
+                uses,
+                expires_s: expires.map(|d| d.as_secs()),
+                note,
+            },
+            InviteCmd::List => AdminCommand::InviteList,
+            InviteCmd::Revoke { hash } => AdminCommand::InviteRevoke { hash },
+        },
+        AdminCmd::CaaCheck => AdminCommand::CaaCheck,
+        AdminCmd::RevokeCert { name, reason } => AdminCommand::RevokeCert {
+            name,
+            reason: reason.map(|r| match r.as_str() {
+                "key_compromise" => RevokeReason::KeyCompromise,
+                "superseded" => RevokeReason::Superseded,
+                "cessation_of_operation" => RevokeReason::CessationOfOperation,
+                _ => RevokeReason::Unspecified,
+            }),
+        },
+        AdminCmd::Reload => AdminCommand::Reload,
+        AdminCmd::BrakeStatus => AdminCommand::BrakeStatus,
     }
 }
 
@@ -149,7 +231,7 @@ fn main() -> anyhow::Result<()> {
     rt.block_on(async move {
         let (cfg, secrets) = Config::load(&cli.config)?;
         match cli.cmd {
-            Cmd::Run => share_edge::run(cfg, secrets).await,
+            Cmd::Run => share_edge::run(cfg, secrets, cli.config.clone()).await,
             Cmd::Admin {
                 json,
                 reference,
@@ -165,6 +247,10 @@ fn main() -> anyhow::Result<()> {
                     println!("{}", serde_json::to_string(&resp)?);
                 } else if let Some(e) = &resp.error {
                     anyhow::bail!("{}: {}", e.code, e.message);
+                } else if let Some(Ok(m)) = resp.result_as::<InviteMinted>() {
+                    // The ticket with the invite, alone on the first line, for copy and paste.
+                    println!("{}", m.ticket);
+                    print!("{}", serde_yaml::to_string(&resp.result)?);
                 } else {
                     print!("{}", serde_yaml::to_string(&resp.result)?);
                 }
@@ -184,9 +270,22 @@ fn main() -> anyhow::Result<()> {
                 }
                 Ok(())
             }
-            Cmd::Ticket => {
-                let key = share_edge::load_or_create_key(&cfg.key_path())?;
-                println!("{}", share_edge::ticket(&cfg, key.public())?);
+            Cmd::Ticket { standby } => {
+                let t = if standby {
+                    share_edge::standby_ticket(&cfg)?
+                } else {
+                    let key = share_edge::load_or_create_key(&cfg.key_path())?;
+                    share_edge::ticket(&cfg, key.public())?
+                };
+                println!("{t}");
+                Ok(())
+            }
+            Cmd::Retire => {
+                if tokio::net::UnixStream::connect(cfg.admin_socket()).await.is_ok() {
+                    anyhow::bail!("the edge is running (admin socket answers): stop it before `retire`");
+                }
+                let signed = share_edge::retire(&cfg, share_edge::state::now_ms())?;
+                println!("{}", serde_json::to_string(&signed)?);
                 Ok(())
             }
         }

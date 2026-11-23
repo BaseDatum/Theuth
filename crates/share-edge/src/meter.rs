@@ -163,7 +163,7 @@ impl Meter {
         for (mesh, net, bytes) in edge.store.usage_day(day).await? {
             let b = u64::try_from(bytes).unwrap_or(0);
             *m.mesh_day.entry(mesh).or_insert(0) += b;
-            for t in tiers(&net, &edge.cfg.limits, &edge.asn) {
+            for t in tiers(&net, &edge.live().limits, &edge.asn) {
                 m.net_day.entry(tier_key(&t)).or_insert((0, t.factor)).0 += b;
             }
         }
@@ -186,7 +186,7 @@ impl Meter {
         let invited = t.invited.load(Ordering::Relaxed);
         *self.pending.entry((mesh.clone(), t.net.clone(), invited)).or_insert(0) += delta;
         *self.mesh_day.entry(mesh).or_insert(0) += delta;
-        for tier in tiers(&t.net, &edge.cfg.limits, &edge.asn) {
+        for tier in tiers(&t.net, &edge.live().limits, &edge.asn) {
             self.net_day.entry(tier_key(&tier)).or_insert((0, tier.factor)).0 += delta;
         }
         self.month_bytes.fetch_add(delta, Ordering::Relaxed);
@@ -196,14 +196,14 @@ impl Meter {
     /// Whether a mesh or a tier of `net` is over today's budget (new routes refused).
     pub fn over_budget(&self, edge: &Edge, mesh: &str, net: &str) -> bool {
         self.over.contains_key(&format!("mesh:{mesh}"))
-            || tiers(net, &edge.cfg.limits, &edge.asn)
+            || tiers(net, &edge.live().limits, &edge.asn)
                 .iter()
                 .any(|t| self.over.contains_key(&tier_key(t)))
     }
 
     /// The per-tunnel rate a tunnel of an (un)invited mesh gets now.
     pub fn rate_for(&self, edge: &Edge, invited: bool) -> u64 {
-        let l = &edge.cfg.limits;
+        let l = &edge.live().limits;
         if !invited && self.throttled.load(Ordering::Relaxed) {
             mbit_bytes(l.throttle_mbit)
         } else {
@@ -215,7 +215,7 @@ impl Meter {
 /// One second of metering: day roll, fold, budgets, month pace and throttle.
 pub fn tick(edge: &Edge, now_ms: u64) {
     let m = &edge.meter;
-    let l = &edge.cfg.limits;
+    let l = &edge.live().limits;
     let day = day_start(now_ms);
     if m.day.swap(day, Ordering::Relaxed) != day {
         m.mesh_day.clear();

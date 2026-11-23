@@ -139,8 +139,10 @@ pub enum Rekeyed {
 
 mod certs;
 mod limits;
+mod ops;
 pub use limits::{BucketSpec, CounterCheck};
 pub use certs::{CertRow, JobRow, RevocationRow};
+pub use ops::{InviteRecord, InviteRevoke, MeshDetail, hex_lower};
 
 /// Longest rekey chain followed (§5.7 rekeys are rare; a cycle cannot be written).
 const MAX_CHAIN: usize = 64;

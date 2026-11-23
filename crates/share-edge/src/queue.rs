@@ -45,7 +45,7 @@ pub fn order<'a>(jobs: &'a [JobRow], class: &str) -> Vec<&'a JobRow> {
 /// token per 7 days ÷ size.
 pub fn bucket(edge: &Edge, ca: &str, class: &str) -> BucketSpec {
     let per_week = f64::from(edge.cfg.acme.cas.letsencrypt.new_certs_per_week.max(2));
-    let share = edge.cfg.acme.invite_share.clamp(0.0, 1.0);
+    let share = edge.live().invite_share.clamp(0.0, 1.0);
     let invited = (per_week * share).ceil().clamp(1.0, per_week - 1.0);
     let cap = if class == "invited" { invited } else { per_week - invited };
     BucketSpec {
@@ -184,12 +184,12 @@ pub async fn try_slot(edge: &Arc<Edge>, ca: &str, job: &JobRow, now_ms: u64) -> 
 /// Sets and clears the edge's full state.
 pub async fn has_room(edge: &Arc<Edge>, now_ms: u64) -> anyhow::Result<bool> {
     let domain = edge.cfg.domain.as_str();
-    let max = u64::from(edge.cfg.limits.names_max);
+    let max = u64::from(edge.live().limits.names_max);
     if edge.store.slotted_count(domain).await? < max {
         edge.set_full(false);
         return Ok(true);
     }
-    let after = u64::try_from(edge.cfg.limits.evict_unpublished_after.as_millis()).unwrap_or(u64::MAX);
+    let after = u64::try_from(edge.live().limits.evict_unpublished_after.as_millis()).unwrap_or(u64::MAX);
     for name in edge.store.unpublished_names(domain, now_ms.saturating_sub(after)).await? {
         if evict(edge, &name, true, now_ms).await? && edge.store.slotted_count(domain).await? < max {
             edge.set_full(false);
@@ -281,12 +281,24 @@ pub async fn announce(
     Ok(())
 }
 
-/// Every minute (§9.4, §9.2): evict `allocated` names without a CSR after `allocated_ttl`, and purge
-/// `conn_log` rows older than `conn_log_retention` (30 days).
+/// Every minute (§9.4, §9.2): evict `allocated` names without a CSR after `allocated_ttl`, expire names whose
+/// mesh has not attached for `unattached_expiry` (90 days; record removal, revocation and the k8s delete hook as
+/// an eviction), and purge `conn_log` rows older than `conn_log_retention` (30 days).
 pub async fn housekeeping(edge: &Arc<Edge>, now_ms: u64) -> anyhow::Result<()> {
-    let l = &edge.cfg.limits;
+    let l = &edge.live().limits;
     let ttl = u64::try_from(l.allocated_ttl.as_millis()).unwrap_or(u64::MAX);
     for name in edge.store.stale_allocated(&edge.cfg.domain, now_ms.saturating_sub(ttl)).await? {
+        evict(edge, &name, false, now_ms).await?;
+    }
+    let idle = u64::try_from(l.unattached_expiry.as_millis()).unwrap_or(u64::MAX);
+    let attached: std::collections::HashSet<String> =
+        edge.tunnels.iter().filter_map(|t| t.mesh().map(|m| m.to_string())).collect();
+    for name in edge.store.unattached_names(&edge.cfg.domain, now_ms.saturating_sub(idle)).await? {
+        let owner = edge.store.name(&edge.cfg.domain, &name).await?.and_then(|r| r.owner);
+        if owner.is_some_and(|o| attached.contains(&o)) {
+            continue;
+        }
+        tracing::info!(name, "expired: mesh unattached for unattached_expiry");
         evict(edge, &name, false, now_ms).await?;
     }
     let keep = u64::try_from(l.conn_log_retention.as_millis()).unwrap_or(u64::MAX);

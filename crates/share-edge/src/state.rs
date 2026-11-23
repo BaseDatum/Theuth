@@ -63,6 +63,9 @@ pub struct Session {
     pub expires_ms: u64,
     /// The `hello` carried the current terms revision.
     pub terms_ok: bool,
+    /// The terms revision the `hello` carried; checked against the live `terms_rev` at every name and CSR
+    /// request, so a reloaded revision needs a new `hello` (§7.6).
+    pub terms_rev: Option<String>,
     /// Edge time of the `hello` that set this session; routes from a session older than the mesh's last Stop
     /// all are refused (§7.4).
     pub hello_ms: u64,
@@ -199,8 +202,18 @@ pub struct Edge {
     pub admission: RwLock<Admission>,
     /// `admin pause`: every tunnel closed, `hello` refused.
     pub paused: AtomicBool,
-    /// Brand blocklist lines (§9.4).
-    pub brands: Vec<String>,
+    /// The reloadable part of the config (§8.1, `admin reload`).
+    live: RwLock<Arc<Live>>,
+    /// Metric counters and the brake's windows (§9.5).
+    pub ops: crate::ops::Ops,
+    /// The standby endpoint key's public half (§5.5), when one is stored.
+    pub standby: OnceLock<PublicKey>,
+    /// The signed retire notice `welcome` carries while this edge runs on its former standby key (§5.5).
+    pub retire: OnceLock<share_proto::Signed>,
+    /// SIGTERM seen: `hello` is refused while the tunnels drain.
+    pub draining: AtomicBool,
+    /// The config file `admin reload` re-reads; unset for an edge built in-process (tests).
+    pub config_path: OnceLock<std::path::PathBuf>,
     /// `host → route`, exact match.
     pub routes: DashMap<String, Route>,
     /// Attached tunnels by engine key (one per engine; a new one replaces the old after `hello`).
@@ -231,14 +244,7 @@ pub struct Edge {
 impl Edge {
     /// Build the state.
     pub fn new(cfg: Config, secrets: Secrets, store: Store, id: PublicKey) -> anyhow::Result<Edge> {
-        let brands = match &cfg.brand_blocklist_file {
-            Some(p) if p.exists() => std::fs::read_to_string(p)?
-                .lines()
-                .map(|l| l.trim().to_ascii_lowercase())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .collect(),
-            _ => Vec::new(),
-        };
+        let live = Live::from_config(&cfg)?;
         let per_sec = NonZeroU32::new(cfg.limits.new_conns_per_ip_sec.max(1)).expect("nonzero");
         let asn = crate::limits::AsnDb::load(cfg.limits.asn_db.as_deref())?;
         Ok(Edge {
@@ -259,12 +265,27 @@ impl Edge {
             asn,
             meter: crate::meter::Meter::default(),
             full: AtomicBool::new(false),
-            brands,
+            live: RwLock::new(Arc::new(live)),
+            ops: crate::ops::Ops::default(),
+            standby: OnceLock::new(),
+            retire: OnceLock::new(),
+            draining: AtomicBool::new(false),
+            config_path: OnceLock::new(),
             cfg,
             secrets,
             store,
             id,
         })
+    }
+
+    /// The reloadable config now in force.
+    pub fn live(&self) -> Arc<Live> {
+        self.live.read().expect("live lock").clone()
+    }
+
+    /// Swap in a reloaded config.
+    pub fn set_live(&self, live: Live) {
+        *self.live.write().expect("live lock") = Arc::new(live);
     }
 
     /// Live admission mode.
@@ -348,5 +369,57 @@ impl Edge {
         self.drop_routes(|_, r| Arc::ptr_eq(&r.tunnel, tunnel));
         self.tunnels
             .remove_if(&tunnel.engine, |_, t| Arc::ptr_eq(t, tunnel));
+    }
+}
+
+/// The config keys `admin reload` applies live (§8.1): `limits` (except the ones sized at start), the brand file,
+/// `reserved_words`, terms and abuse URLs, `acme.queue_max`/`invite_share`, `brake`.
+#[derive(Debug, Clone)]
+pub struct Live {
+    /// `limits`.
+    pub limits: Limits,
+    /// Brand blocklist lines (§9.4).
+    pub brands: Vec<String>,
+    /// Operator reserved words.
+    pub reserved_words: Vec<String>,
+    /// Terms page.
+    pub terms_url: String,
+    /// Current terms revision.
+    pub terms_rev: String,
+    /// Abuse page.
+    pub abuse_url: String,
+    /// `acme.queue_max`.
+    pub queue_max: u32,
+    /// `acme.invite_share`.
+    pub invite_share: f64,
+    /// `brake`.
+    pub brake: crate::config::BrakeConfig,
+    /// `admission` as the file says (a change in the file is applied live by `reload`).
+    pub admission: Admission,
+}
+
+impl Live {
+    /// The reloadable keys of `cfg`, reading the brand file.
+    pub fn from_config(cfg: &Config) -> anyhow::Result<Live> {
+        let brands = match &cfg.brand_blocklist_file {
+            Some(p) if p.exists() => std::fs::read_to_string(p)?
+                .lines()
+                .map(|l| l.trim().to_ascii_lowercase())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .collect(),
+            _ => Vec::new(),
+        };
+        Ok(Live {
+            limits: cfg.limits.clone(),
+            brands,
+            reserved_words: cfg.reserved_words.clone(),
+            terms_url: cfg.terms_url.clone(),
+            terms_rev: cfg.terms_rev.clone(),
+            abuse_url: cfg.abuse_url.clone(),
+            queue_max: cfg.acme.queue_max,
+            invite_share: cfg.acme.invite_share,
+            brake: cfg.brake.clone(),
+            admission: cfg.admission,
+        })
     }
 }

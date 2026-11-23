@@ -262,7 +262,7 @@ async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
     }
     {
         let mut n = edge.per_ip.entry(ip).or_insert(0);
-        if *n >= edge.cfg.limits.conns_per_ip {
+        if *n >= edge.live().limits.conns_per_ip {
             drop(n);
             return reset(tcp);
         }
@@ -287,12 +287,12 @@ async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
     if tunnel.conn_rate.check().is_err() {
         return reset(tcp);
     }
-    if tunnel.streams.fetch_add(1, Ordering::Relaxed) >= edge.cfg.limits.conns_per_tunnel {
+    if tunnel.streams.fetch_add(1, Ordering::Relaxed) >= edge.live().limits.conns_per_tunnel {
         tunnel.streams.fetch_sub(1, Ordering::Relaxed);
         return reset(tcp);
     }
     let _stream_slot = StreamSlot(tunnel.clone());
-    let open = Duration::from_secs(edge.cfg.limits.open_bi_timeout_secs);
+    let open = Duration::from_secs(edge.live().limits.open_bi_timeout_secs);
     let Ok(Ok((mut send, recv))) = tokio::time::timeout(open, tunnel.conn.open_bi()).await else {
         return reset(tcp);
     };
@@ -335,12 +335,14 @@ async fn visitor(edge: Arc<Edge>, mut tcp: TcpStream, peer: SocketAddr) {
     let activity = Arc::new(AtomicU64::new(now_ms()));
     let up = Arc::new(AtomicU64::new(hello_len));
     let down = Arc::new(AtomicU64::new(0));
-    let mut visitor = Metered::new(tcp, up.clone(), down.clone(), activity.clone(), edge.cfg.limits.write_stall);
+    let mut visitor = Metered::new(tcp, up.clone(), down.clone(), activity.clone(), edge.live().limits.write_stall);
     visitor.tunnel = Some(tunnel.clone());
     visitor.host = Some(stats);
+    visitor.totals = Some(edge.ops.bytes.clone());
+    edge.ops.bytes.inbound.fetch_add(hello_len, Ordering::Relaxed);
     visitor.on_live = on_live;
     let mut engine = tokio::io::join(recv, send);
-    let idle = Duration::from_secs(edge.cfg.limits.idle_secs);
+    let idle = Duration::from_secs(edge.live().limits.idle_secs);
     let clean = tokio::select! {
         r = tokio::io::copy_bidirectional(&mut visitor, &mut engine) => r.is_ok(),
         () = idle_watch(activity, idle) => false,
@@ -409,6 +411,7 @@ pub(crate) struct Metered<T> {
     activity: Arc<AtomicU64>,
     tunnel: Option<Arc<Tunnel>>,
     host: Option<Arc<HostStats>>,
+    totals: Option<Arc<crate::ops::ByteTotals>>,
     on_live: Option<Box<dyn FnOnce() + Send>>,
     stall_after: Duration,
     delay: Option<Pin<Box<Sleep>>>,
@@ -430,6 +433,7 @@ impl<T> Metered<T> {
             activity,
             tunnel: None,
             host: None,
+            totals: None,
             on_live: None,
             stall_after,
             delay: None,
@@ -472,6 +476,9 @@ impl<T: AsyncRead + Unpin> AsyncRead for Metered<T> {
             if let Some(h) = &this.host {
                 h.bytes_in.fetch_add(n as u64, Ordering::Relaxed);
             }
+            if let Some(b) = &this.totals {
+                b.inbound.fetch_add(n as u64, Ordering::Relaxed);
+            }
             this.charge(n);
         }
         r
@@ -503,6 +510,9 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for Metered<T> {
                 }
                 if let Some(h) = &this.host {
                     h.bytes_out.fetch_add(n as u64, Ordering::Relaxed);
+                }
+                if let Some(b) = &this.totals {
+                    b.outbound.fetch_add(n as u64, Ordering::Relaxed);
                 }
                 if total >= LIVE_BYTES
                     && let Some(f) = this.on_live.take()
