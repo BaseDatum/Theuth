@@ -4,10 +4,12 @@ import { act, createElement as h } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, expect, test, vi } from 'vitest'
+import { isNotOnEngine, namesApi, NotOnEngine } from '@/components/public-share/wire'
+import { makeApi } from '@/rpc/bindings/client'
 import { RpcError } from '@/rpc/client'
 import { useConnection } from '@/store/connection'
 import { usePublicShares } from '@/store/public-shares'
-import { ApprovalsOffWarning, availabilityText, d22Text, MachinesSection, NameSection, nameProblem, publishArgs } from './Sharing'
+import { ApprovalsOffWarning, availabilityText, d22Text, MachinesSection, MeshIdRow, NameSection, nameProblem, publishArgs } from './Sharing'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), warning: vi.fn(), message: vi.fn() }) }))
 
@@ -41,14 +43,14 @@ test('§5.2 name rule, before asking the edge', () => {
 
 test('§5.2 availability: free, taken, and a cooldown with the date it ends', () => {
   const now = Date.UTC(2026, 10, 23)
-  expect(availabilityText('sky.tun.zip', { available: true, reason: null }, now)).toEqual({ ok: true, text: 'sky.tun.zip is free' })
-  expect(availabilityText('sky.tun.zip', { available: false, reason: 'name_taken' }, now)).toEqual({ ok: false, text: 'sky.tun.zip is taken' })
+  expect(availabilityText('sky.tun.zip', { available: true, reason: null, reclaim_after_ms: null }, now)).toEqual({ ok: true, text: 'sky.tun.zip is free' })
+  expect(availabilityText('sky.tun.zip', { available: false, reason: 'name_taken', reclaim_after_ms: null }, now)).toEqual({ ok: false, text: 'sky.tun.zip is taken' })
   const until = Date.UTC(2026, 11, 20)
   const cool = availabilityText('sky.tun.zip', { available: false, reason: 'cooldown', reclaim_after_ms: until }, now)
   expect(cool.ok).toBe(false)
   expect(cool.text).toContain(`free again on ${new Date(until).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`)
-  // An engine that does not forward `reclaim_after_ms` yet.
-  expect(availabilityText('sky', { available: false, reason: 'cooldown' }, now).text).toBe('sky was released recently and is cooling down')
+  // An edge that does not send `reclaim_after_ms`.
+  expect(availabilityText('sky', { available: false, reason: 'cooldown', reclaim_after_ms: null }, now).text).toBe('sky was released recently and is cooling down')
 })
 
 test('D22 names the hub', () => {
@@ -64,7 +66,7 @@ afterEach(async () => {
   root = undefined
   document.body.innerHTML = ''
   usePublicShares.getState().reset()
-  useConnection.setState({ client: null })
+  useConnection.setState({ client: null, api: null })
 })
 
 async function mount(el: Parameters<typeof h>[0]) {
@@ -75,7 +77,8 @@ async function mount(el: Parameters<typeof h>[0]) {
   await act(async () => root!.render(h(QueryClientProvider, { client: qc }, h(el as never))))
 }
 
-/** A raw client answering `share_names_*` from `answer`; anything else is -32601 like an engine without the method. */
+/** A client answering `share_names_*` from `answer` behind the generated `Api`; anything else is -32601 like an engine
+ * without the method. */
 function client(answer: Record<string, (params: unknown[]) => unknown>) {
   const calls: [string, unknown[]][] = []
   const c = {
@@ -86,7 +89,7 @@ function client(answer: Record<string, (params: unknown[]) => unknown>) {
       return f(params)
     },
   }
-  useConnection.setState({ client: c as never })
+  useConnection.setState({ client: c as never, api: makeApi(c as never) })
   return calls
 }
 
@@ -139,4 +142,50 @@ test('M2 machines: every machine of the mesh with what it serves; the hub marked
   expect(rows).toContain('MacBook (this machine)Serves app.sky.tun.zip')
   expect(rows).toContain('StudiohubServes api2.sky.tun.zip, sky.tun.zip/docs')
   expect(rows).toContain('PiNothing public')
+})
+
+test('M2 namesApi: typed calls with the generated shapes; a missing method is NotOnEngine', async () => {
+  const calls = client({
+    share_names_check: () => ({ available: false, reason: 'cooldown', reclaim_after_ms: 1_800_000_000_000 }),
+    share_names_release: ([name]) => ({ name, reclaim_after_ms: 1_800_000_000_000 }),
+    share_names_transfer: () => 1_790_000_000_000,
+    share_names_rotate: () => 2,
+  })
+  expect(await namesApi.check('sky')).toEqual({ available: false, reason: 'cooldown', reclaim_after_ms: 1_800_000_000_000 })
+  expect(await namesApi.release('sky')).toEqual({ name: 'sky', reclaim_after_ms: 1_800_000_000_000 })
+  expect(await namesApi.transfer('sky', 'mesh-abc')).toBe(1_790_000_000_000)
+  expect(await namesApi.rotate('sky')).toBe(2)
+  expect(calls).toEqual([
+    ['share_names_check', ['sky']],
+    ['share_names_release', ['sky']],
+    ['share_names_transfer', ['sky', 'mesh-abc']],
+    ['share_names_rotate', ['sky']],
+  ])
+  const missing = await namesApi.primary('sky').catch((e: unknown) => e)
+  expect(missing).toBeInstanceOf(NotOnEngine)
+  expect(missing instanceof NotOnEngine && missing.method).toBe('share_names_primary')
+  // Not connected: a plain error, not "not available on this engine".
+  useConnection.setState({ client: null, api: null })
+  const offline = await namesApi.list().catch((e: unknown) => e)
+  expect(isNotOnEngine(offline)).toBe(false)
+})
+
+test('D20 mesh id: shown with a copy button for receiving a transfer; hidden while the engine has none', async () => {
+  expect(renderToStaticMarkup(h(MeshIdRow, { meshId: null }))).toBe('')
+  const writeText = vi.fn(async () => undefined)
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+  client({ share_names_list: () => [] })
+  await mount(() => h(NameSection, { meshId: 'z6mkmesh0123456789' }))
+  expect(text()).toContain('Your mesh id')
+  expect(text()).toContain('Give this to the other mesh to receive a transfer.')
+  expect(document.querySelector('[data-mesh-id]')?.textContent).toBe('z6mkmesh0123456789')
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Copy mesh id"]')!.click())
+  expect(writeText).toHaveBeenCalledWith('z6mkmesh0123456789')
+})
+
+test('D20 mesh id: NameSection without one shows no mesh id row', async () => {
+  client({ share_names_list: () => [] })
+  await mount(NameSection)
+  await vi.waitFor(() => expect(text()).toContain('No name yet.'))
+  expect(text()).not.toContain('Your mesh id')
 })

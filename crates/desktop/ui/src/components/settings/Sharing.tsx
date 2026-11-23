@@ -3,11 +3,12 @@
 // Stop and Stop all, defaults, terms, history and the disclosures.
 
 import { useQuery } from '@tanstack/react-query'
+import { Copy } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { stopAllShares, stopShare } from '@/components/public-share/actions'
 import { PasswordOnce, useSharePassword } from '@/components/public-share/PasswordOnce'
-import { type EdgeState, type Expiry, type HeldName, type NameAvailability, type PublishArgs, checkName, isNotOnEngine, namesApi, shareApi, useShareMethod } from '@/components/public-share/wire'
+import { type EdgeState, type Expiry, type HeldName, type NameCheck, type PublishArgs, isNotOnEngine, namesApi, shareApi, useShareMethod } from '@/components/public-share/wire'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -89,7 +90,7 @@ export function SharingTab() {
         <ApprovalsOffWarning sharing={enabled} approvals={approvalsOn} />
       </Section>
 
-      <NameSection />
+      <NameSection meshId={settings.data?.mesh_id ?? null} />
 
       <MachinesSection />
 
@@ -177,7 +178,7 @@ export function nameProblem(name: string): string | null {
 const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 
 /** The availability line under the field; `cooldown` shows when the name can be claimed again (§5.2). */
-export function availabilityText(name: string, r: NameAvailability, now: number): { ok: boolean; text: string } {
+export function availabilityText(name: string, r: NameCheck, now: number): { ok: boolean; text: string } {
   if (r.available) return { ok: true, text: `${name} is free` }
   if (r.reason === 'cooldown' || r.reclaim_after_ms != null) {
     const at = r.reclaim_after_ms
@@ -216,13 +217,13 @@ function eta(s: number): string {
 const NAMES_KEY = ['share-names'] as const
 
 /** The availability of `name` as the owner types (debounced), `null` while not asked yet. */
-function useNameCheck(name: string): { name: string; result: NameAvailability | null; error: unknown } | null {
-  const [state, setState] = useState<{ name: string; result: NameAvailability | null; error: unknown } | null>(null)
+function useNameCheck(name: string): { name: string; result: NameCheck | null; error: unknown } | null {
+  const [state, setState] = useState<{ name: string; result: NameCheck | null; error: unknown } | null>(null)
   useEffect(() => {
     if (!name || nameProblem(name)) return setState(null)
     let live = true
     const t = setTimeout(() => {
-      checkName(name).then(
+      namesApi.check(name).then(
         (result) => live && setState({ name, result, error: null }),
         (error: unknown) => live && setState({ name, result: null, error }),
       )
@@ -235,9 +236,26 @@ function useNameCheck(name: string): { name: string; result: NameAvailability | 
   return state?.name === name ? state : null
 }
 
-/** §7.4 item 4, §5.2, D20: Your name — Reserve (checked as you type), and per held name Make primary, Rotate key,
- * Release and Transfer to another mesh. Methods the engine lacks answer "not available on this engine". */
-export function NameSection() {
+/** D20: this mesh's id, what another mesh pastes to offer it a name (`share_names_transfer`). Nothing until the
+ * mesh's share key exists. */
+export function MeshIdRow({ meshId }: { meshId: string | null }) {
+  if (!meshId) return null
+  return (
+    <Row label="Your mesh id" description="Give this to the other mesh to receive a transfer." wide>
+      <code data-mesh-id="" className="min-w-0 flex-1 truncate font-mono text-sm select-all">
+        {meshId}
+      </code>
+      <Button variant="ghost" size="icon" className="size-6" aria-label="Copy mesh id" onClick={() => void navigator.clipboard.writeText(meshId).then(() => toast.success('Mesh id copied'))}>
+        <Copy className="size-3.5" />
+      </Button>
+    </Row>
+  )
+}
+
+/** §7.4 item 4, §5.2, D20: Your name — Reserve (checked as you type), per held name Make primary, Rotate key,
+ * Release and Transfer to another mesh, and this mesh's id for receiving one. Methods the engine lacks answer "not
+ * available on this engine". */
+export function NameSection({ meshId = null }: { meshId?: string | null }) {
   const [name, setName] = useState('')
   const domain = usePublicShares((s) => s.status?.domain ?? null)
   const trimmed = name.trim().toLowerCase()
@@ -273,6 +291,7 @@ export function NameSection() {
       ) : (
         names.data!.map((n) => <HeldNameRow key={`${n.domain}/${n.name}`} n={n} />)
       )}
+      <MeshIdRow meshId={meshId} />
     </Section>
   )
 }
