@@ -3835,6 +3835,46 @@
   },
   {
     "input": {
+      "type": "StatusChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StatusChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "StatusChanged",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "status": "sample",
+      "title": "sample"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "StatusChanged",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "status": "sample",
+          "title": "sample"
+        }
+      }
+    }
+  },
+  {
+    "input": {
       "type": "SessionMetadataChanged",
       "session": "00000000-0000-0000-0000-000000000001"
     },

@@ -8,7 +8,7 @@ fn frame(event: serde_json::Value) -> Arc<wire::WireFrame> {
     let mut policy = wire::EventPolicy::legacy_fields(&event);
     policy.delta = match event["type"].as_str() {
         Some("TextDelta" | "ReasoningDelta") => wire::Delta::AppendText,
-        Some("ToolCallProgress" | "VisionProgress") => wire::Delta::Replace,
+        Some("ToolCallProgress" | "VisionProgress" | "StatusChanged") => wire::Delta::Replace,
         _ => wire::Delta::Control,
     };
     Arc::new(wire::WireFrame { descriptor: None, event, policy })
