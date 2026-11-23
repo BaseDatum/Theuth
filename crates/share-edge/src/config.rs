@@ -131,24 +131,47 @@ pub struct AdminConfig {
     pub http: String,
 }
 
-/// `acme:`, the part this phase reads.
+/// `acme:`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct AcmeConfig {
     /// `mailto:` contact of the account.
     pub contact: String,
+    /// ACME profile of every order (`classic`, 90 days; `tlsserver`, 45 days). Empty = the CA's default.
+    pub profile: String,
     /// `letsencrypt` in P1.
     pub primary: String,
     /// Per-CA settings.
     pub cas: CasConfig,
+    /// How often the job runner refreshes ARI windows and looks for renewals (§6.3: 6 h).
+    #[serde(with = "dur")]
+    pub renew_check: Duration,
+    /// Lease of one job attempt; a crashed attempt is picked up again after it.
+    #[serde(with = "dur")]
+    pub job_lease: Duration,
+    /// Attempts before a job is `failed`.
+    pub max_attempts: u32,
+    /// Wait after writing a challenge TXT before readying the challenge (Porkbun's authoritative servers).
+    #[serde(with = "dur")]
+    pub propagation: Duration,
+    /// Wait after clearing the first challenge TXT before writing the second (§6.1: Let's Encrypt's
+    /// recursors cache up to 60 s).
+    #[serde(with = "dur")]
+    pub auth_gap: Duration,
 }
 
 impl Default for AcmeConfig {
     fn default() -> Self {
         AcmeConfig {
             contact: String::new(),
+            profile: "classic".into(),
             primary: "letsencrypt".into(),
             cas: CasConfig::default(),
+            renew_check: Duration::from_secs(6 * 3600),
+            job_lease: Duration::from_secs(15 * 60),
+            max_attempts: 12,
+            propagation: Duration::from_secs(30),
+            auth_gap: Duration::from_secs(60),
         }
     }
 }
@@ -157,18 +180,54 @@ impl Default for AcmeConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct CasConfig {
+    /// `acme.cas.letsencrypt` (P1, Path Z).
+    pub letsencrypt: LeConfig,
     /// `acme.cas.gts` (P2).
     pub gts: GtsConfig,
 }
 
+/// `acme.cas.letsencrypt:`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LeConfig {
+    /// ACME directory URL.
+    pub directory: String,
+    /// New-name certificates per 7 days, one token bucket refilled continuously (§6.5).
+    pub new_certs_per_week: u32,
+}
+
+impl Default for LeConfig {
+    fn default() -> Self {
+        LeConfig {
+            directory: "https://acme-v02.api.letsencrypt.org/directory".into(),
+            new_certs_per_week: 45,
+        }
+    }
+}
+
 /// `acme.cas.gts:` (P2).
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct GtsConfig {
     /// Path P switch.
     pub enabled: bool,
+    /// ACME directory URL.
+    pub directory: String,
+    /// CAA `validationmethods` of the GTS lines.
+    pub validation: String,
     /// File holding the EAB JSON.
     pub eab_file: Option<PathBuf>,
+}
+
+impl Default for GtsConfig {
+    fn default() -> Self {
+        GtsConfig {
+            enabled: false,
+            directory: "https://dv.acme-v02.api.pki.goog/directory".into(),
+            validation: "dns-persist-01".into(),
+            eab_file: None,
+        }
+    }
 }
 
 /// `dns:`.
@@ -177,7 +236,7 @@ pub struct GtsConfig {
 pub struct DnsConfig {
     /// `porkbun` in P1.
     pub provider: String,
-    /// The zone, normally `D`.
+    /// The zone; empty = `domain`.
     pub zone: String,
     /// File holding the provider credential JSON.
     pub credential_file: Option<PathBuf>,
@@ -360,6 +419,9 @@ impl Config {
         if self.domain.is_empty() {
             bail!("`domain` is required");
         }
+        if !self.require_caa && self.admission == Admission::Open {
+            bail!("`require_caa: false` is refused with `admission: open` (§8.2)");
+        }
         if self.domain != self.domain.to_ascii_lowercase() || self.domain.ends_with('.') {
             bail!("`domain` must be lowercase without a trailing dot");
         }
@@ -385,6 +447,29 @@ impl Config {
     /// The endpoint key file.
     pub fn key_path(&self) -> PathBuf {
         self.data_dir.join("iroh.key")
+    }
+
+    /// The DNS zone the records live in.
+    pub fn dns_zone(&self) -> &str {
+        if self.dns.zone.is_empty() {
+            &self.domain
+        } else {
+            &self.dns.zone
+        }
+    }
+
+    /// The CNAME target of every name; default `edge.D`.
+    pub fn dns_target(&self) -> String {
+        if self.dns.target.is_empty() {
+            format!("edge.{}", self.domain)
+        } else {
+            self.dns.target.clone()
+        }
+    }
+
+    /// `<data_dir>/acme/<ca>.json`, the ACME account credentials (0600).
+    pub fn account_path(&self, ca: &str) -> PathBuf {
+        self.data_dir.join("acme").join(format!("{ca}.json"))
     }
 }
 

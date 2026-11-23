@@ -50,4 +50,27 @@ theuth-share-edge --config <path> admin admission invite # the brake (§9.5)
 kubectl -n theuth exec deploy/theuth-share-edge -- /theuth-share-edge admin status
 ```
 
-`acme register` (account and CAA lines, §8.5) arrives with the ACME worker.
+## Certificates (ACME over DNS-01, Porkbun)
+
+Order of first start (§8.5):
+
+```sh
+theuth-share-edge --config <path> acme register          # creates acme/letsencrypt.json (0600), prints 2 CAA lines
+# put both CAA lines (issue + issuewild, accounturi, validationmethods=dns-01) into the zone at Porkbun
+theuth-share-edge --config <path> run                    # refuses to start until the CAA lines resolve
+```
+
+`run` also refuses without the DNS credential or the account file. The Porkbun key may be written as
+`{"key", "secret"}` (zone-update's names) or `{"apikey", "secretapikey"}` (Porkbun's); the file is re-read on
+every DNS call, so a rotated key needs no restart.
+
+Per name the edge writes `<n>.D` and `*.<n>.D` CNAME `edge.D` when the name's first order gets a slot, one
+`_acme-challenge.<n>.D` TXT at a time during an order, and deletes them on release or a name ban (and revokes
+the certificate). Every record it may have written is in the `dns_records` table first; at start every row no
+held name needs (and every challenge TXT) is deleted from the zone. Renewals follow ARI (6 h scan), else at two
+thirds of the lifetime. New-name certificates draw from one bucket (`acme.cas.letsencrypt.new_certs_per_week`,
+default 45); renewals and rotations do not.
+
+Timing keys (`acme:`): `propagation` (30s, wait after writing the TXT), `auth_gap` (60s, between the two
+authorizations), `renew_check` (6h), `job_lease` (15m), `max_attempts` (12; retries back off from 1 min to
+24 h).

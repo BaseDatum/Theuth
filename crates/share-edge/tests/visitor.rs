@@ -2,6 +2,8 @@
 //! route; a TCP visitor's ClientHello then arrives on a bi-stream of the engine's connection behind a PROXY v2
 //! preamble, byte for byte.
 
+mod common;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -77,7 +79,9 @@ async fn visitor_hello_reaches_the_engine_behind_proxy_v2() {
         d = dir.path().display()
     );
     let (cfg, secrets) = Config::from_yaml(&yaml, &|_| None).unwrap();
-    let edge = share_edge::start(cfg, secrets).await.unwrap();
+    let edge = share_edge::start_with(cfg, secrets, common::fakes().backends)
+        .await
+        .unwrap();
 
     let engine_key = SecretKey::generate();
     let mesh_key = SecretKey::generate();

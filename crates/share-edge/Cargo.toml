@@ -41,11 +41,20 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # SNI peek only (`server::Acceptor`); the edge never presents a certificate.
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }
+# 210 §6.1 (EDGE2): ACME, DNS records over zone-update's Porkbun client, job retries, CAA lookup.
+instant-acme = { workspace = true }
+zone-update = { workspace = true }
+backon = "1"
+x509-parser = { workspace = true }
+time = "0.3"
+uuid = { workspace = true }
+hickory-resolver = "0.26"
 
 [dev-dependencies]
 hyper = { version = "1", features = ["client", "http1"] }
 http-body-util = "0.1"
 tempfile = "3"
+rcgen = { workspace = true, features = ["x509-parser"] }
 
 [lints]
 workspace = true

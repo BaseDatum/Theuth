@@ -3,7 +3,7 @@
 use std::net::{IpAddr, Ipv6Addr};
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -194,6 +194,8 @@ pub struct Edge {
     pub per_ip: DashMap<IpAddr, u32>,
     /// New visitor connections per IP key.
     pub ip_rate: DefaultKeyedRateLimiter<IpAddr>,
+    /// Certificates (EDGE2); unset in an edge built without backends.
+    pub certs: OnceLock<crate::certs::Certs>,
     next_conn: AtomicU64,
 }
 
@@ -219,6 +221,7 @@ impl Edge {
             routes: DashMap::new(),
             tunnels: DashMap::new(),
             next_conn: AtomicU64::new(1),
+            certs: OnceLock::new(),
             brands,
             cfg,
             secrets,

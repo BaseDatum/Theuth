@@ -227,6 +227,12 @@ async fn list(edge: &Arc<Edge>, what: ListWhat) -> AdminResult {
 fn apply_ban(edge: &Arc<Edge>, kind: BanKind, value: &str) -> usize {
     match kind {
         BanKind::Name => {
+            // §6.3: a ban revokes (`cessationOfOperation`; `keyCompromise` on a report is TODO(210-M4)) and
+            // deletes the name's records.
+            let (e, n) = (edge.clone(), value.to_string());
+            tokio::spawn(async move {
+                crate::certs::retire(&e, &n, crate::acme::Reason::CessationOfOperation).await;
+            });
             let removed = edge.drop_routes(|_, r| r.name == value);
             let mut touched: Vec<_> = Vec::new();
             for (host, r) in removed {

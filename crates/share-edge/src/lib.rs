@@ -4,9 +4,12 @@
 //!
 //! Depends only on `share-proto`, `platform` and external crates (D14).
 
+pub mod acme;
 pub mod admin;
+pub mod certs;
 pub mod config;
 pub mod control;
+pub mod dns;
 pub mod sni;
 pub mod state;
 pub mod store;
@@ -88,8 +91,38 @@ impl Running {
     }
 }
 
-/// Bind everything and start serving.
+/// Bind everything and start serving, with the production backends: zone-update's Porkbun client over the
+/// DNS credential, the registered ACME account, and the system resolver for `require_caa`.
 pub async fn start(cfg: Config, secrets: Secrets) -> anyhow::Result<Running> {
+    let Some(cred) = secrets.dns.clone() else {
+        anyhow::bail!(
+            "no DNS credential: set `dns.credential_file` or THEUTH_SHARE_EDGE_DNS__CREDENTIAL (§8.3)"
+        );
+    };
+    if cfg.dns.provider != "porkbun" {
+        anyhow::bail!("dns.provider {}: only `porkbun` is built (§6.4)", cfg.dns.provider);
+    }
+    let zone = Arc::new(dns::PorkbunZone::new(cfg.dns_zone(), cred)?);
+    let ca = acme::load_cas(&cfg).await?.remove(0);
+    let backends = certs::Backends {
+        zone,
+        ca,
+        caa: Arc::new(acme::SystemCaa),
+    };
+    start_with(cfg, secrets, backends).await
+}
+
+/// `start` with the given certificate backends (tests pass fakes). With `require_caa` the edge refuses to start
+/// until `D`'s CAA set names every enabled CA's account and method (§8.2).
+pub async fn start_with(
+    cfg: Config,
+    secrets: Secrets,
+    backends: certs::Backends,
+) -> anyhow::Result<Running> {
+    if cfg.require_caa {
+        // TODO(210-M4): re-check daily; at runtime a failure flips admission to `closed` and alerts.
+        acme::require_caa(&*backends.caa, &cfg, std::slice::from_ref(&backends.ca)).await?;
+    }
     platform::files::private_dir(&cfg.data_dir)
         .with_context(|| format!("data_dir {}", cfg.data_dir.display()))?;
     let key = load_or_create_key(&cfg.key_path())?;
@@ -117,7 +150,8 @@ pub async fn start(cfg: Config, secrets: Secrets) -> anyhow::Result<Running> {
     let tcp_addr = listener.local_addr()?;
     let admin_socket = cfg.admin_socket();
     let health = cfg.admin.http.clone();
-    let edge = Arc::new(Edge::new(cfg, secrets, store, id)?);
+    let edge = Arc::new(Edge::new(cfg, secrets, store.clone(), id)?);
+    let _ = edge.certs.set(certs::Certs::new(&backends, store, &edge.cfg));
     let mut rb = Router::builder(endpoint);
     for alpn in share_proto::ALPNS {
         rb = rb.accept(*alpn, control::ShareProtocol { edge: edge.clone() });
@@ -125,6 +159,7 @@ pub async fn start(cfg: Config, secrets: Secrets) -> anyhow::Result<Running> {
     let router = rb.spawn();
     let mut tasks = JoinSet::new();
     tasks.spawn(sni::serve(edge.clone(), listener));
+    tasks.spawn(certs::run(edge.clone()));
     let admin = admin::bind(&admin_socket)?;
     tasks.spawn(admin::serve(edge.clone(), admin, admin_socket));
     if !health.is_empty() {

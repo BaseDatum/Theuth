@@ -170,10 +170,17 @@ fn main() -> anyhow::Result<()> {
                 }
                 Ok(())
             }
-            // TODO(EDGE2): instant-acme account creation, `acme/<ca>.json`, the CAA lines of §8.2.
             Cmd::Acme {
                 cmd: AcmeCmd::Register { ca },
-            } => anyhow::bail!("acme register --ca {ca}: not available in this build yet"),
+            } => {
+                let (uri, lines) = share_edge::acme::register(&cfg, &secrets, &ca).await?;
+                println!("account: {uri}");
+                println!("Add these CAA records to {} before `run` (§8.2):", cfg.domain);
+                for l in lines {
+                    println!("{l}");
+                }
+                Ok(())
+            }
             Cmd::Ticket => {
                 let key = share_edge::load_or_create_key(&cfg.key_path())?;
                 println!("{}", share_edge::ticket(&cfg, key.public())?);

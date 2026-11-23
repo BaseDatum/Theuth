@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::{DefaultBodyLimit, Extension, Path};
+use axum::extract::{DefaultBodyLimit, Extension, Path, RawQuery};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -576,7 +576,13 @@ async fn release(Extension(c): Extension<Ctx>, Path(name): Path<String>) -> ApiR
         .release(c.domain(), &name, now, reclaim_after_ms)
         .await?;
     e.drop_routes(|_, route| route.name == name && route.mesh == s.mesh);
-    // TODO(EDGE2): delete the name's DNS records, revoke its certificate, drop a queued job.
+    // §6.3: revoke (`cessationOfOperation`), delete the D17 records, drop a queued job; in the background,
+    // since DNS calls take seconds and reconciliation at start catches what a crash leaves.
+    let edge = c.edge.clone();
+    let n = name.clone();
+    tokio::spawn(async move {
+        crate::certs::retire(&edge, &n, crate::acme::Reason::CessationOfOperation).await;
+    });
     json(
         StatusCode::OK,
         &NameReleased {
@@ -592,16 +598,34 @@ async fn transfer(Extension(c): Extension<Ctx>) -> ApiResult {
     Err(not_yet("name transfer"))
 }
 
-/// `POST /v1/names/{name}/csr`. TODO(EDGE2): CSR check, job, chain.
-async fn csr(Extension(c): Extension<Ctx>) -> ApiResult {
-    c.session()?;
-    Err(not_yet("certificate issuance"))
+/// `POST /v1/names/{name}/csr[?rotate=true]`, body = CSR DER (§6.2).
+async fn csr(
+    Extension(c): Extension<Ctx>,
+    Path(name): Path<String>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> ApiResult {
+    let s = c.session()?;
+    if c.edge.certs.get().is_none() {
+        return Err(not_yet("certificate issuance"));
+    }
+    let rotate = query
+        .as_deref()
+        .is_some_and(|q| q.split('&').any(|kv| kv == "rotate=true"));
+    match crate::certs::submit(&c.edge, &s.mesh, &name, &body, rotate).await? {
+        Ok(crate::certs::Submitted::Chain(chain)) => json(StatusCode::OK, &chain),
+        Ok(crate::certs::Submitted::Pending(p)) => json(StatusCode::ACCEPTED, &p),
+        Err(b) => Err(b.into()),
+    }
 }
 
-/// `GET /v1/names/{name}/cert`. TODO(EDGE2).
-async fn cert(Extension(c): Extension<Ctx>) -> ApiResult {
-    c.session()?;
-    Err(not_yet("certificate issuance"))
+/// `GET /v1/names/{name}/cert`: the current chain, `404 not_found` before the first.
+async fn cert(Extension(c): Extension<Ctx>, Path(name): Path<String>) -> ApiResult {
+    let s = c.session()?;
+    match crate::certs::chain(&c.edge, &s.mesh, &name).await? {
+        Ok(chain) => json(StatusCode::OK, &chain),
+        Err(b) => Err(b.into()),
+    }
 }
 
 /// `PUT /v1/routes {hosts}`: this engine's full set; all or nothing (§5.4).

@@ -84,6 +84,9 @@ pub struct NewName<'a> {
     pub net: &'a str,
 }
 
+mod certs;
+pub use certs::{CertRow, JobRow};
+
 fn ms(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
 }

@@ -28,6 +28,11 @@ acme:
   primary: letsencrypt        # P1
   invite_share: 0.5
   queue_max: 2000
+  renew_check: 6h             # ARI refresh and renewal scan (§6.3)
+  propagation: 30s            # wait after writing a challenge TXT
+  auth_gap: 60s               # between the two authorizations (§6.1)
+  job_lease: 15m
+  max_attempts: 12            # backoff 1 min doubling to 24 h
   cas:
     letsencrypt:
       directory: https://acme-staging-v02.api.letsencrypt.org/directory   # prod: https://acme-v02.api.letsencrypt.org/directory
