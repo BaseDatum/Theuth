@@ -2,7 +2,9 @@
 #   kubectl kustomize deploy/share-edge/k8s/rwx-dev        # render
 #   kubectl apply -k deploy/share-edge/k8s/rwx-dev         # owner only
 # The Secret `theuth-share-edge` (key dns.json) is created out of band and never committed.
-# Public 443 reaches the edge only once haproxy-passthrough.yaml (not listed below) is applied; read its header.
+# Public 443: HAProxy (haproxy-controller) passes TLS through by SNI to Service theuth-share-edge:8443. The Ingresses
+# doing it are created and deleted by the edge itself (image built with `--features k8s`, templates under `k8s:` in
+# configmap.yaml, RBAC in rbac.yaml), not committed here.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -10,6 +12,7 @@ namespace: theuth
 
 resources:
   - ../base
+  - rbac.yaml
   # - service-iroh-udp.yaml   # UDP 7850 NodePort; owner router decision pending (see the file)
 
 images:
@@ -30,6 +33,13 @@ patches:
         path: /spec/template/spec/nodeSelector
         value:
           kubernetes.io/arch: amd64
+      # In-cluster API credentials for the Ingress templates (rbac.yaml); the base turns the token off.
+      - op: replace
+        path: /spec/template/spec/automountServiceAccountToken
+        value: true
+      - op: add
+        path: /spec/template/spec/serviceAccountName
+        value: theuth-share-edge
       # Admin socket off the NFS data volume (configmap.yaml admin.socket).
       - op: add
         path: /spec/template/spec/volumes/-

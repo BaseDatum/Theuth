@@ -18,6 +18,8 @@
 
 FROM --platform=$BUILDPLATFORM rust:1-bookworm AS build
 ARG TARGETARCH
+# Cargo features of share-edge, e.g. `--build-arg FEATURES=k8s` (the edge manages its Ingresses; rwx-dev overlay).
+ARG FEATURES=""
 # Zig + cargo-zigbuild from PyPI, pinned.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3-pip \
@@ -43,7 +45,7 @@ RUN --mount=type=cache,id=theuth-share-edge-cargo-registry,target=/usr/local/car
 RUN --mount=type=cache,id=theuth-share-edge-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=theuth-share-edge-cargo-target-${TARGETARCH},target=/src/target \
     target="$(cat /target)" \
- && cargo zigbuild --locked --release -p share-edge --target "$target" \
+ && cargo zigbuild --locked --release -p share-edge ${FEATURES:+--features "$FEATURES"} --target "$target" \
  && cp "target/$target/release/theuth-share-edge" /theuth-share-edge
 
 FROM scratch
