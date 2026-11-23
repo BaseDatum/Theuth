@@ -200,7 +200,7 @@ impl IntoResponse for ApiError {
         let status = self.1.unwrap_or_else(|| {
             StatusCode::from_u16(self.0.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
         });
-        let refused = crate::ops::is_limit_refusal(self.0.code).then(|| Refused((*self.0).clone()));
+        let refused = crate::ops::is_limit_refusal(&self.0).then(|| Refused((*self.0).clone()));
         let mut resp = (status, axum::Json(self.0)).into_response();
         if let Some(r) = refused {
             resp.extensions_mut().insert(r);
@@ -539,9 +539,12 @@ pub(crate) fn name_info(r: &NameRow) -> NameInfo {
     }
 }
 
-/// `GET /v1/names/{name}`. TODO(210-M4): per-network rate limit of availability lookups.
+/// `GET /v1/names/{name}`; rate limited per tunnel and client network tier ([`crate::limits::lookup`]).
 async fn availability(Extension(c): Extension<Ctx>, Path(name): Path<String>) -> ApiResult {
     let s = c.session()?;
+    if let Some(b) = crate::limits::lookup(&c.edge, &c.tunnel.net, &c.tunnel.engine) {
+        return Err(b.into());
+    }
     let reason = |r: &str| NameAvailability {
         available: false,
         reason: Some(r.into()),

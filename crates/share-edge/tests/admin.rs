@@ -291,3 +291,141 @@ async fn cert_retry_makes_a_backed_off_job_due_and_resets_attempts() {
     let none = ask(&r.edge, AdminCommand::CertRetry { name: "nobody".into() }).await;
     assert_eq!(none.error.unwrap().code, ErrorCode::NotFound);
 }
+
+#[tokio::test]
+async fn name_lookups_are_limited_per_tunnel_net_and_wide_net() {
+    let r = rig("limits: {lookups_per_net_min: 2, lookups_per_wide_min: 3, lookups_per_tunnel_min: 5}\n").await;
+    let e = &r.edge;
+    let lookup = |net: &str, k: &PublicKey| share_edge::limits::lookup(e, net, k);
+    let pass = |net: &str, k: &PublicKey| assert_eq!(lookup(net, k), None, "{net}");
+    let (a, b, c, d) = (
+        SecretKey::generate().public(),
+        SecretKey::generate().public(),
+        SecretKey::generate().public(),
+        SecretKey::generate().public(),
+    );
+    let scope_of = |refused: Option<ErrorBody>| {
+        let b = refused.expect("refused");
+        assert_eq!(b.code, ErrorCode::RateLimited);
+        assert_eq!(b.status(), 429);
+        assert!(b.retry_after_s.is_some_and(|s| (1..=60).contains(&s)), "{b:?}");
+        assert!(share_edge::ops::is_limit_refusal(&b));
+        e.ops.refused(&b, now_ms());
+        b.scope.unwrap()
+    };
+    // Per IPv4 address: two engines behind one address share the count.
+    pass("192.0.2.1", &a);
+    pass("192.0.2.1", &b);
+    assert_eq!(scope_of(lookup("192.0.2.1", &b)), LimitScope::Net);
+    // Per /24: a third address of the same /24 takes the last wide token, the next one is refused as wide.
+    pass("192.0.2.9", &c);
+    assert_eq!(scope_of(lookup("192.0.2.10", &c)), LimitScope::NetWide);
+    // Another /24 is untouched.
+    pass("198.51.100.1", &c);
+    // IPv6: the tunnel net is the /64 key; a second /64 of the same /48 counts in the wide tier.
+    pass("2001:db8:0:1::", &d);
+    pass("2001:db8:0:1::", &d);
+    assert_eq!(scope_of(lookup("2001:db8:0:1::", &d)), LimitScope::Net);
+    pass("2001:db8:0:2::", &d);
+    assert_eq!(scope_of(lookup("2001:db8:0:3::", &d)), LimitScope::NetWide);
+    // A relayed tunnel has only the per-tunnel limit.
+    let relayed = SecretKey::generate().public();
+    for _ in 0..5 {
+        pass("relay:https://r.example/", &relayed);
+    }
+    assert_eq!(scope_of(lookup("relay:https://r.example/", &relayed)), LimitScope::Tunnel);
+    // `/v1/info`'s scope-less rate_limited is not a limit refusal.
+    assert!(!share_edge::ops::is_limit_refusal(&ErrorBody::new(ErrorCode::RateLimited)));
+    let m = share_edge::ops::render(e, now_ms()).await;
+    assert!(m.contains("share_edge_refusals_total{code=\"rate_limited\",scope=\"net\",limit=\"none\"} 2"), "{m}");
+    assert!(m.contains("share_edge_refusals_total{code=\"rate_limited\",scope=\"net_wide\",limit=\"none\"} 2"), "{m}");
+    assert!(m.contains("share_edge_refusals_total{code=\"rate_limited\",scope=\"tunnel\",limit=\"none\"} 1"), "{m}");
+    e.sweep_limiters();
+}
+
+fn standby_cfg(dir: &std::path::Path, standby_public: Option<PublicKey>) -> Config {
+    let sp = standby_public.map(|p| format!("standby_public: \"{p}\"\n")).unwrap_or_default();
+    let yaml = format!("domain: tun.zip\ndata_dir: {}\niroh: {{relay: \"https://r.example/\"}}\n{sp}", dir.display());
+    Config::from_yaml(&yaml, &|_| None).unwrap().0
+}
+
+#[test]
+fn keygen_writes_a_private_key_once_and_its_public_key_parses() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("standby.key");
+    let public = share_edge::keygen(&out).unwrap();
+    assert_eq!(share_edge::read_key(&out).unwrap().public(), public);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(std::fs::metadata(&out).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    // What the CLI prints: the hex form (what `standby_public` takes) and z-base-32.
+    assert_eq!(public.to_string().parse::<PublicKey>().unwrap(), public);
+    assert_eq!(PublicKey::from_z32(&public.to_z32()).unwrap(), public);
+    assert_eq!(standby_cfg(dir.path(), Some(public)).standby_public, Some(public));
+    let before = std::fs::read(&out).unwrap();
+    assert!(share_edge::keygen(&out).is_err(), "never overwrites");
+    assert_eq!(std::fs::read(&out).unwrap(), before);
+}
+
+#[test]
+fn standby_public_drives_the_standby_ticket_without_a_secret_on_the_volume() {
+    let data = tempfile::tempdir().unwrap();
+    let offline = tempfile::tempdir().unwrap();
+    let public = share_edge::keygen(&offline.path().join("standby.key")).unwrap();
+    let cfg = standby_cfg(data.path(), Some(public));
+    let live = share_edge::load_or_create_key(&cfg.key_path()).unwrap().public();
+    let t = share_edge::standby_ticket(&cfg).unwrap();
+    assert_eq!(t.edge_id(), public);
+    assert_eq!(t.addr.relay_urls().count(), 1, "same relay as the live ticket");
+    assert_eq!(share_edge::standby_key(&cfg, &live).unwrap(), public);
+    assert!(!cfg.standby_key_path().exists(), "no standby secret generated");
+    // The on-volume retire refuses: the standby secret is offline.
+    assert!(share_edge::retire(&cfg, 1).is_err());
+}
+
+#[test]
+fn a_standby_secret_on_the_volume_that_differs_from_standby_public_refuses_start() {
+    let data = tempfile::tempdir().unwrap();
+    let offline = tempfile::tempdir().unwrap();
+    let public = share_edge::keygen(&offline.path().join("standby.key")).unwrap();
+    let cfg = standby_cfg(data.path(), Some(public));
+    let live = share_edge::load_or_create_key(&cfg.key_path()).unwrap().public();
+    // A stale pre-launch standby secret: a different key.
+    share_edge::keygen(&cfg.standby_key_path()).unwrap();
+    assert!(share_edge::standby_key(&cfg, &live).is_err());
+    // The same key on the volume only warns.
+    std::fs::remove_file(cfg.standby_key_path()).unwrap();
+    std::fs::copy(offline.path().join("standby.key"), cfg.standby_key_path()).unwrap();
+    assert_eq!(share_edge::standby_key(&cfg, &live).unwrap(), public);
+}
+
+#[test]
+fn offline_retire_signs_with_the_operator_standby_and_promotes_it() {
+    let data = tempfile::tempdir().unwrap();
+    let offline = tempfile::tempdir().unwrap();
+    let standby_path = offline.path().join("standby.key");
+    let public = share_edge::keygen(&standby_path).unwrap();
+    let cfg = standby_cfg(data.path(), Some(public));
+    let live = share_edge::load_or_create_key(&cfg.key_path()).unwrap().public();
+    // A secret that is not `standby_public` is refused and changes nothing.
+    let other = offline.path().join("other.key");
+    share_edge::keygen(&other).unwrap();
+    assert!(share_edge::retire_offline(&other, &cfg.key_path(), cfg.standby_public, 5).is_err());
+    assert_eq!(share_edge::read_key(&cfg.key_path()).unwrap().public(), live);
+    let signed = share_edge::retire_offline(&standby_path, &cfg.key_path(), cfg.standby_public, 1234).unwrap();
+    let mut pins = share_proto::EdgePins::new(live, Some(public));
+    let notice = pins.accept_retire(&signed, &public).unwrap();
+    assert_eq!((notice.retired, notice.issued_ms), (live, 1234));
+    assert_eq!(pins.live, public);
+    // What the next start needs: the standby as iroh.key, retire.json, the old key kept.
+    assert_eq!(share_edge::read_key(&cfg.key_path()).unwrap().public(), public);
+    let on_disk: share_proto::Signed = serde_json::from_slice(&std::fs::read(cfg.retire_path()).unwrap()).unwrap();
+    assert_eq!(share_proto::Retire::verify(&on_disk, &public).unwrap().retired, live);
+    assert_eq!(share_edge::read_key(&data.path().join("iroh.key.retired")).unwrap().public(), live);
+    assert!(standby_path.exists(), "the operator's copy stays where it is");
+    assert!(!data.path().join("iroh.key.new").exists());
+    // Retiring onto the key already live is refused.
+    assert!(share_edge::retire_offline(&standby_path, &cfg.key_path(), None, 2).is_err());
+}

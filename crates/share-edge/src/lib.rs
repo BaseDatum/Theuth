@@ -38,13 +38,7 @@ use crate::store::Store;
 /// Load `<data_dir>/iroh.key` or create it (32 random bytes, 0600), as the engine's mesh identity does.
 pub fn load_or_create_key(path: &Path) -> anyhow::Result<SecretKey> {
     match std::fs::read(path) {
-        Ok(bytes) => {
-            let bytes: [u8; 32] = bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("{}: expected 32 bytes", path.display()))?;
-            Ok(SecretKey::from_bytes(&bytes))
-        }
+        Ok(bytes) => key_from_bytes(path, &bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let secret = SecretKey::generate();
             if let Some(dir) = path.parent() {
@@ -56,6 +50,28 @@ pub fn load_or_create_key(path: &Path) -> anyhow::Result<SecretKey> {
         }
         Err(e) => Err(e).with_context(|| format!("read {}", path.display())),
     }
+}
+
+/// Read an existing endpoint key file (32 raw bytes); never creates one.
+pub fn read_key(path: &Path) -> anyhow::Result<SecretKey> {
+    let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    key_from_bytes(path, &bytes)
+}
+
+fn key_from_bytes(path: &Path, bytes: &[u8]) -> anyhow::Result<SecretKey> {
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{}: expected 32 bytes", path.display()))?;
+    Ok(SecretKey::from_bytes(&bytes))
+}
+
+/// `keygen --out <path>` (§13 "generate the standby key offline"): a new endpoint secret key file (32 raw bytes,
+/// 0600, the `iroh.key` format); refuses an existing file. Needs no config. Returns the public key, which goes
+/// into the edge's `standby_public` and the release's pinned standby.
+pub fn keygen(out: &Path) -> anyhow::Result<share_proto::PublicKey> {
+    let secret = SecretKey::generate();
+    platform::files::create_private(out, &secret.to_bytes()).with_context(|| format!("create {}", out.display()))?;
+    Ok(secret.public())
 }
 
 /// The ticket clients paste into `share.edge` (§5.5): the endpoint id, the home relay and `iroh.public_addrs`.
@@ -72,33 +88,112 @@ pub fn ticket(cfg: &Config, id: share_proto::PublicKey) -> anyhow::Result<ShareE
 }
 
 /// The standby ticket (`ticket --standby`): the standby key with the live ticket's relay and addresses, what a
-/// release pins beside the live one (§5.5, D15). Creates the standby key when there is none.
+/// release pins beside the live one (§5.5, D15). `standby_public` when set (no file touched); else the
+/// on-volume standby key, created when there is none (pre-launch behaviour).
 pub fn standby_ticket(cfg: &Config) -> anyhow::Result<ShareEdgeTicket> {
-    let standby = load_or_create_key(&cfg.standby_key_path())?;
-    ticket(cfg, standby.public())
+    let standby = match cfg.standby_public {
+        Some(p) => p,
+        None => load_or_create_key(&cfg.standby_key_path())?.public(),
+    };
+    ticket(cfg, standby)
 }
 
-/// `retire` (§5.5): sign a [`share_proto::Retire`] of the live key with the standby key, write it to
-/// `retire.json`, and promote the standby key to `iroh.key` (the old key is kept as `iroh.key.retired`). The edge
-/// must be stopped; the next `run` serves on the former standby key and sends the notice in every `welcome`.
+/// The standby public key an edge running on `live` announces (`status.standby`), checked at start. With
+/// `standby_public`: no secret is created; a standby secret still on the volume is a warning when it matches and
+/// an error when it does not. Without: the on-volume standby key, created at first start.
+pub fn standby_key(cfg: &Config, live: &share_proto::PublicKey) -> anyhow::Result<share_proto::PublicKey> {
+    let path = cfg.standby_key_path();
+    let Some(public) = cfg.standby_public else {
+        return Ok(load_or_create_key(&path)?.public());
+    };
+    if path.exists() {
+        let on_disk = read_key(&path)?.public();
+        anyhow::ensure!(
+            on_disk == public,
+            "{} holds standby key {on_disk}, but standby_public is {public}: remove the file or fix standby_public",
+            path.display()
+        );
+        tracing::warn!(
+            path = %path.display(),
+            "standby_public is set but the standby secret is on the volume: keep it offline and delete this file"
+        );
+    }
+    if public == *live {
+        tracing::warn!(
+            "standby_public is the live key (retired onto it?): `keygen` a new standby and set standby_public"
+        );
+    }
+    Ok(public)
+}
+
+/// `retire` with the on-volume standby key (pre-launch behaviour, `standby_public` unset; §5.5): sign a
+/// [`share_proto::Retire`] of the live key with `<data_dir>/iroh.standby.key`, write `retire.json`, promote it to
+/// `iroh.key` (the old key is kept as `iroh.key.retired`) and remove the standby file. The edge must be stopped;
+/// the next `run` serves on the former standby key and sends the notice in every `welcome`.
 pub fn retire(cfg: &Config, now_ms: u64) -> anyhow::Result<share_proto::Signed> {
-    let live_path = cfg.key_path();
+    anyhow::ensure!(
+        cfg.standby_public.is_none(),
+        "standby_public is set: the standby secret is offline; use `retire --standby-key <path>`"
+    );
     let standby_path = cfg.standby_key_path();
     anyhow::ensure!(standby_path.exists(), "no standby key at {}", standby_path.display());
-    let live = load_or_create_key(&live_path)?;
-    let standby = load_or_create_key(&standby_path)?;
+    let standby = read_key(&standby_path)?;
+    let signed = promote(&cfg.key_path(), &standby, now_ms)?;
+    std::fs::remove_file(&standby_path).with_context(|| format!("remove {}", standby_path.display()))?;
+    Ok(signed)
+}
+
+/// Offline `retire --standby-key <path> [--edge-key <path>]` (§13 launch procedure): sign a
+/// [`share_proto::Retire`] of the key in `edge_key` with the operator-held standby secret and write, beside
+/// `edge_key`, what the edge needs at its next start: `retire.json`, the standby secret as the new `edge_key`
+/// (0600) and the old key as `<edge_key>.retired`. `expect` (the config's `standby_public`, when known) must be
+/// the standby secret's public key. The standby file itself is left where the operator keeps it.
+pub fn retire_offline(
+    standby_key: &Path,
+    edge_key: &Path,
+    expect: Option<share_proto::PublicKey>,
+    now_ms: u64,
+) -> anyhow::Result<share_proto::Signed> {
+    let standby = read_key(standby_key)?;
+    if let Some(p) = expect {
+        anyhow::ensure!(
+            standby.public() == p,
+            "{} is key {}, but standby_public is {p}",
+            standby_key.display(),
+            standby.public()
+        );
+    }
+    promote(edge_key, &standby, now_ms)
+}
+
+/// Sign the retire of `edge_key`'s key by `standby` and promote `standby` to `edge_key`. The new key is written
+/// before the old one moves, so a failure never leaves the data dir without a key (which `run` would replace by
+/// a fresh random one).
+fn promote(edge_key: &Path, standby: &SecretKey, now_ms: u64) -> anyhow::Result<share_proto::Signed> {
+    let live = read_key(edge_key)?;
+    anyhow::ensure!(live.public() != standby.public(), "the standby key is already the live key");
     let notice = share_proto::Retire {
         v: share_proto::Retire::VERSION,
         edge: standby.public(),
         retired: live.public(),
         issued_ms: now_ms,
     };
-    let signed = notice.sign(&standby).map_err(|e| anyhow::anyhow!("{e}"))?;
-    platform::files::create_private(&cfg.retire_path(), &serde_json::to_vec(&signed)?)
-        .with_context(|| format!("write {}", cfg.retire_path().display()))?;
-    let retired = live_path.with_extension("key.retired");
-    std::fs::rename(&live_path, &retired).with_context(|| format!("move {}", live_path.display()))?;
-    std::fs::rename(&standby_path, &live_path).with_context(|| format!("move {}", standby_path.display()))?;
+    let signed = notice.sign(standby).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let dir = edge_key.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let name = edge_key
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("{}: not a file path", edge_key.display()))?
+        .to_string_lossy();
+    let fresh = dir.join(format!("{name}.new"));
+    let _ = std::fs::remove_file(&fresh);
+    platform::files::create_private(&fresh, &standby.to_bytes())
+        .with_context(|| format!("write {}", fresh.display()))?;
+    let retire_json = dir.join("retire.json");
+    platform::files::write_private(&retire_json, &serde_json::to_vec(&signed)?)
+        .with_context(|| format!("write {}", retire_json.display()))?;
+    let retired = dir.join(format!("{name}.retired"));
+    std::fs::rename(edge_key, &retired).with_context(|| format!("move {}", edge_key.display()))?;
+    std::fs::rename(&fresh, edge_key).with_context(|| format!("move {}", fresh.display()))?;
     Ok(signed)
 }
 
@@ -208,8 +303,8 @@ pub async fn start_with(
     platform::files::private_dir(&cfg.data_dir)
         .with_context(|| format!("data_dir {}", cfg.data_dir.display()))?;
     let key = load_or_create_key(&cfg.key_path())?;
-    // §5.5: the standby key, created once beside the live one; `ticket --standby` prints it, `retire` promotes it.
-    let standby = load_or_create_key(&cfg.standby_key_path())?.public();
+    // §5.5, §13: `standby_public` (offline standby), or the on-volume standby key created once beside the live one.
+    let standby = standby_key(&cfg, &key.public())?;
     let retire = load_retire(&cfg, &key.public())?;
     let store = Store::open(&cfg.db_path(), cfg.db_journal).await?;
     let relay_mode = if cfg.iroh.relay.is_empty() {

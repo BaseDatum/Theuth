@@ -293,6 +293,12 @@ pub struct Edge {
     pub ip_rate: DefaultKeyedRateLimiter<IpAddr>,
     /// `GET /v1/info` per client network ([`Tunnel::net`]).
     pub info_rate: DefaultKeyedRateLimiter<String>,
+    /// `GET /v1/names/{name}` per client network (IPv4 address, IPv6 /64), `lookups_per_net_min`.
+    pub lookup_net: DefaultKeyedRateLimiter<IpAddr>,
+    /// `GET /v1/names/{name}` per wide network (IPv4 /24, IPv6 /48), `lookups_per_wide_min`.
+    pub lookup_wide: DefaultKeyedRateLimiter<IpAddr>,
+    /// `GET /v1/names/{name}` per tunnel (engine key), `lookups_per_tunnel_min`.
+    pub lookup_tunnel: DefaultKeyedRateLimiter<PublicKey>,
     /// The `conn_log` writer's queue.
     pub conn_log: ConnLog,
     /// Certificates (EDGE2); unset in an edge built without backends.
@@ -324,6 +330,9 @@ impl Edge {
             info_rate: RateLimiter::keyed(Quota::per_minute(
                 NonZeroU32::new(cfg.limits.info_per_ip_min.max(1)).expect("nonzero"),
             )),
+            lookup_net: per_minute(cfg.limits.lookups_per_net_min),
+            lookup_wide: per_minute(cfg.limits.lookups_per_wide_min),
+            lookup_tunnel: per_minute(cfg.limits.lookups_per_tunnel_min),
             routes: DashMap::new(),
             tunnels: DashMap::new(),
             conn_log: ConnLog::new(CONN_LOG_QUEUE),
@@ -437,6 +446,12 @@ impl Edge {
         self.ip_rate.shrink_to_fit();
         self.info_rate.retain_recent();
         self.info_rate.shrink_to_fit();
+        self.lookup_net.retain_recent();
+        self.lookup_net.shrink_to_fit();
+        self.lookup_wide.retain_recent();
+        self.lookup_wide.shrink_to_fit();
+        self.lookup_tunnel.retain_recent();
+        self.lookup_tunnel.shrink_to_fit();
     }
 
     /// A connection ended: drop its routes and its tunnel entry (if still the current one).
@@ -499,6 +514,10 @@ impl Live {
             admission: cfg.admission,
         })
     }
+}
+
+fn per_minute<K: std::hash::Hash + Eq + Clone>(n: u32) -> DefaultKeyedRateLimiter<K> {
+    RateLimiter::keyed(Quota::per_minute(NonZeroU32::new(n.max(1)).expect("nonzero")))
 }
 
 /// [`Edge::sweep_limiters`] every minute.

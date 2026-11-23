@@ -72,16 +72,19 @@ fn count(q: &Mutex<VecDeque<u64>>, now_ms: u64) -> u32 {
     u32::try_from(q.len()).unwrap_or(u32::MAX)
 }
 
-/// The codes the brake and `share_edge_refusals_total` count as limit refusals.
-pub fn is_limit_refusal(code: ErrorCode) -> bool {
-    matches!(
-        code,
+/// The answers the brake and `share_edge_refusals_total` count as limit refusals: the quota codes, and
+/// `rate_limited` when it names its scope (the availability lookup limit, LAUNCH-EDGE; `/v1/info` floods carry
+/// none and stay uncounted).
+pub fn is_limit_refusal(b: &ErrorBody) -> bool {
+    match b.code {
         ErrorCode::NetworkQuota
-            | ErrorCode::Paced
-            | ErrorCode::Quota
-            | ErrorCode::EnginesQuota
-            | ErrorCode::EdgeFull
-    )
+        | ErrorCode::Paced
+        | ErrorCode::Quota
+        | ErrorCode::EnginesQuota
+        | ErrorCode::EdgeFull => true,
+        ErrorCode::RateLimited => b.scope.is_some(),
+        _ => false,
+    }
 }
 
 fn label<T: serde::Serialize>(v: Option<T>) -> String {
@@ -93,7 +96,7 @@ fn label<T: serde::Serialize>(v: Option<T>) -> String {
 impl Ops {
     /// Count an error answer; only limit refusals are kept.
     pub fn refused(&self, b: &ErrorBody, now_ms: u64) {
-        if !is_limit_refusal(b.code) {
+        if !is_limit_refusal(b) {
             return;
         }
         let key = format!("{}/{}/{}", b.code, label(b.scope), label(b.limit));

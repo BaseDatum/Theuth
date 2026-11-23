@@ -77,6 +77,10 @@ pub struct Config {
     pub drain_secs: u64,
     /// The automatic brake (§9.5).
     pub brake: BrakeConfig,
+    /// The public half of the offline standby key (§5.5, §13; `theuth-share-edge keygen`). Set: the edge never
+    /// creates or needs `iroh.standby.key`, and `ticket --standby` and `status.standby` use this key. Unset: the
+    /// pre-launch behaviour (the edge creates `iroh.standby.key` on its volume at first start).
+    pub standby_public: Option<share_proto::PublicKey>,
 }
 
 /// `brake:` (§9.5). Every threshold of 0 is off. With `auto`, a holding condition flips `admission: open` to
@@ -145,6 +149,7 @@ impl Default for Config {
             k8s: crate::k8s::K8sConfig::default(),
             drain_secs: 30,
             brake: BrakeConfig::default(),
+            standby_public: None,
         }
     }
 }
@@ -422,6 +427,12 @@ pub struct Limits {
     /// Pause of a name's certificate job after `name_fail_max` failed authorizations.
     #[serde(with = "dur")]
     pub name_fail_cooldown: Duration,
+    /// `GET /v1/names/{name}` per minute per client network (IPv4 address, IPv6 /64).
+    pub lookups_per_net_min: u32,
+    /// `GET /v1/names/{name}` per minute per wide network (IPv4 /24, IPv6 /48).
+    pub lookups_per_wide_min: u32,
+    /// `GET /v1/names/{name}` per minute per tunnel (engine key); the only lookup limit of a relayed tunnel.
+    pub lookups_per_tunnel_min: u32,
 }
 
 impl Default for Limits {
@@ -470,6 +481,9 @@ impl Default for Limits {
             unattached_expiry: Duration::from_secs(90 * 86_400),
             name_fail_max: 2,
             name_fail_cooldown: Duration::from_secs(3600),
+            lookups_per_net_min: 30,
+            lookups_per_wide_min: 120,
+            lookups_per_tunnel_min: 30,
         }
     }
 }
@@ -709,7 +723,8 @@ impl Config {
         self.data_dir.join("iroh.key")
     }
 
-    /// `<data_dir>/iroh.standby.key`: the standby endpoint key (§5.5), created at first start.
+    /// `<data_dir>/iroh.standby.key`: the standby endpoint key (§5.5), created at first start unless
+    /// `standby_public` is set (then it should not exist: the secret stays offline).
     pub fn standby_key_path(&self) -> PathBuf {
         self.data_dir.join("iroh.standby.key")
     }

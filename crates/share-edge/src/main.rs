@@ -45,8 +45,26 @@ enum Cmd {
         standby: bool,
     },
     /// With the edge stopped: sign a retire notice of the live key with the standby key, write `retire.json`
-    /// and promote the standby key to `iroh.key` (§5.5).
-    Retire,
+    /// and promote the standby key to the live key (§5.5). Launch procedure (§13, `standby_public` set): pass the
+    /// offline standby secret with `--standby-key`; `--edge-key` names the live key file (default: the config's
+    /// `<data_dir>/iroh.key`), and the files are written beside it. Without `--standby-key`: the on-volume
+    /// `iroh.standby.key` (only when `standby_public` is unset).
+    Retire {
+        /// The offline standby secret key file (`keygen --out`).
+        #[arg(long)]
+        standby_key: Option<PathBuf>,
+        /// The live key file to retire; `retire.json`, the promoted key and `<file>.retired` go beside it.
+        /// Without it the config is read for `<data_dir>/iroh.key`.
+        #[arg(long, requires = "standby_key")]
+        edge_key: Option<PathBuf>,
+    },
+    /// Offline, no config: write a new endpoint secret key (0600, never overwrites) and print its public key
+    /// (hex, as `standby_public` and share-proto parse it; then z-base-32). §13: the standby key.
+    Keygen {
+        /// Where to write the secret key.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -243,6 +261,38 @@ fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     rt.block_on(async move {
+        match &cli.cmd {
+            Cmd::Keygen { out } => {
+                let public = share_edge::keygen(out)?;
+                println!("{public}");
+                println!("z32: {}", public.to_z32());
+                eprintln!("secret key written to {} (0600); keep it offline", out.display());
+                return Ok(());
+            }
+            Cmd::Retire {
+                standby_key: Some(standby_key),
+                edge_key: Some(edge_key),
+            } => {
+                // Offline: the config is read only when present (its `standby_public` is checked).
+                let cfg = if cli.config.exists() {
+                    Some(Config::load(&cli.config)?.0)
+                } else {
+                    None
+                };
+                if let Some(cfg) = &cfg {
+                    refuse_running(cfg).await?;
+                }
+                let signed = share_edge::retire_offline(
+                    standby_key,
+                    edge_key,
+                    cfg.and_then(|c| c.standby_public),
+                    share_edge::state::now_ms(),
+                )?;
+                println!("{}", serde_json::to_string(&signed)?);
+                return Ok(());
+            }
+            _ => {}
+        }
         let (cfg, secrets) = Config::load(&cli.config)?;
         match cli.cmd {
             Cmd::Run => share_edge::run(cfg, secrets, cli.config.clone()).await,
@@ -294,14 +344,25 @@ fn main() -> anyhow::Result<()> {
                 println!("{t}");
                 Ok(())
             }
-            Cmd::Retire => {
-                if tokio::net::UnixStream::connect(cfg.admin_socket()).await.is_ok() {
-                    anyhow::bail!("the edge is running (admin socket answers): stop it before `retire`");
-                }
-                let signed = share_edge::retire(&cfg, share_edge::state::now_ms())?;
+            Cmd::Retire { standby_key, .. } => {
+                refuse_running(&cfg).await?;
+                let now = share_edge::state::now_ms();
+                let signed = match standby_key {
+                    Some(p) => share_edge::retire_offline(&p, &cfg.key_path(), cfg.standby_public, now)?,
+                    None => share_edge::retire(&cfg, now)?,
+                };
                 println!("{}", serde_json::to_string(&signed)?);
                 Ok(())
             }
+            Cmd::Keygen { .. } => unreachable!("handled before the config is read"),
         }
     })
+}
+
+/// `retire` needs the edge stopped: refused while the admin socket answers.
+async fn refuse_running(cfg: &Config) -> anyhow::Result<()> {
+    if tokio::net::UnixStream::connect(cfg.admin_socket()).await.is_ok() {
+        anyhow::bail!("the edge is running (admin socket answers): stop it before `retire`");
+    }
+    Ok(())
 }

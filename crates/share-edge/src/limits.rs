@@ -278,6 +278,45 @@ pub fn tunnels_refusal(edge: &Edge, net: &str, engine: &share_proto::PublicKey) 
     None
 }
 
+/// `GET /v1/names/{name}` (availability lookups, LAUNCH-EDGE): per tunnel (`lookups_per_tunnel_min`), then, for a
+/// direct path, per client network (IPv4 address or IPv6 /64, `lookups_per_net_min`) and per wide network (IPv4
+/// /24 or IPv6 /48, `lookups_per_wide_min`). A relayed tunnel has only the tunnel limit. Refused: `429
+/// rate_limited {scope, retry_after_s}` (no `limit`: share-proto has no lookup kind). In-memory GCRA, swept with
+/// the other keyed limiters; sized at start. Returns the refusal, if any.
+pub fn lookup(edge: &Edge, net: &str, engine: &share_proto::PublicKey) -> Option<ErrorBody> {
+    use governor::clock::{Clock as _, DefaultClock};
+    let refuse = |scope: LimitScope, nu: governor::NotUntil<_>| {
+        let mut b = ErrorBody::new(ErrorCode::RateLimited);
+        b.scope = Some(scope);
+        let wait = nu.wait_time_from(DefaultClock::default().now());
+        b.retry_after_s = Some(u64::try_from(wait.as_millis().div_ceil(1000)).unwrap_or(u64::MAX).max(1));
+        b
+    };
+    if let Err(nu) = edge.lookup_tunnel.check_key(engine) {
+        return Some(refuse(LimitScope::Tunnel, nu));
+    }
+    if let Ok(ip) = net.parse::<IpAddr>() {
+        let ip = crate::state::net_key(ip);
+        let wide = match ip {
+            IpAddr::V4(v4) => {
+                let o = v4.octets();
+                IpAddr::V4(Ipv4Addr::new(o[0], o[1], o[2], 0))
+            }
+            IpAddr::V6(v6) => {
+                let s = v6.segments();
+                IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], 0, 0, 0, 0, 0))
+            }
+        };
+        if let Err(nu) = edge.lookup_net.check_key(&ip) {
+            return Some(refuse(LimitScope::Net, nu));
+        }
+        if let Err(nu) = edge.lookup_wide.check_key(&wide) {
+            return Some(refuse(LimitScope::NetWide, nu));
+        }
+    }
+    None
+}
+
 /// What a granted-before-claim check took, to give back when the claim is refused.
 #[derive(Debug, Default)]
 pub struct Taken {

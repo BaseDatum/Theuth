@@ -628,6 +628,14 @@ pub fn reload(edge: &Edge, cfg: &crate::config::Config) -> anyhow::Result<Reload
     fixed("limits.pre_hello_conns", sl.pre_hello_conns.to_string(), nl.pre_hello_conns.to_string());
     fixed("limits.new_conns_per_ip_sec", sl.new_conns_per_ip_sec.to_string(), nl.new_conns_per_ip_sec.to_string());
     fixed("limits.info_per_ip_min", sl.info_per_ip_min.to_string(), nl.info_per_ip_min.to_string());
+    fixed("limits.lookups_per_net_min", sl.lookups_per_net_min.to_string(), nl.lookups_per_net_min.to_string());
+    fixed("limits.lookups_per_wide_min", sl.lookups_per_wide_min.to_string(), nl.lookups_per_wide_min.to_string());
+    fixed(
+        "limits.lookups_per_tunnel_min",
+        sl.lookups_per_tunnel_min.to_string(),
+        nl.lookups_per_tunnel_min.to_string(),
+    );
+    fixed("standby_public", format!("{:?}", s.standby_public), format!("{:?}", n.standby_public));
     fixed("limits.asn_db", format!("{:?}", sl.asn_db), format!("{:?}", nl.asn_db));
     if new.admission != old.admission {
         *edge.admission.write().expect("admission lock") = new.admission;
