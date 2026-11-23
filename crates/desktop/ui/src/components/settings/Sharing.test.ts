@@ -7,9 +7,10 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { isNotOnEngine, namesApi, NotOnEngine } from '@/components/public-share/wire'
 import { makeApi } from '@/rpc/bindings/client'
 import { RpcError } from '@/rpc/client'
+import { disconnected } from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'
 import { usePublicShares } from '@/store/public-shares'
-import { ApprovalsOffWarning, availabilityText, d22Text, MachinesSection, MeshIdRow, NameSection, nameProblem, publishArgs } from './Sharing'
+import { ApprovalsOffWarning, availabilityText, d22Text, DomainsTab, MachinesSection, MeshIdRow, NameSection, nameProblem, publishArgs, SharingTab } from './Sharing'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), warning: vi.fn(), message: vi.fn() }) }))
 
@@ -66,7 +67,7 @@ afterEach(async () => {
   root = undefined
   document.body.innerHTML = ''
   usePublicShares.getState().reset()
-  useConnection.setState({ client: null, api: null })
+  useConnection.setState({ client: null, api: null, discovery: disconnected() })
 })
 
 async function mount(el: Parameters<typeof h>[0]) {
@@ -142,6 +143,23 @@ test('M2 machines: every machine of the mesh with what it serves; the hub marked
   expect(rows).toContain('MacBook (this machine)Serves app.sky.tun.zip')
   expect(rows).toContain('StudiohubServes api2.sky.tun.zip, sky.tun.zip/docs')
   expect(rows).toContain('PiNothing public')
+})
+
+test('213: Public shares keeps the switch, live shares and history; Domains holds the edge, names, machines and certificates', async () => {
+  client({ share_settings_get: () => ({ enabled: true, edge: 'default', configured: true, mesh_id: null }), share_names_list: () => [] })
+  const methods = ['share_settings_get', 'share_list', 'share_settings_set'].map((name) => ({ name, params: [], result: { schema: {} } }))
+  useConnection.setState({ discovery: { phase: 'ready', capabilities: null, unavailable: new Set(), document: { methods, 'x-theuth': { events: [], subscriptions: [] } } as never } })
+  usePublicShares.getState().setStatus({ domain: 'tun.zip', state: { state: 'attached' }, clock_off_ms: null } as never)
+  await mount(SharingTab)
+  await vi.waitFor(() => expect(text()).toContain('Allow public sharing on this machine'))
+  for (const s of ['Live shares', 'History (30 days)', 'Terms', 'What the edge sees']) expect(text()).toContain(s)
+  for (const s of ['Your name', 'Machines', 'Certificates', 'tun.zip · Connected']) expect(text()).not.toContain(s)
+  await act(async () => root?.unmount())
+  document.body.innerHTML = ''
+  await mount(DomainsTab)
+  await vi.waitFor(() => expect(text()).toContain('tun.zip · Connected'))
+  for (const s of ['Your name', 'Certificates']) expect(text()).toContain(s)
+  expect(text()).not.toContain('Allow public sharing on this machine')
 })
 
 test('M2 namesApi: typed calls with the generated shapes; a missing method is NotOnEngine', async () => {

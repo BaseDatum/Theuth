@@ -13,7 +13,7 @@ import { voice } from '@/components/settings/categories/voice'
 import type { SettingsCategory, SettingsTab } from '@/components/settings/types'
 import { supports, type Discovery } from '@/rpc/discovery'
 
-/** 188: the categories column, top to bottom. 210: Sharing after Network (public web sharing, §7.4 item 4). */
+/** 188: the categories column, top to bottom. 210: Sharing after Network (public web sharing, §7.4 item 4); 213: its hub. */
 export const CATEGORIES: readonly SettingsCategory[] = [general, models, agent, suffixes, learning, voice, meetings, calendar, network, sharing, channels, tools]
 
 /** A tab id and the category it belongs to. */
@@ -40,8 +40,8 @@ export const TAB_IDS = [
   'voice', 'dictation', 'voice-dictionary', 'voice-key', 'voice-history',
   'meetings', 'detection', 'live', 'speakers', 'templates',
   'calendar', 'briefs', 'upcoming',
-  'machine', 'machines', 'devices', 'contacts', 'messaging', 'vms',
-  'sharing',
+  'machine', 'machines', 'devices', 'messaging', 'vms',
+  'shared', 'contacts', 'shared-chats', 'shared-notes', 'sharing', 'domains',
   'signal', 'slack', 'telegram',
   'tools', 'builtins', 'search', 'mcp', 'computer', 'browser',
 ] as const

@@ -79,7 +79,8 @@ pub use note_cells::{CheckCells, CodeBlocks, reader_markdown};
 pub use notebook::*;
 pub use relay::{CreateReq, HandbackReply};
 pub use share::{
-    Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName, proof,
+    Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName,
+    SharedDoc, SharedDocs, proof,
     secret_hash,
 };
 pub use store::DocStats;
@@ -226,6 +227,7 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     use wire::RuntimeWire as _;
     rt.register_wire_event::<DocumentChanged>().await?;
     rt.register_wire_event::<CellLatestChanged>().await?;
+    rt.register_wire_event::<DocumentSharing>().await?;
     rt.register_wire_event::<SourceEvent>().await
 }
 

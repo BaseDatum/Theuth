@@ -2559,12 +2559,30 @@ impl Message<MirrorChanged> for DocumentActor {
         }
         if !self.open.contains_key(&id) {
             let before = self.home_peek(&id);
+            // 213 §4: a mirrored `meta.json` that changes the members or links is a sharing change.
+            let sharing = |m: &DocMeta| (m.members.clone(), m.links.clone());
+            let shared_before = match kind {
+                crate::mirror::MirrorFile::Meta => {
+                    self.store.read_meta(&id).ok().map(|m| sharing(&m))
+                }
+                crate::mirror::MirrorFile::Snapshot => None,
+            };
             match self.store.mirror_apply(&m.path).await {
                 Ok(store::Applied::Created(_)) | Ok(store::Applied::Merged(_)) => {
                     self.pending_homes.remove(&id);
                     self.homes.remove(&id);
                     if let Ok(meta) = self.store.read_meta(&id) {
                         self.rt.publish(DocumentChanged::of(&meta, false)).await;
+                        let now = sharing(&meta);
+                        let changed = match &shared_before {
+                            Some(b) => *b != now,
+                            None => !now.0.is_empty() || !now.1.is_empty(),
+                        };
+                        if changed {
+                            self.rt
+                                .publish(crate::meta::DocumentSharing { doc: id.clone() })
+                                .await;
+                        }
                     }
                     // §4.5: a moved home moves the legs.
                     if self.home_peek(&id) != before {
@@ -2650,15 +2668,18 @@ impl Message<MirrorChanged> for DocumentActor {
                 let vault = self.store.vault();
                 let opens =
                     |l: &crate::meta::ShareLink| crate::share::seal_opens(vault.as_deref(), l);
-                let (home, fence) = (
+                let (home, fence, shared_before) = (
                     o.meta.home.clone(),
                     (o.meta.serve_epoch, o.meta.served_by.clone()),
+                    (o.meta.members.clone(), o.meta.links.clone()),
                 );
                 if !crate::mirror::merge_meta(&mut o.meta, &incoming, &opens) {
                     return;
                 }
                 let home_moved = o.meta.home != home;
                 let fence_moved = (o.meta.serve_epoch, o.meta.served_by.clone()) != fence;
+                let sharing_moved =
+                    (&o.meta.members, &o.meta.links) != (&shared_before.0, &shared_before.1);
                 let (meta, title) = (o.meta.clone(), o.meta.title.clone());
                 if let Err(e) = self.store.write_meta(&meta).await {
                     tracing::warn!(doc = %id, error = %e, "meta.json: merge not saved");
@@ -2673,6 +2694,11 @@ impl Message<MirrorChanged> for DocumentActor {
                 self.fan_out(&id, DocEvent::Members { members, links }, None);
                 self.fan_out(&id, DocEvent::Meta { title }, None);
                 self.rt.publish(DocumentChanged::of(&meta, false)).await;
+                if sharing_moved {
+                    self.rt
+                        .publish(crate::meta::DocumentSharing { doc: id.clone() })
+                        .await;
+                }
                 // §4.4: a beaten fence names a second server; §4.5: a moved home reroutes.
                 if fence_moved {
                     self.fence_beaten(&id);

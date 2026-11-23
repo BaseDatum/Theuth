@@ -43,7 +43,6 @@ pub trait LinkHubApi {
 
 #[async_trait]
 impl LinkHubApiServer for Server {
-
     async fn doc_member_revoke(
         &self,
         ext: &Extensions,

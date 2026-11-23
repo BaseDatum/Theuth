@@ -7,7 +7,7 @@ import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { SessionMemory } from "@/rpc/bindings/method.agent.output"
 import type { EndlessProgress } from "@/rpc/bindings/event.agent_2eendless_2dprogress.output"
 import { useConnection } from '@/store/connection'
-import { on } from '@/store/sessions'
+import { on, onTopic } from '@/store/sessions'
 import { isPopout, openPopout } from '@/lib/popout'
 import { applySandboxEvent } from '@/store/sandboxes'
 import { endlessFixture } from '@/dev/endless-fixture'
@@ -155,6 +155,8 @@ export const queryKeys = {
   contactNearby: ['a2a', 'nearby'] as const,
   /** 183 §7.4: every contact `PairCeremony` by id, from `contact_pair` and each `contact_pair` event (no fetch of its own). */
   contactPair: ['contact-pair'] as const,
+  /** 213 §2: every `sharing_list(kinds)`; refetched on `share.changed@1`, `a2a.changed@1`, `document.changed@1`, `document.sharing@1`. */
+  sharing: ['sharing'] as const,
   // 53 (03 §3): `meetings` is the prefix of the list and every `meeting(id)`; status/topics are the current recording.
   meetings: ['meetings'] as const,
   meeting: (id: string) => ['meetings', id] as const,
@@ -311,7 +313,13 @@ export function useInvalidateOn(): void {
         void qc.invalidateQueries({ queryKey: queryKeys.artifacts })
         search()
       }),
-      on("document.changed@1", 'DocumentChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.notes })),
+      on("document.changed@1", 'DocumentChanged', () => {
+        void qc.invalidateQueries({ queryKey: queryKeys.notes })
+        void qc.invalidateQueries({ queryKey: queryKeys.sharing })
+      }),
+      // 213 §4: a document's members or links changed (create, revoke, join, role change).
+      onTopic('document.sharing@1', () => void qc.invalidateQueries({ queryKey: queryKeys.sharing })),
+      onTopic('share.changed@1', () => void qc.invalidateQueries({ queryKey: queryKeys.sharing })),
       on("secrets.events@1", 'SecretsChanged', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
       on("secrets.events@1", 'SecretResolved', () => void qc.invalidateQueries({ queryKey: queryKeys.secrets })),
       on("agent.communication@1", 'CommunicationChanged', () => {
@@ -325,6 +333,7 @@ export function useInvalidateOn(): void {
       }),
       on("a2a.changed@1", 'A2aChanged', () => {
         void qc.invalidateQueries({ queryKey: queryKeys.a2a })
+        void qc.invalidateQueries({ queryKey: queryKeys.sharing })
         void qc.invalidateQueries({ queryKey: ['communication'] })
         void qc.invalidateQueries({ queryKey: ['peers'] })
       }),

@@ -519,6 +519,22 @@ impl DocumentChanged {
     }
 }
 
+/// 213 §4 bus event: `doc`'s members or links changed (create, revoke, join, role change); the
+/// Settings › Sharing hub refetches `sharing_list` on it. Wire shape `{ "type": "DocumentSharing", "doc": … }`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
+#[serde(tag = "type")]
+pub struct DocumentSharing {
+    /// Document.
+    pub doc: DocId,
+}
+
+impl wire::WireEvent for DocumentSharing {
+    const TOPIC: &'static str = "document.sharing";
+    const VERSION: u32 = 1;
+}
+
 /// 184 §6.4 (W-p) bus event (`subscribe_events`): a replica batch from another engine touched
 /// `cell_latest` rows of `doc`; an open note re-reads `cell_latest`. Wire shape
 /// `{ "type": "CellLatestChanged", "doc": … }`.

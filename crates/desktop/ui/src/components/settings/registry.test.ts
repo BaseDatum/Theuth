@@ -4,6 +4,7 @@ vi.hoisted(() => {
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined })
 })
 import { CATEGORIES, MOVED_TABS, TAB_IDS, isTab, shownCategories, shownTab, shownTabs } from './registry'
+import type { Discovery } from '@/rpc/discovery'
 
 const tabs = CATEGORIES.flatMap((category) => [...category.tabs])
 const ids = tabs.map((tab) => tab.id)
@@ -58,10 +59,39 @@ test('S4: with every tab shown, every category is listed and every tab lands on 
 test('S4: a hidden tab leaves its band and lands on its category’s first shown tab', () => {
   hide('machine', 'vms')
   const network = CATEGORIES.find((category) => category.id === 'network')
-  expect(network && shownTabs(network).map((tab) => tab.id)).toEqual(['machines', 'devices', 'contacts', 'messaging'])
+  expect(network && shownTabs(network).map((tab) => tab.id)).toEqual(['machines', 'devices', 'messaging'])
   expect(shownTab('machine')).toBe('machines')
   expect(shownTab('vms')).toBe('machines')
   expect(shownTab('contacts')).toBe('contacts')
+})
+
+test('213: Sharing holds the shared items in contract order; Network keeps the switches', () => {
+  const tabsOf = (id: string) => CATEGORIES.find((category) => category.id === id)?.tabs.map((tab) => [tab.id, tab.label])
+  expect(tabsOf('sharing')).toEqual([
+    ['shared', 'Overview'],
+    ['contacts', 'Contacts'],
+    ['shared-chats', 'Chats and agents'],
+    ['shared-notes', 'Notes and notebooks'],
+    ['sharing', 'Public shares'],
+    ['domains', 'Domains'],
+  ])
+  expect(tabsOf('network')?.map(([id]) => id)).toEqual(['machine', 'machines', 'devices', 'messaging', 'vms'])
+})
+
+test('213: an engine without sharing_list hides Overview and Notes; Contacts leads Sharing', () => {
+  hide()
+  const sharing = CATEGORIES.find((category) => category.id === 'sharing')!
+  const methods = [...new Set(sharing.tabs.flatMap((tab) => tab.required?.methods ?? []))]
+  const engine = (without: string[]): Discovery => ({
+    phase: 'ready',
+    capabilities: null,
+    unavailable: new Set(),
+    document: { methods: methods.filter((m) => !without.includes(m)).map((name) => ({ name, params: [], result: { schema: {} } })), 'x-theuth': { events: [], subscriptions: [] } } as never,
+  })
+  expect(shownTabs(sharing, engine([])).map((tab) => tab.id)).toEqual(['shared', 'contacts', 'shared-chats', 'shared-notes', 'sharing', 'domains'])
+  const old = engine(['sharing_list', 'sharing_revoke'])
+  expect(shownTabs(sharing, old).map((tab) => tab.id)).toEqual(['contacts', 'shared-chats', 'sharing', 'domains'])
+  expect(shownTab('shared', old)).toBe('contacts')
 })
 
 test('S4: a category with no shown tab leaves the column, and its tabs land on Appearance', () => {

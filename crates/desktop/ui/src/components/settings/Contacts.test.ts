@@ -26,6 +26,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { AddContact, CeremonyBody, type CeremonyView, ContactAccess, Contacts, ContactsTab, OLD_ENGINE, ShareDialog, SharingItems } from './Contacts'
 import { toast } from 'sonner'
 import { A2aSection } from './Communication'
+import { SharedChatsTab } from './SharingHub'
 import { CommunicationNotice, useCommunication } from '@/components/chat/CommunicationNotice'
 import type { A2AStatus as A2aStatus } from "@/rpc/bindings/method.a2a.output"
 import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
@@ -119,6 +120,7 @@ const api = {
   contact_first_waiting: vi.fn(async (): Promise<FirstWaiting[]> => []),
   a2a_export_put: vi.fn(async (_x: Export) => null),
   a2a_export_remove: vi.fn(async (_name: string) => null),
+  sharing_revoke: vi.fn(async (kind: string, id: string, _sub: string | null) => ({ kind, id, pending: false })),
   list_sessions: vi.fn(async () => [
     { id: 's-ops', parent: null, archived: false, title: 'Ops chat', created_at: '2026-11-09T10:00:00Z', here: true, owner: 'me' },
     { id: 's-plan', parent: null, archived: false, title: 'Launch plan', created_at: '2026-11-09T10:00:00Z', here: false, owner: 'xeus' },
@@ -793,7 +795,7 @@ test('188 Messaging › A2A lists only the HTTP peers: a contact is no peer row 
   // a2a_status says the engine runs without it: the listener row says only that.
   expect(t).toContain('Off')
   expect(t).not.toContain('Disabled')
-  // No second contacts list: Network › Contacts is the one.
+  // No second contacts list: Sharing › Contacts is the one.
   expect(t).not.toContain('bobcontact')
   expect(t).not.toContain('theuth/a2a/1 over iroh')
   expect(t).not.toContain('No peers or exports yet')
@@ -807,6 +809,33 @@ test('188 Messaging › A2A lists only the HTTP peers: a contact is no peer row 
   expect(t).not.toContain('http://127.0.0.1:7780/agents/ops-chat/rpc')
   expect(button('Copy URL of ops-chat')).toBeUndefined()
   expect(button('Copy URL of docs')).toBeDefined()
+  // 213: the way to what contacts may reach.
+  await click('Open Contacts')
+  expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'contacts' } })
+})
+
+test('213 Sharing › Chats and agents: each export with the contacts granted it; Stop sharing with one, Remove the export', async () => {
+  await mount(createElement(SharedChatsTab))
+  const research = document.querySelector('[data-export="research"]')!
+  const ops = document.querySelector('[data-export="ops-chat"]')!
+  expect(research.textContent).toContain('Shared with bob')
+  expect(ops.textContent).toContain('Ops chat · Paused (chat archived)')
+  expect(ops.textContent).toMatch(/Shared with (bob and alice|bob, alice)/)
+  await click('Stop sharing Ops chat with alice')
+  expect(api.sharing_revoke).toHaveBeenCalledWith('export', 'ops-chat', 'alice')
+  await click('Open')
+  expect(navigate).toHaveBeenCalledWith({ to: '/c/$session', params: { session: 's-ops' } })
+  const remove = [...research.querySelectorAll('button')].find((b) => b.textContent === 'Remove export')!
+  await run(() => remove.click())
+  expect(api.sharing_revoke).toHaveBeenCalledWith('export', 'research', null)
+  expect(api.a2a_export_remove).not.toHaveBeenCalled()
+  expect(api.contact_update).not.toHaveBeenCalled()
+})
+
+test('213 Sharing › Chats and agents: contacts off reads as one muted line, not an error', async () => {
+  api.a2a_exports.mockRejectedValue(new Error('contacts are unavailable: the a2a plugin is not running'))
+  await mount(createElement(SharedChatsTab))
+  await vi.waitFor(() => expect(body()).toContain('Contacts are off — turn on agent messaging in Network'))
 })
 
 function NoticeFor({ session }: { session: string }) {

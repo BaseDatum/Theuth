@@ -72,6 +72,24 @@ pub trait CompositionApi {
     /// `None` only when there is nothing to bind to.
     #[method(name = "doc_resolve", with_extensions)]
     async fn doc_resolve(&self, binding: document::Binding) -> RpcResult<Option<document::DocId>>;
+    /// 213 §3: every thing this owner shares, across kinds (`kinds` omitted → all): document
+    /// members and links, public shares, exports, contacts. A kind whose plugin is off or not
+    /// running is in `partial`, never an error. Owner only.
+    #[method(name = "sharing_list", with_extensions)]
+    async fn sharing_list(
+        &self,
+        kinds: Option<Vec<crate::sharing::SharingKind>>,
+    ) -> RpcResult<crate::sharing::SharingList>;
+    /// 213 §3: revoke one `sharing_list` row through its kind's own handler (`doc_member_revoke`,
+    /// `doc_link_revoke` [+ its members with `sub: "members"`], `share_stop`, `a2a_export_remove`
+    /// or with `sub: <contact>` that contact's grant, `contact_remove`). Owner only, never gated.
+    #[method(name = "sharing_revoke", with_extensions)]
+    async fn sharing_revoke(
+        &self,
+        kind: crate::sharing::SharingKind,
+        id: String,
+        sub: Option<String>,
+    ) -> RpcResult<crate::sharing::SharingRevoked>;
     /// Stream every wire-visible event as `{"type": ..., ...}`, optionally
     /// only those carrying `session`. `descendants: true` (default `false`)
     /// also delivers events of every session in `session`'s subtree, plus
@@ -268,6 +286,23 @@ impl CompositionApiServer for Server {
         doc_forward(ext, "doc_resolve", (&binding,), r).await
     }
 
+    async fn sharing_list(
+        &self,
+        ext: &Extensions,
+        kinds: Option<Vec<crate::sharing::SharingKind>>,
+    ) -> RpcResult<crate::sharing::SharingList> {
+        crate::sharing::list(self, ext, kinds).await
+    }
+
+    async fn sharing_revoke(
+        &self,
+        ext: &Extensions,
+        kind: crate::sharing::SharingKind,
+        id: String,
+        sub: Option<String>,
+    ) -> RpcResult<crate::sharing::SharingRevoked> {
+        crate::sharing::revoke(self, ext, kind, id, sub).await
+    }
 
     async fn subscribe_events(
         &self,

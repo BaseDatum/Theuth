@@ -26,6 +26,12 @@ test('a shown tab renders, whatever the search', () => {
   expect(routeTarget('tools', { session: 's1' })).toEqual({ kind: 'render' })
 })
 
+test('213: the Sharing hub tabs render; Contacts keeps its id and its access focus after moving out of Network', () => {
+  hide()
+  for (const tab of ['shared', 'shared-chats', 'shared-notes', 'sharing', 'domains']) expect(routeTarget(tab, {})).toEqual({ kind: 'render' })
+  expect(routeTarget('contacts', { focus: 'access:bob' })).toEqual({ kind: 'render' })
+})
+
 test('1: tabs that became pages leave Settings, keeping a legacy session', () => {
   hide()
   expect(routeTarget('skills', { session: 's1', focus: 'x' })).toEqual({ kind: 'page', to: '/skills', search: { session: 's1' } })

@@ -46,6 +46,10 @@ const ADD_HLC: &str = "ALTER TABLE docs ADD COLUMN hlc TEXT";
 /// `docs` column: the replica re-installs its triggers at every attach, so the column replicates
 /// per-column LWW like `notebooks.project`; `meta.json` (the mirror) never carries it.
 const ADD_PROJECT: &str = "ALTER TABLE docs ADD COLUMN project TEXT";
+/// 213 §3: how many share links `meta.json` holds (revoked and expired included), kept like
+/// `members_n` by [`Store::write_meta`] so [`Store::shared`] needs no `meta.json` scan. Replicated
+/// per-column like `project`; an index from before it is backfilled once from `meta.json`.
+const ADD_LINKS_N: &str = "ALTER TABLE docs ADD COLUMN links_n INTEGER NOT NULL DEFAULT 0";
 
 /// The `docs` columns a [`DocSummary`] reads, in [`SummaryTuple`] order (a macro so it splices into `concat!`).
 macro_rules! summary_cols {
@@ -267,7 +271,53 @@ impl Store {
             vault: None,
         };
         store.migrate_ids().await?;
+        store.add_links_n().await?;
         Ok(store)
+    }
+
+    /// 213: add `links_n` and backfill it from every live row's `meta.json` in one transaction, so a
+    /// crash in between leaves no column and the next open does both again. Links are counted on the
+    /// raw JSON, so a pre-SEAL `meta.json` counts too; a missing or unreadable file stays 0.
+    async fn add_links_n(&self) -> anyhow::Result<()> {
+        let mut tx = self.db.begin().await?;
+        match sqlx::query(ADD_LINKS_N).execute(&mut *tx).await {
+            Ok(_) => {}
+            Err(e) if e.to_string().contains("duplicate column") => return Ok(()),
+            Err(e) => return Err(e).context("docs.links_n"),
+        }
+        let ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM docs WHERE deleted_ms IS NULL")
+            .fetch_all(&mut *tx)
+            .await?;
+        for (id,) in ids {
+            let Ok(bytes) = fs::read(self.dir(&DocId(id.clone())).join(META)) else {
+                continue;
+            };
+            let n = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| v.get("links")?.as_array().map(Vec::len))
+                .unwrap_or(0);
+            if n == 0 {
+                continue;
+            }
+            sqlx::query("UPDATE docs SET links_n = ? WHERE id = ?")
+                .bind(n as i64)
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 213 §3: live documents with members or share links (any state), newest update first.
+    pub async fn shared(&self) -> anyhow::Result<Vec<DocId>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT id FROM docs WHERE deleted_ms IS NULL AND (members_n > 0 OR links_n > 0) \
+             ORDER BY updated_ms DESC, rowid DESC",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| DocId(id)).collect())
     }
 
     /// The index pool (for `replica::attach`).
@@ -473,7 +523,7 @@ impl Store {
         sqlx::query(
             "INSERT INTO docs (id, kind, title, binding, created_ms, updated_ms, bytes) VALUES (?, ?, ?, ?, ?, ?, 0) \
              ON CONFLICT (id) DO UPDATE SET kind = excluded.kind, title = excluded.title, binding = excluded.binding, \
-             created_ms = excluded.created_ms, updated_ms = excluded.updated_ms, bytes = 0, members_n = 0, deleted_ms = NULL",
+             created_ms = excluded.created_ms, updated_ms = excluded.updated_ms, bytes = 0, members_n = 0, links_n = 0, deleted_ms = NULL",
         )
         .bind(meta.id.as_str())
         .bind(meta.kind.to_string())
@@ -537,13 +587,16 @@ impl Store {
             &self.dir(&meta.id).join(META),
             serde_json::to_vec_pretty(meta)?.as_slice(),
         )?;
-        sqlx::query("UPDATE docs SET title = ?, updated_ms = ?, members_n = ? WHERE id = ?")
-            .bind(&meta.title)
-            .bind(meta.updated_ms)
-            .bind(meta.members.len() as i64)
-            .bind(meta.id.as_str())
-            .execute(&self.db)
-            .await?;
+        sqlx::query(
+            "UPDATE docs SET title = ?, updated_ms = ?, members_n = ?, links_n = ? WHERE id = ?",
+        )
+        .bind(&meta.title)
+        .bind(meta.updated_ms)
+        .bind(meta.members.len() as i64)
+        .bind(meta.links.len() as i64)
+        .bind(meta.id.as_str())
+        .execute(&self.db)
+        .await?;
         self.mirror_write_meta(&meta.id)?;
         Ok(())
     }
@@ -2768,6 +2821,45 @@ mod tests {
         write_atomic(&p, b"x").unwrap();
         assert_eq!(read_opt(&p).unwrap().unwrap(), b"x");
         assert!(read_opt(&dir.path().join("nope")).unwrap().is_none());
+    }
+
+    /// 213: `shared` lists live documents with members or links (a revoked link still counts) via
+    /// `links_n`, which `write_meta` keeps; an index from before the column is backfilled from
+    /// `meta.json` on open, and a deleted document drops out.
+    #[tokio::test]
+    async fn links_n_lists_shared_documents_and_backfills() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = Store::open(dir.path()).await.unwrap();
+        let plain = meta(Binding::Note);
+        let mut linked = meta(Binding::Note);
+        old.create(&plain).await.unwrap();
+        old.create(&linked).await.unwrap();
+        linked.links.push(crate::meta::ShareLink {
+            id: "lnk_a".into(),
+            role: crate::meta::Role::Viewer,
+            secret_hash_sealed: String::new(),
+            name: None,
+            created_ms: 1,
+            expires_ms: None,
+            revoked_ms: Some(2),
+        });
+        old.write_meta(&linked).await.unwrap();
+        assert_eq!(old.shared().await.unwrap(), vec![linked.id.clone()]);
+        // Drop the column as a pre-213 index had it, keeping the rows.
+        let mut conn = old.pool().acquire().await.unwrap();
+        for sql in [
+            "CREATE TABLE docs_old AS SELECT id, kind, title, binding, created_ms, updated_ms, bytes, members_n, deleted_ms, hlc, project FROM docs",
+            "DROP TABLE docs",
+            "ALTER TABLE docs_old RENAME TO docs",
+        ] {
+            sqlx::query(sql).execute(&mut *conn).await.unwrap();
+        }
+        drop(conn);
+        old.db.close().await;
+        let store = Store::open(dir.path()).await.unwrap();
+        assert_eq!(store.shared().await.unwrap(), vec![linked.id.clone()]);
+        store.delete(&linked.id).await.unwrap();
+        assert!(store.shared().await.unwrap().is_empty());
     }
 
     /// An index from before `docs.project`: opening adds the column, every row reads ungrouped, and

@@ -1,6 +1,7 @@
-// 210 §7.4 item 4, §7.6, §9.1, D22: Settings › Sharing. This machine's switch (the share plugin's store,
-// `share_settings_*`, not a config flag), the edge and its connection, the name, a publish form, the mesh's shares with
-// Stop and Stop all, defaults, terms, history and the disclosures.
+// 210 §7.4 item 4, §7.6, §9.1, D22; 213 §2: Settings › Sharing › Public shares — this machine's switch (the share
+// plugin's store, `share_settings_*`, not a config flag), a publish form, the mesh's shares with Stop and Stop all,
+// defaults, terms, history and the disclosures. Settings › Sharing › Domains — the edge and its connection, the names,
+// the machines and the certificate state.
 
 import { useQuery } from '@tanstack/react-query'
 import { Copy } from 'lucide-react'
@@ -41,9 +42,18 @@ export function edgeStateLabel(s: EdgeState): string {
   }
 }
 
-export function SharingTab() {
+/** `share_settings_get`, when the engine has the share plugin. */
+function useShareSettings() {
   const supported = useShareMethod('share_settings_get')
   const settings = useQuery({ enabled: supported, queryKey: SETTINGS_KEY, queryFn: () => shareApi().share_settings_get() })
+  return { supported, settings }
+}
+
+const NO_PLUGIN = 'This engine has no public sharing (the share plugin is not running).'
+
+/** 213 §2 tab 5: the switch, live shares with Stop / Stop all, history, defaults, terms and disclosures. */
+export function SharingTab() {
+  const { supported, settings } = useShareSettings()
   const setEnabled = useAction((on: boolean) => shareApi().share_settings_set(on), {
     onSuccess: (s) => toast.message(s.enabled ? 'Public sharing is on for this machine' : 'Public sharing is off; this machine’s shares stopped'),
     keys: [SETTINGS_KEY],
@@ -62,7 +72,7 @@ export function SharingTab() {
   const edgeName = status?.domain ?? 'the edge'
   const machines = usePublicShares((s) => s.machines)
 
-  if (!supported) return <Empty>This engine has no public sharing (the share plugin is not running).</Empty>
+  if (!supported) return <Empty>{NO_PLUGIN}</Empty>
   const enabled = settings.data?.enabled ?? false
 
   return (
@@ -79,20 +89,8 @@ export function SharingTab() {
             onCheckedChange={(v) => setEnabled.mutate(v)}
           />
         </Row>
-        <Row label="Edge" description={settings.data ? (settings.data.edge === 'default' ? 'The default edge' : settings.data.edge === 'none' ? 'None' : 'Custom edge ticket') : '…'}>
-          <span className="text-sm text-fg-secondary">{status ? `${edgeName} · ${edgeStateLabel(status.state)}` : 'Not contacted yet'}</span>
-        </Row>
-        {status?.clock_off_ms != null && (
-          <p className="py-2 text-sm text-danger">
-            This machine’s clock is {Math.round(Math.abs(status.clock_off_ms) / 60_000)} min off the edge’s; sharing may fail until it is corrected.
-          </p>
-        )}
         <ApprovalsOffWarning sharing={enabled} approvals={approvalsOn} />
       </Section>
-
-      <NameSection meshId={settings.data?.mesh_id ?? null} />
-
-      <MachinesSection />
 
       {enabled && <PublishForm />}
 
@@ -130,15 +128,6 @@ export function SharingTab() {
         {terms ? <TermsRow edge={terms.edge} url={terms.url} rev={terms.rev} /> : <Empty>The edge asks for its terms on the first publish; you accept them on its card.</Empty>}
       </Section>
 
-      <Section title="Certificates">
-        {/* TODO(210-M2): per-name state ("Getting a certificate…", queue position and ETA) needs the names RPC. */}
-        {active.some((s) => s.state === 'pending') ? (
-          <Empty>Waiting for a certificate: pending shares go live by themselves when it arrives.</Empty>
-        ) : (
-          <Empty>No certificate is pending.</Empty>
-        )}
-      </Section>
-
       <Section title="History (30 days)">
         {history.length === 0 ? (
           <Empty>No ended shares.</Empty>
@@ -156,6 +145,42 @@ export function SharingTab() {
           {/* D22 (§5.7): said on every machine, whatever its switch. */}
           <p>{d22Text(edgeName, machines)}</p>
         </div>
+      </Section>
+    </>
+  )
+}
+
+/** 213 §2 tab 6: the edge and its connection, held names, the mesh's machines, certificate and clock warnings. */
+export function DomainsTab() {
+  const { supported, settings } = useShareSettings()
+  const status = usePublicShares((s) => s.status)
+  const shares = usePublicShares((s) => s.shares)
+  if (!supported) return <Empty>{NO_PLUGIN}</Empty>
+  const edgeName = status?.domain ?? 'the edge'
+  return (
+    <>
+      <Section title="Edge">
+        <Row label="Edge" description={settings.data ? (settings.data.edge === 'default' ? 'The default edge' : settings.data.edge === 'none' ? 'None' : 'Custom edge ticket') : '…'}>
+          <span className="text-sm text-fg-secondary">{status ? `${edgeName} · ${edgeStateLabel(status.state)}` : 'Not contacted yet'}</span>
+        </Row>
+        {status?.clock_off_ms != null && (
+          <p className="py-2 text-sm text-danger">
+            This machine’s clock is {Math.round(Math.abs(status.clock_off_ms) / 60_000)} min off the edge’s; sharing may fail until it is corrected.
+          </p>
+        )}
+      </Section>
+
+      <NameSection meshId={settings.data?.mesh_id ?? null} />
+
+      <MachinesSection />
+
+      <Section title="Certificates">
+        {/* TODO(210-M2): per-name state ("Getting a certificate…", queue position and ETA) needs the names RPC. */}
+        {activeShares(shares).some((s) => s.state === 'pending') ? (
+          <Empty>Waiting for a certificate: pending shares go live by themselves when it arrives.</Empty>
+        ) : (
+          <Empty>No certificate is pending.</Empty>
+        )}
       </Section>
     </>
   )
