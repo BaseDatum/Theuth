@@ -136,3 +136,70 @@ just ts-desktop && cp bindings/openrpc.json crates/theuth/tests/fixtures/wire/op
 
 Cargo.lock: `share` now depends on `zeroize`, a workspace crate that is already in the lock. No new package.
 The lock shows as modified because of other builders' changes. Not committed.
+
+## Green (CLIENT-M2-GREEN)
+
+Commits: `b370ddd65` (share code), `359e8f402` (openrpc fixture). Design of `1daf8ba0f`/`daac0c22f`/`845c27c9a`
+unchanged.
+
+### Fixes
+
+- `cargo check -p share --all-targets` was already clean on `845c27c9a` (the `daac0c22f` fixes hold).
+- `engine.rs`: the doc line of `check_name` had slid above `attached_control` when `rotate_cert` was inserted;
+  moved back (cosmetic).
+- `rekey/tests.rs`: clippy `cloned_ref_to_slice_refs` (`&[edge.clone()]` → `std::slice::from_ref(&edge)`, 5
+  sites). Test-only; no test logic changed. The six P0-6 race tests passed on their first run; no code fix
+  needed.
+- `rpc-compose` `wire_golden`/`wire_topics`: passed with no fixture change (share events unchanged).
+
+### Gaps closed (both under 40 lines)
+
+- **`csr_mismatch` heal timer** (was `TODO(210-M2)`): `Engine::csr_heal_tick(since, posted, now)` and
+  `lib.rs::csr_heal_timer` (every 60 s, spawned at start). On the lease holder only (`family::holder() == Me`;
+  otherwise the timers reset): for each name of the last `welcome`, reads the vault row through
+  `hooks.name_keys.get` (never creates), `holder::row_spki`, then `holder::csr_heal(welcome spki, row spki,
+  since, now, CSR_HEAL_MS)`. `Rotate` → `rotate_cert(name, row)` (posts the **row's** CSR with `?rotate=true`;
+  no new key generation). `posted` remembers the SPKI already posted so a stale `welcome` (refreshed only by the
+  12 h re-`hello`) does not re-post every 5 min; it is cleared once a `welcome` shows the row's SPKI.
+- **`share.changed` for replicated rows** (was `TODO(210-M2)`): `lib.rs` keeps the `replica::attach` handle and
+  spawns `announce_replicated`: for each `ChangeBatch` whose `origin` is not this replica, every distinct
+  `shares` pk is re-read with `Store::get` and announced via `Engine::emit` (now `pub(crate)`). Tombstoned rows
+  (no row left) are not announced. `Lagged` is skipped (the next batch re-announces its rows).
+
+### Not built (still open)
+
+- `TODO(210-M2)`: the `csr_mismatch {spki}` **error** answer of `POST csr` does not feed the heal timer; only the
+  welcome's `names[].spki` drift does. Same decision function, so wiring it is a `since` insert in `ensure_cert`.
+- `TODO(210-M2)`: everything else in "Not built" above (stale `mesh/share_key` deletion, post-`done` actions,
+  rekey RPC/events and attention items, renewal jitter, Stop-all hand-off, `share_extend`, `share_set_access`,
+  random-name release, `share_edges` deletion, three-engine e2e).
+
+### Doubts
+
+- Neither new task has a test: both are thin loops over tested pieces (`holder::csr_heal`, `rotate_cert`,
+  `Store::get`, `emit`). The heal timer needs an attached edge and a lease, the announcer a running replica.
+- A replicated `shares` row whose remote stop arrives as a column update is announced with its new state; a
+  hard row delete (tombstone) is not announced (the UI would keep the row until its next list).
+- `csr_heal_tick` dials the vault/mesh once per name per minute on the holder; fine for a handful of names.
+
+### Wire
+
+`just ts-desktop && just wire-schema-accept`: the `openrpc-v1.json` diff adds only `share_delegate`,
+`share_name_key_ensure`, `share_names_{list,primary,release,reserve,rotate,transfer}`, `share_password`, schemas
+`HeldName`, `NameReleasedInfo` (output + receiver), and the fields `NameCheck.reclaim_after_ms`,
+`ShareSettings.mesh_id`, `Stopped.edge_pending`. No method removed or changed outside `share_*`.
+
+### Verification (runs after the last edit, each under its own `/tmp/theuth-build.lock` hold, `CARGO_BUILD_JOBS=6`)
+
+| command | result |
+|---|---|
+| `cargo check -p share --all-targets` | Finished, no warnings |
+| `cargo clippy -p share --all-targets --no-deps -- -D warnings` | Finished, clean |
+| `cargo test -p share` | 43 passed, 0 failed (incl. 6 `rekey::tests` P0-6 races) |
+| `cargo test -p rpc-compose --test wire_golden --test wire_topics` | 2 + 4 passed; no fixture change |
+| `just ts-desktop` | ok (643 methods, 71 topics) |
+| `just wire-schema-accept` | fixture regenerated, committed `359e8f402` |
+| `cargo test -p theuth --test wire_schema_snapshot` | 1 passed |
+
+Cargo.lock: unchanged by this work (the `zeroize` line under `share` is CLIENT-M2's; no new package). Not
+committed.
