@@ -45,8 +45,6 @@ impl OwnPorts for OwnListeners {
 }
 
 /// The process-tree check (§5.6): the listening socket's owning PID is theuth or a descendant.
-// TODO(210-M1): implement over a socket-table crate (`listeners` or `netstat2`, chosen in M1;
-// `procfs` on Linux) plus `platform`'s process tree. Needs a new dependency line.
 pub trait ProcessCheck: Send + Sync {
     /// `Some(true)` when the listener on loopback `port` is theuth or a child of it; `None` when
     /// unknown.
@@ -60,6 +58,75 @@ impl ProcessCheck for NoProcessCheck {
     fn owned_by_theuth(&self, _: u16) -> Option<bool> {
         None
     }
+}
+
+/// [`ProcessCheck`] over the OS socket table (`listeners`: `proc_pidfdinfo` on macOS, `/proc` on
+/// Linux): a TCP socket in `LISTEN` on `port` whose owner is this process or, walking parent
+/// links up, one of its descendants (browser debug port, MCP servers, sandbox, a2a HTTP).
+/// A daemon that double-forked away from theuth is no longer in the tree and is not caught here;
+/// the own-listener registry covers the listeners theuth knows about.
+pub struct ProcessTree;
+
+impl ProcessCheck for ProcessTree {
+    fn owned_by_theuth(&self, port: u16) -> Option<bool> {
+        let all = listeners::get_all().ok()?;
+        let me = std::process::id();
+        Some(
+            all.iter()
+                .filter(|l| {
+                    l.protocol == listeners::Protocol::TCP
+                        && l.state == listeners::SocketState::Listen
+                        && l.socket.port() == port
+                })
+                .any(|l| descends_from(l.process.pid, me)),
+        )
+    }
+}
+
+/// Deepest parent chain walked before giving up (a cycle or a pathological tree).
+const TREE_DEPTH: usize = 64;
+
+/// `true` when `pid` is `root` or a descendant of it.
+fn descends_from(mut pid: u32, root: u32) -> bool {
+    for _ in 0..TREE_DEPTH {
+        if pid == root {
+            return true;
+        }
+        match parent_pid(pid) {
+            Some(p) if p != pid && p > 1 => pid = p,
+            _ => return false,
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn parent_pid(pid: u32) -> Option<u32> {
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is `size` writable bytes for the struct the call fills.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            i32::try_from(pid).ok()?,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if n != size {
+        return None;
+    }
+    // SAFETY: the call filled the whole struct.
+    Some(unsafe { info.assume_init() }.pbi_ppid)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn parent_pid(pid: u32) -> Option<u32> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name may contain spaces; fields resume after its ')': state, then ppid.
+    let rest = s.get(s.rfind(')')? + 2..)?;
+    rest.split_ascii_whitespace().nth(1)?.parse().ok()
 }
 
 /// Why a `port` source is refused.
@@ -98,8 +165,12 @@ impl PortGuard {
     }
 
     /// Check, then connect to `127.0.0.1:port`, else `[::1]:port`. Called per upstream connect.
+    /// The socket-table walk is blocking work, so it runs off the async workers.
     pub async fn connect(&self, port: u16) -> Result<TcpStream, PortRefused> {
-        self.check(port)?;
+        let g = self.clone();
+        tokio::task::spawn_blocking(move || g.check(port))
+            .await
+            .unwrap_or(Err(PortRefused::Own))?;
         for ip in [
             SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
             SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
@@ -129,17 +200,23 @@ pub enum DirRefused {
     Dot,
 }
 
-/// Validate a `dir` root at publish and return its canonical form (§5.6 table).
+fn has_dot(p: &Path) -> bool {
+    p.components().any(|c| match c {
+        Component::Normal(s) => s.to_string_lossy().starts_with('.'),
+        Component::ParentDir | Component::CurDir => true,
+        _ => false,
+    })
+}
+
+/// Validate a `dir` root at publish and return its canonical form (§5.6 table). The dot and
+/// protected-path rules apply to the typed path and again to the canonical one, so a root that
+/// is (or passes through) a link into `~/.ssh` or the data directory is refused.
 pub fn check_root(root: &str, data_dir: &Path, home: Option<&Path>) -> Result<PathBuf, DirRefused> {
     let p = Path::new(root);
     if !p.is_absolute() {
         return Err(DirRefused::Relative);
     }
-    if p.components().any(|c| match c {
-        Component::Normal(s) => s.to_string_lossy().starts_with('.'),
-        Component::ParentDir | Component::CurDir => true,
-        _ => false,
-    }) {
+    if has_dot(p) {
         return Err(DirRefused::Dot);
     }
     let canon = p
@@ -147,6 +224,9 @@ pub fn check_root(root: &str, data_dir: &Path, home: Option<&Path>) -> Result<Pa
         .ok()
         .filter(|c| c.is_dir())
         .ok_or_else(|| DirRefused::NotDir(root.to_owned()))?;
+    if has_dot(&canon) {
+        return Err(DirRefused::Dot);
+    }
     let data = data_dir
         .canonicalize()
         .unwrap_or_else(|_| data_dir.to_owned());
@@ -161,6 +241,67 @@ pub fn check_root(root: &str, data_dir: &Path, home: Option<&Path>) -> Result<Pa
     }
     Ok(canon)
 }
+
+/// A `dir` root as approved: its canonical path and the directory's device and inode. Every
+/// request opens the canonical path and refuses a different directory, so replacing the approved
+/// folder (by a link or a rename) after publish serves nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirPin {
+    /// Canonical root.
+    pub canon: PathBuf,
+    dev: u64,
+    ino: u64,
+}
+
+/// [`check_root`], then pin the directory it names.
+pub fn pin_root(root: &str, data_dir: &Path, home: Option<&Path>) -> Result<DirPin, DirRefused> {
+    use std::os::unix::fs::MetadataExt as _;
+    let canon = check_root(root, data_dir, home)?;
+    let meta = std::fs::symlink_metadata(&canon)
+        .ok()
+        .filter(std::fs::Metadata::is_dir)
+        .ok_or_else(|| DirRefused::NotDir(root.to_owned()))?;
+    Ok(DirPin {
+        canon,
+        dev: meta.dev(),
+        ino: meta.ino(),
+    })
+}
+
+impl DirPin {
+    /// Open the canonical root without following links (every component on macOS, the last
+    /// elsewhere) and require the pinned device and inode.
+    pub fn check(&self) -> io::Result<()> {
+        use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+        let d = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(NOFOLLOW | libc::O_DIRECTORY)
+            .open(&self.canon)?;
+        let m = d.metadata()?;
+        if m.dev() != self.dev || m.ino() != self.ino || !m.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the shared folder was replaced after approval",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Resolve and open `url_path` below the pinned root: root check, [`resolve`],
+    /// [`open_nofollow`], root check again (a swap during the open is caught before serving).
+    pub fn open(&self, url_path: &str) -> Option<(PathBuf, File)> {
+        self.check().ok()?;
+        let canon = resolve(&self.canon, url_path)?;
+        let f = open_nofollow(&canon).ok()?;
+        self.check().ok()?;
+        Some((canon, f))
+    }
+}
+
+#[cfg(target_os = "macos")]
+const NOFOLLOW: i32 = libc::O_NOFOLLOW_ANY; // with O_NOFOLLOW the kernel answers EINVAL
+#[cfg(not(target_os = "macos"))]
+const NOFOLLOW: i32 = libc::O_NOFOLLOW;
 
 /// Per-request resolution of a URL path below a canonical root (F-m8). `None` → 404.
 /// Percent-decodes, refuses any dot component, canonicalises and checks containment, then maps a
@@ -193,13 +334,9 @@ pub fn resolve(root: &Path, url_path: &str) -> Option<PathBuf> {
 // TODO(210-M1): Linux `openat2(RESOLVE_NO_SYMLINKS)`; today Linux has the O_NOFOLLOW + fstat path.
 pub fn open_nofollow(canon: &Path) -> io::Result<File> {
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
-    #[cfg(target_os = "macos")]
-    const FLAGS: i32 = libc::O_NOFOLLOW_ANY; // with O_NOFOLLOW the kernel answers EINVAL
-    #[cfg(not(target_os = "macos"))]
-    const FLAGS: i32 = libc::O_NOFOLLOW;
     let f = std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(FLAGS)
+        .custom_flags(NOFOLLOW)
         .open(canon)?;
     let opened = f.metadata()?;
     let named = std::fs::symlink_metadata(canon)?;
@@ -323,5 +460,72 @@ mod tests {
             g.connect(port).await.err(),
             Some(PortRefused::NotListening(port))
         );
+    }
+
+    /// M1: the approved folder replaced by a link (or another directory) serves nothing, and a
+    /// root whose canonical path passes through a dot directory is refused at publish.
+    #[test]
+    fn swapped_root_is_refused() {
+        let tmp = tempfile::Builder::new().prefix("share").tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let site = tmp.path().join("site");
+        let secrets = tmp.path().join(".theuth");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::create_dir_all(&secrets).unwrap();
+        std::fs::write(site.join("index.html"), "hi").unwrap();
+        std::fs::write(secrets.join("index.html"), "token").unwrap();
+
+        let link = tmp.path().join("innocent");
+        std::os::unix::fs::symlink(&secrets, &link).unwrap();
+        assert_eq!(
+            pin_root(link.to_str().unwrap(), &data, None),
+            Err(DirRefused::Dot),
+            "a link into a dot directory is refused on its canonical path"
+        );
+
+        let pin = pin_root(site.to_str().unwrap(), &data, None).unwrap();
+        assert!(pin.open("/").is_some());
+        std::fs::rename(&site, tmp.path().join("old")).unwrap();
+        std::os::unix::fs::symlink(&secrets, &site).unwrap();
+        assert!(pin.check().is_err());
+        assert!(pin.open("/").is_none(), "link swapped in for the root");
+        std::fs::remove_file(&site).unwrap();
+        std::fs::create_dir(&site).unwrap();
+        std::fs::write(site.join("index.html"), "other").unwrap();
+        assert!(pin.open("/").is_none(), "another directory renamed in");
+    }
+
+    /// M2: a listener of this process or of a child is theuth's; a free port is not.
+    #[test]
+    fn process_tree_owns_own_and_child_listeners() {
+        let own = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = own.local_addr().unwrap().port();
+        assert_eq!(ProcessTree.owned_by_theuth(port), Some(true));
+        drop(own);
+        assert_eq!(ProcessTree.owned_by_theuth(port), Some(false));
+
+        let Ok(mut child) = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import socket,time\ns=socket.socket()\ns.bind(('127.0.0.1',0))\ns.listen()\n\
+                 print(s.getsockname()[1],flush=True)\ntime.sleep(30)",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+        else {
+            return; // no python3: the child case cannot be staged here
+        };
+        let mut line = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+            &mut line,
+        )
+        .unwrap();
+        let child_port: u16 = line.trim().parse().unwrap();
+        let owned = ProcessTree.owned_by_theuth(child_port);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(owned, Some(true));
     }
 }

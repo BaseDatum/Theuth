@@ -5,8 +5,8 @@
 //! upstream. Upgrades (WebSocket) go through `hyper::upgrade::on` + `copy_bidirectional`.
 
 use std::net::{IpAddr, SocketAddr};
-use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
@@ -18,7 +18,7 @@ use hyper_util::rt::TokioIo;
 use crate::gate::{Gate, Step};
 use crate::model::Source;
 use crate::routes::{Lookup, Mount, Table, normalize_host};
-use crate::sources::{self, PortGuard};
+use crate::sources::PortGuard;
 
 /// Body error.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -161,9 +161,17 @@ pub struct Proxy {
     pub gate: Arc<Gate>,
 }
 
+/// Upstream connect (port checks, TCP connect and HTTP/1.1 handshake) deadline.
+pub const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Upstream response-head deadline (the design's 60 s idle upstream, §7.5).
+pub const UPSTREAM_HEAD_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl Proxy {
-    /// Answer one visitor request.
-    pub async fn handle<B>(&self, req: Request<B>, visitor: SocketAddr) -> Response<Body>
+    /// Answer one visitor request that arrived on a TLS connection whose SNI was `sni`. A request
+    /// whose `Host`/`:authority` this engine does not route, or that belongs to another name than
+    /// the SNI's (a coalesced h2 connection), gets `421` (§5.4) and the browser retries on a
+    /// connection of its own.
+    pub async fn handle<B>(&self, req: Request<B>, visitor: SocketAddr, sni: &str) -> Response<Body>
     where
         B: hyper::body::Body<Data = Bytes> + Send + 'static,
         B::Error: Into<BoxError>,
@@ -186,6 +194,9 @@ impl Proxy {
             Lookup::NotFound => return text(StatusCode::NOT_FOUND, "not found"),
             Lookup::Found(m, rest) => (m, rest),
         };
+        if m.name_of(sni).is_none() || m.name_of(sni) != m.name_of(&host) {
+            return text(StatusCode::MISDIRECTED_REQUEST, "misdirected request");
+        }
         match self.gate.step(&m, &rest, req.method(), req.headers()) {
             Step::Pass => {}
             Step::Respond(r) => return r,
@@ -194,9 +205,7 @@ impl Proxy {
         }
         match &m.source {
             Source::Port(port) => self.forward(req, &m, *port, rest, visitor.ip()).await,
-            Source::Dir(root) => {
-                serve_dir(Path::new(root), &rest, req.method(), req.headers()).await
-            }
+            Source::Dir(_) => serve_dir(&m, &rest, req.method(), req.headers()).await,
         }
     }
 
@@ -212,9 +221,17 @@ impl Proxy {
         B: hyper::body::Body<Data = Bytes> + Send + 'static,
         B::Error: Into<BoxError>,
     {
-        let stream = match self.ports.connect(port).await {
-            Ok(s) => s,
-            Err(e) => return text(StatusCode::BAD_GATEWAY, &e.to_string()),
+        let connect = async {
+            let stream = self.ports.connect(port).await.map_err(|e| e.to_string())?;
+            hyper::client::conn::http1::handshake(TokioIo::new(stream))
+                .await
+                .map_err(|e| e.to_string())
+        };
+        let (mut sender, conn) = match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, connect).await
+        {
+            Ok(Ok(x)) => x,
+            Ok(Err(e)) => return text(StatusCode::BAD_GATEWAY, &e),
+            Err(_) => return text(StatusCode::GATEWAY_TIMEOUT, "the app did not answer in time"),
         };
         let upgrade = is_upgrade(req.headers());
         let visitor_up = upgrade.then(|| hyper::upgrade::on(&mut req));
@@ -236,17 +253,15 @@ impl Proxy {
             port,
         );
         let req = Request::from_parts(parts, body.map_err(Into::into).boxed_unsync());
-        let (mut sender, conn) =
-            match hyper::client::conn::http1::handshake(TokioIo::new(stream)).await {
-                Ok(x) => x,
-                Err(e) => return text(StatusCode::BAD_GATEWAY, &e.to_string()),
-            };
         tokio::spawn(async move {
             let _ = conn.with_upgrades().await;
         });
-        let mut resp = match sender.send_request(req).await {
-            Ok(r) => r,
-            Err(e) => return text(StatusCode::BAD_GATEWAY, &e.to_string()),
+        let mut resp = match tokio::time::timeout(UPSTREAM_HEAD_TIMEOUT, sender.send_request(req))
+            .await
+        {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => return text(StatusCode::BAD_GATEWAY, &e.to_string()),
+            Err(_) => return text(StatusCode::GATEWAY_TIMEOUT, "the app did not answer in time"),
         };
         let upgraded = resp.status() == StatusCode::SWITCHING_PROTOCOLS;
         if upgraded && let Some(visitor_up) = visitor_up {
@@ -265,8 +280,9 @@ impl Proxy {
 }
 
 /// Serve a file of a `dir` source (§5.6, F-m8): full bodies with an `ETag` from size and mtime.
+/// Opened below the mount's pinned root only ([`crate::sources::DirPin::open`]).
 async fn serve_dir(
-    root: &Path,
+    m: &Mount,
     rest: &str,
     method: &Method,
     headers: &HeaderMap,
@@ -274,11 +290,12 @@ async fn serve_dir(
     if method != Method::GET && method != Method::HEAD {
         return text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
     }
-    let (root, rest) = (root.to_owned(), rest.to_owned());
+    let Some(pin) = m.dir.clone() else {
+        return text(StatusCode::NOT_FOUND, "not found");
+    };
+    let rest = rest.to_owned();
     let opened = tokio::task::spawn_blocking(move || {
-        let root = root.canonicalize().ok()?;
-        let canon = sources::resolve(&root, &rest)?;
-        let f = sources::open_nofollow(&canon).ok()?;
+        let (canon, f) = pin.open(&rest)?;
         let meta = f.metadata().ok()?;
         Some((canon, f, meta))
     })
@@ -337,6 +354,12 @@ mod tests {
     use crate::sources::{NoOwnPorts, NoProcessCheck};
 
     fn mount(host: &str, prefix: &str, source: Source) -> Mount {
+        let dir = match &source {
+            Source::Dir(d) => {
+                crate::sources::pin_root(d, std::path::Path::new("/nonexistent"), None).ok()
+            }
+            Source::Port(_) => None,
+        };
         Mount {
             share: "s1".into(),
             host: host.into(),
@@ -344,6 +367,8 @@ mod tests {
             source,
             access: Access::Public,
             interstitial: false,
+            domain: "tun.zip".into(),
+            dir,
         }
     }
 
@@ -465,11 +490,16 @@ mod tests {
         let p = proxy(table);
         let v: SocketAddr = "198.51.100.7:4000".parse().unwrap();
 
-        let r = p.handle(get("docs.sky.tun.zip", "/"), v).await;
+        let r = p.handle(get("docs.sky.tun.zip", "/"), v, "sky.tun.zip").await;
         assert_eq!(r.status(), StatusCode::MISDIRECTED_REQUEST);
-        let r = p.handle(get("sky.tun.zip", "/other"), v).await;
+        let r = p.handle(get("sky.tun.zip", "/other"), v, "sky.tun.zip").await;
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
-        let r = p.handle(get("sky.tun.zip", "/docs/"), v).await;
+        // m5: a routed host of another name than the connection's SNI is misdirected.
+        let r = p.handle(get("sky.tun.zip", "/docs/"), v, "other.tun.zip").await;
+        assert_eq!(r.status(), StatusCode::MISDIRECTED_REQUEST);
+        let r = p.handle(get("sky.tun.zip", "/docs/"), v, "app.sky.tun.zip").await;
+        assert_eq!(r.status(), StatusCode::OK, "same name, coalesced sub-label");
+        let r = p.handle(get("sky.tun.zip", "/docs/"), v, "sky.tun.zip").await;
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(
             r.into_body().collect().await.unwrap().to_bytes(),
@@ -479,7 +509,7 @@ mod tests {
         let mut req = get("app.sky.tun.zip", "/a?b=1");
         req.headers_mut()
             .insert("x-forwarded-for", HeaderValue::from_static("6.6.6.6"));
-        let r = p.handle(req, v).await;
+        let r = p.handle(req, v, "app.sky.tun.zip").await;
         assert_eq!(r.status(), StatusCode::FOUND);
         assert_eq!(r.headers()["location"], "https://app.sky.tun.zip/next");
         let body = r.into_body().collect().await.unwrap().to_bytes();

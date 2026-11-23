@@ -49,6 +49,7 @@ http-body-util = "0.1"
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 arc-swap = "1.9.3"
+listeners = "0.6.1"
 argon2 = "0.6.0"
 cookie = { version = "0.18.2", features = ["signed"] }
 ts-rs = { workspace = true, optional = true }

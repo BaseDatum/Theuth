@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use share_proto::proxy::{TLV_AUTHORITY, TLV_CONN_ID, conn_id_from};
@@ -22,6 +22,10 @@ use crate::proxy::Proxy;
 pub const PREAMBLE_MAX: usize = 1024;
 /// Time to read the preamble.
 pub const PREAMBLE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Time a visitor has to send a complete HTTP/1.1 request head (slowloris).
+pub const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// Largest request head accepted (HTTP/1.1 read buffer, HTTP/2 header list).
+pub const MAX_HEADER_BYTES: usize = 64 * 1024;
 
 /// What the edge told us of the visitor.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,7 +156,24 @@ pub fn acceptor(certs: Arc<Certs>) -> anyhow::Result<tokio_rustls::TlsAcceptor> 
     Ok(tokio_rustls::TlsAcceptor::from(Arc::new(cfg)))
 }
 
-/// Serve one visitor stream to completion.
+/// The visitor HTTP server: a request head must arrive within [`HEADER_READ_TIMEOUT`] and fit in
+/// [`MAX_HEADER_BYTES`].
+// TODO(210-M2): HTTP/2 has no head-read deadline in hyper; an h2 connection that opens no stream
+// lives until the edge's idle timeout.
+pub fn http_server() -> hyper_util::server::conn::auto::Builder<TokioExecutor> {
+    let mut b = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+    b.http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(HEADER_READ_TIMEOUT)
+        .max_buf_size(MAX_HEADER_BYTES);
+    b.http2()
+        .timer(TokioTimer::new())
+        .max_header_list_size(MAX_HEADER_BYTES as u32);
+    b
+}
+
+/// Serve one visitor stream to completion. Requests are checked against the TLS SNI (the
+/// PROXY preamble's authority when the session has none), see [`Proxy::handle`].
 pub async fn serve<S>(
     mut stream: S,
     tls: tokio_rustls::TlsAcceptor,
@@ -164,11 +185,19 @@ where
     let pre = tokio::time::timeout(PREAMBLE_TIMEOUT, read_preamble(&mut stream)).await??;
     let tls = tokio::time::timeout(PREAMBLE_TIMEOUT, tls.accept(stream)).await??;
     let visitor = pre.visitor;
+    let sni: Arc<str> = tls
+        .get_ref()
+        .1
+        .server_name()
+        .map(str::to_owned)
+        .or(pre.sni)
+        .unwrap_or_default()
+        .into();
     let svc = hyper::service::service_fn(move |req| {
-        let proxy = proxy.clone();
-        async move { Ok::<_, std::convert::Infallible>(proxy.handle(req, visitor).await) }
+        let (proxy, sni) = (proxy.clone(), sni.clone());
+        async move { Ok::<_, std::convert::Infallible>(proxy.handle(req, visitor, &sni).await) }
     });
-    hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+    http_server()
         .serve_connection_with_upgrades(TokioIo::new(tls), svc)
         .await
         .map_err(|e| anyhow::anyhow!("visitor connection: {e}"))
@@ -213,5 +242,54 @@ mod tests {
         assert!(certs.lookup("a.b.sky.tun.zip").is_none());
         let (other, _) = crate::keys::name_key("sky", "tun.zip").unwrap();
         assert!(certs.install("sky.tun.zip", &cert.pem(), &other).is_err());
+    }
+
+    async fn ok(
+        _req: http::Request<hyper::body::Incoming>,
+    ) -> Result<http::Response<http_body_util::Full<bytes::Bytes>>, std::convert::Infallible> {
+        Ok(http::Response::new(http_body_util::Full::new(
+            bytes::Bytes::from_static(b"ok"),
+        )))
+    }
+
+    /// m1: a request head that never completes is dropped after the header-read timeout.
+    #[tokio::test(start_paused = true)]
+    async fn slow_head_is_dropped() {
+        use tokio::io::AsyncWriteExt as _;
+        let (mut client, server) = tokio::io::duplex(1 << 20);
+        let conn = tokio::spawn(async move {
+            http_server()
+                .serve_connection_with_upgrades(TokioIo::new(server), hyper::service::service_fn(ok))
+                .await
+                .is_err()
+        });
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: a\r\n")
+            .await
+            .unwrap();
+        let done = tokio::time::timeout(HEADER_READ_TIMEOUT * 2, conn).await;
+        assert!(done.is_ok(), "the connection outlived the header-read timeout");
+        drop(client);
+    }
+
+    /// m1: a request head above the limit is refused, not buffered.
+    #[tokio::test]
+    async fn oversized_head_is_refused() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let (mut client, server) = tokio::io::duplex(1 << 20);
+        tokio::spawn(async move {
+            let _ = http_server()
+                .serve_connection_with_upgrades(TokioIo::new(server), hyper::service::service_fn(ok))
+                .await;
+        });
+        let big = format!(
+            "GET / HTTP/1.1\r\nHost: a\r\nX-Big: {}\r\n\r\n",
+            "a".repeat(MAX_HEADER_BYTES + 1024)
+        );
+        let _ = client.write_all(big.as_bytes()).await;
+        let mut out = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut out)).await;
+        let head = String::from_utf8_lossy(&out);
+        assert!(head.starts_with("HTTP/1.1 431"), "{head}");
     }
 }

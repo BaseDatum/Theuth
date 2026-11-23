@@ -14,7 +14,7 @@ use share_proto::{EndpointAddr, PublicKey, Signed, limits};
 use crate::edge::{DelegationSource, EdgeConn, EdgeDialer};
 use crate::engine::Hooks;
 use crate::keys::{self, NameKey, NameKeyStore};
-use crate::sources::{NoProcessCheck, OwnListeners};
+use crate::sources::{OwnListeners, ProcessTree};
 
 /// Per-stream receive window: 256 visitor streams × 256 KiB = the 64 MiB connection window.
 const STREAM_WINDOW: u32 = 256 * 1024;
@@ -146,16 +146,14 @@ impl NameKeyStore for VaultNameKeys {
     }
 }
 
-/// Every seam filled with the engine's adapters. The process-tree check stays unknown.
-// TODO(210-M1): `ProcessCheck` over a socket-table crate (`listeners`/`netstat2`); none is in
-// Cargo.lock, so no new dependency was added.
+/// Every seam filled with the engine's adapters.
 pub fn engine_hooks() -> Hooks {
     Hooks {
         dialer: Some(Arc::new(MeshDialer)),
         delegation: Some(Arc::new(MeshDelegation)),
         name_keys: Some(Arc::new(VaultNameKeys(None))),
         own_ports: Arc::new(OwnListeners),
-        process: Arc::new(NoProcessCheck),
+        process: Arc::new(ProcessTree),
     }
 }
 

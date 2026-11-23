@@ -7,6 +7,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 use crate::model::{Access, Share, Source};
+use crate::sources::{self, DirPin};
 
 /// One share as the proxy serves it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,11 +24,29 @@ pub struct Mount {
     pub access: Access,
     /// Interstitial on.
     pub interstitial: bool,
+    /// The edge's domain `D` (names are `<name>.D`).
+    pub domain: String,
+    /// A `dir` source's root as pinned when the mount was built; `None` for a `port` source or
+    /// a root that no longer passes [`sources::check_root`] (every request then gets 404).
+    pub dir: Option<DirPin>,
 }
 
 impl Mount {
-    /// From a share row.
+    /// From a share row. A `dir` root is pinned here (canonical path, device, inode) after the
+    /// publish checks run again on it, against `platform::env::data_dir()` and `$HOME`.
+    // TODO(210-M1): persist the pin in the share row (model.rs/store.rs) so a mount rebuilt after
+    // a restart or reconnect refuses a root swapped while the engine was down.
     pub fn of(s: &Share) -> Self {
+        let dir = match &s.source {
+            Source::Dir(d) => sources::pin_root(
+                d,
+                &platform::env::data_dir(),
+                std::env::home_dir().as_deref(),
+            )
+            .inspect_err(|e| tracing::warn!("share {}: {d}: {e}", s.id))
+            .ok(),
+            Source::Port(_) => None,
+        };
         Self {
             share: s.id.clone(),
             host: s.host.clone(),
@@ -39,7 +58,19 @@ impl Mount {
             source: s.source.clone(),
             access: s.access,
             interstitial: s.interstitial,
+            domain: s.domain.clone(),
+            dir,
         }
+    }
+
+    /// The name host (`<name>.D`) `host` belongs to under this mount's domain, lowercased;
+    /// `None` when `host` is not below the domain.
+    pub fn name_of(&self, host: &str) -> Option<String> {
+        let host = normalize_host(host);
+        let domain = self.domain.trim_end_matches('.').to_ascii_lowercase();
+        let below = host.strip_suffix(&domain)?.strip_suffix('.')?;
+        let name = below.rsplit('.').next().filter(|n| !n.is_empty())?;
+        Some(format!("{name}.{domain}"))
     }
 
     /// `https://{host}{prefix}`, no trailing slash.
@@ -148,7 +179,23 @@ mod tests {
             source: Source::Dir("/srv".into()),
             access: Access::Public,
             interstitial: false,
+            domain: "tun.zip".into(),
+            dir: None,
         }
+    }
+
+    #[test]
+    fn name_of_host() {
+        let mt = m("a", "app.sky.tun.zip", "");
+        assert_eq!(mt.name_of("sky.tun.zip").as_deref(), Some("sky.tun.zip"));
+        assert_eq!(
+            mt.name_of("APP.sky.tun.zip.:443").as_deref(),
+            Some("sky.tun.zip")
+        );
+        assert_eq!(mt.name_of("other.tun.zip").as_deref(), Some("other.tun.zip"));
+        assert_eq!(mt.name_of("tun.zip"), None);
+        assert_eq!(mt.name_of("sky.example.org"), None);
+        assert_eq!(mt.name_of("xtun.zip"), None);
     }
 
     #[test]

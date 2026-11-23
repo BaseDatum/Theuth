@@ -55,7 +55,8 @@ pub struct Operator {
 /// The gate of one engine.
 pub struct Gate {
     key: Key,
-    passwords: Mutex<HashMap<String, String>>,
+    /// Share id → (argon2 PHC, the random token its password cookie carries).
+    passwords: Mutex<HashMap<String, (String, String)>>,
     attempts: Mutex<HashMap<IpAddr, (Instant, u32)>>,
     hashing: Semaphore,
     waiting: AtomicUsize,
@@ -79,9 +80,26 @@ pub fn load_key(path: &Path) -> anyhow::Result<Key> {
 
 /// A fresh password the engine shows to the user (never a tool argument, §7.1).
 pub fn generate_password() -> String {
+    random_base32()[..20].to_ascii_lowercase()
+}
+
+/// 256 random bits (two v4 UUIDs, 244 of them random) in base32.
+fn random_base32() -> String {
     let mut b = uuid::Uuid::new_v4().into_bytes().to_vec();
     b.extend(uuid::Uuid::new_v4().into_bytes());
-    data_encoding::BASE32_NOPAD.encode(&b)[..20].to_ascii_lowercase()
+    data_encoding::BASE32_NOPAD.encode(&b)
+}
+
+/// The rate-limit bucket of a visitor: an IPv6 address by its /64 (one subscriber's prefix),
+/// IPv4 (and IPv4-mapped IPv6) by the address.
+fn limiter_key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6((u128::from(v6) & !u128::from(u64::MAX)).into()),
+        },
+        v4 => v4,
+    }
 }
 
 /// argon2id PHC string of `password`.
@@ -126,13 +144,21 @@ impl Gate {
         *self.operator.lock() = op;
     }
 
-    /// Install or drop a share's password hash.
+    /// Install or drop a share's password hash. A new or changed hash mints a fresh cookie token
+    /// (signing every visitor out); re-installing the same hash (restore at each `welcome`) keeps
+    /// it. An engine restart mints new tokens.
     pub fn set_password(&self, share: &str, phc: Option<String>) {
         let mut p = self.passwords.lock();
         match phc {
-            Some(h) => p.insert(share.to_owned(), h),
-            None => p.remove(share),
-        };
+            Some(h) => {
+                if p.get(share).is_none_or(|(old, _)| *old != h) {
+                    p.insert(share.to_owned(), (h, random_base32()));
+                }
+            }
+            None => {
+                p.remove(share);
+            }
+        }
     }
 
     fn jar(headers: &HeaderMap) -> CookieJar {
@@ -173,9 +199,11 @@ impl Gate {
         HeaderValue::from_str(&c).unwrap_or_else(|_| HeaderValue::from_static(""))
     }
 
+    /// The password cookie's value: the share id and its random token, never hash material. The
+    /// signed jar's MAC covers the value, so binding the id here ties the cookie to its share.
     fn pass_value(&self, share: &str) -> Option<String> {
         let p = self.passwords.lock();
-        p.get(share).map(|h| h.chars().rev().take(12).collect())
+        p.get(share).map(|(_, token)| format!("{share}.{token}"))
     }
 
     /// Decide before the source sees the request.
@@ -209,7 +237,7 @@ impl Gate {
                 .get(header::ACCEPT)
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|a| a.contains("text/html"))
-            && self.signed(headers, &seen_cookie(&m.share)).is_none()
+            && self.signed(headers, &seen_cookie(&m.share)).as_deref() != Some(m.share.as_str())
         {
             return Step::Respond(html(StatusCode::OK, &self.interstitial_page(m)));
         }
@@ -224,7 +252,7 @@ impl Gate {
         let mut r = redirect(&format!("{}/", m.prefix));
         r.headers_mut().append(
             header::SET_COOKIE,
-            self.set_cookie(seen_cookie(&m.share), "1".into()),
+            self.set_cookie(seen_cookie(&m.share), m.share.clone()),
         );
         r
     }
@@ -242,7 +270,7 @@ impl Gate {
             let mut a = self.attempts.lock();
             let now = Instant::now();
             a.retain(|_, (t, _)| now.duration_since(*t) < Duration::from_secs(60));
-            let e = a.entry(ip).or_insert((now, 0));
+            let e = a.entry(limiter_key(ip)).or_insert((now, 0));
             e.1 += 1;
             if e.1 > ATTEMPTS_PER_MIN {
                 return text(
@@ -251,7 +279,7 @@ impl Gate {
                 );
             }
         }
-        let Some(phc) = self.passwords.lock().get(&m.share).cloned() else {
+        let Some(phc) = self.passwords.lock().get(&m.share).map(|(h, _)| h.clone()) else {
             return text(StatusCode::UNAUTHORIZED, "password required");
         };
         let Ok(body) = Limited::new(req.into_body(), 4096).collect().await else {
@@ -402,6 +430,8 @@ mod tests {
             source: Source::Port(1),
             access,
             interstitial: true,
+            domain: "tun.zip".into(),
+            dir: None,
         }
     }
 
@@ -478,11 +508,83 @@ mod tests {
         let mut h = nav();
         h.insert(header::COOKIE, HeaderValue::from_str(&pair).unwrap());
         assert!(matches!(g.step(&pm, "/", &Method::GET, &h), Step::Pass));
+
+        // m3: the value is the share id and a random token, not argon2 material.
+        let phc = g.passwords.lock()["s1"].0.clone();
+        let value = pair.split_once('=').unwrap().1;
+        assert!(!value.contains(&phc[phc.len() - 12..]));
+        assert!(!value.contains(&phc.chars().rev().take(12).collect::<String>()));
+        // Re-installing the same hash (restore at `welcome`) keeps the cookie valid …
+        g.set_password("s1", Some(phc));
+        assert!(matches!(g.step(&pm, "/", &Method::GET, &h), Step::Pass));
+        // … the cookie renamed for another password share with the same hash opens nothing …
+        let other = Mount {
+            share: "s2".into(),
+            ..pm.clone()
+        };
+        let s1_phc = g.passwords.lock()["s1"].0.clone();
+        g.set_password("s2", Some(s1_phc));
+        let mut h2 = nav();
+        h2.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&pair.replace("__Host-share-s1=", "__Host-share-s2=")).unwrap(),
+        );
+        assert!(matches!(
+            g.step(&other, "/", &Method::GET, &h2),
+            Step::Respond(_)
+        ));
+        // … and a new password signs the old cookie out.
+        g.set_password("s1", Some(hash_password("other-pw").unwrap()));
+        assert!(matches!(
+            g.step(&pm, "/", &Method::GET, &h),
+            Step::Respond(_)
+        ));
         for _ in 0..ATTEMPTS_PER_MIN {
             let _ = g.login(&pm, ip, req("x", "same-origin")).await;
         }
         assert_eq!(
             g.login(&pm, ip, req("x", "same-origin")).await.status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    /// m4: attempts are counted per IPv6 /64, so rotating addresses inside one prefix does not
+    /// reset the limit; another /64 has its own budget.
+    #[tokio::test]
+    async fn limiter_buckets_ipv6_by_64() {
+        assert_eq!(
+            limiter_key("2001:db8:1:2:aaaa::1".parse().unwrap()),
+            "2001:db8:1:2::".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            limiter_key("::ffff:198.51.100.1".parse().unwrap()),
+            "198.51.100.1".parse::<IpAddr>().unwrap()
+        );
+        let g = Gate::new(Key::generate());
+        let pm = Mount {
+            interstitial: false,
+            ..m(Access::Password)
+        };
+        let req = || {
+            Request::builder()
+                .method(Method::POST)
+                .uri(LOGIN_PATH)
+                .header("sec-fetch-site", "same-origin")
+                .body(Full::new(Bytes::from_static(b"password=x")))
+                .unwrap()
+        };
+        for i in 0..ATTEMPTS_PER_MIN {
+            let ip: IpAddr = format!("2001:db8:1:2::{:x}", i + 1).parse().unwrap();
+            let _ = g.login(&pm, ip, req()).await;
+        }
+        let same: IpAddr = "2001:db8:1:2:ffff::9".parse().unwrap();
+        assert_eq!(
+            g.login(&pm, same, req()).await.status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        let other: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert_ne!(
+            g.login(&pm, other, req()).await.status(),
             StatusCode::TOO_MANY_REQUESTS
         );
     }
