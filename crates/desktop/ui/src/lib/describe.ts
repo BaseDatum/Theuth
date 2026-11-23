@@ -77,8 +77,8 @@ export function describeSharePublish(args: unknown, now: number): SharePublishAs
   const e = EXPIRY[key]
   const at = e ? new Date(now + e.ms).toLocaleString(undefined, { weekday: e.ms > 86_400_000 ? 'short' : undefined, hour: '2-digit', minute: '2-digit' }) : null
   return {
-    // 210 §7.3: `share_publish` from Settings/the card (RPC) carries the exact URL the engine computed before the
-    // ask; a tool call's card is raised by the registry before the engine runs, so it has none (TODO(210-M4)).
+    // 210 §7.3: both paths carry the exact URL the engine computed before the ask: the RPC (Settings/the card) adds
+    // it itself, a tool call through `share_publish`'s registry preview hook; `null` only if an older engine sent none.
     url: str(a.url),
     source,
     access: a.access === 'password' ? 'Password (theuth generates it and shows it to you)' : 'Anyone with the link',

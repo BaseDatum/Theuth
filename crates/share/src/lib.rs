@@ -146,9 +146,9 @@ impl runtime::Plugin for SharePlugin {
                 .await
             {
                 let _ = reg
-                    .ask(::tools::RegisterTool(Arc::new(tools::SharePublishTool {
-                        engine: engine.clone(),
-                    })))
+                    .ask(::tools::RegisterTool(Arc::new(tools::SharePublishTool::new(
+                        engine.clone(),
+                    ))))
                     .await;
                 let _ = reg
                     .ask(::tools::RegisterTool(Arc::new(tools::ShareStopTool {

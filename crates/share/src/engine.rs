@@ -2466,6 +2466,96 @@ mod tests {
         assert!(!e2.fresh.lock().contains("dropped"));
     }
 
+    /// LAUNCH-CLIENT: the tool path's card preview (`share_publish` called by the model). The
+    /// preview names the URL and claims nothing; a denied card never claims; the approved call
+    /// claims exactly the shown name, fails with `NAME_TAKEN_MEANWHILE` when it was taken, and
+    /// refuses an expired or missing preview without claiming.
+    #[tokio::test]
+    async fn tool_preview_binds_the_call_to_the_shown_name() {
+        use crate::tools::SharePublishTool;
+        use ::tools::Tool as _;
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        let edge = Arc::new(NameEdge::default());
+        let (d, e) = engine(8).await;
+        e.store.set_enabled(true).await.unwrap();
+        let info = test_info();
+        e.store
+            .set_terms_rev(&info.edge_id.to_string(), &info.terms_rev)
+            .await
+            .unwrap();
+        e.welcome(&name_edge(&edge), &info, &test_welcome(&[])).await;
+        let tool = SharePublishTool::new(e.clone());
+        let session = runtime::SessionId::new();
+        let args = || -> crate::tools::PublishArgs {
+            serde_json::from_value(serde_json::json!({"source": {"port": port}, "label": "app"}))
+                .unwrap()
+        };
+        let preview = |call_id: &str| ::tools::PreviewCx {
+            session,
+            call_id: call_id.into(),
+        };
+        let cx = |call_id: &str| ::tools::ToolCx {
+            session,
+            call_id: call_id.into(),
+            quiet: false,
+            resources: ::tools::SessionResources::durable_arc(d.path()),
+            cancel: ::tools::CancellationToken::new(),
+            promote_after: None,
+        };
+        let approved = || {
+            Some(::tools::Approved {
+                id: ::tools::ApprovalId(uuid::Uuid::now_v7()),
+                surface: "owner",
+            })
+        };
+
+        // Shown, then denied: the call never runs and nothing is claimed.
+        let card = tool.approval_preview(args(), preview("denied")).await.unwrap().unwrap();
+        let name = card["name"].as_str().unwrap().to_owned();
+        assert_eq!(card["url"], format!("https://app.{name}.tun.zip/"));
+        assert_eq!(card["label"], "app");
+        assert_eq!(*edge.checks.lock(), vec![name], "checked read-only");
+        assert!(edge.claims.lock().is_empty(), "nothing claimed for the card");
+
+        // Shown, approved: the call claims exactly that name (then fails: no name keys).
+        let card = tool.approval_preview(args(), preview("ok")).await.unwrap().unwrap();
+        let shown = card["name"].as_str().unwrap().to_owned();
+        let out = ::tools::approval::approved_scope(approved(), tool.call(args(), cx("ok")))
+            .await
+            .unwrap();
+        assert!(out.content.contains("name keys"), "{out:?}");
+        assert_eq!(*edge.claims.lock(), vec![shown.clone()], "the shown name, no other");
+        assert!(!tool.shown.lock().contains_key(&(session, "ok".into())), "taken once");
+
+        // The shown name was taken meanwhile: refused, no fresh draw.
+        tool.approval_preview(args(), preview("taken")).await.unwrap();
+        tool.shown
+            .lock()
+            .get_mut(&(session, "taken".into()))
+            .unwrap()
+            .preview
+            .name = "taken1".into();
+        let out = ::tools::approval::approved_scope(approved(), tool.call(args(), cx("taken")))
+            .await
+            .unwrap();
+        assert_eq!(out.content, format!("share_publish: {NAME_TAKEN_MEANWHILE}"));
+        assert_eq!(*edge.claims.lock(), vec![shown.clone(), "taken1".into()]);
+
+        // An expired preview, or none at all: refused before any claim.
+        tool.approval_preview(args(), preview("old")).await.unwrap();
+        tool.shown.lock().get_mut(&(session, "old".into())).unwrap().until =
+            std::time::Instant::now();
+        for id in ["old", "never"] {
+            let out = ::tools::approval::approved_scope(approved(), tool.call(args(), cx(id)))
+                .await
+                .unwrap();
+            assert!(out.content.contains("expired"), "{out:?}");
+        }
+        assert_eq!(*edge.claims.lock(), vec![shown, "taken1".into()]);
+        assert!(e.store.list(platform::time::now_ms()).await.unwrap().is_empty());
+    }
+
     /// FIX6 N4: an unused claim is released only when no share of the family that is not
     /// stopped uses the name (another engine's replicated row included), and never when the
     /// shares cannot be read.

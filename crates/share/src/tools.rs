@@ -1,14 +1,16 @@
 //! `share_publish`, `share_list`, `share_stop` (210 §7.1).
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use share_proto::names;
-use tools::{Risk, Tool, ToolCx, ToolOutput};
+use tools::{PreviewCx, Risk, Tool, ToolCx, ToolOutput};
 
 use crate::config::Expiry;
-use crate::engine::{CallOrigin, Consent, Engine};
+use crate::engine::{CallOrigin, Consent, Engine, PublishPreview};
 use crate::model::{Access, Source};
 
 /// The source argument: exactly one of `port` or `dir`.
@@ -101,10 +103,35 @@ pub fn plan(
     })
 }
 
+/// How long a tool call's card preview stays usable: a call approved later is refused (the name
+/// drawn for the card may be gone, a held one may have changed) and the model publishes again.
+pub const PREVIEW_TTL: Duration = Duration::from_secs(30 * 60);
+
+/// What one tool call's approval card showed: the validated plan (its random label included)
+/// and the name/URL the publish must use.
+pub(crate) struct Shown {
+    pub(crate) plan: Plan,
+    pub(crate) preview: PublishPreview,
+    /// Usable until then.
+    pub(crate) until: Instant,
+}
+
 /// `share_publish`.
 pub struct SharePublishTool {
-    /// The engine.
-    pub engine: Arc<Engine>,
+    engine: Arc<Engine>,
+    /// Card previews by (session, call id), taken by the approved call; never claimed, so a
+    /// denied, timed out or withdrawn card just ages out after [`PREVIEW_TTL`].
+    pub(crate) shown: parking_lot::Mutex<HashMap<(runtime::SessionId, String), Shown>>,
+}
+
+impl SharePublishTool {
+    /// The tool over `engine`.
+    pub fn new(engine: Arc<Engine>) -> Self {
+        Self {
+            engine,
+            shown: parking_lot::Mutex::default(),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -115,6 +142,8 @@ impl Tool for SharePublishTool {
     const DIRECT: bool = true;
     /// §7.2: only the owner, in person, approves a publish.
     const HUMAN_ONLY: bool = true;
+    /// §7.3: the card shows the exact URL.
+    const APPROVAL_PREVIEW: bool = true;
     type Args = PublishArgs;
 
     fn description(&self) -> String {
@@ -132,12 +161,41 @@ impl Tool for SharePublishTool {
         false
     }
 
-    async fn call(&self, args: PublishArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        let random = crate::engine::random_bytes();
-        let plan = match plan(args, self.engine.cfg.default_expiry, random) {
-            Ok(p) => p,
-            Err(e) => return Ok(ToolOutput::err(format!("share_publish: {e}"))),
-        };
+    /// §7.3: validate, run the refusals the owner cannot approve away (switch, edge, terms), and
+    /// pick the name exactly as the RPC path does: a held name, else a local draw checked
+    /// read-only at the edge. Nothing is claimed; the call claims it after `Allow`.
+    async fn approval_preview(
+        &self,
+        args: PublishArgs,
+        cx: PreviewCx,
+    ) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
+        let plan = plan(
+            args,
+            self.engine.cfg.default_expiry,
+            crate::engine::random_bytes(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        self.engine.publish_precheck(plan.name.as_deref()).await?;
+        let preview = self.engine.publish_preview(&plan).await?;
+        let mut card = serde_json::Map::new();
+        card.insert("url".into(), preview.url.clone().into());
+        card.insert("name".into(), preview.name.clone().into());
+        card.insert("label".into(), plan.label.clone().into());
+        let mut shown = self.shown.lock();
+        let now = Instant::now();
+        shown.retain(|_, s| now < s.until);
+        shown.insert(
+            (cx.session, cx.call_id),
+            Shown {
+                plan,
+                preview,
+                until: now + PREVIEW_TTL,
+            },
+        );
+        Ok(Some(card))
+    }
+
+    async fn call(&self, _args: PublishArgs, cx: ToolCx) -> anyhow::Result<ToolOutput> {
         // The human-only row this call passed (the registry scopes the body with it); none =
         // the gate was bypassed, so refuse (m7).
         let Some(consent) = Consent::of_call() else {
@@ -145,11 +203,22 @@ impl Tool for SharePublishTool {
                 "share_publish: refused: this call carries no owner approval",
             ));
         };
+        // Publish exactly what the approved card showed (the args are the same call's).
+        let shown = self.shown.lock().remove(&(cx.session, cx.call_id.clone()));
+        let Some(Shown { plan, preview, .. }) = shown.filter(|s| Instant::now() < s.until) else {
+            return Ok(ToolOutput::err(
+                "share_publish: refused: the approval card for this call has expired; publish again",
+            ));
+        };
         let origin = CallOrigin::Call {
             session: cx.session.to_string(),
             call_id: cx.call_id.clone(),
         };
-        match self.engine.publish(plan, origin, consent).await {
+        match self
+            .engine
+            .publish_previewed(plan, origin, consent, preview)
+            .await
+        {
             Ok(p) => {
                 let mut text = format!("Published {} ({})", p.share.url, p.share.state.as_str());
                 if let Some(w) = &p.pending {
