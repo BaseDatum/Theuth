@@ -14,7 +14,6 @@ use agent_desktop_core::{
     AdapterError, AppError, CursorOverlayConfig, DeliverySemantics, PlatformAdapter,
 };
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use super::command::Command;
 
@@ -129,9 +128,8 @@ fn not_delivered(error: AppError) -> AppError {
 /// stable hash of its data dir (161 §3.2), so a sweep finds only the
 /// leftovers of earlier runs of the same engine.
 pub(super) fn engine_name(data_dir: &Path) -> String {
-    let hash = Sha256::digest(data_dir.as_os_str().as_encoded_bytes());
-    let hex: String = hash[..6].iter().map(|b| format!("{b:02x}")).collect();
-    format!("theuth:{hex}")
+    let hash = platform::sha256::hex(data_dir.as_os_str().as_encoded_bytes());
+    format!("theuth:{}", &hash[..12])
 }
 
 /// The namespace is a real agent-desktop session whose id is the theuth

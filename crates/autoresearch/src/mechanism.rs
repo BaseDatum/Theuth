@@ -322,9 +322,7 @@ fn read_index(root: &Path) -> Index {
 
 fn write_index(root: &Path, ix: &Index) -> Result<()> {
     std::fs::create_dir_all(root)?;
-    let tmp = index_path(root).with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(ix)?)?;
-    std::fs::rename(tmp, index_path(root))?;
+    platform::files::write_atomic(&index_path(root), &serde_json::to_vec_pretty(ix)?)?;
     Ok(())
 }
 

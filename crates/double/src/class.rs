@@ -8,7 +8,6 @@ use std::fmt;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tools::Risk;
 
 /// What kind of card a class keys (126 §2 "decision card").
@@ -312,8 +311,7 @@ pub fn ask_hash(options: &[String]) -> Option<String> {
         })
         .collect();
     labels.sort_unstable();
-    let digest = Sha256::digest(labels.join("\n").as_bytes());
-    Some(digest[..6].iter().map(|b| format!("{b:02x}")).collect())
+    Some(platform::sha256::hex(labels.join("\n").as_bytes())[..12].to_owned())
 }
 
 #[cfg(test)]

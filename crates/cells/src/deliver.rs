@@ -272,10 +272,7 @@ fn cut(s: &str, max: usize) -> (&str, bool) {
     if s.len() <= max {
         return (s, true);
     }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = s.floor_char_boundary(max);
     (&s[..end], false)
 }
 
@@ -285,10 +282,7 @@ fn cut(s: &str, max: usize) -> (&str, bool) {
 pub(crate) fn line_cuts(text: &str, head_max: usize, tail_from: usize) -> (usize, usize) {
     let (head, _) = cut(text, head_max);
     let head_end = head.rfind('\n').map_or(head.len(), |i| i + 1);
-    let mut tail = tail_from.min(text.len());
-    while !text.is_char_boundary(tail) {
-        tail += 1;
-    }
+    let tail = text.ceil_char_boundary(tail_from.min(text.len()));
     let at_line_start = tail == 0 || text.as_bytes()[tail - 1] == b'\n';
     let tail_start = text[tail..]
         .find('\n')

@@ -350,14 +350,12 @@ fn ensure_not_user(fm: &okf::Frontmatter, id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `tmp` + rename; parents created.
+/// Temp + rename; parents created.
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("md.tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    platform::files::write_atomic(path, bytes)
 }
 
 /// Design 59 §7.1: a concept that already has a document gets the new file

@@ -2291,14 +2291,13 @@ fn call_risk(tool: &DynTool, session: SessionId, risk: Risk, args: &serde_json::
 /// `serde_json/preserve_order`, so an MCP server re-sending the same schema
 /// with keys in a different order must still hash equal.
 fn identity(tool: &DynTool, spec: &ToolSpec) -> String {
-    use sha2::{Digest as _, Sha256};
     let mut canon = serde_json::json!({
         "name": spec.name,
         "schema": spec.schema,
         "origin": tool.origin(),
     });
     canon.sort_all_objects();
-    hex::encode(Sha256::digest(canon.to_string()))
+    platform::sha256::hex(canon.to_string().as_bytes())
 }
 
 /// One pre-registration invocation's slot in `ToolRegistry::untracked`;

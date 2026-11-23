@@ -12,7 +12,6 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// The longest `label` the Run button shows whole (§3.2); a longer one is a warning and
 /// shows [`short_label`]-truncated, the full text kept as its tooltip.
@@ -533,7 +532,7 @@ pub fn parse_defaults(body: &str) -> NoteDefaults {
 pub fn digest(body: &str) -> String {
     let text = normalize(body);
     let text = text.strip_suffix('\n').unwrap_or(&text);
-    hex::encode(Sha256::digest(text.as_bytes()))
+    platform::sha256::hex(text.as_bytes())
 }
 
 // ---- validation ----

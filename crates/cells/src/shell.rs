@@ -223,9 +223,8 @@ async fn close_job(jobs: &ActorRef<Jobs>, session: SessionId, job: &JobId) {
 
 /// `k` + 12 hex of the kernel id's digest: the job name and `kernels/<id>/` (stable per key).
 pub(crate) fn kernel_dir_name(id: &crate::types::KernelId) -> String {
-    use sha2::{Digest, Sha256};
     let json = serde_json::to_string(id).unwrap_or_default();
-    let d = hex::encode(Sha256::digest(json.as_bytes()));
+    let d = platform::sha256::hex(json.as_bytes());
     format!("k{}", &d[..12])
 }
 

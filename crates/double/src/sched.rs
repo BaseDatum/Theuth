@@ -859,9 +859,7 @@ pub fn persist(path: &Path, cfg: &DoubleConfig) -> std::io::Result<()> {
             lines.extend(block);
         }
     }
-    let tmp = path.with_extension(format!("yaml.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, lines.join("\n") + "\n")?;
-    std::fs::rename(tmp, path)
+    platform::files::write_atomic(path, (lines.join("\n") + "\n").as_bytes())
 }
 
 #[cfg(test)]

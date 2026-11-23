@@ -23,6 +23,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD};
 use chacha20poly1305::XChaCha20Poly1305;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use platform::time::now_ms;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -1098,12 +1099,6 @@ impl Vault {
 
 fn unknown(name: &str) -> String {
     format!("unknown secret {name}; secret_list shows the names")
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 fn rfc3339(ms: u64) -> String {

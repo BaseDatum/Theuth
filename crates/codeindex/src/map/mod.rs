@@ -47,15 +47,11 @@ pub const CALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(120)
 /// node ids sorted and joined by `\n`, first 8 hex. Keyed by what it
 /// contains: renaming changes nothing, re-partitioning changes everything.
 pub fn cluster_id(members: &[String]) -> String {
-    use sha2::Digest;
     let mut sorted: Vec<&str> = members.iter().map(String::as_str).collect();
     sorted.sort_unstable();
     sorted.dedup();
-    let hash = sha2::Sha256::digest(sorted.join("\n").as_bytes());
-    format!(
-        "cluster:{:02x}{:02x}{:02x}{:02x}",
-        hash[0], hash[1], hash[2], hash[3]
-    )
+    let hash = platform::sha256::hex(sorted.join("\n").as_bytes());
+    format!("cluster:{}", &hash[..8])
 }
 
 /// `<perspective>/<node>`: the element id of `node` in `perspective`; the

@@ -10,12 +10,12 @@ mod db;
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::LazyLock;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use decision::embed::{EMBED_ACTOR, Embed, EmbedActor, EmbedInfo, Info, Tokens};
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
+use platform::time::now_ms_i64 as now_ms;
 use search::{MatchRange, SearchPage, TextMatch};
 use serde::{Deserialize, Serialize};
 use surface::anchor::{Locator, TheuthAnchor, TheuthKind};
@@ -866,12 +866,6 @@ fn marker_id(line: &str) -> Option<&str> {
     let inner = line.trim().strip_prefix("<!-- ")?.strip_suffix(" -->")?;
     let id = inner.split(' ').next()?;
     (!id.is_empty()).then_some(id)
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
 }
 
 #[cfg(test)]

@@ -12,10 +12,7 @@
 //! the custody copy).
 
 use std::collections::BTreeMap;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-
-use sha2::{Digest as _, Sha256};
 
 use crate::error::{Error, Result};
 use crate::types::StudySpec;
@@ -268,17 +265,7 @@ pub fn is_build_junk(path: &str) -> bool {
 
 /// sha256 hex of a file.
 pub fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(hex::encode(hasher.finalize()))
+    Ok(platform::sha256::file(path)?)
 }
 
 /// `<root>/drafts/<slug>/` from `<root>/<slug>/evaluator/<segment>/`.

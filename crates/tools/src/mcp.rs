@@ -141,7 +141,6 @@ impl ServerSpec {
     /// headers), so a changed endpoint parameter, argv or credential is a
     /// different identity while nothing of the entry leaves this hash.
     fn origin(&self, server: &str) -> String {
-        use sha2::{Digest as _, Sha256};
         let raw = match &self.transport {
             Transport::Stdio {
                 command,
@@ -155,7 +154,7 @@ impl ServerSpec {
                 "server": server, "url": url, "headers": headers,
             }),
         };
-        format!("mcp:{}", hex::encode(Sha256::digest(raw.to_string())))
+        format!("mcp:{}", platform::sha256::hex(raw.to_string().as_bytes()))
     }
 }
 
@@ -490,9 +489,7 @@ fn load_homes(dir: &Path) -> Result<Homes, String> {
 fn write_homes(dir: &Path, homes: &Homes) -> Result<(), String> {
     let text = serde_yaml::to_string(homes).map_err(|e| e.to_string())?;
     let path = dir.join(HOMES);
-    let tmp = dir.join(format!(".{HOMES}.tmp"));
-    std::fs::write(&tmp, text)
-        .and_then(|()| std::fs::rename(&tmp, &path))
+    platform::files::write_atomic(&path, text.as_bytes())
         .map_err(|e| format!("write {}: {e}", path.display()))
 }
 
@@ -1325,9 +1322,7 @@ impl Message<SetGate> for Mcp {
         let text = serde_yaml::to_string(&gates).map_err(|e| e.to_string())?;
         // Write-then-rename so the watcher never reads a half file.
         let path = self.dir.join("config.yaml");
-        let tmp = self.dir.join("config.yaml.tmp");
-        std::fs::write(&tmp, text)
-            .and_then(|()| std::fs::rename(&tmp, &path))
+        platform::files::write_atomic(&path, text.as_bytes())
             .map_err(|e| format!("write {}: {e}", path.display()))?;
         self.reconcile(ctx.actor_ref()).await;
         Ok(())
@@ -1336,12 +1331,10 @@ impl Message<SetGate> for Mcp {
 
 /// Pretty JSON, write-then-rename so the watcher never reads a half file.
 fn write_json(path: &Path, json: &Value) -> Result<(), String> {
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(
-        &tmp,
-        serde_json::to_vec_pretty(json).map_err(|e| e.to_string())?,
+    platform::files::write_atomic(
+        path,
+        &serde_json::to_vec_pretty(json).map_err(|e| e.to_string())?,
     )
-    .and_then(|()| std::fs::rename(&tmp, path))
     .map_err(|e| format!("write {}: {e}", path.display()))
 }
 

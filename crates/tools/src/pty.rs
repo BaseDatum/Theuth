@@ -832,10 +832,7 @@ fn style_of(c: &vt100::Cell) -> Style {
 
 /// First ≤ [`CELL_BYTES`] bytes on a char boundary.
 fn clip(t: &str) -> &str {
-    let mut n = t.len().min(CELL_BYTES);
-    while !t.is_char_boundary(n) {
-        n -= 1;
-    }
+    let n = t.floor_char_boundary(t.len().min(CELL_BYTES));
     &t[..n]
 }
 

@@ -37,9 +37,7 @@ pub fn write_shim(paths: &CellsPaths) -> std::io::Result<()> {
         return Ok(());
     }
     std::fs::create_dir_all(&paths.root)?;
-    let tmp = path.with_extension("py.tmp");
-    std::fs::write(&tmp, SHIM)?;
-    std::fs::rename(&tmp, &path)
+    platform::files::write_atomic(&path, SHIM.as_bytes())
 }
 
 /// Start a python kernel for `spec` (`KernelSpec::Python`).

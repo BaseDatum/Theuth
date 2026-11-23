@@ -630,9 +630,7 @@ pub fn persist(path: &Path, cfg: &AutoresearchConfig) -> std::io::Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let tmp = path.with_extension(format!("yaml.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, lines.join("\n") + "\n")?;
-    std::fs::rename(tmp, path)
+    platform::files::write_atomic(path, (lines.join("\n") + "\n").as_bytes())
 }
 
 #[cfg(test)]

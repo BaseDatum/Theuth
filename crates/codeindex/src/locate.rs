@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::{Codeindex, store};
 
@@ -74,8 +73,7 @@ pub struct Located {
 
 /// Lowercase hex SHA-256, the `text_sha` convention.
 pub fn text_sha(text: &str) -> String {
-    let d = Sha256::digest(text.as_bytes());
-    d.iter().map(|b| format!("{b:02x}")).collect()
+    platform::sha256::hex(text.as_bytes())
 }
 
 /// Reject `..`, absolute and scheme-like paths before touching the disk, so a

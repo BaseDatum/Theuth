@@ -12,7 +12,6 @@ use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::metadata::Orientation;
 use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits};
-use sha2::{Digest, Sha256};
 
 /// Largest encoded image accepted at ingress ([`validate_bytes`], MCP, snapshots).
 pub const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
@@ -332,19 +331,14 @@ fn write_blob(bytes: &[u8], mime: &str, dir: &Path) -> anyhow::Result<PathBuf> {
     let ext = format_of(mime)
         .map_err(anyhow::Error::msg)?
         .extensions_str()[0];
-    let hex = hex::encode(Sha256::digest(bytes));
+    let hex = platform::sha256::hex(bytes);
     let stem = &hex[..16];
     let path = dir.join(format!("{stem}.{ext}"));
     if read_regular(&path, bytes.len() as u64 + 1).is_ok_and(|held| held == bytes) {
         return Ok(path);
     }
     std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!("{stem}.{}.tmp", uuid::Uuid::new_v4()));
-    std::fs::write(&tmp, bytes)
-        .and_then(|()| std::fs::rename(&tmp, &path))
-        .inspect_err(|_| {
-            let _ = std::fs::remove_file(&tmp);
-        })?;
+    platform::files::write_atomic(&path, bytes)?;
     Ok(path)
 }
 

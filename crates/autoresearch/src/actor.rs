@@ -648,10 +648,7 @@ fn scrub(s: &str, cap: usize) -> String {
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
         .collect();
     if out.len() > cap {
-        let mut cut = cap;
-        while !out.is_char_boundary(cut) {
-            cut -= 1;
-        }
+        let cut = out.floor_char_boundary(cap);
         out.truncate(cut);
     }
     out
@@ -5473,10 +5470,7 @@ pub async fn experiment_env(env: &Env, m: Experiment) -> Result<ExperimentDetail
             .ok(),
         (_, Some(p), _) => std::fs::read_to_string(env.root.join(p)).ok().map(|mut s| {
             if s.len() > MAX_DIFF {
-                let mut cut = MAX_DIFF;
-                while !s.is_char_boundary(cut) {
-                    cut -= 1;
-                }
+                let cut = s.floor_char_boundary(MAX_DIFF);
                 s.truncate(cut);
                 s.push_str("\n… (truncated)");
             }

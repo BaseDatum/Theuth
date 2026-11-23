@@ -149,10 +149,7 @@ pub fn scan_line(line: &str, into: &mut Scanned) -> bool {
                 into.spend_nanos = into.spend_nanos.saturating_add((v * 1e9).round() as u64);
                 let mut label = label.to_owned();
                 if label.len() > SPEND_LABEL {
-                    let mut cut = SPEND_LABEL;
-                    while !label.is_char_boundary(cut) {
-                        cut -= 1;
-                    }
+                    let cut = label.floor_char_boundary(SPEND_LABEL);
                     label.truncate(cut);
                 }
                 into.spend_labels.push(label);
@@ -176,10 +173,7 @@ pub fn scan_line(line: &str, into: &mut Scanned) -> bool {
         }
         let mut text = text.to_owned();
         if text.len() > room {
-            let mut cut = room;
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
-            }
+            let cut = text.floor_char_boundary(room);
             text.truncate(cut);
         }
         into.asi.insert(key.to_owned(), text);

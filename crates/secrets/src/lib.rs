@@ -39,6 +39,7 @@ use std::time::Duration;
 use kameo::actor::Spawn;
 use kameo::message::{Context, Message};
 use kameo::reply::DelegatedReply;
+use platform::time::now_ms;
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -682,13 +683,6 @@ impl Message<ListRequests> for SecretsActor {
             .await
             .map_err(|e| e.to_string())
     }
-}
-
-/// ms since the Unix epoch.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// The secrets actor; `None` before the plugin started or when the vault failed to open.

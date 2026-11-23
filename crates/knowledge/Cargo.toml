@@ -15,6 +15,7 @@ runtime = { workspace = true }
 wire = { workspace = true }
 replica = { workspace = true }
 mesh = { workspace = true }  # 185 B6: `is_hub` in the sync manifest
+platform = { workspace = true }
 tools = { workspace = true }
 document = { workspace = true }
 search = { workspace = true }

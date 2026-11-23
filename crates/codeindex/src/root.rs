@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
-use sha2::{Digest, Sha256};
 
 /// `args.root` | git top-level of the process cwd (`gix::discover`) | cwd;
 /// canonicalised; must be a directory. `ToolCx` carries no cwd, so this uses
@@ -32,7 +31,7 @@ pub fn discover(arg: Option<&Path>) -> anyhow::Result<PathBuf> {
 /// dropped), first 8 hex of its SHA-256 (60 §0.7).
 pub fn db_file_name(root: &Path) -> String {
     let s = root.to_string_lossy();
-    let hash = Sha256::digest(s.as_bytes());
+    let hash = platform::sha256::hex(s.as_bytes());
     let slug: String = s
         .chars()
         .map(|c| {
@@ -43,14 +42,7 @@ pub fn db_file_name(root: &Path) -> String {
             }
         })
         .collect();
-    format!(
-        "{}-{:02x}{:02x}{:02x}{:02x}.sqlite",
-        slug.trim_start_matches('-'),
-        hash[0],
-        hash[1],
-        hash[2],
-        hash[3]
-    )
+    format!("{}-{}.sqlite", slug.trim_start_matches('-'), &hash[..8])
 }
 
 /// Join a user path to `root` and require it to canonicalise under it (60 §11).

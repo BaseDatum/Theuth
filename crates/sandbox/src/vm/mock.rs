@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use parking_lot::Mutex;
+use platform::time::now_ms;
 
 use super::{
     Blocker, HostFacts, LogLine, Mount, Pending, Port, Preflight, ResizeOutcome, ResizeStatus,
@@ -140,12 +141,6 @@ fn handle(name: &str) -> VmHandle {
         name: name.to_owned(),
         runtime_id: Some(format!("mock-{name}")),
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 #[async_trait::async_trait]

@@ -14,7 +14,6 @@ use anyhow::Context as _;
 use kameo::actor::ActorRef;
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use tools::SessionResources;
 
@@ -385,7 +384,7 @@ fn invocation_from_row(r: InvRow) -> Result<Invocation, String> {
 }
 
 fn sha16(bytes: &[u8]) -> String {
-    let mut hex = hex::encode(Sha256::digest(bytes));
+    let mut hex = platform::sha256::hex(bytes);
     hex.truncate(16);
     hex
 }

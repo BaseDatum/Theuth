@@ -14,10 +14,10 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
+use platform::time::now_ms;
 use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 use url::{Host, Url};
 
@@ -215,12 +215,6 @@ pub fn open_tiles() -> Vec<OpenTile> {
         .collect();
     out.sort_by(|a, b| b.opened_ms.cmp(&a.opened_ms).then_with(|| a.id.cmp(&b.id)));
     out
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// Most tiles remembered across all sessions; the least recently updated goes first.
@@ -854,11 +848,9 @@ fn receipt(title: &str, url: &str, id: &str, live: bool) -> String {
 
 /// 205 D4: first 16 hex of `sha256(session ‖ "\n" ‖ origin)`.
 fn frame_id(session: SessionId, url: &Url) -> String {
-    let mut h = Sha256::new();
-    h.update(session.to_string().as_bytes());
-    h.update(b"\n");
-    h.update(url.origin().ascii_serialization().as_bytes());
-    let mut id = hex::encode(h.finalize());
+    let mut id = platform::sha256::hex(
+        format!("{session}\n{}", url.origin().ascii_serialization()).as_bytes(),
+    );
     id.truncate(16);
     id
 }
@@ -1201,9 +1193,10 @@ mod tests {
         assert_eq!(id, frame_id(a, &u("localhost:3000/other?x=1")));
         assert_ne!(id, frame_id(a, &u("http://localhost:3001/")));
         assert_ne!(id, frame_id(b, &u("http://localhost:3000/")));
-        let mut h = Sha256::new();
-        h.update(format!("{a}\nhttp://localhost:3000").as_bytes());
-        assert_eq!(id, hex::encode(h.finalize())[..16]);
+        assert_eq!(
+            id,
+            platform::sha256::hex(format!("{a}\nhttp://localhost:3000").as_bytes())[..16]
+        );
     }
 
     #[test]

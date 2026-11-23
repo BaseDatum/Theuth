@@ -2484,10 +2484,7 @@ pub(crate) fn sep(body: &str) -> &'static str {
 
 fn truncate(mut s: String) -> String {
     if s.len() > MAX_OUTPUT {
-        let mut cut = MAX_OUTPUT;
-        while !s.is_char_boundary(cut) {
-            cut -= 1;
-        }
+        let cut = s.floor_char_boundary(MAX_OUTPUT);
         s.truncate(cut);
         s.push_str("\n[output truncated at 64 KiB]");
     }

@@ -13,8 +13,6 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use sha2::{Digest, Sha256};
-
 use crate::custody;
 use crate::error::{Error, Result};
 use crate::types::StudySpec;
@@ -158,9 +156,7 @@ pub(crate) fn dirty_paths(repo: &Path) -> Result<Vec<String>> {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    hex::encode(h.finalize())
+    platform::sha256::hex(bytes)
 }
 
 /// `autoresearch/<slug>`.
@@ -528,10 +524,7 @@ pub fn diff_text(worktree: &Path, a: &str, b: &str, max_bytes: usize) -> Result<
     let raw = diff_bytes(worktree, &[a, b, "--", "."])?;
     let mut text = String::from_utf8_lossy(&raw).into_owned();
     if text.len() > max_bytes {
-        let mut cut = max_bytes;
-        while !text.is_char_boundary(cut) {
-            cut -= 1;
-        }
+        let cut = text.floor_char_boundary(max_bytes);
         text.truncate(cut);
         text.push_str(&format!("\n… (diff truncated at {max_bytes} bytes)\n"));
     }

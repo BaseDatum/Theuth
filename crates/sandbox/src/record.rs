@@ -107,12 +107,8 @@ pub const VM_STEPS: [&str; 8] = [
     "verify",
 ];
 
-/// Unix ms now.
-pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
-}
+// Unix ms now.
+pub use platform::time::now_ms;
 
 impl Computer {
     /// The VM half, or `Err` naming the backend.
@@ -197,9 +193,7 @@ pub fn write(data_dir: &Path, rec: &Computer) -> anyhow::Result<()> {
     std::fs::create_dir_all(data_dir.join(DIR))?;
     let text = serde_yaml::to_string(rec)?;
     let final_path = path(data_dir, &rec.name);
-    let tmp = final_path.with_extension(format!("yaml.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, &final_path)?;
+    platform::files::write_atomic(&final_path, text.as_bytes())?;
     Ok(())
 }
 
