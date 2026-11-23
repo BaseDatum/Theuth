@@ -360,8 +360,9 @@ async fn remove_host(edge: &Edge, certs: &Certs, rtype: Rtype, host: &str) -> an
 
 async fn remove_records(edge: &Edge, certs: &Certs, name: &str) -> anyhow::Result<()> {
     let zone = edge.cfg.dns_zone();
-    for host in dns::name_hosts(name, &edge.cfg.domain, zone)? {
-        remove_host(edge, certs, Rtype::Cname, &host).await?;
+    // Reverse of the write order: `<n>` before `*.<n>` (see `dns::name_hosts`).
+    for host in dns::name_hosts(name, &edge.cfg.domain, zone)?.iter().rev() {
+        remove_host(edge, certs, Rtype::Cname, host).await?;
     }
     let txt = dns::challenge_host(&format!("{name}.{}", edge.cfg.domain), zone)?;
     remove_host(edge, certs, Rtype::Txt, &txt).await?;
@@ -429,7 +430,10 @@ pub async fn revoke_due(edge: &Edge, certs: &Certs, now: u64) -> anyhow::Result<
 pub async fn reconcile(edge: &Edge) -> anyhow::Result<()> {
     let Some(certs) = edge.certs.get() else { return Ok(()) };
     edge.store.reset_leases().await?;
-    for (host, rtype, _value, name) in edge.store.dns_all().await? {
+    let mut rows = edge.store.dns_all().await?;
+    // `<n>` before `*.<n>`, as `remove_records` (see `dns::name_hosts`).
+    rows.sort_by_key(|(host, ..)| host.starts_with("*."));
+    for (host, rtype, _value, name) in rows {
         let Some(rt) = Rtype::parse(&rtype) else { continue };
         let keep = match (rt, name.as_deref()) {
             (Rtype::Cname, Some(n)) => edge

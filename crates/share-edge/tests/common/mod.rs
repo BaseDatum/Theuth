@@ -23,6 +23,8 @@ pub struct FakeZone {
     pub panic_on: Mutex<Option<String>>,
     /// Every fqdn a TXT probe asked for.
     pub probes: Mutex<Vec<String>>,
+    /// Every `create` / `delete_all` in call order: `("create" | "delete", type, host)`.
+    pub ops: Mutex<Vec<(&'static str, Rtype, String)>>,
 }
 
 impl FakeZone {
@@ -41,6 +43,17 @@ impl FakeZone {
 
     pub fn hosts(&self) -> Vec<(Rtype, String)> {
         self.recs.lock().unwrap().keys().cloned().collect()
+    }
+
+    /// The hosts of `rtype` that `op` touched, in call order.
+    pub fn ops_of(&self, op: &str, rtype: Rtype) -> Vec<String> {
+        self.ops
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(o, t, _)| *o == op && *t == rtype)
+            .map(|(_, _, h)| h.clone())
+            .collect()
     }
 }
 
@@ -84,6 +97,7 @@ impl DnsZone for FakeZone {
                 panic!("fake provider exploded on {host}");
             }
             self.put(rtype, &host, &value);
+            self.ops.lock().unwrap().push(("create", rtype, host.clone()));
             let txt: usize = self
                 .recs
                 .lock()
@@ -100,6 +114,7 @@ impl DnsZone for FakeZone {
 
     fn delete_all(&self, rtype: Rtype, host: String) -> BoxFuture<'_, anyhow::Result<()>> {
         async move {
+            self.ops.lock().unwrap().push(("delete", rtype, host.clone()));
             self.recs.lock().unwrap().remove(&(rtype, host));
             Ok(())
         }

@@ -98,6 +98,8 @@ async fn issuance_writes_records_serializes_txt_and_serves_the_chain() {
     // D17: both CNAMEs, no challenge TXT left, never two TXTs at once.
     assert_eq!(r.f.zone.value(Rtype::Cname, "sky"), Some(vec!["edge.tun.zip".into()]));
     assert_eq!(r.f.zone.value(Rtype::Cname, "*.sky"), Some(vec!["edge.tun.zip".into()]));
+    // E2E1 finding 5: `*.sky` before `sky`, so `x.sky` never gets a cached NXDOMAIN.
+    assert_eq!(r.f.zone.ops_of("create", Rtype::Cname), ["*.sky", "sky"]);
     assert_eq!(r.f.zone.value(Rtype::Txt, "_acme-challenge.sky"), None);
     assert_eq!(r.f.zone.max_txt.load(Ordering::SeqCst), 1);
     let ledger = r.edge.store.dns_all().await.unwrap();
@@ -298,6 +300,7 @@ async fn release_revokes_and_deletes_records() {
     certs::retire(&r.edge, "sky", Reason::CessationOfOperation).await;
     assert_eq!(r.f.ca.revoked.lock().unwrap().clone(), vec![(chain, Reason::CessationOfOperation)]);
     assert!(r.f.zone.hosts().is_empty(), "{:?}", r.f.zone.hosts());
+    assert_eq!(r.f.zone.ops_of("delete", Rtype::Cname), ["sky", "*.sky"], "reverse of the write order");
     assert!(r.edge.store.dns_all().await.unwrap().is_empty());
     let row = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap();
     assert_eq!((row.records, row.chain_pem), (0, None));
@@ -310,12 +313,16 @@ async fn reconciliation_removes_orphans_and_keeps_live_records() {
     let now = now_ms();
     // A released name whose records a crash left, and a stale challenge TXT.
     let old = claim(&r.edge, "old").await.to_string();
-    for (t, host, v, n) in [
-        (Rtype::Cname, "old", "edge.tun.zip", "old"),
+    // Ledger in write order (`*.old` first): reconciliation still deletes `old` first.
+    for (i, (t, host, v, n)) in [
         (Rtype::Cname, "*.old", "edge.tun.zip", "old"),
+        (Rtype::Cname, "old", "edge.tun.zip", "old"),
         (Rtype::Txt, "_acme-challenge.sky", "stale", "*.sky.tun.zip"),
-    ] {
-        r.edge.store.dns_add(host, t.as_str(), v, n, now).await.unwrap();
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        r.edge.store.dns_add(host, t.as_str(), v, n, now + i as u64).await.unwrap();
         r.f.zone.put(t, host, v);
     }
     r.edge.store.set_records("tun.zip", "old", true).await.unwrap();
@@ -325,6 +332,7 @@ async fn reconciliation_removes_orphans_and_keeps_live_records() {
     let mut hosts = r.f.zone.hosts();
     hosts.sort();
     assert_eq!(hosts, vec![(Rtype::Cname, "*.sky".to_string()), (Rtype::Cname, "sky".to_string())]);
+    assert_eq!(r.f.zone.ops_of("delete", Rtype::Cname), ["old", "*.old"], "bare name first");
     assert_eq!(r.edge.store.dns_all().await.unwrap().len(), 2);
 }
 

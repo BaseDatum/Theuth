@@ -184,7 +184,7 @@ pub async fn start(cfg: Config, secrets: Secrets) -> anyhow::Result<Running> {
         zone,
         ca,
         caa: Arc::new(acme::SystemCaa),
-        probe: Arc::new(dns::AuthoritativeTxt),
+        probe: Arc::new(dns::AuthoritativeTxt::default()),
     };
     start_with(cfg, secrets, backends).await
 }
