@@ -7,11 +7,12 @@ TCP 443, it reads only the ClientHello's SNI and splices the bytes to the hostin
 
 | File | What |
 |---|---|
-| `Dockerfile` | static musl binary, `FROM scratch`, built from the repo root |
+| `Dockerfile` | static musl binary, `FROM scratch`, built from the repo root; cross-compiled (cargo-zigbuild), `--build-arg FEATURES=k8s` for edge-managed Kubernetes objects |
 | `compose.yaml` | one host with a public IP: `443:8443/tcp`, `7850:7850/udp`, a named data volume, the DNS key as a file secret |
 | `theuth-share-edge.service` | systemd unit for a plain host |
 | `config.example.yaml` | every key with its default (appendix §8.1) |
 | `k8s/base` | kustomize: Deployment (1 replica, `Recreate`), 1 Gi PVC, LoadBalancer Service (TCP 443 → 8443, UDP 7850, `externalTrafficPolicy: Local`), ConfigMap; the Secret is created out of band |
+| `k8s/rwx-dev` | the owner's cluster: ClusterIP 8443 behind the HAProxy ingress (SNI passthrough, PROXY v2), Ingresses created by the edge from `k8s:` templates (image with `FEATURES=k8s`), ServiceAccount + Role on `ingresses`; admission closed, Let's Encrypt staging. See `docs/design/210-as-built-DEPLOY1.md` |
 
 ## Ports
 

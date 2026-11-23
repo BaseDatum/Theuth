@@ -6,7 +6,7 @@ domain: tun.zip               # D, sent in /v1/info and welcome
 data_dir: /var/lib/theuth-share-edge   # share-edge.sqlite, iroh.key, acme/<ca>.json; persistent, backed up
 listen: "[::]:443"            # "[::]:8443" in k8s behind Service port 443
 listen_http: ""               # off; only for a D outside an HSTS-preloaded TLD
-proxy_protocol_in: false
+listen_proxy_protocol: {trusted: []}   # CIDRs whose connections must start with a PROXY v1/v2 header (an LB/ingress)
 iroh: {listen: "[::]:7850", relay: https://iroh.relay.theuth.io, public_addrs: [], pkarr: true}
 admin: {socket: /var/lib/theuth-share-edge/admin.sock, http: "[::]:9090"}   # §8.5; /metrics, /healthz
 admission: open               # open | invite | closed; live via admin
@@ -85,3 +85,10 @@ limits:                       # §9.4; "net" = IPv4 address or IPv6 /64
   routes_per_tunnel: 64
   idle_secs: 900
 min_client: "0.0.0"           # oldest theuth served; older clients get 426 client_too_old
+k8s:                          # needs a build with the cargo feature `k8s`; see k8s/rwx-dev/configmap.yaml for templates
+  enabled: false
+  namespace: ""               # "" = the pod's service-account namespace
+  field_manager: theuth-share-edge
+  resync: 5m
+  static: []                  # objects applied once at start; ${domain} ${namespace}
+  per_name: []                # objects per serving name; ${name} ${domain} ${host} ${wildcard} ${slug} ${namespace}
