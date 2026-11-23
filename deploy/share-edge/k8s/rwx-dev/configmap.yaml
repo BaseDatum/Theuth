@@ -11,7 +11,9 @@ data:
     data_dir: /var/lib/theuth-share-edge
     listen: "[::]:8443"
     # The Ingresses below send PROXY v2 (haproxy.org/send-proxy-protocol); HAProxy pods connect from the pod network
-    # (kubeadm podSubnet 10.244.0.0/16; the controller DaemonSet is not hostNetwork).
+    # (kubeadm podSubnet 10.244.0.0/16; the controller DaemonSet is not hostNetwork). Not narrower: HAProxy pod IPs
+    # come from that subnet with no fixed per-node range in this repo's config; networkpolicy.yaml limits who can
+    # reach 8443 to the haproxy-controller namespace, which is what makes trusting the whole subnet safe.
     listen_proxy_protocol: {trusted: ["10.244.0.0/16"]}
     # public_addrs empty: no UDP path into the cluster yet (service-iroh-udp.yaml), clients reach the edge via the relay.
     iroh: {listen: "[::]:7850", relay: https://iroh.relay.theuth.io, public_addrs: []}

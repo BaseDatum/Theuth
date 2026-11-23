@@ -1,5 +1,7 @@
 # The edge (cargo feature `k8s`) creates and deletes its passthrough Ingresses from the `k8s:` templates in
 # configmap.yaml: one static `*.tun.zip`, one `*.<name>.tun.zip` per claimed name. Ingresses in `theuth` only.
+# Verbs are what src/k8s/client.rs calls: server-side apply (`patch`, plus `create` when the object is new),
+# `list` by label selector, `delete`; `get` is not called today (read-only, kept). No watch, no update/replace.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -14,7 +16,7 @@ metadata:
 rules:
   - apiGroups: [networking.k8s.io]
     resources: [ingresses]
-    verbs: [get, list, watch, create, update, patch, delete]
+    verbs: [get, list, create, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

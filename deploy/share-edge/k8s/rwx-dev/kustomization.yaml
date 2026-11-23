@@ -13,6 +13,7 @@ namespace: theuth
 resources:
   - ../base
   - rbac.yaml
+  - networkpolicy.yaml
   # - service-iroh-udp.yaml   # UDP 7850 NodePort; owner router decision pending (see the file)
 
 images:

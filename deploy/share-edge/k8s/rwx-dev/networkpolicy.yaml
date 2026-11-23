@@ -1,0 +1,30 @@
+# Who may reach the edge pod (210 FIX4-EDGE #21). The edge trusts PROXY v2 headers from the whole pod network
+# (configmap.yaml `listen_proxy_protocol.trusted`, 10.244.0.0/16): without this policy any pod could connect to 8443
+# and claim any visitor address. 8443 (TLS passthrough + PROXY v2) only from the HAProxy controller's namespace;
+# 9090 (/healthz, /metrics) only from the monitoring namespace (kubelet probes are not subject to NetworkPolicy
+# on this CNI [INFERENCE: true for Calico/Cilium/Flannel+kube-router; check if probes start failing]).
+# UDP 7850 (iroh, service-iroh-udp.yaml NodePort) stays open to all: clients dial it from the internet.
+# Namespaces are matched by the automatic `kubernetes.io/metadata.name` label; adjust `monitoring` if the
+# Prometheus that scrapes 9090 runs elsewhere.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: theuth-share-edge
+  labels: {app.kubernetes.io/name: theuth-share-edge, app.kubernetes.io/part-of: theuth}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: theuth-share-edge}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: haproxy-controller}
+      ports:
+        - {protocol: TCP, port: 8443}
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+      ports:
+        - {protocol: TCP, port: 9090}
+    - ports:
+        - {protocol: UDP, port: 7850}
