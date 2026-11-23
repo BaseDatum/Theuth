@@ -249,7 +249,7 @@ mod mobile {
 /// the desktop-only plugins and commands.
 #[cfg(desktop)]
 mod desktop {
-    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::SeqCst};
 
     use anyhow::Context;
     #[cfg(target_os = "macos")]
@@ -267,6 +267,25 @@ mod desktop {
     #[derive(Default)]
     struct Flags {
         position_on_show: AtomicBool,
+        /// 210 §7.4 item 2: live public shares of the mesh, as the webview's `store/public-shares` counts them.
+        sharing: AtomicU32,
+    }
+
+    /// Tray menu id of "Stop public sharing (N)"; the click goes to the webview as [`SHARE_STOP_ALL_EVENT`].
+    const SHARE_STOP_ALL: &str = "share_stop_all";
+    /// The webview calls RPC `share_stop("all")` on it (the shell holds no RPC connection of its own).
+    const SHARE_STOP_ALL_EVENT: &str = "share-stop-all";
+
+    /// 210 §7.4 item 2 (G4): the webview reports how many shares are live; the tray menu gains or loses
+    /// "Stop public sharing (N)". The tray title is the webview's (`App.tsx` badge), so it stays one writer.
+    pub(crate) fn set_sharing(app: &AppHandle, live: u32) -> tauri::Result<()> {
+        if app.state::<Flags>().sharing.swap(live, SeqCst) == live {
+            return Ok(());
+        }
+        match app.tray_by_id("main") {
+            Some(tray) => tray.set_menu(Some(tray_menu(app)?)),
+            None => Ok(()),
+        }
     }
 
     /// WebKitGTK's DMA-BUF renderer needs a DRM render node; without one (a VM with no GPU
@@ -341,6 +360,7 @@ mod desktop {
             commands::launch_log,
             commands::relaunch,
             commands::quit_ack,
+            commands::share_tray,
             commands::open_window,
             update::check_update,
             update::install_update,
@@ -479,6 +499,18 @@ mod desktop {
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
         ])?;
+        // 210 §7.4 item 2: first in the menu while anything is public; no confirmation (Stop is never gated).
+        let live = app.state::<Flags>().sharing.load(SeqCst);
+        if live > 0 {
+            menu.prepend(&PredefinedMenuItem::separator(app)?)?;
+            menu.prepend(&MenuItem::with_id(
+                app,
+                SHARE_STOP_ALL,
+                format!("Stop public sharing ({live})"),
+                true,
+                None::<&str>,
+            )?)?;
+        }
         Ok(menu)
     }
 
@@ -588,6 +620,7 @@ mod desktop {
             "meeting" => navigate(app, "/meetings/new"),
             "settings" => navigate(app, "/settings/general"),
             "quit" => quit::request(app),
+            SHARE_STOP_ALL => log_err(app.emit(SHARE_STOP_ALL_EVENT, ()), "emit share-stop-all"),
             #[cfg(target_os = "macos")]
             PASTE_PLAIN => paste_plain(app),
             _ => {}

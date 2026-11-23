@@ -96,6 +96,14 @@ pub fn quit_ack(app: AppHandle) {
     crate::quit::start(&app);
 }
 
+/// 210 §7.4 item 2: the webview's live public-share count; the tray menu shows "Stop public sharing (N)" while it
+/// is above zero. Its click comes back as the `share-stop-all` event (the webview owns the RPC connection).
+#[cfg(desktop)]
+#[tauri::command]
+pub fn share_tray(app: AppHandle, live: u32) -> Result<(), String> {
+    crate::desktop::set_sharing(&app, live).map_err(|e| e.to_string())
+}
+
 #[cfg(desktop)]
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
