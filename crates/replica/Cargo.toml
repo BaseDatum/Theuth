@@ -7,6 +7,7 @@ description = "Small-record replication over the mesh: per-column LWW with a hyb
 
 [dependencies]
 runtime = { workspace = true }
+platform = { workspace = true }
 kameo = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }

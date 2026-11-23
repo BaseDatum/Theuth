@@ -905,21 +905,9 @@ fn parse_mark(s: &[u8]) -> Parsed {
 
 /// `%XX` → the byte; anything else verbatim; lossy UTF-8.
 fn percent_decode(s: &[u8]) -> String {
-    let mut out = Vec::with_capacity(s.len());
-    let mut i = 0;
-    while i < s.len() {
-        let hex = |at: usize| s.get(at).and_then(|b| (*b as char).to_digit(16));
-        if s[i] == b'%'
-            && let (Some(hi), Some(lo)) = (hex(i + 1), hex(i + 2))
-        {
-            out.push((hi * 16 + lo) as u8);
-            i += 3;
-        } else {
-            out.push(s[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    percent_encoding::percent_decode(s)
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 /// 109 §5.4: what a job that died with a previous engine keeps in memory
@@ -2496,10 +2484,7 @@ pub(crate) fn sep(body: &str) -> &'static str {
 
 fn truncate(mut s: String) -> String {
     if s.len() > MAX_OUTPUT {
-        let mut cut = MAX_OUTPUT;
-        while !s.is_char_boundary(cut) {
-            cut -= 1;
-        }
+        let cut = s.floor_char_boundary(MAX_OUTPUT);
         s.truncate(cut);
         s.push_str("\n[output truncated at 64 KiB]");
     }

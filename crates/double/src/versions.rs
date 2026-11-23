@@ -117,9 +117,7 @@ pub fn pointer(models: &Path) -> Option<String> {
 /// Rewrite the pointer atomically (`active.tmp` → rename over `active`).
 pub fn set_pointer(models: &Path, id: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(models)?;
-    let tmp = models.join(format!("{ACTIVE}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, format!("{id}\n"))?;
-    std::fs::rename(tmp, models.join(ACTIVE))
+    platform::files::write_atomic(&models.join(ACTIVE), format!("{id}\n").as_bytes())
 }
 
 /// Make `id` active: the version must exist in `versions` (and on disk unless

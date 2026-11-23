@@ -42,8 +42,7 @@ fst = { workspace = true, optional = true }
 # 153 §5.2 (A2): the packaged dictionary — gz in the binary, sha256-checked against data/dictionary.json.
 serde_json = { workspace = true }
 flate2 = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
+platform = { workspace = true }
 # 202: Parakeet TDT on MLX in-process. Always a dependency: voice-mlx compiles MLX only on macOS aarch64
 # and stubs itself (`available() == false`) everywhere else, so no feature flag is needed.
 voice-mlx = { workspace = true }

@@ -32,7 +32,7 @@ import {
   useVoiceKey,
   useVoiceKeySettings,
 } from '@/lib/voice-key'
-import { mmss } from '@/store/meeting'
+import { mmss } from '@/lib/time-format'
 import { useSessions } from '@/store/sessions'
 
 const WIDTH = 440

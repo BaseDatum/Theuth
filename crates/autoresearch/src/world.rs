@@ -25,7 +25,6 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use runtime::SessionId;
-use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::actor::{self, Env};
@@ -308,8 +307,7 @@ fn fmt_at(t: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 fn sha256_hex(s: &str) -> String {
-    let d = Sha256::digest(s.as_bytes());
-    d.iter().map(|b| format!("{b:02x}")).collect()
+    platform::sha256::hex(s.as_bytes())
 }
 
 fn new_token() -> String {

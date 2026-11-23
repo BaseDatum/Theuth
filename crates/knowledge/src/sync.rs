@@ -491,9 +491,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("rename to {}", path.display()))
+    platform::files::write_atomic(path, bytes).with_context(|| format!("write {}", path.display()))
 }
 
 async fn send(stream: &mut Box<dyn ByteStream>, msg: &Msg) -> anyhow::Result<()> {

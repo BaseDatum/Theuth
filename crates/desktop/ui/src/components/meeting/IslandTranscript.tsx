@@ -5,8 +5,9 @@
 
 import { ChevronRight } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
+import { mmss } from '@/lib/time-format'
 import { cn } from '@/lib/utils'
-import { type Line, mmss, useMeeting, who } from '@/store/meeting'
+import { type Line, useMeeting, who } from '@/store/meeting'
 
 /** Open/closed survives a reload of this webview only. */
 const KEY = 'island.transcript.open'

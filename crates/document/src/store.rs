@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use base64::Engine as _;
@@ -127,13 +127,8 @@ pub const TABLES: &[&str] = &[
     "cell_latest",
 ];
 
-/// Unix milliseconds now.
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or_default()
-}
+// Unix milliseconds now.
+pub use platform::time::now_ms_i64 as now_ms;
 
 /// The store handle: paths + the index pool + the shas of the mirror files this process last wrote
 /// (so the mirror watcher tells a foreign projection from an own write, 69) + the merge counters +
@@ -1480,21 +1475,13 @@ fn sanitize(label: &str) -> String {
         .collect()
 }
 
-/// [`write_atomic`] with a `.`-prefixed temp name, for the mirror: the replica's scan ignores dot
-/// files, so a half-written copy is never a row.
+/// [`write_atomic`] for the mirror (its temp is dot-prefixed, which the replica's scan ignores, so
+/// a half-written copy is never a row); refuses a path without a UTF-8 file name.
 fn write_hidden(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
-    else {
+    if path.parent().is_none() || path.file_name().and_then(|n| n.to_str()).is_none() {
         return Err(std::io::Error::other("mirror path without a file name"));
-    };
-    fs::create_dir_all(parent)?;
-    let tmp = parent.join(format!(".{name}.tmp"));
-    {
-        let mut f = File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_data()?;
     }
-    fs::rename(&tmp, path)
+    write_atomic(path, bytes)
 }
 
 /// A peer's full Yjs state (`snapshot.yjs` bytes, v1) as a document of its own, to compare with and
@@ -1524,21 +1511,12 @@ pub fn adds_anything(snapshot: &[u8], doc: &Doc) -> anyhow::Result<bool> {
     Ok(exceeds(&decode_state(snapshot)?, doc))
 }
 
-/// `tmp` + rename; parents created.
+/// Synced temp + rename; parents created.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension(format!(
-        "{}.tmp",
-        path.extension().and_then(|e| e.to_str()).unwrap_or("")
-    ));
-    {
-        let mut f = File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_data()?;
-    }
-    fs::rename(&tmp, path)
+    platform::files::write_atomic_synced(path, bytes)
 }
 
 /// Iterate `updates.log` records: `(tag, update)`. A truncated tail (a crash mid-append) ends the iteration.
@@ -1562,14 +1540,7 @@ pub fn records(log: &[u8]) -> impl Iterator<Item = (u8, &[u8])> {
 
 /// sha256 hex of `bytes`.
 pub fn sha256(bytes: &[u8]) -> String {
-    use sha2::Digest;
-    let d = sha2::Sha256::digest(bytes);
-    let mut s = String::with_capacity(64);
-    for b in d {
-        use std::fmt::Write;
-        let _ = write!(s, "{b:02x}");
-    }
-    s
+    platform::sha256::hex(bytes)
 }
 
 /// Read a whole file, `None` when absent.
@@ -2211,7 +2182,14 @@ mod tests {
                 "own write"
             );
         }
-        assert!(!a.mirror_dir().join(format!(".{}.tmp", names[1])).exists());
+        assert!(
+            fs::read_dir(a.mirror_dir()).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+            "no temp left in the mirror"
+        );
         assert_eq!(
             a.last_projected(&m.id),
             Some(sha256(&fs::read(a.mirror_dir().join(&names[1])).unwrap()))

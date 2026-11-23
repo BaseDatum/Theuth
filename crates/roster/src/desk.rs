@@ -345,17 +345,12 @@ pub fn write_journal(
     max_bytes: usize,
 ) -> std::io::Result<PathBuf> {
     let text = text.trim();
-    let mut cut = text.len().min(max_bytes);
-    while !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
+    let cut = text.floor_char_boundary(max_bytes);
     let path = journal_path(data_dir, name);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("md.tmp");
-    std::fs::write(&tmp, format!("{}\n", &text[..cut]))?;
-    std::fs::rename(&tmp, &path)?;
+    platform::files::write_atomic(&path, format!("{}\n", &text[..cut]).as_bytes())?;
     Ok(path)
 }
 

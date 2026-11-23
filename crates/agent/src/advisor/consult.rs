@@ -120,14 +120,8 @@ fn clip_middle(s: &str, max: usize) -> String {
         return s.to_owned();
     }
     let keep = (max - MARK.len()) / 2;
-    let mut head = keep;
-    while !s.is_char_boundary(head) {
-        head -= 1;
-    }
-    let mut tail = s.len() - keep;
-    while !s.is_char_boundary(tail) {
-        tail += 1;
-    }
+    let head = s.floor_char_boundary(keep);
+    let tail = s.ceil_char_boundary(s.len() - keep);
     format!("{}{MARK}{}", &s[..head], &s[tail..])
 }
 

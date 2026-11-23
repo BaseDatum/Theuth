@@ -134,25 +134,11 @@ fn cap_result(text: &str) -> String {
     };
     if out.len() > RESULT_BYTES {
         let half = RESULT_BYTES / 2;
-        let a = floor_char(&out, half);
-        let b = ceil_char(&out, out.len() - half);
+        let a = out.floor_char_boundary(half);
+        let b = out.ceil_char_boundary(out.len() - half);
         out = format!("{}\n{ELIDED}\n{}", &out[..a], &out[b..]);
     }
     out
-}
-
-fn floor_char(s: &str, mut i: usize) -> usize {
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-fn ceil_char(s: &str, mut i: usize) -> usize {
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
 }
 
 /// `(tag, from)` when `text` is exactly one harness wrapper element.

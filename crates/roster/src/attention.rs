@@ -13,6 +13,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use platform::time::now_ms;
+
 use artifact::ArtifactShown;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -3090,12 +3092,6 @@ impl Message<RegisterSource> for Attention {
     async fn handle(&mut self, m: RegisterSource, _: &mut Context<Self, ()>) {
         self.sources.push(m.0);
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// The attention actor; `None` before the roster plugin started.

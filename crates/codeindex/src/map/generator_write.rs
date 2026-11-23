@@ -559,11 +559,5 @@ pub async fn children_of(
     .await?)
 }
 
-/// Unix milliseconds now.
-pub fn now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
-}
+// Unix milliseconds now.
+pub use platform::time::now_ms_i64 as now_ms;

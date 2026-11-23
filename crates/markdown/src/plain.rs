@@ -1,7 +1,6 @@
 //! Plain-text fallback and chunking for channels without rich text (design
-//! doc 98 §1 seam table): [`plain`] and [`chunks`] are copies of
-//! `crates/signal/src/text.rs` `markdown_to_plain` / `chunk_text` (frozen
-//! protocol code there; edit this copy only).
+//! doc 98 §1 seam table): [`plain`] and [`chunks`]. `crates/signal/src/text.rs`
+//! re-exports them as `markdown_to_plain` / `chunk_text`.
 
 /// Converts markdown-lite to plain text.
 ///

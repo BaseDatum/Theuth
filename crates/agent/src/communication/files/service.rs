@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use platform::time::now_ms_i64 as now_ms;
 use runtime::{Runtime, SessionId};
 use tokio::sync::Notify;
 use tokio::time::Instant;
@@ -49,10 +50,6 @@ pub fn kick() {
     KICK.notify_one();
 }
 
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
 /// `ms` since the epoch as a tokio instant (a far deadline is capped at twice the TTL).
 fn instant_at(ms: i64) -> Instant {
     let cap = 2 * super::OFFER_TTL.as_millis() as i64;
@@ -62,10 +59,7 @@ fn instant_at(ms: i64) -> Instant {
 
 /// At most [`REASON_MAX`] bytes, cut at a character boundary.
 fn reason(s: &str) -> String {
-    let mut n = s.len().min(REASON_MAX);
-    while !s.is_char_boundary(n) {
-        n -= 1;
-    }
+    let n = s.floor_char_boundary(s.len().min(REASON_MAX));
     s[..n].to_owned()
 }
 

@@ -993,13 +993,7 @@ pub struct Candidate {
 
 /// `a-<sha256(data_range)[..12]>`: the same corpus yields the same id.
 pub fn version_id(data_range: &str) -> String {
-    use sha2::Digest as _;
-    let h = sha2::Sha256::digest(data_range.as_bytes());
-    format!("a-{}", hex12(&h))
-}
-
-fn hex12(h: &[u8]) -> String {
-    h.iter().take(6).map(|b| format!("{b:02x}")).collect()
+    format!("a-{}", &platform::sha256::hex(data_range.as_bytes())[..12])
 }
 
 /// One Tier A run over the store, as of `now`: load, mark golden, fit, score

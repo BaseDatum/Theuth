@@ -120,9 +120,7 @@ impl Item {
 
 /// First 8 hex of sha256 (144 W-i's `?s=<sha8>`).
 pub fn sha8(s: &str) -> String {
-    use sha2::Digest as _;
-    let hex = hex::encode(sha2::Sha256::digest(s.as_bytes()));
-    hex[..8].to_owned()
+    platform::sha256::hex(s.as_bytes())[..8].to_owned()
 }
 
 /// `save_answer_as_note` reply: the new note and its `theuth://notes/<id>` URL.

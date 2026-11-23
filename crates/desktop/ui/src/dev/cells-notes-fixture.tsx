@@ -14,6 +14,7 @@ import * as Y from 'yjs'
 import { NoteKernelPill } from '@/components/cells/NoteKernelPill'
 import { Editor } from '@/components/editor/Editor'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { utf8ToB64 as b64 } from '@/lib/base64'
 import type { EngineProvider } from '@/lib/doc/provider'
 import type { Api } from '@/rpc/bindings/client'
 import type { CellLatest } from "@/rpc/bindings/method.cells.output"
@@ -60,7 +61,6 @@ const BLOCKS = new URLSearchParams(location.search).has('hl') ? HIGHLIGHT : [
 ]
 
 const TABLE = `<table><thead><tr><th>project</th><th>cost_usd</th></tr></thead><tbody><tr><td>theuth</td><td>412.80</td></tr><tr><td>sa-frp-integration</td><td>238.15</td></tr><tr><td>dr-t6</td><td>171.40</td></tr></tbody></table>`
-const b64 = (s: string) => btoa(Array.from(new TextEncoder().encode(s), (b) => String.fromCharCode(b)).join(''))
 
 function run(ref: CellRef, name: string, over: Partial<CellRun> = {}): CellRun {
   return {

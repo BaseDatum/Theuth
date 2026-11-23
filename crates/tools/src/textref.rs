@@ -10,7 +10,6 @@ use std::sync::{Arc, LazyLock, OnceLock};
 
 use parking_lot::Mutex;
 use runtime::SessionId;
-use sha2::{Digest as _, Sha256};
 use similar::{Algorithm, DiffOp};
 
 // ---------------------------------------------------------------- refs (§1)
@@ -184,7 +183,7 @@ pub const MAX_SNAPSHOT_BYTES: usize = 4 << 20;
 
 /// The snapshot id of a file's bytes: the first 8 hex chars of sha256.
 pub fn snapshot_id(bytes: &[u8]) -> String {
-    hex::encode(&Sha256::digest(bytes)[..4])
+    platform::sha256::hex(bytes)[..8].to_owned()
 }
 
 /// A text file as lines: LF-normalised, BOM split off; rendered back with

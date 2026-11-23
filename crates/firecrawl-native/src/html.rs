@@ -57,16 +57,6 @@ impl From<SignatureMode> for String {
     }
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0xf) as usize] as char);
-    }
-    s
-}
-
 fn get_node_self_signature(node: &kuchikiki::NodeRef, mode: SignatureMode) -> String {
     let mut signature = format!(
         "v{}:{}:",
@@ -118,15 +108,11 @@ fn get_node_signature(node: &kuchikiki::NodeRef, mode: SignatureMode) -> String 
         return signature;
     }
 
-    use sha2::{Digest as _, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(signature);
-    let hash = hasher.finalize();
     format!(
         "v{}:{}:{}",
         SIGNATURE_VERSION,
         <SignatureMode as Into<String>>::into(mode),
-        hex_encode(&hash)
+        platform::sha256::hex(signature.as_bytes())
     )
 }
 

@@ -12,6 +12,8 @@ jsonrpsee = { workspace = true }
 runtime = { workspace = true }
 wire = { workspace = true }
 agent = { workspace = true }
+chat-common = { workspace = true }
+markdown = { workspace = true }
 a2a = { workspace = true }
 tools = { workspace = true }
 double = { workspace = true }

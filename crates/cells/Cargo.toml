@@ -36,8 +36,6 @@ serde_yaml = { workspace = true }
 schemars = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
-sha2 = { workspace = true }  # §3.4 digests, §8.4 output_sha
-hex = { workspace = true }
 base64 = { workspace = true }  # `cell_input` / `cell_output_file` payloads
 regex = { workspace = true }  # §7.5 expect, §9.4 credential masks
 vt100 = { workspace = true }  # §8.3 the render-only parser

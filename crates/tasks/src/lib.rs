@@ -1713,11 +1713,7 @@ impl runtime::Plugin for TasksPlugin {
             store,
             cfg,
             Arc::new(thread::DocThread),
-            Arc::new(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_millis() as u64)
-            }),
+            Arc::new(platform::time::now_ms),
             platform::process::hostname().to_owned(),
         );
         // 182 D2: creates before `SetEngine` leave `home` unset; `set_engine` stamps them.

@@ -9,7 +9,6 @@ use std::time::Instant;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 use tokio_util::sync::CancellationToken;
 use tools::{Risk, Tool, ToolCx, ToolOutput};
 
@@ -514,9 +513,7 @@ pub fn fingerprint(kind: ProbeKind, spec: &StudySpec, base_sha: &str) -> String 
         "checks_command": spec.checks.as_ref().map(|c| &c.command),
         "holdout": spec.holdout.as_ref().map(|h| serde_json::json!({ "command": h.command, "repeats": h.repeats })),
     });
-    let mut h = Sha256::new();
-    h.update(v.to_string().as_bytes());
-    hex::encode(h.finalize())
+    platform::sha256::hex(v.to_string().as_bytes())
 }
 
 fn kind_of_row(row: &str) -> Option<ProbeKind> {
@@ -1866,11 +1863,9 @@ mod tests {
             "checks_command": s.checks.as_ref().map(|c| &c.command),
             "holdout": s.holdout.as_ref().map(|h| serde_json::json!({ "command": h.command, "repeats": h.repeats })),
         });
-        let mut h = Sha256::new();
-        h.update(pre_c.to_string().as_bytes());
         assert_eq!(
             fingerprint(ProbeKind::Bench, &s, "abc"),
-            hex::encode(h.finalize())
+            platform::sha256::hex(pre_c.to_string().as_bytes())
         );
         let mut with_159 = s.clone();
         with_159.axes.search = crate::types::Search::Front;

@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 
 use agent::{AgentInfo, AgentState, LoginInfo, ModelInfo, SessionSummary, SkillMeta};
+pub use chat_common::short;
 use chrono::{DateTime, Utc};
 use runtime::SessionId;
 use tools::{McpAuth, McpServer};
@@ -724,10 +725,7 @@ fn cut(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
     }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = s.floor_char_boundary(max);
     &s[..end]
 }
 
@@ -740,13 +738,6 @@ fn clip(s: &str, max: usize) -> String {
     let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
     out.push('…');
     out
-}
-
-/// Last 8 chars, as the TUI shows ids; `/resume` accepts them.
-#[must_use]
-pub fn short(id: SessionId) -> String {
-    let s = id.to_string();
-    s[s.len() - 8..].to_owned()
 }
 
 /// `5s`, `12m`, `3h`, `2d` since `t`.

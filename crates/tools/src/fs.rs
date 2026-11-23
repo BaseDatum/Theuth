@@ -320,10 +320,7 @@ fn page(
     let mut count = requested;
     let cut = body.len() > MAX_BYTES;
     if cut {
-        let mut at = MAX_BYTES;
-        while !body.is_char_boundary(at) {
-            at -= 1;
-        }
+        let at = body.floor_char_boundary(MAX_BYTES);
         body.truncate(at);
         if body.ends_with('\n') {
             body.pop();

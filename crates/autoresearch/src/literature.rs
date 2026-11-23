@@ -741,10 +741,7 @@ fn passages(pages: &BTreeMap<String, Page>) -> String {
         if block.len() <= left {
             out.push_str(&block);
         } else {
-            let mut cut = left;
-            while !block.is_char_boundary(cut) {
-                cut -= 1;
-            }
+            let cut = block.floor_char_boundary(left);
             out.push_str(&block[..cut]);
             out.push('\n');
             break;

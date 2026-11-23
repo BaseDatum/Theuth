@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use image::{RgbaImage, imageops};
-use sha2::{Digest, Sha256};
 
 use crate::ax::{self, AxElement, AxFront, AxHit};
 use crate::frame::Display;
@@ -388,7 +387,7 @@ fn ring(img: &mut RgbaImage, at: Pt, scale: Scale, rgb: [u8; 3]) {
 
 /// `<data_dir>/attachments/<sha256(bytes)[..16]>.png`, `put_attachment`'s naming.
 fn save_png(bytes: &[u8], data_dir: &Path) -> Result<PathBuf, String> {
-    let hex = hex::encode(Sha256::digest(bytes));
+    let hex = platform::sha256::hex(bytes);
     let dir = data_dir.join("attachments");
     let path = dir.join(format!("{}.png", &hex[..16]));
     if !path.exists() {

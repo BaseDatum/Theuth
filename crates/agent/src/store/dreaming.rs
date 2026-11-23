@@ -44,10 +44,7 @@ fn clip(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_owned();
     }
-    let mut cut = max;
-    while !s.is_char_boundary(cut) {
-        cut -= 1;
-    }
+    let cut = s.floor_char_boundary(max);
     s[..cut].to_owned()
 }
 

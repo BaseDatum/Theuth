@@ -49,12 +49,7 @@ impl Prices {
                 c.input, c.output, c.cache_read, c.cache_write
             ));
         }
-        let hash = h
-            .finalize()
-            .iter()
-            .take(8)
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let hash = hex::encode(&h.finalize()[..8]);
         let priced_json = serde_json::to_string(&rates.keys().collect::<Vec<_>>())
             .unwrap_or_else(|_| "[]".into());
         Self {

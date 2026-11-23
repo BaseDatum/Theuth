@@ -1173,30 +1173,13 @@ fn normalize(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Levenshtein distance over chars.
-fn levenshtein(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut cur = vec![0; b.len() + 1];
-    for (i, ca) in a.chars().enumerate() {
-        cur[0] = i + 1;
-        for (j, &cb) in b.iter().enumerate() {
-            cur[j + 1] = (prev[j] + usize::from(ca != cb))
-                .min(prev[j + 1] + 1)
-                .min(cur[j] + 1);
-        }
-        std::mem::swap(&mut prev, &mut cur);
-    }
-    prev[b.len()]
-}
-
 /// `1 − distance / longest`; 1.0 for two empty strings.
 pub fn ratio(a: &str, b: &str) -> f32 {
     let longest = a.chars().count().max(b.chars().count());
     if longest == 0 {
         return 1.0;
     }
-    1.0 - levenshtein(a, b) as f32 / longest as f32
+    1.0 - strsim::levenshtein(a, b) as f32 / longest as f32
 }
 
 /// The candidate is (fuzzily) a run of words the agent just said (76 §4.4 step 3).

@@ -154,12 +154,6 @@ export function elapsed(s: Pick<MeetingSlice, 'state' | 'elapsedMs' | 'clockAt'>
   return s.elapsedMs + (s.state === 'Recording' ? now - s.clockAt : 0)
 }
 
-/** `mm:ss` on the recording clock; minutes run past 59. */
-export const mmss = (ms: number): string => {
-  const s = Math.floor(ms / 1000)
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
-}
-
 /** Local `HH:MM` of an RFC 3339 stamp. */
 export const hhmm = (iso: string): string => {
   const d = new Date(iso)

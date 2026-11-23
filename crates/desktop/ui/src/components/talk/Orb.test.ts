@@ -70,6 +70,12 @@ test('a shader failure at runtime switches to the CSS orb', async () => {
 })
 
 test('reduced motion keeps the CSS orb even with an adapter', async () => {
-  vi.stubGlobal('matchMedia', () => ({ matches: true }))
-  expect((await mount({ requestAdapter: async () => adapter })).kind()).toBe('css')
+  // `useReducedMotion` reads and subscribes to `window.matchMedia` (test-dom's jsdom window).
+  const media = window.matchMedia
+  window.matchMedia = (query) => ({ ...media(query), matches: true })
+  try {
+    expect((await mount({ requestAdapter: async () => adapter })).kind()).toBe('css')
+  } finally {
+    window.matchMedia = media
+  }
 })

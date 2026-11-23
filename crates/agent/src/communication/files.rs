@@ -289,10 +289,7 @@ fn cut(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
     }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = s.floor_char_boundary(max);
     &s[..end]
 }
 

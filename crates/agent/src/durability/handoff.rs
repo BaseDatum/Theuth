@@ -212,10 +212,7 @@ pub fn render(h: &Handoff, max_chars: usize) -> String {
             omitted.push(name);
             continue;
         }
-        let mut end = room;
-        while !body.is_char_boundary(end) {
-            end -= 1;
-        }
+        let end = body.floor_char_boundary(room);
         out.push_str(body[..end].trim_end());
         out.push('\n');
         out.push_str(&marker(body.len() - end));

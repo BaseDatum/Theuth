@@ -6,6 +6,14 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::time::Duration;
 
+/// `$THEUTH_DATA_DIR`, else `~/.theuth` (`.theuth` relative when there is no home).
+pub fn data_dir() -> std::path::PathBuf {
+    std::env::var_os("THEUTH_DATA_DIR").map_or_else(
+        || dirs::home_dir().unwrap_or_default().join(".theuth"),
+        std::path::PathBuf::from,
+    )
+}
+
 /// Run `shell -l -i -c 'printf %s "$PATH"'` once, stdin from `/dev/null`,
 /// stderr discarded, in its own session (a `zsh -i` that can reach the tty
 /// takes its foreground away from the TUI; a new process group alone still

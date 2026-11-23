@@ -323,7 +323,13 @@ fn user_entries_round_trip() {
         heard_lc: "tooth".into(),
         canonical: "Parakeet".into(),
     });
-    assert!(path.exists() && !path.with_extension("json.tmp").exists());
+    assert!(path.exists());
+    assert!(
+        std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".tmp")),
+        "no temp left behind"
+    );
 
     let d2 = open();
     assert_eq!(d2.list(None), d.list(None));

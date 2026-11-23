@@ -24,7 +24,8 @@ FILES=(
 )
 
 command -v curl >/dev/null 2>&1 || { echo "error: curl required" >&2; exit 1; }
-size_of() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; } # GNU first: BSD `-f %z` is a valid *filesystem* query on GNU and returns garbage
+# shellcheck source=lib/common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"   # size_of
 
 mkdir -p "$DEST"
 for entry in "${FILES[@]}"; do

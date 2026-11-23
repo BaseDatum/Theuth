@@ -304,10 +304,7 @@ pub async fn probe(peer: &Peer) -> Result<String, ConnectError> {
 /// Cut remote free text at [`REMOTE_TEXT_MAX`] on a char boundary.
 fn cut_remote(mut s: String) -> String {
     if s.len() > REMOTE_TEXT_MAX {
-        let mut n = REMOTE_TEXT_MAX;
-        while !s.is_char_boundary(n) {
-            n -= 1;
-        }
+        let n = s.floor_char_boundary(REMOTE_TEXT_MAX);
         s.truncate(n);
         s.push('…');
     }

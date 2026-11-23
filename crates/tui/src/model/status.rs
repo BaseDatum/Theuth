@@ -1,10 +1,5 @@
 use super::*;
 
-/// Unix ms now.
-pub(crate) fn now_ms() -> u64 {
-    u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
-}
-
 /// How full the context window is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {

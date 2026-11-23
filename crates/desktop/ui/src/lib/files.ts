@@ -9,6 +9,7 @@ import { toast } from 'sonner'
 import { LOCAL } from '@/link/engines'
 import type { Api } from '@/rpc/bindings/client'
 import { type RpcClient, isTransportError } from '@/rpc/client'
+import { decode, encode } from './base64'
 import { container, isDesktop } from './platform'
 // Call-time only (`ownerOf`): `private.ts` imports `forgetPrivate` back.
 import { usePrivate } from './private'
@@ -48,16 +49,9 @@ export const extFor = (file: Blob & { name?: string }): string => {
   return EXT[sub] ?? sub
 }
 
-const toBase64 = (bytes: Uint8Array): string => {
-  let s = ''
-  // 32 KiB chunks keep `fromCharCode` under the argument-count limit.
-  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  return btoa(s)
-}
-
 /** Upload `file` and get back the engine-side path for `send_input.files`; a private `session` routes it to its scratch root (51 §4.5). */
 export async function putAttachment(api: Api, file: Blob, ext: string, session?: string): Promise<string> {
-  const b64 = toBase64(new Uint8Array(await file.arrayBuffer()))
+  const b64 = encode(new Uint8Array(await file.arrayBuffer()))
   return session ? api.put_session_attachment(session, b64, ext) : api.put_attachment(b64, ext)
 }
 
@@ -125,7 +119,7 @@ export function resolveFile(api: Api, path: string, active: string, session?: st
     return hit.p
   }
   const p = fetchB64(api, path, session).then((b64) => {
-    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+    const bytes = decode(b64)
     return URL.createObjectURL(new Blob([bytes], { type: MIME[extOf(path)] ?? 'application/octet-stream' }))
   })
   p.catch(() => {
@@ -162,7 +156,7 @@ export function unpin(path: string): void {
 
 /** Bytes of an engine file via `get_attachment`; uncached (pdf.js transfers the buffer to its worker). */
 export const readBytes = (api: Api, path: string, session?: string): Promise<Uint8Array<ArrayBuffer>> =>
-  fetchB64(api, path, session).then((b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
+  fetchB64(api, path, session).then(decode)
 
 /**
  * 120 §9b: a URL a *document* frame can load — always the bytes over RPC in a typed `blob:` (`application/pdf`), on the

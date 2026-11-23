@@ -19,10 +19,7 @@ pub fn caret_after_edit(old: &str, new: &str) -> usize {
         .zip(new.bytes())
         .take_while(|(a, b)| a == b)
         .count();
-    let mut common = common.min(new.len());
-    while !new.is_char_boundary(common) {
-        common -= 1;
-    }
+    let common = new.floor_char_boundary(common);
     if new.len() > old.len() {
         (common + new.len() - old.len()).min(new.len())
     } else {

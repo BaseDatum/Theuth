@@ -13,6 +13,7 @@ use super::{
 use crate::cost::SpendOwnerKind;
 use crate::store::Store;
 use crate::store::accounting::{CallDriver, NativeGroup};
+use platform::time::now_ms;
 
 /// Revisions whose touched hours are kept for deltas.
 pub(crate) const LOG_REVS: usize = 1024;
@@ -109,10 +110,6 @@ pub(crate) struct Cube {
     engine: String,
     pre_ledger: u32,
     built_at_ms: u64,
-}
-
-fn now_ms() -> u64 {
-    u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
 }
 
 /// Everything the reported leg reads, fetched without holding the cube.

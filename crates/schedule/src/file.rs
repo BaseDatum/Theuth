@@ -1315,10 +1315,8 @@ fn set_line(text: &str, key: &str, line: &str) -> String {
 /// watcher never reads half of it. Creates `dir`. Returns the final path.
 pub fn write_atomic(dir: &Path, name: &str, text: &str) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{name}.md.tmp"));
     let path = dir.join(format!("{name}.md"));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, &path)?;
+    platform::files::write_atomic(&path, text.as_bytes())?;
     Ok(path)
 }
 

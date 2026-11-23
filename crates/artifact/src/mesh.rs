@@ -812,7 +812,7 @@ mod tests {
     }
 
     fn sha_name(bytes: &[u8], ext: &str) -> String {
-        format!("{}.{ext}", &hex::encode(Sha256::digest(bytes))[..16])
+        format!("{}.{ext}", &platform::sha256::hex(bytes)[..16])
     }
 
     #[tokio::test]

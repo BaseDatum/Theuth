@@ -251,10 +251,7 @@ impl Store {
     pub async fn put_example(&self, e: &ExampleRow) -> anyhow::Result<()> {
         let mut text = scrub(&e.card_text);
         if text.len() > CARD_TEXT_MAX {
-            let mut cut = CARD_TEXT_MAX;
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
-            }
+            let cut = text.floor_char_boundary(CARD_TEXT_MAX);
             text.truncate(cut);
         }
         let options: Vec<String> = e.options.iter().map(|o| scrub(o)).collect();

@@ -66,20 +66,18 @@ pub fn read_state(data_dir: &Path) -> DreamState {
         .unwrap_or_default()
 }
 
-/// Write `state.json` atomically (`.tmp` + rename; parents created).
+/// Write `state.json` atomically (temp + rename; parents created).
 pub fn write_state(data_dir: &Path, state: &DreamState) -> anyhow::Result<()> {
     write_atomic(&state_path(data_dir), &serde_json::to_vec_pretty(state)?)?;
     Ok(())
 }
 
-/// `tmp` + rename; parents created.
+/// Temp + rename; parents created.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    platform::files::write_atomic(path, bytes)
 }
 
 /// Append `text` to `path` (parents created).
@@ -226,9 +224,7 @@ pub fn persist(path: &Path, cfg: &DreamConfig) -> std::io::Result<()> {
             lines.extend(block);
         }
     }
-    let tmp = path.with_extension(format!("yaml.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, lines.join("\n") + "\n")?;
-    std::fs::rename(tmp, path)
+    platform::files::write_atomic(path, (lines.join("\n") + "\n").as_bytes())
 }
 
 /// The front-matter keys a settings change (or a hand-edited `config.yaml`,

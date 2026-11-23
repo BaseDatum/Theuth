@@ -7,8 +7,6 @@
 
 use std::path::Path;
 
-use sha2::Digest;
-
 /// The bundled skill text.
 pub const CODEINDEX_SKILL: &str = include_str!("../codeindex.md");
 
@@ -18,7 +16,7 @@ const SKILL_PATH: &str = "skills/codeindex.md";
 const STAMP_PATH: &str = "skills/.codeindex.md.sha256";
 
 fn sha(text: &str) -> String {
-    hex::encode(sha2::Sha256::digest(text.as_bytes()))
+    platform::sha256::hex(text.as_bytes())
 }
 
 /// Install [`CODEINDEX_SKILL`] under `data_dir`. Writes when the file is

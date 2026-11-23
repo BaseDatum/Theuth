@@ -14,6 +14,7 @@ use agent::{
     AgentEvent, ChannelChat, ChannelOrigin, ChannelVia, ObservedMeta, ObservedSource, ObservedState,
 };
 use artifact::ArtifactShown;
+use chat_common::{extension_for, fmt_size, secret_notice, sniff};
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -73,14 +74,6 @@ const COMMAND_BOUND: Duration = Duration::from_secs(crate::port::ASK_TIMEOUT.as_
 #[must_use]
 pub fn threads_path(data_dir: &Path) -> PathBuf {
     data_dir.join("telegram").join("threads.json")
-}
-
-/// 37 §7: where to enter a secret the model asked for (never this chat).
-#[must_use]
-pub fn secret_notice(name: &str, note: &str) -> String {
-    format!(
-        "theuth asks for secret `{name}` — {note}. Enter it in the desktop app, the TUI (/secrets add {name}) or `t --secret-set {name}`; it will not be read from this chat."
-    )
 }
 
 /// Bus events the channel renders, in bus order.
@@ -540,7 +533,7 @@ async fn run(
         match chan.api.me().await {
             Ok(me) => break Some(me),
             Err(e) => {
-                let delay = poll::backoff_delay(attempt);
+                let delay = chat_common::backoff_delay(attempt);
                 attempt = attempt.saturating_add(1);
                 tracing::warn!(error = %e, delay_s = delay.as_secs(), "telegram getMe failed; retrying");
                 chan.publish(TelegramEvent::Disconnected {
@@ -2889,56 +2882,6 @@ fn effective_mime(declared: &str, bytes: &[u8], hint: &str) -> String {
         "application/octet-stream".to_owned()
     } else {
         base
-    }
-}
-
-fn sniff(b: &[u8]) -> Option<&'static str> {
-    if b.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
-        Some("image/png")
-    } else if b.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        Some("image/jpeg")
-    } else if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if b.len() >= 12 && b.starts_with(b"RIFF") && &b[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else if b.starts_with(b"%PDF") {
-        Some("application/pdf")
-    } else if b.starts_with(b"OggS") {
-        Some("audio/ogg")
-    } else {
-        None
-    }
-}
-
-fn extension_for(mime: &str) -> String {
-    match mime {
-        "image/jpeg" => "jpg".into(),
-        "text/plain" => "txt".into(),
-        "audio/mpeg" => "mp3".into(),
-        "audio/mp4" => "m4a".into(),
-        "application/octet-stream" => "bin".into(),
-        _ => {
-            let sub: String = mime
-                .rsplit('/')
-                .next()
-                .unwrap_or_default()
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric())
-                .collect();
-            if sub.is_empty() { "bin".into() } else { sub }
-        }
-    }
-}
-
-fn fmt_size(bytes: usize) -> String {
-    const KIB: usize = 1024;
-    const MIB: usize = KIB * 1024;
-    if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
-    } else if bytes >= KIB {
-        format!("{} KiB", bytes.div_ceil(KIB))
-    } else {
-        format!("{bytes} B")
     }
 }
 

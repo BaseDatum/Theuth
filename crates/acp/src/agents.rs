@@ -288,9 +288,7 @@ pub fn save(data_dir: &Path, entries: &BTreeMap<String, Entry>) -> anyhow::Resul
     let path = path(data_dir);
     let dir = path.parent().context("agents.yaml has a parent")?;
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    let tmp = path.with_extension("yaml.tmp");
-    std::fs::write(&tmp, serde_yaml::to_string(entries)?)
-        .and_then(|()| std::fs::rename(&tmp, &path))
+    platform::files::write_atomic(&path, serde_yaml::to_string(entries)?.as_bytes())
         .with_context(|| format!("write {}", path.display()))
 }
 
@@ -397,7 +395,13 @@ mod tests {
         );
         save(&dir, &entries).unwrap();
         assert_eq!(load(&dir).unwrap(), entries);
-        assert!(!dir.join(DIR).join("agents.yaml.tmp").exists());
+        assert!(
+            std::fs::read_dir(dir.join(DIR)).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp"))
+        );
         let cfg = entries["oc"].config();
         assert_eq!(cfg.command(), Path::new("/usr/local/bin/opencode"));
         assert_eq!(cfg.arguments(), ["acp"]);

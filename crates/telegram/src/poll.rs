@@ -3,12 +3,10 @@
 //! the channel's own [`Incoming`]. With `api.rs` the only module that names
 //! `tgbot` types.
 
-use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
+use chat_common::backoff_delay;
 use parking_lot::Mutex;
-use std::time::Duration;
-
 use runtime::Runtime;
 use tgbot::types::{
     Chat, ChatMember, MaybeInaccessibleMessage, Message, MessageData, MessageOrigin, ReplyTo,
@@ -20,35 +18,13 @@ use tokio_util::sync::CancellationToken;
 use crate::api::{Api, CONFLICT};
 use crate::{BotIdentity, TelegramEvent};
 
-/// Dedup set size (21 §3.1).
-pub const RECENT_KEYS: usize = 1024;
 /// Updates per `getUpdates`.
 const BATCH: u8 = 100;
 /// Long-poll timeout.
 const LONG_POLL_SECS: u64 = 30;
 
 /// Bounded FIFO set of recently seen `update_id`s.
-#[derive(Debug, Default)]
-pub struct RecentKeys {
-    order: VecDeque<i64>,
-    set: HashSet<i64>,
-}
-
-impl RecentKeys {
-    /// Records `id`; `true` when it is new.
-    pub fn insert(&mut self, id: i64) -> bool {
-        if !self.set.insert(id) {
-            return false;
-        }
-        if self.order.len() >= RECENT_KEYS
-            && let Some(old) = self.order.pop_front()
-        {
-            self.set.remove(&old);
-        }
-        self.order.push_back(id);
-        true
-    }
-}
+pub type RecentKeys = chat_common::RecentKeys<i64>;
 
 /// What [`run`] needs.
 pub struct PollCtx {
@@ -66,12 +42,6 @@ pub struct PollCtx {
     pub on_state: Arc<dyn Fn(TelegramEvent) + Send + Sync>,
     /// The process-wide dedup set (98 §11), shared with the channel.
     pub recent: Arc<Mutex<RecentKeys>>,
-}
-
-/// `min(2^min(attempt, 6), 60)` seconds (09 §3.1).
-#[must_use]
-pub fn backoff_delay(attempt: u32) -> Duration {
-    Duration::from_secs((1u64 << attempt.min(6)).min(60))
 }
 
 /// 98 §3.1: `getUpdates { offset: last + 1, limit: 100, timeout: 30 }` until
@@ -103,7 +73,7 @@ pub async fn run(ctx: PollCtx) {
                 }
                 for u in batch {
                     last = last.max(u.id);
-                    let fresh = ctx.recent.lock().insert(u.id);
+                    let fresh = ctx.recent.lock().insert(&u.id);
                     if !fresh {
                         tracing::debug!(update_id = u.id, "duplicate telegram update dropped");
                         continue;
@@ -1136,26 +1106,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn recent_keys_dedup_and_evict() {
-        let mut r = RecentKeys::default();
-        assert!(r.insert(1));
-        assert!(!r.insert(1));
-        for i in 2..=(RECENT_KEYS as i64 + 1) {
-            assert!(r.insert(i));
-        }
-        // 1 was evicted: it is new again.
-        assert!(r.insert(1));
-    }
-
-    #[test]
-    fn backoff_caps_at_sixty() {
-        assert_eq!(backoff_delay(0), Duration::from_secs(1));
-        assert_eq!(backoff_delay(3), Duration::from_secs(8));
-        assert_eq!(backoff_delay(6), Duration::from_secs(60));
-        assert_eq!(backoff_delay(40), Duration::from_secs(60));
-    }
-
     const TOKEN: &str = "123:TEST";
 
     fn body(req: &wiremock::Request) -> Value {
@@ -1224,7 +1174,7 @@ mod tests {
             .mount(&server)
             .await;
         let recent = Arc::new(Mutex::new(RecentKeys::default()));
-        recent.lock().insert(2);
+        recent.lock().insert(&2_i64);
         let mut f = start(server, recent).await;
         let first = f.rx.recv().await.unwrap();
         let second = f.rx.recv().await.unwrap();

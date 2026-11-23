@@ -347,13 +347,12 @@ impl Store {
         Ok(dir)
     }
 
-    /// Rewrite the manifest (`.tmp` + rename, 01 §0.5) and upsert its row.
+    /// Rewrite the manifest (temp + rename, 01 §0.5) and upsert its row.
     pub async fn save(&self, m: &Manifest) -> anyhow::Result<()> {
         let dir = self.meeting_dir(m.id);
-        let tmp = dir.join(".manifest.json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(m)?)
-            .with_context(|| format!("write {}", tmp.display()))?;
-        std::fs::rename(&tmp, dir.join(MANIFEST)).context("rename manifest")?;
+        let path = dir.join(MANIFEST);
+        platform::files::write_atomic(&path, &serde_json::to_vec_pretty(m)?)
+            .with_context(|| format!("write {}", path.display()))?;
         self.upsert(&m.summary()).await
     }
 
@@ -465,13 +464,12 @@ impl Store {
         serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
     }
 
-    /// Rewrite `transcript.json` (`.tmp` + rename) and re-index its segments.
+    /// Rewrite `transcript.json` (temp + rename) and re-index its segments.
     pub async fn save_transcript(&self, t: &Transcript) -> anyhow::Result<()> {
         let dir = self.meeting_dir(t.meeting);
-        let tmp = dir.join(".transcript.json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(t)?)
-            .with_context(|| format!("write {}", tmp.display()))?;
-        std::fs::rename(&tmp, dir.join(transcript::FILE)).context("rename transcript")?;
+        let path = dir.join(transcript::FILE);
+        platform::files::write_atomic(&path, &serde_json::to_vec(t)?)
+            .with_context(|| format!("write {}", path.display()))?;
         self.index_transcript(t).await
     }
 

@@ -10,7 +10,7 @@ use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr},
     sync::Once,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, anyhow, bail};
@@ -25,6 +25,7 @@ use microsandbox::{
     snapshot::GuestFlush,
 };
 use parking_lot::Mutex;
+use platform::time::now_ms;
 
 use super::{
     ImageRef, Init, LogLine, Mount, NetPolicy, Pending, Port, Preflight, ResizeOutcome,
@@ -279,12 +280,6 @@ impl Microsandbox {
 
 fn ctx(name: &str, stage: &str) -> String {
     format!("sandbox {name}: {stage}")
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 fn policy(p: NetPolicy) -> NetworkPolicy {

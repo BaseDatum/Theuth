@@ -26,6 +26,7 @@ import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { SegmentPlayer, playError } from '@/lib/segment-audio'
 import { enrollBlock, enrolledToast, rowBlock, secondsText, selectClick, speechMs } from '@/lib/segment-select'
+import { mmss } from '@/lib/time-format'
 import { cn } from '@/lib/utils'
 import type { EditOp } from '@/rpc/bindings/method.meeting.input'
 import type { EnrollTarget } from '@/rpc/bindings/method.meeting.input'
@@ -36,12 +37,6 @@ import type { SpeakerLabel } from "@/rpc/bindings/method.meeting.output"
 import type { Suggestion as SpeakerSuggestion } from "@/rpc/bindings/method.meeting.output"
 import { EnrollDialog } from './EnrollDialog'
 import { SegmentMenu } from './SegmentMenu'
-
-/** `mm:ss` on the recording clock; minutes run past 59. */
-export const mmss = (ms: number): string => {
-  const s = Math.floor(ms / 1000)
-  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
-}
 
 const chipClass = (speaker: string) =>
   cn('shrink-0 rounded px-1.5 text-[11px] leading-5', speaker === 'me' ? 'bg-fg-accent/15 text-fg-accent' : 'bg-accent text-fg-secondary')

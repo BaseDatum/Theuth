@@ -6,6 +6,7 @@ import { CodeBlock, CodeBlockCopyButton, CodeBlockDownloadButton, type CustomRen
 import { useShallow } from 'zustand/react/shallow'
 import { useTranscriptJump } from '@/components/chat/jump'
 import { FenceContext } from '@/components/chat/surface/JsonRenderFence'
+import { utf8ToB64 } from '@/lib/base64'
 import { useApi } from '@/lib/rpc'
 import { disclosureKey } from '@/lib/tool-runs'
 import type { CellRef } from "@/rpc/bindings/method.cells.output"
@@ -59,8 +60,6 @@ export function cellOrdinals(text: string, entry: string | null, turnRunning: bo
     },
   }
 }
-
-const b64 = (s: string) => btoa(Array.from(new TextEncoder().encode(s), (b) => String.fromCharCode(b)).join(''))
 
 /** streamdown's own code block with the controls its default path mounts (copy, download), honouring `controls`. */
 function Snippet({ code, language, isIncomplete, meta }: CustomRendererProps) {
@@ -224,7 +223,7 @@ function ChatCell({ code, language, isIncomplete, ordinals, ordinal }: CustomRen
       if (latest) act(() => api.cell_stop(latest.id, kill))
     },
     onInput: (data: string) => {
-      if (latest) act(() => api.cell_input(latest.id, b64(data)))
+      if (latest) act(() => api.cell_input(latest.id, utf8ToB64(data)))
     },
     onAsk: () => {
       if (latest) act(() => api.cell_ask(latest.id))

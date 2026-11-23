@@ -74,8 +74,7 @@ fn save_to(path: &Path, map: &HashMap<String, f64>) {
     let Ok(json) = serde_json::to_string_pretty(map) else {
         return;
     };
-    let tmp = path.with_extension("json.tmp");
-    if let Err(e) = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, path)) {
+    if let Err(e) = platform::files::write_atomic(path, json.as_bytes()) {
         tracing::debug!(path = %path.display(), error = %e, "token ratios not saved");
     }
 }

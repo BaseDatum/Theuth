@@ -159,10 +159,7 @@ pub async fn body(store: &Store, study: &StudyRecord, headline: &str) -> Result<
     });
     b.push('\n');
     if b.len() > knowledge::BODY_MAX {
-        let mut cut = knowledge::BODY_MAX - 32;
-        while !b.is_char_boundary(cut) {
-            cut -= 1;
-        }
+        let cut = b.floor_char_boundary(knowledge::BODY_MAX - 32);
         b.truncate(cut);
         b.push_str("\n… (truncated)\n");
     }

@@ -193,10 +193,7 @@ impl Launch {
 
 /// `$THEUTH_DATA_DIR`, else `~/.theuth` (the same directory the terminal uses, 25 §5).
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("THEUTH_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".theuth")))
-        .unwrap_or_else(|| PathBuf::from(".theuth"))
+    platform::env::data_dir()
 }
 
 /// 18 §3 / 63 §2.4: a live engine is reused, not duplicated. The engine

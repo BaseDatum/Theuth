@@ -33,7 +33,6 @@ use futures::{SinkExt as _, StreamExt as _};
 use replica::{ByteStream, PeerId, Transport};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 use sqlx::Row as _;
 use tokio::sync::mpsc;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -202,10 +201,7 @@ fn encode<T: Serialize>(v: &T) -> anyhow::Result<Bytes> {
 }
 
 fn sha256_hex(b: &[u8]) -> String {
-    Sha256::digest(b)
-        .iter()
-        .map(|x| format!("{x:02x}"))
-        .collect()
+    platform::sha256::hex(b)
 }
 
 async fn send(framed: &mut Stream, f: &Frame) -> anyhow::Result<()> {

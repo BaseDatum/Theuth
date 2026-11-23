@@ -315,10 +315,7 @@ fn parse_offset(msg: &str) -> Option<usize> {
 /// 1-based `(line, col)` of byte `offset` in `src` (clamped to the end and
 /// back to a char boundary: the offset is parsed from an error message).
 fn line_col(src: &str, offset: usize) -> (u32, u32) {
-    let mut offset = offset.min(src.len());
-    while !src.is_char_boundary(offset) {
-        offset -= 1;
-    }
+    let offset = src.floor_char_boundary(offset);
     let before = &src[..offset];
     let line = before.matches('\n').count() + 1;
     let col = before.rfind('\n').map_or(offset, |i| offset - i - 1) + 1;

@@ -9,10 +9,11 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context as _, bail};
+use chat_common::backoff_delay;
 use tokio::time::Instant;
 
 use crate::api::{Api, CommandScope, Sender as _};
-use crate::poll::{Incoming, backoff_delay, classify};
+use crate::poll::{Incoming, classify};
 use crate::{BotIdentity, PAIR_TTL, SECRET_TOKEN, commands, mint_code};
 
 /// The interactive terminal, behind a trait for tests.

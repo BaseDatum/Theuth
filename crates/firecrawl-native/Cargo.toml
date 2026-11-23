@@ -16,7 +16,7 @@ regex = { workspace = true }
 roxmltree = "0.20.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
+platform = { workspace = true }
 texting_robots = "0.2.2"
 thiserror = { workspace = true }
 url = { workspace = true }

@@ -229,35 +229,9 @@ fn unwrap_google_url(raw: &str) -> Option<String> {
 }
 
 fn percent_decode(input: &str) -> String {
-    let mut bytes = Vec::with_capacity(input.len());
-    let raw = input.as_bytes();
-    let mut i = 0;
-    while i < raw.len() {
-        if raw[i] == b'%'
-            && i + 2 < raw.len()
-            && let Some(b) = hex_byte(raw[i + 1], raw[i + 2])
-        {
-            bytes.push(b);
-            i += 3;
-            continue;
-        }
-        bytes.push(raw[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
-fn hex_byte(h: u8, l: u8) -> Option<u8> {
-    Some((hex_nibble(h)? << 4) | hex_nibble(l)?)
-}
-
-fn hex_nibble(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
+    percent_encoding::percent_decode_str(input)
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]

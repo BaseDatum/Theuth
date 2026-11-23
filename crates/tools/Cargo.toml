@@ -33,6 +33,7 @@ platform = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
 chrono = { workspace = true }
+percent-encoding = { workspace = true }
 notify = { workspace = true }
 ignore = { workspace = true }
 globset = { workspace = true }
@@ -43,8 +44,6 @@ anydoc = { workspace = true }
 regex = { workspace = true }
 portable-pty = { workspace = true }
 vt100 = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
 jsonschema = { workspace = true }
 image = { workspace = true, features = ["jpeg", "gif", "webp"] }
 base64 = { workspace = true }

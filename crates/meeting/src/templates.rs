@@ -15,7 +15,6 @@ use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
-use sha2::Digest as _;
 
 use crate::calendar::EventRef;
 use crate::store::Store;
@@ -145,7 +144,7 @@ pub fn valid_slug(slug: &str) -> bool {
 }
 
 fn sha256(text: &str) -> String {
-    hex::encode(sha2::Sha256::digest(text.as_bytes()))
+    platform::sha256::hex(text.as_bytes())
 }
 
 /// Write the built-ins into `dir`: a missing file is created; a file equal to the version we

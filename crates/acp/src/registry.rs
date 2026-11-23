@@ -10,7 +10,6 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::agents::{DIR, Entry, Reports};
 
@@ -111,9 +110,7 @@ pub async fn fetch(data_dir: &Path) -> anyhow::Result<Vec<RegistryAgent>> {
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            let tmp = path.with_extension("json.tmp");
-            if let Err(e) = std::fs::write(&tmp, &text).and_then(|()| std::fs::rename(&tmp, &path))
-            {
+            if let Err(e) = platform::files::write_atomic(&path, text.as_bytes()) {
                 tracing::warn!("acp registry cache: {e}");
             }
             Ok(agents)
@@ -225,7 +222,7 @@ pub async fn install(data_dir: &Path, agent: &RegistryAgent) -> anyhow::Result<E
         .await
         .with_context(|| format!("download {}", bin.archive))?;
     if let Some(want) = &bin.sha256 {
-        let got = hex::encode(Sha256::digest(&bytes));
+        let got = platform::sha256::hex(&bytes);
         if !got.eq_ignore_ascii_case(want.trim()) {
             bail!(
                 "{}: sha256 mismatch (expected {want}, got {got})",

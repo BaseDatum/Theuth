@@ -10,7 +10,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
-use sha2::Digest as _;
 
 /// The roster signature's domain prefix (D1): it separates it from the card JWS the same
 /// key signs.
@@ -86,7 +85,7 @@ fn content_json(chain: &str, version: u64, members: &[String]) -> serde_json::Va
 /// The hex SHA-256 of the JCS of `{chain, version, members}`: what ties are broken on.
 pub fn content_hash(chain: &str, version: u64, members: &[String]) -> String {
     let jcs = super::jcs(&content_json(chain, version, members));
-    data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(jcs.as_bytes()))
+    platform::sha256::hex(jcs.as_bytes())
 }
 
 fn signing_input(chain: &str, version: u64, members: &[String], signer: &str) -> Vec<u8> {

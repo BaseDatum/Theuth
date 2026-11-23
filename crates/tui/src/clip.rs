@@ -5,8 +5,6 @@
 
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
-
 /// A pasted image or PDF on disk and its pixel size (0×0 when not decoded, i.e. a dropped file).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Image {
@@ -48,8 +46,7 @@ pub fn image(data_dir: &Path) -> anyhow::Result<Option<Image>> {
     };
     let dir = data_dir.join("attachments");
     std::fs::create_dir_all(&dir)?;
-    let hash = Sha256::digest(&bytes);
-    let name: String = hash[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let name = &platform::sha256::hex(&bytes)[..16];
     let path = dir.join(format!("{name}.png"));
     if !path.exists() {
         std::fs::write(&path, &bytes)?;

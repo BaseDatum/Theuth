@@ -6,23 +6,22 @@
 //! [`Outcome`] side effects.
 
 use std::collections::HashMap;
-use std::fmt::Display;
 
 use agent::communication::{
     AnswerPeerRequest, CommunicationState, GetCommunication, GetPeerMessage, ListPeerMessages,
     ListPeers, PeerMessagePage, PeerRecord, PeerScope, SetCommunication, SetPeerScope,
 };
-use agent::{
-    AGENT_ACTOR, Agents, BroadcastOutcome, BroadcastReceipt, BroadcastRequest, BroadcastTargets,
-    Delivery,
-};
+use agent::{BroadcastRequest, BroadcastTargets, Delivery};
 use anyhow::Context as _;
+use chat_common::{
+    agent, err, git_url, is_provider, mcp, mcp_entry, on_off, receipt_text, short, synced, table,
+};
 use kameo::actor::ActorRef;
 use runtime::SessionId;
 use uuid::Uuid;
 
+use crate::ui;
 pub use crate::ui::Reply;
-use crate::ui::{self, short};
 use crate::{SLACK_ACTOR, SlackStatus};
 
 /// A parsed `/theuth` sub-command.
@@ -664,16 +663,6 @@ async fn logins() -> anyhow::Result<Outcome> {
     Ok(Outcome::Text(ui::logins(&providers, &servers)))
 }
 
-/// `name` is an OAuth provider (else it is taken as an MCP server).
-async fn is_provider(name: &str) -> anyhow::Result<bool> {
-    Ok(agent()?
-        .ask(agent::ListLogins)
-        .await
-        .map_err(err)?
-        .iter()
-        .any(|l| l.name == name))
-}
-
 /// `approvals [on|off [always]]`: bare shows the radio panel; `always`
 /// switches the persisted default.
 async fn approvals_cmd(session: Option<SessionId>, args: &[String]) -> anyhow::Result<Outcome> {
@@ -877,36 +866,6 @@ fn parse_broadcast(arg: &str) -> Result<(Delivery, Selector, String), String> {
         return Err(USAGE.to_owned());
     }
     Ok((delivery, selector, text.to_owned()))
-}
-
-/// `broadcast <short-id> → N sessions`, then `title — outcome` per row.
-fn receipt_text(r: &BroadcastReceipt) -> String {
-    if r.rows.is_empty() {
-        return "no matching sessions".to_owned();
-    }
-    let id = r.id.simple().to_string();
-    let mut out = format!("broadcast {} → {} sessions", &id[..4], r.rows.len());
-    for row in &r.rows {
-        let title = if row.title.is_empty() {
-            short(row.session)
-        } else {
-            row.title.clone()
-        };
-        let outcome = match &row.outcome {
-            BroadcastOutcome::Started => "started".to_owned(),
-            BroadcastOutcome::Queued { delivery, .. } => format!(
-                "queued ({})",
-                match delivery {
-                    Delivery::Steer => "steer",
-                    Delivery::NextTurn => "next turn",
-                }
-            ),
-            BroadcastOutcome::Skipped { reason } => format!("skipped: {reason}"),
-            BroadcastOutcome::Failed { error } => format!("failed: {error}"),
-        };
-        out.push_str(&format!("\n{title} — {outcome}"));
-    }
-    out
 }
 
 /// [`CommunicationState`] as lines: effective state, the global ceiling and
@@ -1250,95 +1209,11 @@ where
         .map_err(err)
 }
 
-fn agent() -> anyhow::Result<ActorRef<Agents>> {
-    ActorRef::<Agents>::lookup(AGENT_ACTOR)?.context("agent actor is not running")
-}
-
-fn mcp() -> anyhow::Result<ActorRef<tools::Mcp>> {
-    ActorRef::<tools::Mcp>::lookup(tools::MCP_ACTOR)?.context("mcp actor is not running")
-}
-
-fn err<E: Display>(e: E) -> anyhow::Error {
-    anyhow::anyhow!("{e}")
-}
-
-fn on_off(b: bool) -> &'static str {
-    if b { "on" } else { "off" }
-}
-
 /// First word and the rest rejoined: `("add", "https://…")`.
 fn split(args: &[String]) -> (&str, String) {
     match args.split_first() {
         Some((sub, rest)) => (sub.as_str(), rest.join(" ")),
         None => ("", String::new()),
-    }
-}
-
-fn synced(rows: Vec<tools::git::SyncResult>) -> String {
-    table(rows.into_iter().map(|r| vec![r.name, r.status]))
-}
-
-/// Rows as columns padded to equal width inside a ``` fence; `(none)` when empty.
-fn table(rows: impl IntoIterator<Item = Vec<String>>) -> String {
-    let rows: Vec<Vec<String>> = rows.into_iter().collect();
-    if rows.is_empty() {
-        return "(none)".to_owned();
-    }
-    let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let widths: Vec<usize> = (0..cols)
-        .map(|c| {
-            rows.iter()
-                .map(|r| r.get(c).map_or(0, |s| s.chars().count()))
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
-    let lines: Vec<String> = rows
-        .iter()
-        .map(|r| {
-            let mut line = String::new();
-            for (c, cell) in r.iter().enumerate() {
-                if c > 0 {
-                    line.push_str("  ");
-                }
-                line.push_str(cell);
-                if c + 1 < r.len() {
-                    line.extend(std::iter::repeat_n(' ', widths[c] - cell.chars().count()));
-                }
-            }
-            line.trim_end().to_owned()
-        })
-        .collect();
-    format!("```\n{}\n```", lines.join("\n"))
-}
-
-/// `mcp add` argument that means "clone a repo": a `.git` URL or a known git host.
-fn git_url(s: &str) -> bool {
-    s.ends_with(".git")
-        || ["github.com/", "gitlab.com/", "codeberg.org/"]
-            .iter()
-            .any(|h| s.contains(h))
-}
-
-/// One MCP server from `mcp add <json>`: a server object with a `name` key
-/// (stripped), `{ "<name>": {...} }`, or `{ "mcpServers": { "<name>": {...} } }`.
-fn mcp_entry(text: &str) -> Result<(String, serde_json::Value), String> {
-    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    let serde_json::Value::Object(mut obj) = v else {
-        return Err("expected a JSON object".into());
-    };
-    if let Some(serde_json::Value::Object(servers)) = obj.remove("mcpServers") {
-        obj = servers;
-    }
-    if obj.contains_key("command") || obj.contains_key("url") {
-        return match obj.remove("name") {
-            Some(serde_json::Value::String(name)) => Ok((name, serde_json::Value::Object(obj))),
-            _ => Err("server object needs a \"name\" field".into()),
-        };
-    }
-    match (obj.len(), obj.into_iter().next()) {
-        (1, Some((name, entry))) if entry.is_object() => Ok((name, entry)),
-        _ => Err("expected exactly one server: {\"<name>\": {\"command\": ...}}".into()),
     }
 }
 

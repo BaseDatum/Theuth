@@ -90,11 +90,9 @@ fn serve() -> u16 {
                 }
                 let body = String::from_utf8_lossy(&buf[head_end..]).into_owned();
                 let (status, html) = if request.starts_with("POST /submitted") {
-                    let q = body
-                        .split('&')
-                        .filter_map(|kv| kv.split_once('='))
-                        .find(|(k, _)| *k == "q")
-                        .map(|(_, v)| urldecode(v))
+                    let q = url::form_urlencoded::parse(body.as_bytes())
+                        .find(|(k, _)| k == "q")
+                        .map(|(_, v)| v.into_owned())
                         .unwrap_or_default();
                     (
                         "200 OK",
@@ -115,30 +113,6 @@ fn serve() -> u16 {
         }
     });
     port
-}
-
-fn urldecode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => out.push(b' '),
-            b'%' if i + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-                match u8::from_str_radix(hex, 16) {
-                    Ok(b) => {
-                        out.push(b);
-                        i += 2;
-                    }
-                    Err(_) => out.push(b'%'),
-                }
-            }
-            b => out.push(b),
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 struct Kit {

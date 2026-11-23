@@ -1,4 +1,5 @@
 import { idbGet, idbPut } from './idb'
+import { decode, encode } from '@/lib/base64'
 
 /** The device's X25519 static: a non-extractable private `CryptoKey` and its raw 32-byte public key. */
 export type Identity = { priv: CryptoKey; pub: Uint8Array<ArrayBuffer> }
@@ -7,17 +8,14 @@ const subtle = globalThis.crypto.subtle
 
 /** base64url without padding (engine ids, pairing strings). */
 export function b64url(bytes: Uint8Array<ArrayBuffer>): string {
-  let s = ''
-  for (const b of bytes) s += String.fromCharCode(b)
-  return btoa(s).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+  return encode(bytes).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
 }
 
 /** Inverse of `b64url`; `null` on bad input. */
 export function unb64url(s: string): Uint8Array<ArrayBuffer> | null {
   if (!/^[A-Za-z0-9_-]*$/.test(s)) return null
   try {
-    const bin = atob(s.replaceAll('-', '+').replaceAll('_', '/'))
-    return Uint8Array.from(bin, (c) => c.charCodeAt(0))
+    return decode(s.replaceAll('-', '+').replaceAll('_', '/'))
   } catch {
     return null
   }

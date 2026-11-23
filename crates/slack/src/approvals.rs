@@ -1,6 +1,7 @@
 //! Approval cards and button clicks (design doc 21 §10.1). Pure: Block Kit JSON
 //! in, parsed clicks out; the channel does the posting and resolving.
 
+use chat_common::truncate;
 use double::{DoubleAnswered, DoublePredicted};
 use slack_morphism::prelude::{SlackInteractionActionContainer, SlackInteractionEvent};
 use tools::{ApprovalId, ApprovalRequested, Decision};
@@ -200,13 +201,6 @@ fn button(action_id: &str, label: &str, style: &str, value: &str) -> serde_json:
         "style": style,
         "value": value,
     })
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max) {
-        Some((i, _)) => format!("{}…", &s[..i]),
-        None => s.to_owned(),
-    }
 }
 
 #[cfg(test)]

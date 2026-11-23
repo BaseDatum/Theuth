@@ -3,16 +3,14 @@
 // otherwise — and while the probe is pending, or once the shader fails — a CSS orb that shows the same three
 // states without a frame loop (reduced motion: no animation). Never a blank button.
 
-import { useState } from 'react'
 import { Orb16 } from '@/components/orbs/orb-16'
+import { useReducedMotion } from '@/hooks/use-reduced-motion'
 import type { OrbState } from '@/lib/talk'
 import { cn } from '@/lib/utils'
 import { useWebGpu, webGpuFailed } from '@/lib/webgpu'
 
-const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches
-
 export function Orb({ state, size, onClick, label }: { state: OrbState; size: number; onClick: () => void; label: string }) {
-  const [motion] = useState(() => !reduced())
+  const motion = !useReducedMotion()
   const gpu = useWebGpu() === true && motion
   return (
     <button

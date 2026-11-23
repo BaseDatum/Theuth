@@ -89,10 +89,7 @@ impl Name {
     };
 
     fn set(&mut self, s: &str) {
-        let mut n = s.len().min(self.buf.len());
-        while !s.is_char_boundary(n) {
-            n -= 1;
-        }
+        let n = s.floor_char_boundary(self.buf.len());
         self.buf[..n].copy_from_slice(&s.as_bytes()[..n]);
         self.len = n;
     }

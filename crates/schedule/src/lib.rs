@@ -638,11 +638,7 @@ const UNTIL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The last 2 KiB of `s`, cut at a char boundary (33 §3.1, §0.7).
 fn tail_2k(s: &str) -> &str {
-    let mut cut = s.len().saturating_sub(2048);
-    while !s.is_char_boundary(cut) {
-        cut += 1;
-    }
-    &s[cut..]
+    &s[s.ceil_char_boundary(s.len().saturating_sub(2048))..]
 }
 
 /// Run `until` through the login shell ([`platform::shell`], `-lc`) in `cwd`,

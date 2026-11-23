@@ -29,6 +29,7 @@ use monty_types::{
     unstable::{self, MontyNode},
 };
 use parking_lot::Mutex;
+use platform::files::write_atomic;
 use regex::Regex;
 use runtime::{SessionId, TurnId};
 use schemars::JsonSchema;
@@ -2264,12 +2265,6 @@ pub fn reset_session(data_dir: &Path, session: SessionId) -> std::io::Result<Res
         }
     }
     Ok(report)
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
 }
 
 #[cfg(test)]

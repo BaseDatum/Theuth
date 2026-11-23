@@ -1409,9 +1409,7 @@ fn upgrade_communication_line(config_path: &Path) -> std::io::Result<bool> {
     if text.ends_with('\n') {
         out.push('\n');
     }
-    let tmp = config_path.with_extension(format!("yaml.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, out)?;
-    std::fs::rename(&tmp, config_path)?;
+    platform::files::write_atomic(config_path, out.as_bytes())?;
     Ok(true)
 }
 

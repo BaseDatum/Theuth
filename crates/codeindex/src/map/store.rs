@@ -193,12 +193,8 @@ pub async fn set_meta(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Resu
     Ok(())
 }
 
-/// Unix milliseconds now.
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-}
+// Unix milliseconds now.
+pub use platform::time::now_ms_i64 as now_ms;
 
 // --- perspectives -------------------------------------------------------------
 

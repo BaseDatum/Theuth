@@ -23,7 +23,6 @@ use bollard::query_parameters::{
 };
 use bytes::Bytes;
 use futures::StreamExt;
-use sha2::Digest;
 use tokio::io::AsyncWriteExt;
 
 use crate::{Cmd, DaemonKind, ExecOutput, Handle, Progress, Sandbox};
@@ -153,8 +152,7 @@ impl DockerSandbox {
             }
             Image::Dev(p) => {
                 let t = std::fs::read(p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
-                let hash = sha2::Sha256::digest(&t);
-                let short: String = hash.iter().take(6).map(|b| format!("{b:02x}")).collect();
+                let short = platform::sha256::hex(&t)[..12].to_owned();
                 (
                     format!("theuth-engine:dev-{short}"),
                     tar_context(DOCKERFILE_DEV, Some(&t)),

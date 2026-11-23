@@ -23,6 +23,7 @@ use base64::Engine as _;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use parking_lot::Mutex;
+use platform::time::now_ms_i64 as now_ms;
 use runtime::Runtime;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -266,17 +267,12 @@ pub async fn start(rt: &Runtime, config: CellsConfig) -> Cells {
     cells
 }
 
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
 fn json<T: Serialize>(v: &T) -> String {
     serde_json::to_string(v).unwrap_or_default()
 }
 
 fn sha(text: &str) -> String {
-    use sha2::{Digest, Sha256};
-    hex::encode(Sha256::digest(text.as_bytes()))
+    platform::sha256::hex(text.as_bytes())
 }
 
 /// §5.4: dropped before use / set for every kernel.
@@ -2593,14 +2589,8 @@ fn outputs_text(outputs: &[CellOutput]) -> String {
 /// One `cell_output` page, cut on char boundaries.
 fn page(text: &str, offset: u64, limit: u32) -> OutputPage {
     let total = text.len() as u64;
-    let mut start = (offset.min(total)) as usize;
-    while start < text.len() && !text.is_char_boundary(start) {
-        start += 1;
-    }
-    let mut end = start.saturating_add(limit.max(1) as usize).min(text.len());
-    while end < text.len() && !text.is_char_boundary(end) {
-        end += 1;
-    }
+    let start = text.ceil_char_boundary((offset.min(total)) as usize);
+    let end = text.ceil_char_boundary(start.saturating_add(limit.max(1) as usize).min(text.len()));
     OutputPage {
         text: text[start..end].to_owned(),
         offset: start as u64,

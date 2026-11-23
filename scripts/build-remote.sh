@@ -67,7 +67,8 @@ case "$OS" in windows | linux) ;; *) echo "error: os must be windows|linux (got 
 DRY_RUN="${THEUTH_REMOTE_DRY_RUN:-0}"
 POLL="${THEUTH_REMOTE_POLL:-20}"
 
-need() { command -v "$1" >/dev/null 2>&1 || { echo "error: $1 required${2:+ ($2)}" >&2; exit 1; }; }
+# shellcheck source=lib/common.sh
+source "$ROOT/scripts/lib/common.sh"   # need
 need ssh; need scp; need git; need jq; need shasum
 [[ "$OS" != "windows" ]] || { need iconv; need base64; }
 

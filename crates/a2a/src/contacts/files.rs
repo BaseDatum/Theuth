@@ -954,10 +954,7 @@ async fn receipt_with<S: AsyncRead + AsyncWrite + Unpin>(
 ) -> Result<(), TransferError> {
     let receipt = match receipt {
         Receipt::Failed { reason } if reason.len() > REASON_MAX => {
-            let mut end = REASON_MAX;
-            while !reason.is_char_boundary(end) {
-                end -= 1;
-            }
+            let end = reason.floor_char_boundary(REASON_MAX);
             Receipt::Failed {
                 reason: reason[..end].to_owned(),
             }

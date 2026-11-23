@@ -33,6 +33,7 @@ cursor = { path = "crates/cursor" }
 signal = { path = "crates/signal" }
 slack = { path = "crates/slack" }
 telegram = { path = "crates/telegram" }
+chat-common = { path = "crates/chat-common" }  # helpers shared by the signal/slack/telegram adapters
 acp = { path = "crates/acp" }
 web = { path = "crates/web" }
 search-providers = { path = "crates/search-providers" }
@@ -267,6 +268,7 @@ h2 = "0.4"
 # Web search/fetch (design doc 16): one HTML parser for markdown and text; wiremock for provider contract tests.
 html-to-markdown-rs = { version = "3.12", default-features = false }
 url = "2"
+percent-encoding = "2"
 wiremock = "0.6"
 http = "1"
 flate2 = "1"  # 38: gzip sitemaps

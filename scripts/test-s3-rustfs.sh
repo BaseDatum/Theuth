@@ -27,7 +27,8 @@ cd "$ROOT"
 command -v aws >/dev/null 2>&1 || { echo "error: aws CLI v2 required (brew install awscli)" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "error: curl required" >&2; exit 1; }
 
-ENDPOINT="${THEUTH_S3_ENDPOINT:-https://s3.rwx.dev}"; ENDPOINT="${ENDPOINT%/}"
+# shellcheck source=lib/s3-env.sh
+source "$ROOT/scripts/lib/s3-env.sh"   # ENDPOINT, s3_export_aws_env, s3_have_creds
 BUCKET="${THEUTH_S3_BUCKET:-theuth}"
 PREFIX="${THEUTH_S3_PREFIX:-releases}"; PREFIX="${PREFIX#/}"; PREFIX="${PREFIX%/}"
 # Bucket root, not the releases prefix: the probe also GETs staging/.
@@ -36,15 +37,10 @@ PUBLIC_ROOT="${PUBLIC_BASE%/"$PREFIX"}"
 DRY_RUN="${THEUTH_S3_DRY_RUN:-0}"
 KEEP_PROBE="${THEUTH_S3_KEEP_PROBE:-0}"
 
-[[ "$DRY_RUN" == "1" || ( -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ) ]] \
+[[ "$DRY_RUN" == "1" ]] || s3_have_creds \
   || { echo "error: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY unset (see .env.signing.example)" >&2; exit 1; }
 
-# rustfs: path-style, no mandatory checksums, no IMDS probe (jarvis release-s3.sh:164-174).
-export AWS_S3_FORCE_PATH_STYLE=true
-export AWS_REQUEST_CHECKSUM_CALCULATION="${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}"
-export AWS_RESPONSE_CHECKSUM_VALIDATION="${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}"
-export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-export AWS_EC2_METADATA_DISABLED=true
+s3_export_aws_env
 AWS=(aws --endpoint-url "$ENDPOINT")
 
 PASS=0; FAIL=0; SKIP=0

@@ -177,11 +177,9 @@ impl State {
             pin: false,
             ..self.entry.clone()
         };
-        let tmp = path.with_extension("json.tmp");
         let written = serde_json::to_vec_pretty(&entry)
             .map_err(std::io::Error::other)
-            .and_then(|bytes| std::fs::write(&tmp, bytes))
-            .and_then(|()| std::fs::rename(&tmp, &path));
+            .and_then(|bytes| platform::files::write_atomic(&path, &bytes));
         match written {
             Ok(()) => {
                 self.stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();

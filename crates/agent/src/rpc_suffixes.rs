@@ -9,6 +9,7 @@ use crate::{Agents, DurableStore};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
+use platform::time::now_ms_i64 as now_ms;
 use rpc_core::{Server, ask, stub_err};
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
@@ -57,10 +58,6 @@ pub(crate) fn watch(rt: Runtime, handle: replica::ReplicaHandle) {
             }
         }
     });
-}
-
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
 }
 
 async fn store() -> RpcResult<crate::store::Store> {

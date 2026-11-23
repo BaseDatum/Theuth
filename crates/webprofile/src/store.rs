@@ -35,7 +35,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::Context as _;
 use base64::Engine as _;
@@ -69,9 +69,7 @@ const SEAL_OVERHEAD: u64 = 40;
 
 /// Unix ms now.
 pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+    platform::time::now_ms()
 }
 
 /// HMAC-SHA256 (RFC 2104) over `sha2`, the one hash the crate already carries.
@@ -1497,4 +1495,18 @@ async fn put(
 
 fn db(e: sqlx::Error) -> ProfileError {
     ProfileError::Unavailable(format!("webprofile.sqlite: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hmac_matches_rfc4231_vector() {
+        // RFC 4231 test case 2: key "Jefe", data "what do ya want for nothing?"
+        assert_eq!(
+            hex::encode(hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
 }

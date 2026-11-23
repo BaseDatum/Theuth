@@ -226,26 +226,9 @@ fn wikipedia(url: &Url, segs: &[&str]) -> Option<(&'static str, Url)> {
 
 /// `%XX` sequences decoded; invalid UTF-8 is replaced.
 fn percent_decode(s: &str) -> String {
-    if !s.contains('%') {
-        return s.to_owned();
-    }
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3])
-            && let Ok(byte) = u8::from_str_radix(hex, 16)
-        {
-            out.push(byte);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    percent_encoding::percent_decode_str(s)
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 // ---- rendering ---------------------------------------------------------------

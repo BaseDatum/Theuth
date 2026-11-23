@@ -1,17 +1,10 @@
 import { type Mock, expect, test, vi } from 'vitest'
-import { type PlayerContext, SegmentPlayer, base64ToBytes, padRange, playError } from './segment-audio'
+import { type PlayerContext, SegmentPlayer, padRange, playError } from './segment-audio'
 
 test('padRange adds 150 ms each side and clamps at zero', () => {
   expect(padRange(1000, 2000)).toEqual([850, 2150])
   expect(padRange(100, 400)).toEqual([0, 550])
   expect(padRange(0, 0, 20)).toEqual([0, 20])
-})
-
-test('base64ToBytes gives the exact bytes in a tight ArrayBuffer', () => {
-  const bytes = base64ToBytes(btoa('RIFF\u0000\u00ff'))
-  expect([...bytes]).toEqual([82, 73, 70, 70, 0, 255])
-  expect(bytes.buffer.byteLength).toBe(6)
-  expect(base64ToBytes('').length).toBe(0)
 })
 
 interface StubSource {

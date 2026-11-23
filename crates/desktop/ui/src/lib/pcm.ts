@@ -3,6 +3,8 @@
 // pure part (encode + batch) so it can be tested without an `AudioContext`.
 // ponytail: raw PCM at 16 kHz is ~32 kB/s per phone; Opus via WebCodecs `AudioEncoder` when WKWebView (iOS 26+) is the floor.
 
+import { encode } from './base64'
+
 /** Float32 frames in [-1, 1] → base64 of little-endian i16, clamped and rounded. */
 export function toI16Base64(frames: Float32Array): string {
   const bytes = new Uint8Array(frames.length * 2)
@@ -11,10 +13,7 @@ export function toI16Base64(frames: Float32Array): string {
     const f = frames[i] ?? 0
     view.setInt16(i * 2, Math.round(Math.max(-1, Math.min(1, f)) * 32767), true)
   }
-  let s = ''
-  // 8 KiB chunks keep `fromCharCode` under the argument-count limit.
-  for (let i = 0; i < bytes.length; i += 0x2000) s += String.fromCharCode(...bytes.subarray(i, i + 0x2000))
-  return btoa(s)
+  return encode(bytes)
 }
 
 /** Accumulates frames and emits whole `samples`-long batches as base64 i16; `flush` emits the remainder. */
