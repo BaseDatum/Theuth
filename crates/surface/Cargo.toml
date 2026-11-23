@@ -16,6 +16,7 @@ unicode-width = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 regex = { workspace = true }
+strsim = { workspace = true }
 # Mermaid → terminal text; bake-off winner (fixtures/mermaid/BAKEOFF.md).
 merman = { version = "0.7", features = ["ascii"] }
 ts-rs = { workspace = true, optional = true }

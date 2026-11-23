@@ -5,6 +5,9 @@
 //! the same document from different engines merges; Bing click redirects are
 //! unwrapped first.
 
+use base64::Engine as _;
+use base64::alphabet;
+use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use url::Url;
 
 /// Cap for the breadcrumb [`display_url`].
@@ -132,28 +135,20 @@ pub(crate) fn unwrap_bing_redirect(raw: &str) -> Option<String> {
     (decoded.starts_with("http://") || decoded.starts_with("https://")).then_some(decoded)
 }
 
-/// Decode URL-safe base64 without padding; `None` on any foreign byte.
+/// URL-safe base64, tolerant of `=` padding and non-zero trailing bits.
+const LENIENT_URL_SAFE: GeneralPurpose = GeneralPurpose::new(
+    &alphabet::URL_SAFE,
+    GeneralPurposeConfig::new()
+        .with_decode_padding_mode(DecodePaddingMode::Indifferent)
+        .with_decode_allow_trailing_bits(true),
+);
+
+/// Decode URL-safe base64, padded or not; `None` on any foreign byte or an empty result.
 fn base64url_decode(s: &str) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let (mut acc, mut bits) = (0u32, 0u8);
-    for b in s.bytes() {
-        let v = match b {
-            b'A'..=b'Z' => b - b'A',
-            b'a'..=b'z' => b - b'a' + 26,
-            b'0'..=b'9' => b - b'0' + 52,
-            b'-' => 62,
-            b'_' => 63,
-            b'=' => break,
-            _ => return None,
-        };
-        acc = (acc << 6) | u32::from(v);
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push(u8::try_from((acc >> bits) & 0xff).ok()?);
-        }
-    }
-    (!out.is_empty()).then_some(out)
+    LENIENT_URL_SAFE
+        .decode(s)
+        .ok()
+        .filter(|out| !out.is_empty())
 }
 
 #[cfg(test)]

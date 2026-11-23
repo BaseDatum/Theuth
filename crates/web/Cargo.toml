@@ -25,7 +25,9 @@ tracing = { workspace = true }
 kameo = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
+percent-encoding = { workspace = true }
 chrono = { workspace = true }
+base64 = { workspace = true }
 uuid = { workspace = true }
 html-to-markdown-rs = { workspace = true }
 rand = { workspace = true }

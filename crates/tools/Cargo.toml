@@ -33,6 +33,7 @@ platform = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
 chrono = { workspace = true }
+percent-encoding = { workspace = true }
 notify = { workspace = true }
 ignore = { workspace = true }
 globset = { workspace = true }

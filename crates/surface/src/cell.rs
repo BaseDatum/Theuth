@@ -1068,7 +1068,7 @@ fn after_unknown(a: &str, ctx: &ValidateCtx) -> String {
     let rank = |n: &str| {
         let n = n.to_lowercase();
         let prefix = n.starts_with(&want) || want.starts_with(&n);
-        (edit_distance(&n, &want), !prefix)
+        (strsim::levenshtein(&n, &want), !prefix)
     };
     let close = |n: &str| {
         let (d, far) = rank(n);
@@ -1084,20 +1084,4 @@ fn after_unknown(a: &str, ctx: &ValidateCtx) -> String {
         list.push_str(&format!(" … and {} more", names.len() - 5));
     }
     format!("`after: {a}` names no cell in scope; cells here: {list}")
-}
-
-/// Levenshtein distance over chars.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut prev = row[0];
-        row[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let cur = row[j + 1];
-            row[j + 1] = (prev + usize::from(ca != *cb)).min(row[j] + 1).min(cur + 1);
-            prev = cur;
-        }
-    }
-    row[b.len()]
 }

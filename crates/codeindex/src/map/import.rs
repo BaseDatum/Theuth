@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use anyhow::Context as _;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::{SqliteConnection, SqlitePool};
 use surface::graph::from_mermaid;
 
@@ -444,48 +445,23 @@ pub(super) fn yaml_scalar<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     })
 }
 
-/// `YYYY-MM-DDTHH:MM:SS(.fff)?Z` → Unix ms (proleptic Gregorian).
+/// `YYYY-MM-DDTHH:MM(:SS)?(.fff)?Z?` → Unix ms (UTC; a missing `Z` is still UTC).
 pub(super) fn iso_to_ms(s: &str) -> Option<u64> {
     let s = s.trim().trim_end_matches('Z');
-    let (date, time) = s.split_once('T')?;
-    let mut d = date.split('-').map(|x| x.parse::<i64>().ok());
-    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
-    let (hms, frac) = time.split_once('.').unwrap_or((time, "0"));
-    let mut t = hms.split(':').map(|x| x.parse::<i64>().ok());
-    let (h, mi, sec) = (t.next()??, t.next()??, t.next().unwrap_or(Some(0))?);
-    let ms: i64 = format!("{frac:0<3}").get(..3)?.parse().ok()?;
-    // Howard Hinnant's days_from_civil.
-    let (y, m) = if m <= 2 { (y - 1, m) } else { (y, m) };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    u64::try_from(((days * 24 + h) * 60 + mi) * 60_000 + sec * 1000 + ms).ok()
+    let at = ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M%.f"]
+        .iter()
+        .find_map(|f| NaiveDateTime::parse_from_str(s, f).ok())?;
+    u64::try_from(at.and_utc().timestamp_millis()).ok()
 }
 
 /// Unix ms → `YYYY-MM-DDTHH:MM:SS.fffZ`.
 pub(super) fn ms_to_iso(ms: u64) -> String {
-    let secs = (ms / 1000) as i64;
-    let days = secs.div_euclid(86_400);
-    let sod = secs.rem_euclid(86_400);
-    // Howard Hinnant's civil_from_days.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z",
-        sod / 3600,
-        sod % 3600 / 60,
-        sod % 60,
-        ms % 1000
-    )
+    i64::try_from(ms)
+        .ok()
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .unwrap_or(DateTime::UNIX_EPOCH)
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
 }
 
 #[cfg(test)]

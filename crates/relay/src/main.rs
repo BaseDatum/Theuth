@@ -98,7 +98,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     };
     let secret = match cli.cookie_secret.as_deref() {
         None | Some("") => None,
-        Some(hex) => Some(cookie::unhex(hex).context("--cookie-secret must be hex")?),
+        Some(s) => Some(hex::decode(s).context("--cookie-secret must be hex")?),
     };
     let web = cli.web.as_deref().map(|dir| {
         Arc::new(web::Web::new(

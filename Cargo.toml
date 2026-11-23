@@ -267,6 +267,7 @@ h2 = "0.4"
 # Web search/fetch (design doc 16): one HTML parser for markdown and text; wiremock for provider contract tests.
 html-to-markdown-rs = { version = "3.12", default-features = false }
 url = "2"
+percent-encoding = "2"
 wiremock = "0.6"
 http = "1"
 flate2 = "1"  # 38: gzip sitemaps
