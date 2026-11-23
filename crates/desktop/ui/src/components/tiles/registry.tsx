@@ -5,6 +5,8 @@ import { artifactTile } from './kinds/artifact'
 import { browserTile } from './kinds/browser'
 import { codemapTile } from './kinds/codemap'
 import { diagramTile } from './kinds/diagram'
+import { diffTile } from './kinds/diff'
+import { fileTile } from './kinds/file'
 import { jobLogTile, jobsTile } from './kinds/jobs'
 import { mediaTile } from './kinds/media'
 import { memoryTile } from './kinds/memory'
@@ -20,6 +22,8 @@ export const TILE_KINDS: Record<string, TileKind> = {
   browser: browserTile,
   codemap: codemapTile,
   diagram: diagramTile,
+  diff: diffTile,
+  file: fileTile,
   jobs: jobsTile,
   'job-log': jobLogTile,
   'job-terminal': jobTerminalTile,

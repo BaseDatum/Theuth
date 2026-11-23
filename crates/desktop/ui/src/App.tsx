@@ -24,7 +24,7 @@ import { notifyIfHidden, primeNotifications } from '@/lib/notify'
 import { chatLeaves, closeWeb, leaves, usePanes } from '@/lib/panes'
 import { closeAllWebViews, installWebViewEvents, useWebViews } from '@/lib/web-views'
 import { webViewOpened } from '@/lib/web-arrival'
-import { noteViewOpened, ptyViewOpened } from '@/lib/tile-arrival'
+import { diffViewOpened, fileViewOpened, noteViewOpened, ptyViewOpened } from '@/lib/tile-arrival'
 import { closeAllTiles, closeSessionTiles } from '@/lib/tiles'
 import { AgentTileBanner } from '@/components/chat/AgentTileBanner'
 import { forgetArtifact } from '@/components/chat/ArtifactPanel'
@@ -587,6 +587,15 @@ function useEventSideEffects(st: Stores): void {
       // screen and the layout tiles; elsewhere (a phone, a hidden chat) its transcript card is the way in.
       on("artifact.pty-view-opened@1", 'PtyViewOpened', (e) => ptyViewOpened(e, visible(e.session))),
       on("artifact.note-view-opened@1", 'NoteViewOpened', (e) => noteViewOpened(e, visible(e.session))),
+      // 212 §4: a `show_file` file or `show_diff` diff likewise; shown again, an open tile or card re-reads it.
+      on("artifact.file-view-opened@1", 'FileViewOpened', (e) => {
+        void qc.invalidateQueries({ queryKey: queryKeys.fileView(e.session, e.path) })
+        fileViewOpened(e, visible(e.session))
+      }),
+      on("artifact.diff-view-opened@1", 'DiffViewOpened', (e) => {
+        void qc.invalidateQueries({ queryKey: queryKeys.diffView(e.session, e.spec) })
+        diffViewOpened(e, visible(e.session))
+      }),
       // The session's frames and tiles go with it: tiles, store entries, native views; a pop-out window holding one
       // closes on `web-view://closed` (`WebFrame`).
       on("agent.events@1", 'SessionDeleted', (e) => {

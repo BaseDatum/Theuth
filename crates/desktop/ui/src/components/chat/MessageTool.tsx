@@ -15,6 +15,8 @@ import { WebViewCard } from './WebViewCard'
 import { ElementFormCard } from './ElementFormCard'
 import { PtyViewCard } from './PtyViewCard'
 import { NoteViewCard } from './NoteViewCard'
+import { FileViewCard } from './FileViewCard'
+import { DiffViewCard } from './DiffViewCard'
 import { RosterCard, rosterRows } from './RosterCard'
 import { Attachments } from './Attachments'
 import { fenced, plugins, shikiTheme } from './MessageAssistant'
@@ -103,6 +105,10 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
       <PtyViewCard tool={tool} />
     ) : tool.name === 'show_note' ? (
       <NoteViewCard tool={tool} />
+    ) : tool.name === 'show_file' ? (
+      <FileViewCard tool={tool} session={session} />
+    ) : tool.name === 'show_diff' ? (
+      <DiffViewCard tool={tool} session={session} />
     ) : tool.name === 'crawl' || tool.name === 'map_site' || tool.name === 'scrape_url' || tool.name === 'search_web' ? (
       <ScrapeCard tool={tool} session={session} />
     ) : tool.name === 'desktop_handoff' ? (
