@@ -73,3 +73,16 @@ Same list as 211: `register_wire_event` ×2; `republish!` in `crates/rpc-compose
 ## 5. Tests
 - Rust (inline in codeview.rs; git tests make a temp repo with `git -c commit.gpgsign=false`): receipt first-two-line pins for both tools; event wire shape; path resolution and refusals (binary, too big, cell record, bad line range); diff modes worktree (incl. untracked), staged, commit, range, files, paths; unknown rev; read-authorization (shown path ok, inside cwd ok, outside refused); truncation.
 - UI: receipt parsers, tile-arrival for both kinds, DiffBody file-section parsing, FileView lang mapping and chunking decision (pure functions).
+
+
+## 6. Amendment (owner, 2026-11-23 13:57) — show_file follows edits on its own
+
+Owner: "file should follow edits on its own." This REPLACES the "does not follow later edits / Refresh" parts of §1, §2 and §4 for show_file:
+
+- New subscription RPC (artifact crate, same forwarding + authorization as `file_view_read`): `subscribe_file_view(session, path)` / `unsubscribe_file_view`, item `FileViewChange { mtime_ms: u64, size: u64, deleted: bool }`. Copy the subscription shape of `subscribe_pty` / `unsubscribe_pty` (`crates/agent/src/rpc_jobs.rs`) for the jsonrpsee subscription plumbing and forwarding.
+- Server side: watch with the workspace `notify = "8"` crate (patterns: `crates/document/src/watch.rs`, `crates/schedule/src/lib.rs`). Watch the file's PARENT directory non-recursively and filter to the file name (editors save by rename/replace). Debounce ~150 ms; coalesce; emit one `FileViewChange` per settled change; emit `deleted: true` when it disappears and resume when it reappears. One watcher per (path) shared by all subscribers (refcount; drop on last unsubscribe). If the watcher cannot be created, fall back to a 2 s mtime poll for that subscription.
+- `file_view_read` gains an optional `if_mtime_ms: Option<u64>`; when equal to the current mtime it returns `unchanged: true` with empty text (field `unchanged: bool` added to `FileViewText`).
+- UI: the file tile subscribes while mounted; on a change it refetches `file_view_read`, keeps the scroll position (anchor on the top visible line), briefly tints lines that changed (simple line-by-line compare of old vs new text, only when ≤ 5k lines), and shows "deleted" state in the header meta when the file is gone. Keep a manual Refresh control too. If the subscription method is unavailable (older engine), fall back to refetching every 3 s with `if_mtime_ms`.
+- Receipt: replace the last sentence with "The tile follows the file as it changes on disk." (Receipt first two lines unchanged.)
+- show_diff is unchanged (Refresh button), unless the orchestrator says otherwise.
+- Tests: Rust — watcher fires on write and on rename-replace, deleted/reappear, debounce coalesces, unsubscribe drops the watcher (use a temp dir; allow generous timeouts); UI — the scroll-anchor and changed-lines helpers as pure functions.
