@@ -2182,7 +2182,14 @@ mod tests {
                 "own write"
             );
         }
-        assert!(!a.mirror_dir().join(format!(".{}.tmp", names[1])).exists());
+        assert!(
+            fs::read_dir(a.mirror_dir()).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+            "no temp left in the mirror"
+        );
         assert_eq!(
             a.last_projected(&m.id),
             Some(sha256(&fs::read(a.mirror_dir().join(&names[1])).unwrap()))

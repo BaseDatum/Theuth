@@ -40,9 +40,8 @@ use std::time::Duration;
 use anyhow::Context as _;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hmac::{Hmac, KeyInit as _, Mac as _};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest as _, Sha256};
 use sqlx::Row as _;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 use zeroize::Zeroizing;
@@ -73,11 +72,26 @@ pub fn now_ms() -> u64 {
     platform::time::now_ms()
 }
 
-/// HMAC-SHA256 (RFC 2104).
+/// HMAC-SHA256 (RFC 2104) over `sha2`, the one hash the crate already carries.
 fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("any key length");
-    mac.update(msg);
-    mac.finalize().into_bytes().into()
+    let mut k0 = Zeroizing::new([0u8; 64]);
+    if key.len() > 64 {
+        let d: [u8; 32] = Sha256::digest(key).into();
+        k0[..32].copy_from_slice(&d);
+    } else {
+        k0[..key.len()].copy_from_slice(key);
+    }
+    let pad = |b: u8| Zeroizing::new(k0.iter().map(|k| k ^ b).collect::<Vec<u8>>());
+    let inner: [u8; 32] = Sha256::new()
+        .chain_update(&*pad(0x36))
+        .chain_update(msg)
+        .finalize()
+        .into();
+    Sha256::new()
+        .chain_update(&*pad(0x5c))
+        .chain_update(inner)
+        .finalize()
+        .into()
 }
 
 fn aad(id: &str) -> Vec<u8> {

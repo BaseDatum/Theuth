@@ -19,7 +19,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use genai::chat::{ChatFrameSink, FrameCtx, RawFrameRef};
-use platform::time::now_ms;
+pub(crate) use platform::time::now_ms;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 

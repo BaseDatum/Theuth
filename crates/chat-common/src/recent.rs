@@ -37,7 +37,7 @@ impl<K: Clone + Eq + Hash> RecentKeys<K> {
         if self.order.len() >= RECENT_KEYS
             && let Some(old) = self.order.pop_front()
         {
-            self.set.remove(&old);
+            self.set.remove::<K>(&old);
         }
         self.order.push_back(key.to_owned());
         self.set.insert(key.to_owned());

@@ -395,7 +395,13 @@ mod tests {
         );
         save(&dir, &entries).unwrap();
         assert_eq!(load(&dir).unwrap(), entries);
-        assert!(!dir.join(DIR).join("agents.yaml.tmp").exists());
+        assert!(
+            std::fs::read_dir(dir.join(DIR)).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp"))
+        );
         let cfg = entries["oc"].config();
         assert_eq!(cfg.command(), Path::new("/usr/local/bin/opencode"));
         assert_eq!(cfg.arguments(), ["acp"]);

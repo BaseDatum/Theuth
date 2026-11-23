@@ -14,6 +14,7 @@ pub use commands::{
     parse_broadcast, pending_id, receipt_text, short, synced, table, word,
 };
 pub use media::{extension_for, fmt_size, sniff};
+pub use port::agents;
 pub use recent::{RECENT_KEYS, RecentKeys};
 
 /// Reconnect backoff: `min(2^min(attempt, 6), 60)` seconds (09 §3.1).

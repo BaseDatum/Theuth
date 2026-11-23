@@ -25,8 +25,6 @@ tracing = { workspace = true }
 xcap = { workspace = true }
 enigo = { workspace = true }
 image = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 # 161: accessibility tree + headless ref actions (`a11y/`); one adapter crate per OS below.
 agent-desktop-core = { workspace = true }

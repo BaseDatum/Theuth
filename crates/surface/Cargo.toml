@@ -13,8 +13,6 @@ jsonrepair-rs = { workspace = true }
 tracing = { workspace = true }
 markdown = { workspace = true }
 unicode-width = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
 platform = { workspace = true }
 regex = { workspace = true }
 strsim = { workspace = true }
