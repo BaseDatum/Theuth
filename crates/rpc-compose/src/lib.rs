@@ -9,6 +9,8 @@ pub mod client_mirror;
 pub mod acp;
 /// Unified owner search and its tool adapter.
 pub mod search;
+/// 213: the Settings › Sharing hub (`sharing_list`, `sharing_revoke`).
+pub mod sharing;
 /// Owner-aware local topic intake and stream controls.
 pub mod topics;
 

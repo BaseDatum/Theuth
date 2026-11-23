@@ -16909,6 +16909,58 @@
         ],
         "type": "object"
       },
+      "event.document_2esharing.output.DocId": {
+        "description": "A document id: 26 lowercase base32 characters (§4.1). Bound documents (knowledge, artifact,\nmeeting note) render uuid v5 of the binding key under [`DocId::NAMESPACE`], so every engine of a\nmesh mints the same id for the same thing (69 §5); notes, which have no natural key, render uuid v7.",
+        "type": "string"
+      },
+      "event.document_2esharing.output.DocumentSharing": {
+        "description": "213 §4 bus event: `doc`'s members or links changed (create, revoke, join, role change); the\nSettings › Sharing hub refetches `sharing_list` on it. Wire shape `{ \"type\": \"DocumentSharing\", \"doc\": … }`.",
+        "properties": {
+          "doc": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.document_2esharing.output.DocId"
+              }
+            ],
+            "description": "Document."
+          },
+          "type": {
+            "const": "DocumentSharing",
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.document_2esharing.receiver.DocId": {
+        "description": "A document id: 26 lowercase base32 characters (§4.1). Bound documents (knowledge, artifact,\nmeeting note) render uuid v5 of the binding key under [`DocId::NAMESPACE`], so every engine of a\nmesh mints the same id for the same thing (69 §5); notes, which have no natural key, render uuid v7.",
+        "type": "string"
+      },
+      "event.document_2esharing.receiver.DocumentSharing": {
+        "description": "213 §4 bus event: `doc`'s members or links changed (create, revoke, join, role change); the\nSettings › Sharing hub refetches `sharing_list` on it. Wire shape `{ \"type\": \"DocumentSharing\", \"doc\": … }`.",
+        "properties": {
+          "doc": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.document_2esharing.receiver.DocId"
+              }
+            ],
+            "description": "Document."
+          },
+          "type": {
+            "const": "DocumentSharing",
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc",
+          "type"
+        ],
+        "type": "object"
+      },
       "event.document_2esources.output.DocId": {
         "description": "A document id: 26 lowercase base32 characters (§4.1). Bound documents (knowledge, artifact,\nmeeting note) render uuid v5 of the binding key under [`DocId::NAMESPACE`], so every engine of a\nmesh mints the same id for the same thing (69 §5); notes, which have no natural key, render uuid v7.",
         "type": "string"
@@ -110199,6 +110251,36 @@
         "format": "uuid",
         "type": "string"
       },
+      "method.rpc_2dcompose.input.SharingKind": {
+        "description": "What a [`SharingRow`] is.",
+        "oneOf": [
+          {
+            "const": "document_member",
+            "description": "Someone who joined a document (through a link). Id `<doc>|<member pub>`.",
+            "type": "string"
+          },
+          {
+            "const": "document_link",
+            "description": "A document's share link. Id `<doc>|<link id>`.",
+            "type": "string"
+          },
+          {
+            "const": "public_share",
+            "description": "A public share on the edge (210). Id: the share id.",
+            "type": "string"
+          },
+          {
+            "const": "export",
+            "description": "A chat or agent exported to contacts (183). Id: the export name.",
+            "type": "string"
+          },
+          {
+            "const": "contact",
+            "description": "A contact (183). Id: the contact name.",
+            "type": "string"
+          }
+        ]
+      },
       "method.rpc_2dcompose.output.AdvisorDefaults": {
         "description": "Live advisor defaults carried by `Info` beside `default_model` /\n`default_effort` (125 §6.5): the remembered pick and the three tuning keys.",
         "properties": {
@@ -112464,6 +112546,228 @@
         "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
         "type": "string"
+      },
+      "method.rpc_2dcompose.output.SharingKind": {
+        "description": "What a [`SharingRow`] is.",
+        "oneOf": [
+          {
+            "const": "document_member",
+            "description": "Someone who joined a document (through a link). Id `<doc>|<member pub>`.",
+            "type": "string"
+          },
+          {
+            "const": "document_link",
+            "description": "A document's share link. Id `<doc>|<link id>`.",
+            "type": "string"
+          },
+          {
+            "const": "public_share",
+            "description": "A public share on the edge (210). Id: the share id.",
+            "type": "string"
+          },
+          {
+            "const": "export",
+            "description": "A chat or agent exported to contacts (183). Id: the export name.",
+            "type": "string"
+          },
+          {
+            "const": "contact",
+            "description": "A contact (183). Id: the contact name.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.rpc_2dcompose.output.SharingList": {
+        "description": "`sharing_list` reply.",
+        "properties": {
+          "partial": {
+            "description": "Kinds asked for that could not be read.",
+            "items": {
+              "$ref": "#/components/schemas/method.rpc_2dcompose.output.SharingPartial"
+            },
+            "type": "array"
+          },
+          "rows": {
+            "description": "Rows, grouped by kind (documents, public shares, exports, contacts).",
+            "items": {
+              "$ref": "#/components/schemas/method.rpc_2dcompose.output.SharingRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows",
+          "partial"
+        ],
+        "type": "object"
+      },
+      "method.rpc_2dcompose.output.SharingPartial": {
+        "description": "A kind the list could not read: its plugin is off or not running, or it failed.",
+        "properties": {
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.rpc_2dcompose.output.SharingKind"
+              }
+            ],
+            "description": "Kind."
+          },
+          "reason": {
+            "description": "Plugin off / not running / error text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "method.rpc_2dcompose.output.SharingRevoked": {
+        "description": "`sharing_revoke` reply.",
+        "properties": {
+          "id": {
+            "description": "Id.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.rpc_2dcompose.output.SharingKind"
+              }
+            ],
+            "description": "Kind."
+          },
+          "pending": {
+            "description": "The edge has not confirmed yet (`share_stop`'s `edge_pending`).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "pending"
+        ],
+        "type": "object"
+      },
+      "method.rpc_2dcompose.output.SharingRow": {
+        "description": "One shared thing as the hub lists it.",
+        "properties": {
+          "audience": {
+            "description": "Human text: member name | \"anyone with the link\" | \"public\" | \"password\" | contact names.",
+            "type": "string"
+          },
+          "count": {
+            "description": "Members joined via a link | visitors | contacts granted an export | exports a contact may reach.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_ms": {
+            "description": "Created (or joined / paired), Unix ms.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "engine": {
+            "description": "Hosting machine name when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_ms": {
+            "description": "Expiry, Unix ms.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Id, per kind: `<doc>|<member pub>`, `<doc>|<link id>`, share id, export name, contact name.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.rpc_2dcompose.output.SharingKind"
+              }
+            ],
+            "description": "Kind."
+          },
+          "last_access_ms": {
+            "description": "Best effort; `None` when unknown.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "open": {
+            "description": "What the UI opens: doc id | session id | agent name | contact name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent": {
+            "description": "Doc id for `document_*` rows.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permission": {
+            "description": "Doc role | share access | export first-contact policy | contact first-contact.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revocable": {
+            "description": "`sharing_revoke` has something to do for it.",
+            "type": "boolean"
+          },
+          "state": {
+            "description": "`live|pending|offline|stopped` (share), `active|expired|revoked` (doc), `paused` (export),\n`blocked` (contact).",
+            "type": "string"
+          },
+          "title": {
+            "description": "Doc title | host+path | export name | contact name.",
+            "type": "string"
+          },
+          "url": {
+            "description": "Public share URL; `None` for doc links (the secret is shown only at creation).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "title",
+          "audience",
+          "permission",
+          "state",
+          "created_ms",
+          "expires_ms",
+          "last_access_ms",
+          "count",
+          "url",
+          "engine",
+          "parent",
+          "revocable",
+          "open"
+        ],
+        "type": "object"
       },
       "method.rpc_2dcompose.output.Source": {
         "description": "Who wrote a concept (frontmatter `source`; absent for hand-written files).",
@@ -114821,6 +115125,219 @@
         "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
         "type": "string"
+      },
+      "method.rpc_2dcompose.receiver.SharingKind": {
+        "description": "What a [`SharingRow`] is.",
+        "oneOf": [
+          {
+            "const": "document_member",
+            "description": "Someone who joined a document (through a link). Id `<doc>|<member pub>`.",
+            "type": "string"
+          },
+          {
+            "const": "document_link",
+            "description": "A document's share link. Id `<doc>|<link id>`.",
+            "type": "string"
+          },
+          {
+            "const": "public_share",
+            "description": "A public share on the edge (210). Id: the share id.",
+            "type": "string"
+          },
+          {
+            "const": "export",
+            "description": "A chat or agent exported to contacts (183). Id: the export name.",
+            "type": "string"
+          },
+          {
+            "const": "contact",
+            "description": "A contact (183). Id: the contact name.",
+            "type": "string"
+          }
+        ]
+      },
+      "method.rpc_2dcompose.receiver.SharingList": {
+        "description": "`sharing_list` reply.",
+        "properties": {
+          "partial": {
+            "description": "Kinds asked for that could not be read.",
+            "items": {
+              "$ref": "#/components/schemas/method.rpc_2dcompose.receiver.SharingPartial"
+            },
+            "type": "array"
+          },
+          "rows": {
+            "description": "Rows, grouped by kind (documents, public shares, exports, contacts).",
+            "items": {
+              "$ref": "#/components/schemas/method.rpc_2dcompose.receiver.SharingRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows",
+          "partial"
+        ],
+        "type": "object"
+      },
+      "method.rpc_2dcompose.receiver.SharingPartial": {
+        "description": "A kind the list could not read: its plugin is off or not running, or it failed.",
+        "properties": {
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.rpc_2dcompose.receiver.SharingKind"
+              }
+            ],
+            "description": "Kind."
+          },
+          "reason": {
+            "description": "Plugin off / not running / error text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "method.rpc_2dcompose.receiver.SharingRevoked": {
+        "description": "`sharing_revoke` reply.",
+        "properties": {
+          "id": {
+            "description": "Id.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.rpc_2dcompose.receiver.SharingKind"
+              }
+            ],
+            "description": "Kind."
+          },
+          "pending": {
+            "description": "The edge has not confirmed yet (`share_stop`'s `edge_pending`).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "pending"
+        ],
+        "type": "object"
+      },
+      "method.rpc_2dcompose.receiver.SharingRow": {
+        "description": "One shared thing as the hub lists it.",
+        "properties": {
+          "audience": {
+            "description": "Human text: member name | \"anyone with the link\" | \"public\" | \"password\" | contact names.",
+            "type": "string"
+          },
+          "count": {
+            "description": "Members joined via a link | visitors | contacts granted an export | exports a contact may reach.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_ms": {
+            "description": "Created (or joined / paired), Unix ms.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "engine": {
+            "description": "Hosting machine name when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_ms": {
+            "description": "Expiry, Unix ms.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Id, per kind: `<doc>|<member pub>`, `<doc>|<link id>`, share id, export name, contact name.",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.rpc_2dcompose.receiver.SharingKind"
+              }
+            ],
+            "description": "Kind."
+          },
+          "last_access_ms": {
+            "description": "Best effort; `None` when unknown.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "open": {
+            "description": "What the UI opens: doc id | session id | agent name | contact name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent": {
+            "description": "Doc id for `document_*` rows.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "permission": {
+            "description": "Doc role | share access | export first-contact policy | contact first-contact.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revocable": {
+            "description": "`sharing_revoke` has something to do for it.",
+            "type": "boolean"
+          },
+          "state": {
+            "description": "`live|pending|offline|stopped` (share), `active|expired|revoked` (doc), `paused` (export),\n`blocked` (contact).",
+            "type": "string"
+          },
+          "title": {
+            "description": "Doc title | host+path | export name | contact name.",
+            "type": "string"
+          },
+          "url": {
+            "description": "Public share URL; `None` for doc links (the secret is shown only at creation).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "title",
+          "audience",
+          "state",
+          "revocable"
+        ],
+        "type": "object"
       },
       "method.rpc_2dcompose.receiver.Source": {
         "description": "Who wrote a concept (frontmatter `source`; absent for hand-written files).",
@@ -148069,6 +148586,83 @@
       "x-theuth-owner": "share"
     },
     {
+      "name": "sharing_list",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "kinds",
+          "required": false,
+          "schema": {
+            "items": {
+              "$ref": "#/components/schemas/method.rpc_2dcompose.input.SharingKind"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.rpc_2dcompose.output.SharingList"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.rpc_2dcompose.receiver.SharingList"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "rpc-compose"
+    },
+    {
+      "name": "sharing_revoke",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.rpc_2dcompose.input.SharingKind"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "sub",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.rpc_2dcompose.output.SharingRevoked"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.rpc_2dcompose.receiver.SharingRevoked"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "rpc-compose"
+    },
+    {
       "name": "shutdown",
       "paramStructure": "by-position",
       "params": [],
@@ -150985,6 +151579,16 @@
           "$ref": "#/components/schemas/event.document_2echanged.output.DocumentChanged"
         },
         "topic": "document.changed",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.document_2esharing.receiver.DocumentSharing"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.document_2esharing.output.DocumentSharing"
+        },
+        "topic": "document.sharing",
         "version": 1
       },
       {

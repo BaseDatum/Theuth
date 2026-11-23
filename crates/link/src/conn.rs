@@ -1057,6 +1057,18 @@ mod tests {
         assert!(guest_gate(b"not json").is_none());
     }
 
+    /// 213 §3: the Sharing hub's methods are owner-only: never in `GUEST_METHODS`, refused at the gate.
+    #[test]
+    fn guest_gate_refuses_sharing_hub_methods() {
+        for m in ["sharing_list", "sharing_revoke"] {
+            assert!(!GUEST_METHODS.contains(&m), "{m}");
+            let req = format!(r#"{{"jsonrpc":"2.0","id":7,"method":"{m}","params":[]}}"#);
+            let refused = guest_gate(req.as_bytes()).expect(m);
+            let v: serde_json::Value = serde_json::from_str(refused.get()).unwrap();
+            assert_eq!(v["error"]["code"], -32601, "{m}");
+        }
+    }
+
     /// 171 §13.2: guests read a note's replicated latest outputs, and nothing else of cells —
     /// every press, kernel and full-output method stays off the guest list.
     #[test]

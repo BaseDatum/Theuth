@@ -866,6 +866,56 @@ impl Message<MembersOf> for DocumentActor {
     }
 }
 
+/// One document of [`SharedDocs`]: its sharing as this engine holds it (links without their hash).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedDoc {
+    /// Document.
+    pub doc: DocId,
+    /// Title.
+    pub title: String,
+    /// Members and links.
+    pub sharing: Members,
+}
+
+/// `ask` → `Result<Vec<SharedDoc>, String>` (213 §3 `sharing_list`): every live document with
+/// members or links, newest update first, served on any engine: the open copy when loaded, else
+/// `meta.json` (mirrored meta on a non-serving engine, eventually consistent). Owner only (rpc).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SharedDocs;
+
+impl Message<SharedDocs> for DocumentActor {
+    type Reply = Result<Vec<SharedDoc>, String>;
+
+    async fn handle(&mut self, _: SharedDocs, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let ids = self.store.shared().await.map_err(|e| format!("{e:#}"))?;
+        let mut out = Vec::with_capacity(ids.len());
+        for doc in ids {
+            let meta = match self.open.get(&doc) {
+                Some(o) => o.meta.clone(),
+                None => match self.store.read_meta(&doc) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::debug!(doc = %doc, error = %e, "sharing list: meta.json unreadable");
+                        continue;
+                    }
+                },
+            };
+            if meta.members.is_empty() && meta.links.is_empty() {
+                continue;
+            }
+            out.push(SharedDoc {
+                doc,
+                title: meta.title,
+                sharing: Members {
+                    members: meta.members,
+                    links: meta.links.iter().map(ShareLink::public).collect(),
+                },
+            });
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

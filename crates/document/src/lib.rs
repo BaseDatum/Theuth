@@ -79,7 +79,8 @@ pub use note_cells::{CheckCells, CodeBlocks, reader_markdown};
 pub use notebook::*;
 pub use relay::{CreateReq, HandbackReply};
 pub use share::{
-    Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName, proof,
+    Join, JoinError, LinkCreate, LinkRevoke, MemberRevoke, MemberSet, MembersOf, SetName,
+    SharedDoc, SharedDocs, proof,
     secret_hash,
 };
 pub use store::DocStats;
