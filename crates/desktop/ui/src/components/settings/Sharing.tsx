@@ -1,18 +1,20 @@
-// 210 §7.4 item 4, §7.6, §9.1, D22: Settings › Network › Sharing. This machine's switch (the share plugin's store,
-// `share_settings_*`, not a config flag), the edge and its connection, the name, the mesh's shares with Stop and Stop
-// all, defaults, terms, history and the disclosures.
+// 210 §7.4 item 4, §7.6, §9.1, D22: Settings › Sharing. This machine's switch (the share plugin's store,
+// `share_settings_*`, not a config flag), the edge and its connection, the name, a publish form, the mesh's shares with
+// Stop and Stop all, defaults, terms, history and the disclosures.
 
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { stopAllShares, stopShare } from '@/components/public-share/actions'
-import { type EdgeState, type ShareSettings, shareCall, useShareMethod } from '@/components/public-share/wire'
+import { PasswordOnce, useSharePassword } from '@/components/public-share/PasswordOnce'
+import { type EdgeState, type Expiry, type PublishArgs, reserveName, shareApi, useShareMethod } from '@/components/public-share/wire'
 import { Empty, Row, Section, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { openExternal } from '@/lib/platform'
-import { activeShares, sourceLabel, stateLabel, timeLeft, usePublicShares } from '@/store/public-shares'
+import { useConnection } from '@/store/connection'
+import { activeShares, edgePendingLabel, sourceLabel, stateLabel, timeLeft, usePublicShares } from '@/store/public-shares'
 
 const SETTINGS_KEY = ['share-settings'] as const
 
@@ -40,11 +42,13 @@ export function edgeStateLabel(s: EdgeState): string {
 
 export function SharingTab() {
   const supported = useShareMethod('share_settings_get')
-  const settings = useQuery({ enabled: supported, queryKey: SETTINGS_KEY, queryFn: () => shareCall('share_settings_get') })
-  const setEnabled = useAction((on: boolean) => shareCall('share_settings_set', on, null), {
-    onSuccess: (s: ShareSettings) => toast.message(s.enabled ? 'Public sharing is on for this machine' : 'Public sharing is off; this machine’s shares stopped'),
+  const settings = useQuery({ enabled: supported, queryKey: SETTINGS_KEY, queryFn: () => shareApi().share_settings_get() })
+  const setEnabled = useAction((on: boolean) => shareApi().share_settings_set(on), {
+    onSuccess: (s) => toast.message(s.enabled ? 'Public sharing is on for this machine' : 'Public sharing is off; this machine’s shares stopped'),
     keys: [SETTINGS_KEY],
   })
+  const approvalsOn = useConnection((s) => s.info?.approvals.global ?? null)
+  const edgePending = usePublicShares((s) => s.edgePending)
   const shares = usePublicShares((s) => s.shares)
   const traffic = usePublicShares((s) => s.traffic)
   const status = usePublicShares((s) => s.status)
@@ -81,11 +85,15 @@ export function SharingTab() {
             This machine’s clock is {Math.round(Math.abs(status.clock_off_ms) / 60_000)} min off the edge’s; sharing may fail until it is corrected.
           </p>
         )}
+        <ApprovalsOffWarning sharing={enabled} approvals={approvalsOn} />
       </Section>
 
       <NameSection />
 
+      {enabled && <PublishForm />}
+
       <Section title="Live shares" actions={active.length > 0 && <Button size="sm" variant="destructive" onClick={() => void stopAllShares()}>Stop all</Button>}>
+        {edgePending !== null && <p className="py-2 text-sm text-danger">{edgePendingLabel(edgePending)}</p>}
         {active.length === 0 ? (
           <Empty>Nothing is public.</Empty>
         ) : (
@@ -153,8 +161,8 @@ function NameSection() {
   const [name, setName] = useState('')
   const [checked, setChecked] = useState<{ name: string; available: boolean; reason: string | null } | null>(null)
   const canReserve = useShareMethod('share_names_reserve')
-  const check = useAction((n: string) => shareCall('share_names_check', n), { onSuccess: (r, n) => setChecked({ name: n, ...r }) })
-  const reserve = useAction((n: string) => shareCall('share_names_reserve', n), { onSuccess: (_r, n) => toast.success(`Reserved ${n}`) })
+  const check = useAction((n: string) => shareApi().share_names_check(n), { onSuccess: (r, n) => setChecked({ name: n, ...r }) })
+  const reserve = useAction((n: string) => reserveName(n), { onSuccess: (_r, n) => toast.success(`Reserved ${n}`) })
   const trimmed = name.trim().toLowerCase()
   const ok = checked?.name === trimmed && checked.available
   return (
@@ -182,7 +190,7 @@ function NameSection() {
 
 function TermsRow({ edge, url, rev }: { edge: string; url: string; rev: string }) {
   const [ok, setOk] = useState(false)
-  const accept = useAction(() => shareCall('share_terms_accept', edge, rev), {
+  const accept = useAction(() => shareApi().share_terms_accept(edge, rev), {
     onSuccess: () => {
       usePublicShares.getState().askTerms(null)
       toast.success('Terms accepted')
@@ -204,5 +212,70 @@ function TermsRow({ edge, url, rev }: { edge: string; url: string; rev: string }
         Accept
       </Button>
     </Row>
+  )
+}
+
+/** Settings › Sharing with sharing on and `tools.approvals` off: publishing still asks (human-only), nothing else does. */
+export function ApprovalsOffWarning({ sharing, approvals }: { sharing: boolean; approvals: boolean | null }) {
+  if (!sharing || approvals !== false) return null
+  return (
+    <p role="alert" data-approvals-off="" className="py-2 text-sm text-danger">
+      Approvals are off. Publishing still asks you, but other tools run without asking.
+    </p>
+  )
+}
+
+const EXPIRIES: readonly [Expiry, string][] = [
+  ['1h', '1 hour'],
+  ['8h', '8 hours'],
+  ['24h', '24 hours'],
+  ['7d', '7 days'],
+]
+
+/** `share_publish` args from the form: a number is a local port, anything else a folder. */
+export function publishArgs(source: string, expiry: Expiry, password: boolean): PublishArgs | null {
+  const s = source.trim()
+  if (!s) return null
+  const port = /^\d+$/.test(s) ? Number(s) : null
+  return { source: port !== null ? { port } : { dir: s }, expiry, access: password ? 'password' : 'public' }
+}
+
+/** Publish from Settings: the engine raises an owner-only approval (FIX-A B1) and answers once it is allowed. A password
+ * share's password is then shown once, from `share_password`. */
+function PublishForm() {
+  const [source, setSource] = useState('')
+  const [expiry, setExpiry] = useState<Expiry>('8h')
+  const [password, setPassword] = useState(false)
+  const [published, setPublished] = useState<{ id: string; url: string; password: string | null } | null>(null)
+  const publish = useAction((a: PublishArgs) => shareApi().share_publish(a), {
+    onSuccess: (p) => {
+      setPublished({ id: p.share.id, url: p.share.url, password: p.share.access === 'password' ? p.password : null })
+      toast.success(`Published ${p.share.url}`)
+    },
+  })
+  const [shown, hide] = useSharePassword(published && published.password !== null ? published.id : null, published?.password)
+  const args = publishArgs(source, expiry, password)
+  return (
+    <Section title="Publish">
+      <Row label="Source" description="A local port (5173) or a folder to serve. You approve the publish in the approval that appears." wide>
+        <Input value={source} placeholder="5173 or /path/to/site" className="max-w-64" onChange={(e) => setSource(e.target.value)} aria-label="Source" />
+        <select aria-label="Expiry" value={expiry} onChange={(e) => setExpiry(e.target.value as Expiry)} className="h-8 rounded-md border border-border-subtle bg-transparent px-2 text-sm">
+          {EXPIRIES.map(([v, l]) => (
+            <option key={v} value={v}>
+              {l}
+            </option>
+          ))}
+        </select>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={password} onChange={(e) => setPassword(e.target.checked)} />
+          Password
+        </label>
+        <Button size="sm" variant="destructive" disabled={!args || publish.isPending} onClick={() => args && publish.mutate(args)}>
+          {publish.isPending ? 'Waiting for approval…' : 'Publish'}
+        </Button>
+      </Row>
+      {published && <p className="pb-1 font-mono text-sm wrap-anywhere">{published.url}</p>}
+      {shown && <PasswordOnce password={shown} onDone={hide} />}
+    </Section>
   )
 }

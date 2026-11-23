@@ -17,24 +17,31 @@ export type PublicSharesState = {
   /** `share_list` answered once on this connection. */
   loaded: boolean
   terms: TermsAsk | null
+  /** The last Stop all's `edge_pending`: the mesh-wide stop the edge has not taken yet. The engine sends it again at
+   * its next welcome, so it clears when the edge connection (re)attaches. */
+  edgePending: string | null
   replace(list: readonly Share[]): void
   changed(share: Share): void
   setTraffic(t: ShareTraffic): void
   setStatus(s: ShareStatus): void
   askTerms(t: TermsAsk | null): void
+  setEdgePending(why: string | null): void
   reset(): void
 }
 
-const EMPTY = { shares: {}, traffic: {}, status: null, loaded: false, terms: null }
+const EMPTY = { shares: {}, traffic: {}, status: null, loaded: false, terms: null, edgePending: null }
 
 export const usePublicShares = create<PublicSharesState>()((set) => ({
   ...EMPTY,
   replace: (list) => set({ shares: Object.fromEntries(list.map((s) => [s.id, s])), loaded: true }),
   changed: (share) => set((st) => ({ shares: { ...st.shares, [share.id]: share } })),
   setTraffic: (t) => set((st) => ({ traffic: { ...st.traffic, [t.id]: t } })),
-  setStatus: (status) => set({ status }),
+  setStatus: (status) =>
+    set((st) => ({ status, edgePending: status.state.state === 'attached' && st.status?.state.state !== 'attached' ? null : st.edgePending })),
   askTerms: (terms) => set({ terms }),
-  reset: () => set(EMPTY),
+  setEdgePending: (edgePending) => set({ edgePending }),
+  // A webview reconnect is not an edge reattach: the pending edge stop stays until the edge attaches.
+  reset: () => set((st) => ({ ...EMPTY, edgePending: st.edgePending })),
 }))
 
 /** Reachable now or about to be: `live`, `offline` (comes back by itself) and `pending` (goes live when its certificate lands). */
@@ -66,6 +73,11 @@ export function stripLabel(sum: Summary): string | null {
   if (sum.pending > 0) parts.push(`${sum.pending} pending`)
   if (sum.visitors !== null) parts.push(sum.visitors === 1 ? '1 visitor' : `${sum.visitors} visitors`)
   return parts.join(' · ')
+}
+
+/** What the strip and the cards say while a Stop all has not reached the edge: not "stopped" (FIX-A M7). */
+export function edgePendingLabel(why: string): string {
+  return `Stopped here · the edge stop is pending and will be retried (${why})`
 }
 
 /** Active shares, newest first. */

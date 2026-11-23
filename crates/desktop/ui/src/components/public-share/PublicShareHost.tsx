@@ -1,19 +1,16 @@
-// 210 §7.4: the side effects behind `store/public-shares` — seed by `share_list` on every connection, follow the
-// `share.*@1` topics (or poll `share_list` while the generated bindings do not route them yet), keep the tray item in
-// step, answer the tray's Stop, and post "Live: <url>" / "First visitor on <host>" when the window is hidden (item 7).
+// 210 §7.4: the side effects behind `store/public-shares` — seed by `share_list` on every open connection, follow the
+// `share.*@1` topics, keep the tray item in step, take the tray's Stop all result (the shell runs it,
+// `crates/desktop/src/share.rs`), and post "Live: <url>" / "First visitor on <host>" when the window is hidden (item 7).
 // Mounted once, in the main window's shell.
 
 import { useEffect } from 'react'
-import { loadShares, stopAllShares } from '@/components/public-share/actions'
-import { SHARE_TOPICS, type ShareChanged, type ShareStatus, type ShareTraffic, onShareTopic } from '@/components/public-share/wire'
+import { applyStopped, loadShares } from '@/components/public-share/actions'
 import { notifyIfHidden } from '@/lib/notify'
 import { isDesktop } from '@/lib/platform'
-import { onShareStopAll, shareTray } from '@/lib/tauri'
+import { onShareStoppedAll, shareTray } from '@/lib/tauri'
 import { useConnection } from '@/store/connection'
 import { firstVisitors, newlyLive, summarize, usePublicShares } from '@/store/public-shares'
-
-/** While `share.changed@1` is not routed by the bindings: how often `share_list` refreshes the store. */
-export const POLL_MS = 10_000
+import { onTopic } from '@/store/sessions'
 
 export function PublicShareHost() {
   const client = useConnection((s) => s.client)
@@ -21,20 +18,16 @@ export function PublicShareHost() {
 
   useEffect(() => {
     if (!client || !open) return
-    const st = usePublicShares.getState()
-    st.reset()
-    const load = () => void loadShares().catch(() => undefined)
-    load()
+    usePublicShares.getState().reset()
+    // Listen first, then seed: a change between the two lands after the baseline or in it, never lost.
     const offs = [
-      onShareTopic<ShareChanged>(SHARE_TOPICS.changed, (e) => usePublicShares.getState().changed(e.share)),
-      onShareTopic<ShareTraffic>(SHARE_TOPICS.traffic, (e) => usePublicShares.getState().setTraffic(e)),
-      onShareTopic<ShareStatus>(SHARE_TOPICS.status, (e) => usePublicShares.getState().setStatus(e)),
+      onTopic('share.changed@1', (e) => usePublicShares.getState().changed(e.share)),
+      onTopic('share.traffic@1', (e) => usePublicShares.getState().setTraffic(e)),
+      onTopic('share.status@1', (e) => usePublicShares.getState().setStatus(e)),
     ]
-    // TODO(210-M1, WIRE1): drop the poll once `share.changed@1` is in the generated `TOPICS`.
-    const timer = offs[0] === null ? window.setInterval(load, POLL_MS) : 0
+    void loadShares().catch(() => undefined)
     return () => {
-      for (const off of offs) off?.()
-      if (timer) window.clearInterval(timer)
+      for (const off of offs) off()
     }
   }, [client, open])
 
@@ -58,7 +51,7 @@ export function PublicShareHost() {
         if (s) void notifyIfHidden(`First visitor on ${s.host}`, s.url)
       }
     })
-    const offTray = onShareStopAll(() => void stopAllShares())
+    const offTray = onShareStoppedAll((r) => applyStopped('all', r))
     return () => {
       offStore()
       void offTray.then((f) => f())

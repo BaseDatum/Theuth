@@ -5,12 +5,13 @@
 import { Copy, ExternalLink, Globe } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
+import { PasswordOnce, useSharePassword } from '@/components/public-share/PasswordOnce'
 import { stopShare } from '@/components/public-share/actions'
-import { type Share, shareCall } from '@/components/public-share/wire'
+import { type Share, shareApi } from '@/components/public-share/wire'
 import { Button } from '@/components/ui/button'
 import { openExternal } from '@/lib/platform'
 import type { Entry } from '@/store/sessions'
-import { type TermsAsk, parseTermsError, sourceLabel, stateLabel, timeLeft, usePublicShares } from '@/store/public-shares'
+import { type TermsAsk, edgePendingLabel, parseTermsError, sourceLabel, stateLabel, timeLeft, usePublicShares } from '@/store/public-shares'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 
@@ -35,6 +36,9 @@ export function SharePublishCard({ tool, session }: { tool: Tool; session: strin
   const terms = tool.result?.isError ? parseTermsError(tool.result.output) : null
   const now = useNow(share?.state === 'live' || share?.state === 'offline')
   const running = !tool.interrupted && (tool.pending || !tool.result)
+  // The tool output never carries the password (the model must not see it): the owner gets it once by `share_password`.
+  const [password, hidePassword] = useSharePassword(share && share.access === 'password' && share.state !== 'stopped' ? share.id : null)
+  const edgePending = usePublicShares((s) => s.edgePending)
 
   if (terms) return <TermsCard terms={terms} />
   if (running) return <Frame title="Publishing to the public internet…" />
@@ -80,6 +84,8 @@ export function SharePublishCard({ tool, session }: { tool: Tool; session: strin
           )}
         </dl>
       )}
+      {password && <PasswordOnce password={password} onDone={hidePassword} />}
+      {share && !active && edgePending !== null && <p className="mt-1 text-xs text-danger">{edgePendingLabel(edgePending)}</p>}
       {share && active && (
         <div className="mt-2 flex gap-2">
           {/* Never gated (§7.4). TODO(210-M2): Extend (re-asks) once `share_extend` exists. */}
@@ -111,7 +117,7 @@ function TermsCard({ terms }: { terms: TermsAsk }) {
   useEffect(() => usePublicShares.getState().askTerms(terms), [terms.edge, terms.url, terms.rev])
   const accept = async () => {
     try {
-      await shareCall('share_terms_accept', terms.edge, terms.rev)
+      await shareApi().share_terms_accept(terms.edge, terms.rev)
       setDone(true)
       usePublicShares.getState().askTerms(null)
       toast.success('Terms accepted: ask again to publish')
