@@ -2251,7 +2251,7 @@ mod tests {
     #[tokio::test]
     async fn the_agent_publish_tool_still_needs_the_approval_row() {
         use ::tools::Tool as _;
-        assert!(crate::tools::SharePublishTool::HUMAN_ONLY);
+        const { assert!(crate::tools::SharePublishTool::HUMAN_ONLY) };
         let (d, e) = engine(8).await;
         e.store.set_enabled(true).await.unwrap();
         let tool = crate::tools::SharePublishTool::new(e.clone());
