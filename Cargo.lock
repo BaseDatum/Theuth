@@ -2520,6 +2520,7 @@ dependencies = [
  "futures-io",
  "futures-lite",
  "piper",
+ "tracing",
 ]
 
 [[package]]
@@ -8889,6 +8890,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 
 [[package]]
+name = "hickory-net"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c480823ed7c2c5d0f09c41020cb6b7c28029ce60ec42dc942158dcf22f8e0a4d"
+dependencies = [
+ "async-trait",
+ "cfg-if",
+ "data-encoding",
+ "futures-channel",
+ "futures-io",
+ "futures-util",
+ "hickory-proto",
+ "idna",
+ "ipnet",
+ "jni 0.22.4",
+ "rand 0.10.3",
+ "thiserror 2.0.21",
+ "tinyvec",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "hickory-proto"
 version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8899,12 +8924,39 @@ dependencies = [
  "ipnet",
  "jni 0.22.4",
  "once_cell",
+ "prefix-trie",
  "rand 0.10.3",
  "ring",
  "thiserror 2.0.21",
  "tinyvec",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "hickory-resolver"
+version = "0.26.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f3da5255c95d5a716857d54b5b8f4e8d67c3484d3beaaaae2ce25063b3ba981"
+dependencies = [
+ "cfg-if",
+ "futures-util",
+ "hickory-net",
+ "hickory-proto",
+ "ipconfig",
+ "ipnet",
+ "jni 0.22.4",
+ "moka",
+ "ndk-context",
+ "once_cell",
+ "parking_lot",
+ "rand 0.10.3",
+ "resolv-conf",
+ "smallvec",
+ "system-configuration 0.7.0",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -9234,6 +9286,7 @@ dependencies = [
  "hyper-util",
  "rustls",
  "rustls-native-certs",
+ "rustls-platform-verifier 0.7.1",
  "tokio",
  "tokio-rustls",
  "tower-service",
@@ -9789,6 +9842,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "instant-acme"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f05ad37c421b962354c358d347d4a6130151df9407978372d3ad7f0c8f71a64"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "bytes",
+ "http",
+ "http-body",
+ "http-body-util",
+ "httpdate",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "x509-parser",
+]
+
+[[package]]
 name = "interpolator"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9893,6 +9974,9 @@ name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "ipnetwork"
@@ -12921,6 +13005,23 @@ dependencies = [
  "ctutils",
  "hybrid-array",
  "num-traits",
+]
+
+[[package]]
+name = "moka"
+version = "0.12.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4293f18e7567a1caf3c584855554377025c65e0aa445344d04171f5ad63d19b9"
+dependencies = [
+ "crossbeam-channel",
+ "crossbeam-epoch",
+ "crossbeam-utils",
+ "equivalent",
+ "parking_lot",
+ "portable-atomic",
+ "smallvec",
+ "tagptr",
+ "uuid",
 ]
 
 [[package]]
@@ -16375,6 +16476,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 
 [[package]]
+name = "prefix-trie"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cf6e3177f0684016a5c209b00882e15f8bdd3f3bb48f0491df10cd102d0c6e7"
+dependencies = [
+ "either",
+ "ipnet",
+ "num-traits",
+]
+
+[[package]]
 name = "presage"
 version = "0.8.0-dev"
 source = "git+https://github.com/whisperfish/presage?rev=aeaedf99babebae2dbc6b86bca797807d4cd9fda#aeaedf99babebae2dbc6b86bca797807d4cd9fda"
@@ -17713,6 +17825,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "resolv-conf"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
+
+[[package]]
 name = "resvg"
 version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18019,6 +18137,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sessionsync",
+ "share",
  "signal",
  "slack",
  "talk",
@@ -20084,6 +20203,7 @@ dependencies = [
  "jsonrpsee",
  "kameo",
  "libc",
+ "mesh",
  "mime_guess",
  "parking_lot",
  "platform",
@@ -20096,6 +20216,7 @@ dependencies = [
  "runtime",
  "rustls",
  "schemars 1.2.3",
+ "secrets",
  "serde",
  "serde_json",
  "share-proto",
@@ -20119,20 +20240,24 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "backon",
  "clap",
  "dashmap",
  "figment",
  "futures",
  "governor",
+ "hickory-resolver",
  "http-body-util",
  "humantime",
  "hyper",
  "hyper-util",
+ "instant-acme",
  "iroh",
  "libc",
  "platform",
  "ppp",
  "rand 0.10.3",
+ "rcgen",
  "rustls",
  "serde",
  "serde_json",
@@ -20140,10 +20265,14 @@ dependencies = [
  "share-proto",
  "sqlx",
  "tempfile",
+ "time",
  "tokio",
  "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+ "x509-parser",
+ "zone-update",
 ]
 
 [[package]]
@@ -21727,6 +21856,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tagptr"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
+
+[[package]]
 name = "talk"
 version = "2.22.2"
 dependencies = [
@@ -22601,6 +22736,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sessionsync",
+ "share",
  "signal",
  "slack",
  "surface",
@@ -24597,6 +24733,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cde93ff05758a36a851a398a772b0b79a82fbe3c186a46f2696baaeaf84c966b"
 dependencies = [
  "base64 0.23.1",
+ "brotli-decompressor 5.0.3",
  "der",
  "flate2",
  "log",
@@ -27338,6 +27475,23 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zone-update"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77ef78cef8ea5a216fa8ddbef691ae18c2fc611093b109e49687eda00b13ffdb"
+dependencies = [
+ "async-trait",
+ "blocking",
+ "cfg-if",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+ "ureq 3.5.0",
+]
 
 [[package]]
 name = "zoneinfo64"
