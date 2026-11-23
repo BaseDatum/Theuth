@@ -31,6 +31,9 @@ vi.mock('@/lib/tauri', () => ({ isTauri: () => shell.tauri }))
 vi.mock('@/lib/pages', () => ({ pagePut: (call: string, doc: string) => shell.put(call, doc), pageDrop: async () => {} }))
 const toasts = vi.hoisted(() => [] as string[])
 vi.mock('sonner', () => ({ toast: Object.assign((m: string) => void toasts.push(m), { error: (m: string) => void toasts.push(m) }) }))
+/** The mesh the card reads to name an agent browser's engine (`obscura:studio` -> "studio"); no QueryClient is mounted. */
+const mesh = vi.hoisted(() => ({ current: { self_id: 'me', self_name: 'laptop', peers: [{ id: 'studio', name: 'studio', addrs: [], reachable: true, last_seen_ms: 0 }] } as unknown }))
+vi.mock('@/components/tasks/queries', async (original) => ({ ...(await original<object>()), useMesh: () => ({ data: mesh.current }) }))
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 const SECRET = 'hunter2-correct-horse'
