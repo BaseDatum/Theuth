@@ -1052,8 +1052,10 @@ mod tests {
         let data_dir = PathBuf::from(std::env::var("THEUTH_MLX_DATA_DIR").unwrap());
         let clip = std::fs::read(std::env::var("THEUTH_MLX_CLIP").unwrap()).unwrap();
         let pcm: Vec<f32> = clip
-            .chunks_exact(2)
-            .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| f32::from(i16::from_le_bytes(*b)) / 32768.0)
             .collect();
         let m = Mlx::new(&data_dir, Duration::ZERO);
         let t = Instant::now();

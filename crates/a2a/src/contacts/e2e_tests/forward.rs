@@ -285,6 +285,9 @@ async fn a_call_for_a_session_owned_elsewhere_is_carried_to_its_owner() {
     );
     assert!(seen.lock().is_empty(), "never carried");
 
+    // C's calls share one per-contact token bucket (10/s, burst 10; `server.rs`), and the ten calls
+    // above plus a background card/sessions refetch have drained it; let it refill.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
     // An owner that never answers: offline at the forward's deadline, before C's own 30 s.
     *answers.lock() = VecDeque::from([Answer::Silent]);
     let at = std::time::Instant::now();

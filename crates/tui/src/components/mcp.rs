@@ -21,6 +21,7 @@ pub(crate) struct Menu {
     pub(crate) pending: Option<Target>,
 }
 #[derive(Clone, Debug)]
+#[expect(clippy::large_enum_variant, reason = "The draft moves into an already boxed effect.")]
 pub(crate) enum Request {
     ListMcp(Option<SessionId>), McpStatus,
     SetGate { server: String, tool: Option<String>, gate: Option<Gate>, session: Option<SessionId> },

@@ -2,7 +2,7 @@ use crate as talk;
 use agent::{Agents, GetPolishModel};
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
-use rpc_core::{ask, send, Server};
+use rpc_core::{Server, ask, send};
 use talk::rpc_support::dictation;
 
 /// Hub RPC methods owned by this plugin.
@@ -26,7 +26,6 @@ pub trait TalkHubApi {
 
 #[async_trait]
 impl TalkHubApiServer for Server {
-
     async fn voice_settings(&self) -> RpcResult<voice::VoiceSettings> {
         let mut settings = send(&dictation()?, voice::CurrentSettings).await?;
         // The live slot (`set_polish_model`), not the one read at startup.
@@ -47,11 +46,14 @@ impl TalkHubApiServer for Server {
 
     async fn voice_mlx_download(&self) -> RpcResult<voice::mlx::MlxState> {
         let data_dir = self.rt.data_dir.clone();
-        match voice::mlx::state(&data_dir) {
-            s @ (voice::mlx::MlxState::Unavailable { .. }
-            | voice::mlx::MlxState::Ready
-            | voice::mlx::MlxState::Downloading { .. }) => return Ok(s),
-            _ => {}
+        let state = voice::mlx::state(&data_dir);
+        if matches!(
+            state,
+            voice::mlx::MlxState::Unavailable { .. }
+                | voice::mlx::MlxState::Ready
+                | voice::mlx::MlxState::Downloading { .. }
+        ) {
+            return Ok(state);
         }
         tokio::spawn(async move {
             let _ = voice::mlx::install(&data_dir).await;

@@ -111,6 +111,8 @@ BUNDLE_DIR="target/release/bundle"
 DIST="target/release/dist"
 # shellcheck source=lib/s3-env.sh
 source "$ROOT/scripts/lib/s3-env.sh"   # ENDPOINT, s3_export_aws_env, s3_have_creds
+# shellcheck source=lib/common.sh
+source "$ROOT/scripts/lib/common.sh"   # need
 BUCKET="${THEUTH_S3_BUCKET:-theuth}"
 DRY_RUN="${THEUTH_S3_DRY_RUN:-0}"
 DEST="s3://${BUCKET}/staging/${VERSION}/"
