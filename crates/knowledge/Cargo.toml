@@ -35,7 +35,6 @@ ts-rs = { workspace = true, optional = true }
 [dev-dependencies]
 figment = { workspace = true }
 tempfile = "3"
-uuid = { workspace = true }
 parking_lot = { workspace = true }
 
 [features]

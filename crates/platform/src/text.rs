@@ -63,6 +63,8 @@ mod tests {
     fn cut_bytes_never_splits_a_char() {
         assert_eq!(cut_bytes("héllo", 2), "h");
         assert_eq!(cut_bytes("héllo", 3), "hé");
+        assert_eq!(cut_bytes("héllo", 6), "héllo");
+        assert_eq!(cut_bytes("héllo", 5), "héll");
         assert_eq!(cut_bytes("héllo", 99), "héllo");
         assert_eq!(cut_bytes("héllo", 0), "");
     }
