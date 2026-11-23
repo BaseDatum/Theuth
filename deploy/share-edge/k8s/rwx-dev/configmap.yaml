@@ -20,6 +20,9 @@ data:
     # Socket on the emptyDir the overlay mounts, not on the NFS data volume.
     admin: {socket: /run/theuth-share-edge/admin.sock, http: "[::]:9090"}
     admission: closed
+    # Standby key is OFFLINE (§13): secret only in the owner's vault (tunzip.edge.standby.key.b64); the edge never
+    # holds it. Rotation: theuth-share-edge retire --standby-key <file> --config <cfg>, edge stopped.
+    standby_public: 8dc34c5495d079157b02ff81ddbd47de68b60ef9f579e86bb8d5fb46c670a075
     terms_url: https://example.com/share-terms     # TBD before admission opens (§9.5)
     terms_rev: "2026-11-23"
     abuse_url: https://example.com/share-abuse     # TBD
