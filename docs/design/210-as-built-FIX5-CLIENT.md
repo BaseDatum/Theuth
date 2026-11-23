@@ -52,3 +52,34 @@ Branch `feat/210-public-share`, commit `1ad86c4a1`. Scope: `crates/share` only. 
 - `cargo clippy -p share --all-targets --no-deps -- -D warnings` → clean.
 - `cargo test -p rpc-compose --test wire_golden` → 2 passed.
 - No Cargo.lock change.
+
+# FIX6-CLIENT (N2, N3, N4)
+
+All in `crates/share/src/engine.rs`, commit `6587a299f`.
+
+## What changed
+- **N2** `Engine::may_mount`: a store error from `enabled()` or `locally_approved()` no longer counts as a missing approval. It logs, changes nothing (route table and `unmounted` set untouched) and returns whether the share is routed now. So one `SQLITE_BUSY` on the 30 s tick (`expire`) leaves a live share routed, and `restore`, `after_cert` and the welcome's Offline→Live pass leave an unmounted share unmounted. Those callers only mount when the result is `true`, and for an unrouted share it is `false`.
+- **N3** `pick_name` with a `candidate` (only `publish_previewed` passes one) claims exactly that name. On `name_taken` the publish fails with `NAME_TAKEN_MEANWHILE` ("the name shown was taken meanwhile; publish again") and claims nothing. No `Claim` exists yet, so nothing is released and no row is stored. A plain `publish` (no candidate) still redraws up to 3 times.
+- **N4** `release_unused` reads every share of the family (`Store::list`, which includes replicated rows of other engines) and keeps the name when any share that is not `Stopped` uses it under any label. If the list fails, it logs and keeps the claim, and the name stays in `fresh`.
+
+## Public API
+- New `pub const share::engine::NAME_TAKEN_MEANWHILE: &str`.
+- Nothing else changed: no wire, RPC-schema or migration change.
+
+## Deviations
+- The FIX5 deviation "the post-approval claim redraws anyway" is stale. `draw_name` keeps the last draw after 3 `available: false` checks, and the claim of that draw now fails with N3's error if it really is taken.
+
+## Not built
+- Nothing new. TODO(210-M3) (failed background cert step leaves the share `pending`) is unchanged.
+
+## Doubts
+- N2: a store error that persists keeps a routed share routed indefinitely, even if its approval really changed. Expiry still stops it, because `expire` checks `expires_ms` before `may_mount`. This is the fail-open trade the fix asked for.
+- N4: the `fresh` race from the FIX5 doubts is narrowed for stored rows only. A concurrent publish that has not stored its row yet is still not visible to `release_unused`.
+
+## Verification
+- `cargo test -p share` (its own lock hold, after the last edit) → 59 passed, 0 failed. New or changed tests:
+  - `engine::tests::a_store_error_leaves_mounts_as_they_are`: `share_approvals` is dropped. `expire` and `restore` keep `x` routed, and `y` stays unmounted and unreported.
+  - `engine::tests::release_unused_keeps_names_in_use_or_in_doubt`: another engine's live row on `app.busy` keeps `busy` claimed. A stopped row does not keep `gone`, which is released. With `shares` dropped, `doubt` is not released and stays in `fresh`.
+  - `engine::tests::preview_claims_nothing_and_a_failed_publish_gives_its_claim_back`: shown `taken1` → error equals `NAME_TAKEN_MEANWHILE`, claims only `["taken1"]`, `fresh` empty, no rows. Shown `free1` → claimed, the publish fails at name keys, and `free1` is released.
+- `cargo clippy -p share --all-targets --no-deps -- -D warnings` → clean. It ran in one lock hold together with a filtered re-run of the three tests above (3 passed).
+- No Cargo.lock change.
