@@ -5,6 +5,7 @@ import {
   IDLE,
   LINGER_MS,
   REFUSED_KEY,
+  NO_VALUES,
   REFUSE_MS,
   STOPPED,
   WINDOW_CLOSED,
@@ -351,4 +352,34 @@ test('arguments, results and failures never reach the console', async () => {
   const logged = spies.flatMap((s) => s.mock.calls).map((c) => JSON.stringify(c))
   expect(logged.filter((l) => l.includes(SECRET))).toEqual([])
   for (const s of spies) s.mockRestore()
+})
+
+test('a fill_form arrives without values: the claiming connection fetches them once, after its claim, and only the shell call carries them', async () => {
+  const SECRET = 'hunter2-tile-value'
+  const fetched: [string, string | undefined][] = []
+  const api = engine.api as Record<string, unknown>
+  api.element_form_values = vi.fn(async (call: string, session?: string) => {
+    fetched.push([call, session])
+    return { 1: SECRET }
+  })
+  const args = { world: 'isolated', source: 'agent', arguments: { cmd: 'fill_form', params: { form: 'f1', count: 2, values_from: 'element_form_values' } }, timeout_ms: 1000 }
+  const e = request({ args })
+  events.requested!(e)
+  // Nothing is fetched before the claim is won.
+  expect(fetched).toEqual([])
+  await flush()
+  expect(fetched).toEqual([[e.id, 's1']])
+  expect(shell.calls.map((c) => c.args)).toEqual([{ ...args, arguments: { cmd: 'fill_form', params: { form: 'f1', count: 2, values: { 1: SECRET } } } }])
+  // The event's own arguments stay value-free.
+  expect(JSON.stringify(e)).not.toContain(SECRET)
+  shell.calls[0]!.resolve({ filled: 1 })
+  await flush()
+  expect(JSON.stringify(engine.answers)).not.toContain(SECRET)
+  // The engine has no values for it (`null`: fetched already, or the card is over): the call fails and nothing runs.
+  api.element_form_values = vi.fn(async () => null)
+  events.requested!(request({ args }))
+  await flush()
+  expect(shell.calls).toHaveLength(1)
+  expect(engine.answers.at(-1)?.[1]).toEqual({ kind: 'failed', reason: NO_VALUES })
+  delete api.element_form_values
 })

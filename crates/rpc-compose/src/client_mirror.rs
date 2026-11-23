@@ -50,6 +50,27 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         rt.publish(a2a::A2aChanged {}).await;
         return;
     }
+    // 209 P5: `ElementFormResolved { id, outcome }` would also fit a struct listed below that
+    // reads only `id`; both card events are matched by their tag first.
+    match v["type"].as_str() {
+        Some("ElementFormRequested") => {
+            if let Ok(ev) =
+                <browser::show_element::ElementFormRequested as serde::Deserialize>::deserialize(v)
+            {
+                rt.publish(ev).await;
+            }
+            return;
+        }
+        Some("ElementFormResolved") => {
+            if let Ok(ev) =
+                <browser::show_element::ElementFormResolved as serde::Deserialize>::deserialize(v)
+            {
+                rt.publish(ev).await;
+            }
+            return;
+        }
+        _ => {}
+    }
     macro_rules! republish {
         ($($t:ty),* $(,)?) => {$(
             if let Ok(ev) = <$t as serde::Deserialize>::deserialize(v) {

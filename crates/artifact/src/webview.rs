@@ -207,7 +207,9 @@ pub fn open_tiles() -> Vec<OpenTile> {
                     id: id.clone(),
                     url: t.url.clone(),
                     title: t.title.clone(),
-                    host: Url::parse(&t.url).map(|u| host_port(&u)).unwrap_or_default(),
+                    host: Url::parse(&t.url)
+                        .map(|u| host_port(&u))
+                        .unwrap_or_default(),
                     opened_ms: t.opened_ms?,
                 })
             })
@@ -248,7 +250,9 @@ pub fn record_state(s: WebViewState) -> WebViewStateReply {
         .lock()
         .get(&s.session)
         .and_then(|m| m.get(&id))
-        .map_or((None, false), |t| (t.opened_ms, t.url == url && t.title == title));
+        .map_or((None, false), |t| {
+            (t.opened_ms, t.url == url && t.title == title)
+        });
     put(
         s.session,
         id,
@@ -659,6 +663,28 @@ pub fn relay_allows(id: WebViewCallId, answer: &WebViewCallAnswer, by: &str) -> 
             .is_none_or(|(_, c)| c == by)
 }
 
+/// 209 §4.4 (P5 `element_form_values`): whether `by` is the connection whose `Claimed` call `id`
+/// on this engine took.
+#[must_use]
+pub fn claimed_by(rt: &Runtime, id: WebViewCallId, by: &str) -> bool {
+    calls(rt)
+        .0
+        .lock()
+        .get(&id)
+        .is_some_and(|p| p.claimer.as_deref() == Some(by))
+}
+
+/// Front door (209 §4.4, P5 `element_form_values`): whether `by` is the local connection whose
+/// forwarded `Claimed` the owner took for call `id` (stricter than [`relay_allows`]: a call
+/// nobody here claimed answers `false`).
+#[must_use]
+pub fn relayed_claim_by(id: WebViewCallId, by: &str) -> bool {
+    RELAYED_CLAIMS
+        .lock()
+        .iter()
+        .any(|(i, c)| *i == id && c == by)
+}
+
 /// A front door forwarded `answer` from `by` for call `id` and the owner said `taken`: a taken
 /// claim binds the call to `by`; the claimer's `Done`/`Failed` ends the binding.
 pub fn relayed(id: WebViewCallId, answer: &WebViewCallAnswer, by: &str, taken: bool) {
@@ -688,6 +714,23 @@ pub async fn call(
     work: Duration,
 ) -> CallOutcome {
     let id = WebViewCallId(uuid::Uuid::now_v7());
+    call_as(rt, id, session, view, delegated, op, args, work).await
+}
+
+/// [`call`] under the caller's fresh `id`, for a caller that keys something to the call before
+/// it is published (209 P5: the card's values, fetched by the claimer with
+/// `element_form_values`).
+#[allow(clippy::too_many_arguments)]
+pub async fn call_as(
+    rt: &Runtime,
+    id: WebViewCallId,
+    session: SessionId,
+    view: &str,
+    delegated: bool,
+    op: WebViewOp,
+    args: serde_json::Value,
+    work: Duration,
+) -> CallOutcome {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let pending = calls(rt);
     pending.0.lock().insert(id, Pending { tx, claimer: None });
@@ -1275,10 +1318,20 @@ mod tests {
     #[test]
     fn open_tiles_follow_show_web_reports_and_close() {
         let s = SessionId::new();
-        let mine = || open_tiles().into_iter().filter(|t| t.session == s).collect::<Vec<_>>();
+        let mine = || {
+            open_tiles()
+                .into_iter()
+                .filter(|t| t.session == s)
+                .collect::<Vec<_>>()
+        };
         let mut rx = watch_tiles();
         rx.borrow_and_update();
-        opened(s, "00000000000000c1", "http://localhost:5173/", "localhost:5173");
+        opened(
+            s,
+            "00000000000000c1",
+            "http://localhost:5173/",
+            "localhost:5173",
+        );
         assert!(rx.has_changed().unwrap());
         let first = mine();
         assert_eq!(first.len(), 1);
@@ -1297,15 +1350,33 @@ mod tests {
                 closed,
             });
         };
-        report("web-00000000000000c1", "http://localhost:5173/cart", "Cart", false);
+        report(
+            "web-00000000000000c1",
+            "http://localhost:5173/cart",
+            "Cart",
+            false,
+        );
         assert!(rx.has_changed().unwrap());
         let t = &mine()[0];
-        assert_eq!((t.url.as_str(), t.title.as_str(), t.opened_ms), ("http://localhost:5173/cart", "Cart", at));
+        assert_eq!(
+            (t.url.as_str(), t.title.as_str(), t.opened_ms),
+            ("http://localhost:5173/cart", "Cart", at)
+        );
         // The same page reported again keeps its open time.
-        report("web-00000000000000c1", "http://localhost:5173/cart", "Cart", false);
+        report(
+            "web-00000000000000c1",
+            "http://localhost:5173/cart",
+            "Cart",
+            false,
+        );
         assert_eq!(mine()[0].opened_ms, at);
         // A tile only a client knows (the engine restarted under it) makes no item.
-        report("web:00000000000000c2", "http://localhost:8080/", "Other", false);
+        report(
+            "web:00000000000000c2",
+            "http://localhost:8080/",
+            "Other",
+            false,
+        );
         assert_eq!(mine().len(), 1);
         report("web:00000000000000c1", "", "", true);
         assert!(mine().is_empty());

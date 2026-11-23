@@ -12,6 +12,7 @@ import { AnsweredAskCard, askQuestions } from './AskCard'
 import { BoardCard, isBoardCreate } from './BoardCard'
 import { ScrapeCard } from './ScrapeCard'
 import { WebViewCard } from './WebViewCard'
+import { ElementFormCard } from './ElementFormCard'
 import { PtyViewCard } from './PtyViewCard'
 import { NoteViewCard } from './NoteViewCard'
 import { RosterCard, rosterRows } from './RosterCard'
@@ -96,6 +97,8 @@ export const MessageTool = memo(function MessageTool({ tool, session, readOnly }
       <ArtifactCard tool={tool} session={session} readOnly={readOnly} />
     ) : tool.name === 'show_web' ? (
       <WebViewCard tool={tool} session={session} />
+    ) : tool.name === 'browser_show_element' ? (
+      <ElementFormCard tool={tool} session={session} readOnly={readOnly} />
     ) : tool.name === 'show_pty' ? (
       <PtyViewCard tool={tool} />
     ) : tool.name === 'show_note' ? (

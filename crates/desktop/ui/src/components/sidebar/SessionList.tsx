@@ -30,6 +30,7 @@ import { nextSelection, type SelectMode } from '@/lib/selection'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { useSessions } from '@/store/sessions'
 import { useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
+import { useElementForms } from '@/store/element-forms'
 import { AgentTree } from './AgentTree'
 import { ProjectIcon, ProjectStyleDialog } from './ProjectStyle'
 import { activeRoots, SessionItem } from './SessionItem'
@@ -298,7 +299,12 @@ export function SessionList({
   const approvals = useApprovals((s) => s.pending)
   const asks = useAsks((s) => s.pending)
   const secrets = useSecretRequests((s) => s.pending)
-  const prompting = useMemo(() => new Set([...approvals, ...asks, ...secrets].map((p) => p.session)), [approvals, asks, secrets])
+  // 209 §4.10: a form card waits on the user like a prompt does.
+  const forms = useElementForms((s) => s.pending)
+  const prompting = useMemo(
+    () => new Set([...approvals, ...asks, ...secrets, ...Object.values(forms)].map((p) => p.session)),
+    [approvals, asks, secrets, forms],
+  )
   // Joined, so the selector's result is a stable string while every streamed delta re-runs it.
   const hot = useSessions((s) => activeRoots(roots, subs, s.sessions, prompting).join('\n'))
   const activeSet = useMemo(() => new Set(hot ? hot.split('\n') : []), [hot])

@@ -502,6 +502,93 @@ async fn run(rt: &Runtime, session: SessionId, view: &str, delegated: bool, op: 
     }
 }
 
+/// Agent command `cmd` with `params` on tile `view` for `session` under the call id `id`, its
+/// JSON result as the script returned it (209 P5: `serialize`, `fill_form`), or the reason it did
+/// not run. The address the answer named is remembered like [`call`]'s.
+pub(crate) async fn agent_json(
+    rt: &Runtime,
+    session: SessionId,
+    view: &str,
+    delegated: bool,
+    id: webview::WebViewCallId,
+    cmd: &'static str,
+    params: Value,
+) -> Result<Value, String> {
+    let op = Op::Agent {
+        cmd,
+        params,
+        timeout_ms: SCRIPT_MS,
+    };
+    let Some((_, args, work)) = op.request() else {
+        unreachable!("an agent op always has a request")
+    };
+    script_json(rt, session, view, delegated, id, args, work, cmd).await
+}
+
+/// The page's `{ url, title, ready, doc }` without shipping the agent script (209 P5: the poll
+/// after a card's submit). `doc` is the agent's document token when an agent runs in this
+/// document, else `""` (a document no agent ran in is a new one).
+pub const LOCATION_JS: &str = "let doc = ''; try { const a = globalThis.__theuthAgent; if (a && a.commands && a.commands.location) doc = (await a.commands.location()).doc || ''; } catch (_) { doc = ''; } return { url: location.href, title: document.title, ready: document.readyState, doc };";
+
+/// [`LOCATION_JS`] on tile `view` in the isolated world.
+pub(crate) async fn location_json(
+    rt: &Runtime,
+    session: SessionId,
+    view: &str,
+    delegated: bool,
+) -> Result<Value, String> {
+    let args = json!({
+        "world": "isolated",
+        "source": LOCATION_JS,
+        "arguments": {},
+        "timeout_ms": SCRIPT_MS,
+    });
+    let work = Duration::from_millis(SCRIPT_MS + 5_000);
+    let id = webview::WebViewCallId(uuid::Uuid::now_v7());
+    script_json(rt, session, view, delegated, id, args, work, "location").await
+}
+
+/// One `script` op with `args` on tile `view`, its JSON result or why it did not run (`what`
+/// names it for the model).
+#[allow(clippy::too_many_arguments)]
+async fn script_json(
+    rt: &Runtime,
+    session: SessionId,
+    view: &str,
+    delegated: bool,
+    id: webview::WebViewCallId,
+    args: Value,
+    work: Duration,
+    what: &str,
+) -> Result<Value, String> {
+    if is_stopped(view) {
+        return Err(stopped_text(view));
+    }
+    let name = WebViewOp::Script;
+    match webview::call_as(rt, id, session, view, delegated, name, args, work).await {
+        CallOutcome::Done { result, .. } => {
+            let url = result["url"].as_str().filter(|u| !u.is_empty());
+            seen(session, view, url.map(str::to_owned), None);
+            Ok(result)
+        }
+        CallOutcome::NoClient => Err(format!(
+            "no client holds tile web:{view} (the user may have closed it); {BACK_HOME}"
+        )),
+        CallOutcome::TimedOut => Err(format!(
+            "tile web:{view} did not finish `{what}` within {} s",
+            work.max(webview::OP_WAIT).as_secs()
+        )),
+        CallOutcome::Failed(reason) if reason == webview::STOPPED => {
+            STOPPED.lock().insert(
+                view.to_owned(),
+                tokio::time::Instant::now() + webview::STOP_HOLD,
+            );
+            Err(stopped_text(view))
+        }
+        CallOutcome::Failed(reason) => Err(reason),
+    }
+}
+
 /// A done op's result as the text obscura would have answered (209 §4.7: our format, close to
 /// obscura's).
 #[must_use]

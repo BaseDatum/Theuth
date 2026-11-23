@@ -404,6 +404,13 @@ pub trait Tool: Send + Sync + 'static {
         false
     }
 
+    /// Whether the tool's own card in the transcript is the user's approval (209 §9): the
+    /// session's cap still sees [`Tool::RISK`] (a `read_only` cap hides and refuses the tool),
+    /// then the policy lookup uses [`Risk::ReadOnly`], so no separate prompt comes before the
+    /// card. Only `browser_show_element` sets it: pressing Submit on its card is the approval.
+    /// Default `false`.
+    const APPROVED_BY_CARD: bool = false;
+
     /// Run it.
     async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput>;
 }
@@ -444,6 +451,10 @@ pub trait ErasedTool: Send + Sync + 'static {
         let _ = (session, args);
         false
     }
+    /// [`Tool::APPROVED_BY_CARD`]. MCP tools keep the default `false`.
+    fn approved_by_card(&self) -> bool {
+        false
+    }
     /// Invoke with raw args.
     fn call(
         &self,
@@ -476,6 +487,10 @@ impl<T: Tool> ErasedTool for T {
         T::CREDENTIALED
             && <T::Args as serde::Deserialize>::deserialize(args)
                 .is_ok_and(|a| Tool::credentialed(self, session, &a))
+    }
+
+    fn approved_by_card(&self) -> bool {
+        T::APPROVED_BY_CARD
     }
 
     fn call(

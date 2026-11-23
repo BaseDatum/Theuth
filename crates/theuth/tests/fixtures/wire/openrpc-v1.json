@@ -7856,7 +7856,7 @@
             "type": "integer"
           },
           "model": {
-            "description": "The session's model id (\"\" for boundary nodes).",
+            "description": "The session's model id (\"\" for boundary nodes). A harness child shows\nthe model its harness reports (`harness_model`), never the harness name.",
             "type": "string"
           },
           "name": {
@@ -8683,7 +8683,7 @@
             "type": "integer"
           },
           "model": {
-            "description": "The session's model id (\"\" for boundary nodes).",
+            "description": "The session's model id (\"\" for boundary nodes). A harness child shows\nthe model its harness reports (`harness_model`), never the harness name.",
             "type": "string"
           },
           "name": {
@@ -13950,6 +13950,394 @@
             "type": "object"
           }
         ]
+      },
+      "event.browser_2eelement_2dform_2drequested.output.ElementFormField": {
+        "description": "One control of the card (209 §4.4): `index` is its `data-theuth-field`.",
+        "properties": {
+          "index": {
+            "description": "The `data-theuth-field` index in the snapshot and the live page.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "description": "Input type in lower case (`email`, `password`, `checkbox`, …), `textarea`, `select` or\n`submit`.",
+            "type": "string"
+          },
+          "label": {
+            "description": "What the page labels it with, never its value.",
+            "type": "string"
+          },
+          "masked": {
+            "description": "A password or another secret field: rendered masked.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The control's `name`, or empty.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "kind",
+          "name",
+          "label",
+          "masked"
+        ],
+        "type": "object"
+      },
+      "event.browser_2eelement_2dform_2drequested.output.ElementFormId": {
+        "description": "Correlates an [`ElementFormRequested`] with its answer (209 §4.4).",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.browser_2eelement_2dform_2drequested.output.ElementFormRequested": {
+        "description": "Event: an agent session shows one element of its page as a card (209 D13, §4.4, §4.10).\nNo field value, ever.",
+        "properties": {
+          "action_origin": {
+            "description": "Where the form posts, `scheme://host[:port]` in ASCII: the submit button's `formaction`,\nelse the form's `action`, resolved against the page; [`origin`](Self::origin) when there\nis neither or it is not http(s) (209 §4.10).",
+            "type": "string"
+          },
+          "call_id": {
+            "description": "The `browser_show_element` call the card belongs to.",
+            "type": "string"
+          },
+          "fields": {
+            "description": "The controls, in index order.",
+            "items": {
+              "$ref": "#/components/schemas/event.browser_2eelement_2dform_2drequested.output.ElementFormField"
+            },
+            "type": "array"
+          },
+          "height": {
+            "description": "The element's rendered height in CSS px.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "html": {
+            "description": "The sanitised snapshot ([`sanitize`]).",
+            "type": "string"
+          },
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.browser_2eelement_2dform_2drequested.output.ElementFormId"
+              }
+            ],
+            "description": "`answer_element_form`'s id."
+          },
+          "origin": {
+            "description": "`scheme://host[:port]` in ASCII, from the browser's address at serialise time.",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.browser_2eelement_2dform_2drequested.output.SessionId"
+              }
+            ],
+            "description": "The session the tool runs in."
+          },
+          "source": {
+            "description": "`obscura:<engine>` or `web:<tile id>`.",
+            "type": "string"
+          },
+          "title": {
+            "description": "The tool's `title`, else the page's title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "ElementFormRequested",
+            "type": "string"
+          },
+          "url": {
+            "description": "The page's address at serialise time.",
+            "type": "string"
+          },
+          "width": {
+            "description": "The element's rendered width in CSS px.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "session",
+          "call_id",
+          "origin",
+          "action_origin",
+          "url",
+          "source",
+          "title",
+          "html",
+          "width",
+          "height",
+          "fields",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.browser_2eelement_2dform_2drequested.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.browser_2eelement_2dform_2drequested.receiver.ElementFormField": {
+        "description": "One control of the card (209 §4.4): `index` is its `data-theuth-field`.",
+        "properties": {
+          "index": {
+            "description": "The `data-theuth-field` index in the snapshot and the live page.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "description": "Input type in lower case (`email`, `password`, `checkbox`, …), `textarea`, `select` or\n`submit`.",
+            "type": "string"
+          },
+          "label": {
+            "description": "What the page labels it with, never its value.",
+            "type": "string"
+          },
+          "masked": {
+            "description": "A password or another secret field: rendered masked.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The control's `name`, or empty.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "kind",
+          "name",
+          "label",
+          "masked"
+        ],
+        "type": "object"
+      },
+      "event.browser_2eelement_2dform_2drequested.receiver.ElementFormId": {
+        "description": "Correlates an [`ElementFormRequested`] with its answer (209 §4.4).",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.browser_2eelement_2dform_2drequested.receiver.ElementFormRequested": {
+        "description": "Event: an agent session shows one element of its page as a card (209 D13, §4.4, §4.10).\nNo field value, ever.",
+        "properties": {
+          "action_origin": {
+            "description": "Where the form posts, `scheme://host[:port]` in ASCII: the submit button's `formaction`,\nelse the form's `action`, resolved against the page; [`origin`](Self::origin) when there\nis neither or it is not http(s) (209 §4.10).",
+            "type": "string"
+          },
+          "call_id": {
+            "description": "The `browser_show_element` call the card belongs to.",
+            "type": "string"
+          },
+          "fields": {
+            "description": "The controls, in index order.",
+            "items": {
+              "$ref": "#/components/schemas/event.browser_2eelement_2dform_2drequested.receiver.ElementFormField"
+            },
+            "type": "array"
+          },
+          "height": {
+            "description": "The element's rendered height in CSS px.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "html": {
+            "description": "The sanitised snapshot ([`sanitize`]).",
+            "type": "string"
+          },
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.browser_2eelement_2dform_2drequested.receiver.ElementFormId"
+              }
+            ],
+            "description": "`answer_element_form`'s id."
+          },
+          "origin": {
+            "description": "`scheme://host[:port]` in ASCII, from the browser's address at serialise time.",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.browser_2eelement_2dform_2drequested.receiver.SessionId"
+              }
+            ],
+            "description": "The session the tool runs in."
+          },
+          "source": {
+            "description": "`obscura:<engine>` or `web:<tile id>`.",
+            "type": "string"
+          },
+          "title": {
+            "description": "The tool's `title`, else the page's title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "ElementFormRequested",
+            "type": "string"
+          },
+          "url": {
+            "description": "The page's address at serialise time.",
+            "type": "string"
+          },
+          "width": {
+            "description": "The element's rendered width in CSS px.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "session",
+          "call_id",
+          "origin",
+          "action_origin",
+          "url",
+          "source",
+          "title",
+          "html",
+          "width",
+          "height",
+          "fields",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.browser_2eelement_2dform_2drequested.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.browser_2eelement_2dform_2dresolved.output.ElementFormId": {
+        "description": "Correlates an [`ElementFormRequested`] with its answer (209 §4.4).",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.browser_2eelement_2dform_2dresolved.output.ElementFormOutcome": {
+        "description": "How a card ended (209 §4.4).",
+        "oneOf": [
+          {
+            "const": "submitted",
+            "description": "The values were typed and the form submitted.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "The user cancelled (or the call was cancelled).",
+            "type": "string"
+          },
+          {
+            "const": "stale",
+            "description": "The page changed since the card was shown: nothing was typed.",
+            "type": "string"
+          },
+          {
+            "const": "timeout",
+            "description": "No answer within `tools.ask_timeout_secs`.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.browser_2eelement_2dform_2dresolved.output.ElementFormResolved": {
+        "description": "Event: the card is answered or gone (209 §4.4).",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.browser_2eelement_2dform_2dresolved.output.ElementFormId"
+              }
+            ],
+            "description": "The request's id."
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.browser_2eelement_2dform_2dresolved.output.ElementFormOutcome"
+              }
+            ],
+            "description": "How it ended."
+          },
+          "type": {
+            "const": "ElementFormResolved",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "outcome",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.browser_2eelement_2dform_2dresolved.receiver.ElementFormId": {
+        "description": "Correlates an [`ElementFormRequested`] with its answer (209 §4.4).",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.browser_2eelement_2dform_2dresolved.receiver.ElementFormOutcome": {
+        "description": "How a card ended (209 §4.4).",
+        "oneOf": [
+          {
+            "const": "submitted",
+            "description": "The values were typed and the form submitted.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "The user cancelled (or the call was cancelled).",
+            "type": "string"
+          },
+          {
+            "const": "stale",
+            "description": "The page changed since the card was shown: nothing was typed.",
+            "type": "string"
+          },
+          {
+            "const": "timeout",
+            "description": "No answer within `tools.ask_timeout_secs`.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.browser_2eelement_2dform_2dresolved.receiver.ElementFormResolved": {
+        "description": "Event: the card is answered or gone (209 §4.4).",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.browser_2eelement_2dform_2dresolved.receiver.ElementFormId"
+              }
+            ],
+            "description": "The request's id."
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.browser_2eelement_2dform_2dresolved.receiver.ElementFormOutcome"
+              }
+            ],
+            "description": "How it ended."
+          },
+          "type": {
+            "const": "ElementFormResolved",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "outcome",
+          "type"
+        ],
+        "type": "object"
       },
       "event.browser_2eevents.output.BrowserEvent": {
         "description": "Bus events for frontends, on the shared RPC event stream (23 §5).",
@@ -41335,7 +41723,7 @@
             "type": "integer"
           },
           "model": {
-            "description": "The session's model id (\"\" for boundary nodes).",
+            "description": "The session's model id (\"\" for boundary nodes). A harness child shows\nthe model its harness reports (`harness_model`), never the harness name.",
             "type": "string"
           },
           "name": {
@@ -52057,7 +52445,7 @@
             "type": "integer"
           },
           "model": {
-            "description": "The session's model id (\"\" for boundary nodes).",
+            "description": "The session's model id (\"\" for boundary nodes). A harness child shows\nthe model its harness reports (`harness_model`), never the harness name.",
             "type": "string"
           },
           "name": {
@@ -72991,6 +73379,330 @@
           }
         },
         "type": "object"
+      },
+      "method.browser.input.ElementFormAnswer": {
+        "description": "The card's answer (209 §4.4): `{ \"submit\": { \"values\": { \"<index>\": \"…\" } } }` or\n`{ \"cancel\": {} }` (the bare string `\"cancel\"` is taken too). Its `Debug` never shows a value.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "Type `values` (by field index) and submit.",
+            "properties": {
+              "submit": {
+                "properties": {
+                  "values": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Field index as a decimal string → what the user entered.",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "values"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "submit"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Close the card; nothing is typed.",
+            "properties": {
+              "cancel": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "cancel"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "method.browser.input.ElementFormId": {
+        "description": "Correlates an [`ElementFormRequested`] with its answer (209 §4.4).",
+        "format": "uuid",
+        "type": "string"
+      },
+      "method.browser.input.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "method.browser.input.WebViewCallId": {
+        "description": "Correlates a [`WebViewCallRequested`] with its answers (209 D8).",
+        "format": "uuid",
+        "type": "string"
+      },
+      "method.browser.output.ElementFormField": {
+        "description": "One control of the card (209 §4.4): `index` is its `data-theuth-field`.",
+        "properties": {
+          "index": {
+            "description": "The `data-theuth-field` index in the snapshot and the live page.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "description": "Input type in lower case (`email`, `password`, `checkbox`, …), `textarea`, `select` or\n`submit`.",
+            "type": "string"
+          },
+          "label": {
+            "description": "What the page labels it with, never its value.",
+            "type": "string"
+          },
+          "masked": {
+            "description": "A password or another secret field: rendered masked.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The control's `name`, or empty.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "kind",
+          "name",
+          "label",
+          "masked"
+        ],
+        "type": "object"
+      },
+      "method.browser.output.ElementFormId": {
+        "description": "Correlates an [`ElementFormRequested`] with its answer (209 §4.4).",
+        "format": "uuid",
+        "type": "string"
+      },
+      "method.browser.output.ElementFormRequested": {
+        "description": "Event: an agent session shows one element of its page as a card (209 D13, §4.4, §4.10).\nNo field value, ever.",
+        "properties": {
+          "action_origin": {
+            "description": "Where the form posts, `scheme://host[:port]` in ASCII: the submit button's `formaction`,\nelse the form's `action`, resolved against the page; [`origin`](Self::origin) when there\nis neither or it is not http(s) (209 §4.10).",
+            "type": "string"
+          },
+          "call_id": {
+            "description": "The `browser_show_element` call the card belongs to.",
+            "type": "string"
+          },
+          "fields": {
+            "description": "The controls, in index order.",
+            "items": {
+              "$ref": "#/components/schemas/method.browser.output.ElementFormField"
+            },
+            "type": "array"
+          },
+          "height": {
+            "description": "The element's rendered height in CSS px.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "html": {
+            "description": "The sanitised snapshot ([`sanitize`]).",
+            "type": "string"
+          },
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.browser.output.ElementFormId"
+              }
+            ],
+            "description": "`answer_element_form`'s id."
+          },
+          "origin": {
+            "description": "`scheme://host[:port]` in ASCII, from the browser's address at serialise time.",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.browser.output.SessionId"
+              }
+            ],
+            "description": "The session the tool runs in."
+          },
+          "source": {
+            "description": "`obscura:<engine>` or `web:<tile id>`.",
+            "type": "string"
+          },
+          "title": {
+            "description": "The tool's `title`, else the page's title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "ElementFormRequested",
+            "type": "string"
+          },
+          "url": {
+            "description": "The page's address at serialise time.",
+            "type": "string"
+          },
+          "width": {
+            "description": "The element's rendered width in CSS px.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "session",
+          "call_id",
+          "origin",
+          "action_origin",
+          "url",
+          "source",
+          "title",
+          "html",
+          "width",
+          "height",
+          "fields",
+          "type"
+        ],
+        "type": "object"
+      },
+      "method.browser.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "method.browser.receiver.ElementFormField": {
+        "description": "One control of the card (209 §4.4): `index` is its `data-theuth-field`.",
+        "properties": {
+          "index": {
+            "description": "The `data-theuth-field` index in the snapshot and the live page.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "description": "Input type in lower case (`email`, `password`, `checkbox`, …), `textarea`, `select` or\n`submit`.",
+            "type": "string"
+          },
+          "label": {
+            "description": "What the page labels it with, never its value.",
+            "type": "string"
+          },
+          "masked": {
+            "description": "A password or another secret field: rendered masked.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The control's `name`, or empty.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "kind",
+          "name",
+          "label",
+          "masked"
+        ],
+        "type": "object"
+      },
+      "method.browser.receiver.ElementFormId": {
+        "description": "Correlates an [`ElementFormRequested`] with its answer (209 §4.4).",
+        "format": "uuid",
+        "type": "string"
+      },
+      "method.browser.receiver.ElementFormRequested": {
+        "description": "Event: an agent session shows one element of its page as a card (209 D13, §4.4, §4.10).\nNo field value, ever.",
+        "properties": {
+          "action_origin": {
+            "description": "Where the form posts, `scheme://host[:port]` in ASCII: the submit button's `formaction`,\nelse the form's `action`, resolved against the page; [`origin`](Self::origin) when there\nis neither or it is not http(s) (209 §4.10).",
+            "type": "string"
+          },
+          "call_id": {
+            "description": "The `browser_show_element` call the card belongs to.",
+            "type": "string"
+          },
+          "fields": {
+            "description": "The controls, in index order.",
+            "items": {
+              "$ref": "#/components/schemas/method.browser.receiver.ElementFormField"
+            },
+            "type": "array"
+          },
+          "height": {
+            "description": "The element's rendered height in CSS px.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "html": {
+            "description": "The sanitised snapshot ([`sanitize`]).",
+            "type": "string"
+          },
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.browser.receiver.ElementFormId"
+              }
+            ],
+            "description": "`answer_element_form`'s id."
+          },
+          "origin": {
+            "description": "`scheme://host[:port]` in ASCII, from the browser's address at serialise time.",
+            "type": "string"
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.browser.receiver.SessionId"
+              }
+            ],
+            "description": "The session the tool runs in."
+          },
+          "source": {
+            "description": "`obscura:<engine>` or `web:<tile id>`.",
+            "type": "string"
+          },
+          "title": {
+            "description": "The tool's `title`, else the page's title.",
+            "type": "string"
+          },
+          "type": {
+            "const": "ElementFormRequested",
+            "type": "string"
+          },
+          "url": {
+            "description": "The page's address at serialise time.",
+            "type": "string"
+          },
+          "width": {
+            "description": "The element's rendered width in CSS px.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "session",
+          "call_id",
+          "origin",
+          "action_origin",
+          "url",
+          "source",
+          "title",
+          "html",
+          "width",
+          "height",
+          "fields",
+          "type"
+        ],
+        "type": "object"
+      },
+      "method.browser.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
       },
       "method.cells.input.CellRef": {
         "description": "Which cell (§3.4). Chat: the assistant message `entry` and the 1-based position among\nits *cells*; note: the doc and the cell's `name`, else its BlockNote block id.",
@@ -125906,6 +126618,55 @@
       "x-theuth-owner": "tasks"
     },
     {
+      "name": "answer_element_form",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.browser.input.ElementFormId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "answer",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.browser.input.ElementFormAnswer"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.browser.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "browser"
+    },
+    {
       "name": "answer_fence_snapshot",
       "paramStructure": "by-position",
       "params": [
@@ -132439,6 +133200,141 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "agent"
+    },
+    {
+      "name": "element_form_shown",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.browser.input.ElementFormId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.browser.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "browser"
+    },
+    {
+      "name": "element_form_values",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "call_id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.browser.input.WebViewCallId"
+          },
+          "x-theuth-aliases": [
+            "callId"
+          ]
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.browser.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "browser"
+    },
+    {
+      "name": "element_forms_pending",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.browser.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.browser.output.ElementFormRequested"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.browser.receiver.ElementFormRequested"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "browser"
     },
     {
       "name": "enable_schedule",
@@ -145952,6 +146848,26 @@
           "$ref": "#/components/schemas/event.autoresearch_2eevents.output.StudyEvent"
         },
         "topic": "autoresearch.events",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.browser_2eelement_2dform_2drequested.receiver.ElementFormRequested"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.browser_2eelement_2dform_2drequested.output.ElementFormRequested"
+        },
+        "topic": "browser.element-form-requested",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.browser_2eelement_2dform_2dresolved.receiver.ElementFormResolved"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.browser_2eelement_2dform_2dresolved.output.ElementFormResolved"
+        },
+        "topic": "browser.element-form-resolved",
         "version": 1
       },
       {

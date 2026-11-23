@@ -8,13 +8,19 @@
 //! [`profile`] carries the shared browser profile (209): `tools::Ctx` loads
 //! it into a session's isolate, and every isolate drop saves its delta first.
 //! [`tile`] is the tools' second target, the user's web view tile (209 D8).
+//! [`show_element`] lifts one element of a page into a chat card (209 D13); [`rpc`] carries its
+//! answer (`answer_element_form`) and the cards still waiting (`element_forms_pending`).
 
 pub mod profile;
 pub mod render;
+pub mod rpc;
 pub mod session;
+pub mod show_element;
 pub mod systemone;
 pub mod tile;
 pub mod tools;
+
+pub use rpc::rpc_module;
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -436,7 +442,10 @@ impl Message<agent::AgentEvent> for Browsers {
             agent::AgentEvent::TurnFinished { session, .. } => {
                 self.systemone_done(session, "turn finished");
             }
-            agent::AgentEvent::SessionDeleted { session } => tile::forget(&[session]),
+            agent::AgentEvent::SessionDeleted { session } => {
+                tile::forget(&[session]);
+                show_element::forget(&[session]);
+            }
             _ => {}
         }
     }
@@ -492,6 +501,7 @@ impl Message<CloseTree> for Browsers {
         // and storage) ends once any in-flight command finishes; we wait for
         // that off the mailbox, bounded, so a hung page cannot stall the ack.
         tile::forget(&m.subtree);
+        show_element::forget(&m.subtree);
         let exits: Vec<_> = m
             .subtree
             .iter()
@@ -521,6 +531,8 @@ impl Message<CloseTree> for Browsers {
 pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     use wire::RuntimeWire as _;
     rt.register_wire_event::<BrowserEvent>().await?;
+    rt.register_wire_event::<show_element::ElementFormRequested>().await?;
+    rt.register_wire_event::<show_element::ElementFormResolved>().await?;
     Ok(())
 }
 

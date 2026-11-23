@@ -1,4 +1,5 @@
-//! The sixteen `browser_*` tools (design doc 23 §4) plus `browser_attach` (209 D8): our names
+//! The sixteen `browser_*` tools (design doc 23 §4) plus `browser_attach` (209 D8) and
+//! `browser_show_element` (209 D13, [`crate::show_element`]): our names
 //! and static descriptions over obscura-mcp's tool dispatch. Each tool sends one
 //! [`Call`] to the [`Browsers`] actor, passes obscura's arguments through
 //! unchanged unless the §4 table says otherwise, and tidies the text reply
@@ -74,7 +75,7 @@ impl Ctx {
 
     /// `out` with the tile prefix in front, when `on` names the tile (and the address known then)
     /// the call started on; the address the call itself reached wins while still on that tile.
-    fn prefixed(
+    pub(crate) fn prefixed(
         &self,
         session: SessionId,
         on: Option<(String, String)>,
@@ -144,7 +145,7 @@ impl Ctx {
     }
 
     /// [`Self::raw`] without the profile load: the load's own calls.
-    async fn send(
+    pub(crate) async fn send(
         &self,
         session: SessionId,
         name: &str,
@@ -172,7 +173,7 @@ impl Ctx {
     /// only. A failed apply is logged (without values) and the call goes on. First, the deletes a
     /// forget or sign out everywhere queued for the isolate run (209 §6), so no call after the
     /// change sends a forgotten cookie.
-    async fn ensure_profile(&self, session: SessionId) -> anyhow::Result<()> {
+    pub(crate) async fn ensure_profile(&self, session: SessionId) -> anyhow::Result<()> {
         if profile::has_pending(session) {
             let guard = profile::guard(session);
             let _held = guard.lock().await;
@@ -305,7 +306,7 @@ impl Ctx {
     /// 209 D14: remember the site of the page `session` is on after a call that may have
     /// navigated (its address read with `location.href`), so the next acting call knows whether
     /// it acts signed in.
-    async fn track(&self, session: SessionId) -> anyhow::Result<()> {
+    pub(crate) async fn track(&self, session: SessionId) -> anyhow::Result<()> {
         let href = json!({ "expression": "location.href" });
         if let Ok(v) = self.send(session, "browser_evaluate", href).await? {
             let (text, is_error) = text_of(&v);
@@ -1374,6 +1375,7 @@ pub fn all(actor: ActorRef<Browsers>, cfg: BrowserConfig, rt: Runtime) -> Vec<Dy
         Arc::new(CloseTool(Arc::clone(&ctx))),
         Arc::new(ShowTool(Arc::clone(&ctx))),
         Arc::new(AttachTool(Arc::clone(&ctx))),
+        Arc::new(crate::show_element::ShowElementTool(Arc::clone(&ctx))),
     ];
     if ctx.cfg.import_cookies {
         all.push(Arc::new(ProfilesTool));

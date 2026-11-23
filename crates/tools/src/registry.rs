@@ -1362,7 +1362,9 @@ impl ToolRegistry {
 
     /// The one permission decision (12 §5), before anyone is asked: `Deny`
     /// for a tool above the session's cap ([`SetCap`]), else `tools.policy`
-    /// for the risk, at least `Ask` when the args carry a secret placeholder
+    /// for the risk (for a tool whose card is the approval,
+    /// [`crate::ErasedTool::approved_by_card`], the policy of `ReadOnly`: 209 §9),
+    /// at least `Ask` when the args carry a secret placeholder
     /// (37 §0.4), then `Ask` → `Allow` unless prompts are on for the session:
     /// its nearest pin ([`SetApprovals`], 183 §4.5), else `tools.approvals`.
     /// `Deny` is never rewritten.
@@ -1376,7 +1378,10 @@ impl ToolRegistry {
         if session.is_some_and(|s| self.capped(s, name, risk).is_some()) {
             return PolicyAction::Deny;
         }
-        let mut action = self.policy.action(risk);
+        let by_card = self.tools.get(name).is_some_and(|t| t.approved_by_card());
+        let mut action = self
+            .policy
+            .action(if by_card { Risk::ReadOnly } else { risk });
         if mentions {
             action = action.max(PolicyAction::Ask);
         }
@@ -3773,6 +3778,81 @@ pub(crate) mod tests {
         );
         let out = reg.ask(Invoke(with(child, false))).await.unwrap();
         assert_eq!(out.content, "acted");
+    }
+
+    /// A `Mutating` tool whose card is the approval, like `browser_show_element` (209 §9).
+    struct ByCard;
+
+    #[async_trait::async_trait]
+    impl Tool for ByCard {
+        const NAME: &'static str = "by_card";
+        const RISK: Risk = Risk::Mutating;
+        const APPROVED_BY_CARD: bool = true;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok("carded"))
+        }
+    }
+
+    /// 209 §9: with mutating calls asking and prompts on, a tool approved by its card runs
+    /// without a prompt (a plain mutating tool still asks), while a session capped at
+    /// `read_only` neither sees it nor may call it.
+    #[tokio::test]
+    async fn approved_by_card_skips_the_prompt_but_not_the_cap() {
+        let policy = Policy {
+            read_only: PolicyAction::Allow,
+            mutating: PolicyAction::Ask,
+            destructive: PolicyAction::Deny,
+        };
+        let reg = registry_with(
+            vec![Arc::new(ByCard), Arc::new(Touch), Arc::new(Echo)],
+            None,
+            policy,
+            None,
+        );
+        let (parent, child) = (SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent,
+        })
+        .await
+        .unwrap();
+        let out = reg.ask(Invoke(call("by_card", parent))).await.unwrap();
+        assert_eq!(out.content, "carded");
+        let out = reg.ask(Invoke(call("touch", parent))).await.unwrap();
+        assert!(out.is_error && out.content.contains("approval"), "{out:?}");
+        let described = reg.ask(DescribeTools(Some(parent))).await.unwrap();
+        let card = described
+            .iter()
+            .find(|i| i.spec.name == "by_card")
+            .expect("listed uncapped");
+        assert_eq!(
+            (card.spec.risk, card.action),
+            (Risk::Mutating, PolicyAction::Allow)
+        );
+
+        reg.tell(SetCap {
+            session: child,
+            cap: Some(Risk::ReadOnly),
+        })
+        .await
+        .unwrap();
+        let names: Vec<String> = reg
+            .ask(ListTools(Some(child)))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, ["echo"]);
+        let out = reg.ask(Invoke(call("by_card", child))).await.unwrap();
+        assert_eq!(
+            out.content,
+            "by_card: denied: subagent is capped at read_only"
+        );
     }
 
     /// Journal that records every `approvals` write.

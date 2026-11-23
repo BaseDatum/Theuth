@@ -30,14 +30,24 @@ const JSONRPSEE: [&str; 6] = [
     "jsonrpsee_client_transport=info",
 ];
 
+/// The HTML parsers' targets: obscura's html5ever logs every text token at DEBUG, so a page that
+/// echoes what the user typed into a `browser_show_element` card would put it in the log (209
+/// §9). Held at INFO like [`JSONRPSEE`].
+const PARSERS: [&str; 3] = [
+    "html5ever=info",
+    "markup5ever=info",
+    "markup5ever_rcdom=info",
+];
+
 /// The engine's filter: [`env_filter`], then INFO for everything, iroh's pkarr publisher
 /// at ERROR — it warns "Failed to publish to pkarr" every 1–13 s while the DNS relay is
-/// unreachable (69 Z) and the endpoint keeps working — and jsonrpsee at INFO, so neither a bare
-/// `RUST_LOG` level nor a directive naming these targets prints RPC bodies ([`JSONRPSEE`]; a
-/// longer target such as `jsonrpsee_core::server=trace` still would). Added last, these override
-/// `RUST_LOG` for their targets, as before.
+/// unreachable (69 Z) and the endpoint keeps working — and jsonrpsee and the HTML parsers at
+/// INFO, so neither a bare `RUST_LOG` level nor a directive naming these targets prints RPC
+/// bodies ([`JSONRPSEE`]) or page text ([`PARSERS`]); a longer target such as
+/// `jsonrpsee_core::server=trace` still would. Added last, these override `RUST_LOG` for their
+/// targets, as before.
 pub fn engine_filter(rust_log: &str) -> EnvFilter {
-    JSONRPSEE.iter().fold(
+    JSONRPSEE.iter().chain(PARSERS.iter()).fold(
         env_filter(rust_log)
             .add_directive(tracing::Level::INFO.into())
             .add_directive(
@@ -223,6 +233,32 @@ mod tests {
                 .map(|(.., m)| m.as_str())
                 .collect();
             assert_eq!(got, ["listening"], "RUST_LOG={rust_log}");
+        }
+    }
+
+    /// 209 §9: html5ever's per-token DEBUG/TRACE (page text, so a value a page echoes) never
+    /// passes for a bare level or a directive naming the crate (a longer target still would, as
+    /// for jsonrpsee).
+    #[test]
+    fn html_parser_tokens_never_reach_the_log() {
+        for rust_log in ["", "debug", "trace", "html5ever=trace,markup5ever=debug"] {
+            let seen = Seen::default();
+            let sub = tracing_subscriber::registry()
+                .with(engine_filter(rust_log))
+                .with(seen.clone());
+            tracing::subscriber::with_default(sub, || {
+                tracing::debug!(target: "html5ever::tokenizer", "processing token: page text");
+                tracing::trace!(target: "html5ever::tree_builder", "page text");
+                tracing::debug!(target: "markup5ever::interface", "page text");
+                tracing::info!(target: "html5ever::tokenizer", "kept");
+            });
+            let seen = seen.0.lock().unwrap();
+            let got: Vec<&str> = seen
+                .iter()
+                .filter(|(t, ..)| t.contains("5ever"))
+                .map(|(.., m)| m.as_str())
+                .collect();
+            assert_eq!(got, ["kept"], "RUST_LOG={rust_log}");
         }
     }
 

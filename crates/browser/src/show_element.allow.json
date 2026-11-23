@@ -1,0 +1,20 @@
+{
+  "tags": [
+    "form", "fieldset", "legend", "label", "input", "button", "select", "option", "optgroup", "textarea",
+    "output", "div", "span", "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "strong", "b", "em", "i",
+    "u", "s", "small", "sub", "sup", "mark", "abbr", "code", "pre", "blockquote", "q", "cite", "time",
+    "address", "ul", "ol", "li", "dl", "dt", "dd", "table", "thead", "tbody", "tfoot", "tr", "th", "td",
+    "caption", "colgroup", "col", "section", "article", "header", "footer", "main", "nav", "aside", "figure",
+    "figcaption", "a", "img", "wbr"
+  ],
+  "dropped": [
+    "script", "noscript", "style", "link", "meta", "base", "head", "title", "template", "iframe", "frame",
+    "frameset", "object", "embed", "applet", "param", "canvas", "video", "audio", "source", "track",
+    "picture", "svg", "math", "portal", "dialog", "xmp", "plaintext", "noembed", "noframes"
+  ],
+  "attrs": [
+    "style", "type", "name", "placeholder", "autocomplete", "checked", "selected", "disabled", "for", "id",
+    "class", "data-theuth-field"
+  ],
+  "img_attrs": ["alt", "src"]
+}

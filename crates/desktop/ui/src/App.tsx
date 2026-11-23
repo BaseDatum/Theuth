@@ -32,6 +32,7 @@ import { installFenceSnapshot } from '@/lib/fence-snapshot'
 import { installPagePreview } from '@/lib/page-preview'
 import { startWebProfileSync } from '@/lib/web-profile'
 import { startWebViewAgent } from '@/lib/web-view-agent'
+import { startElementForms } from '@/lib/element-form'
 import { container, isDesktop } from '@/lib/platform'
 import { POPOUT, closePopout, popoutMeeting, popoutSession } from '@/lib/popout'
 import { onOwnerChanged, onPeerChange, remoteAmong, settleAfterFollowLoss, withdrawRelayed } from '@/lib/owner'
@@ -735,6 +736,8 @@ function Main() {
   useEffect(() => (AUX ? undefined : startWebProfileSync()), [])
   // 209 §4.7: a pop-out window may hold a tile too; each window claims only the tiles it holds.
   useEffect(() => (ISLAND || OVERLAY ? undefined : startWebViewAgent()), [])
+  // 209 §4.10: every window that shows a transcript shows the form cards; each loads the pending ones when it connects.
+  useEffect(() => (ISLAND || OVERLAY ? undefined : startElementForms()), [])
   // The shell flips both windows; each webview mirrors the value into its own settings copy.
   useEffect(() => {
     const off = onCaptureHidden((h) => useMeetingSettings.getState().setHidden(h))
