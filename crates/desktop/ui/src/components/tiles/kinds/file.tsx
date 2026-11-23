@@ -5,6 +5,7 @@ import type { FileProps } from '@/components/tiles/open'
 import { TileFrame } from '@/components/tiles/TileFrame'
 import type { TileKind, TileRender } from '@/components/tiles/types'
 import { Button } from '@/components/ui/button'
+import { openPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
 
 /** The tile header's Refresh (refetch what the tile shows) and Copy (`text`, once loaded). */
@@ -44,6 +45,7 @@ function File({ tile, first, close }: TileRender) {
       title={p.title}
       meta={meta}
       controls={<ViewControls refresh={() => void q.refetch()} fetching={q.isFetching} text={data?.text} what="file" />}
+      popOut={() => void openPopout({ kind: 'file', session: p.session, path: p.path, line: p.line, end_line: p.end_line })}
     >
       <FileView session={p.session} path={p.path} lang={p.lang} line={p.line} end={p.end_line} className="flex-1" />
     </TileFrame>

@@ -60,3 +60,17 @@ test('the row cap spans files and offers Show all only with a handler', () => {
   expect(capped).toContain('Show all 6 lines')
   expect(renderToStaticMarkup(createElement(DiffSections, { files, cap: 2 }))).not.toContain('Show all')
 })
+
+test('split layout draws each change once per side, old left and new right, with filler for an unpaired line', () => {
+  const { files, stats } = diffFiles(view)
+  const split = renderToStaticMarkup(createElement(DiffSections, { files, stats, layout: 'split' }))
+  // src/a.rs: keep|keep, old|new (word-marked); new.txt: filler|hello.
+  expect(split.match(/<del /g)).toHaveLength(1)
+  expect(split.match(/<ins /g)).toHaveLength(1)
+  expect(split.match(/data-filler/g)).toHaveLength(1)
+  expect(split.indexOf('>old</del>')).toBeGreaterThan(0)
+  expect(split.indexOf('>old</del>')).toBeLessThan(split.indexOf('>new</ins>'))
+  expect(split.match(/>keep</g)).toHaveLength(2)
+  // The unified default is unchanged: no filler, one row per line.
+  expect(renderToStaticMarkup(createElement(DiffSections, { files, stats }))).not.toContain('data-filler')
+})
