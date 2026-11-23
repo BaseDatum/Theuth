@@ -15,7 +15,8 @@ import { labelKind } from './peer-identity'
 
 type Tool = Extract<Entry, { kind: 'tool' }>
 
-/** A run: tool rows and job results, possibly with reasoning rows between them, starting and ending with one of those; or 2+ adjacent peer rows from one sender. */
+/** A run: tool rows and job results, possibly with reasoning rows between them, starting and ending with one of those; or 2+ adjacent peer rows from one sender.
+ * A run may hold python calls with their cells' calls (a group alone, or a fold of groups and tool rows, `foldTools`). */
 export type Run = Entry[]
 
 /** Deliverable tools (Sky, 2026-10-06): "Show tool cards are never folded in with the collapsed sequential tools. They
@@ -48,39 +49,49 @@ const isQuietStatus = (e: Entry): boolean => e.kind === 'tool' && e.name === 'se
 
 /** A `python` call (without a restart note) heads its own group: the call, then the runtime calls its cell made (call ids `<id>.<n>`). */
 const isPythonCall = (e: Entry | undefined): e is Tool => e?.kind === 'tool' && e.name === 'python' && !e.restart
-/** A group is a `Run` that starts with a python call; the first entry of any other run is a job result or a tool that is not `python`. */
-export const isPythonGroup = (run: Run): boolean => isPythonCall(run[0])
-/** A finished cell that called nothing and did not fail: a `ran code` card on its own. */
-const ranCodeOnly = (item: Entry | Run): item is Run => {
-  const call = Array.isArray(item) && item.length === 1 ? item[0] : undefined
-  return isPythonCall(call) && !call.pending && !!call.result && !call.result.isError
+/** A group: one python call and only the calls its cell made. */
+export const isPythonGroup = (run: Run): boolean => {
+  const head = run[0]
+  return isPythonCall(head) && run.every((e, i) => i === 0 || (e.kind === 'tool' && e.callId.startsWith(`${head.callId}.`)))
 }
-/** Two or more `ran code` cells folded into one card (`ran code × N`), reasoning between them riding along. */
-export const isCodeRun = (run: Run): boolean => isPythonCall(run[0]) && run.filter(isPythonCall).length > 1
 
-/** Sky 2026-11-22: consecutive `ran code` cells collapse into one run; unpinned reasoning between two of them rides
- * along, a trailing one stays outside. A cell with calls, a failed or running cell, or any other row ends the run. */
-function foldCodeOnly(items: (Entry | Run)[], pinned: ReadonlySet<string>): (Entry | Run)[] {
+/** What one item of `foldRuns` adds to a fold, or null when it ends one: a python group whose cell finished without
+ * failing (a running or failed cell keeps its own card, so its live or red header stays in view); with `fold` on, also a
+ * tool run (not a peer group) or a lone tool call. */
+function foldMember(item: Entry | Run, fold: boolean): Entry[] | null {
+  if (!Array.isArray(item)) return fold && foldsTool(item) ? [item] : null
+  const head = item[0]
+  if (isPythonCall(head)) return !head.pending && head.result && !head.result.isError ? item : null
+  return fold && (head?.kind !== 'peer' || isJob(head)) ? item : null
+}
+
+/** Sky 2026-11-23 ("why aren't 3 tools, 2 tools, etc, collapsed to 5 tools … when they're consecutive"): consecutive
+ * python groups, and with `fold` on the tool runs and lone tool calls beside them, become one card; unpinned reasoning
+ * between two of them rides along, a trailing one stays outside. A running or failed cell, a deliverable, a pinned
+ * thinking block, a restart note, assistant text or any other row ends the fold. Without `fold` only cells merge. */
+function foldTools(items: (Entry | Run)[], pinned: ReadonlySet<string>, fold: boolean): (Entry | Run)[] {
   const out: (Entry | Run)[] = []
   let i = 0
   while (i < items.length) {
     const item = items[i] as Entry | Run
-    if (!ranCodeOnly(item)) {
+    const first = foldMember(item, fold)
+    if (!first) {
       out.push(item)
       i++
       continue
     }
-    const run: Entry[] = [item[0] as Entry]
+    const run: Entry[] = [...first]
     const between: Entry[] = []
     let last = i
     for (let j = i + 1; j < items.length; j++) {
       const next = items[j] as Entry | Run
-      if (!Array.isArray(next) && next.kind === 'reasoning' && !pinned.has(next.id)) between.push(next)
-      else if (ranCodeOnly(next)) {
-        run.push(...between, next[0] as Entry)
+      const member = foldMember(next, fold)
+      if (member) {
+        run.push(...between, ...member)
         between.length = 0
         last = j
-      } else break
+      } else if (!Array.isArray(next) && next.kind === 'reasoning' && !pinned.has(next.id)) between.push(next)
+      else break
     }
     out.push(last > i ? run : item)
     i = last + 1
@@ -140,8 +151,8 @@ function adoptCellCalls(entries: Entry[]): Entry[] {
  * so its EngineRestartCard stays in view. Sky 2026-11-10: two or more adjacent peer cards from one sender fold into one
  * run too (`PeerGroup`); a row removed from context stays its own tombstone. Sky 2026-11-10: a job result (`isJob`) is a
  * tool card here: it folds into the tool run around it and never into a `PeerGroup`.
- * A `python` call is never part of such a run: it and the calls its cell made are one group (`PythonGroup`), whether or not
- * `fold` is on (the preference only governs the generic runs). */
+ * A `python` call and the calls its cell made are one group (`PythonGroup`), whether or not `fold` is on (the
+ * preference only governs the generic runs); then `foldTools` merges adjacent groups and runs into one card. */
 export function foldRuns(given: Entry[], pinned: ReadonlySet<string> = NONE, fold = true): (Entry | Run)[] {
   const entries = adoptCellCalls(given.filter((e) => !isQuietStatus(e)))
   const out: (Entry | Run)[] = []
@@ -182,7 +193,7 @@ export function foldRuns(given: Entry[], pinned: ReadonlySet<string> = NONE, fol
     out.push(e)
     i++
   }
-  return fold ? foldCodeOnly(out, pinned) : out
+  return foldTools(out, pinned, fold)
 }
 
 export type Summary = {
@@ -195,8 +206,12 @@ export type Summary = {
   hint: string | null
 }
 
+/** Header of a tool run or a fold: python cells are not counted, their calls are (`ran code × N` when the fold holds no
+ * call at all); the duration spans every call and cell. */
 export function summarize(run: Run): Summary {
-  const tools = run.filter((e): e is Tool => e.kind === 'tool')
+  const tools = run.filter((e): e is Tool => e.kind === 'tool' && !isPythonCall(e))
+  const jobs = run.filter(isJob).length
+  if (!tools.length && !jobs && run.some(isPythonCall)) return summarizeCells(run)
   const current = tools.findIndex((t) => !t.result)
   const done = tools.filter((t) => t.result)
   const failed = done.filter((t) => t.result?.isError)
@@ -206,17 +221,18 @@ export function summarize(run: Run): Summary {
   if (current >= 0) {
     return { text: `running \`${tools[current]?.name}\` · ${current + 1} of ${tools.length}`, running: true, failed: mostlyFailed, hint }
   }
-  const jobs = run.filter(isJob).length
   const parts = [tools.length ? `${tools.length} tool${tools.length === 1 ? '' : 's'}` : '', jobs ? `${jobs} job output${jobs === 1 ? '' : 's'}` : ''].filter(Boolean)
-  const start = tools[0]?.startedAt
-  const end = tools[tools.length - 1]?.finishedAt
+  const timed = run.filter((e): e is Tool => e.kind === 'tool')
+  const start = timed[0]?.startedAt
+  // A cell finishes after the calls it made: the latest finish ends the run.
+  const end = timed.reduce<number | undefined>((max, t) => (t.finishedAt !== undefined && (max === undefined || t.finishedAt > max) ? t.finishedAt : max), undefined)
   // `2.1 s` under a minute, `3 min` from there.
   if (start !== undefined && end !== undefined) parts.push(end - start < 60_000 ? `${((end - start) / 1000).toFixed(1)} s` : `${Math.round((end - start) / 60_000)} min`)
   if (failed.length) parts.push(`${failed.length} failed (${failed.map((t) => t.name).join(', ')})`)
   return { text: parts.join(' · '), running: false, failed: mostlyFailed, hint }
 }
 
-/** Header of a code run: `ran code × 3 · 1.2 s` (the cells' own durations added up). */
+/** Header of a fold of cells that called nothing: `ran code × 3 · 1.2 s` (the cells' own durations added up). */
 export function summarizeCells(run: Run): Summary {
   const cells = run.filter(isPythonCall)
   const ms = cells.reduce((sum, c) => sum + (c.startedAt !== undefined && c.finishedAt !== undefined ? c.finishedAt - c.startedAt : 0), 0)
@@ -250,24 +266,30 @@ export function summarizeGroup(group: Run): GroupSummary {
   return { text: parts.join(' · '), running, failed: crashed || failed.length > done.length - failed.length, hint, calls: calls.length }
 }
 
-/** A folded run: consecutive peer cards from one sender (`PeerGroup`), a python call with its runtime calls (`PythonGroup`), or tool calls and job results (`ToolRun`). */
+/** A folded run: consecutive peer cards from one sender (`PeerGroup`), a python call with its runtime calls alone (`PythonGroup`), or tool calls, job results and python cells (`ToolRun`). */
 export function ToolRunCard({ run, prompts, session }: { run: Run; prompts: Prompt[] | null; session: string }) {
-  if (isCodeRun(run)) return <CodeRun run={run} prompts={prompts} session={session} />
   if (isPythonGroup(run)) return <PythonGroup group={run} prompts={prompts} session={session} />
   return run[0]?.kind === 'peer' && !isJob(run[0]) ? <PeerGroup run={run as Peer[]} session={session} /> : <ToolRun run={run} prompts={prompts} session={session} />
 }
 
-/** One card for a run of consecutive tool calls (70 TOOL-COLLAPSE): collapsed by default to a live status line, expanded
- * to the same cards the transcript shows ungrouped. Open state lives in the disclosure store keyed by the first call id
- * (a job result's entry id when the run starts with one), so it survives the settled reload (new entry ids, same call
- * ids); until the user toggles the run it is open whenever a member's own card is (`toolKey`, a job card's `peer`), so
- * the next call folding an expanded tool card into a run keeps it on screen (171F B13).
+/** One card for a run of consecutive tool calls (70 TOOL-COLLAPSE), or a fold of python cells and tool rows
+ * (`foldTools`): collapsed by default to a live status line, expanded to the same cards the transcript shows
+ * ungrouped, each cell as its `> code` row followed by its calls. Open state lives in the disclosure store keyed by the
+ * first call id (a job result's entry id when the run starts with one), so it survives the settled reload (new entry
+ * ids, same call ids) and a group that becomes the head of a fold keeps its state; until the user toggles the run it is
+ * open whenever a member's own card is (`toolKey`, a job card's `peer`, a later cell's group `run|<call id>`), so the
+ * next call folding an expanded card into a run keeps it on screen (171F B13). The cells' attachments stay visible
+ * collapsed, as on a group's card.
  * Prompts waiting on a call in the run render under the header whether or not it is open: an approval must never hide
  * inside a collapsed run. */
 function ToolRun({ run, prompts, session }: { run: Run; prompts: Prompt[] | null; session: string }) {
   const first = run[0] as Entry
   const member = useDisclosed((open) =>
-    run.some((e) => (e.kind === 'tool' ? open[toolKey(e.callId)] : e.kind === 'peer' && open[disclosureKey(e.id, 'peer')]) === true),
+    run.some((e) =>
+      e.kind === 'tool'
+        ? open[toolKey(e.callId)] === true || (e !== first && isPythonCall(e) && open[disclosureKey('run', e.callId)] === true)
+        : e.kind === 'peer' && open[disclosureKey(e.id, 'peer')] === true,
+    ),
   )
   const [open, setOpen] = useDisclosure(disclosureKey('run', first.kind === 'tool' ? first.callId : first.id), member)
   const { text, running, failed, hint } = summarize(run)
@@ -285,33 +307,48 @@ function ToolRun({ run, prompts, session }: { run: Run; prompts: Prompt[] | null
             <div className={cn('w-full truncate pl-6 font-mono text-xs', hint.startsWith('✗') ? 'text-danger' : 'text-success')}>{hint}</div>
           )}
         </button>
+        {run.map(
+          (e) =>
+            isPythonCall(e) &&
+            e.result && <Attachments key={e.id} files={e.result.files} occurrences={e.context?.attachments} session={session} active={e.context?.active} className="mt-2" />,
+        )}
       </div>
-      {open && run.map((e) => <Message key={e.id} entry={e} prompts={null} session={session} />)}
+      {open &&
+        run.map((e) =>
+          isPythonCall(e) ? (
+            <div key={e.id} className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 pb-3 text-sm">
+              <CellCode call={e} />
+            </div>
+          ) : (
+            <Message key={e.id} entry={e} prompts={null} session={session} />
+          ),
+        )}
       {prompts?.map((p) => <PromptCard key={p.id} prompt={p} />)}
     </>
   )
 }
 
-/** Consecutive cells that called nothing (`isCodeRun`): one collapsed `ran code × N` card; expanded, each cell's own
- * `ran code` card (its source one click further) and the reasoning between them. Open state: `cells|<first call id>`. */
-function CodeRun({ run, prompts, session }: { run: Run; prompts: Prompt[] | null; session: string }) {
-  const first = run[0] as Tool
-  const [open, setOpen] = useDisclosure(disclosureKey('cells', first.callId))
-  const { text } = summarizeCells(run)
+/** A cell's collapsed `> code` row (`code|<call id>`): open, the source; the cell's output when it failed or the source is open. */
+function CellCode({ call }: { call: Tool }) {
+  const [codeOpen, setCodeOpen] = useDisclosure(disclosureKey('code', call.callId))
+  const source = codeDetails(call.name, call.args)
+  const { result } = call
   return (
     <>
-      <div className="my-2 min-w-0 rounded-xl border border-border-subtle bg-layer-1 px-4 py-3 text-sm">
-        <button type="button" className="flex w-full min-w-0 items-center gap-2 text-left font-medium" aria-expanded={open} onClick={() => setOpen(!open)}>
-          <ChevronRight className={cn('size-4 shrink-0 transition-transform', open && 'rotate-90')} />
-          <Wrench className="size-3.5 shrink-0 text-fg-secondary" />
-          <span className="min-w-0 truncate">{text}</span>
-        </button>
-      </div>
-      {open &&
-        run.map((e) =>
-          isPythonCall(e) ? <PythonGroup key={e.id} group={[e]} prompts={null} session={session} /> : <Message key={e.id} entry={e} prompts={null} session={session} />,
-        )}
-      {prompts?.map((p) => <PromptCard key={p.id} prompt={p} />)}
+      {source && (
+        <div className="mt-2 pl-6">
+          <button type="button" className="flex w-full items-center gap-2 text-left font-medium" aria-expanded={codeOpen} onClick={() => setCodeOpen(!codeOpen)}>
+            <ChevronRight className={cn('size-4 shrink-0 transition-transform', codeOpen && 'rotate-90')} />
+            <span>code</span>
+          </button>
+          {codeOpen && <Source code={source.code} language={source.language} />}
+        </div>
+      )}
+      {result && (result.isError || codeOpen) && result.output && (
+        <pre className={cn('mt-2 ml-6 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap', result.isError && 'text-danger')}>
+          {result.output}
+        </pre>
+      )}
     </>
   )
 }
@@ -326,9 +363,7 @@ function PythonGroup({ group, prompts, session }: { group: Run; prompts: Prompt[
   const calls = group.slice(1)
   const member = useDisclosed((open) => calls.some((e) => e.kind === 'tool' && open[toolKey(e.callId)] === true))
   const [open, setOpen] = useDisclosure(disclosureKey('run', call.callId), member)
-  const [codeOpen, setCodeOpen] = useDisclosure(disclosureKey('code', call.callId))
   const { text, running, failed, hint } = summarizeGroup(group)
-  const source = codeDetails(call.name, call.args)
   const { result } = call
   return (
     <>
@@ -344,20 +379,7 @@ function PythonGroup({ group, prompts, session }: { group: Run; prompts: Prompt[
             <div className={cn('w-full truncate pl-6 font-mono text-xs', hint.startsWith('✗') ? 'text-danger' : 'text-success')}>{hint}</div>
           )}
         </button>
-        {open && source && (
-          <div className="mt-2 pl-6">
-            <button type="button" className="flex w-full items-center gap-2 text-left font-medium" aria-expanded={codeOpen} onClick={() => setCodeOpen(!codeOpen)}>
-              <ChevronRight className={cn('size-4 shrink-0 transition-transform', codeOpen && 'rotate-90')} />
-              <span>code</span>
-            </button>
-            {codeOpen && <Source code={source.code} language={source.language} />}
-          </div>
-        )}
-        {open && result && (result.isError || codeOpen) && result.output && (
-          <pre className={cn('mt-2 ml-6 max-h-56 overflow-auto rounded-lg bg-layer-2 p-3 font-mono text-xs leading-5 wrap-anywhere whitespace-pre-wrap', result.isError && 'text-danger')}>
-            {result.output}
-          </pre>
-        )}
+        {open && <CellCode call={call} />}
         {result && <Attachments files={result.files} occurrences={call.context?.attachments} session={session} active={call.context?.active} className="mt-2" />}
       </div>
       {open && calls.map((e) => <Message key={e.id} entry={e} prompts={null} session={session} />)}

@@ -24,7 +24,7 @@ export const isDecision = (prompt: Prompt): boolean =>
   prompt.type === 'AskRequested' && prompt.questions.length === 1 && prompt.questions[0]!.id.startsWith('decision:')
 
 /**
- * Entries (consecutive tool calls folded into one run row when `collapse`, 70, a `python` call and its runtime calls always into one group; `pinned` thinking blocks never fold,
+ * Entries (consecutive tool calls folded into one run row when `collapse`, 70, a `python` call and its runtime calls always into one group, adjacent groups (and with `collapse` the runs beside them) into one fold; `pinned` thinking blocks never fold,
  * `foldRuns`), each with the prompts waiting on its (unfinished, same-named) tool call. 114 (Sky's D1 + 16:55 correction):
  * - a decision ask is never a chat card: the desk's `escalate` tool row is the awareness and `/attention` is where it is
  *   answered — it is dropped here;

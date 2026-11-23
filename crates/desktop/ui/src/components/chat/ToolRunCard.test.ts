@@ -207,10 +207,10 @@ test('ToolRunCard: a run that starts with a job is a tool run; expanded, the job
 const py = (extra: Partial<Tool> = {}): Tool => tool(50, { name: 'python', callId: 'p1', args: { code: 'x = read_file("a")\nprint(x)' }, ...extra })
 const kid = (n: number, extra: Partial<Tool> = {}): Tool => tool(60 + n, { callId: `p1.${n}`, child: true, name: `k${n}`, ...extra })
 
-test('foldRuns: a python call and the calls its cell made are one group, apart from neighbouring runs; deliverables it made stay plain after it', () => {
+test('foldRuns: a python call and the calls its cell made are one group, folded with neighbouring runs; deliverables it made stay plain after it', () => {
   const [a, b, k1, k2] = [tool(1), tool(2), kid(1), kid(2)]
   const shown = kid(3, { name: 'show' })
-  expect(foldRuns([a, b, py(), k1, shown, k2, tool(3), tool(4)])).toEqual([[a, b], [py(), k1, k2], shown, [tool(3), tool(4)]])
+  expect(foldRuns([a, b, py(), k1, shown, k2, tool(3), tool(4)])).toEqual([[a, b, py(), k1, k2], shown, [tool(3), tool(4)]])
   // A cell that made no calls is still a group; a restart note keeps it a plain entry.
   expect(foldRuns([py()])).toEqual([[py()]])
   const restarted = py({ restart: { clock: '09:00:00', after: 9, cause: 'restart', replayed: 1, interrupted: 0, text: '' } })
@@ -224,12 +224,12 @@ test('foldRuns: parallel cells (two python calls in one message) each get their 
   const p2 = tool(51, { name: 'python', callId: 'p2', args: { code: 'y = grep("b")' } })
   const [a1, b1] = [kid(1), tool(71, { callId: 'p2.1', child: true, name: 'g1' })]
   const a2 = kid(2)
-  expect(foldRuns([p1, p2, a1, b1, a2])).toEqual([[p1, a1, a2], [p2, b1]])
+  expect(foldRuns([p1, p2, a1, b1, a2])).toEqual([[p1, a1, a2, p2, b1]])
   expect(summarizeGroup([p1, a1, a2]).text).toBe('2 tools')
   expect(summarizeGroup([p2, b1]).text).toBe('1 tool')
-  // A call whose cell is not on screen stays where it is.
+  // A call whose cell is not on screen stays where it is (here a tool call beside the cells, so in their fold).
   const stray = tool(72, { callId: 'gone.1', child: true })
-  expect(foldRuns([p1, p2, stray, a1])).toEqual([[p1, a1], [p2], stray])
+  expect(foldRuns([p1, p2, stray, a1])).toEqual([[p1, a1, p2, stray]])
 })
 
 test('foldRuns: consecutive cells that called nothing fold into one `ran code × N` card', () => {
@@ -244,14 +244,14 @@ test('foldRuns: consecutive cells that called nothing fold into one `ran code ×
   // A lone one stays its own group; a pinned thinking block splits the run.
   expect(foldRuns([q1, t1])).toEqual([[q1], t1])
   expect(foldRuns([q1, t1, q2], new Set(['t1']))).toEqual([[q1], t1, [q2]])
-  // A cell with calls, a failed cell or a running cell ends the run.
-  expect(foldRuns([q1, q2, py(), kid(1), q3])).toEqual([[q1, q2], [py(), kid(1)], [q3]])
+  // A cell with calls joins the fold; a failed cell or a running cell ends it.
+  expect(foldRuns([q1, q2, py(), kid(1), q3])).toEqual([[q1, q2, py(), kid(1), q3]])
   const failed = cell(4, { result: { output: 'NameError', isError: true, files: [] } })
   expect(foldRuns([q1, failed, q2])).toEqual([[q1], [failed], [q2]])
   const running = cell(5, { result: undefined, pending: false })
   expect(foldRuns([q1, q2, running])).toEqual([[q1, q2], [running]])
-  // With folding off each cell keeps its own card.
-  expect(foldRuns([q1, q2], undefined, false)).toEqual([[q1], [q2]])
+  // With folding off cells still fold with each other.
+  expect(foldRuns([q1, q2], undefined, false)).toEqual([[q1, q2]])
   // The card: one header, collapsed.
   const html = renderToStaticMarkup(createElement(ToolRunCard, { run: [q1, t1, q2], prompts: null, session: 's' }))
   expect(html).toContain('ran code × 2')
@@ -313,4 +313,64 @@ test('foldRuns: a direct set_status call draws nothing and no longer splits a ru
   const py = tool(5, { name: 'python', callId: 'p' })
   const inner = tool(6, { name: 'set_status', callId: 'p.1' })
   expect(foldRuns([py, inner])).toEqual([[py, inner]])
+})
+
+/** A finished cell `id` and the `calls` it made, numbered from `n`. */
+const cell = (id: string, n: number, calls: number): Tool[] => [
+  tool(n, { name: 'python', callId: id, args: { code: `# ${id}` } }),
+  ...Array.from({ length: calls }, (_, i) => tool(n + 1 + i, { callId: `${id}.${i + 1}`, child: true, name: `${id}k${i + 1}` })),
+]
+const thought = (id: string): Entry => ({ id, kind: 'reasoning', text: 'hm', done: true })
+
+test('foldRuns: Sky 2026-11-23 — consecutive groups and tool runs with only thoughts between them are one `10 tools` card', () => {
+  useToolRuns.setState({ disclosed: {} })
+  // Thought, [2 tools], [1 tool], thought, [1 tool], thought, [4 tools], [2 tools], text.
+  const [ta, tb] = [tool(1), tool(2)]
+  const [A, B, C, D] = [cell('A', 10, 1), cell('B', 20, 1), cell('C', 30, 4), cell('D', 40, 2)]
+  const [t0, t1, t2] = [thought('t0'), thought('t1'), thought('t2')]
+  const said = text('x')
+  const entries = [t0, ta, tb, ...A, t1, ...B, t2, ...C, ...D, said]
+  const fold = [ta, tb, ...A, t1, ...B, t2, ...C, ...D]
+  expect(foldRuns(entries)).toEqual([t0, fold, said])
+  // Collapse off: the generic calls stay plain, the cells still fold.
+  expect(foldRuns(entries, undefined, false)).toEqual([t0, ta, tb, [...A, t1, ...B, t2, ...C, ...D], said])
+  expect(summarize(fold).text).toBe('10 tools')
+  const render = () => renderToStaticMarkup(createElement(ToolRunCard, { run: fold, prompts: null, session: 's' }))
+  const collapsed = render()
+  expect(collapsed.match(/aria-expanded/g)).toHaveLength(1)
+  expect(collapsed).toContain('10 tools')
+  expect(collapsed).not.toContain('>Ak1<')
+  // Expanded under the first entry's key: every cell's `code` row, its calls, the generic calls, in order.
+  useToolRuns.setState({ disclosed: { [disclosureKey('run', 'c1')]: true } })
+  const expanded = render()
+  expect(expanded.match(/>code</g)).toHaveLength(4)
+  const order = ['>t1<', '>t2<', '>Ak1<', '>Bk1<', '>Ck1<', '>Ck4<', '>Dk2<'].map((s) => expanded.indexOf(s))
+  expect(order.every((at, i) => at >= 0 && (i === 0 || at > order[i - 1]!))).toBe(true)
+})
+
+test('foldRuns: a group the user opened keeps the fold it joins open', () => {
+  const [A, B] = [cell('A', 10, 1), cell('B', 20, 1)]
+  useToolRuns.setState({ disclosed: { [disclosureKey('run', 'B')]: true } })
+  const html = renderToStaticMarkup(createElement(ToolRunCard, { run: [...A, ...B], prompts: null, session: 's' }))
+  expect(html).toContain('>Bk1<')
+  useToolRuns.setState({ disclosed: {} })
+})
+
+test('foldRuns: a deliverable, a pinned thought, assistant text, a failed or running cell each end a fold of groups', () => {
+  const [A, B] = [cell('A', 10, 2), cell('B', 20, 1)]
+  const show = tool(9, { name: 'show' })
+  expect(foldRuns([...A, show, ...B])).toEqual([A, show, B])
+  const t = thought('t')
+  expect(foldRuns([...A, t, ...B], new Set(['t']))).toEqual([A, t, B])
+  expect(foldRuns([...A, t, ...B])).toEqual([[...A, t, ...B]])
+  expect(foldRuns([...A, text('x'), ...B])).toEqual([A, text('x'), B])
+  const [crashed, ...ck] = cell('F', 50, 1)
+  const failed = [{ ...crashed!, result: { output: 'NameError', isError: true, files: [] } }, ...ck]
+  expect(foldRuns([...A, ...failed, ...B])).toEqual([A, failed, B])
+  const [live, ...lk] = cell('R', 60, 1)
+  const running = [{ ...live!, result: undefined }, ...lk]
+  expect(foldRuns([...A, ...B, ...running])).toEqual([[...A, ...B], running])
+  // A deliverable a cell made stays plain after its group and splits the fold too.
+  const made = tool(70, { callId: 'A.3', child: true, name: 'show' })
+  expect(foldRuns([...A, made, ...B])).toEqual([A, made, B])
 })
