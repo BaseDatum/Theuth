@@ -235,3 +235,119 @@ async fn visitor_hello_reaches_the_engine_behind_proxy_v2() {
 
     edge.shutdown().await;
 }
+
+fn hello_body(v: u32, client: &str, info: &Info, mesh: &SecretKey, engine: &SecretKey) -> Vec<u8> {
+    let d = Delegation::new(
+        info.domain.clone(),
+        info.edge_id,
+        mesh.public(),
+        engine.public(),
+        now_ms(),
+        info.now_ms,
+    );
+    serde_json::to_vec(&Hello {
+        v,
+        delegation: d.sign(mesh).unwrap(),
+        invite: None,
+        client: client.into(),
+        terms_rev: None,
+    })
+    .unwrap()
+}
+
+/// FIX-EDGE: `/v1/info` rate limit, protocol and client version gates, routes refused after a Stop all until a
+/// new `hello`, and the admin socket's mode and line cap.
+#[tokio::test(flavor = "multi_thread")]
+async fn control_gates() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let yaml = format!(
+        "domain: tun.zip\ndata_dir: {d}\nlisten: \"127.0.0.1:0\"\niroh: {{listen: \"127.0.0.1:0\"}}\n\
+         min_client: \"2.0.0\"\nlimits: {{info_per_ip_min: 2}}\nadmin: {{socket: {d}/admin.sock}}\n",
+        d = dir.path().display()
+    );
+    let (cfg, secrets) = Config::from_yaml(&yaml, &|_| None).unwrap();
+    let edge = share_edge::start_with(cfg, secrets, common::fakes().backends)
+        .await
+        .unwrap();
+    let engine_key = SecretKey::generate();
+    let mesh_key = SecretKey::generate();
+    let ep = Endpoint::builder(presets::Minimal)
+        .secret_key(engine_key.clone())
+        .relay_mode(RelayMode::Disabled)
+        .bind_addr("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+        .unwrap()
+        .bind()
+        .await
+        .unwrap();
+    let conn = ep
+        .connect(edge.endpoint_addr(), share_proto::ALPN)
+        .await
+        .unwrap();
+
+    // m9: two per minute from this network, then 429 rate_limited.
+    let (status, body) = call(&conn, "GET", paths::INFO, None).await;
+    assert_eq!(status, 200);
+    let info: Info = serde_json::from_slice(&body).unwrap();
+    assert_eq!(call(&conn, "GET", paths::INFO, None).await.0, 200);
+    let (status, body) = call(&conn, "GET", paths::INFO, None).await;
+    assert_eq!(status, 429);
+    assert!(String::from_utf8_lossy(&body).contains("rate_limited"));
+
+    // M11: another protocol major, then a client below min_client: 426 client_too_old.
+    for (v, client) in [(2, client_agent("2.25.5")), (1, client_agent("1.9.9"))] {
+        let body = hello_body(v, &client, &info, &mesh_key, &engine_key);
+        let (status, body) = call(&conn, "POST", paths::HELLO, Some(body)).await;
+        assert_eq!(status, 426, "v{v} {client}");
+        assert!(String::from_utf8_lossy(&body).contains("client_too_old"));
+    }
+
+    let good = || hello_body(1, &client_agent("2.25.5"), &info, &mesh_key, &engine_key);
+    let (status, body) = call(&conn, "POST", paths::HELLO, Some(good())).await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let name = names::random_name([9, 8, 7, 6, 5, 4]);
+    let req = serde_json::to_vec(&NameRequest { name: name.clone() }).unwrap();
+    assert_eq!(call(&conn, "POST", paths::NAMES, Some(req)).await.0, 201);
+    let routes = serde_json::to_vec(&RoutesPut {
+        hosts: vec![format!("x.{name}.tun.zip")],
+    })
+    .unwrap();
+    assert_eq!(call(&conn, "PUT", paths::ROUTES, Some(routes.clone())).await.0, 204);
+
+    // M7: a Stop all after this session's hello (here written straight to the store, so the tunnel is not
+    // killed): routes are refused until a new hello.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let mesh = mesh_key.public().to_string();
+    edge.edge.store.stop_all(&mesh, now_ms()).await.unwrap();
+    let (status, body) = call(&conn, "PUT", paths::ROUTES, Some(routes.clone())).await;
+    assert_eq!(status, 403);
+    assert!(String::from_utf8_lossy(&body).contains("hello_required"));
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(call(&conn, "POST", paths::HELLO, Some(good())).await.0, 200);
+    assert_eq!(call(&conn, "PUT", paths::ROUTES, Some(routes)).await.0, 204);
+
+    // m2: 0600 from the start (bound in a 0700 staging directory, nothing left behind).
+    let sock = dir.path().join("admin.sock");
+    let mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let stray: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".admin-bind-"))
+        .collect();
+    assert!(stray.is_empty(), "{stray:?}");
+
+    // m1: a request line over the cap gets `too_large` and the connection closes.
+    let mut admin = tokio::net::UnixStream::connect(&sock).await.unwrap();
+    let long = vec![b'x'; share_edge::admin::MAX_LINE + 1];
+    admin.write_all(&long).await.unwrap();
+    let mut out = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), admin.read_to_end(&mut out))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out).contains("too_large"), "{}", String::from_utf8_lossy(&out));
+
+    edge.shutdown().await;
+}

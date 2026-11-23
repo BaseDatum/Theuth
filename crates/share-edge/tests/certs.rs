@@ -11,7 +11,7 @@ use share_edge::certs::{self, Certs, Submitted};
 use share_edge::config::{Config, Secrets};
 use share_edge::dns::Rtype;
 use share_edge::state::{Edge, now_ms};
-use share_edge::store::{NewName, Store};
+use share_edge::store::{Claimed, NewName, Store};
 use share_proto::{ErrorCode, PublicKey, SecretKey};
 
 const HOUR: u64 = 3_600_000;
@@ -43,14 +43,17 @@ async fn claim(edge: &Edge, name: &str) -> PublicKey {
     let m = mesh.to_string();
     edge.store.attach(&m, &engine.to_string(), "192.0.2.1", false, now_ms()).await.unwrap();
     edge.store
-        .claim(NewName {
-            domain: "tun.zip",
-            name,
-            kind: "reserved",
-            owner: &m,
-            now_ms: now_ms() as i64,
-            net: "192.0.2.1",
-        })
+        .claim(
+            NewName {
+                domain: "tun.zip",
+                name,
+                kind: "reserved",
+                owner: &m,
+                now_ms: now_ms() as i64,
+                net: "192.0.2.1",
+            },
+            3,
+        )
         .await
         .unwrap();
     mesh
@@ -183,7 +186,16 @@ async fn sqlx_clear_ari(r: &Rig) {
     let row = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap();
     r.edge
         .store
-        .store_chain("tun.zip", "sky", "letsencrypt", row.chain_pem.as_deref().unwrap(), row.not_after_ms.unwrap() as u64, None)
+        .store_chain(
+            "tun.zip",
+            "sky",
+            row.owner.as_deref().unwrap(),
+            row.csr_spki.as_deref().unwrap(),
+            "letsencrypt",
+            row.chain_pem.as_deref().unwrap(),
+            row.not_after_ms.unwrap() as u64,
+            None,
+        )
         .await
         .unwrap();
 }
@@ -214,9 +226,10 @@ async fn renewal_runs_while_the_new_cert_bucket_is_empty() {
 #[tokio::test]
 async fn release_revokes_and_deletes_records() {
     let r = rig("").await;
-    let (_, _) = issue(&r, "sky").await;
+    let (mesh, _) = issue(&r, "sky").await;
     let chain = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap().chain_pem.unwrap();
-    r.edge.store.release("tun.zip", "sky", now_ms(), now_ms() + DAY).await.unwrap();
+    let m = mesh.to_string();
+    r.edge.store.release("tun.zip", "sky", &m, now_ms(), DAY).await.unwrap().unwrap();
     certs::retire(&r.edge, "sky", Reason::CessationOfOperation).await;
     assert_eq!(r.f.ca.revoked.lock().unwrap().clone(), vec![(chain, Reason::CessationOfOperation)]);
     assert!(r.f.zone.hosts().is_empty(), "{:?}", r.f.zone.hosts());
@@ -231,7 +244,7 @@ async fn reconciliation_removes_orphans_and_keeps_live_records() {
     let (_, _) = issue(&r, "sky").await;
     let now = now_ms();
     // A released name whose records a crash left, and a stale challenge TXT.
-    claim(&r.edge, "old").await;
+    let old = claim(&r.edge, "old").await.to_string();
     for (t, host, v, n) in [
         (Rtype::Cname, "old", "edge.tun.zip", "old"),
         (Rtype::Cname, "*.old", "edge.tun.zip", "old"),
@@ -241,7 +254,7 @@ async fn reconciliation_removes_orphans_and_keeps_live_records() {
         r.f.zone.put(t, host, v);
     }
     r.edge.store.set_records("tun.zip", "old", true).await.unwrap();
-    r.edge.store.release("tun.zip", "old", now, now + DAY).await.unwrap();
+    r.edge.store.release("tun.zip", "old", &old, now, DAY).await.unwrap().unwrap();
 
     certs::reconcile(&r.edge).await.unwrap();
     let mut hosts = r.f.zone.hosts();
@@ -291,4 +304,115 @@ async fn new_names_wait_for_a_token() {
     assert!(job.next_at_ms as u64 > t0 + 6 * DAY);
     certs::tick(&r.edge, t0 + 7 * DAY).await.unwrap();
     assert_eq!(r.edge.store.cert_row("tun.zip", "fog").await.unwrap().unwrap().state, "valid");
+}
+
+async fn new_mesh(edge: &Edge) -> PublicKey {
+    let mesh = SecretKey::generate().public();
+    let engine = SecretKey::generate().public().to_string();
+    edge.store.attach(&mesh.to_string(), &engine, "192.0.2.1", false, now_ms()).await.unwrap();
+    mesh
+}
+
+async fn claim_as(edge: Arc<Edge>, mesh: PublicKey, name: &'static str, kind: &'static str) -> Claimed {
+    let m = mesh.to_string();
+    let n = NewName { domain: "tun.zip", name, kind, owner: &m, now_ms: now_ms() as i64, net: "192.0.2.1" };
+    edge.store.claim(n, 1).await.unwrap()
+}
+
+fn sorted(mut v: Vec<Claimed>) -> Vec<String> {
+    let mut s: Vec<String> = v.drain(..).map(|c| format!("{c:?}")).collect();
+    s.sort();
+    s
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_claims_have_one_winner_and_keep_the_quota() {
+    let r = rig("").await;
+    let (a, b) = (new_mesh(&r.edge).await, new_mesh(&r.edge).await);
+
+    // Two meshes, one name, at once: one wins, the other sees it taken.
+    let x = tokio::spawn(claim_as(r.edge.clone(), a, "sky", "reserved"));
+    let y = tokio::spawn(claim_as(r.edge.clone(), b, "sky", "reserved"));
+    let got = vec![x.await.unwrap(), y.await.unwrap()];
+    assert_eq!(sorted(got), ["Granted", "Taken"]);
+
+    // One mesh, two random names at once: the quota is one random name while it holds none.
+    let c = new_mesh(&r.edge).await;
+    let x = tokio::spawn(claim_as(r.edge.clone(), c, "fogone", "random"));
+    let y = tokio::spawn(claim_as(r.edge.clone(), c, "fogtwo", "random"));
+    let got = vec![x.await.unwrap(), y.await.unwrap()];
+    assert_eq!(sorted(got), ["Granted", "Quota"]);
+    assert_eq!(r.edge.store.held_names("tun.zip", &c.to_string()).await.unwrap().len(), 1);
+
+    // A released name: others wait for the cooldown, the previous owner does not.
+    let owner = r.edge.store.name("tun.zip", "sky").await.unwrap().unwrap().owner.unwrap();
+    let (winner, loser) = if owner == a.to_string() { (a, b) } else { (b, a) };
+    r.edge.store.release("tun.zip", "sky", &owner, now_ms(), DAY).await.unwrap().unwrap();
+    assert!(r.edge.store.release("tun.zip", "sky", &owner, now_ms(), DAY).await.unwrap().is_none());
+    assert!(matches!(claim_as(r.edge.clone(), loser, "sky", "reserved").await, Claimed::Cooldown(_)));
+    assert_eq!(claim_as(r.edge.clone(), winner, "sky", "reserved").await, Claimed::Granted);
+    assert_eq!(claim_as(r.edge.clone(), winner, "sky", "reserved").await, Claimed::AlreadyHeld);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chain_ordered_before_a_release_never_lands_on_the_next_owner() {
+    let r = rig("").await;
+    let a = claim(&r.edge, "sky").await;
+    certs::submit(&r.edge, &a, "sky", &csr("sky"), false).await.unwrap().unwrap();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (go_tx, go_rx) = tokio::sync::oneshot::channel();
+    *r.f.ca.gate.lock().unwrap() = Some((started_tx, go_rx));
+    let edge = r.edge.clone();
+    let runner = tokio::spawn(async move { certs::tick(&edge, now_ms()).await });
+    started_rx.await.unwrap();
+
+    // Mid-order: `a` releases (no cooldown), `b` claims and posts its own CSR.
+    r.edge.store.release("tun.zip", "sky", &a.to_string(), now_ms(), 0).await.unwrap().unwrap();
+    let b = new_mesh(&r.edge).await;
+    assert_eq!(claim_as(r.edge.clone(), b, "sky", "reserved").await, Claimed::Granted);
+    let p = certs::submit(&r.edge, &b, "sky", &csr("sky"), false).await.unwrap().unwrap();
+    assert!(matches!(p, Submitted::Pending(_)), "{p:?}");
+    go_tx.send(()).unwrap();
+    runner.await.unwrap().unwrap();
+    certs::tick(&r.edge, now_ms()).await.unwrap();
+
+    let row = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap();
+    assert_eq!(row.owner.as_deref(), Some(b.to_string().as_str()));
+    let chain = row.chain_pem.expect("b's own chain");
+    assert_eq!(leaf_info(&chain).unwrap().spki.0.as_slice(), row.csr_spki.as_deref().unwrap(), "b's key");
+    let revoked = r.f.ca.revoked.lock().unwrap().clone();
+    assert_eq!(revoked.len(), 1, "a's orphan leaf is revoked");
+    assert_ne!(revoked[0].0, chain);
+    assert_eq!(revoked[0].1, Reason::CessationOfOperation);
+    let jobs = r.edge.store.jobs("tun.zip", "sky").await.unwrap();
+    let states: Vec<_> = jobs.iter().map(|j| (j.mesh == a.to_string(), j.state.as_str())).collect();
+    assert_eq!(states, [(true, "dropped"), (false, "done")]);
+    // m9: each challenge TXT was polled for (as an absolute name) before the CA looked.
+    let probes = r.f.zone.probes.lock().unwrap().clone();
+    assert!(probes.iter().all(|p| p == "_acme-challenge.sky.tun.zip."), "{probes:?}");
+    assert_eq!(probes.len(), 4, "two authorizations per order, two orders");
+}
+
+#[tokio::test]
+async fn a_failed_revocation_is_retried_and_the_records_still_go() {
+    let r = rig("").await;
+    let (mesh, _) = issue(&r, "sky").await;
+    let chain = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap().chain_pem.unwrap();
+    r.f.ca.fail_revokes.store(1, Ordering::SeqCst);
+    r.edge.store.release("tun.zip", "sky", &mesh.to_string(), now_ms(), DAY).await.unwrap().unwrap();
+    certs::retire(&r.edge, "sky", Reason::CessationOfOperation).await;
+    assert!(r.f.ca.revoked.lock().unwrap().is_empty());
+    assert!(r.f.zone.hosts().is_empty(), "records go even when the CA fails: {:?}", r.f.zone.hosts());
+    let rev = r.edge.store.revocations("tun.zip", "sky").await.unwrap();
+    assert_eq!(rev.len(), 1);
+    assert_eq!((rev[0].state.as_str(), rev[0].attempts), ("queued", 1));
+    assert!(rev[0].last_error.as_deref().unwrap().contains("CA unavailable"));
+    assert!(r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap().chain_pem.is_none());
+
+    certs::tick(&r.edge, now_ms()).await.unwrap();
+    assert!(r.f.ca.revoked.lock().unwrap().is_empty(), "backoff before the retry");
+    certs::tick(&r.edge, now_ms() + 3 * 60_000).await.unwrap();
+    assert_eq!(r.f.ca.revoked.lock().unwrap().clone(), vec![(chain, Reason::CessationOfOperation)]);
+    let rev = r.edge.store.revocations("tun.zip", "sky").await.unwrap();
+    assert_eq!((rev[0].state.as_str(), rev[0].attempts), ("done", 2));
 }

@@ -31,6 +31,27 @@ pub enum Reason {
     KeyCompromise,
 }
 
+impl Reason {
+    /// The `revocations.reason` column value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Reason::CessationOfOperation => "cessation_of_operation",
+            Reason::Superseded => "superseded",
+            Reason::KeyCompromise => "key_compromise",
+        }
+    }
+
+    /// The inverse of [`Reason::as_str`].
+    pub fn parse(s: &str) -> Option<Reason> {
+        match s {
+            "cessation_of_operation" => Some(Reason::CessationOfOperation),
+            "superseded" => Some(Reason::Superseded),
+            "key_compromise" => Some(Reason::KeyCompromise),
+            _ => None,
+        }
+    }
+}
+
 /// An ARI suggested window, Unix ms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Window {

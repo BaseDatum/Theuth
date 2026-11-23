@@ -10,7 +10,7 @@ use anyhow::Context as _;
 use serde_json::{Value, json};
 use share_proto::admin::{AdminCommand, AdminRequest, AdminResponse, BanKind, ListWhat};
 use share_proto::{ErrorCode, KillReason};
-use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::state::{Edge, now_ms};
@@ -24,13 +24,34 @@ fn kind_str(k: BanKind) -> &'static str {
     }
 }
 
-/// Bind the socket (replacing a stale file), mode 0600.
+/// Longest request line the socket reads (m1); a longer one is answered `too_large` and the connection closed.
+pub const MAX_LINE: usize = share_proto::limits::MAX_JSON_BODY;
+
+/// Bind the socket (replacing a stale file), mode 0600. The socket is created inside a fresh 0700 directory
+/// next to `path`, set to 0600 there, then renamed into place (m2): it is never reachable with the umask's
+/// permissions.
 pub fn bind(path: &Path) -> anyhow::Result<UnixListener> {
+    use std::os::unix::fs::DirBuilderExt as _;
     if path.exists() {
         std::fs::remove_file(path).with_context(|| format!("remove stale {}", path.display()))?;
     }
-    let l = UnixListener::bind(path).with_context(|| format!("bind {}", path.display()))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let staging = parent.join(format!(".admin-bind-{}-{:016x}", std::process::id(), rand::random::<u64>()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&staging)
+        .with_context(|| format!("create {}", staging.display()))?;
+    let tmp = staging.join("admin.sock");
+    let bound = bind_private(&tmp, path);
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_dir(&staging);
+    bound
+}
+
+fn bind_private(tmp: &Path, path: &Path) -> anyhow::Result<UnixListener> {
+    let l = UnixListener::bind(tmp).with_context(|| format!("bind {}", tmp.display()))?;
+    std::fs::set_permissions(tmp, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::rename(tmp, path).with_context(|| format!("move socket to {}", path.display()))?;
     Ok(l)
 }
 
@@ -53,18 +74,31 @@ pub async fn serve(edge: Arc<Edge>, listener: UnixListener, socket: std::path::P
 
 async fn connection(edge: Arc<Edge>, stream: UnixStream) {
     let (r, mut w) = stream.into_split();
-    let mut lines = BufReader::new(r).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if line.trim().is_empty() {
-            continue;
+    let mut reader = BufReader::new(r);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let limit = u64::try_from(MAX_LINE + 1).unwrap_or(u64::MAX);
+        match (&mut reader).take(limit).read_until(b'\n', &mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
         }
-        let resp = match serde_json::from_str::<AdminRequest>(&line) {
-            Ok(req) => handle(&edge, req).await,
-            Err(e) => AdminResponse::err(0, ErrorCode::Invalid, e.to_string()),
+        let too_long = buf.last() != Some(&b'\n') && buf.len() > MAX_LINE;
+        let resp = if too_long {
+            AdminResponse::err(0, ErrorCode::TooLarge, format!("request line over {MAX_LINE} bytes"))
+        } else {
+            let line = String::from_utf8_lossy(&buf);
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<AdminRequest>(&line) {
+                Ok(req) => handle(&edge, req).await,
+                Err(e) => AdminResponse::err(0, ErrorCode::Invalid, e.to_string()),
+            }
         };
         let mut out = serde_json::to_vec(&resp).unwrap_or_default();
         out.push(b'\n');
-        if w.write_all(&out).await.is_err() {
+        if w.write_all(&out).await.is_err() || too_long {
             break;
         }
     }

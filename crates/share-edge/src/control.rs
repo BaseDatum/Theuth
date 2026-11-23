@@ -30,7 +30,7 @@ use share_proto::{
 use tower::ServiceExt as _;
 
 use crate::state::{Edge, Route, Session, Tunnel, now_ms};
-use crate::store::{NameRow, NewName};
+use crate::store::{Claimed, NameRow, NewName};
 
 /// Header read deadline of one control request.
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -94,9 +94,10 @@ async fn serve(edge: Arc<Edge>, tunnel: Arc<Tunnel>) {
                     break;
                 }
                 if tunnel.session(now_ms()).is_none() {
-                    // §5.7: at expiry without a renewed delegation.
+                    // §5.7: at expiry without a renewed delegation, one `kill`, then stop serving (FIX-EDGE M10:
+                    // staying in the loop re-armed an already-elapsed timer and killed on every pass).
                     tunnel.kill(None, KillReason::DelegationExpired);
-                    edge.detach(&tunnel);
+                    break;
                 }
             }
         }
@@ -230,9 +231,12 @@ fn api() -> Router {
         .layer(DefaultBodyLimit::max(share_proto::limits::MAX_JSON_BODY))
 }
 
-/// `GET /v1/info`, the one request answered before `hello`. TODO(210-M3): per-IP rate limit (`info_per_ip_min`).
+/// `GET /v1/info`, the one request answered before `hello`; `info_per_ip_min` per client network.
 async fn info(Extension(c): Extension<Ctx>) -> ApiResult {
     let e = &c.edge;
+    if e.info_rate.check_key(&c.tunnel.net).is_err() {
+        return Err(err(ErrorCode::RateLimited));
+    }
     json(
         StatusCode::OK,
         &Info {
@@ -252,12 +256,23 @@ async fn info(Extension(c): Extension<Ctx>) -> ApiResult {
     )
 }
 
-/// `POST /v1/hello` (§5.7): delegation check, bans, rekey, revoke, admission, engine count; then `welcome`.
+/// `POST /v1/hello` (§5.7): protocol and client version, delegation check, bans, rekey, revoke, admission,
+/// engine count; then `welcome`.
 async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
     let e = c.edge.clone();
     let h: Hello = parse(&body)?;
+    // FIX-EDGE M11: a different protocol major on this ALPN, or a client below `min_client`, is refused before
+    // anything else is read. `client_too_old` (426) is the one version code share-proto has; the message says
+    // which rule failed.
+    if h.v != PROTOCOL_MAJOR {
+        let mut b = ErrorBody::new(ErrorCode::ClientTooOld);
+        b.message = Some(format!("protocol v{} is not served here; this edge speaks v{PROTOCOL_MAJOR}", h.v));
+        return Err(b.into());
+    }
     if !client_ok(&h.client, &e.cfg.min_client) {
-        return Err(err(ErrorCode::ClientTooOld));
+        let mut b = ErrorBody::new(ErrorCode::ClientTooOld);
+        b.message = Some(format!("client {:?} is older than min_client {}", h.client, e.cfg.min_client));
+        return Err(b.into());
     }
     let now = now_ms();
     let ident = EdgeIdentity {
@@ -339,6 +354,7 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         mesh: d.mesh,
         expires_ms: d.expires_ms,
         terms_ok,
+        hello_ms: now,
     });
     c.tunnel.pre_hello.lock().expect("permit lock").take();
     // §5.3: one tunnel per engine key; a new one replaces the old.
@@ -473,9 +489,10 @@ fn now_i64() -> i64 {
     i64::try_from(now_ms()).unwrap_or(i64::MAX)
 }
 
-/// The claim rules of §5.2 shared by random allocation and reserved claims. `Ok(true)` = already held by this
-/// mesh (idempotent).
-async fn claim(c: &Ctx, s: &Session, name: &str, kind: NameKind) -> Result<bool, ApiError> {
+/// The claim rules of §5.2 shared by random allocation and reserved claims; an existing hold by this mesh is
+/// idempotent. Ban, owner, cooldown and quota are decided by [`crate::store::Store::claim`] in one transaction
+/// (FIX-EDGE M5).
+async fn claim(c: &Ctx, s: &Session, name: &str, kind: NameKind) -> Result<(), ApiError> {
     if !s.terms_ok {
         return Err(err(ErrorCode::TermsRequired));
     }
@@ -484,54 +501,36 @@ async fn claim(c: &Ctx, s: &Session, name: &str, kind: NameKind) -> Result<bool,
         return Err(err(ErrorCode::Banned));
     }
     let mesh = s.mesh.to_string();
-    if let Some(r) = e.store.name(c.domain(), name).await? {
-        let mine = r.owner.as_deref() == Some(mesh.as_str());
-        if r.state == "banned" {
-            return Err(err(ErrorCode::Banned));
-        }
-        if r.held() {
-            return if mine {
-                Ok(true)
-            } else {
-                Err(err(ErrorCode::NameTaken))
-            };
-        }
-        // Released: until the cooldown ends only the previous owner may claim it again (§5.2).
-        if let Some(t) = r.reclaim_after_ms
-            && t > now_i64()
-            && !mine
-        {
+    // TODO(210-M3): paced bucket (`429 paced`), `edge_full`, per-network claim and quota limits.
+    let outcome = e
+        .store
+        .claim(
+            NewName {
+                domain: c.domain(),
+                name,
+                kind: if kind == NameKind::Reserved {
+                    "reserved"
+                } else {
+                    "random"
+                },
+                owner: &mesh,
+                now_ms: now_i64(),
+                net: &c.tunnel.net,
+            },
+            e.cfg.reserved_per_mesh,
+        )
+        .await?;
+    match outcome {
+        Claimed::Granted | Claimed::AlreadyHeld => Ok(()),
+        Claimed::Banned => Err(err(ErrorCode::Banned)),
+        Claimed::Taken => Err(err(ErrorCode::NameTaken)),
+        Claimed::Quota => Err(err(ErrorCode::Quota)),
+        Claimed::Cooldown(t) => {
             let mut b = ErrorBody::new(ErrorCode::Cooldown);
             b.reclaim_after_ms = u64::try_from(t).ok();
-            return Err(b.into());
+            Err(b.into())
         }
     }
-    let held = e.store.held_names(c.domain(), &mesh).await?;
-    let reserved = held.iter().filter(|r| r.kind == "reserved").count();
-    let over = match kind {
-        // One random name, only while the mesh holds no name at all.
-        NameKind::Random => !held.is_empty(),
-        NameKind::Reserved => reserved >= e.cfg.reserved_per_mesh as usize,
-    };
-    if over {
-        return Err(err(ErrorCode::Quota));
-    }
-    // TODO(210-M3): paced bucket (`429 paced`), `edge_full`, per-network claim and quota limits.
-    e.store
-        .claim(NewName {
-            domain: c.domain(),
-            name,
-            kind: if kind == NameKind::Reserved {
-                "reserved"
-            } else {
-                "random"
-            },
-            owner: &mesh,
-            now_ms: now_i64(),
-            net: &c.tunnel.net,
-        })
-        .await?;
-    Ok(false)
 }
 
 /// `POST /v1/names {name}`: a client-drawn random name.
@@ -559,22 +558,17 @@ async fn release(Extension(c): Extension<Ctx>, Path(name): Path<String>) -> ApiR
     let s = c.session()?;
     let e = &c.edge;
     let mesh = s.mesh.to_string();
-    let Some(r) = e.store.name(c.domain(), &name).await? else {
+    if e.store.name(c.domain(), &name).await?.is_none() {
         return Err(err(ErrorCode::NotFound));
-    };
-    if !r.held() || r.owner.as_deref() != Some(mesh.as_str()) {
-        return Err(err(ErrorCode::NotOwner));
     }
-    let now = now_ms();
     let cooldown = u64::try_from(e.cfg.reclaim_cooldown.as_millis()).unwrap_or(u64::MAX);
-    let not_after = r
-        .not_after_ms
-        .and_then(|v| u64::try_from(v).ok())
-        .unwrap_or(0);
-    let reclaim_after_ms = now.saturating_add(cooldown).max(not_after);
-    e.store
-        .release(c.domain(), &name, now, reclaim_after_ms)
-        .await?;
+    let Some(reclaim_after_ms) = e
+        .store
+        .release(c.domain(), &name, &mesh, now_ms(), cooldown)
+        .await?
+    else {
+        return Err(err(ErrorCode::NotOwner));
+    };
     e.drop_routes(|_, route| route.name == name && route.mesh == s.mesh);
     // §6.3: revoke (`cessationOfOperation`), delete the D17 records, drop a queued job; in the background,
     // since DNS calls take seconds and reconciliation at start catches what a crash leaves.
@@ -633,6 +627,7 @@ async fn put_routes(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
     let s = c.session()?;
     let e = &c.edge;
     let req: RoutesPut = parse(&body)?;
+    after_stop_all(e, &s).await?;
     if req.hosts.len() > e.cfg.limits.routes_per_tunnel as usize {
         return Err(err(ErrorCode::Quota));
     }
@@ -689,7 +684,34 @@ async fn put_routes(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
             e.announce(&s.mesh, &host, Some(tunnel.engine));
         }
     }
+    // A Stop all that landed while this request ran: `mesh_stop` writes the store before dropping routes, so
+    // either its drop removed what was inserted above, or this read sees it.
+    if let Err(stale) = after_stop_all(e, &s).await {
+        e.drop_routes(|_, r| Arc::ptr_eq(&r.tunnel, &tunnel));
+        return Err(stale);
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// FIX-EDGE M7 (edge half of §7.4): routes come only from a session that began after the mesh's last Stop
+/// all. An engine attached before it must reconnect, take `welcome.stop_all_ms`, stop every share with
+/// `live_ms <= stop_all_ms`, and publish again. The per-share rule itself is the client's: `RoutesPut` does
+/// not carry when each share was published.
+async fn after_stop_all(e: &Edge, s: &Session) -> Result<(), ApiError> {
+    let stop = e
+        .store
+        .mesh(&s.mesh.to_string())
+        .await?
+        .and_then(|m| m.stop_all_ms)
+        .and_then(|v| u64::try_from(v).ok());
+    match stop {
+        Some(stop) if s.hello_ms <= stop => {
+            let mut b = ErrorBody::new(ErrorCode::HelloRequired);
+            b.message = Some(format!("Stop all at {stop}: reconnect, then publish again"));
+            Err(b.into())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// `GET /v1/events`: SSE held for the connection. TODO(210-M3): `stats` every 30 s from the metering.

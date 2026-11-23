@@ -11,7 +11,7 @@ use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use share_edge::acme::{Ca, Caa, CaaLookup, Reason, Validator, Window, caa_lines, parse_caa_text};
 use share_edge::certs::Backends;
-use share_edge::dns::{DnsZone, Rtype};
+use share_edge::dns::{DnsZone, Rtype, TxtProbe};
 
 /// The in-memory zone; `get` refuses a host with two records, as zone-update does.
 #[derive(Debug, Default)]
@@ -21,6 +21,8 @@ pub struct FakeZone {
     pub max_txt: AtomicUsize,
     /// `create` panics for this host.
     pub panic_on: Mutex<Option<String>>,
+    /// Every fqdn a TXT probe asked for.
+    pub probes: Mutex<Vec<String>>,
 }
 
 impl FakeZone {
@@ -39,6 +41,28 @@ impl FakeZone {
 
     pub fn hosts(&self) -> Vec<(Rtype, String)> {
         self.recs.lock().unwrap().keys().cloned().collect()
+    }
+}
+
+/// The fake zone is its own authoritative server: a probe sees exactly what is in the map.
+impl TxtProbe for FakeZone {
+    fn wait<'a>(
+        &'a self,
+        zone: &'a str,
+        fqdn: &'a str,
+        value: &'a str,
+        _deadline: std::time::Duration,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        async move {
+            self.probes.lock().unwrap().push(fqdn.to_string());
+            let host = fqdn.trim_end_matches('.').strip_suffix(&format!(".{zone}")).unwrap_or(fqdn);
+            anyhow::ensure!(
+                self.value(Rtype::Txt, host).is_some_and(|v| v.iter().any(|x| x == value)),
+                "{fqdn} not visible"
+            );
+            Ok(())
+        }
+        .boxed()
     }
 }
 
@@ -94,6 +118,10 @@ pub struct FakeCa {
     pub replaces: Mutex<Vec<Option<String>>>,
     pub revoked: Mutex<Vec<(String, Reason)>>,
     pub ari: Mutex<Option<Window>>,
+    /// `(started, go)`: the next `issue` signals `started` after validation and waits for `go` before signing.
+    pub gate: Mutex<Option<(tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>)>>,
+    /// The next this many `revoke` calls fail.
+    pub fail_revokes: AtomicUsize,
 }
 
 impl FakeCa {
@@ -108,6 +136,8 @@ impl FakeCa {
             replaces: Mutex::new(Vec::new()),
             revoked: Mutex::new(Vec::new()),
             ari: Mutex::new(None),
+            gate: Mutex::new(None),
+            fail_revokes: AtomicUsize::new(0),
         }
     }
 }
@@ -141,6 +171,11 @@ impl Ca for FakeCa {
                 );
                 v.cleanup(n).await?;
             }
+            let gate = self.gate.lock().unwrap().take();
+            if let Some((started, go)) = gate {
+                let _ = started.send(());
+                let _ = go.await;
+            }
             let der = rustls::pki_types::CertificateSigningRequestDer::from(csr.to_vec());
             let mut req = rcgen::CertificateSigningRequestParams::from_der(&der)?;
             let now = time::OffsetDateTime::now_utc();
@@ -160,6 +195,13 @@ impl Ca for FakeCa {
 
     fn revoke<'a>(&'a self, chain_pem: &'a str, reason: Reason) -> BoxFuture<'a, anyhow::Result<()>> {
         async move {
+            if self
+                .fail_revokes
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                anyhow::bail!("CA unavailable");
+            }
             self.revoked.lock().unwrap().push((chain_pem.to_string(), reason));
             Ok(())
         }
@@ -202,6 +244,7 @@ pub fn fakes() -> Fakes {
         zone: zone.clone(),
         ca: ca.clone(),
         caa: Arc::new(FakeCaa::registered()),
+        probe: zone.clone(),
     };
     Fakes { zone, ca, backends }
 }

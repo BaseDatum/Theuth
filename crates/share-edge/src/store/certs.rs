@@ -1,6 +1,6 @@
 //! Certificate columns, `cert_jobs`, the `dns_records` ledger and `buckets` (210 §5.8, §6.2–§6.5).
 
-use sqlx::FromRow;
+use sqlx::{FromRow, SqliteConnection};
 
 use super::{Store, ms};
 
@@ -89,6 +89,57 @@ pub struct JobRow {
     pub last_error: Option<String>,
 }
 
+/// A `revocations` row (FIX-EDGE M6).
+#[derive(Debug, Clone, FromRow)]
+pub struct RevocationRow {
+    /// Row id.
+    pub id: i64,
+    /// The name the chain was for.
+    pub name: String,
+    /// The chain to revoke.
+    pub chain_pem: String,
+    /// `cessation_of_operation` · `superseded` · `key_compromise`.
+    pub reason: String,
+    /// `queued` · `done` · `failed`.
+    pub state: String,
+    /// Attempts so far.
+    pub attempts: i64,
+    /// The last attempt's error.
+    pub last_error: Option<String>,
+}
+
+/// Inside a transaction: queue the chain (if any) of a released or banned name for revocation and clear it from
+/// the row. A held name (re-claimed meanwhile) is left alone: its chain is the new holder's.
+pub(super) async fn move_chain_to_revocations(
+    conn: &mut SqliteConnection,
+    domain: &str,
+    name: &str,
+    reason: &str,
+    now_ms: u64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO revocations (domain, name, chain_pem, reason, next_at_ms, created_ms)
+         SELECT domain, name, chain_pem, ?1, ?2, ?2 FROM names
+         WHERE domain = ?3 AND name = ?4 AND chain_pem IS NOT NULL
+           AND (state IN ('released','banned') OR banned IS NOT NULL)",
+    )
+    .bind(reason)
+    .bind(ms(now_ms))
+    .bind(domain)
+    .bind(name)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "UPDATE names SET chain_pem = NULL, ari_start_ms = NULL, ari_end_ms = NULL WHERE domain = ? AND name = ?
+           AND (state IN ('released','banned') OR banned IS NOT NULL)",
+    )
+    .bind(domain)
+    .bind(name)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 impl Store {
     /// The certificate columns of a name.
     pub async fn cert_row(&self, domain: &str, name: &str) -> anyhow::Result<Option<CertRow>> {
@@ -162,20 +213,26 @@ impl Store {
         Ok(())
     }
 
-    /// A new chain: `valid`, with its CA, expiry and ARI window.
+    /// A new chain: `valid`, with its CA, expiry and ARI window; only while `owner` still holds the name with
+    /// the CSR whose SPKI hash is `spki` (FIX-EDGE M6: a name released and re-claimed mid-order must not get
+    /// the old owner's chain). `false` when nothing was stored; the caller revokes the orphan leaf.
+    #[allow(clippy::too_many_arguments)]
     pub async fn store_chain(
         &self,
         domain: &str,
         name: &str,
+        owner: &str,
+        spki: &[u8],
         ca: &str,
         chain_pem: &str,
         not_after_ms: u64,
         ari: Option<(u64, u64)>,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
-            "UPDATE names SET state = CASE WHEN state IN ('allocated','queued','slotted','valid') THEN 'valid'
-               ELSE state END, ca = ?, chain_pem = ?, not_after_ms = ?, ari_start_ms = ?, ari_end_ms = ?
-             WHERE domain = ? AND name = ?",
+    ) -> anyhow::Result<bool> {
+        let r = sqlx::query(
+            "UPDATE names SET state = 'valid', ca = ?, chain_pem = ?, not_after_ms = ?, ari_start_ms = ?,
+               ari_end_ms = ?
+             WHERE domain = ? AND name = ? AND owner = ? AND csr_spki = ? AND banned IS NULL
+               AND state IN ('allocated','queued','slotted','valid')",
         )
         .bind(ca)
         .bind(chain_pem)
@@ -184,9 +241,11 @@ impl Store {
         .bind(ari.map(|a| ms(a.1)))
         .bind(domain)
         .bind(name)
+        .bind(owner)
+        .bind(spki)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(r.rows_affected() == 1)
     }
 
     /// The ARI window of a name.
@@ -201,14 +260,76 @@ impl Store {
         Ok(())
     }
 
-    /// Forget a revoked chain (the cooldown already used its `not_after_ms`).
-    pub async fn clear_chain(&self, domain: &str, name: &str) -> anyhow::Result<()> {
+    /// Move a name's chain (if any) to the durable revocation queue and forget it (ban, retire). The cooldown
+    /// already used its `not_after_ms`, which stays.
+    pub async fn retire_chain(&self, domain: &str, name: &str, reason: &str, now_ms: u64) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        move_chain_to_revocations(&mut tx, domain, name, reason, now_ms).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Queue the revocation of one chain that is in no row (a superseded or orphaned leaf).
+    pub async fn queue_revocation(
+        &self,
+        domain: &str,
+        name: &str,
+        chain_pem: &str,
+        reason: &str,
+        now_ms: u64,
+    ) -> anyhow::Result<()> {
         sqlx::query(
-            "UPDATE names SET chain_pem = NULL, ari_start_ms = NULL, ari_end_ms = NULL
-             WHERE domain = ? AND name = ?",
+            "INSERT INTO revocations (domain, name, chain_pem, reason, next_at_ms, created_ms) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(domain)
         .bind(name)
+        .bind(chain_pem)
+        .bind(reason)
+        .bind(ms(now_ms))
+        .bind(ms(now_ms))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Queued revocations due at `now_ms`, oldest first.
+    pub async fn due_revocations(&self, now_ms: u64) -> anyhow::Result<Vec<RevocationRow>> {
+        Ok(sqlx::query_as::<_, RevocationRow>(
+            "SELECT id, name, chain_pem, reason, state, attempts, last_error FROM revocations
+             WHERE state = 'queued' AND next_at_ms <= ? ORDER BY next_at_ms, id",
+        )
+        .bind(ms(now_ms))
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Every revocation of a name, oldest first.
+    pub async fn revocations(&self, domain: &str, name: &str) -> anyhow::Result<Vec<RevocationRow>> {
+        Ok(sqlx::query_as::<_, RevocationRow>(
+            "SELECT id, name, chain_pem, reason, state, attempts, last_error FROM revocations
+             WHERE domain = ? AND name = ? ORDER BY id",
+        )
+        .bind(domain)
+        .bind(name)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// Record one revocation attempt: `done`, `failed` (given up), or back to `queued` at `next_at_ms`.
+    pub async fn revocation_attempt(
+        &self,
+        id: i64,
+        state: &str,
+        next_at_ms: u64,
+        error: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE revocations SET state = ?, attempts = attempts + 1, next_at_ms = ?, last_error = ? WHERE id = ?",
+        )
+        .bind(state)
+        .bind(ms(next_at_ms))
+        .bind(error)
+        .bind(id)
         .execute(&self.pool)
         .await?;
         Ok(())

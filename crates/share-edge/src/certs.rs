@@ -36,6 +36,8 @@ pub struct Backends {
     pub ca: Arc<dyn Ca>,
     /// CAA resolution for `require_caa`.
     pub caa: Arc<dyn CaaLookup>,
+    /// Challenge TXT visibility on the zone's authoritative servers.
+    pub probe: Arc<dyn dns::TxtProbe>,
 }
 
 /// The certificate subsystem, held by `Edge::certs`.
@@ -50,6 +52,7 @@ pub struct Certs {
     /// Wakes the runner (a new job).
     pub wake: Notify,
     last_scan_ms: Mutex<u64>,
+    revoking: tokio::sync::Mutex<()>,
 }
 
 impl Certs {
@@ -63,23 +66,26 @@ impl Certs {
                 store,
                 dns_zone: cfg.dns_zone().to_string(),
                 propagation: cfg.acme.propagation,
+                probe: b.probe.clone(),
                 gap: cfg.acme.auth_gap,
                 last_cleanup: Mutex::new(None),
             },
             wake: Notify::new(),
             last_scan_ms: Mutex::new(0),
+            revoking: tokio::sync::Mutex::new(()),
         }
     }
 }
 
-/// `dns-01` over the zone: one TXT at `_acme-challenge.<n>` at a time, the configured wait after the write,
-/// and `auth_gap` between clearing one and writing the next (§6.1).
+/// `dns-01` over the zone: one TXT at `_acme-challenge.<n>` at a time, then a poll of the zone's authoritative
+/// servers for it (up to `acme.propagation`), and `auth_gap` between clearing one and writing the next (§6.1).
 #[derive(Debug)]
 pub struct Dns01 {
     zone: Arc<dyn DnsZone>,
     store: Store,
     dns_zone: String,
     propagation: Duration,
+    probe: Arc<dyn dns::TxtProbe>,
     gap: Duration,
     last_cleanup: Mutex<Option<tokio::time::Instant>>,
 }
@@ -104,8 +110,21 @@ impl Validator for Dns01 {
                 .dns_add(&host, Rtype::Txt.as_str(), value, ident, now_ms())
                 .await?;
             dns::ensure(&*self.zone, Rtype::Txt, &host, value).await?;
-            // TODO(210-M1): query Porkbun's authoritative servers for the value instead of a fixed wait.
-            tokio::time::sleep(self.propagation).await;
+            // FIX-EDGE m9: poll the authoritative servers up to `acme.propagation` (the old fixed wait). A value
+            // still missing at the deadline is logged and the CA asked anyway, as before; the CA retries its own
+            // lookups for a while and a failed authorization fails the attempt, which backs off.
+            let fqdn = format!("{host}.{}.", self.dns_zone);
+            let budget = self.propagation + Duration::from_secs(15);
+            let seen = tokio::time::timeout(
+                budget,
+                self.probe.wait(&self.dns_zone, &fqdn, value, self.propagation),
+            )
+            .await;
+            match seen {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!(%fqdn, "challenge TXT: {e:#}"),
+                Err(_) => tracing::warn!(%fqdn, "challenge TXT: authoritative poll over {budget:?}"),
+            }
             Ok(())
         }
         .boxed()
@@ -225,7 +244,9 @@ pub async fn submit(
         Err(e) => return Ok(Err(csr_error(&e))),
     };
     let now = now_ms();
-    let open = edge.store.open_job(domain, name).await?;
+    // A job still open from the name's previous holder (released mid-order) is not this mesh's: its result is
+    // refused by `store_chain` and revoked.
+    let open = edge.store.open_job(domain, name).await?.filter(|j| j.mesh == mesh_s);
     let slotted = matches!(row.state.as_str(), "slotted" | "valid");
     let answer = match row.csr.as_deref() {
         Some(stored) if stored == der => {
@@ -318,8 +339,9 @@ async fn remove_records(edge: &Edge, certs: &Certs, name: &str) -> anyhow::Resul
     edge.store.set_records(&edge.cfg.domain, name, false).await
 }
 
-/// Release or ban (§6.3): drop the name's jobs, revoke its certificate, delete its records. Errors are logged;
-/// what is left in DNS is removed by the next start's reconciliation.
+/// Release or ban (§6.3): drop the name's jobs, queue its chain for revocation (durable, retried with backoff
+/// by the runner), try that revocation now, delete its records. Errors are logged; what is left in DNS is
+/// removed by the next start's reconciliation, a failed revocation by the runner.
 pub async fn retire(edge: &Edge, name: &str, reason: Reason) {
     let Some(certs) = edge.certs.get() else { return };
     let domain = edge.cfg.domain.as_str();
@@ -335,14 +357,41 @@ async fn retire_inner(
     name: &str,
     reason: Reason,
 ) -> anyhow::Result<()> {
-    edge.store.drop_jobs(domain, name).await?;
-    if let Some(row) = edge.store.cert_row(domain, name).await?
-        && let Some(chain) = row.chain_pem
-    {
-        dns::contain(certs.ca.revoke(&chain, reason)).await.context("revoke")?;
-        edge.store.clear_chain(domain, name).await?;
+    let now = now_ms();
+    // A release moved the chain already; a ban moves it here.
+    edge.store.retire_chain(domain, name, reason.as_str(), now).await?;
+    revoke_due(edge, certs, now).await?;
+    if edge.store.cert_row(domain, name).await?.is_some_and(|r| r.held()) {
+        // Re-claimed (by its previous owner) since the release: its jobs and records are the new holder's.
+        return Ok(());
     }
+    edge.store.drop_jobs(domain, name).await?;
     remove_records(edge, certs, name).await
+}
+
+/// Run every due revocation: `done` on success, else retried with the job backoff until `acme.max_attempts`,
+/// then `failed` (logged as an error). One pass at a time.
+pub async fn revoke_due(edge: &Edge, certs: &Certs, now: u64) -> anyhow::Result<()> {
+    let _one = certs.revoking.lock().await;
+    for r in edge.store.due_revocations(now).await? {
+        let reason = Reason::parse(&r.reason).unwrap_or(Reason::CessationOfOperation);
+        match dns::contain(certs.ca.revoke(&r.chain_pem, reason)).await {
+            Ok(()) => edge.store.revocation_attempt(r.id, "done", now, None).await?,
+            Err(e) => {
+                let msg = format!("{e:#}");
+                let attempts = r.attempts + 1;
+                if attempts >= i64::from(edge.cfg.acme.max_attempts) {
+                    tracing::error!(name = %r.name, "revocation failed for good: {msg}");
+                    edge.store.revocation_attempt(r.id, "failed", now, Some(&msg)).await?;
+                } else {
+                    tracing::warn!(name = %r.name, attempt = attempts, "revocation: {msg}");
+                    let next = now.saturating_add(u64::try_from(backoff(attempts).as_millis()).unwrap_or(0));
+                    edge.store.revocation_attempt(r.id, "queued", next, Some(&msg)).await?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// At start: release every lease (one runner per edge) and delete every ledger record that no held name
@@ -422,7 +471,7 @@ pub async fn tick(edge: &Edge, now: u64) -> anyhow::Result<()> {
             }
         }
     }
-    Ok(())
+    revoke_due(edge, certs, now).await
 }
 
 async fn process(edge: &Edge, certs: &Certs, job: &JobRow, now: u64) -> anyhow::Result<()> {
@@ -483,6 +532,9 @@ async fn process(edge: &Edge, certs: &Certs, job: &JobRow, now: u64) -> anyhow::
         .map_err(|e| anyhow::anyhow!("{e:?}"))?
         .spki;
     if leaf.spki != want {
+        edge.store
+            .queue_revocation(domain, &job.name, &pem, Reason::CessationOfOperation.as_str(), now)
+            .await?;
         bail!("issued certificate's key differs from the CSR's");
     }
     let ari = certs
@@ -490,9 +542,20 @@ async fn process(edge: &Edge, certs: &Certs, job: &JobRow, now: u64) -> anyhow::
         .renewal_window(&pem)
         .await
         .map(|w| (w.start_ms, w.end_ms));
-    edge.store
-        .store_chain(domain, &job.name, certs.ca.id(), &pem, leaf.not_after_ms, ari)
+    let stored = edge
+        .store
+        .store_chain(domain, &job.name, &job.mesh, &want.0, certs.ca.id(), &pem, leaf.not_after_ms, ari)
         .await?;
+    if !stored {
+        // Released, re-claimed or re-keyed while ordering (FIX-EDGE M6): the leaf belongs to nobody.
+        edge.store
+            .queue_revocation(domain, &job.name, &pem, Reason::CessationOfOperation.as_str(), now)
+            .await?;
+        edge.store
+            .finish_job(&job.id, "dropped", Some("name or CSR changed during the order"))
+            .await?;
+        return Ok(());
+    }
     edge.store.finish_job(&job.id, "done", None).await?;
     if let Ok(mesh) = job.mesh.parse::<PublicKey>() {
         for t in edge.mesh_tunnels(&mesh) {
@@ -505,22 +568,28 @@ async fn process(edge: &Edge, certs: &Certs, job: &JobRow, now: u64) -> anyhow::
         && let Some(old) = old
     {
         // TODO(210-M2): `keyCompromise` when the removal behind the rotation was marked compromised.
-        if let Err(e) = dns::contain(certs.ca.revoke(&old, Reason::Superseded)).await {
-            tracing::warn!(name = %job.name, "revoke superseded: {e:#}");
-        }
+        edge.store
+            .queue_revocation(domain, &job.name, &old, Reason::Superseded.as_str(), now)
+            .await?;
     }
     Ok(())
 }
 
 /// Refresh ARI windows and queue renewals (§6.3): inside the ARI window, else at two thirds of the lifetime;
-/// never for a name unattached for 90 days.
+/// never for a name unattached for 90 days. A mesh with a live tunnel counts as attached now, and its names'
+/// `last_attach_ms` is stamped (a tunnel may stay up longer than 90 days without a new `hello`).
 async fn renewal_scan(edge: &Edge, certs: &Certs, now: u64) -> anyhow::Result<()> {
     let domain = edge.cfg.domain.as_str();
     for row in edge.store.valid_names(domain).await? {
         let (Some(owner), Some(chain)) = (row.owner.clone(), row.chain_pem.clone()) else {
             continue;
         };
-        if now.saturating_sub(ms_u64(row.last_attach_ms)) > NO_RENEW_AFTER_MS {
+        let live = owner
+            .parse::<PublicKey>()
+            .is_ok_and(|m| !edge.mesh_tunnels(&m).is_empty());
+        if live {
+            edge.store.touch_attached(&owner, now).await?;
+        } else if now.saturating_sub(ms_u64(row.last_attach_ms)) > NO_RENEW_AFTER_MS {
             // TODO(210-M3): inactivity expiry releases and revokes; here the certificate just runs out.
             continue;
         }

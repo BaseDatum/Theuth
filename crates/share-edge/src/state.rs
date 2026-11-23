@@ -63,6 +63,9 @@ pub struct Session {
     pub expires_ms: u64,
     /// The `hello` carried the current terms revision.
     pub terms_ok: bool,
+    /// Edge time of the `hello` that set this session; routes from a session older than the mesh's last Stop
+    /// all are refused (§7.4).
+    pub hello_ms: u64,
 }
 
 /// One engine's connection on `theuth/share/1`, before and after `hello`.
@@ -194,6 +197,8 @@ pub struct Edge {
     pub per_ip: DashMap<IpAddr, u32>,
     /// New visitor connections per IP key.
     pub ip_rate: DefaultKeyedRateLimiter<IpAddr>,
+    /// `GET /v1/info` per client network ([`Tunnel::net`]).
+    pub info_rate: DefaultKeyedRateLimiter<String>,
     /// Certificates (EDGE2); unset in an edge built without backends.
     pub certs: OnceLock<crate::certs::Certs>,
     next_conn: AtomicU64,
@@ -218,6 +223,9 @@ impl Edge {
             visitors: Arc::new(Semaphore::new(cfg.limits.global_conns as usize)),
             per_ip: DashMap::new(),
             ip_rate: RateLimiter::keyed(Quota::per_second(per_sec)),
+            info_rate: RateLimiter::keyed(Quota::per_minute(
+                NonZeroU32::new(cfg.limits.info_per_ip_min.max(1)).expect("nonzero"),
+            )),
             routes: DashMap::new(),
             tunnels: DashMap::new(),
             next_conn: AtomicU64::new(1),

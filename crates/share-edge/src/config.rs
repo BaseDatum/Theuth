@@ -151,7 +151,8 @@ pub struct AcmeConfig {
     pub job_lease: Duration,
     /// Attempts before a job is `failed`.
     pub max_attempts: u32,
-    /// Wait after writing a challenge TXT before readying the challenge (Porkbun's authoritative servers).
+    /// How long to poll the zone's authoritative servers for a written challenge TXT before readying the
+    /// challenge anyway.
     #[serde(with = "dur")]
     pub propagation: Duration,
     /// Wait after clearing the first challenge TXT before writing the second (§6.1: Let's Encrypt's
@@ -277,6 +278,8 @@ pub struct Limits {
     pub conns_per_ip: u32,
     /// New visitor connections per second per IP (IPv6 /64).
     pub new_conns_per_ip_sec: u32,
+    /// `GET /v1/info` requests per minute per client network (IPv4, IPv6 /64, or relay URL).
+    pub info_per_ip_min: u32,
 }
 
 impl Default for Limits {
@@ -291,6 +294,7 @@ impl Default for Limits {
             global_conns: 20_000,
             conns_per_ip: 64,
             new_conns_per_ip_sec: 20,
+            info_per_ip_min: 30,
         }
     }
 }

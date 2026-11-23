@@ -225,6 +225,85 @@ impl DnsZone for PorkbunZone {
     }
 }
 
+/// Where a challenge TXT must be visible before the CA is told to look (§6.1): the zone's authoritative
+/// servers. FIX-EDGE m9 replaces the fixed `acme.propagation` sleep (TODO(210-M1)) with this poll.
+pub trait TxtProbe: Send + Sync + fmt::Debug {
+    /// Return once every authoritative server of `zone` answers `value` for the absolute `fqdn`; an error when
+    /// `deadline` passes first.
+    fn wait<'a>(
+        &'a self,
+        zone: &'a str,
+        fqdn: &'a str,
+        value: &'a str,
+        deadline: std::time::Duration,
+    ) -> BoxFuture<'a, anyhow::Result<()>>;
+}
+
+/// [`TxtProbe`] over hickory: the zone's NS set from the system resolver, then one uncached, non-recursive
+/// resolver per NS address, polled every 2 s.
+#[derive(Debug, Default)]
+pub struct AuthoritativeTxt;
+
+impl TxtProbe for AuthoritativeTxt {
+    fn wait<'a>(
+        &'a self,
+        zone: &'a str,
+        fqdn: &'a str,
+        value: &'a str,
+        deadline: std::time::Duration,
+    ) -> BoxFuture<'a, anyhow::Result<()>> {
+        async move {
+            use hickory_resolver::TokioResolver;
+            use hickory_resolver::config::{NameServerConfig, ResolverConfig};
+            use hickory_resolver::net::runtime::TokioRuntimeProvider;
+            use hickory_resolver::proto::rr::{RData, RecordType};
+
+            let end = tokio::time::Instant::now() + deadline;
+            let system = TokioResolver::builder_tokio()?.build()?;
+            let ns = system.lookup(format!("{zone}."), RecordType::NS).await?;
+            let mut servers = Vec::new();
+            for r in ns.answers() {
+                if let RData::NS(n) = &r.data {
+                    servers.extend(system.lookup_ip(n.0.to_string()).await?.iter());
+                }
+            }
+            if servers.is_empty() {
+                bail!("no authoritative server found for {zone}");
+            }
+            let mut resolvers = Vec::with_capacity(servers.len());
+            for ip in servers {
+                let mut cfg = ResolverConfig::default();
+                cfg.add_name_server(NameServerConfig::udp_and_tcp(ip));
+                let mut b = TokioResolver::builder_with_config(cfg, TokioRuntimeProvider::default());
+                b.options_mut().cache_size = 0;
+                b.options_mut().recursion_desired = false;
+                resolvers.push((ip, b.build()?));
+            }
+            loop {
+                let mut missing = Vec::new();
+                for (ip, r) in &resolvers {
+                    let seen = r.lookup(fqdn, RecordType::TXT).await.is_ok_and(|l| {
+                        l.answers()
+                            .iter()
+                            .any(|rec| matches!(&rec.data, RData::TXT(t) if t.to_string() == value))
+                    });
+                    if !seen {
+                        missing.push(*ip);
+                    }
+                }
+                if missing.is_empty() {
+                    return Ok(());
+                }
+                if tokio::time::Instant::now() >= end {
+                    bail!("{fqdn} TXT not yet on {missing:?} after {deadline:?}");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+        .boxed()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

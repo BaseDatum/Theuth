@@ -84,8 +84,25 @@ pub struct NewName<'a> {
     pub net: &'a str,
 }
 
+/// The outcome of [`Store::claim`] (§5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claimed {
+    /// The name is now the mesh's.
+    Granted,
+    /// The mesh already holds it (idempotent).
+    AlreadyHeld,
+    /// Banned.
+    Banned,
+    /// Held by another mesh.
+    Taken,
+    /// Released, in its cooldown, and the claimer is not the previous owner; the cooldown's end.
+    Cooldown(i64),
+    /// The mesh's name quota is used up.
+    Quota,
+}
+
 mod certs;
-pub use certs::{CertRow, JobRow};
+pub use certs::{CertRow, JobRow, RevocationRow};
 
 fn ms(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
@@ -161,6 +178,19 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// A live tunnel of `mesh` counts as an attach: stamp its held names (renewal scan).
+    pub async fn touch_attached(&self, mesh: &str, now_ms: u64) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE names SET last_attach_ms = ? WHERE owner = ?
+             AND state IN ('allocated','queued','slotted','valid')",
+        )
+        .bind(ms(now_ms))
+        .bind(mesh)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -261,11 +291,57 @@ impl Store {
         .await?)
     }
 
-    /// Insert or re-claim a name as `allocated` (lazy allocation, §5.2). Clears every per-holder column; the
-    /// claim itself is an attach (it arrives over a live tunnel, after the `hello`), so `last_attach_ms` starts
-    /// at the claim and the §6.3 "unattached for 90 days" rule counts from there.
-    pub async fn claim(&self, n: NewName<'_>) -> anyhow::Result<()> {
-        sqlx::query(
+    /// Claim a name for `n.owner` under the §5.2 rules, atomically (FIX-EDGE M5): one `BEGIN IMMEDIATE`
+    /// transaction reads the row and the mesh's held names, checks ban, owner, cooldown and quota, then inserts
+    /// a fresh row or re-claims a released one with a conditional upsert whose row count is checked. Two meshes
+    /// claiming one name, or one mesh claiming two names past its quota, are serialized by SQLite's write lock.
+    ///
+    /// Quota: a random name only while the mesh holds no name; reserved names up to `reserved_max`.
+    ///
+    /// A re-claim clears every per-holder column; a released name's chain already left for `revocations` in
+    /// [`Store::release`]. The claim itself is an attach (it arrives over a live tunnel, after the `hello`), so
+    /// `last_attach_ms` starts at the claim and the §6.3 "unattached for 90 days" rule counts from there.
+    pub async fn claim(&self, n: NewName<'_>, reserved_max: u32) -> anyhow::Result<Claimed> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let row: Option<(String, Option<String>, Option<i64>, Option<String>)> = sqlx::query_as(
+            "SELECT state, owner, reclaim_after_ms, banned FROM names WHERE domain = ? AND name = ?",
+        )
+        .bind(n.domain)
+        .bind(n.name)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some((state, owner, reclaim_after, banned)) = &row {
+            let mine = owner.as_deref() == Some(n.owner);
+            if state == "banned" || banned.is_some() {
+                return Ok(Claimed::Banned);
+            }
+            if state != "released" {
+                return Ok(if mine { Claimed::AlreadyHeld } else { Claimed::Taken });
+            }
+            if let Some(t) = *reclaim_after
+                && t > n.now_ms
+                && !mine
+            {
+                return Ok(Claimed::Cooldown(t));
+            }
+        }
+        let kinds: Vec<String> = sqlx::query_scalar(
+            "SELECT kind FROM names WHERE domain = ? AND owner = ?
+             AND state IN ('allocated','queued','slotted','valid')",
+        )
+        .bind(n.domain)
+        .bind(n.owner)
+        .fetch_all(&mut *tx)
+        .await?;
+        let over = if n.kind == "reserved" {
+            kinds.iter().filter(|k| *k == "reserved").count() >= reserved_max as usize
+        } else {
+            !kinds.is_empty()
+        };
+        if over {
+            return Ok(Claimed::Quota);
+        }
+        let r = sqlx::query(
             "INSERT INTO names (domain, name, kind, owner, state, created_ms, net, last_attach_ms)
              VALUES (?1, ?2, ?3, ?4, 'allocated', ?5, ?6, ?5)
              ON CONFLICT(domain, name) DO UPDATE SET kind = excluded.kind, owner = excluded.owner,
@@ -273,7 +349,9 @@ impl Store {
                last_attach_ms = excluded.last_attach_ms, first_live_ms = NULL, transfer_to = NULL,
                transfer_until_ms = NULL, released_ms = NULL, reclaim_after_ms = NULL, csr = NULL, csr_spki = NULL,
                ca = NULL, chain_pem = NULL, not_after_ms = NULL, ari_start_ms = NULL, ari_end_ms = NULL,
-               banned = NULL",
+               banned = NULL
+             WHERE names.state = 'released' AND names.banned IS NULL
+               AND (names.reclaim_after_ms IS NULL OR names.reclaim_after_ms <= ?5 OR names.owner = ?4)",
         )
         .bind(n.domain)
         .bind(n.name)
@@ -281,30 +359,45 @@ impl Store {
         .bind(n.owner)
         .bind(n.now_ms)
         .bind(n.net)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
-        Ok(())
+        anyhow::ensure!(r.rows_affected() == 1, "claim of {} changed underneath", n.name);
+        tx.commit().await?;
+        Ok(Claimed::Granted)
     }
 
-    /// Mark a name released with its cooldown end. The owner column keeps the previous owner.
+    /// Release a name `owner` holds: `released` with `reclaim_after_ms = max(now + cooldown, not_after)`; the
+    /// owner column keeps the previous owner. In the same transaction the chain moves to `revocations`
+    /// (`cessationOfOperation`), so a re-claim cannot wipe it unrevoked (FIX-EDGE M5/M6). `None` when the
+    /// mesh does not hold the name.
     pub async fn release(
         &self,
         domain: &str,
         name: &str,
+        owner: &str,
         now_ms: u64,
-        reclaim_after_ms: u64,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
-            "UPDATE names SET state = 'released', released_ms = ?, reclaim_after_ms = ?, transfer_to = NULL,
-               transfer_until_ms = NULL WHERE domain = ? AND name = ?",
+        cooldown_ms: u64,
+    ) -> anyhow::Result<Option<u64>> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let at: Option<i64> = sqlx::query_scalar(
+            "UPDATE names SET state = 'released', released_ms = ?1,
+               reclaim_after_ms = MAX(?2, COALESCE(not_after_ms, 0)), transfer_to = NULL, transfer_until_ms = NULL
+             WHERE domain = ?3 AND name = ?4 AND owner = ?5 AND state IN ('allocated','queued','slotted','valid')
+               AND banned IS NULL
+             RETURNING reclaim_after_ms",
         )
         .bind(ms(now_ms))
-        .bind(ms(reclaim_after_ms))
+        .bind(ms(now_ms.saturating_add(cooldown_ms)))
         .bind(domain)
         .bind(name)
-        .execute(&self.pool)
+        .bind(owner)
+        .fetch_optional(&mut *tx)
         .await?;
-        Ok(())
+        if at.is_some() {
+            certs::move_chain_to_revocations(&mut tx, domain, name, "cessation_of_operation", now_ms).await?;
+        }
+        tx.commit().await?;
+        Ok(at.map(|v| u64::try_from(v).unwrap_or(0)))
     }
 
     /// Consume one use of an invite; false when unknown, used up or expired.
