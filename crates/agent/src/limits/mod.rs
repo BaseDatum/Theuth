@@ -19,6 +19,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use genai::chat::{ChatFrameSink, FrameCtx, RawFrameRef};
+use platform::time::now_ms;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
@@ -195,10 +196,6 @@ const WRITE_DEBOUNCE: Duration = Duration::from_secs(2);
 const FIRST_POLL_MS: u64 = 20_000;
 const DIR: &str = "limits";
 const SNAPSHOT: &str = "snapshot.json";
-
-pub(crate) fn now_ms() -> u64 {
-    u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
-}
 
 /// A response's headers with lower-case names (non-UTF-8 values dropped).
 pub(crate) fn lower(h: &reqwest::header::HeaderMap) -> Vec<(String, String)> {

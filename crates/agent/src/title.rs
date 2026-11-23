@@ -227,10 +227,7 @@ fn cut(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_owned();
     }
-    let mut end = max.saturating_sub(1);
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = s.floor_char_boundary(max.saturating_sub(1));
     format!("{}…", &s[..end])
 }
 

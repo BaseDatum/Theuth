@@ -45,10 +45,7 @@ pub struct PathCandidate {
 /// opened with `"` or `'` may contain spaces (the quote stays outside the
 /// range); an unquoted one may contain `\ `.
 pub fn trigger(input: &str, cursor: usize, windows: bool) -> Option<(usize, usize)> {
-    let mut cursor = cursor.min(input.len());
-    while !input.is_char_boundary(cursor) {
-        cursor -= 1;
-    }
+    let cursor = input.floor_char_boundary(cursor.min(input.len()));
     let before = &input[..cursor];
     let line_start = before.rfind('\n').map_or(0, |i| i + 1);
     let fences = before[..line_start]

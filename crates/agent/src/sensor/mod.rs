@@ -16,7 +16,6 @@ use kameo::actor::ActorRef;
 use monty_pool::Pool;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 use tools::ToolRegistry;
 
@@ -693,10 +692,7 @@ fn decode(raw: Value, profile: &SensorProfile) -> Result<SensorRun, SensorError>
     let truncated = payload.len() > profile.max_payload;
     if truncated {
         let total = payload.len();
-        let mut cut = profile.max_payload;
-        while !payload.is_char_boundary(cut) {
-            cut -= 1;
-        }
+        let cut = payload.floor_char_boundary(profile.max_payload);
         payload.truncate(cut);
         payload.push_str(&format!("{TRUNCATED_MARKER}{total} bytes]"));
     }
@@ -742,13 +738,7 @@ fn python_works(p: &Path) -> bool {
 
 /// `sha256(payload)` as lowercase hex (40 §1.6): what `fire: on_change` compares.
 pub fn payload_hash(payload: &str) -> String {
-    let digest = Sha256::digest(payload.as_bytes());
-    let mut out = String::with_capacity(64);
-    for b in digest {
-        use std::fmt::Write as _;
-        let _ = write!(out, "{b:02x}");
-    }
-    out
+    platform::sha256::hex(payload.as_bytes())
 }
 
 /// The envelope (40 §1.5): `key=value` tokens on the payload's first line, in

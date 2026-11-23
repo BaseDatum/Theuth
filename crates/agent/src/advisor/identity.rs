@@ -35,10 +35,7 @@ pub fn one_shot(data_dir: &Path) -> String {
 fn with_context(data_dir: &Path, mut out: String) -> String {
     let prompt = std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default();
     let prompt = if prompt.len() > PROJECT_BYTES {
-        let mut cut = PROJECT_BYTES;
-        while !prompt.is_char_boundary(cut) {
-            cut -= 1;
-        }
+        let cut = prompt.floor_char_boundary(PROJECT_BYTES);
         format!("{}\n…[prompt.md elided to fit]", &prompt[..cut])
     } else {
         prompt

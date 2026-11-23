@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use kameo::reply::{DelegatedReply, ReplySender};
+use platform::time::now_ms;
 use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -358,10 +359,6 @@ fn rfc_ms(s: &str) -> u64 {
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|t| ms(t.with_timezone(&chrono::Utc)))
         .unwrap_or(0)
-}
-
-fn now_ms() -> u64 {
-    ms(chrono::Utc::now())
 }
 
 /// 208 D9: the node kind of a session row; advisor and ask sessions are not on the graph.

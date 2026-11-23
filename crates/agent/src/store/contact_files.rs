@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 
 use chrono::{DateTime, TimeZone as _, Utc};
+use platform::time::now_ms_i64 as now_ms;
 use sqlx::{FromRow, SqliteConnection};
 
 use super::Store;
@@ -198,10 +199,6 @@ async fn exchange_state_in(
 
 fn read(state: Option<&str>) -> bool {
     matches!(state, Some("consumed" | "replied"))
-}
-
-fn now_ms() -> i64 {
-    Utc::now().timestamp_millis()
 }
 
 /// Where the send path stages a message's offers until its exchange exists: the sending

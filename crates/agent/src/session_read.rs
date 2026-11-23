@@ -132,10 +132,7 @@ pub fn render(
         for (i, t) in selected.iter().enumerate() {
             turn_text(&mut s, from + i, t, with_tools);
             if s.len() > MAX_BYTES {
-                let mut cut = MAX_BYTES;
-                while !s.is_char_boundary(cut) {
-                    cut -= 1;
-                }
+                let cut = s.floor_char_boundary(MAX_BYTES);
                 s.truncate(cut);
                 let _ = write!(
                     s,

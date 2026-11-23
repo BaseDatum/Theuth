@@ -198,10 +198,7 @@ fn verbatim_line(kind: Kind, text: &str, max: usize) -> String {
         _ => head.rfind(' ').map_or(head, |p| &head[..p]),
     };
     let tail_room = room.saturating_sub(head.len());
-    let mut from = text.len().saturating_sub(tail_room);
-    while !text.is_char_boundary(from) {
-        from += 1;
-    }
+    let from = text.ceil_char_boundary(text.len().saturating_sub(tail_room));
     let window = &text[from..];
     // Tail: starts at a sentence start when one falls in its first half.
     let start = sentence_start(window)

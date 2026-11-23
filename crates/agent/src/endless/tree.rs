@@ -270,10 +270,7 @@ pub fn mechanical_unit(unit: &Unit, node_bytes: u32) -> Option<String> {
     }
     let room = max.saturating_sub(GAP.len());
     let head = super::guards::cut_utf8(&flat, room * 2 / 3);
-    let mut from = flat.len() - (room - head.len());
-    while !flat.is_char_boundary(from) {
-        from += 1;
-    }
+    let from = flat.ceil_char_boundary(flat.len() - (room - head.len()));
     Some(format!("{head}{GAP}{}", &flat[from..]))
 }
 
