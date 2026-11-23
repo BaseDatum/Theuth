@@ -134,7 +134,7 @@ pub async fn start_with(
     platform::files::private_dir(&cfg.data_dir)
         .with_context(|| format!("data_dir {}", cfg.data_dir.display()))?;
     let key = load_or_create_key(&cfg.key_path())?;
-    let store = Store::open(&cfg.db_path()).await?;
+    let store = Store::open(&cfg.db_path(), cfg.db_journal).await?;
     let relay_mode = if cfg.iroh.relay.is_empty() {
         RelayMode::Disabled
     } else {

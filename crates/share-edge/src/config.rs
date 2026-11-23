@@ -26,6 +26,9 @@ pub struct Config {
     pub domain: String,
     /// `share-edge.sqlite`, `iroh.key`, `acme/`.
     pub data_dir: PathBuf,
+    /// SQLite journal of `share-edge.sqlite`: `wal` (default) or `delete` (a data dir on NFS, where WAL's shared
+    /// memory does not work; the file is then locked exclusively by this single writer).
+    pub db_journal: DbJournal,
     /// The visitor TLS listener (TCP).
     pub listen: SocketAddr,
     /// The edge's own iroh endpoint.
@@ -72,11 +75,23 @@ pub struct Config {
     pub k8s: crate::k8s::K8sConfig,
 }
 
+/// `db_journal:`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DbJournal {
+    /// `journal_mode=WAL`.
+    #[default]
+    Wal,
+    /// `journal_mode=DELETE` with `locking_mode=EXCLUSIVE`.
+    Delete,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
             domain: String::new(),
             data_dir: PathBuf::from("/var/lib/theuth-share-edge"),
+            db_journal: DbJournal::Wal,
             listen: "[::]:443".parse().expect("static addr"),
             iroh: IrohConfig::default(),
             admin: AdminConfig::default(),
@@ -631,6 +646,14 @@ mod tests {
     #[test]
     fn missing_domain_is_refused() {
         assert!(Config::from_yaml("listen: \"[::]:443\"\n", &no_env).is_err());
+    }
+
+    #[test]
+    fn db_journal_parses_lowercase() {
+        assert_eq!(Config::default().db_journal, DbJournal::Wal);
+        let (cfg, _) = Config::from_yaml(&format!("{BASE}db_journal: delete\n"), &no_env).unwrap();
+        assert_eq!(cfg.db_journal, DbJournal::Delete);
+        assert!(Config::from_yaml(&format!("{BASE}db_journal: WAL\n"), &no_env).is_err());
     }
 
     #[test]

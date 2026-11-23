@@ -5,8 +5,10 @@ use std::path::Path;
 use std::str::FromStr as _;
 
 use anyhow::Context as _;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteLockingMode, SqlitePoolOptions};
 use sqlx::{FromRow, SqlitePool};
+
+use crate::config::DbJournal;
 
 /// The edge's database.
 #[derive(Clone, Debug)]
@@ -162,14 +164,23 @@ fn ms(v: u64) -> i64 {
 }
 
 impl Store {
-    /// Open (creating) `path` and run the migrations.
-    pub async fn open(path: &Path) -> anyhow::Result<Store> {
+    /// Open (creating) `path` with `journal` and run the migrations. [`DbJournal::Delete`] (NFS) also locks the
+    /// file exclusively and keeps one connection: an exclusive lock held by one pooled connection would leave
+    /// every other one `SQLITE_BUSY`.
+    pub async fn open(path: &Path, journal: DbJournal) -> anyhow::Result<Store> {
         let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))?
             .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
             .foreign_keys(true);
+        let (opts, max_connections) = match journal {
+            DbJournal::Wal => (opts.journal_mode(SqliteJournalMode::Wal), 4),
+            DbJournal::Delete => (
+                opts.journal_mode(SqliteJournalMode::Delete)
+                    .locking_mode(SqliteLockingMode::Exclusive),
+                1,
+            ),
+        };
         let pool = SqlitePoolOptions::new()
-            .max_connections(4)
+            .max_connections(max_connections)
             .connect_with(opts)
             .await
             .with_context(|| format!("open {}", path.display()))?;

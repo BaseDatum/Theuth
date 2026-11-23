@@ -34,7 +34,7 @@ async fn rig(extra: &str) -> Rig {
         dir.path().display()
     );
     let (cfg, _) = Config::from_yaml(&yaml, &|_| None).unwrap();
-    let store = Store::open(&cfg.db_path()).await.unwrap();
+    let store = Store::open(&cfg.db_path(), cfg.db_journal).await.unwrap();
     let f = common::fakes();
     let edge = Arc::new(Edge::new(cfg, Secrets::default(), store.clone(), SecretKey::generate().public()).unwrap());
     edge.certs.set(Certs::new(&f.backends, store, &edge.cfg)).unwrap();
