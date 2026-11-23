@@ -31,6 +31,18 @@ pub const JOIN_HOSTS: &[(&str, &str)] = &[
     ("facetime.apple.com", "facetime.apple.com"),
 ];
 
+/// The user's zone for floating (zone-less) times, so a date across a DST change keeps its wall
+/// clock. A set `TZ` decides (chrono's `Local` honours it on Unix), else the system zone; a fixed
+/// offset only when the zone cannot be named (a POSIX `TZ` rule, an empty `TZ`).
+fn local_tz() -> Tz {
+    match std::env::var("TZ") {
+        Ok(s) => Some(s.trim_start_matches(':').to_owned()),
+        Err(_) => iana_time_zone::get_timezone().ok(),
+    }
+    .and_then(|n| n.parse::<chrono_tz::Tz>().ok())
+    .map_or_else(|| Tz::Fixed(*chrono::Local::now().offset()), Tz::Tz)
+}
+
 /// Parse `text` (one VCALENDAR) and expand every VEVENT into the instances that overlap
 /// `[from, to]`, as rows for `source`.
 pub fn expand(
@@ -42,7 +54,7 @@ pub fn expand(
     let ical = ICalendar::parse(text)
         .map_err(|_| anyhow::anyhow!("not an iCalendar document (no BEGIN:VCALENDAR)"))?;
     // Floating times (no TZID, no Z) are local (§7.3).
-    let default_tz = Tz::Fixed(*chrono::Local::now().offset());
+    let default_tz = local_tz();
     let timezones: Vec<ICalendarComponent> = ical.timezones().cloned().collect();
     let resolver = ical.build_tz_resolver().with_default(default_tz);
 

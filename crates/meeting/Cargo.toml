@@ -28,6 +28,8 @@ schemars = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = "0.10"
+iana-time-zone = { workspace = true }
 sqlx = { workspace = true }
 rtrb = { workspace = true }
 opus = { workspace = true }

@@ -794,29 +794,10 @@ mod tests {
         r.resolve(name).unwrap()
     }
 
-    /// A pool over a worker binary: `$THEUTH_WORKER`, else `monty` or `t` on
-    /// `PATH` (`t subprocess` is the production worker, 08 §9); `None`, with a
-    /// note, when absent so the test skips.
+    /// A pool over a python worker (see [`crate::repl::test_pool`]); `None`
+    /// when there is none so the test skips.
     async fn worker_pool() -> Option<Arc<Pool>> {
-        let worker = std::env::var_os("THEUTH_WORKER")
-            .map(PathBuf::from)
-            .or_else(|| {
-                let path = std::env::var_os("PATH")?;
-                ["monty", "t"].iter().find_map(|n| {
-                    std::env::split_paths(&path)
-                        .map(|d| d.join(n))
-                        .find(|p| p.is_file())
-                })
-            });
-        let Some(worker) = worker else {
-            eprintln!("no monty/t worker on PATH; skipping");
-            return None;
-        };
-        let pool = crate::repl::open_pool(&worker, 4).await;
-        if pool.is_none() {
-            eprintln!("worker pool failed to start; skipping");
-        }
-        pool
+        crate::repl::test_pool(4).await
     }
 
     fn args(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {

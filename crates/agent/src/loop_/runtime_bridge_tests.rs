@@ -4,8 +4,8 @@
 //! call_id, with the teaching note first; a name the model cannot see (unknown,
 //! or hidden for the session) is refused. One tokio test: the tool registry is
 //! a process-global actor bound to the runtime that spawned it. The bridged
-//! scenarios need a python worker (`$THEUTH_WORKER`, else `monty`/`t` on
-//! `PATH`) and skip without one; the refusal needs none.
+//! scenarios need a python worker (see `repl::test_pool`: `$THEUTH_WORKER`, this
+//! build's `t`, else `monty`/`t` on `PATH`) and skip without one; the refusal needs none.
 
 use serde_json::{Value, json};
 use wiremock::{Request, Respond, ResponseTemplate};
@@ -13,28 +13,10 @@ use wiremock::{Request, Respond, ResponseTemplate};
 use super::vision_fallback_tests::{Fake, Harness, body, sse, sse_tool_call, system};
 use super::*;
 
-/// A pool over a worker binary; `None`, with a note, when absent so the
-/// bridged scenarios skip.
+/// A pool over a python worker (see [`crate::repl::test_pool`]); `None` when
+/// there is none so the bridged scenarios skip.
 async fn worker_pool() -> Option<Arc<Pool>> {
-    let worker = std::env::var_os("THEUTH_WORKER")
-        .map(PathBuf::from)
-        .or_else(|| {
-            let path = std::env::var_os("PATH")?;
-            ["monty", "t"].iter().find_map(|n| {
-                std::env::split_paths(&path)
-                    .map(|d| d.join(n))
-                    .find(|p| p.is_file())
-            })
-        });
-    let Some(worker) = worker else {
-        eprintln!("no monty/t worker on PATH; skipping the bridged scenarios");
-        return None;
-    };
-    let pool = repl::open_pool(&worker, 1).await;
-    if pool.is_none() {
-        eprintln!("worker pool failed to start; skipping the bridged scenarios");
-    }
-    pool
+    crate::repl::test_pool(1).await
 }
 
 /// `(call_id, name, args)` of every `ToolCallStarted`, in order.

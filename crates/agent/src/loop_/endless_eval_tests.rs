@@ -864,20 +864,10 @@ async fn register(reg: &ActorRef<ToolRegistry>, name: &'static str, direct: bool
     .unwrap();
 }
 
-/// The python worker pool (`$THEUTH_WORKER`, else `monty`/`t` on `PATH`),
-/// as `runtime_bridge_tests` finds it; `None` when there is none.
+/// The python worker pool, as [`crate::repl::test_pool`] finds it; `None`
+/// when there is none.
 async fn worker_pool() -> Option<Arc<Pool>> {
-    let worker = std::env::var_os("THEUTH_WORKER")
-        .map(PathBuf::from)
-        .or_else(|| {
-            let path = std::env::var_os("PATH")?;
-            ["monty", "t"].iter().find_map(|n| {
-                std::env::split_paths(&path)
-                    .map(|d| d.join(n))
-                    .find(|p| p.is_file())
-            })
-        })?;
-    repl::open_pool(&worker, 1).await
+    crate::repl::test_pool(1).await
 }
 
 #[test]

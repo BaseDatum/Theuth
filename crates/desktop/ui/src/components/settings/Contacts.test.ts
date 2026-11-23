@@ -31,6 +31,8 @@ import type { A2AStatus as A2aStatus } from "@/rpc/bindings/method.a2a.output"
 import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
+// PlainScreens -> attention/shared -> attention/Page -> routes/c.$session -> chat/Transcript -> lib/nudges reads localStorage at import.
+vi.hoisted(() => vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined }))
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<object>()), useNavigate: () => navigate, Link: ({ children }: { children: ReactNode }) => children }))
 const local = vi.hoisted(() => ({ on: true }))
