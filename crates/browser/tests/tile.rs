@@ -128,13 +128,17 @@ fn text_of(v: &Value) -> (String, bool) {
 
 /// The fake client app: holds tile [`VIEW`] as its own obscura session `page`, claims every
 /// call for it and runs the op there, as the shell's `web_view_call` does in the tile, answering
-/// over `answer_web_view_call` on one owner connection.
+/// over `answer_web_view_call` on one owner connection. A `fill_form` op carries no values (209
+/// P5): the client fetches them with `element_form_values` on that same connection, after a
+/// second owner connection (`stranger`) is refused them. Every request's `args` is kept in `seen`.
 #[derive(kameo::Actor)]
 struct Client {
     browsers: ActorRef<Browsers>,
     page: SessionId,
     rpc: jsonrpsee::Methods,
+    stranger: jsonrpsee::Methods,
     ops: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 /// `answer_web_view_call(id, answer)` through the RPC dispatch.
@@ -142,6 +146,17 @@ async fn answer(rpc: &jsonrpsee::Methods, id: WebViewCallId, answer: WebViewCall
     rpc.call("answer_web_view_call", (id, answer))
         .await
         .expect("answer_web_view_call")
+}
+
+/// `element_form_values(id, session)` through the RPC dispatch.
+async fn values(
+    rpc: &jsonrpsee::Methods,
+    id: WebViewCallId,
+    session: SessionId,
+) -> Option<serde_json::Map<String, Value>> {
+    rpc.call("element_form_values", (id, Some(session)))
+        .await
+        .expect("element_form_values")
 }
 
 impl Message<WebViewCallRequested> for Client {
@@ -152,18 +167,44 @@ impl Message<WebViewCallRequested> for Client {
             return;
         }
         assert!(!r.delegated, "the tile's own session acts");
+        self.seen.lock().unwrap().push(r.args.to_string());
         let cmd = r.args["arguments"]["cmd"].as_str().unwrap_or_default();
         self.ops
             .lock()
             .unwrap()
             .push(format!("{} {cmd}", r.op.as_str()).trim().to_owned());
         let (browsers, page, rpc) = (self.browsers.clone(), self.page, self.rpc.clone());
+        let stranger = self.stranger.clone();
         tokio::spawn(async move {
             let claim = WebViewCallAnswer::Claimed {
                 client: "fake".into(),
             };
+            let mut args = r.args.clone();
+            let fetch = args["arguments"]["params"]["values_from"] == "element_form_values";
+            if fetch {
+                assert!(
+                    values(&rpc, r.id, r.session).await.is_none(),
+                    "values before the claim"
+                );
+            }
             assert!(answer(&rpc, r.id, claim).await, "claim refused");
-            let done = run(&browsers, page, r.op, &r.args).await;
+            if fetch {
+                assert!(
+                    values(&stranger, r.id, r.session).await.is_none(),
+                    "another connection got the values"
+                );
+                let got = values(&rpc, r.id, r.session)
+                    .await
+                    .expect("the claimer's values");
+                assert!(
+                    values(&rpc, r.id, r.session).await.is_none(),
+                    "the values were fetched twice"
+                );
+                let params = args["arguments"]["params"].as_object_mut().expect("params");
+                params.remove("values_from");
+                params.insert("values".into(), Value::Object(got));
+            }
+            let done = run(&browsers, page, r.op, &args).await;
             assert!(answer(&rpc, r.id, done).await, "answer refused");
         });
     }
@@ -341,17 +382,28 @@ async fn drives_a_tile_through_the_agent_script() {
         .await
         .expect("tile page");
     let ops = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    // The app's owner connection: artifact's RPC module with an authenticated peer.
-    let mut rpc: jsonrpsee::Methods = artifact::rpc_module(rpc_core::Server::new(rt.clone()))
-        .module
-        .into();
-    let (peer, _conn) = rpc_core::RpcPeer::open();
-    rpc.extensions_mut().insert(peer);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    // An owner connection of the app: artifact's and browser's RPC modules with an
+    // authenticated peer of its own.
+    let app = || {
+        let mut m = artifact::rpc_module(rpc_core::Server::new(rt.clone())).module;
+        m.merge(browser::rpc_module(rpc_core::Server::new(rt.clone())).module)
+            .expect("merge");
+        let mut m: jsonrpsee::Methods = m.into();
+        let (peer, conn) = rpc_core::RpcPeer::open();
+        m.extensions_mut().insert(peer);
+        (m, conn)
+    };
+    let (rpc, _conn) = app();
+    let (stranger, _stranger_conn) = app();
+    let (forms, _forms_conn) = app();
     let client = Client::spawn(Client {
         browsers: browsers.clone(),
         page,
         rpc,
+        stranger,
         ops: ops.clone(),
+        seen: seen.clone(),
     });
     rt.subscribe::<Client, WebViewCallRequested>(&client).await;
 
@@ -549,6 +601,59 @@ async fn drives_a_tile_through_the_agent_script() {
         b"\x89PNG\r\n\x1a\n"
     );
 
+    // 209 P5 on the tile: the form as a card; the values never ride a WebViewCallRequested, the
+    // claimer fetches them once (the fake client asserts the stranger and a second fetch get
+    // nothing).
+    const SECRET: &str = "Tile-Secret-Value-42";
+    let opened = kit
+        .ok("browser_open", json!({ "url": base }), &prefix)
+        .await;
+    assert!(opened.contains("TILE_FIXTURE_ALPHA"), "{opened}");
+    let answering = async {
+        let mut card = None;
+        for _ in 0..200 {
+            if let Some(c) = browser::show_element::pending(&rt, None).into_iter().next() {
+                card = Some(c);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let card = card.expect("no card within 20 s");
+        let shown: bool = forms
+            .call("element_form_shown", (card.id, Some(card.session)))
+            .await
+            .expect("element_form_shown");
+        assert!(shown);
+        let values = json!({ "submit": { "values": { "0": "tile-query-value", "1": SECRET } } });
+        let taken: bool = forms
+            .call("answer_element_form", (card.id, values, Some(card.session)))
+            .await
+            .expect("answer_element_form");
+        assert!(taken);
+        card
+    };
+    let (shown, card) = tokio::join!(
+        kit.call("browser_show_element", json!({ "selector": "form" })),
+        answering
+    );
+    assert_eq!(card.source, format!("web:{VIEW}"));
+    assert_eq!(card.action_origin, format!("http://127.0.0.1:{port}"));
+    assert!(!shown.is_error, "{}", shown.content);
+    assert_eq!(
+        shown.content,
+        format!(
+            "{prefix}\nsubmitted · http://127.0.0.1:{port} · filled 0 q, 1 pw · now {base}submitted — Sent"
+        )
+    );
+    let sent = kit.ok("browser_read", json!({}), &prefix).await;
+    assert!(sent.contains("you sent: [typed value] color r"), "{sent}");
+    for args in seen.lock().unwrap().iter() {
+        assert!(
+            !args.contains(SECRET) && !args.contains("tile-query-value"),
+            "a value rode a WebViewCallRequested: {args}"
+        );
+    }
+
     // Close detaches; the tile's page stays.
     let closed = kit.ok("browser_close", json!({}), &prefix).await;
     assert!(closed.starts_with("Detached from tile web:"), "{closed}");
@@ -567,6 +672,8 @@ async fn drives_a_tile_through_the_agent_script() {
         "back",
         "snapshot",
         "script",
+        "script serialize",
+        "script fill_form",
     ] {
         assert!(ops.iter().any(|o| o == op), "op {op} never ran: {ops:?}");
     }

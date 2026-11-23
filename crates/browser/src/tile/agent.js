@@ -69,9 +69,25 @@ if (!agent || agent.version !== VERSION) {
       return t.length > n ? t.slice(0, n - 1) + '\u2026' : t;
     };
 
+    // Natives bound when this agent is built (209 §9): page code that runs later (a handler the
+    // card's fill fires, a timer) cannot swap them under the snapshot, the field check or the
+    // result. On obscura the agent runs in the page's world, so a page that replaced them before
+    // the agent's first command is not covered; the tile's isolated world is.
+    const apply = Reflect.apply;
+    const nat = {
+      gcs: typeof getComputedStyle === 'function' ? getComputedStyle : null,
+      qs: Document.prototype.querySelector,
+      qsa: Element.prototype.querySelectorAll,
+      get: Element.prototype.getAttribute,
+      set: Element.prototype.setAttribute,
+      del: Element.prototype.removeAttribute,
+      has: Element.prototype.hasAttribute,
+    };
+    const attrOf = (el, n) => apply(nat.get, el, [n]);
+
     function style(el) {
       try {
-        return typeof getComputedStyle === 'function' ? getComputedStyle(el) : null;
+        return nat.gcs ? apply(nat.gcs, globalThis, [el]) : null;
       } catch (_) {
         return null;
       }
@@ -1000,34 +1016,48 @@ if (!agent || agent.version !== VERSION) {
           return { refused: 'size', kib: Math.ceil(whole / 1024) };
         }
         if (!snap.stamps.some(fillable)) return { refused: 'empty' };
-        for (const el of document.querySelectorAll('[data-theuth-field]')) el.removeAttribute('data-theuth-field');
-        for (const el of document.querySelectorAll('[data-theuth-form]')) el.removeAttribute('data-theuth-form');
-        snap.stamps.forEach((el, i) => el.setAttribute('data-theuth-field', String(i)));
-        root.setAttribute('data-theuth-form', id);
+        // Marks of this card only (`-<id hex>`), so another card of the same page stays valid.
+        const hex = id.replace(/-/g, '');
+        const fieldAttr = 'data-theuth-field-' + hex;
+        snap.stamps.forEach((el, i) => apply(nat.set, el, [fieldAttr, String(i)]));
+        apply(nat.set, root, ['data-theuth-form-' + hex, '']);
         const fields = snap.stamps.map((el, i) => ({
           index: i,
           kind: kindOf(el),
-          name: clip(el.getAttribute('name') || '', 120),
+          name: clip(attrOf(el, 'name') || '', 120),
           label: fieldLabel(el),
           masked: secret(el),
         }));
         const b = box(root);
-        return { html: snap.html, width: b.w, height: b.h, url: location.href, title: document.title, fields, doc: DOC };
+        const action = actionOf(root, snap.stamps);
+        return { html: snap.html, width: b.w, height: b.h, url: location.href, title: document.title, fields, action, doc: DOC };
       },
 
       // 209 P5: the user's values (`{ "<index>": string }`) into the controls `serialize`
-      // stamped, then submit; `{ stale }` and nothing typed when the page is not the one shown.
+      // stamped, then submit; `{ stale }` and nothing typed when the page is not the one shown:
+      // another address, the element gone, or its controls not the ones of the card (`fields`,
+      // each `{ name, kind }` in index order). Only the keys sent are filled.
       async fill_form(p) {
         const id = String(p.form || '');
         if (!FORM_ID.test(id)) throw new Error('bad form id');
+        const values = p.values;
+        if (!values || typeof values !== 'object' || !Object.keys(values).length) throw new Error('no values to fill');
         const bare = (u) => String(u || '').split('#')[0];
         if (bare(location.href) !== bare(p.url)) return { stale: 'address' };
-        const root = document.querySelector('[data-theuth-form="' + id + '"]');
+        const hex = id.replace(/-/g, '');
+        const fieldAttr = 'data-theuth-field-' + hex;
+        const formAttr = 'data-theuth-form-' + hex;
+        const root = apply(nat.qs, document, ['[' + formAttr + ']']);
         if (!root) return { stale: 'form' };
-        const stamped = (root.hasAttribute('data-theuth-field') ? [root] : []).concat(Array.from(root.querySelectorAll('[data-theuth-field]')));
-        if (stamped.length !== p.count) return { stale: 'fields' };
-        const at = new Map(stamped.map((el) => [el.getAttribute('data-theuth-field'), el]));
-        const values = p.values || {};
+        const stamped = (apply(nat.has, root, [fieldAttr]) ? [root] : []).concat(Array.from(apply(nat.qsa, root, ['[' + fieldAttr + ']'])));
+        const want = Array.isArray(p.fields) ? p.fields : [];
+        if (stamped.length !== want.length) return { stale: 'fields' };
+        const at = new Map(stamped.map((el) => [attrOf(el, fieldAttr), el]));
+        for (let i = 0; i < want.length; i++) {
+          const el = at.get(String(i));
+          const w = want[i] || {};
+          if (!el || kindOf(el) !== w.kind || clip(attrOf(el, 'name') || '', 120) !== w.name) return { stale: 'fields' };
+        }
         const keys = Object.keys(values).filter((k) => /^\d+$/.test(k) && at.has(k)).sort((a, b) => a - b);
         // Unchecked first, so a radio group ends on the one the user chose.
         const order = keys.filter((k) => values[k] === 'false').concat(keys.filter((k) => values[k] !== 'false'));
@@ -1044,12 +1074,12 @@ if (!agent || agent.version !== VERSION) {
             setNativeValue(el, opt.value);
             opt.selected = true;
           } else if (el.tagName === 'INPUT' && (type === 'checkbox' || type === 'radio')) {
-            const want = v === 'true';
-            if (el.checked === want) {
+            const on = v === 'true';
+            if (el.checked === on) {
               filled.push(Number(k));
               continue;
             }
-            el.checked = want;
+            el.checked = on;
           } else if (editable(el) === 'value' && !el.readOnly) {
             focus(el);
             setNativeValue(el, v);
@@ -1061,27 +1091,45 @@ if (!agent || agent.version !== VERSION) {
           filled.push(Number(k));
         }
         filled.sort((a, b) => a - b);
-        const form = root.tagName === 'FORM' ? root : root.querySelector('form') || (root.closest && root.closest('form'));
+        const { form, button } = submitterOf(root, stamped);
+        for (const el of stamped) apply(nat.del, el, [fieldAttr]);
+        apply(nat.del, root, [formAttr]);
         return leaving(() => {
           let submitted = '';
-          const button = form && form.querySelector(SUBMIT);
-          if (button) {
+          if (form && button) {
             button.click();
             submitted = 'button';
           } else if (form && typeof form.requestSubmit === 'function') {
             form.requestSubmit();
             submitted = 'form';
-          } else {
-            const own = stamped.find((el) => isSubmit(el) && !el.disabled);
-            if (own) {
-              own.click();
-              submitted = 'field';
-            }
+          } else if (button) {
+            button.click();
+            submitted = 'field';
           }
           return { filled, submitted };
         });
       },
     };
+
+    // The form `root` submits and the button that submits it: the form's first enabled submit
+    // button (none: `requestSubmit`), or without a form the element's own stamped one.
+    function submitterOf(root, stamped) {
+      const form = root.tagName === 'FORM' ? root : root.querySelector('form') || (root.closest && root.closest('form'));
+      const button = form ? form.querySelector(SUBMIT) : stamped.find((el) => isSubmit(el) && !el.disabled);
+      return { form, button: button || null };
+    }
+
+    // Where the form posts, resolved: the submitting button's `formaction`, else the form's
+    // `action`, else the page (209 §4.10: the card names it).
+    function actionOf(root, stamped) {
+      try {
+        const { form, button } = submitterOf(root, stamped);
+        const raw = (button && attrOf(button, 'formaction')) || (form && attrOf(form, 'action')) || '';
+        return raw.trim() ? new URL(raw, document.baseURI).href : location.href;
+      } catch (_) {
+        return location.href;
+      }
+    }
 
     function scrollTo0(x, y) {
       try { window.scrollTo(x, y); } catch (_) { /* no layout */ }

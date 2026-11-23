@@ -2,7 +2,8 @@
 //! a loopback sign-in page. The card is answered through the real `answer_element_form` RPC
 //! dispatch on an owner connection (browser's RPC module), as the app does; the server records
 //! what the form posted. The test password must appear in no wire event, no log line (captured at
-//! debug level), no tool output and no file under the data dir.
+//! debug level), no tool output and no file under the data dir, which holds the session store
+//! with every tool output of the run.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -328,6 +329,7 @@ async fn a_sign_in_form_goes_to_the_chat_and_back_into_the_page() {
     assert_eq!(card.session, kit.session);
     assert_eq!(card.call_id, "call-login");
     assert_eq!(card.origin, origin);
+    assert_eq!(card.action_origin, origin, "the form posts to its own page");
     assert_eq!(card.url, base);
     assert_eq!(card.source, "obscura:local");
     assert_eq!(card.title, "Sign in fixture");
@@ -371,6 +373,37 @@ async fn a_sign_in_form_goes_to_the_chat_and_back_into_the_page() {
             card.html
         );
     }
+
+    // A second card of the same element leaves the first one valid (each card marks the page
+    // with its own attributes); closing it touches nothing.
+    let second = kit.show(json!({ "selector": "#login" }), "call-login-2");
+    let card2 = next_card(&frames, &mut seen).await;
+    assert_ne!(card2.id, card.id);
+    assert!(answer(&rpc, card2.id, json!({ "cancel": {} })).await);
+    assert!(
+        second
+            .await
+            .expect("tool task")
+            .content
+            .starts_with("cancelled · ")
+    );
+
+    // The app shows the card; a submit naming no field the card fills is refused and the card
+    // stays.
+    let on_screen: bool = rpc
+        .call("element_form_shown", (card.id, Option::<SessionId>::None))
+        .await
+        .expect("element_form_shown");
+    assert!(on_screen);
+    assert!(
+        !answer(
+            &rpc,
+            card.id,
+            json!({ "submit": { "values": { "3": "x" } } })
+        )
+        .await,
+        "a submit with nothing to fill was taken"
+    );
 
     // A late client sees it; a guest may neither list nor answer it.
     let pending: Vec<ElementFormRequested> = rpc
@@ -480,6 +513,15 @@ async fn a_sign_in_form_goes_to_the_chat_and_back_into_the_page() {
         format!("cancelled · {origin} · the user closed the form; nothing was typed")
     );
     assert_eq!(outcome_of(&frames, card.id).await, "cancelled");
+
+    // The session ends while a card shows: the card closes as cancelled and leaves the list.
+    let task = kit.show(json!({ "selector": "#search" }), "call-ended");
+    let card = next_card(&frames, &mut seen).await;
+    browser::show_element::forget(&[kit.session]);
+    let out = task.await.expect("tool task");
+    outputs.push(out.content.clone());
+    assert!(out.content.starts_with("cancelled · "), "{}", out.content);
+    assert_eq!(outcome_of(&frames, card.id).await, "cancelled");
     let pending: Vec<ElementFormRequested> = rpc
         .call("element_forms_pending", (Option::<SessionId>::None,))
         .await
@@ -519,6 +561,26 @@ async fn a_sign_in_form_goes_to_the_chat_and_back_into_the_page() {
         })
         .collect();
     assert!(leaks.is_empty(), "the password is in the log: {leaks:#?}");
+
+    // The run's transcript, as the engine keeps it: every tool output in `sessions.sqlite`.
+    let store = agent::store::Store::open(&data_dir.path().join("sessions.sqlite"), None)
+        .await
+        .expect("session store");
+    store
+        .create_session(kit.session, "m", None, None, None)
+        .await
+        .expect("session");
+    for out in &outputs {
+        store
+            .append_local_note(kit.session, out)
+            .await
+            .expect("note");
+    }
+    drop(store);
+    assert!(
+        !files_containing(data_dir.path(), b"signed in with [typed value]").is_empty(),
+        "the store holds no transcript"
+    );
     assert_eq!(
         files_containing(data_dir.path(), PASSWORD.as_bytes()),
         Vec::<std::path::PathBuf>::new()

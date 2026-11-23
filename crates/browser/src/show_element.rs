@@ -3,24 +3,30 @@
 //! Submit, the values go into the real form and nowhere else, and the model reads a receipt.
 //!
 //! The agent script (`tile/agent.js`, command `serialize`) clones the element with its computed
-//! styles, without scripts, addresses or values, and stamps its controls `data-theuth-field="<n>"`
-//! and the element `data-theuth-form="<id>"` in the live page; on obscura it runs through
-//! `browser_evaluate`, on an attached tile through the tile op `script` (world `isolated`). The
-//! engine sanitises the clone once more with an allowlist ([`sanitize`]) and publishes
-//! [`ElementFormRequested`]; the client's card answers with the RPC `answer_element_form`
-//! ([`answer`]). The tool waits for it like `ask_user` (`tools.ask_timeout_secs`), then, on the
-//! same browser, checks the page is still the one shown and the agent script's `fill_form` sets
-//! the values by index and submits. [`ElementFormResolved`] closes the card.
+//! styles, without scripts, addresses or values, stamps its controls `data-theuth-field="<n>"` in
+//! the clone and marks them (and the element) with this card's own attributes in the live page;
+//! on obscura it runs through `browser_evaluate`, on an attached tile through the tile op `script`
+//! (world `isolated`). The engine sanitises the clone once more with an allowlist ([`sanitize`],
+//! the lists also in `show_element.allow.json` for the client's test), checks its stamps against
+//! the fields, and publishes [`ElementFormRequested`]; the client's card says it is on screen
+//! (`element_form_shown`, [`shown`]) and answers with `answer_element_form` ([`answer`]). A card no
+//! client shows within [`SHOW_WAIT`] ends; a shown one waits like `ask_user`
+//! (`tools.ask_timeout_secs`). Then, on the same browser, the agent script's `fill_form` checks
+//! the page is still the one shown (address, element, each control's name and kind), sets the
+//! values sent by index and submits. [`ElementFormResolved`] closes the card.
 //!
 //! Values (209 §4.10, §9) live in the RPC params, in [`Zeroizing`] strings here, and in the page:
 //! never in an event, a `ToolOutput`, `tracing` or `sessions.sqlite`. What a session submitted is
-//! scrubbed from its later browser replies ([`scrub`]). On a tile the values reach the page inside
-//! the one `script` op's arguments, the only path to the client holding it.
+//! scrubbed from its later browser replies ([`scrub`]; in this process only). On a tile the
+//! `fill_form` op carries no values: the client that claimed it fetches them once with
+//! `element_form_values` ([`take_values`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
+use artifact::webview::{self, WebViewCallId};
 use parking_lot::Mutex;
 use runtime::{Runtime, SessionId};
 use schemars::JsonSchema;
@@ -70,6 +76,10 @@ pub struct ElementFormRequested {
     pub call_id: String,
     /// `scheme://host[:port]` in ASCII, from the browser's address at serialise time.
     pub origin: String,
+    /// Where the form posts, `scheme://host[:port]` in ASCII: the submit button's `formaction`,
+    /// else the form's `action`, resolved against the page; [`origin`](Self::origin) when there
+    /// is neither or it is not http(s) (209 §4.10).
+    pub action_origin: String,
     /// The page's address at serialise time.
     pub url: String,
     /// `obscura:<engine>` or `web:<tile id>`.
@@ -208,6 +218,8 @@ enum Reply {
 struct Waiting {
     request: ElementFormRequested,
     tx: tokio::sync::oneshot::Sender<Reply>,
+    /// Woken by `element_form_shown` (209 §4.10: a card no app shows ends after [`SHOW_WAIT`]).
+    shown: Arc<tokio::sync::Notify>,
 }
 
 /// Cards waiting on one engine, a [`Runtime`] extension shared by the tool and the RPC handler.
@@ -241,33 +253,79 @@ pub fn pending(rt: &Runtime, session: Option<SessionId>) -> Vec<ElementFormReque
 
 /// The card's answer (the RPC `answer_element_form`, owner connections only): `true` when card
 /// `id` was waiting here and this answer was taken (the first one wins). Values move into
-/// [`Zeroizing`] strings; keys that are not a field index are dropped.
+/// [`Zeroizing`] strings; keys that are not a field index are dropped. A submit naming no field
+/// the card fills (209 §4.10: only the controls the user changed are sent) is refused and the card
+/// stays pending.
 pub fn answer(rt: &Runtime, id: ElementFormId, answer: ElementFormAnswer) -> bool {
-    let Some(w) = forms(rt).0.lock().remove(&id) else {
+    let forms = forms(rt);
+    let mut map = forms.0.lock();
+    let Some(w) = map.get(&id) else {
         return false;
     };
     let reply = match answer {
         ElementFormAnswer::Cancel {} => Reply::Cancel,
-        ElementFormAnswer::Submit { values } => Reply::Submit(
-            values
+        ElementFormAnswer::Submit { values } => {
+            let fillable = |k: u32| {
+                w.request
+                    .fields
+                    .iter()
+                    .any(|f| f.index == k && f.kind != "submit")
+            };
+            let values: BTreeMap<u32, Zeroizing<String>> = values
                 .into_iter()
                 .filter_map(|(k, v)| {
                     let v = Zeroizing::new(v);
                     let k = k.parse::<u32>().ok()?;
-                    (k < w.request.fields.len() as u32).then_some((k, v))
+                    fillable(k).then_some((k, v))
                 })
-                .collect(),
-        ),
+                .collect();
+            if values.is_empty() {
+                return false;
+            }
+            Reply::Submit(values)
+        }
+    };
+    let Some(w) = map.remove(&id) else {
+        return false;
     };
     w.tx.send(reply).is_ok()
 }
 
-/// Values sessions submitted through a card, scrubbed from their later browser replies (209 §9).
-static TYPED: LazyLock<Mutex<HashMap<SessionId, Vec<Zeroizing<String>>>>> =
+/// The RPC `element_form_shown`: a client renders card `id` (209 §4.10). `true` while it waits
+/// on this engine.
+pub fn shown(rt: &Runtime, id: ElementFormId) -> bool {
+    let forms = forms(rt);
+    let map = forms.0.lock();
+    let Some(w) = map.get(&id) else {
+        return false;
+    };
+    w.shown.notify_one();
+    true
+}
+
+/// A card no client showed within this ends as `cancelled` (209 §4.10): an unattended session
+/// does not wait `tools.ask_timeout_secs` for a card nobody sees.
+pub const SHOW_WAIT: Duration = Duration::from_secs(120);
+
+/// What the model reads when no client showed the card within [`SHOW_WAIT`].
+pub const NOT_SHOWN: &str = "no app showed the form; ask the user to open theuth";
+
+/// Cards in flight by session, process-wide, so the end of a session (which has no [`Runtime`]
+/// at hand) closes them: [`forget`] wakes each one's tool.
+static LIVE: LazyLock<Mutex<Vec<(ElementFormId, SessionId, Arc<tokio::sync::Notify>)>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Values sessions submitted through a card, scrubbed from their later browser replies (209 §9):
+/// per session, at most [`TYPED_MAX`] values (the oldest goes first), each as typed and
+/// URL-encoded. In this process's memory only: an engine restart, or the session continuing on
+/// another engine of the mesh, no longer scrubs what was typed before (209 §4.10).
+static TYPED: LazyLock<Mutex<HashMap<SessionId, VecDeque<Vec<Zeroizing<String>>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Shortest submitted value [`scrub`] replaces: shorter ones are too likely to be page words.
-const SCRUB_MIN: usize = 4;
+const SCRUB_MIN: usize = 6;
+/// Most values one session's [`scrub`] replaces.
+const TYPED_MAX: usize = 32;
 
 /// Remember `value` (as typed, and URL-encoded as a GET form sends it) for [`scrub`].
 fn remember(session: SessionId, value: &str) {
@@ -277,10 +335,18 @@ fn remember(session: SessionId, value: &str) {
     let encoded: String = url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
     let mut all = TYPED.lock();
     let list = all.entry(session).or_default();
-    for v in [value.to_owned(), encoded.replace('+', "%20"), encoded] {
-        if !list.iter().any(|k| **k == v) {
-            list.push(Zeroizing::new(v));
+    if list.iter().any(|forms| *forms[0] == value) {
+        return;
+    }
+    let mut forms: Vec<Zeroizing<String>> = vec![Zeroizing::new(value.to_owned())];
+    for v in [encoded.replace('+', "%20"), encoded] {
+        if !forms.iter().any(|k| **k == v) {
+            forms.push(Zeroizing::new(v));
         }
+    }
+    list.push_back(forms);
+    while list.len() > TYPED_MAX {
+        list.pop_front();
     }
 }
 
@@ -290,18 +356,70 @@ pub(crate) fn scrub(session: SessionId, text: &mut String) {
     let Some(list) = all.get(&session) else {
         return;
     };
-    for v in list {
+    for v in list.iter().flatten() {
         if text.contains(v.as_str()) {
             *text = text.replace(v.as_str(), "[typed value]");
         }
     }
 }
 
-/// The sessions ended: what they submitted is forgotten.
+/// The sessions ended: what they submitted is forgotten, and their cards still showing close as
+/// `cancelled` (their tools wake and resolve them).
 pub fn forget(sessions: &[SessionId]) {
     let mut all = TYPED.lock();
     for s in sessions {
         all.remove(s);
+    }
+    drop(all);
+    for (_, s, ended) in LIVE.lock().iter() {
+        if sessions.contains(s) {
+            ended.notify_one();
+        }
+    }
+}
+
+/// Values of tile `fill_form` calls, by the `WebViewCallRequested` id, until the client that
+/// claimed the call fetches them with `element_form_values` (209 §4.4, §9: never in an event).
+#[derive(Clone, Default)]
+struct Fills(Arc<Mutex<HashMap<WebViewCallId, BTreeMap<String, Zeroizing<String>>>>>);
+
+fn fills(rt: &Runtime) -> Fills {
+    rt.extension(Fills::default)
+}
+
+/// Whether tile call `id` holds values on this engine.
+#[must_use]
+pub fn values_here(rt: &Runtime, id: WebViewCallId) -> bool {
+    fills(rt).0.lock().contains_key(&id)
+}
+
+/// The RPC `element_form_values`: the values of tile call `id`, once, to `by` only when `by` is
+/// the connection whose claim of the call was taken; else `None`.
+#[must_use]
+pub fn take_values(rt: &Runtime, id: WebViewCallId, by: &str) -> Option<BTreeMap<String, String>> {
+    let fills = fills(rt);
+    let mut map = fills.0.lock();
+    if !map.contains_key(&id) || !webview::claimed_by(rt, id, by) {
+        return None;
+    }
+    let values = map.remove(&id)?;
+    Some(
+        values
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().to_owned()))
+            .collect(),
+    )
+}
+
+/// Removes a tile call's values when the call is over, fetched or not.
+struct FillGuard {
+    rt: Runtime,
+    id: WebViewCallId,
+}
+
+impl Drop for FillGuard {
+    fn drop(&mut self) {
+        fills(&self.rt).0.lock().remove(&self.id);
     }
 }
 
@@ -441,35 +559,45 @@ fn inline_image(src: &str) -> bool {
 }
 
 /// A `style` value with HTML character references decoded (`&amp;`, `&quot;`, `&lt;`, `&gt;`,
-/// `&apos;`, numeric ones), or `None` when it has another reference.
-fn decode_refs(v: &str) -> Option<String> {
+/// `&apos;`, numeric ones). Any other `&` (a literal one, an unknown reference) stays as written:
+/// [`clean_style`] escapes every `&` again, so the browser reads it as that text.
+fn decode_refs(v: &str) -> String {
     let mut out = String::with_capacity(v.len());
     let mut rest = v;
     while let Some(at) = rest.find('&') {
         out.push_str(&rest[..at]);
         let tail = &rest[at + 1..];
-        let end = tail.find(';')?;
-        let name = &tail[..end];
-        let c = match name {
-            "amp" => '&',
-            "quot" => '"',
-            "lt" => '<',
-            "gt" => '>',
-            "apos" => '\'',
-            n => {
-                let n = n.strip_prefix('#')?;
-                let code = match n.strip_prefix(['x', 'X']) {
-                    Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-                    None => n.parse().ok()?,
-                };
-                char::from_u32(code)?
+        let decoded = tail.find(';').and_then(|end| {
+            let c = match &tail[..end] {
+                "amp" => '&',
+                "quot" => '"',
+                "lt" => '<',
+                "gt" => '>',
+                "apos" => '\'',
+                n => {
+                    let n = n.strip_prefix('#')?;
+                    let code = match n.strip_prefix(['x', 'X']) {
+                        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                        None => n.parse().ok()?,
+                    };
+                    char::from_u32(code)?
+                }
+            };
+            Some((c, end))
+        });
+        match decoded {
+            Some((c, end)) => {
+                out.push(c);
+                rest = &tail[end + 1..];
             }
-        };
-        out.push(c);
-        rest = &tail[end + 1..];
+            None => {
+                out.push('&');
+                rest = tail;
+            }
+        }
     }
     out.push_str(rest);
-    Some(out)
+    out
 }
 
 /// Declarations of a `style` value, split on `;` outside quotes and parentheses.
@@ -522,15 +650,41 @@ fn inert_declaration(d: &str) -> bool {
     })
 }
 
-/// The `style` value kept: its inert declarations, or `None` when none is left.
+/// The `style` value kept: its inert declarations, or `None` when none is left. `lol_html`'s
+/// `set_attribute` escapes only `"`, so every `&` is escaped here, once.
 fn clean_style(raw: &str) -> Option<String> {
-    let css = decode_refs(raw)?;
+    let css = decode_refs(raw);
     let kept: Vec<&str> = declarations(&css)
         .into_iter()
         .map(str::trim)
         .filter(|d| !d.is_empty() && d.contains(':') && inert_declaration(d))
         .collect();
     (!kept.is_empty()).then(|| kept.join("; ").replace('&', "&amp;"))
+}
+
+/// The `data-theuth-field` indices of a sanitised snapshot, in document order.
+fn stamps(html: &str) -> Result<Vec<u32>, String> {
+    use lol_html::{RewriteStrSettings, element, rewrite_str};
+    let found = RefCell::new(Vec::new());
+    rewrite_str(
+        html,
+        RewriteStrSettings {
+            element_content_handlers: vec![element!("[data-theuth-field]", |el| {
+                let n = el
+                    .get_attribute("data-theuth-field")
+                    .and_then(|v| v.parse::<u32>().ok());
+                found.borrow_mut().push(n);
+                Ok(())
+            })],
+            ..RewriteStrSettings::new()
+        },
+    )
+    .map_err(|e| format!("the element's snapshot is not valid HTML: {e}"))?;
+    found
+        .into_inner()
+        .into_iter()
+        .collect::<Option<Vec<u32>>>()
+        .ok_or_else(|| "the element's snapshot has a bad field stamp".to_owned())
 }
 
 /// The engine's own pass over a snapshot (209 §4.10): only [`TAGS`] (others unwrapped,
@@ -603,44 +757,71 @@ enum Source {
 }
 
 /// The agent script's command `cmd` with `params` on `source` for `session`: its JSON result, or
-/// why it did not run. On obscura through `browser_evaluate` in the page (as P3's fixture client
-/// runs it); the expression is built in a [`Zeroizing`] buffer, since it may carry values.
+/// why it did not run. On a tile under the call id `id`; on obscura through `browser_evaluate` in
+/// the page (as P3's fixture client runs it), the expression built in a [`Zeroizing`] buffer,
+/// since it may carry values.
 async fn agent(
     ctx: &Ctx,
     session: SessionId,
     source: &Source,
+    id: WebViewCallId,
     cmd: &'static str,
     params: Value,
 ) -> Result<Value, String> {
     match source {
         Source::Tile { view, delegated } => {
-            tile::agent_json(&ctx.rt, session, view, *delegated, cmd, params).await
+            tile::agent_json(&ctx.rt, session, view, *delegated, id, cmd, params).await
         }
         Source::Obscura => {
-            ctx.ensure_profile(session)
-                .await
-                .map_err(|e| e.to_string())?;
-            let mut expression = Zeroizing::new(String::with_capacity(tile::AGENT_JS.len() + 256));
-            expression.push_str("(async () => { const r = await (async (cmd, params) => {\n");
-            expression.push_str(&tile::AGENT_JS);
-            expression.push_str("\n})(");
-            expression.push_str(&Value::from(cmd).to_string());
-            expression.push_str(", ");
-            expression.push_str(&Zeroizing::new(params.to_string()));
-            expression.push_str("); return JSON.stringify(r === undefined ? null : r); })()");
-            let args = json!({ "expression": expression.as_str(), "timeoutMs": 15_000 });
-            let v = match ctx.send(session, "browser_evaluate", args).await {
-                Ok(Ok(v)) => v,
-                Ok(Err(e)) => return Err(e),
-                Err(e) => return Err(e.to_string()),
-            };
-            let (text, is_error) = text_of(&v);
-            if is_error {
-                return Err(text);
-            }
-            serde_json::from_str(&text).map_err(|_| "the page answered no JSON".to_owned())
+            let mut body = Zeroizing::new(String::with_capacity(tile::AGENT_JS.len() + 256));
+            body.push_str("await (async (cmd, params) => {\n");
+            body.push_str(&tile::AGENT_JS);
+            body.push_str("\n})(");
+            body.push_str(&Value::from(cmd).to_string());
+            body.push_str(", ");
+            body.push_str(&Zeroizing::new(params.to_string()));
+            body.push(')');
+            evaluate(ctx, session, &body).await
         }
     }
+}
+
+/// The page's `{ url, title, ready, doc }` on `source` ([`tile::LOCATION_JS`], without the agent
+/// script: the poll after a submit).
+async fn locate(ctx: &Ctx, session: SessionId, source: &Source) -> Result<Value, String> {
+    match source {
+        Source::Tile { view, delegated } => {
+            tile::location_json(&ctx.rt, session, view, *delegated).await
+        }
+        Source::Obscura => {
+            let body = format!("await (async () => {{ {} }})()", tile::LOCATION_JS);
+            evaluate(ctx, session, &body).await
+        }
+    }
+}
+
+/// `browser_evaluate` of the async expression `body` on obscura, its result as JSON.
+/// `JSON.stringify` is bound before `body` runs, so page code `body` triggers (a handler the fill
+/// fires) cannot rewrite the answer through it (209 §9).
+async fn evaluate(ctx: &Ctx, session: SessionId, body: &str) -> Result<Value, String> {
+    ctx.ensure_profile(session)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut expression = Zeroizing::new(String::with_capacity(body.len() + 160));
+    expression.push_str("(async () => { const stringify = JSON.stringify; const r = ");
+    expression.push_str(body);
+    expression.push_str("; return stringify(r === undefined ? null : r); })()");
+    let args = json!({ "expression": expression.as_str(), "timeoutMs": 15_000 });
+    let v = match ctx.send(session, "browser_evaluate", args).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => return Err(e),
+        Err(e) => return Err(e.to_string()),
+    };
+    let (text, is_error) = text_of(&v);
+    if is_error {
+        return Err(text);
+    }
+    serde_json::from_str(&text).map_err(|_| "the page answered no JSON".to_owned())
 }
 
 /// One line, at most 120 characters.
@@ -686,7 +867,17 @@ fn refusal(r: &Value) -> String {
     }
 }
 
-/// The card's request from a `serialize` result, or what the model reads instead.
+/// `scheme://host[:port]` in ASCII of an http(s) address.
+fn web_origin(url: &str) -> Option<String> {
+    url::Url::parse(url)
+        .ok()
+        .filter(|u| matches!(u.scheme(), "http" | "https"))
+        .map(|u| u.origin().ascii_serialization())
+}
+
+/// The card's request from a `serialize` result, or what the model reads instead; with it the
+/// page's own `{ name, kind }` of each field in index order, which `fill_form` checks the live
+/// controls against (209 §4.10).
 fn request(
     r: &Value,
     id: ElementFormId,
@@ -694,7 +885,7 @@ fn request(
     call_id: &str,
     source: String,
     title: Option<&str>,
-) -> Result<ElementFormRequested, String> {
+) -> Result<(ElementFormRequested, Vec<Value>), String> {
     if let Some(e) = r["error"].as_str() {
         return Err(e.to_owned());
     }
@@ -702,28 +893,48 @@ fn request(
         return Err(refusal(r));
     }
     let url = r["url"].as_str().unwrap_or_default().to_owned();
-    let origin = url::Url::parse(&url)
-        .ok()
-        .filter(|u| matches!(u.scheme(), "http" | "https"))
-        .map(|u| u.origin().ascii_serialization())
+    let origin = web_origin(&url)
         .ok_or("the page has no web address (http or https), so its form cannot be shown")?;
+    let action_origin = r["action"]
+        .as_str()
+        .and_then(web_origin)
+        .unwrap_or_else(|| origin.clone());
     let html = sanitize(r["html"].as_str().unwrap_or_default())?;
-    let fields: Vec<ElementFormField> = r["fields"]
+    let mut fields: Vec<(ElementFormField, Value)> = r["fields"]
         .as_array()
         .map(|a| {
             a.iter()
                 .enumerate()
-                .map(|(i, f)| ElementFormField {
-                    index: i as u32,
-                    kind: one_line(f["kind"].as_str().unwrap_or("text")).to_ascii_lowercase(),
-                    name: one_line(f["name"].as_str().unwrap_or_default()),
-                    label: one_line(f["label"].as_str().unwrap_or_default()),
-                    masked: f["masked"] == true,
+                .map(|(i, f)| {
+                    let index = f["index"]
+                        .as_u64()
+                        .and_then(|n| u32::try_from(n).ok())
+                        .unwrap_or(i as u32);
+                    let field = ElementFormField {
+                        index,
+                        kind: one_line(f["kind"].as_str().unwrap_or("text")).to_ascii_lowercase(),
+                        name: one_line(f["name"].as_str().unwrap_or_default()),
+                        label: one_line(f["label"].as_str().unwrap_or_default()),
+                        masked: f["masked"] == true,
+                    };
+                    let live = json!({ "name": f["name"], "kind": f["kind"] });
+                    (field, live)
                 })
                 .collect()
         })
         .unwrap_or_default();
-    if !fields.iter().any(|f| f.kind != "submit") {
+    fields.sort_by_key(|(f, _)| f.index);
+    // Each field is one stamp of the snapshot and the stamps are 0..n: a label cannot sit on
+    // another control than the one it names.
+    let mut stamped = stamps(&html)?;
+    stamped.sort_unstable();
+    let indices: Vec<u32> = fields.iter().map(|(f, _)| f.index).collect();
+    if stamped != indices || indices.iter().enumerate().any(|(i, n)| *n != i as u32) {
+        return Err(
+            "the element's snapshot does not match its fields; nothing was shown".to_owned(),
+        );
+    }
+    if !fields.iter().any(|(f, _)| f.kind != "submit") {
         return Err(refusal(&json!({ "refused": "empty" })));
     }
     let px = |k: &str, or: u32| match r[k].as_u64() {
@@ -734,19 +945,24 @@ fn request(
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| r["title"].as_str().unwrap_or_default());
-    Ok(ElementFormRequested {
-        id,
-        session,
-        call_id: call_id.to_owned(),
-        origin,
-        url,
-        source,
-        title: one_line(title),
-        html,
-        width: px("width", 400),
-        height: px("height", 320),
-        fields,
-    })
+    let (fields, live) = fields.into_iter().unzip();
+    Ok((
+        ElementFormRequested {
+            id,
+            session,
+            call_id: call_id.to_owned(),
+            origin,
+            action_origin,
+            url,
+            source,
+            title: one_line(title),
+            html,
+            width: px("width", 400),
+            height: px("height", 320),
+            fields,
+        },
+        live,
+    ))
 }
 
 /// `0 email, 1 password` for the receipt: the field's name, else its label, else its kind.
@@ -782,6 +998,7 @@ impl Drop for Open {
         use runtime::kameo_actors::message_bus::Publish;
         let Some(rt) = self.rt.take() else { return };
         forms(&rt).0.lock().remove(&self.id);
+        LIVE.lock().retain(|(id, ..)| *id != self.id);
         let closed = ElementFormResolved {
             id: self.id,
             outcome: ElementFormOutcome::Cancelled,
@@ -797,6 +1014,7 @@ impl Open {
     async fn close(mut self, outcome: ElementFormOutcome) {
         if let Some(rt) = self.rt.take() {
             forms(&rt).0.lock().remove(&self.id);
+            LIVE.lock().retain(|(id, ..)| *id != self.id);
             rt.publish(ElementFormResolved {
                 id: self.id,
                 outcome,
@@ -804,6 +1022,16 @@ impl Open {
             .await;
         }
     }
+}
+
+/// How the first wait for a card ended.
+enum Waited {
+    /// An answer, a cancel, or the card dropped (`None`).
+    Reply(Option<Reply>),
+    /// A client showed it (`element_form_shown`).
+    Shown,
+    /// No client showed it within [`SHOW_WAIT`].
+    Unseen,
 }
 
 /// Arguments of [`ShowElementTool`].
@@ -883,7 +1111,8 @@ impl ShowElementTool {
         let id = ElementFormId(uuid::Uuid::now_v7());
         let mut params = json!({ "form": id.0.to_string() });
         params[target.0] = target.1.into();
-        let snap = match agent(ctx, session, &source, "serialize", params).await {
+        let call = WebViewCallId(uuid::Uuid::now_v7());
+        let snap = match agent(ctx, session, &source, call, "serialize", params).await {
             Ok(r) => r,
             Err(e) => return ToolOutput::err(e),
         };
@@ -891,7 +1120,7 @@ impl ShowElementTool {
             Source::Tile { view, .. } => format!("web:{view}"),
             Source::Obscura => format!("obscura:{}", engine_name().await),
         };
-        let request = match request(
+        let (request, live) = match request(
             &snap,
             id,
             session,
@@ -907,24 +1136,47 @@ impl ShowElementTool {
             request.url.clone(),
             request.fields.clone(),
         );
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let shown = Arc::new(tokio::sync::Notify::new());
+        let ended = Arc::new(tokio::sync::Notify::new());
         forms(&ctx.rt).0.lock().insert(
             id,
             Waiting {
                 request: request.clone(),
                 tx,
+                shown: shown.clone(),
             },
         );
+        LIVE.lock().push((id, session, ended.clone()));
         let open = Open {
             rt: Some(ctx.rt.clone()),
             id,
         };
         ctx.rt.publish(request).await;
         let wait = ask_timeout(&ctx.rt);
+        let deadline = tokio::time::Instant::now() + wait;
+        // 209 §4.10: a card no app shows within SHOW_WAIT ends; once shown it waits `wait`.
+        let unseen = tokio::time::Instant::now() + SHOW_WAIT.min(wait);
         let reply = tokio::select! {
-            r = rx => r.ok(),
-            () = tokio::time::sleep(wait) => None,
-            () = cx.cancel.cancelled() => Some(Reply::Cancel),
+            r = &mut rx => Waited::Reply(r.ok()),
+            () = shown.notified() => Waited::Shown,
+            () = tokio::time::sleep_until(unseen) => Waited::Unseen,
+            () = cx.cancel.cancelled() => Waited::Reply(Some(Reply::Cancel)),
+            () = ended.notified() => Waited::Reply(Some(Reply::Cancel)),
+        };
+        let reply = match reply {
+            Waited::Reply(r) => r,
+            Waited::Unseen if unseen < deadline => {
+                open.close(ElementFormOutcome::Cancelled).await;
+                return ToolOutput::ok(NOT_SHOWN);
+            }
+            Waited::Unseen => None,
+            Waited::Shown => tokio::select! {
+                r = &mut rx => r.ok(),
+                () = tokio::time::sleep_until(deadline) => None,
+                () = cx.cancel.cancelled() => Some(Reply::Cancel),
+                () = ended.notified() => Some(Reply::Cancel),
+            },
         };
         let values = match reply {
             None => {
@@ -950,16 +1202,21 @@ impl ShowElementTool {
                 remember(session, v);
             }
         }
-        let filled = self
-            .fill(session, &source, id, &url, fields.len(), values)
-            .await;
+        let filled = self.fill(session, &source, id, &url, live, values).await;
         let r = match filled {
-            Ok(r) if r.get("stale").is_none() => r,
-            Ok(_) => {
+            Ok(r) if r.get("stale").is_none() && r.get("error").is_none() => r,
+            Ok(r) if r.get("stale").is_some() => {
                 open.close(ElementFormOutcome::Stale).await;
                 return ToolOutput::err(
                     "the page changed since the form was shown; nothing was typed",
                 );
+            }
+            Ok(r) => {
+                open.close(ElementFormOutcome::Stale).await;
+                let e = one_line(r["error"].as_str().unwrap_or_default());
+                return ToolOutput::err(format!(
+                    "the form could not be filled ({e}); nothing was submitted"
+                ));
             }
             Err(e) => {
                 open.close(ElementFormOutcome::Stale).await;
@@ -999,28 +1256,50 @@ impl ShowElementTool {
         ToolOutput::ok(text)
     }
 
-    /// The agent script's `fill_form` with the user's values, on the browser the card came from.
+    /// The agent script's `fill_form` with the user's values, on the browser the card came from,
+    /// checking the live controls against `live` (each field's `{ name, kind }`). On obscura the
+    /// values ride the `browser_evaluate` expression; on a tile they never ride the
+    /// `WebViewCallRequested` event (209 §4.4, §9): the op says `values_from`, and the client that
+    /// claimed it fetches them once with `element_form_values`.
     async fn fill(
         &self,
         session: SessionId,
         source: &Source,
         id: ElementFormId,
         url: &str,
-        count: usize,
+        live: Vec<Value>,
         values: BTreeMap<u32, Zeroizing<String>>,
     ) -> Result<Value, String> {
-        let mut map = serde_json::Map::new();
-        for (i, v) in &values {
-            map.insert(i.to_string(), Value::String(v.as_str().to_owned()));
-        }
-        drop(values);
-        let params = json!({
+        let mut params = json!({
             "form": id.0.to_string(),
             "url": url,
-            "count": count,
-            "values": Value::Object(map),
+            "fields": live,
         });
-        agent(&self.0, session, source, "fill_form", params).await
+        let call = WebViewCallId(uuid::Uuid::now_v7());
+        let _guard = match source {
+            Source::Tile { .. } => {
+                let values = values
+                    .into_iter()
+                    .map(|(i, v)| (i.to_string(), v))
+                    .collect();
+                fills(&self.0.rt).0.lock().insert(call, values);
+                params["values_from"] = "element_form_values".into();
+                Some(FillGuard {
+                    rt: self.0.rt.clone(),
+                    id: call,
+                })
+            }
+            Source::Obscura => {
+                let mut map = serde_json::Map::new();
+                for (i, v) in &values {
+                    map.insert(i.to_string(), Value::String(v.as_str().to_owned()));
+                }
+                drop(values);
+                params["values"] = Value::Object(map);
+                None
+            }
+        };
+        agent(&self.0, session, source, call, "fill_form", params).await
     }
 
     /// After the submit: the page's new address and title once it changed (another address or
@@ -1037,7 +1316,7 @@ impl ShowElementTool {
         let mut changed = None;
         while tokio::time::Instant::now() < deadline {
             tokio::time::sleep(LOOK).await;
-            let Ok(r) = agent(&self.0, session, source, "location", json!({})).await else {
+            let Ok(r) = locate(&self.0, session, source).await else {
                 continue;
             };
             let url = r["url"].as_str().unwrap_or_default();
@@ -1186,40 +1465,216 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_origin_comes_from_the_address_in_ascii() {
-        let r = request(
-            &json!({
-                "url": "https://bücher.example:8443/login?next=/a#top",
-                "title": "Sign in",
-                "html": "<form><input type=\"email\" data-theuth-field=\"0\"></form>",
-                "width": 0, "height": 210,
-                "fields": [{ "kind": "email", "name": "email", "label": "Email", "masked": false }],
-            }),
+    fn page(fields: Value, html: &str, action: Option<&str>) -> Value {
+        json!({
+            "url": "https://bücher.example:8443/login?next=/a#top",
+            "title": "Sign in",
+            "html": html,
+            "width": 0, "height": 210,
+            "fields": fields,
+            "action": action,
+        })
+    }
+
+    fn card(r: &Value) -> Result<(ElementFormRequested, Vec<Value>), String> {
+        request(
+            r,
             ElementFormId(uuid::Uuid::nil()),
             SessionId::new(),
             "c",
             "obscura:local".into(),
             Some("  "),
         )
-        .expect("request");
+    }
+
+    #[test]
+    fn the_origin_comes_from_the_address_in_ascii() {
+        let one = json!([{ "kind": "email", "name": "email", "label": "Email", "masked": false }]);
+        let html = "<form><input type=\"email\" data-theuth-field=\"0\"></form>";
+        let (r, live) = card(&page(one.clone(), html, None)).expect("request");
         assert_eq!(r.origin, "https://xn--bcher-kva.example:8443");
+        assert_eq!(r.action_origin, r.origin, "no action: the page's origin");
         assert_eq!((r.width, r.height, r.title.as_str()), (400, 210, "Sign in"));
         assert_eq!(bare(&r.url), "https://xn--bcher-kva.example:8443/login");
+        assert_eq!(live, [json!({ "name": "email", "kind": "email" })]);
+        let (r, _) = card(&page(
+            one.clone(),
+            html,
+            Some("https://sso.bücher.example/post?x=1"),
+        ))
+        .expect("request");
+        assert_eq!(r.action_origin, "https://sso.xn--bcher-kva.example");
+        let (r, _) = card(&page(one, html, Some("javascript:void(0)"))).expect("request");
+        assert_eq!(r.action_origin, r.origin, "not http(s): the page's origin");
+    }
+
+    /// 209 §4.10: each field is one stamp of the snapshot, by the page's own index; a page that
+    /// lists its fields out of stamp order or with a stamp missing shows no card.
+    #[test]
+    fn fields_pair_with_their_stamps_by_the_page_index() {
+        let html = "<form><input type=\"password\" data-theuth-field=\"1\"><input type=\"email\" data-theuth-field=\"0\"></form>";
+        let fields = json!([
+            { "index": 1, "kind": "password", "name": "pw", "label": "Password", "masked": true },
+            { "index": 0, "kind": "email", "name": "email", "label": "Email", "masked": false },
+        ]);
+        let (r, live) = card(&page(fields, html, None)).expect("request");
+        let got: Vec<(u32, &str)> = r
+            .fields
+            .iter()
+            .map(|f| (f.index, f.kind.as_str()))
+            .collect();
+        assert_eq!(got, [(0, "email"), (1, "password")]);
+        assert_eq!(live[1], json!({ "name": "pw", "kind": "password" }));
+        let two = json!([
+            { "index": 0, "kind": "email", "name": "email", "label": "Email" },
+            { "index": 1, "kind": "password", "name": "pw", "label": "Password" },
+        ]);
+        let one_stamp = "<form><input data-theuth-field=\"0\"><input></form>";
+        assert!(card(&page(two.clone(), one_stamp, None)).is_err());
+        let twice = "<form><input data-theuth-field=\"0\"><input data-theuth-field=\"0\"></form>";
+        assert!(card(&page(two, twice, None)).is_err());
+    }
+
+    /// A literal `&` in a style value keeps the style, escaped once; a hidden `url(` is still
+    /// found through a numeric reference.
+    #[test]
+    fn a_literal_ampersand_keeps_the_style() {
+        let clean = sanitize(
+            r#"<div style='font-family: "A&B"; color: red'>x</div><span style="a: &unknown; b">y</span>"#,
+        )
+        .expect("sanitize");
+        assert!(
+            clean.contains(r#"style="font-family: &quot;A&amp;B&quot;; color: red""#),
+            "{clean}"
+        );
+        assert!(!clean.contains("&amp;amp;"), "escaped twice: {clean}");
+        assert!(clean.contains("a: &amp;unknown"), "{clean}");
+        let hidden = sanitize(
+            r#"<p style="background: u&#114;l(https://evil.example/e); color: blue">z</p>"#,
+        )
+        .expect("sanitize");
+        assert!(!hidden.contains("evil"), "{hidden}");
+        assert!(hidden.contains("color: blue"), "{hidden}");
+    }
+
+    /// The client's test reads `show_element.allow.json`; it must be the lists the code uses.
+    #[test]
+    fn the_checked_in_allowlist_is_the_code_s() {
+        let file: Value = serde_json::from_str(include_str!("show_element.allow.json"))
+            .expect("show_element.allow.json");
+        let list = |k: &str| -> Vec<String> {
+            file[k]
+                .as_array()
+                .unwrap_or_else(|| panic!("{k}"))
+                .iter()
+                .map(|v| v.as_str().expect("a name").to_owned())
+                .collect()
+        };
+        let code = |l: &[&str]| -> Vec<String> { l.iter().map(|s| (*s).to_owned()).collect() };
+        assert_eq!(list("tags"), code(TAGS));
+        assert_eq!(list("dropped"), code(DROPPED));
+        assert_eq!(list("attrs"), code(ATTRS));
+        assert_eq!(list("img_attrs"), ["alt", "src"]);
     }
 
     #[test]
     fn submitted_values_are_scrubbed_raw_and_url_encoded() {
         let session = SessionId::new();
         remember(session, PASSWORD);
-        remember(session, "abc");
+        remember(session, "Hello");
         let encoded: String = url::form_urlencoded::byte_serialize(PASSWORD.as_bytes()).collect();
-        let mut text = format!("x {PASSWORD} y ?pw={encoded} abc");
+        let mut text = format!("x {PASSWORD} y ?pw={encoded} Hello");
         scrub(session, &mut text);
-        assert_eq!(text, "x [typed value] y ?pw=[typed value] abc");
+        assert_eq!(text, "x [typed value] y ?pw=[typed value] Hello");
         forget(&[session]);
         let mut again = PASSWORD.to_owned();
         scrub(session, &mut again);
         assert_eq!(again, PASSWORD);
+    }
+
+    /// At most 32 values per session are scrubbed; the oldest goes first.
+    #[test]
+    fn the_scrub_list_is_capped() {
+        let session = SessionId::new();
+        for i in 0..=TYPED_MAX {
+            remember(session, &format!("value-{i:04}"));
+        }
+        let mut first = "value-0000".to_owned();
+        scrub(session, &mut first);
+        assert_eq!(first, "value-0000", "the oldest is dropped");
+        let mut last = format!("value-{TYPED_MAX:04}");
+        scrub(session, &mut last);
+        assert_eq!(last, "[typed value]");
+        forget(&[session]);
+    }
+
+    fn waiting(rt: &Runtime) -> (ElementFormId, tokio::sync::oneshot::Receiver<Reply>) {
+        let one = json!([
+            { "index": 0, "kind": "email", "name": "email", "label": "Email" },
+            { "index": 1, "kind": "submit", "name": "", "label": "Go" },
+        ]);
+        let html = "<form><input data-theuth-field=\"0\"><button data-theuth-field=\"1\">Go</button></form>";
+        let (request, _) = card(&page(one, html, None)).expect("request");
+        let id = ElementFormId(uuid::Uuid::now_v7());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        forms(rt).0.lock().insert(
+            id,
+            Waiting {
+                request,
+                tx,
+                shown: Arc::default(),
+            },
+        );
+        (id, rx)
+    }
+
+    /// 209 §4.10: a submit naming no field the card fills leaves the card waiting.
+    #[test]
+    fn a_submit_without_a_field_leaves_the_card_pending() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let (id, mut rx) = waiting(&rt);
+        let none = |v: Value| serde_json::from_value::<ElementFormAnswer>(v).expect("answer");
+        assert!(!answer(
+            &rt,
+            id,
+            none(json!({ "submit": { "values": {} } }))
+        ));
+        assert!(!answer(
+            &rt,
+            id,
+            none(json!({ "submit": { "values": { "1": "x", "7": "y", "a": "z" } } }))
+        ));
+        assert!(pending_here(&rt, id), "the card was consumed");
+        assert!(rx.try_recv().is_err());
+        assert!(answer(
+            &rt,
+            id,
+            none(json!({ "submit": { "values": { "0": "me@example.com", "1": "x" } } }))
+        ));
+        assert!(!pending_here(&rt, id));
+        match rx.try_recv() {
+            Ok(Reply::Submit(v)) => assert_eq!(v.keys().copied().collect::<Vec<_>>(), [0]),
+            _ => panic!("no submit"),
+        }
+    }
+
+    /// A tile fill's values go once, to the connection holding the call's claim only.
+    #[test]
+    fn tile_values_go_to_the_claimer_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let call = WebViewCallId(uuid::Uuid::now_v7());
+        fills(&rt).0.lock().insert(
+            call,
+            BTreeMap::from([("0".to_owned(), Zeroizing::new(PASSWORD.to_owned()))]),
+        );
+        assert!(values_here(&rt, call));
+        assert_eq!(take_values(&rt, call, "conn:1"), None, "nobody claimed it");
+        let _guard = FillGuard {
+            rt: rt.clone(),
+            id: call,
+        };
+        assert!(values_here(&rt, call), "a refused fetch keeps them");
     }
 }
