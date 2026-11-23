@@ -8,13 +8,14 @@
 # and linker for aws-lc-sys and the bundled SQLite) targets $TARGETARCH's musl triple, so no Rust or
 # C runs under QEMU when an arm64 Mac builds the amd64 image (or the reverse).
 #
-# Reproducibility: the build uses the repo's Cargo.lock with `--locked`. Only share-edge and its
+# Reproducibility: the build starts from the repo's committed Cargo.lock. Only share-edge and its
 # in-repo path dependencies (`share-proto`, `platform`) are copied, and the workspace
 # [patch.crates-io] block is cut (it pulls git forks and `vendor/` crates the edge never uses, as for
 # the relay). The one patch the edge does reach is `vendor/libsqlite3-sys` (SQLCipher over BoringSSL,
-# for the Signal store); without it cargo resolves stock crates.io `libsqlite3-sys`, pinned below to
-# 0.36.0, the version the vendored copy is based on, with its `bundled` SQLite (sqlx's feature). The
-# edge does not use SQLCipher. Every other package keeps the version locked in Cargo.lock.
+# for the Signal store); without it the lock's path entry is orphaned, so `cargo metadata` re-resolves
+# once (cargo keeps every existing lock entry and adds only the missing crates.io `libsqlite3-sys`), and
+# `cargo update --precise` pins that to 0.36.0, the version the vendored copy forks, with its `bundled`
+# SQLite (sqlx's feature). The edge does not use SQLCipher. The build then runs `--locked`.
 
 FROM --platform=$BUILDPLATFORM rust:1-bookworm AS build
 ARG TARGETARCH
@@ -36,11 +37,11 @@ RUN case "$TARGETARCH" in \
 COPY crates/share-edge ./crates/share-edge
 COPY crates/share-proto ./crates/share-proto
 COPY crates/platform ./crates/platform
-# Trim the workspace, drop the patches, pin libsqlite3-sys (see the header). `cargo update -p`
-# rewrites only that entry; prunes packages no member reaches; `--locked` then refuses any other drift.
+# Trim the workspace, drop the patches, re-resolve and pin libsqlite3-sys (see the header).
 RUN --mount=type=cache,id=theuth-share-edge-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     sed -i 's|members = \["crates/\*"\]|members = ["crates/share-edge", "crates/share-proto", "crates/platform"]|' Cargo.toml \
  && sed -i '/^\[patch\.crates-io\]/,$d' Cargo.toml \
+ && cargo metadata --format-version 1 >/dev/null \
  && cargo update -p libsqlite3-sys --precise 0.36.0
 RUN --mount=type=cache,id=theuth-share-edge-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=theuth-share-edge-cargo-target-${TARGETARCH},target=/src/target \
