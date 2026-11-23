@@ -42,7 +42,7 @@ import type { SelectMode } from '@/lib/selection'
 import { useRowSwipe } from '@/lib/use-row-swipe'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
-import { type Activity, type SessionSlice, shownActivity, useSessionField, useSessions } from '@/store/sessions'
+import { type Activity, type SessionSlice, shownActivity, statusLine, useSessionField, useSessions } from '@/store/sessions'
 import { routed, useEngineLabel } from '@/lib/owner'
 import { useApprovals } from '@/store/approvals'
 import { SidebarPopoutButton } from './SidebarPopoutButton'
@@ -71,10 +71,11 @@ export const turnActivity = (s: Pick<SessionSummary, 'here' | 'running'>, slice:
 
 function SessionActivity({ id, here, running }: { id: string; here: boolean; running: boolean }) {
   const activity = useSessions((s) => turnActivity({ here, running }, s.sessions[id]))
-  const status = useSessionField(id, 'statusText')
+  const reported = useSessionField(id, 'statusText')
   if (activity === 'idle') return null
   const [Icon, word] = ACTIVITY[activity]
-  // 212 §12: the agent's own status line, when it reported one, names the activity.
+  // 212 §12: the agent's own status line, when it reported one, names the activity (not while compacting).
+  const status = statusLine(activity, reported)
   const label = status || word
   // The lucide glyphs pulse; the loading-dev ones (thinking, harvesting) animate on their own.
   const glyph = (

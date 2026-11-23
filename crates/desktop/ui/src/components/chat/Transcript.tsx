@@ -16,6 +16,7 @@ import {
   type Activity,
   freshness,
   shownActivity,
+  statusLine,
   useEntries,
   useSessionField,
 } from '@/store/sessions'
@@ -553,7 +554,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
         {(running || activity !== 'idle') && (
           <div className={cn('flex w-full items-center gap-2 py-3 text-sm text-fg-secondary', compact ? 'px-4' : 'mx-auto md:max-w-[768px] px-8')}>
             <ActivityIndicator activity={activity} />
-            {statusText || (activity === 'vision' && visionStatus) || WORD[activity]}
+            {statusLine(activity, statusText, visionStatus) || WORD[activity]}
           </div>
         )}
       </div>
