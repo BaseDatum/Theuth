@@ -2044,6 +2044,7 @@ fn rpc_composition(server: rpc_core::Server) -> (jsonrpsee::RpcModule<rpc_core::
         dreaming::rpc_module(server.clone()),
         autoresearch::rpc_module(server.clone()),
         cells::rpc_module(server.clone()),
+        share::rpc_module(server.clone()),
         sandbox::rpc_module(server),
     ]).expect("production RPC descriptors");
     let discovery = rpc_core::Discovery {
@@ -2195,6 +2196,8 @@ fn engine_plugins(headless: bool, serve: bool) -> Vec<Box<dyn Plugin>> {
         Box::new(webprofile::WebProfilePlugin),
         Box::new(tasks::TasksPlugin),
         Box::new(sandbox::SandboxPlugin),
+        // 210: public web sharing; after mesh (identity, endpoint, vault) and replica (shares table).
+        Box::new(share::SharePlugin::engine()),
         // Always registers its actor (183 W-26: contacts need it; `a2a.enabled`
         // gates the HTTP listener) and finishes in the background once `agent`
         // and `secrets` answer, so its place in this list carries no ordering
