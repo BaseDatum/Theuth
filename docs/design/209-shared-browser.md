@@ -1000,6 +1000,42 @@ and §9 already say it):
   forward of `element_form_values` / `element_form_shown`; the `sessionsync` relay test still uses stand-in
   structs (pulling `browser` into its dev-dependencies would build obscura there).
 
+#### P5 proof (iPad simulator)
+
+Run on 2026-11-23: iPad simulator (iOS 26), the app built from `feat/209-p5`, paired with a dev engine of the same
+tree (own data dir, fake model, a loopback HTTP login site on `*.lvh.me`). Every case ran through the iPad's card:
+
+- **Obscura**: `browser_open`, `browser_read`, `browser_show_element { selector: "form" }`: the card shows the open
+  lock (plain HTTP), `http://app.lvh.me:18209`, "Sends to …", **Submit to app.lvh.me:18209**, Cancel, the field
+  copy. Typed into the card, Submit: the site logged one `POST /login` with `user` and `password` whose hashes are
+  those of the typed strings; receipt `submitted · http://app.lvh.me:18209 · filled 0 user, 1 password · now
+  http://app.lvh.me:18209/ — 209 test home`.
+- **Tile**: `show_web`, `browser_attach`, the card on the tile's form, Submit: the tile signed in, one POST; the
+  `fill_form` call's event carried `form, url, fields, values_from`, no value.
+- **Cancel** (obscura and tile): `cancelled · …`, nothing posted. **Stale**: `browser_show_element` and
+  `browser_open` of another page in one model reply (the open runs while the card waits); Submit gives `stale`,
+  "the page changed since the form was shown; nothing was typed", nothing posted. **Subagent**: a child's card
+  shows in the parent chat under "subagent … is waiting on you"; Submit posted once. `browser_attach {}` returns
+  to obscura; closing the tile on the iPad empties `web_views`.
+- **Values**: none of the typed strings in the data dir (sessions store, logs at `browser=debug`), in any captured
+  event frame (803, 16 of them `WebViewCallRequested`), in the model's requests, or in the app's unified log.
+
+Fixed by the run:
+
+- **The tile's receipt** starts with the `[tile web:… · host]` line every tile reply carries (§4.6), and a failed
+  call comes back from the transcript as `ERROR: …`: the card showed the prefix line as its receipt, and after a
+  reload read no outcome (the stale card fell back to a bare error line). `lib/element-form.ts` `receiptLine`
+  drops both before `outcomeOfReceipt` reads the first line.
+- **The engine's raw id**: `obscura:<engine id>` printed a 64-hex id ("agent browser on 46848e…"). The card names the
+  engine from `mesh_status` ("agent browser on dev209"), "an agent browser" when the mesh does not know it.
+- **The copy of a native button**: WebKit reports a form's default submit button (`:default`) with the accent
+  background, no radius and bold text while painting it natively; written inline, those made the copy a flat blue
+  box. `serialize` probes a default button as one (inside a form) and writes no border radius for a control whose
+  `appearance` is not `none` and whose background and borders are the defaults; the copy keeps the native look.
+
+Seen, not changed: iOS autocapitalises the first letter typed into a text field of the card, as it does in the page
+(the snapshot keeps no `autocapitalize`).
+
 ## 11. Open questions
 
 - Q1. Session cookies (no `expires`) in the profile outlive the browser that set them, the way "continue where you
