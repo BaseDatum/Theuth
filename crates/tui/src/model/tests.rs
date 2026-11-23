@@ -4851,7 +4851,7 @@
         component_menu_key(&mut m, "mcp", KeyCode::Char('s'));
         assert!(matches!(
             component_request::<McpRequest>(&mut rx),
-            Ok(McpRequest::SetHidden { session: None, draft, .. }) if picked(&draft)
+            Ok(McpRequest::SetHidden { session: None, draft, .. }) if picked(&draft.as_deref().cloned())
         ));
         // `/<skill>` with no session.
         m.submit("/caveman lite", &tx);
