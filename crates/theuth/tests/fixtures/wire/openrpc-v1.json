@@ -120901,6 +120901,34 @@
         ],
         "type": "object"
       },
+      "method.share.output.PendingCert": {
+        "description": "A pending share's certificate: the edge's queue position and estimate when it answered in\ntime, both `None` while the certificate step still runs.",
+        "properties": {
+          "eta_s": {
+            "description": "Estimated seconds to a certificate.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "queue_pos": {
+            "description": "Position in the edge's certificate queue.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "queue_pos",
+          "eta_s"
+        ],
+        "type": "object"
+      },
       "method.share.output.Published": {
         "description": "A publish result; `password` only for `access: password`, for the owner's surfaces.",
         "properties": {
@@ -120910,6 +120938,17 @@
               "string",
               "null"
             ]
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.share.output.PendingCert"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While `share.state` is `pending`: where the certificate stands, as far as known."
           },
           "share": {
             "allOf": [
@@ -121404,6 +121443,30 @@
         ],
         "type": "object"
       },
+      "method.share.receiver.PendingCert": {
+        "description": "A pending share's certificate: the edge's queue position and estimate when it answered in\ntime, both `None` while the certificate step still runs.",
+        "properties": {
+          "eta_s": {
+            "description": "Estimated seconds to a certificate.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "queue_pos": {
+            "description": "Position in the edge's certificate queue.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "method.share.receiver.Published": {
         "description": "A publish result; `password` only for `access: password`, for the owner's surfaces.",
         "properties": {
@@ -121413,6 +121476,17 @@
               "string",
               "null"
             ]
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.share.receiver.PendingCert"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While `share.state` is `pending`: where the certificate stands, as far as known."
           },
           "share": {
             "allOf": [
