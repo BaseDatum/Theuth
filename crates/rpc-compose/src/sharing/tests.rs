@@ -69,21 +69,40 @@ fn document_rows_carry_link_states_and_members_via_link() {
             .unwrap_or_else(|| panic!("{id} in {rows:#?}"))
     };
     let live = by_id("lnk_live");
-    assert_eq!((live.state.as_str(), live.count, live.last_access_ms), ("active", Some(2), Some(NOW - 3)));
+    assert_eq!(
+        (live.state.as_str(), live.count, live.last_access_ms),
+        ("active", Some(2), Some(NOW - 3))
+    );
     assert_eq!(live.audience, ANYONE);
     assert_eq!(live.url, None);
     assert_eq!(live.parent.as_deref(), Some(doc.as_str()));
     let expired = by_id("lnk_expired");
-    assert_eq!((expired.state.as_str(), expired.revocable), ("expired", true));
+    assert_eq!(
+        (expired.state.as_str(), expired.revocable),
+        ("expired", true)
+    );
     let revoked = by_id("lnk_revoked");
-    assert_eq!((revoked.state.as_str(), revoked.count), ("revoked", Some(1)));
+    assert_eq!(
+        (revoked.state.as_str(), revoked.count),
+        ("revoked", Some(1))
+    );
     assert!(revoked.revocable, "its member can still be swept");
-    assert!(!rows.iter().any(|r| r.id.ends_with("lnk_old")), "revoked > 30 days: omitted");
+    assert!(
+        !rows.iter().any(|r| r.id.ends_with("lnk_old")),
+        "revoked > 30 days: omitted"
+    );
     let m = by_id("c");
-    assert_eq!((m.kind, m.permission.as_deref(), m.last_access_ms), (SharingKind::DocumentMember, Some("viewer"), None));
+    assert_eq!(
+        (m.kind, m.permission.as_deref(), m.last_access_ms),
+        (SharingKind::DocumentMember, Some("viewer"), None)
+    );
 
     let only_links = doc_rows(&d, NOW, false, true);
-    assert!(only_links.iter().all(|r| r.kind == SharingKind::DocumentLink));
+    assert!(
+        only_links
+            .iter()
+            .all(|r| r.kind == SharingKind::DocumentLink)
+    );
     assert_eq!(only_links.len(), 3);
 }
 
@@ -104,8 +123,8 @@ fn revoked_link_without_members_is_not_revocable() {
 #[test]
 fn export_and_contact_rows_join_grants() {
     let exports: Vec<Export> = serde_json::from_value(serde_json::json!([
-        {"name": "helper", "target": {"agent": {"agent": "theuth"}}, "description": ""},
-        {"name": "chat", "target": {"chat": {"session": runtime::SessionId::new()}}, "description": "", "paused": "chat archived"},
+        {"name": "helper", "target": {"kind": "agent", "agent": "theuth"}, "description": ""},
+        {"name": "chat", "target": {"kind": "chat", "session": runtime::SessionId::new()}, "description": "", "paused": "chat archived"},
     ]))
     .unwrap();
     let contacts = vec![
@@ -114,12 +133,32 @@ fn export_and_contact_rows_join_grants() {
     ];
     let rows = export_rows(&exports, &contacts);
     assert_eq!(rows[0].audience, "ann, bob");
-    assert_eq!((rows[0].count, rows[0].permission.as_deref()), (Some(2), Some("mixed")));
+    assert_eq!(
+        (rows[0].count, rows[0].permission.as_deref()),
+        (Some(2), Some("mixed"))
+    );
     assert_eq!(rows[0].open.as_deref(), Some("theuth"));
-    assert_eq!((rows[1].state.as_str(), rows[1].count, rows[1].permission.as_deref()), ("paused", Some(1), Some("ask")));
+    assert_eq!(
+        (
+            rows[1].state.as_str(),
+            rows[1].count,
+            rows[1].permission.as_deref()
+        ),
+        ("paused", Some(1), Some("ask"))
+    );
     let rows = contact_rows(&contacts);
-    assert_eq!((rows[0].state.as_str(), rows[0].count, rows[0].permission.as_deref()), ("active", Some(1), Some("allow")));
-    assert_eq!((rows[1].state.as_str(), rows[1].count), ("blocked", Some(2)));
+    assert_eq!(
+        (
+            rows[0].state.as_str(),
+            rows[0].count,
+            rows[0].permission.as_deref()
+        ),
+        ("active", Some(1), Some("allow"))
+    );
+    assert_eq!(
+        (rows[1].state.as_str(), rows[1].count),
+        ("blocked", Some(2))
+    );
 }
 
 #[test]
@@ -128,15 +167,21 @@ fn share_rows_name_their_machine_and_stop_only_when_running() {
         "id": "s1", "engine": "eid", "edge": "edge", "domain": "tun.zip", "host": "x.tun.zip",
         "path": "/app1", "url": "https://x.tun.zip/app1/", "source": {"port": 8080},
         "access": "password", "interstitial": true, "created_ms": 5, "live_ms": 6,
-        "expires_ms": 9, "created_by": {"settings": "settings"},
+        "expires_ms": 9, "created_by": "settings",
         "approved_by": {"approval_id": "a", "surface": "settings"}, "state": "live",
         "stopped_ms": null, "stopped_by": null,
     }))
     .unwrap();
     let machines = HashMap::from([("eid".to_owned(), "laptop".to_owned())]);
     let r = share_row(&share, &machines);
-    assert_eq!((r.title.as_str(), r.audience.as_str(), r.state.as_str()), ("x.tun.zip/app1", "password", "live"));
-    assert_eq!((r.engine.as_deref(), r.url.as_deref(), r.expires_ms), (Some("laptop"), Some("https://x.tun.zip/app1/"), Some(9)));
+    assert_eq!(
+        (r.title.as_str(), r.audience.as_str(), r.state.as_str()),
+        ("x.tun.zip/app1", "password", "live")
+    );
+    assert_eq!(
+        (r.engine.as_deref(), r.url.as_deref(), r.expires_ms),
+        (Some("laptop"), Some("https://x.tun.zip/app1/"), Some(9))
+    );
     assert!(r.revocable);
     let stopped = Share {
         state: ShareState::Stopped,
@@ -152,29 +197,61 @@ fn revoke_dispatch_table() {
     let d = doc.as_str();
     assert_eq!(
         plan(SharingKind::DocumentMember, &format!("{d}|pubkey"), None).unwrap(),
-        Revoke::DocMember { doc: doc.clone(), member: "pubkey".into() }
+        Revoke::DocMember {
+            doc: doc.clone(),
+            member: "pubkey".into()
+        }
     );
     assert_eq!(
         plan(SharingKind::DocumentLink, &format!("{d}|lnk_1"), None).unwrap(),
-        Revoke::DocLink { doc: doc.clone(), link: "lnk_1".into(), members: false }
+        Revoke::DocLink {
+            doc: doc.clone(),
+            link: "lnk_1".into(),
+            members: false
+        }
     );
     assert_eq!(
-        plan(SharingKind::DocumentLink, &format!("{d}|lnk_1"), Some("members")).unwrap(),
-        Revoke::DocLink { doc: doc.clone(), link: "lnk_1".into(), members: true }
+        plan(
+            SharingKind::DocumentLink,
+            &format!("{d}|lnk_1"),
+            Some("members")
+        )
+        .unwrap(),
+        Revoke::DocLink {
+            doc: doc.clone(),
+            link: "lnk_1".into(),
+            members: true
+        }
     );
-    assert_eq!(plan(SharingKind::PublicShare, "s1", None).unwrap(), Revoke::ShareStop("s1".into()));
-    assert_eq!(plan(SharingKind::Export, "helper", None).unwrap(), Revoke::ExportRemove("helper".into()));
+    assert_eq!(
+        plan(SharingKind::PublicShare, "s1", None).unwrap(),
+        Revoke::ShareStop("s1".into())
+    );
+    assert_eq!(
+        plan(SharingKind::Export, "helper", None).unwrap(),
+        Revoke::ExportRemove("helper".into())
+    );
     assert_eq!(
         plan(SharingKind::Export, "helper", Some("ann")).unwrap(),
-        Revoke::Ungrant { contact: "ann".into(), export: "helper".into() }
+        Revoke::Ungrant {
+            contact: "ann".into(),
+            export: "helper".into()
+        }
     );
-    assert_eq!(plan(SharingKind::Contact, "ann", None).unwrap(), Revoke::ContactRemove("ann".into()));
+    assert_eq!(
+        plan(SharingKind::Contact, "ann", None).unwrap(),
+        Revoke::ContactRemove("ann".into())
+    );
 
     for (kind, id, sub) in [
         (SharingKind::DocumentMember, "no-pipe".to_owned(), None),
         (SharingKind::DocumentMember, "notadoc|x".to_owned(), None),
         (SharingKind::DocumentMember, format!("{d}|"), None),
-        (SharingKind::DocumentMember, format!("{d}|x"), Some("members")),
+        (
+            SharingKind::DocumentMember,
+            format!("{d}|x"),
+            Some("members"),
+        ),
         (SharingKind::DocumentLink, format!("{d}|lnk_1"), Some("all")),
         (SharingKind::PublicShare, "all".to_owned(), None),
         (SharingKind::PublicShare, "s1".to_owned(), Some("x")),
@@ -198,11 +275,20 @@ async fn list_reports_partial_for_plugins_not_running_and_refuses_guests() {
     assert!(l.rows.is_empty());
     let kinds: Vec<_> = l.partial.iter().map(|p| p.kind).collect();
     assert_eq!(kinds, ALL.to_vec());
-    let a2a = l.partial.iter().find(|p| p.kind == SharingKind::Export).unwrap();
+    let a2a = l
+        .partial
+        .iter()
+        .find(|p| p.kind == SharingKind::Export)
+        .unwrap();
     assert_eq!(a2a.reason, a2a::contacts::OFF);
 
-    let only = list(&server, &ext, Some(vec![SharingKind::Contact])).await.unwrap();
-    assert_eq!(only.partial.iter().map(|p| p.kind).collect::<Vec<_>>(), [SharingKind::Contact]);
+    let only = list(&server, &ext, Some(vec![SharingKind::Contact]))
+        .await
+        .unwrap();
+    assert_eq!(
+        only.partial.iter().map(|p| p.kind).collect::<Vec<_>>(),
+        [SharingKind::Contact]
+    );
 
     let (guest, _g) = rpc_core::RpcPeer::open_guest([1; 32], [2; 32]);
     let mut gext = Extensions::new();

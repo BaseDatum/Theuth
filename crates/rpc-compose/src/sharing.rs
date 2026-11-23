@@ -243,7 +243,7 @@ pub(crate) fn export_rows(exports: &[Export], contacts: &[Contact]) -> Vec<Shari
         .map(|e| {
             let granted: Vec<&Contact> = contacts
                 .iter()
-                .filter(|c| c.exports.iter().any(|x| *x == e.name))
+                .filter(|c| c.exports.contains(&e.name))
                 .collect();
             SharingRow {
                 kind: SharingKind::Export,
@@ -259,7 +259,12 @@ pub(crate) fn export_rows(exports: &[Export], contacts: &[Contact]) -> Vec<Shari
                         .iter()
                         .map(|c| c.first_contact.get(&e.name).copied().unwrap_or_default()),
                 ),
-                state: if e.paused.is_some() { "paused" } else { "active" }.to_owned(),
+                state: if e.paused.is_some() {
+                    "paused"
+                } else {
+                    "active"
+                }
+                .to_owned(),
                 created_ms: None,
                 expires_ms: None,
                 last_access_ms: None,
@@ -309,9 +314,16 @@ pub(crate) fn contact_rows(contacts: &[Contact]) -> Vec<SharingRow> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Revoke {
     /// `doc_member_revoke(doc, member)`.
-    DocMember { doc: document::DocId, member: String },
+    DocMember {
+        doc: document::DocId,
+        member: String,
+    },
     /// `doc_link_revoke(doc, link)`, then with `members` `doc_member_revoke` for each member via it.
-    DocLink { doc: document::DocId, link: String, members: bool },
+    DocLink {
+        doc: document::DocId,
+        link: String,
+        members: bool,
+    },
     /// `share_stop(id)`.
     ShareStop(String),
     /// `a2a_export_remove(name)`.
@@ -331,7 +343,8 @@ fn doc_pair(id: &str) -> RpcResult<(document::DocId, String)> {
         .split_once('|')
         .filter(|(_, r)| !r.is_empty())
         .ok_or_else(|| bad(format!("expected `<doc>|<id>`, got `{id}`")))?;
-    let doc = document::DocId::parse(doc).ok_or_else(|| bad(format!("not a document id: `{doc}`")))?;
+    let doc =
+        document::DocId::parse(doc).ok_or_else(|| bad(format!("not a document id: `{doc}`")))?;
     Ok((doc, rest.to_owned()))
 }
 
@@ -358,7 +371,9 @@ pub(crate) fn plan(kind: SharingKind, id: &str, sub: Option<&str>) -> RpcResult<
             };
             Ok(Revoke::DocLink { doc, link, members })
         }
-        SharingKind::PublicShare if id == "all" => Err(bad("one share id; Stop all is `share_stop`")),
+        SharingKind::PublicShare if id == "all" => {
+            Err(bad("one share id; Stop all is `share_stop`"))
+        }
         SharingKind::PublicShare => no_sub(Revoke::ShareStop(id.to_owned())),
         SharingKind::Export => Ok(match sub {
             None => Revoke::ExportRemove(id.to_owned()),
@@ -384,10 +399,15 @@ pub(crate) async fn revoke(
     match plan(kind, &id, sub.as_deref())? {
         Revoke::DocMember { doc, member } => server.doc_member_revoke(ext, doc, member).await?,
         Revoke::DocLink { doc, link, members } => {
-            server.doc_link_revoke(ext, doc.clone(), link.clone()).await?;
+            server
+                .doc_link_revoke(ext, doc.clone(), link.clone())
+                .await?;
             if members {
                 let joined = server.doc_members(ext, doc.clone()).await?.members;
-                for m in joined.into_iter().filter(|m| m.via.as_deref() == Some(link.as_str())) {
+                for m in joined
+                    .into_iter()
+                    .filter(|m| m.via.as_deref() == Some(link.as_str()))
+                {
                     server.doc_member_revoke(ext, doc.clone(), m.pub_).await?;
                 }
             }
@@ -425,7 +445,10 @@ pub(crate) async fn list(
         }
     };
 
-    let (members, links) = (want(SharingKind::DocumentMember), want(SharingKind::DocumentLink));
+    let (members, links) = (
+        want(SharingKind::DocumentMember),
+        want(SharingKind::DocumentLink),
+    );
     if members || links {
         let docs = match documents() {
             Ok(d) => doc_send(&d, SharedDocs).await,
@@ -452,7 +475,11 @@ pub(crate) async fn list(
                 out.rows
                     .extend(shares.iter().map(|s| share_row(s, &machines)));
             }
-            Err(e) => partial(&mut out, &[SharingKind::PublicShare], e.message().to_owned()),
+            Err(e) => partial(
+                &mut out,
+                &[SharingKind::PublicShare],
+                e.message().to_owned(),
+            ),
         }
     }
 
