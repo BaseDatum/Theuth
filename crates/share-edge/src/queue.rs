@@ -283,7 +283,8 @@ pub async fn announce(
 
 /// Every minute (§9.4, §9.2): evict `allocated` names without a CSR after `allocated_ttl`, expire names whose
 /// mesh has not attached for `unattached_expiry` (90 days; record removal, revocation and the k8s delete hook as
-/// an eviction), and purge `conn_log` rows older than `conn_log_retention` (30 days).
+/// an eviction), purge `conn_log` rows older than `conn_log_retention` (30 days), and delete revoked engine rows
+/// older than [`crate::state::REVOKE_WINDOW_MS`] (FIX5-EDGE R6).
 pub async fn housekeeping(edge: &Arc<Edge>, now_ms: u64) -> anyhow::Result<()> {
     let l = &edge.live().limits;
     let ttl = u64::try_from(l.allocated_ttl.as_millis()).unwrap_or(u64::MAX);
@@ -305,6 +306,13 @@ pub async fn housekeeping(edge: &Arc<Edge>, now_ms: u64) -> anyhow::Result<()> {
     let n = edge.store.purge_conn_log(now_ms.saturating_sub(keep)).await?;
     if n > 0 {
         tracing::debug!(rows = n, "conn_log purged");
+    }
+    let n = edge
+        .store
+        .prune_revoked(now_ms.saturating_sub(crate::state::REVOKE_WINDOW_MS))
+        .await?;
+    if n > 0 {
+        tracing::debug!(rows = n, "old revoked engine rows pruned");
     }
     Ok(())
 }

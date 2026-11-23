@@ -354,21 +354,28 @@ impl Store {
         .await?)
     }
 
-    /// Append `engines` to the mesh's revoke list (§5.7). Only engines the mesh already has a `mesh_engines` row
-    /// for (seen at a `hello`) are revoked; unknown ids are skipped, so a delegated engine cannot grow the table
-    /// with made-up keys. `Ok(None)` when the mesh would hold more than `cap` revoked rows (nothing written);
-    /// else the engines now revoked by this call or before.
+    /// Append `engines` to the mesh's revoke list (§5.7). An id the mesh never attached is stored as a revoked
+    /// row with `first_ms = 0` (FIX5-EDGE R1: a machine removed before its first `hello` cannot attach with the
+    /// delegation it already holds); such a row never counts toward the per-day engine quota (`first_ms` is
+    /// before every day start). `Ok(None)` when the mesh would hold more than `cap` revoked rows newer than
+    /// `since_ms` (nothing written; FIX5-EDGE R6: older revocations outlived every delegation and are pruned by
+    /// [`Store::prune_revoked`]); else the engines now revoked by this call or before.
     pub async fn revoke(
         &self,
         mesh: &str,
         engines: &[String],
         cap: u64,
+        since_ms: u64,
         now_ms: u64,
     ) -> anyhow::Result<Option<Vec<String>>> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let mut fresh = Vec::new();
+        let mut unknown = Vec::new();
         let mut known = Vec::new();
         for e in engines {
+            if fresh.contains(e) || unknown.contains(e) || known.contains(e) {
+                continue;
+            }
             let row: Option<Option<i64>> =
                 sqlx::query_scalar("SELECT revoked_ms FROM mesh_engines WHERE mesh = ? AND engine = ?")
                     .bind(mesh)
@@ -377,16 +384,19 @@ impl Store {
                     .await?;
             match row {
                 Some(Some(_)) => known.push(e.clone()),
-                Some(None) if !fresh.contains(e) => fresh.push(e.clone()),
-                _ => {}
+                Some(None) => fresh.push(e.clone()),
+                None => unknown.push(e.clone()),
             }
         }
-        let have: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM mesh_engines WHERE mesh = ? AND revoked_ms IS NOT NULL")
-                .bind(mesh)
-                .fetch_one(&mut *tx)
-                .await?;
-        if u64::try_from(have).unwrap_or(0).saturating_add(fresh.len() as u64) > cap {
+        let have: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM mesh_engines WHERE mesh = ? AND revoked_ms IS NOT NULL AND revoked_ms >= ?",
+        )
+        .bind(mesh)
+        .bind(ms(since_ms))
+        .fetch_one(&mut *tx)
+        .await?;
+        let adding = (fresh.len() + unknown.len()) as u64;
+        if u64::try_from(have).unwrap_or(0).saturating_add(adding) > cap {
             return Ok(None);
         }
         for e in &fresh {
@@ -397,9 +407,30 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
         }
+        for e in &unknown {
+            sqlx::query(
+                "INSERT INTO mesh_engines (mesh, engine, first_ms, last_ms, net, revoked_ms) VALUES (?, ?, 0, 0, '', ?)",
+            )
+            .bind(mesh)
+            .bind(e)
+            .bind(ms(now_ms))
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await?;
         known.extend(fresh);
+        known.extend(unknown);
         Ok(Some(known))
+    }
+
+    /// Delete revoked `mesh_engines` rows revoked before `before_ms` (FIX5-EDGE R6): every delegation that
+    /// existed at their revocation has expired, so the row no longer refuses anything. Returns the rows deleted.
+    pub async fn prune_revoked(&self, before_ms: u64) -> anyhow::Result<u64> {
+        let r = sqlx::query("DELETE FROM mesh_engines WHERE revoked_ms IS NOT NULL AND revoked_ms < ?")
+            .bind(ms(before_ms))
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
     }
 
     /// Set the mesh's Stop all time.
@@ -751,7 +782,7 @@ impl Store {
         for e in revoke {
             sqlx::query(
                 "INSERT INTO mesh_engines (mesh, engine, first_ms, last_ms, net, revoked_ms)
-                 VALUES (?1, ?2, ?3, ?3, '', ?3)
+                 VALUES (?1, ?2, 0, 0, '', ?3)
                  ON CONFLICT(mesh, engine) DO UPDATE SET revoked_ms = COALESCE(revoked_ms, excluded.revoked_ms)",
             )
             .bind(new)

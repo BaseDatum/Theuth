@@ -313,12 +313,11 @@ mod tests {
         assert!(s.unban("tun.zip", "name", "sky").await.unwrap());
         assert_eq!(s.held_names("tun.zip", "m1").await.unwrap().len(), 1);
 
-        // #7: only engines the mesh has seen, at most `cap` revoked.
+        // #7: at most `cap` revocations (unknown ids are stored, FIX5-EDGE R1; see the test below).
         s.attach("m1", "e2", "192.0.2.1", false, t0).await.unwrap();
         let ids = |v: &[&str]| v.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
-        assert_eq!(s.revoke("m1", &ids(&["e2", "made-up"]), 4, t0).await.unwrap(), Some(ids(&["e2"])));
-        assert_eq!(s.engines("m1").await.unwrap().len(), 2, "no row for an unknown engine");
-        assert_eq!(s.revoke("m1", &ids(&["e1"]), 1, t0).await.unwrap(), None, "over the cap");
+        assert_eq!(s.revoke("m1", &ids(&["e2"]), 4, 0, t0).await.unwrap(), Some(ids(&["e2"])));
+        assert_eq!(s.revoke("m1", &ids(&["e1"]), 1, 0, t0).await.unwrap(), None, "over the cap");
         assert!(s.revoked("m1", "e1").await.unwrap().is_none());
 
         // #20: the invite is spent by the attach that uses it, and only once.
@@ -335,5 +334,42 @@ mod tests {
         s.close().await;
         let s = Store::open(&path, DbJournal::Wal).await.unwrap();
         assert!(s.paused().await.unwrap());
+    }
+
+    /// FIX5-EDGE R1, R6: an engine revoked before it ever attached is refused (a revoked row, outside the
+    /// per-day engine quota, inside the cap); the cap counts only revocations within the window, and older
+    /// revoked rows are pruned.
+    #[tokio::test]
+    async fn unknown_engines_are_revoked_and_old_revocations_age_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("e.sqlite"), DbJournal::Wal).await.unwrap();
+        let day = 86_400_000u64;
+        let t0 = 100 * day;
+        let ids = |v: &[&str]| v.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
+        s.attach("m1", "e1", "n", false, t0).await.unwrap();
+
+        // R1: the never-seen id is stored revoked and listed; a repeat in the request counts once.
+        let done = s.revoke("m1", &ids(&["lost", "lost", "e1"]), 2, 0, t0).await.unwrap();
+        assert_eq!(done, Some(ids(&["e1", "lost"])));
+        assert_eq!(s.revoked("m1", "lost").await.unwrap(), Some(i64::try_from(t0).unwrap()));
+        assert!(s.engine_known("m1", "lost").await.unwrap());
+        assert_eq!(
+            s.engines_first_seen_since("m1", t0 - t0 % day).await.unwrap(),
+            1,
+            "a revoked-only row is not an engine first seen today"
+        );
+        // Unknown ids count toward the cap.
+        assert_eq!(s.revoke("m1", &ids(&["other"]), 2, 0, t0).await.unwrap(), None);
+        assert!(s.revoked("m1", "other").await.unwrap().is_none(), "nothing written over the cap");
+        // Re-revoking is idempotent and adds nothing to the count.
+        assert_eq!(s.revoke("m1", &ids(&["lost"]), 2, 0, t0).await.unwrap(), Some(ids(&["lost"])));
+
+        // R6: revocations before `since` do not count; prune deletes them and nothing newer.
+        let later = t0 + 2 * day;
+        assert_eq!(s.revoke("m1", &ids(&["other"]), 2, t0 + 1, later).await.unwrap(), Some(ids(&["other"])));
+        assert_eq!(s.prune_revoked(t0 + 1).await.unwrap(), 2);
+        assert!(s.revoked("m1", "lost").await.unwrap().is_none());
+        assert!(!s.engine_known("m1", "lost").await.unwrap());
+        assert!(s.revoked("m1", "other").await.unwrap().is_some(), "a recent revocation stays");
     }
 }

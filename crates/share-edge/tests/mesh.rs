@@ -552,3 +552,61 @@ async fn a_banned_name_is_not_held_and_a_stale_route_is_evicted() {
     let (_a2, w) = rig.attach(&ka, &ma).await;
     assert!(w.names.is_empty(), "a banned name is not in welcome.names");
 }
+
+/// FIX5-EDGE R1: a machine revoked before it ever attached is in `RevokeResult.revoked` and its `hello` with the
+/// delegation it already holds is refused `revoked`.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_engine_revoked_before_its_first_hello_cannot_attach() {
+    let rig = Rig::new().await;
+    let [m, ka, lost] = keys();
+    let (a, _) = rig.attach(&ka, &m).await;
+    let req = RevokeRequest { engines: vec![lost.public()] };
+    let (status, body) = a.send("POST", paths::MESH_REVOKE, &req).await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let r: share_proto::RevokeResult = serde_json::from_slice(&body).unwrap();
+    assert_eq!(r.revoked, vec![lost.public()]);
+    let (_, body) = rig.dial(&lost).await.hello(&rig, &m).await;
+    assert_eq!(err(&body).code, ErrorCode::Revoked);
+}
+
+/// FIX5-EDGE R3: the eviction re-reads the owner. A route of another mesh on a name this mesh no longer holds
+/// (released since its `held` read) stays; on a name it holds, it is evicted.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stale_route_is_evicted_only_while_the_name_is_held() {
+    let rig = Rig::new().await;
+    let [ma, mb, ka, kb] = keys();
+    let (a, _) = rig.attach(&ka, &ma).await;
+    let (_b, _) = rig.attach(&kb, &mb).await;
+    assert_eq!(a.call("PUT", &paths::name("sky"), None).await.0, 200);
+    let h = host(None, "sky");
+    let edge = &rig.run.edge;
+    let tb = edge.tunnels.get(&kb.public()).unwrap().clone();
+    let route = || share_edge::state::Route {
+        name: "sky".into(),
+        mesh: mb.public(),
+        tunnel: tb.clone(),
+        stats: Default::default(),
+    };
+    let wanted = vec![(h.clone(), "sky".to_string())];
+    let (ma_s, mb_s) = (ma.public().to_string(), mb.public().to_string());
+
+    // Held by `ma`: `mb`'s route is evicted.
+    edge.routes.insert(h.clone(), route());
+    let gone = share_edge::control::evict_stale_routes(edge, D, &ma.public(), &wanted).await.unwrap();
+    assert_eq!(gone, vec![h.clone()]);
+    assert_eq!(rig.route_of(&h), None);
+
+    // `ma` no longer holds `sky`: `mb`'s route survives.
+    edge.store.release(D, "sky", &ma_s, now_ms(), 0).await.unwrap();
+    edge.routes.insert(h.clone(), route());
+    let gone = share_edge::control::evict_stale_routes(edge, D, &ma.public(), &wanted).await.unwrap();
+    assert!(gone.is_empty());
+    assert_eq!(rig.route_of(&h), Some(kb.public()));
+    // Held by `mb` now: still nothing for `ma` to evict.
+    let at = i64::try_from(now_ms() + 1_000).unwrap();
+    let n = share_edge::store::NewName { domain: D, name: "sky", kind: "reserved", owner: &mb_s, now_ms: at, net: "n" };
+    assert_eq!(edge.store.claim(n, 3).await.unwrap(), share_edge::store::Claimed::Granted);
+    let gone = share_edge::control::evict_stale_routes(edge, D, &ma.public(), &wanted).await.unwrap();
+    assert!(gone.is_empty());
+    assert_eq!(rig.route_of(&h), Some(kb.public()));
+}

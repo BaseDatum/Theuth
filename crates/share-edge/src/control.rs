@@ -863,9 +863,7 @@ async fn put_routes(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
             wanted.push((host, parts.name));
         }
     }
-    // FIX4-EDGE #4: a host routed by another mesh's tunnel is stale (this mesh holds the name now, e.g. after
-    // a transfer whose route drop raced a re-put): evict it instead of refusing the owner.
-    e.drop_routes(|h, r| r.mesh != s.mesh && wanted.iter().any(|(w, _)| w == h));
+    evict_stale_routes(e, c.domain(), &s.mesh, &wanted).await?;
     let conflicts: Vec<RouteEntry> = wanted
         .iter()
         .filter_map(|(h, _)| {
@@ -976,6 +974,38 @@ async fn stop_all_of(e: &Edge, mesh: &PublicKey) -> anyhow::Result<Option<u64>> 
         .and_then(|v| u64::try_from(v).ok()))
 }
 
+/// FIX4-EDGE #4: a host routed by another mesh's tunnel is stale when `mesh` holds the name now (e.g. after a
+/// transfer whose route drop raced a re-put): evict it instead of refusing the owner. FIX5-EDGE R3: the owner
+/// is read again here, just before the eviction, so a release or transfer since the caller's `held` read evicts
+/// nobody; such a host keeps the other mesh's route (the caller answers `route_conflict`). `wanted` is
+/// `(host, name)`. Returns the hosts evicted.
+pub async fn evict_stale_routes(
+    e: &Edge,
+    domain: &str,
+    mesh: &PublicKey,
+    wanted: &[(String, String)],
+) -> anyhow::Result<Vec<String>> {
+    let mesh_s = mesh.to_string();
+    let mut evictable: Vec<&str> = Vec::new();
+    for (host, name) in wanted {
+        if !e.routes.get(host).is_some_and(|r| r.mesh != *mesh) {
+            continue;
+        }
+        let ours = e
+            .store
+            .name(domain, name)
+            .await?
+            .is_some_and(|r| r.held() && r.owner.as_deref() == Some(mesh_s.as_str()));
+        if ours {
+            evictable.push(host);
+        }
+    }
+    Ok(e.drop_routes(|h, r| r.mesh != *mesh && evictable.contains(&h))
+        .into_iter()
+        .map(|(h, _)| h)
+        .collect())
+}
+
 /// `GET /v1/mesh`: the edge's current id for the session's mesh (after a rekey, the end of the chain), its
 /// engines, routes, revoke list and rekey history (§5.7 `confirming`).
 async fn mesh_status(Extension(c): Extension<Ctx>) -> ApiResult {
@@ -1051,8 +1081,11 @@ async fn mesh_revoke(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         return Err(ErrorBody::invalid("engines").into());
     }
     let ids: Vec<String> = req.engines.iter().map(ToString::to_string).collect();
-    // FIX4-EDGE #7: only engines the mesh has seen; at most `REVOKED_PER_MESH` revoked rows per mesh.
-    let Some(done) = e.store.revoke(&s.mesh.to_string(), &ids, cap, now_ms()).await? else {
+    // FIX4-EDGE #7, FIX5-EDGE R1/R6: unknown ids are stored revoked; at most `REVOKED_PER_MESH` revocations per
+    // mesh within `REVOKE_WINDOW_MS`.
+    let now = now_ms();
+    let since = now.saturating_sub(crate::state::REVOKE_WINDOW_MS);
+    let Some(done) = e.store.revoke(&s.mesh.to_string(), &ids, cap, since, now).await? else {
         return Err(ErrorBody::limited(ErrorCode::Quota, LimitScope::Mesh, LimitKind::Engines).into());
     };
     let revoked: Vec<PublicKey> = req

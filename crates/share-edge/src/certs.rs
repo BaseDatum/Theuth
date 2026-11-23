@@ -57,6 +57,10 @@ pub struct Certs {
     /// Last `queue` event position per waiting job (§6.5 events on change only).
     positions: Mutex<HashMap<String, u32>>,
     revoking: tokio::sync::Mutex<()>,
+    /// One lock per name over its D17 records (FIX5-EDGE R5): `ensure_records`, `retire` and `reconcile_dns`
+    /// each hold it from their ownership check through their DNS writes, so a retire cannot delete between an
+    /// ensure's ledger write and its zone write (nor an ensure write after a retire's delete).
+    record_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Certs {
@@ -79,7 +83,18 @@ impl Certs {
             last_scan_ms: Mutex::new(0),
             positions: Mutex::new(HashMap::new()),
             revoking: tokio::sync::Mutex::new(()),
+            record_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Hold `name`'s record lock. Entries nobody holds or waits for are dropped on the next call.
+    async fn lock_name(&self, name: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let m = {
+            let mut locks = self.record_locks.lock().expect("record locks");
+            locks.retain(|_, m| Arc::strong_count(m) > 1);
+            locks.entry(name.to_string()).or_default().clone()
+        };
+        m.lock_owned().await
     }
 }
 
@@ -347,6 +362,7 @@ pub async fn chain(edge: &Edge, mesh: &PublicKey, name: &str) -> anyhow::Result<
 /// The D17 CNAMEs of `name` for `mesh`. Ownership is read again right before each write (FIX4-EDGE #14): a
 /// name released or banned while the job ran gets no record, which its `retire` would never delete.
 async fn ensure_records(edge: &Edge, certs: &Certs, name: &str, mesh: &str) -> anyhow::Result<()> {
+    let _held = certs.lock_name(name).await;
     let target = edge.cfg.dns_target();
     for host in dns::name_hosts(name, &edge.cfg.domain, edge.cfg.dns_zone())? {
         anyhow::ensure!(still_held(edge, name, mesh).await?, "{name} is no longer held by {mesh}");
@@ -410,6 +426,7 @@ async fn retire_inner(
     // A release moved the chain already; a ban moves it here.
     edge.store.retire_chain(domain, name, reason.as_str(), now).await?;
     revoke_due(edge, certs, now).await?;
+    let _held = certs.lock_name(name).await;
     match edge.store.cert_row(domain, name).await? {
         // No row: the edge never wrote records for it (a ban on an unclaimed label); nothing to delete.
         None => return Ok(()),
@@ -466,6 +483,10 @@ pub async fn reconcile_dns(edge: &Edge) -> anyhow::Result<()> {
     rows.sort_by_key(|(host, ..)| host.starts_with("*."));
     for (host, rtype, _value, name) in rows {
         let Some(rt) = Rtype::parse(&rtype) else { continue };
+        let _held = match name.as_deref() {
+            Some(n) => Some(certs.lock_name(n).await),
+            None => None,
+        };
         let keep = match (rt, name.as_deref()) {
             (Rtype::Cname, Some(n)) => edge
                 .store

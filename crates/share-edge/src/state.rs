@@ -23,8 +23,14 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const CONTROL_PER_SEC: u32 = 20;
 /// Burst of [`CONTROL_PER_SEC`].
 pub const CONTROL_BURST: u32 = 100;
-/// Most engines one mesh's revoke list holds (`POST /v1/mesh/revoke` past it is `429 quota`).
+/// Most engines one mesh's revoke list holds (`POST /v1/mesh/revoke` past it is `429 quota`), counting only
+/// revocations newer than [`REVOKE_WINDOW_MS`].
 pub const REVOKED_PER_MESH: u64 = 256;
+/// How long a revoked engine row still refuses (FIX5-EDGE R6): the longest delegation an edge accepts plus the
+/// issue-time skew, so every delegation that existed at the revocation has expired by then. Older revoked rows
+/// are pruned by `queue::housekeeping`.
+pub const REVOKE_WINDOW_MS: u64 =
+    share_proto::limits::DELEGATION_MAX_TTL_MS + share_proto::limits::DELEGATION_SKEW_MS;
 /// `conn_log` rows queued for the writer; a full queue drops the row and counts it (FIX4-EDGE #9).
 pub const CONN_LOG_QUEUE: usize = 4096;
 /// Rows the `conn_log` writer inserts per transaction at most.
