@@ -219,6 +219,7 @@ tracing-appender = "0.2"
 figment = { version = "0.10", features = ["yaml", "env"] }
 serde_yaml = "0.9"
 notify = "8"
+notify-debouncer-full = "0.7"  # 212 §6: show_file tiles follow the file
 kameo = "0.22"
 kameo_actors = "0.8"
 genai = { version = "0.7.3", features = ["bedrock-sigv4"] }

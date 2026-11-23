@@ -7,7 +7,8 @@ use agent::rpc_forward as forward;
 use std::path::{Path, PathBuf};
 use artifact::search::ArtifactMatchContext;
 use jsonrpsee::Extensions;
-use jsonrpsee::core::{RpcResult, async_trait};
+use jsonrpsee::core::{RpcResult, SubscriptionResult, async_trait};
+use jsonrpsee::server::{PendingSubscriptionSink, SubscriptionMessage};
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::ErrorObjectOwned;
 use runtime::SessionId;
@@ -53,6 +54,33 @@ pub trait ArtifactArtifactsApi {
         loading: bool,
         closed: Option<bool>,
     ) -> RpcResult<artifact::webview::WebViewStateReply>;
+    /// 212 §2, §6: the text of a file a `show_file` tile shows (at most 2 MiB, `truncated`
+    /// past that); `unchanged` with empty text when `if_mtime_ms` is still its mtime. Served for
+    /// what the session showed in this engine lifetime or anything inside its working directory
+    /// or repository, never a cell record; `not a shown file` otherwise. Forwarded to the
+    /// session's owner.
+    #[method(name = "file_view_read", with_extensions)]
+    async fn file_view_read(
+        &self,
+        session: SessionId,
+        path: String,
+        if_mtime_ms: Option<u64>,
+    ) -> RpcResult<artifact::codeview::FileViewText>;
+    /// 212 §2: the unified patch a `show_diff` tile shows, recomputed now, with per-file
+    /// numbers (text at most 1 MiB, then a truncation line). Authorized as `file_view_read`
+    /// (`not a shown diff`); forwarded to the session's owner.
+    #[method(name = "diff_view_read", with_extensions)]
+    async fn diff_view_read(
+        &self,
+        session: SessionId,
+        spec: artifact::codeview::DiffSpec,
+    ) -> RpcResult<artifact::codeview::DiffViewText>;
+    /// 212 §6: one item each time a shown file settles after a change (written, replaced,
+    /// deleted, back). Authorized as `file_view_read`. The watch runs where the file is: a
+    /// session owned by another engine is refused with `RUNS_ELSEWHERE` (the tile then polls
+    /// `file_view_read` with `if_mtime_ms`).
+    #[subscription(name = "subscribe_file_view", unsubscribe = "unsubscribe_file_view", item = artifact::codeview::FileViewChange, with_extensions)]
+    async fn subscribe_file_view(&self, session: SessionId, path: String) -> SubscriptionResult;
     /// 209 D8, §4.4: a client's answer to a `WebViewCallRequested`: the first `Claimed` wins
     /// (later ones answer `false`) and binds the call to this connection; only that connection's
     /// `Done`/`Failed` resolves it (before any claim, only a `Failed` "stopped by the user" or
@@ -195,6 +223,90 @@ impl ArtifactArtifactsApiServer for Server {
             loading,
             closed: closed.unwrap_or(false),
         }))
+    }
+
+    async fn file_view_read(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        path: String,
+        if_mtime_ms: Option<u64>,
+    ) -> RpcResult<artifact::codeview::FileViewText> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(r) =
+            forward::route(ext, session, "file_view_read", (session, &path, if_mtime_ms)).await?
+        {
+            return Ok(r);
+        }
+        let root = self.authorize(ext, session).await?.resources.root.clone();
+        tokio::task::spawn_blocking(move || {
+            artifact::codeview::file_view_read(session, &root, &path, if_mtime_ms)
+        })
+        .await
+        .map_err(|e| failed(e.to_string()))?
+        .map_err(failed)
+    }
+
+    async fn diff_view_read(
+        &self,
+        ext: &Extensions,
+        session: SessionId,
+        spec: artifact::codeview::DiffSpec,
+    ) -> RpcResult<artifact::codeview::DiffViewText> {
+        self.authorize_fwd(ext, session).await?;
+        if let Some(r) = forward::route(ext, session, "diff_view_read", (session, &spec)).await? {
+            return Ok(r);
+        }
+        let root = self.authorize(ext, session).await?.resources.root.clone();
+        tokio::task::spawn_blocking(move || {
+            artifact::codeview::diff_view_read(session, &root, &spec)
+        })
+        .await
+        .map_err(|e| failed(e.to_string()))?
+        .map_err(failed)
+    }
+
+    async fn subscribe_file_view(
+        &self,
+        pending: PendingSubscriptionSink,
+        ext: &Extensions,
+        session: SessionId,
+        path: String,
+    ) -> SubscriptionResult {
+        let admit = async {
+            let root = self.authorize(ext, session).await?.resources.root.clone();
+            if let Some(owner) = forward::owner_peer(session).await {
+                return Err(forward::runs_elsewhere(owner.0));
+            }
+            artifact::codeview::authorize_file(session, &root, &path).map_err(failed)
+        };
+        let path = match admit.await {
+            Ok(p) => p,
+            Err(e) => {
+                pending.reject(e).await;
+                return Ok(());
+            }
+        };
+        let sink = pending.accept().await?;
+        // One watcher per file, whichever spelling of its path the client sent.
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
+        let mut watch = artifact::codewatch::watch(&path);
+        tokio::spawn(async move {
+            loop {
+                let change = tokio::select! {
+                    _ = sink.closed() => return,
+                    c = watch.next() => c,
+                };
+                let Some(change) = change else { return };
+                let item = SubscriptionMessage::from(
+                    serde_json::value::to_raw_value(&change).expect("FileViewChange serializes"),
+                );
+                if sink.send(item).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(())
     }
 
     async fn answer_web_view_call(

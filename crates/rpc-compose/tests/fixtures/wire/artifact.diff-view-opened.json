@@ -1,0 +1,138 @@
+[
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "id": "0123456789abcdef",
+      "title": "working tree",
+      "spec": {
+        "mode": "worktree",
+        "root": "/work",
+        "a": null,
+        "b": null,
+        "three_dot": false,
+        "paths": []
+      },
+      "files": 3,
+      "added": 10,
+      "removed": 2
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DiffViewOpened",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "id": "0123456789abcdef",
+          "title": "working tree",
+          "spec": {
+            "mode": "worktree",
+            "root": "/work",
+            "a": null,
+            "b": null,
+            "three_dot": false,
+            "paths": []
+          },
+          "files": 3,
+          "added": 10,
+          "removed": 2
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "id": "fedcba9876543210",
+      "title": "main...HEAD · src",
+      "spec": {
+        "mode": "range",
+        "root": "/work",
+        "a": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "b": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "three_dot": true,
+        "paths": [
+          "src"
+        ]
+      },
+      "files": 0,
+      "added": 0,
+      "removed": 0
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DiffViewOpened",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "id": "fedcba9876543210",
+          "title": "main...HEAD · src",
+          "spec": {
+            "mode": "range",
+            "root": "/work",
+            "a": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "b": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "three_dot": true,
+            "paths": [
+              "src"
+            ]
+          },
+          "files": 0,
+          "added": 0,
+          "removed": 0
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "id": "00112233445566ff",
+      "title": "old.txt ↔ new.txt",
+      "spec": {
+        "mode": "files",
+        "root": null,
+        "a": "/tmp/old.txt",
+        "b": "/tmp/new.txt",
+        "three_dot": false,
+        "paths": []
+      },
+      "files": 1,
+      "added": 2,
+      "removed": 1
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "DiffViewOpened",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "id": "00112233445566ff",
+          "title": "old.txt ↔ new.txt",
+          "spec": {
+            "mode": "files",
+            "root": null,
+            "a": "/tmp/old.txt",
+            "b": "/tmp/new.txt",
+            "three_dot": false,
+            "paths": []
+          },
+          "files": 1,
+          "added": 2,
+          "removed": 1
+        }
+      }
+    }
+  }
+]

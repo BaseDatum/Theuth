@@ -191,6 +191,13 @@ are rewritten on every start.
   shows it. `show_note{doc, block?, title?}` opens a note, board, knowledge
   page or meeting note there (`doc` as the `doc_*` tools take it), live as
   you edit it (design doc 211).
+- `show_file{path, line?, end_line?, title?}` opens a source file in the
+  same kind of tile, raw and syntax highlighted, scrolled to and marking
+  `line`..`end_line`; the tile follows the file as it changes on disk.
+  `show_diff{commit? | range? | staged? | file_a+file_b, paths?, title?}`
+  opens a colorized diff there: the working tree against HEAD (untracked
+  files included) by default, the staged changes, one commit, a range
+  (`main..HEAD`, `main...HEAD`) or two files (design doc 212).
 - `app{name, source, title?, edit?, base_call_id?}` publishes an OpenUI Lang
   program as an interactive screen the user opens and clicks on desktop/web
   (design doc 46; load the `apps` skill first). It renders progressively

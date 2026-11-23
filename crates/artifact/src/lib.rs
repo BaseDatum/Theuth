@@ -27,6 +27,8 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
 
 pub mod rpc_support;
 pub mod archive;
+pub mod codeview;
+pub mod codewatch;
 pub mod export;
 pub mod inline;
 pub mod kind;
@@ -59,6 +61,10 @@ pub use store::{
 };
 pub use svg::Raster;
 pub use tools::ShowArgs;
+pub use codeview::{
+    DiffFileStat, DiffMode, DiffSpec, DiffViewOpened, DiffViewText, FileViewChange,
+    FileViewOpened, FileViewText, ShowDiffArgs, ShowDiffTool, ShowFileArgs, ShowFileTool,
+};
 pub use tileview::{
     NoteViewOpened, PtyViewOpened, ShowNoteArgs, ShowNoteTool, ShowPtyArgs, ShowPtyTool,
 };
@@ -679,6 +685,8 @@ impl Message<agent::AgentEvent> for ArtifactActor {
         };
         // 209 D9: what clients reported of the session's web view tiles goes with it.
         webview::forget(&[session]);
+        // 212 §2: what the session showed in a file or diff tile.
+        codeview::forget(&[session]);
         // A member of a closed private tree has nothing left; `state_for`
         // says so. Unknown ids are durable no-ops: the delete matches no rows.
         let Ok(state) = self.stores.state_for(session) else {
@@ -759,6 +767,7 @@ impl Message<::tools::CloseTree> for ArtifactActor {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         webview::forget(&m.subtree);
+        codeview::forget(&m.subtree);
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
         let stores = self.stores.clone();
@@ -787,6 +796,8 @@ pub async fn declare_wire(rt: &Runtime) -> anyhow::Result<()> {
     rt.register_wire_event::<WebViewOpened>().await?;
     rt.register_wire_event::<PtyViewOpened>().await?;
     rt.register_wire_event::<NoteViewOpened>().await?;
+    rt.register_wire_event::<FileViewOpened>().await?;
+    rt.register_wire_event::<DiffViewOpened>().await?;
     rt.register_wire_event::<preview::PagePreviewRequested>().await?;
     rt.register_wire_event::<preview::PagePreviewResolved>().await?;
     rt.register_wire_event::<snapshot::FenceSnapshotRequested>().await?;
@@ -891,6 +902,16 @@ impl runtime::Plugin for ArtifactPlugin {
                     .await;
                 let _ = reg
                     .ask(::tools::RegisterTool(Arc::new(tileview::ShowNoteTool {
+                        rt: rt.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(codeview::ShowFileTool {
+                        rt: rt.clone(),
+                    })))
+                    .await;
+                let _ = reg
+                    .ask(::tools::RegisterTool(Arc::new(codeview::ShowDiffTool {
                         rt: rt.clone(),
                     })))
                     .await;

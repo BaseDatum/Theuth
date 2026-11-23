@@ -21,7 +21,7 @@ use tools::{
 use crate::webview::clean_title;
 
 /// The receipt line both tools add when no app would see the event (as `show_web`'s).
-const NO_APP: &str = "note: no app is connected; the card in the chat opens it later";
+pub(crate) const NO_APP: &str = "note: no app is connected; the card in the chat opens it later";
 
 /// Longest accepted `block` id, in bytes.
 const MAX_BLOCK: usize = 64;

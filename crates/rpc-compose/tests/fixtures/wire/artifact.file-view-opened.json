@@ -1,0 +1,70 @@
+[
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "id": "0123456789abcdef",
+      "path": "/work/src/main.rs",
+      "title": "main.rs",
+      "lang": "rs",
+      "line": null,
+      "end_line": null,
+      "size": 120,
+      "lines": 9
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "FileViewOpened",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "id": "0123456789abcdef",
+          "path": "/work/src/main.rs",
+          "title": "main.rs",
+          "lang": "rs",
+          "line": null,
+          "end_line": null,
+          "size": 120,
+          "lines": 9
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "session": "00000000-0000-0000-0000-000000000001",
+      "call_id": "sample",
+      "id": "fedcba9876543210",
+      "path": "/work/Dockerfile",
+      "title": "build image",
+      "lang": "Dockerfile",
+      "line": 4,
+      "end_line": 7,
+      "size": 512,
+      "lines": 20
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "FileViewOpened",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "call_id": "sample",
+          "id": "fedcba9876543210",
+          "path": "/work/Dockerfile",
+          "title": "build image",
+          "lang": "Dockerfile",
+          "line": 4,
+          "end_line": 7,
+          "size": 512,
+          "lines": 20
+        }
+      }
+    }
+  }
+]
