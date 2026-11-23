@@ -165,8 +165,9 @@ pub fn decide(pairs: &[Pair], cfg: &Cfg) -> Decision {
 
 // ── Student t ─────────────────────────────────────────────────────────────────────────────────
 
-/// The t quantile at `p` (0.5 < p < 1); `p ≤ 0.5` is `0`, `p ≥ 1` is `+∞`, results cap at 1e6,
-/// and degrees of freedom that are not positive and finite give `+∞` (nothing clears it).
+/// The t quantile at `p` (0.5 < p < 1); `p ≤ 0.5` is `0`, `p ≥ 1` is `+∞`, and degrees of
+/// freedom that are not positive and finite give `+∞` (nothing clears it). Quantiles past 2¹⁹
+/// return the ceiling 2²⁰, as the doubling search this replaced did.
 pub fn t_quantile(df: f64, p: f64) -> f64 {
     if p >= 1.0 {
         return f64::INFINITY;
@@ -174,8 +175,14 @@ pub fn t_quantile(df: f64, p: f64) -> f64 {
     if p.is_nan() || p <= 0.5 {
         return 0.0;
     }
+    if !df.is_finite() {
+        return f64::INFINITY;
+    }
     match StudentsT::new(0.0, 1.0, df) {
-        Ok(t) => t.inverse_cdf(p).min(1e6),
+        Ok(t) => {
+            let q = t.inverse_cdf(p);
+            if q <= 524_288.0 { q } else { 1_048_576.0 }
+        }
         Err(_) => f64::INFINITY,
     }
 }
