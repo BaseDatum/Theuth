@@ -297,12 +297,20 @@ async fn control_gates() {
     assert_eq!(status, 429);
     assert!(String::from_utf8_lossy(&body).contains("rate_limited"));
 
-    // M11: another protocol major, then a client below min_client: 426 client_too_old.
-    for (v, client) in [(2, client_agent("2.25.5")), (1, client_agent("1.9.9"))] {
+    // Another protocol major: 426 protocol_mismatch naming the served majors; a client below min_client: 426
+    // client_too_old.
+    for (v, client, code) in [
+        (2, client_agent("2.25.5"), "protocol_mismatch"),
+        (1, client_agent("1.9.9"), "client_too_old"),
+    ] {
         let body = hello_body(v, &client, &info, &mesh_key, &engine_key);
         let (status, body) = call(&conn, "POST", paths::HELLO, Some(body)).await;
         assert_eq!(status, 426, "v{v} {client}");
-        assert!(String::from_utf8_lossy(&body).contains("client_too_old"));
+        let e: share_proto::ErrorBody = serde_json::from_slice(&body).unwrap();
+        assert_eq!(e.code.as_str(), code);
+        if v == 2 {
+            assert_eq!(e.supported, share_proto::SUPPORTED_MAJORS.to_vec());
+        }
     }
 
     let good = || hello_body(1, &client_agent("2.25.5"), &info, &mesh_key, &engine_key);

@@ -11,7 +11,9 @@ use backon::BackoffBuilder as _;
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use share_proto::events::{CertEvent, QueueEvent};
-use share_proto::{CertChain, CertPending, CsrError, ErrorBody, ErrorCode, Event, PublicKey, SpkiHash};
+use share_proto::{
+    CertChain, CertPending, CsrError, CsrQuery, ErrorBody, ErrorCode, Event, PublicKey, SpkiHash,
+};
 use tokio::sync::Notify;
 
 use crate::acme::{Ca, CaaLookup, Reason, Validator, leaf_info};
@@ -217,14 +219,16 @@ async fn pending(edge: &Edge, job: &JobRow, slotted: bool) -> anyhow::Result<Sub
     }))
 }
 
-/// `POST /v1/names/{name}/csr` (§6.2 steps 2–3): `Ok(Err(body))` is a refusal.
+/// `POST /v1/names/{name}/csr` (§6.2 steps 2–3): `Ok(Err(body))` is a refusal. `q.compromised` counts only with
+/// `q.rotate`; it marks the name so the superseded certificate is revoked `keyCompromise` (§6.3).
 pub async fn submit(
     edge: &Edge,
     mesh: &PublicKey,
     name: &str,
     der: &[u8],
-    rotate: bool,
+    q: CsrQuery,
 ) -> anyhow::Result<Result<Submitted, ErrorBody>> {
+    let rotate = q.rotate;
     let Some(certs) = edge.certs.get() else {
         bail!("certificates are not configured on this edge");
     };
@@ -271,6 +275,10 @@ pub async fn submit(
         }
         Some(_) => {
             edge.store.set_csr(domain, name, der, &info.spki.0, None).await?;
+            // Sticky until the new chain is out: a later plain rotation still replaces the same compromised leaf.
+            if q.compromised {
+                edge.store.set_rotate_compromised(domain, name, true).await?;
+            }
             match open {
                 // A queued job reads the CSR when it runs.
                 Some(j) => pending(edge, &j, slotted).await?,
@@ -564,13 +572,21 @@ async fn process(edge: &Edge, certs: &Certs, job: &JobRow, now: u64) -> anyhow::
             }));
         }
     }
-    if job.kind == "rotate"
-        && let Some(old) = old
+    // The old certificate goes once the new chain is out, whatever the job kind that carried the new key (a
+    // rotation can land on a queued renewal): `keyCompromise` when the rotation replaced a key a removed engine
+    // held, else `superseded` (§6.3). A renewal with the same key revokes nothing.
+    if let Some(old) = old
+        && leaf_info(&old).map_or(true, |l| l.spki != want)
     {
-        // TODO(210-M2): `keyCompromise` when the removal behind the rotation was marked compromised.
+        let reason = if edge.store.rotate_compromised(domain, &job.name).await? {
+            Reason::KeyCompromise
+        } else {
+            Reason::Superseded
+        };
         edge.store
-            .queue_revocation(domain, &job.name, &old, Reason::Superseded.as_str(), now)
+            .queue_revocation(domain, &job.name, &old, reason.as_str(), now)
             .await?;
+        edge.store.set_rotate_compromised(domain, &job.name, false).await?;
     }
     Ok(())
 }

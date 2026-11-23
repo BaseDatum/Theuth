@@ -20,17 +20,19 @@ use iroh::protocol::{AcceptError, ProtocolHandler};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use share_proto::names::{self, HostError};
-use share_proto::version::{client_ok, edge_agent};
+use share_proto::version::{client_ok, edge_agent, protocol_ok};
 use share_proto::{
-    Admission, Delegation, EdgeIdentity, ErrorBody, ErrorCode, Hello, Info, InterstitialRule,
-    KillReason, MeshEngine, MeshStatus, NameAvailability, NameGranted, NameInfo, NameKind,
-    NameReleased, NameRequest, NameState, PROTOCOL_MAJOR, PublicKey, RevokeRequest, RevokeResult,
-    RouteEntry, RoutesPut, SpkiHash, StopAll, Welcome, WelcomeLimits, paths,
+    Admission, CsrQuery, Delegation, EdgeIdentity, ErrorBody, ErrorCode, Hello, Info,
+    InterstitialRule, KillReason, MeshEngine, MeshStatus, NameAvailability, NameGranted, NameInfo,
+    NameKind, NameReleased, NameRequest, NameState, PROTOCOL_MAJOR, PublicKey, Rekey,
+    RekeyAccepted, RekeyEntry, RevokeRequest, RevokeResult, RouteEntry, RoutesPut,
+    SUPPORTED_MAJORS, SignedRekey, SpkiHash, StopAll, TransferAccepted, TransferRequest, Welcome,
+    WelcomeLimits, paths,
 };
 use tower::ServiceExt as _;
 
 use crate::state::{Edge, Route, Session, Tunnel, now_ms};
-use crate::store::{Claimed, NameRow, NewName};
+use crate::store::{Claimed, NameRow, NewName, Rekeyed};
 
 /// Header read deadline of one control request.
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -261,12 +263,11 @@ async fn info(Extension(c): Extension<Ctx>) -> ApiResult {
 async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
     let e = c.edge.clone();
     let h: Hello = parse(&body)?;
-    // FIX-EDGE M11: a different protocol major on this ALPN, or a client below `min_client`, is refused before
-    // anything else is read. `client_too_old` (426) is the one version code share-proto has; the message says
-    // which rule failed.
-    if h.v != PROTOCOL_MAJOR {
-        let mut b = ErrorBody::new(ErrorCode::ClientTooOld);
-        b.message = Some(format!("protocol v{} is not served here; this edge speaks v{PROTOCOL_MAJOR}", h.v));
+    // A protocol major this edge does not serve is `426 protocol_mismatch {supported}`; a client below
+    // `min_client` is `426 client_too_old`. Both before anything else is read.
+    if !protocol_ok(h.v) {
+        let mut b = ErrorBody::protocol_mismatch(SUPPORTED_MAJORS.to_vec());
+        b.message = Some(format!("protocol v{} is not served here", h.v));
         return Err(b.into());
     }
     if !client_ok(&h.client, &e.cfg.min_client) {
@@ -311,7 +312,9 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         }
     }
     let known = e.store.mesh(&mesh).await?;
-    if let Some(to) = known.as_ref().and_then(|m| m.rekeyed_to.as_deref()) {
+    if known.as_ref().is_some_and(|m| m.rekeyed_to.is_some()) {
+        // The end of the chain: the mesh id the edge holds now (§5.7).
+        let to = e.store.current_mesh(&mesh).await?;
         let to: PublicKey = to.parse().map_err(|_| anyhow::anyhow!("bad rekeyed_to"))?;
         return Err(ErrorBody::rekeyed(to).into());
     }
@@ -448,9 +451,8 @@ fn name_info(r: &NameRow) -> NameInfo {
         not_after: r.not_after_ms.and_then(|v| u64::try_from(v).ok()),
         // TODO(210-M3): the slot queue position.
         queue: None,
-        // TODO(210-M2): fill from the row's transfer_to / transfer_until_ms.
-        transfer_to: None,
-        transfer_until_ms: None,
+        transfer_to: r.transfer_to.as_deref().and_then(|t| t.parse().ok()),
+        transfer_until_ms: r.transfer_until_ms.and_then(|v| u64::try_from(v).ok()),
     }
 }
 
@@ -483,8 +485,24 @@ async fn availability(Extension(c): Extension<Ctx>, Path(name): Path<String>) ->
             reason: None,
             reclaim_after_ms: None,
         },
+        // The receiving mesh of a pending transfer may claim it (§5.2 D20).
+        Some(r)
+            if r.held()
+                && r.transfer_to.as_deref() == Some(mesh.as_str())
+                && r.transfer_until_ms.is_some_and(|u| u > now_i64()) =>
+        {
+            NameAvailability {
+                available: true,
+                reason: None,
+                reclaim_after_ms: None,
+            }
+        }
         Some(r) if r.held() => reason("taken"),
-        Some(r) if r.reclaim_after_ms.is_some_and(|t| t > now_i64()) => reason("cooldown"),
+        Some(r) if r.reclaim_after_ms.is_some_and(|t| t > now_i64()) => {
+            let mut a = reason("cooldown");
+            a.reclaim_after_ms = r.reclaim_after_ms.and_then(|v| u64::try_from(v).ok());
+            a
+        }
         Some(_) => NameAvailability {
             available: true,
             reason: None,
@@ -533,6 +551,18 @@ async fn claim(c: &Ctx, s: &Session, name: &str, kind: NameKind) -> Result<(), A
         Claimed::Granted | Claimed::AlreadyHeld => {
             // Routing objects before the certificate job needs them; never blocks the claim.
             crate::k8s::granted(&c.edge, name);
+            Ok(())
+        }
+        Claimed::Transferred => {
+            // §5.2 D20: the giving mesh's routes under the name go now (announced to it); the old chain is
+            // queued for revocation in the claim's transaction, the revoker woken. The k8s per-name objects
+            // stay: the name keeps serving, under its new mesh.
+            let to = s.mesh;
+            e.drop_routes(|_, r| r.name == name && r.mesh != to);
+            crate::k8s::granted(&c.edge, name);
+            if let Some(certs) = e.certs.get() {
+                certs.wake.notify_one();
+            }
             Ok(())
         }
         Claimed::Banned => Err(err(ErrorCode::Banned)),
@@ -600,13 +630,38 @@ async fn release(Extension(c): Extension<Ctx>, Path(name): Path<String>) -> ApiR
     )
 }
 
-/// `POST /v1/names/{name}/transfer`. TODO(210-M2).
-async fn transfer(Extension(c): Extension<Ctx>) -> ApiResult {
-    c.session()?;
-    Err(not_yet("name transfer"))
+/// `POST /v1/names/{name}/transfer {to_mesh}` (§5.2 D20): offer a held name to another mesh for
+/// `TRANSFER_TTL_MS`; the receiver claims it with the plain `PUT`, with no cooldown. A newer offer replaces the
+/// previous one; a release cancels it. `to_mesh` is resolved through its rekey chain.
+async fn transfer(
+    Extension(c): Extension<Ctx>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> ApiResult {
+    let s = c.session()?;
+    let e = &c.edge;
+    let req: TransferRequest = parse(&body)?;
+    let to = e.store.current_mesh(&req.to_mesh.to_string()).await?;
+    if to == s.mesh.to_string() {
+        return Err(ErrorBody::invalid("to_mesh").into());
+    }
+    let until = now_ms().saturating_add(share_proto::limits::TRANSFER_TTL_MS);
+    if !e
+        .store
+        .offer_transfer(c.domain(), &name, &s.mesh.to_string(), &to, until)
+        .await?
+    {
+        return Err(err(ErrorCode::NotOwner));
+    }
+    json(
+        StatusCode::OK,
+        &TransferAccepted {
+            transfer_until_ms: until,
+        },
+    )
 }
 
-/// `POST /v1/names/{name}/csr[?rotate=true]`, body = CSR DER (§6.2).
+/// `POST /v1/names/{name}/csr[?rotate=true[&compromised=true]]`, body = CSR DER (§6.2, §6.3).
 async fn csr(
     Extension(c): Extension<Ctx>,
     Path(name): Path<String>,
@@ -617,13 +672,21 @@ async fn csr(
     if c.edge.certs.get().is_none() {
         return Err(not_yet("certificate issuance"));
     }
-    let rotate = query
-        .as_deref()
-        .is_some_and(|q| q.split('&').any(|kv| kv == "rotate=true"));
-    match crate::certs::submit(&c.edge, &s.mesh, &name, &body, rotate).await? {
+    let q = csr_query(query.as_deref().unwrap_or(""));
+    match crate::certs::submit(&c.edge, &s.mesh, &name, &body, q).await? {
         Ok(crate::certs::Submitted::Chain(chain)) => json(StatusCode::OK, &chain),
         Ok(crate::certs::Submitted::Pending(p)) => json(StatusCode::ACCEPTED, &p),
         Err(b) => Err(b.into()),
+    }
+}
+
+/// The CSR post's query: `rotate=true`, and `compromised=true` only together with it (CONTRACT2).
+fn csr_query(q: &str) -> CsrQuery {
+    let has = |k: &str| q.split('&').any(|kv| kv == format!("{k}=true"));
+    let rotate = has("rotate");
+    CsrQuery {
+        rotate,
+        compromised: rotate && has("compromised"),
     }
 }
 
@@ -642,6 +705,14 @@ async fn put_routes(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
     let e = &c.edge;
     let req: RoutesPut = parse(&body)?;
     after_stop_all(e, &s).await?;
+    // §7.4 per share: a host whose share went live at or before the mesh's last Stop all is refused, nothing
+    // applied, naming those hosts.
+    if let Some(stop) = stop_all_of(e, &s.mesh).await? {
+        let stopped = req.stopped_hosts(stop);
+        if !stopped.is_empty() {
+            return Err(ErrorBody::stopped_all(stop, stopped).into());
+        }
+    }
     if req.hosts.len() > e.cfg.limits.routes_per_tunnel as usize {
         return Err(err(ErrorCode::Quota));
     }
@@ -748,16 +819,30 @@ async fn events(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-/// `GET /v1/mesh`.
+/// The mesh's last Stop all.
+async fn stop_all_of(e: &Edge, mesh: &PublicKey) -> anyhow::Result<Option<u64>> {
+    Ok(e.store
+        .mesh(&mesh.to_string())
+        .await?
+        .and_then(|m| m.stop_all_ms)
+        .and_then(|v| u64::try_from(v).ok()))
+}
+
+/// `GET /v1/mesh`: the edge's current id for the session's mesh (after a rekey, the end of the chain), its
+/// engines, routes, revoke list and rekey history (§5.7 `confirming`).
 async fn mesh_status(Extension(c): Extension<Ctx>) -> ApiResult {
     let s = c.session()?;
     let e = &c.edge;
-    let mesh = s.mesh.to_string();
-    let attached: Vec<PublicKey> = e.mesh_tunnels(&s.mesh).iter().map(|t| t.engine).collect();
-    let engines = e
-        .store
-        .engines(&mesh)
-        .await?
+    let mesh = e.store.current_mesh(&s.mesh.to_string()).await?;
+    let current: PublicKey = mesh.parse().map_err(|_| anyhow::anyhow!("bad mesh id {mesh}"))?;
+    let attached: Vec<PublicKey> = e.mesh_tunnels(&current).iter().map(|t| t.engine).collect();
+    let rows = e.store.engines(&mesh).await?;
+    let revoked = rows
+        .iter()
+        .filter(|r| r.revoked_ms.is_some())
+        .filter_map(|r| r.engine.parse().ok())
+        .collect();
+    let engines = rows
         .into_iter()
         .filter_map(|r| {
             let engine: PublicKey = r.engine.parse().ok()?;
@@ -769,22 +854,28 @@ async fn mesh_status(Extension(c): Extension<Ctx>) -> ApiResult {
             })
         })
         .collect();
-    let stop_all_ms = e
+    let rekeys = e
         .store
-        .mesh(&mesh)
+        .rekey_history(&mesh)
         .await?
-        .and_then(|m| m.stop_all_ms)
-        .and_then(|v| u64::try_from(v).ok());
+        .into_iter()
+        .filter_map(|(old, new, ms)| {
+            Some(RekeyEntry {
+                old: old.parse().ok()?,
+                new: new.parse().ok()?,
+                ms: u64::try_from(ms).ok()?,
+            })
+        })
+        .collect();
     json(
         StatusCode::OK,
         &MeshStatus {
-            mesh: s.mesh,
+            mesh: current,
             engines,
-            routes: e.mesh_routes(&s.mesh),
-            stop_all_ms,
-            // TODO(210-M2): the revoke list and rekey history.
-            revoked: Vec::new(),
-            rekeys: Vec::new(),
+            routes: e.mesh_routes(&current),
+            stop_all_ms: stop_all_of(e, &current).await?,
+            revoked,
+            rekeys,
         },
     )
 }
@@ -823,8 +914,49 @@ async fn mesh_revoke(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
     )
 }
 
-/// `POST /v1/mesh/rekey`. TODO(210-M2): `Rekey::verify`, the atomic move of names, invites and routes.
-async fn mesh_rekey(Extension(c): Extension<Ctx>) -> ApiResult {
-    c.session()?;
-    Err(not_yet("mesh rekey"))
+/// `POST /v1/mesh/rekey` (§5.7): a `Rekey` signed by the old and the new mesh key. Answered with or without a
+/// `hello` on the connection: the two signatures are the authority, and an engine whose mesh id was already
+/// rekeyed away (the heal rule's sender) cannot `hello` under it. First valid rekey wins: a second for the same
+/// `old` gets `409 mesh_rekeyed {to}` with the end of the chain, which a holder whose stash holds `to` heals
+/// with [`Rekey::chain`]. Applied atomically by [`crate::store::Store::rekey`]; then every tunnel under `old`
+/// gets `kill {mesh_rekeyed}` (its routes go now; engines re-`hello` under `new`), and a tunnel already under
+/// `new` whose engine the new revoke list names gets `kill {revoked}`.
+async fn mesh_rekey(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
+    let e = &c.edge;
+    let signed: SignedRekey = parse(&body)?;
+    let ident = EdgeIdentity {
+        edge: e.id,
+        domain: e.cfg.domain.clone(),
+    };
+    let r = Rekey::verify(&signed, &ident).map_err(|re| {
+        let mut b = ErrorBody::new(re.code());
+        b.message = Some(re.to_string());
+        ApiError::from(b)
+    })?;
+    let revoke: Vec<String> = r.revoke.iter().map(ToString::to_string).collect();
+    match e
+        .store
+        .rekey(&r.old.to_string(), &r.new.to_string(), &revoke, now_ms())
+        .await?
+    {
+        Rekeyed::Applied => {}
+        Rekeyed::Moved(to) => {
+            let to: PublicKey = to.parse().map_err(|_| anyhow::anyhow!("bad rekeyed_to"))?;
+            return Err(ErrorBody::rekeyed(to).into());
+        }
+        Rekeyed::Unknown => return Err(err(ErrorCode::NotFound)),
+        Rekeyed::Banned => return Err(err(ErrorCode::Banned)),
+        Rekeyed::NewInUse => return Err(ErrorBody::invalid("new").into()),
+    }
+    e.drop_routes(|_, route| route.mesh == r.old);
+    for t in e.mesh_tunnels(&r.old) {
+        t.kill(None, KillReason::MeshRekeyed);
+    }
+    for t in e.mesh_tunnels(&r.new) {
+        if r.revoke.contains(&t.engine) {
+            e.detach(&t);
+            t.kill(None, KillReason::Revoked);
+        }
+    }
+    json(StatusCode::OK, &RekeyAccepted { mesh: r.new })
 }

@@ -12,7 +12,11 @@ use share_edge::config::{Config, Secrets};
 use share_edge::dns::Rtype;
 use share_edge::state::{Edge, now_ms};
 use share_edge::store::{Claimed, NewName, Store};
-use share_proto::{ErrorCode, PublicKey, SecretKey};
+use share_proto::{CsrQuery, ErrorCode, PublicKey, SecretKey};
+
+const PLAIN: CsrQuery = CsrQuery { rotate: false, compromised: false };
+const ROTATE: CsrQuery = CsrQuery { rotate: true, compromised: false };
+const ROTATE_COMPROMISED: CsrQuery = CsrQuery { rotate: true, compromised: true };
 
 const HOUR: u64 = 3_600_000;
 const DAY: u64 = 24 * HOUR;
@@ -72,7 +76,7 @@ fn csr(name: &str) -> Vec<u8> {
 async fn issue(r: &Rig, name: &str) -> (PublicKey, Vec<u8>) {
     let mesh = claim(&r.edge, name).await;
     let der = csr(name);
-    let first = certs::submit(&r.edge, &mesh, name, &der, false).await.unwrap().unwrap();
+    let first = certs::submit(&r.edge, &mesh, name, &der, PLAIN).await.unwrap().unwrap();
     assert!(matches!(first, Submitted::Pending(_)), "{first:?}");
     certs::tick(&r.edge, now_ms()).await.unwrap();
     (mesh, der)
@@ -100,7 +104,7 @@ async fn issuance_writes_records_serializes_txt_and_serves_the_chain() {
     assert_eq!(ledger.len(), 2, "{ledger:?}");
 
     // The same CSR again: the chain; GET cert: the chain.
-    match certs::submit(&r.edge, &mesh, "sky", &der, false).await.unwrap().unwrap() {
+    match certs::submit(&r.edge, &mesh, "sky", &der, PLAIN).await.unwrap().unwrap() {
         Submitted::Chain(c) => assert_eq!(c.chain_pem, chain),
         other => panic!("{other:?}"),
     }
@@ -113,15 +117,15 @@ async fn issuance_writes_records_serializes_txt_and_serves_the_chain() {
 async fn foreign_names_and_foreign_meshes_are_refused() {
     let r = rig("").await;
     let mesh = claim(&r.edge, "sky").await;
-    let e = certs::submit(&r.edge, &mesh, "sky", &csr("evil"), false).await.unwrap().unwrap_err();
+    let e = certs::submit(&r.edge, &mesh, "sky", &csr("evil"), PLAIN).await.unwrap().unwrap_err();
     assert_eq!(e.code, ErrorCode::CsrNames);
-    let e = certs::submit(&r.edge, &mesh, "sky", &csr_for(&["sky.tun.zip"]), false)
+    let e = certs::submit(&r.edge, &mesh, "sky", &csr_for(&["sky.tun.zip"]), PLAIN)
         .await
         .unwrap()
         .unwrap_err();
     assert_eq!(e.code, ErrorCode::CsrNames);
     let other = SecretKey::generate().public();
-    let e = certs::submit(&r.edge, &other, "sky", &csr("sky"), false).await.unwrap().unwrap_err();
+    let e = certs::submit(&r.edge, &other, "sky", &csr("sky"), PLAIN).await.unwrap().unwrap_err();
     assert_eq!(e.code, ErrorCode::NotOwner);
     assert!(r.edge.store.jobs("tun.zip", "sky").await.unwrap().is_empty());
     assert!(r.edge.certs.get().is_some());
@@ -134,17 +138,78 @@ async fn a_different_csr_needs_rotate_and_rotation_revokes_the_old_chain() {
     let (mesh, _) = issue(&r, "sky").await;
     let old = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap().chain_pem.unwrap();
     let new = csr("sky");
-    let e = certs::submit(&r.edge, &mesh, "sky", &new, false).await.unwrap().unwrap_err();
+    let e = certs::submit(&r.edge, &mesh, "sky", &new, PLAIN).await.unwrap().unwrap_err();
     assert_eq!(e.code, ErrorCode::CsrMismatch);
     assert!(e.spki.is_some());
 
-    let p = certs::submit(&r.edge, &mesh, "sky", &new, true).await.unwrap().unwrap();
+    let p = certs::submit(&r.edge, &mesh, "sky", &new, ROTATE).await.unwrap().unwrap();
     assert!(matches!(p, Submitted::Pending(_)));
     certs::tick(&r.edge, now_ms()).await.unwrap();
     let row = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap();
     assert_ne!(row.chain_pem.as_deref(), Some(old.as_str()));
     assert_eq!(r.f.ca.revoked.lock().unwrap().clone(), vec![(old.clone(), Reason::Superseded)]);
     assert_eq!(r.f.ca.replaces.lock().unwrap()[1].as_deref(), Some(old.as_str()));
+}
+
+/// §6.3 after a removal: `?rotate=true&compromised=true` revokes the old certificate `keyCompromise`, and the
+/// flag does not outlive that rotation (the next plain rotation is `superseded`).
+#[tokio::test]
+async fn a_compromised_rotation_revokes_key_compromise_once() {
+    let r = rig("").await;
+    let (mesh, _) = issue(&r, "sky").await;
+    let first = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap().chain_pem.unwrap();
+    let p = certs::submit(&r.edge, &mesh, "sky", &csr("sky"), ROTATE_COMPROMISED).await.unwrap().unwrap();
+    assert!(matches!(p, Submitted::Pending(_)));
+    certs::tick(&r.edge, now_ms()).await.unwrap();
+    let second = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap().chain_pem.unwrap();
+    assert_ne!(first, second);
+    assert!(!r.edge.store.rotate_compromised("tun.zip", "sky").await.unwrap());
+
+    certs::submit(&r.edge, &mesh, "sky", &csr("sky"), ROTATE).await.unwrap().unwrap();
+    certs::tick(&r.edge, now_ms()).await.unwrap();
+    assert_eq!(
+        r.f.ca.revoked.lock().unwrap().clone(),
+        vec![(first, Reason::KeyCompromise), (second, Reason::Superseded)]
+    );
+}
+
+/// §5.2 D20 at the store and the CA: an offered name moves to the receiving mesh without a cooldown, the old
+/// chain is revoked `cessationOfOperation`, the name stays slotted (no new-name token: the bucket is empty) and
+/// the receiver's own CSR is issued. Without an offer, or after it lapses, the claim is `Taken`.
+#[tokio::test]
+async fn an_online_transfer_moves_the_name_and_revokes_the_old_chain() {
+    let r = rig(", cas: {letsencrypt: {new_certs_per_week: 1}}").await;
+    let (a, _) = issue(&r, "sky").await;
+    let old = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap().chain_pem.unwrap();
+    let b = new_mesh(&r.edge).await;
+    assert_eq!(claim_as(r.edge.clone(), b, "sky", "reserved").await, Claimed::Taken);
+
+    // An offer that already lapsed does nothing.
+    let (sa, sb) = (a.to_string(), b.to_string());
+    assert!(r.edge.store.offer_transfer("tun.zip", "sky", &sa, &sb, now_ms() - 1).await.unwrap());
+    assert_eq!(claim_as(r.edge.clone(), b, "sky", "reserved").await, Claimed::Taken);
+    // Only the holder can offer.
+    assert!(!r.edge.store.offer_transfer("tun.zip", "sky", &sb, &sa, now_ms() + DAY).await.unwrap());
+
+    assert!(r.edge.store.offer_transfer("tun.zip", "sky", &sa, &sb, now_ms() + DAY).await.unwrap());
+    let row = r.edge.store.name("tun.zip", "sky").await.unwrap().unwrap();
+    assert_eq!(row.transfer_to.as_deref(), Some(sb.as_str()));
+    assert_eq!(claim_as(r.edge.clone(), b, "sky", "reserved").await, Claimed::Transferred);
+    let row = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap();
+    assert_eq!(row.owner.as_deref(), Some(sb.as_str()));
+    assert_eq!(row.state, "slotted");
+    assert!(row.chain_pem.is_none() && row.csr.is_none());
+    assert_eq!(claim_as(r.edge.clone(), a, "sky", "reserved").await, Claimed::Taken);
+
+    let der = csr("sky");
+    certs::submit(&r.edge, &b, "sky", &der, PLAIN).await.unwrap().unwrap();
+    certs::tick(&r.edge, now_ms()).await.unwrap();
+    let row = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap();
+    assert_eq!(row.state, "valid");
+    let leaf = leaf_info(row.chain_pem.as_deref().unwrap()).unwrap();
+    assert_eq!(leaf.spki, share_proto::check_csr(&der, "sky", "tun.zip").unwrap().spki);
+    assert_eq!(r.f.ca.revoked.lock().unwrap().clone(), vec![(old, Reason::CessationOfOperation)]);
+    assert_eq!(r.f.ca.issued.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -208,7 +273,7 @@ async fn renewal_runs_while_the_new_cert_bucket_is_empty() {
     let (_, _) = issue(&r, "sky").await;
     let first = r.edge.store.cert_row("tun.zip", "sky").await.unwrap().unwrap().chain_pem.unwrap();
     let mesh = claim(&r.edge, "fog").await;
-    let p = certs::submit(&r.edge, &mesh, "fog", &csr("fog"), false).await.unwrap().unwrap();
+    let p = certs::submit(&r.edge, &mesh, "fog", &csr("fog"), PLAIN).await.unwrap().unwrap();
     assert!(matches!(&p, Submitted::Pending(p) if p.queue_pos == Some(1)), "{p:?}");
     let t0 = now_ms() + 7 * HOUR;
     certs::tick(&r.edge, t0).await.unwrap();
@@ -268,7 +333,7 @@ async fn a_provider_panic_is_a_failed_attempt_with_backoff() {
     let r = rig("").await;
     *r.f.zone.panic_on.lock().unwrap() = Some("*.sky".into());
     let mesh = claim(&r.edge, "sky").await;
-    certs::submit(&r.edge, &mesh, "sky", &csr("sky"), false).await.unwrap().unwrap();
+    certs::submit(&r.edge, &mesh, "sky", &csr("sky"), PLAIN).await.unwrap().unwrap();
     let t0 = now_ms();
     certs::tick(&r.edge, t0).await.unwrap();
     let jobs = r.edge.store.jobs("tun.zip", "sky").await.unwrap();
@@ -290,7 +355,7 @@ async fn new_names_wait_for_a_token() {
     let r = rig(", cas: {letsencrypt: {new_certs_per_week: 1}}").await;
     let (_, _) = issue(&r, "sky").await;
     let mesh = claim(&r.edge, "fog").await;
-    let p = certs::submit(&r.edge, &mesh, "fog", &csr("fog"), false).await.unwrap().unwrap();
+    let p = certs::submit(&r.edge, &mesh, "fog", &csr("fog"), PLAIN).await.unwrap().unwrap();
     match p {
         Submitted::Pending(p) => assert_eq!(p.queue_pos, Some(1)),
         other => panic!("{other:?}"),
@@ -358,7 +423,7 @@ async fn concurrent_claims_have_one_winner_and_keep_the_quota() {
 async fn a_chain_ordered_before_a_release_never_lands_on_the_next_owner() {
     let r = rig("").await;
     let a = claim(&r.edge, "sky").await;
-    certs::submit(&r.edge, &a, "sky", &csr("sky"), false).await.unwrap().unwrap();
+    certs::submit(&r.edge, &a, "sky", &csr("sky"), PLAIN).await.unwrap().unwrap();
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (go_tx, go_rx) = tokio::sync::oneshot::channel();
     *r.f.ca.gate.lock().unwrap() = Some((started_tx, go_rx));
@@ -370,7 +435,7 @@ async fn a_chain_ordered_before_a_release_never_lands_on_the_next_owner() {
     r.edge.store.release("tun.zip", "sky", &a.to_string(), now_ms(), 0).await.unwrap().unwrap();
     let b = new_mesh(&r.edge).await;
     assert_eq!(claim_as(r.edge.clone(), b, "sky", "reserved").await, Claimed::Granted);
-    let p = certs::submit(&r.edge, &b, "sky", &csr("sky"), false).await.unwrap().unwrap();
+    let p = certs::submit(&r.edge, &b, "sky", &csr("sky"), PLAIN).await.unwrap().unwrap();
     assert!(matches!(p, Submitted::Pending(_)), "{p:?}");
     go_tx.send(()).unwrap();
     runner.await.unwrap().unwrap();
