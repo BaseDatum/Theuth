@@ -279,15 +279,13 @@ impl Profiles {
             .expect("just placed")
     }
 
-    /// `<id>.json`, `.tmp` + rename.
+    /// `<id>.json`, temp + rename.
     fn write(&self, id: ProfileId) -> Result<(), String> {
         let path = self.path(id);
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(
-            &tmp,
-            serde_json::to_vec_pretty(self.get(id)).map_err(|e| e.to_string())?,
+        platform::files::write_atomic(
+            &path,
+            &serde_json::to_vec_pretty(self.get(id)).map_err(|e| e.to_string())?,
         )
-        .and_then(|()| std::fs::rename(&tmp, &path))
         .map_err(|e| format!("write {}: {e}", path.display()))
     }
 

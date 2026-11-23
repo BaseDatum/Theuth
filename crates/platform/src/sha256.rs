@@ -52,6 +52,11 @@ pub fn remember(path: &Path, hex: &str) {
     }
 }
 
+/// Lowercase hex of SHA-256 over `bytes`.
+pub fn hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
 /// sha256 hex of `path`, streamed (digest 0.11 hashers are not `io::Write`).
 pub fn file(path: &Path) -> io::Result<String> {
     let mut f = std::fs::File::open(path)?;
@@ -85,6 +90,14 @@ pub fn cached(path: &Path) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_of_bytes() {
+        assert_eq!(
+            hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 
     #[test]
     fn sidecar_format_and_short_circuit() {

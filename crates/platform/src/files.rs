@@ -17,6 +17,46 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     })
 }
 
+/// Write `bytes` to a unique `.<file name>.<pid>.<n>.tmp` beside `path`, then
+/// rename it over `path` (the same rename as [`write_private`]); the temp is
+/// removed on error. No directory creation, no fsync, no chmod: the umask
+/// default, as `fs::write` plus `rename`.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_atomic_with(path, bytes, false)
+}
+
+/// [`write_atomic`] with `sync_data` on the temp before the rename.
+pub fn write_atomic_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_atomic_with(path, bytes, true)
+}
+
+fn write_atomic_with(path: &Path, bytes: &[u8], sync: bool) -> io::Result<()> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut name = std::ffi::OsString::from(".");
+    name.push(path.file_name().unwrap_or_default());
+    name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let tmp = path.with_file_name(name);
+    let written = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        if sync {
+            f.sync_data()?;
+        }
+        Ok(())
+    })();
+    written
+        .and_then(|()| imp::rename(&tmp, path))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })
+}
+
 /// Create `path` owner-only with `bytes`; `AlreadyExists` when it is there
 /// (the caller decides whose wins).
 pub fn create_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -297,6 +337,44 @@ mod tests {
             assert_eq!(mode(&p), 0o600);
             assert_eq!(mode(&d), 0o700);
         }
+    }
+
+    #[test]
+    fn write_atomic_replaces_and_leaves_no_temp() {
+        let d = scratch("atomic");
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("f.json");
+        write_atomic(&p, b"one").unwrap();
+        write_atomic_synced(&p, b"two").unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"two");
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn write_atomic_concurrent_writers_never_tear() {
+        let d = scratch("atomic-race");
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("f");
+        let handles: Vec<_> = [b'a', b'b']
+            .into_iter()
+            .map(|c| {
+                let p = p.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..50 {
+                        write_atomic(&p, &vec![c; 4096]).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let got = std::fs::read(&p).unwrap();
+        assert_eq!(got.len(), 4096);
+        assert!(got.iter().all(|b| *b == got[0]));
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

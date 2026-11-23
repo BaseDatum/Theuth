@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use serde::Deserialize;
 use rpc_compose::api::clients::*;
 use iocraft::prelude::{element, View as BoxView, Text, BorderStyle, FlexDirection, Weight, TextWrap};
-use crate::model::when;
+use crate::model::{now_ms, when};
 use crate::ui::{FAIENCE, BONE_DIM};
 
 /// Global metadata is retained across session resets; pending input is not.
@@ -381,7 +381,6 @@ impl Component for Secrets {
     fn wake(&self) -> Option<u64> { self.refresh.then_some(0) }
 }
 fn bad_secret_name(name: &str) -> String { format!("secrets: {name:?} is not a name; use [A-Za-z0-9_.-], at most 64") }
-fn now_ms() -> u64 { u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0) }
 
 #[cfg(test)]
 mod tests {

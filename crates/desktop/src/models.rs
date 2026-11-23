@@ -456,7 +456,7 @@ mod tests {
         Entry {
             path: "m/f.bin".into(),
             size,
-            sha256: hex::encode(Sha256::digest(body)),
+            sha256: platform::sha256::hex(body),
             platform: None,
             key: None,
         }

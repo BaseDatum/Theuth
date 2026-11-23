@@ -15,6 +15,7 @@ pub mod service;
 pub mod sha256;
 pub mod shell;
 pub mod target;
+pub mod time;
 pub mod version;
 
 pub use process::{ProcessTree, Signal, TreeSample};

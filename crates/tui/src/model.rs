@@ -253,7 +253,8 @@ pub(crate) use sessions::{project_heading, project_order};
 pub use lifecycle::removal_line;
 pub use slash::{COMMANDS, SlashRow};
 pub(crate) use slash::command_rank;
-pub(crate) use status::{now_ms, when, ago, on_off};
+pub(crate) use platform::time::now_ms;
+pub(crate) use status::{when, ago, on_off};
 pub use status::{Level, k};
 pub(crate) use status::elapsed;
 

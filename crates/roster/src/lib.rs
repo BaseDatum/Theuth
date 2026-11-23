@@ -48,7 +48,9 @@ pub mod types;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
+
+use platform::time::now_ms;
 
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -338,13 +340,6 @@ pub struct Roster {
 #[serde(default)]
 struct AgentSection {
     endless: agent::EndlessConfig,
-}
-
-/// ms since the Unix epoch.
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// 148 E3/F7: the agent's configured model as the canonical catalog id, or

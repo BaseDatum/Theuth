@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// Weights directory under `<data_dir>/models/`.
 pub const MLX_MODEL_SUBDIR: &str = "parakeet-tdt-mlx";
@@ -196,22 +195,6 @@ fn part_of(dest: &Path) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// sha256 of a whole file, hex.
-fn sha256_file(path: &Path) -> anyhow::Result<String> {
-    use std::io::Read as _;
-    let mut f = std::fs::File::open(path)?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 20];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        h.update(&buf[..n]);
-    }
-    Ok(hex::encode(h.finalize()))
-}
-
 /// `part` matches `e`; else why not.
 fn check(part: &Path, e: &Expect) -> anyhow::Result<()> {
     let n = std::fs::metadata(part)?.len();
@@ -219,7 +202,7 @@ fn check(part: &Path, e: &Expect) -> anyhow::Result<()> {
         anyhow::ensure!(n == size, "{}: {n} bytes, hub says {size}", part.display());
     }
     if let Some(want) = &e.sha256 {
-        let got = sha256_file(part)?;
+        let got = platform::sha256::file(part)?;
         anyhow::ensure!(
             &got == want,
             "{}: sha256 {got}, hub says {want}",
@@ -978,7 +961,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("x.part");
         std::fs::write(&f, b"abc").unwrap();
-        let sha = hex::encode(Sha256::digest(b"abc"));
+        let sha = platform::sha256::hex(b"abc");
         assert_eq!(part_of(&dir.join("x")), f);
         check(
             &f,
@@ -1027,7 +1010,7 @@ mod tests {
                         .insert_header("x-linked-size", b.len().to_string())
                         .insert_header(
                             "x-linked-etag",
-                            format!("\"{}\"", hex::encode(Sha256::digest(&b))),
+                            format!("\"{}\"", platform::sha256::hex(&b)),
                         ),
                 )
                 .mount(&server)

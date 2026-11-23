@@ -207,11 +207,7 @@ pub fn export_dir() -> PathBuf {
 
 /// `$THEUTH_DATA_DIR` (default `~/.theuth`): the ORT dylib's home.
 pub fn data_dir() -> PathBuf {
-    std::env::var_os("THEUTH_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".theuth")
-        })
+    platform::env::data_dir()
 }
 
 #[cfg(test)]

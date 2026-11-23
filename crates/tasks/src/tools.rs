@@ -10,6 +10,7 @@ use agent::attach::AttachRef;
 use kameo::actor::ActorRef;
 use kameo::error::SendError;
 use kameo::message::{Context, Message};
+use platform::time::now_ms;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tools::{RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistry};
@@ -103,12 +104,6 @@ async fn session_project(cx: &ToolCx) -> Option<String> {
         .into_iter()
         .find(|s| s.id == cx.session)
         .and_then(|s| s.project)
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 fn out<T: Serialize>(r: Result<T, String>) -> anyhow::Result<ToolOutput> {

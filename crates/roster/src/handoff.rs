@@ -7,6 +7,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use platform::time::now_ms;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePool;
@@ -334,12 +336,6 @@ pub fn timeout(rt: &runtime::Runtime) -> Duration {
         .section::<SandboxSection>("sandbox")
         .map_or(DEFAULT_TIMEOUT_SECS, |s| s.handoff_timeout_secs);
     Duration::from_secs(secs)
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 #[cfg(test)]

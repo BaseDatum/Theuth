@@ -10,6 +10,7 @@
 
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
+use platform::time::now_ms;
 use runtime::Runtime;
 use schedule::ScheduleEvent;
 use serde::{Deserialize, Serialize};
@@ -511,12 +512,6 @@ impl Message<ListActivity> for Activity {
     async fn handle(&mut self, m: ListActivity, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
         list(&self.pool, &m.0).await.map_err(|e| e.to_string())
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// The activity actor; `None` before the tasks plugin started.

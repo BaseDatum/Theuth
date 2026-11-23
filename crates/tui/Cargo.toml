@@ -55,7 +55,6 @@ serde_json = { workspace = true }
 crossterm = "0.29"
 arboard = { workspace = true }
 png = { workspace = true }
-sha2 = { workspace = true }
 unicode-width = { workspace = true }
 iso_currency = { version = "0.7.1", features = ["iterator"] }
 

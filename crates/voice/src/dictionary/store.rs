@@ -34,7 +34,7 @@ pub fn read(path: &Path) -> anyhow::Result<(Vec<Entry>, Vec<Negative>)> {
     }
 }
 
-/// Write `<path>.tmp` then rename over `path`.
+/// Write a temp beside `path` then rename over it.
 pub fn write(path: &Path, entries: &[Entry], negatives: &[Negative]) -> anyhow::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -44,8 +44,6 @@ pub fn write(path: &Path, entries: &[Entry], negatives: &[Negative]) -> anyhow::
         entries: entries.to_vec(),
         negatives: negatives.to_vec(),
     };
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&f)?)?;
-    std::fs::rename(&tmp, path)?;
+    platform::files::write_atomic(path, &serde_json::to_vec_pretty(&f)?)?;
     Ok(())
 }

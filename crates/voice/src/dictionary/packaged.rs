@@ -6,7 +6,6 @@
 use std::io::Read;
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use super::matcher::Index;
 use super::{Entry, EntryId, Kind, Scope, Source};
@@ -69,7 +68,7 @@ pub fn record() -> anyhow::Result<Record> {
 
 /// Hex sha256 of the embedded file.
 pub fn sha256() -> String {
-    hex::encode(Sha256::digest(GZ))
+    platform::sha256::hex(GZ)
 }
 
 /// Verify the hash (proof row 3), gunzip, index.

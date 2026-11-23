@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
@@ -628,7 +628,7 @@ impl Dictation {
             device: device.clone(),
             row: HistoryRow {
                 id,
-                started_ms: unix_ms(),
+                started_ms: platform::time::now_ms(),
                 finished_ms: None,
                 surface,
                 destination: match &destination {
@@ -770,13 +770,6 @@ impl Dictation {
             let _ = me.tell(StandbyExpired(generation)).await;
         });
     }
-}
-
-/// Now, Unix ms.
-fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 impl Message<Prewarm> for Dictation {
@@ -1200,7 +1193,7 @@ impl Message<Report> for Dictation {
                 }
                 if let Some(store) = self.store.clone() {
                     let mut row = run.row;
-                    row.finished_ms = Some(unix_ms());
+                    row.finished_ms = Some(platform::time::now_ms());
                     row.raw = done.raw;
                     row.shaped = done.shaped;
                     row.press_ms = timings.press_to_first_pcm_ms;
