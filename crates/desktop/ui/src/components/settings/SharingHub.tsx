@@ -2,16 +2,19 @@
 // (the exports and the contacts granted each) and Notes and notebooks (documents with members or links). Revoke and
 // stop are never behind a confirmation (210); a kind the engine reports in `partial` shows one muted line.
 
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { MessageSquare, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { ExportChip, useChatMachine, useUngrant } from '@/components/settings/Contacts'
+import { ExportChip, useChatMachine, who } from '@/components/settings/Contacts'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { type SharingKind, type SharingPartial, type SharingRow, ended, useSharingList } from '@/components/settings/sharing-wire'
 import { agoText } from '@/components/sources/origin'
 import { Button } from '@/components/ui/button'
 import { names, useContacts, useExports } from '@/lib/contacts'
+import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 import { queryKeys, useApi } from '@/lib/rpc'
+import { useQuerySupport } from '@/rpc/capabilities'
 
 /** §2 rule: a kind whose plugin is off reads as one line, not an error. */
 const CONTACTS_OFF = 'Contacts are off — turn on agent messaging in Network'
@@ -46,7 +49,7 @@ const toTab = (tab: string) => ({ to: '/settings/$tab', params: { tab } }) as co
 const GROUPS: { tab: string; label: string; kinds: readonly SharingKind[]; unit: (n: number) => string }[] = [
   { tab: 'shared-notes', label: 'Notes and notebooks', kinds: ['document_member', 'document_link'], unit: (n) => `${n} shared document${n === 1 ? '' : 's'}` },
   { tab: 'contacts', label: 'Contacts', kinds: ['contact'], unit: (n) => `${n} contact${n === 1 ? '' : 's'}` },
-  { tab: 'shared-chats', label: 'Chats and agents', kinds: ['export'], unit: (n) => `${n} shared with contacts` },
+  { tab: 'shared-chats', label: 'Chats and agents', kinds: ['export'], unit: (n) => `${n} shared chat${n === 1 ? '' : 's'} or agent${n === 1 ? '' : 's'}` },
   { tab: 'sharing', label: 'Public shares', kinds: ['public_share'], unit: (n) => `${n} live` },
 ]
 
@@ -107,19 +110,19 @@ export function SharingOverviewTab() {
   )
 }
 
-/** 213 §2 tab 3: every export with the contacts granted it; Stop sharing with one, Remove the export, Open its chat. */
+/** 213 §2 tab 3: every export with the contacts granted it; Stop sharing with one, Remove the export, Open its chat.
+ * Both go through `sharing_revoke` (`export`, with the contact for one grant); the engine fires `A2aChanged`. */
 export function SharedChatsTab() {
   const api = useApi()
   const navigate = useNavigate()
   const exports = useExports()
   const contacts = useContacts()
-  const ungrant = useUngrant()
   const machineOf = useChatMachine()
-  const remove = useAction((name: string) => api.a2a_export_remove(name), {
-    keys: [queryKeys.contacts, queryKeys.exports],
-    onSuccess: (_r, name) => toast.message(`Stopped sharing ${name}`),
+  const revoke = useAction((v: { name: string; contact: string | null }) => api.sharing_revoke('export', v.name, v.contact), {
+    keys: [queryKeys.contacts, queryKeys.exports, queryKeys.sharing],
+    onSuccess: (_r, v) => v.contact === null && toast.message(`Stopped sharing ${v.name}`),
   })
-  const busy = ungrant.isPending || remove.isPending
+  const busy = revoke.isPending
   return (
     <Section title="Chats and agents">
       <p className="text-[13px] text-fg-secondary">Each chat and agent your contacts may reach. Share more from a contact under Contacts or from a chat’s menu.</p>
@@ -145,7 +148,7 @@ export function SharedChatsTab() {
                   <MessageSquare /> Open
                 </Button>
               )}
-              <Button variant="ghost" size="sm" className="text-danger" disabled={busy} onClick={() => remove.mutate(x.name)}>
+              <Button variant="ghost" size="sm" className="text-danger" disabled={busy} onClick={() => revoke.mutate({ name: x.name, contact: null })}>
                 Remove export
               </Button>
             </div>
@@ -155,7 +158,7 @@ export function SharedChatsTab() {
                 {granted.map((c) => (
                   <span key={c.id || c.name} className="inline-flex items-center gap-0.5 rounded-full border border-border-subtle py-0.5 pr-0.5 pl-2 text-xs text-fg-secondary">
                     {c.name}
-                    <Button variant="ghost" size="icon-sm" className="size-5" aria-label={`Stop sharing ${label} with ${c.name}`} disabled={busy} onClick={() => ungrant.mutate({ contact: c, exp: x.name })}>
+                    <Button variant="ghost" size="icon-sm" className="size-5" aria-label={`Stop sharing ${label} with ${c.name}`} disabled={busy} onClick={() => revoke.mutate({ name: x.name, contact: who(c) })}>
                       <X className="size-3" />
                     </Button>
                   </span>
@@ -184,11 +187,15 @@ export function byDocument(rows: readonly SharingRow[]): { doc: string; title: s
   return [...docs.values()]
 }
 
-/** 213 §2 tab 4: documents with members or links; Remove member, Revoke link (and the members who joined through it), Open. */
+/** 213 §2 tab 4: documents with members or links; Remove member, Revoke link (and the members who joined through it), Open
+ * (a notebook on its own page, from `notebook_list`; any other document as a note). */
 export function SharedNotesTab() {
   const api = useApi()
+  const nb = useNotebooksApi()
   const navigate = useNavigate()
   const list = useSharingList(['document_member', 'document_link'])
+  const notebooks = useQuery({ enabled: useQuerySupport(['notebook_list']), queryKey: notebookKeys.list(false), queryFn: () => nb.notebook_list(false) })
+  const notebook = new Set(notebooks.data?.map((n) => n.doc.id))
   const revoke = useAction((v: { kind: SharingKind; id: string; sub: string | null }) => api.sharing_revoke(v.kind, v.id, v.sub), { keys: [queryKeys.sharing] })
   const now = Date.now()
   const docs = byDocument(list.data?.rows ?? [])
@@ -202,7 +209,7 @@ export function SharedNotesTab() {
         <div key={d.doc} data-doc={d.doc} className="border-b border-border-subtle py-3 last:border-0">
           <div className="flex items-center gap-2">
             <span className="min-w-0 flex-1 truncate text-sm font-medium">{d.title}</span>
-            <Button variant="outline" size="sm" onClick={() => void navigate({ to: '/notes/$id', params: { id: d.doc } })}>
+            <Button variant="outline" size="sm" onClick={() => void navigate(notebook.has(d.doc) ? { to: '/notebooks/$id', params: { id: d.doc } } : { to: '/notes/$id', params: { id: d.doc } })}>
               Open document
             </Button>
           </div>
@@ -246,16 +253,15 @@ export function SharedNotesTab() {
                       </span>
                     </span>
                     {live && l.revocable && (
-                      <>
-                        <Button variant="outline" size="sm" disabled={revoke.isPending} onClick={() => revoke.mutate({ kind: 'document_link', id: l.id, sub: null })}>
-                          Revoke link
-                        </Button>
-                        {joined > 0 && (
-                          <Button variant="outline" size="sm" disabled={revoke.isPending} onClick={() => revoke.mutate({ kind: 'document_link', id: l.id, sub: 'members' })}>
-                            Revoke and remove its members
-                          </Button>
-                        )}
-                      </>
+                      <Button variant="outline" size="sm" disabled={revoke.isPending} onClick={() => revoke.mutate({ kind: 'document_link', id: l.id, sub: null })}>
+                        Revoke link
+                      </Button>
+                    )}
+                    {/* A revoked or expired link still sweeps the members who came through it. */}
+                    {l.revocable && joined > 0 && (
+                      <Button variant="outline" size="sm" disabled={revoke.isPending} onClick={() => revoke.mutate({ kind: 'document_link', id: l.id, sub: 'members' })}>
+                        {live ? 'Revoke and remove its members' : 'Remove its members'}
+                      </Button>
                     )}
                   </li>
                 )

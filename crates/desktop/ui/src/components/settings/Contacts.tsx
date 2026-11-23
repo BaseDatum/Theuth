@@ -60,7 +60,7 @@ const toContacts = (contact?: string) => ({ to: '/settings/$tab', params: { tab:
 const toMachines = { to: '/settings/$tab', params: { tab: 'machines' } } as const
 /** 191 D8: a quarantined record (refused or waiting) is not admitted here: no menu; Access and Share… list it with its state and its mesh-wide shares. Contact RPCs name it by record id, since a waiting rename shares its alias with a live contact. */
 const held = (c: Contact) => c.problem_kind === 'refused' || c.problem_kind === 'waiting'
-const who = (c: Contact) => (held(c) && c.id ? c.id : c.name)
+export const who = (c: Contact) => (held(c) && c.id ? c.id : c.name)
 /** 191: why a held contact reaches nothing from this machine now, and where its shares apply. */
 const heldLine = (c: Contact) =>
   c.problem_kind === 'waiting' ? `Waiting on this machine: ${c.problem}. What you share applies once this clears.` : `Refused on this machine: ${c.problem}. What you share applies on your machines that admit ${c.name}.`

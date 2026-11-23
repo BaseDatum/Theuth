@@ -33,8 +33,8 @@ const LIST: SharingList = {
   rows: [
     row({ kind: 'document_member', id: 'd1|pa', parent: 'd1', audience: 'Ann', permission: 'editor', last_access_ms: NOW - 120_000 }),
     row({ kind: 'document_link', id: 'd1|l1', parent: 'd1', audience: 'anyone with the link', permission: 'editor', created_ms: NOW - 86_400_000, count: 1 }),
-    row({ kind: 'document_link', id: 'd1|l0', parent: 'd1', audience: 'anyone with the link', permission: 'viewer', state: 'revoked' }),
-    row({ kind: 'document_member', id: 'd2|pb', parent: 'd2', title: 'Notes', audience: 'Ben', permission: 'viewer' }),
+    row({ kind: 'document_link', id: 'd1|l0', parent: 'd1', audience: 'anyone with the link', permission: 'viewer', state: 'revoked', count: 1 }),
+    row({ kind: 'document_member', id: 'd2|pb', parent: 'd2', title: 'Reading list', audience: 'Ben', permission: 'viewer' }),
     row({ kind: 'public_share', id: 's1', title: 'app.sky.tun.zip/', audience: 'public', state: 'live', created_ms: NOW - 10_000 }),
     row({ kind: 'public_share', id: 's0', title: 'old.sky.tun.zip/', audience: 'public', state: 'stopped' }),
   ],
@@ -43,6 +43,7 @@ const LIST: SharingList = {
 const api = {
   sharing_list: vi.fn(async (_kinds: unknown): Promise<SharingList> => LIST),
   sharing_revoke: vi.fn(async (kind: string, id: string, _sub: string | null) => ({ kind, id, pending: false })),
+  notebook_list: vi.fn(async (_archived: boolean) => [{ doc: { id: 'd2' } }]),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 
@@ -80,12 +81,21 @@ test('213 Notes: per document its members and links; revoke a link alone or with
   const d1 = document.querySelector('[data-doc="d1"]')!
   expect(d1.textContent).toContain('Ann · editor · seen 2 min ago')
   expect(d1.textContent).toContain('1 joined')
-  // The revoked link stays listed without actions; the live one offers both revokes.
+  // A revoked link offers no Revoke, but still sweeps the member who came through it; the live one offers both.
   expect(buttonsIn(d1, 'Revoke link')).toHaveLength(1)
   await act(async () => buttonsIn(d1, 'Revoke and remove its members')[0]!.click())
   expect(api.sharing_revoke).toHaveBeenCalledWith('document_link', 'd1|l1', 'members')
+  await act(async () => buttonsIn(d1, 'Remove its members')[0]!.click())
+  expect(api.sharing_revoke).toHaveBeenCalledWith('document_link', 'd1|l0', 'members')
   await act(async () => buttonsIn(d1, 'Remove')[0]!.click())
   expect(api.sharing_revoke).toHaveBeenCalledWith('document_member', 'd1|pa', null)
   await act(async () => buttonsIn(d1, 'Open document')[0]!.click())
   expect(navigate).toHaveBeenCalledWith({ to: '/notes/$id', params: { id: 'd1' } })
+  // A notebook opens on its own page.
+  await vi.waitFor(() => expect(api.notebook_list).toHaveBeenCalled())
+  const d2 = document.querySelector('[data-doc="d2"]')!
+  await vi.waitFor(async () => {
+    await act(async () => buttonsIn(d2, 'Open document')[0]!.click())
+    expect(navigate).toHaveBeenCalledWith({ to: '/notebooks/$id', params: { id: 'd2' } })
+  })
 })
