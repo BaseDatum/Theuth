@@ -131,6 +131,9 @@ fn admin_command(cmd: AdminCmd) -> AdminCommand {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Several crates in the graph enable rustls with both aws-lc-rs and ring; pick one
+    // process-wide provider before any TLS client or server config is built.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_env_filter(
