@@ -229,11 +229,11 @@ export type Action<V, R = unknown> = UseMutationResult<R, Error, V>
 
 /**
  * `useMutation` with the settings conventions: invalidate `keys` on success,
- * `toast.error` on failure. `V` is whatever the caller's closure needs.
+ * `toast.error` on failure (or `onError` instead, when given). `V` is whatever the caller's closure needs.
  */
 export function useAction<V, R>(
   fn: (vars: V) => Promise<R>,
-  opts: { keys?: readonly QueryKey[]; onSuccess?: (result: R, vars: V) => void } = {},
+  opts: { keys?: readonly QueryKey[]; onSuccess?: (result: R, vars: V) => void; onError?: (e: unknown) => void } = {},
 ): Action<V, R> {
   const qc = useQueryClient()
   return useMutation({
@@ -242,7 +242,7 @@ export function useAction<V, R>(
       for (const key of opts.keys ?? []) void qc.invalidateQueries({ queryKey: key })
       opts.onSuccess?.(result, vars)
     },
-    onError: (e) => toast.error(errorText(e)),
+    onError: (e) => (opts.onError ? opts.onError(e) : toast.error(errorText(e))),
   })
 }
 

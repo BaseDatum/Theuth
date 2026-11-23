@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::EdgeChoice;
 use crate::engine::{CallOrigin, Consent, Published};
-use crate::model::Share;
+use crate::model::{EdgeTerms, Share};
 use crate::names::{self, HeldName};
 use crate::rpc_support::engine;
 use crate::tools::{PublishArgs, plan};
@@ -106,9 +106,15 @@ pub trait ShareApi {
     #[method(name = "share_names_check")]
     async fn share_names_check(&self, name: String) -> RpcResult<NameCheck>;
 
-    /// Accept an edge's terms revision (first-run card).
+    /// Accept an edge's terms revision (Settings › Sharing or the first-run card). `edge` is
+    /// [`EdgeTerms::edge`] (the endpoint id) or the attached edge's domain.
     #[method(name = "share_terms_accept", with_extensions)]
     async fn share_terms_accept(&self, edge: String, terms_rev: String) -> RpcResult<()>;
+
+    /// The configured edge's current terms and whether this mesh accepted them (TERMS-FIRST);
+    /// `null` while sharing is off or no edge is configured. Attaches like `share_names_check`.
+    #[method(name = "share_terms_get")]
+    async fn share_terms_get(&self) -> RpcResult<Option<EdgeTerms>>;
 
     /// The mesh's names: the replicated `share_names` rows (released ones included) joined
     /// with the edge's view from the last `welcome`.
@@ -160,10 +166,14 @@ pub trait ShareApi {
     async fn share_password(&self, id: String) -> RpcResult<Option<String>>;
 }
 
-// §7.2: `share_publish`, `share_settings_set {enabled: true | edge}` and `share_terms_accept`
-// raise a human-only approval row ([`Consent::ask`]) and act only on the owner's `Allow`;
-// stopping and switching off are never gated. M2: `share_names_reserve` and
-// `share_names_transfer` ask the same way. TODO(210-M2): `share_extend`, `share_set_access`.
+// §7.2: `share_publish`, `share_settings_set {enabled: true | edge}`, `share_terms_accept`,
+// `share_names_reserve` and `share_names_transfer` need the owner's [`Consent`]: the owner's own
+// press when the call comes from their client ([`Consent::of_press`], TERMS-FIRST: no second
+// approval for a click they just made), else a human-only approval row ([`Consent::ask`]) for
+// the internal peer (MCP console, ACP half, TUI, family-forwarded calls). The agent's tool path
+// is gated by the registry ([`Consent::of_call`]). Stopping and switching off are never gated.
+// Refusals the owner cannot approve away (switch, edge, terms) answer before any card.
+// TODO(210-M2): `share_extend`, `share_set_access`.
 #[async_trait]
 impl ShareApiServer for Server {
     async fn share_list(&self) -> RpcResult<Vec<Share>> {
@@ -216,7 +226,7 @@ impl ShareApiServer for Server {
             o.insert("name".into(), preview.name.clone().into());
             o.insert("label".into(), p.label.clone().into());
         }
-        let consent = Consent::ask("share_publish", card)
+        let consent = Consent::press_or_ask(ext, "share_publish", card)
             .await
             .map_err(|e| failed(format!("{e:#}")))?;
         e.publish_previewed(p, CallOrigin::Settings, consent, preview)
@@ -254,7 +264,8 @@ impl ShareApiServer for Server {
             e.disable().await.map_err(|e| failed(e.to_string()))?;
         }
         if choice.is_some() || enabled == Some(true) {
-            let consent = Consent::ask(
+            let consent = Consent::press_or_ask(
+                ext,
                 "share_settings_set",
                 serde_json::json!({ "enabled": enabled, "edge": edge }),
             )
@@ -292,7 +303,8 @@ impl ShareApiServer for Server {
     ) -> RpcResult<()> {
         owner(ext)?;
         let e = engine()?;
-        let consent = Consent::ask(
+        let consent = Consent::press_or_ask(
+            ext,
             "share_terms_accept",
             serde_json::json!({ "edge": edge, "terms_rev": terms_rev }),
         )
@@ -303,6 +315,10 @@ impl ShareApiServer for Server {
             .map_err(|e| failed(e.to_string()))
     }
 
+    async fn share_terms_get(&self) -> RpcResult<Option<EdgeTerms>> {
+        engine()?.edge_terms().await.map_err(err)
+    }
+
     async fn share_names_list(&self) -> RpcResult<Vec<HeldName>> {
         names::list(&*engine()?).await.map_err(err)
     }
@@ -310,10 +326,11 @@ impl ShareApiServer for Server {
     async fn share_names_reserve(&self, ext: &Extensions, name: String) -> RpcResult<HeldName> {
         owner(ext)?;
         let e = engine()?;
-        Consent::ask("share_names_reserve", serde_json::json!({ "name": name }))
-            .await
-            .map_err(err)?;
-        names::reserve(&e, &name).await.map_err(err)
+        names::reserve(&e, &name, || {
+            Consent::press_or_ask(ext, "share_names_reserve", serde_json::json!({ "name": name }))
+        })
+        .await
+        .map_err(err)
     }
 
     async fn share_names_release(&self, ext: &Extensions, name: String) -> RpcResult<NameReleasedInfo> {
@@ -343,7 +360,8 @@ impl ShareApiServer for Server {
     ) -> RpcResult<u64> {
         owner(ext)?;
         let e = engine()?;
-        Consent::ask(
+        Consent::press_or_ask(
+            ext,
             "share_names_transfer",
             serde_json::json!({ "name": name, "to_mesh": to_mesh }),
         )

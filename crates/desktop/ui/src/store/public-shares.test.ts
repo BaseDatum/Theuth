@@ -1,6 +1,6 @@
 import { beforeEach, expect, test } from 'vitest'
 import type { Share, ShareTraffic } from '@/components/public-share/wire'
-import { activeShares, firstVisitors, newlyLive, parseTermsError, stripLabel, summarize, timeLeft, trayBadge, usePublicShares } from './public-shares'
+import { activeShares, firstVisitors, newlyLive, parseTermsError, stripLabel, summarize, termsRefusal, termsToast, timeLeft, trayBadge, usePublicShares } from './public-shares'
 
 const share = (id: string, state: Share['state'], over: Partial<Share> = {}): Share => ({
   id,
@@ -62,6 +62,13 @@ test('the engine’s terms refusal parses into edge, url and revision', () => {
     'share_publish: accept the terms of abc123 first (https://tun.zip/terms, revision 2026-11): Settings › Sharing or the first-run card'
   expect(parseTermsError(msg)).toEqual({ edge: 'abc123', url: 'https://tun.zip/terms', rev: '2026-11' })
   expect(parseTermsError('share_publish: no such port')).toBeNull()
+})
+
+test('TERMS-FIRST: a terms refusal is the engine’s text or a raw edge terms_required; other errors are not', () => {
+  expect(termsRefusal('accept the terms of tun.zip first (https://tun.zip/terms, revision 2): x')).toEqual({ ask: { edge: 'tun.zip', url: 'https://tun.zip/terms', rev: '2' } })
+  expect(termsRefusal('edge answered 403: terms_required')).toEqual({ ask: null })
+  expect(termsRefusal('edge answered 409: name_taken')).toBeNull()
+  expect(termsToast(null)).toBe('Accept the terms of the sharing edge first: Settings › Sharing › Public shares › Terms')
 })
 
 test('notifications: newly live (not offline → live) and first visitor', () => {

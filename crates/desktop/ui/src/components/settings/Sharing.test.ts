@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, createElement as h } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { toast } from 'sonner'
 import { afterEach, expect, test, vi } from 'vitest'
 import { isNotOnEngine, namesApi, NotOnEngine } from '@/components/public-share/wire'
 import { makeApi } from '@/rpc/bindings/client'
@@ -10,7 +11,7 @@ import { RpcError } from '@/rpc/client'
 import { disconnected } from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'
 import { usePublicShares } from '@/store/public-shares'
-import { ApprovalsOffWarning, availabilityText, d22Text, DomainsTab, MachinesSection, MeshIdRow, NameSection, nameProblem, publishArgs, SharingTab } from './Sharing'
+import { ApprovalsOffWarning, availabilityText, d22Text, DomainsTab, MachinesSection, MeshIdRow, NameSection, nameProblem, publishArgs, SharingTab, TermsSection } from './Sharing'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), warning: vi.fn(), message: vi.fn() }) }))
 
@@ -206,4 +207,75 @@ test('D20 mesh id: NameSection without one shows no mesh id row', async () => {
   await mount(NameSection)
   await vi.waitFor(() => expect(text()).toContain('No name yet.'))
   expect(text()).not.toContain('Your mesh id')
+})
+
+const TERMS = { edge: 'z6mkedge', domain: 'tun.zip', url: 'https://tun.zip/terms', rev: '2026-11-23' }
+
+test('TERMS-FIRST: the Terms row shows the edge’s terms before any publish; Accept sends the edge id and revision', async () => {
+  let accepted = false
+  const calls = client({
+    share_terms_get: () => ({ ...TERMS, accepted }),
+    share_terms_accept: () => {
+      accepted = true
+      return null
+    },
+  })
+  await mount(() => h(TermsSection, { enabled: true }))
+  await vi.waitFor(() => expect(text()).toContain('Read revision 2026-11-23'))
+  expect(button('Accept')!.disabled).toBe(true)
+  await act(async () => document.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
+  await act(async () => button('Accept')!.click())
+  await vi.waitFor(() => expect(document.querySelector('[data-terms-accepted]')?.textContent).toBe('Accepted revision 2026-11-23'))
+  expect(calls.filter(([m]) => m === 'share_terms_accept')).toEqual([['share_terms_accept', ['z6mkedge', '2026-11-23']]])
+  expect(button('Accept')).toBeUndefined()
+})
+
+test('TERMS-FIRST: sharing off asks nothing of the edge; an engine without share_terms_get keeps the first-publish text', async () => {
+  const calls = client({})
+  await mount(() => h(TermsSection, { enabled: false }))
+  expect(text()).toContain('Turn public sharing on to see the edge’s terms.')
+  expect(calls).toEqual([])
+  await act(async () => root?.unmount())
+  document.body.innerHTML = ''
+  await mount(() => h(TermsSection, { enabled: true }))
+  await vi.waitFor(() => expect(text()).toContain('The edge asks for its terms on the first publish'))
+})
+
+/** Types `value` into the reserve field the way React sees it. */
+async function typeName(value: string) {
+  const input = document.querySelector<HTMLInputElement>('[aria-label="Name"]')!
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+  await act(async () => {
+    set.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+/** Reserve `sky` in NameSection against an engine whose `share_names_reserve` throws `message`. */
+async function reserveRefused(message: string) {
+  vi.mocked(toast.error).mockClear()
+  client({
+    share_names_list: () => [],
+    share_names_check: () => ({ available: true, reason: null, reclaim_after_ms: null }),
+    share_names_reserve: () => {
+      throw new RpcError(-32000, message)
+    },
+  })
+  await mount(NameSection)
+  await typeName('sky')
+  await vi.waitFor(() => expect(button('Reserve')!.disabled).toBe(false))
+  await act(async () => button('Reserve')!.click())
+}
+
+test('TERMS-FIRST: a reserve refused for terms opens the Accept step and says so', async () => {
+  await reserveRefused('accept the terms of tun.zip first (https://tun.zip/terms, revision 2026-11-23): Settings › Sharing or the first-run card')
+  await vi.waitFor(() => expect(toast.error).toHaveBeenCalledWith('Accept the terms of tun.zip first: Settings › Sharing › Public shares › Terms'))
+  expect(usePublicShares.getState().terms).toEqual({ edge: 'tun.zip', url: 'https://tun.zip/terms', rev: '2026-11-23' })
+})
+
+test('TERMS-FIRST: a raw edge terms_required maps to the same plain toast, never the raw code', async () => {
+  usePublicShares.getState().setStatus({ domain: 'tun.zip', state: { state: 'attached' } } as never)
+  await reserveRefused('edge answered 403: terms_required')
+  await vi.waitFor(() => expect(toast.error).toHaveBeenCalledWith('Accept the terms of tun.zip first: Settings › Sharing › Public shares › Terms'))
+  expect(vi.mocked(toast.error).mock.calls.flat().join(' ')).not.toContain('terms_required')
 })

@@ -21,8 +21,8 @@ use crate::edge::{Attachment, Control, CsrAnswer, DelegationSource, EdgeDialer, 
 use crate::gate::{self, Gate, Operator};
 use crate::keys::{self, NameKeyStore};
 use crate::model::{
-    Access, ApprovedBy, CreatedBy, EdgeState, Share, ShareChanged, ShareState, ShareStatus, Source,
-    StoppedBy,
+    Access, ApprovedBy, CreatedBy, EdgeState, EdgeTerms, Share, ShareChanged, ShareState,
+    ShareStatus, Source, StoppedBy,
 };
 use crate::proxy::Proxy;
 use crate::routes::{Lookup, Mount, Table};
@@ -46,6 +46,8 @@ pub const PUBLISH_CERT_WAIT: Duration = Duration::from_millis(1500);
 pub const STOP_ALL_ATTACH_WAIT: Duration = Duration::from_secs(10);
 /// The approval cards Stop all and the switch turned off withdraw.
 const PUBLISH_TOOL: &str = "share_publish";
+/// `approved_by.surface` of an act the owner pressed in their own client ([`Consent::of_press`]).
+pub const PRESS: &str = "press";
 
 /// Who asked for a publish.
 #[derive(Clone, Debug)]
@@ -61,10 +63,11 @@ pub enum CallOrigin {
     Settings,
 }
 
-/// Proof that the owner, in person, approved an act through a human-only row (§7.2): the only
-/// way to publish, switch sharing on, change the edge or accept terms. Built from the tool
-/// registry's scope ([`Consent::of_call`]) or by raising the row ([`Consent::ask`]); an empty or
-/// non-owner row is refused, so the ask cannot be skipped.
+/// Proof that the owner, in person, approved an act (§7.2): the only way to publish, switch
+/// sharing on, change the edge, accept terms, reserve or transfer a name. Built from the tool
+/// registry's scope ([`Consent::of_call`]), by raising the human-only row ([`Consent::ask`]), or
+/// from the owner's own press in a UI ([`Consent::of_press`], TERMS-FIRST); an empty or
+/// non-owner row is refused, so the ask cannot be skipped by an agent.
 #[derive(Clone, Debug)]
 pub struct Consent(ApprovedBy, u64);
 
@@ -110,6 +113,40 @@ impl Consent {
         })
         .await?;
         Self::from_approved(a, Some(asked_ms))
+    }
+
+    /// The owner pressed the button in their own client (TERMS-FIRST): the call's
+    /// connection is a human press in the sense of 171 §12.1 invariant 1 (as
+    /// `cells_guard::press`) — an authenticated peer that is neither a share-link guest nor the
+    /// internal peer. The internal peer is the MCP owner console, the ACP agent half, the TUI and
+    /// every family-forwarded call, so an agent never gets here; those callers [`Consent::ask`].
+    /// What remains is the owner's desktop/app socket (bearer token) or a paired device (Noise):
+    /// the same set that can resolve a human-only row (`Approval`'s `Resolve`, the 210 §7.2
+    /// token residual), so skipping the card for them grants nothing the card withheld.
+    pub fn of_press(ext: &jsonrpsee::Extensions) -> Option<Self> {
+        let p = ext.get::<rpc_core::RpcPeer>()?;
+        if p.guest().is_some() || p.is_internal() || p.is_closed() {
+            return None;
+        }
+        Some(Self(
+            ApprovedBy {
+                approval_id: uuid::Uuid::now_v7().to_string(),
+                surface: PRESS.to_owned(),
+            },
+            platform::time::now_ms(),
+        ))
+    }
+
+    /// `Self::of_press`, else raise the human-only row for `what`.
+    pub async fn press_or_ask(
+        ext: &jsonrpsee::Extensions,
+        what: &str,
+        args: serde_json::Value,
+    ) -> anyhow::Result<Self> {
+        match Self::of_press(ext) {
+            Some(c) => Ok(c),
+            None => Self::ask(what, args).await,
+        }
     }
 
     /// The row, for `approved_by`.
@@ -881,10 +918,10 @@ impl Engine {
 
     /// The accepted terms revision when it is the edge's current one (`info.terms_rev`); else
     /// the refusal the owner's surfaces parse (`accept the terms of … first (<url>, revision
-    /// <rev>)`).
+    /// <rev>)`). An edge without terms (empty `terms_rev`) asks nothing, as the edge's own check.
     async fn current_terms(&self, link: &Link) -> anyhow::Result<Option<String>> {
         let accepted = self.store.terms_rev(&link.info.edge_id.to_string()).await?;
-        if accepted.as_deref() != Some(link.info.terms_rev.as_str()) {
+        if !link.info.terms_rev.is_empty() && accepted.as_deref() != Some(link.info.terms_rev.as_str()) {
             anyhow::bail!(
                 "accept the terms of {} first ({}, revision {}): Settings › Sharing or the first-run card",
                 link.info.domain,
@@ -893,6 +930,50 @@ impl Engine {
             );
         }
         Ok(accepted)
+    }
+
+    /// TERMS-FIRST: what a name claim (reserve, a received transfer) or a CSR post is refused
+    /// for before the owner is asked: no edge, the edge unreachable, or its current terms not
+    /// accepted (the same refusal text as a publish). Run it before raising the approval row.
+    pub async fn terms_precheck(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.store.edge().await?.tickets().is_empty(),
+            NO_SHARING_EDGE
+        );
+        let link = self.wait_attached().await?;
+        self.current_terms(&link).await.map(drop)
+    }
+
+    /// Right before a claim or CSR post: the terms accepted at the edge's current revision, and
+    /// this session's `hello` carrying them (a `hello` sent before the owner accepted is sent
+    /// again), else the edge answers `403 terms_required` (§7.6).
+    pub(crate) async fn terms_ready(&self) -> anyhow::Result<()> {
+        let link = self.wait_attached().await?;
+        let accepted = self.current_terms(&link).await?;
+        if !link.welcome.terms_ok {
+            self.rehello(&link, accepted).await?;
+        }
+        Ok(())
+    }
+
+    /// TERMS-FIRST: the configured edge's current terms and whether this mesh accepted them, for
+    /// Settings › Sharing. `None` while sharing is off or no edge is configured (nothing dials
+    /// for it then); otherwise attaches like a name check.
+    pub async fn edge_terms(&self) -> anyhow::Result<Option<EdgeTerms>> {
+        if !self.store.enabled().await? || self.store.edge().await?.tickets().is_empty() {
+            return Ok(None);
+        }
+        let link = self.wait_attached().await?;
+        let edge = link.info.edge_id.to_string();
+        let accepted = self.store.terms_rev(&edge).await?;
+        Ok(Some(EdgeTerms {
+            accepted: link.info.terms_rev.is_empty()
+                || accepted.as_deref() == Some(link.info.terms_rev.as_str()),
+            edge,
+            domain: link.info.domain.clone(),
+            url: link.info.terms_url.clone(),
+            rev: link.info.terms_rev.clone(),
+        }))
     }
 
     /// What a publish can be refused for before the owner is asked (E2E1 finding 8): sharing
@@ -1336,9 +1417,15 @@ impl Engine {
         self.store.set_edge(edge).await
     }
 
-    /// Record accepted terms for `edge` under the owner's [`Consent`].
+    /// Record accepted terms for `edge` under the owner's [`Consent`]. `edge` is the edge's
+    /// endpoint id ([`EdgeTerms::edge`]) or, as the refusal text names it, the attached edge's
+    /// domain: both are stored under the endpoint id, the key [`Self::current_terms`] reads.
     pub async fn accept_terms(&self, edge: &str, rev: &str, _consent: &Consent) -> anyhow::Result<()> {
-        self.store.set_terms_rev(edge, rev).await?;
+        let id = self
+            .live_link()
+            .filter(|l| l.info.domain == edge)
+            .map_or_else(|| edge.to_owned(), |l| l.info.edge_id.to_string());
+        self.store.set_terms_rev(&id, rev).await?;
         self.terms.send_replace(Some(rev.to_owned()));
         Ok(())
     }
@@ -2081,6 +2168,105 @@ mod tests {
         e2.welcome(&info_edge(), &info, &test_welcome(&[("sky", NameState::Allocated)]))
             .await;
         e2.publish_precheck(None).await.unwrap();
+    }
+
+    /// TERMS-FIRST: reserving a name with the edge's terms not accepted answers the terms
+    /// refusal the desktop parses and never takes the owner's consent (no card is raised);
+    /// accepting under the domain the refusal names (what the desktop sends) is enough.
+    #[tokio::test]
+    async fn reserve_refuses_unaccepted_terms_before_the_consent() {
+        let (_d, e) = engine(8).await;
+        let info = test_info();
+        e.store.set_enabled(true).await.unwrap();
+        e.welcome(&info_edge(), &info, &test_welcome(&[])).await;
+        let asked = std::sync::atomic::AtomicU32::new(0);
+        let ask = || async {
+            asked.fetch_add(1, Ordering::SeqCst);
+            Ok(Consent::test())
+        };
+        let err = format!("{:#}", crate::names::reserve(&e, "sky", ask).await.unwrap_err());
+        assert!(
+            err.contains("accept the terms of tun.zip first (https://tun.zip/terms, revision 2026-11-23)"),
+            "{err}"
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 0, "no consent is asked for");
+        assert_eq!(
+            e.edge_terms().await.unwrap(),
+            Some(EdgeTerms {
+                edge: info.edge_id.to_string(),
+                domain: "tun.zip".into(),
+                url: "https://tun.zip/terms".into(),
+                rev: "2026-11-23".into(),
+                accepted: false,
+            })
+        );
+
+        e.accept_terms("tun.zip", "2026-11-23", &Consent::test()).await.unwrap();
+        assert!(e.edge_terms().await.unwrap().unwrap().accepted);
+        e.terms_precheck().await.unwrap();
+        // Past the terms the consent is taken, then the claim goes to the edge (this fake one
+        // serves only `/v1/info`, so the claim itself fails).
+        assert!(crate::names::reserve(&e, "sky", ask).await.is_err());
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+
+        e.store.set_enabled(false).await.unwrap();
+        assert_eq!(e.edge_terms().await.unwrap(), None, "nothing dials while sharing is off");
+    }
+
+    /// TERMS-FIRST: the owner's own press stands for consent only from a connection that is
+    /// neither a guest nor the internal peer (MCP console, ACP half, TUI, forwarded calls).
+    #[tokio::test]
+    async fn only_the_owners_client_presses_without_a_card() {
+        let ext = |p: Option<rpc_core::RpcPeer>| {
+            let mut x = jsonrpsee::Extensions::new();
+            if let Some(p) = p {
+                x.insert(p);
+            }
+            x
+        };
+        let (ui, _g) = rpc_core::RpcPeer::open();
+        let (device, _g2) = rpc_core::RpcPeer::open_remote();
+        let (guest, _g3) = rpc_core::RpcPeer::open_guest([1; 32], [2; 32]);
+        let c = Consent::of_press(&ext(Some(ui))).expect("the owner's desktop socket presses");
+        assert_eq!(c.approved_by().surface, PRESS);
+        assert!(!c.approved_by().approval_id.is_empty());
+        assert!(Consent::of_press(&ext(Some(device))).is_some());
+        assert!(Consent::of_press(&ext(Some(rpc_core::RpcPeer::internal()))).is_none());
+        assert!(Consent::of_press(&ext(Some(guest))).is_none());
+        assert!(Consent::of_press(&ext(None)).is_none());
+        // Not a press: the human-only row is raised (none runs here, so the ask itself fails).
+        let err = Consent::press_or_ask(
+            &ext(Some(rpc_core::RpcPeer::internal())),
+            "share_names_reserve",
+            serde_json::json!({ "name": "sky" }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("share_names_reserve: no approval service is running"), "{err}");
+    }
+
+    /// TERMS-FIRST: the agent's tool path never takes a press; it acts only inside the
+    /// registry's human-only approval (`HUMAN_ONLY`), and outside one it refuses.
+    #[tokio::test]
+    async fn the_agent_publish_tool_still_needs_the_approval_row() {
+        use ::tools::Tool as _;
+        assert!(crate::tools::SharePublishTool::HUMAN_ONLY);
+        let (d, e) = engine(8).await;
+        e.store.set_enabled(true).await.unwrap();
+        let tool = crate::tools::SharePublishTool::new(e.clone());
+        let cx = ::tools::ToolCx {
+            session: runtime::SessionId::new(),
+            call_id: "c".into(),
+            quiet: false,
+            resources: ::tools::SessionResources::durable_arc(d.path()),
+            cancel: ::tools::CancellationToken::new(),
+            promote_after: None,
+        };
+        let args = serde_json::from_value(serde_json::json!({"source": {"port": 5173}})).unwrap();
+        let out = tool.call(args, cx).await.unwrap();
+        assert!(out.is_error, "{out:?}");
+        assert!(e.list().await.unwrap().is_empty());
     }
 
     /// A name key that is minted only when `release` is notified (the vault settle).

@@ -219,7 +219,7 @@ Counters are not in the row; they travel as events. DDL: §5.8.
 | `interstitial` | default true |
 | `created_ms`, `live_ms`, `expires_ms` | expiry counts from `live_ms`; null only for a reserved-name share started from Settings |
 | `created_by` | `{session, call_id}` or `"settings"` |
-| `approved_by` | `{approval_id, surface}`: always the owner through the approval row (§7.2) |
+| `approved_by` | `{approval_id, surface}`: the owner through the approval row, or `surface: "press"` for the owner's own press in their client (§7.2, TERMS-FIRST) |
 | `state` | `pending` (no certificate yet, §7.6) · `live` · `offline` · `stopped` with `stopped_ms`, `stopped_by` (`user`, `expiry`, `edge_ban`, `budget`, `switch_off`, `source_gone`) |
 
 Stopped rows are kept 30 days for Settings history.
@@ -870,18 +870,22 @@ press, a policy switch or the agent driving a UI (rejected alternative §11.13).
 
 Timeout (300 s) denies.
 
-**The share RPC surface.** No method publishes without the approval row.
+**The share RPC surface.** No method publishes without the owner's consent: the approval row, or (TERMS-FIRST,
+`210-as-built-TERMS-FIRST.md`) the owner's own press from their client — a connection that is neither a guest nor the
+internal peer (171 §12.1 invariant 1). The internal peer (MCP console, ACP half, TUI, family-forwarded calls) and the
+agent's tool path always get the row. Refusals the owner cannot approve away (switch, edge, terms) answer first.
 
 | method | callers | gate |
 |---|---|---|
 | `share.list` | any client | none |
 | `share.stop {id \| "all"}` | every surface, family engines | never gated; forwarded to the share's engine; `all` stops the mesh at the edge (§7.4) |
-| `share.publish {…}` · `share.extend {id, expiry}` · `share.set_access {id, access}` | Settings, card | the owner-only approval row |
-| `share.settings.get` · `share.settings.set {enabled?, edge?, defaults?}` | Settings | turning sharing on and changing the edge need the approval row; off and defaults do not |
+| `share.publish {…}` · `share.extend {id, expiry}` · `share.set_access {id, access}` | Settings, card | the owner's press, else the owner-only approval row |
+| `share.settings.get` · `share.settings.set {enabled?, edge?, defaults?}` | Settings | turning sharing on and changing the edge need the press or the row; off and defaults do not |
 | `share.names.check {name}` | Settings, first-run card | none |
-| `share.names.reserve {name}` · `share.names.transfer {name, to_mesh}` | Settings | the approval row |
+| `share.names.reserve {name}` · `share.names.transfer {name, to_mesh}` | Settings | the press or the row; reserve checks the edge's terms first |
 | `share.names.release` · `share.names.primary` · `share.names.rotate` | Settings | a UI confirmation |
-| `share.terms.accept {edge, terms_rev}` | first-run card | recorded with the approval that carries it |
+| `share.terms.get` | Settings | none; the configured edge's `{edge, domain, url, rev, accepted}` |
+| `share.terms.accept {edge, terms_rev}` | Settings, first-run card | the press or the row |
 | `share.delegate {engine, edge, domain, edge_now_ms}` · `share.name_key.ensure {domain, name}` | family engines → lease holder | internal; answered only by the synced lease holder for a live peer (§5.7, §6.2) |
 
 **Residual, stated plainly.** `resolve_approval` (`crates/tasks/src/rpc_hub.rs#L40-L49`) records `Answerer::Human`

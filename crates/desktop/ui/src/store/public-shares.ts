@@ -179,6 +179,19 @@ export function parseTermsError(message: string): TermsAsk | null {
   return m ? { edge: m[1]!, url: m[2]!, rev: m[3]! } : null
 }
 
+/** A refusal for unaccepted terms: the engine's text above, or the edge's raw `403 terms_required` should one still
+ * reach the client (TERMS-FIRST). `ask` is the parsed terms when the text carries them. */
+export function termsRefusal(message: string): { ask: TermsAsk | null } | null {
+  const ask = parseTermsError(message)
+  if (ask) return { ask }
+  return /\bterms_required\b/.test(message) ? { ask: null } : null
+}
+
+/** What a Sharing action's toast says for a terms refusal: never the raw code. */
+export function termsToast(edge: string | null): string {
+  return `Accept the terms of ${edge ?? 'the sharing edge'} first: Settings › Sharing › Public shares › Terms`
+}
+
 /** Ids whose visitor count went from none to some: the "first visitor" moment (§7.4 item 7). */
 export function firstVisitors(before: Record<string, ShareTraffic>, after: Record<string, ShareTraffic>): string[] {
   return Object.values(after)

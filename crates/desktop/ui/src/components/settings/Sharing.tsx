@@ -3,7 +3,7 @@
 // defaults, terms, history and the disclosures. Settings › Sharing › Domains — the edge and its connection, the names,
 // the machines and the certificate state.
 
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
@@ -16,9 +16,25 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { openExternal } from '@/lib/platform'
 import { useConnection } from '@/store/connection'
-import { type Machines, activeShares, edgePendingLabel, machineLabel, servedBy, sourceLabel, stateLabel, timeLeft, usePublicShares } from '@/store/public-shares'
+import { type Machines, activeShares, edgePendingLabel, machineLabel, servedBy, sourceLabel, stateLabel, termsRefusal, termsToast, timeLeft, usePublicShares } from '@/store/public-shares'
 
 const SETTINGS_KEY = ['share-settings'] as const
+const TERMS_KEY = ['share-terms'] as const
+
+/** TERMS-FIRST: a Sharing action's failure. A terms refusal (the engine's `accept the terms of … first`, or a raw edge
+ * `terms_required`) opens the Terms row's Accept step and says so in plain words; anything else toasts as usual. */
+export function useShareError(): (e: unknown) => void {
+  const qc = useQueryClient()
+  return (e) => {
+    const msg = errorText(e)
+    const refusal = termsRefusal(msg)
+    if (!refusal) return void toast.error(msg)
+    const shares = usePublicShares.getState()
+    if (refusal.ask) shares.askTerms(refusal.ask)
+    void qc.invalidateQueries({ queryKey: TERMS_KEY })
+    toast.error(termsToast(refusal.ask?.edge ?? shares.status?.domain ?? null))
+  }
+}
 
 /** §5.9 as one line. */
 export function edgeStateLabel(s: EdgeState): string {
@@ -54,16 +70,17 @@ const NO_PLUGIN = 'This engine has no public sharing (the share plugin is not ru
 /** 213 §2 tab 5: the switch, live shares with Stop / Stop all, history, defaults, terms and disclosures. */
 export function SharingTab() {
   const { supported, settings } = useShareSettings()
+  const shareError = useShareError()
   const setEnabled = useAction((on: boolean) => shareApi().share_settings_set(on), {
     onSuccess: (s) => toast.message(s.enabled ? 'Public sharing is on for this machine' : 'Public sharing is off; this machine’s shares stopped'),
-    keys: [SETTINGS_KEY],
+    keys: [SETTINGS_KEY, TERMS_KEY],
+    onError: shareError,
   })
   const approvalsOn = useConnection((s) => s.info?.approvals.global ?? null)
   const edgePending = usePublicShares((s) => s.edgePending)
   const shares = usePublicShares((s) => s.shares)
   const traffic = usePublicShares((s) => s.traffic)
   const status = usePublicShares((s) => s.status)
-  const terms = usePublicShares((s) => s.terms)
   const active = activeShares(shares)
   const history = Object.values(shares)
     .filter((s) => s.state === 'stopped')
@@ -124,9 +141,7 @@ export function SharingTab() {
         </Row>
       </Section>
 
-      <Section title="Terms">
-        {terms ? <TermsRow edge={terms.edge} url={terms.url} rev={terms.rev} /> : <Empty>The edge asks for its terms on the first publish; you accept them on its card.</Empty>}
-      </Section>
+      <TermsSection enabled={enabled} />
 
       <Section title="History (30 days)">
         {history.length === 0 ? (
@@ -287,20 +302,22 @@ export function NameSection({ meshId = null }: { meshId?: string | null }) {
   const problem = trimmed ? nameProblem(trimmed) : null
   const check = useNameCheck(trimmed)
   const names = useQuery({ queryKey: NAMES_KEY, queryFn: () => namesApi.list(), retry: false })
+  const shareError = useShareError()
   const reserve = useAction((n: string) => namesApi.reserve(n), {
     keys: [NAMES_KEY],
     onSuccess: (_r, n) => {
       setName('')
       toast.success(`Reserved ${n}`)
     },
+    onError: shareError,
   })
   const avail = check?.result ? availabilityText(domain ? `${trimmed}.${domain}` : trimmed, check.result, Date.now()) : null
   return (
     <Section title="Your name">
-      <Row label="Reserve a name" description={`Your mesh's shares live under ${domain ? `<name>.${domain}` : '<name>.<edge domain>'}. Without one, the first publish picks a random name. Reserving asks for your approval.`} wide>
+      <Row label="Reserve a name" description={`Your mesh's shares live under ${domain ? `<name>.${domain}` : '<name>.<edge domain>'}. Without one, the first publish picks a random name.`} wide>
         <Input value={name} placeholder="sky" className="max-w-56" onChange={(e) => setName(e.target.value)} aria-label="Name" />
         <Button size="sm" disabled={!avail?.ok || reserve.isPending} onClick={() => reserve.mutate(trimmed)}>
-          {reserve.isPending ? 'Waiting for approval…' : 'Reserve'}
+          {reserve.isPending ? 'Reserving…' : 'Reserve'}
         </Button>
       </Row>
       {trimmed && (
@@ -332,10 +349,11 @@ function HeldNameRow({ n }: { n: HeldName }) {
     toast.success(text)
   }
   const fqdn = `${n.name}.${n.domain}`
-  const primary = useAction(() => namesApi.primary(n.name), { keys: [NAMES_KEY], onSuccess: done(`New shares use ${fqdn}`) })
-  const rotate = useAction(() => namesApi.rotate(n.name), { keys: [NAMES_KEY], onSuccess: done(`Rotating the key of ${fqdn}`) })
-  const release = useAction(() => namesApi.release(n.name), { keys: [NAMES_KEY], onSuccess: done(`Released ${fqdn}`) })
-  const transfer = useAction((mesh: string) => namesApi.transfer(n.name, mesh), { keys: [NAMES_KEY], onSuccess: done(`${fqdn} offered for 7 days`) })
+  const onError = useShareError()
+  const primary = useAction(() => namesApi.primary(n.name), { keys: [NAMES_KEY], onSuccess: done(`New shares use ${fqdn}`), onError })
+  const rotate = useAction(() => namesApi.rotate(n.name), { keys: [NAMES_KEY], onSuccess: done(`Rotating the key of ${fqdn}`), onError })
+  const release = useAction(() => namesApi.release(n.name), { keys: [NAMES_KEY], onSuccess: done(`Released ${fqdn}`), onError })
+  const transfer = useAction((mesh: string) => namesApi.transfer(n.name, mesh), { keys: [NAMES_KEY], onSuccess: done(`${fqdn} offered for 7 days`), onError })
   const busy = primary.isPending || rotate.isPending || release.isPending || transfer.isPending
   const missing = [primary, rotate, release, transfer].some((a) => a.error && isNotOnEngine(a.error))
   return (
@@ -385,7 +403,7 @@ function HeldNameRow({ n }: { n: HeldName }) {
           <span className="text-fg-secondary">To another mesh (paste its mesh id or ticket; it claims the name within 7 days):</span>
           <Input value={to} placeholder="mesh id or ticket" className="max-w-72 font-mono" onChange={(e) => setTo(e.target.value)} aria-label="Target mesh" />
           <Button size="sm" variant="destructive" disabled={busy || !to.trim()} onClick={() => transfer.mutate(to.trim())}>
-            {transfer.isPending ? 'Waiting for approval…' : 'Offer transfer'}
+            {transfer.isPending ? 'Offering…' : 'Offer transfer'}
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setConfirm(null)}>
             Cancel
@@ -446,9 +464,53 @@ export function MachinesSection() {
   )
 }
 
+/** TERMS-FIRST: the edge's terms as soon as the edge is known (`share_terms_get`), not only after a refused publish:
+ * Accept while not accepted, else the accepted revision. A refusal parsed from an action (`askTerms`) shows its Accept
+ * step too, and is the only source on an engine without `share_terms_get`. */
+export function TermsSection({ enabled }: { enabled: boolean }) {
+  const asked = usePublicShares((s) => s.terms)
+  const current = useQuery({ enabled, queryKey: TERMS_KEY, queryFn: () => shareApi().share_terms_get(), retry: false })
+  const t = enabled ? current.data : undefined
+  const known = t && t.rev ? t : null
+  return (
+    <Section title="Terms">
+      {known && !known.accepted ? (
+        <TermsRow edge={known.edge} url={known.url} rev={known.rev} />
+      ) : asked && !(known?.accepted && known.rev === asked.rev) ? (
+        <TermsRow edge={asked.edge} url={asked.url} rev={asked.rev} />
+      ) : known ? (
+        <Row label="The edge's terms" description={<TermsLink url={known.url} rev={known.rev} />}>
+          <span data-terms-accepted="" className="text-sm text-fg-secondary">
+            Accepted revision {known.rev}
+          </span>
+        </Row>
+      ) : t ? (
+        <Empty>{t.domain} has no terms to accept.</Empty>
+      ) : !enabled ? (
+        <Empty>Turn public sharing on to see the edge’s terms.</Empty>
+      ) : current.isLoading ? (
+        <Empty>Contacting the edge…</Empty>
+      ) : current.isError && !isNotOnEngine(current.error) ? (
+        <Empty>The edge’s terms could not be read: {errorText(current.error)}</Empty>
+      ) : (
+        <Empty>The edge asks for its terms on the first publish; you accept them on its card.</Empty>
+      )}
+    </Section>
+  )
+}
+
+function TermsLink({ url, rev }: { url: string; rev: string }) {
+  return (
+    <button type="button" className="text-fg-accent hover:underline" onClick={() => openExternal(url)}>
+      Read revision {rev}
+    </button>
+  )
+}
+
 function TermsRow({ edge, url, rev }: { edge: string; url: string; rev: string }) {
   const [ok, setOk] = useState(false)
   const accept = useAction(() => shareApi().share_terms_accept(edge, rev), {
+    keys: [TERMS_KEY],
     onSuccess: () => {
       usePublicShares.getState().askTerms(null)
       toast.success('Terms accepted')
@@ -457,11 +519,7 @@ function TermsRow({ edge, url, rev }: { edge: string; url: string; rev: string }
   return (
     <Row
       label="The edge's terms"
-      description={
-        <button type="button" className="text-fg-accent hover:underline" onClick={() => openExternal(url)}>
-          Read revision {rev}
-        </button>
-      }
+      description={<TermsLink url={url} rev={rev} />}
     >
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={ok} onChange={(e) => setOk(e.target.checked)} />I accept
@@ -498,24 +556,27 @@ export function publishArgs(source: string, expiry: Expiry, password: boolean): 
   return { source: port !== null ? { port } : { dir: s }, expiry, access: password ? 'password' : 'public' }
 }
 
-/** Publish from Settings: the engine raises an owner-only approval (FIX-A B1) and answers once it is allowed. A password
- * share's password is then shown once, from `share_password`. */
+/** Publish from Settings: the owner's own press is the consent (TERMS-FIRST: no approval card for it; the agent's
+ * publishes still raise one), so it publishes on the click. A password share's password is then shown once, from
+ * `share_password`. */
 function PublishForm() {
   const [source, setSource] = useState('')
   const [expiry, setExpiry] = useState<Expiry>('8h')
   const [password, setPassword] = useState(false)
   const [published, setPublished] = useState<{ id: string; url: string; password: string | null } | null>(null)
+  const onError = useShareError()
   const publish = useAction((a: PublishArgs) => shareApi().share_publish(a), {
     onSuccess: (p) => {
       setPublished({ id: p.share.id, url: p.share.url, password: p.share.access === 'password' ? p.password : null })
       toast.success(`Published ${p.share.url}`)
     },
+    onError,
   })
   const [shown, hide] = useSharePassword(published && published.password !== null ? published.id : null, published?.password)
   const args = publishArgs(source, expiry, password)
   return (
     <Section title="Publish">
-      <Row label="Source" description="A local port (5173) or a folder to serve. You approve the publish in the approval that appears." wide>
+      <Row label="Source" description="A local port (5173) or a folder to serve. It goes public at once when you press Publish." wide>
         <Input value={source} placeholder="5173 or /path/to/site" className="max-w-64" onChange={(e) => setSource(e.target.value)} aria-label="Source" />
         <select aria-label="Expiry" value={expiry} onChange={(e) => setExpiry(e.target.value as Expiry)} className="h-8 rounded-md border border-border-subtle bg-transparent px-2 text-base md:text-sm">
           {EXPIRIES.map(([v, l]) => (
@@ -529,7 +590,7 @@ function PublishForm() {
           Password
         </label>
         <Button size="sm" variant="destructive" disabled={!args || publish.isPending} onClick={() => args && publish.mutate(args)}>
-          {publish.isPending ? 'Waiting for approval…' : 'Publish'}
+          {publish.isPending ? 'Publishing…' : 'Publish'}
         </Button>
       </Row>
       {published && <p className="pb-1 font-mono text-sm wrap-anywhere">{published.url}</p>}

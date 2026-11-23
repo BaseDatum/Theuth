@@ -47,14 +47,15 @@ export const namesApi = {
   list: () => names('share_names_list', (a) => a.share_names_list()),
   /** The edge's `GET /v1/names/{name}`; `reclaim_after_ms` with reason `cooldown`. */
   check: (name: string) => names('share_names_check', (a) => a.share_names_check(name)),
-  /** Owner-only approval row (§7.2): resolves once the owner allowed it. */
+  /** §7.2: the owner's press from this client is the consent (TERMS-FIRST, no card); refused first when the edge's
+   * terms are not accepted (`accept the terms of … first`). */
   reserve: (name: string) => names('share_names_reserve', (a) => a.share_names_reserve(name)),
   release: (name: string) => names('share_names_release', (a) => a.share_names_release(name)),
   primary: (name: string) => names('share_names_primary', (a) => a.share_names_primary(name)),
   /** Answers the new key generation. */
   rotate: (name: string) => names('share_names_rotate', (a) => a.share_names_rotate(name)),
   /** `to_mesh`: the receiving mesh's id, or pasted text carrying it (the engine takes the first id-shaped token).
-   * Owner-only approval row. Answers the offer's end, Unix ms. */
+   * The owner's press is the consent (no card). Answers the offer's end, Unix ms. */
   transfer: (name: string, toMesh: string) => names('share_names_transfer', (a) => a.share_names_transfer(name, toMesh)),
 }
 

@@ -136,6 +136,22 @@ pub enum CreatedBy {
     Settings(String),
 }
 
+/// `share_terms_get` answer (TERMS-FIRST): the configured edge's current terms.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct EdgeTerms {
+    /// The edge's endpoint id, what `share_terms_accept` takes.
+    pub edge: String,
+    /// The edge's domain.
+    pub domain: String,
+    /// The terms page.
+    pub url: String,
+    /// The current revision; empty when the edge has no terms.
+    pub rev: String,
+    /// This mesh accepted `rev` (always for an edge without terms).
+    pub accepted: bool,
+}
+
 /// The owner's approval that let it go live (§7.2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]

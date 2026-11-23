@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use share_proto::{NameKind, PublicKey};
 use sqlx::Row as _;
 
-use crate::engine::Engine;
+use crate::engine::{Consent, Engine};
 use crate::model::{ShareState, StoppedBy};
 use crate::store::Store;
 
@@ -155,9 +155,18 @@ impl Store {
 }
 
 /// `share_names_reserve`: claim a reserved name (`PUT /v1/names/{name}`); the first reserved
-/// name becomes primary (§5.2).
-pub async fn reserve(engine: &Engine, name: &str) -> anyhow::Result<HeldName> {
+/// name becomes primary (§5.2). TERMS-FIRST: the edge's terms are checked before `consent`
+/// (the owner's press, or the approval row it raises) is taken, so an unaccepted revision
+/// answers the terms refusal and never raises a card the edge would refuse anyway.
+pub async fn reserve<F, Fut>(engine: &Engine, name: &str, consent: F) -> anyhow::Result<HeldName>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = anyhow::Result<Consent>>,
+{
     share_proto::names::check_reserved::<&str>(name, &[]).map_err(|e| anyhow::anyhow!(e.reason()))?;
+    engine.terms_precheck().await?;
+    consent().await?;
+    engine.terms_ready().await?;
     let (granted, info) = engine
         .with_control(|c, info| async move { Ok((c.claim(name).await?, info)) })
         .await?;
@@ -222,6 +231,8 @@ pub async fn rotate(engine: &Engine, name: &str) -> anyhow::Result<u32> {
             crate::family::call(&h, "share_names_rotate", serde_json::json!({ "name": name })).await
         }
         crate::family::Holder::Me => {
+            // The CSR post needs the edge's terms: refuse before a new key replaces the row.
+            engine.terms_ready().await?;
             let (_, info) = engine.attached_control().await?;
             let key = crate::wiring::rotate_name_key_as_holder(&info.domain, name).await?;
             engine.rotate_cert(name, &key).await?;
