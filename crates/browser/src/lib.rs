@@ -11,6 +11,7 @@
 //! [`show_element`] lifts one element of a page into a chat card (209 D13); [`rpc`] carries its
 //! answer (`answer_element_form`) and the cards still waiting (`element_forms_pending`).
 
+pub mod origins;
 pub mod profile;
 pub mod render;
 pub mod rpc;
@@ -20,6 +21,7 @@ pub mod systemone;
 pub mod tile;
 pub mod tools;
 
+pub use origins::OwnOrigins;
 pub use rpc::rpc_module;
 
 use std::collections::{HashMap, HashSet};

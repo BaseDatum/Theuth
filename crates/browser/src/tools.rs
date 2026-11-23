@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use tools::{DynTool, Risk, SessionResources, Tool, ToolCx, ToolOutput, Tracked};
 
 use crate::tile::{self, Target};
-use crate::{BrowserConfig, BrowserEvent, Browsers, Call, profile};
+use crate::{BrowserConfig, BrowserEvent, Browsers, Call, OwnOrigins, profile};
 
 /// What every tool holds: the actor, the config and the runtime (screenshot
 /// dir, event bus), plus the System-1 loop's shadow ledger.
@@ -447,12 +447,12 @@ const OWN_WINDOW: &str =
 impl Ctx {
     /// 210 §7.2 (F-m7), asked only while a human-only approval is pending: `Some(refusal)` when
     /// the page the call starts from, or a `navigate`/`tab_new` target, is an origin of this
-    /// engine's own web client. The current page is one `location.href` read (a tile's too); a
-    /// failed read cannot prove the page is not theuth's and refuses.
+    /// engine's own web client ([`OwnOrigins`]). The current page is one `location.href` read
+    /// (a tile's too); a failed read cannot prove the page is not theuth's and refuses.
     async fn own_window(&self, session: SessionId, name: &str, args: &Value) -> Option<String> {
-        let listen = rpc_listen(&self.rt);
+        let own = OwnOrigins::from_config(&self.rt);
         let target = args.get("url").and_then(Value::as_str);
-        if target.is_some_and(|u| own_origin(u, &listen)) {
+        if target.is_some_and(|u| own.contains(u)) {
             return Some(OWN_WINDOW.to_owned());
         }
         let href = json!({ "expression": "location.href" });
@@ -462,46 +462,7 @@ impl Ctx {
         };
         let here = here.trim().trim_matches('"');
         tracing::debug!(%session, name, here, "acting browser call while a human-only approval is pending");
-        own_origin(here, &listen).then(|| OWN_WINDOW.to_owned())
-    }
-}
-
-/// `rpc.listen` (the engine's RPC listener, which serves the web client), default
-/// `127.0.0.1:7777` like `rpc::RpcConfig`.
-/// TODO(210-M2): every configured web-client origin beside the listener's.
-fn rpc_listen(rt: &Runtime) -> String {
-    rt.config
-        .find_value("rpc.listen")
-        .ok()
-        .and_then(|v| v.into_string())
-        .unwrap_or_else(|| "127.0.0.1:7777".to_owned())
-}
-
-/// Whether `url` (http, https, ws or wss) is served by the listener at `listen`
-/// (`host:port`); a loopback or unspecified listen host matches every loopback name.
-fn own_origin(url: &str, listen: &str) -> bool {
-    let Ok(u) = url::Url::parse(url) else {
-        return false;
-    };
-    if !matches!(u.scheme(), "http" | "https" | "ws" | "wss") {
-        return false;
-    }
-    let Ok(addr) = listen.parse::<std::net::SocketAddr>() else {
-        return false;
-    };
-    if u.port_or_known_default() != Some(addr.port()) {
-        return false;
-    }
-    let loopback = addr.ip().is_loopback() || addr.ip().is_unspecified();
-    match u.host() {
-        Some(url::Host::Ipv4(ip)) => {
-            ip == addr.ip() || (loopback && (ip.is_loopback() || ip.is_unspecified()))
-        }
-        Some(url::Host::Ipv6(ip)) => {
-            ip == addr.ip() || (loopback && (ip.is_loopback() || ip.is_unspecified()))
-        }
-        Some(url::Host::Domain(d)) => loopback && d.eq_ignore_ascii_case("localhost"),
-        None => false,
+        own.contains(here).then(|| OWN_WINDOW.to_owned())
     }
 }
 
@@ -1589,24 +1550,24 @@ mod tests {
         );
     }
 
-    /// 210 §7.2 (F-m7): the web client's origins are the listener's, under every loopback name.
-    #[test]
-    fn own_origin_matches_the_listener_under_loopback_names() {
-        let listen = "127.0.0.1:7777";
-        for url in [
-            "http://127.0.0.1:7777/",
-            "http://localhost:7777/#/settings/sharing",
-            "ws://[::1]:7777/rpc",
-        ] {
-            assert!(own_origin(url, listen), "{url}");
-        }
-        for url in [
-            "http://127.0.0.1:8080/",
-            "https://example.com:7777/",
-            "about:blank",
-            "file:///tmp/x",
-        ] {
-            assert!(!own_origin(url, listen), "{url}");
-        }
+    /// 210 §7.2 (F-m7): the config read: `rpc.listen` and `link.relay`, defaults otherwise.
+    #[tokio::test]
+    async fn own_origins_follow_rpc_listen_and_link_relay() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let own = OwnOrigins::from_config(&rt);
+        assert!(own.contains("http://localhost:7777/"));
+        assert!(own.contains("https://relay.theuth.io/link"));
+        assert!(!own.contains("http://192.168.1.5:7777/"));
+
+        let cfg = figment::Figment::new()
+            .merge(("rpc.listen", "0.0.0.0:9000"))
+            .merge(("link.relay", "ws://10.0.0.2:8787"));
+        let rt = Runtime::new(cfg, dir.path().to_path_buf());
+        let own = OwnOrigins::from_config(&rt);
+        assert!(own.contains("http://my-mac.local:9000/"));
+        assert!(own.contains("http://10.0.0.2:8787/link"));
+        assert!(!own.contains("http://localhost:7777/"));
+        assert!(!own.contains("https://relay.theuth.io/link"));
     }
 }
