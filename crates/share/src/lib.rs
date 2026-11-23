@@ -11,12 +11,15 @@
 //!   [`keys::NameKeyStore`], [`sources::OwnPorts`], [`sources::ProcessCheck`]
 
 pub mod config;
+pub mod duties;
 pub mod edge;
 pub mod engine;
+pub mod family;
 pub mod gate;
 pub mod holder;
 pub mod keys;
 pub mod model;
+pub mod names;
 pub mod proxy;
 pub mod rekey;
 pub mod routes;
@@ -120,6 +123,10 @@ impl runtime::Plugin for SharePlugin {
             if engine_id.is_empty() {
                 tracing::warn!("share: no mesh identity; sharing cannot attach to an edge");
             }
+        }
+        // D22: removal duties run whatever the sharing switch says.
+        if let Some(dialer) = hooks.dialer.clone() {
+            tokio::spawn(duties::run(store.clone(), rt.data_dir.clone(), dialer));
         }
         let engine = Engine::new(cfg, store, rt.data_dir.clone(), engine_id, hooks, Some(rt.clone()))?;
         engine.start().await?;

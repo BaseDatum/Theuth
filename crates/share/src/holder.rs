@@ -100,6 +100,11 @@ pub fn row_spki(row: &NameKey, name: &str, domain: &str) -> anyhow::Result<SpkiH
     Ok(share_proto::check_csr(&row.csr_der, name, domain)?.spki)
 }
 
+/// Lowercase hex of an SPKI hash (the `share_name_key_ensure` answer).
+pub fn spki_hex(h: &SpkiHash) -> String {
+    data_encoding::HEXLOWER.encode(&h.0)
+}
+
 /// What the holder does about a name whose edge SPKI (welcome `names[].spki`, or a
 /// `csr_mismatch {spki}`) is not the vault row's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

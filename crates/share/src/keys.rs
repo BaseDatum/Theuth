@@ -21,9 +21,8 @@ pub struct NameKey {
     pub csr_der: Vec<u8>,
 }
 
-/// Where name keys live. M1: the local vault ([`crate::wiring::VaultNameKeys`]); M2: through
-/// `share.name_key.ensure` on the lease holder with the settle rule (§6.2 step 1).
-// TODO(210-M2): `share.name_key.ensure` on the lease holder.
+/// Where name keys live: the engine's [`crate::wiring::FamilyNameKeys`] creates a missing row only
+/// through the lease holder (`share_name_key_ensure`, settle rule, §6.2 step 1).
 #[async_trait::async_trait]
 pub trait NameKeyStore: Send + Sync {
     /// The current row, if any.

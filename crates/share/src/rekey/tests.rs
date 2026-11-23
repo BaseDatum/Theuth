@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use anyhow::Context as _;
 use share_proto::{EdgeIdentity, SpkiHash};
 
 use super::*;

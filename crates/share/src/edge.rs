@@ -529,6 +529,13 @@ pub fn compat(v: u32, min_client: &str, me: &str) -> Result<(), Incompatible> {
 pub trait Attachment: Send + Sync {
     /// This engine's full route set.
     fn hosts(&self) -> Vec<String>;
+    /// The route set as sent: hosts plus each host's `published_ms` (default: none).
+    async fn routes(&self) -> RoutesPut {
+        RoutesPut {
+            hosts: self.hosts(),
+            published_ms: Default::default(),
+        }
+    }
     /// A `welcome` arrived (apply `stop_all_ms`, record names, fetch missing chains).
     async fn welcome(&self, control: &Control, info: &Info, welcome: &Welcome);
     /// An SSE event other than `drain`.
@@ -717,7 +724,7 @@ impl Client {
             Ok(rx) => rx,
             Err(_) => return Next::Dial,
         };
-        if let Err(e) = control.put_routes(self.attachment.hosts()).await {
+        if let Err(e) = control.put_routes_at(self.attachment.routes().await).await {
             tracing::warn!("share: PUT /v1/routes: {e}");
         }
         self.set(EdgeState::Attached, clock);
@@ -751,7 +758,8 @@ impl Client {
                             self.set(EdgeState::Attached, clock);
                         }
                         KillReason::Revoked => return Next::Removed,
-                        // TODO(210-M2): mesh_rekeyed waits for the vault's new `mesh/share_key`.
+                        // `mesh_rekeyed`: redial with backoff; each new `hello` delegates under the
+                        // vault's current `mesh/share_key`, so it attaches once the rekey replicated.
                         _ => { self.attachment.event(&control, Event::Kill(k)).await; return Next::Dial; }
                     },
                     Some(ev) => self.attachment.event(&control, ev).await,
@@ -804,7 +812,8 @@ impl Client {
                     Next::Dial
                 }
                 Some(ErrorCode::Revoked) => Next::Removed,
-                // TODO(210-M2): wait for the vault's new `mesh/share_key`, then delegate again.
+                // The vault's new `mesh/share_key` has not replicated here yet: redial with
+                // backoff; the next delegation is signed under whatever key the vault holds then.
                 Some(ErrorCode::MeshRekeyed) => Next::Dial,
                 Some(
                     ErrorCode::Internal

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use anyhow::Context as _;
 use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -305,11 +306,28 @@ impl Engine {
 
     async fn push_routes(&self) {
         let control = self.link.lock().as_ref().map(|l| l.control.clone());
-        if let Some(c) = control
-            && let Err(e) = c.put_routes(self.table.hosts()).await
-        {
+        let Some(c) = control else { return };
+        if let Err(e) = c.put_routes_at(self.routes_put().await).await {
             tracing::warn!("share: PUT /v1/routes: {e}");
         }
+    }
+
+    /// This engine's routes with each host's `published_ms`: the earliest `live_ms` of a live
+    /// share under it, so the edge's `stopped_all` check judges every host by its own publish.
+    async fn routes_put(&self) -> share_proto::RoutesPut {
+        let hosts = self.table.hosts();
+        let mut published_ms = std::collections::BTreeMap::new();
+        if let Ok(mine) = self.mine().await {
+            for s in mine {
+                if let Some(live) = s.live_ms
+                    && hosts.contains(&s.host)
+                {
+                    let e = published_ms.entry(s.host.clone()).or_insert(live);
+                    *e = (*e).min(live);
+                }
+            }
+        }
+        share_proto::RoutesPut { hosts, published_ms }
     }
 
     /// Restore this engine's shares from the store into the route table and the password gate
@@ -657,18 +675,27 @@ impl Engine {
         }
     }
 
-    /// Stop one of this engine's shares.
-    // TODO(210-M2): a share of another engine is forwarded with `rpc_forward::to_engine`.
+    /// Stop a share. One of another engine is forwarded to that engine over `theuth/rpc/1`
+    /// (`share_stop {id}`), which stops it and announces it; the replicated row follows.
     pub async fn stop(&self, id: &str, by: StoppedBy) -> anyhow::Result<Share> {
         let mut s = self
             .store
             .get(id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("no share {id}"))?;
-        anyhow::ensure!(
-            s.engine == self.engine_id,
-            "share {id} runs on another machine (stopping it from here is M2)"
-        );
+        if s.engine != self.engine_id {
+            if s.state == ShareState::Stopped {
+                return Ok(s);
+            }
+            let _: crate::rpc_share::Stopped = crate::family::call(
+                &s.engine,
+                "share_stop",
+                serde_json::json!({ "id": id }),
+            )
+            .await
+            .with_context(|| format!("share {id} runs on another machine, which did not answer"))?;
+            return Ok(self.store.get(id).await?.unwrap_or(s));
+        }
         if s.state != ShareState::Stopped {
             s.state = ShareState::Stopped;
             s.stopped_ms = Some(platform::time::now_ms());
@@ -689,15 +716,28 @@ impl Engine {
         Ok(s)
     }
 
-    /// Stop all (§7.4): every local share created before now, then `POST /v1/mesh/stop` with
-    /// retries. Detached or refused, the edge stop stays pending (sent again at the next
-    /// `welcome`) and the outcome says so. Shares created before it never go live (M7).
+    /// Stop all (§7.4): every local share created before now, the shares of other machines
+    /// (each asked over `theuth/rpc/1`), then `POST /v1/mesh/stop` with retries. Detached or
+    /// refused, the edge stop stays pending (sent again at the next `welcome`) and the outcome
+    /// says so. Shares created before it never go live (M7).
     pub async fn stop_all(&self) -> anyhow::Result<StopAllOutcome> {
+        self.stop_all_with(true).await
+    }
+
+    /// Stop all as asked by another machine of the family: no second fan-out.
+    pub async fn stop_all_forwarded(&self) -> anyhow::Result<StopAllOutcome> {
+        self.stop_all_with(false).await
+    }
+
+    async fn stop_all_with(&self, fan_out: bool) -> anyhow::Result<StopAllOutcome> {
         let now = platform::time::now_ms();
         self.store.stop_all_at(now).await?;
         let stopped = self.stop_local(StoppedBy::User, Some(now)).await;
-        // TODO(210-M2): attach first when detached; forward `share.stop all` to reachable
-        // engines; hand Stop all to the lease holder when this engine cannot reach the edge.
+        if fan_out {
+            self.stop_all_elsewhere().await;
+        }
+        // TODO(210-M2): attach first when detached; hand Stop all to the lease holder when this
+        // engine cannot reach the edge.
         let edge_pending = match self.send_stop_all().await {
             Ok(()) => None,
             Err(e) => {
@@ -725,6 +765,36 @@ impl Engine {
             }
         }
         Err(last)
+    }
+
+    /// Ask every other machine with a share not stopped to Stop all (best effort, 10 s each, in
+    /// parallel); the edge's `POST /v1/mesh/stop` closes their tunnels whatever they answer.
+    async fn stop_all_elsewhere(&self) {
+        let Ok(all) = self.store.list(platform::time::now_ms()).await else {
+            return;
+        };
+        let mut engines: Vec<String> = all
+            .into_iter()
+            .filter(|s| s.engine != self.engine_id && s.state != ShareState::Stopped)
+            .map(|s| s.engine)
+            .collect();
+        engines.sort();
+        engines.dedup();
+        let calls = engines.into_iter().map(|e| async move {
+            let r = tokio::time::timeout(
+                Duration::from_secs(10),
+                crate::family::call::<crate::rpc_share::Stopped>(
+                    &e,
+                    "share_stop",
+                    serde_json::json!({ "id": "all" }),
+                ),
+            )
+            .await;
+            if !matches!(r, Ok(Ok(_))) {
+                tracing::warn!("share: Stop all on {e} did not answer; the edge stop covers it");
+            }
+        });
+        futures::future::join_all(calls).await;
     }
 
     /// Stop every local share (created before `before`, when given), continuing past errors;
@@ -788,6 +858,38 @@ impl Engine {
     }
 
     /// `GET /v1/names/{name}` through the current connection.
+    /// The attached edge's control client and info (attaching first, §5.2 "a name operation").
+    pub(crate) async fn attached_control(&self) -> anyhow::Result<(Control, Info)> {
+        let link = self.wait_attached().await?;
+        Ok((link.control.clone(), link.info.clone()))
+    }
+
+    /// The last `welcome`'s names with its edge id and domain; `None` while detached.
+    pub(crate) fn welcome_names(&self) -> Option<(String, String, Vec<NameInfo>)> {
+        self.link.lock().as_ref().map(|l| {
+            (l.info.edge_id.to_string(), l.info.domain.clone(), l.welcome.names.clone())
+        })
+    }
+
+    /// This engine's id.
+    pub fn engine_id(&self) -> &str {
+        &self.engine_id
+    }
+
+    /// After a name-key rotation (§6.3): post the row's CSR with `?rotate=true` and install
+    /// the chain when it is issued at once (otherwise the `cert` event installs it).
+    pub(crate) async fn rotate_cert(&self, name: &str, key: &keys::NameKey) -> anyhow::Result<bool> {
+        let link = self.wait_attached().await?;
+        match link.control.csr(name, key.csr_der.clone(), true).await? {
+            CsrAnswer::Issued(c) => {
+                let host = names::host(name, None, &link.info.domain);
+                self.certs.install(&host, &c.chain_pem, &key.key_pem)?;
+                Ok(true)
+            }
+            CsrAnswer::Pending(_) => Ok(false),
+        }
+    }
+
     pub async fn check_name(&self, name: &str) -> anyhow::Result<share_proto::NameAvailability> {
         names::check_reserved::<&str>(name, &[]).map_err(|e| anyhow::anyhow!(e.reason()))?;
         let link = self.wait_attached().await?;
@@ -860,6 +962,10 @@ impl Attachment for Engine {
         self.table.hosts()
     }
 
+    async fn routes(&self) -> share_proto::RoutesPut {
+        self.routes_put().await
+    }
+
     async fn welcome(&self, control: &Control, info: &Info, welcome: &Welcome) {
         self.gate.set_operator(Operator {
             name: info.domain.clone(),
@@ -875,6 +981,15 @@ impl Attachment for Engine {
             info: info.clone(),
             welcome: welcome.clone(),
         }));
+        // D22: the mesh is known at this edge; the holder's removal duties dial it.
+        if let Ok(choice) = self.store.edge().await
+            && let Some(t) = choice.tickets().into_iter().find(|t| t.addr.id == info.edge_id)
+        {
+            let row = crate::rekey::EdgeRow::new(info.edge_id, &info.domain, &t.to_string());
+            if let Err(e) = self.store.put_share_edge(&row, platform::time::now_ms()).await {
+                tracing::warn!("share: share_edges row: {e:#}");
+            }
+        }
         if let Some(stop_all) = welcome.stop_all_ms {
             // Every share asked for before it, pending ones included (M7).
             let _ = self.stop_local(StoppedBy::User, Some(stop_all.saturating_sub(1))).await;
@@ -959,7 +1074,9 @@ impl Attachment for Engine {
 
     async fn removed(&self) {
         let _ = self.stop_local(StoppedBy::User, None).await;
-        // TODO(210-M2): delete the stale `mesh/share_key` and `share/*` vault rows.
+        // TODO(210-M2): drop the stale `mesh/share_key` and `share/*` rows. Not done: a
+        // `revoked` answer alone does not prove this engine left the family, and deleting a
+        // replicated vault row while still paired would delete the family's key.
     }
 
     fn state(&self, state: &EdgeState, clock_off_ms: Option<i64>) {

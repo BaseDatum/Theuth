@@ -55,10 +55,37 @@ fn vault() -> anyhow::Result<Arc<secrets::Vault>> {
         .context("the vault is not open yet")
 }
 
-/// M1 [`DelegationSource`]: this engine reads (or, as the synced lease holder, mints)
-/// `mesh/share_key` and signs its own delegation (§5.7).
-// TODO(210-M2): a non-holder asks the holder with `share.delegate` over `theuth/rpc/1`.
+/// [`DelegationSource`] for the family (§5.7, F-M1): the synced lease holder reads (or mints)
+/// `mesh/share_key` and signs its own delegation; any other engine asks the holder with
+/// `share_delegate` over `theuth/rpc/1`, and the holder signs only for a live peer.
 pub struct MeshDelegation;
+
+/// This engine's endpoint id.
+fn self_key() -> anyhow::Result<PublicKey> {
+    mesh::self_id()
+        .context("the mesh identity is not known yet")?
+        .parse()
+        .context("mesh self id")
+}
+
+/// The holder side of `share_delegate`: sign for `engine` when it is this engine or a live peer,
+/// `issued_ms = min(own clock, edge_now_ms)` (§5.7). Errors on a non-holder.
+pub async fn delegate_as_holder(
+    engine: PublicKey,
+    edge: PublicKey,
+    domain: &str,
+    edge_now_ms: u64,
+) -> anyhow::Result<Signed> {
+    anyhow::ensure!(
+        mesh::share::is_lease_holder().await,
+        "only the mesh's lease holder signs delegations"
+    );
+    let key = mesh::share::ensure_share_key(&*vault()?).await?;
+    let live = mesh::share::may_delegate(&engine.to_string());
+    key.with_secret(|sk| {
+        crate::holder::issue(sk, engine, edge, domain, edge_now_ms, platform::time::now_ms(), live)
+    })
+}
 
 #[async_trait::async_trait]
 impl DelegationSource for MeshDelegation {
@@ -68,29 +95,82 @@ impl DelegationSource for MeshDelegation {
         domain: &str,
         edge_now_ms: u64,
     ) -> anyhow::Result<Signed> {
-        let engine: PublicKey = mesh::self_id()
-            .context("the mesh identity is not known yet")?
-            .parse()
-            .context("mesh self id")?;
-        let key = mesh::share::ensure_share_key(&*vault()?).await?;
-        let signed = key.with_secret(|sk| {
-            share_proto::Delegation::new(
-                domain.to_owned(),
-                edge,
-                sk.public(),
-                engine,
-                platform::time::now_ms(),
-                edge_now_ms,
-            )
-            .sign(sk)
-        })?;
-        Ok(signed)
+        let engine = self_key()?;
+        match crate::family::holder().await? {
+            crate::family::Holder::Me => delegate_as_holder(engine, edge, domain, edge_now_ms).await,
+            crate::family::Holder::Peer(h) => {
+                crate::family::call(
+                    &h,
+                    "share_delegate",
+                    serde_json::json!({
+                        "engine": engine.to_string(),
+                        "edge": edge.to_string(),
+                        "domain": domain,
+                        "edge_now_ms": edge_now_ms,
+                    }),
+                )
+                .await
+            }
+        }
+    }
+}
+
+/// How long a non-holder waits for the holder's name-key row to replicate (§6.2 step 1).
+const REPLICATE_WAIT: Duration = Duration::from_secs(120);
+
+/// [`NameKeyStore`] for the family (§6.2 step 1, F-M4): reads the vault row; a missing row is
+/// created only by the lease holder (`share_name_key_ensure`, with the settle rule), and a
+/// non-holder waits for it to replicate before posting its CSR.
+pub struct FamilyNameKeys(pub VaultNameKeys);
+
+/// The holder side of `share_name_key_ensure`: the settled row (written here if missing).
+pub async fn name_key_as_holder(store: &VaultNameKeys, domain: &str, name: &str) -> anyhow::Result<NameKey> {
+    anyhow::ensure!(
+        mesh::share::is_lease_holder().await,
+        "only the mesh's lease holder creates name keys"
+    );
+    crate::holder::ensure_name_key(store, &crate::holder::MeshSettle, domain, name).await
+}
+
+#[async_trait::async_trait]
+impl NameKeyStore for FamilyNameKeys {
+    async fn get(&self, domain: &str, name: &str) -> anyhow::Result<Option<NameKey>> {
+        self.0.get(domain, name).await
+    }
+
+    async fn create(&self, domain: &str, name: &str, _key: NameKey) -> anyhow::Result<NameKey> {
+        match crate::family::holder().await? {
+            crate::family::Holder::Me => name_key_as_holder(&self.0, domain, name).await,
+            crate::family::Holder::Peer(h) => {
+                let spki: String = crate::family::call(
+                    &h,
+                    "share_name_key_ensure",
+                    serde_json::json!({ "domain": domain, "name": name }),
+                )
+                .await?;
+                let vault = self.0.vault()?;
+                let deadline = tokio::time::Instant::now() + REPLICATE_WAIT;
+                loop {
+                    vault.refresh().await?;
+                    if let Some(k) = self.0.get(domain, name).await?
+                        && crate::holder::spki_hex(&crate::holder::row_spki(&k, name, domain)?) == spki
+                    {
+                        return Ok(k);
+                    }
+                    anyhow::ensure!(
+                        tokio::time::Instant::now() < deadline,
+                        "the name key for {name}.{domain} has not reached this machine yet"
+                    );
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
     }
 }
 
 /// [`NameKeyStore`] over the vault rows `share/<domain>/<name>/tls` (§6.2, §8.3), written with
 /// `set_if_version(…, None)` so two engines minting at once settle on one key.
-// TODO(210-M2): through `share.name_key.ensure` on the lease holder with the settle rule.
+// The holder's raw store; engines use [`FamilyNameKeys`] over it.
 /// `None` resolves the vault behind the mesh endpoint on each call.
 pub struct VaultNameKeys(pub Option<Arc<secrets::Vault>>);
 
@@ -146,12 +226,48 @@ impl NameKeyStore for VaultNameKeys {
     }
 }
 
+/// The holder side of a name-key rotation (§6.3): replace `share/<domain>/<name>/tls` with a
+/// fresh key of the next generation (compare-and-set on the row version), settle, re-read.
+pub async fn rotate_name_key_as_holder(domain: &str, name: &str) -> anyhow::Result<NameKey> {
+    anyhow::ensure!(
+        mesh::share::is_lease_holder().await,
+        "only the mesh's lease holder rotates name keys"
+    );
+    let vault = vault()?;
+    let row = keys::vault_row(domain, name);
+    let (v, cur) = vault
+        .get_versioned(&row)
+        .with_context(|| format!("no name key for {name}.{domain}"))?;
+    let cur = parse_row(&row, &cur)?;
+    let (key_pem, csr_der) = keys::name_key(name, domain)?;
+    let next = NameKey {
+        r#gen: cur.r#gen + 1,
+        key_pem,
+        csr_der,
+    };
+    let json = serde_json::to_string(&next)?;
+    vault
+        .set_if_version(&row, &json, "share", Some(v))
+        .await
+        .map_err(anyhow::Error::msg)?;
+    crate::holder::Settle::settle(&crate::holder::MeshSettle).await;
+    vault.refresh().await?;
+    let (_, settled) = vault.get_versioned(&row).context("name key row vanished")?;
+    parse_row(&row, &settled)
+}
+
+/// The mesh id (public half of `mesh/share_key`) when the row exists on this machine.
+pub fn mesh_id() -> Option<String> {
+    let v = vault().ok()?;
+    mesh::share::share_key(&v).ok().flatten().map(|k| k.mesh_id().to_string())
+}
+
 /// Every seam filled with the engine's adapters.
 pub fn engine_hooks() -> Hooks {
     Hooks {
         dialer: Some(Arc::new(MeshDialer)),
         delegation: Some(Arc::new(MeshDelegation)),
-        name_keys: Some(Arc::new(VaultNameKeys(None))),
+        name_keys: Some(Arc::new(FamilyNameKeys(VaultNameKeys(None)))),
         own_ports: Arc::new(OwnListeners),
         process: Arc::new(ProcessTree),
     }
