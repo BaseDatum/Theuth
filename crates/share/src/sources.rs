@@ -28,9 +28,11 @@ static OWN_LISTENERS: parking_lot::RwLock<std::collections::BTreeSet<u16>> =
     parking_lot::RwLock::new(std::collections::BTreeSet::new());
 
 /// Record a TCP port this process listens on (the RPC listener from `rpc-compose`'s `serve`).
-/// Process-wide: an engine is one process.
-// TODO(210-M1): every other plugin binding a TCP listener (a2a HTTP, browser debug port, …)
-// registers here too; the process-tree check covers the rest once it exists.
+/// Process-wide: an engine is one process. Every other listener theuth binds (a2a HTTP, MCP
+/// HTTP, OAuth callback, browser debug port, sandbox bring-up, …) lives in this process or one
+/// of its children, which [`ProcessTree`] refuses by owner PID; it is not registered here
+/// because those crates do not depend on `share`. This registry is the fast path that needs no
+/// socket-table walk.
 pub fn register_own_port(port: u16) {
     OWN_LISTENERS.write().insert(port);
 }
@@ -51,12 +53,23 @@ pub trait ProcessCheck: Send + Sync {
     fn owned_by_theuth(&self, port: u16) -> Option<bool>;
 }
 
-/// No socket-table lookup wired.
+/// No socket-table lookup wired: every owner is unknown, so every port is refused.
 pub struct NoProcessCheck;
 
 impl ProcessCheck for NoProcessCheck {
     fn owned_by_theuth(&self, _: u16) -> Option<bool> {
         None
+    }
+}
+
+/// Tests: every listener belongs to someone else.
+#[cfg(test)]
+pub(crate) struct NotTheuth;
+
+#[cfg(test)]
+impl ProcessCheck for NotTheuth {
+    fn owned_by_theuth(&self, _: u16) -> Option<bool> {
+        Some(false)
     }
 }
 
@@ -153,12 +166,13 @@ pub struct PortGuard {
 }
 
 impl PortGuard {
-    /// Static refusals: zero and own ports.
+    /// Static refusals: zero and own ports. An owner the process-tree check cannot determine
+    /// (`None`: socket table unreadable, or no check wired) refuses too: fail closed.
     pub fn check(&self, port: u16) -> Result<(), PortRefused> {
         if port == 0 {
             return Err(PortRefused::Zero);
         }
-        if self.own.is_own(port) || self.process.owned_by_theuth(port) == Some(true) {
+        if self.own.is_own(port) || self.process.owned_by_theuth(port) != Some(false) {
             return Err(PortRefused::Own);
         }
         Ok(())
@@ -331,14 +345,14 @@ pub fn resolve(root: &Path, url_path: &str) -> Option<PathBuf> {
         p.push(seg);
     }
     let mut canon = p.canonicalize().ok()?;
-    if !canon.starts_with(root) {
-        return None;
-    }
     if canon.is_dir() {
         canon = canon.join("index.html").canonicalize().ok()?;
-        if !canon.starts_with(root) {
-            return None;
-        }
+    }
+    // Containment and the dot rule on the canonical path below the root: a link inside the
+    // root that leads to `.env` or into `.git/` is refused like the URL spelling would be.
+    let rel = canon.strip_prefix(root).ok()?;
+    if has_dot(rel) {
+        return None;
     }
     canon.is_file().then_some(canon)
 }
@@ -418,6 +432,39 @@ mod tests {
             open_nofollow(&root.join("k.txt")).is_err(),
             "no-follow open of a link fails"
         );
+    }
+
+    /// FIX4 #17: a link inside the root that leads to a dot entry of the same root (`env` →
+    /// `.env`, `git` → `.git/`) is refused on its canonical path, not only on the URL's spelling.
+    #[test]
+    fn link_to_a_dot_entry_inside_the_root_is_refused() {
+        let tmp = tempfile::Builder::new().prefix("share").tempdir().unwrap();
+        let root = tmp.path().join("site");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".env"), "x").unwrap();
+        std::fs::write(root.join(".git/config"), "c").unwrap();
+        std::fs::write(root.join("ok.txt"), "ok").unwrap();
+        std::os::unix::fs::symlink(root.join(".env"), root.join("env")).unwrap();
+        std::os::unix::fs::symlink(root.join(".git"), root.join("git")).unwrap();
+        let root = root.canonicalize().unwrap();
+        assert!(resolve(&root, "/ok.txt").is_some());
+        assert!(resolve(&root, "/env").is_none());
+        assert!(resolve(&root, "/git/config").is_none());
+    }
+
+    /// FIX4 #16: an unknown process-tree answer refuses the port (fail closed).
+    #[test]
+    fn unknown_owner_is_refused() {
+        let g = PortGuard {
+            own: Arc::new(NoOwnPorts),
+            process: Arc::new(NoProcessCheck),
+        };
+        assert_eq!(g.check(5173), Err(PortRefused::Own));
+        let g = PortGuard {
+            own: Arc::new(NoOwnPorts),
+            process: Arc::new(NotTheuth),
+        };
+        assert_eq!(g.check(5173), Ok(()));
     }
 
     #[test]

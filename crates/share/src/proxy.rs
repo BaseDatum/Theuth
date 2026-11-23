@@ -14,6 +14,7 @@ use http::{Method, Request, Response, StatusCode, Version};
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt as _, Full, StreamBody};
 use hyper_util::rt::TokioIo;
+use tokio_util::sync::CancellationToken;
 
 use crate::gate::{Gate, Step};
 use crate::model::Source;
@@ -198,16 +199,21 @@ impl Proxy {
         if m.name_of(sni).is_none() || m.name_of(sni) != m.name_of(&host) {
             return text(StatusCode::MISDIRECTED_REQUEST, "misdirected request");
         }
-        match self.gate.step(&m, &rest, req.method(), req.headers()) {
-            Step::Pass => {}
-            Step::Respond(r) => return r,
-            Step::Continue => return self.gate.proceed(&m, req.headers()),
-            Step::Login => return self.gate.login(&m, visitor.ip(), req).await,
-        }
-        match &m.source {
-            Source::Port(port) => self.forward(req, &m, *port, rest, visitor.ip()).await,
-            Source::Dir(_) => serve_dir(&m, &rest, req.method(), req.headers()).await,
-        }
+        // §7.4: stopping the share resets what is still streaming for it (bodies, upgrades).
+        let stop = self.table.stop_token(&m.share);
+        let resp = match self.gate.step(&m, &rest, req.method(), req.headers()) {
+            Step::Pass => match &m.source {
+                Source::Port(port) => {
+                    self.forward(req, &m, *port, rest, visitor.ip(), stop.clone())
+                        .await
+                }
+                Source::Dir(_) => serve_dir(&m, &rest, req.method(), req.headers()).await,
+            },
+            Step::Respond(r) => r,
+            Step::Continue => self.gate.proceed(&m, req.headers()),
+            Step::Login => self.gate.login(&m, visitor.ip(), req).await,
+        };
+        resp.map(|b| until_stopped(b, stop))
     }
 
     async fn forward<B>(
@@ -217,6 +223,7 @@ impl Proxy {
         port: u16,
         rest: String,
         visitor: IpAddr,
+        stop: CancellationToken,
     ) -> Response<Body>
     where
         B: hyper::body::Body<Data = Bytes> + Send + 'static,
@@ -268,15 +275,67 @@ impl Proxy {
         if upgraded && let Some(visitor_up) = visitor_up {
             let upstream_up = hyper::upgrade::on(&mut resp);
             tokio::spawn(async move {
-                if let (Ok(v), Ok(u)) = tokio::join!(visitor_up, upstream_up) {
-                    let _ =
-                        tokio::io::copy_bidirectional(&mut TokioIo::new(v), &mut TokioIo::new(u))
-                            .await;
+                let copy = async {
+                    if let (Ok(v), Ok(u)) = tokio::join!(visitor_up, upstream_up) {
+                        let _ = tokio::io::copy_bidirectional(
+                            &mut TokioIo::new(v),
+                            &mut TokioIo::new(u),
+                        )
+                        .await;
+                    }
+                };
+                // Stopping the share drops both halves (§7.4).
+                tokio::select! {
+                    () = copy => {}
+                    () = stop.cancelled() => {}
                 }
             });
         }
         response_headers(resp.headers_mut(), port, m, upgraded);
         resp.map(|b| b.map_err(Into::into).boxed_unsync())
+    }
+}
+
+/// `body`, ending in an error once `stop` fires: hyper resets the h2 stream (or closes the
+/// HTTP/1.1 connection) instead of finishing a response for a share that was stopped. Size
+/// hint and end-of-stream are the inner body's, so framing (`Content-Length`) is unchanged.
+pub fn until_stopped(body: Body, stop: CancellationToken) -> Body {
+    use hyper::body::Body as _;
+    if body.is_end_stream() {
+        return body;
+    }
+    UntilStopped {
+        inner: body,
+        stop: Box::pin(stop.cancelled_owned()),
+    }
+    .boxed_unsync()
+}
+
+struct UntilStopped {
+    inner: Body,
+    stop: std::pin::Pin<Box<tokio_util::sync::WaitForCancellationFutureOwned>>,
+}
+
+impl hyper::body::Body for UntilStopped {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, BoxError>>> {
+        if self.stop.as_mut().poll(cx).is_ready() {
+            return std::task::Poll::Ready(Some(Err("the share was stopped".into())));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
     }
 }
 
@@ -352,7 +411,7 @@ async fn serve_dir(
 mod tests {
     use super::*;
     use crate::model::Access;
-    use crate::sources::{NoOwnPorts, NoProcessCheck};
+    use crate::sources::{NoOwnPorts, NotTheuth};
 
     fn mount(host: &str, prefix: &str, source: Source) -> Mount {
         let dir = match &source {
@@ -436,7 +495,7 @@ mod tests {
             table,
             ports: PortGuard {
                 own: Arc::new(NoOwnPorts),
-                process: Arc::new(NoProcessCheck),
+                process: Arc::new(NotTheuth),
             },
             gate: Arc::new(Gate::new(cookie::Key::generate())),
         }

@@ -306,6 +306,44 @@ impl Store {
         Ok(())
     }
 
+    /// Record that this engine's consent path published `s` (FIX4 #1): its approval id and what
+    /// was approved (host, path, source, access). Local only: never in [`REPLICATED`].
+    pub async fn put_approval(&self, s: &Share, at_ms: u64) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO share_approvals (share, approval_id, binding, approved_ms) VALUES (?, ?, ?, ?) \
+             ON CONFLICT(share) DO UPDATE SET approval_id = excluded.approval_id, \
+             binding = excluded.binding, approved_ms = excluded.approved_ms",
+        )
+        .bind(&s.id)
+        .bind(&s.approved_by.approval_id)
+        .bind(binding(s)?)
+        .bind(at_ms as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// `s` is a share this engine's consent path recorded, unchanged since: same approval id,
+    /// host, path, source and access. A row replicated from elsewhere (or altered there) is not.
+    pub async fn locally_approved(&self, s: &Share) -> anyhow::Result<bool> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT approval_id, binding FROM share_approvals WHERE share = ?",
+        )
+        .bind(&s.id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some_and(|(a, b)| a == s.approved_by.approval_id && b == binding(s).unwrap_or_default()))
+    }
+
+    /// Forget a share's local approval once it is stopped.
+    pub async fn delete_approval(&self, share: &str) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM share_approvals WHERE share = ?")
+            .bind(share)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn ms_setting(&self, key: &str) -> anyhow::Result<Option<u64>> {
         Ok(self.setting(key).await?.and_then(|v| v.parse().ok()))
     }
@@ -335,6 +373,17 @@ impl Store {
             .await?;
         Ok(())
     }
+}
+
+/// What the owner approved of a share, as stored in `share_approvals.binding`.
+fn binding(s: &Share) -> anyhow::Result<String> {
+    Ok(serde_json::to_string(&(
+        &s.engine,
+        &s.host,
+        &s.path,
+        &s.source,
+        s.access.as_str(),
+    ))?)
 }
 
 fn decode(r: &SqliteRow) -> anyhow::Result<Share> {

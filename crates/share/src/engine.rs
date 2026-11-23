@@ -39,6 +39,10 @@ pub const ATTACH_WAIT: Duration = Duration::from_secs(30);
 /// `pending`; the step goes on in the background and the share goes live via `share.changed`
 /// (E2E1 finding 9: a fresh name key settles for `REKEY_SETTLE_SECS`).
 pub const PUBLISH_CERT_WAIT: Duration = Duration::from_millis(1500);
+/// How long Stop all waits to attach before handing the edge stop to the lease holder.
+pub const STOP_ALL_ATTACH_WAIT: Duration = Duration::from_secs(10);
+/// The approval cards Stop all and the switch turned off withdraw.
+const PUBLISH_TOOL: &str = "share_publish";
 
 /// Who asked for a publish.
 #[derive(Clone, Debug)]
@@ -59,27 +63,41 @@ pub enum CallOrigin {
 /// registry's scope ([`Consent::of_call`]) or by raising the row ([`Consent::ask`]); an empty or
 /// non-owner row is refused, so the ask cannot be skipped.
 #[derive(Clone, Debug)]
-pub struct Consent(ApprovedBy);
+pub struct Consent(ApprovedBy, u64);
 
 impl Consent {
-    fn from_approved(a: ::tools::Approved) -> anyhow::Result<Self> {
+    fn from_approved(a: ::tools::Approved, asked_ms: Option<u64>) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !a.id.0.is_nil() && a.surface == "owner",
             "this needs the owner's own approval"
         );
-        Ok(Self(ApprovedBy {
-            approval_id: a.id.0.to_string(),
-            surface: a.surface.to_owned(),
-        }))
+        // The row's id is a v7 UUID minted when the card was raised: its timestamp is when the
+        // owner was asked, for a row the registry raised before the tool body ran.
+        let asked_ms = asked_ms.unwrap_or_else(|| {
+            a.id.0
+                .get_timestamp()
+                .map_or(0, |t| {
+                    let (s, n) = t.to_unix();
+                    s * 1000 + u64::from(n) / 1_000_000
+                })
+        });
+        Ok(Self(
+            ApprovedBy {
+                approval_id: a.id.0.to_string(),
+                surface: a.surface.to_owned(),
+            },
+            asked_ms,
+        ))
     }
 
     /// The human-only row the running tool call passed; `None` outside a gated body.
     pub fn of_call() -> Option<Self> {
-        ::tools::approved().and_then(|a| Self::from_approved(a).ok())
+        ::tools::approved().and_then(|a| Self::from_approved(a, None).ok())
     }
 
     /// Raise a human-only row for `what` (an RPC acting for the owner) and wait for `Allow`.
     pub async fn ask(what: &str, args: serde_json::Value) -> anyhow::Result<Self> {
+        let asked_ms = platform::time::now_ms();
         let a = ::tools::ask_human_only(::tools::approval::RequestApproval {
             session: runtime::SessionId(uuid::Uuid::nil()),
             tool: what.to_owned(),
@@ -88,7 +106,7 @@ impl Consent {
             call_id: None,
         })
         .await?;
-        Self::from_approved(a)
+        Self::from_approved(a, Some(asked_ms))
     }
 
     /// The row, for `approved_by`.
@@ -96,13 +114,28 @@ impl Consent {
         &self.0
     }
 
+    /// When the owner was asked, Unix ms: a Stop all at or after it voids the approval (§7.4).
+    pub fn asked_ms(&self) -> u64 {
+        self.1
+    }
+
     #[cfg(test)]
     pub(crate) fn test() -> Self {
-        Self::from_approved(::tools::Approved {
-            id: ::tools::ApprovalId(uuid::Uuid::now_v7()),
-            surface: "owner",
-        })
+        Self::from_approved(
+            ::tools::Approved {
+                id: ::tools::ApprovalId(uuid::Uuid::now_v7()),
+                surface: "owner",
+            },
+            None,
+        )
         .unwrap()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_asked_at(asked_ms: u64) -> Self {
+        let mut c = Self::test();
+        c.1 = asked_ms;
+        c
     }
 }
 
@@ -145,6 +178,17 @@ pub struct PendingCert {
     pub queue_pos: Option<u32>,
     /// Estimated seconds to a certificate.
     pub eta_s: Option<u64>,
+}
+
+/// A publish's name and exact URL, computed before the owner is asked (§7.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishPreview {
+    /// The `<name>` of `<label>.<name>.D`.
+    pub name: String,
+    /// The exact URL the share will have.
+    pub url: String,
+    /// The name was allocated at the edge for this preview (released again on a refusal).
+    pub allocated: bool,
 }
 
 /// Where [`Engine::ensure_cert`] left a name.
@@ -201,6 +245,12 @@ pub struct Engine {
     installed: Mutex<HashMap<String, NameInfo>>,
     /// Generated passwords of this run, for the owner's `share_password` (M9); never logged.
     passwords: Mutex<HashMap<String, String>>,
+    /// Shares left unmounted for want of a local approval or with the switch off (FIX4 #1).
+    unmounted: Mutex<std::collections::BTreeSet<String>>,
+    /// Random names allocated at the edge in this run, before a welcome lists them (§7.3).
+    fresh: Mutex<std::collections::BTreeSet<String>>,
+    /// The edge state machine runs (set by `start`): Stop all may wait for it to attach.
+    client: std::sync::atomic::AtomicBool,
 }
 
 /// Six random bytes (names, labels).
@@ -255,6 +305,9 @@ impl Engine {
             admit: tokio::sync::Mutex::new(()),
             installed: Mutex::new(HashMap::new()),
             passwords: Mutex::new(HashMap::new()),
+            unmounted: Mutex::new(std::collections::BTreeSet::new()),
+            fresh: Mutex::new(std::collections::BTreeSet::new()),
+            client: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 
@@ -262,6 +315,7 @@ impl Engine {
     /// ticker. Without a dialer, a delegation source or a ticket to dial (edge `none`, or the
     /// default while its tickets are placeholders) no client runs and publishing says so.
     pub async fn start(self: &Arc<Self>) -> anyhow::Result<()> {
+        self.stop_at_start().await;
         self.restore().await;
         let choice = self.store.edge().await?;
         let tickets = choice.tickets();
@@ -279,6 +333,7 @@ impl Engine {
                 timing: Default::default(),
             };
             tokio::spawn(client.run(self.need.subscribe()));
+            self.client.store(true, Ordering::SeqCst);
         } else if tickets.is_empty() {
             tracing::info!("share: {NO_SHARING_EDGE}");
         }
@@ -401,13 +456,22 @@ impl Engine {
 
     /// Restore this engine's shares from the store into the route table and the password gate
     /// (M9): at start and at every `welcome`. A password share whose hash is gone can never be
-    /// opened and is stopped.
+    /// opened and is stopped; an expired one stops as `expiry`; one without this engine's own
+    /// approval record (FIX4 #1) or while the switch is off is left unmounted.
     async fn restore(&self) {
         let Ok(mine) = self.mine().await else { return };
+        let now = platform::time::now_ms();
         for s in mine
             .into_iter()
             .filter(|s| matches!(s.state, ShareState::Live | ShareState::Offline))
         {
+            if s.expires_ms.is_some_and(|e| e <= now) {
+                let _ = self.stop(&s.id, StoppedBy::Expiry).await;
+                continue;
+            }
+            if !self.may_mount(&s).await {
+                continue;
+            }
             if s.access == Access::Password {
                 match self.store.secret(&s.id).await {
                     Ok(Some(phc)) => self.gate.set_password(&s.id, Some(phc)),
@@ -426,6 +490,70 @@ impl Engine {
                 self.table.insert(m);
             }
         }
+    }
+
+    /// §7.4: "Quitting the engine stops its shares; only reserved-name shares started from
+    /// Settings without expiry resume on restart." Run once at start, before [`Self::restore`]:
+    /// every share of this engine not stopped is stopped unless it was created from Settings
+    /// under a reserved name the mesh still holds (those keep their own expiry: every share has
+    /// one, `Expiry` has no "never").
+    async fn stop_at_start(&self) {
+        let Ok(mine) = self.mine().await else { return };
+        let reserved: Vec<String> = match self.store.names().await {
+            Ok(n) => n
+                .into_iter()
+                .filter(|n| n.kind == "reserved" && n.released_ms.is_none())
+                .map(|n| names::host(&n.name, None, &n.domain))
+                .collect(),
+            Err(e) => {
+                tracing::warn!("share: names at start: {e:#}");
+                Vec::new()
+            }
+        };
+        for s in mine {
+            let resumes = matches!(s.created_by, CreatedBy::Settings(_))
+                && reserved.contains(&name_host_of(&s.host, &s.domain));
+            if !resumes {
+                tracing::info!("share: {} stopped with the engine's last run (§7.4)", s.id);
+                let _ = self.stop(&s.id, StoppedBy::User).await;
+            }
+        }
+    }
+
+    /// A share of this engine may be mounted (FIX4 #1): the switch is on and this engine's own
+    /// consent path recorded exactly this share. Otherwise it is left unmounted and listed in
+    /// [`Self::unmounted`].
+    async fn may_mount(&self, s: &Share) -> bool {
+        let why = match (self.store.enabled().await, self.store.locally_approved(s).await) {
+            (Ok(true), Ok(true)) => {
+                self.unmounted.lock().remove(&s.id);
+                return true;
+            }
+            (Ok(false), _) => "public sharing is off".to_owned(),
+            (_, Ok(false)) => "no approval for it was given on this machine".to_owned(),
+            (Err(e), _) | (_, Err(e)) => format!("{e:#}"),
+        };
+        tracing::warn!("share: {} left unmounted: {why}", s.id);
+        self.table.remove(&s.id);
+        self.unmounted.lock().insert(s.id.clone());
+        false
+    }
+
+    /// Shares of this engine the store lists as live or pending that were left unmounted
+    /// because no local approval matches them or the switch is off (FIX4 #1).
+    pub fn unmounted(&self) -> Vec<String> {
+        self.unmounted.lock().iter().cloned().collect()
+    }
+
+    /// The switch is on and no Stop all happened since the owner was asked (§7.4, FIX4 #6).
+    async fn still_approved(&self, consent: &Consent) -> anyhow::Result<()> {
+        anyhow::ensure!(self.store.enabled().await?, SWITCH_OFF);
+        if let Some(b) = self.store.stop_all_ms().await?
+            && b >= consent.asked_ms()
+        {
+            anyhow::bail!("Stop all was pressed after this publish was asked for; ask again");
+        }
+        Ok(())
     }
 
     /// The mount for one of this engine's shares (M1). A `dir` share is served from the pin
@@ -483,7 +611,7 @@ impl Engine {
             !consent.0.approval_id.is_empty(),
             "this needs the owner's own approval"
         );
-        anyhow::ensure!(self.store.enabled().await?, SWITCH_OFF);
+        self.still_approved(&consent).await?;
         anyhow::ensure!(
             !self.store.edge().await?.tickets().is_empty(),
             NO_SHARING_EDGE
@@ -529,7 +657,7 @@ impl Engine {
         let link = self.wait_attached().await?;
         let domain = link.info.domain.clone();
         let edge = link.info.edge_id.to_string();
-        let name = self.pick_name(&link, plan.name.as_deref()).await?;
+        let (name, _) = self.pick_name(&link, plan.name.as_deref()).await?;
         let host = names::host(&name, plan.label.as_deref(), &domain);
         let url = names::share_url(&host, &plan.path);
         let prefix = if plan.path == "/" {
@@ -570,6 +698,9 @@ impl Engine {
         let have_cert = matches!(step, Some(CertStep::Installed));
         let now = platform::time::now_ms();
         let expiry_ms = plan.expiry.duration().as_millis() as u64;
+        // The last moment before anything is stored: the switch and Stop all may have changed
+        // while the certificate step and the hash ran (§7.4).
+        self.still_approved(&consent).await?;
         let share = Share {
             id,
             engine: self.engine_id.clone(),
@@ -607,6 +738,7 @@ impl Engine {
             if let Some(pin) = &pin {
                 self.store.put_pin(&share.id, pin).await?;
             }
+            self.store.put_approval(&share, now).await?;
             self.store.put(&share).await
         }
         .await;
@@ -614,6 +746,7 @@ impl Engine {
             let _ = self.store.delete_secret(&share.id).await;
             let _ = self.store.delete_request(&share.id).await;
             let _ = self.store.delete_pin(&share.id).await;
+            let _ = self.store.delete_approval(&share.id).await;
             return Err(e);
         }
         if let Some((pw, phc)) = &password {
@@ -703,14 +836,19 @@ impl Engine {
     }
 
     /// The name for a publish: the requested held one, else the primary (newest reserved, else
-    /// random), else a fresh random allocation after the terms (§5.2, §7.6).
-    async fn pick_name(&self, link: &Link, want: Option<&str>) -> anyhow::Result<String> {
+    /// random), else a fresh random allocation after the terms (§5.2, §7.6). A name allocated
+    /// in this run (by [`Self::publish_preview`]) counts as held until the next welcome lists it.
+    /// The flag is `true` when this call allocated the name.
+    async fn pick_name(&self, link: &Link, want: Option<&str>) -> anyhow::Result<(String, bool)> {
         let held = Self::held_names(link);
         if let Some(w) = want {
+            if self.fresh.lock().contains(w) {
+                return Ok((w.to_owned(), false));
+            }
             return held
                 .iter()
                 .find(|n| n.name == w)
-                .map(|n| n.name.clone())
+                .map(|n| (n.name.clone(), false))
                 .ok_or_else(|| {
                     anyhow::anyhow!("the mesh holds no name {w} at {}", link.info.domain)
                 });
@@ -720,7 +858,10 @@ impl Engine {
             .find(|n| n.kind == NameKind::Reserved)
             .or_else(|| held.first())
         {
-            return Ok(n.name.clone());
+            return Ok((n.name.clone(), false));
+        }
+        if let Some(n) = self.fresh.lock().iter().next() {
+            return Ok((n.clone(), false));
         }
         // First publish: terms, then a client-drawn random name.
         let accepted = self.current_terms(link).await?;
@@ -730,12 +871,40 @@ impl Engine {
         for _ in 0..3 {
             let name = names::random_name(random_bytes());
             match link.control.allocate(&name).await {
-                Ok(g) => return Ok(g.name),
+                Ok(g) => {
+                    self.fresh.lock().insert(g.name.clone());
+                    return Ok((g.name, true));
+                }
                 Err(e) if e.code() == Some(ErrorCode::NameTaken) => continue,
                 Err(e) => return Err(e.into()),
             }
         }
         anyhow::bail!("could not allocate a name at {}", link.info.domain)
+    }
+
+    /// What the approval card shows before the ask (§7.3): the name, host and exact URL a
+    /// publish of `plan` gets. A first publish allocates its random name at the edge here;
+    /// `allocated` says so, and [`Self::release_preview`] gives it back when the owner says no.
+    pub async fn publish_preview(&self, plan: &Plan) -> anyhow::Result<PublishPreview> {
+        let link = self.wait_attached().await?;
+        let (name, allocated) = self.pick_name(&link, plan.name.as_deref()).await?;
+        let host = names::host(&name, plan.label.as_deref(), &link.info.domain);
+        Ok(PublishPreview {
+            url: names::share_url(&host, &plan.path),
+            name,
+            allocated,
+        })
+    }
+
+    /// Give back a name [`Self::publish_preview`] allocated for a publish the owner refused.
+    pub async fn release_preview(&self, p: &PublishPreview) {
+        if !p.allocated || !self.fresh.lock().remove(&p.name) {
+            return;
+        }
+        let name = p.name.as_str();
+        if let Err(e) = self.with_control(|c, _| async move { c.release(name).await }).await {
+            tracing::warn!("share: release of unused name {name}: {e:#}");
+        }
     }
 
     async fn rehello(&self, link: &Link, terms_rev: Option<String>) -> anyhow::Result<()> {
@@ -848,6 +1017,7 @@ impl Engine {
             let _ = self.store.delete_secret(id).await;
             let _ = self.store.delete_request(id).await;
             let _ = self.store.delete_pin(id).await;
+            let _ = self.store.delete_approval(id).await;
             if self.table.remove(id) {
                 self.push_routes().await;
             }
@@ -874,16 +1044,38 @@ impl Engine {
     async fn stop_all_with(&self, fan_out: bool) -> anyhow::Result<StopAllOutcome> {
         let now = platform::time::now_ms();
         self.store.stop_all_at(now).await?;
+        // Pending publish cards are withdrawn; an `Allow` already given is refused by the
+        // `stop_all_ms >= asked_ms` check in `publish` (§7.4, M7).
+        ::tools::approval::dismiss_tool(PUBLISH_TOOL).await;
         let stopped = self.stop_local(StoppedBy::User, Some(now)).await;
         if fan_out {
             self.stop_all_elsewhere().await;
         }
-        // TODO(210-M2): attach first when detached; hand Stop all to the lease holder when this
-        // engine cannot reach the edge.
-        let edge_pending = match self.send_stop_all().await {
+        // §7.4: on the engine's own connection, attaching first when detached (bounded). With
+        // no edge client running (no dialer, delegation source or ticket) there is nothing to
+        // wait for.
+        let dials = self.client.load(Ordering::SeqCst);
+        let mut sent = if !dials && self.live_link().is_none() {
+            Err(anyhow::anyhow!("not attached to the sharing edge"))
+        } else {
+            match tokio::time::timeout(STOP_ALL_ATTACH_WAIT, self.wait_attached()).await {
+                Ok(Ok(_)) => self.send_stop_all().await,
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(anyhow::anyhow!(
+                    "the sharing edge did not answer within {STOP_ALL_ATTACH_WAIT:?}"
+                )),
+            }
+        };
+        self.refresh_need().await;
+        // An engine that cannot reach the edge hands Stop all to the lease holder (§7.4).
+        if fan_out && let Err(e) = &sent {
+            tracing::warn!("share: POST /v1/mesh/stop: {e:#}; handing Stop all to the lease holder");
+            sent = self.stop_all_via_holder().await.map_err(|h| anyhow::anyhow!("{e:#}; {h:#}"));
+        }
+        let edge_pending = match sent {
             Ok(()) => None,
             Err(e) => {
-                tracing::warn!("share: POST /v1/mesh/stop: {e:#}");
+                tracing::warn!("share: Stop all not confirmed by the edge: {e:#}");
                 Some(format!("{e:#}"))
             }
         };
@@ -892,6 +1084,22 @@ impl Engine {
             stopped,
             edge_pending,
         })
+    }
+
+    /// Ask the lease holder to Stop all on its own edge connection; `Ok` when it confirmed.
+    async fn stop_all_via_holder(&self) -> anyhow::Result<()> {
+        let peer = match crate::family::holder().await? {
+            crate::family::Holder::Me => {
+                anyhow::bail!("this machine holds the lease and cannot reach the edge")
+            }
+            crate::family::Holder::Peer(p) => p,
+        };
+        let r: crate::rpc_share::Stopped =
+            crate::family::call(&peer, "share_stop", serde_json::json!({ "id": "all" })).await?;
+        match r.edge_pending {
+            None => self.store.stop_all_sent().await,
+            Some(why) => anyhow::bail!("the lease holder {peer} could not reach the edge either: {why}"),
+        }
     }
 
     /// `POST /v1/mesh/stop`, three tries; clears the pending mark on success.
@@ -982,6 +1190,8 @@ impl Engine {
     /// Switch sharing off and stop this machine's shares (`switch_off`). Never gated.
     pub async fn disable(&self) -> anyhow::Result<()> {
         self.store.set_enabled(false).await?;
+        // A publish card still on screen must not outlive the switch (§7.4).
+        ::tools::approval::dismiss_tool(PUBLISH_TOOL).await;
         self.stop_local(StoppedBy::SwitchOff, None).await?;
         Ok(())
     }
@@ -1112,6 +1322,9 @@ impl Engine {
                 let _ = self.stop(&s.id, StoppedBy::User).await;
                 continue;
             }
+            if !self.may_mount(&s).await {
+                continue;
+            }
             let expiry = match self.store.request_expiry(&s.id).await {
                 Ok(Some(ms)) => ms,
                 _ => self.cfg.default_expiry.duration().as_millis() as u64,
@@ -1209,6 +1422,9 @@ impl Attachment for Engine {
         // Restore routes of shares that were live before a reconnect.
         if let Ok(mine) = self.mine().await {
             for mut s in mine.into_iter().filter(|s| s.state == ShareState::Offline) {
+                if !self.may_mount(&s).await {
+                    continue;
+                }
                 s.state = ShareState::Live;
                 let Some(m) = self.mount(&s).await else {
                     continue;
@@ -1290,7 +1506,7 @@ impl Attachment for Engine {
 mod tests {
     use super::*;
     use crate::config::Expiry;
-    use crate::sources::{NoProcessCheck, OwnListeners};
+    use crate::sources::{NotTheuth, OwnListeners};
 
     async fn engine(max_live: u32) -> (tempfile::TempDir, Arc<Engine>) {
         engine_with(max_live, None).await
@@ -1312,7 +1528,7 @@ mod tests {
             delegation: None,
             name_keys,
             own_ports: Arc::new(OwnListeners),
-            process: Arc::new(NoProcessCheck),
+            process: Arc::new(NotTheuth),
         };
         let e = Engine::new(cfg, store, dir.path().to_path_buf(), "me".into(), hooks, None).unwrap();
         (dir, e)
@@ -1427,6 +1643,13 @@ mod tests {
         assert_eq!(leaf_of(&e), Some(der2), "the renewed chain replaced the old one");
     }
 
+    /// A share row this engine's consent path wrote (row + local approval), switch on.
+    async fn put_approved(e: &Engine, s: &Share) {
+        e.store.set_enabled(true).await.unwrap();
+        e.store.put(s).await.unwrap();
+        e.store.put_approval(s, 0).await.unwrap();
+    }
+
     fn share(id: &str, created_ms: u64, state: ShareState, access: Access) -> Share {
         Share {
             id: id.into(),
@@ -1454,17 +1677,22 @@ mod tests {
     #[test]
     fn consent_needs_an_owner_row() {
         let id = ::tools::ApprovalId(uuid::Uuid::now_v7());
-        assert!(Consent::from_approved(::tools::Approved { id, surface: "human" }).is_err());
+        assert!(Consent::from_approved(::tools::Approved { id, surface: "human" }, None).is_err());
         let nil = ::tools::ApprovalId(uuid::Uuid::nil());
         assert!(
-            Consent::from_approved(::tools::Approved {
-                id: nil,
-                surface: "owner"
-            })
+            Consent::from_approved(
+                ::tools::Approved {
+                    id: nil,
+                    surface: "owner"
+                },
+                None
+            )
             .is_err()
         );
         assert!(Consent::of_call().is_none(), "no row outside a gated call");
-        let c = Consent::from_approved(::tools::Approved { id, surface: "owner" }).unwrap();
+        let c = Consent::from_approved(::tools::Approved { id, surface: "owner" }, None).unwrap();
+        let now = platform::time::now_ms();
+        assert!(now.abs_diff(c.asked_ms()) < 5_000, "asked_ms from the row's v7 id");
         assert_eq!(c.approved_by().approval_id, id.0.to_string());
     }
 
@@ -1504,15 +1732,9 @@ mod tests {
     #[tokio::test]
     async fn restore_remounts_live_shares_and_stops_hashless_password_shares() {
         let (_d, e) = engine(8).await;
-        e.store
-            .put(&share("a", 1, ShareState::Live, Access::Password))
-            .await
-            .unwrap();
+        put_approved(&e, &share("a", 1, ShareState::Live, Access::Password)).await;
         e.store.put_secret("a", "$argon2id$x").await.unwrap();
-        e.store
-            .put(&share("b", 2, ShareState::Live, Access::Password))
-            .await
-            .unwrap();
+        put_approved(&e, &share("b", 2, ShareState::Live, Access::Password)).await;
         e.restore().await;
         assert!(matches!(
             e.table.lookup("a.sky.tun.zip", "/"),
@@ -1556,12 +1778,12 @@ mod tests {
             ..share(id, 1, ShareState::Live, Access::Public)
         };
         for (id, root) in [("a", &kept), ("b", &swapped), ("c", &inside)] {
-            e.store.put(&dir_share(id, root)).await.unwrap();
+            put_approved(&e, &dir_share(id, root)).await;
             // `c` was pinned against another data dir (the platform default, say).
             let pin = sources::pin_root(root.to_str().unwrap(), &elsewhere, None).unwrap();
             e.store.put_pin(id, &pin).await.unwrap();
         }
-        e.store.put(&dir_share("d", &kept)).await.unwrap();
+        put_approved(&e, &dir_share("d", &kept)).await;
         std::fs::rename(&swapped, tmp.path().join("old")).unwrap();
         std::fs::create_dir(&swapped).unwrap();
 
@@ -1811,6 +2033,217 @@ mod tests {
         assert!(live.expires_ms.is_some());
         assert!(e.certs.lookup("app.sky.tun.zip").is_some());
         assert!(matches!(e.table.lookup("app.sky.tun.zip", "/"), Lookup::Found(..)));
+    }
+
+    /// FIX4 #1: a `shares` row naming this engine that arrived by replication (no local approval
+    /// record), or whose approved host/source was altered elsewhere, is never mounted and is
+    /// reported; with the switch off nothing mounts either.
+    #[tokio::test]
+    async fn replicated_rows_without_a_local_approval_stay_unmounted() {
+        let (_d, e) = engine(8).await;
+        e.store.set_enabled(true).await.unwrap();
+        let foreign = share("r", 1, ShareState::Live, Access::Public);
+        e.store.put(&foreign).await.unwrap();
+        put_approved(&e, &share("a", 2, ShareState::Live, Access::Public)).await;
+        let altered = share("x", 3, ShareState::Live, Access::Public);
+        put_approved(&e, &altered).await;
+        sqlx::query("UPDATE shares SET source = ? WHERE id = 'x'")
+            .bind(serde_json::to_string(&Source::Port(22)).unwrap())
+            .execute(e.store.pool())
+            .await
+            .unwrap();
+        e.restore().await;
+        let routed = |id: &str| matches!(e.table.lookup(&format!("{id}.sky.tun.zip"), "/"), Lookup::Found(..));
+        assert!(routed("a"));
+        assert!(!routed("r"), "replicated row mounted");
+        assert!(!routed("x"), "altered row mounted");
+        assert_eq!(e.unmounted(), vec!["r".to_owned(), "x".to_owned()]);
+        assert_eq!(e.store.get("r").await.unwrap().unwrap().state, ShareState::Live, "left as is");
+        // Offline → Live at a welcome goes through the same gate.
+        e.store
+            .put(&share("o", 4, ShareState::Offline, Access::Public))
+            .await
+            .unwrap();
+        e.welcome(&info_edge(), &test_info(), &test_welcome(&[])).await;
+        assert_eq!(e.store.get("o").await.unwrap().unwrap().state, ShareState::Offline);
+        assert!(!routed("o"));
+
+        e.table.remove("a");
+        e.store.set_enabled(false).await.unwrap();
+        e.restore().await;
+        assert!(!routed("a"), "mounted with the switch off");
+    }
+
+    /// FIX4 #10 (§7.4): a restart stops this engine's shares except those created from
+    /// Settings under a reserved name the mesh holds; an expired one stops as `expiry`.
+    #[tokio::test]
+    async fn start_stops_shares_except_reserved_settings_ones() {
+        let (_d, e) = engine(8).await;
+        e.store
+            .put_name("x", "tun.zip", "sky", NameKind::Reserved)
+            .await
+            .unwrap();
+        let call = Share {
+            created_by: CreatedBy::Call {
+                session: "s".into(),
+                call_id: "c".into(),
+            },
+            ..share("c", 1, ShareState::Live, Access::Public)
+        };
+        let random_name = Share {
+            host: "z.other.tun.zip".into(),
+            ..share("z", 2, ShareState::Live, Access::Public)
+        };
+        let expired = Share {
+            expires_ms: Some(5),
+            ..share("e", 3, ShareState::Live, Access::Public)
+        };
+        let kept = share("k", 4, ShareState::Live, Access::Public);
+        for s in [&call, &random_name, &expired, &kept] {
+            put_approved(&e, s).await;
+        }
+        e.start().await.unwrap();
+        for (id, want) in [
+            ("c", (ShareState::Stopped, Some(StoppedBy::User))),
+            ("z", (ShareState::Stopped, Some(StoppedBy::User))),
+            ("e", (ShareState::Stopped, Some(StoppedBy::Expiry))),
+            ("k", (ShareState::Live, None)),
+        ] {
+            let s = e.store.get(id).await.unwrap().unwrap();
+            assert_eq!((s.state, s.stopped_by), want, "{id}");
+        }
+        assert!(matches!(e.table.lookup("k.sky.tun.zip", "/"), Lookup::Found(..)));
+    }
+
+    /// FIX4 #6: an approval given before a Stop all (or with the switch turned off since) does
+    /// not publish.
+    #[tokio::test]
+    async fn publish_refused_after_stop_all_or_switch_off() {
+        let (_d, e) = engine(8).await;
+        e.store.set_enabled(true).await.unwrap();
+        let plan = || Plan {
+            source: Source::Port(5173),
+            label: Some("app".into()),
+            name: None,
+            path: "/".into(),
+            expiry: Expiry::H1,
+            access: Access::Public,
+        };
+        let asked = platform::time::now_ms();
+        e.store.stop_all_at(asked + 10).await.unwrap();
+        let err = e
+            .publish(plan(), CallOrigin::Settings, Consent::test_asked_at(asked))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Stop all was pressed"), "{err}");
+        e.store.set_enabled(false).await.unwrap();
+        let err = e
+            .publish(plan(), CallOrigin::Settings, Consent::test_asked_at(asked + 20))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Public sharing is off"), "{err}");
+    }
+
+    /// FIX4 #3: Stop all from a detached engine whose edge client runs waits for the attach
+    /// and sends `POST /v1/mesh/stop` on it.
+    #[tokio::test]
+    async fn stop_all_attaches_first_when_detached() {
+        let (_d, e) = engine(8).await;
+        e.client.store(true, Ordering::SeqCst);
+        let app = axum::Router::new().route(
+            share_proto::paths::MESH_STOP,
+            axum::routing::post(|| async { axum::Json(share_proto::StopAll { stop_all_ms: 1 }) }),
+        );
+        let control = Control::new(crate::edge::tests::FakeConn::new(app));
+        let redial = tokio::spawn({
+            let e = e.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                e.welcome(&control, &test_info(), &test_welcome(&[])).await;
+            }
+        });
+        let o = tokio::time::timeout(Duration::from_secs(5), e.stop_all())
+            .await
+            .expect("bounded")
+            .unwrap();
+        assert_eq!(o.edge_pending, None);
+        assert!(e.store.stop_all_pending().await.unwrap().is_none());
+        redial.await.unwrap();
+    }
+
+    /// FIX4 #12: the card's URL is known before the ask: a held name is used as is; a first
+    /// publish allocates its random name for the card and gives it back on a refusal.
+    #[tokio::test]
+    async fn preview_names_the_url_and_releases_a_fresh_name_on_refusal() {
+        use axum::routing::{delete, post};
+
+        let released = Arc::new(Mutex::new(Vec::<String>::new()));
+        let rel = released.clone();
+        let app = axum::Router::new()
+            .route(
+                share_proto::paths::NAMES,
+                post(|axum::Json(b): axum::Json<serde_json::Value>| async move {
+                    axum::Json(share_proto::NameGranted {
+                        name: b["name"].as_str().unwrap().to_owned(),
+                    })
+                }),
+            )
+            .route(
+                share_proto::paths::NAME,
+                delete(move |axum::extract::Path(n): axum::extract::Path<String>| {
+                    rel.lock().push(n.clone());
+                    async move {
+                        axum::Json(share_proto::NameReleased {
+                            name: n,
+                            reclaim_after_ms: 1,
+                        })
+                    }
+                }),
+            );
+        let plan = Plan {
+            source: Source::Port(5173),
+            label: Some("app".into()),
+            name: None,
+            path: "/".into(),
+            expiry: Expiry::H1,
+            access: Access::Public,
+        };
+
+        let (_d, e) = engine(8).await;
+        e.welcome(&info_edge(), &test_info(), &test_welcome(&[("sky", NameState::Valid)]))
+            .await;
+        let p = e.publish_preview(&plan).await.unwrap();
+        assert_eq!(
+            p,
+            PublishPreview {
+                name: "sky".into(),
+                url: "https://app.sky.tun.zip/".into(),
+                allocated: false
+            }
+        );
+
+        let (_d2, e2) = engine(8).await;
+        let info = test_info();
+        e2.store
+            .set_terms_rev(&info.edge_id.to_string(), &info.terms_rev)
+            .await
+            .unwrap();
+        e2.welcome(&Control::new(crate::edge::tests::FakeConn::new(app)), &info, &test_welcome(&[]))
+            .await;
+        let p = e2.publish_preview(&plan).await.unwrap();
+        assert!(p.allocated);
+        assert_eq!(p.url, format!("https://app.{}.tun.zip/", p.name));
+        // Allowed: the publish uses the allocated name (not yet in any welcome).
+        let link = e2.live_link().unwrap();
+        assert_eq!(
+            e2.pick_name(&link, Some(&p.name)).await.unwrap(),
+            (p.name.clone(), false)
+        );
+        // Refused: given back.
+        e2.release_preview(&p).await;
+        assert_eq!(*released.lock(), vec![p.name.clone()]);
     }
 
     #[test]

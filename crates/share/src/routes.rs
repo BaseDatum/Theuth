@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use tokio_util::sync::CancellationToken;
 
 use crate::model::{Access, Share, Source};
 use crate::sources::DirPin;
@@ -86,11 +87,16 @@ pub enum Lookup {
 #[derive(Default)]
 pub struct Table {
     map: ArcSwap<HashMap<String, Vec<Arc<Mount>>>>,
+    /// One token per routed share, cancelled when it leaves the table (§7.4 "open visitor
+    /// streams for that host are reset"): response bodies and upgraded streams select on it.
+    stops: parking_lot::Mutex<HashMap<String, CancellationToken>>,
 }
 
 impl Table {
-    /// Add or replace a mount.
+    /// Add or replace a mount. A share already routed keeps its stop token, so a remount (a
+    /// welcome's restore) does not orphan the streams it serves.
     pub fn insert(&self, m: Mount) {
+        self.stops.lock().entry(m.share.clone()).or_default();
         self.map.rcu(|cur| {
             let mut next = (**cur).clone();
             for v in next.values_mut() {
@@ -102,6 +108,16 @@ impl Table {
             next.retain(|_, v| !v.is_empty());
             next
         });
+    }
+
+    /// The stop token of a routed share; an already cancelled one when it is not routed (it
+    /// was removed between the lookup and this call).
+    pub fn stop_token(&self, share: &str) -> CancellationToken {
+        self.stops.lock().get(share).cloned().unwrap_or_else(|| {
+            let t = CancellationToken::new();
+            t.cancel();
+            t
+        })
     }
 
     /// Remove a share; returns whether it was routed.
@@ -118,6 +134,9 @@ impl Table {
             next.retain(|_, v| !v.is_empty());
             next
         });
+        if let Some(t) = self.stops.lock().remove(share) {
+            t.cancel();
+        }
         hit
     }
 
@@ -209,5 +228,21 @@ mod tests {
         assert!(t.remove("c"));
         assert_eq!(t.lookup("app.sky.tun.zip", "/"), Lookup::Misdirected);
         assert_eq!(t.hosts(), vec!["sky.tun.zip".to_owned()]);
+    }
+
+    /// FIX4 #11: a remount keeps the share's stop token; removing the share cancels it, and a
+    /// share no longer routed hands out a cancelled one.
+    #[test]
+    fn stop_token_survives_remount_and_fires_on_remove() {
+        let t = Table::default();
+        t.insert(m("a", "app.sky.tun.zip", ""));
+        t.insert(m("b", "docs.sky.tun.zip", ""));
+        let a = t.stop_token("a");
+        t.insert(m("a", "app.sky.tun.zip", ""));
+        assert!(!a.is_cancelled());
+        assert!(t.remove("a"));
+        assert!(a.is_cancelled());
+        assert!(!t.stop_token("b").is_cancelled(), "other shares keep streaming");
+        assert!(t.stop_token("a").is_cancelled());
     }
 }
