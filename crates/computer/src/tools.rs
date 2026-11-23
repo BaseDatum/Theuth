@@ -17,6 +17,7 @@ use tools::{DynTool, Risk, SessionResources, Tool, ToolCx, ToolOutput};
 
 use crate::ComputerConfig;
 use crate::a11y::{self, A11y};
+use crate::ax::{self, AxFront};
 use crate::clipboard::{self, Clipboard};
 use crate::frame::Frame;
 use crate::input::{self, Action, Button, InputError, Reply};
@@ -87,6 +88,56 @@ impl Ctx {
             InputError::Timeout => "input timed out after 30 s".to_owned(),
             InputError::Recovered(s) => format!("input thread recovered: {s}"),
         })
+    }
+}
+
+/// 210 §7.2 (F-m7): the refusal while a human-only approval is pending.
+pub(crate) const SELF_REFUSED: &str =
+    "refused: theuth's own window can't be driven while your approval is pending";
+
+/// 210 §7.2: an input to `front` (the frontmost window) or `target` (the window under the
+/// point) would land on theuth itself.
+#[must_use]
+pub(crate) fn drives_self(front: Option<&AxFront>, target: Option<&AxFront>) -> bool {
+    front.is_some_and(ax::is_self) || target.is_some_and(ax::is_self)
+}
+
+/// 210 §7.2: while a human-only approval is pending, an input-producing tool refuses when the
+/// frontmost window, or the window under `at` (global logical point), [`ax::is_self`]. The
+/// agent must not press its own Allow button. One approval-actor round trip otherwise.
+pub(crate) async fn guard_self(at: Option<(i32, i32)>) -> Result<(), String> {
+    if !tools::pending_human_only().await {
+        return Ok(());
+    }
+    let hits_self = tokio::task::spawn_blocking(move || {
+        let front = ax::frontmost();
+        let target = at
+            .and_then(|(x, y)| {
+                ax::Reader::default().hit_at(crate::pointer::Pt {
+                    x: x as f32,
+                    y: y as f32,
+                })
+            })
+            .and_then(|hit| hit.front);
+        drives_self(front.as_ref(), target.as_ref())
+    })
+    .await
+    // A panicked lookup cannot prove the target is not theuth: refuse.
+    .unwrap_or(true);
+    if hits_self {
+        Err(SELF_REFUSED.to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+/// 210 §7.2: for tools whose target window is not known before they act (`computer_act`,
+/// `computer_window`, the script tools): refuse outright while a human-only approval is pending.
+pub(crate) async fn refuse_while_human_only() -> Result<(), String> {
+    if tools::pending_human_only().await {
+        Err(SELF_REFUSED.to_owned())
+    } else {
+        Ok(())
     }
 }
 
@@ -242,6 +293,7 @@ computer_tool!(
     "Move the mouse pointer to (x, y), pixels of the last computer_screenshot, without clicking. Use it to hover a menu or reveal a tooltip.",
     |ctx, a, cx| {
         let (px, py) = try_out!(ctx.point(cx.session, a.x, a.y));
+        try_out!(guard_self(Some((px, py))).await);
         try_out!(ctx.act(Action::Move(px, py)).await);
         Ok(ToolOutput::ok(format!("moved to ({},{})", a.x, a.y)))
     }
@@ -273,6 +325,7 @@ computer_tool!(
     "Click at (x, y), pixels of the last computer_screenshot, or where the pointer is when x and y are omitted. `button` left (default) / right / middle; `count` 2 double-clicks, 3 triple-clicks; `modifiers` like `shift` or `cmd+shift` are held during the click.",
     |ctx, a, cx| {
         let at = try_out!(optional_point(ctx, cx.session, a.x, a.y));
+        try_out!(guard_self(at).await);
         let button = a.button.unwrap_or(Button::Left);
         let count = a.count.unwrap_or(1).clamp(1, 3);
         let mods = match &a.modifiers {
@@ -308,6 +361,8 @@ computer_tool!(
     |ctx, a, cx| {
         let from = try_out!(ctx.point(cx.session, a.from[0], a.from[1]));
         let to = try_out!(ctx.point(cx.session, a.to[0], a.to[1]));
+        try_out!(guard_self(Some(from)).await);
+        try_out!(guard_self(Some(to)).await);
         let button = a.button.unwrap_or(Button::Left);
         try_out!(ctx.act(Action::Drag { from, to, button }).await);
         Ok(ToolOutput::ok(format!(
@@ -340,6 +395,7 @@ computer_tool!(
     "Scroll by `dy` lines (positive = down) and/or `dx` lines (positive = right), at (x, y) in pixels of the last computer_screenshot or under the pointer when x and y are omitted.",
     |ctx, a, cx| {
         let at = try_out!(optional_point(ctx, cx.session, a.x, a.y));
+        try_out!(guard_self(at).await);
         let dx = a.dx.unwrap_or(0);
         let dy = a.dy.unwrap_or(0);
         if dx == 0 && dy == 0 {
@@ -367,6 +423,7 @@ computer_tool!(
     "Type `text` into whatever control has keyboard focus, as if on the keyboard (any language; newlines press Return). Click a field first; use computer_key for shortcuts.",
     |ctx, a, _cx| {
         let n = a.text.chars().count();
+        try_out!(guard_self(None).await);
         try_out!(ctx.act(Action::Type(a.text)).await);
         Ok(ToolOutput::ok(format!("typed {n} chars")))
     }
@@ -388,6 +445,7 @@ computer_tool!(
         if input::is_refused(&keys) {
             return Ok(ToolOutput::err("refused: this chord quits or logs out; ask the user to press it"));
         }
+        try_out!(guard_self(None).await);
         try_out!(ctx.act(Action::Chord(keys)).await);
         Ok(ToolOutput::ok(format!("pressed {}", a.keys)))
     }
@@ -589,5 +647,89 @@ mod tests {
         ctx.forget(&[closing, SessionId::new()]);
         assert!(!ctx.frames().contains_key(&closing));
         assert!(ctx.frames().contains_key(&other));
+    }
+
+    /// 210 §7.2: while a human-only approval waits, theuth's own window is off limits to
+    /// input and the script/act tools refuse outright; another app's window is not, and
+    /// everything is back once the owner answered.
+    #[tokio::test]
+    async fn input_to_theuth_is_refused_while_a_human_only_approval_is_pending() {
+        use kameo::actor::Spawn;
+
+        let theuth = AxFront {
+            pid: std::process::id() as i32,
+            app: "theuth".into(),
+            bundle_id: None,
+            window_title: None,
+            document_url: None,
+        };
+        let other = AxFront {
+            pid: 1,
+            bundle_id: Some("com.apple.TextEdit".into()),
+            ..theuth.clone()
+        };
+        assert!(drives_self(Some(&theuth), None));
+        assert!(drives_self(Some(&other), Some(&theuth)));
+        assert!(!drives_self(Some(&other), Some(&other)));
+        assert!(!drives_self(None, None));
+
+        assert_eq!(refuse_while_human_only().await, Ok(()));
+        let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let approval =
+            tools::Approval::spawn(tools::Approval::new(rt, std::time::Duration::from_secs(30)));
+        approval.register(tools::APPROVAL_ACTOR).unwrap();
+        let asking = {
+            let approval = approval.clone();
+            tokio::spawn(async move {
+                approval
+                    .ask(tools::RequestHumanOnly(tools::approval::RequestApproval {
+                        session: SessionId::new(),
+                        tool: "share_publish".into(),
+                        args: serde_json::json!({}),
+                        risk: Risk::Destructive,
+                        call_id: None,
+                    }))
+                    .await
+            })
+        };
+        let mut pending = Vec::new();
+        while pending.is_empty() {
+            tokio::task::yield_now().await;
+            pending = approval.ask(tools::PendingApprovals).await.unwrap();
+        }
+        assert!(pending[0].human_only);
+        assert_eq!(
+            refuse_while_human_only().await,
+            Err(SELF_REFUSED.to_owned())
+        );
+        // The script tool (macOS) refuses before running anything.
+        if let Some(script) = native::all()
+            .into_iter()
+            .find(|t| t.spec().name == "applescript")
+        {
+            let cx = tools::ToolCx {
+                session: SessionId::new(),
+                call_id: "c".into(),
+                quiet: false,
+                resources: SessionResources::durable_arc(Path::new("/tmp")),
+                cancel: tools::CancellationToken::new(),
+                promote_after: None,
+            };
+            let out = script
+                .call(serde_json::json!({"script": "return 1"}), cx)
+                .await
+                .unwrap();
+            assert!(out.is_error && out.content == SELF_REFUSED, "{out:?}");
+        }
+
+        approval
+            .ask(tools::Resolve {
+                id: pending[0].id,
+                decision: tools::Decision::Deny,
+            })
+            .await
+            .unwrap();
+        asking.await.unwrap().unwrap();
+        assert_eq!(refuse_while_human_only().await, Ok(()));
     }
 }

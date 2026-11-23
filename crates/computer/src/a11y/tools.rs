@@ -7,7 +7,7 @@ use tools::{Risk, Tool, ToolCx, ToolOutput};
 
 use super::Request;
 use super::args::{ActArgs, FindArgs, GetArgs, SnapshotArgs, WindowArgs, WindowsArgs};
-use crate::tools::{Ctx, computer_tool, try_out};
+use crate::tools::{Ctx, computer_tool, refuse_while_human_only, try_out};
 
 computer_tool!(
     /// `computer_snapshot` → agent-desktop `snapshot`.
@@ -34,7 +34,11 @@ computer_tool!(
     /// `computer_act` → one headless agent-desktop ref action.
     ActTool, "computer_act", Risk::Mutating, ActArgs,
     "Act on an element by its ref from the latest snapshot, headlessly through the accessibility API: no pointer movement, no focus stealing, no synthetic keys. Actions: click, double_click, right_click, focus, clear, set_value / type / select (with `value`), toggle, check, uncheck, expand, collapse, scroll (`direction`, `amount`), scroll_to. Where no headless path exists it fails without acting. On STALE_REF or AMBIGUOUS_TARGET take a new snapshot; retry only when the error's `retry` is `safe`.",
-    |ctx, a, cx| Ok(ToolOutput::ok(try_out!(ctx.a11y.run(cx.session, Request::Act(a)).await)))
+    |ctx, a, cx| {
+        // 210 §7.2: the ref's app is not known here; refuse while a human-only card waits.
+        try_out!(refuse_while_human_only().await);
+        Ok(ToolOutput::ok(try_out!(ctx.a11y.run(cx.session, Request::Act(a)).await)))
+    }
 );
 
 computer_tool!(
@@ -48,5 +52,8 @@ computer_tool!(
     /// `computer_window` → agent-desktop's window commands.
     WindowTool, "computer_window", Risk::Mutating, WindowArgs,
     "Focus, minimize, maximize, restore, move (`x`, `y`) or resize (`width`, `height`) a window by its id from computer_windows.",
-    |ctx, a, cx| Ok(ToolOutput::ok(try_out!(ctx.a11y.run(cx.session, Request::Window(a)).await)))
+    |ctx, a, cx| {
+        try_out!(refuse_while_human_only().await);
+        Ok(ToolOutput::ok(try_out!(ctx.a11y.run(cx.session, Request::Window(a)).await)))
+    }
 );

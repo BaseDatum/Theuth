@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::activity::{self, Activity, ActivitySink, Kind, OperationId};
-use crate::approval::{Approval, Decision, RequestApproval};
+use crate::approval::{Approval, Decision, RequestApproval, RequestHumanOnly};
 use crate::ask::{AskUser, AskUserTool};
 use crate::builtins::{self, BUILTIN_CATEGORY_PREFIX, BuiltinCategory, BuiltinTool, CATEGORIES};
 use crate::communication::{self, Admitted, CommunicationAccess};
@@ -92,6 +92,10 @@ pub struct ToolRegistry {
     /// 16 §5 (2026-11-11): sessions a plugin runs a tool call under without the local-network
     /// grant it holds itself (a notebook source's ingest job), from [`SetNoLan`].
     no_lan: HashSet<SessionId>,
+    /// 210 §7.2: sessions a chat channel bound to a thread whose user is not the owner, from
+    /// [`SetNonOwnerThread`]. A human-only tool is refused in them and their subagents. In
+    /// memory only; the channels re-send it for their bound threads at start.
+    non_owner_thread: HashSet<SessionId>,
     /// `<data_dir>/config.yaml`, for the persistent switch.
     config_path: PathBuf,
     /// Per-root file capability from [`InstallResources`] (51 §4.5); a
@@ -991,6 +995,7 @@ impl Message<Forget> for ToolRegistry {
             self.allow_only.remove(s);
             self.turn_allow_only.remove(s);
             self.no_lan.remove(s);
+            self.non_owner_thread.remove(s);
             crate::seat::forget(*s);
             crate::textref::forget_clips(*s);
         }
@@ -1367,7 +1372,9 @@ impl ToolRegistry {
     /// at least `Ask` when the args carry a secret placeholder
     /// (37 §0.4), then `Ask` → `Allow` unless prompts are on for the session:
     /// its nearest pin ([`SetApprovals`], 183 §4.5), else `tools.approvals`.
-    /// `Deny` is never rewritten.
+    /// `Deny` is never rewritten. A [`crate::Tool::HUMAN_ONLY`] tool (210 §7.2) is `Deny` in a
+    /// contact turn or a session bound to a non-owner chat thread, else at least `Ask`, and
+    /// neither the session pin nor `tools.approvals: false` rewrites that `Ask`.
     fn effective(
         &self,
         session: Option<SessionId>,
@@ -1378,12 +1385,20 @@ impl ToolRegistry {
         if session.is_some_and(|s| self.capped(s, name, risk).is_some()) {
             return PolicyAction::Deny;
         }
-        let by_card = self.tools.get(name).is_some_and(|t| t.approved_by_card());
+        let tool = self.tools.get(name);
+        let human_only = tool.is_some_and(|t| t.human_only());
+        if human_only && session.is_some_and(|s| self.owner_absent(s)) {
+            return PolicyAction::Deny;
+        }
+        let by_card = tool.is_some_and(|t| t.approved_by_card());
         let mut action = self
             .policy
             .action(if by_card { Risk::ReadOnly } else { risk });
         if mentions {
             action = action.max(PolicyAction::Ask);
+        }
+        if human_only {
+            return action.max(PolicyAction::Ask);
         }
         if action == PolicyAction::Ask
             && !session
@@ -1395,11 +1410,38 @@ impl ToolRegistry {
         action
     }
 
+    /// 210 §7.2: the owner is not the one in this session: a contact turn or inbox
+    /// ([`Self::contact_scoped`]), or a session (or an ancestor) bound to a non-owner chat
+    /// thread ([`SetNonOwnerThread`]).
+    fn owner_absent(&self, id: SessionId) -> bool {
+        if self.contact_scoped(id) {
+            return true;
+        }
+        let mut cur = id;
+        loop {
+            if self.non_owner_thread.contains(&cur) {
+                return true;
+            }
+            match self.parents.get(&cur) {
+                Some(p) => cur = *p,
+                None => return false,
+            }
+        }
+    }
+
+    /// Whether `name` is a registered [`crate::Tool::HUMAN_ONLY`] tool.
+    fn human_only(&self, name: &str) -> bool {
+        self.tools.get(name).is_some_and(|t| t.human_only())
+    }
+
     /// Why a `Deny` from [`Self::effective`] happened, for the model: the cap
     /// names its ceiling so the subagent knows the refusal is not the policy's.
     fn denied(&self, session: SessionId, name: &str, risk: Risk) -> String {
         match self.capped(session, name, risk) {
             Some(cap) => format!("denied: subagent is capped at {cap}"),
+            None if self.human_only(name) && self.owner_absent(session) => {
+                "denied: only the owner can approve this, and this conversation is not the owner's (a contact's turn or a non-owner chat thread)".to_owned()
+            }
             None => "denied by policy".to_owned(),
         }
     }
@@ -1501,6 +1543,12 @@ impl ToolRegistry {
                 return Err(Unavailable(format!("{name}: {why}")));
             }
             PolicyAction::Ask => match activation {
+                // 210 §7.2: an app press is not the owner's approval of a human-only call.
+                _ if tool.human_only() => {
+                    return Err(Unavailable(format!(
+                        "{name}: only the owner can approve this tool, in theuth itself; an app cannot run it"
+                    )));
+                }
                 None => return Err(Refused::NeedsApproval),
                 Some(a) => tracing::info!(
                     tool = %name, risk = ?spec.risk, secrets = mentions,
@@ -1676,6 +1724,7 @@ impl Message<ExternalApproval> for ToolRegistry {
                 return reply;
             }
         };
+        let human_only = self.human_only(&m.tool);
         tokio::spawn(async move {
             let req = RequestApproval {
                 session: m.session,
@@ -1684,19 +1733,19 @@ impl Message<ExternalApproval> for ToolRegistry {
                 risk: m.risk,
                 call_id: None,
             };
+            let asked = if human_only {
+                approval.ask(RequestHumanOnly(req)).await.ok()
+            } else {
+                approval.ask(req).await.ok()
+            };
             // Timeout already resolves as `Deny`; an unreachable actor is one too.
             // 207: a dismissal is carried, not flattened into a deny.
-            tx.send(
-                approval
-                    .ask(req)
-                    .await
-                    .map_or(ExternalVerdict::plain(Decision::Deny), |r| {
-                        ExternalVerdict {
-                            decision: r.decision,
-                            dismissed: r.dismissed,
-                        }
-                    }),
-            );
+            tx.send(asked.map_or(ExternalVerdict::plain(Decision::Deny), |r| {
+                ExternalVerdict {
+                    decision: r.decision,
+                    dismissed: r.dismissed,
+                }
+            }));
         });
         reply
     }
@@ -1937,6 +1986,37 @@ impl Message<SetNoLan> for ToolRegistry {
         } else {
             self.no_lan.remove(&m.session);
         }
+    }
+}
+
+/// `tell` (210 §7.2): `session` is bound to a chat thread whose user is not the owner (`on`),
+/// or no longer is. Sent by the Slack and Telegram channels on every bind and for every bound
+/// thread at start; a human-only tool is refused in such a session and its subagents.
+#[derive(Clone, Copy, Debug)]
+pub struct SetNonOwnerThread {
+    /// The bound session.
+    pub session: SessionId,
+    /// Set or lift.
+    pub on: bool,
+}
+
+impl Message<SetNonOwnerThread> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: SetNonOwnerThread, _: &mut Context<Self, Self::Reply>) {
+        if m.on {
+            self.non_owner_thread.insert(m.session);
+        } else {
+            self.non_owner_thread.remove(&m.session);
+        }
+    }
+}
+
+/// [`SetNonOwnerThread`] to the registered registry, without waiting; a no-op when none runs.
+/// Synchronous so a channel can call it under its own lock.
+pub fn mark_non_owner_thread(session: SessionId, on: bool) {
+    if let Ok(Some(registry)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR) {
+        let _ = registry.tell(SetNonOwnerThread { session, on }).try_send();
     }
 }
 
@@ -2357,7 +2437,14 @@ async fn invoke(
             call_id: Some(call_id.clone()),
         };
         let suspended = suspend();
-        let answer = approval.ask(req).await;
+        let answer = if tool.human_only() {
+            approval
+                .ask(RequestHumanOnly(req))
+                .await
+                .map_err(|e| e.to_string())
+        } else {
+            approval.ask(req).await.map_err(|e| e.to_string())
+        };
         match answer {
             Ok(r) if r.decision == Decision::Allow => {}
             // Denied / timed out / unavailable: the suspension drops
@@ -2632,6 +2719,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             allow_only: HashMap::new(),
             turn_allow_only: HashMap::new(),
             no_lan: HashSet::new(),
+            non_owner_thread: HashSet::new(),
             config_path: rt.data_dir.join("config.yaml"),
             resources: HashMap::new(),
             durable: SessionResources::durable_arc(&rt.data_dir),
@@ -2707,6 +2795,7 @@ pub(crate) mod tests {
             allow_only: HashMap::new(),
             turn_allow_only: HashMap::new(),
             no_lan: HashSet::new(),
+            non_owner_thread: HashSet::new(),
             config_path: PathBuf::new(),
             resources: HashMap::new(),
             durable: SessionResources::durable_arc(std::path::Path::new("/tmp")),
@@ -5361,5 +5450,173 @@ pub(crate) mod tests {
                 dismissed: true
             }
         );
+    }
+
+    /// A human-only tool, like `share_publish` (210 §7.2).
+    struct Publish(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Tool for Publish {
+        const NAME: &'static str = "publish";
+        const RISK: Risk = Risk::Destructive;
+        const HUMAN_ONLY: bool = true;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolOutput::ok("published"))
+        }
+    }
+
+    /// What [`Owner`] saw: per card, `(human_only, double's ResolveBy accepted)`.
+    type Seen = Arc<Mutex<Vec<(bool, bool)>>>;
+
+    /// Bus subscriber standing in for the double, then the owner: it first tries to answer
+    /// every card as the double, then allows it as the human.
+    #[derive(kameo::Actor)]
+    struct Owner(ActorRef<Approval>, Seen);
+
+    impl Message<crate::approval::ApprovalRequested> for Owner {
+        type Reply = ();
+        async fn handle(
+            &mut self,
+            m: crate::approval::ApprovalRequested,
+            _: &mut Context<Self, ()>,
+        ) {
+            let double = self
+                .0
+                .ask(crate::approval::ResolveBy {
+                    id: m.id,
+                    decision: Decision::Allow,
+                    by: crate::journal::Answerer::Double,
+                })
+                .await
+                .unwrap();
+            lock(&self.1).push((m.human_only, double));
+            if !double {
+                let _ = self
+                    .0
+                    .ask(crate::approval::Resolve {
+                        id: m.id,
+                        decision: Decision::Allow,
+                    })
+                    .await;
+            }
+        }
+    }
+
+    /// 210 §7.2: with every policy `allow`, `tools.approvals: false` and the session pinned
+    /// off, a human-only call still asks; its card says `human_only`; the double's answer is
+    /// refused and only the human's runs it. A plain tool under the same switches never asks.
+    #[tokio::test]
+    async fn human_only_asks_with_approvals_off_and_the_double_cannot_answer() {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(5)));
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let all_allow = Policy {
+            read_only: PolicyAction::Allow,
+            mutating: PolicyAction::Allow,
+            destructive: PolicyAction::Allow,
+        };
+        let reg = ToolRegistry::spawn(ToolRegistry {
+            policy: all_allow,
+            approvals: false,
+            approval: Some(approval.clone()),
+            ..build(vec![Arc::new(Publish(runs.clone())), Arc::new(Echo)], None)
+        });
+        let seen: Seen = Arc::default();
+        let owner = Owner::spawn(Owner(approval.clone(), seen.clone()));
+        rt.subscribe::<Owner, crate::approval::ApprovalRequested>(&owner)
+            .await;
+        let session = SessionId::new();
+        reg.ask(SetApprovals {
+            session: Some(session),
+            enabled: false,
+            clear: false,
+        })
+        .await
+        .unwrap();
+
+        let out = reg.ask(Invoke(call("echo", session))).await.unwrap();
+        assert_eq!(out.content, "hi");
+        assert!(lock(&seen).is_empty(), "a plain tool asked");
+
+        let out = reg.ask(Invoke(call("publish", session))).await.unwrap();
+        assert_eq!(out.content, "published", "{out:?}");
+        assert_eq!(*lock(&seen), [(true, false)]);
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let i = reg
+            .ask(InspectTool {
+                session,
+                name: "publish".into(),
+                args: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(i.action, PolicyAction::Ask);
+    }
+
+    /// 210 §7.2: policy `deny` still denies a human-only tool; an app press never answers
+    /// its `Ask`; a session bound to a non-owner thread, and its subagents, are refused.
+    #[tokio::test]
+    async fn human_only_refuses_deny_app_press_and_non_owner_threads() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let deny = Policy {
+            read_only: PolicyAction::Allow,
+            mutating: PolicyAction::Allow,
+            destructive: PolicyAction::Deny,
+        };
+        let reg = registry_with(vec![Arc::new(Publish(runs.clone()))], None, deny, None);
+        let session = SessionId::new();
+        let out = reg.ask(Invoke(call("publish", session))).await.unwrap();
+        assert_eq!(out.content, "publish: denied by policy");
+
+        let reg = registry(vec![Arc::new(Publish(runs.clone()))], None);
+        let identity = bound(&reg, session, "publish").await;
+        let pressed = reg
+            .ask(AppInvoke {
+                call: call("publish", session),
+                activation: press("1"),
+                expected_identity: identity,
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(&pressed, AppInvoked::Unavailable(why) if why.contains("only the owner")),
+            "{pressed:?}"
+        );
+
+        let (thread, child) = (SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent: thread,
+        })
+        .await
+        .unwrap();
+        reg.tell(SetNonOwnerThread {
+            session: thread,
+            on: true,
+        })
+        .await
+        .unwrap();
+        for s in [thread, child] {
+            let out = reg.ask(Invoke(call("publish", s))).await.unwrap();
+            assert!(
+                out.is_error && out.content.contains("not the owner's"),
+                "{out:?}"
+            );
+        }
+        reg.tell(SetNonOwnerThread {
+            session: thread,
+            on: false,
+        })
+        .await
+        .unwrap();
+        // Lifted: back to asking, and no approval actor runs here.
+        let out = reg.ask(Invoke(call("publish", thread))).await.unwrap();
+        assert!(out.content.contains("approval required"), "{out:?}");
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

@@ -225,7 +225,7 @@ fn empty_pending_replaces_categories_and_loss_resync_preserves_inspection() {
     let mut model = Model::new("model".into(), true);
     model.session = Some(session);
     model.components.register(Counter::new("counter")).unwrap();
-    let request = tools::ApprovalRequested { id: tools::ApprovalId(uuid::Uuid::now_v7()), session, tool: "shell".into(), args: json!({"command":"echo hi"}), risk: tools::Risk::ReadOnly };
+    let request = tools::ApprovalRequested { id: tools::ApprovalId(uuid::Uuid::now_v7()), session, tool: "shell".into(), args: json!({"command":"echo hi"}), risk: tools::Risk::ReadOnly, human_only: false };
     let ask = tools::AskRequested { id: tools::AskId(uuid::Uuid::now_v7()), session, questions: vec![tools::Question { id: "q".into(), question: "Which?".into(), options: vec![], recommended: None }] };
     let secret = json!({"type":"SecretRequested","id":uuid::Uuid::now_v7(),"session":session,"name":"token","note":"API","current":null});
     model.apply(UiEvent::Wire(TopicEvent::control(json!({"type":"PendingPrompts","approvals":[request],"asks":[ask],"secrets":[secret]}))));

@@ -69,7 +69,7 @@ pub use activity::{
 };
 pub use approval::{
     Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Dismiss, ForgetSession,
-    PendingApprovals, Resolve, ResolveBy,
+    PendingApprovals, PendingHumanOnly, RequestHumanOnly, Resolve, ResolveBy, pending_human_only,
 };
 pub use ask::{
     Answer, AnswerAsk, AnswerAskBy, AskId, AskRequested, AskResolved, AskUser, Choice, LeaveAsk,
@@ -109,7 +109,8 @@ pub use registry::{
 };
 pub use registry::{
     Allowlisted, CancelCalls, ContactScoped, EffectiveCap, InstallResources, RemoveResources,
-    RestoreApprovals, RestoreHidden, SetAllowOnly, SetNoLan, SetPromoteAfter, SetTurnCap,
+    RestoreApprovals, RestoreHidden, SetAllowOnly, SetNoLan, SetNonOwnerThread, SetPromoteAfter,
+    SetTurnCap, mark_non_owner_thread,
 };
 pub use registry::{
     BuiltinsSwitchError, CloseTreeAll, ExpectParticipants, HarnessInvoke, HiddenEpoch,
@@ -411,6 +412,14 @@ pub trait Tool: Send + Sync + 'static {
     /// Default `false`.
     const APPROVED_BY_CARD: bool = false;
 
+    /// 210 §7.2 (D10): only the owner, in person, on a surface the owner controls may approve
+    /// a call of this tool. The gate keeps it at least `Ask` whatever `tools.approvals`, a
+    /// session pin or the policy say (`Deny` still denies); an app activation, the double
+    /// ([`approval::ResolveBy`] with a non-human answerer) and a non-owner chat user can never
+    /// answer it; it is refused outright in contact turns and in sessions bound to a non-owner
+    /// chat thread ([`registry::SetNonOwnerThread`]). Default `false`.
+    const HUMAN_ONLY: bool = false;
+
     /// Run it.
     async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput>;
 }
@@ -455,6 +464,10 @@ pub trait ErasedTool: Send + Sync + 'static {
     fn approved_by_card(&self) -> bool {
         false
     }
+    /// [`Tool::HUMAN_ONLY`]. MCP tools keep the default `false`.
+    fn human_only(&self) -> bool {
+        false
+    }
     /// Invoke with raw args.
     fn call(
         &self,
@@ -491,6 +504,10 @@ impl<T: Tool> ErasedTool for T {
 
     fn approved_by_card(&self) -> bool {
         T::APPROVED_BY_CARD
+    }
+
+    fn human_only(&self) -> bool {
+        T::HUMAN_ONLY
     }
 
     fn call(

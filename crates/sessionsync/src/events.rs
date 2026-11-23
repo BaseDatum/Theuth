@@ -1298,6 +1298,7 @@ mod tests {
                 tool: "shell".into(),
                 args: serde_json::json!({ "command": "cargo test" }),
                 risk: tools::Risk::Mutating,
+                human_only: false,
             })
             .await;
         let got = tokio::time::timeout(Duration::from_secs(5), tapped.recv())
@@ -1345,6 +1346,7 @@ mod tests {
                 tool: "shell".into(),
                 args: serde_json::json!({}),
                 risk: tools::Risk::Mutating,
+                human_only: false,
             })
             .await;
         tokio::time::timeout(Duration::from_secs(5), tapped.recv())
@@ -1689,6 +1691,7 @@ mod tests {
                 tool: "shell".into(),
                 args: serde_json::json!({}),
                 risk: tools::Risk::Mutating,
+                human_only: false,
             })
             .await;
         let card = tokio::time::timeout(Duration::from_secs(5), rtapped.recv())
@@ -1753,6 +1756,7 @@ mod tests {
                 tool: "shell".into(),
                 args: serde_json::json!({}),
                 risk: tools::Risk::Mutating,
+                human_only: false,
             })
             .await;
         let live = tokio::time::timeout(Duration::from_secs(5), tapped.recv())

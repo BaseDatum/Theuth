@@ -330,6 +330,8 @@ struct Card {
     session: SessionId,
     /// The thread's user, allowed to click beside the owner; `None` for owner-DM cards.
     thread_user: Option<String>,
+    /// 210 §7.2: only the owner may click it, never the thread user.
+    human_only: bool,
     /// Who clicked, once a click was accepted.
     by: Option<String>,
     /// Owner-DM cards only: `(ts, body, session context line)`.
@@ -815,10 +817,11 @@ impl Channel {
             Outcome::Resume { session, reply, .. } => {
                 // A fresh root message in this channel becomes the session's thread.
                 match self.api.post_markdown(channel, None, &reply.text).await {
-                    Ok(ts) => self.lock().threads.bind(
-                        thread_key(channel, &ts),
-                        Thread::new(session, user.to_owned(), team.to_owned()),
-                    ),
+                    Ok(ts) => {
+                        let thread = Thread::new(session, user.to_owned(), team.to_owned());
+                        self.note_thread(&thread);
+                        self.lock().threads.bind(thread_key(channel, &ts), thread);
+                    }
                     Err(e) => tracing::warn!(error = %e, "slack resume root post failed"),
                 }
                 reply
@@ -1007,14 +1010,13 @@ impl Channel {
     }
 
     /// An Allow/Deny click (21 §10.1): owner or the card's thread user may
-    /// answer; the card itself is updated when `ApprovalResolved` arrives.
+    /// answer — only the owner for a human-only card (210 §7.2); the card
+    /// itself is updated when `ApprovalResolved` arrives.
     async fn handle_click(&self, click: approvals::Click) {
         let permitted = click.user == self.owner
-            || self
-                .lock()
-                .cards
-                .get(&click.id)
-                .is_some_and(|c| c.thread_user.as_deref() == Some(click.user.as_str()));
+            || self.lock().cards.get(&click.id).is_some_and(|c| {
+                !c.human_only && c.thread_user.as_deref() == Some(click.user.as_str())
+            });
         if !permitted {
             tracing::warn!(user = %click.user, "slack approval click from a user who may not answer it");
             self.ephemeral(&click.channel, &click.user, "not allowed")
@@ -1374,6 +1376,7 @@ impl Channel {
                             s.workers.remove(&key);
                         }
                         s.threads.bind(key.clone(), thread.clone());
+                        self.note_thread(&thread);
                     }
                     let _ = self.worker(&key, &thread).send(Out::Mark(m.ts, voice));
                 }
@@ -1431,6 +1434,7 @@ impl Channel {
                         s.threads.touch(&key);
                     } else {
                         s.threads.bind(key.clone(), thread.clone());
+                        self.note_thread(&thread);
                     }
                 }
                 let _ = self.worker(&key, &thread).send(Out::Mark(m.ts, voice));
@@ -1643,6 +1647,11 @@ impl Channel {
                     match &ev {
                         AgentEvent::TurnStarted { .. } => {
                             s.running.insert(session);
+                            // 210 §7.2: re-said each turn, so a restart (the
+                            // registry keeps it in memory) never forgets it.
+                            if let Some((_, t)) = s.threads.by_session(session) {
+                                self.note_thread(t);
+                            }
                         }
                         AgentEvent::TurnFinished { .. } => {
                             s.running.remove(&session);
@@ -1673,6 +1682,7 @@ impl Channel {
                             Card {
                                 session: req.session,
                                 thread_user: Some(thread.user.clone()),
+                                human_only: req.human_only,
                                 by: None,
                                 dm: None,
                             },
@@ -1903,6 +1913,14 @@ impl Channel {
         }
     }
 
+    /// 210 §7.2: a session bound to a thread whose user is not the owner may not run a
+    /// human-only tool; tells the tool registry (never lifted while the engine runs).
+    fn note_thread(&self, thread: &Thread) {
+        if thread.user != self.owner {
+            tools::mark_non_owner_thread(thread.session, true);
+        }
+    }
+
     /// The thread rendering `session`, cloned out of the lock.
     pub(crate) fn bound(&self, session: SessionId) -> Option<(ThreadKey, Thread)> {
         self.lock()
@@ -1952,6 +1970,7 @@ impl Channel {
                     Card {
                         session: req.session,
                         thread_user: None,
+                        human_only: req.human_only,
                         by: None,
                         dm: Some((ts, body, context)),
                     },
@@ -2002,6 +2021,7 @@ impl Channel {
             let mut s = self.lock();
             s.parent_of.insert(child, (parent, name.clone()));
             s.threads.bind(key.clone(), thread.clone());
+            self.note_thread(&thread);
         }
         let link = self.permalink(channel, &ts).await;
         let _ = self.worker(&key, &thread);
@@ -3417,6 +3437,7 @@ pub(crate) mod tests {
             tool: "shell".into(),
             args: json!({ "command": "rm -rf target/" }),
             risk: tools::Risk::Destructive,
+            human_only: false,
         }
     }
 
@@ -3971,6 +3992,32 @@ pub(crate) mod tests {
         let updated = format!("update_blocks {DM} 7.7");
         f.until(|calls| calls.contains(&updated)).await;
         assert!(f.chan.lock().cards.is_empty());
+    }
+
+    /// 210 §7.2: on a human-only card in a friend's thread, the thread user's click is
+    /// refused and only the owner's resolves it.
+    #[tokio::test]
+    async fn human_only_card_in_a_bound_thread_takes_only_the_owners_click() {
+        let f = fixture();
+        f.bind(FRIEND);
+        let req = ApprovalRequested {
+            human_only: true,
+            ..approval(f.stub.session)
+        };
+        let id = req.id;
+        f.chan.route(Event::Requested(req)).await;
+        let card = format!("post_blocks {DM} 100.1 2 blocks");
+        f.until(|calls| calls.contains(&card)).await;
+
+        f.chan
+            .handle_inbound(click(FRIEND, id, approvals::ACTION_APPROVE))
+            .await;
+        assert!(f.stub.calls().is_empty(), "{:?}", f.stub.calls());
+
+        f.chan
+            .handle_inbound(click(OWNER, id, approvals::ACTION_APPROVE))
+            .await;
+        assert_eq!(f.stub.calls(), vec![Call::Resolve(id, Decision::Allow)]);
     }
 
     fn artifact(session: SessionId, dir: &Path) -> ArtifactShown {

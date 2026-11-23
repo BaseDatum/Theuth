@@ -19,6 +19,8 @@ pub struct Card {
     pub session: SessionId,
     /// The thread's user, allowed to press beside the owner; `None` for owner-chat cards.
     pub thread_user: Option<u64>,
+    /// 210 §7.2: only the owner may press it, never the thread user.
+    pub human_only: bool,
     /// Where the card is, once sent.
     pub at: Option<MsgRef>,
     /// The text [`card`] used (edited in place on resolution).
@@ -74,7 +76,16 @@ pub fn body(req: &ApprovalRequested) -> String {
             ),
         ),
     };
-    format!("⚠️ **{}** wants to run\n```{lang}\n{args}\n```", req.tool)
+    let owner_only = if req.human_only {
+        // 210 §7.2: the thread user's press is refused; say so on the card.
+        "\n_Only the owner can answer this._"
+    } else {
+        ""
+    };
+    format!(
+        "⚠️ **{}** wants to run\n```{lang}\n{args}\n```{owner_only}",
+        req.tool
+    )
 }
 
 /// The card after resolution: the first line of `body` becomes the verdict
@@ -151,6 +162,7 @@ mod tests {
             tool: tool.into(),
             args,
             risk: tools::Risk::Mutating,
+            human_only: false,
         }
     }
 

@@ -266,6 +266,7 @@ mod tests {
             tool: tool.to_owned(),
             args,
             risk: tools::Risk::Destructive,
+            human_only: false,
         }
     }
 

@@ -3071,6 +3071,7 @@ mod tests {
                 tool: "shell".into(),
                 args: serde_json::json!({ "command": "rm -rf target/" }),
                 risk: Risk::Destructive,
+                human_only: false,
             }))
             .await;
         let Some(SentItem::Text { timestamp, .. }) = f.transport.sent().last().cloned() else {

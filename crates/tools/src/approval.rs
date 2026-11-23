@@ -52,6 +52,11 @@ pub struct ApprovalRequested {
     pub args: serde_json::Value,
     /// Risk class that triggered the ask.
     pub risk: Risk,
+    /// 210 §7.2 (D10): only the owner, in person, may answer: every client renders an
+    /// owner-only card ("only you can answer"), a chat channel accepts only the owner's
+    /// click, and [`ResolveBy`] with any answerer but [`Answerer::Human`] is refused.
+    #[serde(default)]
+    pub human_only: bool,
 }
 
 impl wire::WireEvent for ApprovalRequested {
@@ -128,6 +133,12 @@ pub struct RequestApproval {
     /// for an external approval that belongs to no call.
     pub call_id: Option<String>,
 }
+
+/// 210 §7.2: [`RequestApproval`] for a [`crate::Tool::HUMAN_ONLY`] tool. Same reply; the
+/// card carries `human_only: true` and only a human [`Resolve`] / [`ResolveBy`] answers it.
+/// The registry sends it for every human-only call; other senders keep [`RequestApproval`].
+#[derive(Clone, Debug)]
+pub struct RequestHumanOnly(pub RequestApproval);
 
 /// 109 §6.2 (D-call): a stored `answered` row for a `planned` call the
 /// engine died before starting. `tell` before the call replays; the next
@@ -244,14 +255,14 @@ impl Message<HonourAnswer> for Approval {
     }
 }
 
-impl Message<RequestApproval> for Approval {
-    type Reply = DelegatedReply<ApprovalResolved>;
-
-    async fn handle(
+impl Approval {
+    /// [`RequestApproval`] and [`RequestHumanOnly`]: publish the card and park the waiter.
+    async fn request(
         &mut self,
         m: RequestApproval,
-        ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+        human_only: bool,
+        ctx: &mut Context<Self, DelegatedReply<ApprovalResolved>>,
+    ) -> DelegatedReply<ApprovalResolved> {
         let (reply, tx) = ctx.reply_sender();
         let id = ApprovalId(uuid::Uuid::now_v7());
         if let Some((decision, dismissed)) = m
@@ -277,6 +288,7 @@ impl Message<RequestApproval> for Approval {
             tool: m.tool,
             args: m.args,
             risk: m.risk,
+            human_only,
         };
         let asked_at = Utc::now();
         let deadline = asked_at + self.timeout;
@@ -349,9 +361,41 @@ impl Message<RequestApproval> for Approval {
     }
 }
 
+impl Message<RequestApproval> for Approval {
+    type Reply = DelegatedReply<ApprovalResolved>;
+
+    async fn handle(
+        &mut self,
+        m: RequestApproval,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.request(m, false, ctx).await
+    }
+}
+
+impl Message<RequestHumanOnly> for Approval {
+    type Reply = DelegatedReply<ApprovalResolved>;
+
+    async fn handle(
+        &mut self,
+        m: RequestHumanOnly,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.request(m.0, true, ctx).await
+    }
+}
+
 impl Message<Resolve> for Approval {
     type Reply = bool;
 
+    /// Every caller of `Resolve` is recorded as [`Answerer::Human`], including the RPC
+    /// `resolve_approval` (`crates/tasks/src/rpc_hub.rs`). 210 §7.2 residual, stated plainly:
+    /// the RPC token is the file `<data_dir>/token`, so an agent whose shell runs unapproved
+    /// can read it and resolve its own human-only row (`osascript` from such a shell is the
+    /// same residual). The guarantee holds while shell commands are approved or sandboxed;
+    /// Settings warns when sharing is on and approvals are off.
+    /// TODO(210-M4): presence-bound resolution (P2): a signature by an owner device key
+    /// unlocked by Touch ID or a console prompt.
     async fn handle(&mut self, m: Resolve, _: &mut Context<Self, Self::Reply>) -> bool {
         self.resolve(m.id, m.decision, Answerer::Human).await
     }
@@ -360,7 +404,18 @@ impl Message<Resolve> for Approval {
 impl Message<ResolveBy> for Approval {
     type Reply = bool;
 
+    /// 210 §7.2: a human-only row answers only to [`Answerer::Human`]; any other answerer
+    /// (the double) is refused with `false` and the row stays pending for the owner.
     async fn handle(&mut self, m: ResolveBy, _: &mut Context<Self, Self::Reply>) -> bool {
+        if m.by != Answerer::Human
+            && self
+                .pending
+                .get(&m.id)
+                .is_some_and(|p| p.requested.human_only)
+        {
+            tracing::warn!(id = ?m.id, by = ?m.by, "refused: a human-only approval answers only to the owner");
+            return false;
+        }
         self.resolve(m.id, m.decision, m.by).await
     }
 }
@@ -427,6 +482,28 @@ impl Message<PendingApprovals> for Approval {
     ) -> Self::Reply {
         self.pending.values().map(|p| p.requested.clone()).collect()
     }
+}
+
+/// `ask` → whether any human-only approval is pending (210 §7.2): while it is, computer-use,
+/// script and acting browser tools refuse to drive theuth's own windows and web origins.
+pub struct PendingHumanOnly;
+
+impl Message<PendingHumanOnly> for Approval {
+    type Reply = bool;
+
+    async fn handle(&mut self, _: PendingHumanOnly, _: &mut Context<Self, Self::Reply>) -> bool {
+        self.pending.values().any(|p| p.requested.human_only)
+    }
+}
+
+/// [`PendingHumanOnly`] on the registered approval actor; `false` when none runs. One local
+/// mailbox round trip: cheap enough for every acting computer/browser call.
+pub async fn pending_human_only() -> bool {
+    let Ok(Some(approval)) = kameo::actor::ActorRef::<Approval>::lookup(crate::APPROVAL_ACTOR)
+    else {
+        return false;
+    };
+    approval.ask(PendingHumanOnly).await.unwrap_or(false)
 }
 
 #[cfg(test)]

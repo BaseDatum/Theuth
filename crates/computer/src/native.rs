@@ -165,6 +165,10 @@ impl Tool for AppleScriptTool {
     }
 
     async fn call(&self, a: Self::Args, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        // 210 §7.2: a script can press theuth's own Allow button.
+        if let Err(e) = crate::tools::refuse_while_human_only().await {
+            return Ok(ToolOutput::err(e));
+        }
         Ok(output(
             "osascript",
             run("osascript", &["-e", &a.script], None, a.timeout_secs).await,
@@ -208,6 +212,11 @@ impl Tool for ShortcutsTool {
     }
 
     async fn call(&self, a: Self::Args, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        if a.name != SHORTCUTS_LIST
+            && let Err(e) = crate::tools::refuse_while_human_only().await
+        {
+            return Ok(ToolOutput::err(e));
+        }
         let run = if a.name == SHORTCUTS_LIST {
             run("shortcuts", &["list"], None, a.timeout_secs).await
         } else {
@@ -253,6 +262,9 @@ impl Tool for PowerShellTool {
     }
 
     async fn call(&self, a: Self::Args, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        if let Err(e) = crate::tools::refuse_while_human_only().await {
+            return Ok(ToolOutput::err(e));
+        }
         let args = [
             "-NoProfile",
             "-NonInteractive",

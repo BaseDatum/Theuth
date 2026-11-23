@@ -328,6 +328,12 @@ impl Ctx {
         name: &str,
         args: Value,
     ) -> anyhow::Result<ToolOutput> {
+        if !READS.contains(&name)
+            && tools::pending_human_only().await
+            && let Some(why) = self.own_window(session, name, &args).await
+        {
+            return Ok(ToolOutput::err(why));
+        }
         self.settle(session, name, &args);
         let (mut out, navigated) = match self.raw(session, name, args).await? {
             Ok(v) => {
@@ -423,6 +429,81 @@ const NAVIGATES: &[&str] = &[
     "browser_tab_close",
     "browser_close",
 ];
+
+/// obscura tools that only read the page; every other call acts (210 §7.2 F-m7). An unknown
+/// name counts as acting, so a new tool is refused rather than let through.
+const READS: &[&str] = &[
+    "browser_snapshot",
+    "browser_screenshot",
+    "browser_interactive_elements",
+    "browser_storage_state",
+    "browser_tab_list",
+];
+
+/// 210 §7.2 (F-m7): the refusal of an acting call on theuth's own web client.
+const OWN_WINDOW: &str =
+    "refused: theuth's own window can't be driven while your approval is pending";
+
+impl Ctx {
+    /// 210 §7.2 (F-m7), asked only while a human-only approval is pending: `Some(refusal)` when
+    /// the page the call starts from, or a `navigate`/`tab_new` target, is an origin of this
+    /// engine's own web client. The current page is one `location.href` read (a tile's too); a
+    /// failed read cannot prove the page is not theuth's and refuses.
+    async fn own_window(&self, session: SessionId, name: &str, args: &Value) -> Option<String> {
+        let listen = rpc_listen(&self.rt);
+        let target = args.get("url").and_then(Value::as_str);
+        if target.is_some_and(|u| own_origin(u, &listen)) {
+            return Some(OWN_WINDOW.to_owned());
+        }
+        let href = json!({ "expression": "location.href" });
+        let here = match self.raw(session, "browser_evaluate", href).await {
+            Ok(Ok(v)) if !text_of(&v).1 => text_of(&v).0,
+            _ => return Some(OWN_WINDOW.to_owned()),
+        };
+        let here = here.trim().trim_matches('"');
+        tracing::debug!(%session, name, here, "acting browser call while a human-only approval is pending");
+        own_origin(here, &listen).then(|| OWN_WINDOW.to_owned())
+    }
+}
+
+/// `rpc.listen` (the engine's RPC listener, which serves the web client), default
+/// `127.0.0.1:7777` like `rpc::RpcConfig`.
+/// TODO(210-M2): every configured web-client origin beside the listener's.
+fn rpc_listen(rt: &Runtime) -> String {
+    rt.config
+        .find_value("rpc.listen")
+        .ok()
+        .and_then(|v| v.into_string())
+        .unwrap_or_else(|| "127.0.0.1:7777".to_owned())
+}
+
+/// Whether `url` (http, https, ws or wss) is served by the listener at `listen`
+/// (`host:port`); a loopback or unspecified listen host matches every loopback name.
+fn own_origin(url: &str, listen: &str) -> bool {
+    let Ok(u) = url::Url::parse(url) else {
+        return false;
+    };
+    if !matches!(u.scheme(), "http" | "https" | "ws" | "wss") {
+        return false;
+    }
+    let Ok(addr) = listen.parse::<std::net::SocketAddr>() else {
+        return false;
+    };
+    if u.port_or_known_default() != Some(addr.port()) {
+        return false;
+    }
+    let loopback = addr.ip().is_loopback() || addr.ip().is_unspecified();
+    match u.host() {
+        Some(url::Host::Ipv4(ip)) => {
+            ip == addr.ip() || (loopback && (ip.is_loopback() || ip.is_unspecified()))
+        }
+        Some(url::Host::Ipv6(ip)) => {
+            ip == addr.ip() || (loopback && (ip.is_loopback() || ip.is_unspecified()))
+        }
+        Some(url::Host::Domain(d)) => loopback && d.eq_ignore_ascii_case("localhost"),
+        None => false,
+    }
+}
 
 /// Text blocks of an MCP result joined with `\n`, and its `isError` flag.
 pub(crate) fn text_of(result: &Value) -> (String, bool) {
@@ -1506,5 +1587,26 @@ mod tests {
                 .join("browser")
                 .join(session.to_string())
         );
+    }
+
+    /// 210 §7.2 (F-m7): the web client's origins are the listener's, under every loopback name.
+    #[test]
+    fn own_origin_matches_the_listener_under_loopback_names() {
+        let listen = "127.0.0.1:7777";
+        for url in [
+            "http://127.0.0.1:7777/",
+            "http://localhost:7777/#/settings/sharing",
+            "ws://[::1]:7777/rpc",
+        ] {
+            assert!(own_origin(url, listen), "{url}");
+        }
+        for url in [
+            "http://127.0.0.1:8080/",
+            "https://example.com:7777/",
+            "about:blank",
+            "file:///tmp/x",
+        ] {
+            assert!(!own_origin(url, listen), "{url}");
+        }
     }
 }

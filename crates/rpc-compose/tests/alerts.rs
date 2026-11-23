@@ -137,6 +137,7 @@ async fn attention_list_masks_alerts_per_connection() {
             tool: "shell".into(),
             args: serde_json::json!({ "command": "rm x" }),
             risk: tools::Risk::Destructive,
+            human_only: false,
         })
         .await
         .unwrap();

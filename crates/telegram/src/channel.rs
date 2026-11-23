@@ -1001,6 +1001,7 @@ impl Channel {
 
     /// Binds `key` to `thread`, replacing the worker when the session changed.
     fn rebind(&self, key: &ThreadKey, thread: Thread) {
+        self.note_thread(&thread);
         let mut s = self.lock();
         if s.threads
             .get(key)
@@ -1009,6 +1010,15 @@ impl Channel {
             shutdown_worker(&mut s, key);
         }
         s.threads.bind(key.clone(), thread);
+    }
+
+    /// 210 §7.2: a session bound to a thread whose user is not the owner (or while no owner
+    /// is paired) may not run a human-only tool; tells the tool registry (never lifted while
+    /// the engine runs).
+    fn note_thread(&self, thread: &Thread) {
+        if self.owner() != Some(thread.user) {
+            tools::mark_non_owner_thread(thread.session, true);
+        }
     }
 
     /// Where `session` renders: its own thread, else its flat-child slot.
@@ -2090,7 +2100,8 @@ impl Channel {
         }
     }
 
-    /// Owner or the card's thread user may answer (98 §10.1).
+    /// Owner or the card's thread user may answer (98 §10.1); only the owner a
+    /// human-only card (210 §7.2).
     async fn press_approval(&self, cb: &IncomingCallback, id: ApprovalId, decision: Decision) {
         let user = cb.from.id;
         let permitted = self.owner() == Some(user)
@@ -2098,7 +2109,7 @@ impl Channel {
                 .lock()
                 .cards
                 .get(&id)
-                .is_some_and(|c| c.thread_user == Some(user));
+                .is_some_and(|c| !c.human_only && c.thread_user == Some(user));
         if !permitted {
             tracing::warn!(
                 user,
@@ -2367,6 +2378,11 @@ impl Channel {
                     match &ev {
                         AgentEvent::TurnStarted { .. } => {
                             s.running.insert(session);
+                            // 210 §7.2: re-said each turn, so a restart (the
+                            // registry keeps it in memory) never forgets it.
+                            if let Some((_, t)) = s.threads.by_session(session) {
+                                self.note_thread(t);
+                            }
                         }
                         AgentEvent::TurnFinished { .. } => {
                             s.running.remove(&session);
@@ -2395,6 +2411,7 @@ impl Channel {
                     approvals::Card {
                         session: req.session,
                         thread_user,
+                        human_only: req.human_only,
                         at: None,
                         body: approvals::body(&req),
                         by: None,
@@ -3241,6 +3258,7 @@ pub(crate) mod tests {
             tool: "shell".into(),
             args: serde_json::json!({ "command": "ls" }),
             risk: Risk::Mutating,
+            human_only: false,
         }
     }
 
