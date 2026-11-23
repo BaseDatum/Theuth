@@ -120,6 +120,11 @@ impl Table {
         })
     }
 
+    /// The share is routed.
+    pub fn routes(&self, share: &str) -> bool {
+        self.stops.lock().contains_key(share)
+    }
+
     /// Remove a share; returns whether it was routed.
     pub fn remove(&self, share: &str) -> bool {
         let mut hit = false;

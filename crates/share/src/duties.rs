@@ -91,10 +91,7 @@ impl DialedEdges {
 impl RekeyEdges for DialedEdges {
     async fn revoke(&self, e: &EdgeRow, key: &SecretKey, engines: &[PublicKey]) -> anyhow::Result<()> {
         match self.attach(e, key).await? {
-            Ok(c) => {
-                c.revoke(engines.to_vec()).await?;
-                Ok(())
-            }
+            Ok(c) => revoke_covers(engines, &c.revoke(engines.to_vec()).await?),
             // The mesh already moved on: the rekey's revoke list carries them.
             Err(_) => Ok(()),
         }
@@ -113,6 +110,24 @@ impl RekeyEdges for DialedEdges {
             Err(to) => Ok(Err(to)),
         }
     }
+}
+
+/// A revoke answer lists the mesh's whole revoke list (unknown ids included): one missing an
+/// engine asked for means the edge did not take it, and the revoke step fails (to be retried).
+fn revoke_covers(asked: &[PublicKey], got: &share_proto::RevokeResult) -> anyhow::Result<()> {
+    let missing: Vec<String> = asked
+        .iter()
+        .filter(|e| !got.revoked.contains(e))
+        .map(|e| e.to_string())
+        .collect();
+    anyhow::ensure!(
+        missing.is_empty(),
+        "the edge's revoke list lacks {} of the {} engines asked: {}",
+        missing.len(),
+        asked.len(),
+        missing.join(", ")
+    );
+    Ok(())
 }
 
 /// Run the duties until the process ends. Needs the mesh endpoint and vault; waits for them.
@@ -185,4 +200,21 @@ async fn tick_once(rk: &Rekeyer<'_>, removed_now: Vec<String>, was_holder: &mut 
         rk.heal(now).await?;
     }
     rk.prune(now).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// FIX5: the edge answers the whole revoke list, unknown ids included; one that lacks an
+    /// engine asked for is a failed revoke.
+    #[test]
+    fn a_revoke_answer_missing_an_engine_fails() {
+        let [a, b, other] = [1u8, 2, 3].map(|n| SecretKey::from_bytes(&[n; 32]).public());
+        let answer = |revoked: Vec<PublicKey>| share_proto::RevokeResult { revoked };
+        revoke_covers(&[a, b], &answer(vec![other, b, a])).unwrap();
+        let err = revoke_covers(&[a, b], &answer(vec![a, other])).unwrap_err().to_string();
+        assert!(err.contains(&b.to_string()) && err.contains("1 of the 2"), "{err}");
+        assert!(revoke_covers(&[a], &answer(vec![])).is_err());
+    }
 }

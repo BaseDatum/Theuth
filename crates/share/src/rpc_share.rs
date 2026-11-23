@@ -200,12 +200,13 @@ impl ShareApiServer for Server {
         owner(ext)?;
         let e = engine()?;
         let mut card = serde_json::to_value(&args).map_err(|e| failed(e.to_string()))?;
-        let mut p = plan(args, e.cfg.default_expiry, crate::engine::random_bytes()).map_err(failed)?;
+        let p = plan(args, e.cfg.default_expiry, crate::engine::random_bytes()).map_err(failed)?;
         // Refusals the owner cannot approve away (terms, switch, edge) answer before the card.
         e.publish_precheck(p.name.as_deref())
             .await
             .map_err(|e| failed(format!("{e:#}")))?;
-        // §7.3: the card shows the exact URL; a first publish allocates its name for it here.
+        // §7.3: the card shows the exact URL; a first publish draws its name for it here and
+        // claims it only after `Allow` (a refusal, timeout or dropped call claims nothing).
         let preview = e
             .publish_preview(&p)
             .await
@@ -215,15 +216,10 @@ impl ShareApiServer for Server {
             o.insert("name".into(), preview.name.clone().into());
             o.insert("label".into(), p.label.clone().into());
         }
-        let consent = match Consent::ask("share_publish", card).await {
-            Ok(c) => c,
-            Err(err) => {
-                e.release_preview(&preview).await;
-                return Err(failed(format!("{err:#}")));
-            }
-        };
-        p.name = Some(preview.name);
-        e.publish(p, CallOrigin::Settings, consent)
+        let consent = Consent::ask("share_publish", card)
+            .await
+            .map_err(|e| failed(format!("{e:#}")))?;
+        e.publish_previewed(p, CallOrigin::Settings, consent, preview)
             .await
             .map_err(|e| failed(format!("{e:#}")))
     }

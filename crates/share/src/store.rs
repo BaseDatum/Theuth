@@ -324,7 +324,8 @@ impl Store {
     }
 
     /// `s` is a share this engine's consent path recorded, unchanged since: same approval id,
-    /// host, path, source and access. A row replicated from elsewhere (or altered there) is not.
+    /// host, path, source, access and expiry. A row replicated from elsewhere (or altered
+    /// there) is not.
     pub async fn locally_approved(&self, s: &Share) -> anyhow::Result<bool> {
         let row: Option<(String, String)> = sqlx::query_as(
             "SELECT approval_id, binding FROM share_approvals WHERE share = ?",
@@ -333,6 +334,22 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.is_some_and(|(a, b)| a == s.approved_by.approval_id && b == binding(s).unwrap_or_default()))
+    }
+
+    /// This engine took `before` (pending, locally approved) live as `after` (its expiry now
+    /// set from the local `share_requests` lifetime): move the binding along. `false` when the
+    /// stored binding is not `before`'s, i.e. the row was not this engine's approved one.
+    pub async fn rebind_approval(&self, before: &Share, after: &Share) -> anyhow::Result<bool> {
+        let done = sqlx::query(
+            "UPDATE share_approvals SET binding = ? WHERE share = ? AND approval_id = ? AND binding = ?",
+        )
+        .bind(binding(after)?)
+        .bind(&before.id)
+        .bind(&before.approved_by.approval_id)
+        .bind(binding(before)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected() == 1)
     }
 
     /// Forget a share's local approval once it is stopped.
@@ -375,7 +392,8 @@ impl Store {
     }
 }
 
-/// What the owner approved of a share, as stored in `share_approvals.binding`.
+/// What the owner approved of a share, as stored in `share_approvals.binding`: the expiry too
+/// (R4), so a replicated edit of `expires_ms` unbinds the row instead of extending the share.
 fn binding(s: &Share) -> anyhow::Result<String> {
     Ok(serde_json::to_string(&(
         &s.engine,
@@ -383,6 +401,7 @@ fn binding(s: &Share) -> anyhow::Result<String> {
         &s.path,
         &s.source,
         s.access.as_str(),
+        s.expires_ms,
     ))?)
 }
 
