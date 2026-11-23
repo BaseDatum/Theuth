@@ -122,6 +122,7 @@ pub mod skills;
 pub mod snap;
 pub mod spill;
 pub mod store;
+pub mod status;
 pub mod supervisor;
 pub mod title;
 pub mod todo;
@@ -3895,6 +3896,18 @@ pub enum AgentEvent {
         #[cfg_attr(feature = "ts", ts(type = "number | null"))]
         seq: Option<i64>,
     },
+    /// The agent's own one-line status (design 212 §9); replaces the generic activity word
+    /// in clients until the turn ends.
+    StatusChanged {
+        /// Session.
+        session: SessionId,
+        /// What the agent says it is doing now (≤ 80 chars).
+        status: String,
+        /// The new title, when this call retitled the session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        title: Option<String>,
+    },
     /// The root's metadata changed (51 §3): `project` is the new effective
     /// value for the whole tree. Published after the commit.
     SessionMetadataChanged {
@@ -4056,7 +4069,9 @@ impl wire::WireEvent for AgentEvent {
         match json.get("type").and_then(serde_json::Value::as_str) {
             Some("SubagentSpawned" | "ObservedChildChanged") => policy.announces_child = true,
             Some("TextDelta" | "ReasoningDelta") => policy.delta = wire::Delta::AppendText,
-            Some("ToolCallProgress" | "VisionProgress") => policy.delta = wire::Delta::Replace,
+            Some("ToolCallProgress" | "VisionProgress" | "StatusChanged") => {
+                policy.delta = wire::Delta::Replace
+            }
             _ => {}
         }
         policy
@@ -4096,6 +4111,7 @@ impl AgentEvent {
             | Self::ContextChanged { session, .. }
             | Self::TodoChanged { session, .. }
             | Self::VisionProgress { session, .. }
+            | Self::StatusChanged { session, .. }
             | Self::SessionMetadataChanged { session, .. }
             | Self::Error { session, .. }
             | Self::ModelUsageChanged { session, .. }
@@ -4158,6 +4174,9 @@ pub struct AgentConfig {
     /// Interrupted-reply recoveries per turn — a stalled stream or the output
     /// token cap — before the turn stops with an error (36 §2.4, §2.6).
     pub max_salvages: u32,
+    /// Tool calls between harness "status check" nudges asking the model to call
+    /// `set_status` (212 §10); the first nudge comes after 2 calls. `0` = off.
+    pub status_every: u32,
     /// Max characters of tool output sent back to the model.
     pub max_tool_output_chars: usize,
     /// With the runtime on, only `python` and the tools that talk to the user
@@ -4244,6 +4263,7 @@ impl Default for AgentConfig {
             max_tool_rounds: 32,
             stream_idle_secs: 120,
             max_salvages: 2,
+            status_every: 8,
             max_tool_output_chars: 32_000,
             runtime_only: true,
             communication: None,

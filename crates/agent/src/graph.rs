@@ -1467,7 +1467,8 @@ fn activity_sessions(ev: &AgentEvent) -> Vec<SessionId> {
         | AgentEvent::MessageDelivered { .. }
         | AgentEvent::Compacting { .. }
         | AgentEvent::Compacted { .. }
-        | AgentEvent::VisionProgress { .. } => event_sessions(ev),
+        | AgentEvent::VisionProgress { .. }
+        | AgentEvent::StatusChanged { .. } => event_sessions(ev),
         _ => Vec::new(),
     }
 }
@@ -1890,7 +1891,8 @@ impl Graph {
             AgentEvent::TextDelta { .. }
             | AgentEvent::ReasoningDelta { .. }
             | AgentEvent::ToolCallProgress { .. }
-            | AgentEvent::VisionProgress { .. } => quiet = true,
+            | AgentEvent::VisionProgress { .. }
+            | AgentEvent::StatusChanged { .. } => quiet = true,
             _ => {}
         }
         for s in event_sessions(&ev) {
