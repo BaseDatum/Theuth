@@ -342,8 +342,8 @@ mod tests {
     /// Indent `symbol` of `name` by one unit through the real tool and hook.
     async fn indent(name: &str, before: &str, symbol: &str) -> (String, String) {
         register();
-        let dir = crate::TestDir::new("syntax-hook");
-        let path = dir.0.join(name);
+        let dir = crate::test_dir("syntax-hook");
+        let path = dir.path().join(name);
         std::fs::write(&path, before).unwrap();
         let args = IndentArgs {
             path: path.clone(),

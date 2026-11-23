@@ -15,17 +15,8 @@ use parking_lot::Mutex;
 use runtime::Runtime;
 use tools::Tool;
 
-struct TempDir(PathBuf);
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-fn tempdir() -> TempDir {
-    let d = std::env::temp_dir().join(format!("theuth-codemap-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&d).unwrap();
-    TempDir(d)
-}
+mod common;
+use common::tempdir;
 
 fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
@@ -54,8 +45,8 @@ impl Message<CodeindexEvent> for Sink {
 }
 
 struct Scratch {
-    _data: TempDir,
-    _repo: TempDir,
+    _data: tempfile::TempDir,
+    _repo: tempfile::TempDir,
     root: PathBuf,
     ix: Arc<Codeindex>,
     ri: Arc<RootIndex>,
@@ -70,18 +61,18 @@ async fn scratch() -> Scratch {
     let repo = tempdir();
     copy_dir(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rust"),
-        &repo.0,
+        repo.path(),
     );
-    let rt = Runtime::new(figment::Figment::new(), data.0.clone());
+    let rt = Runtime::new(figment::Figment::new(), data.path().to_path_buf());
     let seen: Seen = Arc::default();
     let sink = Sink::spawn(Sink(seen.clone()));
     rt.subscribe::<Sink, CodeindexEvent>(&sink).await;
     let ix = Arc::new(
-        Codeindex::new(CodeindexConfig::default(), &data.0)
+        Codeindex::new(CodeindexConfig::default(), data.path())
             .unwrap()
             .with_runtime(rt),
     );
-    let root = repo.0.canonicalize().unwrap();
+    let root = repo.path().canonicalize().unwrap();
     let ri = ix.open_root(&root).await.unwrap();
     let r = ix.reconcile(&ri, false).await.unwrap();
     assert!(!r.stale && r.reparsed > 0, "{r:?}");
@@ -136,7 +127,7 @@ fn tool_ran(ev: &CodeindexEvent) -> Option<(&str, &str, &codeindex::CodeToolSumm
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn events_are_published_once_per_call() {
     let s = scratch().await;
-    let data = s._data.0.clone();
+    let data = s._data.path().to_path_buf();
     let out = CodeFindTool(s.ix.clone())
         .call(
             CodeFindArgs {
@@ -513,7 +504,7 @@ async fn lens_rpcs_never_walk() {
     let err = lens::here(
         &s.ix,
         Here {
-            root: other.0.clone(),
+            root: other.path().to_path_buf(),
             focus: None,
             edited: None,
             limit: None,

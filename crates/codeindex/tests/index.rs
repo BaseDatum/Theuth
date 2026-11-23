@@ -7,6 +7,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod common;
+use common::tempdir;
+
 use codeindex::lang::Language;
 use codeindex::parse::{ParsedFile, Parsers, parse};
 use codeindex::{Codeindex, CodeindexConfig, RootIndex, store};
@@ -276,22 +279,10 @@ fn open_db_ref(root: &std::path::Path) -> String {
     format!("crates/knowledge/src/store.rs:{line}")
 }
 
-struct TempDir(PathBuf);
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-fn tempdir() -> TempDir {
-    let d = std::env::temp_dir().join(format!("theuth-codeindex-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&d).unwrap();
-    TempDir(d)
-}
-
 /// Index one fixture directory as a root (temp data dir, dropped with it).
-async fn index_fixture(rel: &str) -> (TempDir, Arc<Codeindex>, Arc<RootIndex>) {
+async fn index_fixture(rel: &str) -> (tempfile::TempDir, Arc<Codeindex>, Arc<RootIndex>) {
     let data = tempdir();
-    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), data.path()).unwrap());
     let root = fixtures().join(rel).canonicalize().unwrap();
     let ri = ix.open_root(&root).await.unwrap();
     let r = ix.reconcile(&ri, false).await.unwrap();
@@ -808,7 +799,7 @@ async fn affected_set_is_re_resolved() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reconcile_refuses_to_empty_the_index() {
     let repo = tempdir();
-    let d = repo.0.canonicalize().unwrap();
+    let d = repo.path().canonicalize().unwrap();
     std::fs::create_dir_all(d.join("src")).unwrap();
     for i in 0..10 {
         std::fs::write(
@@ -818,7 +809,7 @@ async fn reconcile_refuses_to_empty_the_index() {
         .unwrap();
     }
     let data = tempdir();
-    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), data.path()).unwrap());
     let ri = ix.open_root(&d).await.unwrap();
     let r = ix.reconcile(&ri, false).await.unwrap();
     assert_eq!(
@@ -901,7 +892,7 @@ async fn test_subjects_link_api_tests() {
     use codeindex::tools::{CodeImpactArgs, CodeImpactTool, CodeSymbolArgs, CodeSymbolTool};
     use tools::Tool;
     let repo = tempdir();
-    let d = repo.0.canonicalize().unwrap();
+    let d = repo.path().canonicalize().unwrap();
     for dir in ["src", "tests", "web/__tests__"] {
         std::fs::create_dir_all(d.join(dir)).unwrap();
     }
@@ -945,7 +936,7 @@ async fn test_subjects_link_api_tests() {
         std::fs::write(d.join(p), s).unwrap();
     }
     let data = tempdir();
-    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), data.path()).unwrap());
     let ri = ix.open_root(&d).await.unwrap();
     ix.reconcile(&ri, false).await.unwrap();
     let subjects = store::test_subjects(&ri.pool).await.unwrap();
@@ -1316,7 +1307,7 @@ async fn find_tiers_and_monikers() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn monikers_are_stable_across_line_moves() {
     let repo = tempdir();
-    let d = repo.0.canonicalize().unwrap();
+    let d = repo.path().canonicalize().unwrap();
     std::fs::create_dir_all(d.join("src")).unwrap();
     std::fs::write(
         d.join("Cargo.toml"),
@@ -1326,7 +1317,7 @@ async fn monikers_are_stable_across_line_moves() {
     let body = "pub struct Foo;\n\nimpl Foo {\n    pub fn render(&self) {}\n    pub fn render_all(&self) {}\n}\n\npub fn render() {}\n";
     std::fs::write(d.join("src/lib.rs"), body).unwrap();
     let data = tempdir();
-    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), data.path()).unwrap());
     let ri = ix.open_root(&d).await.unwrap();
     ix.reconcile(&ri, false).await.unwrap();
     let snapshot = |ri: &RootIndex| {
@@ -1371,7 +1362,7 @@ async fn monikers_are_stable_across_line_moves() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn indexes_this_repository() {
     let data = tempdir();
-    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), data.path()).unwrap());
     let root = repo_root();
     let ri = ix.open_root(&root).await.unwrap();
 
@@ -1529,7 +1520,7 @@ async fn indexes_this_repository() {
     );
 
     // The store lives in the temp data dir with the §0.7 name, and nowhere else.
-    let entries: Vec<_> = std::fs::read_dir(data.0.join("codeindex"))
+    let entries: Vec<_> = std::fs::read_dir(data.path().join("codeindex"))
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
@@ -1560,12 +1551,12 @@ async fn tools_envelope() {
     };
     use tools::Tool;
     let data = tempdir();
-    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), data.path()).unwrap());
     let cx = || tools::ToolCx {
         session: runtime::SessionId::new(),
         call_id: String::new(),
         quiet: false,
-        resources: tools::SessionResources::durable_arc(&data.0),
+        resources: tools::SessionResources::durable_arc(data.path()),
         cancel: tools::CancellationToken::new(),
         promote_after: None,
     };
@@ -1802,12 +1793,12 @@ async fn map_and_symbol() {
     };
     use tools::Tool;
     let data = tempdir();
-    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), data.path()).unwrap());
     let cx = || tools::ToolCx {
         session: runtime::SessionId::new(),
         call_id: String::new(),
         quiet: false,
-        resources: tools::SessionResources::durable_arc(&data.0),
+        resources: tools::SessionResources::durable_arc(data.path()),
         cancel: tools::CancellationToken::new(),
         promote_after: None,
     };
@@ -2199,12 +2190,12 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(st.success(), "git {args:?}");
 }
 
-fn cx(data: &TempDir) -> tools::ToolCx {
+fn cx(data: &tempfile::TempDir) -> tools::ToolCx {
     tools::ToolCx {
         session: runtime::SessionId::new(),
         call_id: String::new(),
         quiet: false,
-        resources: tools::SessionResources::durable_arc(&data.0),
+        resources: tools::SessionResources::durable_arc(data.path()),
         cancel: tools::CancellationToken::new(),
         promote_after: None,
     }
@@ -2219,7 +2210,7 @@ async fn impact_on_a_fixture_repository() {
     use codeindex::tools::{CodeImpactArgs, CodeImpactTool, CodeSymbolArgs, CodeSymbolTool};
     use tools::Tool;
     let repo = tempdir();
-    let d = repo.0.canonicalize().unwrap();
+    let d = repo.path().canonicalize().unwrap();
     git(&d, &["init", "-q", "-b", "main"]);
     std::fs::create_dir_all(d.join("src")).unwrap();
     std::fs::create_dir_all(d.join("tests")).unwrap();
@@ -2266,7 +2257,7 @@ async fn impact_on_a_fixture_repository() {
     git(&d, &["commit", "-q", "-m", "three"]);
 
     let data = tempdir();
-    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), data.path()).unwrap());
     let args =
         |files: Option<Vec<&str>>, range: Option<&str>, include_tests: bool| CodeImpactArgs {
             files: files.map(|v| v.into_iter().map(PathBuf::from).collect()),
@@ -2489,7 +2480,7 @@ async fn impact_on_this_repository() {
     use codeindex::tools::{CodeImpactArgs, CodeImpactTool, CodeSymbolArgs, CodeSymbolTool};
     use tools::Tool;
     let data = tempdir();
-    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), data.path()).unwrap());
     let root = repo_root();
     let args = |files: Option<Vec<&str>>, range: Option<&str>| CodeImpactArgs {
         files: files.map(|v| v.into_iter().map(PathBuf::from).collect()),
@@ -2649,7 +2640,7 @@ async fn map_render_badges_cache_and_changed_mode() {
     use codeindex::tools::{CodeMapArgs, CodeMapTool};
     use tools::Tool;
     let repo = tempdir();
-    let d = repo.0.canonicalize().unwrap();
+    let d = repo.path().canonicalize().unwrap();
     git(&d, &["init", "-q", "-b", "main"]);
     std::fs::create_dir_all(d.join("src")).unwrap();
     std::fs::write(
@@ -2676,7 +2667,7 @@ async fn map_render_badges_cache_and_changed_mode() {
     git(&d, &["commit", "-q", "-m", "one"]);
 
     let data = tempdir();
-    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), data.path()).unwrap());
     let tool = CodeMapTool(ix.clone());
     let args = |mode: Option<&str>, paths_only: bool| CodeMapArgs {
         focus: None,

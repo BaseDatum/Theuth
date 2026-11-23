@@ -3,23 +3,14 @@
 //! bare links, and the root/path rejections. Nothing is written inside this
 //! repository.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use codeindex::locate::{locate, text_sha};
 use codeindex::{Codeindex, CodeindexConfig, Locate, LocateAnchor, LocateStatus};
 
-struct TempDir(PathBuf);
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-fn tempdir() -> TempDir {
-    let d = std::env::temp_dir().join(format!("theuth-locate-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&d).unwrap();
-    TempDir(d)
-}
+mod common;
+use common::tempdir;
 
 fn git(dir: &Path, args: &[&str]) {
     let st = std::process::Command::new("git")
@@ -52,7 +43,7 @@ fn anchor(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn locate_states_and_rejections() {
     let repo = tempdir();
-    let root = repo.0.canonicalize().unwrap();
+    let root = repo.path().canonicalize().unwrap();
     git(&root, &["init", "-q"]);
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
@@ -63,7 +54,7 @@ async fn locate_states_and_rejections() {
     std::fs::write(root.join("src/util.rs"), UTIL).unwrap();
     std::fs::write(root.join("src/lib.rs"), "pub mod util;\n").unwrap();
     let data = tempdir();
-    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
+    let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), data.path()).unwrap());
     let run = |anchors: Vec<LocateAnchor>| {
         locate(
             &ix,
@@ -162,8 +153,8 @@ async fn locate_states_and_rejections() {
     // Out of root: `..`, absolute, and a symlink that escapes — each fails the whole batch,
     // even beside a good anchor, and even when the file does not exist.
     let outside = tempdir();
-    std::fs::write(outside.0.join("secret.rs"), "fn s() {}\n").unwrap();
-    std::os::unix::fs::symlink(&outside.0, root.join("src/link")).unwrap();
+    std::fs::write(outside.path().join("secret.rs"), "fn s() {}\n").unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.join("src/link")).unwrap();
     let good = || anchor("src/util.rs", 1, 3, None, None);
     for bad in [
         "../secret.rs",
@@ -197,7 +188,7 @@ async fn locate_states_and_rejections() {
     let err = locate(
         &ix,
         Locate {
-            root: plain.0.clone(),
+            root: plain.path().to_path_buf(),
             anchors: vec![],
         },
     )

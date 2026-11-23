@@ -381,14 +381,9 @@ fn quoted(label: &str) -> String {
     )
 }
 
-/// A YAML double-quoted scalar.
+/// A YAML double-quoted scalar (a JSON string is one).
 fn yq(s: &str) -> String {
-    format!(
-        "\"{}\"",
-        s.replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', " ")
-    )
+    serde_json::to_string(s).expect("a str serialises to JSON")
 }
 
 fn yaml_list(key: &str, items: &[String]) -> String {
@@ -621,7 +616,6 @@ pub fn code_overview_text(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     use super::super::import::{import, is_ours};
@@ -629,17 +623,6 @@ mod tests {
     use crate::index::RootIndex;
     use crate::{CodeindexConfig, index::Codeindex};
 
-    struct TempDir(PathBuf);
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    fn tempdir() -> TempDir {
-        let d = std::env::temp_dir().join(format!("theuth-omm-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&d).unwrap();
-        TempDir(d)
-    }
     fn copy_dir(from: &Path, to: &Path) {
         std::fs::create_dir_all(to).unwrap();
         for e in std::fs::read_dir(from).unwrap() {
@@ -654,19 +637,24 @@ mod tests {
     }
 
     /// The rust fixture indexed in a scratch data dir, plus an empty map pool beside it.
-    async fn scratch() -> (TempDir, TempDir, Arc<RootIndex>, SqlitePool) {
-        let data = tempdir();
-        let repo = tempdir();
+    async fn scratch() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        Arc<RootIndex>,
+        SqlitePool,
+    ) {
+        let data = crate::test_dir("omm");
+        let repo = crate::test_dir("omm");
         copy_dir(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rust"),
-            &repo.0,
+            repo.path(),
         );
-        let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), &data.0).unwrap());
-        let root = repo.0.canonicalize().unwrap();
+        let ix = Arc::new(Codeindex::new(CodeindexConfig::default(), data.path()).unwrap());
+        let root = repo.path().canonicalize().unwrap();
         let ri = ix.open_root(&root).await.unwrap();
         let r = ix.reconcile(&ri, true).await.unwrap();
         assert!(r.reparsed > 0, "{r:?}");
-        let pool = store::open(&store::path(&data.0.join(crate::DIR), &root), &root)
+        let pool = store::open(&store::path(&data.path().join(crate::DIR), &root), &root)
             .await
             .unwrap();
         (data, repo, ri, pool)
