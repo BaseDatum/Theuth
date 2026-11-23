@@ -47,9 +47,16 @@ patches:
           - {name: THEUTH_SHARE_EDGE_DB_JOURNAL, value: delete}
       # Static musl in scratch: ndots:5 search expansion makes external lookups (api.porkbun.com, ACME) time out
       # with EAI_AGAIN under load; resolve external names directly.
+      # CoreDNS here forwards to the node's resolvers and intermittently answers SERVFAIL for public names
+      # (musl turns that into EAI_AGAIN at once). The edge resolves only public names (Porkbun, ACME, iroh relay;
+      # the k8s API is reached by KUBERNETES_SERVICE_HOST), so it uses public resolvers directly.
+      - op: add
+        path: /spec/template/spec/dnsPolicy
+        value: None
       - op: add
         path: /spec/template/spec/dnsConfig
         value:
+          nameservers: [1.1.1.1, 9.9.9.9]
           options:
             - {name: ndots, value: "1"}
             - {name: timeout, value: "2"}
