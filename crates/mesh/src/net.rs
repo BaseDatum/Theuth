@@ -3096,6 +3096,8 @@ pub(crate) mod tests {
         let accepted =
             tokio::spawn(async move { accepting.accept().await.unwrap().await.unwrap() });
 
+        // Gossip's in-memory lookup is the one service a bound endpoint has; the dial adds none.
+        let lookups = net.endpoint.address_lookup().unwrap().len();
         let transport = QuicTransportConfig::builder()
             .max_concurrent_bidi_streams(2u32.into())
             .build();
@@ -3129,9 +3131,10 @@ pub(crate) mod tests {
             !net.joined.load(Ordering::Relaxed),
             "join_network never ran"
         );
-        assert!(
-            net.endpoint.address_lookup().unwrap().is_empty(),
-            "nothing publishes this engine"
+        assert_eq!(
+            net.endpoint.address_lookup().unwrap().len(),
+            lookups,
+            "no pkarr, DNS or mDNS service: nothing publishes this engine"
         );
         conn.close(0u32.into(), b"done");
         edge.close().await;

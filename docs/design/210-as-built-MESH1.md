@@ -84,12 +84,16 @@ impl Vault {
 
 - `mesh::net::tests::dial_alpn_uses_its_config_and_publishes_nothing`: a `Net` bound with discovery **on** dials a
   plain endpoint on `theuth/test-share/1`; the remote can open two bidi streams and the third waits (the
-  per-connection `max_concurrent_bidi_streams(2)` applies); afterwards `joined` is false and the endpoint's
-  address-lookup services are empty.
+  per-connection `max_concurrent_bidi_streams(2)` applies); afterwards `joined` is false and the endpoint has no
+  address-lookup service beyond the one it had before the dial (iroh-gossip's in-memory `GossipAddressLookup`,
+  which publishes nothing); `join_network` would add pkarr publisher and resolver, n0 DNS and mDNS.
 - `mesh::share::tests::only_the_holder_mints_and_the_handle_signs`: without a mesh actor nobody is the holder, so
   `ensure_share_key` fails and writes nothing; after a holder mint it loads the row; signatures verify under
   `mesh_id`.
 - `secrets::vault::tests::share_rows_are_versioned_hidden_and_unexpandable`, `share_key_is_minted_only_by_the_holder`.
+
+Verification: `cargo test -p secrets -p mesh`: mesh 72 passed, secrets 66 passed; `cargo clippy -p secrets -p mesh
+--all-targets -- -D warnings` clean.
 
 ## Deviations from the design, and why
 
@@ -121,4 +125,4 @@ impl Vault {
   so it cannot dial an edge anyway; "an engine without a family is its own holder" holds when the mesh plugin runs
   alone (lone engine elects itself).
 - The `dial_alpn` test cannot observe pkarr traffic directly; it asserts the cause (no `join_network`, no lookup
-  service installed).
+  service added by the dial).
