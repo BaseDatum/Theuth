@@ -2575,6 +2575,40 @@
             "type": "object"
           },
           {
+            "description": "The agent's own one-line status (design 212 §9); replaces the generic activity word\nin clients until the turn ends.",
+            "properties": {
+              "session": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.output.SessionId"
+                  }
+                ],
+                "description": "Session."
+              },
+              "status": {
+                "description": "What the agent says it is doing now (≤ 80 chars).",
+                "type": "string"
+              },
+              "title": {
+                "description": "The new title, when this call retitled the session.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "StatusChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
             "description": "The root's metadata changed (51 §3): `project` is the new effective\nvalue for the whole tree. Published after the commit.",
             "properties": {
               "project": {
@@ -5905,6 +5939,40 @@
               "stage",
               "model",
               "sources"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The agent's own one-line status (design 212 §9); replaces the generic activity word\nin clients until the turn ends.",
+            "properties": {
+              "session": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.receiver.SessionId"
+                  }
+                ],
+                "description": "Session."
+              },
+              "status": {
+                "description": "What the agent says it is doing now (≤ 80 chars).",
+                "type": "string"
+              },
+              "title": {
+                "description": "The new title, when this call retitled the session.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "StatusChanged",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "status"
             ],
             "type": "object"
           },
