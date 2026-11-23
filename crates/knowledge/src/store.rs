@@ -2448,10 +2448,10 @@ mod tests {
     use chrono::TimeZone;
 
     /// Guard first in the tuple: it is declared first, so it drops last.
-    async fn open() -> (crate::TestDir, Arc<Knowledge>) {
-        let dir = crate::TestDir::new("knowledge");
-        let rt = Runtime::new(figment::Figment::new(), dir.0.clone());
-        let k = Knowledge::open(&dir.0, rt).await.unwrap();
+    async fn open() -> (tempfile::TempDir, Arc<Knowledge>) {
+        let dir = crate::test_dir("knowledge");
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let k = Knowledge::open(dir.path(), rt).await.unwrap();
         (dir, k)
     }
 
@@ -2474,7 +2474,7 @@ mod tests {
     #[tokio::test]
     async fn put_for_round_trips_the_136_keys_and_unknown_keys() {
         let (dir, k) = open().await;
-        let path = dir.0.join(DIR).join("facts").join("rt.md");
+        let path = dir.path().join(DIR).join("facts").join("rt.md");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
@@ -2555,7 +2555,7 @@ mod tests {
         assert!(m.hint);
         assert!(m.evidence.is_empty());
         assert!(
-            !std::fs::read_to_string(dir.0.join(DIR).join("facts").join("plain.md"))
+            !std::fs::read_to_string(dir.path().join(DIR).join("facts").join("plain.md"))
                 .unwrap()
                 .contains("status:")
         );
@@ -3398,7 +3398,7 @@ mod tests {
     #[tokio::test]
     async fn ops_do_not_restamp_timestamp() {
         let (dir, k) = open().await;
-        let path = dir.0.join(DIR).join("records").join("old.md");
+        let path = dir.path().join(DIR).join("records").join("old.md");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let old = (chrono::Utc::now() - chrono::Duration::days(20))
             .format("%Y-%m-%dT%H:%M:%SZ")
@@ -3440,7 +3440,7 @@ mod tests {
     #[tokio::test]
     async fn harvest_reput_unions_evidence_and_never_demotes_status() {
         let (dir, k) = open().await;
-        let path = dir.0.join(DIR).join("facts").join("m.md");
+        let path = dir.path().join(DIR).join("facts").join("m.md");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
@@ -3488,7 +3488,7 @@ mod tests {
         k.put(put("facts/other", "Other", "model"), Source::Model)
             .await
             .unwrap();
-        let path = dir.0.join(DIR).join("facts").join("h.md");
+        let path = dir.path().join(DIR).join("facts").join("h.md");
         let before = std::fs::read(&path).unwrap();
         let scope = AgentScope {
             owner: USER_OWNER.into(),
@@ -3695,7 +3695,7 @@ mod tests {
 
     /// `ops` reports to `cto`; `mkt` is another line. Sessions: ops, cto, mkt.
     async fn scoped() -> (
-        crate::TestDir,
+        tempfile::TempDir,
         Arc<Knowledge>,
         SessionId,
         SessionId,
@@ -3730,7 +3730,7 @@ mod tests {
     async fn existing_concepts_default_to_user_and_shared() {
         let (dir, k) = open().await;
         // A hand-written file without the 67 §9 keys.
-        let path = dir.0.join(DIR).join("facts").join("old.md");
+        let path = dir.path().join(DIR).join("facts").join("old.md");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "---\ntype: fact\ntitle: Old\n---\nold body\n").unwrap();
         k.sync().await.unwrap();
@@ -4180,16 +4180,16 @@ mod tests {
             .await
             .unwrap();
         drop(k);
-        std::fs::remove_file(dir.0.join(INDEX_FILE)).unwrap();
-        let rt = Runtime::new(figment::Figment::new(), dir.0.clone());
-        let k = Knowledge::open(&dir.0, rt).await.unwrap();
+        std::fs::remove_file(dir.path().join(INDEX_FILE)).unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let k = Knowledge::open(dir.path(), rt).await.unwrap();
         assert_eq!(k.list(None, None, None, 10).await.unwrap().len(), 1);
     }
 
     #[test]
     fn regenerate_indexes_skips_dot_dirs_and_unchanged_files() {
-        let scratch = crate::TestDir::new("knowledge");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("knowledge");
+        let dir = scratch.path().to_path_buf();
         let md = "---\ntype: fact\ntitle: A\n---\nbody\n";
         std::fs::create_dir_all(dir.join("facts")).unwrap();
         std::fs::create_dir_all(dir.join(".git")).unwrap();

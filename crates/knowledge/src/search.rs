@@ -776,10 +776,10 @@ mod tests {
     use crate::types::{Put, Source};
 
     /// Guard first in the tuple: it is declared first, so it drops last.
-    async fn open() -> (crate::TestDir, Arc<Knowledge>) {
-        let dir = crate::TestDir::new("ksearch");
-        let rt = Runtime::new(figment::Figment::new(), dir.0.clone());
-        let k = Knowledge::open(&dir.0, rt).await.unwrap();
+    async fn open() -> (tempfile::TempDir, Arc<Knowledge>) {
+        let dir = crate::test_dir("ksearch");
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let k = Knowledge::open(dir.path(), rt).await.unwrap();
         (dir, k)
     }
 

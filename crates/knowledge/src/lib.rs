@@ -640,31 +640,14 @@ impl runtime::Plugin for KnowledgePlugin {
     }
 }
 
-/// A test scratch directory under `$TMPDIR`, `theuth-<tag>-<uuid>`, removed
-/// on drop — on a passing test and on a panic alike (141 R4: leaked
-/// `theuth-*` test dirs filled the shared machine's disk). Bind it before
-/// anything that uses the path, so it drops last.
+/// A test scratch directory `theuth-<tag>-*` under `$TMPDIR`, removed on drop
+/// — on a passing test and on a panic alike (141 R4: leaked `theuth-*` test
+/// dirs filled the shared machine's disk). Bind it before anything that uses
+/// the path, so it drops last.
 #[cfg(test)]
-pub(crate) struct TestDir(pub(crate) std::path::PathBuf);
-
-#[cfg(test)]
-impl TestDir {
-    /// An uncreated `theuth-<tag>-<uuid>` path (for a scratch file); dropped
-    /// like the directory form.
-    pub(crate) fn path(tag: &str) -> Self {
-        Self(std::env::temp_dir().join(format!("theuth-{tag}-{}", uuid::Uuid::new_v4())))
-    }
-
-    pub(crate) fn new(tag: &str) -> Self {
-        let s = Self::path(tag);
-        std::fs::create_dir_all(&s.0).unwrap();
-        s
-    }
-}
-
-#[cfg(test)]
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0).or_else(|_| std::fs::remove_file(&self.0));
-    }
+pub(crate) fn test_dir(tag: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("theuth-{tag}-"))
+        .tempdir()
+        .unwrap()
 }
