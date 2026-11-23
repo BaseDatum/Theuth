@@ -193,7 +193,7 @@ unchanged.
 
 | command | result |
 |---|---|
-| `cargo check -p share --all-targets` | Finished, no warnings |
+| `cargo check -p share --all-targets` | Finished, no warnings (ran before the 5-line clippy fix in `rekey/tests.rs`; clippy below type-checks the same targets after it) |
 | `cargo clippy -p share --all-targets --no-deps -- -D warnings` | Finished, clean |
 | `cargo test -p share` | 43 passed, 0 failed (incl. 6 `rekey::tests` P0-6 races) |
 | `cargo test -p rpc-compose --test wire_golden --test wire_topics` | 2 + 4 passed; no fixture change |
