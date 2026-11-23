@@ -16,6 +16,10 @@ against, plus empty crates for the edge and the client plugin.
 `share-proto` dependencies: `serde`, `serde_json`, `postcard`, `iroh-base`, `iroh-tickets`, `x509-parser`,
 `data-encoding`, `sha2`, `thiserror`; dev: `rcgen`. No workspace crate.
 
+Verification: `cargo test -p share-proto` 24 passed; `cargo clippy -p share-proto -p share-edge -p share
+--all-targets -- -D warnings` clean (it also covers `cargo check` of all three); `cargo tree -p share-proto -e
+normal` lists no workspace crate but itself.
+
 ## Public API of `share-proto`
 
 Root re-exports: `api::*`, `ErrorBody`, `ErrorCode`, `Event`, `KillReason`, `CsrError`, `CsrInfo`, `SpkiHash`,
