@@ -65,3 +65,4 @@ workspace = true
 [dev-dependencies]
 figment = { workspace = true }
 wiremock = { workspace = true }
+tempfile = "3"
