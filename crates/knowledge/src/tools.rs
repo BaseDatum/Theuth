@@ -1683,15 +1683,16 @@ mod tests {
         );
         assert_eq!(out.content, want);
         assert!(out.structured.is_none());
-        let seen = judge.seen.lock();
-        assert_eq!(seen.len(), 3);
-        assert_eq!(
-            seen[0].statement,
-            "This memory helps answer the question: how is the build lock acquired"
-        );
-        // No description given: the store fills in the title, which the judge reads once.
-        assert_eq!(seen[0].state, "A\n\nbody of A");
-        drop(seen);
+        {
+            let seen = judge.seen.lock();
+            assert_eq!(seen.len(), 3);
+            assert_eq!(
+                seen[0].statement,
+                "This memory helps answer the question: how is the build lock acquired"
+            );
+            // No description given: the store fills in the title, which the judge reads once.
+            assert_eq!(seen[0].state, "A\n\nbody of A");
+        }
         assert_eq!(
             opened(&k, &["facts/a", "facts/b", "facts/c"]).await,
             [1, 1, 0]
