@@ -279,7 +279,7 @@ impl Component for Share {
             return None;
         }
         use iocraft::prelude::*;
-        self.segment().map(|text| View::IntrinsicElement {
+        self.segment().map(|text| super::View::IntrinsicElement {
             element: element!(Text(content: text, color: crate::ui::CARNELIAN)).into_any(),
             rows: 1,
             replace: false,
@@ -376,7 +376,7 @@ mod tests {
         let a = Live { id: "a".into(), url: "https://a.tun.zip/".into(), domain: "tun.zip".into(), state: "live".into(), expires_ms: Some(3 * 3_600_000 + 5 * 60_000) };
         let b = Live { state: "pending".into(), id: "b".into(), expires_ms: None, ..a.clone() };
         let gone = Live { state: "stopped".into(), id: "c".into(), ..a.clone() };
-        assert_eq!(list_text(&[gone.clone()], 0), "public sharing: nothing is public");
+        assert_eq!(list_text(std::slice::from_ref(&gone), 0), "public sharing: nothing is public");
         assert_eq!(
             list_text(&[a, b, gone], 0),
             "public sharing: 2 live  ·  /share stop stops all\n  https://a.tun.zip/  ·  expires in 3h05m  ·  a\n  https://a.tun.zip/ (pending)  ·  no expiry  ·  b"
