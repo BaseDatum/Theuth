@@ -21,7 +21,7 @@ resources:
 
 images:
   - name: ghcr.io/skymoore/theuth/share-edge
-    newTag: share-edge-1b0ebd7e7   # built with FEATURES=k8s (k8s.enabled needs it)
+    newTag: share-edge-9775ee820   # built with FEATURES=k8s (k8s.enabled needs it)
 
 patches:
   - path: configmap.yaml
