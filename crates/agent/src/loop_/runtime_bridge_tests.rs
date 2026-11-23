@@ -15,7 +15,7 @@ use super::*;
 
 /// A pool over a worker binary; `None`, with a note, when absent so the
 /// bridged scenarios skip.
-async fn worker_pool() -> Option<Arc<Pool>> {
+pub(super) async fn worker_pool() -> Option<Arc<Pool>> {
     let worker = std::env::var_os("THEUTH_WORKER")
         .map(PathBuf::from)
         .or_else(|| {

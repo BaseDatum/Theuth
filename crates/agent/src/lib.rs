@@ -711,6 +711,9 @@ pub struct Toolset {
     /// §1.5, 81): `None` = the configured `knowledge.hint_limit`; `Some(0)` = no
     /// hints, no knowledge search at turn start.
     pub hint_limit: Option<u32>,
+    /// Tool calls between `set_status` nudges for this session (212 §10): `None` =
+    /// the configured `agent.status_every`; `Some(0)` = no nudge.
+    pub status_every: Option<u32>,
 }
 
 /// `ask` → `Result<(), String>`: one session's toolset override, in memory

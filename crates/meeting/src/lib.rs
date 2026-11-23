@@ -926,6 +926,7 @@ impl MeetingConfig {
             prompts: self.live_prompts.clone(),
             runtime: false,
             hint_limit: Some(self.live_hint_limit),
+            status_every: Some(0),
         }
     }
 }

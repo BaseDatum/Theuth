@@ -69,6 +69,7 @@ pub mod harness;
 mod knowledge_harvester;
 mod moved;
 pub mod suffixes;
+pub mod title_guard;
 pub mod turn_usage;
 pub use capture::ATTACHED;
 pub use durability::Scope;

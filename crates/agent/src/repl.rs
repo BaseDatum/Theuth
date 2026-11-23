@@ -41,6 +41,7 @@ use crate::AgentEvent;
 use crate::advisor;
 use crate::endless::Endless;
 use crate::loop_::{CellPermit, CellRunning, endless_tools};
+use crate::status;
 use crate::todo::{self, Todo};
 
 /// Tool name.
@@ -1183,6 +1184,15 @@ pub struct Repl {
     /// The batch's working copy of the todo list while `todo` is in
     /// `cx.local`: the loop sets it before a cell and reads it back after.
     pub(crate) todo: Vec<Todo>,
+    /// The last `set_status` a cell of this batch made (212 §8), while `set_status` is in
+    /// `cx.local`: the loop takes it after the cell and applies it.
+    pub(crate) status: Option<status::StatusUpdate>,
+    /// The session's title is the user's (212 §11): the loop sets it before a cell so
+    /// the receipt says the title was kept.
+    pub(crate) user_titled: bool,
+    /// Inner tool calls cells made since the loop last took the count, `todo` and
+    /// `set_status` excluded: the status nudge's counter (212 §10).
+    pub(crate) inner_calls: u32,
 }
 
 impl Repl {
@@ -1320,6 +1330,9 @@ impl Repl {
             unawaited: 0,
             hinted: false,
             todo: Vec::new(),
+            status: None,
+            user_titled: false,
+            inner_calls: 0,
         };
         if let Err(e) = repl.ensure_checkout().await {
             tracing::warn!("python runtime checkout failed: {e}");
@@ -1794,6 +1807,9 @@ impl Repl {
             unawaited,
             names,
             todo: todos,
+            status: status_set,
+            user_titled,
+            inner_calls,
             ..
         } = self;
         let (cx, spill): (&RunCx, &Path) = (cx, spill);
@@ -1880,6 +1896,9 @@ impl Repl {
                             _ => match find_tool(cx, &function_name).await {
                                 Some(spec) => {
                                     n += 1;
+                                    if spec.name != todo::NAME && spec.name != status::NAME {
+                                        *inner_calls += 1;
+                                    }
                                     let id = format!("{call_id}.{n}");
                                     let args = merge_args(&spec, &args);
                                     cx.rt
@@ -1924,13 +1943,30 @@ impl Repl {
                         // still running keeps it), and the interpreter resumes only
                         // once a permit is held again.
                         drop(running.take());
-                        // `todo` runs first, in invocation order, on the one
-                        // working copy; the rest run together.
+                        // `todo` and `set_status` run first, in invocation order, on the
+                        // one working copy; the rest run together.
                         let todo_outs: Vec<Option<ToolOutput>> = calls
                             .iter()
                             .map(|(_, c)| {
-                                (c.local && c.name == todo::NAME)
-                                    .then(|| todo::call(todos, c.args.clone()))
+                                if !c.local {
+                                    None
+                                } else if c.name == todo::NAME {
+                                    Some(todo::call(todos, c.args.clone()))
+                                } else if c.name == status::NAME {
+                                    Some(match status::parse(c.args.clone()) {
+                                        Ok(u) => {
+                                            let out = ToolOutput::ok(status::receipt(
+                                                u.title.as_deref(),
+                                                *user_titled,
+                                            ));
+                                            *status_set = Some(u);
+                                            out
+                                        }
+                                        Err(e) => ToolOutput::err(e),
+                                    })
+                                } else {
+                                    None
+                                }
                             })
                             .collect();
                         // Each result's images are copied as it lands: a sibling

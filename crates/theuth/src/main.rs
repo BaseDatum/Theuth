@@ -897,6 +897,7 @@ agent:
                              # unset: inherits title_model, then the session's model. Must be a catalog `provider/model`. /escalate or Settings → Agent loop
   # stream_idle_secs: 120     # seconds without a stream event before a model call is abandoned (36 §2.3); Settings → Agent loop
   # max_salvages: 2           # interrupted-reply recoveries per turn (stalled stream or output cap) before the turn errors (36 §2.4); 0 = off
+  # status_every: 8           # tool calls between harness nudges asking the model to call set_status (212 §10); the first comes after 2; 0 = off
   # aws_profile: work          # Bedrock inference for every session; /aws or Settings → Connections
   # openrouter:               # built-in OpenRouter provider (85 §0.6); key = secret `openrouter` or OPENROUTER_API_KEY
   #   provider: {order: [anthropic], allow_fallbacks: false}  # OpenRouter `provider` preferences, sent verbatim when set

@@ -91,7 +91,7 @@ use crate::vision::{self, VisionImage, VisionSource, VisionStatus};
 use crate::{
     AGENT_ACTOR, Advisory, AgentConfig, AgentEvent, Agents, AppendAdvisory, CompactStyle,
     QueuedInput, SessionKind, SetAdvisorOn, SurfaceConfig, Toolset, Usage, VisionStage, attach,
-    clock, compact, skills, spill, todo,
+    clock, compact, skills, spill, status, todo,
 };
 
 /// Characters of tool output shown in [`AgentEvent::ToolCallFinished`] (and
@@ -604,6 +604,13 @@ pub struct SessionState {
     pub todo_version: u64,
     /// Round of this turn in which `todo` was last called or reminded.
     pub todo_touched_round: u32,
+    /// The agent's own status line this turn (212 §8); `None` until it calls `set_status`.
+    pub status: Option<String>,
+    /// Tool calls since the last `set_status` or status nudge (212 §10); `todo` and
+    /// `set_status` do not count.
+    pub tool_calls_since_status: u32,
+    /// No `set_status` and no status nudge yet this turn: the first nudge comes early.
+    pub status_quiet: bool,
     /// Concept ids hinted this epoch (10 §4.2); cleared by compaction, not persisted.
     pub hinted: BTreeSet<String>,
     /// Round of this turn in which the last `<knowledge>` check ran.
@@ -698,6 +705,9 @@ impl SessionState {
             todos: Vec::new(),
             todo_version: 0,
             todo_touched_round: 0,
+            status: None,
+            tool_calls_since_status: 0,
+            status_quiet: true,
             hinted: BTreeSet::new(),
             knowledge_hinted_round: 0,
             knowledge_read: BTreeSet::new(),
@@ -792,6 +802,15 @@ impl Actor for Session {
     type Error = Infallible;
 
     async fn on_start(session: Self, _: ActorRef<Self>) -> Result<Self, Infallible> {
+        // 212 §11: the title guards persist across engine restarts.
+        match session.shared.store.title_guard(session.shared.id).await {
+            Ok(g) => {
+                let relaxed = std::sync::atomic::Ordering::Relaxed;
+                session.shared.agent_titled.store(g.agent_titled, relaxed);
+                session.shared.user_titled.store(g.user_titled, relaxed);
+            }
+            Err(e) => tracing::warn!(session = %session.shared.id, "title_guard: {e:#}"),
+        }
         Ok(session)
     }
 
@@ -828,6 +847,11 @@ struct Shared {
     toolset: Arc<parking_lot::RwLock<Option<Toolset>>>,
     /// [`SetTitlePin`] (`meetings/06-live-toolset.md` §1.7); shared with the running turn.
     title_pinned: Arc<std::sync::atomic::AtomicBool>,
+    /// 212 §11: the agent named this session with `set_status`; the title model stays off.
+    agent_titled: Arc<std::sync::atomic::AtomicBool>,
+    /// 212 §11: the user renamed this session; neither the title model nor `set_status`
+    /// replaces it.
+    user_titled: Arc<std::sync::atomic::AtomicBool>,
     /// Model for title calls (07 §15); `None` = the session's model. Shared with the supervisor.
     title_model: Arc<RwLock<Option<Resolved>>>,
     /// Vision fallback (52 §3.1); `None` = no fallback. Shared with the
@@ -925,6 +949,17 @@ struct Shared {
     /// Test hook: the view an endless turn renders instead of asking the service.
     #[cfg(test)]
     test_view: Arc<parking_lot::Mutex<Option<ViewRender>>>,
+}
+
+impl Shared {
+    /// The title model leaves this session's title alone (06 §1.7, 212 §11): pinned,
+    /// named by the agent with `set_status`, or renamed by the user.
+    fn title_held(&self) -> bool {
+        let relaxed = std::sync::atomic::Ordering::Relaxed;
+        self.title_pinned.load(relaxed)
+            || self.agent_titled.load(relaxed)
+            || self.user_titled.load(relaxed)
+    }
 }
 
 /// A vision fallback that failed in this session (read-file-images §3):
@@ -1047,6 +1082,8 @@ impl Session {
                 compaction: Arc::default(),
                 toolset: Arc::default(),
                 title_pinned: Arc::default(),
+                agent_titled: Arc::default(),
+                user_titled: Arc::default(),
                 title_model,
                 vision_model,
                 image_refusals: Arc::default(),
@@ -2618,6 +2655,10 @@ impl Message<Titled> for Session {
 
     async fn handle(&mut self, _: Titled, _: &mut Context<Self, Self::Reply>) {
         self.titled = true;
+        // 212 §11: `RenameSession` persisted the guard; the live session follows.
+        self.shared
+            .user_titled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -3923,6 +3964,9 @@ pub(crate) fn direct_specs(
     if listed(todo::NAME) {
         specs.push(todo::spec());
     }
+    if listed(status::NAME) {
+        specs.push(status::spec());
+    }
     if runtime {
         specs.push(repl::spec());
     }
@@ -3933,7 +3977,9 @@ pub(crate) fn direct_specs(
 /// The loop-local direct tools a python cell can await too (the repl answers
 /// them, 08 §3.1); every other loop-local one is in [`repl::DIRECT_ONLY`].
 pub(crate) fn awaitable_locals() -> impl Iterator<Item = ToolSpec> {
-    std::iter::once(todo::spec()).chain(endless_tools::specs())
+    [todo::spec(), status::spec()]
+        .into_iter()
+        .chain(endless_tools::specs())
 }
 
 /// The plugins' prompt blocks for [`frame::baseline`]; a `toolset` keeps only
@@ -4048,6 +4094,77 @@ impl Turn {
 
     async fn publish(&self, event: AgentEvent) {
         self.shared.rt.publish(event).await;
+    }
+
+    /// 212 §10: the round prelude asks for `set_status` now — the tool is in this
+    /// turn's array, the cadence is on for this session, and it is not the dreaming one.
+    fn status_nudge_due(&self) -> bool {
+        let every = self
+            .shared
+            .toolset
+            .read()
+            .as_ref()
+            .and_then(|t| t.status_every)
+            .unwrap_or(self.shared.cfg.status_every);
+        status::nudge_due(
+            self.state.tool_calls_since_status,
+            self.state.status_quiet,
+            every,
+        ) && self.tools.iter().any(|t| t.name.as_str() == status::NAME)
+            && !self
+                .knowledge()
+                .is_some_and(|k| k.is_consolidating_session(self.shared.id))
+    }
+
+    /// 212 §8: apply one `set_status` call (direct or from a cell): the status line and
+    /// its event, the title unless the user named the session, and the persisted
+    /// `agent_titled` guard on the first call.
+    async fn apply_status(&mut self, u: status::StatusUpdate) {
+        let session = self.shared.id;
+        let relaxed = std::sync::atomic::Ordering::Relaxed;
+        self.state.status = Some(u.status.clone());
+        self.state.tool_calls_since_status = 0;
+        self.state.status_quiet = false;
+        if !self.shared.agent_titled.swap(true, relaxed)
+            && let Err(e) = self.shared.store.set_agent_titled(session).await
+        {
+            tracing::warn!(session = %session, "set_agent_titled: {e:#}");
+        }
+        let title = u.title.filter(|_| !self.shared.user_titled.load(relaxed));
+        let title = match title {
+            Some(t) => match self.shared.store.set_title(session, &t).await {
+                Ok(()) => Some(t),
+                Err(e) => {
+                    tracing::warn!(session = %session, "set_title: {e:#}");
+                    None
+                }
+            },
+            None => None,
+        };
+        self.publish(AgentEvent::StatusChanged {
+            session,
+            status: u.status,
+            title: title.clone(),
+        })
+        .await;
+        if let Some(title) = title {
+            // The title only; the event repeats the stored tags (as `RenameSession`).
+            let tags = self
+                .shared
+                .store
+                .session(session)
+                .await
+                .ok()
+                .flatten()
+                .map(|s| s.tags)
+                .unwrap_or_default();
+            self.publish(AgentEvent::TitleChanged {
+                session,
+                title,
+                tags,
+            })
+            .await;
+        }
     }
 
     /// 125 §4.1 item 4 / §4.12: tell the `Advisors` actor one agent-core step
@@ -5659,6 +5776,7 @@ impl Turn {
         // error admits none of them).
         let locals: Vec<String> = [
             todo::NAME,
+            status::NAME,
             repl::NAME,
             advisor::advise::NAME,
             advisor::consult::NAME,
@@ -6629,6 +6747,9 @@ impl Turn {
                     None => None,
                 };
                 self.state.todo_touched_round = 0;
+                self.state.status = None;
+                self.state.tool_calls_since_status = 0;
+                self.state.status_quiet = true;
                 self.state.knowledge_hinted_round = 0;
                 self.state.surface_rounds = 0;
                 self.state.cell_rounds = 0;
@@ -6821,12 +6942,9 @@ impl Turn {
     /// closed generation lands. Diagnostics never carry prompt/reply/title
     /// content; for a private tree not even their lengths.
     async fn maybe_title(&mut self) {
-        // 06 §1.7: a pinned title (a recording meeting's) is never regenerated.
-        if self
-            .shared
-            .title_pinned
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        // 06 §1.7: a pinned title (a recording meeting's) is never regenerated; 212 §11:
+        // nor one the agent (`set_status`) or the user named.
+        if self.shared.title_held() {
             return;
         }
         let epoch_changed = self.state.epoch != self.state.title_epoch;
@@ -7175,6 +7293,16 @@ impl Turn {
             let list = todo::render(&self.state.todos);
             self.note("todo", &list).await;
             self.state.todo_touched_round = round;
+        }
+        // 212 §10: a `<nudge>` asking for `set_status` every few tool calls.
+        if chat && self.status_nudge_due() {
+            let user_titled = self
+                .shared
+                .user_titled
+                .load(std::sync::atomic::Ordering::Relaxed);
+            self.note("nudge", &status::nudge_text(user_titled)).await;
+            self.state.tool_calls_since_status = 0;
+            self.state.status_quiet = false;
         }
         // 144 §5.3 / 157 D2: a bound chat gets its `<notebook>` block once per epoch (the manifest after a
         // compaction, D5) and a `<notebook_changes>` note when the notebook moved since, after the user's
@@ -7733,6 +7861,7 @@ impl Turn {
         let endless = self.endless_listed;
         let local = |name: &str| {
             name == todo::NAME
+                || name == status::NAME
                 || name == repl::NAME
                 || (advisor && name == advisor::advise::NAME)
                 || (consulting && name == advisor::consult::NAME)
@@ -7813,6 +7942,12 @@ impl Turn {
         // 47 §5.1: `todo` operations run against a working copy; the list is
         // canonical only once it commits with this batch's tool message below.
         let mut plan: Option<Vec<todo::Todo>> = None;
+        // 212 §10: every call counts toward the status nudge but `todo` and `set_status`;
+        // a cell's inner calls are added after it runs.
+        self.state.tool_calls_since_status += calls
+            .iter()
+            .filter(|c| c.fn_name != todo::NAME && c.fn_name != status::NAME)
+            .count() as u32;
         for (i, call) in calls.iter().enumerate() {
             if cancelled || outputs[i].is_some() {
                 continue;
@@ -7855,6 +7990,19 @@ impl Turn {
                         call.fn_name
                     )),
                     None => ToolOutput::err("fractal context is not available in this process"),
+                }
+            } else if call.fn_name == status::NAME {
+                match status::parse(call.fn_arguments.clone()) {
+                    Ok(u) => {
+                        let user_titled = self
+                            .shared
+                            .user_titled
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        let out = ToolOutput::ok(status::receipt(u.title.as_deref(), user_titled));
+                        self.apply_status(u).await;
+                        out
+                    }
+                    Err(e) => ToolOutput::err(e),
                 }
             } else if call.fn_name == todo::NAME {
                 self.state.todo_touched_round = round;
@@ -8258,10 +8406,18 @@ impl Turn {
         let repl = self.repl.insert(repl);
         let committed = plan.as_ref().unwrap_or(&self.state.todos);
         repl.todo.clone_from(committed);
+        repl.user_titled = self
+            .shared
+            .user_titled
+            .load(std::sync::atomic::Ordering::Relaxed);
         let out = repl.run(&call.call_id, &code).await;
         if repl.todo != *plan.as_ref().unwrap_or(&self.state.todos) {
             *plan = Some(std::mem::take(&mut repl.todo));
             self.state.todo_touched_round = round;
+        }
+        self.state.tool_calls_since_status += std::mem::take(&mut repl.inner_calls);
+        if let Some(u) = repl.status.take() {
+            self.apply_status(u).await;
         }
         out
     }
@@ -10294,6 +10450,10 @@ mod budget_tests;
 #[cfg(test)]
 mod runtime_bridge_tests;
 
+/// 212 §13: `set_status` state, events, title guards, nudge cadence and the python bridge.
+#[cfg(test)]
+mod status_tests;
+
 #[cfg(test)]
 mod mcp_live_tests;
 
@@ -10463,6 +10623,7 @@ mod tests {
             prompts: vec!["meeting".into(), "web".into()],
             runtime: false,
             hint_limit: None,
+            status_every: None,
         };
         assert_eq!(
             names(direct_specs(registry(), true, true, true, Some(&live))),
@@ -10474,6 +10635,7 @@ mod tests {
             prompts: vec![],
             runtime: true,
             hint_limit: None,
+            status_every: None,
         };
         assert_eq!(
             names(direct_specs(
@@ -10502,15 +10664,17 @@ mod tests {
             prompts: vec![],
             runtime: false,
             hint_limit: None,
+            status_every: None,
         };
         assert!(names(direct_specs(registry(), true, true, false, Some(&spawn))).is_empty());
-        // `None`: the floor with the runtime on, everything plus `todo` without.
+        // `None`: the floor with the runtime on, everything plus `todo` and `set_status` without.
         assert_eq!(
             names(direct_specs(registry(), true, true, true, None)),
             [
                 "ask_user",
                 "meeting_topic",
                 "python",
+                "set_status",
                 "spawn_subagent",
                 "todo"
             ]
@@ -10521,6 +10685,7 @@ mod tests {
                 "ask_user",
                 "brief_search",
                 "meeting_topic",
+                "set_status",
                 "shell",
                 "spawn_subagent",
                 "todo"
@@ -10568,6 +10733,7 @@ mod tests {
             prompts: vec!["agent".into()],
             runtime: false,
             hint_limit: None,
+            status_every: None,
         };
         assert_eq!(prompt_blocks(blocks(), Some(&live), true), "A");
     }

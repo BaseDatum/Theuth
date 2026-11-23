@@ -9970,6 +9970,11 @@ impl Message<RenameSession> for Agents {
             .set_title(m.session, &title)
             .await
             .map_err(|e| e.to_string())?;
+        // 212 §11: the title model never overwrites a user's name, nor does `set_status`.
+        store
+            .set_user_titled(m.session)
+            .await
+            .map_err(|e| e.to_string())?;
         // A rename changes the title only; the event repeats the stored tags.
         let tags = store
             .session(m.session)
