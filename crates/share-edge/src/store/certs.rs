@@ -474,6 +474,17 @@ impl Store {
         Ok(())
     }
 
+    /// `cert retry`: make a `queued` job due at `now_ms` with its attempt count reset (so the backoff and the
+    /// `max_attempts` budget start over). False when the job is no longer queued.
+    pub async fn retry_job(&self, id: &str, now_ms: u64) -> anyhow::Result<bool> {
+        let r = sqlx::query("UPDATE cert_jobs SET next_at_ms = ?, attempts = 0 WHERE id = ? AND state = 'queued'")
+            .bind(ms(now_ms))
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
     /// Drop every open job of a name (release, ban).
     pub async fn drop_jobs(&self, domain: &str, name: &str) -> anyhow::Result<()> {
         sqlx::query(

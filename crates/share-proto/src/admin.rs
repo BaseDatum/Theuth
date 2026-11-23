@@ -123,6 +123,12 @@ pub enum AdminCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<RevokeReason>,
     },
+    /// Make a name's queued certificate job due now and reset its attempt count (after an infrastructure fix,
+    /// instead of waiting out the backoff).
+    CertRetry {
+        /// The name.
+        name: String,
+    },
     /// Re-read the reloadable config (§8.1).
     Reload,
     /// Close every tunnel and refuse `hello`.
@@ -505,6 +511,24 @@ pub struct RevokeCertResult {
     pub reason: RevokeReason,
 }
 
+/// `cert retry <name>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertRetryResult {
+    /// The name.
+    pub name: String,
+    /// The job made due.
+    pub job_id: String,
+    /// Its kind.
+    pub kind: JobKind,
+    /// Attempts it had before the reset.
+    pub attempts_before: u32,
+    /// Its last error, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// New `next_at_ms` (now).
+    pub next_at_ms: u64,
+}
+
 /// `reload`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReloadResult {
@@ -626,6 +650,7 @@ mod tests {
             AdminCommand::CaaCheck,
             AdminCommand::BrakeStatus,
             AdminCommand::Reload,
+            AdminCommand::CertRetry { name: "sky".into() },
         ];
         for (i, c) in cmds.into_iter().enumerate() {
             let r = AdminRequest {
@@ -637,6 +662,22 @@ mod tests {
             assert_eq!(serde_json::from_str::<AdminRequest>(&line).unwrap(), r);
         }
         assert!(!AdminCommand::InviteList.is_mutating());
+        assert!(AdminCommand::CertRetry { name: "x".into() }.is_mutating());
+        let line = r#"{"id":1,"cmd":"cert-retry","args":{"name":"sky"}}"#;
+        assert_eq!(
+            serde_json::from_str::<AdminRequest>(line).unwrap().command,
+            AdminCommand::CertRetry { name: "sky".into() }
+        );
+        let cr = CertRetryResult {
+            name: "sky".into(),
+            job_id: "j1".into(),
+            kind: JobKind::New,
+            attempts_before: 4,
+            last_error: Some("dns".into()),
+            next_at_ms: 9,
+        };
+        let back = AdminResponse::ok_typed(1, &cr);
+        assert_eq!(back.result_as::<CertRetryResult>().unwrap().unwrap(), cr);
         assert!(AdminCommand::InviteRevoke { hash: "x".into() }.is_mutating());
         let line = r#"{"id":1,"cmd":"invite-revoke","args":{"hash":"ab"}}"#;
         assert!(matches!(

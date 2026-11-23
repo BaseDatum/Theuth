@@ -108,6 +108,11 @@ enum AdminCmd {
         #[arg(value_parser = ["unspecified", "key_compromise", "superseded", "cessation_of_operation"])]
         reason: Option<String>,
     },
+    /// Certificate jobs: `retry <name>`.
+    Cert {
+        #[command(subcommand)]
+        cmd: CertCmd,
+    },
     /// Re-read the reloadable config (limits, brand file, terms, admission, brake).
     Reload,
     /// Which brake conditions hold.
@@ -131,6 +136,12 @@ enum InviteCmd {
     List,
     /// Revoke an invite by its hash (or a unique prefix of 8+ hex characters).
     Revoke { hash: String },
+}
+
+#[derive(Subcommand)]
+enum CertCmd {
+    /// Make the name's queued job due now and reset its backoff (after an infrastructure fix).
+    Retry { name: String },
 }
 
 #[derive(Subcommand)]
@@ -207,6 +218,9 @@ fn admin_command(cmd: AdminCmd) -> AdminCommand {
                 _ => RevokeReason::Unspecified,
             }),
         },
+        AdminCmd::Cert {
+            cmd: CertCmd::Retry { name },
+        } => AdminCommand::CertRetry { name },
         AdminCmd::Reload => AdminCommand::Reload,
         AdminCmd::BrakeStatus => AdminCommand::BrakeStatus,
     }

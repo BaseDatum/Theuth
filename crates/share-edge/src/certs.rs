@@ -424,7 +424,8 @@ pub async fn revoke_due(edge: &Edge, certs: &Certs, now: u64) -> anyhow::Result<
 }
 
 /// At start: release every lease (one runner per edge) and delete every ledger record that no held name
-/// needs; challenge TXTs never outlive an order.
+/// needs; challenge TXTs never outlive an order. A held name's CNAMEs stay even when `records` is 0 (a job
+/// that failed between ledger and flag): its next attempt re-ensures them idempotently.
 pub async fn reconcile(edge: &Edge) -> anyhow::Result<()> {
     let Some(certs) = edge.certs.get() else { return Ok(()) };
     edge.store.reset_leases().await?;
@@ -435,7 +436,7 @@ pub async fn reconcile(edge: &Edge) -> anyhow::Result<()> {
                 .store
                 .cert_row(&edge.cfg.domain, n)
                 .await?
-                .is_some_and(|r| r.held() && r.records != 0),
+                .is_some_and(|r| r.held()),
             _ => false,
         };
         if keep {

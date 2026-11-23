@@ -9,9 +9,9 @@ use std::sync::atomic::Ordering;
 use anyhow::Context as _;
 use serde_json::{Value, json};
 use share_proto::admin::{
-    AdminCommand, AdminRequest, AdminResponse, AdmissionResult, BanInfo, BanKind, CaaCheckResult, ClosedTunnels,
-    EvictResult, InviteListResult, InviteMinted, InviteRevoked, InviteRow, JobKind, ListWhat, MeshResult,
-    QueueClass, QueueResult, QueueRow, RecoverResult, ReleaseResult, ReloadResult, RevokeCertResult,
+    AdminCommand, AdminRequest, AdminResponse, AdmissionResult, BanInfo, BanKind, CaaCheckResult, CertRetryResult,
+    ClosedTunnels, EvictResult, InviteListResult, InviteMinted, InviteRevoked, InviteRow, JobKind, ListWhat,
+    MeshResult, QueueClass, QueueResult, QueueRow, RecoverResult, ReleaseResult, ReloadResult, RevokeCertResult,
     RevokeReason, StatusResult,
 };
 use share_proto::{Admission, ErrorCode, Invite, KillReason, MeshEngine, PublicKey, RekeyEntry};
@@ -272,6 +272,7 @@ async fn run(edge: &Arc<Edge>, cmd: AdminCommand) -> AdminResult {
         }
         AdminCommand::CaaCheck => typed(&caa_check(edge, now).await.map_err(internal)?),
         AdminCommand::RevokeCert { name, reason } => revoke_cert(edge, &name, reason.unwrap_or_default(), now).await,
+        AdminCommand::CertRetry { name } => cert_retry(edge, &name, now).await,
         AdminCommand::Reload => {
             let Some(path) = edge.config_path.get() else {
                 return Err((ErrorCode::Invalid, "this edge was not started from a config file".into()));
@@ -551,6 +552,32 @@ async fn revoke_cert(edge: &Arc<Edge>, name: &str, reason: RevokeReason, now: u6
     }
     crate::certs::revoke_due(edge, certs, now).await.map_err(internal)?;
     typed(&RevokeCertResult { name: name.to_string(), reason: sent })
+}
+
+/// `cert retry <name>`: the name's queued job due now, attempts reset, runner woken.
+async fn cert_retry(edge: &Arc<Edge>, name: &str, now: u64) -> AdminResult {
+    let Some(certs) = edge.certs.get() else {
+        return Err((ErrorCode::Invalid, "no certificate backends on this edge".into()));
+    };
+    let Some(job) = edge.store.open_job(&edge.cfg.domain, name).await.map_err(internal)? else {
+        return Err((ErrorCode::NotFound, format!("{name} has no queued certificate job")));
+    };
+    if job.state != "queued" || !edge.store.retry_job(&job.id, now).await.map_err(internal)? {
+        return Err((ErrorCode::Invalid, format!("{name}: its job is being ordered now")));
+    }
+    certs.wake.notify_one();
+    typed(&CertRetryResult {
+        name: name.to_string(),
+        job_id: job.id,
+        kind: match job.kind.as_str() {
+            "renew" => JobKind::Renew,
+            "rotate" => JobKind::Rotate,
+            _ => JobKind::New,
+        },
+        attempts_before: u32::try_from(job.attempts).unwrap_or(0),
+        last_error: job.last_error,
+        next_at_ms: now,
+    })
 }
 
 /// `reload` (§8.1): apply the reloadable keys of `cfg` live and name the changed ones; keys sized at start are

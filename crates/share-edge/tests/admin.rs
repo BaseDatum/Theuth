@@ -11,9 +11,9 @@ use share_edge::config::{Config, Secrets};
 use share_edge::state::{Edge, now_ms};
 use share_edge::store::{NewName, Store};
 use share_proto::admin::{
-    AdminCommand, AdminRequest, AdminResponse, BrakeKind, BrakeStatus, CaaCheckResult, InviteListResult,
-    InviteMinted, InviteRevoked, MeshResult, QueueResult, RecoverResult, ReleaseResult, ReloadResult,
-    RevokeCertResult, RevokeReason, StatusResult,
+    AdminCommand, AdminRequest, AdminResponse, BrakeKind, BrakeStatus, CaaCheckResult, CertRetryResult,
+    InviteListResult, InviteMinted, InviteRevoked, JobKind, MeshResult, QueueResult, RecoverResult, ReleaseResult,
+    ReloadResult, RevokeCertResult, RevokeReason, StatusResult,
 };
 use share_proto::{Admission, CsrQuery, ErrorBody, ErrorCode, LimitKind, LimitScope, PublicKey, SecretKey};
 
@@ -254,4 +254,40 @@ async fn drain_refuses_hello_and_returns_at_once_without_tunnels() {
     let r = rig("").await;
     assert_eq!(share_edge::drain(&r.edge, 30).await, 0);
     assert!(r.edge.draining.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn cert_retry_makes_a_backed_off_job_due_and_resets_attempts() {
+    let r = rig("").await;
+    let a = SecretKey::generate().public();
+    claim(&r.edge, &a, "alpha").await;
+    certs::submit(&r.edge, &a, "alpha", &csr("alpha"), CsrQuery::default()).await.unwrap().unwrap();
+    // Two failed attempts; the job now waits far out in backoff.
+    let t0 = now_ms();
+    let far = t0 + 3_600_000;
+    for _ in 0..2 {
+        let j = r.edge.store.lease_job(far, far + 60_000).await.unwrap().unwrap();
+        r.edge.store.requeue_job(&j.id, far, Some("dns: SERVFAIL"), false).await.unwrap();
+    }
+    let before = r.edge.store.open_job("tun.zip", "alpha").await.unwrap().unwrap();
+    assert_eq!(before.attempts, 2);
+
+    let res: CertRetryResult = ok(&r.edge, AdminCommand::CertRetry { name: "alpha".into() }).await;
+    assert_eq!(res.name, "alpha");
+    assert_eq!(res.job_id, before.id);
+    assert_eq!(res.kind, JobKind::New);
+    assert_eq!(res.attempts_before, 2);
+    assert_eq!(res.last_error.as_deref(), Some("dns: SERVFAIL"));
+    assert!(res.next_at_ms >= t0 && res.next_at_ms < far);
+    let after = r.edge.store.open_job("tun.zip", "alpha").await.unwrap().unwrap();
+    assert_eq!((after.state.as_str(), after.attempts, after.next_at_ms as u64), ("queued", 0, res.next_at_ms));
+    // Due now: a runner tick as of `now` leases it.
+    let leased = r.edge.store.lease_job(now_ms(), now_ms() + 60_000).await.unwrap().unwrap();
+    assert_eq!((leased.id.as_str(), leased.attempts), (before.id.as_str(), 1));
+
+    // While ordering: refused, untouched. Unknown or job-less name: not_found.
+    let busy = ask(&r.edge, AdminCommand::CertRetry { name: "alpha".into() }).await;
+    assert_eq!(busy.error.unwrap().code, ErrorCode::Invalid);
+    let none = ask(&r.edge, AdminCommand::CertRetry { name: "nobody".into() }).await;
+    assert_eq!(none.error.unwrap().code, ErrorCode::NotFound);
 }

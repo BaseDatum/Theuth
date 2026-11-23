@@ -329,6 +329,32 @@ async fn reconciliation_removes_orphans_and_keeps_live_records() {
 }
 
 #[tokio::test]
+async fn reconciliation_keeps_a_held_names_half_written_records() {
+    let r = rig("").await;
+    let mesh = claim(&r.edge, "fog").await;
+    certs::submit(&r.edge, &mesh, "fog", &csr("fog"), PLAIN).await.unwrap().unwrap();
+    // A job died after writing ledger and CNAMEs but before the `records` flag (records == 0).
+    let now = now_ms();
+    for host in ["fog", "*.fog"] {
+        r.edge.store.dns_add(host, Rtype::Cname.as_str(), "edge.tun.zip", "fog", now).await.unwrap();
+        r.f.zone.put(Rtype::Cname, host, "edge.tun.zip");
+    }
+    assert_eq!(r.edge.store.cert_row("tun.zip", "fog").await.unwrap().unwrap().records, 0);
+
+    certs::reconcile(&r.edge).await.unwrap();
+    let mut hosts = r.f.zone.hosts();
+    hosts.sort();
+    assert_eq!(hosts, vec![(Rtype::Cname, "*.fog".to_string()), (Rtype::Cname, "fog".to_string())]);
+    assert_eq!(r.edge.store.dns_all().await.unwrap().len(), 2);
+
+    // The retried job re-ensures them and issues.
+    certs::tick(&r.edge, now_ms()).await.unwrap();
+    let row = r.edge.store.cert_row("tun.zip", "fog").await.unwrap().unwrap();
+    assert_eq!((row.state.as_str(), row.records), ("valid", 1));
+    assert_eq!(r.edge.store.dns_all().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn a_provider_panic_is_a_failed_attempt_with_backoff() {
     let r = rig("").await;
     *r.f.zone.panic_on.lock().unwrap() = Some("*.sky".into());
