@@ -45,7 +45,7 @@ data:
     # first label cut, so `*.tun.zip` carries `<name>.tun.zip` and each `*.<name>.tun.zip` carries `<label>.<name>.tun.zip`.
     k8s:
       enabled: true
-      namespace: theuth
+      namespace: theuth-share
       static:
         - apiVersion: networking.k8s.io/v1
           kind: Ingress

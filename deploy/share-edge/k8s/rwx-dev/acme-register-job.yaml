@@ -10,7 +10,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: theuth-share-edge-acme-register
-  namespace: theuth
+  namespace: theuth-share
   labels: {app.kubernetes.io/name: theuth-share-edge-acme-register, app.kubernetes.io/part-of: theuth}
 spec:
   backoffLimit: 0

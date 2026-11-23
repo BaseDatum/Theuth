@@ -2,15 +2,18 @@
 #   kubectl kustomize deploy/share-edge/k8s/rwx-dev        # render
 #   kubectl apply -k deploy/share-edge/k8s/rwx-dev         # owner only
 # The Secret `theuth-share-edge` (key dns.json) is created out of band and never committed.
+# The edge lives in its own namespace `theuth-share` so its Ingress RBAC covers only its own Ingresses, not the
+# relay's Ingresses in `theuth`.
 # Public 443: HAProxy (haproxy-controller) passes TLS through by SNI to Service theuth-share-edge:8443. The Ingresses
 # doing it are created and deleted by the edge itself (image built with `--features k8s`, templates under `k8s:` in
 # configmap.yaml, RBAC in rbac.yaml), not committed here.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: theuth
+namespace: theuth-share
 
 resources:
+  - namespace.yaml
   - ../base
   - rbac.yaml
   - networkpolicy.yaml
