@@ -601,13 +601,13 @@ mod tests {
     }
 
     async fn oauth_auth() -> (crate::TestDir, Auth) {
-        let scratch = crate::TestDir::new("backend-oauth-route");
+        let scratch = crate::test_dir("backend-oauth-route");
         let vault = std::sync::Arc::new(
-            secrets::Vault::open(&scratch.0, secrets::KeyStore::File)
+            secrets::Vault::open(scratch.path(), secrets::KeyStore::File)
                 .await
                 .unwrap(),
         );
-        let mut auth = Auth::stub(&scratch.0);
+        let mut auth = Auth::stub(scratch.path());
         auth.vault = Some(vault.clone());
         auth.oauth = auth.oauth.with_grants(Some(vault.clone()));
         for ns in ["openai", "anthropic", "xai"] {
@@ -668,7 +668,7 @@ mod tests {
             },
         );
         std::fs::write(
-            scratch.0.join("models.json"),
+            scratch.path().join("models.json"),
             serde_json::json!({"gateway": {"models": {"x": {
                 "id": "x", "name": "x", "protocol": protocol,
                 "limit": {"context": 0, "output": 0}
@@ -676,7 +676,7 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let resolved = models::Catalog::load(&scratch.0)
+        let resolved = models::Catalog::load(scratch.path())
             .resolve("gateway/x", &|_| true)
             .unwrap();
         let target = routed_target(&resolved, &auth).await;
@@ -1246,8 +1246,8 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let dir = crate::TestDir::new("backend-429");
-        let auth = crate::supervisor::Auth::stub(&dir.0);
+        let dir = crate::test_dir("backend-429");
+        let auth = crate::supervisor::Auth::stub(dir.path());
         auth.gateways.write().unwrap().insert(
             "z160gw".into(),
             Gateway {

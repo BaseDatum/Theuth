@@ -127,8 +127,8 @@ mod tests {
 
     #[tokio::test]
     async fn moved_row_opens_no_turn_and_masks_when_out_of_context() {
-        let scratch = crate::TestDir::new("moved");
-        let store = Store::open(&scratch.0.join("sessions.sqlite"), None)
+        let scratch = crate::test_dir("moved");
+        let store = Store::open(&scratch.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let id = SessionId::new();

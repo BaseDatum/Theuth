@@ -241,8 +241,8 @@ mod tests {
 
     /// Fresh store in a temp dir with one chat session; the dir goes when the guard drops.
     async fn fresh() -> (Store, SessionId, crate::TestDir) {
-        let scratch = crate::TestDir::new("advisor");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("advisor");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -349,7 +349,7 @@ mod tests {
             "put_advisor_link left no log row for the advised session"
         );
 
-        let other = Store::open(&dir.0.join("other.sqlite"), None)
+        let other = Store::open(&dir.path().join("other.sqlite"), None)
             .await
             .unwrap();
         for row in &rows {
@@ -517,8 +517,8 @@ mod tests {
     /// no advisory, and the new table is usable.
     #[tokio::test]
     async fn migration_applies_on_a_0033_database() {
-        let scratch = crate::TestDir::new("advisor");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("advisor");
+        let dir = scratch.path().to_path_buf();
         let path = dir.join("sessions.sqlite");
         let old = SessionId::new();
         {

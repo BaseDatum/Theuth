@@ -172,8 +172,8 @@ fn count(events: &[AgentEvent], pick: impl Fn(&AgentEvent) -> bool) -> usize {
 #[test]
 fn hooks_fire_per_batch_and_at_turn_end() {
     crate::with_test_registry(async {
-        let scratch = crate::TestDir::new("adv-reg");
-        let reg_dir = scratch.0.clone();
+        let scratch = crate::test_dir("adv-reg");
+        let reg_dir = scratch.path().to_path_buf();
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();
@@ -242,8 +242,8 @@ fn hooks_fire_per_batch_and_at_turn_end() {
 #[test]
 fn passive_cards_never_open_a_turn_and_land_at_the_boundary() {
     crate::with_test_registry(async {
-        let scratch = crate::TestDir::new("adv-reg");
-        let reg_dir = scratch.0.clone();
+        let scratch = crate::test_dir("adv-reg");
+        let reg_dir = scratch.path().to_path_buf();
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();
@@ -352,8 +352,8 @@ fn passive_cards_never_open_a_turn_and_land_at_the_boundary() {
 #[test]
 fn stop_preserves_queued_steers_as_cards() {
     crate::with_test_registry(async {
-        let scratch = crate::TestDir::new("adv-reg");
-        let reg_dir = scratch.0.clone();
+        let scratch = crate::test_dir("adv-reg");
+        let reg_dir = scratch.path().to_path_buf();
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();
@@ -398,8 +398,8 @@ fn stop_preserves_queued_steers_as_cards() {
 #[test]
 fn advisor_kind_session_runs_advise_locally_with_the_bare_prompt() {
     crate::with_test_registry(async {
-        let scratch = crate::TestDir::new("adv-reg");
-        let reg_dir = scratch.0.clone();
+        let scratch = crate::test_dir("adv-reg");
+        let reg_dir = scratch.path().to_path_buf();
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();
@@ -497,8 +497,8 @@ fn advisor_kind_session_runs_advise_locally_with_the_bare_prompt() {
 #[test]
 fn masked_card_lands_at_once_and_stays_out_of_context() {
     crate::with_test_registry(async {
-        let scratch = crate::TestDir::new("adv-reg");
-        let reg_dir = scratch.0.clone();
+        let scratch = crate::test_dir("adv-reg");
+        let reg_dir = scratch.path().to_path_buf();
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();

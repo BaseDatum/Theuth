@@ -139,8 +139,8 @@ mod tests {
 
     #[test]
     fn ambient_profile_is_a_section_header_in_either_file() {
-        let scratch = crate::TestDir::new("aws");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("aws");
+        let dir = scratch.path().to_path_buf();
         let creds = dir.join("credentials");
         let config = dir.join("config");
         std::fs::write(&creds, "[work]\naws_access_key_id = x\n").unwrap();

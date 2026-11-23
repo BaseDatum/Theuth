@@ -203,7 +203,7 @@ mod tests {
     }
 
     fn temp() -> crate::TestDir {
-        crate::TestDir::new("139-w3")
+        crate::test_dir("139-w3")
     }
 
     /// 139 §7.4 (1): `child_spawned` writes the `child_result` row with the
@@ -212,7 +212,7 @@ mod tests {
     #[tokio::test]
     async fn child_result_wait_written_and_cleared() {
         let scratch = temp();
-        let mut a = agents_on(scratch.0.clone(), Some("b"), true).await;
+        let mut a = agents_on(scratch.path().to_path_buf(), Some("b"), true).await;
         let parent = SessionId::new();
         a.store
             .create_session(parent, "m", None, None, None)
@@ -256,7 +256,7 @@ mod tests {
     #[tokio::test]
     async fn settle_on_transfer_injects_the_lost_note() {
         let scratch = temp();
-        let dir = scratch.0.clone();
+        let dir = scratch.path().to_path_buf();
         let parent = SessionId::new();
         let (with_cwd, without_cwd, on_c) = (SessionId::new(), SessionId::new(), SessionId::new());
         let worktree = dir.join("wt");

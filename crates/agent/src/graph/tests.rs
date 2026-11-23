@@ -559,8 +559,8 @@ async fn actor_seeds_publishes_one_delta_and_renews_unchanged() {
             self.0.lock().unwrap().push(ev);
         }
     }
-    let scratch = crate::TestDir::new("graph-actor");
-    let rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let scratch = crate::test_dir("graph-actor");
+    let rt = Runtime::new(figment::Figment::new(), scratch.path().to_path_buf());
     let a = crate::supervisor::bare_agents(rt.clone(), None, false).await;
     let store = a.store.clone();
     let agents = Agents::spawn(a);
@@ -697,8 +697,8 @@ fn turn_started(session: SessionId) -> AgentEvent {
 
 /// A live `Agents`, its store, and the runtime.
 async fn engine(name: &str) -> (crate::TestDir, Runtime, Store, ActorRef<Agents>) {
-    let scratch = crate::TestDir::new(name);
-    let rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let scratch = crate::test_dir(name);
+    let rt = Runtime::new(figment::Figment::new(), scratch.path().to_path_buf());
     let a = crate::supervisor::bare_agents(rt.clone(), None, false).await;
     let store = a.store.clone();
     (scratch, rt, store, Agents::spawn(a))
@@ -707,8 +707,8 @@ async fn engine(name: &str) -> (crate::TestDir, Runtime, Store, ActorRef<Agents>
 /// A later `agent_graph` asking a wider window than the seed read re-seeds: the older tree appears, in a new epoch.
 #[tokio::test]
 async fn wider_window_reads_older_trees() {
-    let scratch = crate::TestDir::new("graph-wider");
-    let rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let scratch = crate::test_dir("graph-wider");
+    let rt = Runtime::new(figment::Figment::new(), scratch.path().to_path_buf());
     let a = crate::supervisor::bare_agents(rt.clone(), None, false).await;
     let store = a.store.clone();
     let agents = Agents::spawn(a);
@@ -765,8 +765,8 @@ async fn wider_window_reads_older_trees() {
 #[tokio::test]
 async fn peer_changed_fills_ends_and_result() {
     use crate::store::communication::AcceptExchange;
-    let scratch = crate::TestDir::new("graph-peer-changed");
-    let rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let scratch = crate::test_dir("graph-peer-changed");
+    let rt = Runtime::new(figment::Figment::new(), scratch.path().to_path_buf());
     let a = crate::supervisor::bare_agents(rt.clone(), None, false).await;
     let (p, c) = (SessionId::new(), SessionId::new());
     a.store
@@ -880,8 +880,8 @@ fn metadata_events_do_not_move_the_clock() {
 /// keeps one exchange's changes in call order, and an exchange it cannot read publishes no guessed end.
 #[tokio::test]
 async fn peer_changed_fills_ends_in_order_off_the_actor() {
-    let scratch = crate::TestDir::new("graph-peer");
-    let rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let scratch = crate::test_dir("graph-peer");
+    let rt = Runtime::new(figment::Figment::new(), scratch.path().to_path_buf());
     let a = crate::supervisor::bare_agents(rt.clone(), None, false).await;
     let store = a.store.clone();
     let (p, c) = (SessionId::new(), SessionId::new());
@@ -1182,8 +1182,8 @@ async fn persist_skips_deleted_sessions_and_cleanup_drops_orphans() {
 /// fraction digits): a row just before the bound is out, just after is in, newest first.
 #[tokio::test]
 async fn exchanges_since_bound_matches_the_writer_format() {
-    let scratch = crate::TestDir::new("graph-bound");
-    let store = Store::open(&scratch.0.join("sessions.sqlite"), None)
+    let scratch = crate::test_dir("graph-bound");
+    let store = Store::open(&scratch.path().join("sessions.sqlite"), None)
         .await
         .unwrap();
     let (p, c) = (SessionId::new(), SessionId::new());

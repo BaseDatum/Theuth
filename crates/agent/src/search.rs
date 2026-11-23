@@ -621,8 +621,8 @@ mod tests {
     #[tokio::test]
     async fn page_goes_indexing_then_ready_and_invalidate_resets() {
         use ::search::PageState;
-        let scratch = crate::TestDir::new("search");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("search");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();

@@ -170,8 +170,8 @@ mod tests {
     }
 
     async fn open(name: &str) -> (Store, crate::TestDir) {
-        let dir = crate::TestDir::new(name);
-        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+        let dir = crate::test_dir(name);
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         (store, dir)
@@ -255,7 +255,7 @@ mod tests {
     async fn suffixes_and_their_deletion_ride_the_record_replica() {
         let open = |name: &'static str| async move {
             let (store, dir) = open(name).await;
-            let engine = replica::Engine::open(&dir.0.join("replica.sqlite"))
+            let engine = replica::Engine::open(&dir.path().join("replica.sqlite"))
                 .await
                 .unwrap();
             let handle = engine.attach(&store.write, &SUFFIX_TABLES).await.unwrap();

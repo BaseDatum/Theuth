@@ -613,10 +613,10 @@ mod tests {
     /// the owner's machine, directory, instructions or skills.
     #[test]
     fn a_contact_prompt_carries_nothing_of_the_owners_machine() {
-        let dir = crate::TestDir::new("contact-frame");
-        std::fs::write(dir.0.join("prompt.md"), "OWNER-STANDING-ORDER").unwrap();
+        let dir = crate::test_dir("contact-frame");
+        std::fs::write(dir.path().join("prompt.md"), "OWNER-STANDING-ORDER").unwrap();
         let owner = baseline_dated(
-            &dir.0,
+            dir.path(),
             None,
             "PEER-LINE",
             "PLUGIN-BLOCK",
@@ -652,10 +652,10 @@ mod tests {
     /// it names the effort beside the model; an effort alone gets its own line.
     #[test]
     fn the_subagent_line_names_the_effort_only_when_set() {
-        let dir = crate::TestDir::new("subagent-line");
+        let dir = crate::test_dir("subagent-line");
         let line = |m: Option<&str>, e: Option<&str>| {
             baseline_dated(
-                &dir.0,
+                dir.path(),
                 None,
                 "",
                 "",
@@ -1106,8 +1106,8 @@ mod tests {
     /// the surface heading, the app heading and the root-only content.
     #[test]
     fn baseline_by_audience() {
-        let scratch = crate::TestDir::new("audience");
-        let data_dir = scratch.0.clone();
+        let scratch = crate::test_dir("audience");
+        let data_dir = scratch.path().to_path_buf();
         std::fs::write(
             data_dir.join("prompt.md"),
             "Shared rule.\n<!-- root-only -->\nRoot rule.\n<!-- /root-only -->\n",
@@ -1175,8 +1175,8 @@ mod tests {
     /// paragraph and before the approvals one.
     #[test]
     fn shared_hardware_guidance_in_every_audience() {
-        let scratch = crate::TestDir::new("sharedhw");
-        let data_dir = scratch.0.clone();
+        let scratch = crate::test_dir("sharedhw");
+        let data_dir = scratch.path().to_path_buf();
         std::fs::write(data_dir.join("prompt.md"), "Shared rule.\n").unwrap();
         let attended = baseline(
             &data_dir,
@@ -1238,8 +1238,8 @@ mod tests {
     /// (cwd/date, plugin blocks, guidance) stay.
     #[test]
     fn identity_replaces_theuth_persona() {
-        let scratch = crate::TestDir::new("identity");
-        let data_dir = scratch.0.clone();
+        let scratch = crate::test_dir("identity");
+        let data_dir = scratch.path().to_path_buf();
         std::fs::write(
             data_dir.join("prompt.md"),
             "Theuth — home automation, chat anywhere.\n",
@@ -1273,8 +1273,8 @@ mod tests {
 
     #[test]
     fn advised_paragraph_sits_before_guidance_and_advisor_baseline_is_bare() {
-        let scratch = crate::TestDir::new("frame-adv");
-        let data_dir = scratch.0.clone();
+        let scratch = crate::test_dir("frame-adv");
+        let data_dir = scratch.path().to_path_buf();
         let p = baseline(
             &data_dir,
             None,
@@ -1299,8 +1299,8 @@ mod tests {
     /// guidance, exactly while `consult` is in the turn's tool list.
     #[test]
     fn consult_paragraph_follows_the_advisory_one_when_the_tool_is_listed() {
-        let scratch = crate::TestDir::new("frame-con");
-        let data_dir = scratch.0.clone();
+        let scratch = crate::test_dir("frame-con");
+        let data_dir = scratch.path().to_path_buf();
         let p = baseline(
             &data_dir,
             None,

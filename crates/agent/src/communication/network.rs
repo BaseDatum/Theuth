@@ -6766,10 +6766,10 @@ mod tests {
     #[test]
     fn a_contact_turn_in_a_chat_spawns_nothing_at_the_registry() {
         crate::with_test_registry(async {
-            let reg_dir = crate::TestDir::new("spawn-reg");
+            let reg_dir = crate::test_dir("spawn-reg");
             let reg = tools::registry::start(&runtime::Runtime::new(
                 figment::Figment::new(),
-                reg_dir.0.clone(),
+                reg_dir.path().to_path_buf(),
             ))
             .await
             .unwrap();
@@ -7420,8 +7420,8 @@ mod tests {
     /// yet, none stored) runs capped from its first admission too.
     #[tokio::test]
     async fn an_inbox_is_capped_and_default_deny_at_every_actor_start() {
-        let scratch = crate::TestDir::new("z3r2");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("z3r2");
+        let dir = scratch.path().to_path_buf();
         let mut a = crate::supervisor::tests::agents_on(dir.clone(), None, true).await;
         let inbox = a
             .handle_inbox(ContactInbox {
@@ -7489,8 +7489,8 @@ mod tests {
                 })
             }
         }
-        let scratch = crate::TestDir::new("z3r3");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("z3r3");
+        let dir = scratch.path().to_path_buf();
         let mut a = crate::supervisor::tests::agents_on(dir.clone(), None, true).await;
         a.identity = Some(std::sync::Arc::new(Roster));
         let inbox = a
@@ -8715,9 +8715,13 @@ mod tests {
     /// nothing accepted; this engine's own is served.
     #[tokio::test]
     async fn the_return_route_serves_only_a_session_strictly_owned_here() {
-        let scratch = crate::TestDir::new("agents");
-        let mut a =
-            crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true).await;
+        let scratch = crate::test_dir("agents");
+        let mut a = crate::supervisor::tests::agents_on(
+            scratch.path().to_path_buf(),
+            Some("me-engine"),
+            true,
+        )
+        .await;
         let binding = a
             .store
             .bind_peer("bob/proj", &contact_endpoint("bob-endpoint"))
@@ -8791,9 +8795,13 @@ mod tests {
     /// still in the insert-only `inboxes` set never short-circuits the check.
     #[tokio::test]
     async fn a_contact_message_into_a_session_not_strictly_ours_is_never_delivered() {
-        let scratch = crate::TestDir::new("agents");
-        let mut a =
-            crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true).await;
+        let scratch = crate::test_dir("agents");
+        let mut a = crate::supervisor::tests::agents_on(
+            scratch.path().to_path_buf(),
+            Some("me-engine"),
+            true,
+        )
+        .await;
         let binding = a
             .store
             .bind_peer("bob", &contact_endpoint("bob-endpoint"))
@@ -8851,9 +8859,13 @@ mod tests {
     /// even for a session in the insert-only `inboxes` set.
     #[tokio::test]
     async fn an_unreadable_owner_refuses_every_contact_path() {
-        let scratch = crate::TestDir::new("agents");
-        let mut a =
-            crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true).await;
+        let scratch = crate::test_dir("agents");
+        let mut a = crate::supervisor::tests::agents_on(
+            scratch.path().to_path_buf(),
+            Some("me-engine"),
+            true,
+        )
+        .await;
         let binding = a
             .store
             .bind_peer("bob", &contact_endpoint("bob-endpoint"))
@@ -9059,7 +9071,7 @@ mod full_inbox_tests {
             let (scratch, mut a) = crate::supervisor::tests::agents_with(true).await;
             let reg = tools::registry::start(&runtime::Runtime::new(
                 figment::Figment::new(),
-                scratch.0.clone(),
+                scratch.path().to_path_buf(),
             ))
             .await
             .unwrap();
@@ -9709,10 +9721,13 @@ mod full_inbox_tests {
     #[tokio::test]
     async fn an_empty_owner_on_a_mesh_engine_is_never_here() {
         let setup = || async {
-            let scratch = crate::TestDir::new("agents");
-            let mut a =
-                crate::supervisor::tests::agents_on(scratch.0.clone(), Some("me-engine"), true)
-                    .await;
+            let scratch = crate::test_dir("agents");
+            let mut a = crate::supervisor::tests::agents_on(
+                scratch.path().to_path_buf(),
+                Some("me-engine"),
+                true,
+            )
+            .await;
             assert_eq!(a.store.engine(), "me-engine");
             a.identity = Some(Arc::new(Roster::research(Some(tools::Risk::Mutating))));
             let binding = a

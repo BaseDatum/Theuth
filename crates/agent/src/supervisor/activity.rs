@@ -584,8 +584,8 @@ mod tests {
 
     impl Rig {
         async fn new() -> Self {
-            let scratch = crate::TestDir::new("155-w1");
-            let a = agents_on(scratch.0.clone(), Some("a"), true).await;
+            let scratch = crate::test_dir("155-w1");
+            let a = agents_on(scratch.path().to_path_buf(), Some("a"), true).await;
             let parent = SessionId::new();
             a.store
                 .create_session(parent, "m", None, None, None)

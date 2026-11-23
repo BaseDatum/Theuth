@@ -90,8 +90,8 @@ async fn harness_factory(
     cfg: EndlessConfig,
     factory: super::pump::CompactorFactory,
 ) -> (crate::TestDir, Endless, Store, SessionId) {
-    let scratch = crate::TestDir::new("endless-e2e");
-    let dir = scratch.0.clone();
+    let scratch = crate::test_dir("endless-e2e");
+    let dir = scratch.path().to_path_buf();
     let store = Store::open(&dir.join("sessions.sqlite"), None)
         .await
         .unwrap();
@@ -2242,8 +2242,8 @@ async fn endless_off_with_5000_unbuilt_writes_a_bounded_head() {
 /// `ollama/flat-194` (`ollama` needs no key, so a chat may pick either); an
 /// epochs session on the flat one, so no compactor call ever goes out.
 async fn effort_harness(cfg: EndlessConfig) -> (crate::TestDir, Endless, SessionId) {
-    let scratch = crate::TestDir::new("endless-effort");
-    let dir = scratch.0.clone();
+    let scratch = crate::test_dir("endless-effort");
+    let dir = scratch.path().to_path_buf();
     let model = |id: &str, efforts: &[&str]| {
         let mut m = serde_json::json!({
             "id": id, "name": id, "limit": { "context": 100_000, "output": 4_096 }
@@ -2364,8 +2364,8 @@ async fn compactor_efforts_follow_the_chain_live() {
 #[tokio::test]
 async fn default_and_a_picked_low_switch_the_compactor_request() {
     let h = crate::loop_::thinking_tests::Harness::texting().await;
-    let scratch = crate::TestDir::new("endless-pick-low");
-    let dir = scratch.0.clone();
+    let scratch = crate::test_dir("endless-pick-low");
+    let dir = scratch.path().to_path_buf();
     let catalog = serde_json::json!({ "anthropic": { "id": "anthropic", "name": "Anthropic", "models": {
         "claude-haiku-5-5": {
             "id": "claude-haiku-5-5", "name": "Haiku 5.5", "reasoning": true,
@@ -3755,7 +3755,7 @@ async fn zoom_on_an_image_unit_returns_the_binary() {
     );
     // R3-1: written under the given tree root, 0700/0600, never the shared
     // temp dir, and gone once discarded (the loop discards after reading).
-    let zoom_root = dir.0.join("zoom");
+    let zoom_root = dir.path().join("zoom");
     let out = crate::loop_::endless_tools::run(
         &endless,
         id,

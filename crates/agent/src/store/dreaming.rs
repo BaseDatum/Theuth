@@ -430,8 +430,8 @@ mod tests {
     /// session lives in another store and is not here to begin with.
     #[tokio::test]
     async fn ledger_counts_filters_and_scrubs() {
-        let scratch = crate::TestDir::new("ledger");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("ledger");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();

@@ -60,8 +60,8 @@ fn channel_origin_rides_beside_the_text() {
 }
 
 async fn scenario() {
-    let scratch = crate::TestDir::new("channel-origin-reg");
-    let reg_rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let scratch = crate::test_dir("channel-origin-reg");
+    let reg_rt = Runtime::new(figment::Figment::new(), scratch.path().to_path_buf());
     tools::registry::start(&reg_rt).await.unwrap();
 
     let mut h = Harness::new(Fake::compact_held(HOLD)).await;

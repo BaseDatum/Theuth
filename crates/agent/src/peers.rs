@@ -1128,8 +1128,8 @@ mod tests {
 
     #[test]
     fn spawn_description_lists_configured_harnesses() {
-        let scratch = crate::TestDir::new("peers");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("peers");
+        let dir = scratch.path().to_path_buf();
         let plain = SpawnSubagentTool {
             data_dir: dir.clone(),
             nodes: Nodes::default(),
@@ -1168,8 +1168,8 @@ mod tests {
     /// name, and an unknown name's error lists it.
     #[test]
     fn spawn_description_and_unknown_list_nodes() {
-        let scratch = crate::TestDir::new("peers");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("peers");
+        let dir = scratch.path().to_path_buf();
         let nodes = Nodes::default();
         {
             let mut w = nodes.write().unwrap_or_else(|p| p.into_inner());

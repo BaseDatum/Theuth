@@ -476,8 +476,8 @@ mod tests {
     /// machine", never the id.
     #[tokio::test]
     async fn job_note_names_the_engine_that_ran_it() {
-        let scratch = crate::TestDir::new("139-w3");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("139-w3");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("b".into())),
@@ -540,9 +540,9 @@ mod tests {
     /// engine restarted"; a crash keeps 109's wording.
     #[tokio::test]
     async fn job_note_after_a_move_says_moved_without_an_engine_on_the_row() {
-        let scratch = crate::TestDir::new("183-z-moved");
+        let scratch = crate::test_dir("183-z-moved");
         let store = Store::open(
-            &scratch.0.join("sessions.sqlite"),
+            &scratch.path().join("sessions.sqlite"),
             Some(mesh::EngineId("b".into())),
         )
         .await

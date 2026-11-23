@@ -415,8 +415,8 @@ pub(super) struct Harness {
 
 impl Harness {
     pub(super) async fn new(fake: impl Respond + 'static) -> Self {
-        let scratch = crate::TestDir::new("vision-e2e");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("vision-e2e");
+        let dir = scratch.path().to_path_buf();
         let model = |id: &str, image: bool| {
             json!({
                 "id": id, "name": id,
@@ -901,8 +901,8 @@ fn vision_fallback_contract_against_fake_provider() {
 
 /// One registry and one vault for the process; every scenario's turn finds them.
 async fn vision_scenarios() {
-    let scratch = crate::TestDir::new("vision-reg");
-    let reg_dir = scratch.0.clone();
+    let scratch = crate::test_dir("vision-reg");
+    let reg_dir = scratch.path().to_path_buf();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
     tools::secrets::install(Arc::new(Vault));
@@ -1662,9 +1662,9 @@ fn square(rgb: [u8; 3]) -> Vec<u8> {
 /// The red square on disk outside any harness (a fake is built before its
 /// harness), its path, and the base64 a provider must receive for it.
 fn picture() -> (crate::TestDir, PathBuf, String) {
-    let dir = crate::TestDir::new("pics");
-    std::fs::create_dir_all(&dir.0).unwrap();
-    let path = dir.0.join("red.png");
+    let dir = crate::test_dir("pics");
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let path = dir.path().join("red.png");
     let bytes = square([255, 0, 0]);
     std::fs::write(&path, &bytes).unwrap();
     (dir, path, BASE64.encode(&bytes))

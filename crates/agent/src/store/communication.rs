@@ -3184,9 +3184,9 @@ mod graph_store_tests {
     /// `upsert_last_events` keeps the max and survives a reopen; `delete_last_event` forgets.
     #[tokio::test]
     async fn last_events_keep_the_max_and_survive_reopen() {
-        let scratch = crate::TestDir::new("graph-last");
+        let scratch = crate::test_dir("graph-last");
         let (a, b) = (SessionId::new(), SessionId::new());
-        let store = open(&scratch.0).await;
+        let store = open(scratch.path()).await;
         store
             .upsert_last_events(&[(a, 100), (b, 50)])
             .await
@@ -3194,7 +3194,7 @@ mod graph_store_tests {
         store.upsert_last_events(&[(a, 90), (b, 70)]).await.unwrap();
         store.close().await;
         drop(store);
-        let store = open(&scratch.0).await;
+        let store = open(scratch.path()).await;
         let got = store.last_events(&[a, b, SessionId::new()]).await.unwrap();
         assert_eq!(got.len(), 2);
         assert_eq!((got[&a], got[&b]), (100, 70));
@@ -3205,8 +3205,8 @@ mod graph_store_tests {
     /// `exchanges_since` honours the bound and the limit, newest first; `graph_waits` reads kinds.
     #[tokio::test]
     async fn exchanges_since_bound_and_graph_waits() {
-        let scratch = crate::TestDir::new("graph-ex");
-        let store = open(&scratch.0).await;
+        let scratch = crate::test_dir("graph-ex");
+        let store = open(scratch.path()).await;
         let (p, c) = (SessionId::new(), SessionId::new());
         store
             .create_session(p, "m", None, None, None)
@@ -3277,8 +3277,8 @@ mod tests {
     use super::*;
 
     async fn fresh() -> (Store, SessionId, crate::TestDir) {
-        let scratch = crate::TestDir::new("comm");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("comm");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -3922,7 +3922,7 @@ mod tests {
         drop_peer_column(&store).await;
         let head = store.log_after(0).await.unwrap().last().unwrap().seq;
         store.close().await;
-        let path = dir.0.join("sessions.sqlite");
+        let path = dir.path().join("sessions.sqlite");
 
         let store = Store::open(&path, None).await.unwrap();
         assert_eq!(stored_peer(&store, a, seq).await, Some(want));
@@ -3965,7 +3965,7 @@ mod tests {
         );
         assert!(store.peer_origins(a).await.unwrap().is_empty());
         store.close().await;
-        let path = dir.0.join("sessions.sqlite");
+        let path = dir.path().join("sessions.sqlite");
 
         let store = Store::open(&path, None).await.unwrap();
         assert_eq!(stored_peer(&store, a, seq).await, None);
@@ -4009,7 +4009,7 @@ mod tests {
         let head = store.log_seq();
         store.close().await;
 
-        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         assert_eq!(stored_peer(&store, a, sa).await, None);
@@ -4663,7 +4663,7 @@ mod tests {
         );
 
         // A v2.19.0 store: no `held` column, migration 0055 not applied, one task waiting.
-        let path = dir.0.join("sessions.sqlite");
+        let path = dir.path().join("sessions.sqlite");
         store.close().await;
         drop(store);
         {

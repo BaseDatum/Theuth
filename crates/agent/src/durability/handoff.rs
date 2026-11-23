@@ -485,8 +485,8 @@ mod tests {
         use crate::todo::{Todo, TodoSource};
         use genai::chat::ChatMessage;
 
-        let scratch = crate::TestDir::new("handoff");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("handoff");
+        let dir = scratch.path().to_path_buf();
         let sh = |args: &[&str]| {
             let o = std::process::Command::new("git")
                 .args(args)

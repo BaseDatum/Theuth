@@ -10786,8 +10786,8 @@ mod tests {
     /// projection is that frame's estimate.
     #[tokio::test]
     async fn context_edit_is_idle_only_and_installs_committed_frame() {
-        let scratch = crate::TestDir::new("loop");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("loop");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -11191,8 +11191,8 @@ mod tests {
 
     #[test]
     fn prompt_parts_in_order_with_blank_lines() {
-        let scratch = crate::TestDir::new("prompt");
-        let data_dir = scratch.0.clone();
+        let scratch = crate::test_dir("prompt");
+        let data_dir = scratch.path().to_path_buf();
         let skills_dir = skills::dir(&data_dir);
         std::fs::create_dir_all(&skills_dir).unwrap();
         let bare = frame::baseline(&data_dir, None, "", "", None, None, true, false, false);
@@ -11586,8 +11586,8 @@ mod tests {
     async fn a_file_notice_is_consumed_once_and_an_ended_share_opens_nothing() {
         use crate::communication::files::notices::{self, Pending};
         use crate::store::contacts::{Cell, RecordTable, RecordWrite};
-        let scratch = crate::TestDir::new("notice");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("notice");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -11722,8 +11722,8 @@ mod tests {
                 }
             }
         }
-        let scratch = crate::TestDir::new("notice-holder");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("notice-holder");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -11828,8 +11828,8 @@ mod tests {
     async fn peer_input_consumes_once_and_never_after_revocation() {
         use crate::communication::PeerMessageState;
         use crate::store::communication::AcceptExchange;
-        let scratch = crate::TestDir::new("peer");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("peer");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -12016,8 +12016,8 @@ mod tests {
     #[test]
     fn a_full_contact_message_keeps_the_lan_of_its_turn() {
         crate::with_test_registry(async {
-            let scratch = crate::TestDir::new("peer-lan");
-            let dir = scratch.0.clone();
+            let scratch = crate::test_dir("peer-lan");
+            let dir = scratch.path().to_path_buf();
             let reg = tools::registry::start(&Runtime::new(figment::Figment::new(), dir.clone()))
                 .await
                 .unwrap();
@@ -12053,8 +12053,8 @@ mod tests {
     /// from `pending` at the next snapshot and the marker stays put.
     #[tokio::test]
     async fn prepare_images_branches_on_vision_and_projects_text_only_frames() {
-        let scratch = crate::TestDir::new("vision");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("vision");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -12833,8 +12833,8 @@ mod tests {
     /// shows it as returned money, and the bus announces the new revision.
     #[tokio::test]
     async fn accounted_call_settles_returned_cost_and_announces() {
-        let scratch = crate::TestDir::new("cost");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("cost");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -12906,8 +12906,8 @@ mod tests {
     /// `settled`; only the settled one carries money.
     #[tokio::test]
     async fn retried_attempts_share_a_request_under_distinct_call_ids() {
-        let scratch = crate::TestDir::new("cost");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("cost");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -12979,8 +12979,8 @@ mod tests {
     /// frame's own budget reaches the wire on the first attempt.
     #[tokio::test]
     async fn overflow_with_numbers_is_resent_with_the_servers_reply_budget() {
-        let scratch = crate::TestDir::new("116");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("116");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -13034,8 +13034,8 @@ mod tests {
     /// overflow goes back to `round()` for its one compaction.
     #[tokio::test]
     async fn overflow_of_the_prompt_alone_is_left_to_compaction() {
-        let scratch = crate::TestDir::new("116");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("116");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -13086,8 +13086,8 @@ mod tests {
     /// and the endpoint is never contacted.
     #[tokio::test]
     async fn refused_reservation_aborts_before_transport() {
-        let scratch = crate::TestDir::new("cost");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("cost");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let orphan = SessionId::new();
         let (base_url, hits, _) =
@@ -13130,8 +13130,8 @@ mod tests {
     /// derives the owner and the call reaches the transport exactly once.
     #[tokio::test]
     async fn removed_owner_row_still_reaches_the_transport_once() {
-        let scratch = crate::TestDir::new("cost");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("cost");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -13179,8 +13179,8 @@ mod tests {
     /// hit. Clearing the budget lets the next call through again.
     #[tokio::test]
     async fn budget_refuses_the_call_that_would_pass_the_cap() {
-        let scratch = crate::TestDir::new("budget");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("budget");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -13304,8 +13304,8 @@ mod tests {
     /// the main model's resolution error instead of a model.
     #[tokio::test]
     async fn role_model_inherits_escalate_title_session() {
-        let scratch = crate::TestDir::new("role");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("role");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let (base_url, _hits, _) = fake_openai(vec![]).await;
         let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
@@ -13342,8 +13342,8 @@ mod tests {
     /// else the session's model — never the title model, as before.
     #[tokio::test]
     async fn knowledge_harvester_prefers_session_pick_then_default_then_session() {
-        let scratch = crate::TestDir::new("knowledge-harvester-role");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("knowledge-harvester-role");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -13398,8 +13398,8 @@ mod tests {
     /// 153 §9.3: `Polish` = polish → title → session, independent of the escalate slot.
     #[tokio::test]
     async fn polish_chain_prefers_polish_then_title_then_session() {
-        let scratch = crate::TestDir::new("polish-role");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("polish-role");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let (base_url, _hits, _) = fake_openai(vec![]).await;
         let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
@@ -13428,8 +13428,8 @@ mod tests {
     /// budget runs out — and the reply carries text, model and tokens.
     #[tokio::test]
     async fn side_call_settles_under_its_kind() {
-        let scratch = crate::TestDir::new("side");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("side");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -13509,8 +13509,8 @@ mod tests {
     /// take is dropped, not sent.
     #[tokio::test]
     async fn named_with_effort_carries_its_effort() {
-        let scratch = crate::TestDir::new("side-effort");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("side-effort");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -13571,8 +13571,8 @@ mod tests {
     /// `polish_effort`; Vision → `vision_effort`. Read per call (live).
     #[tokio::test]
     async fn role_effort_follows_the_answering_setting() {
-        let scratch = crate::TestDir::new("role-effort");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("role-effort");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let (base_url, _hits, _) = fake_openai(vec![]).await;
         let (turn, _, _, _events) = gateway_turn(&dir, store, SessionId::new(), base_url).await;
@@ -13629,8 +13629,8 @@ mod tests {
     /// local server is the thinking-off request (no effort keyword).
     #[tokio::test]
     async fn side_calls_through_the_actor_carry_their_effort() {
-        let scratch = crate::TestDir::new("role-wire");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("role-wire");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store
@@ -13689,8 +13689,8 @@ mod tests {
     /// keyword, `enable_thinking: false` — and a level rides as `reasoning_effort`.
     #[tokio::test]
     async fn title_turn_carries_the_title_effort_and_off_stays_thinking_off() {
-        let scratch = crate::TestDir::new("title-effort");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("title-effort");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open_memory().await.unwrap();
         let id = SessionId::new();
         store

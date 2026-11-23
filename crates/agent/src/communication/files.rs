@@ -1041,8 +1041,8 @@ mod tests {
     }
 
     async fn store() -> (Store, runtime::SessionId, crate::TestDir) {
-        let dir = crate::TestDir::new("files");
-        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+        let dir = crate::test_dir("files");
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let id = runtime::SessionId::new();

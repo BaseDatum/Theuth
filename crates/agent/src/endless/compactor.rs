@@ -1968,13 +1968,13 @@ mod tests {
             let got = thinking_off(&r(id, None));
             assert_eq!(format!("{got:?}"), format!("{:?}", Some(want)), "{id}");
         }
-        let dir = crate::TestDir::new("compactor-thinking");
+        let dir = crate::test_dir("compactor-thinking");
         let compactor = |model: Resolved| ModelCompactor {
             session: runtime::SessionId::new(),
             backend: crate::backend::Backend::for_model(
                 &model,
                 &genai::Client::builder().build().unwrap(),
-                &crate::supervisor::Auth::stub(&dir.0),
+                &crate::supervisor::Auth::stub(dir.path()),
             ),
             effort: thinking_off(&model),
             chosen: false,
@@ -2021,7 +2021,7 @@ mod tests {
     /// effort instead of the thinking-off kwargs.
     #[test]
     fn a_chosen_compactor_effort_rides_every_transport() {
-        let dir = crate::TestDir::new("compactor-chosen");
+        let dir = crate::test_dir("compactor-chosen");
         let model = Resolved {
             id: "anthropic/claude-haiku-5-5".into(),
             genai: "anthropic::claude-haiku-5-5".into(),
@@ -2033,7 +2033,7 @@ mod tests {
             backend: crate::backend::Backend::for_model(
                 &model,
                 &genai::Client::builder().build().unwrap(),
-                &crate::supervisor::Auth::stub(&dir.0),
+                &crate::supervisor::Auth::stub(dir.path()),
             ),
             effort: Some(ReasoningEffort::High),
             chosen: true,
@@ -2597,8 +2597,8 @@ mod tests {
         let single = estimate_usd(&usage, &c.rates().unwrap());
         assert_eq!(b.usage(), Some(usage));
 
-        let dir = crate::TestDir::new("endless-batch-rows");
-        let store = crate::store::Store::open(&dir.0.join("sessions.sqlite"), None)
+        let dir = crate::test_dir("endless-batch-rows");
+        let store = crate::store::Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let id = runtime::SessionId::new();

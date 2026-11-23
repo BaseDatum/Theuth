@@ -36,8 +36,8 @@ fn view() -> ViewRender {
 
 /// A registry for `rebase`'s `ListTools`; process-global, so one per scenario.
 async fn registry() -> crate::TestDir {
-    let scratch = crate::TestDir::new("endless-reg");
-    let reg_rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let scratch = crate::test_dir("endless-reg");
+    let reg_rt = Runtime::new(figment::Figment::new(), scratch.path().to_path_buf());
     tools::registry::start(&reg_rt).await.unwrap();
     scratch
 }

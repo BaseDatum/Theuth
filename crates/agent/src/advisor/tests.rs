@@ -192,8 +192,8 @@ impl Rig {
     ) -> Self {
         crate::loop_::advisor_tests::clear_stale::<Agents>(AGENT_ACTOR);
         crate::loop_::advisor_tests::clear_stale::<Advisors>(ADVISORS_ACTOR);
-        let reg_scratch = crate::TestDir::new("adv-reg");
-        let reg_dir = reg_scratch.0.clone();
+        let reg_scratch = crate::test_dir("adv-reg");
+        let reg_dir = reg_scratch.path().to_path_buf();
         tools::registry::start(&Runtime::new(figment::Figment::new(), reg_dir.clone()))
             .await
             .unwrap();
@@ -204,8 +204,8 @@ impl Rig {
             .respond_with(Shared(script.clone()))
             .mount(&server)
             .await;
-        let scratch = crate::TestDir::new("adv-rig");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("adv-rig");
+        let dir = scratch.path().to_path_buf();
         let mut a = agents_on(dir.clone(), None, true).await;
         a.set_test_keyed(configured);
         a.test_auth()

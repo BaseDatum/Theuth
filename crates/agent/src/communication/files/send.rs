@@ -374,23 +374,23 @@ mod tests {
     /// too) is cloned where the volume can and hashed once.
     #[test]
     fn the_gate_refuses_before_anything_is_staged() {
-        let d = crate::TestDir::new("send");
-        let root = d.0.join("root");
+        let d = crate::test_dir("send");
+        let root = d.path().join("root");
         std::fs::create_dir_all(root.join("mesh")).unwrap();
         let identity = root.join("mesh/identity");
         std::fs::write(&identity, b"secret").unwrap();
-        let link = d.0.join("link");
+        let link = d.path().join("link");
         std::os::unix::fs::symlink(&identity, &link).unwrap();
-        let hard = d.0.join("hard");
+        let hard = d.path().join("hard");
         std::fs::hard_link(&identity, &hard).unwrap();
-        let fifo = d.0.join("fifo");
+        let fifo = d.path().join("fifo");
         {
             use std::os::unix::ffi::OsStrExt as _;
             let c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
             // SAFETY: a valid NUL-terminated path.
             assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         }
-        let big = d.0.join("big.bin");
+        let big = d.path().join("big.bin");
         std::fs::File::create(&big)
             .unwrap()
             .set_len(FILE_MAX + 1)
@@ -427,7 +427,7 @@ mod tests {
         let outgoing = root.join(OUTGOING_DIR);
         let staged = || std::fs::read_dir(&outgoing).map_or(0, |d| d.count());
         assert_eq!(staged(), 0, "nothing staged for a refusal");
-        let ok = d.0.join("research.sqlite");
+        let ok = d.path().join("research.sqlite");
         std::fs::write(&ok, b"a received store").unwrap();
         let p = pick(&ok, &root).unwrap();
         assert_eq!((p.name.as_str(), p.size), ("research.sqlite", 16));

@@ -300,16 +300,20 @@ mod tests {
 
     #[tokio::test]
     async fn monthly_caps_and_latest_routine_run() {
-        let dir = crate::TestDir::new("limits-budgets");
-        let path = dir.0.join("sessions.sqlite");
+        let dir = crate::test_dir("limits-budgets");
+        let path = dir.path().join("sessions.sqlite");
         let store = crate::store::Store::open(&path, None).await.unwrap();
-        std::fs::create_dir_all(dir.0.join("agents")).unwrap();
+        std::fs::create_dir_all(dir.path().join("agents")).unwrap();
         std::fs::write(
-            dir.0.join("agents/atlas.md"),
+            dir.path().join("agents/atlas.md"),
             "---\nbudget: 40 USD/month\n---\nQA.",
         )
         .unwrap();
-        std::fs::write(dir.0.join("agents/birch.md"), "---\ntitle: S\n---\nQA.").unwrap();
+        std::fs::write(
+            dir.path().join("agents/birch.md"),
+            "---\ntitle: S\n---\nQA.",
+        )
+        .unwrap();
 
         // Atlas's desk root and a child: both count toward its month.
         let desk = SessionId::new();
@@ -365,7 +369,7 @@ mod tests {
 
         let db = super::super::open_db(&path);
         let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap();
-        let got = read(&db, &dir.0, now, &[]).await.unwrap();
+        let got = read(&db, dir.path(), now, &[]).await.unwrap();
         let rows: Vec<_> = got
             .iter()
             .map(|b| {
@@ -409,7 +413,7 @@ mod tests {
         let (first, _) = month_bounds(now);
         let reported = [piece(now, 2), piece(first - 1, 4)];
         store.delete_session(desk).await.unwrap();
-        let got = read(&db, &dir.0, now, &reported).await.unwrap();
+        let got = read(&db, dir.path(), now, &reported).await.unwrap();
         assert_eq!(got[0].id, "agent:atlas");
         assert_eq!((got[0].spent_usd * 100.0).round() / 100.0, 2.5, "{got:?}");
     }

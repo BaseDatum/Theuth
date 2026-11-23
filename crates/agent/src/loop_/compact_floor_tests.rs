@@ -29,8 +29,8 @@ fn floor_turns_auto_compaction_off_once() {
 }
 
 async fn scenario() {
-    let scratch = crate::TestDir::new("compact-floor-reg");
-    let reg_dir = scratch.0.clone();
+    let scratch = crate::test_dir("compact-floor-reg");
+    let reg_dir = scratch.path().to_path_buf();
     let reg_rt = Runtime::new(figment::Figment::new(), reg_dir.clone());
     tools::registry::start(&reg_rt).await.unwrap();
 

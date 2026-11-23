@@ -749,8 +749,8 @@ mod queue {
 
     /// A service whose foreign downloads trust the test CA and may reach `allow`.
     async fn rig(allow: Option<SocketAddr>, idle: Duration) -> Rig {
-        let dir = crate::TestDir::new("foreign");
-        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+        let dir = crate::test_dir("foreign");
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let session = SessionId::new();
@@ -763,7 +763,7 @@ mod queue {
             .await
             .unwrap();
         let door = Arc::new(Door::default());
-        let mut svc = FileService::new(store, dir.0.clone(), None, door.clone());
+        let mut svc = FileService::new(store, dir.path().to_path_buf(), None, door.clone());
         let s = Arc::get_mut(&mut svc).unwrap();
         s.backoff = Duration::from_millis(20);
         s.idle = idle;
@@ -1006,8 +1006,8 @@ mod queue {
             let _ = tls.shutdown().await;
         })
         .await;
-        let dir = crate::TestDir::new("foreign-refusals");
-        let partial = dir.0.join("partial");
+        let dir = crate::test_dir("foreign-refusals");
+        let partial = dir.path().join("partial");
         let public = DownloadOpts::default();
         let local = DownloadOpts {
             test_allow: vec![addr],

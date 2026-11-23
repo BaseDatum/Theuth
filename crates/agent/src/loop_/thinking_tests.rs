@@ -192,11 +192,11 @@ impl Harness {
             ))
             .build()
             .unwrap();
-        let dir = crate::TestDir::new("thinking");
+        let dir = crate::test_dir("thinking");
         Self {
             bodies,
             client,
-            catalog: models::Catalog::load(&dir.0),
+            catalog: models::Catalog::load(dir.path()),
             dir,
             _server: server,
         }
@@ -267,7 +267,7 @@ impl Harness {
             .create_session(id, &model.id, None, None, None)
             .await
             .unwrap();
-        let rt = Runtime::new(figment::Figment::new(), self.dir.0.clone());
+        let rt = Runtime::new(figment::Figment::new(), self.dir.path().to_path_buf());
         let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
         let sink = kameo::actor::Spawn::spawn_with_mailbox(
             super::vision_fallback_tests::Sink(tx),
@@ -289,12 +289,12 @@ impl Harness {
             Arc::default(),
             store.clone(),
             self.client.clone(),
-            Auth::stub(&self.dir.0),
+            Auth::stub(self.dir.path()),
             rt,
-            Arc::new(models::Catalog::load(&self.dir.0)),
+            Arc::new(models::Catalog::load(self.dir.path())),
             None,
             Arc::new(Semaphore::new(1)),
-            SessionResources::durable_arc(&self.dir.0),
+            SessionResources::durable_arc(self.dir.path()),
         );
         let mut turn = Turn::new(
             session.shared.clone(),
@@ -482,7 +482,7 @@ async fn endless_compactor_turns_thinking_off_per_model() {
             backend: crate::backend::Backend::for_model(
                 &model,
                 &h.client,
-                &crate::supervisor::Auth::stub(&h.dir.0),
+                &crate::supervisor::Auth::stub(h.dir.path()),
             ),
             effort: thinking_off(&model),
             chosen: false,
@@ -536,7 +536,7 @@ async fn compactor_body(h: &Harness, id: &str, pick: Option<ReasoningEffort>, li
         backend: crate::backend::Backend::for_model(
             &model,
             &h.client,
-            &crate::supervisor::Auth::stub(&h.dir.0),
+            &crate::supervisor::Auth::stub(h.dir.path()),
         ),
         effort: thinking_off(&model),
         chosen: false,

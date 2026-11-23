@@ -119,8 +119,8 @@ impl ErasedTool for NbTool {
 
 /// The process-global registry with the three fakes over `nb`.
 async fn registry(nb: &Shared) -> crate::TestDir {
-    let scratch = crate::TestDir::new("nb-ctx-reg");
-    let reg_rt = Runtime::new(figment::Figment::new(), scratch.0.clone());
+    let scratch = crate::test_dir("nb-ctx-reg");
+    let reg_rt = Runtime::new(figment::Figment::new(), scratch.path().to_path_buf());
     let registry = tools::registry::start(&reg_rt).await.unwrap();
     for name in ["notebook_get", "source_get", "doc_read"] {
         registry

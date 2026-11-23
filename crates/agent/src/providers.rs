@@ -545,8 +545,8 @@ mod tests {
     async fn save_roundtrip_and_remove() {
         use kameo::actor::Spawn;
         use std::sync::Arc;
-        let scratch = crate::TestDir::new("prov");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("prov");
+        let dir = scratch.path().to_path_buf();
         let vault = Arc::new(
             secrets::Vault::open(&dir, secrets::KeyStore::File)
                 .await
@@ -606,8 +606,8 @@ mod tests {
     async fn keyless_add_and_remove_keep_foreign_secrets() {
         use kameo::actor::Spawn;
         use std::sync::Arc;
-        let scratch = crate::TestDir::new("prov-r23");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("prov-r23");
+        let dir = scratch.path().to_path_buf();
         let vault = Arc::new(
             secrets::Vault::open(&dir, secrets::KeyStore::File)
                 .await
@@ -683,8 +683,8 @@ mod tests {
     /// a local listing marks the block.
     #[test]
     fn server_windows_fill_unknown_never_user() {
-        let scratch = crate::TestDir::new("prov-windows");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("prov-windows");
+        let dir = scratch.path().to_path_buf();
         let ids = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let local = |c: &[(&str, u32)]| -> HashMap<String, u32> {
             c.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect()
@@ -714,8 +714,8 @@ mod tests {
     /// are (a hand-edited `protocol` included), new ids are context 0, gone ids go.
     #[test]
     fn custom_listing_keeps_adds_and_removes() {
-        let scratch = crate::TestDir::new("prov-custom");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("prov-custom");
+        let dir = scratch.path().to_path_buf();
         let ids = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
             write_models(&dir, "rwx", &ids(&["b", "a"]), cloud()).unwrap(),
@@ -744,8 +744,8 @@ mod tests {
     /// nothing is removed, and the bundled provider metadata stays.
     #[test]
     fn builtin_listing_only_adds_unknown_ids() {
-        let scratch = crate::TestDir::new("prov-builtin");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("prov-builtin");
+        let dir = scratch.path().to_path_buf();
         let cat = models::Catalog::load(&dir);
         let zen = cat
             .providers()
@@ -795,8 +795,8 @@ mod tests {
     /// 162 D4: an empty listing or an unreadable user file changes nothing.
     #[test]
     fn empty_listing_or_broken_file_leaves_models_json_alone() {
-        let scratch = crate::TestDir::new("prov-empty");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("prov-empty");
+        let dir = scratch.path().to_path_buf();
         write_models(&dir, "rwx", &["a".into()], cloud()).unwrap();
         let before = std::fs::read(dir.join("models.json")).unwrap();
         let e = write_models(&dir, "rwx", &[], cloud()).unwrap_err();

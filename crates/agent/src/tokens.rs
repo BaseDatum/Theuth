@@ -456,14 +456,14 @@ mod tests {
     /// R1-1: learned ratios survive a restart through `token_ratios.json`.
     #[test]
     fn learned_ratios_round_trip_through_the_file() {
-        let dir = crate::TestDir::new("token-ratios");
-        let path = dir.0.join(RATIOS_FILE);
+        let dir = crate::test_dir("token-ratios");
+        let path = dir.path().join(RATIOS_FILE);
         let map = HashMap::from([("p/a".to_owned(), 3.1), ("p/b".to_owned(), 9.0)]);
         save_to(&path, &map);
         let back = load_from(&path);
         assert_eq!(back["p/a"], 3.1);
         assert_eq!(back["p/b"], 4.0, "clamped on load");
-        assert!(load_from(&dir.0.join("missing.json")).is_empty());
+        assert!(load_from(&dir.path().join("missing.json")).is_empty());
     }
 
     /// The learner converges on the observed ratio and stays clamped.

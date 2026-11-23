@@ -174,51 +174,21 @@ pub(crate) fn with_test_registry<F: Future>(body: F) -> F::Output {
     out
 }
 
-/// A test scratch directory under `$TMPDIR`, `theuth-<tag>-<uuid>`, removed
-/// on drop — on a passing test and on a panic alike (141 R3 T15 / R4: leaked
+/// A test scratch directory `theuth-<tag>-*` under `$TMPDIR`, removed on drop
+/// — on a passing test and on a panic alike (141 R3 T15 / R4: leaked
 /// `theuth-*` test dirs filled the shared machine's disk). Bind it before
 /// anything that uses the path, so it drops last.
 #[cfg(test)]
-pub(crate) struct TestDir(pub(crate) std::path::PathBuf);
+pub(crate) type TestDir = tempfile::TempDir;
 
 #[cfg(test)]
-impl TestDir {
-    pub(crate) fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("theuth-{tag}-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
+pub(crate) fn test_dir(tag: &str) -> TestDir {
+    tempfile::Builder::new()
+        .prefix(&format!("theuth-{tag}-"))
+        .tempdir()
+        .unwrap()
 }
 
-#[cfg(test)]
-impl Drop for TestDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// 141 R3 T15: the guard deletes its dir on drop — also mid-panic, since
-/// unwinding drops the test's locals.
-#[cfg(test)]
-#[test]
-fn scratch_is_removed_on_drop() {
-    let path = {
-        let s = TestDir::new("scratch-check");
-        std::fs::write(s.0.join("x"), b"x").unwrap();
-        assert!(s.0.is_dir());
-        s.0.clone()
-    };
-    assert!(!path.exists(), "{path:?}");
-    let path = std::panic::catch_unwind(|| {
-        let s = TestDir::new("scratch-panic");
-        let p = s.0.clone();
-        std::panic::panic_any(p);
-    })
-    .unwrap_err()
-    .downcast::<std::path::PathBuf>()
-    .unwrap();
-    assert!(!path.exists(), "{path:?}");
-}
 pub mod cost;
 pub mod costs;
 pub mod lifecycle;

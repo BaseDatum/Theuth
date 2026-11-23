@@ -4307,8 +4307,8 @@ mod tests {
 
     /// Fresh store in a temp dir with one session; the dir goes when the guard drops.
     async fn fresh() -> (Store, SessionId, crate::TestDir) {
-        let scratch = crate::TestDir::new("store");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("store");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -5565,7 +5565,7 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
             [(0, "u1".into()), (1, "a1".into()), (2, "u2".into())]
         );
         drop(store);
-        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         assert_eq!(store.errors(id).await.unwrap(), all);
@@ -6738,7 +6738,7 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
         store.close().await;
         drop(store);
 
-        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         assert_eq!(
@@ -6767,7 +6767,7 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
         store.set_session_hidden(id, &names).await.unwrap();
         store.close().await;
         drop(store);
-        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         assert_eq!(store.session_hidden(id).await.unwrap(), names);
@@ -6865,7 +6865,7 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
         store.close().await;
         drop(store);
 
-        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let (_, _, tail) = store.frame(id).await.unwrap();
@@ -6905,7 +6905,7 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
         store.close().await;
         drop(store);
 
-        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         assert_eq!(store.context_revision(id).await.unwrap(), "5");
@@ -7407,7 +7407,7 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
         // Resume: a fresh handle reloads the committed note, no inference implied.
         store.close().await;
         drop(store);
-        let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
             .await
             .unwrap();
         let frame = store.vision_frame(id).await.unwrap();
@@ -7464,8 +7464,8 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
         use crate::cost::{CallKind, CallStatus, CostObservation, MeterUpdate, Money};
         use crate::todo::Status;
 
-        let scratch = crate::TestDir::new("capture");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("capture");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(&dir.join("sessions.sqlite"), None)
             .await
             .unwrap();
@@ -7898,8 +7898,8 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
     /// backfilled on the next open that knows one, and decides `here`.
     #[tokio::test]
     async fn owner_is_set_at_creation_backfilled_at_open_and_decides_here() {
-        let scratch = crate::TestDir::new("owner");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("owner");
+        let dir = scratch.path().to_path_buf();
         let path = dir.join("sessions.sqlite");
         let store = Store::open(&path, None).await.unwrap();
         let id = SessionId::new();
@@ -7945,8 +7945,8 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
     /// engine's desk is not ours.
     #[tokio::test]
     async fn one_desk_per_agent_is_found_and_enforced() {
-        let scratch = crate::TestDir::new("desk");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("desk");
+        let dir = scratch.path().to_path_buf();
         let path = dir.join("sessions.sqlite");
         let theirs = Store::open(&path, Some(mesh::EngineId("them".into())))
             .await
@@ -8003,8 +8003,8 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
     /// unmarked, unpinned, archived and titled `<agent> · desk (superseded …)`.
     #[tokio::test]
     async fn migration_dedupes_desks_by_last_update() {
-        let scratch = crate::TestDir::new("dedupe");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("dedupe");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("me".into())),
@@ -8115,8 +8115,8 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
     /// that passes, and it is logged under the new epoch.
     #[tokio::test]
     async fn writes_on_a_foreign_session_are_refused_until_taken() {
-        let scratch = crate::TestDir::new("guard");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("guard");
+        let dir = scratch.path().to_path_buf();
         let path = dir.join("sessions.sqlite");
         let store = Store::open(&path, Some(mesh::EngineId("a".into())))
             .await
@@ -8180,8 +8180,8 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
         use crate::cost::{CallKind, CallStatus, CostObservation, MeterUpdate, Money};
         use crate::todo::Status;
 
-        let scratch = crate::TestDir::new("fence");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("fence");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("a".into())),
@@ -8403,9 +8403,9 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
     /// Both creation orders, so the refused session is captured after ours once.
     #[tokio::test]
     async fn a_refused_commit_burns_no_log_seq() {
-        let scratch = crate::TestDir::new("burned-seq");
+        let scratch = crate::test_dir("burned-seq");
         let store = Store::open(
-            &scratch.0.join("sessions.sqlite"),
+            &scratch.path().join("sessions.sqlite"),
             Some(mesh::EngineId("a".into())),
         )
         .await
@@ -8472,8 +8472,8 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
     /// `session_log_seq` follows the session's own rows; `flush` logs nothing.
     #[tokio::test]
     async fn orphans_above_the_shipped_cursor_and_local_notes_are_not_logged() {
-        let scratch = crate::TestDir::new("orphan");
-        let dir = scratch.0.clone();
+        let scratch = crate::test_dir("orphan");
+        let dir = scratch.path().to_path_buf();
         let store = Store::open(
             &dir.join("sessions.sqlite"),
             Some(mesh::EngineId("a".into())),
@@ -8606,8 +8606,8 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
 
     #[tokio::test]
     async fn isolated_memory_lineage_survives_retirement_restart_and_external_descendants() {
-        let dir = crate::TestDir::new("isolated-lineage");
-        let path = dir.0.join("sessions.sqlite");
+        let dir = crate::test_dir("isolated-lineage");
+        let path = dir.path().join("sessions.sqlite");
         let store = Store::open(&path, None).await.unwrap();
         let (root, child, external) = (SessionId::new(), SessionId::new(), SessionId::new());
         store

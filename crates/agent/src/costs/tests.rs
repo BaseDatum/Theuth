@@ -23,8 +23,8 @@ struct Rig {
 }
 
 async fn rig() -> Rig {
-    let dir = crate::TestDir::new("costs");
-    let store = Store::open(&dir.0.join("sessions.sqlite"), None)
+    let dir = crate::test_dir("costs");
+    let store = Store::open(&dir.path().join("sessions.sqlite"), None)
         .await
         .unwrap();
     let catalog = Arc::new(models::Catalog::load(Path::new("/unused")));
