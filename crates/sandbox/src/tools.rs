@@ -123,10 +123,6 @@ fn mib(m: u32) -> String {
     }
 }
 
-fn gib_bytes(b: u64) -> String {
-    format!("{:.1} GiB", b as f64 / f64::from(1u32 << 30))
-}
-
 /// One line per fact about a sandbox (`sandbox_create`, `sandbox_start`, …).
 pub fn info_lines(i: &SandboxInfo) -> String {
     let mut lines = vec![
@@ -152,9 +148,9 @@ pub fn info_lines(i: &SandboxInfo) -> String {
             res.push_str(&format!(
                 "; live: cpu {:.0}%, memory {} used, disk {} used / {} free",
                 m.cpu_percent,
-                gib_bytes(m.memory_bytes),
-                gib_bytes(m.disk_used_bytes),
-                gib_bytes(m.disk_free_bytes)
+                platform::fmt::bytes(m.memory_bytes),
+                platform::fmt::bytes(m.disk_used_bytes),
+                platform::fmt::bytes(m.disk_free_bytes)
             ));
         }
         lines.push(res);
@@ -232,10 +228,10 @@ fn one_line(i: &SandboxInfo, reachable: Option<bool>) -> String {
                 " cpus={}({:.0}%) memory={}/{} (limit {}, guest MemTotal stays at boot size) disk={}/{}",
                 r.cpus,
                 m.cpu_percent,
-                gib_bytes(m.memory_bytes),
+                platform::fmt::bytes(m.memory_bytes),
                 mib(r.memory_mib),
-                gib_bytes(m.memory_limit_bytes),
-                gib_bytes(m.disk_used_bytes),
+                platform::fmt::bytes(m.memory_limit_bytes),
+                platform::fmt::bytes(m.disk_used_bytes),
                 mib(r.root_disk_mib)
             )),
             None => s.push_str(&format!(

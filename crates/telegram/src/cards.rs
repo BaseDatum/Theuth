@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::api::{self, MsgRef};
-use crate::bubble::{Reasoning, fmt_elapsed, fmt_size, note_open, report, send_rich_or_plain};
+use crate::bubble::{Reasoning, fmt_elapsed, note_open, report, send_rich_or_plain};
 use crate::worker::{WorkerCtx, brand};
 
 /// Output shown inline; the rest behind the `out:` button.
@@ -265,7 +265,7 @@ impl Card {
                         if *more > 0 {
                             out.push_str(&format!(
                                 "… {more} more chars\n<tg-button type=\"callback_data\" data=\"out:{call_id}\">full output · {}</tg-button>\n",
-                                fmt_size(*size)
+                                platform::fmt::bytes(*size as u64)
                             ));
                         }
                         if !urls.is_empty() {

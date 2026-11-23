@@ -147,7 +147,7 @@ pub(crate) fn parts(
         let _ = writeln!(
             b,
             "output {}, {}:",
-            size(text.len()),
+            platform::fmt::bytes(text.len() as u64),
             if complete {
                 "complete"
             } else {
@@ -161,7 +161,7 @@ pub(crate) fn parts(
     }
     if let Some(code) = x.edited_code {
         b.push_str("code that ran (edited):\n");
-        let (c, _) = cut(code, 2048);
+        let c = platform::text::cut_bytes(code, 2048);
         b.push_str(c);
         if !c.ends_with('\n') {
             b.push('\n');
@@ -243,17 +243,6 @@ fn esc(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// `1.9 KiB`, `312 B`.
-fn size(n: usize) -> String {
-    if n < 1024 {
-        format!("{n} B")
-    } else if n < 1024 * 1024 {
-        format!("{:.1} KiB", n as f64 / 1024.0)
-    } else {
-        format!("{:.1} MiB", n as f64 / (1024.0 * 1024.0))
-    }
-}
-
 /// `14 212`.
 fn grouped(n: usize) -> String {
     let s = n.to_string();
@@ -267,20 +256,11 @@ fn grouped(n: usize) -> String {
     out
 }
 
-/// The longest prefix of at most `max` bytes, cut on a char boundary.
-fn cut(s: &str, max: usize) -> (&str, bool) {
-    if s.len() <= max {
-        return (s, true);
-    }
-    let end = s.floor_char_boundary(max);
-    (&s[..end], false)
-}
-
 /// Line-aligned cuts for a head of at most `head_max` bytes and a tail from byte `tail_from`
 /// on (171F B17): the head ends after its last `\n`, the tail starts at the next line start; a
 /// window without a newline is cut at the byte (on a char boundary). `(head_end, tail_start)`.
 pub(crate) fn line_cuts(text: &str, head_max: usize, tail_from: usize) -> (usize, usize) {
-    let (head, _) = cut(text, head_max);
+    let head = platform::text::cut_bytes(text, head_max);
     let head_end = head.rfind('\n').map_or(head.len(), |i| i + 1);
     let tail = text.ceil_char_boundary(tail_from.min(text.len()));
     let at_line_start = tail == 0 || text.as_bytes()[tail - 1] == b'\n';

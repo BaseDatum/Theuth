@@ -182,7 +182,7 @@ async fn image_comes_back_as_a_picture() {
     );
     assert!(
         out.content
-            .ends_with(&format!(": image, {}]", artifact::kind::human(a.bytes))),
+            .ends_with(&format!(": image, {}]", platform::fmt::bytes(a.bytes))),
         "{}",
         out.content
     );

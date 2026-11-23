@@ -191,7 +191,7 @@ async fn convert(
     if a.bytes > ::tools::doc::MAX_BYTES as u64 {
         return Ok(Body::Unavailable(format!(
             "{} exceeds the {} MB conversion cap",
-            kind::human(a.bytes),
+            platform::fmt::bytes(a.bytes),
             ::tools::doc::MAX_BYTES >> 20
         )));
     }

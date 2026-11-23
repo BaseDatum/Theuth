@@ -63,13 +63,13 @@ impl std::fmt::Display for InlineError {
                 f,
                 "{} is {}; images are limited to {} MiB",
                 path.display(),
-                mib(*bytes),
+                platform::fmt::bytes(*bytes),
                 MAX_IMAGE >> 20
             ),
             Self::PageTooLarge { bytes } => write!(
                 f,
                 "inlined page would be {}; the limit is {} MiB",
-                mib(*bytes),
+                platform::fmt::bytes(*bytes),
                 MAX_PAGE >> 20
             ),
         }
@@ -77,11 +77,6 @@ impl std::fmt::Display for InlineError {
 }
 
 impl std::error::Error for InlineError {}
-
-/// `12.3 MiB`.
-fn mib(bytes: u64) -> String {
-    format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
-}
 
 /// The page with its images inlined and how many were.
 #[derive(Debug)]
@@ -507,7 +502,7 @@ mod tests {
         );
         assert_eq!(
             err.to_string(),
-            "/tmp/big.png is 10.0 MiB; images are limited to 10 MiB"
+            "/tmp/big.png is 10.5 MB; images are limited to 10 MiB"
         );
         assert_eq!(reads.get(), 0);
     }
@@ -530,7 +525,7 @@ mod tests {
         );
         assert!(
             err.to_string()
-                .starts_with("inlined page would be 28.0 MiB; the limit is 25 MiB")
+                .starts_with("inlined page would be 29.4 MB; the limit is 25 MiB")
         );
         assert_eq!(reads.get(), 0);
         // Two references fit.

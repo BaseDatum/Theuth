@@ -46,6 +46,7 @@ tokio = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
+anstream = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 kameo = { workspace = true }

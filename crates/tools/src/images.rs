@@ -304,7 +304,7 @@ pub fn tool_output(
     let (w, h) = f.source;
     let mut text = format!(
         "[{tool} {shown}: {source_mime} {w}\u{d7}{h}, {}",
-        human(bytes.len())
+        platform::fmt::bytes(bytes.len() as u64)
     );
     match f.scaled {
         Some((w, h)) => text.push_str(&format!("; scaled to {w}\u{d7}{h}")),
@@ -316,15 +316,6 @@ pub fn tool_output(
         files: vec![path],
         ..crate::ToolOutput::ok(text)
     })
-}
-
-/// `n` bytes as `12 KB` / `3.4 MB`.
-fn human(n: usize) -> String {
-    if n < 1024 * 1024 {
-        format!("{} KB", n.div_ceil(1024).max(1))
-    } else {
-        format!("{:.1} MB", n as f64 / (1024.0 * 1024.0))
-    }
 }
 
 fn write_blob(bytes: &[u8], mime: &str, dir: &Path) -> anyhow::Result<PathBuf> {
@@ -403,7 +394,7 @@ pub(crate) mod tests {
 
     fn tmp() -> (crate::TestDir, PathBuf) {
         let guard = crate::TestDir::new("images");
-        let dir = guard.0.clone();
+        let dir = guard.path().to_path_buf();
         (guard, dir)
     }
 

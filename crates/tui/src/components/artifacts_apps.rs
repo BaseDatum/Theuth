@@ -294,7 +294,7 @@ pub struct Progress {
 /// `building <name>… 3.2 KB` for `app` (its `name` streams first),
 /// `preparing <tool>… 3.2 KB` for every other tool.
 pub fn progress_line(tool: &str, p: &Progress) -> String {
-    let size = bytes_label(p.bytes as u64);
+    let size = platform::fmt::bytes(p.bytes as u64);
     match (tool, &p.show) {
         ("show", Some(s)) => match (&s.name, s.writing) {
             (Some(n), true) => format!("writing {n}… {size}"),
@@ -366,23 +366,13 @@ const INLINE_LINES: usize = 200;
 /// Rows of a CSV artifact shown inline.
 const CSV_ROWS: usize = 20;
 
-/// Bytes as `512 B` / `3.2 kB` / `1.4 MB`, decimal (199 UI-2: one unit system).
-pub fn bytes_label(bytes: u64) -> String {
-    match bytes {
-        b if b < 1_000 => format!("{b} B"),
-        b if b < 1_000_000 => format!("{:.1} kB", b as f64 / 1e3),
-        b => format!("{:.1} MB", b as f64 / 1e6),
-    }
-}
-
-
 /// The kind-specific size of an artifact card header (35 §6.1): pages for a
 /// compiled PDF, bytes otherwise. Drawn every frame, so nothing here touches
 /// the file; the line count shows in the expanded body.
 pub fn artifact_size(a: &artifact::Artifact) -> String {
     match (a.kind, a.pages) {
-        (artifact::Kind::Pdf, Some(p)) => format!("{p} pages · {}", bytes_label(a.bytes)),
-        _ => bytes_label(a.bytes),
+        (artifact::Kind::Pdf, Some(p)) => format!("{p} pages · {}", platform::fmt::bytes(a.bytes)),
+        _ => platform::fmt::bytes(a.bytes),
     }
 }
 
@@ -403,7 +393,7 @@ pub fn artifact_row(a: &artifact::Artifact) -> String {
         "▣ {} · {} · {} · v{} · {age}",
         a.name,
         a.kind.as_str(),
-        bytes_label(a.bytes),
+        platform::fmt::bytes(a.bytes),
         a.version
     )
 }
@@ -520,14 +510,14 @@ pub(crate) fn artifact_text(
         }) {
             Err(_) => format!(
                 "{} · no listing (archive unreadable) · {path}",
-                bytes_label(a.bytes)
+                platform::fmt::bytes(a.bytes)
             ),
             Ok(l) => {
                 let mut out = format!(
                     "{} files · {} unpacked · {} · {path}\n",
                     l.total_entries,
-                    bytes_label(l.total_size),
-                    bytes_label(a.bytes)
+                    platform::fmt::bytes(l.total_size),
+                    platform::fmt::bytes(a.bytes)
                 );
                 for e in l.entries.iter().take(ARCHIVE_ROWS) {
                     out.push_str(&format!(
@@ -535,7 +525,7 @@ pub(crate) fn artifact_text(
                         if e.is_dir {
                             String::new()
                         } else {
-                            bytes_label(e.size)
+                            platform::fmt::bytes(e.size)
                         },
                         e.path
                     ));

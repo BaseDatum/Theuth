@@ -137,16 +137,6 @@ pub enum Check {
     Skipped(String),
 }
 
-/// `1024 B` → `1 KB`, `212 MB`.
-pub fn human(bytes: u64) -> String {
-    const K: u64 = 1024;
-    match bytes {
-        b if b < K => format!("{b} B"),
-        b if b < K * K => format!("{} KB", b.div_ceil(K)),
-        b => format!("{} MB", b.div_ceil(K * K)),
-    }
-}
-
 /// `shown report.pdf (v1 · 3 pages · 84 KB) · source report.md · file <draft>`;
 /// `shown archive.zip (v1 · 42 files · 3 MB)`; `shown flow.mmd (v1 · mermaid · 12 lines · 1 KB)`;
 /// `shown chart.html (v2 · 212 lines · 48 KB · 2 images inlined · height 600 · 2 edits applied)
@@ -170,7 +160,7 @@ pub fn receipt(a: &Artifact, x: &Receipt) -> String {
     }
     match x.dims {
         Some((w, h)) => parts.push(format!("{w}×{h}")),
-        None => parts.push(human(a.bytes)),
+        None => parts.push(platform::fmt::bytes(a.bytes)),
     }
     if let Some(n) = x.images.filter(|n| *n > 0) {
         parts.push(format!(
@@ -306,7 +296,7 @@ mod tests {
         };
         assert_eq!(
             receipt(&record("archive.zip", Kind::Archive, 3 * 1024 * 1024), &x),
-            "shown archive.zip (v1 · 42 files · 3 MB)"
+            "shown archive.zip (v1 · 42 files · 3.1 MB)"
         );
         let x = Receipt {
             lines: Some(12),
@@ -335,7 +325,7 @@ mod tests {
         };
         assert_eq!(
             receipt(&record("chart.html", Kind::Html, 48 * 1024), &x),
-            "shown chart.html (v1 · 212 lines · 48 KB · 2 images inlined · height 600 · 2 edits \
+            "shown chart.html (v1 · 212 lines · 49.2 kB · 2 images inlined · height 600 · 2 edits \
              applied) · checked on desktop: height 612 · 1 warning(s) · file \
              /d/drafts/s/chart.html\n\
              live page in the theuth app (desktop, web, phone); Slack/Telegram/Signal get the \
@@ -376,12 +366,5 @@ mod tests {
         assert_eq!(h, ["a", "b"]);
         assert_eq!(rows, [["x, y", "line1\nline2"]]);
         assert_eq!(total, 2);
-    }
-
-    #[test]
-    fn human_sizes() {
-        assert_eq!(human(512), "512 B");
-        assert_eq!(human(84 * 1024), "84 KB");
-        assert_eq!(human(212 * 1024 * 1024 + 1), "213 MB");
     }
 }

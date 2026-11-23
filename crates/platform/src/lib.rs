@@ -6,6 +6,7 @@
 
 pub mod env;
 pub mod files;
+pub mod fmt;
 pub mod idle;
 pub mod open;
 pub mod ort;
@@ -15,6 +16,7 @@ pub mod service;
 pub mod sha256;
 pub mod shell;
 pub mod target;
+pub mod text;
 pub mod time;
 pub mod version;
 

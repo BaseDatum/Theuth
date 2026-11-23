@@ -925,8 +925,8 @@ impl State {
         let too_big = |name: &str, len: usize| {
             format!(
                 "{name}: {} exceeds {} (not saved as a draft)",
-                kind::human(len as u64),
-                kind::human(MAX_BYTES)
+                platform::fmt::bytes(len as u64),
+                platform::fmt::bytes(MAX_BYTES)
             )
         };
         match (args.path, args.content, args.edits) {
@@ -995,8 +995,8 @@ impl State {
                     return Err(format!(
                         "{}: {} exceeds {}",
                         path.display(),
-                        kind::human(meta.len()),
-                        kind::human(MAX_BYTES)
+                        platform::fmt::bytes(meta.len()),
+                        platform::fmt::bytes(MAX_BYTES)
                     ));
                 }
                 let name = args
@@ -1134,8 +1134,8 @@ impl State {
         if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_BYTES {
             return Err(format!(
                 "{name}: {} exceeds {}",
-                kind::human(bytes.len() as u64),
-                kind::human(MAX_BYTES)
+                platform::fmt::bytes(bytes.len() as u64),
+                platform::fmt::bytes(MAX_BYTES)
             )
             .into());
         }
@@ -1419,8 +1419,8 @@ impl State {
         if m.bytes.len() as u64 > MAX_BYTES {
             return Err(invalid(format!(
                 "{} exceeds {}",
-                kind::human(m.bytes.len() as u64),
-                kind::human(MAX_BYTES)
+                platform::fmt::bytes(m.bytes.len() as u64),
+                platform::fmt::bytes(MAX_BYTES)
             )));
         }
         if let Some((suffix, src)) = &m.source {
@@ -1432,8 +1432,8 @@ impl State {
             if src.len() as u64 > MAX_BYTES {
                 return Err(invalid(format!(
                     "source {} exceeds {}",
-                    kind::human(src.len() as u64),
-                    kind::human(MAX_BYTES)
+                    platform::fmt::bytes(src.len() as u64),
+                    platform::fmt::bytes(MAX_BYTES)
                 )));
             }
         }
@@ -1845,7 +1845,7 @@ impl State {
             let s = v.to_string();
             if s.len() > MAX_INVOCATION_RESULT {
                 serde_json::json!({
-                    "omitted": format!("result of {} exceeds {}", kind::human(s.len() as u64), kind::human(MAX_INVOCATION_RESULT as u64)),
+                    "omitted": format!("result of {} exceeds {}", platform::fmt::bytes(s.len() as u64), platform::fmt::bytes(MAX_INVOCATION_RESULT as u64)),
                 })
                 .to_string()
             } else {
@@ -2568,7 +2568,7 @@ mod tests {
             .show(sess, "c".into(), by_path(big.clone()))
             .await
             .unwrap_err();
-        assert_eq!(err, format!("{}: 33 MB exceeds 32 MB", big.display()));
+        assert_eq!(err, format!("{}: 34.6 MB exceeds 33.6 MB", big.display()));
 
         // 150 §D1: nameless content is still saved, and the error says how to publish it.
         let mut args = content("x.txt", "hi");
@@ -3102,7 +3102,7 @@ mod tests {
             kind::receipt(&shown.artifact, &shown.receipt),
             format!(
                 "shown src.tar.gz (v1 · 1 files · {})",
-                kind::human(shown.artifact.bytes)
+                platform::fmt::bytes(shown.artifact.bytes)
             )
         );
         let listing = archive::read_listing(&shown.artifact.path).await.unwrap();
@@ -3379,7 +3379,7 @@ mod tests {
         m.bytes = vec![0; 33 * 1024 * 1024];
         assert_eq!(
             s.commit(m).await.unwrap_err(),
-            CommitError::Other("panel.openui: 33 MB exceeds 32 MB".into())
+            CommitError::Other("panel.openui: 34.6 MB exceeds 33.6 MB".into())
         );
         assert!(s.list(Some(sess), false).await.unwrap().is_empty());
         assert!(blobs(&s.dir).is_empty());

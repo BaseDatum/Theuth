@@ -190,8 +190,7 @@ impl JobTail {
     /// Append raw output. Escape sequences are dropped, `\r` rewinds the
     /// current line (progress bars), tabs become spaces.
     pub fn push(&mut self, chunk: &str) {
-        let mut chars = chunk.chars();
-        while let Some(c) = chars.next() {
+        for c in anstream::adapter::strip_str(chunk).flat_map(str::chars) {
             match c {
                 '\n' => {
                     if self.lines.len() == JOB_LINES {
@@ -201,27 +200,6 @@ impl JobTail {
                 }
                 '\r' => self.partial.clear(),
                 '\t' => self.partial.push_str("    "),
-                '\x1b' => match chars.next() {
-                    // CSI: parameters, then one final byte in `@`..`~`.
-                    Some('[') => {
-                        for c in chars.by_ref() {
-                            if ('@'..='~').contains(&c) {
-                                break;
-                            }
-                        }
-                    }
-                    // OSC: to BEL or ST.
-                    Some(']') => {
-                        let mut prev = '\0';
-                        for c in chars.by_ref() {
-                            if c == '\x07' || (prev == '\x1b' && c == '\\') {
-                                break;
-                            }
-                            prev = c;
-                        }
-                    }
-                    _ => {}
-                },
                 c if c.is_control() => {}
                 c => self.partial.push(c),
             }

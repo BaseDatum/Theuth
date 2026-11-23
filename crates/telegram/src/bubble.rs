@@ -624,18 +624,6 @@ pub fn fmt_k(n: u32) -> String {
     }
 }
 
-/// `12 B` · `1.5 KB` · `2.0 MB`.
-#[must_use]
-pub fn fmt_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
-
 /// `0.3 s` · `42 s` · `1m32s`.
 #[must_use]
 pub fn fmt_elapsed(d: Duration) -> String {

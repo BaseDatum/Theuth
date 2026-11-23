@@ -13,7 +13,7 @@ pub use commands::{
     Selector, agent, communication_text, err, git_url, is_provider, jobs, mcp, mcp_entry, on_off,
     parse_broadcast, pending_id, receipt_text, short, synced, table, word,
 };
-pub use media::{extension_for, fmt_size, sniff};
+pub use media::{extension_for, sniff};
 pub use port::agents;
 pub use recent::{RECENT_KEYS, RecentKeys};
 
@@ -34,10 +34,7 @@ pub fn secret_notice(name: &str, note: &str) -> String {
 /// `s` cut to its first `max` chars with `…` appended when it was longer.
 #[must_use]
 pub fn truncate(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max) {
-        Some((i, _)) => format!("{}…", &s[..i]),
-        None => s.to_owned(),
-    }
+    platform::text::clip_then_ellipsis(s, max).into_owned()
 }
 
 #[cfg(test)]

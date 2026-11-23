@@ -14,7 +14,7 @@ use std::time::Duration;
 use agent::{AgentEvent, Ancestors, ChannelChat, ChannelOrigin, ChannelVia, PeerScope};
 use artifact::{ArtifactShown, snapshot};
 use async_trait::async_trait;
-use chat_common::{backoff_delay, extension_for, fmt_size, sniff};
+use chat_common::{backoff_delay, extension_for, sniff};
 use futures::StreamExt;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
@@ -1471,7 +1471,7 @@ impl Channel {
                 tracing::warn!(error = %e, path = %path.display(), "failed to save attachment");
                 continue;
             }
-            let mut detail = format!("{mime}, {}", fmt_size(a.bytes.len()));
+            let mut detail = format!("{mime}, {}", platform::fmt::bytes(a.bytes.len() as u64));
             if a.voice_note {
                 detail.push_str(", voice note");
                 if let Some(ms) = a.duration_ms {

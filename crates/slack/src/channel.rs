@@ -20,7 +20,7 @@ use agent::{
 };
 use artifact::{Artifact, ArtifactShown};
 use async_trait::async_trait;
-use chat_common::{agents, fmt_size, secret_notice};
+use chat_common::{agents, secret_notice};
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
@@ -1582,7 +1582,7 @@ impl Channel {
                                 lines.push(format!(
                                     "[attachment: {} ({mime}, {})] (transcription unavailable)",
                                     path.display(),
-                                    fmt_size(len)
+                                    platform::fmt::bytes(len as u64)
                                 ));
                             }
                         }
@@ -1591,7 +1591,7 @@ impl Channel {
                     lines.push(format!(
                         "[attachment: {} ({mime}, {})]",
                         path.display(),
-                        fmt_size(len)
+                        platform::fmt::bytes(len as u64)
                     ));
                     if mime.starts_with("image/") || mime == "application/pdf" {
                         paths.push(path);

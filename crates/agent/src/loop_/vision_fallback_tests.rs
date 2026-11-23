@@ -1709,8 +1709,9 @@ async fn read_file_image_takes_the_fallback_path() {
     );
     assert!(
         main.contains(&format!(
-            "[read_file {}: image/png 4\u{d7}4, 1 KB]",
-            png.display()
+            "[read_file {}: image/png 4\u{d7}4, {}]",
+            png.display(),
+            platform::fmt::bytes(std::fs::metadata(&png).unwrap().len())
         )),
         "{main}"
     );
