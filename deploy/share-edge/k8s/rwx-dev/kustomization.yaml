@@ -45,6 +45,15 @@ patches:
         path: /spec/template/spec/containers/0/env
         value:
           - {name: THEUTH_SHARE_EDGE_DB_JOURNAL, value: delete}
+      # Static musl in scratch: ndots:5 search expansion makes external lookups (api.porkbun.com, ACME) time out
+      # with EAI_AGAIN under load; resolve external names directly.
+      - op: add
+        path: /spec/template/spec/dnsConfig
+        value:
+          options:
+            - {name: ndots, value: "1"}
+            - {name: timeout, value: "2"}
+            - {name: attempts, value: "3"}
       # Admin socket off the NFS data volume (configmap.yaml admin.socket).
       - op: add
         path: /spec/template/spec/volumes/-
