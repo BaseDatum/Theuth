@@ -78,7 +78,8 @@ bun run check
   → fails with 21 errors, all pre-existing and outside UI1's files (element-form bindings missing:
     ElementFormCard.tsx, element-form*.ts, web-view-agent.ts, store/sessions.ts:979-980); none in files touched here
 cargo clippy -p desktop --all-targets   (under /tmp/theuth-build.lock)
-  → see report
+  → unverified: lock (other sessions held /tmp/theuth-build.lock for the rest of the budget; the job never
+    started). The Rust change is ~40 lines in `crates/desktop/src/{lib,commands}.rs`; run this first.
 ```
 
 No `Cargo.lock` change from UI1 (no new crates or npm packages).
