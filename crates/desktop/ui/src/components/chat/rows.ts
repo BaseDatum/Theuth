@@ -2,6 +2,7 @@ import { withGaps } from '@/lib/time'
 import type { AgentInfo } from '@/store/ui-events'
 import type { Prompt } from '@/store/approvals'
 import type { Entry } from '@/store/sessions'
+import type { ElementFormRequested } from '@/lib/element-form-wire'
 import { foldRuns, type Run } from './ToolRunCard'
 
 export type Row =
@@ -9,6 +10,8 @@ export type Row =
   | { key: string; run: Run; prompts: Prompt[] | null }
   /** A prompt with no row of its own, appended after the last entry: `from` names the child session it belongs to. */
   | { key: string; prompt: Prompt; from?: AgentInfo }
+  /** 209 §4.10: a child session's form card (its tool row is in the child's transcript), labelled with the child. */
+  | { key: string; form: ElementFormRequested; from: AgentInfo }
   /** `1 h 12 min later · 15:15` between two rows at least an hour apart (74 §5). */
   | { key: string; gap: string }
 
@@ -28,6 +31,7 @@ export const isDecision = (prompt: Prompt): boolean =>
  * - every other prompt with no such row (a subagent's prompt, 19 §3.4: `children` is the session's subtree, labelled with
  *   the child; a loose ask) is appended after the last entry, in `pending` order, so an open approval or question is
  *   never lost in the transcript after a reload.
+ * A child session's pending form card (209 §4.10, `forms`) is appended the same way, after the prompts.
  */
 export function buildRows(
   entries: Entry[],
@@ -36,6 +40,7 @@ export function buildRows(
   children: Record<string, AgentInfo> | undefined,
   collapse: boolean,
   pinned?: ReadonlySet<string>,
+  forms: readonly ElementFormRequested[] = [],
 ): Row[] {
   const items = foldRuns(entries, pinned, collapse)
   const rows: Row[] = items.map((item) =>
@@ -61,6 +66,10 @@ export function buildRows(
     const row = rows[i]
     if (row && 'prompts' in row) row.prompts = [...(row.prompts ?? []), prompt]
     else loose.push({ key: prompt.id, prompt })
+  }
+  for (const form of forms) {
+    const from = form.session !== session ? children?.[form.session] : undefined
+    if (from) loose.push({ key: form.id, form, from })
   }
   return withGaps(rows.concat(loose), rowAt)
 }

@@ -5,11 +5,13 @@ import { type AppInput, parseAppInput } from '@/components/apps/lifecycle'
 import { ENGINE_NOTICES, parseBroadcast, parseFileNotice } from '@/lib/injected'
 import { parseMeetingLine } from '@/lib/meeting-line'
 import type { AgentInfo } from '@/store/ui-events'
+import type { ElementFormRequested } from '@/lib/element-form-wire'
 import type { Prompt } from '@/store/approvals'
 import { type Entry, useSessions } from '@/store/sessions'
 import { AdvisorNoteCard } from './AdvisorNoteCard'
 import { ApprovalCard } from './ApprovalCard'
 import { AskCard } from './AskCard'
+import { ElementFormPanel } from './ElementFormCard'
 import { AutoresearchCard, BroadcastCard, ChildLostCard, ChildStateCard, ContactInboxCard, ContactMessageCard, DeskCard, EngineRestartCard, MovedCard, ParentViewCard, ResumeCard, WakeCard, childLine } from './HarnessCards'
 import { FileNoticeCard } from './ContactFiles'
 import { MessageAssistant, RemoveButton } from './MessageAssistant'
@@ -321,7 +323,11 @@ export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo 
   ) : (
     ask
   )
-  if (!from) return card
+  return from ? <FromChild from={from}>{card}</FromChild> : card
+}
+
+/** A child session's card in an ancestor's transcript: headed by the child's name and a link to its session. */
+function FromChild({ from, children }: { from: AgentInfo; children: ReactNode }) {
   return (
     <div className="mt-2 [&>*:last-child]:mt-0">
       <div className="flex items-center gap-2 text-xs text-fg-secondary">
@@ -333,8 +339,18 @@ export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo 
           open
         </Link>
       </div>
-      {card}
+      {children}
     </div>
+  )
+}
+
+/** 209 §4.10: a subagent's pending form card (its `browser_show_element` row is in the child's transcript); answering
+ * here or there answers the same form. */
+export function FormPromptCard({ form, from }: { form: ElementFormRequested; from: AgentInfo }) {
+  return (
+    <FromChild from={from}>
+      <ElementFormPanel form={form} />
+    </FromChild>
   )
 }
 

@@ -10,6 +10,7 @@ import { useApi } from '@/lib/rpc'
 import { useToolRuns } from '@/lib/tool-runs'
 import { cn } from '@/lib/utils'
 import { type Prompt, useApprovals, useAsks, useSecretRequests } from '@/store/approvals'
+import { useElementForms } from '@/store/element-forms'
 import { useScope } from '@/store/engine-scope'
 import {
   type Activity,
@@ -18,7 +19,7 @@ import {
   useEntries,
   useSessionField,
 } from '@/store/sessions'
-import { Message, PromptCard } from './Message'
+import { FormPromptCard, Message, PromptCard } from './Message'
 import { ActivityIndicator } from './Indicators'
 import { window as reach } from './lookahead'
 import { type Row, buildRows } from './rows'
@@ -201,9 +202,11 @@ export function Transcript({ session, compact = false }: { session: string; comp
 
   const collapse = useToolRuns((s) => s.collapse)
   const pinnedThinking = useToolRuns((s) => s.pinned)
+  const formsById = useElementForms((s) => s.pending)
+  const forms = useMemo(() => Object.values(formsById), [formsById])
   const rows = useMemo(
-    () => buildRows(entries, pending, session, children, collapse, pinnedThinking),
-    [entries, pending, session, children, collapse, pinnedThinking],
+    () => buildRows(entries, pending, session, children, collapse, pinnedThinking, forms),
+    [entries, pending, session, children, collapse, pinnedThinking, forms],
   )
   // R1.2: the library's measurement memo keys on `getItemKey`'s identity — a new one means a full pass, so it changes
   // only when the rows do (and with the width, so the pass re-estimates at the new bucket). The remembered heights
@@ -513,6 +516,8 @@ export function Transcript({ session, compact = false }: { session: string; comp
           <span className="tabular-nums">{row.gap}</span>
           <span className="h-px flex-1 bg-border-subtle" />
         </div>
+      ) : 'form' in row ? (
+        <FormPromptCard form={row.form} from={row.from} />
       ) : (
         <PromptCard prompt={row.prompt} from={row.from} />
       )}

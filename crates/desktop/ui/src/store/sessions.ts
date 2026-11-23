@@ -975,6 +975,9 @@ export function dispatch(events: TopicEvent[], st: Stores = active()): void {
       case 'tools.approval-resolved@1': approvals.resolve(item.event.id); break;
       case 'tools.ask-requested@1': asks.add(item.event); break;
       case 'tools.ask-resolved@1': asks.resolve(item.event.id); break;
+      // 209 §4.10: into this engine's store, live or not, like the prompts.
+      case 'browser.element-form-requested@1': st.elementForms.getState().add(item.event); break;
+      case 'browser.element-form-resolved@1': st.elementForms.getState().resolve(item.event.id, item.event.outcome); break;
 
       case 'secrets.events@1':
         if (item.event.type === 'SecretRequested') secrets.add(item.event);

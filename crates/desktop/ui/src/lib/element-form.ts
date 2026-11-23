@@ -1,21 +1,23 @@
 // 209 §4.10, D13: one element of a page (typically a sign-in form) lifted into a transcript card. The engine sends a
 // sanitised static clone (`ElementFormRequested`); the card frames it in the sandboxed inline-page frame of 120 with a
 // document this module builds: the CSP meta first, then the app's own bootstrap, then the clone, re-sanitised here
-// (the client trusts nothing in it). The user types into the frame; Submit asks the bootstrap for the values by
-// `data-theuth-field` index (`theuth/collect`) and hands them straight to `answer_element_form`. Values live only in
-// that call's arguments: never in a store, a log, the transcript or an error message.
+// (the client trusts nothing in it). The user types into the frame; Submit asks the bootstrap for the values of the
+// controls the user changed, by `data-theuth-field` index (`theuth/collect`), and hands them straight to
+// `answer_element_form`. Values live only in that call's arguments: never in a store, a log, the transcript or an error
+// message. They do cross the app window's `message` bus once (the frame's reply, posted to `'*'`: an opaque-origin
+// frame has no origin to name): `collectValues` is the only consumer, matching the frame's window and a fresh nonce;
+// no other `message` listener of the app may log `ev.data`.
 
-import { create } from 'zustand'
-import type { ElementFormAnswer, ElementFormRequested, ElementFormResolved } from '@/lib/element-form-wire'
+import type { ElementFormAnswer, ElementFormRequested } from '@/lib/element-form-wire'
 import { useEngines } from '@/link/engines'
 import type { Api } from '@/rpc/bindings/client'
-import { ready, supports } from '@/rpc/discovery'
+import { type Discovery, ready, supports } from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'
-import { on } from '@/store/sessions'
+import type { FormOutcome } from '@/store/element-forms'
+import { active } from '@/store/engine-scope'
 
-export type { ElementFormRequested, ElementFormResolved }
+export type { ElementFormRequested }
 export type ElementFormField = ElementFormRequested['fields'][number]
-export type Outcome = ElementFormResolved['outcome']
 
 /** The document's whole network policy (§4.10): `theuth-page`'s header carries only `sandbox …`, no `default-src`. */
 export const FORM_CSP =
@@ -38,15 +40,24 @@ const BUTTON_KINDS = new Set(['submit', 'button', 'reset', 'image'])
 export const isButton = (f: Pick<ElementFormField, 'kind'>): boolean => BUTTON_KINDS.has(f.kind.toLowerCase())
 
 /**
- * The bootstrap: answers `theuth/collect` from its parent with every control's value by `data-theuth-field` index
- * (checkbox and radio as `"true"` / `"false"`, buttons skipped), turns Enter in a field and any submit of the clone into
- * `theuth/submit-request` (the real submit is blocked anyway, `form-action 'none'`), and reports the height. It never
- * logs and keeps nothing; the values exist in the page and in the one reply.
+ * The bootstrap: answers `theuth/collect` from its parent with, by `data-theuth-field` index, the value of every
+ * control the user changed (an `input` or `change` event fired on it) and the state of every checkbox and radio
+ * (`"true"` / `"false"`); an untouched control is left out, so the page keeps what it had there (ruling B). Buttons
+ * are skipped. It turns Enter in a field and any submit of the clone into `theuth/submit-request` (the real submit is
+ * blocked anyway, `form-action 'none'`), and reports the height. It never logs and keeps nothing; the values exist in
+ * the page and in the one reply.
  */
 export function formBootstrap(): string {
   return `(function () {
 var post = function (msg) { try { window.parent.postMessage(msg, '*'); } catch (e) {} };
 var SKIP = { submit: 1, button: 1, reset: 1, image: 1, file: 1, hidden: 1 };
+var touched = {};
+var mark = function (ev) {
+  var el = ev.target && ev.target.closest ? ev.target.closest('[data-theuth-field]') : null;
+  if (el) touched[el.getAttribute('data-theuth-field')] = 1;
+};
+document.addEventListener('input', mark, true);
+document.addEventListener('change', mark, true);
 var collect = function () {
   var out = {};
   var els = document.querySelectorAll('[data-theuth-field]');
@@ -57,8 +68,9 @@ var collect = function () {
     if (tag === 'INPUT') {
       var t = (el.getAttribute('type') || 'text').toLowerCase();
       if (SKIP[t]) continue;
-      out[n] = t === 'checkbox' || t === 'radio' ? (el.checked ? 'true' : 'false') : String(el.value);
-    } else if (tag === 'SELECT' || tag === 'TEXTAREA') out[n] = String(el.value);
+      if (t === 'checkbox' || t === 'radio') out[n] = el.checked ? 'true' : 'false';
+      else if (touched[n]) out[n] = String(el.value);
+    } else if ((tag === 'SELECT' || tag === 'TEXTAREA') && touched[n]) out[n] = String(el.value);
   }
   return out;
 };
@@ -89,21 +101,27 @@ window.addEventListener('load', size);
 })();`
 }
 
-/** Tags of forms and text (§4.10's allowlist); everything else is unwrapped, or dropped with its content when listed in `DROP`. */
-const TAGS = new Set(
-  (
-    'form fieldset legend label input select option optgroup textarea button div span p a h1 h2 h3 h4 h5 h6 strong em b i u s ' +
-    'small mark sub sup br hr ul ol li dl dt dd table caption thead tbody tfoot tr th td section header footer main nav ' +
-    'article aside figure figcaption blockquote pre code abbr img'
-  ).split(' '),
+const words = (s: string): string[] => s.trim().split(/\s+/)
+/** Tags of forms and text (§4.10's allowlist, the engine's `show_element.allow.json` `tags`); everything else is
+ * unwrapped, or dropped with its content when listed in `DROP_TAGS`. */
+export const ALLOWED_TAGS: ReadonlySet<string> = new Set(
+  words(
+    'form fieldset legend label input select option optgroup textarea button output div span p a h1 h2 h3 h4 h5 h6 strong ' +
+      'em b i u s q cite small mark sub sup br wbr hr ul ol li dl dt dd table caption colgroup col thead tbody tfoot tr th td ' +
+      'section header footer main nav article aside address figure figcaption blockquote pre code abbr time img',
+  ),
 )
-const DROP = new Set(
-  (
-    'script noscript style link meta base iframe frame frameset object embed svg math template title head video audio ' +
-    'source track picture canvas portal applet param dialog'
-  ).split(' '),
+/** Tags dropped with everything inside them (the engine's `drop`). */
+export const DROP_TAGS: ReadonlySet<string> = new Set(
+  words(
+    'script noscript style link meta base iframe frame frameset noframes object embed svg math template title head video ' +
+      'audio source track picture canvas portal applet param dialog xmp plaintext noembed',
+  ),
 )
-const ATTRS = new Set(['style', 'type', 'name', 'placeholder', 'autocomplete', 'checked', 'selected', 'disabled', 'for', 'id', 'class', 'data-theuth-field'])
+/** Attributes kept on any allowed tag (the engine's `attrs`); `img` also keeps `alt` and an inline-image `src`. */
+export const ALLOWED_ATTRS: ReadonlySet<string> = new Set(
+  words('style type name placeholder autocomplete checked selected disabled for id class data-theuth-field'),
+)
 /** `url(...)` that is not an inline image. */
 const URL_IN_STYLE = /url\(\s*(?!['"]?data:image\/)[^)]*\)/gi
 /** Input types that never belong in the card: hidden ones stay in the real form, files cannot be carried. */
@@ -111,26 +129,29 @@ const NO_INPUT = new Set(['hidden', 'file'])
 
 /**
  * The clone re-sanitised by the same allowlist as the engine's (§4.10): no script, style sheet, frame, `meta`, `base`,
- * `on*`, link or network URL survives; `img` keeps only a `data:image/` source; a field the event marks `masked` is
- * `type=password` whatever the clone says. Parsed inert (`DOMParser`: nothing runs or loads).
+ * `on*`, link or network URL survives; `img` keeps its `alt` and only a `data:image/` source; a field the event marks
+ * `masked` is `type=password` whatever the clone says. Parsed inert (`DOMParser`: nothing runs or loads).
  */
 export function sanitizeSnapshot(html: string, masked: ReadonlySet<string> = new Set()): string {
   const doc = new DOMParser().parseFromString(`<!doctype html><body>${html}`, 'text/html')
   const clean = (el: Element): void => {
     for (const child of [...el.children]) {
       const tag = child.localName
-      if (DROP.has(tag) || child.namespaceURI !== 'http://www.w3.org/1999/xhtml') {
+      if (DROP_TAGS.has(tag) || child.namespaceURI !== 'http://www.w3.org/1999/xhtml') {
         child.remove()
         continue
       }
-      if (!TAGS.has(tag)) {
+      if (!ALLOWED_TAGS.has(tag)) {
         clean(child)
         child.replaceWith(...child.childNodes)
         continue
       }
       for (const attr of [...child.attributes]) {
         const name = attr.name.toLowerCase()
-        const keep = ATTRS.has(name) || (tag === 'img' && name === 'src' && /^data:image\//i.test(attr.value.trim()))
+        const keep =
+          ALLOWED_ATTRS.has(name) ||
+          (tag === 'img' && name === 'alt') ||
+          (tag === 'img' && name === 'src' && /^data:image\//i.test(attr.value.trim()))
         if (!keep) child.removeAttribute(attr.name)
       }
       const style = child.getAttribute('style')
@@ -179,7 +200,8 @@ export function readFrameMessage(data: unknown): FrameMessage | null {
   return null
 }
 
-/** The values of the event's non-button fields, by index: a string each (missing → `""`); anything else the frame sent is dropped. */
+/** The string values the frame sent for the event's non-button fields, by index; an index the frame left out (the user
+ * did not touch it) stays out, and anything else the frame sent is dropped. */
 export function pickValues(fields: readonly ElementFormField[], raw: unknown): Record<string, string> {
   const got = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
   const out: Record<string, string> = {}
@@ -187,7 +209,7 @@ export function pickValues(fields: readonly ElementFormField[], raw: unknown): R
     if (isButton(f)) continue
     const key = String(f.index)
     const v = Object.hasOwn(got, key) ? got[key] : undefined
-    out[key] = typeof v === 'string' ? v : ''
+    if (typeof v === 'string') out[key] = v
   }
   return out
 }
@@ -223,9 +245,13 @@ export function collectValues(
   return promise
 }
 
-/** The app's own reading of the page origin: `scheme://host[:port]` with the host in ASCII (an IDN as `xn--…`, so a
- * homograph shows), never the snapshot's word for it. `null` for an origin that is not http(s) (an opaque `null`). */
-export function originLabel(origin: string): { text: string; host: string; secure: boolean } | null {
+/** The app's own reading of an origin: `scheme://host[:port]` with the host in ASCII (an IDN as `xn--…`, so a homograph
+ * shows), never the snapshot's word for it; `head` + `tail` = `text`, where `tail` is the part a phishing suffix
+ * cannot hide (the host's last two labels and the port, or the whole host for an IP address), drawn untruncated. */
+export type OriginLabel = { text: string; host: string; secure: boolean; head: string; tail: string }
+
+/** `origin` as the app shows it; `null` for an origin that is not http(s) (an opaque `null`). */
+export function originLabel(origin: string): OriginLabel | null {
   let u: URL
   try {
     u = new URL(origin)
@@ -233,7 +259,12 @@ export function originLabel(origin: string): { text: string; host: string; secur
     return null
   }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return null
-  return { text: `${u.protocol}//${u.host}`, host: u.host, secure: u.protocol === 'https:' }
+  const text = `${u.protocol}//${u.host}`
+  const name = u.hostname
+  const ip = name.startsWith('[') || /^[0-9.]+$/.test(name)
+  const labels = name.split('.')
+  const tail = (ip || labels.length <= 2 ? name : labels.slice(-2).join('.')) + (u.port ? `:${u.port}` : '')
+  return { text, host: u.host, secure: u.protocol === 'https:', head: text.slice(0, text.length - tail.length), tail }
 }
 
 /** Which browser holds the page: the user's tile or an agent browser of an engine. */
@@ -243,109 +274,74 @@ export function sourceLabel(source: string): string {
   return source
 }
 
-/** The outcome read back from the tool's receipt (§4.10) once the event is gone (a reload): `null` when it says none. */
-export function outcomeOfReceipt(output: string): Outcome | null {
-  if (output.startsWith('submitted')) return 'submitted'
-  if (output.startsWith('cancelled')) return 'cancelled'
-  if (output.startsWith('the page changed')) return 'stale'
-  if (output.startsWith('no answer')) return 'timeout'
+/** The outcome read back from the tool's receipt (§4.10) once the event is gone (a reload), from its first line:
+ * `null` when it says none. */
+export function outcomeOfReceipt(output: string): FormOutcome | null {
+  const line = output.trimStart().split('\n', 1)[0] ?? ''
+  if (line.startsWith('submitted')) return 'submitted'
+  if (line.startsWith('cancelled') || line.startsWith('no app showed the form')) return 'cancelled'
+  if (line.startsWith('the page changed')) return 'stale'
+  if (line.startsWith('no answer')) return 'timeout'
   return null
 }
 
-/** A resolved card: how it ended and the origin it was shown for (from its event, when this window saw it). */
-export type Resolved = { outcome: Outcome; origin: string | null }
-
-/** Pending cards (no values, ever) and the outcomes of resolved ones, by request id; `calls` maps a tool call to its request. */
-type ElementFormsStore = {
-  pending: Record<string, ElementFormRequested>
-  outcomes: Record<string, Resolved>
-  calls: Record<string, string>
-  add(e: ElementFormRequested): void
-  resolve(id: string, outcome: Outcome): void
-  /** The engine's `element_forms_pending`: afterwards the pending set is exactly that, for `session` when given (its
-   * cards only), else for every session but those in `keep` (sessions loaded on their own: owned by another engine). */
-  replace(list: ElementFormRequested[], scope: { session: string } | { keep: ReadonlySet<string> }): void
-  clear(): void
-}
-
-export const useElementForms = create<ElementFormsStore>()((set) => ({
-  pending: {},
-  outcomes: {},
-  calls: {},
-  add: (e) =>
-    set((s) => (s.outcomes[e.id] || s.pending[e.id] ? s : { pending: { ...s.pending, [e.id]: e }, calls: { ...s.calls, [e.call_id]: e.id } })),
-  resolve: (id, outcome) =>
-    set((s) => {
-      const { [id]: form, ...pending } = s.pending
-      return { pending, outcomes: { ...s.outcomes, [id]: { outcome, origin: form?.origin ?? null } } }
-    }),
-  replace: (list, scope) =>
-    set((s) => {
-      const kept = (e: ElementFormRequested) => ('session' in scope ? e.session !== scope.session : scope.keep.has(e.session))
-      const pending: Record<string, ElementFormRequested> = {}
-      for (const e of Object.values(s.pending)) if (kept(e)) pending[e.id] = e
-      const calls = { ...s.calls }
-      for (const e of list) {
-        if (s.outcomes[e.id] || e.type !== 'ElementFormRequested') continue
-        // A card already on screen keeps its object: its frame (and what the user typed) stays.
-        pending[e.id] = s.pending[e.id] ?? e
-        calls[e.call_id] = e.id
-      }
-      return { pending, calls }
-    }),
-  clear: () => set({ pending: {}, outcomes: {}, calls: {} }),
-}))
-
-const METHODS = { answer: 'answer_element_form', pending: 'element_forms_pending' } as const
+const METHODS = { answer: 'answer_element_form', pending: 'element_forms_pending', shown: 'element_form_shown' } as const
 const REQUESTED_TOPIC = 'browser.element-form-requested@1'
 
-/** Whether the connected engine takes answers (an older one has no card to answer). */
+/** Whether the card's engine takes answers (an older one has no card to answer). */
 export function useCanAnswer(): boolean {
   return useConnection((s) => !!s.api && supports(s.discovery, { methods: [METHODS.answer], topics: [REQUESTED_TOPIC] }))
 }
 
-/** The connection's API, or a thrown error the card shows. */
-function api(): Api {
-  const a = useConnection.getState().api
-  if (!a) throw new Error('not connected')
-  return a
-}
-
-/** Submit: `values` go only into this call's arguments. `session` is the request's: an engine that did not issue the
- * form forwards the answer to the session's owner. `true` when the form was still pending and this answer was taken. */
-export function answerElementForm(id: string, values: Record<string, string>, session: string): Promise<boolean> {
+/** Submit on `api` (the card's own engine): `values` go only into this call's arguments. `session` is the request's: an
+ * engine that did not issue the form forwards the answer to the session's owner. `true` when the form was still pending
+ * and this answer was taken. */
+export function answerElementForm(api: Api, id: string, values: Record<string, string>, session: string): Promise<boolean> {
   const answer: ElementFormAnswer = { submit: { values } }
-  return api().answer_element_form(id, answer, session)
+  return api.answer_element_form(id, answer, session)
 }
 
 /** Cancel: nothing is typed into the page. */
-export function cancelElementForm(id: string, session: string): Promise<boolean> {
+export function cancelElementForm(api: Api, id: string, session: string): Promise<boolean> {
   const answer: ElementFormAnswer = { cancel: {} }
-  return api().answer_element_form(id, answer, session)
+  return api.answer_element_form(id, answer, session)
 }
+
+/** Cards each connection was told are on screen. */
+const shownOn = new WeakMap<Api, Set<string>>()
+
+/** Ruling D: tell the engine a card is on screen (`element_form_shown`), once per card per connection; an engine
+ * whose cards no app shows gives up on them. A failed call is tried again on the next render. */
+export function markShown(api: Api, discovery: Discovery, form: Pick<ElementFormRequested, 'id' | 'session'>): void {
+  if (!supports(discovery, { methods: [METHODS.shown] })) return
+  let ids = shownOn.get(api)
+  if (!ids) shownOn.set(api, (ids = new Set()))
+  if (ids.has(form.id)) return
+  ids.add(form.id)
+  api.element_form_shown(form.id, form.session).catch(() => ids.delete(form.id))
+}
+
+/** How many sessions `asked` remembers: the oldest is forgotten (asked again if its card is still missing). */
+const MAX_ASKED = 64
 
 /** Sessions whose pending cards were asked for by name (a transcript of a session another engine owns), per connection. */
 let asked = new Set<string>()
 let askedOf: Api | null = null
 
-/** Load the engine's pending cards (`session`: that session's, which the engine forwards to its owner) and put them in
- * the store, leaving the cards of the `keep` sessions alone on a whole load; `false` when unsupported or the call
+/** Load the engine's pending cards (`session`: that session's, which the engine forwards to its owner) into the active
+ * engine's store, leaving the cards of the `keep` sessions alone on a whole load; `false` when unsupported or the call
  * failed (the store is left as it is). */
-export async function loadPending(
-  a: Api,
-  discovery: Parameters<typeof supports>[0],
-  session?: string,
-  keep: ReadonlySet<string> = asked,
-): Promise<boolean> {
+export async function loadPending(a: Api, discovery: Discovery, session?: string, keep: ReadonlySet<string> = asked): Promise<boolean> {
   if (!ready(discovery) || !supports(discovery, { methods: [METHODS.pending] })) return false
+  const store = active().elementForms
   const list = await (session === undefined ? a.element_forms_pending() : a.element_forms_pending(session)).catch(() => null)
   if (!list) return false
-  useElementForms.getState().replace(list, session === undefined ? { keep: new Set(keep) } : { session })
+  store.getState().replace(list, session === undefined ? { keep: new Set(keep) } : { session })
   return true
 }
 
 /** A card whose form this window has not seen (a late attach, a remote-owned session): ask for its session's cards,
- * once per connection. */
+ * once per connection while that answer stands (a failed ask is forgotten, so the next render asks again). */
 export function attachSession(session: string): void {
   const { api: a, state, discovery } = useConnection.getState()
   if (!a || state !== 'open') return
@@ -355,17 +351,26 @@ export function attachSession(session: string): void {
   }
   if (asked.has(session)) return
   asked.add(session)
-  void loadPending(a, discovery, session)
+  if (asked.size > MAX_ASKED) asked.delete(asked.values().next().value as string)
+  const of = asked
+  void loadPending(a, discovery, session).then((ok) => {
+    if (!ok) of.delete(session)
+  })
+}
+
+/** Ask a session's cards again now (the card waited long after its answer was taken: a lost `ElementFormResolved`). */
+export function reloadSession(session: string): void {
+  const { api: a, state, discovery } = useConnection.getState()
+  if (a && state === 'open') void loadPending(a, discovery, session)
 }
 
 /**
- * Listen for cards in this window, and ask the engine for the pending ones on every connect, reconnect and engine
- * switch (a client that attached late, or missed events while away, still shows the card); sessions asked for by name
- * are asked again. Returns the stop.
+ * Ask the engine for the pending cards on every connect, reconnect and engine switch (a client that attached late, or
+ * missed events while away, still shows the card); sessions asked for by name are asked again. The events themselves
+ * reach each engine's store through `dispatch`. Returns the stop.
  */
 export function startElementForms(): () => void {
   let loadedFrom: Api | null = null
-  let engine = useEngines.getState().active
   const onConnection = () => {
     const { api: a, state, discovery } = useConnection.getState()
     if (state !== 'open') loadedFrom = null
@@ -380,24 +385,21 @@ export function startElementForms(): () => void {
     })
   }
   let offConnection = useConnection.subscribe(onConnection)
-  const offs = [
-    on('browser.element-form-requested@1', 'ElementFormRequested', (e) => useElementForms.getState().add(e)),
-    on('browser.element-form-resolved@1', 'ElementFormResolved', (e) => useElementForms.getState().resolve(e.id, e.outcome)),
-    useEngines.subscribe((s) => {
-      if (s.active === engine) return
-      engine = s.active
-      useElementForms.getState().clear()
-      asked = new Set()
-      askedOf = null
-      loadedFrom = null
-      offConnection()
-      offConnection = useConnection.subscribe(onConnection)
-      onConnection()
-    }),
-    () => offConnection(),
-  ]
+  let engine = useEngines.getState().active
+  // Each engine keeps its own cards (`Stores.elementForms`); a switch re-binds to the new engine's connection and loads.
+  const offEngine = useEngines.subscribe((s) => {
+    if (s.active === engine) return
+    engine = s.active
+    asked = new Set()
+    askedOf = null
+    loadedFrom = null
+    offConnection()
+    offConnection = useConnection.subscribe(onConnection)
+    onConnection()
+  })
   onConnection()
   return () => {
-    for (const off of offs) off()
+    offConnection()
+    offEngine()
   }
 }
