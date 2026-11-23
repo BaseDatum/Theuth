@@ -978,6 +978,15 @@ impl Channel {
         !self.owner.is_empty() && normalize_number(number) == self.owner
     }
 
+    /// 210 §7.2: a session bound to a thread whose number is not the owner's (or
+    /// while no owner is set) may not run a human-only tool; tells the tool
+    /// registry (never lifted while the engine runs), as Slack and Telegram do.
+    fn note_thread(&self, session: SessionId, number: &str) {
+        if !self.is_owner(number) {
+            tools::mark_non_owner_thread(session, true);
+        }
+    }
+
     fn is_allowed(&self, number: &str) -> bool {
         if self.is_owner(number) {
             return true;
@@ -1148,15 +1157,27 @@ impl Channel {
             if reaction.remove {
                 return;
             }
-            let id = self
+            // 210 §7.2: a human-only card takes only the owner's answer.
+            let hit = self
                 .approvals
                 .lock()
                 .await
-                .by_reaction(&sender.number, reaction.target_timestamp);
-            if let (Some(id), Some(decision)) = (id, approvals::decision_for_emoji(&reaction.emoji))
-                && let Err(e) = self.port.resolve(id, decision).await
-            {
-                tracing::warn!(error = %e, "approval resolve by reaction failed");
+                .by_reaction(&sender.number, reaction.target_timestamp)
+                .map(|e| (e.id, e.human_only));
+            let Some(decision) = approvals::decision_for_emoji(&reaction.emoji) else {
+                return;
+            };
+            match hit {
+                Some((_, true)) if !self.is_owner(&sender.number) => {
+                    self.send_chunks(&sender, "only the owner can answer this")
+                        .await;
+                }
+                Some((id, _)) => {
+                    if let Err(e) = self.port.resolve(id, decision).await {
+                        tracing::warn!(error = %e, "approval resolve by reaction failed");
+                    }
+                }
+                None => {}
             }
             return;
         }
@@ -1256,6 +1277,7 @@ impl Channel {
             Ok(id) => {
                 let mut s = self.lock();
                 s.threads.bind(&sender, id);
+                self.note_thread(id, &sender.number);
                 // The entry outlives this call: `TurnStarted` picks it up, and a
                 // steer updates the running turn in place (last input wins).
                 let turn = s.turns.entry(id).or_default();
@@ -1368,6 +1390,7 @@ impl Channel {
                 let mut s = self.lock();
                 s.threads.bind_agent(sender, desk, name, title, task);
                 if let Some(desk) = desk {
+                    self.note_thread(desk, &sender.number);
                     s.turns
                         .entry(desk)
                         .or_default()
@@ -1420,6 +1443,7 @@ impl Channel {
             }
             Reply::Resume(id) => {
                 self.lock().threads.bind(sender, id);
+                self.note_thread(id, &sender.number);
                 format!("resumed {id}")
             }
             Reply::Allow(n) => match ask_signal(crate::Allow(n.clone())).await {
@@ -1670,6 +1694,8 @@ impl Channel {
                     let Some(to) = s.threads.recipient_for(session) else {
                         return;
                     };
+                    // Re-said each turn: the registry keeps the mark in memory only.
+                    self.note_thread(session, &to.number);
                     let turn = s.turns.entry(session).or_default();
                     turn.in_flight = true;
                     if let Some(h) = turn.typing.take() {
@@ -3109,6 +3135,49 @@ mod tests {
                 target_ts: timestamp,
             })
         );
+    }
+
+    /// 210 §7.2: a human-only card in a friend's thread says only the owner can
+    /// answer, and the friend's 👍 is refused, not resolved.
+    #[tokio::test]
+    async fn human_only_card_refuses_a_non_owner_reaction() {
+        let f = fixture().await;
+        let session = f.stub.session;
+        f.chan.lock().threads.bind(&Recipient::new(FRIEND), session);
+        let id = ApprovalId(Uuid::new_v4());
+        f.chan
+            .handle_event(Event::Requested(ApprovalRequested {
+                id,
+                session,
+                tool: "share_publish".into(),
+                args: serde_json::json!({}),
+                risk: Risk::Destructive,
+                human_only: true,
+            }))
+            .await;
+        let Some(SentItem::Text {
+            timestamp, text, ..
+        }) = f.transport.sent().last().cloned()
+        else {
+            panic!("approval message not sent");
+        };
+        assert!(text.contains("Only the owner can answer this."), "{text}");
+        f.chan
+            .handle_envelope(SignalEnvelope {
+                reaction: Some(IncomingReaction {
+                    emoji: "👍".into(),
+                    target_timestamp: timestamp,
+                    remove: false,
+                }),
+                text: None,
+                ..env(FRIEND, 99, "")
+            })
+            .await;
+        assert!(f.stub.calls().is_empty());
+        assert!(matches!(
+            f.transport.sent().last(),
+            Some(SentItem::Text { text, .. }) if text == "only the owner can answer this"
+        ));
     }
 
     #[tokio::test]
