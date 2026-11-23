@@ -550,7 +550,7 @@ impl Store {
     /// ([`Store::rekey`] refuses a `new` that was rekeyed away), the bound only guards a hand-edited database.
     pub async fn current_mesh(&self, mesh: &str) -> anyhow::Result<String> {
         let mut conn = self.pool.acquire().await?;
-        chain_end(&mut *conn, mesh).await
+        chain_end(&mut conn, mesh).await
     }
 
     /// The applied rekeys that lead to `mesh`, oldest first, as `(old, new, ms)`.
@@ -591,7 +591,7 @@ impl Store {
             return Ok(Rekeyed::Unknown);
         };
         if rekeyed_to.is_some() {
-            return Ok(Rekeyed::Moved(chain_end(&mut *tx, old).await?));
+            return Ok(Rekeyed::Moved(chain_end(&mut tx, old).await?));
         }
         let bans: i64 = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM bans WHERE kind = 'mesh' AND value IN (?1, ?2)

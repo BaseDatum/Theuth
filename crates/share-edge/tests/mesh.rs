@@ -206,7 +206,7 @@ async fn reserved_names_cooldown_and_online_transfer() {
 
     // `a` serves the name, then offers it to `b`; only the holder may offer, never to itself.
     let h = host(None, "sky");
-    assert_eq!(a.send("PUT", paths::ROUTES, &routes(&[h.clone()])).await.0, 204);
+    assert_eq!(a.send("PUT", paths::ROUTES, &routes(std::slice::from_ref(&h))).await.0, 204);
     let offer = TransferRequest { to_mesh: mb.public() };
     let to_a = TransferRequest { to_mesh: ma.public() };
     let (status, body) = b.send("POST", &paths::name_transfer("sky"), &to_a).await;
@@ -229,9 +229,9 @@ async fn reserved_names_cooldown_and_online_transfer() {
     // The receiver claims with the plain PUT: no cooldown, `a`'s route goes, `a` no longer holds it.
     assert_eq!(b.call("PUT", &paths::name("sky"), None).await.0, 200);
     assert_eq!(rig.route_of(&h), None);
-    let (status, body) = a.send("PUT", paths::ROUTES, &routes(&[h.clone()])).await;
+    let (status, body) = a.send("PUT", paths::ROUTES, &routes(std::slice::from_ref(&h))).await;
     assert_eq!((status, err(&body).code), (403, ErrorCode::NotOwner));
-    assert_eq!(b.send("PUT", paths::ROUTES, &routes(&[h.clone()])).await.0, 204);
+    assert_eq!(b.send("PUT", paths::ROUTES, &routes(std::slice::from_ref(&h))).await.0, 204);
     assert_eq!(rig.route_of(&h), Some(kb.public()));
     // `a` holds nothing now: its quota is free again.
     assert_eq!(a.call("PUT", &paths::name("fog"), None).await.0, 200);
@@ -267,7 +267,7 @@ async fn three_engine_family() {
 
     let (bare, app, docs) = (host(None, "sky"), host(Some("app"), "sky"), host(Some("docs"), "sky"));
     assert_eq!(e1.send("PUT", paths::ROUTES, &routes(&[bare.clone(), app.clone()])).await.0, 204);
-    assert_eq!(e2.send("PUT", paths::ROUTES, &routes(&[docs.clone()])).await.0, 204);
+    assert_eq!(e2.send("PUT", paths::ROUTES, &routes(std::slice::from_ref(&docs))).await.0, 204);
     let (status, body) = e2.send("PUT", paths::ROUTES, &routes(&[docs.clone(), app.clone()])).await;
     let e = err(&body);
     assert_eq!((status, e.code), (409, ErrorCode::RouteConflict));
@@ -316,7 +316,7 @@ async fn three_engine_family() {
 
     // Removal of e2 whose vault rotation fails: the hub revokes now; no rekey follows yet.
     let (e2, _) = rig.attach(&k2, &m).await;
-    assert_eq!(e2.send("PUT", paths::ROUTES, &routes(&[docs.clone()])).await.0, 204);
+    assert_eq!(e2.send("PUT", paths::ROUTES, &routes(std::slice::from_ref(&docs))).await.0, 204);
     let (hub, _) = rig.attach(&k3, &m).await;
     let req = RevokeRequest { engines: vec![k2.public()] };
     assert_eq!(hub.send("POST", paths::MESH_REVOKE, &req).await.0, 200);
@@ -359,7 +359,7 @@ async fn three_engine_family() {
     assert_eq!(ms.revoked, vec![k2.public()]);
     assert_eq!(ms.rekeys.len(), 1);
     assert_eq!((ms.rekeys[0].old, ms.rekeys[0].new), (m.public(), m2.public()));
-    let mut put = routes(&[bare.clone()]);
+    let mut put = routes(std::slice::from_ref(&bare));
     put.published_ms.insert(bare.clone(), now_ms());
     assert_eq!(e1.send("PUT", paths::ROUTES, &put).await.0, 204);
     assert_eq!(rig.route_of(&bare), Some(k1.public()));
