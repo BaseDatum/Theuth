@@ -337,18 +337,21 @@ impl Verdict {
     }
 }
 
-/// The judge's view of a memory: title, description and body (no
-/// frontmatter), cut to [`PEEK_STATE_BYTES`].
+/// The judge's view of a memory: title, description (unless it repeats the title) and body
+/// (no frontmatter), cut to [`PEEK_STATE_BYTES`].
 fn peek_state(c: &Concept) -> String {
     let body = okf::Document::parse(&c.text).map_or_else(|_| c.text.clone(), |d| d.body);
-    let s = format!(
-        "{}\n{}\n\n{}",
-        c.meta.title,
-        c.meta.description,
-        body.trim()
-    );
+    let (title, description) = (c.meta.title.trim(), c.meta.description.trim());
+    let s = if description.is_empty() || description == title {
+        format!("{title}\n\n{}", body.trim())
+    } else {
+        format!("{title}\n{description}\n\n{}", body.trim())
+    };
     platform::text::cut_bytes(&s, PEEK_STATE_BYTES).to_owned()
 }
+
+/// Prefix of the judge errors that mean the model cannot answer at all (`decision::classify`).
+const PEEK_UNAVAILABLE: &str = "decision model unavailable";
 
 /// The ids a `peek_memory` receipt returned in full (its `` ### `id` — relevant `` lines),
 /// for the loop's compaction head (212 §4.3).
@@ -424,11 +427,17 @@ impl Tool for PeekTool {
         } else {
             self.judge.judge(items).await
         };
-        let verdicts: Vec<Verdict> = match answers {
-            Ok(v) => v.iter().map(|v| Verdict::of(v, self.threshold)).collect(),
+        let (verdicts, judge_failed): (Vec<Verdict>, bool) = match answers {
+            Ok(v) => (
+                v.iter().map(|v| Verdict::of(v, self.threshold)).collect(),
+                false,
+            ),
             Err(e) => {
                 let e = format!("{e:#}");
-                (0..n).map(|_| Verdict::Undecided(e.clone())).collect()
+                (
+                    (0..n).map(|_| Verdict::Undecided(e.clone())).collect(),
+                    true,
+                )
             }
         };
         let mut verdicts = verdicts.into_iter();
@@ -450,23 +459,30 @@ impl Tool for PeekTool {
             })
             .collect();
 
-        let (mut judged, mut relevant, mut undecided) = (0, 0, 0);
+        let (mut judged, mut relevant, mut undecided, mut unavailable_rows) = (0, 0, 0, 0);
         for (_, row) in &rows {
             if let Peeked::Judged(_, v) = row {
                 judged += 1;
                 match v {
                     Verdict::Relevant(_) => relevant += 1,
-                    Verdict::Undecided(_) => undecided += 1,
+                    Verdict::Undecided(e) => {
+                        undecided += 1;
+                        if e.starts_with(PEEK_UNAVAILABLE) {
+                            unavailable_rows += 1;
+                        }
+                    }
                     Verdict::NotRelevant(_) => {}
                 }
             }
         }
-        let unavailable = judged > 0 && undecided == judged;
+        // Nothing answered: name why, so the model knows whether a retry can help.
+        let all_undecided = judged > 0 && undecided == judged;
+        let unavailable = all_undecided && (judge_failed || unavailable_rows == undecided);
 
         let mut s = format!(
             "peek_memory: {relevant} of {} relevant to \"{}\"\n\n",
             rows.len(),
-            platform::text::clip_then_ellipsis(question, PEEK_HEADLINE_CHARS)
+            platform::text::clip_then_ellipsis(&question.replace('\n', " "), PEEK_HEADLINE_CHARS)
         );
         if relevant == 0 {
             s.push_str("No memory was judged relevant.\n");
@@ -512,6 +528,10 @@ impl Tool for PeekTool {
         if unavailable {
             s.push_str(
                 "The local decision model is unavailable; read with knowledge_get(id) instead.\n",
+            );
+        } else if all_undecided {
+            s.push_str(
+                "The local decision model did not answer in time; try again or read with knowledge_get(id).\n",
             );
         }
         Ok(ToolOutput::ok(s))
@@ -1600,8 +1620,8 @@ mod tests {
             seen[0].statement,
             "This memory helps answer the question: how is the build lock acquired"
         );
-        // No description given: the store fills in the title.
-        assert_eq!(seen[0].state, "A\nA\n\nbody of A");
+        // No description given: the store fills in the title, which the judge reads once.
+        assert_eq!(seen[0].state, "A\n\nbody of A");
         drop(seen);
         assert_eq!(
             opened(&k, &["facts/a", "facts/b", "facts/c"]).await,
@@ -1638,6 +1658,90 @@ mod tests {
         );
         assert!(peek_relevant_ids(&out.content).next().is_none());
         assert_eq!(opened(&k, &["facts/a", "facts/b"]).await, [0, 0]);
+    }
+
+    fn failed(error: &str) -> BoolVerdict {
+        BoolVerdict {
+            p_true: None,
+            choice: None,
+            truncated: false,
+            error: Some(error.into()),
+        }
+    }
+
+    /// The closing line says why nothing answered: unavailable (the call failed, or every
+    /// row says so) vs. not in time (timeouts; a retry can help).
+    #[tokio::test]
+    async fn peek_tells_unavailable_from_timed_out() {
+        let (_scratch, k) = peek_bundle("kpeek").await;
+        let unavailable =
+            "The local decision model is unavailable; read with knowledge_get(id) instead.\n";
+        let late = "The local decision model did not answer in time; try again or read with knowledge_get(id).\n";
+        let missing = "decision model unavailable: checkpoint not installed";
+        let slow = "the local model did not answer within 3000 ms (it may still be loading)";
+        let ids = ["facts/a", "facts/b"];
+        for (answers, tail) in [
+            (vec![failed(missing), failed(missing)], unavailable),
+            (vec![failed(slow), failed(slow)], late),
+            (vec![failed(missing), failed(slow)], late),
+        ] {
+            let (tool, _) = peek_tool(&k, Some(answers));
+            let out = tool.call(peek_args("q", &ids), cx(false)).await.unwrap();
+            assert!(out.content.ends_with(tail), "{}", out.content);
+            let other = if tail == late { unavailable } else { late };
+            assert!(!out.content.contains(other), "{}", out.content);
+        }
+        // One row answered: no closing line at all.
+        let (tool, _) = peek_tool(&k, Some(vec![said(false, 0.1), failed(slow)]));
+        let out = tool.call(peek_args("q", &ids), cx(false)).await.unwrap();
+        assert!(out.content.ends_with("knowledge_get(id) reads it anyway\n"));
+    }
+
+    /// The judge's state: the description line only when it says more than the title; a
+    /// multi-byte body is cut at 4096 bytes on a char boundary. The headline puts a
+    /// multi-line question on one line.
+    #[tokio::test]
+    async fn peek_state_and_headline() {
+        let (_scratch, k) = peek_bundle("kpeek").await;
+        for (id, description, body) in [
+            ("facts/same", Some("D"), "short".to_owned()),
+            ("facts/desc", Some("what d says"), "short".to_owned()),
+            ("facts/long", None, "é".repeat(3000)),
+        ] {
+            k.put(
+                Put {
+                    id: id.into(),
+                    title: "D".into(),
+                    description: description.map(Into::into),
+                    body,
+                    ..put()
+                },
+                Source::Model,
+            )
+            .await
+            .unwrap();
+        }
+        let (tool, judge) = peek_tool(&k, Some(vec![said(false, 0.1); 3]));
+        let out = tool
+            .call(
+                peek_args(
+                    "how is\nthe lock\ntaken",
+                    &["facts/same", "facts/desc", "facts/long"],
+                ),
+                cx(false),
+            )
+            .await
+            .unwrap();
+        let seen = judge.seen.lock();
+        assert_eq!(seen[0].state, "D\n\nshort");
+        assert_eq!(seen[1].state, "D\nwhat d says\n\nshort");
+        // "D\n\n" is 3 bytes, each "é" 2: 2046 of them fit under 4096.
+        assert_eq!(seen[2].state.len(), 4095);
+        assert_eq!(seen[2].state, format!("D\n\n{}", "é".repeat(2046)));
+        assert_eq!(
+            out.content.lines().next().unwrap(),
+            "peek_memory: 0 of 3 relevant to \"how is the lock taken\""
+        );
     }
 
     /// 212 §5.3: argument limits; dedupe keeps request order.
