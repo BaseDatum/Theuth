@@ -197,7 +197,7 @@ impl Ca for FakeCa {
         async move {
             if self
                 .fail_revokes
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                 .is_ok()
             {
                 anyhow::bail!("CA unavailable");

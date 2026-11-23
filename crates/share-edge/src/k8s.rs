@@ -242,7 +242,7 @@ fn ident(v: &Value) -> anyhow::Result<(String, String, String)> {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
-            .with_context(|| format!("template needs a string `{}`", &p[1..].replace('/', ".")))
+            .with_context(|| format!("template needs a string `{}`", p[1..].replace('/', ".")))
     };
     if !v.is_object() {
         bail!("template must be an object");
@@ -639,7 +639,7 @@ spec:
     #[test]
     fn substitutes_every_variable_in_values_only() {
         let t = yaml(
-            "k-${name}: [${name}, ${domain}, ${host}, ${wildcard}, ${slug}, ${namespace}, 'a$b', 7]",
+            "k-${name}: ['${name}', '${domain}', '${host}', '${wildcard}', '${slug}', '${namespace}', 'a$b', 7]",
         );
         let r = render(&t, &Vars::name("App_X", "tun.zip", "theuth"), NAME_VARS).unwrap();
         assert_eq!(
@@ -678,7 +678,7 @@ spec:
         assert!(cfg(&fixed, "").validate("tun.zip").is_err());
         let ns = INGRESS.replace("  labels:", "  namespace: ns-${slug}\n  labels:");
         assert!(cfg(&ns, "").validate("tun.zip").is_err());
-        assert!(cfg("kind: Ingress\nmetadata: {name: a-${slug}}", "").validate("tun.zip").is_err());
+        assert!(cfg("kind: Ingress\nmetadata: {name: 'a-${slug}'}", "").validate("tun.zip").is_err());
         let st = "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: wild}\ndata: {h: '*.${domain}'}";
         cfg(INGRESS, st).validate("tun.zip").unwrap();
         assert!(cfg(INGRESS, &st.replace("${domain}", "${name}")).validate("tun.zip").is_err());
@@ -770,7 +770,7 @@ spec:
             enabled: true,
             per_name: vec![
                 yaml(INGRESS),
-                yaml("apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata: {name: r-${slug}, namespace: ignored}"),
+                yaml("apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata: {name: 'r-${slug}', namespace: ignored}"),
             ],
             static_objects: vec![yaml(
                 "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: wild}\ndata: {h: '*.${domain}'}",
