@@ -591,8 +591,9 @@ mod tests {
         assert!(!pending_has(over));
         assert!(a.ledger.pending_for_test(s).is_empty(), "no input, no turn");
         assert!(!a.store.notice_committed(s, over).await.unwrap());
-        // Other rows come from the real session actor the rig spawns (no registry, so
-        // its own turn errors); only the refused notice's ended-share row must be absent.
+        // The other rows are the real session actor's own turn errors ("tool registry not
+        // running": the rig spawns no registry); only the refused notice's ended-share row
+        // ([`ended_text`]) must be absent.
         assert!(
             a.store
                 .errors(s)

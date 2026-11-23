@@ -262,7 +262,10 @@ pub(crate) async fn test_pool(max_processes: usize) -> Option<Arc<Pool>> {
             fed.map(|_| ())
         };
         match probe.await {
-            Ok(()) => return Some(pool),
+            Ok(()) => {
+                eprintln!("python worker {}", worker.display());
+                return Some(pool);
+            }
             Err(e) => eprintln!(
                 "python worker {} unusable ({e}); build `t` (cargo build -p theuth --bin t) or set THEUTH_WORKER",
                 worker.display()
