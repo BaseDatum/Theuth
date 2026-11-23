@@ -184,6 +184,9 @@ async fn legacy_event_families() {
     family::<dreaming::DreamUndone>(&rt, &mut stream, "dreaming.undone").await;
     family::<autoresearch::StudyEvent>(&rt, &mut stream, "autoresearch.events").await;
     family::<cells::CellEvent>(&rt, &mut stream, "cells.events").await;
+    family::<share::ShareChanged>(&rt, &mut stream, "share.changed").await;
+    family::<share::ShareStatus>(&rt, &mut stream, "share.status").await;
+    family::<share::ShareTraffic>(&rt, &mut stream, "share.traffic").await;
     family::<agent::EndlessProgress>(&rt, &mut stream, "agent.endless-progress").await;
     family::<agent::CostCubeChanged>(&rt, &mut stream, "agent.cost-cube").await;
     relay(&rt, &mut stream).await;

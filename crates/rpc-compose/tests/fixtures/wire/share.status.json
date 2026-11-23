@@ -1,0 +1,84 @@
+[
+  {
+    "input": {
+      "edge": "sample-edge",
+      "domain": null,
+      "state": {
+        "state": "dialing",
+        "attempt": 2
+      },
+      "clock_off_ms": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ShareStatus",
+          "edge": "sample-edge",
+          "domain": null,
+          "state": {
+            "state": "dialing",
+            "attempt": 2
+          },
+          "clock_off_ms": null
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "edge": "sample-edge",
+      "domain": "tun.zip",
+      "state": {
+        "state": "attached"
+      },
+      "clock_off_ms": -360000
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ShareStatus",
+          "edge": "sample-edge",
+          "domain": "tun.zip",
+          "state": {
+            "state": "attached"
+          },
+          "clock_off_ms": -360000
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "edge": "sample-edge",
+      "domain": "tun.zip",
+      "state": {
+        "state": "blocked",
+        "reason": "client_too_old"
+      },
+      "clock_off_ms": null
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ShareStatus",
+          "edge": "sample-edge",
+          "domain": "tun.zip",
+          "state": {
+            "state": "blocked",
+            "reason": "client_too_old"
+          },
+          "clock_off_ms": null
+        }
+      }
+    }
+  }
+]

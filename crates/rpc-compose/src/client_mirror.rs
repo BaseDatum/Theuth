@@ -69,6 +69,26 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
             }
             return;
         }
+        // 210: the share events are matched by tag: `ShareTraffic` / `ShareStatus` read only
+        // fields other structs share (`id`, `state`), so a field-shape match could misfire.
+        Some("ShareChanged") => {
+            if let Ok(ev) = <share::ShareChanged as serde::Deserialize>::deserialize(v) {
+                rt.publish(ev).await;
+            }
+            return;
+        }
+        Some("ShareStatus") => {
+            if let Ok(ev) = <share::ShareStatus as serde::Deserialize>::deserialize(v) {
+                rt.publish(ev).await;
+            }
+            return;
+        }
+        Some("ShareTraffic") => {
+            if let Ok(ev) = <share::ShareTraffic as serde::Deserialize>::deserialize(v) {
+                rt.publish(ev).await;
+            }
+            return;
+        }
         _ => {}
     }
     macro_rules! republish {
