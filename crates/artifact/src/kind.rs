@@ -137,9 +137,9 @@ pub enum Check {
     Skipped(String),
 }
 
-/// `shown report.pdf (v1 · 3 pages · 84 KB) · source report.md · file <draft>`;
-/// `shown archive.zip (v1 · 42 files · 3 MB)`; `shown flow.mmd (v1 · mermaid · 12 lines · 1 KB)`;
-/// `shown chart.html (v2 · 212 lines · 48 KB · 2 images inlined · height 600 · 2 edits applied)
+/// `shown report.pdf (v1 · 3 pages · 84.2 kB) · source report.md · file <draft>`;
+/// `shown archive.zip (v1 · 42 files · 3.1 MB)`; `shown flow.mmd (v1 · mermaid · 12 lines · 1.2 kB)`;
+/// `shown chart.html (v2 · 212 lines · 48.0 kB · 2 images inlined · height 600 · 2 edits applied)
 /// · checked on desktop: height 612 · file <draft>` + the audience line.
 pub fn receipt(a: &Artifact, x: &Receipt) -> String {
     let mut parts = vec![format!("v{}", a.version)];

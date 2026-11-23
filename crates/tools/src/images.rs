@@ -289,7 +289,7 @@ pub fn save_fitted(f: &Fitted<'_>, dir: &Path) -> anyhow::Result<PathBuf> {
 /// The result of `tool` reading image `bytes` (`read_file`, `read_url`):
 /// [`fit`] to [`MAX_EDGE`], saved under `dir` ([`save_fitted`]) and
 /// attached as the tool's picture; the text is one header line,
-/// `[<tool> <shown>: image/png 1600×1100, 12 KB]` plus `; scaled to W×H`
+/// `[<tool> <shown>: image/png 1600×1100, 12.3 kB]` plus `; scaled to W×H`
 /// when it was downscaled (or `; re-encoded as <mime>` when only the bytes
 /// changed). An undecodable or still-oversize image is the error. Blocking.
 pub fn tool_output(
