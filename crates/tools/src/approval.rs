@@ -204,11 +204,17 @@ enum Verdict {
     Dismissed,
 }
 
+/// The asker's reply sender, shared by the waiter (which watches it close and answers on it)
+/// and [`Approval::resolve`] (which refuses to record an answer nobody will act on). `None`
+/// inside for a `tell` sender.
+type Asker = Arc<parking_lot::Mutex<Option<kameo::reply::BoxReplySender>>>;
+
 /// One unanswered request: the card, its journal row and the waiter.
 struct Pending {
     requested: ApprovalRequested,
     row: QuestionRow,
     tx: oneshot::Sender<Verdict>,
+    asker: Asker,
 }
 
 /// The approval actor.
@@ -263,6 +269,15 @@ impl Approval {
         let Some(p) = self.pending.remove(&id) else {
             return false;
         };
+        // The asker went away before its waiter noticed (210 FIX4 #15): nobody would act on
+        // this answer, so the card is withdrawn as for [`Gone`] instead of recording it.
+        if p.asker.lock().as_ref().is_some_and(|t| t.is_closed()) {
+            let _ = p.tx.send(Verdict::Dismissed);
+            if p.row.tool_call_id.is_none() {
+                self.settle(p.row, QuestionState::TimedOut, None, None).await;
+            }
+            return false;
+        }
         let delivered = p.tx.send(Verdict::Decided(decision)).is_ok();
         self.settle(
             p.row,
@@ -359,27 +374,28 @@ impl Approval {
                 )
                 .await;
         }
+        // The raw sender, so the waiter can watch for its asker going away.
+        let asker: Asker = Arc::new(parking_lot::Mutex::new(
+            tx.map(kameo::reply::ReplySender::boxed),
+        ));
         self.pending.insert(
             id,
             Pending {
                 requested: requested.clone(),
                 row,
                 tx: dtx,
+                asker: asker.clone(),
             },
         );
         let rt = self.rt.clone();
         let timeout = self.timeout;
         let me = ctx.actor_ref().clone();
-        // The raw sender, so the waiter can watch for its asker going away.
-        let mut tx = tx.map(kameo::reply::ReplySender::boxed);
         tokio::spawn(async move {
             rt.publish(requested).await;
-            let asker_gone = async {
-                match tx.as_mut() {
-                    Some(tx) => tx.closed().await,
-                    None => std::future::pending().await,
-                }
-            };
+            let asker_gone = std::future::poll_fn(|cx| match asker.lock().as_mut() {
+                Some(tx) => tx.poll_closed(cx),
+                None => std::task::Poll::Pending,
+            });
             let (decision, timed_out, dismissed) = tokio::select! {
                 r = tokio::time::timeout(timeout, drx) => match r {
                     Ok(Ok(Verdict::Decided(d))) => (d, false, false),
@@ -405,7 +421,7 @@ impl Approval {
                 dismissed,
             };
             rt.publish(resolved.clone()).await;
-            if let Some(tx) = tx {
+            if let Some(tx) = asker.lock().take() {
                 let _ = tx.send(Ok(Box::new(resolved) as kameo::message::BoxReply));
             }
         });
@@ -478,7 +494,13 @@ impl Message<Dismiss> for Approval {
     /// 207: the parked call is not run; the row settles `answered` with
     /// `"dismissed"` by the human.
     async fn handle(&mut self, m: Dismiss, _: &mut Context<Self, Self::Reply>) -> bool {
-        let Some(p) = self.pending.remove(&m.id) else {
+        self.dismiss(m.id).await
+    }
+}
+
+impl Approval {
+    async fn dismiss(&mut self, id: ApprovalId) -> bool {
+        let Some(p) = self.pending.remove(&id) else {
             return false;
         };
         let delivered = p.tx.send(Verdict::Dismissed).is_ok();
@@ -491,6 +513,39 @@ impl Message<Dismiss> for Approval {
         .await;
         delivered
     }
+}
+
+/// `ask` → how many pending cards for `tool` were dismissed (210 §7.4: Stop all and the
+/// switch turned off withdraw every pending `share_publish` card, so a late `Allow` cannot
+/// publish after them). Each settles as a [`Dismiss`] would.
+#[derive(Clone, Debug)]
+pub struct DismissTool(pub String);
+
+impl Message<DismissTool> for Approval {
+    type Reply = usize;
+
+    async fn handle(&mut self, m: DismissTool, _: &mut Context<Self, Self::Reply>) -> usize {
+        let ids: Vec<ApprovalId> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| p.requested.tool == m.0)
+            .map(|(id, _)| *id)
+            .collect();
+        let mut n = 0;
+        for id in ids {
+            n += usize::from(self.dismiss(id).await);
+        }
+        n
+    }
+}
+
+/// [`DismissTool`] on the registered approval actor; `0` when none runs.
+pub async fn dismiss_tool(tool: &str) -> usize {
+    let Ok(Some(approval)) = kameo::actor::ActorRef::<Approval>::lookup(crate::APPROVAL_ACTOR)
+    else {
+        return 0;
+    };
+    approval.ask(DismissTool(tool.to_owned())).await.unwrap_or(0)
 }
 
 impl Message<Expire> for Approval {
@@ -1057,5 +1112,81 @@ pub(crate) mod tests {
         );
         let rows = journal.questions();
         assert_eq!(rows.last().map(|r| r.state), Some(QuestionState::TimedOut));
+    }
+
+    fn req(tool: &str) -> RequestApproval {
+        RequestApproval {
+            tool: tool.into(),
+            ..request(SessionId::new(), None)
+        }
+    }
+
+    async fn first_pending(actor: &kameo::actor::ActorRef<Approval>) -> ApprovalId {
+        loop {
+            if let Some(r) = actor.ask(PendingApprovals).await.unwrap().first() {
+                break r.id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// 210 FIX4 #15: an `Allow` that reaches the actor after the asker went away but before the
+    /// waiter noticed is not recorded as an answer: `Resolve` says `false`, nothing is left
+    /// pending and the RPC row settles without an answer.
+    #[tokio::test]
+    async fn resolve_after_the_asker_left_is_a_withdrawal() {
+        let (_rt, actor, journal) = actor(Duration::from_secs(30)).await;
+        let asked = tokio::spawn({
+            let actor = actor.clone();
+            async move { ask_human_only_on(&actor, req("share_publish")).await }
+        });
+        let id = first_pending(&actor).await;
+        asked.abort();
+        let _ = asked.await;
+        let r = actor
+            .ask(Resolve {
+                id,
+                decision: Decision::Allow,
+            })
+            .await
+            .unwrap();
+        assert!(!r, "an answer nobody acts on is refused");
+        assert!(actor.ask(PendingApprovals).await.unwrap().is_empty());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let rows = journal.questions();
+        assert!(
+            rows.iter().all(|r| r.answer.is_none()),
+            "no Allow recorded: {rows:?}"
+        );
+        assert_eq!(rows.last().map(|r| r.state), Some(QuestionState::TimedOut));
+    }
+
+    /// 210 FIX4 #6: `DismissTool` withdraws every pending card of that tool and only those;
+    /// the asker gets the dismissal as an error.
+    #[tokio::test]
+    async fn dismiss_tool_withdraws_only_that_tools_cards() {
+        let (_rt, actor, _journal) = actor(Duration::from_secs(30)).await;
+        let publish = tokio::spawn({
+            let actor = actor.clone();
+            async move { ask_human_only_on(&actor, req("share_publish")).await }
+        });
+        first_pending(&actor).await;
+        let other = tokio::spawn({
+            let actor = actor.clone();
+            async move { ask_human_only_on(&actor, req("share_terms_accept")).await }
+        });
+        while actor.ask(PendingApprovals).await.unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            actor.ask(DismissTool("share_publish".into())).await.unwrap(),
+            1
+        );
+        let e = publish.await.unwrap().unwrap_err();
+        assert!(e.to_string().contains("dismissed"), "{e}");
+        let left = actor.ask(PendingApprovals).await.unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].tool, "share_terms_accept");
+        other.abort();
     }
 }
