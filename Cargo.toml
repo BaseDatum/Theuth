@@ -13,6 +13,7 @@ publish = false
 okf = { version = "0.2.7", default-features = false }
 gix = { version = "0.90", default-features = false, features = ["revision", "blob-diff", "sha1", "parallel"] }
 platform = { path = "crates/platform" }  # OS primitives: process trees, private files, open, service units, PTY program, ORT name, target matrix (design doc 58)
+anstream = "1"  # strip ANSI/VT escapes from terminal output (`anstream::adapter`); already in the tree via clap
 runtime = { path = "crates/runtime" }
 wire = { path = "crates/wire" }
 models = { path = "crates/models" }
@@ -401,6 +402,8 @@ rand = "0.10"
 # (local time, DST-correct) + `describe()`; humantime = `every:` durations.
 croner = { version = "4", features = ["chrono"] }
 humantime = "2"
+statrs = { version = "0.19", default-features = false, features = ["std"] }  # Student-t / normal CDF and quantile (evalcore gate, autoresearch pareto); no nalgebra/rand
+libm = "0.2"  # erfc (autoresearch SRM p-value)
 # secrets vault (37): XChaCha20-Poly1305 file, key in the OS keychain (or a 0600 file),
 # values zeroized in memory, one aho-corasick pass scrubs tool output, rpassword for `--secret-set`.
 # keyring 4 default `v1` = the 3.x API over apple-native (login keychain, same generic-password

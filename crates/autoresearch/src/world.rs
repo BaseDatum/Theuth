@@ -75,25 +75,7 @@ pub fn ratio_p(a: u64, b: u64) -> f64 {
         return 1.0;
     }
     let x = (a as f64 - b as f64).powi(2) / n;
-    erfc((x / 2.0).sqrt())
-}
-
-/// Complementary error function (Numerical Recipes `erfcc`, |ε| < 1.2e-7).
-fn erfc(x: f64) -> f64 {
-    let z = x.abs();
-    let t = 1.0 / (1.0 + 0.5 * z);
-    let r = t
-        * (-z * z - 1.265_512_23
-            + t * (1.000_023_68
-                + t * (0.374_091_96
-                    + t * (0.096_784_18
-                        + t * (-0.186_288_06
-                            + t * (0.278_868_07
-                                + t * (-1.135_203_98
-                                    + t * (1.488_515_87
-                                        + t * (-0.822_152_23 + t * 0.170_872_77)))))))))
-            .exp();
-    if x >= 0.0 { r } else { 2.0 - r }
+    libm::erfc((x / 2.0).sqrt())
 }
 
 /// One arm's cumulated windows: unit-weighted mean, the variance of that mean and the

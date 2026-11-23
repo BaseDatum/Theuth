@@ -4,6 +4,7 @@
 //! W7 consumes `paired` and `decide` with one fixture × seed as one pair (W-k).
 
 use serde::{Deserialize, Serialize};
+use statrs::distribution::{ContinuousCDF, StudentsT};
 
 /// One case scored on both trees.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -164,119 +165,19 @@ pub fn decide(pairs: &[Pair], cfg: &Cfg) -> Decision {
 
 // ── Student t ─────────────────────────────────────────────────────────────────────────────────
 
-/// Lanczos ln Γ(x), x > 0.
-fn ln_gamma(x: f64) -> f64 {
-    const G: [f64; 7] = [
-        1.000_000_000_190_015,
-        76.180_091_729_471_46,
-        -86.505_320_329_416_77,
-        24.014_098_240_830_91,
-        -1.231_739_572_450_155,
-        0.001_208_650_973_866_179,
-        -0.000_005_395_239_384_953,
-    ];
-    let mut s = G[0];
-    for (i, g) in G.iter().enumerate().skip(1) {
-        s += g / (x + i as f64);
-    }
-    let tmp = x + 5.5;
-    (x + 0.5) * tmp.ln() - tmp + (2.506_628_274_631_000_5 * s / x).ln()
-}
-
-/// Continued fraction for the regularised incomplete beta (Lentz).
-fn betacf(a: f64, b: f64, x: f64) -> f64 {
-    const TINY: f64 = 1e-300;
-    let (qab, qap, qam) = (a + b, a + 1.0, a - 1.0);
-    let mut c = 1.0;
-    let mut d = 1.0 - qab * x / qap;
-    if d.abs() < TINY {
-        d = TINY;
-    }
-    d = 1.0 / d;
-    let mut h = d;
-    for m in 1..300 {
-        let m = m as f64;
-        let m2 = 2.0 * m;
-        let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
-        d = 1.0 + aa * d;
-        if d.abs() < TINY {
-            d = TINY;
-        }
-        c = 1.0 + aa / c;
-        if c.abs() < TINY {
-            c = TINY;
-        }
-        d = 1.0 / d;
-        h *= d * c;
-        let aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
-        d = 1.0 + aa * d;
-        if d.abs() < TINY {
-            d = TINY;
-        }
-        c = 1.0 + aa / c;
-        if c.abs() < TINY {
-            c = TINY;
-        }
-        d = 1.0 / d;
-        let del = d * c;
-        h *= del;
-        if (del - 1.0).abs() < 1e-14 {
-            break;
-        }
-    }
-    h
-}
-
-/// Regularised incomplete beta I_x(a, b).
-fn betai(a: f64, b: f64, x: f64) -> f64 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    if x >= 1.0 {
-        return 1.0;
-    }
-    let bt = (ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln()).exp();
-    if x < (a + 1.0) / (a + b + 2.0) {
-        bt * betacf(a, b, x) / a
-    } else {
-        1.0 - bt * betacf(b, a, 1.0 - x) / b
-    }
-}
-
-/// Student-t CDF with `df` degrees of freedom.
-fn t_cdf(t: f64, df: f64) -> f64 {
-    let x = df / (df + t * t);
-    let tail = 0.5 * betai(df / 2.0, 0.5, x);
-    if t >= 0.0 { 1.0 - tail } else { tail }
-}
-
-/// The t quantile at `p` (0.5 < p < 1) by bisection; `p ≥ 1` is `+∞`.
+/// The t quantile at `p` (0.5 < p < 1); `p ≤ 0.5` is `0`, `p ≥ 1` is `+∞`, results cap at 1e6,
+/// and degrees of freedom that are not positive and finite give `+∞` (nothing clears it).
 pub fn t_quantile(df: f64, p: f64) -> f64 {
     if p >= 1.0 {
         return f64::INFINITY;
     }
-    if p <= 0.5 {
+    if p.is_nan() || p <= 0.5 {
         return 0.0;
     }
-    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
-    while t_cdf(hi, df) < p {
-        hi *= 2.0;
-        if hi > 1e6 {
-            return hi;
-        }
+    match StudentsT::new(0.0, 1.0, df) {
+        Ok(t) => t.inverse_cdf(p).min(1e6),
+        Err(_) => f64::INFINITY,
     }
-    for _ in 0..200 {
-        let mid = 0.5 * (lo + hi);
-        if t_cdf(mid, df) < p {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-        if hi - lo < 1e-10 {
-            break;
-        }
-    }
-    0.5 * (lo + hi)
 }
 
 #[cfg(test)]
