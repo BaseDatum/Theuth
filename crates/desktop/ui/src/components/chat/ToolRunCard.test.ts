@@ -299,3 +299,18 @@ test('PythonGroup: a cell error stays visible collapsed', () => {
   expect(html).toContain('✗ NameError: x')
   expect(html).toContain('border-danger-border')
 })
+
+test('foldRuns: a direct set_status call draws nothing and no longer splits a run; a failed one keeps its card (212 §12)', () => {
+  const [a, b, c] = [tool(1), tool(2), tool(3)]
+  const status = tool(9, { name: 'set_status', args: { status: 'merging' }, result: { output: 'status set', isError: false, files: [] } })
+  const running = tool(8, { name: 'set_status', pending: true, result: undefined })
+  const failed = tool(7, { name: 'set_status', result: { output: 'set_status: status must not be empty', isError: true, files: [] } })
+  expect(foldRuns([a, status, b, c])).toEqual([[a, b, c]])
+  expect(foldRuns([a, running, b])).toEqual([[a, b]])
+  expect(foldRuns([status])).toEqual([])
+  expect(foldRuns([a, failed, b])).toEqual([[a, failed, b]])
+  // Inside a python cell it stays in the cell's group.
+  const py = tool(5, { name: 'python', callId: 'p' })
+  const inner = tool(6, { name: 'set_status', callId: 'p.1' })
+  expect(foldRuns([py, inner])).toEqual([[py, inner]])
+})

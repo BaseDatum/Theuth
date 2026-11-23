@@ -41,6 +41,11 @@ const isJob = (e: Entry | undefined): e is Peer => foldsPeer(e) && labelKind(e.o
 /** A row a tool run is made of: a tool call that is no deliverable and carries no restart note, or a job result. */
 const foldsTool = (e: Entry | undefined): boolean => isJob(e) || (e?.kind === 'tool' && !isDeliverable(e) && !e.restart && !isPythonCall(e))
 
+/** A direct `set_status` call (212 §12): its text is already the status line in the footer, so a call that has not failed
+ * draws nothing in the transcript (Sky 2026-11-23: it split the collapsed tool cards). A failed one keeps its card. A
+ * `set_status` made inside a python cell stays in that cell's group. */
+const isQuietStatus = (e: Entry): boolean => e.kind === 'tool' && e.name === 'set_status' && !e.callId.includes('.') && !e.result?.isError
+
 /** A `python` call (without a restart note) heads its own group: the call, then the runtime calls its cell made (call ids `<id>.<n>`). */
 const isPythonCall = (e: Entry | undefined): e is Tool => e?.kind === 'tool' && e.name === 'python' && !e.restart
 /** A group is a `Run` that starts with a python call; the first entry of any other run is a job result or a tool that is not `python`. */
@@ -138,7 +143,7 @@ function adoptCellCalls(entries: Entry[]): Entry[] {
  * A `python` call is never part of such a run: it and the calls its cell made are one group (`PythonGroup`), whether or not
  * `fold` is on (the preference only governs the generic runs). */
 export function foldRuns(given: Entry[], pinned: ReadonlySet<string> = NONE, fold = true): (Entry | Run)[] {
-  const entries = adoptCellCalls(given)
+  const entries = adoptCellCalls(given.filter((e) => !isQuietStatus(e)))
   const out: (Entry | Run)[] = []
   let i = 0
   while (i < entries.length) {
