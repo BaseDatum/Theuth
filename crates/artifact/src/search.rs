@@ -595,6 +595,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::kind;
 
     fn art(dir: &Path, call_id: &str, name: &str, version: u32, created_at: i64) -> Artifact {
         let id = format!("{name}-blob");
