@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use browser::OwnOrigins;
 use runtime::SessionId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,7 @@ use tools::{DynTool, Risk, SessionResources, Tool, ToolCx, ToolOutput};
 
 use crate::ComputerConfig;
 use crate::a11y::{self, A11y};
+use crate::ax::{self, AxFront};
 use crate::clipboard::{self, Clipboard};
 use crate::frame::Frame;
 use crate::input::{self, Action, Button, InputError, Reply};
@@ -35,6 +37,8 @@ pub struct Ctx {
     pub a11y: A11y,
     /// The process's clipboard thread (161 §5).
     pub clipboard: Clipboard,
+    /// 210 §7.2: theuth's own web-client origins (RPC listener, link relay web app).
+    pub origins: OwnOrigins,
 }
 
 /// The model-facing words for a missing Accessibility grant on macOS (27 §0.8),
@@ -87,6 +91,75 @@ impl Ctx {
             InputError::Timeout => "input timed out after 30 s".to_owned(),
             InputError::Recovered(s) => format!("input thread recovered: {s}"),
         })
+    }
+}
+
+/// 210 §7.2 (F-m7): the refusal while a human-only approval is pending.
+pub(crate) const SELF_REFUSED: &str =
+    "refused: theuth's own window can't be driven while your approval is pending";
+
+/// 210 §7.2: whether `f` is theuth: its own process or app ([`ax::is_self`]), or a browser
+/// window whose document is on one of theuth's own web-client origins.
+#[must_use]
+pub(crate) fn is_own(f: &AxFront, origins: &OwnOrigins) -> bool {
+    ax::is_self(f)
+        || f.document_url
+            .as_deref()
+            .is_some_and(|u| origins.contains(u))
+}
+
+/// 210 §7.2: an input to `front` (the frontmost window) or `target` (the window under the
+/// point) would land on theuth itself, natively or as its web client in a browser.
+#[must_use]
+pub(crate) fn drives_self(
+    front: Option<&AxFront>,
+    target: Option<&AxFront>,
+    origins: &OwnOrigins,
+) -> bool {
+    front.is_some_and(|f| is_own(f, origins)) || target.is_some_and(|f| is_own(f, origins))
+}
+
+/// 210 §7.2: while a human-only approval is pending, an input-producing tool refuses when the
+/// frontmost window, or the window under `at` (global logical point), is theuth's
+/// ([`is_own`]). The agent must not press its own Allow button. One approval-actor round trip
+/// otherwise.
+pub(crate) async fn guard_self(
+    origins: &OwnOrigins,
+    at: Option<(i32, i32)>,
+) -> Result<(), String> {
+    if !tools::pending_human_only().await {
+        return Ok(());
+    }
+    let origins = origins.clone();
+    let hits_self = tokio::task::spawn_blocking(move || {
+        let front = ax::frontmost();
+        let target = at
+            .and_then(|(x, y)| {
+                ax::Reader::default().hit_at(crate::pointer::Pt {
+                    x: x as f32,
+                    y: y as f32,
+                })
+            })
+            .and_then(|hit| hit.front);
+        drives_self(front.as_ref(), target.as_ref(), &origins)
+    })
+    .await
+    // A panicked lookup cannot prove the target is not theuth: refuse.
+    .unwrap_or(true);
+    if hits_self {
+        Err(SELF_REFUSED.to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+/// 210 §7.2: for tools whose target window is not known before they act (`computer_act`,
+/// `computer_window`, the script tools): refuse outright while a human-only approval is pending.
+pub(crate) async fn refuse_while_human_only() -> Result<(), String> {
+    if tools::pending_human_only().await {
+        Err(SELF_REFUSED.to_owned())
+    } else {
+        Ok(())
     }
 }
 
@@ -242,6 +315,7 @@ computer_tool!(
     "Move the mouse pointer to (x, y), pixels of the last computer_screenshot, without clicking. Use it to hover a menu or reveal a tooltip.",
     |ctx, a, cx| {
         let (px, py) = try_out!(ctx.point(cx.session, a.x, a.y));
+        try_out!(guard_self(&ctx.origins, Some((px, py))).await);
         try_out!(ctx.act(Action::Move(px, py)).await);
         Ok(ToolOutput::ok(format!("moved to ({},{})", a.x, a.y)))
     }
@@ -273,6 +347,7 @@ computer_tool!(
     "Click at (x, y), pixels of the last computer_screenshot, or where the pointer is when x and y are omitted. `button` left (default) / right / middle; `count` 2 double-clicks, 3 triple-clicks; `modifiers` like `shift` or `cmd+shift` are held during the click.",
     |ctx, a, cx| {
         let at = try_out!(optional_point(ctx, cx.session, a.x, a.y));
+        try_out!(guard_self(&ctx.origins, at).await);
         let button = a.button.unwrap_or(Button::Left);
         let count = a.count.unwrap_or(1).clamp(1, 3);
         let mods = match &a.modifiers {
@@ -308,6 +383,8 @@ computer_tool!(
     |ctx, a, cx| {
         let from = try_out!(ctx.point(cx.session, a.from[0], a.from[1]));
         let to = try_out!(ctx.point(cx.session, a.to[0], a.to[1]));
+        try_out!(guard_self(&ctx.origins, Some(from)).await);
+        try_out!(guard_self(&ctx.origins, Some(to)).await);
         let button = a.button.unwrap_or(Button::Left);
         try_out!(ctx.act(Action::Drag { from, to, button }).await);
         Ok(ToolOutput::ok(format!(
@@ -340,6 +417,7 @@ computer_tool!(
     "Scroll by `dy` lines (positive = down) and/or `dx` lines (positive = right), at (x, y) in pixels of the last computer_screenshot or under the pointer when x and y are omitted.",
     |ctx, a, cx| {
         let at = try_out!(optional_point(ctx, cx.session, a.x, a.y));
+        try_out!(guard_self(&ctx.origins, at).await);
         let dx = a.dx.unwrap_or(0);
         let dy = a.dy.unwrap_or(0);
         if dx == 0 && dy == 0 {
@@ -367,6 +445,7 @@ computer_tool!(
     "Type `text` into whatever control has keyboard focus, as if on the keyboard (any language; newlines press Return). Click a field first; use computer_key for shortcuts.",
     |ctx, a, _cx| {
         let n = a.text.chars().count();
+        try_out!(guard_self(&ctx.origins, None).await);
         try_out!(ctx.act(Action::Type(a.text)).await);
         Ok(ToolOutput::ok(format!("typed {n} chars")))
     }
@@ -388,6 +467,7 @@ computer_tool!(
         if input::is_refused(&keys) {
             return Ok(ToolOutput::err("refused: this chord quits or logs out; ask the user to press it"));
         }
+        try_out!(guard_self(&ctx.origins, None).await);
         try_out!(ctx.act(Action::Chord(keys)).await);
         Ok(ToolOutput::ok(format!("pressed {}", a.keys)))
     }
@@ -418,7 +498,11 @@ computer_tool!(
     /// `computer_open`: [`platform::open::open_app`] / [`platform::open::open_url`], detached.
     OpenTool, "computer_open", Risk::Mutating, OpenArgs,
     "Launch or bring forward an application by name (`app`), or open a URL with the OS default handler (`url`), which for http(s) is the user's real, signed-in browser. Give exactly one. Returns at once; take a computer_screenshot to see the result.",
-    |_ctx, a, _cx| {
+    |ctx, a, _cx| {
+        // 210 §7.2: theuth's own web client opened in the user's browser is its Allow button.
+        if a.url.as_deref().is_some_and(|u| ctx.origins.contains(u)) {
+            try_out!(refuse_while_human_only().await);
+        }
         try_out!(open_one(a.app.as_deref(), a.url.as_deref()));
         let what = a.app.or(a.url).unwrap_or_default();
         Ok(ToolOutput::ok(format!("opened {what}")))
@@ -463,6 +547,7 @@ mod tests {
             frames: Mutex::new(HashMap::new()),
             a11y: A11y::new(Path::new("/tmp/theuth-test")),
             clipboard: Clipboard::default(),
+            origins: OwnOrigins::new("127.0.0.1:7777", None),
         }
     }
 
@@ -589,5 +674,138 @@ mod tests {
         ctx.forget(&[closing, SessionId::new()]);
         assert!(!ctx.frames().contains_key(&closing));
         assert!(ctx.frames().contains_key(&other));
+    }
+
+    /// 210 §7.2: while a human-only approval waits, theuth's own window is off limits to
+    /// input and the script/act tools refuse outright; another app's window is not, and
+    /// everything is back once the owner answered.
+    #[tokio::test]
+    async fn input_to_theuth_is_refused_while_a_human_only_approval_is_pending() {
+        use kameo::actor::Spawn;
+
+        let theuth = AxFront {
+            pid: std::process::id() as i32,
+            app: "theuth".into(),
+            bundle_id: None,
+            window_title: None,
+            document_url: None,
+        };
+        let other = AxFront {
+            pid: 1,
+            bundle_id: Some("com.apple.TextEdit".into()),
+            ..theuth.clone()
+        };
+        let origins = OwnOrigins::new("0.0.0.0:7777", Some("wss://relay.theuth.io"));
+        assert!(drives_self(Some(&theuth), None, &origins));
+        assert!(drives_self(Some(&other), Some(&theuth), &origins));
+        assert!(!drives_self(Some(&other), Some(&other), &origins));
+        assert!(!drives_self(None, None, &origins));
+        // theuth's web client in the user's browser, on a LAN address or the relay web app.
+        let browser_at = |url: &str| AxFront {
+            pid: 1,
+            app: "Safari".into(),
+            bundle_id: Some("com.apple.Safari".into()),
+            window_title: None,
+            document_url: Some(url.into()),
+        };
+        let lan = browser_at("http://192.168.1.5:7777/#/approvals");
+        let relay = browser_at("https://relay.theuth.io/link");
+        let page = browser_at("https://example.com/");
+        assert!(drives_self(Some(&lan), None, &origins));
+        assert!(drives_self(Some(&page), Some(&relay), &origins));
+        assert!(!drives_self(Some(&page), Some(&page), &origins));
+
+        assert_eq!(refuse_while_human_only().await, Ok(()));
+        let rt = runtime::Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let approval =
+            tools::Approval::spawn(tools::Approval::new(rt, std::time::Duration::from_secs(30)));
+        approval.register(tools::APPROVAL_ACTOR).unwrap();
+        let asking = {
+            let approval = approval.clone();
+            tokio::spawn(async move {
+                approval
+                    .ask(tools::RequestHumanOnly(tools::approval::RequestApproval {
+                        session: SessionId::new(),
+                        tool: "share_publish".into(),
+                        args: serde_json::json!({}),
+                        risk: Risk::Destructive,
+                        call_id: None,
+                    }))
+                    .await
+            })
+        };
+        let mut pending = Vec::new();
+        while pending.is_empty() {
+            tokio::task::yield_now().await;
+            pending = approval.ask(tools::PendingApprovals).await.unwrap();
+        }
+        assert!(pending[0].human_only);
+        assert_eq!(
+            refuse_while_human_only().await,
+            Err(SELF_REFUSED.to_owned())
+        );
+        // The script tool (macOS) refuses before running anything.
+        if let Some(script) = native::all()
+            .into_iter()
+            .find(|t| t.spec().name == "applescript")
+        {
+            let cx = tools::ToolCx {
+                session: SessionId::new(),
+                call_id: "c".into(),
+                quiet: false,
+                resources: SessionResources::durable_arc(Path::new("/tmp")),
+                cancel: tools::CancellationToken::new(),
+                promote_after: None,
+            };
+            let out = script
+                .call(serde_json::json!({"script": "return 1"}), cx)
+                .await
+                .unwrap();
+            assert!(out.is_error && out.content == SELF_REFUSED, "{out:?}");
+        }
+        // computer_open of theuth's own web client and computer_clipboard_write refuse.
+        let ctx = Arc::new(Ctx {
+            origins: origins.clone(),
+            ..ctx()
+        });
+        let call = |name: &str, args: serde_json::Value| {
+            let tool = all(Arc::clone(&ctx))
+                .into_iter()
+                .find(|t| t.spec().name == name)
+                .unwrap();
+            async move {
+                let cx = tools::ToolCx {
+                    session: SessionId::new(),
+                    call_id: "c".into(),
+                    quiet: false,
+                    resources: SessionResources::durable_arc(Path::new("/tmp")),
+                    cancel: tools::CancellationToken::new(),
+                    promote_after: None,
+                };
+                tool.call(args, cx).await.unwrap()
+            }
+        };
+        let out = call(
+            "computer_open",
+            serde_json::json!({"url": "http://my-mac.local:7777/"}),
+        )
+        .await;
+        assert!(out.is_error && out.content == SELF_REFUSED, "{out:?}");
+        let out = call(
+            "computer_clipboard_write",
+            serde_json::json!({"text": "allow"}),
+        )
+        .await;
+        assert!(out.is_error && out.content == SELF_REFUSED, "{out:?}");
+
+        approval
+            .ask(tools::Resolve {
+                id: pending[0].id,
+                decision: tools::Decision::Deny,
+            })
+            .await
+            .unwrap();
+        asking.await.unwrap().unwrap();
+        assert_eq!(refuse_while_human_only().await, Ok(()));
     }
 }

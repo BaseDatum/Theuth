@@ -215,6 +215,9 @@ computer_tool!(
     ClipboardWriteTool, "computer_clipboard_write", Risk::Mutating, ClipboardWriteArgs,
     "Set the clipboard to exactly one of: `text`, the PNG at `image_path`, the `files` (absolute paths, as a file manager copies them), or nothing with `clear: true`.",
     |ctx, a, _cx| {
+        // 210 §7.2: a pending human-only card could be answered by a paste of the agent's
+        // making (an Allow link, a typed reply); the clipboard is off limits until it is.
+        try_out!(crate::tools::refuse_while_human_only().await);
         let op = try_out!(write_op(a));
         let done = match &op {
             Write::Text(t) => format!("copied {} chars", t.chars().count()),

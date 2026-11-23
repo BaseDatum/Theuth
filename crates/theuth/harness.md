@@ -76,6 +76,7 @@ signal: {enabled: true, device_name: theuth, owner: "+1555…", allowed: []}
 a2a: {enabled: false, listen: 127.0.0.1:7780, public_url: null}   # remote agents over A2A (50 §6); off = no actor or listener; peers/exports in a2a/peers.yaml, `/a2a reload`
 sessions: {takeover_secs: 300, release_wait_secs: 10, orphan_keep_days: 7, harness_outbox_ttl_secs: 604800}   # transcript replication across engines (68 §9): owner unseen this long → another engine may take a session it needs to write; how long a taker waits for a reachable owner to flush; how long a demoted owner keeps undelivered turns for viewing; how long a job result / reminder for a session owned elsewhere waits to be forwarded (139 R2)
 acp: {idle_stop_secs: 1800}   # an external harness child (acp/agents.yaml) with no turn, approval, job or ACP traffic this long has its process stopped; the next message resumes it with session/load; 0 = never
+share: {default_expiry: 8h, max_live: 5, interstitial: true}   # public web sharing (210): defaults only. The switch ("Allow public sharing") and the edge live in Settings › Sharing, never here; `share.enabled`/`share.edge` are ignored with a warning
 ```
 
 Only `agent.model` is required. Changing this file needs a restart, which
@@ -296,4 +297,8 @@ are rewritten on every start.
 Restart the process, log in (providers or MCP), approve a call, switch the
 running session's model (`/model`), pair Signal, see a secret's value, add
 one from the keyboard, or delete one (`/secrets`, Settings › Secrets, `theuth
---secret-set`). When a task needs one of these, stop and ask.
+--secret-set`), or approve a `share_publish` (only the owner, in person, on
+their own surface; never a double, an app or another chat user). Turning
+public sharing on and choosing the edge are in Settings › Sharing; with no
+edge configured, publishing answers "No sharing edge configured". When a task
+needs one of these, stop and ask.

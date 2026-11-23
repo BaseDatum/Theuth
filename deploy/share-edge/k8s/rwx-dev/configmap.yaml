@@ -1,0 +1,91 @@
+# P0 smoke config: admission closed, Let's Encrypt STAGING. Replaces the base's config.yaml whole.
+# Before production: the prod directory, terms/abuse pages, require_caa: true with the
+# CAA records of the production account (§8.2; the edge refuses to start without them), admission open|invite.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: theuth-share-edge
+data:
+  config.yaml: |
+    domain: tun.zip
+    data_dir: /var/lib/theuth-share-edge
+    listen: "[::]:8443"
+    # The Ingresses below send PROXY v2 (haproxy.org/send-proxy-protocol); HAProxy pods connect from the pod network
+    # (kubeadm podSubnet 10.244.0.0/16; the controller DaemonSet is not hostNetwork). Not narrower: HAProxy pod IPs
+    # come from that subnet with no fixed per-node range in this repo's config; networkpolicy.yaml limits who can
+    # reach 8443 to the haproxy-controller namespace, which is what makes trusting the whole subnet safe.
+    listen_proxy_protocol: {trusted: ["10.244.0.0/16"]}
+    # public_addrs empty: no UDP path into the cluster yet (service-iroh-udp.yaml), clients reach the edge via the relay.
+    iroh: {listen: "[::]:7850", relay: https://iroh.relay.theuth.io, public_addrs: []}
+    # Socket on the emptyDir the overlay mounts, not on the NFS data volume.
+    admin: {socket: /run/theuth-share-edge/admin.sock, http: "[::]:9090"}
+    admission: closed
+    # Standby key is OFFLINE (§13): secret only in the owner's vault (tunzip.edge.standby.key.b64); the edge never
+    # holds it. Rotation: theuth-share-edge retire --standby-key <file> --config <cfg>, edge stopped.
+    standby_public: 8dc34c5495d079157b02ff81ddbd47de68b60ef9f579e86bb8d5fb46c670a075
+    terms_url: https://example.com/share-terms     # TBD before admission opens (§9.5)
+    terms_rev: "2026-11-23"
+    abuse_url: https://example.com/share-abuse     # TBD
+    abuse_contact: abuse@example.com               # TBD
+    # false is accepted only with admission closed|invite. A staging account's URI would not match the
+    # production accounturi CAA line anyway.
+    require_caa: false
+    acme:
+      contact: mailto:sky@rwx.dev   # passed verbatim as the ACME account contact URI
+      profile: classic
+      primary: letsencrypt
+      cas:
+        letsencrypt:
+          directory: https://acme-staging-v02.api.letsencrypt.org/directory   # prod: https://acme-v02.api.letsencrypt.org/directory
+        gts: {enabled: false}
+    dns:
+      provider: porkbun
+      zone: tun.zip
+      credential_file: /run/secrets/theuth-share-edge/dns.json
+      target: edge.tun.zip
+    # Passthrough Ingresses the edge creates/deletes itself (feature `k8s`, RBAC in rbac.yaml). The HAProxy controller
+    # (haproxytech/kubernetes-ingress v3.2.14) maps `*.X` to SNI key `.X` and looks up the SNI exactly, then with its
+    # first label cut, so `*.tun.zip` carries `<name>.tun.zip` and each `*.<name>.tun.zip` carries `<label>.<name>.tun.zip`.
+    k8s:
+      enabled: true
+      namespace: theuth-share
+      static:
+        - apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: share-edge-static
+            labels: {app.kubernetes.io/name: theuth-share-edge, app.kubernetes.io/part-of: theuth}
+            annotations:
+              haproxy.org/ssl-passthrough: "true"
+              haproxy.org/send-proxy-protocol: proxy-v2
+              haproxy.org/timeout-server: 3600s
+              haproxy.org/timeout-tunnel: 3600s
+          spec:
+            ingressClassName: haproxy
+            rules:
+              - host: "*.tun.zip"
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend: {service: {name: theuth-share-edge, port: {number: 8443}}}
+      per_name:
+        - apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: share-edge-name-${slug}
+            labels: {app.kubernetes.io/name: theuth-share-edge, app.kubernetes.io/part-of: theuth}
+            annotations:
+              haproxy.org/ssl-passthrough: "true"
+              haproxy.org/send-proxy-protocol: proxy-v2
+              haproxy.org/timeout-server: 3600s
+              haproxy.org/timeout-tunnel: 3600s
+          spec:
+            ingressClassName: haproxy
+            rules:
+              - host: "*.${name}.tun.zip"
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend: {service: {name: theuth-share-edge, port: {number: 8443}}}

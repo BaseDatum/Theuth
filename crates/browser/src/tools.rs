@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use tools::{DynTool, Risk, SessionResources, Tool, ToolCx, ToolOutput, Tracked};
 
 use crate::tile::{self, Target};
-use crate::{BrowserConfig, BrowserEvent, Browsers, Call, profile};
+use crate::{BrowserConfig, BrowserEvent, Browsers, Call, OwnOrigins, profile};
 
 /// What every tool holds: the actor, the config and the runtime (screenshot
 /// dir, event bus), plus the System-1 loop's shadow ledger.
@@ -328,6 +328,12 @@ impl Ctx {
         name: &str,
         args: Value,
     ) -> anyhow::Result<ToolOutput> {
+        if !READS.contains(&name)
+            && tools::pending_human_only().await
+            && let Some(why) = self.own_window(session, name, &args).await
+        {
+            return Ok(ToolOutput::err(why));
+        }
         self.settle(session, name, &args);
         let (mut out, navigated) = match self.raw(session, name, args).await? {
             Ok(v) => {
@@ -423,6 +429,42 @@ const NAVIGATES: &[&str] = &[
     "browser_tab_close",
     "browser_close",
 ];
+
+/// obscura tools that only read the page; every other call acts (210 §7.2 F-m7). An unknown
+/// name counts as acting, so a new tool is refused rather than let through.
+const READS: &[&str] = &[
+    "browser_snapshot",
+    "browser_screenshot",
+    "browser_interactive_elements",
+    "browser_storage_state",
+    "browser_tab_list",
+];
+
+/// 210 §7.2 (F-m7): the refusal of an acting call on theuth's own web client.
+const OWN_WINDOW: &str =
+    "refused: theuth's own window can't be driven while your approval is pending";
+
+impl Ctx {
+    /// 210 §7.2 (F-m7), asked only while a human-only approval is pending: `Some(refusal)` when
+    /// the page the call starts from, or a `navigate`/`tab_new` target, is an origin of this
+    /// engine's own web client ([`OwnOrigins`]). The current page is one `location.href` read
+    /// (a tile's too); a failed read cannot prove the page is not theuth's and refuses.
+    async fn own_window(&self, session: SessionId, name: &str, args: &Value) -> Option<String> {
+        let own = OwnOrigins::from_config(&self.rt);
+        let target = args.get("url").and_then(Value::as_str);
+        if target.is_some_and(|u| own.contains(u)) {
+            return Some(OWN_WINDOW.to_owned());
+        }
+        let href = json!({ "expression": "location.href" });
+        let here = match self.raw(session, "browser_evaluate", href).await {
+            Ok(Ok(v)) if !text_of(&v).1 => text_of(&v).0,
+            _ => return Some(OWN_WINDOW.to_owned()),
+        };
+        let here = here.trim().trim_matches('"');
+        tracing::debug!(%session, name, here, "acting browser call while a human-only approval is pending");
+        own.contains(here).then(|| OWN_WINDOW.to_owned())
+    }
+}
 
 /// Text blocks of an MCP result joined with `\n`, and its `isError` flag.
 pub(crate) fn text_of(result: &Value) -> (String, bool) {
@@ -1506,5 +1548,26 @@ mod tests {
                 .join("browser")
                 .join(session.to_string())
         );
+    }
+
+    /// 210 §7.2 (F-m7): the config read: `rpc.listen` and `link.relay`, defaults otherwise.
+    #[tokio::test]
+    async fn own_origins_follow_rpc_listen_and_link_relay() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
+        let own = OwnOrigins::from_config(&rt);
+        assert!(own.contains("http://localhost:7777/"));
+        assert!(own.contains("https://relay.theuth.io/link"));
+        assert!(!own.contains("http://192.168.1.5:7777/"));
+
+        let cfg = figment::Figment::new()
+            .merge(("rpc.listen", "0.0.0.0:9000"))
+            .merge(("link.relay", "ws://10.0.0.2:8787"));
+        let rt = Runtime::new(cfg, dir.path().to_path_buf());
+        let own = OwnOrigins::from_config(&rt);
+        assert!(own.contains("http://my-mac.local:9000/"));
+        assert!(own.contains("http://10.0.0.2:8787/link"));
+        assert!(!own.contains("http://localhost:7777/"));
+        assert!(!own.contains("https://relay.theuth.io/link"));
     }
 }

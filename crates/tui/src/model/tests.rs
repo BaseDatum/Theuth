@@ -44,7 +44,7 @@
             assert!(m.private.as_ref().unwrap().member(child) && m.private.as_ref().unwrap().member(grandchild));
             let approval = ApprovalId(uuid::Uuid::now_v7());
             let request = |id, session| ApprovalRequested {
-                id, session, tool: "shell".into(), args: serde_json::json!({"command":"echo ok"}), risk: tools::Risk::ReadOnly,
+                id, session, tool: "shell".into(), args: serde_json::json!({"command":"echo ok"}), risk: tools::Risk::ReadOnly, human_only: false,
             };
             m.apply(wire_event("tools.approval-requested", request(approval, grandchild)));
             m.apply(wire_event("tools.approval-requested", request(ApprovalId(uuid::Uuid::now_v7()), SessionId::new())));
@@ -4851,7 +4851,7 @@
         component_menu_key(&mut m, "mcp", KeyCode::Char('s'));
         assert!(matches!(
             component_request::<McpRequest>(&mut rx),
-            Ok(McpRequest::SetHidden { session: None, draft, .. }) if picked(&draft)
+            Ok(McpRequest::SetHidden { session: None, draft, .. }) if picked(&draft.as_deref().cloned())
         ));
         // `/<skill>` with no session.
         m.submit("/caveman lite", &tx);
@@ -8463,6 +8463,7 @@
             tool: "shell".into(),
             args: serde_json::json!({"command": "git push"}),
             risk: tools::Risk::Mutating,
+            human_only: false,
         }));
         assert_eq!(m.components.get::<Double>().unwrap().chip().as_deref(), Some("double: Allow 91 % · L1"));
         // L2: the countdown is derived from `will_act_at` and keeps frames coming.

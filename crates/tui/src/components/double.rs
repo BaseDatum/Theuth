@@ -254,7 +254,7 @@ fn empty_pending_approvals_removes_its_prediction_without_resolving_the_ask() {
     model.components = Registry::empty();
     model.components.register(Double::default()).unwrap();
     model.mount_components(&tx);
-    model.apply(UiEvent::Approval(tools::ApprovalRequested { id: approval, session, tool: "shell".into(), args: json!({"command":"echo hi"}), risk: tools::Risk::ReadOnly }));
+    model.apply(UiEvent::Approval(tools::ApprovalRequested { id: approval, session, tool: "shell".into(), args: json!({"command":"echo hi"}), risk: tools::Risk::ReadOnly, human_only: false }));
     model.apply(UiEvent::Ask(tools::AskRequested { id: ask, session, questions: vec![tools::Question { id: "q".into(), question: "Which?".into(), options: vec![], recommended: None }] }));
     for (id, kind, choice) in [(approval.0, ::double::CardKind::Approval, "Allow"), (ask.0, ::double::CardKind::Ask, "Wait")] {
         let prediction = DoublePredicted { question_id: id.to_string(), session: Some(session), kind, class: "test".into(), choice: choice.into(), index: None, p: 0.9, probs: vec![], rung: 1, will_act_at: None, version: "baseline".into(), explain: Default::default() };

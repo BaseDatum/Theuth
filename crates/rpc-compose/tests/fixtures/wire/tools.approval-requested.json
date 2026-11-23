@@ -18,7 +18,8 @@
           "session": "00000000-0000-0000-0000-000000000001",
           "tool": "sample",
           "args": null,
-          "risk": "read_only"
+          "risk": "read_only",
+          "human_only": false
         }
       }
     }
@@ -56,7 +57,8 @@
               null
             ]
           },
-          "risk": "read_only"
+          "risk": "read_only",
+          "human_only": false
         }
       }
     }
@@ -80,7 +82,8 @@
           "session": "00000000-0000-0000-0000-000000000001",
           "tool": "sample",
           "args": null,
-          "risk": "mutating"
+          "risk": "mutating",
+          "human_only": false
         }
       }
     }
@@ -104,7 +107,8 @@
           "session": "00000000-0000-0000-0000-000000000001",
           "tool": "sample",
           "args": null,
-          "risk": "destructive"
+          "risk": "destructive",
+          "human_only": false
         }
       }
     }

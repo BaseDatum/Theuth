@@ -23,6 +23,38 @@ use crate::journal::{
 #[serde(transparent)]
 pub struct ApprovalId(pub uuid::Uuid);
 
+/// 210 §7.2: the approval row a gated call passed, visible to the tool body it admitted (a
+/// share records it as `approved_by`). `surface` says who could answer: `owner` for a
+/// human-only row (only the owner in person resolves it), `human` otherwise.
+// TODO(210-M2): the surface that actually answered (desktop, web, tui, slack, …); `Resolve`
+// does not carry it yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Approved {
+    /// The approval row.
+    pub id: ApprovalId,
+    /// `owner` or `human`.
+    pub surface: &'static str,
+}
+
+tokio::task_local! {
+    static APPROVED: Approved;
+}
+
+/// Run `fut` under the approval it passed; `None` runs it bare. Task-locals do not cross
+/// `spawn`: wrap the future you spawn.
+pub async fn approved_scope<F: Future>(approved: Option<Approved>, fut: F) -> F::Output {
+    match approved {
+        Some(a) => APPROVED.scope(a, fut).await,
+        None => fut.await,
+    }
+}
+
+/// The approval the running tool call passed; `None` for an ungated call or outside a body.
+#[must_use]
+pub fn approved() -> Option<Approved> {
+    APPROVED.try_with(Clone::clone).ok()
+}
+
 /// Human answer. A `kameo::Reply` so [`crate::ExternalApproval`] can answer with it directly.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
@@ -52,6 +84,11 @@ pub struct ApprovalRequested {
     pub args: serde_json::Value,
     /// Risk class that triggered the ask.
     pub risk: Risk,
+    /// 210 §7.2 (D10): only the owner, in person, may answer: every client renders an
+    /// owner-only card ("only you can answer"), a chat channel accepts only the owner's
+    /// click, and [`ResolveBy`] with any answerer but [`Answerer::Human`] is refused.
+    #[serde(default)]
+    pub human_only: bool,
 }
 
 impl wire::WireEvent for ApprovalRequested {
@@ -129,6 +166,12 @@ pub struct RequestApproval {
     pub call_id: Option<String>,
 }
 
+/// 210 §7.2: [`RequestApproval`] for a [`crate::Tool::HUMAN_ONLY`] tool. Same reply; the
+/// card carries `human_only: true` and only a human [`Resolve`] / [`ResolveBy`] answers it.
+/// The registry sends it for every human-only call; other senders keep [`RequestApproval`].
+#[derive(Clone, Debug)]
+pub struct RequestHumanOnly(pub RequestApproval);
+
 /// 109 §6.2 (D-call): a stored `answered` row for a `planned` call the
 /// engine died before starting. `tell` before the call replays; the next
 /// [`RequestApproval`] for `(session, call_id)` resolves with `decision`
@@ -149,6 +192,11 @@ pub struct HonourAnswer {
 /// Internal: drop a pending entry whose waiter gave up.
 struct Expire(ApprovalId);
 
+/// Internal: the asker of a pending entry went away (its `ask` future was dropped: an RPC
+/// caller that timed out, a cancelled call). Nobody would act on an answer any more, so the
+/// card is withdrawn instead of accepting an `Allow` that does nothing (210 E2E1 finding 7).
+struct Gone(ApprovalId);
+
 /// 207: what the parked call is told: a decision, or that the user left it
 /// to the agent.
 enum Verdict {
@@ -156,11 +204,17 @@ enum Verdict {
     Dismissed,
 }
 
+/// The asker's reply sender, shared by the waiter (which watches it close and answers on it)
+/// and [`Approval::resolve`] (which refuses to record an answer nobody will act on). `None`
+/// inside for a `tell` sender.
+type Asker = Arc<parking_lot::Mutex<Option<kameo::reply::BoxReplySender>>>;
+
 /// One unanswered request: the card, its journal row and the waiter.
 struct Pending {
     requested: ApprovalRequested,
     row: QuestionRow,
     tx: oneshot::Sender<Verdict>,
+    asker: Asker,
 }
 
 /// The approval actor.
@@ -215,6 +269,15 @@ impl Approval {
         let Some(p) = self.pending.remove(&id) else {
             return false;
         };
+        // The asker went away before its waiter noticed (210 FIX4 #15): nobody would act on
+        // this answer, so the card is withdrawn as for [`Gone`] instead of recording it.
+        if p.asker.lock().as_ref().is_some_and(|t| t.is_closed()) {
+            let _ = p.tx.send(Verdict::Dismissed);
+            if p.row.tool_call_id.is_none() {
+                self.settle(p.row, QuestionState::TimedOut, None, None).await;
+            }
+            return false;
+        }
         let delivered = p.tx.send(Verdict::Decided(decision)).is_ok();
         self.settle(
             p.row,
@@ -244,14 +307,14 @@ impl Message<HonourAnswer> for Approval {
     }
 }
 
-impl Message<RequestApproval> for Approval {
-    type Reply = DelegatedReply<ApprovalResolved>;
-
-    async fn handle(
+impl Approval {
+    /// [`RequestApproval`] and [`RequestHumanOnly`]: publish the card and park the waiter.
+    async fn request(
         &mut self,
         m: RequestApproval,
-        ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
+        human_only: bool,
+        ctx: &mut Context<Self, DelegatedReply<ApprovalResolved>>,
+    ) -> DelegatedReply<ApprovalResolved> {
         let (reply, tx) = ctx.reply_sender();
         let id = ApprovalId(uuid::Uuid::now_v7());
         if let Some((decision, dismissed)) = m
@@ -277,6 +340,7 @@ impl Message<RequestApproval> for Approval {
             tool: m.tool,
             args: m.args,
             risk: m.risk,
+            human_only,
         };
         let asked_at = Utc::now();
         let deadline = asked_at + self.timeout;
@@ -310,12 +374,17 @@ impl Message<RequestApproval> for Approval {
                 )
                 .await;
         }
+        // The raw sender, so the waiter can watch for its asker going away.
+        let asker: Asker = Arc::new(parking_lot::Mutex::new(
+            tx.map(kameo::reply::ReplySender::boxed),
+        ));
         self.pending.insert(
             id,
             Pending {
                 requested: requested.clone(),
                 row,
                 tx: dtx,
+                asker: asker.clone(),
             },
         );
         let rt = self.rt.clone();
@@ -323,15 +392,26 @@ impl Message<RequestApproval> for Approval {
         let me = ctx.actor_ref().clone();
         tokio::spawn(async move {
             rt.publish(requested).await;
-            let (decision, timed_out, dismissed) = match tokio::time::timeout(timeout, drx).await {
-                Ok(Ok(Verdict::Decided(d))) => (d, false, false),
-                // 207: left to the agent: not run.
-                Ok(Ok(Verdict::Dismissed)) => (Decision::Deny, false, true),
-                // Sender dropped: actor died; treat as deny.
-                Ok(Err(_)) => (Decision::Deny, false, false),
-                Err(_) => {
-                    let _ = me.ask(Expire(id)).await;
-                    (Decision::Deny, true, false)
+            let asker_gone = std::future::poll_fn(|cx| match asker.lock().as_mut() {
+                Some(tx) => tx.poll_closed(cx),
+                None => std::task::Poll::Pending,
+            });
+            let (decision, timed_out, dismissed) = tokio::select! {
+                r = tokio::time::timeout(timeout, drx) => match r {
+                    Ok(Ok(Verdict::Decided(d))) => (d, false, false),
+                    // 207: left to the agent: not run.
+                    Ok(Ok(Verdict::Dismissed)) => (Decision::Deny, false, true),
+                    // Sender dropped: actor died; treat as deny.
+                    Ok(Err(_)) => (Decision::Deny, false, false),
+                    Err(_) => {
+                        let _ = me.ask(Expire(id)).await;
+                        (Decision::Deny, true, false)
+                    }
+                },
+                // Withdrawn: `dismissed` (not run, nobody to tell), so every surface drops it.
+                () = asker_gone => {
+                    let _ = me.ask(Gone(id)).await;
+                    (Decision::Deny, false, true)
                 }
             };
             let resolved = ApprovalResolved {
@@ -341,17 +421,49 @@ impl Message<RequestApproval> for Approval {
                 dismissed,
             };
             rt.publish(resolved.clone()).await;
-            if let Some(tx) = tx {
-                tx.send(resolved);
+            if let Some(tx) = asker.lock().take() {
+                let _ = tx.send(Ok(Box::new(resolved) as kameo::message::BoxReply));
             }
         });
         reply
     }
 }
 
+impl Message<RequestApproval> for Approval {
+    type Reply = DelegatedReply<ApprovalResolved>;
+
+    async fn handle(
+        &mut self,
+        m: RequestApproval,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.request(m, false, ctx).await
+    }
+}
+
+impl Message<RequestHumanOnly> for Approval {
+    type Reply = DelegatedReply<ApprovalResolved>;
+
+    async fn handle(
+        &mut self,
+        m: RequestHumanOnly,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.request(m.0, true, ctx).await
+    }
+}
+
 impl Message<Resolve> for Approval {
     type Reply = bool;
 
+    /// Every caller of `Resolve` is recorded as [`Answerer::Human`], including the RPC
+    /// `resolve_approval` (`crates/tasks/src/rpc_hub.rs`). 210 §7.2 residual, stated plainly:
+    /// the RPC token is the file `<data_dir>/token`, so an agent whose shell runs unapproved
+    /// can read it and resolve its own human-only row (`osascript` from such a shell is the
+    /// same residual). The guarantee holds while shell commands are approved or sandboxed;
+    /// Settings warns when sharing is on and approvals are off.
+    /// TODO(210-M4): presence-bound resolution (P2): a signature by an owner device key
+    /// unlocked by Touch ID or a console prompt.
     async fn handle(&mut self, m: Resolve, _: &mut Context<Self, Self::Reply>) -> bool {
         self.resolve(m.id, m.decision, Answerer::Human).await
     }
@@ -360,7 +472,18 @@ impl Message<Resolve> for Approval {
 impl Message<ResolveBy> for Approval {
     type Reply = bool;
 
+    /// 210 §7.2: a human-only row answers only to [`Answerer::Human`]; any other answerer
+    /// (the double) is refused with `false` and the row stays pending for the owner.
     async fn handle(&mut self, m: ResolveBy, _: &mut Context<Self, Self::Reply>) -> bool {
+        if m.by != Answerer::Human
+            && self
+                .pending
+                .get(&m.id)
+                .is_some_and(|p| p.requested.human_only)
+        {
+            tracing::warn!(id = ?m.id, by = ?m.by, "refused: a human-only approval answers only to the owner");
+            return false;
+        }
         self.resolve(m.id, m.decision, m.by).await
     }
 }
@@ -371,7 +494,13 @@ impl Message<Dismiss> for Approval {
     /// 207: the parked call is not run; the row settles `answered` with
     /// `"dismissed"` by the human.
     async fn handle(&mut self, m: Dismiss, _: &mut Context<Self, Self::Reply>) -> bool {
-        let Some(p) = self.pending.remove(&m.id) else {
+        self.dismiss(m.id).await
+    }
+}
+
+impl Approval {
+    async fn dismiss(&mut self, id: ApprovalId) -> bool {
+        let Some(p) = self.pending.remove(&id) else {
             return false;
         };
         let delivered = p.tx.send(Verdict::Dismissed).is_ok();
@@ -386,6 +515,39 @@ impl Message<Dismiss> for Approval {
     }
 }
 
+/// `ask` → how many pending cards for `tool` were dismissed (210 §7.4: Stop all and the
+/// switch turned off withdraw every pending `share_publish` card, so a late `Allow` cannot
+/// publish after them). Each settles as a [`Dismiss`] would.
+#[derive(Clone, Debug)]
+pub struct DismissTool(pub String);
+
+impl Message<DismissTool> for Approval {
+    type Reply = usize;
+
+    async fn handle(&mut self, m: DismissTool, _: &mut Context<Self, Self::Reply>) -> usize {
+        let ids: Vec<ApprovalId> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| p.requested.tool == m.0)
+            .map(|(id, _)| *id)
+            .collect();
+        let mut n = 0;
+        for id in ids {
+            n += usize::from(self.dismiss(id).await);
+        }
+        n
+    }
+}
+
+/// [`DismissTool`] on the registered approval actor; `0` when none runs.
+pub async fn dismiss_tool(tool: &str) -> usize {
+    let Ok(Some(approval)) = kameo::actor::ActorRef::<Approval>::lookup(crate::APPROVAL_ACTOR)
+    else {
+        return 0;
+    };
+    approval.ask(DismissTool(tool.to_owned())).await.unwrap_or(0)
+}
+
 impl Message<Expire> for Approval {
     type Reply = ();
 
@@ -393,6 +555,21 @@ impl Message<Expire> for Approval {
         if let Some(p) = self.pending.remove(&m.0) {
             self.settle(p.row, QuestionState::TimedOut, None, None)
                 .await;
+        }
+    }
+}
+
+impl Message<Gone> for Approval {
+    type Reply = ();
+
+    /// The row leaves `pending`: an RPC row (no call) is settled `timed_out` with no answer;
+    /// a tool call's row is left to the call's own journal (a resume re-asks it, 109 §6.2), as
+    /// for [`ForgetSession`].
+    async fn handle(&mut self, m: Gone, _: &mut Context<Self, Self::Reply>) {
+        if let Some(p) = self.pending.remove(&m.0)
+            && p.row.tool_call_id.is_none()
+        {
+            self.settle(p.row, QuestionState::TimedOut, None, None).await;
         }
     }
 }
@@ -427,6 +604,60 @@ impl Message<PendingApprovals> for Approval {
     ) -> Self::Reply {
         self.pending.values().map(|p| p.requested.clone()).collect()
     }
+}
+
+/// `ask` → whether any human-only approval is pending (210 §7.2): while it is, computer-use,
+/// script and acting browser tools refuse to drive theuth's own windows and web origins.
+pub struct PendingHumanOnly;
+
+impl Message<PendingHumanOnly> for Approval {
+    type Reply = bool;
+
+    async fn handle(&mut self, _: PendingHumanOnly, _: &mut Context<Self, Self::Reply>) -> bool {
+        self.pending.values().any(|p| p.requested.human_only)
+    }
+}
+
+/// [`PendingHumanOnly`] on the registered approval actor; `false` when none runs. One local
+/// mailbox round trip: cheap enough for every acting computer/browser call.
+pub async fn pending_human_only() -> bool {
+    let Ok(Some(approval)) = kameo::actor::ActorRef::<Approval>::lookup(crate::APPROVAL_ACTOR)
+    else {
+        return false;
+    };
+    approval.ask(PendingHumanOnly).await.unwrap_or(false)
+}
+
+/// 210 §7.2: raise a human-only row outside the tool registry (an RPC that acts for the owner:
+/// share publish, switch-on, edge change, terms) on `approval`, wait for the answer, and return
+/// the row as [`Approved`] on `Allow`. A deny, a dismissal or a timeout is an error.
+pub async fn ask_human_only_on(
+    approval: &kameo::actor::ActorRef<Approval>,
+    req: RequestApproval,
+) -> anyhow::Result<Approved> {
+    let tool = req.tool.clone();
+    let r = approval
+        .ask(RequestHumanOnly(req))
+        .await
+        .map_err(|e| anyhow::anyhow!("{tool}: the approval could not be asked: {e}"))?;
+    match (r.decision, r.timed_out, r.dismissed) {
+        (Decision::Allow, _, _) => Ok(Approved {
+            id: r.id,
+            surface: "owner",
+        }),
+        (_, true, _) => anyhow::bail!("{tool}: nobody answered the approval in time"),
+        (_, _, true) => anyhow::bail!("{tool}: the approval was dismissed"),
+        _ => anyhow::bail!("{tool}: the owner denied it"),
+    }
+}
+
+/// [`ask_human_only_on`] on the registered approval actor; an error when none runs.
+pub async fn ask_human_only(req: RequestApproval) -> anyhow::Result<Approved> {
+    let Ok(Some(approval)) = kameo::actor::ActorRef::<Approval>::lookup(crate::APPROVAL_ACTOR)
+    else {
+        anyhow::bail!("{}: no approval service is running", req.tool);
+    };
+    ask_human_only_on(&approval, req).await
 }
 
 #[cfg(test)]
@@ -788,5 +1019,174 @@ pub(crate) mod tests {
             (Decision::Deny, false, true)
         );
         assert!(journal.questions().is_empty(), "no second question");
+    }
+
+    /// 210 §7.2 (B1): an RPC-raised human-only row is a `human_only` card; the double cannot
+    /// answer it, the owner's `Allow` yields the row as `Approved {surface: owner}`, a deny is an
+    /// error.
+    #[tokio::test]
+    async fn ask_human_only_waits_for_the_owner() {
+        let (_rt, actor, _journal) = actor(Duration::from_secs(5)).await;
+        for decision in [Decision::Allow, Decision::Deny] {
+            let asked = tokio::spawn({
+                let actor = actor.clone();
+                async move { ask_human_only_on(&actor, request(SessionId::new(), None)).await }
+            });
+            let row = loop {
+                if let Some(r) = actor.ask(PendingApprovals).await.unwrap().first().cloned() {
+                    break r;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            };
+            assert!(row.human_only);
+            assert!(
+                !actor
+                    .ask(ResolveBy {
+                        id: row.id,
+                        decision: Decision::Allow,
+                        by: Answerer::Double,
+                    })
+                    .await
+                    .unwrap()
+            );
+            assert!(actor.ask(Resolve { id: row.id, decision }).await.unwrap());
+            let r = asked.await.unwrap();
+            match decision {
+                Decision::Allow => assert_eq!(
+                    r.unwrap(),
+                    Approved {
+                        id: row.id,
+                        surface: "owner"
+                    }
+                ),
+                Decision::Deny => assert!(r.unwrap_err().to_string().contains("denied")),
+            }
+        }
+    }
+
+    /// 210 E2E1 finding 7: when the RPC caller of a human-only row gives up (its future is
+    /// dropped), the card is withdrawn: a dismissed resolution reaches every surface, nothing
+    /// stays pending, a late `Allow` is refused, and the RPC row leaves `pending`.
+    #[tokio::test]
+    async fn abandoned_ask_withdraws_the_card() {
+        let (rt, actor, journal) = actor(Duration::from_secs(30)).await;
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let sub = SeenResolved::spawn(SeenResolved(published.clone()));
+        rt.subscribe::<SeenResolved, ApprovalResolved>(&sub).await;
+        let asked = tokio::spawn({
+            let actor = actor.clone();
+            async move { ask_human_only_on(&actor, request(SessionId::new(), None)).await }
+        });
+        let id = loop {
+            if let Some(r) = actor.ask(PendingApprovals).await.unwrap().first() {
+                break r.id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        asked.abort();
+        let event = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(e) = lock(&published).first().cloned() {
+                    break e;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the card is withdrawn well before the 30 s timeout");
+        assert_eq!(
+            (event.id, event.decision, event.timed_out, event.dismissed),
+            (id, Decision::Deny, false, true)
+        );
+        assert!(actor.ask(PendingApprovals).await.unwrap().is_empty());
+        assert!(!actor.ask(PendingHumanOnly).await.unwrap());
+        assert!(
+            !actor
+                .ask(Resolve {
+                    id,
+                    decision: Decision::Allow
+                })
+                .await
+                .unwrap(),
+            "a late Allow does nothing and says so"
+        );
+        let rows = journal.questions();
+        assert_eq!(rows.last().map(|r| r.state), Some(QuestionState::TimedOut));
+    }
+
+    fn req(tool: &str) -> RequestApproval {
+        RequestApproval {
+            tool: tool.into(),
+            ..request(SessionId::new(), None)
+        }
+    }
+
+    async fn first_pending(actor: &kameo::actor::ActorRef<Approval>) -> ApprovalId {
+        loop {
+            if let Some(r) = actor.ask(PendingApprovals).await.unwrap().first() {
+                break r.id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// 210 FIX4 #15: an `Allow` that reaches the actor after the asker went away but before the
+    /// waiter noticed is not recorded as an answer: `Resolve` says `false`, nothing is left
+    /// pending and the RPC row settles without an answer.
+    #[tokio::test]
+    async fn resolve_after_the_asker_left_is_a_withdrawal() {
+        let (_rt, actor, journal) = actor(Duration::from_secs(30)).await;
+        let asked = tokio::spawn({
+            let actor = actor.clone();
+            async move { ask_human_only_on(&actor, req("share_publish")).await }
+        });
+        let id = first_pending(&actor).await;
+        asked.abort();
+        let _ = asked.await;
+        let r = actor
+            .ask(Resolve {
+                id,
+                decision: Decision::Allow,
+            })
+            .await
+            .unwrap();
+        assert!(!r, "an answer nobody acts on is refused");
+        assert!(actor.ask(PendingApprovals).await.unwrap().is_empty());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let rows = journal.questions();
+        assert!(
+            rows.iter().all(|r| r.answer.is_none()),
+            "no Allow recorded: {rows:?}"
+        );
+        assert_eq!(rows.last().map(|r| r.state), Some(QuestionState::TimedOut));
+    }
+
+    /// 210 FIX4 #6: `DismissTool` withdraws every pending card of that tool and only those;
+    /// the asker gets the dismissal as an error.
+    #[tokio::test]
+    async fn dismiss_tool_withdraws_only_that_tools_cards() {
+        let (_rt, actor, _journal) = actor(Duration::from_secs(30)).await;
+        let publish = tokio::spawn({
+            let actor = actor.clone();
+            async move { ask_human_only_on(&actor, req("share_publish")).await }
+        });
+        first_pending(&actor).await;
+        let other = tokio::spawn({
+            let actor = actor.clone();
+            async move { ask_human_only_on(&actor, req("share_terms_accept")).await }
+        });
+        while actor.ask(PendingApprovals).await.unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            actor.ask(DismissTool("share_publish".into())).await.unwrap(),
+            1
+        );
+        let e = publish.await.unwrap().unwrap_err();
+        assert!(e.to_string().contains("dismissed"), "{e}");
+        let left = actor.ask(PendingApprovals).await.unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].tool, "share_terms_accept");
+        other.abort();
     }
 }

@@ -638,6 +638,7 @@ fn is_deliverable(name: &str, args: &serde_json::Value) -> bool {
             | "agent_draft"
             | "task_draft"
             | "routine_draft"
+            | "share_publish"
     ) || (name == "doc_create" && args.get("kind").and_then(|k| k.as_str()) == Some("board"))
 }
 

@@ -56,6 +56,7 @@ async fn remaining_owners_golden_parity() {
     dreaming::declare_wire(&rt).await.unwrap();
     autoresearch::declare_wire(&rt).await.unwrap();
     cells::declare_wire(&rt).await.unwrap();
+    share::declare_wire(&rt).await.unwrap();
     let mut events = rt.wire_events();
     family::<tasks::activity::ActivityAppended>(&rt, &mut events, "tasks.activity").await;
     family::<codeindex::CodeindexEvent>(&rt, &mut events, "codeindex.events").await;
@@ -70,4 +71,7 @@ async fn remaining_owners_golden_parity() {
     family::<dreaming::DreamUndone>(&rt, &mut events, "dreaming.undone").await;
     family::<autoresearch::StudyEvent>(&rt, &mut events, "autoresearch.events").await;
     family::<cells::CellEvent>(&rt, &mut events, "cells.events").await;
+    family::<share::ShareChanged>(&rt, &mut events, "share.changed").await;
+    family::<share::ShareStatus>(&rt, &mut events, "share.status").await;
+    family::<share::ShareTraffic>(&rt, &mut events, "share.traffic").await;
 }

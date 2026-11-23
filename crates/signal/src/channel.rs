@@ -32,7 +32,9 @@ use uuid::Uuid;
 
 use crate::commands::{self, Cx, Reply};
 use crate::transport::{IncomingAttachment, Recipient, SignalEnvelope, SignalTransport};
-use crate::{SIGNAL_ACTOR, SignalConfig, SignalEvent, SignalStatus, approvals, asks, text};
+use crate::{
+    SIGNAL_ACTOR, SignalConfig, SignalEvent, SignalStatus, approvals, asks, sharing, text,
+};
 
 /// How long the Signal server keeps a provisioning URL scannable.
 pub const LINK_URL_TTL: Duration = Duration::from_secs(90);
@@ -364,6 +366,10 @@ enum Event {
     Predicted(double::DoublePredicted),
     /// 126 §10: the double answered a card at L2.
     DoubleAnswered(double::DoubleAnswered),
+    /// 210 §7.4: a share record changed (replicated rows of other machines too).
+    Share(share::Share),
+    /// 210 §7.4: the engine's list at boot.
+    ShareSeed(Vec<share::Share>),
 }
 
 /// Bus subscriber: forwards into the ordered event worker.
@@ -420,6 +426,13 @@ impl Message<ArtifactShown> for Bus {
     type Reply = ();
     async fn handle(&mut self, m: ArtifactShown, _: &mut Context<Self, ()>) {
         let _ = self.tx.send(Event::Artifact(m));
+    }
+}
+
+impl Message<share::ShareChanged> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: share::ShareChanged, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Share(m.share));
     }
 }
 
@@ -483,6 +496,8 @@ pub(crate) struct State {
     link_url: Option<String>,
     /// 67 decision 22: only the hub answers; the lease says who that is.
     pub(crate) lease: roster::lease::Follower,
+    /// 210 §7.4 item 9: the owner's live-share notices.
+    sharing: sharing::Notices,
 }
 
 pub(crate) struct Channel {
@@ -599,6 +614,20 @@ const APP_NOTE: &str = "Interactive app — open on desktop/web";
 async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
     let (env_tx, mut env_rx) = mpsc::unbounded_channel::<SignalEnvelope>();
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Event>();
+    // 210 §7.4 item 9: the records so far, when the share engine is up.
+    if let Ok(engine) = share::rpc_support::engine() {
+        let seed = ev_tx.clone();
+        tokio::spawn(async move {
+            match engine.list().await {
+                Ok(list) => {
+                    let _ = seed.send(Event::ShareSeed(list));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "signal: share list for the live-share notice")
+                }
+            }
+        });
+    }
     let bus = Bus::spawn_with_mailbox(Bus { tx: ev_tx }, runtime::subscriber_mailbox());
     chan.rt.subscribe::<Bus, AgentEvent>(&bus).await;
     chan.rt.subscribe::<Bus, ApprovalRequested>(&bus).await;
@@ -612,6 +641,7 @@ async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
         .subscribe::<Bus, double::DoublePredicted>(&bus)
         .await;
     chan.rt.subscribe::<Bus, double::DoubleAnswered>(&bus).await;
+    chan.rt.subscribe::<Bus, share::ShareChanged>(&bus).await;
     // 67 §4.7: who "we" are, once the mesh is up; the follower re-reads the
     // last lease it saw against that id.
     let identity = {
@@ -688,6 +718,7 @@ impl Channel {
                 last_event: None,
                 link_url: None,
                 lease: roster::lease::Follower::default(),
+                sharing: sharing::Notices::default(),
             }),
             approvals: tokio::sync::Mutex::new(approvals::Pending::default()),
             asks: tokio::sync::Mutex::new(asks::Pending::default()),
@@ -978,6 +1009,15 @@ impl Channel {
         !self.owner.is_empty() && normalize_number(number) == self.owner
     }
 
+    /// 210 §7.2: a session bound to a thread whose number is not the owner's (or
+    /// while no owner is set) may not run a human-only tool; tells the tool
+    /// registry (never lifted while the engine runs), as Slack and Telegram do.
+    fn note_thread(&self, session: SessionId, number: &str) {
+        if !self.is_owner(number) {
+            tools::mark_non_owner_thread(session, true);
+        }
+    }
+
     fn is_allowed(&self, number: &str) -> bool {
         if self.is_owner(number) {
             return true;
@@ -1148,15 +1188,27 @@ impl Channel {
             if reaction.remove {
                 return;
             }
-            let id = self
+            // 210 §7.2: a human-only card takes only the owner's answer.
+            let hit = self
                 .approvals
                 .lock()
                 .await
-                .by_reaction(&sender.number, reaction.target_timestamp);
-            if let (Some(id), Some(decision)) = (id, approvals::decision_for_emoji(&reaction.emoji))
-                && let Err(e) = self.port.resolve(id, decision).await
-            {
-                tracing::warn!(error = %e, "approval resolve by reaction failed");
+                .by_reaction(&sender.number, reaction.target_timestamp)
+                .map(|e| (e.id, e.human_only));
+            let Some(decision) = approvals::decision_for_emoji(&reaction.emoji) else {
+                return;
+            };
+            match hit {
+                Some((_, true)) if !self.is_owner(&sender.number) => {
+                    self.send_chunks(&sender, "only the owner can answer this")
+                        .await;
+                }
+                Some((id, _)) => {
+                    if let Err(e) = self.port.resolve(id, decision).await {
+                        tracing::warn!(error = %e, "approval resolve by reaction failed");
+                    }
+                }
+                None => {}
             }
             return;
         }
@@ -1256,6 +1308,7 @@ impl Channel {
             Ok(id) => {
                 let mut s = self.lock();
                 s.threads.bind(&sender, id);
+                self.note_thread(id, &sender.number);
                 // The entry outlives this call: `TurnStarted` picks it up, and a
                 // steer updates the running turn in place (last input wins).
                 let turn = s.turns.entry(id).or_default();
@@ -1368,6 +1421,7 @@ impl Channel {
                 let mut s = self.lock();
                 s.threads.bind_agent(sender, desk, name, title, task);
                 if let Some(desk) = desk {
+                    self.note_thread(desk, &sender.number);
                     s.turns
                         .entry(desk)
                         .or_default()
@@ -1420,6 +1474,7 @@ impl Channel {
             }
             Reply::Resume(id) => {
                 self.lock().threads.bind(sender, id);
+                self.note_thread(id, &sender.number);
                 format!("resumed {id}")
             }
             Reply::Allow(n) => match ask_signal(crate::Allow(n.clone())).await {
@@ -1655,10 +1710,46 @@ impl Channel {
             }
             Event::Secret(_) => {}
             Event::Lease(lease) => {
-                if let Some(holding) = self.lock().lease.observe(&lease) {
+                let gained = self.lock().lease.observe(&lease);
+                if let Some(holding) = gained {
                     tracing::info!(holding, holder = ?lease.holder, reason = %lease.reason, "signal: hub duties follow the lease");
                 }
+                if gained == Some(true) {
+                    self.share_notice().await;
+                }
             }
+            Event::Share(s) => {
+                self.lock().sharing.apply(s);
+                self.share_notice().await;
+            }
+            Event::ShareSeed(list) => {
+                self.lock().sharing.seed(list);
+                self.share_notice().await;
+            }
+        }
+    }
+
+    /// 210 §7.4 item 9: the owner hears the transitions: the list when the first share goes
+    /// live, [`sharing::STOPPED_TEXT`] when none is left. The hub sends them (every engine
+    /// sees every record). Signal cannot pin, and its edits are unreliable on linked devices,
+    /// so there is no message kept in place; `/share` lists on demand.
+    async fn share_notice(&self) {
+        if self.owner.is_empty() {
+            return;
+        }
+        let (to, text) = {
+            let mut s = self.lock();
+            if !s.lease.holding {
+                return;
+            }
+            let Some(text) = s.sharing.step(sharing::now_ms()) else {
+                return;
+            };
+            (s.threads.recipient(&self.owner), text)
+        };
+        if self.send_chunks(&to, &text).await.is_none() {
+            tracing::warn!("signal: live-share notice not sent; retried on the next change");
+            self.lock().sharing.failed();
         }
     }
 
@@ -1670,6 +1761,8 @@ impl Channel {
                     let Some(to) = s.threads.recipient_for(session) else {
                         return;
                     };
+                    // Re-said each turn: the registry keeps the mark in memory only.
+                    self.note_thread(session, &to.number);
                     let turn = s.turns.entry(session).or_default();
                     turn.in_flight = true;
                     if let Some(h) = turn.typing.take() {
@@ -3071,6 +3164,7 @@ mod tests {
                 tool: "shell".into(),
                 args: serde_json::json!({ "command": "rm -rf target/" }),
                 risk: Risk::Destructive,
+                human_only: false,
             }))
             .await;
         let Some(SentItem::Text { timestamp, .. }) = f.transport.sent().last().cloned() else {
@@ -3108,6 +3202,49 @@ mod tests {
                 target_ts: timestamp,
             })
         );
+    }
+
+    /// 210 §7.2: a human-only card in a friend's thread says only the owner can
+    /// answer, and the friend's 👍 is refused, not resolved.
+    #[tokio::test]
+    async fn human_only_card_refuses_a_non_owner_reaction() {
+        let f = fixture().await;
+        let session = f.stub.session;
+        f.chan.lock().threads.bind(&Recipient::new(FRIEND), session);
+        let id = ApprovalId(Uuid::new_v4());
+        f.chan
+            .handle_event(Event::Requested(ApprovalRequested {
+                id,
+                session,
+                tool: "share_publish".into(),
+                args: serde_json::json!({}),
+                risk: Risk::Destructive,
+                human_only: true,
+            }))
+            .await;
+        let Some(SentItem::Text {
+            timestamp, text, ..
+        }) = f.transport.sent().last().cloned()
+        else {
+            panic!("approval message not sent");
+        };
+        assert!(text.contains("Only the owner can answer this."), "{text}");
+        f.chan
+            .handle_envelope(SignalEnvelope {
+                reaction: Some(IncomingReaction {
+                    emoji: "👍".into(),
+                    target_timestamp: timestamp,
+                    remove: false,
+                }),
+                text: None,
+                ..env(FRIEND, 99, "")
+            })
+            .await;
+        assert!(f.stub.calls().is_empty());
+        assert!(matches!(
+            f.transport.sent().last(),
+            Some(SentItem::Text { text, .. }) if text == "only the owner can answer this"
+        ));
     }
 
     #[tokio::test]

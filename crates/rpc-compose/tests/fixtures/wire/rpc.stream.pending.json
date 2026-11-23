@@ -15,7 +15,8 @@
             "args": {
               "command": "rm sample"
             },
-            "risk": "destructive"
+            "risk": "destructive",
+            "human_only": false
           }
         ],
         "asks": [

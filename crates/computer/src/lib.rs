@@ -303,6 +303,7 @@ impl runtime::Plugin for ComputerPlugin {
             frames: Mutex::new(HashMap::new()),
             a11y,
             clipboard: clipboard::Clipboard::default(),
+            origins: browser::OwnOrigins::from_config(rt),
         });
         let actor = Computer::spawn(Computer {
             ctx: ctx.clone(),

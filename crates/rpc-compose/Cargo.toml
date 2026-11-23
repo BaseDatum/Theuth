@@ -50,6 +50,7 @@ double = { workspace = true }
 dreaming = { workspace = true }
 autoresearch = { workspace = true }
 cells = { workspace = true }
+share = { workspace = true }
 agent-client-protocol = { workspace = true }
 figment = { workspace = true }
 tokio = { workspace = true }

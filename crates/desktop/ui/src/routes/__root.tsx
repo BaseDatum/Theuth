@@ -11,6 +11,8 @@ import { DragOverlay } from '@/components/chat/Panes'
 import { StudyDraftBridge } from '@/components/autoresearch/SetupPane'
 import { MeetingBar } from '@/components/meeting/MeetingBar'
 import { settings } from '@/components/chat/slash'
+import { PublicShareHost } from '@/components/public-share/PublicShareHost'
+import { PublicShareStrip } from '@/components/public-share/PublicShareStrip'
 import { RoutineDraftBridge } from '@/components/routines/RoutineChat'
 import { AppSidebar } from '@/components/sidebar/AppSidebar'
 import { SearchDialog } from '@/components/sidebar/SearchDialog'
@@ -77,7 +79,10 @@ function Root() {
       <Capability required={costsRequirements} hide><CostsPrefetch /></Capability>
       <Capability required={studyRequirements} hide><StudyDraftBridge /></Capability>
       <DragOverlay />
+      <PublicShareHost />
       <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">
+        {/* 210 §7.4 item 1: over every route while anything of the mesh is public. */}
+        <PublicShareStrip />
         {/* 160 R2: the routed page and the resident costs page share one column; the costs page lies over it. */}
         <ResidentCtx value>
           <div className="relative flex min-h-0 flex-1 flex-col">

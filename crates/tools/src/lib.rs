@@ -68,8 +68,9 @@ pub use activity::{
     Settle, Tracked,
 };
 pub use approval::{
-    Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Decision, Dismiss, ForgetSession,
-    PendingApprovals, Resolve, ResolveBy,
+    Approval, ApprovalId, ApprovalRequested, ApprovalResolved, Approved, Decision, Dismiss,
+    ForgetSession, PendingApprovals, PendingHumanOnly, RequestHumanOnly, Resolve, ResolveBy,
+    approved, approved_scope, ask_human_only, ask_human_only_on, pending_human_only,
 };
 pub use ask::{
     Answer, AnswerAsk, AnswerAskBy, AskId, AskRequested, AskResolved, AskUser, Choice, LeaveAsk,
@@ -109,7 +110,8 @@ pub use registry::{
 };
 pub use registry::{
     Allowlisted, CancelCalls, ContactScoped, EffectiveCap, InstallResources, RemoveResources,
-    RestoreApprovals, RestoreHidden, SetAllowOnly, SetNoLan, SetPromoteAfter, SetTurnCap,
+    RestoreApprovals, RestoreHidden, SetAllowOnly, SetNoLan, SetNonOwnerThread, SetPromoteAfter,
+    SetTurnCap, mark_non_owner_thread,
 };
 pub use registry::{
     BuiltinsSwitchError, CloseTreeAll, ExpectParticipants, HarnessInvoke, HiddenEpoch,
@@ -348,6 +350,17 @@ pub struct ToolCx {
     pub promote_after: Option<std::time::Duration>,
 }
 
+/// What [`Tool::approval_preview`] knows of the call: the key a tool keeps its preview under, so
+/// that its [`Tool::call`] (same `session` and `call_id` in [`ToolCx`]) acts on exactly what the
+/// card showed.
+#[derive(Clone, Debug)]
+pub struct PreviewCx {
+    /// Owning session.
+    pub session: SessionId,
+    /// Provider call id.
+    pub call_id: String,
+}
+
 /// One struct per tool; the schema is derived from `Args`.
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync + 'static {
@@ -411,6 +424,34 @@ pub trait Tool: Send + Sync + 'static {
     /// Default `false`.
     const APPROVED_BY_CARD: bool = false;
 
+    /// 210 §7.2 (D10): only the owner, in person, on a surface the owner controls may approve
+    /// a call of this tool. The gate keeps it at least `Ask` whatever `tools.approvals`, a
+    /// session pin or the policy say (`Deny` still denies); an app activation, the double
+    /// ([`approval::ResolveBy`] with a non-human answerer) and a non-owner chat user can never
+    /// answer it; it is refused outright in contact turns and in sessions bound to a non-owner
+    /// chat thread ([`registry::SetNonOwnerThread`]). Default `false`.
+    const HUMAN_ONLY: bool = false;
+
+    /// Whether [`Tool::approval_preview`] has anything to add: only then are a call's arguments
+    /// deserialised for it, so every other tool's ask costs nothing. Default `false`.
+    const APPROVAL_PREVIEW: bool = false;
+
+    /// Card details computed before the registry raises this call's approval card (210 §7.3):
+    /// `Ok(Some(map))` is merged key by key into the card's args (what every surface renders);
+    /// `Err` refuses the call before any card. [`Tool::call`] still gets the model's own args;
+    /// a tool that must act on exactly what the card showed keeps the preview under
+    /// ([`PreviewCx::session`], [`PreviewCx::call_id`]) and looks it up from [`ToolCx`]. A denied,
+    /// timed out or withdrawn card never reaches `call`, so a preview must claim nothing.
+    /// Asked only when [`Tool::APPROVAL_PREVIEW`] is set; default none.
+    async fn approval_preview(
+        &self,
+        args: Self::Args,
+        cx: PreviewCx,
+    ) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
+        let _ = (args, cx);
+        Ok(None)
+    }
+
     /// Run it.
     async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput>;
 }
@@ -455,6 +496,20 @@ pub trait ErasedTool: Send + Sync + 'static {
     fn approved_by_card(&self) -> bool {
         false
     }
+    /// [`Tool::HUMAN_ONLY`]. MCP tools keep the default `false`.
+    fn human_only(&self) -> bool {
+        false
+    }
+    /// [`Tool::approval_preview`] on raw args; args that do not parse have none (the call fails
+    /// on them anyway). MCP tools keep the default: none.
+    fn approval_preview(
+        &self,
+        args: &serde_json::Value,
+        cx: PreviewCx,
+    ) -> BoxFuture<'_, anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>>> {
+        let _ = (args, cx);
+        Box::pin(std::future::ready(Ok(None)))
+    }
     /// Invoke with raw args.
     fn call(
         &self,
@@ -491,6 +546,26 @@ impl<T: Tool> ErasedTool for T {
 
     fn approved_by_card(&self) -> bool {
         T::APPROVED_BY_CARD
+    }
+
+    fn human_only(&self) -> bool {
+        T::HUMAN_ONLY
+    }
+
+    fn approval_preview(
+        &self,
+        args: &serde_json::Value,
+        cx: PreviewCx,
+    ) -> BoxFuture<'_, anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>>> {
+        let args = T::APPROVAL_PREVIEW
+            .then(|| <T::Args as serde::Deserialize>::deserialize(args).ok())
+            .flatten();
+        Box::pin(async move {
+            match args {
+                Some(a) => Tool::approval_preview(self, a, cx).await,
+                None => Ok(None),
+            }
+        })
     }
 
     fn call(

@@ -1,0 +1,136 @@
+[
+  {
+    "input": {
+      "share": {
+        "id": "0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+        "engine": "sample-engine",
+        "edge": "sample-edge",
+        "domain": "tun.zip",
+        "host": "k3x9qa.sky.tun.zip",
+        "path": "/",
+        "url": "https://k3x9qa.sky.tun.zip/",
+        "source": {
+          "port": 5173
+        },
+        "access": "public",
+        "interstitial": true,
+        "created_ms": 1700000000000,
+        "live_ms": 1700000001000,
+        "expires_ms": 1700028801000,
+        "created_by": {
+          "session": "sample-session",
+          "call_id": "call_1"
+        },
+        "approved_by": {
+          "approval_id": "sample-approval",
+          "surface": "owner"
+        },
+        "state": "live",
+        "stopped_ms": null,
+        "stopped_by": null
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ShareChanged",
+          "share": {
+            "id": "0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+            "engine": "sample-engine",
+            "edge": "sample-edge",
+            "domain": "tun.zip",
+            "host": "k3x9qa.sky.tun.zip",
+            "path": "/",
+            "url": "https://k3x9qa.sky.tun.zip/",
+            "source": {
+              "port": 5173
+            },
+            "access": "public",
+            "interstitial": true,
+            "created_ms": 1700000000000,
+            "live_ms": 1700000001000,
+            "expires_ms": 1700028801000,
+            "created_by": {
+              "session": "sample-session",
+              "call_id": "call_1"
+            },
+            "approved_by": {
+              "approval_id": "sample-approval",
+              "surface": "owner"
+            },
+            "state": "live",
+            "stopped_ms": null,
+            "stopped_by": null
+          }
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "share": {
+        "id": "0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c",
+        "engine": "sample-engine",
+        "edge": "sample-edge",
+        "domain": "tun.zip",
+        "host": "sky.tun.zip",
+        "path": "/docs",
+        "url": "https://sky.tun.zip/docs/",
+        "source": {
+          "dir": "/Users/sample/site"
+        },
+        "access": "password",
+        "interstitial": true,
+        "created_ms": 1700000000000,
+        "live_ms": null,
+        "expires_ms": null,
+        "created_by": "settings",
+        "approved_by": {
+          "approval_id": "",
+          "surface": ""
+        },
+        "state": "stopped",
+        "stopped_ms": 1700000500000,
+        "stopped_by": "user"
+      }
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ShareChanged",
+          "share": {
+            "id": "0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c",
+            "engine": "sample-engine",
+            "edge": "sample-edge",
+            "domain": "tun.zip",
+            "host": "sky.tun.zip",
+            "path": "/docs",
+            "url": "https://sky.tun.zip/docs/",
+            "source": {
+              "dir": "/Users/sample/site"
+            },
+            "access": "password",
+            "interstitial": true,
+            "created_ms": 1700000000000,
+            "live_ms": null,
+            "expires_ms": null,
+            "created_by": "settings",
+            "approved_by": {
+              "approval_id": "",
+              "surface": ""
+            },
+            "state": "stopped",
+            "stopped_ms": 1700000500000,
+            "stopped_by": "user"
+          }
+        }
+      }
+    }
+  }
+]

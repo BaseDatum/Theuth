@@ -1,0 +1,24 @@
+[package]
+name = "share-proto"
+version = "2.25.5"  # frozen: only the binaries carry the product version (platform::version)
+edition.workspace = true
+publish.workspace = true
+description = "Wire contract of public web sharing: ALPN theuth/share/1, control API, delegations, tickets, name and CSR rules (design doc 210)"
+
+# 210 D14: no theuth crate here, so `theuth-share-edge` checks everything standalone.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+postcard = { workspace = true }
+iroh-base = { workspace = true }
+iroh-tickets = { workspace = true }
+x509-parser = { workspace = true }
+data-encoding = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }
+
+[lints]
+workspace = true

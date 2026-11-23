@@ -1,0 +1,37 @@
+# NOT in kustomization.yaml: run once before the first start. `run` refuses to start without
+# <data_dir>/acme/letsencrypt.json ("no ACME account for letsencrypt"), and `acme register` creates that file
+# only if absent, so it cannot be an initContainer (the scratch image has no shell to guard a re-run).
+#   kubectl apply -k deploy/share-edge/k8s/rwx-dev && kubectl -n theuth scale deploy/theuth-share-edge --replicas=0
+#   kubectl -n theuth apply -f deploy/share-edge/k8s/rwx-dev/acme-register-job.yaml
+#   kubectl -n theuth logs job/theuth-share-edge-acme-register   # prints the account URI and the two CAA lines (§8.2)
+#   kubectl -n theuth delete job theuth-share-edge-acme-register && kubectl -n theuth scale deploy/theuth-share-edge --replicas=1
+# Contacts Let's Encrypt STAGING (the configmap's directory). Keep the image tag equal to kustomization.yaml's.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: theuth-share-edge-acme-register
+  namespace: theuth-share
+  labels: {app.kubernetes.io/name: theuth-share-edge-acme-register, app.kubernetes.io/part-of: theuth}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      imagePullSecrets: [{name: ghcr-secret}]
+      nodeSelector: {kubernetes.io/arch: amd64}
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, fsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: register
+          image: ghcr.io/skymoore/theuth/share-edge:share-edge-9775ee820
+          args: ["acme", "register", "--ca", "letsencrypt", "--config", "/etc/theuth-share-edge/config.yaml"]
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+          env: [{name: THEUTH_SHARE_EDGE_DB_JOURNAL, value: delete}]
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/theuth-share-edge}
+            - {name: config, mountPath: /etc/theuth-share-edge, readOnly: true}
+            - {name: secrets, mountPath: /run/secrets/theuth-share-edge, readOnly: true}
+      volumes:
+        - {name: data, persistentVolumeClaim: {claimName: theuth-share-edge-data}}
+        - {name: config, configMap: {name: theuth-share-edge}}
+        - {name: secrets, secret: {secretName: theuth-share-edge, defaultMode: 0440}}

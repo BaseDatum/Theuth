@@ -118,6 +118,8 @@ pub async fn serve(rt: &Runtime, cfg: RpcConfig, module: ModuleFactory) -> anyho
     let methods = methods(rt.clone(), module).await;
     let listener = TcpListener::bind(cfg.listen.as_str()).await?;
     let addr = listener.local_addr()?;
+    // 210 §5.6: a public share may never proxy to the engine's own RPC listener.
+    share::sources::register_own_port(addr.port());
     tracing::info!(%addr, token = %token_path.display(), "rpc listening");
     let shutdown = rt.shutdown.clone();
     tokio::spawn(accept(listener, methods, token, async move {

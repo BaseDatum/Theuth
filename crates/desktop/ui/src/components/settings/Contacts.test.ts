@@ -1,7 +1,7 @@
+import './test-dom'
 import { readyConnection } from '@/components/settings/test-engine'
 import type * as ConnectionModule from '@/store/connection'
 import { receiveComponent } from '@/rpc/bindings/receive'
-import './test-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { type ReactNode, act, createContext, createElement, useContext } from 'react'
 import { createRoot } from 'react-dom/client'

@@ -1,0 +1,10 @@
+# iroh.key (pinned by shipped clients), share-edge.sqlite and acme/: back it up. An empty new PVC is a key rotation.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: theuth-share-edge-data
+  labels: {app.kubernetes.io/name: theuth-share-edge, app.kubernetes.io/part-of: theuth}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 1Gi}

@@ -60,6 +60,8 @@ pub async fn action(mut cx: CommandCx<'_>, data: &str) -> Option<Outcome> {
         ["approvals", "ask"] => ("approvals", "on".to_owned()),
         ["approvals", "off_session"] => ("approvals", "off".to_owned()),
         ["approvals", "off_always"] => ("approvals", "off always".to_owned()),
+        // 210 §7.4 item 9: the live-share message's `Stop all`.
+        ["share", "stop"] => ("share", "stop".to_owned()),
         ["page", panel, n] => {
             cx.page = n.parse().ok()?;
             let name = match *panel {
@@ -300,6 +302,7 @@ pub fn help() -> Reply {
                 "peers",
                 "requests",
                 "a2a",
+                "share",
             ],
         ),
     ];

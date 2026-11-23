@@ -14,7 +14,7 @@ const CLOUD = 'c10d'.repeat(16)
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<object>()), useApi: () => ({ list_sessions: async () => [] }) }))
 vi.mock('@/components/tasks/queries', () => ({ useMesh: () => ({ data: { self_id: 'me', peers: [{ id: CLOUD, name: 'cloud-1', reachable: true }] } }) }))
 
-const approval = (session: string): ApprovalRequested => ({ type: 'ApprovalRequested', id: `ap-${session}`, session, tool: 'shell', args: { command: 'cargo test -p replica' }, risk: 'mutating' })
+const approval = (session: string): ApprovalRequested => ({ type: 'ApprovalRequested', id: `ap-${session}`, session, tool: 'shell', args: { command: 'cargo test -p replica' }, risk: 'mutating', human_only: false })
 const render = (session: string, rows: Pick<SessionSummary, 'id' | 'owner' | 'here'>[]) => {
   const client = new QueryClient()
   client.setQueryData(queryKeys.sessions, rows)

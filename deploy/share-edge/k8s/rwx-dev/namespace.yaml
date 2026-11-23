@@ -1,0 +1,8 @@
+# Dedicated namespace for the edge (owner 2026-11-23): its Ingress Role covers only the Ingresses it creates here,
+# so it no longer holds RBAC over the relay's Ingresses in `theuth`. The Secret `theuth-share-edge` and the image pull
+# secret `ghcr-secret` are created/copied out of band and never committed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: theuth-share
+  labels: {app.kubernetes.io/part-of: theuth}

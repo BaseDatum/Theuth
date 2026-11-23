@@ -20,7 +20,7 @@ const tool = (id: string, name: string, at: number, done = true): Entry => ({
   at,
   ...(done ? { result: { ok: true, output: 'done' } as never } : {}),
 })
-const approval = (id: string, tool: string, session = 'desk'): ApprovalRequested => ({ type: 'ApprovalRequested', id, session, tool, args: {}, risk: 'mutating' })
+const approval = (id: string, tool: string, session = 'desk'): ApprovalRequested => ({ type: 'ApprovalRequested', id, session, tool, args: {}, risk: 'mutating', human_only: false })
 const ask = (id: string, session = 'desk', questionId = 'q'): AskRequested => ({
   type: 'AskRequested',
   id,

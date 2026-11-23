@@ -5,7 +5,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { type UnlistenFn, emitTo, listen } from '@tauri-apps/api/event'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { Window, getCurrentWindow } from '@tauri-apps/api/window'
 
 /** `launch::Connection`: what the webview needs to open the WebSocket. */
 export type Connection = {
@@ -57,6 +57,20 @@ const on = <T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> =>
 export const onLaunchLog = (cb: (chunk: string) => void) => on<string>('launch-log', cb)
 /** Tray menu / app menu: show the window and go to `path` (`/`, `/knowledge`, `/settings/appearance`). */
 export const onNavigate = (cb: (path: string) => void) => on<string>('navigate', cb)
+/** 210 §7.4 item 2: the tray's "Stop public sharing (N)" item, shown while `live > 0` (`commands::share_tray`). */
+export const shareTray = (live: number): Promise<void> =>
+  isTauri() ? invoke<void>('share_tray', { live }) : Promise.resolve()
+/** The tray's "Stop public sharing" ran in the shell (`crates/desktop/src/share.rs`): its `share_stop("all")` result. */
+export const onShareStoppedAll = (cb: (stopped: { stopped: number; edge_pending: string | null }) => void) =>
+  on<{ stopped: number; edge_pending: string | null }>('share-stopped-all', cb)
+/** 210 §7.4 item 6: the island's LIVE badge Stop — the tray's native Stop all (`share::stop_all`), same outcome. */
+export const shareStopAll = (): Promise<void> => (isTauri() ? invoke<void>('share_stop_all') : Promise.resolve())
+/** Whether the main window is shown (`isVisible`; closing it only hides it → `false`). Off Tauri: `true`. */
+export async function mainWindowVisible(): Promise<boolean> {
+  if (!isTauri()) return true
+  const main = await Window.getByLabel('main')
+  return main ? main.isVisible() : false
+}
 /** `quit::Requested`: `restart` on Settings › Install and restart. */
 export type QuitRequested = { restart: boolean }
 /** `quit::Progress`: one per quit-worker step (163 D4); a second `engine` with `forced` when the daemon was killed. */

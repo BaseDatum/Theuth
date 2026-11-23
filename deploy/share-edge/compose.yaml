@@ -1,0 +1,29 @@
+# theuth-share-edge on one host with a public IP (design doc 210 §8.4, appendix §8.4).
+#   cp deploy/share-edge/config.example.yaml deploy/share-edge/config.yaml   # edit domain, iroh.public_addrs, dns
+#   echo '{"key":"pk1_…","secret":"sk1_…"}' > deploy/share-edge/dns.json && chmod 600 deploy/share-edge/dns.json
+#   docker compose -f deploy/share-edge/compose.yaml up -d
+# Not on the same IP as deploy/relay/compose.yaml: its Caddy owns 443. No TCP 80 (§4.1).
+# Operator commands: docker compose -f deploy/share-edge/compose.yaml exec share-edge /theuth-share-edge admin status
+services:
+  share-edge:
+    build:
+      context: ../..
+      dockerfile: deploy/share-edge/Dockerfile
+    image: theuth-share-edge
+    restart: unless-stopped
+    ports:
+      - "443:8443/tcp"
+      - "7850:7850/udp"
+    volumes:
+      - data:/var/lib/theuth-share-edge
+      - ./config.yaml:/etc/theuth-share-edge/config.yaml:ro
+    secrets:
+      - source: dns
+        target: /run/secrets/theuth-share-edge/dns.json
+
+secrets:
+  dns:
+    file: ./dns.json
+
+volumes:
+  data:

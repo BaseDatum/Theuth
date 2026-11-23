@@ -41,6 +41,8 @@ voice = { workspace = true }
 roster = { workspace = true }
 tasks = { workspace = true }
 mesh = { workspace = true }
+# 210 §7.4 item 9: `/share` and the owner's live-share notices.
+share = { workspace = true }
 ts-rs = { workspace = true, optional = true }
 
 [dev-dependencies]

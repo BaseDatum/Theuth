@@ -25,7 +25,7 @@ pub(crate) struct Menu {
 pub(crate) enum Request {
     ListMcp(Option<SessionId>), McpStatus,
     SetGate { server: String, tool: Option<String>, gate: Option<Gate>, session: Option<SessionId> },
-    SetHidden { session: Option<SessionId>, tools: Vec<String>, hidden: bool, draft: Option<agent::CreateSessionOptions> },
+    SetHidden { session: Option<SessionId>, tools: Vec<String>, hidden: bool, draft: Option<Box<agent::CreateSessionOptions>> },
     AddMcp { name: String, entry: serde_json::Value }, AddMcpRepo(String), SyncMcp,
     Login(String), Logout(String),
 }
@@ -58,7 +58,7 @@ fn send(cx: &mut Cx<'_, '_, Msg>, request: Request) {
             }.await),
             Request::SetHidden { session: None, tools, hidden, draft } => {
                 let result = match draft {
-                    Some(draft) => api.create_session(draft).await.map(|open| open.session),
+                    Some(draft) => api.create_session(*draft).await.map(|open| open.session),
                     None => api.new_session().await,
                 };
                 match result {
@@ -311,7 +311,7 @@ impl Mcp {
                 session,
                 tools: row.tool_names(),
                 hidden,
-                draft: tx.core.draft_options.cloned(),
+                draft: tx.core.draft_options.cloned().map(Box::new),
             }))
         };
         // The scope prompt after ⏎ on an `on` row: the target is the row the

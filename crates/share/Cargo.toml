@@ -1,0 +1,68 @@
+[package]
+name = "share"
+version = "2.25.5"  # frozen: only the binaries carry the product version (platform::version)
+edition.workspace = true
+publish.workspace = true
+description = "Public web sharing client plugin: tunnel to a share edge, TLS termination, proxy, consent (design doc 210)"
+
+[dependencies]
+share-proto = { workspace = true }
+rpc-core = { workspace = true }
+rpc-core-macros = { workspace = true }
+jsonrpsee = { workspace = true }
+runtime = { workspace = true }
+wire = { workspace = true }
+tools = { workspace = true }
+platform = { workspace = true }
+# 210 WIRE1: the engine adapters (`wiring`): `Net::dial_alpn`, `mesh/share_key`, the vault's `share/` rows.
+mesh = { workspace = true }
+secrets = { workspace = true }
+iroh = { workspace = true }
+iroh-base = { workspace = true }
+rcgen = { workspace = true }
+ppp = { workspace = true }
+kameo = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+tokio-util = { workspace = true, features = ["io"] }
+replica = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+data-encoding = { workspace = true }
+mime_guess = { workspace = true }
+libc = { workspace = true }
+# 210 M2: the rekey stash zeroises secrets.
+zeroize = { workspace = true }
+# 210 appendix §4.6: TLS termination, serving, proxy, upgrades, gate.
+hyper = { version = "1", features = ["client", "server", "http1", "http2"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "service", "server-auto", "client-legacy", "http1", "http2"] }
+http-body-util = "0.1"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["aws_lc_rs"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
+arc-swap = "1.9.3"
+listeners = "0.6.1"
+argon2 = "0.6.0"
+cookie = { version = "0.18.2", features = ["signed"] }
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+axum = { workspace = true }
+tower = { workspace = true }
+
+[features]
+ts = ["dep:ts-rs", "runtime/ts", "tools/ts"]
+
+[lints]
+workspace = true

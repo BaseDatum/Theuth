@@ -4484,6 +4484,7 @@ mod tests {
             tool: "bash".into(),
             args: serde_json::json!({ "command": "rm -rf /tmp/x" }),
             risk: tools::Risk::Destructive,
+            human_only: false,
         };
         let q = ask(s, &[("Ship?", &["Yes"])]);
         let inputs = Inputs {
@@ -4518,6 +4519,7 @@ mod tests {
             tool: "bash".into(),
             args: serde_json::json!({ "command": "ls" }),
             risk: tools::Risk::Destructive,
+            human_only: false,
         };
         let mut inputs = Inputs {
             approvals: vec![(a, 40)],
@@ -5177,6 +5179,7 @@ mod tests {
             tool: "shell".into(),
             args: serde_json::json!({ "command": "kubectl delete deployment x" }),
             risk: tools::Risk::Destructive,
+            human_only: false,
         };
         let approval_id = format!("approval:{}", a.id.0);
         let ops = tasks::Owner::Agent("ops".into());

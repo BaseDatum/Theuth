@@ -29,6 +29,8 @@ vi.mock('@/rpc/discovery', async (original) => ({
 const shell = vi.hoisted(() => ({ tauri: false, put: (async () => 'theuth-page://x') as (call: string, doc: string) => Promise<string> }))
 vi.mock('@/lib/tauri', () => ({ isTauri: () => shell.tauri }))
 vi.mock('@/lib/pages', () => ({ pagePut: (call: string, doc: string) => shell.put(call, doc), pageDrop: async () => {} }))
+// The card names the agent browser's engine from the mesh (`obscura:studio` → "studio").
+vi.mock('@/components/tasks/queries', () => ({ useMesh: () => ({ data: { self_id: 'me', self_name: 'mac', peers: [{ id: 'studio', name: 'studio', reachable: true }] } }) }))
 const toasts = vi.hoisted(() => [] as string[])
 vi.mock('sonner', () => ({ toast: Object.assign((m: string) => void toasts.push(m), { error: (m: string) => void toasts.push(m) }) }))
 /** The mesh the card reads to name an agent browser's engine (`obscura:studio` -> "studio"); no QueryClient is mounted. */

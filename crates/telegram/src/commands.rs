@@ -98,6 +98,11 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
         "one message to many sessions; --next lands after the turn (owner)",
     ),
     ("a2a", "[reload]", "network status or config reload (owner)"),
+    (
+        "share",
+        "[list|stop [<id>|all]]",
+        "live public shares; stop one or all (owner)",
+    ),
 ];
 
 const OWNER_ONLY: &[&str] = &[
@@ -108,6 +113,7 @@ const OWNER_ONLY: &[&str] = &[
     "requests",
     "a2a",
     "broadcast",
+    "share",
 ];
 
 /// Commands in the group scope (98 §10.3), each `is_ephemeral`.
@@ -545,6 +551,8 @@ async fn run(cx: &CommandCx<'_>, name: &str, arg: &str) -> anyhow::Result<Outcom
         "requests" => requests_cmd(cx.session, arg).await,
         "a2a" => a2a_cmd(arg).await,
         "broadcast" => broadcast_cmd(cx, arg).await,
+        // 210 §7.4 item 9: never gated by an approval.
+        "share" => text(crate::sharing::command(arg).await?),
         _ => reply(help()),
     }
 }
@@ -1417,6 +1425,8 @@ mod tests {
             ("requests", ""),
             ("a2a", "reload"),
             ("broadcast", "running hello"),
+            ("share", "stop"),
+            ("share", ""),
         ] {
             assert_eq!(
                 handle(cx(&port, 2, None), name, arg).await,
@@ -1450,6 +1460,25 @@ mod tests {
             panic!()
         };
         assert!(r.markdown.starts_with("```\nstate: "));
+    }
+
+    /// 210 §7.4 item 9: `/share stop` reaches the share engine for the owner, with no
+    /// approval; without a running engine the reply says sharing is not running.
+    #[tokio::test]
+    async fn share_stop_dispatches_for_the_owner() {
+        let port = FakePort::default();
+        assert!(owner_only("share"));
+        for arg in ["stop", "stop all", "stop 0193aa01", "", "list"] {
+            assert_eq!(
+                handle(cx(&port, 1, None), "share", arg).await,
+                text(crate::sharing::NOT_RUNNING),
+                "{arg}"
+            );
+        }
+        assert_eq!(
+            handle(cx(&port, 1, None), "share", "start").await,
+            text("usage: /share [list | stop [<id>|all]]")
+        );
     }
 
     #[tokio::test]

@@ -136,7 +136,16 @@ pub fn body(req: &ApprovalRequested) -> String {
             ),
         ),
     };
-    format!("⚠️ **{}** wants to run\n```{lang}\n{args}\n```", req.tool)
+    let owner_only = if req.human_only {
+        // 210 §7.2: the thread user's click is refused; say so on the card.
+        "\n_Only the owner can answer this._"
+    } else {
+        ""
+    };
+    format!(
+        "⚠️ **{}** wants to run\n```{lang}\n{args}\n```{owner_only}",
+        req.tool
+    )
 }
 
 /// A parsed Allow/Deny button click.
@@ -216,6 +225,7 @@ mod tests {
             tool: tool.into(),
             args,
             risk: tools::Risk::Destructive,
+            human_only: false,
         }
     }
 

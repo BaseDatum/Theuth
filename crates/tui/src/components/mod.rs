@@ -18,6 +18,7 @@ pub mod mesh_devices;
 pub mod secrets;
 pub mod peers;
 pub mod files;
+pub mod share;
 
 // Step-11 group t2 (boards, costs and artifacts): add modules below, in this block only.
 pub mod tasks;

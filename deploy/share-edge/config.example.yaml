@@ -1,0 +1,119 @@
+# theuth-share-edge config (design doc 210 §8.1; this is appendix §8.1 as P1 ships it).
+# Env overrides: THEUTH_SHARE_EDGE_<KEY>, `__` between levels (THEUTH_SHARE_EDGE_LIMITS__IDLE_SECS=600).
+# Secrets never go in this file (§8.3): dns.credential_file or THEUTH_SHARE_EDGE_DNS__CREDENTIAL, not both.
+# Not yet enforced (later milestones): acme.cas.letsencrypt.orders_per_3h, limits.reserved_min_mesh_age,
+# limits.engine_keys_per_mesh_day, the gts block (P2).
+domain: tun.zip               # D, sent in /v1/info and welcome
+data_dir: /var/lib/theuth-share-edge   # share-edge.sqlite, iroh.key, acme/<ca>.json; persistent, backed up
+db_journal: wal              # wal | delete; delete = data dir on NFS (DELETE journal, exclusive lock, one connection)
+listen: "[::]:443"            # "[::]:8443" in k8s behind Service port 443
+listen_http: ""               # off; only for a D outside an HSTS-preloaded TLD
+listen_proxy_protocol: {trusted: []}   # CIDRs whose connections must start with a PROXY v1/v2 header (an LB/ingress)
+iroh: {listen: "[::]:7850", relay: https://iroh.relay.theuth.io, public_addrs: [], pkarr: true}   # pkarr: not published (tickets carry relay + addrs)
+admin: {socket: /var/lib/theuth-share-edge/admin.sock, http: "[::]:9090"}   # §8.5; /metrics, /healthz
+admission: open               # open | invite | closed; live via admin; `admin reload` applies a changed value
+drain_secs: 30                # SIGTERM: drain {secs} to every tunnel, wait up to this long, then stop
+# standby_public: <hex>       # public key of the OFFLINE standby (`theuth-share-edge keygen`); launch: set it.
+                              # unset: the edge creates iroh.standby.key on its volume (pre-launch); see README
+brake:                        # §9.5; 0 = threshold off. auto: a holding condition flips open → invite (never back)
+  auto: false
+  refusals_per_min: 0         # limit refusals (network_quota, paced, quota, engines_quota, edge_full) in the last minute
+  new_meshes_per_min: 0       # meshes first seen in the last minute
+  queue_eta_hours: 72         # longest queue ETA above this holds queue_eta
+reserved_per_mesh: 1
+engines_per_mesh: 8
+delegation_max_ttl: 25h       # top-level, not under limits
+random_name_len: 6
+reclaim_cooldown: 30d
+reserved_words: []
+brand_blocklist_file: /etc/theuth-share-edge/brands.txt   # §9.4; reloadable
+terms_url: https://example.com/share-terms     # outside D
+terms_rev: "2026-11-23"
+abuse_url: https://example.com/share-abuse     # outside D
+abuse_contact: abuse@example.com
+require_caa: true             # cannot be false with admission open (§8.2)
+acme:
+  contact: mailto:ops@example.com
+  profile: classic
+  primary: letsencrypt        # P1
+  invite_share: 0.5           # invited share of every CA's weekly new-name certificates (invited 23, open 22 of 45);
+                              # an invited token unused for 24 h may go to the open queue (§6.5)
+  queue_max: 2000             # names waiting for a slot; beyond it new names and first CSRs: 503 edge_full
+  renew_check: 6h             # ARI refresh and renewal scan (§6.3)
+  propagation: 30s            # wait after writing a challenge TXT
+  auth_gap: 60s               # between the two authorizations (§6.1)
+  job_lease: 15m
+  max_attempts: 12            # backoff 1 min doubling to 24 h
+  cas:
+    letsencrypt:
+      directory: https://acme-staging-v02.api.letsencrypt.org/directory   # prod: https://acme-v02.api.letsencrypt.org/directory
+      validation: dns-01
+      orders_per_3h: 200
+      new_certs_per_week: 45
+    gts:                      # P2
+      enabled: false
+      directory: https://dv.acme-v02.api.pki.goog/directory   # staging: https://dv.acme-v02.test-api.pki.goog/directory
+      validation: dns-persist-01
+      eab_file: /run/secrets/theuth-share-edge/acme-gts-eab.json
+      orders_per_hour: 80
+dns:
+  provider: porkbun
+  zone: tun.zip
+  credential_file: /run/secrets/theuth-share-edge/dns.json
+  target: edge.tun.zip
+limits:                       # §9.4; "net" = IPv4 address or IPv6 /64; refusals carry {scope, limit}
+  creates_per_net_hour: 30    # claims and allocations, open meshes; per tier × factor
+  creates_burst: 10
+  new_meshes_per_net_day: 5   # meshes first seen per day (not invited)
+  certs_per_net_week: 2       # open meshes only; invited meshes are not counted per network
+  certs_per_mesh_week: 2      # new-name certificates per mesh per 7 days, every mesh
+  queued_per_net: 2           # open meshes only
+  reserved_per_net: 6         # reserved names held, open meshes only
+  reserved_min_mesh_age: 0s   # a younger mesh's reserved claim: 429 quota {scope: mesh, limit: reserved, retry_after_s}
+  tunnels_per_net: 10
+  wide_net_factor: 4          # per IPv4 /24 and IPv6 /48
+  v6_32_factor: 16            # per IPv6 /32
+  asn_factor: 64              # per origin ASN
+  asn_db: /var/lib/theuth-share-edge/ip2asn.tsv   # optional; iptoasn TSV (start end asn …) or "cidr asn" lines;
+                              # unset or missing file = ASN tier off
+  open_new_names_day: 500     # global, paced (burst 1/24 of it), open meshes only: 429 paced {retry_after_s}
+  relayed_new_meshes_day: 20  # relay-only newcomer meshes, edge-wide
+  relayed_every: 1h           # paced: one per relayed_every, burst relayed_burst
+  relayed_burst: 4
+  names_max: 1200             # P1: Porkbun record bound (§6.4); counted at slot time
+  allocated_ttl: 1h           # an allocated name without a CSR is evicted
+  evict_unpublished_after: 7d # at names_max, names never live this long after allocation are evicted first
+  bytes_per_mesh_day: 20GiB   # B, KiB…TiB, KB…TB or a plain count; over it: kill {budget}, routes refused to UTC midnight
+  bytes_per_net_day: 50GiB    # per tier × factor
+  engine_keys_per_mesh_day: 8 # engine keys first seen per mesh per UTC day: 403 engines_quota {scope: mesh}
+  unattached_expiry: 90d      # held names of a mesh not attached this long expire (records, cert, k8s objects gone)
+  name_fail_max: 2            # failed certificate attempts of a name in a row …
+  name_fail_cooldown: 1h      # … pause its job this long
+  tunnel_mbit: 50             # per-tunnel shaping; burst min(64 MiB, 10 s of rate)
+  throttle_mbit: 2            # non-invited tunnels while egress is over pace (§9.6)
+  egress_month: 10TiB         # the host's allowance; pace = allowance × fraction of month elapsed
+  new_conns_per_tunnel_sec: 50
+  new_conns_burst: 200
+  write_stall: 5s             # a visitor that accepts no bytes this long is reset
+  conn_log_retention: 30d     # conn_log rows purged after this
+  conns_per_tunnel: 256
+  open_bi_timeout_secs: 5
+  conns_per_ip: 64
+  new_conns_per_ip_sec: 20
+  global_conns: 20000         # refuses to start with RLIMIT_NOFILE under 65536
+  pre_hello_conns: 256
+  hello_timeout_secs: 10
+  info_per_ip_min: 30
+  lookups_per_net_min: 30     # GET /v1/names/{name} per IPv4 address / IPv6 /64 (429 rate_limited {scope: net})
+  lookups_per_wide_min: 120   # … per IPv4 /24 / IPv6 /48 (scope: net_wide)
+  lookups_per_tunnel_min: 30  # … per tunnel (engine key; scope: tunnel); a relayed tunnel's only lookup limit
+  routes_per_tunnel: 64
+  idle_secs: 900
+min_client: "0.0.0"           # oldest theuth served; older clients get 426 client_too_old
+k8s:                          # needs a build with the cargo feature `k8s`; see k8s/rwx-dev/configmap.yaml for templates
+  enabled: false
+  namespace: ""               # "" = the pod's service-account namespace
+  field_manager: theuth-share-edge
+  resync: 5m
+  static: []                  # objects applied once at start; ${domain} ${namespace}
+  per_name: []                # objects per serving name; ${name} ${domain} ${host} ${wildcard} ${slug} ${namespace}

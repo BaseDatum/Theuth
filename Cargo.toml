@@ -62,6 +62,22 @@ iroh = { version = "1.2", default-features = false, features = ["tls-aws-lc-rs"]
 iroh-gossip = { version = "0.101", default-features = false, features = ["net"] }  # 67
 iroh-mdns-address-lookup = "0.6"  # 67
 data-encoding = "2"  # 67
+# Public web sharing (design doc 210, building blocks in the appendix §4.6). `share-proto` = the wire contract
+# (no theuth crate), `share-edge` = the standalone `theuth-share-edge` binary, `share` = the client plugin.
+# iroh-base `key` = Ed25519 sign/verify for delegations and rekeys and `EndpointAddr` for the ticket;
+# iroh-tickets = the `Ticket` trait for `ShareEdgeTicket`; x509-parser `verify-aws` = CSR signature checks on
+# aws-lc-rs, the process provider; rcgen `aws_lc_rs` = the hosting engine's P-256 key and CSR.
+share-proto = { path = "crates/share-proto" }  # 210
+share = { path = "crates/share" }  # 210
+iroh-base = { version = "1.4", default-features = false, features = ["key"] }  # 210
+iroh-tickets = "1.0.0"  # 210
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }  # 210
+x509-parser = { version = "0.18.1", features = ["verify-aws"] }  # 210
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }  # 210
+instant-acme = { version = "0.8.5", default-features = false, features = ["aws-lc-rs", "hyper-rustls", "time", "x509-parser"] }  # 210 §6.1
+zone-update = { version = "=0.12.3", default-features = false, features = ["async", "porkbun"] }  # 210 §6.1
+ppp = "2.3.0"  # 210 §5.3: PROXY v2 visitor preamble
+governor = "0.10.4"  # 210 §9.4
 sandbox = { path = "crates/sandbox" }  # make an engine: ssh installer / docker container → mesh peer (67 §13, 64 §4)
 artifact = { path = "crates/artifact" }
 app = { path = "crates/app" }  # interactive OpenUI apps: publish, app RPC, one-press tool bridge (46)

@@ -179,6 +179,12 @@ enum Event {
     Predicted(double::DoublePredicted),
     /// 126 §10: the double answered a card at L2.
     DoubleAnswered(double::DoubleAnswered),
+    /// 210 §7.4: a share record changed (local or replicated).
+    Share(Box<share::model::ShareChanged>),
+    /// 210 §7.4: the engine's share list at start.
+    Shares(Vec<share::model::Share>),
+    /// Once a minute: the live message's countdowns.
+    ShareTick,
 }
 
 /// Bus subscriber: forwards into the ordered router.
@@ -266,6 +272,13 @@ impl Message<mesh::MeshEvent> for Bus {
     }
 }
 
+impl Message<share::model::ShareChanged> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: share::model::ShareChanged, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Share(Box::new(m)));
+    }
+}
+
 /// An acked, deduplicated Socket Mode envelope (21 §7).
 pub enum Inbound {
     /// Events API payload.
@@ -330,6 +343,8 @@ struct Card {
     session: SessionId,
     /// The thread's user, allowed to click beside the owner; `None` for owner-DM cards.
     thread_user: Option<String>,
+    /// 210 §7.2: only the owner may click it, never the thread user.
+    human_only: bool,
     /// Who clicked, once a click was accepted.
     by: Option<String>,
     /// Owner-DM cards only: `(ts, body, session context line)`.
@@ -392,6 +407,8 @@ struct State {
     socket: Option<CancellationToken>,
     /// Set once identity resolved: the socket may open.
     app_token: Option<String>,
+    /// 210 §7.4: the owner-DM live-share message.
+    live: crate::public_share::LiveMessage,
 }
 
 /// Everything shared by the listener callbacks, the inbound worker, the
@@ -501,6 +518,8 @@ async fn run(
     mut inbound_rx: mpsc::UnboundedReceiver<Inbound>,
 ) {
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Event>();
+    let share_tx = ev_tx.clone();
+    let resync_tx = ev_tx.clone();
     let bus = Bus::spawn_with_mailbox(Bus { tx: ev_tx }, runtime::subscriber_mailbox());
     chan.rt.subscribe::<Bus, AgentEvent>(&bus).await;
     chan.rt.subscribe::<Bus, ApprovalRequested>(&bus).await;
@@ -515,6 +534,32 @@ async fn run(
         .subscribe::<Bus, double::DoublePredicted>(&bus)
         .await;
     chan.rt.subscribe::<Bus, double::DoubleAnswered>(&bus).await;
+    chan.rt
+        .subscribe::<Bus, share::model::ShareChanged>(&bus)
+        .await;
+    // 210 §7.4: seed from the share engine once it runs (it may start after
+    // this plugin), then tick the live message's countdowns.
+    let shares = tokio::spawn(async move {
+        let mut seeded = false;
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            if !seeded && let Ok(engine) = share::rpc_support::engine() {
+                match engine.list().await {
+                    Ok(rows) => {
+                        seeded = true;
+                        let _ = share_tx.send(Event::Shares(rows));
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "share list for the slack live message failed")
+                    }
+                }
+            }
+            if share_tx.send(Event::ShareTick).is_err() {
+                return;
+            }
+        }
+    });
     // 67 §4.7: learn our engine id once the mesh is up; the lease resolves then.
     let me = {
         let chan = Arc::clone(&chan);
@@ -580,6 +625,8 @@ async fn run(
                 team,
                 owner_dm,
             });
+            // 210 §7.4: through the router, the live message's only writer.
+            let _ = resync_tx.send(Event::ShareTick);
             // 21 §11: streams a previous process left open.
             let stale = chan.lock().threads.take_streams();
             for (channel, ts) in stale {
@@ -599,6 +646,7 @@ async fn run(
         }
     }
     me.abort();
+    shares.abort();
     inbound.abort();
     router.abort();
     bus.kill();
@@ -658,6 +706,7 @@ impl Channel {
                 follower: roster::lease::Follower::default(),
                 socket: None,
                 app_token: None,
+                live: crate::public_share::LiveMessage::default(),
             }),
             inbound_tx,
             rt,
@@ -815,10 +864,11 @@ impl Channel {
             Outcome::Resume { session, reply, .. } => {
                 // A fresh root message in this channel becomes the session's thread.
                 match self.api.post_markdown(channel, None, &reply.text).await {
-                    Ok(ts) => self.lock().threads.bind(
-                        thread_key(channel, &ts),
-                        Thread::new(session, user.to_owned(), team.to_owned()),
-                    ),
+                    Ok(ts) => {
+                        let thread = Thread::new(session, user.to_owned(), team.to_owned());
+                        self.note_thread(&thread);
+                        self.lock().threads.bind(thread_key(channel, &ts), thread);
+                    }
                     Err(e) => tracing::warn!(error = %e, "slack resume root post failed"),
                 }
                 reply
@@ -962,7 +1012,9 @@ impl Channel {
             let cx = chan.command_cx(&user, &channel);
             let out = commands::action(&action, value.as_deref(), cx).await;
             let reply = chan.after_command(out, &channel, &user, &team).await;
-            chan.respond(&url, reply, true).await;
+            // 210 §7.4: the live message is the status holder's; answer beside it.
+            let replace = !action.starts_with("cmd:share:");
+            chan.respond(&url, reply, replace).await;
         });
     }
 
@@ -1007,14 +1059,13 @@ impl Channel {
     }
 
     /// An Allow/Deny click (21 §10.1): owner or the card's thread user may
-    /// answer; the card itself is updated when `ApprovalResolved` arrives.
+    /// answer — only the owner for a human-only card (210 §7.2); the card
+    /// itself is updated when `ApprovalResolved` arrives.
     async fn handle_click(&self, click: approvals::Click) {
         let permitted = click.user == self.owner
-            || self
-                .lock()
-                .cards
-                .get(&click.id)
-                .is_some_and(|c| c.thread_user.as_deref() == Some(click.user.as_str()));
+            || self.lock().cards.get(&click.id).is_some_and(|c| {
+                !c.human_only && c.thread_user.as_deref() == Some(click.user.as_str())
+            });
         if !permitted {
             tracing::warn!(user = %click.user, "slack approval click from a user who may not answer it");
             self.ephemeral(&click.channel, &click.user, "not allowed")
@@ -1374,6 +1425,7 @@ impl Channel {
                             s.workers.remove(&key);
                         }
                         s.threads.bind(key.clone(), thread.clone());
+                        self.note_thread(&thread);
                     }
                     let _ = self.worker(&key, &thread).send(Out::Mark(m.ts, voice));
                 }
@@ -1431,6 +1483,7 @@ impl Channel {
                         s.threads.touch(&key);
                     } else {
                         s.threads.bind(key.clone(), thread.clone());
+                        self.note_thread(&thread);
                     }
                 }
                 let _ = self.worker(&key, &thread).send(Out::Mark(m.ts, voice));
@@ -1643,6 +1696,11 @@ impl Channel {
                     match &ev {
                         AgentEvent::TurnStarted { .. } => {
                             s.running.insert(session);
+                            // 210 §7.2: re-said each turn, so a restart (the
+                            // registry keeps it in memory) never forgets it.
+                            if let Some((_, t)) = s.threads.by_session(session) {
+                                self.note_thread(t);
+                            }
                         }
                         AgentEvent::TurnFinished { .. } => {
                             s.running.remove(&session);
@@ -1673,6 +1731,7 @@ impl Channel {
                             Card {
                                 session: req.session,
                                 thread_user: Some(thread.user.clone()),
+                                human_only: req.human_only,
                                 by: None,
                                 dm: None,
                             },
@@ -1894,12 +1953,68 @@ impl Channel {
             Event::Lease(lease) => {
                 self.lock().follower.observe(&lease);
                 self.sync_socket().await;
+                self.sync_live_share().await;
             }
             Event::Peer(p) => {
                 if let Some((key, thread)) = self.bound(p.session) {
                     let _ = self.worker(&key, &thread).send(Out::Peer(Box::new(p)));
                 }
             }
+            Event::Share(m) => {
+                self.lock().live.observe(m.share);
+                self.sync_live_share().await;
+            }
+            Event::Shares(rows) => {
+                {
+                    let mut s = self.lock();
+                    for row in rows {
+                        s.live.observe(row);
+                    }
+                }
+                self.sync_live_share().await;
+            }
+            Event::ShareTick => self.sync_live_share().await,
+        }
+    }
+
+    /// 210 §7.4 item 9: post, update in place or end the owner-DM live-share
+    /// message. Only the router calls it, so one call is in flight at a time.
+    async fn sync_live_share(&self) {
+        use crate::public_share::{LiveOp, ended_blocks, now_ms};
+        let Some(dm) = self.identity.get().and_then(|i| i.owner_dm.clone()) else {
+            return;
+        };
+        let op = {
+            let mut s = self.lock();
+            let holding = s.follower.holding;
+            s.live.next(now_ms(), holding)
+        };
+        match op {
+            None => {}
+            Some(LiveOp::Post { text, blocks }) => {
+                match self.api.post_blocks(&dm, None, blocks).await {
+                    Ok(ts) => self.lock().live.posted(ts, text),
+                    Err(e) => tracing::warn!(error = %e, "slack live-share message not posted"),
+                }
+            }
+            Some(LiveOp::Update { ts, blocks }) => {
+                if let Err(e) = self.api.update_blocks(&dm, &ts, blocks).await {
+                    tracing::warn!(error = %e, "slack live-share message not updated");
+                }
+            }
+            Some(LiveOp::End { ts, text }) => {
+                if let Err(e) = self.api.update_blocks(&dm, &ts, ended_blocks(&text)).await {
+                    tracing::debug!(error = %e, "slack live-share message not ended");
+                }
+            }
+        }
+    }
+
+    /// 210 §7.2: a session bound to a thread whose user is not the owner may not run a
+    /// human-only tool; tells the tool registry (never lifted while the engine runs).
+    fn note_thread(&self, thread: &Thread) {
+        if thread.user != self.owner {
+            tools::mark_non_owner_thread(thread.session, true);
         }
     }
 
@@ -1952,6 +2067,7 @@ impl Channel {
                     Card {
                         session: req.session,
                         thread_user: None,
+                        human_only: req.human_only,
                         by: None,
                         dm: Some((ts, body, context)),
                     },
@@ -2002,6 +2118,7 @@ impl Channel {
             let mut s = self.lock();
             s.parent_of.insert(child, (parent, name.clone()));
             s.threads.bind(key.clone(), thread.clone());
+            self.note_thread(&thread);
         }
         let link = self.permalink(channel, &ts).await;
         let _ = self.worker(&key, &thread);
@@ -3431,6 +3548,7 @@ pub(crate) mod tests {
             tool: "shell".into(),
             args: json!({ "command": "rm -rf target/" }),
             risk: tools::Risk::Destructive,
+            human_only: false,
         }
     }
 
@@ -3987,6 +4105,32 @@ pub(crate) mod tests {
         assert!(f.chan.lock().cards.is_empty());
     }
 
+    /// 210 §7.2: on a human-only card in a friend's thread, the thread user's click is
+    /// refused and only the owner's resolves it.
+    #[tokio::test]
+    async fn human_only_card_in_a_bound_thread_takes_only_the_owners_click() {
+        let f = fixture();
+        f.bind(FRIEND);
+        let req = ApprovalRequested {
+            human_only: true,
+            ..approval(f.stub.session)
+        };
+        let id = req.id;
+        f.chan.route(Event::Requested(req)).await;
+        let card = format!("post_blocks {DM} 100.1 2 blocks");
+        f.until(|calls| calls.contains(&card)).await;
+
+        f.chan
+            .handle_inbound(click(FRIEND, id, approvals::ACTION_APPROVE))
+            .await;
+        assert!(f.stub.calls().is_empty(), "{:?}", f.stub.calls());
+
+        f.chan
+            .handle_inbound(click(OWNER, id, approvals::ACTION_APPROVE))
+            .await;
+        assert_eq!(f.stub.calls(), vec![Call::Resolve(id, Decision::Allow)]);
+    }
+
     fn artifact(session: SessionId, dir: &Path) -> ArtifactShown {
         let path = dir.join("report.md");
         std::fs::write(&path, b"# hi").unwrap();
@@ -4171,6 +4315,42 @@ pub(crate) mod tests {
         assert!(f.stub.calls().is_empty());
         f.until(|calls| calls.contains(&format!("ephemeral {DM} {STRANGER} not allowed")))
             .await;
+    }
+
+    #[tokio::test]
+    async fn live_share_message_in_the_owner_dm() {
+        use crate::public_share::tests::share as row;
+        use share::model::{ShareChanged, ShareState};
+        let f = fixture();
+        let changed = |state| {
+            Event::Share(Box::new(ShareChanged {
+                share: row("s1", "app.sky.tun.zip", state, None),
+            }))
+        };
+        f.chan.route(changed(ShareState::Live)).await;
+        f.chan.route(Event::ShareTick).await;
+        f.chan.route(changed(ShareState::Offline)).await;
+        f.chan.route(changed(ShareState::Stopped)).await;
+        f.chan.route(Event::ShareTick).await;
+        assert_eq!(
+            f.api.calls(),
+            [
+                format!("post_blocks {OWNER_DM} - 2 blocks"),
+                format!("update_blocks {OWNER_DM} 7.7"),
+                format!("update_blocks {OWNER_DM} 7.7"),
+            ]
+        );
+        let blocks = f.api.blocks();
+        assert!(
+            blocks[1][0]["text"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("offline")
+        );
+        assert_eq!(
+            blocks[2][0]["text"]["text"],
+            crate::public_share::STOPPED_TEXT
+        );
     }
 
     #[tokio::test]

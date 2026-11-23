@@ -37,6 +37,7 @@ use crate::poll::{
     PollCtx, RecentKeys, SenderRef, Service,
 };
 use crate::port::{LivePort, Port};
+use crate::sharing::{self, Step};
 use crate::threads::{self, Thread, ThreadKey, Threads, Topic};
 use crate::ui::short;
 use crate::worker::{self, RenderConfig, Row, VoiceHandles, WorkerCtx, WorkerMsg, WorkerNote};
@@ -91,6 +92,10 @@ enum Event {
     Predicted(double::DoublePredicted),
     /// 126 §10: the double answered a card at L2.
     DoubleAnswered(double::DoubleAnswered),
+    /// 210 §7.4: a share record changed (replicated rows of other machines too).
+    Share(share::Share),
+    /// 210 §7.4: the engine's list at boot.
+    ShareSeed(Vec<share::Share>),
 }
 
 /// Bus subscriber: forwards into the ordered event task.
@@ -119,6 +124,13 @@ forward!(ArtifactShown => Artifact);
 forward!(secrets::SecretsEvent => Secret);
 forward!(double::DoublePredicted => Predicted);
 forward!(double::DoubleAnswered => DoubleAnswered);
+
+impl Message<share::ShareChanged> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: share::ShareChanged, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Share(m.share));
+    }
+}
 
 impl Message<mesh::MeshEvent> for Bus {
     type Reply = ();
@@ -348,6 +360,8 @@ pub(crate) struct State {
     ephemeral_failed: HashSet<i64>,
     /// What we know about chats we saw.
     chats: HashMap<i64, ChatInfo>,
+    /// 210 §7.4 item 9: the owner's live-share message.
+    sharing: sharing::LiveMessage,
 }
 
 /// Everything shared by the tasks and the [`Handle`].
@@ -465,6 +479,7 @@ async fn run(
     mut notes_rx: mpsc::UnboundedReceiver<WorkerNote>,
 ) {
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Event>();
+    let seed_tx = ev_tx.clone();
     let bus = Bus::spawn_with_mailbox(Bus { tx: ev_tx }, runtime::subscriber_mailbox());
     chan.rt.subscribe::<Bus, AgentEvent>(&bus).await;
     chan.rt.subscribe::<Bus, ApprovalRequested>(&bus).await;
@@ -478,6 +493,7 @@ async fn run(
         .subscribe::<Bus, double::DoublePredicted>(&bus)
         .await;
     chan.rt.subscribe::<Bus, double::DoubleAnswered>(&bus).await;
+    chan.rt.subscribe::<Bus, share::ShareChanged>(&bus).await;
     if let Some(live) = &chan.live {
         let hook = Arc::clone(&chan);
         live.on_event(Arc::new(move |ev| {
@@ -562,6 +578,17 @@ async fn run(
         chan.set_command_scopes(owner).await;
         chan.repair_open().await;
         chan.sync_poller().await;
+        // 210 §7.4 item 9: the records so far; no engine = nothing live (a message a
+        // previous process left is ended).
+        let seed = match share::rpc_support::engine() {
+            Ok(engine) => engine.list().await.map_err(|e| {
+                tracing::warn!(error = %e, "telegram: share list for the live-share message");
+            }),
+            Err(_) => Ok(Vec::new()),
+        };
+        if let Ok(list) = seed {
+            let _ = seed_tx.send(Event::ShareSeed(list));
+        }
         shutdown.cancelled().await;
     }
     me.abort();
@@ -728,6 +755,9 @@ impl Channel {
                 albums: HashMap::new(),
                 ephemeral_failed: HashSet::new(),
                 chats: HashMap::new(),
+                sharing: sharing::LiveMessage::new(sharing::load_message(&sharing::message_path(
+                    &rt.data_dir,
+                ))),
             }),
             port,
             cfg,
@@ -1001,6 +1031,7 @@ impl Channel {
 
     /// Binds `key` to `thread`, replacing the worker when the session changed.
     fn rebind(&self, key: &ThreadKey, thread: Thread) {
+        self.note_thread(&thread);
         let mut s = self.lock();
         if s.threads
             .get(key)
@@ -1009,6 +1040,15 @@ impl Channel {
             shutdown_worker(&mut s, key);
         }
         s.threads.bind(key.clone(), thread);
+    }
+
+    /// 210 §7.2: a session bound to a thread whose user is not the owner (or while no owner
+    /// is paired) may not run a human-only tool; tells the tool registry (never lifted while
+    /// the engine runs).
+    fn note_thread(&self, thread: &Thread) {
+        if self.owner() != Some(thread.user) {
+            tools::mark_non_owner_thread(thread.session, true);
+        }
     }
 
     /// Where `session` renders: its own thread, else its flat-child slot.
@@ -2090,7 +2130,8 @@ impl Channel {
         }
     }
 
-    /// Owner or the card's thread user may answer (98 §10.1).
+    /// Owner or the card's thread user may answer (98 §10.1); only the owner a
+    /// human-only card (210 §7.2).
     async fn press_approval(&self, cb: &IncomingCallback, id: ApprovalId, decision: Decision) {
         let user = cb.from.id;
         let permitted = self.owner() == Some(user)
@@ -2098,7 +2139,7 @@ impl Channel {
                 .lock()
                 .cards
                 .get(&id)
-                .is_some_and(|c| c.thread_user == Some(user));
+                .is_some_and(|c| !c.human_only && c.thread_user == Some(user));
         if !permitted {
             tracing::warn!(
                 user,
@@ -2283,7 +2324,10 @@ impl Channel {
             chat: cb.chat,
             id: cb.message_id,
         };
-        self.apply_outcome(out, &to, &cb.from, Some(at)).await;
+        // 210 §7.4 item 9: the live-share message stays the indicator (the share
+        // events end it); the Stop all receipt is a message of its own.
+        let edit = (!rest.starts_with("share:")).then_some(at);
+        self.apply_outcome(out, &to, &cb.from, edit).await;
     }
 
     /// `out:<call_id>`: the full tool output as a text file (98 §8.4).
@@ -2333,8 +2377,19 @@ impl Channel {
     async fn handle_event(self: &Arc<Self>, ev: Event) {
         match ev {
             Event::Lease(lease) => {
-                self.lock().follower.observe(&lease);
+                let gained = self.lock().follower.observe(&lease) == Some(true);
                 self.sync_poller().await;
+                if gained {
+                    self.share_sync().await;
+                }
+            }
+            Event::Share(s) => {
+                self.lock().sharing.apply(s);
+                self.share_sync().await;
+            }
+            Event::ShareSeed(list) => {
+                self.lock().sharing.seed(list);
+                self.share_sync().await;
             }
             Event::Agent(AgentEvent::SubagentSpawned {
                 parent,
@@ -2367,6 +2422,11 @@ impl Channel {
                     match &ev {
                         AgentEvent::TurnStarted { .. } => {
                             s.running.insert(session);
+                            // 210 §7.2: re-said each turn, so a restart (the
+                            // registry keeps it in memory) never forgets it.
+                            if let Some((_, t)) = s.threads.by_session(session) {
+                                self.note_thread(t);
+                            }
                         }
                         AgentEvent::TurnFinished { .. } => {
                             s.running.remove(&session);
@@ -2395,6 +2455,7 @@ impl Channel {
                     approvals::Card {
                         session: req.session,
                         thread_user,
+                        human_only: req.human_only,
                         at: None,
                         body: approvals::body(&req),
                         by: None,
@@ -2498,6 +2559,51 @@ impl Channel {
                 self.note(&to, &secret_notice(&name, &note)).await;
             }
             Event::Secret(_) => {}
+        }
+    }
+
+    /// 210 §7.4 item 9: the owner's live-share message follows the records: posted
+    /// and pinned on the first active share, edited in place, ended and unpinned
+    /// when none is left. The hub posts it (every engine sees every record).
+    async fn share_sync(&self) {
+        let Some(chat) = self.owner().and_then(|o| i64::try_from(o).ok()) else {
+            return;
+        };
+        let step = {
+            let mut s = self.lock();
+            if !s.follower.holding {
+                return;
+            }
+            s.sharing.step(sharing::now_ms())
+        };
+        let path = sharing::message_path(&self.rt.data_dir);
+        let kb = sharing::keyboard();
+        match step {
+            Step::Idle => {}
+            Step::Post(text) => {
+                let to = Target { chat, thread: None };
+                match self.send(&to, &text, Some(&kb), None, None).await {
+                    Ok(id) => {
+                        let at = MsgRef { chat, id };
+                        self.lock().sharing.posted(at, text);
+                        sharing::save_message(&path, Some(at));
+                        if let Err(e) = self.api.pin(&at, true).await {
+                            tracing::debug!(chat, error = %e, "telegram: pinning the live-share message failed");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(chat, error = %e, "telegram: live-share message not sent");
+                    }
+                }
+            }
+            Step::Edit(at, text) => self.edit(at, &text, Some(&kb)).await,
+            Step::End(at) => {
+                sharing::save_message(&path, None);
+                self.edit(at, sharing::STOPPED_TEXT, None).await;
+                if let Err(e) = self.api.pin(&at, false).await {
+                    tracing::debug!(chat, error = %e, "telegram: unpinning the live-share message failed");
+                }
+            }
         }
     }
 
@@ -3234,6 +3340,7 @@ pub(crate) mod tests {
             tool: "shell".into(),
             args: serde_json::json!({ "command": "ls" }),
             risk: Risk::Mutating,
+            human_only: false,
         }
     }
 
@@ -4509,6 +4616,50 @@ pub(crate) mod tests {
         f.push("hello");
         f.wait_input().await;
         assert!(f.chan.lock().prompts.is_empty(), "the prompt reply ran");
+    }
+
+    /// 210 §7.4 item 9: the first active share posts the owner's message and pins it; the
+    /// last one ending edits it to "stopped" and unpins; a non-hub engine stays silent.
+    #[tokio::test]
+    async fn live_share_message_is_posted_pinned_and_ended() {
+        use share::model::ShareState;
+        let f = fixture(false);
+        // Mid-bucket, so `(in 3h)` reads the same a few ms later.
+        let far = sharing::now_ms() + 3 * 3_600_000 + 600_000;
+        let live = crate::sharing::tests::share("x", ShareState::Live, Some(far));
+        f.chan.handle_event(Event::Share(live.clone())).await;
+        let owner_chat = i64::try_from(OWNER).unwrap();
+        let calls = f.api.calls();
+        let Some(Call::SendRich { to, md, markup, .. }) = calls.first() else {
+            panic!("{calls:?}")
+        };
+        assert_eq!(to.chat, owner_chat);
+        assert!(md.starts_with("● Sharing publicly · 1 live\nhttps://x.tun.zip/ — expires "));
+        assert_eq!(markup.as_ref(), Some(&sharing::keyboard()));
+        let Some(Call::Pin { at, pinned: true }) = calls.get(1).cloned() else {
+            panic!("{calls:?}")
+        };
+        let path = sharing::message_path(&f.rt.data_dir);
+        assert_eq!(sharing::load_message(&path), Some(at));
+        // The same record again: nothing to edit.
+        f.chan.handle_event(Event::Share(live.clone())).await;
+        assert_eq!(f.api.calls().len(), 2);
+        let mut stopped = live;
+        stopped.state = ShareState::Stopped;
+        f.chan.handle_event(Event::Share(stopped)).await;
+        let calls = f.api.calls();
+        assert!(
+            matches!(&calls[2], Call::EditRich { at: a, md, markup: None } if *a == at && md == sharing::STOPPED_TEXT),
+            "{calls:?}"
+        );
+        assert!(matches!(calls[3], Call::Pin { at: a, pinned: false } if a == at));
+        assert_eq!(sharing::load_message(&path), None);
+
+        let g = fixture(false);
+        g.chan.lock().follower.holding = false;
+        let other = crate::sharing::tests::share("y", ShareState::Pending, None);
+        g.chan.handle_event(Event::Share(other)).await;
+        assert!(g.api.calls().is_empty(), "only the hub posts");
     }
 
     /// Tests that `register` the `"telegram"` actor take this (the kameo

@@ -67,6 +67,8 @@ pub enum Cmd {
     A2a(Vec<String>),
     /// `broadcast [--next] running|roots|<id>[,<id>…] <text>` (owner, 62 §5.3).
     Broadcast(String),
+    /// `share [list | stop [<id>|all]]` (owner, 210 §7.4): live public shares; Stop never asks.
+    Share(Vec<String>),
     /// Unknown or ambiguous first word.
     Unknown(String),
 }
@@ -166,6 +168,11 @@ pub(crate) const COMMANDS: &[(&str, &str, &str)] = &[
         "one message to many sessions; --next lands after the turn (owner)",
     ),
     (
+        "share",
+        "[list|stop [<id>|all]]",
+        "live public shares; stop one or all (owner)",
+    ),
+    (
         "slack",
         "[status|allow <U>|rm <U>|channel add <C>|channel rm <C>]",
         "this channel (owner)",
@@ -213,6 +220,7 @@ pub fn classify(text: &str) -> Cmd {
         Some("requests") => Cmd::Requests(words()),
         Some("a2a") => Cmd::A2a(words()),
         Some("broadcast") => Cmd::Broadcast(arg.to_owned()),
+        Some("share") => Cmd::Share(words()),
         _ => Cmd::Unknown(word),
     }
 }
@@ -241,7 +249,7 @@ pub fn is_instant(cmd: &Cmd) -> bool {
         | Cmd::Model(None)
         | Cmd::Agents
         | Cmd::Unknown(_) => true,
-        Cmd::Approvals(args) | Cmd::Communication(args) => args.is_empty(),
+        Cmd::Approvals(args) | Cmd::Communication(args) | Cmd::Share(args) => args.is_empty(),
         _ => false,
     }
 }
@@ -259,6 +267,7 @@ fn owner_only(cmd: &Cmd) -> bool {
             | Cmd::Requests(_)
             | Cmd::A2a(_)
             | Cmd::Broadcast(_)
+            | Cmd::Share(_)
     )
 }
 
@@ -317,6 +326,8 @@ pub async fn action(action_id: &str, value: Option<&str>, mut cx: CommandCx<'_>)
         },
         ["skills", "sync"] => Cmd::Skills(words(&["sync"])),
         ["mcp", "sync"] => Cmd::Mcp(words(&["sync"])),
+        ["share", "stop"] => Cmd::Share(words(&["stop"])),
+        ["share", "stop", id] => Cmd::Share(words(&["stop", id])),
         ["login", name] => Cmd::Login(Some((*name).to_owned())),
         ["logout", name] => Cmd::Logout(Some((*name).to_owned())),
         ["approvals"] => match value {
@@ -519,6 +530,7 @@ async fn run(cmd: Cmd, cx: &CommandCx<'_>) -> anyhow::Result<Outcome> {
         Cmd::Requests(args) => requests_cmd(cx.session.context(NO_SESSION)?, &args).await,
         Cmd::A2a(args) => a2a_cmd(&args).await,
         Cmd::Broadcast(arg) => broadcast_cmd(&arg).await,
+        Cmd::Share(args) => share_cmd(&args).await,
     }
 }
 
@@ -1191,6 +1203,45 @@ async fn a2a_cmd(args: &[String]) -> anyhow::Result<Outcome> {
     Ok(Outcome::Text(ui::result(&lines.join("\n"))))
 }
 
+/// `share [list | stop [<id>|all]]` (210 §7.4): never gated beyond the owner check; Stop all
+/// reaches every machine of the mesh and the edge.
+async fn share_cmd(args: &[String]) -> anyhow::Result<Outcome> {
+    use crate::public_share::{self as ps, ShareCmd};
+    let text = |s: String| Ok(Outcome::Text(ui::result(&s)));
+    let engine = || {
+        share::rpc_support::engine()
+            .map_err(|_| anyhow::anyhow!("public sharing is not running on this machine"))
+    };
+    match ps::parse(args) {
+        ShareCmd::Usage => text(ps::USAGE.into()),
+        ShareCmd::List => text(ps::share_list_text(&engine()?.list().await?, ps::now_ms())),
+        ShareCmd::StopAll => {
+            let out = engine()?.stop_all().await?;
+            let mut s = format!("stopped {}", out.stopped);
+            if let Some(why) = out.edge_pending {
+                s.push_str(&format!(
+                    "\nedge stop pending: {why} (sent again at the next attach)"
+                ));
+            }
+            text(s)
+        }
+        ShareCmd::Stop(key) => {
+            let engine = engine()?;
+            let rows = engine.list().await?;
+            let id = match ps::pick(&rows, &key) {
+                Ok(s) => s.id.clone(),
+                Err(msg) => return text(msg),
+            };
+            let s = engine.stop(&id, share::model::StoppedBy::User).await?;
+            text(if s.state == share::model::ShareState::Stopped {
+                format!("stopped {}", s.url)
+            } else {
+                format!("stop sent to the machine hosting {}", s.url)
+            })
+        }
+    }
+}
+
 /// A unit-variant enum's serde word: `Debug` lowercased (`A2a` → `a2a`).
 fn lower<T: std::fmt::Debug>(v: &T) -> String {
     format!("{v:?}").to_lowercase()
@@ -1316,6 +1367,50 @@ mod tests {
         // The owner passes the gate; `slack status` needs no actor at all.
         let out = handle(Cmd::Slack(vec!["status".into()]), cx("U0WNER", None)).await;
         assert_ne!(out, text(OWNER_MSG));
+    }
+
+    #[test]
+    fn classifies_share() {
+        let w = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(classify("share"), Cmd::Share(vec![]));
+        assert_eq!(classify("share list"), Cmd::Share(w(&["list"])));
+        assert_eq!(classify("share stop"), Cmd::Share(w(&["stop"])));
+        assert_eq!(classify("sha stop all"), Cmd::Share(w(&["stop", "all"])));
+        assert_eq!(
+            classify("share stop 0191abc"),
+            Cmd::Share(w(&["stop", "0191abc"]))
+        );
+        assert!(is_instant(&Cmd::Share(vec![])));
+        assert!(!is_instant(&Cmd::Share(w(&["stop"]))));
+    }
+
+    #[tokio::test]
+    async fn share_stop_is_owner_only_and_never_asks() {
+        let stop = |v: &[&str]| Cmd::Share(v.iter().map(|s| (*s).to_owned()).collect());
+        for cmd in [stop(&[]), stop(&["stop"]), stop(&["stop", "x"])] {
+            assert_eq!(
+                handle(cmd.clone(), cx("U5TRANGER", None)).await,
+                text(OWNER_MSG),
+                "{cmd:?}"
+            );
+        }
+        // The live message's buttons go through the same gate.
+        for id in ["cmd:share:stop", "cmd:share:stop:x"] {
+            assert_eq!(
+                action(id, None, cx("U5TRANGER", None)).await,
+                text(OWNER_MSG),
+                "{id}"
+            );
+        }
+        // The owner passes straight to the engine (not running here); no approval asked.
+        assert_eq!(
+            handle(stop(&["stop"]), cx("U0WNER", None)).await,
+            text("error: public sharing is not running on this machine")
+        );
+        assert_eq!(
+            handle(stop(&["start"]), cx("U0WNER", None)).await,
+            Outcome::Text(ui::result(crate::public_share::USAGE))
+        );
     }
 
     #[tokio::test]

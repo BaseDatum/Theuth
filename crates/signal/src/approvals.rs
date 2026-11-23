@@ -33,6 +33,8 @@ pub struct Entry {
     pub number: String,
     /// Timestamp of our approval message once sent; reactions target it.
     pub sent_ts: Option<u64>,
+    /// 210 §7.2: a human-only card only the owner may answer.
+    pub human_only: bool,
 }
 
 /// Result of [`Pending::by_code`].
@@ -90,6 +92,7 @@ impl Pending {
                 session: req.session,
                 number: number.to_owned(),
                 sent_ts: None,
+                human_only: req.human_only,
             },
         );
         code
@@ -119,11 +122,10 @@ impl Pending {
     }
 
     /// The pending request whose message `number` reacted to at `target_ts`.
-    pub fn by_reaction(&self, number: &str, target_ts: u64) -> Option<ApprovalId> {
+    pub fn by_reaction(&self, number: &str, target_ts: u64) -> Option<&Entry> {
         self.live
             .values()
             .find(|e| e.sent_ts == Some(target_ts) && e.number == number)
-            .map(|e| e.id)
     }
 
     /// Drops the entry for `res.id` and tombstones it. `None` if unknown.
@@ -176,6 +178,9 @@ pub fn message(req: &ApprovalRequested, code: &str) -> String {
     out.push_str(&format!(
         "👍 to allow · 👎 to deny · or /approve {code} · /deny {code}"
     ));
+    if req.human_only {
+        out.push_str("\nOnly the owner can answer this.");
+    }
     out
 }
 
@@ -266,6 +271,7 @@ mod tests {
             tool: tool.to_owned(),
             args,
             risk: tools::Risk::Destructive,
+            human_only: false,
         }
     }
 
@@ -296,11 +302,11 @@ mod tests {
         let mut p = Pending::default();
         let r = req("shell", json!({}));
         let code = p.insert(&r, "+1");
-        assert_eq!(p.by_reaction("+1", 42), None);
+        assert!(p.by_reaction("+1", 42).is_none());
         p.mark_sent(&code, 42);
-        assert_eq!(p.by_reaction("+1", 42), Some(r.id));
-        assert_eq!(p.by_reaction("+2", 42), None);
-        assert_eq!(p.by_reaction("+1", 43), None);
+        assert_eq!(p.by_reaction("+1", 42).map(|e| e.id), Some(r.id));
+        assert!(p.by_reaction("+2", 42).is_none());
+        assert!(p.by_reaction("+1", 43).is_none());
     }
 
     #[test]

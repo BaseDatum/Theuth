@@ -1,0 +1,24 @@
+[
+  {
+    "input": {
+      "id": "0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+      "visitors": 3,
+      "requests": 41,
+      "last_ms": 1700000100000
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "ShareTraffic",
+          "id": "0193a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+          "visitors": 3,
+          "requests": 41,
+          "last_ms": 1700000100000
+        }
+      }
+    }
+  }
+]

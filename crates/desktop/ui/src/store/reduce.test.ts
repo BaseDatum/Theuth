@@ -1734,7 +1734,7 @@ test('183 §5.1: relayed events of a session owned elsewhere stream like local o
     { type: 'ToolCallPending', session: S, turn: T, call_id: 'c1', name: 'shell' },
     { type: 'ToolCallProgress', session: S, turn: T, call_id: 'c1', args: '{"command": "cargo' },
     { type: 'ToolCallStarted', session: S, turn: T, call_id: 'c1', name: 'shell', args: { command: 'cargo test' } },
-    { type: 'ApprovalRequested', id: 'ap1', session: S, tool: 'shell', args: {}, risk: 'mutating' },
+    { type: 'ApprovalRequested', id: 'ap1', session: S, tool: 'shell', args: {}, risk: 'mutating', human_only: false },
     // The owner moved mid-turn: its resumed batch opens the first result with the restart note.
     { type: 'TurnResumed', session: S, turn: T, kind: 'interrupted', interrupted_at: '2026-11-08T11:42:03Z', resumed_at: '2026-11-08T11:42:07Z', partial_dropped: false, cause: 'transfer', from: "Sky's MacBook" },
     { type: 'ToolCallFinished', session: S, turn: T, call_id: 'c1', output: '<engine_restart at="11:42:07" after="4s" kind="transfer" from="mac" to="xeus" replayed="0" interrupted="1"/>\nERROR: interrupted', is_error: true, files: [] },

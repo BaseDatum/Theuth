@@ -375,6 +375,25 @@ relay-docker-push tag="":
       .
     echo "pushed ${IMAGE}:${TAG} and ${IMAGE}:latest"
 
+share-edge-docker-push tag="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TAG="{{tag}}"
+    if [ -z "$TAG" ]; then
+      TAG="${THEUTH_SHARE_EDGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || echo dev)}"
+    fi
+    IMAGE="${THEUTH_SHARE_EDGE_IMAGE:-ghcr.io/skymoore/theuth/share-edge}"
+    PLATFORM="${THEUTH_SHARE_EDGE_PLATFORM:-linux/amd64,linux/arm64}"
+    echo "==> buildx build+push ${IMAGE}:${TAG} (${PLATFORM})"
+    docker buildx build \
+      --platform "${PLATFORM}" \
+      -f deploy/share-edge/Dockerfile \
+      -t "${IMAGE}:${TAG}" \
+      -t "${IMAGE}:latest" \
+      --push \
+      .
+    echo "pushed ${IMAGE}:${TAG} and ${IMAGE}:latest"
+
 # Multi-arch build+push of the upstream iroh-relay (design doc 67 §4.2) for the engine mesh.
 # The image is the stock `iroh-relay` binary pinned to the workspace `iroh` line; the tag
 # defaults to that version so the deployed relay always matches the crate engines link.

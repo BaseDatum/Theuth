@@ -38,6 +38,7 @@ tasks = { workspace = true }
 roster = { workspace = true }
 webprofile = { workspace = true }
 sandbox = { workspace = true }
+share = { workspace = true }  # 210
 async-trait = { workspace = true }
 a2a = { workspace = true }
 update = { workspace = true }
