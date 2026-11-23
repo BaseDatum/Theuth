@@ -74,6 +74,22 @@ fn mark_non_owner_thread(session: SessionId, on: bool);           // sync lookup
   refusal while a `RequestHumanOnly` row is pending, `applescript` refuses on macOS, all clear after resolve.
 - `browser::tools::tests::own_origin_matches_the_listener_under_loopback_names`.
 
+Results (macOS, this worktree):
+
+- `cargo check --tests -p tools -p slack -p telegram -p signal -p computer -p browser`: clean, no warnings.
+- `cargo test -p tools`: lib 298 passed, 1 failed: `git::tests::clone_pull_and_list_against_a_local_bare_repo`
+  ("gpg failed to sign the data": the machine's git signing config, unrelated). The lib failure stopped cargo
+  before the integration-test targets, so those did not run.
+- `cargo test -p slack`: 163 passed, 2 failed under load (`observed_child_is_a_watch_row_on_the_board_and_gets_no_thread`
+  5 s `until` timeout, `threads::tests::agent_binding_persists` same-millisecond `updated_at`); both passed on a
+  rerun together with the two approval-card tests (4/4).
+- `cargo test -p telegram`: 137 passed. `cargo test -p computer`: 106 passed.
+- **Unverified (lock)**: `cargo test -p browser`, `cargo test -p signal` (test-literal changes only),
+  `cargo clippy -- -D warnings` on all six crates. Waited more than 15 minutes for the build lock, which
+  workspace-wide checks held.
+- Foreign crates with the `human_only: false` literals (`roster`, `sessionsync`, `tui`, `rpc-compose` tests) were
+  not compiled by me.
+
 ## Deviations, and why
 
 - **`ToolSpec` unchanged**: §7.2 says "carried into the tool spec". `ToolSpec` is built by struct literal in
