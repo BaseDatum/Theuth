@@ -67,3 +67,8 @@ Run in `crates/desktop/ui` unless noted:
 - `cargo clippy -p desktop --all-targets --no-deps -- -D warnings` and `cargo test -p desktop` (under `/tmp/theuth-build.lock`): see the result appended below.
 
 No npm or crate dependency added. `Cargo.lock` shows as modified in the tree; not from this phase (other builders' crates).
+
+### Cargo results (under `/tmp/theuth-build.lock`)
+
+- `cargo clippy -p desktop --all-targets --no-deps -- -D warnings` → clean (exit 0).
+- `cargo test -p desktop` → 115 passed, 0 failed.
