@@ -87,12 +87,12 @@ impl ShareConfig {
     }
 }
 
-/// The shipped default edge (D15): live key first, cold standby second. Placeholders until the
-/// operator fills them with `theuth-share-edge ticket` output; a placeholder never parses, so
-/// [`default_edges`] is empty and publishing says "No sharing edge configured".
-// TODO(210-M4): the operator pastes the two real tickets of tun.zip's live and standby keys here.
+/// The shipped default edge (D15): live key first, cold standby second. The live key is tun.zip's
+/// edge (`theuth-share-edge ticket` on rwx-dev: endpoint 72f4d775…, home relay iroh.relay.theuth.io);
+/// a placeholder never parses, so it drops out of [`default_edges`].
+// TODO(210-M4): the operator pastes the cold standby key's ticket here.
 pub const DEFAULT_EDGE_TICKETS: [&str; 2] = [
-    "OPERATOR-FILL-ME: theuthedge… ticket of the live key",
+    "theuthedgeabzpjv3v4geij2u6gslbt42qbetwihld3nt3fofa5yests3j3dqdqaiadvuhi5dqom5c6l3jojxwqltsmvwgc6joorugk5lunaxgs3zpaa",
     "OPERATOR-FILL-ME: theuthedge… ticket of the cold standby key",
 ];
 
@@ -156,7 +156,12 @@ mod tests {
 
     #[test]
     fn placeholders_never_parse_and_choice_roundtrips() {
-        assert!(default_edges().is_empty());
+        let edges = default_edges();
+        assert_eq!(edges.len(), 1, "the live ticket parses, the standby placeholder drops out");
+        assert_eq!(
+            edges[0].addr.id.to_string(),
+            "72f4d775e18884ea9e349619f3500927641d63db67b2b8a0ee0929cb69d8e038"
+        );
         assert_eq!(EdgeChoice::parse("none").unwrap(), EdgeChoice::None);
         assert_eq!(
             EdgeChoice::parse("default").unwrap().to_setting(),
