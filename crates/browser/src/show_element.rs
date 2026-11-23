@@ -310,16 +310,21 @@ pub const SHOW_WAIT: Duration = Duration::from_secs(120);
 /// What the model reads when no client showed the card within [`SHOW_WAIT`].
 pub const NOT_SHOWN: &str = "no app showed the form; ask the user to open theuth";
 
+/// A card in flight: its id, its session, and what wakes its tool when the session ends.
+type LiveCard = (ElementFormId, SessionId, Arc<tokio::sync::Notify>);
+
 /// Cards in flight by session, process-wide, so the end of a session (which has no [`Runtime`]
 /// at hand) closes them: [`forget`] wakes each one's tool.
-static LIVE: LazyLock<Mutex<Vec<(ElementFormId, SessionId, Arc<tokio::sync::Notify>)>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+static LIVE: LazyLock<Mutex<Vec<LiveCard>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// One session's submitted values, oldest first, each in every form [`scrub`] looks for.
+type Typed = VecDeque<Vec<Zeroizing<String>>>;
 
 /// Values sessions submitted through a card, scrubbed from their later browser replies (209 §9):
 /// per session, at most [`TYPED_MAX`] values (the oldest goes first), each as typed and
 /// URL-encoded. In this process's memory only: an engine restart, or the session continuing on
 /// another engine of the mesh, no longer scrubs what was typed before (209 §4.10).
-static TYPED: LazyLock<Mutex<HashMap<SessionId, VecDeque<Vec<Zeroizing<String>>>>>> =
+static TYPED: LazyLock<Mutex<HashMap<SessionId, Typed>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Shortest submitted value [`scrub`] replaces: shorter ones are too likely to be page words.
@@ -378,10 +383,13 @@ pub fn forget(sessions: &[SessionId]) {
     }
 }
 
+/// A tile fill's values by field index.
+type FillValues = BTreeMap<String, Zeroizing<String>>;
+
 /// Values of tile `fill_form` calls, by the `WebViewCallRequested` id, until the client that
 /// claimed the call fetches them with `element_form_values` (209 §4.4, §9: never in an event).
 #[derive(Clone, Default)]
-struct Fills(Arc<Mutex<HashMap<WebViewCallId, BTreeMap<String, Zeroizing<String>>>>>);
+struct Fills(Arc<Mutex<HashMap<WebViewCallId, FillValues>>>);
 
 fn fills(rt: &Runtime) -> Fills {
     rt.extension(Fills::default)
@@ -1629,8 +1637,8 @@ mod tests {
     }
 
     /// 209 §4.10: a submit naming no field the card fills leaves the card waiting.
-    #[test]
-    fn a_submit_without_a_field_leaves_the_card_pending() {
+    #[tokio::test]
+    async fn a_submit_without_a_field_leaves_the_card_pending() {
         let dir = tempfile::tempdir().expect("temp dir");
         let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
         let (id, mut rx) = waiting(&rt);
@@ -1660,8 +1668,8 @@ mod tests {
     }
 
     /// A tile fill's values go once, to the connection holding the call's claim only.
-    #[test]
-    fn tile_values_go_to_the_claimer_once() {
+    #[tokio::test]
+    async fn tile_values_go_to_the_claimer_once() {
         let dir = tempfile::tempdir().expect("temp dir");
         let rt = Runtime::new(figment::Figment::new(), dir.path().to_path_buf());
         let call = WebViewCallId(uuid::Uuid::now_v7());
