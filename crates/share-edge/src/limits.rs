@@ -259,8 +259,8 @@ pub async fn new_mesh(edge: &Edge, net: &str, now_ms: u64) -> anyhow::Result<Res
     })
 }
 
-/// Tunnels attached per network tier (§9.4 `tunnels_per_net`), counted over the live tunnels.
-pub fn tunnels_ok(edge: &Edge, net: &str, engine: &share_proto::PublicKey) -> Result<(), ErrorBody> {
+/// Tunnels attached per network tier (§9.4 `tunnels_per_net`), counted over the live tunnels: the refusal, if any.
+pub fn tunnels_refusal(edge: &Edge, net: &str, engine: &share_proto::PublicKey) -> Option<ErrorBody> {
     let l = &edge.cfg.limits;
     let mine = tiers(net, l, &edge.asn);
     let nets: Vec<String> = edge
@@ -272,10 +272,10 @@ pub fn tunnels_ok(edge: &Edge, net: &str, engine: &share_proto::PublicKey) -> Re
     for t in &mine {
         let n = nets.iter().filter(|n| in_tier(n, t, l, &edge.asn)).count() as u64;
         if n >= u64::from(l.tunnels_per_net) * t.factor {
-            return Err(limited(ErrorCode::NetworkQuota, t.scope, LimitKind::Tunnels, None));
+            return Some(limited(ErrorCode::NetworkQuota, t.scope, LimitKind::Tunnels, None));
         }
     }
-    Ok(())
+    None
 }
 
 /// What a granted-before-claim check took, to give back when the claim is refused.

@@ -355,7 +355,9 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
     if others >= e.cfg.engines_per_mesh as usize {
         return Err(ErrorBody::limited(ErrorCode::EnginesQuota, LimitScope::Mesh, LimitKind::Engines).into());
     }
-    crate::limits::tunnels_ok(&e, &c.tunnel.net, &d.engine).map_err(ApiError::from)?;
+    if let Some(b) = crate::limits::tunnels_refusal(&e, &c.tunnel.net, &d.engine) {
+        return Err(b.into());
+    }
     let mesh_invited = invited || known.as_ref().is_some_and(|m| m.invited != 0);
     e.store
         .attach(&mesh, &engine, &c.tunnel.net, invited, now)
