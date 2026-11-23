@@ -42,6 +42,10 @@ parking_lot = { workspace = true }
 data-encoding = { workspace = true }
 mime_guess = { workspace = true }
 libc = { workspace = true }
+# 210 M2: the rekey stash zeroises secrets; `share_delegate`/`share_name_key_ensure` ride
+# `agent::rpc_forward::to_peer` to the lease holder.
+zeroize = { workspace = true }
+agent = { workspace = true }
 # 210 appendix §4.6: TLS termination, serving, proxy, upgrades, gate.
 hyper = { version = "1", features = ["client", "server", "http1", "http2"] }
 hyper-util = { version = "0.1.21", features = ["tokio", "service", "server-auto", "client-legacy", "http1", "http2"] }

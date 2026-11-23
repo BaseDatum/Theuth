@@ -240,21 +240,64 @@ impl Control {
             .1)
     }
 
-    /// `PUT /v1/routes` with this engine's full set.
+    /// `PUT /v1/routes` with this engine's full set, without per-host publish times (hosts are
+    /// judged by the `hello` time).
     pub async fn put_routes(&self, hosts: Vec<String>) -> Result<(), EdgeError> {
+        self.put_routes_at(RoutesPut {
+            hosts,
+            published_ms: Default::default(),
+        })
+        .await
+    }
+
+    /// `PUT /v1/routes` with each host's `published_ms` (the share's `live_ms`), so the edge's
+    /// `stopped_all` check judges every share by its own publish time.
+    pub async fn put_routes_at(&self, put: RoutesPut) -> Result<(), EdgeError> {
         let _: (u16, serde_json::Value) = self
-            // TODO(210-M2): `published_ms` per host (the share's `live_ms`) for the edge's
-            // `stopped_all` check; absent hosts are judged by the `hello` time, as before.
-            .json(
-                http::Method::PUT,
-                paths::ROUTES,
-                Some(&RoutesPut {
-                    hosts,
-                    published_ms: Default::default(),
-                }),
-            )
+            .json(http::Method::PUT, paths::ROUTES, Some(&put))
             .await?;
         Ok(())
+    }
+
+    /// `POST /v1/names/{name}/transfer {to_mesh}` (D20).
+    pub async fn transfer(
+        &self,
+        name: &str,
+        to_mesh: PublicKey,
+    ) -> Result<share_proto::TransferAccepted, EdgeError> {
+        let req = share_proto::TransferRequest { to_mesh };
+        Ok(self
+            .json(http::Method::POST, &paths::name_transfer(name), Some(&req))
+            .await?
+            .1)
+    }
+
+    /// `GET /v1/mesh`.
+    pub async fn mesh(&self) -> Result<share_proto::MeshStatus, EdgeError> {
+        Ok(self.json(http::Method::GET, paths::MESH, None::<&()>).await?.1)
+    }
+
+    /// `POST /v1/mesh/revoke {engines}` (§5.7 `revoking`).
+    pub async fn revoke(
+        &self,
+        engines: Vec<PublicKey>,
+    ) -> Result<share_proto::RevokeResult, EdgeError> {
+        let req = share_proto::RevokeRequest { engines };
+        Ok(self
+            .json(http::Method::POST, paths::MESH_REVOKE, Some(&req))
+            .await?
+            .1)
+    }
+
+    /// `POST /v1/mesh/rekey` with a signed `Rekey` (§5.7 `sending`).
+    pub async fn rekey(
+        &self,
+        signed: &share_proto::SignedRekey,
+    ) -> Result<share_proto::RekeyAccepted, EdgeError> {
+        Ok(self
+            .json(http::Method::POST, paths::MESH_REKEY, Some(signed))
+            .await?
+            .1)
     }
 
     /// `GET /v1/names/{name}`.
