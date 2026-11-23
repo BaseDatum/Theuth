@@ -341,9 +341,9 @@ fn run_file_text(kind: ShellKind, req: &ExecuteRequest) -> String {
                 out.push_str(&format!("$env:{k} = {}\n", pwsh_quote(v)));
             }
         } else {
-            out.push_str(&format!("cd -- {}\n", platform::shell::quote(&cwd)));
+            out.push_str(&format!("cd -- {}\n", platform::shell::single_quote(&cwd)));
             for (k, v) in &req.env {
-                out.push_str(&format!("export {k}={}\n", platform::shell::quote(v)));
+                out.push_str(&format!("export {k}={}\n", platform::shell::single_quote(v)));
             }
         }
     }
@@ -370,7 +370,7 @@ pub(crate) fn run_line(kind: ShellKind, file: &Path) -> String {
     } else {
         format!(
             r#"printf '\033]133;C\007'; . {}; __theuth_x=$?; (umask 077; {{ printf '%s\0' "$PWD"; env -0; }} >"${SNAP_VAR}") 2>/dev/null; printf '\033]133;D;%s\007\033]7;file://%s%s\007' "$__theuth_x" "$(hostname)" "$PWD""#,
-            platform::shell::quote(&f)
+            platform::shell::single_quote(&f)
         )
     }
 }
@@ -994,7 +994,7 @@ mod tests {
         };
         assert_eq!(
             run_file_text(ShellKind::Bash, &req),
-            "cd -- \"/tmp/it's\"\nexport P='a b'\nls\n"
+            "cd -- '/tmp/it'\\''s'\nexport P='a b'\nls\n"
         );
         req.cwd = None;
         assert_eq!(run_file_text(ShellKind::Bash, &req), "ls\n");
