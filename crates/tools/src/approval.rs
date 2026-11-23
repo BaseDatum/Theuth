@@ -192,6 +192,11 @@ pub struct HonourAnswer {
 /// Internal: drop a pending entry whose waiter gave up.
 struct Expire(ApprovalId);
 
+/// Internal: the asker of a pending entry went away (its `ask` future was dropped: an RPC
+/// caller that timed out, a cancelled call). Nobody would act on an answer any more, so the
+/// card is withdrawn instead of accepting an `Allow` that does nothing (210 E2E1 finding 7).
+struct Gone(ApprovalId);
+
 /// 207: what the parked call is told: a decision, or that the user left it
 /// to the agent.
 enum Verdict {
@@ -365,17 +370,32 @@ impl Approval {
         let rt = self.rt.clone();
         let timeout = self.timeout;
         let me = ctx.actor_ref().clone();
+        // The raw sender, so the waiter can watch for its asker going away.
+        let mut tx = tx.map(kameo::reply::ReplySender::boxed);
         tokio::spawn(async move {
             rt.publish(requested).await;
-            let (decision, timed_out, dismissed) = match tokio::time::timeout(timeout, drx).await {
-                Ok(Ok(Verdict::Decided(d))) => (d, false, false),
-                // 207: left to the agent: not run.
-                Ok(Ok(Verdict::Dismissed)) => (Decision::Deny, false, true),
-                // Sender dropped: actor died; treat as deny.
-                Ok(Err(_)) => (Decision::Deny, false, false),
-                Err(_) => {
-                    let _ = me.ask(Expire(id)).await;
-                    (Decision::Deny, true, false)
+            let asker_gone = async {
+                match tx.as_mut() {
+                    Some(tx) => tx.closed().await,
+                    None => std::future::pending().await,
+                }
+            };
+            let (decision, timed_out, dismissed) = tokio::select! {
+                r = tokio::time::timeout(timeout, drx) => match r {
+                    Ok(Ok(Verdict::Decided(d))) => (d, false, false),
+                    // 207: left to the agent: not run.
+                    Ok(Ok(Verdict::Dismissed)) => (Decision::Deny, false, true),
+                    // Sender dropped: actor died; treat as deny.
+                    Ok(Err(_)) => (Decision::Deny, false, false),
+                    Err(_) => {
+                        let _ = me.ask(Expire(id)).await;
+                        (Decision::Deny, true, false)
+                    }
+                },
+                // Withdrawn: `dismissed` (not run, nobody to tell), so every surface drops it.
+                () = asker_gone => {
+                    let _ = me.ask(Gone(id)).await;
+                    (Decision::Deny, false, true)
                 }
             };
             let resolved = ApprovalResolved {
@@ -386,7 +406,7 @@ impl Approval {
             };
             rt.publish(resolved.clone()).await;
             if let Some(tx) = tx {
-                tx.send(resolved);
+                let _ = tx.send(Ok(Box::new(resolved) as kameo::message::BoxReply));
             }
         });
         reply
@@ -480,6 +500,21 @@ impl Message<Expire> for Approval {
         if let Some(p) = self.pending.remove(&m.0) {
             self.settle(p.row, QuestionState::TimedOut, None, None)
                 .await;
+        }
+    }
+}
+
+impl Message<Gone> for Approval {
+    type Reply = ();
+
+    /// The row leaves `pending`: an RPC row (no call) is settled `timed_out` with no answer;
+    /// a tool call's row is left to the call's own journal (a resume re-asks it, 109 §6.2), as
+    /// for [`ForgetSession`].
+    async fn handle(&mut self, m: Gone, _: &mut Context<Self, Self::Reply>) {
+        if let Some(p) = self.pending.remove(&m.0)
+            && p.row.tool_call_id.is_none()
+        {
+            self.settle(p.row, QuestionState::TimedOut, None, None).await;
         }
     }
 }
@@ -972,5 +1007,55 @@ pub(crate) mod tests {
                 Decision::Deny => assert!(r.unwrap_err().to_string().contains("denied")),
             }
         }
+    }
+
+    /// 210 E2E1 finding 7: when the RPC caller of a human-only row gives up (its future is
+    /// dropped), the card is withdrawn: a dismissed resolution reaches every surface, nothing
+    /// stays pending, a late `Allow` is refused, and the RPC row leaves `pending`.
+    #[tokio::test]
+    async fn abandoned_ask_withdraws_the_card() {
+        let (rt, actor, journal) = actor(Duration::from_secs(30)).await;
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let sub = SeenResolved::spawn(SeenResolved(published.clone()));
+        rt.subscribe::<SeenResolved, ApprovalResolved>(&sub).await;
+        let asked = tokio::spawn({
+            let actor = actor.clone();
+            async move { ask_human_only_on(&actor, request(SessionId::new(), None)).await }
+        });
+        let id = loop {
+            if let Some(r) = actor.ask(PendingApprovals).await.unwrap().first() {
+                break r.id;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        };
+        asked.abort();
+        let event = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(e) = lock(&published).first().cloned() {
+                    break e;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the card is withdrawn well before the 30 s timeout");
+        assert_eq!(
+            (event.id, event.decision, event.timed_out, event.dismissed),
+            (id, Decision::Deny, false, true)
+        );
+        assert!(actor.ask(PendingApprovals).await.unwrap().is_empty());
+        assert!(!actor.ask(PendingHumanOnly).await.unwrap());
+        assert!(
+            !actor
+                .ask(Resolve {
+                    id,
+                    decision: Decision::Allow
+                })
+                .await
+                .unwrap(),
+            "a late Allow does nothing and says so"
+        );
+        let rows = journal.questions();
+        assert_eq!(rows.last().map(|r| r.state), Some(QuestionState::TimedOut));
     }
 }
