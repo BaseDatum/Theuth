@@ -51,6 +51,9 @@ RUN --mount=type=cache,id=theuth-share-edge-cargo-registry,target=/usr/local/car
 
 FROM scratch
 COPY --from=build /theuth-share-edge /theuth-share-edge
+# TLS clients (ACME, Porkbun, Kubernetes API, iroh relay) need a CA bundle; scratch has none.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 USER 65532:65532
 # 8443/tcp visitors (the Service or host maps 443), 7850/udp iroh, 9090/tcp /healthz and /metrics.
 EXPOSE 8443/tcp 7850/udp 9090/tcp
