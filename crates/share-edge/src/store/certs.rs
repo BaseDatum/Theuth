@@ -188,6 +188,30 @@ impl Store {
         Ok(())
     }
 
+    /// Store the first CSR of a name, only while it has none (P0-6: two machines of one mesh posting different
+    /// CSRs in one sync gap; the loser gets `csr_mismatch`). True when this call stored it.
+    pub async fn set_first_csr(
+        &self,
+        domain: &str,
+        name: &str,
+        csr: &[u8],
+        spki: &[u8],
+        state: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let r = sqlx::query(
+            "UPDATE names SET csr = ?, csr_spki = ?, state = COALESCE(?, state)
+             WHERE domain = ? AND name = ? AND csr IS NULL",
+        )
+        .bind(csr)
+        .bind(spki)
+        .bind(state)
+        .bind(domain)
+        .bind(name)
+        .execute(&self.pool)
+        .await?;
+        Ok(r.rows_affected() == 1)
+    }
+
     /// Move a held name to `state` (no-op once released or banned).
     pub async fn set_name_state(&self, domain: &str, name: &str, state: &str) -> anyhow::Result<()> {
         sqlx::query(

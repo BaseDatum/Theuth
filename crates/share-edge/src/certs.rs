@@ -291,7 +291,16 @@ pub async fn submit(
         }
         None => {
             let state = (!slotted).then_some("queued");
-            edge.store.set_csr(domain, name, der, &info.spki.0, state).await?;
+            if !edge.store.set_first_csr(domain, name, der, &info.spki.0, state).await? {
+                // Another engine's first CSR landed since the row was read (P0-6 sync-gap race).
+                let now_row = edge.store.cert_row(domain, name).await?;
+                let same = now_row.as_ref().and_then(|r| r.csr.as_deref()) == Some(der);
+                if !same {
+                    let held = now_row.as_ref().and_then(spki_of).unwrap_or(SpkiHash([0; 32]));
+                    return Ok(Err(ErrorBody::csr_mismatch(held)));
+                }
+            }
+            let open = edge.store.open_job(domain, name).await?.filter(|j| j.mesh == mesh_s);
             let j = match open {
                 Some(j) => j,
                 None => new_job(edge, &row, &mesh_s, "new", now).await?,
