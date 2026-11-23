@@ -151,3 +151,61 @@ Not covered by an automated test here: a removal whose vault rotation *fails for
 `waiting_vault` state; the edge side (revoke closes tunnels, names stay, no rekey) is in `three_engine_family`.
 The k8s per-name objects follow claim/release/transfer through the existing `k8s::granted`/`gone` hooks (rekey
 changes no name); no new k8s test.
+
+## Green (EDGE-M2-GREEN)
+
+Goal: make EDGE-M2's unverified runs pass without changing its design, plus one owner addition (`db_journal`).
+
+### Changes
+
+| commit | change |
+|---|---|
+| `061d6df49` | clippy `-D warnings` only: `explicit_auto_deref` in `Store::current_mesh`/`Store::rekey` (`&mut *conn` → `&mut conn`), `cloned_ref_to_slice_refs` ×6 in `tests/mesh.rs` (`&[h.clone()]` → `std::slice::from_ref(&h)`). No behaviour change. |
+| `a0c7a86e8` | owner decision (edge DB on NFS, WAL off): `config::DbJournal { Wal (default), Delete }`, key `db_journal: wal \| delete` (serde lowercase; env `THEUTH_SHARE_EDGE_DB_JOURNAL`). `Store::open(path, journal)`: `Wal` → `journal_mode=WAL`, pool 4 (unchanged); `Delete` → `journal_mode=DELETE` + `locking_mode=EXCLUSIVE`, **pool 1**. Callers: `lib.rs` run, `tests/certs.rs` rig. Unit test `config::tests::db_journal_parses_lowercase`. |
+
+- The suspected `leaf_info(&old).map_or(true, …)` in `certs::process` is **not** a lint: `leaf_info` returns a
+  `Result`, for which clippy 1.99 has no `is_none_or` counterpart; left as is (an `is_none_or` attempt did not
+  compile and was reverted before any commit).
+- No test failed: the test EDGE-M2 fixed (`reserved_names_cooldown_and_online_transfer`) passes; `visitor` ran
+  for the first time and passes (2/2). Nothing in code or tests had to change for the tests.
+
+### Public API change
+
+```rust
+config::DbJournal { Wal, Delete }          // #[serde(rename_all = "lowercase")], Default = Wal
+config::Config { .., db_journal: DbJournal }
+Store::open(path: &Path, journal: DbJournal) -> Result<Store>   // was open(path)
+```
+
+### Deviation / doubt (db_journal)
+
+- `Delete` also sets the pool to **one** connection. Not in the request, but required: under
+  `locking_mode=EXCLUSIVE` the first connection that reads keeps its SHARED lock and the first that writes keeps
+  EXCLUSIVE, so every other pooled connection would get `SQLITE_BUSY` after the busy timeout. With one connection a
+  code path that holds a transaction and then awaits a second pool connection would deadlock instead; the whole
+  suite was run with `THEUTH_SHARE_EDGE_DB_JOURNAL=delete` (every test edge loads its config through
+  `Config::from_yaml`, which merges the process env) to cover that: see Verification.
+- `deploy/share-edge/k8s/rwx-dev/configmap.yaml` already carries `db_journal: delete` (not this phase's file);
+  `deploy/share-edge/config.example.yaml` does not list the key (not this phase's file either). `TODO(210-M2)`: add
+  `db_journal: wal` to `config.example.yaml`.
+- Exclusive locking on NFS assumes one edge process per data dir (the k8s Deployment's single replica); a second
+  replica would fail to open, not corrupt.
+
+### Verification (all after the last code edit, 16:23, each command its own `/tmp/theuth-build.lock` hold)
+
+```sh
+CARGO_BUILD_JOBS=6 cargo test -p share-edge --all-features --no-fail-fast
+CARGO_BUILD_JOBS=6 THEUTH_SHARE_EDGE_DB_JOURNAL=delete cargo test -p share-edge --all-features --no-fail-fast -- --skip db_journal_parses_lowercase
+CARGO_BUILD_JOBS=6 cargo clippy -p share-edge --all-targets --all-features -- -D warnings
+CARGO_BUILD_JOBS=6 cargo clippy -p share-edge --all-targets -- -D warnings
+cargo tree -p share-edge -e normal | grep -E '\(/'
+```
+
+- test (WAL, default): exit 0 — unit 26/26, `certs` 14/14, `mesh` 4/4, `visitor` 2/2.
+- test (`db_journal=delete` via env, every rig loads config through `Config::from_yaml`): exit 0 — unit 25/25
+  (the parse test skipped: the env override beats its YAML), `certs` 14/14, `mesh` 4/4, `visitor` 2/2. No
+  deadlock with the single connection.
+- clippy `--all-features`: exit 0. clippy default features: exit 0.
+- `cargo tree -e normal` path crates: `share-edge`, `share-proto`, `platform`, `vendor/libsqlite3-sys`. Nothing else.
+- `Cargo.lock`: the one-line worktree change predates this phase and is not from it (no manifest edit); left
+  uncommitted. No new packages.
