@@ -121284,6 +121284,39 @@
         ],
         "description": "Who asked for the share: a tool call or Settings."
       },
+      "method.share.output.EdgeTerms": {
+        "description": "`share_terms_get` answer (TERMS-FIRST): the configured edge's current terms.",
+        "properties": {
+          "accepted": {
+            "description": "This mesh accepted `rev` (always for an edge without terms).",
+            "type": "boolean"
+          },
+          "domain": {
+            "description": "The edge's domain.",
+            "type": "string"
+          },
+          "edge": {
+            "description": "The edge's endpoint id, what `share_terms_accept` takes.",
+            "type": "string"
+          },
+          "rev": {
+            "description": "The current revision; empty when the edge has no terms.",
+            "type": "string"
+          },
+          "url": {
+            "description": "The terms page.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "edge",
+          "domain",
+          "url",
+          "rev",
+          "accepted"
+        ],
+        "type": "object"
+      },
       "method.share.output.HeldName": {
         "description": "`share_names_list` item: a name of the mesh, the replicated `share_names` row joined with\nthe edge's `NameInfo` from the last `welcome` (§5.2).",
         "properties": {
@@ -121833,6 +121866,39 @@
           }
         ],
         "description": "Who asked for the share: a tool call or Settings."
+      },
+      "method.share.receiver.EdgeTerms": {
+        "description": "`share_terms_get` answer (TERMS-FIRST): the configured edge's current terms.",
+        "properties": {
+          "accepted": {
+            "description": "This mesh accepted `rev` (always for an edge without terms).",
+            "type": "boolean"
+          },
+          "domain": {
+            "description": "The edge's domain.",
+            "type": "string"
+          },
+          "edge": {
+            "description": "The edge's endpoint id, what `share_terms_accept` takes.",
+            "type": "string"
+          },
+          "rev": {
+            "description": "The current revision; empty when the edge has no terms.",
+            "type": "string"
+          },
+          "url": {
+            "description": "The terms page.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "edge",
+          "domain",
+          "url",
+          "rev",
+          "accepted"
+        ],
+        "type": "object"
       },
       "method.share.receiver.HeldName": {
         "description": "`share_names_list` item: a name of the mesh, the replicated `share_names` row joined with\nthe edge's `NameInfo` from the last `welcome` (§5.2).",
@@ -148579,6 +148645,37 @@
         },
         "x-theuth-receiverSchema": {
           "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "share"
+    },
+    {
+      "name": "share_terms_get",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.share.output.EdgeTerms"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "x-theuth-receiverSchema": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/method.share.receiver.EdgeTerms"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "x-theuth-audience": "owner",
