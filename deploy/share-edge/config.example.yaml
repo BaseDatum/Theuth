@@ -13,6 +13,8 @@ iroh: {listen: "[::]:7850", relay: https://iroh.relay.theuth.io, public_addrs: [
 admin: {socket: /var/lib/theuth-share-edge/admin.sock, http: "[::]:9090"}   # §8.5; /metrics, /healthz
 admission: open               # open | invite | closed; live via admin; `admin reload` applies a changed value
 drain_secs: 30                # SIGTERM: drain {secs} to every tunnel, wait up to this long, then stop
+# standby_public: <hex>       # public key of the OFFLINE standby (`theuth-share-edge keygen`); launch: set it.
+                              # unset: the edge creates iroh.standby.key on its volume (pre-launch); see README
 brake:                        # §9.5; 0 = threshold off. auto: a holding condition flips open → invite (never back)
   auto: false
   refusals_per_min: 0         # limit refusals (network_quota, paced, quota, engines_quota, edge_full) in the last minute
@@ -102,6 +104,9 @@ limits:                       # §9.4; "net" = IPv4 address or IPv6 /64; refusal
   pre_hello_conns: 256
   hello_timeout_secs: 10
   info_per_ip_min: 30
+  lookups_per_net_min: 30     # GET /v1/names/{name} per IPv4 address / IPv6 /64 (429 rate_limited {scope: net})
+  lookups_per_wide_min: 120   # … per IPv4 /24 / IPv6 /48 (scope: net_wide)
+  lookups_per_tunnel_min: 30  # … per tunnel (engine key; scope: tunnel); a relayed tunnel's only lookup limit
   routes_per_tunnel: 64
   idle_secs: 900
 min_client: "0.0.0"           # oldest theuth served; older clients get 426 client_too_old

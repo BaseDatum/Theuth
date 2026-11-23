@@ -51,6 +51,44 @@ theuth-share-edge --config <path> admin admission invite # the brake (§9.5)
 kubectl -n theuth exec deploy/theuth-share-edge -- /theuth-share-edge admin status
 ```
 
+## Standby key (launch procedure, §5.5, §13)
+
+A release pins two edge keys: the live `iroh.key` and a cold standby. The standby secret is generated and kept
+offline; the edge only knows its public half.
+
+```sh
+# On an offline machine (no config needed): writes the secret (0600, never overwrites), prints the public key
+theuth-share-edge keygen --out /media/offline/standby.key
+# → line 1: hex public key (what standby_public takes); line 2: z32 form
+```
+
+Put the hex key into the config as `standby_public: <hex>`, restart, and pin both tickets in the release:
+
+```sh
+theuth-share-edge --config <path> ticket             # live
+theuth-share-edge --config <path> ticket --standby   # standby_public with the live relay and addresses
+```
+
+With `standby_public` set the edge never creates `iroh.standby.key`. A leftover `iroh.standby.key` on the volume
+is a start warning when it is the same key (delete it) and refuses start when it is a different one.
+
+**Rotation (live key lost or compromised).** Stop the edge, take a copy of the data dir (or work on the volume),
+then, with the offline standby secret at hand:
+
+```sh
+theuth-share-edge retire --standby-key /media/offline/standby.key --edge-key <data_dir copy>/iroh.key
+# or, on the host: theuth-share-edge --config <path> retire --standby-key /media/offline/standby.key
+```
+
+This signs `Retire {edge: standby, retired: live}` with the standby secret and writes beside the edge key:
+`retire.json`, the standby secret as the new `iroh.key` (0600) and the old key as `iroh.key.retired`. Copy those
+back into the data dir, `keygen` a new standby, set `standby_public` to it, start the edge: every `welcome` now
+carries the retire notice, and clients move their pin. Without a config file present, the `--edge-key` form does
+not check `standby_public` or whether the edge is running.
+
+Edges without `standby_public` keep the pre-launch behaviour: `iroh.standby.key` is created on the volume at
+first start, and `retire` (no flags) promotes it.
+
 ## Certificates (ACME over DNS-01, Porkbun)
 
 Order of first start (§8.5):
