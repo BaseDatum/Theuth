@@ -29,6 +29,8 @@ surface = { workspace = true }
 markdown = { workspace = true }
 tasks = { workspace = true }
 mime_guess = { workspace = true }
+# 210 §7.4 item 9: the owner's live-share message and `/share`.
+share = { workspace = true }
 tgbot = { workspace = true }
 # tgbot's reqwest links aws-lc-rs; rustls panics on the first TLS dial unless a
 # process provider is installed (21 §2.1). `Api::new` installs it when missing.

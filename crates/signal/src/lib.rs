@@ -42,6 +42,7 @@ pub mod error;
 #[cfg(test)]
 pub mod mock;
 pub mod presage;
+pub mod sharing;
 pub mod text;
 pub mod transport;
 pub mod user;

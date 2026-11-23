@@ -32,7 +32,9 @@ use uuid::Uuid;
 
 use crate::commands::{self, Cx, Reply};
 use crate::transport::{IncomingAttachment, Recipient, SignalEnvelope, SignalTransport};
-use crate::{SIGNAL_ACTOR, SignalConfig, SignalEvent, SignalStatus, approvals, asks, text};
+use crate::{
+    SIGNAL_ACTOR, SignalConfig, SignalEvent, SignalStatus, approvals, asks, sharing, text,
+};
 
 /// How long the Signal server keeps a provisioning URL scannable.
 pub const LINK_URL_TTL: Duration = Duration::from_secs(90);
@@ -364,6 +366,10 @@ enum Event {
     Predicted(double::DoublePredicted),
     /// 126 §10: the double answered a card at L2.
     DoubleAnswered(double::DoubleAnswered),
+    /// 210 §7.4: a share record changed (replicated rows of other machines too).
+    Share(share::Share),
+    /// 210 §7.4: the engine's list at boot.
+    ShareSeed(Vec<share::Share>),
 }
 
 /// Bus subscriber: forwards into the ordered event worker.
@@ -420,6 +426,13 @@ impl Message<ArtifactShown> for Bus {
     type Reply = ();
     async fn handle(&mut self, m: ArtifactShown, _: &mut Context<Self, ()>) {
         let _ = self.tx.send(Event::Artifact(m));
+    }
+}
+
+impl Message<share::ShareChanged> for Bus {
+    type Reply = ();
+    async fn handle(&mut self, m: share::ShareChanged, _: &mut Context<Self, ()>) {
+        let _ = self.tx.send(Event::Share(m.share));
     }
 }
 
@@ -483,6 +496,8 @@ pub(crate) struct State {
     link_url: Option<String>,
     /// 67 decision 22: only the hub answers; the lease says who that is.
     pub(crate) lease: roster::lease::Follower,
+    /// 210 §7.4 item 9: the owner's live-share notices.
+    sharing: sharing::Notices,
 }
 
 pub(crate) struct Channel {
@@ -599,6 +614,20 @@ const APP_NOTE: &str = "Interactive app — open on desktop/web";
 async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
     let (env_tx, mut env_rx) = mpsc::unbounded_channel::<SignalEnvelope>();
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Event>();
+    // 210 §7.4 item 9: the records so far, when the share engine is up.
+    if let Ok(engine) = share::rpc_support::engine() {
+        let seed = ev_tx.clone();
+        tokio::spawn(async move {
+            match engine.list().await {
+                Ok(list) => {
+                    let _ = seed.send(Event::ShareSeed(list));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "signal: share list for the live-share notice")
+                }
+            }
+        });
+    }
     let bus = Bus::spawn_with_mailbox(Bus { tx: ev_tx }, runtime::subscriber_mailbox());
     chan.rt.subscribe::<Bus, AgentEvent>(&bus).await;
     chan.rt.subscribe::<Bus, ApprovalRequested>(&bus).await;
@@ -612,6 +641,7 @@ async fn run(chan: Arc<Channel>, mut ctrl: mpsc::UnboundedReceiver<Control>) {
         .subscribe::<Bus, double::DoublePredicted>(&bus)
         .await;
     chan.rt.subscribe::<Bus, double::DoubleAnswered>(&bus).await;
+    chan.rt.subscribe::<Bus, share::ShareChanged>(&bus).await;
     // 67 §4.7: who "we" are, once the mesh is up; the follower re-reads the
     // last lease it saw against that id.
     let identity = {
@@ -688,6 +718,7 @@ impl Channel {
                 last_event: None,
                 link_url: None,
                 lease: roster::lease::Follower::default(),
+                sharing: sharing::Notices::default(),
             }),
             approvals: tokio::sync::Mutex::new(approvals::Pending::default()),
             asks: tokio::sync::Mutex::new(asks::Pending::default()),
@@ -1679,10 +1710,46 @@ impl Channel {
             }
             Event::Secret(_) => {}
             Event::Lease(lease) => {
-                if let Some(holding) = self.lock().lease.observe(&lease) {
+                let gained = self.lock().lease.observe(&lease);
+                if let Some(holding) = gained {
                     tracing::info!(holding, holder = ?lease.holder, reason = %lease.reason, "signal: hub duties follow the lease");
                 }
+                if gained == Some(true) {
+                    self.share_notice().await;
+                }
             }
+            Event::Share(s) => {
+                self.lock().sharing.apply(s);
+                self.share_notice().await;
+            }
+            Event::ShareSeed(list) => {
+                self.lock().sharing.seed(list);
+                self.share_notice().await;
+            }
+        }
+    }
+
+    /// 210 §7.4 item 9: the owner hears the transitions: the list when the first share goes
+    /// live, [`sharing::STOPPED_TEXT`] when none is left. The hub sends them (every engine
+    /// sees every record). Signal cannot pin, and its edits are unreliable on linked devices,
+    /// so there is no message kept in place; `/share` lists on demand.
+    async fn share_notice(&self) {
+        if self.owner.is_empty() {
+            return;
+        }
+        let (to, text) = {
+            let mut s = self.lock();
+            if !s.lease.holding {
+                return;
+            }
+            let Some(text) = s.sharing.step(sharing::now_ms()) else {
+                return;
+            };
+            (s.threads.recipient(&self.owner), text)
+        };
+        if self.send_chunks(&to, &text).await.is_none() {
+            tracing::warn!("signal: live-share notice not sent; retried on the next change");
+            self.lock().sharing.failed();
         }
     }
 

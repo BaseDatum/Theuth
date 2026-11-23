@@ -130,6 +130,11 @@ const COMMANDS: &[(&str, &str, &str)] = &[
         "[reload]",
         "network status or config reload (owner)",
     ),
+    (
+        "/share",
+        "[list|stop [<id>|all]]",
+        "live public shares; stop one or all (owner)",
+    ),
 ];
 
 const OWNER_ONLY: &[&str] = &[
@@ -142,6 +147,7 @@ const OWNER_ONLY: &[&str] = &[
     "/requests",
     "/a2a",
     "/broadcast",
+    "/share",
 ];
 const OWNER_MSG: &str = "This command is restricted to the owner.";
 const NO_SESSION: &str = "no session yet: send a message first";
@@ -478,6 +484,8 @@ async fn run(cx: &mut Cx<'_>, name: &'static str, arg: &str) -> anyhow::Result<R
         "/requests" => requests_cmd(cx.session, arg).await,
         "/a2a" => a2a_cmd(arg).await,
         "/broadcast" => broadcast_cmd(arg).await,
+        // 210 §7.4 item 9: never gated by an approval.
+        "/share" => text(crate::sharing::command(arg).await?),
         _ => text(help()),
     }
 }
@@ -1235,6 +1243,9 @@ mod tests {
             "/requests",
             "/a2a reload",
             "/broadcast running hello",
+            "/share stop",
+            "/share",
+            "/sha list",
         ] {
             let cx = Cx {
                 session: None,
@@ -1265,6 +1276,32 @@ mod tests {
             handle(cx, "/signal rm +1 555").await,
             Some(Reply::RemoveAllowed("+1 555".into()))
         );
+    }
+
+    /// 210 §7.4 item 9: `/share` is in the table, owner-only, and reaches the share engine
+    /// for the owner without an approval; no running engine says so.
+    #[tokio::test]
+    async fn share_is_owner_only_and_reaches_the_engine() {
+        let mut p = Pending::default();
+        assert!(OWNER_ONLY.contains(&"/share"));
+        assert_eq!(
+            classify(&p, "/share stop all"),
+            Some(("/share", "stop all"))
+        );
+        assert_eq!(classify(&p, "/sh"), Some(("/share", "")));
+        for text in ["/share stop", "/share stop all", "/share", "/share list"] {
+            let cx = Cx {
+                session: None,
+                is_owner: true,
+                status: status(),
+                approvals: &mut p,
+            };
+            assert_eq!(
+                handle(cx, text).await,
+                Some(Reply::Text(crate::sharing::NOT_RUNNING.into())),
+                "{text}"
+            );
+        }
     }
 
     /// 162 D8: `refresh` without a name is a usage error, never an engine call.

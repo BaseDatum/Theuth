@@ -16,9 +16,9 @@ use tgbot::types::{
     AnswerCallbackQuery, BotCommand, BotCommandScope, ChatAction, CloseForumTopic,
     CreateForumTopic, DeleteMessage, DeleteWebhook, EditForumTopic, EditMessageReplyMarkup,
     EditMessageText, EphemeralMessageParameters, GetBot, GetFile, GetUpdates, InlineKeyboardButton,
-    InlineKeyboardMarkup, InputFileReader, InputRichMessage, ReactionType, ReplyParameters,
-    SendChatAction, SendDocument, SendMessage, SendPhoto, SendRichMessage, SendRichMessageDraft,
-    SendVoice, SetBotCommands, SetMessageReaction,
+    InlineKeyboardMarkup, InputFileReader, InputRichMessage, PinChatMessage, ReactionType,
+    ReplyParameters, SendChatAction, SendDocument, SendMessage, SendPhoto, SendRichMessage,
+    SendRichMessageDraft, SendVoice, SetBotCommands, SetMessageReaction, UnpinChatMessage,
 };
 use tokio::time::Instant;
 use tracing::Instrument;
@@ -277,6 +277,8 @@ pub trait Sender: Send + Sync + 'static {
     async fn close_topic(&self, chat: i64, topic: i64) -> Result<(), ApiError>;
     /// `deleteMessage`.
     async fn delete_message(&self, at: &MsgRef) -> Result<(), ApiError>;
+    /// `pinChatMessage` (silent) when `pinned`, else `unpinChatMessage` for that message.
+    async fn pin(&self, at: &MsgRef, pinned: bool) -> Result<(), ApiError>;
     /// `setMyCommands` for one scope.
     async fn set_commands(
         &self,
@@ -834,6 +836,17 @@ impl Sender for Api {
             .map(|_| ())
     }
 
+    async fn pin(&self, at: &MsgRef, pinned: bool) -> Result<(), ApiError> {
+        self.pace(&[]).await;
+        if pinned {
+            let m = PinChatMessage::new(at.chat, at.id).with_disable_notification(true);
+            self.call("pinChatMessage", m).await.map(|_| ())
+        } else {
+            let m = UnpinChatMessage::new(at.chat).with_message_id(at.id);
+            self.call("unpinChatMessage", m).await.map(|_| ())
+        }
+    }
+
     async fn set_commands(
         &self,
         scope: CommandScope,
@@ -965,6 +978,10 @@ pub mod mock {
             topic: i64,
         },
         DeleteMessage(MsgRef),
+        Pin {
+            at: MsgRef,
+            pinned: bool,
+        },
         SetCommands {
             scope: CommandScope,
             names: Vec<String>,
@@ -1264,6 +1281,10 @@ pub mod mock {
 
         async fn delete_message(&self, at: &MsgRef) -> Result<(), ApiError> {
             self.record(Call::DeleteMessage(*at), "delete_message")
+        }
+
+        async fn pin(&self, at: &MsgRef, pinned: bool) -> Result<(), ApiError> {
+            self.record(Call::Pin { at: *at, pinned }, "pin")
         }
 
         async fn set_commands(

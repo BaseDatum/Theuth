@@ -53,6 +53,7 @@ pub mod commands;
 pub mod poll;
 pub mod port;
 pub mod setup;
+pub mod sharing;
 pub mod threads;
 pub mod ui;
 pub mod user;
