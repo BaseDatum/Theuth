@@ -14,6 +14,11 @@ test('the rest is everything below the first line, trimmed', () => {
   expect(afterFirstLine('Only one line')).toBe('')
 })
 
+test('a response that opens with a fence keeps it whole', () => {
+  const t = '```json-render\n{"root":"t"}\n```\nThe edge builder fixed a race.'
+  expect(afterFirstLine(t)).toBe(t)
+})
+
 test('picks the row the summary came from, even when a newer turn followed', () => {
   const h = [u('go'), a('Merged the fix.\nAll green.'), u('again'), a('Working on it')]
   expect(finalResponse(h, 'Merged the fix.')).toBe('Merged the fix.\nAll green.')

@@ -12,11 +12,14 @@ export function firstLine(text: string): string {
   return ''
 }
 
-/** Everything after the first non-empty line, trimmed; the trailing `## Next` section stays (it is part of the text). */
+/** Everything after the first non-empty line, trimmed; the trailing `## Next` section stays (it is part of the text).
+ * A response that opens with a fence keeps it whole: cutting the opener would turn the block into stray text. */
 export function afterFirstLine(text: string): string {
   const lines = text.split('\n')
   const i = lines.findIndex((l) => l.trim() !== '')
-  return i < 0 ? '' : lines.slice(i + 1).join('\n').trim()
+  if (i < 0) return ''
+  if (/^(```|~~~)/.test(lines[i]?.trim() ?? '')) return text.trim()
+  return lines.slice(i + 1).join('\n').trim()
 }
 
 /** The summary may be clipped with `…`: compare on the part before it. */
