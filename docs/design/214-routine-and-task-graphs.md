@@ -37,3 +37,9 @@ Status: contract (fixed before builders start). Owner request 2026-11-24.
 
 - Rust: `cargo test -p tasks`, `cargo test -p roster`, `cargo test -p rpc-compose --test wire_golden`, clippy `--no-deps` on touched crates. Orchestrator: `just wire-schema-accept`, `just ts-desktop`.
 - UI: `bun run check`, `bun run test` (vitest, `*.test.ts` only). Pure builders tested: `routineGraph`, task `graphModel` (edges from blockers, non-task blockers, cycle-safe, stable hash).
+
+## 4. Amendment A1 (owner, 2026-11-24 15:20) — finished dependencies stay visible
+
+- `Task` gains `#[serde(default)] pub resolved_blockers: Vec<TaskId>`: task ids that used to be in `blockers` and were removed because that task closed (done/cancelled). Stored (migration `crates/tasks/migrations/0010_resolved_blockers.sql`, `resolved_blockers_json TEXT NOT NULL DEFAULT '[]'`). `on_closed` appends the closing id (deduped) when it strips it from a dependent's `blockers`. A manual removal via task_update does NOT add to resolved_blockers. If a closed task is reopened, its id is not put back into blockers (unchanged behaviour). Emits `TaskChanged{Updated}` for each dependent touched.
+- Graph: edge B→A drawn for `A.blockers ∋ B` (open, solid) and for `A.resolved_blockers ∋ B` (done, faded). The layout hash is built from the union of both sets, so a blocker resolving never relayouts.
+- Replication: `tasks` is a replicated table — B-ENG checks whether a column add needs a replica/wire schema bump and does it.
