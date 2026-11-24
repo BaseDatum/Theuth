@@ -118,7 +118,7 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
     case 'info':
       return <MessageInfo text={entry.text} label={entry.label} />
     case 'error':
-      return <ErrorRow text={entry.text} session={session} at={entry.at} />
+      return <ErrorRow text={entry.text} child={entry.child} session={session} at={entry.at} />
     case 'compacted':
       return <MessageCompacted epoch={entry.epoch} style={entry.style} summary={entry.summary} />
     case 'interrupted':
@@ -130,8 +130,8 @@ function body(entry: Entry, session: string, readOnly?: boolean) {
 
 /** An `errors` row. 199 D17: one that is an ended share's file notice is its file card, "not given to the agent"; the raw
  * `<message_file>` markup never shows, even when it does not parse. */
-function ErrorRow({ text, session, at }: { text: string; session: string; at?: number }) {
-  if (!text.trimStart().startsWith('<message_file')) return <MessageError text={text} />
+function ErrorRow({ text, child, session, at }: { text: string; child?: string; session: string; at?: number }) {
+  if (!text.trimStart().startsWith('<message_file')) return <MessageError text={text} child={child} />
   const note = parseFileNotice(text)
   return note ? <FileNoticeCard note={note} session={session} at={at} ended /> : <MessageError text="File notice (unreadable)" />
 }

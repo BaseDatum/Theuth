@@ -1,6 +1,7 @@
 import { ChevronRight } from 'lucide-react'
 import { memo } from 'react'
 import { Details } from './disclosure'
+import { ErrorCard } from './ErrorCard'
 
 /** One muted line (`model → x`, `↳ spawned name`, …). 201 R3-2: with a `label` (a `<ledger>` / `<recall>` / `<tools>`
  * harness note) the line is the label and `text` folds under it, collapsed by default. */
@@ -23,13 +24,10 @@ export const MessageInfo = memo(function MessageInfo({ text, label }: { text: st
   )
 })
 
-/** One error in the danger colour: a provider refusal, a failed send. Announced; wraps with the transcript. */
-export const MessageError = memo(function MessageError({ text }: { text: string }) {
-  return (
-    <div role="alert" className="py-1 text-sm text-danger whitespace-pre-wrap">
-      {text}
-    </div>
-  )
+/** One error (a provider refusal, a failed send) as the error card. Announced; wraps with the transcript. `child`: the
+ * subagent a parent relays it from. */
+export const MessageError = memo(function MessageError({ text, child }: { text: string; child?: string }) {
+  return <ErrorCard text={text} child={child} />
 })
 
 /** 109 §8.2: the partial an interrupted model call streamed — greyed under an `interrupted — resuming` label until the

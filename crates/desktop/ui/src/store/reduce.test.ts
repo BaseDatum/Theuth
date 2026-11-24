@@ -1965,3 +1965,10 @@ test('reminder details follow events even after an ids-only snapshot', () => {
   st.applyEvents([{ type: 'ReminderCancelled', session: id, id: 'r1' }])
   expect(useSessions.getState().sessions[id]?.reminderDetails.has('r1')).toBe(false)
 })
+
+test('a child\'s Error lands on its parent as an error entry attributed to the child by name', () => {
+  const draft: Record<string, SessionSlice> = { [S]: empty(S) }
+  route(draft, { type: 'SubagentSpawned', parent: S, child: 'kid', name: 'probe-gemini' }, ctx())
+  route(draft, { type: 'Error', session: 'kid', turn: T, message: 'model: boom' }, ctx())
+  expect(draft[S]?.entries.at(-1)).toMatchObject({ kind: 'error', text: '↳ probe-gemini error: model: boom', child: 'probe-gemini' })
+})

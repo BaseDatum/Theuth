@@ -1592,6 +1592,7 @@ function trackRow(
           id: nextId(),
           kind: "error",
           text: `↳ ${name} error: ${e.message}`,
+          child: name,
         }),
       };
     // Subagents card: the model the harness reports (or a native switch) lands on every ancestor's row, no reload.

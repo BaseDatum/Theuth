@@ -179,7 +179,8 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
   | { kind: "advisory"; notes: AdvisoryNote[]; seq?: number; question?: string }
   /** `label`: 201 R3-2 — a harness note's collapsed line (`Ledger updated`); `text` shows when expanded. */
   | { kind: "info"; text: string; label?: string }
-  | { kind: "error"; text: string }
+  /** `child`: the subagent whose error a parent relays (`↳ name error: …`); the card attributes it. */
+  | { kind: "error"; text: string; child?: string }
   | { kind: "compacted"; epoch: number; style: CompactStyle; summary?: string }
   /** 109 §8.2: the partial an interrupted model call streamed; greyed, removed by the regenerated reply's first delta. */
   | { kind: "interrupted"; text: string }
