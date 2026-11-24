@@ -10,6 +10,7 @@ use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use rpc_core::{Server, ask};
 use runtime::SessionId;
+use std::path::PathBuf;
 use tools::git::SyncResult;
 
 #[rpc_core_macros::rpc_descriptors(owner = "agent", descriptors = rpc_descriptors, audience = "owner")]
@@ -23,22 +24,27 @@ pub trait SkillsApi {
     async fn load_skill(&self, name: String) -> RpcResult<SkillBody>;
     /// Hand a skill to the model as user input: its body wrapped in
     /// `<skill name="…">`, then `args` (design doc 04 §2.4). New turn when
-    /// idle, steer when running; `None` session starts one.
+    /// idle, steer when running; `None` session starts one. `files` are
+    /// attached to that input exactly as `send_input`'s (image files, 17 §2);
+    /// optional, absent = none.
     #[method(name = "use_skill", with_extensions)]
     async fn use_skill(
         &self,
         session: Option<SessionId>,
         name: String,
         args: String,
+        files: Option<Vec<PathBuf>>,
     ) -> RpcResult<SessionId>;
     /// [`use_skill`](Self::use_skill) for several skills at once: one input
-    /// whose `<skill>` blocks follow `names`' order, then `args`.
+    /// whose `<skill>` blocks follow `names`' order, then `args`, carrying
+    /// `files` like `send_input`'s.
     #[method(name = "use_skills", with_extensions)]
     async fn use_skills(
         &self,
         session: Option<SessionId>,
         names: Vec<String>,
         args: String,
+        files: Option<Vec<PathBuf>>,
     ) -> RpcResult<SessionId>;
     /// Write `skills/<name>.md`.
     #[method(name = "add_skill")]
@@ -79,23 +85,32 @@ impl SkillsApiServer for Server {
         session: Option<SessionId>,
         name: String,
         args: String,
+        files: Option<Vec<PathBuf>>,
     ) -> RpcResult<SessionId> {
         self.authorize_opt_fwd(ext, session).await?;
         let session = match session {
             Some(s) => s,
             None => owner_root().await?,
         };
-        if let Some(r) =
+        let files = files.unwrap_or_default();
+        // Without files the forward keeps the three-parameter shape an older owner takes.
+        let routed = if files.is_empty() {
             forward::route(ext, session, "use_skill", (Some(session), &name, &args)).await?
-        {
+        } else {
+            let params = (Some(session), &name, &args, forward::ByName(&files));
+            forward::route(ext, session, "use_skill", params).await?
+        };
+        if let Some(r) = routed {
             return Ok(r);
         }
+        let files = forward::resolve_files(ext, &self.rt.data_dir, files).await?;
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             UseSkill {
                 session: Some(session),
                 names: vec![name],
                 args,
+                files,
             },
         )
         .await
@@ -107,23 +122,31 @@ impl SkillsApiServer for Server {
         session: Option<SessionId>,
         names: Vec<String>,
         args: String,
+        files: Option<Vec<PathBuf>>,
     ) -> RpcResult<SessionId> {
         self.authorize_opt_fwd(ext, session).await?;
         let session = match session {
             Some(s) => s,
             None => owner_root().await?,
         };
-        if let Some(r) =
+        let files = files.unwrap_or_default();
+        let routed = if files.is_empty() {
             forward::route(ext, session, "use_skills", (Some(session), &names, &args)).await?
-        {
+        } else {
+            let params = (Some(session), &names, &args, forward::ByName(&files));
+            forward::route(ext, session, "use_skills", params).await?
+        };
+        if let Some(r) = routed {
             return Ok(r);
         }
+        let files = forward::resolve_files(ext, &self.rt.data_dir, files).await?;
         ask::<Agents, _>(
             agent::AGENT_ACTOR,
             UseSkill {
                 session: Some(session),
                 names,
                 args,
+                files,
             },
         )
         .await
