@@ -475,7 +475,7 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         assert_eq!(v["result"], flag(true), "{v}");
         assert_eq!(
             std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
-            "agent:\n  model: x  # keep\nonboarding:\n  completed: true\n"
+            "agent:\n  model: x  # keep\n\nonboarding:\n  completed: true\n"
         );
     }
 
