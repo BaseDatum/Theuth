@@ -22,6 +22,7 @@ import { CostsPrefetch } from '@/lib/costs/queries'
 import { CostsResident, ResidentCtx } from '@/components/costs/Resident'
 import type { SearchRequest } from '@/lib/search'
 import { pageTitle } from '@/lib/nav'
+import { remeasureViewport } from '@/lib/viewport'
 import { POPOUT, isPopout } from '@/lib/popout'
 import { isIsland, isOverlay } from '@/lib/tauri'
 import { OnboardingHost } from '@/components/onboarding/OnboardingHost'
@@ -59,6 +60,9 @@ function Root() {
   // Every path that changes it (the toggles, ⌘B, ⇧⌘S's event, a swipe) lands here; a mesh switch keeps it.
   const [open, setOpen] = useSidebarOpen()
   useHotkeys()
+  // Opening a chat re-reads the viewport: an iPad window that changed size with no event left since keeps its old band.
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  useEffect(remeasureViewport, [pathname])
 
   useEffect(() => {
     const toggle = () => setOpen((o) => !o)

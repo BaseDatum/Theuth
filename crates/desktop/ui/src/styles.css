@@ -583,10 +583,15 @@ body.voice-hold {
     --safe-bottom: 0px;
   }
 
+  /*
+   * The page is the shell's own height (`--visible-band`, the same reading `h-band` takes), never a separate CSS
+   * viewport unit: the iPadOS webview can leave `dvh` stale and short (the sidebar's `svh`, 2c0e5c8a3) and `#root`
+   * clips, so a band-tall shell lost its bottom, the composer, until a window resize refreshed the unit.
+   */
   html,
   body,
   #root {
-    height: 100dvh;
+    height: var(--visible-band, 100dvh);
     overflow: hidden;
   }
 

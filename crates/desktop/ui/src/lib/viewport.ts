@@ -47,24 +47,43 @@ export function applyViewport(): void {
   if (window.scrollY || window.scrollX) window.scrollTo(0, 0)
 }
 
+/**
+ * WebKit can report the old `innerHeight` / `visualViewport` while a resize is still settling (an iPadOS Stage Manager
+ * or Split View window finding its size, a resume, a rotation), and send no event once the value is final. One more
+ * reading after the burst catches it.
+ */
+export const SETTLE_MS = 300
+
+let remeasure = (): void => {}
+
+/** Read the viewport again soon, with no window event: the router calls it on every route change (opening a chat). */
+export const remeasureViewport = (): void => remeasure()
+
 /** Start tracking; returns the disposer. Call once before the first render. */
 export function trackViewport(): () => void {
   let frame = 0
+  let settle: ReturnType<typeof setTimeout> | undefined
   const schedule = () => {
-    if (frame) return
-    frame = requestAnimationFrame(() => {
-      frame = 0
-      applyViewport()
-    })
+    if (!frame)
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        applyViewport()
+      })
+    clearTimeout(settle)
+    settle = setTimeout(applyViewport, SETTLE_MS)
   }
-  const targets: [EventTarget | null, string[]][] = [
+  const targets: [EventTarget | null | undefined, string[]][] = [
     [window, ['resize', 'orientationchange', 'focusin', 'focusout', 'pageshow']],
     [window.visualViewport, ['resize', 'scroll']],
+    [globalThis.document, ['visibilitychange']],
   ]
   for (const [t, names] of targets) for (const n of names) t?.addEventListener(n, schedule)
+  remeasure = schedule
   applyViewport()
   return () => {
     cancelAnimationFrame(frame)
+    clearTimeout(settle)
+    remeasure = () => {}
     for (const [t, names] of targets) for (const n of names) t?.removeEventListener(n, schedule)
   }
 }
