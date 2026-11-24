@@ -21,7 +21,6 @@ import { Screen } from '@/components/attention/Screen'
 import { useAttention } from '@/components/hud/queries'
 import { attentionFixture } from '@/components/settings/attention-fixtures'
 import { SidebarProvider } from '@/components/ui/sidebar'
-import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { AgentGraphChanged, GraphPulse, GraphPulseKind } from '@/rpc/bindings/event.agent_2egraph.output'
 import type { Api } from '@/rpc/bindings/client'
@@ -251,7 +250,6 @@ const root = createRootRoute({
           <Outlet />
         </div>
       </SidebarProvider>
-      <Toaster />
     </TooltipProvider>
   ),
 })

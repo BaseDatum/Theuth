@@ -8,7 +8,7 @@ import * as native from '@/lib/web-view-native'
 import { useWebViews } from '@/lib/web-views'
 
 /** Open things a native web view would draw over (it sits above all DOM): radix dialogs, sheets, menus, popovers,
- * selects, the modal backdrops and toasts. Tooltips are not among them: they come and go with the pointer. */
+ * selects, the modal backdrops and the notice history. Tooltips are not among them: they come and go with the pointer. */
 const OVERLAYS = [
   '[role="dialog"]',
   '[role="alertdialog"]',
@@ -17,7 +17,7 @@ const OVERLAYS = [
   '[data-radix-popper-content-wrapper]',
   '[data-slot="sheet-content"]',
   '[data-slot$="-overlay"]',
-  '[data-sonner-toast]',
+  '[data-notice-popover]',
 ].join(',')
 
 const isTooltip = (el: Element) => el.querySelector('[role="tooltip"],[data-slot="tooltip-content"]') !== null

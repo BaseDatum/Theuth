@@ -1,13 +1,14 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
-import { toast } from 'sonner'
 import { Editor as BlockEditor } from '@/components/editor/Editor'
 import { NotebookGuest } from '@/components/notebooks/NotebookGuest'
 import { ParticipantStrip } from '@/components/share/ParticipantStrip'
+import { PhoneStatusLine } from '@/components/status/PhoneStatusLine'
+import { StatusBar } from '@/components/status/StatusBar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Toaster } from '@/components/ui/sonner'
 import { type DocStatus, type GuestUser, EngineProvider } from '@/lib/doc/provider'
+import { notify } from '@/lib/notify'
 import { CLOSE_REFUSED } from '@/link/frames'
 import { type ShareTarget, dialRotation, joinBusy, joinProof, parseShareLink, serverMoved } from '@/link/guest'
 import type { Engine } from '@/link/engines'
@@ -63,17 +64,21 @@ export function GuestApp() {
       />
     )
   }
+  // 217: no engine scope here, so the bar (the line on a phone) carries notices only.
   return (
-    <>
-      <GuestSession target={target} name={name} />
-      <Toaster />
-    </>
+    <div className="flex h-full flex-col">
+      <div className="min-h-0 flex-1">
+        <GuestSession target={target} name={name} />
+      </div>
+      <StatusBar guest />
+      <PhoneStatusLine guest />
+    </div>
   )
 }
 
 function Screen({ title, hint, children }: { title: string; hint?: string; children?: ReactNode }) {
   return (
-    <main className="flex h-dvh flex-col items-center justify-center gap-3 p-6 text-center">
+    <main className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
       <h1 className="text-lg font-medium">{title}</h1>
       {hint && <p className="max-w-sm text-sm text-fg-tertiary">{hint}</p>}
       {children}
@@ -145,7 +150,7 @@ function GuestSession({ target, name }: { target: ShareTarget; name: string }) {
       p.onStatus((s) => {
         if (s.kind !== 'closed' || p !== provider) return
         if (s.reason === 'demoted') {
-          toast('You can now only view this document')
+          notify('You can now only view this document')
           open({ ...user, role: 'viewer' })
         } else if (s.reason === 'revoked') end('Your access was removed.')
         else if (s.reason === 'deleted') end('This document was deleted.')
@@ -243,7 +248,7 @@ function GuestDocument({ provider, user, owner, client, engine }: { provider: En
     document.title = title
   }, [title])
   return (
-    <main className="flex h-dvh flex-col" data-guest-role={user.role}>
+    <main className="flex h-full flex-col" data-guest-role={user.role}>
       <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-border-subtle px-4">
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium">{title || 'Untitled'}</h1>
         <ParticipantStrip provider={provider} />

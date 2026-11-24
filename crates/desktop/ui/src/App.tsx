@@ -5,13 +5,11 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import { useShortcuts } from '@/lib/shortcuts'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { toast } from 'sonner'
 import { ATTENTION_KEY } from '@/components/hud/queries'
 import { QuitOverlay, useQuit } from '@/components/launch/QuitOverlay'
 import { PreQuit, confirmQuit, tauriShellQuit } from '@/components/cells/QuitSheet'
 import { StartupScreen } from '@/components/launch/StartupScreen'
 import { PairScreen } from '@/components/link/PairScreen'
-import { Toaster } from '@/components/ui/sonner'
 import { AlertNotifier } from '@/lib/alerts'
 import { describe } from '@/lib/describe'
 import { installDictationListeners, refreshStatus, setModel } from '@/lib/dictation'
@@ -20,7 +18,8 @@ import { EngineSwitch } from '@/lib/engine-switch'
 import { FocusTracker, Throttle, deriveFocus } from '@/lib/event-focus'
 import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
-import { notifyIfHidden, primeNotifications } from '@/lib/notify'
+import { notify } from '@/lib/notify'
+import { notifyIfHidden, primeNotifications } from '@/lib/os-notify'
 import { chatLeaves, closeWeb, resetPanes, usePanes } from '@/lib/panes'
 import { closeAllWebViews, installWebViewEvents, useWebViews } from '@/lib/web-views'
 import { webViewOpened } from '@/lib/web-arrival'
@@ -71,6 +70,7 @@ import type { TopicEvent } from '@/rpc/bindings/client'
 import { disconnected, ready, supports } from '@/rpc/discovery'
 import { routeTree } from '@/routeTree.gen'
 import { routerMounted, useConnection, watchDrops } from '@/store/connection'
+import { useEventRate } from '@/store/event-rate'
 import { EngineProvider, type Stores, dropScope, scope } from '@/store/engine-scope'
 import { hydrateMeeting, installMeetingListeners } from '@/store/meeting'
 import { dispatch, on, useSessions } from '@/store/sessions'
@@ -275,6 +275,7 @@ function attach(st: Stores): void {
   }
   watchLongTasks()
   const attached = client.subscribe(null, null, (e) => {
+    useEventRate.getState().tick()
     if (generation !== client.generation) { queue.length = 0; generation = client.generation }
     // The stream's first item (also after a reconnect's re-issue): the subscription is up, seed the live sets.
     if (e.key === 'rpc.stream@1' && e.event.type === 'PendingPrompts') seedLive(st)
@@ -306,14 +307,7 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
   conn.setDiscovery(disconnected())
   st.connection.setState({ outage: false })
   let client: RpcClient | undefined
-  // Toasts for the engine on screen; a mesh row's hub failover (69 decision 6) shows the switcher's
-  // "reconnecting…" chip instead — the new hub answers on the same id within seconds.
-  const drops = watchDrops(st.connection, (text) => {
-    const { active, engines } = useEngines.getState()
-    const shown = active === st.id && engines.find((h) => h.id === st.id)?.kind !== 'mesh'
-    if (shown) toast(text)
-    return shown
-  })
+  const drops = watchDrops(st.connection)
   signal.addEventListener('abort', () => {
     drops.stop()
     detach(st)
@@ -346,6 +340,9 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
         const elapsed = drops.next(s)
         if (elapsed !== undefined) gap = elapsed
       })
+      client.onRetry((r) => {
+        if (!signal.aborted) st.connection.setState({ retryAt: r.at, attempt: r.attempt })
+      })
       conn.setClient(client, api)
       client.onDiscovery((discovery) => {
         if (signal.aborted) return
@@ -366,13 +363,13 @@ function boot(st: Stores, make: () => Promise<RpcClient>, signal: AbortSignal): 
   })()
 }
 
-/** ⌥Esc: `cancel` every session with a turn in flight, one toast for the lot. */
+/** ⌥Esc: `cancel` every session with a turn in flight, one notice for the lot. */
 async function cancelAll(): Promise<void> {
   const api = useConnection.getState().api
   if (!api) return
   const running = Object.values(useSessions.getState().sessions).filter((s) => s.running)
   await Promise.all(running.map((s) => api.cancel(s.id, null, 'stop').catch(() => undefined)))
-  if (running.length) toast(`cancelled ${running.length} sessions`)
+  if (running.length) notify(`cancelled ${running.length} sessions`)
 }
 
 /**
@@ -388,18 +385,18 @@ function useTauri(): void {
       onNavigate((path) => router.history.push(path)),
       onQuitRequested((p) => void quit(p.restart)),
       onQuitProgress((p) => useQuit.getState().send({ type: 'progress', ...p })),
-      // `crates/desktop/src/models.rs`: one toast, updated in place, for the whole batch.
+      // `crates/desktop/src/models.rs`: one notice, updated in place, for the whole batch.
       onModelsProgress((p) => {
         const id = 'models'
         if (p.state === 'downloading')
-          toast.loading(`Downloading speech models… ${Math.round((100 * p.done) / p.total)}%`, { id, description: p.file })
-        else if (p.state === 'verifying') toast.loading('Verifying models…', { id, description: p.file })
+          notify.loading(`Downloading speech models… ${Math.round((100 * p.done) / p.total)}%`, { id, description: p.file })
+        else if (p.state === 'verifying') notify.loading('Verifying models…', { id, description: p.file })
         else if (p.state === 'ready') {
-          toast.success('Speech models ready', { id, description: undefined })
+          notify.success('Speech models ready', { id, description: undefined })
           // The daemon reloads lazily but the UI gates the mic on `model.state`; ask again so the button unlocks without a restart.
           const api = useConnection.getState().api
           if (api) void api.dictation_prewarm().then(setModel).catch(() => undefined)
-        } else toast.error(`Speech models: ${p.message}`, { id, description: undefined })
+        } else notify.error(`Speech models: ${p.message}`, { id, description: undefined })
       }),
     ]
     const onQuit = () => void quit()
@@ -437,17 +434,17 @@ function useGlobalShortcuts(): void {
         await win.show()
         await win.setFocus()
       }
-    }).catch(() => toast.error(`Could not register ${toggle}; another app holds it`))
+    }).catch(() => notify.error(`Could not register ${toggle}; another app holds it`))
     void register(cancel, (e) => {
       if (e.state === 'Pressed') void cancelAll()
-    }).catch(() => toast.error(`Could not register ${cancel}; another app holds it`))
+    }).catch(() => notify.error(`Could not register ${cancel}; another app holds it`))
     return () => void unregister([toggle, cancel]).catch(() => undefined)
   }, [toggle, cancel])
 }
 
 /**
  * 96 §4.3: the voice key is a Rust-side global shortcut; the main webview tells the shell the chord at boot and on
- * every rebind (`""` when the key is off). A refused chord toasts and the store falls back to the last one that bound.
+ * every rebind (`""` when the key is off). A refused chord says so and the store falls back to the last one that bound.
  */
 function useVoiceKeyBinding(): void {
   const chord = useShortcuts((s) => s.chords['voice-key'])
@@ -461,7 +458,7 @@ function useVoiceKeyBinding(): void {
     voiceKeyBind(want).then(
       () => (bound.current = want),
       (e: unknown) => {
-        toast.error(`Voice key: ${String(e)}`, { description: want ? `${want} stays unbound; the previous key still works` : undefined })
+        notify.error(`Voice key: ${String(e)}`, { description: want ? `${want} stays unbound; the previous key still works` : undefined })
         if (bound.current !== null && enabled && bound.current !== '') useShortcuts.getState().set('voice-key', bound.current)
       },
     )
@@ -470,7 +467,7 @@ function useVoiceKeyBinding(): void {
     if (AUX || !isDesktop()) return
     const off = onPointRefused((p) => {
       if (p.reason !== 'chord taken') return
-      toast.error('Voice key: another app holds this chord', {
+      notify.error('Voice key: another app holds this chord', {
         action: { label: 'Change the keys', onClick: () => router.history.push('/settings/shortcuts') },
       })
     })
@@ -493,9 +490,9 @@ function visible(session: string): boolean {
   return usePanes.getState().leaves.includes(session)
 }
 
-/** 129 D3: one resync per 5 s (later `Lagged`s in the window coalesce into one trailing run); the toast once a minute. */
+/** 129 D3: one resync per 5 s (later `Lagged`s in the window coalesce into one trailing run); the notice once a minute. */
 const RESYNC_MS = 5_000
-const LAGGED_TOAST_MS = 60_000
+const LAGGED_NOTICE_MS = 60_000
 
 /**
  * 183 §4.4 / §5.3 / §12.1 (R1): the listeners every window needs for another engine's sessions, popouts included.
@@ -531,7 +528,7 @@ function useEventSideEffects(st: Stores): void {
         for (const off of offs) off()
       }
     }
-    const toasts = new Throttle(() => toast('Events dropped, resyncing'), LAGGED_TOAST_MS, false)
+    const notices = new Throttle(() => notify.warning('Events dropped, resyncing'), LAGGED_NOTICE_MS, false)
     // 130 D8: while the macOS companion is alive it owns banners and the menu bar count, so the
     // webview posts no notifications and clears its tray `●N` title; both come back when it exits.
     // 132 D7: the count is the attention inbox's length — the sidebar badge's number — read from the
@@ -565,7 +562,7 @@ function useEventSideEffects(st: Stores): void {
       }),
       on("rpc.stream@1", 'Lagged', () => {
         resyncs.call()
-        toasts.call()
+        notices.call()
       }),
       ...relayGuards(st),
       on(
@@ -726,7 +723,7 @@ const switcher = new EngineSwitch((href) => {
   return promise
 })
 
-/** 96 §5.3: an overlay webview is a canvas and three listeners — no engines, no stores, no toaster. */
+/** 96 §5.3: an overlay webview is a canvas and three listeners — no engines, no stores, no status bar. */
 export function App() {
   return OVERLAY ? <RouterProvider router={router} /> : <Main />
 }
@@ -801,6 +798,7 @@ function Main() {
   // — on a real switch only, not a StrictMode re-run of this effect.
   useEffect(() => {
     const st = scope(active)
+    useEventRate.getState().reset()
     attach(st)
     return () => {
       detach(st)
@@ -838,7 +836,6 @@ function Main() {
           <Shell engine={engine} onRelaunch={() => setAttempt((n) => n + 1)} />
         </EngineProvider>
       )}
-      <Toaster />
       {/* 209 §9: an agent acting on a tile no frame of this window shows, in the windows `startWebViewAgent` runs in. */}
       {!ISLAND && !OVERLAY && <AgentTileBanner />}
       {/* 163 D5: portalled to <body>; it makes everything else there inert while it is up. */}

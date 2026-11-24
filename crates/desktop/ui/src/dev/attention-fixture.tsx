@@ -14,7 +14,6 @@ import { Page, useAttentionView } from '@/components/attention/Page'
 import { Screen } from '@/components/attention/Screen'
 import { ATTENTION_KEY, dropFromList, useAttention } from '@/components/hud/queries'
 import { SidebarProvider } from '@/components/ui/sidebar'
-import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { Api } from '@/rpc/bindings/client'
 import type { AttentionItem } from '@/rpc/bindings/method.roster.output'
@@ -94,7 +93,6 @@ const root = createRootRoute({
           <Outlet />
         </div>
       </SidebarProvider>
-      <Toaster />
     </TooltipProvider>
   ),
 })

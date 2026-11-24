@@ -125,7 +125,7 @@ test('a pane drag hides the native layer and shows the address instead; the drop
   await act(async () => root.unmount())
 })
 
-test('a toast over the frame hides the native layer; a tooltip does not', async () => {
+test('a notice popover over the frame hides the native layer; a tooltip does not', async () => {
   frame()
   const { root } = await mount(h(WebFrame, { id: ID }))
   const tip = document.body.appendChild(document.createElement('div'))
@@ -134,7 +134,7 @@ test('a toast over the frame hides the native layer; a tooltip does not', async 
   await act(async () => new Promise<void>((r) => requestAnimationFrame(() => r())))
   expect(native.visible).not.toHaveBeenCalledWith(ID, false)
   const toast = document.body.appendChild(document.createElement('li'))
-  toast.setAttribute('data-sonner-toast', '')
+  toast.setAttribute('data-notice-popover', '')
   await vi.waitFor(() => expect(native.visible).toHaveBeenLastCalledWith(ID, false))
   toast.remove()
   await vi.waitFor(() => expect(native.visible).toHaveBeenLastCalledWith(ID, true))
