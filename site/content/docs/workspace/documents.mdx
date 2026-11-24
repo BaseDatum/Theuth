@@ -1,6 +1,6 @@
 ---
 title: Documents, notes and boards
-description: The three kinds of thing theuth writes for you — immutable artifacts, live notes and knowledge documents, and boards — and how to attach, export and share them.
+description: The three kinds of thing theuth writes for you (immutable artifacts, live notes and knowledge documents, and boards) and how to edit, run, attach, export and share them.
 ---
 
 ## Three kinds of thing
@@ -9,23 +9,64 @@ theuth produces and keeps three different kinds of content. They look similar in
 
 | | Artifact | Note / document | Board |
 |---|---|---|---|
-| What it is | A file the agent handed you with the `show` tool: a report, a CSV, an image, a PDF, a diagram, source code | A page you and the agent edit together, live | A long-form, interactive explanation of code, drawn by the agent |
-| Can you edit it? | No — each one is an immutable snapshot; a new `show` makes `v2` | Yes, in the desktop editor and on paired devices | Yes (it is a note with a reader mode); usually you ask the agent to change it |
+| What it is | A file the agent handed you with the `show` tool: a report, a CSV, an image, a PDF, a live HTML page, a diagram, source code | A page you and the agent edit together, live | A long-form, interactive explanation of code, drawn by the agent |
+| Can you edit it? | No: each one is an immutable snapshot; a new `show` makes `v2` | Yes, in the desktop editor, on paired devices and by share link | Yes (it is a note with a reader mode); usually you ask the agent to change it |
 | Where it lives | `~/.theuth/artifacts/` (content-addressed) | `~/.theuth/documents/<id>/` (a Yjs document plus a derived `.md`) | Same as a note |
-| Where you see it | A card in the chat, the `▣ N` list in the header, `/artifacts` | **Notes** in the sidebar, knowledge concept pages, meeting pages | **Notes**, with a `board` badge |
+| Where you see it | A card in the chat, the `▣ N` list in the header, **Library** › **Artifacts** | **Library** › **Notes**, knowledge concept pages, meeting pages, notebooks | **Library** › **Notes**, with a `board` badge |
 | Shareable by link? | No | Yes | Yes |
 
-Knowledge concepts and meeting notes are documents too: the concept page and the note beside a meeting open the same editor as a note. See [Knowledge](/docs/workspace/knowledge) and [Meetings](/docs/workspace/meetings) for what is specific to them.
+Knowledge concepts, meeting notes and notebook notes are documents too: they open the same editor as a note. See [Knowledge](/docs/workspace/knowledge), [Meetings](/docs/workspace/meetings) and [Notebooks](/docs/workspace/notebooks) for what is specific to them. Code blocks you can run with one press live in notes and chat replies alike; they have their own page: [Cells](/docs/workspace/cells).
 
 ## Artifacts: files the agent shows you
 
-When the deliverable is a file, the agent calls `show` instead of pasting the content into its reply. You get a card in the chat with the file's name, kind and size; clicking it opens the file in a panel on the right (desktop) or renders it inline (TUI).
+When the deliverable is a file, the agent calls `show` instead of pasting the content into its reply. You get a card in the chat with the file's name, kind and size; clicking it opens the file in a panel on the right (desktop) or renders it inline (TUI). In Slack, Signal and Telegram the file lands in the bound thread, chat or topic.
+
+`show` takes exactly one of:
+
+| Argument | What it does |
+|---|---|
+| `path` | Shows a file that exists (one the agent wrote, a screenshot, a document). A `.md` or `.typ` path with a `.pdf` `name` is compiled to PDF. |
+| `content` + `name` | Writes the text once and shows it. The extension of `name` picks the rendering. |
+| `edits` + `name` | Fixes the text last sent under `name` with `[{old, new, all?}]` replacements (all or nothing) and shows the result as the next version. `[]` republishes unchanged. |
+
+Optional: `title` (card title; default the name, or the first heading of a markdown file), `source` (`markdown` by default or `typst`, for `.pdf` names), `height` and `check` (HTML pages, below). Every text the agent sends is also saved as a working copy under `artifacts/drafts/<session>/`, and the result names it (`· file <path>`), so a fix is a small `edits` call or an `edit` of that file, never the whole text again.
 
 ### Kinds and viewers
 
-The kind follows the file extension: markdown (`.md`), CSV/TSV (as a table), images (`.png`, `.jpg`, `.gif`, `.webp`), SVG, PDF (the agent can write markdown or Typst and have it compiled into a real PDF), HTML (rendered in a sandboxed frame with no scripts), Mermaid (`.mmd`), archives (`.zip`, `.tar.gz` … listed as a file tree) and plain text or code (`.txt`, `.rs`, `.py`, `.json`, …). Anything else is a downloadable file. Apps (`.openui`) are a special kind with their own page: [Apps](/docs/workspace/apps).
+The kind follows the file extension:
 
-The desktop shows each kind appropriately — rendered markdown, syntax-highlighted code, a zoomable image, the PDF in the native viewer, the first 500 rows of a CSV. The TUI renders markdown, code and CSV inline (`Ctrl+O` expands the card; long text is capped at 200 lines) and opens everything else with the OS.
+| Kind | Extensions | Desktop | TUI |
+|---|---|---|---|
+| Markdown | `.md`, `.markdown` | rendered | rendered inline |
+| CSV / TSV | `.csv`, `.tsv` | table, first 500 rows | table inline |
+| Image | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` | zoomable picture | opens with the OS |
+| SVG | `.svg` | picture | opens with the OS |
+| PDF | `.pdf` | the PDF viewer | opens with the OS |
+| HTML | `.html`, `.htm` | a live page (below) | source inline; `o` opens it with the OS |
+| Mermaid | `.mmd`, `.mermaid` | the rendered diagram | source |
+| Archive | `.zip`, `.tar`, `.tar.gz` / `.tgz`, `.tar.bz2` / `.tbz2` | a browsable file tree | listing |
+| Text and code | `.txt`, `.log`, `.json`, `.yaml`, `.toml`, `.rs`, `.py`, `.ts`, `.go`, `.sh`, `.sql`, `.diff` and other source extensions | syntax highlighted | inline |
+| File | anything else (Office files included) | **Save as…** / **Download** | opens with the OS |
+
+Apps (`.openui`) are a special kind with their own page: [Apps](/docs/workspace/apps).
+
+In the TUI, `Ctrl+O` expands a card inline (long text is capped at 200 lines) and `o` opens the newest artifact of the exchange with the OS.
+
+**PDFs from markdown.** A `.pdf` name turns markdown (or Typst, with `source: typst`) into a typeset PDF. Front matter `title`, `author` and `toc: true` add a title block and a table of contents. The agent gets a picture of page 1 back to check the layout; it also gets pictures of SVGs it shows.
+
+**Office files and PDFs as text.** `artifact_read` returns a PDF, Word, PowerPoint, Excel, ODF, RTF or EPUB artifact as Markdown (up to 25 MB per file, 30 s per conversion), and search matches their text ([Search](/docs/workspace/search)). The desktop viewer shows Office files as a download; there is no format conversion of the file itself.
+
+### Live HTML pages
+
+`show{content, name: "x.html"}` renders a live page in the chat: scripts run, CDN libraries load, and the page is themed with the app's colours and follows light and dark mode. It runs in a sandboxed frame (`allow-scripts allow-forms`, never same-origin, no pop-ups, no top-level navigation, no modal dialogs), so it cannot reach the app or call tools. Absolute local image paths in the page are inlined into it. A link in the page opens only after you click it.
+
+- **Height.** In the transcript the frame grows to the page's reported height, between 80 and 2000 px. `show{height}` (80 to 2000) caps it lower; the rest scrolls inside. Opened in the panel or the explorer, the page is uncapped.
+- **Checked before publishing.** `show` first renders the page hidden in a connected desktop or web app and refuses to publish it when its console logs an error; the agent fixes it with `edits`, or publishes anyway with `check: false`. With no app connected, the page is published unchecked. The receipt says where it was checked (`checked on desktop: height 612`).
+- **Error chip.** When a published page later logs errors, the frame's toolbar shows them (the first 20).
+- **`page_preview{path | html, width?}`** renders a page hidden without publishing it and returns its height and console (log, info, warning, error, uncaught exceptions). Width 240 to 1600 px, default 728; pages up to 512,000 characters. It fails fast with `no renderer connected` when no desktop or web client is open.
+- **Elsewhere.** Slack, Signal and Telegram receive the `.html` file; the TUI shows its source and `o` opens it in your browser through the OS.
+
+Pages suit mockups, dashboards and visual explainers. For a screen whose buttons run tools, the agent builds an [app](/docs/workspace/apps); for a running website such as your dev server, it opens a [web view](/docs/workspace/web-views).
 
 ### Versions
 
@@ -35,90 +76,146 @@ Showing the same file *name* again in the same session makes the next version: t
 
 In the desktop card or panel:
 
-- **Reveal in Finder** / **Show in file manager** — show the stored file (local engine only).
-- **Open in panel**, **Open in new window**, **Open in explorer** — different places to read it.
-- The `⋯` menu: **Copy** (text kinds), **Save as…** (local) or **Download** (when you are connected through the relay), **Open** (with the default app, local only), **Attach to this chat**, **Attach to chat…**, **Copy path**.
+- **Reveal in Finder** (macOS) / **Show in file manager**: show the stored file (local engine only).
+- **Open in panel**, **Open in new window**: different places to read it.
+- The `⋯` menu: **Copy** (text kinds), **Save as…** (local) or **Download** (when you are connected through the relay), **Open** (with the default app, local only), **Open in explorer**, **Attach to this chat**, **Attach to chat…**, **Copy path**.
 
-The header's `▣ N` button lists every artifact of the session, newest first; picking one opens the panel. **Artifacts** in the sidebar (`/artifacts`) is the explorer across all sessions, with filters by name, title and kind. Search also finds artifacts by name and title ([Search](/docs/workspace/search)).
+The header's `▣ N` button lists every artifact of the session, newest first; picking one opens the panel. **Library** › **Artifacts** (`/artifacts`) is the explorer across all sessions, with filters by name, title and kind. Search also finds artifacts by name, title and content.
 
-In the TUI, a `▣` card shows the name, version and size with the path as a clickable `file://` link. `o` opens the newest artifact of the current exchange with the OS; `Ctrl+O` expands it inline. `/artifacts` opens a picker over the session (and its subagents): `⏎` opens the file with the OS, `s` shows it inline, `e` exports a copy to `~/Downloads/<name>`, `Esc` closes.
-
-In Slack, Signal and Telegram the file lands in the bound thread, chat or topic.
+In the TUI, a `▣` card shows the name, version and size with the path as a clickable `file://` link. `/artifacts` opens a picker over the session (and its subagents): `⏎` opens the file with the OS, `s` shows it inline, `e` exports a copy to `~/Downloads/<name>`, `Esc` closes.
 
 ### Storage
 
-Artifacts live under `~/.theuth/artifacts/` (or `<data_dir>/artifacts/`), one file per distinct content, named by the first 16 hex characters of its SHA-256 and the original extension. The index — name, title, kind, version, which session and tool call produced it — is `~/.theuth/artifacts.sqlite`. Showing the same bytes twice stores one file and two records. Deleting a session removes its records; unreferenced files are swept at the next start.
+Artifacts live under `~/.theuth/artifacts/` (or `<data_dir>/artifacts/`), one file per distinct content, named by the first 16 hex characters of its SHA-256 and the original extension. The index (name, title, kind, version, which session and tool call produced it) is `~/.theuth/artifacts.sqlite`. Showing the same bytes twice stores one file and two records. Deleting a session removes its records; unreferenced files are swept at the next start.
+
+Artifacts of a private session are kept in an in-memory index and a scratch folder and are removed when the private session closes; they never enter the store above, and `artifact_list` over MCP drops them.
 
 `artifact.enabled: false` removes the `show` tool; existing files and the index are kept ([Configuration](/docs/reference/configuration)).
 
-A markdown artifact is also bound to a document behind the scenes, so the agent can revise it with its document tools; each settled revision becomes the next version of the artifact. In the current desktop build the artifact viewer itself is read-only — to edit text yourself, ask for a note.
+A markdown artifact is also bound to a document behind the scenes, so the agent can revise it with its document tools (`artifact_read` names the document id); each settled revision becomes the next version of the artifact. The artifact viewer itself is read-only: to edit text yourself, ask for a note.
 
 ## Notes and documents: pages you edit together
 
 A note is a page in the desktop editor backed by a collaborative (Yjs) document whose source of truth is your engine. You type in it, the agent edits it with block-level tools, and both appear in front of whoever has it open. Every change is also written out as ordinary markdown, so search, `grep`, git and the agent's file tools keep working on the file.
 
+The page is drawn as a sheet of paper: an A4 portrait page (1:√2) centred on the canvas that grows with the content, edge to edge on a phone.
+
 ### Creating a note
 
-- In the desktop sidebar open **Notes** and press **+ New note**. A note titled `Untitled` opens with the title selected; type a title and press Enter.
+- In the sidebar, **Note** (the note icon with a plus) creates a note and opens it: in its own window on the desktop app, as a page on a phone. Its pop-out button always opens the new note in its own window.
+- In **Library** › **Notes**, press **New note**. When notes are grouped by project, each project header has a `+` (`New note in "<project>"`), and **New note** files the note in the one project left open when all others are collapsed.
 - From the composer's `+` menu choose **New note**: the note is created and attached to the current chat.
-- Ask the agent: "start a note for …" — its `doc_create` lands in the same list.
+- Ask the agent: "start a note for …". Its `doc_create` lands in the same list (optionally in a project or a notebook).
+
+A new note is titled `Untitled` with the title selected; type a title and press Enter.
 
 Every meeting owns a note, created when the meeting starts and shown beside the live transcript; the meeting summary is written into it. Knowledge concepts open in the same editor from the **Knowledge** page; their first block is a fixed frontmatter block (edit metadata through the agent or **Open raw**, not by deleting the block).
 
-The notes list shows the title, when it was last updated and a kind badge (`board`, for example). Each row has **Rename**, **Open in new window** and **Delete now**; a deleted note stays in `~/.theuth/documents/.trash/` for 30 days.
+### The notes list
+
+**Library** › **Notes** lists every note and board, newest update first, under collapsible project headers (the same project labels as chats; **Ungrouped** last; no headers while no note has a project). A row shows the title, when it was last updated and a kind badge (`board`, for example). Drag a row onto the composer to attach it. Each row's menu has **Rename**, **Move to project…** (an existing project, a new one typed inline, or **Remove from project**), **Open in new window** and **Delete now**. A deleted note stays in `~/.theuth/documents/.trash/` for 30 days.
 
 ### Editing
 
-The editor is BlockNote: paragraphs, headings 1–3, bullet/numbered/check lists, code blocks, tables, quotes, dividers. Type `/` for the block menu; it also offers **Diagram** (a Mermaid chart rendered in place) and **Ask theuth…**, which focuses the note's chat panel with the current block quoted.
+The editor is BlockNote: paragraphs, headings 1 to 3, bullet, numbered and check lists, code blocks, tables, quotes and dividers. Type `/` for the block menu; besides the standard blocks it offers:
 
-The note page's actions are **Rename**, **Attach to chat…**, **Snapshots…**, **Export**, **Undo last agent edit**, **Open in new window**, **Delete**, **Share…**, plus **Chat**, which opens a chat panel under the note — the first message creates a session with the note attached. On a phone or tablet the editor hides drag handles and shows a fixed formatting bar above the keyboard.
+- **Diagram**: a Mermaid chart, rendered in place.
+- **Cell**: code you run with one press (see [Cells](/docs/workspace/cells)).
+- **Ask theuth…**: opens the note's chat with `about block <id>:` in the composer.
+
+A code block whose language is `mermaid` or `json-render` shows the rendered diagram; click it (or **Edit source**) to edit the source, and leave the block to see the picture again. `json-render` blocks use the same component catalog as chat replies: cards, tables, metrics, timelines, charts and diagrams such as `Graph`, `Sequence`, `StateMachine`, `Swimlane`, `Gantt` and `Sankey` ([Apps](/docs/workspace/apps) explains how these surfaces differ from apps).
+
+The note page's actions are **Rename**, **Move to** (machine; in a mesh only, below), **Attach to chat…**, **Snapshots…**, **Export**, **Undo last agent edit**, **Open in new window**, **Delete**, **Share…** and **Chat**. The title has a dictation button. A note with cells shows a kernel pill beside the title (`python · .venv 3.12 · idle`). On a phone or tablet the editor hides drag handles and shows a fixed formatting bar above the keyboard.
 
 The status line under the editor reads `live`, `offline · N queued` (edits are kept locally and replayed when the engine is back), `read only` (you are a viewer of a shared document) or `closed · <reason>`, followed by `exported HH:MM` when the derived file was last written or `updated from file HH:MM` when an edit arrived through the file.
 
+### The chat in every note
+
+Every note has a chat under it, so you can ask the agent to add to the note without leaving it. A note you have never touched opens with the chat shown; **Chat** in the bar toggles it and the choice is remembered per note.
+
+- Before the first message it is an input bar. Your first message creates a session titled like the note; every message leads with the note's `[attached note …]` marker.
+- After that it is a resizable panel with that session's transcript over the same composer, with the model picker and the tools sheet of a normal chat.
+- **New chat** forgets the session and returns to the input bar; the session itself stays in the chat list. The open button reads **Open in the chat list** (or **Open in its own window** in a pop-out).
+- Pop-out note windows (**Open in new window**) have the same chat panel. The pop-out and the main window edit the same document and follow each other live.
+
+A meeting's note uses the meeting's own session instead of a separate chat.
+
 ### The agent in your document
 
-The agent edits documents with a handful of block tools: `doc_read` (an outline with block ids, or the markdown), `doc_insert`, `doc_replace`, `doc_delete`, `doc_move`, `doc_create`. It reads the outline, changes the smallest run of blocks, and is instructed never to rewrite text a person typed unless asked. Edits are regular undoable changes; **Undo last agent edit** reverts the most recent one.
+The agent edits documents with block tools:
+
+| Tool | What it does |
+|---|---|
+| `doc_read` | the outline (one line per block, id first; `depth` limits nesting) or annotated markdown (`format: markdown`, optionally only some `blocks`) |
+| `doc_insert` | inserts markdown `after` or `before` a block, or at `start` / `end` (default) |
+| `doc_replace` | replaces a run of blocks with markdown |
+| `doc_delete` | removes blocks with their children |
+| `doc_move` | reorders blocks, keeping ids and authorship |
+| `doc_create` | a new note (`kind: note`, default) or board (`kind: board` with a repository `root`), optionally in a `project` or a `notebook` |
+| `doc_export` | a `.pdf` (default) or `.md` export (see [Exporting](#exporting)) |
+
+`doc` accepts a document id, `knowledge:<concept id>` or `meeting:<meeting id>`. The agent reads the outline, changes the smallest run of blocks, and is instructed never to rewrite text a person typed unless asked. Edits are regular undoable changes; **Undo last agent edit** reverts the most recent one. `doc_insert` refuses an insert whose cells do not validate and names each problem.
 
 While the agent edits you see its presence as a participant named `theuth`, and its new text is revealed progressively (over at most 1.5 s) in the agent colour. The colour is `documents.agent_color` (default `#7c3aed`); hovering a block shows who wrote it and when (`theuth · 14:02`, `you · 14:03`).
+
+The agent can also open a note, board, knowledge page or meeting note in a tile beside the chat with `show_note{doc, block?, title?}`, scrolled to a block and updating live as it edits ([Web views and tiles](/docs/workspace/web-views)).
 
 ### Snapshots
 
 Snapshots are full copies of the document taken at meaningful moments, listed by **Snapshots…**; **Restore** imports a snapshot's text over the current one as one change (nothing is rewound, and the restore is itself undoable). The engine writes them automatically:
 
-- `artifact-v<N>` — each time a markdown artifact's document becomes a new version
-- `meeting-before-summary` and `meeting-summary` — around the meeting summary turn
-- `import-file` — before a large edit that arrived through the file (for example a `git pull` or the agent's `write_file`)
+- `artifact-v<N>`: each time a markdown artifact's document becomes a new version
+- `meeting-before-summary` and `meeting-summary`: around the meeting summary turn
+- `import-file`: before a large edit that arrived through the file (for example a `git pull` or the agent's `write_file`)
 
-Labelled snapshots are never pruned. `documents.snapshots_keep` (default 30) applies only to automatic `daily` snapshots — and no code path writes those in the current build, so in practice every snapshot is kept. There is no button to take a snapshot by hand; knowledge concepts have a separate git **History** sheet with per-commit restore.
+Labelled snapshots are never pruned. `documents.snapshots_keep` (default 30) applies only to automatic `daily` snapshots, and no code path writes those in the current build, so in practice every snapshot is kept. There is no button to take a snapshot by hand; knowledge concepts have a separate git **History** sheet with per-commit restore.
 
 ### Limits
 
 A document may grow to `documents.max_doc_bytes` (default 8 MiB) of CRDT state; an edit that would cross it is refused with `DocTooLarge` and the editor closes with `closed · document full (8 MiB); reload`. One update from an editor may be at most 48 KiB; the editor batches offline edits under that cap, and a single refused one shows `closed · update too large (48 KiB); reload`. In both cases reload the page: the engine's state is authoritative and the refused local edit is dropped.
 
+Images, video, audio and file blocks cannot be placed inside a document; attach them to the chat instead.
+
 ### The derived markdown file
 
-After each accepted change the engine waits `documents.export_debounce_ms` (default 400 ms, capped at 3 s while you keep typing) and rewrites the document's markdown file: `~/.theuth/documents/<id>/note.md` for notes and boards, `~/.theuth/knowledge/<id>.md` for concepts, the meeting's notes file for meeting notes. Edits made to that file from outside — the agent's `write_file`, a `git pull`, your editor — are imported back as one change, block-diffed so untouched blocks keep their ids and formatting. Knowledge commits and artifact versions are recorded after `documents.export_quiet_secs` (default 60 s) without typing.
+After each accepted change the engine waits `documents.export_debounce_ms` (default 400 ms, capped at 3 s while you keep typing) and rewrites the document's markdown file: `~/.theuth/documents/<id>/note.md` for notes and boards, `~/.theuth/knowledge/<id>.md` for concepts, the meeting's notes file for meeting notes. Edits made to that file from outside (the agent's `write_file`, a `git pull`, your editor) are imported back as one change, block-diffed so untouched blocks keep their ids and formatting. Knowledge commits and artifact versions are recorded after `documents.export_quiet_secs` (default 60 s) without typing.
+
+A document nobody has open is unloaded from memory after `documents.idle_unload_secs` (default 600 s); at most `documents.max_open_docs` (default 256) stay loaded.
 
 ```yaml
 documents:
-  enabled: true
+  enabled: true              # false: no store, no doc_* tools; knowledge falls back to raw text
   export_debounce_ms: 400
+  export_quiet_secs: 60
   max_doc_bytes: 8388608
   snapshots_keep: 30
   agent_color: "#7c3aed"
   max_members: 64
-  sharing: on          # off: no new share links, members still connect; disabled: members refused too
+  sharing: on                # off: no new share links, members still connect; disabled: members refused too
+  idle_unload_secs: 600
+  max_open_docs: 256
+  snapshot_quiet_ms: 2000    # an open document is snapshotted this long after its last update, for replication
 ```
 
 Full list and defaults: [Configuration](/docs/reference/configuration).
 
+## Notes across your machines
+
+In a [mesh](/docs/automation/mesh), every machine holds a replicated copy of your documents, so the agent's `doc_read` works on any of them. Live editing is served by one machine per document:
+
+- **A home machine.** Notes, boards, meeting notes and task threads belong to the machine that created them. Other machines edit them through it. Knowledge concepts, artifacts and other documents are served by the mesh's hub.
+- **The machine chip.** In a mesh, a note, board or meeting note shows which machine it lives on next to the title (`This note lives on <machine>; other machines edit it through it.`).
+- **Home offline.** When the home machine is unreachable you keep editing on another machine; a banner says the home is offline and your changes merge back when it returns. When two machines have the note open at once, a banner says so and edits merge within seconds.
+- **Move to.** The note bar's **Move to** menu lists your machines (`lives here`, `offline 5m`) and moves a note's home to another online machine (toast `Moved to <machine>`). Only plain notes move: boards stay on the machine whose folder they point at, meeting notes on the machine that recorded them. Moves are available once every machine runs a version that supports them.
+- **Cells run where you look.** A cell in a note runs on the machine your app is connected to when you press it, with that machine's folders and interpreters; see [Cells](/docs/workspace/cells).
+
 ## Boards: explanations you can point at
 
-A board is a note of kind `board` that the agent draws when the answer to a question about code in a working tree needs a diagram and more than a paragraph: "how does X work", "walk me through this change", "what did commit N change", "explain this codebase". It has fixed sections (**What and why → Map → How it works → Decisions and trade-offs → Checks → Open questions**, any of which may be omitted), prose whose claims about code are links, `Excerpt` blocks quoting the exact lines that carry a mechanism, and one diagram per idea — a `Graph` or `Sequence` whose nodes and steps point at code.
+A board is a note of kind `board` that the agent draws when the answer to a question about code in a working tree needs a diagram and more than a paragraph: "how does X work", "walk me through this change", "what did commit N change", "explain this codebase". It has fixed sections (**What and why → Map → How it works → Decisions and trade-offs → Checks → Open questions**, any of which may be omitted), prose whose claims about code are links, `Excerpt` blocks quoting the exact lines that carry a mechanism, and one diagram per idea whose nodes and steps point at code: a `Graph` (map or flow), `Sequence` (calls over time), `StateMachine` (a lifecycle), `Entities` (a schema or key types), `Swimlane` (handoffs between owners) or `GraphDelta` (what a change added, removed and rewired).
 
-You cannot create a board from the UI; ask the agent ("draw a board: how does the approval gate work?"). The board appears in **Notes** and draws itself progressively while you watch — a badge reads `theuth is drawing · <section>`. The agent ends with a `theuth://notes/<id>` link in chat.
+You cannot create a board from the UI; ask the agent ("draw a board: how does the approval gate work?"). The board appears in **Notes** and draws itself progressively while you watch; a badge reads `theuth is drawing · <section>`. The agent ends with a `theuth://notes/<id>` link in chat.
 
-In the board's **Read** mode (toggle **Edit** ↔ **Read** in the bar):
+In the board's **Read** mode (toggle **Edit** / **Read** in the bar):
 
 - Hover a sentence, a diagram node or an excerpt row and everything that shares the same code anchor lights up together; click to pin it and open the code beside the text in a side pane (**Code window**).
 - **Tour this board** (`T`, or ⌘↵ on a diagram) walks a diagram stop by stop (`↑`/`↓`, `j`/`k`, `Home`/`End`, `Esc`).
@@ -126,7 +223,7 @@ In the board's **Read** mode (toggle **Edit** ↔ **Read** in the bar):
 - Select text and press **Ask about this** (⌘⇧A): the composer is prefilled with `[board <doc> · block <id> · …]` and your quote; the agent edits that place on the board in response.
 - A **Contents** rail lists the sections; sections collapse and remember their state.
 
-Settings › General has **Serif prose on boards** (on by default). Boards export like notes (below), with diagrams as pictures when exported from the desktop.
+Settings › General › Appearance has **Serif prose on boards** (on by default). Boards export like notes (below), with diagrams as pictures when exported from the desktop.
 
 ## Attaching things to a message
 
@@ -137,7 +234,7 @@ Desktop:
 - Composer `+` → **Attach…** opens a picker with tabs **All / Notes / Knowledge / Artifacts / Chats / Meetings** and a search box (`Search notes, knowledge, artifacts, chats, meetings…`). Typing `@` followed by a word in the composer opens the same picker filtered.
 - Drag a row from the notes list, the knowledge list or the artifacts explorer onto the composer.
 - From any document or artifact: **Attach to chat…** (pick a recent chat or a new one) or **Attach to this chat** in the artifact `⋯` menu. Search results offer **Attach to current chat**.
-- `+` → **Attach file** attaches an image or PDF as a binary part (the agent *sees* it rather than referencing it); this is the path for screenshots and scanned pages.
+- `+` → **Attach file** attaches images (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`) or a PDF as a binary part (the agent *sees* it rather than referencing it); this is the path for screenshots and scanned pages.
 - Tasks have their own **Attachments** field so the owning agent reads the same things ([Tasks](/docs/automation/tasks)).
 
 TUI: `/attach [query]` opens the search menu in pick mode (`⇥ filters · ↑↓ results · ⏎ attach · esc close`); the pick becomes a token in the input box and the attachment's marker line leads the sent message. Images and PDFs are attached by pasting or dropping a path.
@@ -146,73 +243,84 @@ Attached references appear as chips above the composer and as a line like `[atta
 
 ## Exporting
 
-**Notes, boards and other documents.** The **Export** button in the document bar offers **Markdown…** and **PDF…**. On the local desktop a save dialog opens and the file is written to the path you choose (`Saved <file>` with a **Reveal** action). From a browser or phone through the relay the export is stored as an artifact instead and opens in the viewer, grouped under **Exports** in the explorer. PDFs are typeset from the markdown; board diagrams are included as vector pictures when exported from the desktop, and as text when the agent exports. The agent can export too, with `doc_export(doc, format="markdown"|"pdf", dest?)` — ask "export this note as PDF".
+**Notes, boards and other documents.** The **Export** button in the document bar offers **Markdown…**, **PDF…** and **Copy Markdown**. On the local desktop a save dialog opens and the file is written to the path you choose (`Saved <file>` with a **Reveal** action). From a browser or phone through the relay the export is stored as an artifact instead and opens in the viewer, grouped under **Exports** in the explorer. PDFs are A4, typeset from the markdown; board diagrams are included as vector pictures when exported from the desktop, and as text when the agent exports. Each cell is exported with its last output (as an `output` block, capped at 8 KiB) and its run line (`ran 14:38 · exit 0 · 33 s · expect ✓`).
 
-**Artifacts.** An artifact is already a file: **Save as…** (local) or **Download** (remote) copies it where you like, and the TUI's `e` in the `/artifacts` picker copies it to `~/Downloads/<name>`. There is no format conversion for artifacts; what you saved is exactly what was shown.
+The agent exports with `doc_export(doc, format?, dest?)`: `format` is `pdf` (default) or `markdown`; without `dest` the file becomes an artifact card in the chat, with `dest` (an absolute path under your home folder) it is written there. Ask "export this note as PDF".
+
+**Artifacts.** An artifact is already a file: **Save as…** (local) or **Download** (remote) copies it where you like, and the TUI's `e` in the `/artifacts` picker copies it to `~/Downloads/<name>`. What you save is exactly what was shown.
 
 Share links (below) are not exports: they give someone live access to the document on your engine, and stop working when you revoke them.
 
 ## Sharing a document by link
 
-Sharing makes another person a *member* of one document. They open a link in a browser, pick a name, and connect through your relay to your engine — editing live beside you if the link allows it, or just reading. They do not become a paired device and cannot see anything but that document.
+Sharing makes another person a *member* of one document (a note, board, knowledge concept or notebook). They open a link in a browser, pick a name, and connect through the relay to your engine, editing live beside you if the link allows it, or just reading. They do not become a paired device and cannot see anything but that document. To publish a website or a folder on a public address instead, see [Sharing](/docs/automation/sharing).
 
 ### Prerequisites
 
-- Link must be on, with a reachable relay (Settings › Link; see [Desktop](/docs/workspace/desktop)). Creating a link otherwise fails with `link is off: turn on Settings › Link to share documents`.
 - `documents.sharing` must be `on` (the default).
-- Your engine must be running for the document to be reachable: the relay stores nothing, so when your machine is asleep the guest page waits (`Connecting…`).
+- A reachable relay. On a single machine, Link must be on (Settings › Network › **Devices** › **Relay**; see [Desktop](/docs/workspace/desktop)); otherwise creating a link fails with `link is off: turn on Settings › Link to share documents`. In a mesh, a machine with Link off makes a *mesh link* instead, served by your mesh; if no hub is reachable to make one, the dialog says so.
+- The machine that serves the document must be running: the relay stores nothing, so while it is asleep the guest page waits (`Connecting…`).
 
 ### Creating a link
 
-1. Open the note, concept or board and press **Share…**.
-2. Choose **Can edit** or **Can view**, an expiry (**Expires in 1 day / 7 days / 30 days**, or **Never expires**), and optionally **Their name** so they do not have to pick one.
-3. Press **Create link**. The link is shown once — **Copy link** or scan the QR code. It has the form `https://<relay>/d#1.<harness>.<doc>.<secret>`; your engine keeps only a hash of the secret, so a lost link cannot be recovered, only revoked and recreated.
+1. Open the note, concept, board or notebook and press **Share…**.
+2. Choose **Can edit** or **Can view**, an expiry (**Expires in 1 day / 7 days / 30 days**, or **Never expires**; default 7 days), and optionally **Their name (optional)** so they do not have to pick one.
+3. Press **Create link**. The link is shown once: **Copy link** or scan the QR code. The dialog says which machine serves it: for a note in a mesh, its home machine, with the mesh as fallback while the home is offline. Your engine keeps only a hash of the secret, so a lost link cannot be recovered, only revoked and recreated.
 
-Send the link over a channel you trust: anyone who has it can join with that role until it expires or you revoke it.
+A link has the form `https://<relay>/d#1.<link id>.<doc>.<secret>`, or `https://<relay>/d#2.<home link id>.<mesh link id>.<doc>.<secret>` when it names the note's home machine first. Send it over a channel you trust: anyone who has it can join with that role until it expires or you revoke it.
 
 ### Managing access
 
 The **Share** dialog lists **Links** (role, preset name, created, expiry, **Revoke**) and **Members** (colour, name, which link they came through, last seen, a role selector `editor` / `viewer`, **Remove**).
 
 - **Revoke** on a link stops new joins; people who already joined keep their membership.
-- Changing a member to `viewer` demotes them immediately — their editor reopens read-only (`You can now only view this document`).
-- **Remove** closes their connections and refuses them next time (`Your access was removed`); the toast says `Access removed`.
+- Changing a member to `viewer` demotes them immediately: their editor reopens read-only (`You can now only view this document`).
+- **Remove** asks for confirmation: the member can no longer join through any link made so far, and **Also revoke link «…»** (on by default) also revokes the link they came in on, since anyone else holding it could still join. Their connections close and they see `Your access was removed.`; your toast says `Access removed`.
 - `documents.sharing: off` stops new links while existing members keep connecting; `documents.sharing: disabled` also refuses existing members. `documents.max_members` (default 64) caps members per document; the next join sees `This document is full.`
+
+Settings › Sharing › **Notes and notebooks** lists every shared document with its members (with **Remove**) and links, and **Open document** for each; **Overview** counts everything you share. See [Sharing](/docs/automation/sharing).
 
 ### What the guest sees
 
-The page at `/d` asks `What should the others call you?`, then shows the document title, the participant strip and the editor (read-only for viewers), with a footer `You are editing as <name> · shared by <your engine's name>`. A dead or expired link reads `This link no longer works.`; sharing turned off reads `Sharing is turned off for this document.`
+The page at `/d` asks `What should the others call you?`, then shows the document title, the participant strip and the editor (read-only for viewers), with a footer `You are editing as <name> · shared by <your engine's name>` (`viewing` for viewers). Cells in the note show their latest run but no Run button: only you can run cells. A dead or expired link reads `This link no longer works.`; sharing turned off reads `Sharing is turned off for this document.`; a deleted document reads `This document was deleted.`
 
 ### What the relay sees, and what the agent trusts
 
-The relay only forwards encrypted frames between the guest's browser and your engine; it learns that some browser loaded `/d` and connected to your engine, never the document's contents or the link secret (the fragment after `#` is not sent to any server).
+The guest's browser and your engine exchange encrypted frames through the relay. The relay sees IP addresses, timing and frame sizes and that some browser loaded `/d` and connected to your engine; it does not see the document's contents, and the link secret is in the fragment after `#`, which browsers do not send to any server. One caveat applies to every browser client: the guest page's code is served by the relay's site, so a relay operator who served modified code could read that browser's session. A self-hosted relay removes that exposure. See [Security](/docs/reference/security).
 
-Text written by a member is marked as theirs. When the agent reads the document, blocks written by a member carry a label — `[by <name> · doc-member:<id>]` in the outline, `<!-- <id> by <name> · doc-member:… -->` in markdown — and the agent is instructed to treat such blocks as data: it may quote, summarise or edit them on your request, but it does not follow instructions found in them. There is deliberately no `doc_share` tool: only you, from the UI, can create links or change members.
+Text written by a member is marked as theirs. When the agent reads the document, blocks written by a member carry a label (`[by <name> · doc-member:<id>]` in the outline, `<!-- <id> by <name> · doc-member:… -->` in markdown), and the agent is instructed to treat such blocks as data: it may quote, summarise or edit them on your request, but it does not follow instructions found in them. There is deliberately no tool to create share links: only you, from the UI, can create links or change members.
+
+## Notes from other tools (MCP)
+
+When theuth runs as an MCP server (Settings › MCP), MCP clients get document tools: `doc_list` and `doc_markdown` to read notes, meeting notes and other documents, and `doc_create`, `doc_rename`, `doc_set_project` and `doc_delete` (to the trash) to manage notes. These write tools have no approval step inside theuth: any client holding the token can use them. See [MCP](/docs/reference/mcp).
 
 ## Limitations
 
 - Editing documents is a desktop and web (relay) feature. The TUI can attach notes to messages (`/attach`), find them with `/search`, and open knowledge as raw markdown through `/knowledge`, but has no document viewer or editor.
-- Sharing needs Link enabled and a relay; apps and artifacts cannot be shared by link ([Apps](/docs/workspace/apps)).
-- Images and other files cannot be placed inside a document; attach them to the chat instead.
+- Sharing needs a relay; apps and artifacts cannot be shared by link ([Apps](/docs/workspace/apps)).
+- Images and other files cannot be placed inside a document.
 - Boards are created only by the agent.
 - Comments, suggestions and a version-browsing UI beyond **Snapshots…** do not exist.
 
 ## Troubleshooting
 
-**`documents helper failed: …`** or **`documents helper did not answer within 30s`** in an error or the log — the editor backend runs inside `t` and stopped a conversion that crashed, ran past its deadline or hit its memory limit; it restarts by itself and open documents reconnect. If one document triggers it every time, open it with **Open raw**, and report it.
+**`documents helper failed: …`** or **`documents helper did not answer within 30s`** in an error or the log: the editor backend (BlockNote and Yjs) runs inside the engine on its own thread, and a request that crashed, ran past its 30 s deadline or hit its 512 MiB memory limit is stopped. The runtime restarts by itself and open documents reconnect. If one document triggers it every time, open it with **Open raw** and report it.
 
-**A concept page is empty although the file has a body** — its first import failed. Open **Open raw**, save once, and the file is re-imported.
+**A concept page is empty although the file has a body**: its first import failed. Open **Open raw**, save once, and the file is re-imported.
 
-**`closed · document full (8 MiB); reload`** / **`closed · update too large (48 KiB); reload`** — see [Limits](#limits). Reload the page; move very large content (logs, data dumps) into an artifact or a file instead of a note.
+**`closed · document full (8 MiB); reload`** / **`closed · update too large (48 KiB); reload`**: see [Limits](#limits). Reload the page; move very large content (logs, data dumps) into an artifact or a file instead of a note.
 
-**Share… fails with `link is off: turn on Settings › Link to share documents`** — enable Link and set a relay first. **`secrets vault unavailable; cannot seal the link secret`** — the secrets vault is not open; see [Secrets](/docs/reference/secrets).
+**`show` refuses an HTML page**: its console logged an error while it was checked in your app. Ask the agent to fix the error; `check: false` publishes it anyway.
 
-**A guest sees `Connecting…` forever** — your engine is unreachable (asleep, offline, Link disabled). Members need your engine running.
+**Share… fails with `link is off: turn on Settings › Link to share documents`**: turn on **Relay** in Settings › Network › **Devices** first. **`secrets vault unavailable; cannot seal the link secret`**: the secrets vault is not open; see [Secrets](/docs/reference/secrets).
 
-**The agent ignores a request written inside a shared note** — by design: text from members is treated as data, not instructions. Ask in chat yourself.
+**A guest sees `Connecting…` forever**: the machine that serves the document is unreachable (asleep, offline, Link disabled). Members need it running.
+
+**The agent ignores a request written inside a shared note**: by design, text from members is treated as data, not instructions. Ask in chat yourself.
 
 ## Source
 
-- `crates/artifact` — the `show` tool, store, export
-- `crates/document` — documents, snapshots, sharing, the `doc_*` tools, the `board` skill
-- `crates/desktop/ui/src/components/notes` and `components/share` — editor pages and the Share dialog
+- `crates/artifact`: the `show`, `page_preview`, `artifact_read` and `doc_export` tools, store, PDF export
+- `crates/document`: documents, snapshots, homes, sharing, the `doc_*` tools, the `board` skill
+- `crates/js-runtime`: the in-process runtime that hosts the editor backend
+- `crates/desktop/ui/src/components/notes`, `components/editor`, `components/board` and `components/share`: note pages, editor, board reader and the Share dialog

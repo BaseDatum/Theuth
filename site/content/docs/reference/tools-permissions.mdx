@@ -126,15 +126,82 @@ See [Browser and desktop](/docs/automation/browser-desktop) for usage.
 
 Voice and talk expose RPC methods and desktop controls, not model tools.
 
-### Turning groups off
+### More groups
 
-There is no per-tool disable list for built-ins. Groups come and go with
-their plugin's switch in `config.yaml`: `secrets.tools`, `knowledge.enabled`,
-`web.enabled`, `scrape.enabled`, `codeindex.enabled`, `browser.enabled`,
-`computer.enabled`, `documents.enabled`, `artifact.enabled`, `app.enabled`,
-`schedule.enabled`, `sandbox.enabled`, `voice.enabled`, `talk.enabled`,
-`meeting.enabled`. The communication trio needs agent messaging on (`agent.communication`; unset = on once a machine is paired).
-MCP tools are switched individually in `mcp/config.yaml`.
+| Group | Tools | Risk |
+|---|---|---|
+| text editing | `clip` | read_only |
+| text editing | `move_text`, `copy_text`, `indent` | mutating |
+| cells | `cell_runs`, `cell_output`, `interpreters` | read_only; the model can read cell runs, never start one (below) |
+| code index | `code_overview` | read_only |
+| knowledge | `knowledge_stats` | read_only |
+| knowledge | `knowledge_archive`, `knowledge_merge`, `knowledge_retitle`, `knowledge_supersede`, `knowledge_verify` | mutating |
+| output | `show_web`, `web_views`, `show_note`, `show_file`, `show_diff`, `page_preview` | read_only |
+| output | `show_pty` | mutating |
+| browser | `browser_attach` | read_only |
+| browser | `browser_show_element` | mutating |
+| computer | `applescript`, `shortcuts` (macOS), `powershell` (Windows) | mutating |
+| sandbox | `sandbox_desktop` | read_only |
+| sandbox | `sandbox_takeover` | mutating |
+| notebooks | `notebook_list`, `notebook_get`, `notebook_ask`, `notebook_overviews`, `notebook_context_estimate`, `notebook_context_set`, `source_list`, `source_get`, `nb_search` | read_only |
+| notebooks | `notebook_create`, `notebook_add`, `notebook_remove`, `notebook_overview_run`, `source_add`, `source_refresh`, `insight_run`, `insight_promote` | mutating |
+| autoresearch | `autoresearch_status`, `autoresearch_draft`, `autoresearch_launch_card` | read_only |
+| autoresearch | `autoresearch_start`, `autoresearch_control`, `autoresearch_discard`, `autoresearch_probe`, `autoresearch_launch`, `experiment_begin`, `experiment_run`, `experiment_log`, `experiment_notes` | mutating |
+| schedules | `list_sensors`, `routine_draft` | read_only |
+| tasks | `task_waiting_on_user` | read_only |
+| tasks | `task_move_home` | mutating |
+| agents | `wait_peer` | read_only |
+| meetings | `meeting_suggest_speakers` | read_only |
+| decisions | `decide_many`, `decide_label`, `double_status`, `double_class`, `double_classes` | read_only |
+| decisions | `double_cap`, `double_pause`, `double_rollback`, `double_train` | mutating |
+| decisions | `double_forget` | destructive |
+| dreaming | `dreaming_state`, `case_list`, `replay_case` | read_only |
+| dreaming | `dreaming_journal`, `dreaming_ledger`, `dreaming_undo`, `case_put`, `skill_learned_edit`, `preferences_set` | mutating |
+| share | `share_list`, `share_stop` | read_only |
+| share | `share_publish` | destructive, **human-only** (below) |
+
+Each feature's page covers its tools: [Notebooks](/docs/workspace/notebooks),
+[Web views](/docs/workspace/web-views), [Autoresearch](/docs/automation/autoresearch),
+[Sharing](/docs/automation/sharing).
+
+### Builtins switches
+
+Every built-in tool belongs to one of 21 fixed categories: Files, Shell and
+jobs, Code index, Web, Browser, Computer use, Sandboxes, Knowledge and
+search, Documents and notebooks, Output and apps, Agents and peers, Tasks,
+Schedules and reminders, Autoresearch, Meetings, Secrets, Decision model,
+Dreaming, Skills and MCP setup, Channels, and Other (any builtin no other
+category claims, so a new tool is never beyond reach). A whole category or a
+single tool can be:
+
+| State | Scope | Where it is kept |
+|---|---|---|
+| On | | default |
+| **Off here** | this chat and its subagents | on the session |
+| **Off always** | every chat on this machine | `tools.builtins.disabled` in `config.yaml` (comments preserved) |
+
+Switch them in **Settings › Tools › Builtins**, or per chat in the composer's
+tools sheet (`/builtins` opens it on the Builtins tab; `/tools` and `/mcp`
+open the same sheet). A tool that is off is removed from the model's list.
+`tools.builtins.disabled` takes tool names and category keys `cat:<id>`; a
+category key also covers tools of that category added later:
+
+```yaml
+tools:
+  builtins:
+    disabled: ["cat:computer", "http_request"]
+```
+
+Category ids: `files`, `shell`, `code`, `web`, `browser`, `computer`,
+`sandbox`, `knowledge`, `documents`, `output`, `agents`, `tasks`,
+`schedules`, `autoresearch`, `meetings`, `secrets`, `decisions`, `dreaming`,
+`setup`, `channels`, `other`.
+
+Whole plugins still come and go with their own switch in `config.yaml`
+(`knowledge.enabled`, `browser.enabled`, `computer.enabled`,
+`sandbox.enabled` and so on). The communication trio needs agent messaging
+on (`agent.communication`; unset = on once a machine is paired). MCP tools
+are switched in the MCP tab of the same sheet and in `mcp/config.yaml`.
 
 ## The gate
 
@@ -142,15 +209,19 @@ For every call the registry computes an action in this order:
 
 1. If the session (or an ancestor) has a subagent cap and the tool's risk is
    above it: `deny`.
-2. `tools.policy.<risk>`.
-3. If any string argument contains a `{{secret:` placeholder and the tool
+2. If the tool is human-only and the owner is not the one in this
+   conversation (a contact's turn, or a session bound to a non-owner's
+   Slack, Signal or Telegram thread): `deny`.
+3. `tools.policy.<risk>`.
+4. If any string argument contains a `{{secret:` placeholder and the tool
    consumes secrets: at least `ask`. The approval card shows the
    placeholder; the value is substituted only after approval.
-4. If the result is `ask` and approvals are off for the session: its own
+5. A human-only tool is at least `ask`, and nothing below rewrites that.
+6. If the result is `ask` and approvals are off for the session: its own
    pin, else the nearest ancestor's, else `tools.approvals` on the engine
    that owns the session. Off: `allow`.
 
-`deny` is never rewritten by step 4. What the model sees when a call does not
+`deny` is never rewritten by step 6. What the model sees when a call does not
 run:
 
 | Situation | Tool result |
@@ -159,6 +230,8 @@ run:
 | you denied | `<tool>: denied by user` |
 | no answer within `tools.approval_timeout_secs` (300) | `<tool>: approval timed out` |
 | subagent cap | `<tool>: denied: subagent is capped at <risk>` |
+| human-only tool in a conversation that is not the owner's | `<tool>: denied: only the owner can approve this, and this conversation is not the owner's (a contact's turn or a non-owner chat thread)` |
+| you dismissed the card in the Inbox | `<tool>: not run`, with the note that you left the call to the agent without approving it and that it should find a way that needs no approval or explain why it needs one |
 | communication off | `<tool>: communication_disabled: <why>` |
 | hidden or unknown tool | `unknown tool: <name>` |
 | turn cancelled while waiting | `<tool>: cancelled before it ran` |
@@ -213,6 +286,61 @@ Slack sessions started elsewhere send their approvals to the owner's DM when
 `telegram.approvals` and the owner's chat. On Signal, approvals for unbound
 sessions go to the owner.
 
+### Dismissing an approval
+
+Dismissing an approval card in the desktop **Inbox** (instead of Allow or
+Deny) neither runs nor refuses the call: it is **left to the agent**. The
+model is told the call was not run and to find a way that needs no approval
+or explain why it needs one; nothing is recorded as a denial by you. Slack and
+Telegram rewrite the card to `<tool> left to the agent (not run, not
+refused)`, and Signal sends that line. For an external ACP harness the
+dismissal goes back as a one-time rejection marked as left to the agent.
+
+### Human-only tools
+
+Some tools act for you in a way the agent must never approve for itself.
+`share_publish`, which puts something of yours on the public internet, is
+the one such model tool today; accepting the sharing terms is gated the same
+way. For these:
+
+- Only the owner, in person, can answer: in the desktop or web client, in the
+  terminal, or from the owner's own Slack, Telegram or Signal account. On
+  channels the card says `Only the owner can answer this.`
+- Not another allowed chat user, not the double, not a click in an
+  [app](/docs/workspace/apps) (`<tool>: only the owner can approve this tool, in theuth itself; an app cannot run it`),
+  not `tools.policy`, not `/approvals off` and not `tools.approvals: false`.
+- While such a card is pending, the agent's own input into theuth is refused:
+  `computer_*` input into theuth's windows, `applescript` and `shortcuts`,
+  and acting `browser_*` calls against theuth's web client.
+- Unanswered, it is denied after `tools.approval_timeout_secs` like any other.
+
+### Cells
+
+A cell in a note runs only when a person presses Run. No tool, routine,
+subagent, ACP child, MCP client, app, channel or the double can start one,
+and nothing re-runs a cell on its own. The model can read past runs and
+output (`cell_runs`, `cell_output`) and list `interpreters`.
+
+### The double
+
+The double is an optional local model of your own answers (`double.enabled`,
+default `false`, restart to change). It predicts your answer to each card
+before you see it and scores itself afterwards. Its authority per class of
+card climbs a ladder as its record earns it:
+
+| Rung | What it does |
+|---|---|
+| L0 | observes only (every new class starts here) |
+| L1 | suggests an answer on the card; you still press it |
+| L2 | answers after a grace countdown (`double.ladder.grace_secs`, default 30 s) that you can take over |
+| L3 | answers at once |
+
+One override by you demotes the class a rung immediately. Caps
+(`double.ladder.caps`): `destructive` is fixed at L1, `mutating` defaults to
+L1 (higher only with a per-class opt-in), and `read_only` defaults to L2, so
+L3 is not reached by default. Human-only cards are never predicted, learned
+from or answered by it.
+
 ### Apps
 
 An [app](/docs/workspace/apps) you click is different: **the press is the
@@ -248,10 +376,13 @@ good); hand edits are picked up within a second. Details in
 ## Subagents
 
 Configured under `agent.subagents` (defaults `max_depth: 1`,
-`max_concurrent: 8`, `max_runtime_secs: 600`, `reply_timeout_secs: 120`):
+`max_concurrent: 16`, `max_concurrent_external: 32`, `max_runtime_secs: 600`,
+`reply_timeout_secs: 120`):
 
 - A session at depth ≥ `max_depth` gets `subagents are not available at depth N`.
-- At most `max_concurrent` child turns run at once; further spawns queue.
+- Each orchestrator tree runs at most `max_concurrent` native child turns at
+  once, and separately at most `max_concurrent_external` ACP harness or mesh
+  node children; further spawns queue and the parent is told.
 - A child turn over `max_runtime_secs` is stopped and its result is prefixed
   `[timed out after Ns, stop=…]`.
 - `spawn_subagent{tools: read_only|mutating}` installs a cap: the child and
@@ -275,3 +406,10 @@ literal sources or queries (`app`, `task_draft`, `agent_draft`, `search`,
 `code_*`, `project_profile`, `sandbox_*`, `secret_request`, `secret_request_form`,
 `desktop_handoff`) do not expand placeholders and do not raise the gate. See
 [Secrets](/docs/reference/secrets).
+
+## Related
+
+- [Security](/docs/reference/security): the security model behind approvals and human-only tools
+- [Channels](/docs/automation/channels): answering approvals from Slack, Signal and Telegram
+- [Sharing](/docs/automation/sharing): `share_publish` and its owner-only approval
+- [Secrets](/docs/reference/secrets): placeholders and scrubbing

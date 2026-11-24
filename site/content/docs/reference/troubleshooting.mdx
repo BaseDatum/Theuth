@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Symptom-first checks for installation, startup, provider authentication, tool denials, MCP servers, mesh and sandboxes, voice, local models, search, documents and apps — using the harness's own log and status surfaces.
+description: Symptom-first checks for installation, startup, providers and local models, Fractal context, tool denials, MCP, mesh and sandboxes, public sharing, contacts, web views, voice, search, documents and apps, using the harness's own log and status surfaces.
 ---
 
 Start with the log. Every normal run writes
@@ -35,8 +35,8 @@ them there first.
 | Symptom | Check |
 |---|---|
 | `cannot determine data dir; pass --data-dir` | no home directory in the environment (a service without `HOME`); pass `--data-dir` or set `THEUTH_DATA_DIR` |
-| `t --headless` exits 3 and prints a running engine | one engine per data dir; the TUI, `-p` and `--acp` attach to it, a second headless exits. Stop the other one or use another `--data-dir` |
-| `no harness on 127.0.0.1:7777; start t --headless first` | a subcommand (`t mesh …`, `t sandbox …`, `t --link`) found no daemon on `rpc.listen`; start one, or match `THEUTH_RPC__LISTEN` |
+| `engine already running (pid N, <host>, since HH:MM, ws://…)` | one engine per data dir. The TUI, `-p` and `--acp` attach to it; a second `t --headless` or desktop engine prints this and exits 0 (so a service manager does not restart-loop), anything else exits 3. Run plain `t` to attach, stop the other one, or use another `--data-dir` |
+| `no harness on 127.0.0.1:7777; start t --headless first` | a subcommand (`t mesh …`, `t sandbox …`, `t --link`) found no engine on `rpc.listen`; start one, or match `THEUTH_RPC__LISTEN`. `t mcp` says `no engine on <listen>: …` for the same reason |
 | the configured port is busy | with `--serve`/`--headless` the bind fails; without those flags the engine falls back to an ephemeral loopback port with a warning and records it in `engine.json` |
 | a config change did nothing | `config.yaml` is read at startup only; restart. Only the directories `mcp/`, `schedules/`, `knowledge/`, `agents/` are watched. See [Configuration](/docs/reference/configuration) |
 | an env override is ignored | the shape is `THEUTH_<SECTION>__<KEY>` with two underscores between levels; the value wins over the file on every start |
@@ -55,10 +55,24 @@ them there first.
 | a model call dies mid-stream | `agent.stream_idle_secs` (120) abandons a stream with no events; `agent.max_salvages` (2) retries an interrupted reply; the final error stays in the transcript |
 | images are ignored by a text-only model | set `agent.vision_model` to an image-capable `provider/model` (`/vision <model>`) |
 | the context fills and quality drops | `agent.compact_at` (0.8) triggers automatic compaction; `/compact` folds now; `/shake images` removes bulky content without dropping later turns |
-| a local gateway's models are missing | `/provider add` fetches `GET {base}models` into `models.json`; edit that file for local `ollama/…` entries |
+| a local gateway's models are missing | `/provider add` fetches `GET {base}models` into `models.json`; `/provider refresh <name>` lists them again; edit that file for entries the server does not list |
+| `/provider find` lists a local server as `answered 401: needs an API key` | the server (omlx with key checks, or a keyed gateway) refuses the model list; add it with `/provider add <name> <url> <key>`. `answered, but lists no models at /v1/models` means nothing is loaded in it yet |
+| a local model's context is wrong or unknown | servers report the served window where they can; otherwise theuth assumes 16,384 tokens for memory sizing only. `/provider limits <provider> <model> <context> [output]` sets it (`0` = unknown) |
+| `<name> has no key; set it first` | a cloud provider needs a key; only a loopback or private-network URL may be added without one |
 | `secrets vault unavailable: …` in the log | provider keys then come from `/login` and the environment only; see the Secrets section below |
 
 More in [Models](/docs/getting-started/models).
+
+## Fractal context
+
+| Symptom | Check |
+|---|---|
+| the Memory panel shows `Summaries are failing · N attempts · …` | the compactor model keeps failing (full error on hover). **Retry now**, **Fold now**, or **Change model**; `/fractal model <id>` does the same from the TUI. Summaries use `agent.endless.model`, else the session's own model |
+| `compactor model "<id>": no configured provider serves it` | the picked compactor is not configured; pick another or add its provider |
+| `compactor returned nothing` / `compactor job timed out after Ns` | a small or overloaded local model gave up; `agent.endless.profile: small` (picked automatically for local models and windows up to 32,000 tokens) uses a shorter prompt, or choose a larger compactor |
+| the backlog never folds | settling may be paused (`/fractal resume`); `/fractal fold` folds the unsummarized backlog now, `/fractal` shows the view state |
+
+See [Sessions](/docs/workspace/sessions).
 
 ## Tool denials and approvals
 
@@ -98,6 +112,17 @@ Privacy & Security. Screen Recording applies only after restarting that app;
 | `/mcp add <git url>` cloned but no server appeared | cloning writes no entry; build the repo, then add an entry with `"cwd": "repos/<name>"` |
 | `/login` says `<name> is a stdio server; nothing to log in to` | OAuth applies to `url` entries only |
 
+theuth as an MCP server (Settings › MCP, `mcp_server.enabled`, off by default):
+
+| Symptom | Check |
+|---|---|
+| the client gets `unauthorized` (401) | it sends no `Authorization: Bearer <token>` or an old one; copy the token again from Settings › MCP (rotating it ends every client session) |
+| the client gets `not found` (404) | the URL must end in `/mcp` on `127.0.0.1:<mcp_server.port>` (7788 by default); it listens on loopback only |
+| `mcp server: not started` in the log | the port is taken, often by a second engine on the same data dir; change `mcp_server.port` or stop the other engine. A stdio client can use `t mcp` instead |
+| `private session: not shared over MCP` | Private sessions and their artifacts are never served |
+
+Every call is logged to `<data_dir>/mcp/server-audit.jsonl`.
+
 ## Mesh, nodes and sandboxes
 
 | Symptom | Check |
@@ -113,6 +138,49 @@ Privacy & Security. Screen Recording applies only after restarting that app;
 | `sandbox_*` tools are missing | `sandbox.enabled: false`, or `sandbox.vm.enabled: false` for VMs |
 
 See [Mesh](/docs/automation/mesh) and [Sandboxes](/docs/automation/sandboxes).
+
+## Public sharing
+
+| Message | Check |
+|---|---|
+| `Public sharing is off in Settings › Sharing` | the master switch **Allow public sharing on this machine** is off by default, per machine; switch it on on the machine that should host the share. `share.enabled` in `config.yaml` is ignored |
+| `No sharing edge configured` | this machine's edge choice is `none`; set it back to the default or paste an edge ticket |
+| `Can't reach the sharing edge; see Settings › Sharing` | the engine could not attach to the edge; Settings › Sharing › Domains › Edge shows the connection state |
+| `accept the terms of <domain> first (<url>, revision <rev>): …` | accept the edge's terms once per revision in Settings › Sharing › Public shares › Terms, then publish again |
+| `that port is theuth itself` / `nothing is listening on localhost:<port>` | only a loopback dev server can be shared, never theuth's own listeners; start the server or pick its real port |
+| `a path with a hidden or dot component cannot be shared` / `<path> cannot be shared` | a `dir` share cannot be a dot directory, your home root or theuth's data directory |
+| a share stays `pending` | its name is waiting for a certificate (about 2.5 min the first time) or a slot; it goes live by itself |
+
+`/share` (TUI, Signal, Telegram) or `/theuth share` (Slack) lists live
+shares and stops them. The full list of messages is in
+[Public sharing](/docs/automation/sharing#troubleshooting).
+
+## Contacts
+
+| Message | Check |
+|---|---|
+| `no Add contact window is open` | the other side's **Add contact…** window closed (10 min, `a2a.contact_window_secs`); open it again and retry |
+| `the invite ticket expired` / `the invite ticket was used or is not this window's` | tickets are single-use and belong to one window; send a fresh one |
+| `a request without a ticket must come from a Nearby agent` | without a ticket, both machines must see each other under **Nearby agents** on the same local network; otherwise use **Invite** |
+| `another contact ceremony is running` | one ceremony at a time; wait for it to finish |
+| `too many failed ceremonies from this endpoint` | three failures refuse that machine for the rest of the window; open a new window |
+| `the other side did not answer` / `the other side closed the ceremony` | the other machine is unreachable or its window closed; both sides must press **Accept** within 120 s |
+
+Adding a contact needs the machine's own screen; phone and web clients have
+no **Add contact…** button. See [Contacts](/docs/automation/contacts).
+
+## Web views
+
+| Message | Check |
+|---|---|
+| `show_web: only http and https URLs (got …:)` / `credentials in the URL are not allowed` | tiles open plain `http(s)` pages without `user:pass@`; sign in inside the tile instead |
+| `show_web: link-local address … is not allowed` | link-local addresses are always refused |
+| `show_web: local network not allowed for this call` | the turn came from a restricted contact state, which reaches the public web only |
+| `no client holds tile web:<id> (the user may have closed it)` | the agent tried to drive a tile that no open client shows; reopen the page, or `browser_attach {}` returns the agent to its own browser |
+| a site refuses clicks or typing on a tile | tile input is synthetic; a site that checks for real input ignores it, so do that step yourself |
+| the web client shows **Open in browser** instead of a tile | there is no native web view in a browser; use the desktop or iOS app |
+
+See [Web views](/docs/workspace/web-views).
 
 ## Voice, talk, meetings
 
@@ -135,7 +203,7 @@ See [Voice](/docs/workspace/voice) and [Meetings](/docs/workspace/meetings).
 | `search_web` results are thin or a search is reported degraded | the keyless engines are best-effort; `bing` is opt-in because it serves flagged clients empty pages; add a provider under `search_providers` with its secret (`firecrawl`, `brave`) or run SearXNG / OpenSERP locally |
 | `search_x` is missing | it registers only while an `xai` secret or `/login xai` exists |
 | `read_url` returns little | `web.fetch_max_chars` (4000) caps a page; pages needing JavaScript are for `browser_open` |
-| the browser cannot reach `localhost` | `browser.allow_private_network: false` by default |
+| the browser cannot reach `localhost` | `browser.allow_private_network` and `web.allow_private_network` are `true` by default; a turn from a restricted contact state never reaches the local network |
 | `/search` finds a session but not an artifact | artifacts match on saved text or source; images and other binaries match by name only (no OCR). The group header says whether a category is still indexing |
 | the phone app says `Method not found` for `search` | the app or browser build is older than the harness; update both together |
 
@@ -171,6 +239,9 @@ See [Documents](/docs/workspace/documents), [Knowledge](/docs/workspace/knowledg
 - `/computer`: macOS permissions and displays.
 - `/cost`: per-tree model cost, including coverage of what the provider returned.
 - `t session context <id>`: what fills a session's context window.
+- `/fractal`: the Fractal context view state of the open session.
+- `/share`: every live public share of the mesh, with stop.
+- `/provider find`: which local model servers answer on loopback.
 - The bundled `harness` skill tells the model the same facts about its own
   data dir; if the agent claims a `config.yaml` edit took effect without a
   restart, it is wrong.

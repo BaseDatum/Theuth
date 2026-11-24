@@ -8,8 +8,11 @@
     "voice",
     "meetings",
     "documents",
+    "cells",
+    "notebooks",
     "knowledge",
     "apps",
+    "web-views",
     "search"
   ]
 }

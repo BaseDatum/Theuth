@@ -1,22 +1,24 @@
 ---
 title: Apps
-description: Interactive screens the agent builds with the app tool — how they differ from static surfaces, where they run, what a button press means, and how to read their bindings before you press.
+description: Interactive screens the agent builds with the app tool. How they differ from static surfaces and live HTML pages, where they run, what a button press means, and how to read their bindings before you press.
 ---
 
 ## What an app is
 
-When the deliverable is a screen you work *in* — a dashboard, a control panel, a form, a clickable prototype — the agent calls the `app` tool with a program written in OpenUI Lang. theuth validates the source and publishes it as an immutable `<name>.openui` artifact. The desktop app and the relay's browser UI render it as a live panel: you press buttons, fill inputs, and its `Query` bindings read installed tools without another model turn.
+When the deliverable is a screen you work *in* (a dashboard, a control panel, a form, a clickable prototype), the agent calls the `app` tool with a program written in OpenUI Lang. theuth validates the source and publishes it as an immutable `<name>.openui` artifact. The desktop app and the relay's browser UI render it as a live panel: you press buttons, fill inputs, and its `Query` bindings read installed tools without another model turn.
 
 An app is one of several ways the agent can show you something. The others are static:
 
 | What you see | How it gets there | Interactive? |
 |---|---|---|
-| A chart, table, card or diagram inside a reply | A `json-render` or `mermaid` fence in the message | No — a picture |
-| A small OpenUI block inside a reply | An inline `openui` fence | Partly — inputs and local state work; queries and actions are inert until you choose **Open as app** |
-| A file card (markdown, CSV, image, PDF …) | The `show` tool | No — read, copy, save (see [Documents, notes and boards](/docs/workspace/documents)) |
-| An app panel | The `app` tool | Yes — queries read live, actions run tools |
+| A chart, table, card or diagram inside a reply | A `json-render` or `mermaid` fence in the message | No: a picture |
+| A small OpenUI block inside a reply | An inline `openui` fence | Partly: inputs and local state work; queries and actions are inert until you choose **Open as app** |
+| A file card (markdown, CSV, image, PDF …) | The `show` tool | No: read, copy, save (see [Documents, notes and boards](/docs/workspace/documents)) |
+| A live HTML page inline in the reply | The `show` tool with an `.html` name | Scripts run inside a sandboxed frame, but the page cannot call tools (see [Documents, notes and boards](/docs/workspace/documents)) |
+| A running website, such as your dev server | The `show_web` tool | A real page in a web view tile (see [Web views](/docs/workspace/web-views)) |
+| An app panel | The `app` tool | Yes: queries read live, actions run tools |
 
-The static kinds are called *surfaces*: the model writes a fence, each frontend renders it as well as it can (the desktop draws it, the TUI prints a text rendering, Slack, Signal and Telegram receive a flattened code block). An app is different because it keeps running after the agent's turn is over: it talks to the engine on its own.
+The static kinds are called *surfaces*: the model writes a fence, each frontend renders it as well as it can. The desktop draws it, the TUI prints a text rendering, and Slack, Signal and Telegram receive it as a PNG picture drawn by a connected desktop or web client (set `pictures: false` in that channel's config to send the text fallback instead; default `true`). The native macOS and Windows companions show the same pictures in their Ask bar answers. An app is different because it keeps running after the agent's turn is over: it talks to the engine on its own. A live HTML page is also different from an app: it can run its own scripts, but it has no bindings to your tools, so it is the right choice for a mockup or a visual explainer and the wrong one for a control panel.
 
 The agent decides between a static picture and an app on its own, but you can simply ask: "build me a panel for …", "make this a clickable prototype", "I want a form that …". If you want a picture rather than a screen, say so ("draw a diagram", "show me a table"). You can also promote an inline `openui` fence from a reply into a real app by hovering it and choosing **Open as app** (desktop only; no model turn is spent).
 
@@ -27,7 +29,8 @@ The agent decides between a static picture and an app on its own, but you can si
 | Desktop app | The live panel: the artifact card in chat opens it on the right, the `/artifacts` explorer and search also open it |
 | Browser UI through the relay (`/link`) | The same bundle, so the same live panel, from any paired device |
 | TUI | A receipt card marked `interactive on desktop/web`; `Ctrl+O` shows the `.openui` source read-only, `o` opens the file with the OS, `/apps` lists them |
-| Slack / Signal / Telegram | The `.openui` source as a file with the note `Interactive app — open on desktop/web` |
+| Signal / Telegram | The `.openui` source as a file, captioned with a note that it is interactive on desktop/web |
+| Slack | One card with the app's title and `Interactive in theuth · not runnable in Slack`; the source is not uploaded |
 | ACP clients | The usual artifact link to the `.openui` file |
 
 Tool execution always happens on the engine that owns the session, never in the browser. Opening an app from a phone over the relay does not change what a press means.
@@ -40,7 +43,7 @@ When the engine commits the version, the same mounted panel becomes live: querie
 
 ## Queries: live reads without a model turn
 
-A `Query` binding names an installed tool (a native tool, an MCP tool, or `http_request`) and its arguments. The app calls it when the panel loads, on its refresh timer, or when its arguments change — straight through the engine's tool registry. No model turn happens, so a dashboard that polls every few seconds costs no tokens.
+A `Query` binding names an installed tool (a native tool, an MCP tool, or `http_request`) and its arguments. The app calls it when the panel loads, on its refresh timer, or when its arguments change, straight through the engine's tool registry. No model turn happens, so a dashboard that polls every few seconds costs no tokens.
 
 Timer and load reads can never mutate anything: a `Mutation` binding that is triggered by anything other than a press is refused by the engine with `a Mutation runs only from a pressed action`.
 
@@ -49,24 +52,24 @@ When a read fails, the strip under the app says why and keeps the last good data
 | Strip text | Meaning |
 |---|---|
 | `needs your go-ahead to load` / `…to refresh` + a **Load** / **Refresh** button | The tool policy would normally ask before running this tool; pressing the button is your approval (see below) |
-| `unavailable: <reason>` | The engine will not run this binding at all — see [Gates](#gates-when-a-binding-cannot-run) |
-| `offline — refreshes when reconnected` | The engine is unreachable; the read repeats once it is back |
+| `unavailable: <reason>` | The engine will not run this binding at all; see [Gates](#gates-when-a-binding-cannot-run) |
+| `offline` + refreshes when reconnected | The engine is unreachable; the read repeats once it is back |
 | `node busy` + **Retry** | The engine's app queue is full |
-| `stale — showing earlier data` | The last refresh did not complete |
+| `stale` + showing earlier data | The last refresh did not complete |
 
 ## Actions and mutations: the press is the approval
 
 A `Mutation` binding runs a tool when you activate a control. **There is no second confirmation card.** One click on **Sync**, **Delete**, **Send** runs the bound tool, including destructive tools and tools whose arguments carry a `{{secret:NAME}}` placeholder. The agent is instructed to make the consequence clear in the label instead of asking twice.
 
-This is also how a gated read works: when a tool is set to *ask* in your tool policy ([Tools and permissions](/docs/reference/tools-permissions)), an automatic load does not prompt you — it parks and the strip shows a **Load** or **Refresh** button. Pressing it is the consent, for that one read.
+This is also how a gated read works: when a tool is set to *ask* in your tool policy ([Tools and permissions](/docs/reference/tools-permissions)), an automatic load does not prompt you: it parks and the strip shows a **Load** or **Refresh** button. Pressing it is the consent, for that one read.
 
 Secrets never appear in the app. A `{{secret:NAME}}` placeholder is committed literally in the `.openui` source and the engine resolves it only when the bound tool actually runs; the value is not in the panel, the artifact, or the reply. See [Secrets](/docs/reference/secrets).
 
-Pressed outcomes are durable: each press is recorded in the `app_invocations` table of `<data_dir>/artifacts.sqlite` (request id, statement, tool, argument hash, status, result up to 64 KiB), so a reopened panel still shows `last run <status>` for each action, and a press whose outcome the engine lost reports `outcome unknown — check before repeating` rather than running again.
+Pressed outcomes are durable: each press is recorded in the `app_invocations` table of `<data_dir>/artifacts.sqlite` (request id, statement, tool, argument hash, status, result up to 64 KiB), so a reopened panel still shows `last run <status>` for each action, and a press whose outcome the engine lost reports `outcome unknown` (check before repeating) rather than running again.
 
 ### Before you press
 
-An app can only call the tools it was published with, and you can see which. The strip lists every bound statement with its tool name; the artifact's receipt in the chat names them with their risk, for example `tools: argo_sync(mutating), argo_app_health(read_only)`. The **Source** disclosure in the panel shows the exact program. If a mutation's label does not tell you what it will do, read the source before pressing — the engine will not ask on your behalf.
+An app can only call the tools it was published with, and you can see which. The strip lists every bound statement with its tool name; the artifact's receipt in the chat names them with their risk, for example `tools: argo_sync(mutating), argo_app_health(read_only)`. The **Source** disclosure in the panel shows the exact program. If a mutation's label does not tell you what it will do, read the source before pressing: the engine will not ask on your behalf.
 
 ## Gates: when a binding cannot run
 
@@ -83,7 +86,7 @@ Bindings are pinned by *identity*: a hash of the tool's name, its input schema a
 
 ## Versions and edits
 
-Every publish is a new, immutable `.openui` artifact; the same name again in the same session becomes `v2`, `v3`, …. The agent iterates with `edit: true` plus the `base_call_id` from the receipt of the version it is changing; the engine merges the patch and commits only if that version is still the latest — otherwise the agent gets `conflict: … is no longer the latest …` and re-reads.
+Every publish is a new, immutable `.openui` artifact; the same name again in the same session becomes `v2`, `v3`, …. The agent iterates with `edit: true` plus the `base_call_id` from the receipt of the version it is changing; the engine merges the patch and commits only if that version is still the latest. Otherwise the agent gets `conflict: … is no longer the latest …` and re-reads.
 
 In the desktop panel a version selector (`v1`, `v2 (latest)`) appears once there is more than one. A panel opened on the newest version follows new versions as they land; a panel opened on an older one stays pinned to it. Under the hood, apps are artifacts, so everything in [Documents, notes and boards](/docs/workspace/documents) about the artifact card, `Save as…`, `Download` and the explorer applies to them too.
 
@@ -91,38 +94,45 @@ In the TUI, `/apps` lists the session's apps (`⏎` opens the source with the OS
 
 ## Sharing an app
 
-There is no share link for apps. Share links (`https://<relay>/d#…`) exist only for notes, knowledge concepts and boards — see [Documents, notes and boards](/docs/workspace/documents). An app runs for you on your own paired devices through the relay-served UI; a third party cannot be given a link to it.
+There is no share link for an `.openui` app. Share links (`https://<relay>/d#…`) exist only for notes, knowledge concepts and boards; see [Documents, notes and boards](/docs/workspace/documents). An app runs for you on your own paired devices through the relay-served UI; a third party cannot be given a link to it.
 
-What you *can* hand over is the source: `Save as…` / `Download` in the desktop, `e` in the TUI `/apps` picker, or the `.openui` file Slack, Signal and Telegram receive. The recipient can read it, or paste it to their own agent, but it will not run outside your engine.
+What you *can* hand over is the source: `Save as…` / `Download` in the desktop, `e` in the TUI `/apps` picker, or the `.openui` file Signal and Telegram receive. The recipient can read it, or paste it to their own agent, but it will not run outside your engine.
+
+If what you want to show someone is a real web app (a dev server on a local port, or a built static folder), the agent can publish it at a public `https://` address with `share_publish`; you approve the publish and can stop it at any time. See [Public sharing](/docs/automation/sharing). To look at that dev server yourself beside the chat, ask for a web view tile ([Web views](/docs/workspace/web-views)).
 
 ## Turning apps off
 
 ```yaml
 app:
-  enabled: true   # false: no `app` tool, no prompt block, no parser helper, no app RPC
+  enabled: true   # false: no `app` tool, no prompt block, no parser, no app RPC
 ```
 
 With `app.enabled: false` the agent has no `app` tool and the TUI hides `/apps` (typing it says `apps are off (app.enabled); /artifacts lists their sources`). Existing apps stay readable as source in `/artifacts`, the desktop explorer and `Ctrl+O`. See [Configuration](/docs/reference/configuration).
 
 ## The parser
 
-Validation runs inside `t`: the same OpenUI library the desktop renders with is bundled into the binary and runs in an embedded JavaScript engine on its own thread, so source and renderer always agree and there is no separate executable to install. It starts on the first `app` call; a validation that hangs (2 s) or crashes fails that one call and the parser is rebuilt for the next. `t --app-parser-hash` prints the library hash this build embeds.
+Validation and edit merging run inside `t`: the same OpenUI library the desktop renders with is bundled into the binary and runs in an embedded JavaScript runtime on its own thread, so source and renderer always agree and there is no separate executable to install. It starts on the first `app` call; a validation that hangs (2 s) or crashes fails that one call and the parser is rebuilt for the next. `t --app-parser-hash` prints the library hash this build embeds.
+
+Every app's root is a `Card`, which acts as the page; layout inside it uses `Stack`. A single action step can be passed bare (`Button("Add", @Set($n, $n + 1))`); several steps go in `Action([...])`, and `@CopyToClipboard(text)` copies text for you. App themes follow the desktop appearance: each panel and inline fence scopes its theme to its own light or dark mode, so a light and a dark render on the same screen do not affect each other.
 
 ## Troubleshooting
 
-**`app parser failed: …`** — that one validation was stopped and the parser rebuilt; call `app` again. Nothing else is affected: existing apps stay readable.
+**`app parser failed: …`**: that one validation was stopped and the parser rebuilt; call `app` again. Nothing else is affected: existing apps stay readable.
 
-**`parser helper validated against library <h1>, this harness is <h2>`** — should not happen with the in-process parser (it is the binary's own library); report it.
+**`parser helper validated against library <h1>, this harness is <h2>`**: should not happen with the in-process parser (it is the binary's own library); report it.
 
-**`app parser busy: 8 validations pending; try again`** / **`app parser did not answer within 2s`** — transient; a stuck validation is terminated and the parser rebuilt for the next request.
+**`app parser busy: 8 validations pending; try again`** / **`app parser did not answer within 2s`**: transient; a stuck validation is terminated and the parser rebuilt for the next request.
 
-**The panel says `Apps are disabled on this node; the source stays readable.`** — `app.enabled` is `false` on that engine. **`This node predates apps: update it to run this app.`** — the engine you are connected to is an older release; update it with `t --update`.
+**The panel says `Apps are disabled on this node; the source stays readable.`**: `app.enabled` is `false` on that engine. **`This node predates apps: update it to run this app. The source stays readable.`**: the engine you are connected to is an older release; update it with `t --update`.
 
-**A button does nothing and the strip says `unavailable: …`** — see [Gates](#gates-when-a-binding-cannot-run); the message names the tool and the reason.
+**A button does nothing and the strip says `unavailable: …`**: see [Gates](#gates-when-a-binding-cannot-run); the message names the tool and the reason.
 
-**A control that worked yesterday now says `tool identity changed`** — an MCP server or tool schema changed. Ask the agent to republish the app so the bindings are pinned to the current tool.
+**A control that worked yesterday now says `tool identity changed`**: an MCP server or tool schema changed. Ask the agent to republish the app so the bindings are pinned to the current tool.
 
 ## Source
 
-- `crates/app` — the `app` tool, helper, invocation engine
-- `crates/desktop/ui/src/components/apps` — the live panel
+- `crates/app`: the `app` tool, parser client, invocation engine
+- `crates/js-runtime`: the in-process OpenUI checker and merger
+- `crates/desktop/ui/src/components/apps`: the live panel and theme
+- `crates/tui/src/components/artifacts_apps.rs`: `/apps` and `/artifacts`
+- `crates/slack`, `crates/signal`, `crates/telegram`: app cards and channel pictures

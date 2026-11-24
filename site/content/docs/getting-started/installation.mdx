@@ -5,7 +5,7 @@ description: Install the t command or the desktop app on macOS, Linux and Window
 
 ## Two things you can install
 
-- **The `t` command** — the whole harness in one binary: terminal UI, headless daemon, print mode, CLI subcommands; app validation and the notes/knowledge editor backend run inside it. Every package below also ships a small `theuth-app-parser-<hash>` file beside `t` that only older self-updaters look for.
+- **The `t` command:** the whole harness in one binary: terminal UI, headless daemon, print mode, CLI subcommands. The document converters (Office and PDF), the app checker and the Mermaid checker run inside it on embedded JavaScript runtimes, so there are no separate `theuth-documents` or app-parser helper programs to install. Every package below still ships a small `theuth-app-parser-<hash>` stub beside `t`, only because older self-updaters look for it; current `t` never runs it.
 - **The desktop app** (`theuth.app`, `theuth-desktop`) — a tray/menubar shell around the same engine. It bundles its own `t`, so it does not need the command installed, and it reuses an engine a terminal `t` already started on the same data directory.
 
 They share `~/.theuth` (`--data-dir` / `THEUTH_DATA_DIR` relocate it on every OS, `C:\Users\<you>\.theuth` on Windows). Installing both is normal.
@@ -63,7 +63,7 @@ What differs from macOS:
 - Meetings record through PipeWire. There is no echo cancellation on this path, so headphones are recommended; the meeting status reports `no echo cancellation; headphones recommended`, or the reason when no PipeWire daemon answers.
 - `t --install-service` writes a systemd user unit (`~/.config/systemd/user/theuth.service`) and runs `loginctl enable-linger` so it survives logout; it tells you if lingering could not be enabled.
 - In a VM without a GPU render node (no `/dev/dri/renderD*`), the app sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` itself so WebKitGTK does not paint a blank window. If you see a blank window anyway, set that variable by hand.
-- The vault key goes into the Secret Service (for example GNOME Keyring) when one answers, otherwise into `~/.theuth/secrets.key` with a warning in the log.
+- The engine key that unlocks the vault goes into the Secret Service (for example GNOME Keyring) when one answers, otherwise into `~/.theuth/secrets.key` with a warning in the log.
 
 ## Windows
 
@@ -80,10 +80,44 @@ WebView2 is required by the app; Windows 11 ships it, and where it is missing th
 
 What differs on Windows:
 
-- The vault key is a generic credential in the Windows Credential Manager (`secrets:C:\Users\<you>\.theuth`). Over an SSH or other network logon the Credential Manager is unavailable and theuth falls back to `secrets.key` in the data directory, saying so in the log.
+- The engine key that unlocks the vault is a generic credential in the Windows Credential Manager (`secrets:C:\Users\<you>\.theuth`). Over an SSH or other network logon the Credential Manager is unavailable and theuth falls back to `secrets.key` in the data directory, saying so in the log.
 - `t --install-service` creates a Task Scheduler logon task named `theuth` for the current user (`schtasks /create /sc onlogon`). The source marks this path as not yet verified on a real Windows install; check `schtasks /query /tn theuth /v` after installing.
 - Meetings record through WASAPI loopback without echo cancellation (headphones recommended).
 - Self-update does not work for either artifact in this version (see Updating); install a newer `-setup.exe` or unzip a newer zip over the old one.
+
+## Local models
+
+These run on your machine; the weights live under `~/.theuth/models/`. The desktop app downloads them when a feature first needs them; `t` on its own does not (on a server use `scripts/fetch-models.sh` from the repository).
+
+| Model | Used for | Notes |
+|---|---|---|
+| Parakeet TDT 0.6B v3, ONNX int8 (`models/parakeet-tdt`) | speech to text: dictation, voice notes, meetings | the default engine on every platform; needs the ONNX Runtime library, which the macOS app and the Windows installer bundle |
+| Parakeet TDT 0.6B v3 on MLX (`models/parakeet-tdt-mlx`) | the same, on the Apple GPU | optional, macOS on Apple silicon only, `voice.stt_engine: mlx` after an explicit download; falls back to ONNX until downloaded and after 3 consecutive failures |
+| Pocket TTS (`models/pocket-tts`) | spoken replies | |
+
+Chat itself uses the model provider you configure (see [Models and providers](/docs/getting-started/models)), which can be a local server such as Ollama or LM Studio.
+
+## What stays local and what leaves
+
+Your config, sessions, knowledge, documents, the encrypted vault and the local models stay in `~/.theuth` on your machine. Things leave it when you use features that need them:
+
+- **Your model provider** receives the prompts, the conversation and tool results of every turn (unless the provider is a local server).
+- **Web tools** (`search_web`, `read_url`, the browser, `http_request`) reach the sites and search providers they are pointed at.
+- **The update check** fetches `latest.json` from `update.url` (see Updating below); `update.enabled: false` stops it.
+- **Channels, MCP servers and paired machines** receive what you send them.
+- **Public shares and contacts** receive what you publish or grant, by design.
+
+### Optional hosted services
+
+Three services are run for theuth by its operator. Each is used only by the feature named, and each can be replaced with your own:
+
+| Service | Used by | Default | Change it with |
+|---|---|---|---|
+| `relay.theuth.io` | the link to your phone or a browser, when the link is on (`link.enabled`, default `false`) | `link.relay: wss://relay.theuth.io` | `link.relay` |
+| `iroh.relay.theuth.io` | the mesh between your machines when they cannot reach each other directly | `mesh.relay: https://iroh.relay.theuth.io` | `mesh.relay` (a URL, `public` or `none`); machines on one LAN need no relay |
+| `tun.zip` | public sharing: the edge that serves your shared pages at `<name>.tun.zip` | the shipped default edge | the machine's sharing edge setting (another edge ticket, or none); nothing is dialled until you share |
+
+What each service can and cannot see is described in [Security](/docs/reference/security).
 
 ## Build from source
 
@@ -146,7 +180,7 @@ Limitations in this version: the in-app updater only knows how to swap a macOS `
 
    Linux: remove the `theuth` package with your package manager, or delete the AppImage / the tarball's two files. Windows: Add/Remove Programs, or `%LOCALAPPDATA%\theuth\uninstall.exe`.
 3. Decide about `~/.theuth`. Nothing above touches it: the config, the encrypted vault (`secrets.sqlite`), sessions, knowledge, artifacts, documents, logs and downloaded models all stay until you delete the directory.
-4. The vault **key** is not in that directory when a keychain was available: it is a keychain item with service `theuth` and account `secrets:<absolute data dir>` (Keychain Access on macOS, Credential Manager on Windows, your Secret Service keyring on Linux). Delete it after the directory; without the directory the item is useless, and without the item the vault cannot be opened. If you ever set `secrets.key_store: file`, the key is `~/.theuth/secrets.key` instead.
+4. The engine key that unlocks the vault is not in that directory when a keychain was available: it is a keychain item with service `theuth` and account `secrets:<absolute data dir>` (Keychain Access on macOS, Credential Manager on Windows, your Secret Service keyring on Linux). Delete it after the directory; without the directory the item is useless, and without the item the vault cannot be opened. If you ever set `secrets.key_store: file`, the key is `~/.theuth/secrets.key` instead.
 
 ## Troubleshooting first runs
 

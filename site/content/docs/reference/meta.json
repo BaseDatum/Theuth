@@ -1,6 +1,6 @@
 {
   "title": "Reference",
-  "description": "Configuration, tools and permissions, MCP, skills, secrets, CLI, troubleshooting and development.",
+  "description": "Configuration, tools and permissions, MCP, skills, secrets, security, CLI, troubleshooting and development.",
   "pages": [
     "index",
     "configuration",
@@ -8,6 +8,7 @@
     "mcp",
     "skills",
     "secrets",
+    "security",
     "cli",
     "troubleshooting",
     "development"

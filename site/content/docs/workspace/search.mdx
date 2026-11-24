@@ -7,35 +7,41 @@ theuth has three different kinds of search, and it helps to keep them apart:
 
 | You want to… | Use |
 |---|---|
-| Find an earlier conversation, a shown file, a knowledge concept, a note or a meeting | **Saved-record search** — `⌘K` / `Ctrl+K`, `/search` |
-| Have the agent look something up on the internet | **Web tools** — `search_web`, `read_url`, `search_x`, `scrape_url`, `crawl`, `map_site` |
-| Have the agent find where a symbol lives, who calls it, what a change touches | **Code intelligence** — `code_*` tools and the desktop **CodeMap** |
+| Find an earlier conversation, a shown file, a knowledge concept, a note, a meeting, a notebook source or a notebook | **Saved-record search**: `⌘K` / `Ctrl+K`, `/search` |
+| Have the agent look something up on the internet | **Web tools**: `search_web`, `read_url`, `search_x`, `scrape_url`, `crawl`, `map_site` |
+| Have the agent find where a symbol lives, who calls it, what a change touches | **Code intelligence**: `code_*` tools and the desktop **CodeMap** |
 
 ## Saved-record search
 
 ### Opening it
 
-- Desktop: `⌘K` (`Ctrl+K` on Linux and Windows; editable under Settings › Shortcuts), the magnifier next to the sidebar toggle, or `/search [query]` in the composer. `/sessions` opens the same dialog limited to sessions for that one search.
-- Terminal: `/search [query]`. With a query it runs at once; `Tab` cycles between the query, the category chips, the results and the footer (`↻ Refresh`, `? Help`); `Space`/`⏎` toggles a chip; `⏎` on a result opens it; `Esc` closes.
+- Desktop: `⌘K` (`Ctrl+K` on Linux and Windows; editable under Settings › General › Shortcuts), the **Search** button (magnifier) in the sidebar and the chat header, or `/search [query]` in the composer. `/sessions` opens the same dialog limited to sessions for that one search. When voice is set up, the microphone button in the query box dictates the query.
+- Terminal: `/search [query]`. With a query it runs at once; `Tab` (and `Shift+Tab`) cycles between the query, the category chips, the results and the footer (`↻ Refresh`, `? Help`); `←`/`→` move between chips, `Space`/`⏎` toggles a chip; `⏎` on a result opens it; `Esc` closes.
+
+With an empty query the desktop dialog lists **Recent sessions · not matches** (when Sessions is selected) and, if you have paired machines, a **New chat on** group that starts a chat on another machine of your [mesh](/docs/automation/mesh).
 
 ### Categories
 
-Six independent categories, all selected the first time you open search. Toggle any combination; the selection is remembered for the rest of the run (not the query). The **All** chip reselects everything; deselecting all shows *Select at least one category* and searches nothing.
+Eight independent categories, all selected the first time you open search. Toggle any combination with the chips under **Search in** (a drop-down on narrow screens); the selection is remembered while the app runs (the query is not). The **All** chip reselects everything; deselecting all shows *Select at least one category.* and searches nothing.
 
 | Chip | What it searches |
 |---|---|
-| **Sessions** | Session titles and the user/assistant text of every transcript, including turns folded by compaction. Not tool results, not reasoning. |
+| **Sessions** | Session titles and the user/assistant text of every transcript, including turns folded by compaction and archived sessions (marked **Archived**). Not tool results, not reasoning. |
 | **Artifacts** | Every version of every file the agent showed: name, title and kind, plus the saved content of Markdown, text, code, CSV, HTML/SVG source, the Markdown/Typst source of compiled PDFs, and converted PDF/Office documents. |
-| **Knowledge** | The current text of every concept in `~/.theuth/knowledge/`. |
-| **Knowledge history** | Every recorded change to a concept — the complete before and after text, including concepts that have since been deleted. |
-| **Notes** | Note titles and bodies. |
+| **Knowledge** | The current text of every concept in your knowledge bundle. |
+| **Knowledge history** | Every recorded change to a concept: the complete before and after text, including concepts that have since been deleted. |
+| **Notes** | Titles and blocks of free-standing notes and boards. |
 | **Meetings** | Meeting titles and transcript segments. |
+| **Sources** | The text of [notebook](/docs/workspace/notebooks) sources and their insights, block by block. |
+| **Notebooks** | Notebook titles and descriptions. |
 
-Images and other binaries are found by name and metadata only; there is no OCR. An artifact whose content could not be read (invalid UTF-8, an encrypted or scanned PDF, a document over the converter's 25 MiB limit) still matches on metadata and is flagged **Content not searchable**. A session hit whose message was removed with `/shake` is labelled **Removed from context**.
+Images and other binaries are found by name and metadata only; there is no OCR. An artifact whose content could not be read (invalid UTF-8, an encrypted or scanned PDF, a document over the converter's 25 MB cap) still matches on metadata and is flagged **Content not searchable**. A session hit whose message was removed with `/shake` is labelled **Removed from context**.
+
+Saved-record search in the app always looks at your main memory. A persistent agent hired with isolated memory has its own knowledge bundle: its concepts never appear in this dialog, and when that agent calls `search`, the Knowledge and Knowledge history groups come from its own bundle only (see [Knowledge](/docs/workspace/knowledge)).
 
 ### Query syntax
 
-Matching is fuzzy by default, space separates terms, and lowercase matches any case. The fzf operators work:
+Sessions, Artifacts, Knowledge, Knowledge history and meeting titles use fuzzy matching: space separates terms, and lowercase matches any case. The fzf operators work there:
 
 | Write | To match |
 |---|---|
@@ -44,66 +50,100 @@ Matching is fuzzy by default, space separates terms, and lowercase matches any c
 | `suffix$` | candidates ending with `suffix` |
 | `!not` | candidates that do **not** contain `not` |
 
-A query matches **one candidate text at a time**: a title, one message, one artifact body, one concept body, one side of a knowledge change. `!old` therefore excludes candidates containing "old", not every record that mentions it somewhere. Queries are capped at 1024 characters.
+A fuzzy query matches **one candidate text at a time**: a title, one message, one artifact body, one concept body, one side of a knowledge change. `!old` therefore excludes candidates containing "old", not every record that mentions it somewhere.
+
+The other categories use full-text indexes, where the operators above are plain text:
+
+- **Notes**, **Sources** and **Notebooks** run a hybrid search over the block index: each word of the query is a keyword term (a block containing any of them qualifies, ranked by relevance), fused with the nearest blocks by meaning from the local embedding model (`notebooks.embedding_model`, default `embed-gte-modernbert-base` under `<data_dir>/models/`). Without that checkpoint the search is keywords only. No embedding request leaves the machine. The index lives in `documents/index.sqlite` and is updated whenever a document changes. See [Notebooks](/docs/workspace/notebooks).
+- **Meeting transcripts** use the meetings full-text index: every word must appear in the segment.
+
+Queries are capped at 1024 characters in every category.
 
 ### Results
 
-Results are grouped per category in a fixed order and ranked within the group; ten per category by default, **Show more** grows a group to 30, then 50, after which the heading says *More matches; refine your query or categories*. Headings say `10 shown` or `10+ matches`, never a guessed total. With an empty query and Sessions selected you get **Recent sessions · not matches**.
+Results are grouped per category in the fixed order of the table above and ranked within the group; ten per category by default, **Show more** grows a group to 30, then 50, after which the group says *More matches; refine your query or categories.* Headings say `10 shown` or `10+ matches`, never a guessed total. Each row shows the matched text highlighted, with provenance underneath (role and age for a session, version and chat for an artifact, `Before change`/`After change` and the commit for a history hit, the heading above the block for notes and sources, duration for a meeting).
 
-Group states you may see: `indexing…` (the category is building its cache — artifacts and history index on first use; results appear when it finishes), `unavailable` (the plugin is off or its store is missing), `error`, and `· some content not searched` when coverage was partial. Knowledge is synced from disk when the dialog opens; edits made while it stays open need **Refresh**.
+Group states you may see: `indexing…` (the category is building its cache; artifacts and history index on first use, and results appear when it finishes), `unavailable` (the plugin is off or its store is missing), `error` (with a **Retry** button), and `· some content not searched` when coverage was partial. Knowledge is synced from disk when the dialog opens (the chips row shows *Updating knowledge…*); edits made while it stays open need **Refresh**. **Search help** in the footer repeats the syntax.
 
 ### Opening a hit
 
 Opening is reading, never acting:
 
-- a **session** hit opens that session at the matching message (the terminal shows a read-only page of the transcript around it);
+- a **session** hit opens that session at the matching message: the desktop shows a read-only **Earlier messages** view ending at it (no composer; **Jump to latest** opens the live chat), the terminal a read-only page of the transcript around it (`⏎` or `j` jumps to the latest, `Esc` or `b` returns to the results). A title hit simply opens the chat;
 - an **artifact** hit opens that exact occurrence and version in the artifact viewer (terminal: a preview; `o` opens the file, `e` exports it, `m` shows the matched text);
 - a **knowledge** hit opens the concept;
-- a **knowledge history** hit opens the historical text of that revision, read-only, with the History sheet at that commit — nothing is restored;
-- a **note** or **meeting** hit opens it in the desktop app (the terminal has no reader for these; it tells you to `/attach` them instead).
+- a **knowledge history** hit opens the historical text of that revision, read-only, with the History sheet at that commit; nothing is restored (terminal: `c` shows the change itself);
+- a **note** hit opens the note at the matching block, a **source** hit the source at its block, a **notebook** hit the notebook, a **meeting** hit the meeting.
 
-The desktop remembers the search so a destination can offer **Back to results**, and a row can be attached to the open chat instead of opened.
+The terminal has no reader for notes and meetings; it names the id and tells you to `/attach` it instead. It lists no rows for Sources and Notebooks; use the desktop app or ask the agent.
+
+The desktop remembers the search so a destination can offer **Back to results**, and while a chat is open each row has an **Attach to current chat** button (paperclip) that adds the hit to that chat instead of opening it.
 
 ### The agent's `search` tool
 
-The agent can run the same search for you: `search(query, categories?, limit?)` returns the same groups, states and stable identities (session id, artifact `call_id`, concept id, `id@commit`, note id, meeting id) without opening anything. It waits up to 30 s for a category that is still indexing. Ask in plain words — "find the conversation where we set up the relay" — and it will cite what it found. Two neighbours are easy to confuse with it:
+The agent can run the same search for you: `search(query, categories?, limit?)` returns the same groups, states and stable identities (session id, artifact `call_id` and version, concept id, `id@commit`, note id and block, meeting id, source id and block, notebook id) without opening anything. It reconciles knowledge with disk first, then waits up to 30 s for a category that is still indexing; past that, or if the turn is cancelled, it answers with what it has and says why. Snippets pass through the secrets redactor. Ask in plain words ("find the conversation where we set up the relay") and it will cite what it found.
 
-- `knowledge_search` is the agent's keyword lookup over current concepts, the same ranking that drives `<knowledge>` hints. It is not fuzzy and does not see history. See [Knowledge](/docs/workspace/knowledge).
+Neighbours that are easy to confuse with it:
+
+- `knowledge_search` is the agent's keyword lookup over current concepts, the same ranking that drives `<knowledge>` hints. It is not fuzzy and does not see history. `peek_memory(question, ids)` then lets the local decision model pick which hinted concepts actually answer a question. See [Knowledge](/docs/workspace/knowledge).
+- `nb_search` searches notes, boards, meeting notes, sources, insights and notebook descriptions at block level with the same hybrid index, and can be narrowed to given notebooks, documents or block kinds. Its hits carry the `theuth://` link the agent cites. See [Notebooks](/docs/workspace/notebooks).
 - `search_web` searches the internet, below.
+
+`search`, `peek_memory` and the `knowledge_*` tools form the **Knowledge and search** category under Settings › Tools › Builtins, where you can switch them off (see [Tools and permissions](/docs/reference/tools-permissions)).
+
+### From other tools
+
+When theuth runs as an MCP server, MCP clients get their own read-only search tools: `meeting_search` (meeting titles and transcripts, answered by this same search), `brief_search`, `knowledge_search` and `notebook_search`. See [MCP](/docs/reference/mcp).
+
+The Inbox has a separate filter box (**Search inbox**, focused with `/`): it keeps the items whose title, detail, agent, tool, task or project contain every word you type. It does not search saved records.
 
 ## Web search
 
-The agent reaches the web through tools provided by the `web`, `scrape` and `search-providers` plugins. The search and fetch tools are read-only (`http_request` is not) and all follow the usual approval policy (see [Tools and permissions](/docs/reference/tools-permissions)).
+The agent reaches the web through tools provided by the `web`, `scrape` and `search-providers` plugins. The search and fetch tools are read-only (`http_request` is not) and all follow the usual approval policy (see [Tools and permissions](/docs/reference/tools-permissions)); they make up the **Web** category under Settings › Tools › Builtins.
 
 ### `search_web` and `read_url`
 
-`search_web(query, limit, category, site, recent, read)` returns a ranked list (title, URL, snippet), then reads the top hits — five by default, `read: 0` for a cheaper results-only pass — and returns the passages of each page most relevant to the query. `category` is `general | news | it | science`; `site` restricts to a host; `recent` is `day | week | month | year`. `read_url(url, max_chars, format, rendered)` fetches one page as Markdown (default) or plain text; `rendered: true` loads it in the embedded browser for JavaScript-only sites. Private, loopback and link-local addresses are refused. `http_request` makes a single explicit API call with method, headers and body.
+`search_web(query, limit, category, site, recent, providers, read)` returns a ranked list (title, URL, snippet; `limit` 1 to 20, default 8), then reads the top hits (five by default, up to 8; `read: 0` for a cheaper results-only pass) and returns the passages of each page most relevant to the query. `category` is `general | news | it | science`; `site` restricts to a host; `recent` is `day | week | month | year`; `providers` picks a subset of the registered providers by name.
 
-Out of the box, searches run on **keyless built-in engines** — no account needed:
+`read_url(url, max_chars, format, rendered, offset, compact, source)` fetches one page as Markdown (default) or plain text, cut at `max_chars` (200 to 16000, default 4000). A cut page reports the offset to continue from and the headings of what was left out; pass that as `offset`. `compact` (default on) strips repeated blocks, image runs and leaked class names before the cap. With `source: auto` (default) Hacker News, Reddit, npm, PyPI, crates.io, arXiv, Wikipedia and Stack Overflow are read from their JSON APIs; `page` forces the HTML, `api` fails when no API source matches. `rendered: true` loads the page in the embedded browser for JavaScript-only sites.
+
+When a page is not content (a bot challenge, rate limit, sign-in page, cookie wall, error page, empty app shell or unsupported body), the answer starts with `ISSUE: <kind> (<detail>)` and names the next step to try, such as `rendered: true`, importing browser cookies or handing the page to you, instead of returning the wall as if it were the page. A 429 or a transient gateway error (502 to 504, 520 to 524) is retried once, honouring `Retry-After` when it fits.
+
+`http_request` makes a single explicit API call with method, headers and body.
+
+Out of the box, searches run on **keyless built-in engines**; no account needed:
 
 ```yaml
 web:
   enabled: true
   engines: [google, brave, qwant, duckduckgo, wikipedia, arxiv, github]   # `bing` is opt-in
-  read_top: 5           # search_web reads this many top hits
-  read_chars: 2500      # passage budget per read page
-  read_budget_ms: 6000  # whole read phase
-  render_cap_ms: 3000   # one browser-rendered page inside a search
-  recent_default: null  # day | week | month | year when a call passes none
+  read_top: 5               # search_web reads this many top hits
+  read_chars: 2500          # passage budget per read page
+  read_budget_ms: 6000      # whole read phase
+  render_cap_ms: 3000       # one browser-rendered page inside a search
+  recent_default: null      # day | week | month | year when a call passes none
+  fetch_max_chars: 4000     # read_url default cap
+  keyless_fallback: true    # false: keyless engines only when no provider serves the category
+  degraded_is_error: false
+  allow_private_network: true
 ```
 
-Keyless engines rate-limit and occasionally serve empty pages. When too few engines answer, the result starts with `WARNING: degraded search` and the agent is told to say so rather than answer from it; `web.degraded_is_error: true` turns that into an error instead. The read-phase keys can be changed live under Settings › Search. `web.enabled: false` removes the tools entirely.
+Keyless engines rate-limit and occasionally serve empty pages. When no external provider answered and at most one general engine returned rows, the result starts with `WARNING: degraded search` and the agent is told to say so rather than answer from it; `web.degraded_is_error: true` turns that into an error instead. `web.enabled: false` removes the tools entirely.
+
+**Settings › Tools › Web search** edits this live, without a restart: **Providers** (one card per provider with its URL, timeout, key and a **Test** button; order is registration order), **Defaults** (**Pages read per search**, **Read budget (s)**, **Render cap (s)**, **Default recency**, **Keyless engines as fallback only**, **Treat degraded as error**) and **Status** (per-engine health from recent calls, and a box to run a test search).
+
+**Local addresses.** In your own turns the web tools can reach `localhost`, LAN addresses, `.local` names and tailnet (CGNAT) addresses: `web.allow_private_network` is on by default. Settings › Network › This machine › **Local network access** sets it together with `browser.allow_private_network`; a change applies after a restart. Link-local and cloud metadata addresses are always refused, and turns run on behalf of a [contact](/docs/automation/contacts) stay on the public internet. See [Security](/docs/reference/security).
 
 ### Optional providers
 
-Adding one external provider gives you search that does not rate-limit. Keys go in the encrypted vault (`t --secret-set <name>`, `/secrets add <name>`, or Settings › Search), never in `config.yaml` or chat — see [Secrets](/docs/reference/secrets).
+Adding one external provider gives you search that does not rate-limit. Keys go in the encrypted vault (`t --secret-set <name>`, `/secrets add <name>`, or **Set key…** in Settings › Tools › Web search), never in `config.yaml` or chat; see [Secrets](/docs/reference/secrets).
 
-| Provider | Config block | Needs |
-|---|---|---|
-| SearXNG you run | `search_providers.searxng.base_url` | nothing (JSON format enabled on the instance) |
-| OpenSERP you run | `search_providers.openserp.base_url` | nothing for a local server; secret `openserp` for a hosted one |
-| Firecrawl | present by default, inert until its key exists | secret `firecrawl` |
-| Brave Search API (`brave_api`) | `search_providers.brave` | secret `brave` |
+| Provider | Config block | Needs | Default timeout |
+|---|---|---|---|
+| SearXNG you run | `search_providers.searxng.base_url` | nothing (JSON format enabled on the instance) | 6000 ms |
+| OpenSERP you run | `search_providers.openserp.base_url` (default `http://127.0.0.1:7000`, engines `google, bing, duckduckgo`) | nothing for a local server; secret `openserp` for a hosted one | 8000 ms |
+| Firecrawl | present by default (`https://api.firecrawl.dev`), inert until its key exists | secret `firecrawl` | 8000 ms |
+| Brave Search API (`brave_api`) | `search_providers.brave` | secret `brave` | 5000 ms |
 
 ```yaml
 search_providers:
@@ -113,7 +153,7 @@ search_providers:
     enabled: true        # key: `t --secret-set brave`
 ```
 
-`search_web`'s own description tells the model which providers are registered, so you will see it mention them.
+Every block takes `enabled` (keep the block, skip the provider), `timeout_ms` and `priority` (lower registers first). `search_web`'s own description tells the model which providers are registered, so you will see it mention them.
 
 ### `search_x`
 
@@ -123,14 +163,15 @@ search_providers:
 
 For whole sites rather than single pages:
 
-- `scrape_url(url, formats, only_main_content, rendered)` — one page to Markdown (optionally HTML and links), chrome stripped by default.
-- `crawl(url, limit, max_depth, include_paths, ignore_paths, sitemap, …)` — walk a site from a seed URL and return one Markdown document per page; stays under the seed's directory unless told otherwise.
-- `map_site(url, limit, search)` — list a site's URLs from its sitemap and a short walk without fetching bodies; `search` puts the URLs relevant to a query first.
+- `scrape_url(url, formats, only_main_content, max_chars, rendered, offset, compact, source)`: one page to Markdown (optionally HTML and links), chrome stripped by default, cut at 100000 characters by default. It falls back to the embedded browser on its own when the plain fetch comes back thin; `rendered: true` forces it.
+- `crawl(url, limit, max_depth, include_paths, ignore_paths, same_domain, sitemap, crawl_entire_domain, allow_subdomains, delay_ms, format, max_chars_per_page, …)`: walk a site from a seed URL and return one Markdown document per page (20000 characters per page by default). It stays under the seed's directory unless `crawl_entire_domain: true`; `sitemap` is `include` (default), `skip` or `only`; a path pattern that does not compile is reported, not ignored.
+- `map_site(url, limit, search, include_subdomains, ignore_query_parameters)`: list a site's URLs from its sitemap and a short walk without fetching bodies; `search` puts the URLs relevant to a query first.
 
 Limits and manners come from the `scrape:` section and are deliberately conservative:
 
 ```yaml
 scrape:
+  enabled: true
   concurrency: 5
   max_pages: 50
   max_depth: 3
@@ -141,7 +182,7 @@ scrape:
   delay_ms: 100       # per-host gap between requests
 ```
 
-A crawl that hits `max_pages` or `run_timeout_ms` returns what it has. Leave `robots: true` unless you own the site.
+A crawl that hits `max_pages` or `run_timeout_ms` returns what it has, marked `incomplete` with the reason (`limit` or `deadline`) and the pages it skipped. Leave `robots: true` unless you own the site.
 
 ## Code intelligence
 
@@ -155,7 +196,10 @@ When the agent works in a source tree it can answer structural questions without
 | `code_symbol` | One definition in full: body, callers, callees, co-changed files, tests |
 | `code_map` | A ranked map of the tree (PageRank over the file graph), fitted to a token budget |
 | `code_impact` | What a set of files or a git range (`main..HEAD`, `WORKTREE`) touches, directly and transitively |
-| `project_profile` | How the project is checked — detected from manifests and lockfiles, nothing executed |
+| `code_overview` | The stored CodeMap architecture map: its perspectives, or one element with prose, edges and diagram. Reads what was generated; never generates |
+| `project_profile` | How the project is checked, detected from manifests and lockfiles, nothing executed |
+
+These make up the **Code index** category under Settings › Tools › Builtins.
 
 The root is the `root` argument, else the git top level of the working directory, else the directory itself. There is no watcher: every `code_*` call reconciles the index by file mtime and size first. Up to `sync_limit` changed files are re-parsed before answering; beyond that the answer is marked `stale` with a `pending` count and the rest finishes in the background. The first call on a new root pays for the whole index.
 
@@ -172,18 +216,20 @@ codeindex:
 
 ### CodeMap (desktop)
 
-The first time a `code_*` tool runs in a session, a **CodeMap** button appears in the chat header, the way the browser and terminal panels do. It never opens itself. The panel shows the root (with a picker when the session touched several), `files · symbols` counts, a freshness chip (`fresh` or `stale · N pending`) and three lenses:
+The first time a `code_*` tool runs in a session, a **CodeMap** button appears in the chat header, the way the browser and terminal panels do; a dot on it means the agent made a call the map has not shown yet. It never opens itself. It opens as a resizable side pane (360 to 920 px), or as a tile when the chat sits in a pane layout; below 768 px it is a bottom sheet. The header shows the root (with a picker when the session touched several), `files · symbols` counts, a freshness chip (`fresh` or `stale · N pending`), the number of calls, and four tabs:
 
-- **here** — a tree of the directories, files and symbols the agent is working in; follows its tool calls;
-- **fit** — one symbol in the middle, its callers on one side and its callees on the other;
-- **change** — the files of the current change (uncommitted work or a git range) and what they reach, directly and transitively.
+- **map**: generated architecture diagrams. The code index decides the structure at no cost; on first open a model names, groups and describes the parts, charged to the session that opened it (*Generating the map in this session's cost…*). A tree of perspectives (always an overall architecture, plus the ones the code evidences) leads to drillable elements, each a small diagram with prose. Selecting one shows **Explain in chat**, **Snapshot to board**, **Regenerate element** and **Copy Mermaid**. `/` focuses **Find element or file…**. Stale elements are flagged with **Refresh now**. An `.omm/` directory already in the repository is read and shown as read-only perspectives. Narrow panes show the map as a list.
+- **here**: a tree of the directories, files and symbols the agent is working in; follows its tool calls;
+- **fit**: one symbol in the middle, its callers on one side and its callees on the other;
+- **change**: the files of the current change (uncommitted work or a git range) and what they reach, directly and transitively.
 
-Keys `1`/`2`/`3` pin a lens, `p` toggles pin and follow. Right-click a row for **Ask about this** (puts `path#La-Lb` in the composer), **How it fits** and **What changes**. `⊡` (**Snapshot to board**) saves the current lens into a board as a diagram; `⤢` pops the map into its own window. Edits made by the agent re-parse only the files it touched; if the engine suspects the root is wrong a banner offers **Reconcile** for a full pass. Below 768 px the map opens as a bottom sheet. There is no terminal equivalent.
+Keys: `1` opens the map, `2`/`3`/`4` pin a lens, `p` toggles pin and **follow** (follow the agent), `Esc` closes. Right-click a lens row for **Ask about this** (puts `path#La-Lb` in the composer), **How it fits** and **What changes**. On a lens tab, `⊡` (**Snapshot to board**) offers **Copy fence** (a Graph block for a board) or **Ask to add to board**. **Open in new window** pops the map into its own window. A **trail** at the bottom lists the agent's code calls; clicking one replays its view. Edits made by the agent re-parse only the files it touched; if the engine suspects the root is wrong a banner offers **Reconcile** for a full pass. There is no terminal equivalent.
 
 ## Limitations
 
 - Saved-record search covers this engine's own store. In a [mesh](/docs/automation/mesh), replicated sessions are searchable where they are replicated; there is no cross-engine aggregation.
-- Session search indexes user and assistant text only — not tool output, reasoning or compaction summaries.
+- Session search indexes user and assistant text only: not tool output, reasoning or compaction summaries.
+- Semantic matching covers notes, sources and notebooks only, and only with the embedding checkpoint installed. Sessions, artifacts and knowledge are fuzzy text matches.
 - No OCR anywhere: images in artifacts and PDFs without a text layer match by name only.
 - Web results depend on third-party engines; keyless ones degrade without notice. Treat `degraded` answers as a prompt to retry or add a provider.
 - Code intelligence is syntactic. No type inference, no language server; references are matched by name with a confidence score (same file or import, same package, or merely unique in the tree).
@@ -192,11 +238,17 @@ Keys `1`/`2`/`3` pin a lens, `p` toggles pin and follow. Right-click a row for *
 
 **A category sits on `indexing…`.** Artifacts and knowledge history build their caches on first use; large archives take a moment. The dialog polls and fills in. If it stays, press **Refresh** (`↻ Refresh` in the terminal), which also resets a failed category.
 
-**A knowledge concept I just edited is not found.** Knowledge is synced when search opens, not while it stays open — **Refresh**. If the file does not parse, it is excluded until it does; see [Knowledge](/docs/workspace/knowledge).
+**A knowledge concept I just edited is not found.** Knowledge is synced when search opens, not while it stays open: **Refresh**. If the file does not parse, it is excluded until it does; see [Knowledge](/docs/workspace/knowledge).
+
+**`'exact` or `!not` does nothing in Notes, Sources or Notebooks.** Those categories use the full-text and embedding index, where operators are plain words. Use plain words; any of them can match.
+
+**Notes or sources only match exact words.** The embedding checkpoint is missing under `<data_dir>/models/`, so search runs on keywords only. See [Notebooks](/docs/workspace/notebooks).
 
 **`query is 1025 characters; the maximum is 1024`.** Shorten it; there is no truncation.
 
-**`search_web` keeps returning `WARNING: degraded search`.** The keyless engines are rate-limiting you. Add a SearXNG/OpenSERP instance or a `brave`/`firecrawl` key under `search_providers`.
+**`search_web` keeps returning `WARNING: degraded search`.** The keyless engines are rate-limiting you. Add a SearXNG/OpenSERP instance or a `brave`/`firecrawl` key under `search_providers`, and check **Status** in Settings › Tools › Web search.
+
+**`read_url` starts with `ISSUE: access_challenge`.** The site served a bot wall. Let the agent take the suggested next step (`rendered: true`, imported cookies or a handoff to you).
 
 **`search_x` is missing from the tool list.** It registers only when an xAI credential exists: `/login xai` or `t --secret-set xai`.
 
@@ -206,7 +258,8 @@ Keys `1`/`2`/`3` pin a lens, `p` toggles pin and follow. Right-click a row for *
 
 ## Related
 
-- [Sessions](/docs/workspace/sessions) and [Knowledge](/docs/workspace/knowledge) — what the saved-record search looks through
-- [Browser and desktop control](/docs/automation/browser-desktop) — the embedded browser `read_url rendered: true` uses
-- [Tools and permissions](/docs/reference/tools-permissions), [Configuration](/docs/reference/configuration), [Secrets](/docs/reference/secrets)
-- Source: `crates/search`, `crates/web`, `crates/codeindex`
+- [Sessions](/docs/workspace/sessions), [Knowledge](/docs/workspace/knowledge) and [Notebooks](/docs/workspace/notebooks): what the saved-record search looks through
+- [Browser and desktop control](/docs/automation/browser-desktop): the embedded browser `read_url rendered: true` uses
+- [MCP](/docs/reference/mcp): search tools for other MCP clients
+- [Tools and permissions](/docs/reference/tools-permissions), [Configuration](/docs/reference/configuration), [Secrets](/docs/reference/secrets), [Security](/docs/reference/security)
+- Source: `crates/search`, `crates/rpc-compose/src/search.rs`, `crates/document/src/index`, `crates/web`, `crates/scrape`, `crates/search-providers`, `crates/codeindex`

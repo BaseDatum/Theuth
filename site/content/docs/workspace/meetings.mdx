@@ -1,106 +1,185 @@
 ---
 title: Meetings
-description: Record a call from the desktop app, get live briefs while it runs, and end up with a speaker-labelled transcript, a note and a summary you can search and ask about later.
+description: Record a call from the desktop app (or let theuth notice it), get live briefs while it runs, and end up with a speaker-labelled transcript, a templated note and a summary you can search and ask about later.
 ---
 
 ## What a meeting recording is
 
-A meeting is two audio tracks captured by the desktop app's engine — the meeting app's output (or all system audio) and your microphone — transcribed live on your machine. While it runs, a small floating strip (the *island*) shows levels, topic buttons and short briefs prepared by a dedicated agent session. When you stop, a post pass re-transcribes both tracks with word timings, labels speakers, lets you review the result, and writes a summary into the meeting's note.
+A meeting is two audio tracks captured by the desktop app's engine, transcribed live on your machine: the meeting app's output (or all system audio) and your microphone. While it runs, a small floating strip (the *island*) shows levels, topic buttons and short briefs prepared by a dedicated agent session. When you stop, a post pass re-transcribes both tracks with word timings, labels speakers, lets you review the result, and writes a summary into the meeting's note under the headings of a note template.
 
-Recording is a desktop feature on the machine whose engine does the capture: not a phone, not a browser, not an engine reached over the relay. Every device can *read* finished meetings — list, transcript, note, search — only the local desktop records.
+theuth can also start the flow for you: when another app holds the microphone for 15 seconds it asks whether to record, matches the call to your calendar, and, for a recurring meeting that belongs to a project, shows a pre-meeting brief built from that project's previous meetings. Nothing records until you press **Start recording**.
+
+Recording is a desktop feature on the machine whose engine does the capture: not a phone, not a browser, not an engine reached over the relay. Every device can *read* finished meetings (list, transcript, note, search); only the local desktop records.
 
 ### Platform support
 
 | | macOS | Windows | Linux |
 |---|---|---|---|
 | System / per-app audio | Core Audio process tap | WASAPI loopback | PipeWire |
-| Microphone echo cancellation | Yes (Apple voice processing) | No — `headphones recommended` | No — `headphones recommended` |
-| Island hidden from screen shares | Yes | Yes | No (`Visible in screen shares`) |
+| Microphone echo cancellation | Yes (Apple voice processing) | No: `headphones recommended` | No: `headphones recommended` |
+| Meeting detection (mic holder poll) | Every 2 s | Every 2 s | Every 5 s |
+| Detection prompt | Native companion island, and a banner on the Meetings page | Native companion island, and a banner on the Meetings page | Banner on the Meetings page only |
+| Calendar | macOS Calendar (EventKit) or ICS subscriptions | ICS subscriptions | ICS subscriptions |
+| Island hidden from screen shares | Yes, best effort (on by default) | Yes (on by default) | No (`Visible in screen shares`) |
 | Island placement | At the notch, over full-screen apps, never takes focus | Top-centre of the monitor, never takes focus | Wherever you drag it; may take focus |
 
-On Windows and Linux the engine reports its capture as *partial* when the loopback backend answers and *unavailable* when it does not (no render device; no PipeWire daemon for your user). When capture is unavailable the **Start meeting…** button does not appear. These two paths are newer and far less exercised than the macOS one; treat recording there as best effort rather than a supported promise.
+On Windows and Linux the engine reports its capture as *partial* when the loopback backend answers and *unavailable* when it does not (no default audio device; no PipeWire daemon for your user). When capture is unavailable the **Start meeting…** button does not appear. These two paths are newer and far less exercised than the macOS one; treat recording there as best effort rather than a supported promise.
+
+On macOS and Windows the native companion app draws the island (and the detection and pre-meeting prompts) while it runs; the desktop app's own island stands down then and takes over when the companion is not running.
 
 ## Prerequisites
 
 - **Models.** Live transcription uses the same English streaming model as dictation (`~/.theuth/models/nemotron-streaming-en/`); the post pass uses Parakeet TDT (`parakeet-tdt/`) and, for speaker labels, the Nemotron diarization model plus a speaker-embedding model (`nemotron-diarization/`, `pyannote/`). The desktop app downloads anything missing at start. Without the diarization models the pipeline still finishes, but every line from the other side is `Speaker 1` and the review pane says so. See [Voice](/docs/workspace/voice) for the ONNX Runtime requirement and `t --bench-models`.
-- **Permissions (macOS).** Two prompts on the first start: **Microphone** and **System audio recording**. The start form shows both rows; a denied one offers **Open System Settings**. Windows and Linux have no equivalent prompt.
-- **A model for the meeting session.** The meeting runs its own chat session; pick a fast, inexpensive model for it in the start form (**Session model**, remembered for next time). This session is what talks to your model provider — see [Privacy](#consent-and-privacy).
+- **Permissions (macOS).** Two prompts on the first start: **Microphone** and **System audio recording**. The start form shows both rows (`asked on first start` until then); a denied one offers **Open System Settings**. Windows and Linux have no equivalent prompt. Using macOS Calendar adds a third permission for the companion (Calendars).
+- **A model for the meeting session.** The meeting runs its own chat session. Set a fast, inexpensive model once in Settings › Meetings › Defaults › **Meeting model** (`meeting.model`; unset, it is the same as new sessions), or override it per meeting with **Session model** in the start form. This session is what talks to your model provider; see [Privacy](#consent-and-privacy).
 - **Disk.** The engine flags `disk low` under 500 MB free.
 
 ## Starting, pausing and stopping
 
-Open **Meetings** in the sidebar (route `/meetings`) and press **Start meeting…** — on every desktop OS where capture is available. On macOS the tray menu also has a **Start meeting…** entry; Windows and Linux have no tray entry (and record best-effort: partial capture, no echo cancellation, headphones recommended). The start form asks for:
+### By hand
 
-- **Source** — `System audio` (every app on the default output) or one app; apps currently playing are listed first with `· playing`. **Refresh** rescans.
-- **Title** — optional; the summary sets one later.
-- **Context** — what the meeting is about and who is in it; this is the first line the meeting session reads. Type it or dictate it.
-- **Session model** — the model the meeting session runs on.
-- The consent checkbox, verbatim: *I acknowledge I understand the law and this recording is legal.* **Start** stays disabled until it is ticked.
+Open **Meetings** (a tab of the Library section, route `/meetings`) and press **Start meeting…**, on every desktop OS where capture is available. On macOS the desktop app's tray menu also has a **Start meeting…** entry; Windows and Linux have no tray entry. The start form asks for:
+
+- **Source**: `System audio` (every app on the default output) or one app; apps currently playing are listed first with `· playing`. **Refresh** rescans.
+- **Title**: optional; the summary sets one later.
+- **Context**: what the meeting is about and who is in it; this is the first line the meeting session reads. Type it or dictate it.
+- **Project**: groups the meeting and its chat with the project's sessions. **Default** uses the project remembered for this calendar series, else Settings › Meetings › Defaults › **Default project**.
+- **Session model**: the model the meeting session runs on, with effort chips when the model has them. **Meeting default** uses `meeting.model`. Your pick is remembered for the next start.
+- **Note template**: the headings the summary is written under. **Automatic** uses the template remembered for this calendar event or project, else the default from Settings › Meetings; see [Note templates](#note-templates).
+- **∞ Fractal context**: keeps a compressed view of the whole meeting behind the live transcript; its zoom and recall tools bring any earlier moment back. The switch starts at `agent.endless.default_meeting` (default off).
+- The **Microphone** and **System audio recording** permission rows.
+- The consent line, verbatim: *By starting the recording you acknowledge the recording is lawful.* There is no checkbox; pressing **Start** is the acknowledgement.
+
+### When theuth notices a call
+
+With detection on (Settings › Meetings › Detection › **Detect meetings from the microphone**, default on), the engine checks every 2 seconds (5 on Linux) which apps hold an input stream. When one eligible app has held the microphone for 15 seconds, the prompt appears on the island and as a banner on the Meetings page:
+
+- **`<App> is using your microphone`**, with the matched calendar event and project chip when there are any, and an event list (**Which meeting is this?**) to pick another event or **None of these**.
+- **Start recording** records that app with the event's title, description (up to 1,000 characters) and attendees as context.
+- **Not now** stops asking about that app for 10 minutes.
+- **Never for `<App>`** (in the **⋯** menu, or `N` on the island) adds the app to the ignored list for good.
+- The same consent line as the start form.
+
+There is no timeout: the prompt stays until you answer, the app lets go of the microphone for 30 seconds, or a meeting starts. Detection stays quiet while a meeting records or theuth's own dictation or voice holds a microphone. The **Ignored apps** list (Settings › Meetings › Detection; `meeting.detect.ignore`) ships with theuth's own processes, Siri and Apple speech, Voice Memos, dictation apps (Wispr Flow, superwhisper, VoiceInk, MacWhisper) and screen recorders (OBS, Loom, Cap, Screen Studio, CleanShot X, Kap). Entries are bundle ids on macOS (`com.apple.FaceTime`), image names on Windows (`obs64.exe`) and application names on Linux.
+
+When the app being recorded is one that was holding the microphone (always the case for a meeting started from the prompt) and it stops using the microphone for 30 seconds, the island and the banner ask **`<App> stopped using the microphone N s ago`**, **Stop recording?**, with **Stop** and **Keep recording** (Return keeps). theuth never stops a recording on its own because of this.
+
+### From the calendar: Upcoming
+
+With **Pre-meeting briefs** on (Settings › Calendar › Briefs, default on), a calendar event that has a project (remembered for its series, or the default project) shows on the native companion's island from 5 minutes before it starts until 5 minutes after: **In N min · `<Title>`** (or **Now · `<Title>`**), the project chip, the pre-meeting brief's bullets, a source line (**From the last meetings in `<project>` · attendees …**), **Start recording** and **Dismiss**, and the consent line. **Start recording** here records all system audio with the event as context. The Upcoming card is a companion feature (macOS and Windows); the desktop app's island does not show it.
+
+### While it records
 
 Only one meeting records at a time. While it runs:
 
 - A bar at the bottom of every page shows a pulsing dot and the clock with **Meeting** (back to the meeting page), **Pause recording** / **Resume recording** and **Stop recording**.
-- The island's **⋮** menu has the same pause/resume/stop controls.
+- The island has the same pause/resume/stop controls (the desktop island's **⋮** menu; the companion's mute and stop buttons).
 - The recording stops by itself at `meeting.max_minutes` (default 180); the island shows `10 min left` ten minutes before.
 
 Pauses are recorded as gaps in the manifest and excluded from the recording clock.
+
+## Calendar
+
+Calendars are read-only and feed the event match, the context seed, speaker-name suggestions and pre-meeting briefs. Settings › Calendar has three tabs:
+
+- **Calendars.** **Use macOS Calendar** (`meeting.calendar.eventkit`, default off; Mac only) lets the companion push the events of every account macOS Calendar knows, under one Calendars permission. The status line reads `Access granted`, `Companion not running` or a denied message pointing at System Settings › Privacy › Calendars. **Calendar subscriptions (ICS / iCal secret address)** takes a name and the secret `https://` or `webcal://` address from Google Calendar, Outlook or iCloud. The URL is stored in the [vault](/docs/reference/secrets) (anyone with it can read the calendar), never shown in full again, and fetched every 15 minutes (`meeting.calendar.poll_secs`, default 900). Each row shows `synced …` or its error, with **Refresh** and **Delete**.
+- **Briefs.** **Pre-meeting briefs** (`meeting.calendar.prebrief`, default on).
+- **Upcoming.** The next 24 hours of events, cancelled ones left out.
+
+There is no Google or Microsoft account sign-in; an ICS address is the only way to reach those calendars.
+
+**Matching.** Events from 10 minutes before their start to 15 minutes after their end are candidates. Each is scored on time, on whether the join link's host fits the app holding the mic (Zoom, Meet in a browser, Teams and so on) and on your RSVP; the best is preselected when it scores at least 0.8 with a 0.25 lead, otherwise the list opens with nothing chosen. Change the event before the start from the prompt's list, or afterwards from the event chip in the meeting page header (**No event** clears it).
+
+**Projects as series.** A meeting's project (start form, prompt, or the project chip in the meeting page header) is remembered under the event's id and its normalised title, so the next instance of a recurring meeting gets the same project. The meeting list filters by project (**All projects** or one).
+
+**Pre-meeting briefs.** From 15 minutes before a matched event with a project, one private turn on the meeting model reads the Decisions, Action items and Open questions of the project's last three finished meetings and writes up to three bullets (45-second budget). The brief is cached, filed in the brief cache with the attendees as aliases (so it can pop up again during the call), and regenerated when a new meeting of the project finishes or the event changes.
 
 ## During the meeting
 
 ### The island
 
-A 440 × 44 px strip (macOS: at the notch, above full-screen apps; it never steals focus from the meeting app). It shows two level meters (mic and system), the recording clock, topic buttons, status badges, an eye button and **⋮**. When a brief is showing it grows to fit the title and up to three bullets, with **Newer brief** / **Older brief** arrows, an `↑ N new` badge, and **deeper** (ask for a longer, more specific brief). Below it, a collapsed **Transcript** dropdown and a request box: *Ask the meeting agent… a topic name = brief it*.
+The desktop app's island is a 440 × 44 px strip (macOS: at the notch, above full-screen apps; it never steals focus from the meeting app). It shows two level meters (mic and system), the recording clock, topic buttons, status badges, an eye button and **⋮**. When a brief is showing it grows to fit the title and up to three bullets, with **Newer brief** / **Older brief** arrows, an `↑ N new` badge, and **deeper** (ask for a longer, more specific brief). Below it, a collapsed **Transcript** dropdown and a request box: *Ask the meeting agent… a topic name = brief it*.
 
-**Hiding it from screen shares.** Both theuth windows can be excluded from screen sharing and screenshots (Settings › Meetings › **Hidden from capture**, on by default on macOS; the eye button and the **Eye hotkey**, default `Alt+Shift+E`, flip it while a meeting records). This is never automatic — theuth does not detect that you are sharing — and your own screenshots of the windows come out black while it is on. Linux cannot hide the island; its eye reads **Visible in screen shares**.
+The native companion's island shows the same content natively and adds keys once you click it: `J` / `↓` next (older) brief, `K` / `↑` previous, `E` dismisses the focused topic, `D` goes deeper, `M` pauses or resumes, Return sends the request box, Esc leaves it. Stop is `Ctrl+M` held on macOS and `Ctrl+Shift+M` on Windows. You can drag it; it remembers a position per display, and a double-click on its grip snaps it back. The companion's Settings › Island has **Always show the island** (off: it appears only while a meeting is live) and the eye default.
+
+**Hiding it from screen shares.** The islands, and on the companion every panel, are excluded from screen sharing and screenshots by default; the eye button and the **Eye hotkey** (default `Alt+Shift+E`, Settings › General › Shortcuts) flip it while a meeting records. The eye's tint says which state you are in: orange filled eye, viewers can see the island; green slashed eye, hidden. In the desktop app the switch is Settings › Meetings › Live › **Hidden from capture** (macOS). It is never automatic (theuth does not detect that you are sharing), and your own screenshots of the windows come out black while it is on. Treat it as best effort on macOS: it sets the window's "no sharing" flag, which Apple documents as no longer honoured by modern capture paths, so a share may still show the island. Windows uses the display-affinity exclusion. Linux cannot hide the island; its eye reads **Visible in screen shares**.
 
 ### The meeting page
 
-`/meetings/<id>` is the control centre: state, elapsed time, degradation notices, pause/resume/stop, the live log (`me:` for your track, `Speaker N:` or `them:` for the other side), a typed request box (*Ask the meeting session… (answer arrives as a brief)*), the brief log, a link to the session, and the meeting's note beside it all.
+`/meetings/<id>` is the control centre. The header row carries the event chip, the project chip, the state, **Briefs · N** (show or hide the brief column), **Session** (the meeting's chat) and the actions for the current state, with **Delete meeting…** in the trailing **⋯** once the recording is over. Below it:
+
+- **Briefs**: a full-height, resizable column on the left in every state, oldest first, the brief the island shows outlined, cached briefs linked to their row on the Briefs tab.
+- The centre: while recording, the live log (`me:` for your track, `Speaker N:` or `them:` for the other side) with a request box (*Ask the meeting session… (answer arrives as a brief)*); afterwards, the transcript. Under it, the meeting's own chat session, split by a draggable divider.
+- The note on the right: the full note editor, the same as in [Documents](/docs/workspace/documents).
+- A warning line when capture is not hearing a track (see [Audio watchdog](#audio-watchdog)), and a line listing degradations.
+
+Before the transcript exists the centre shows the recording's details: **Started**, **Ended**, **Duration**, **Meeting app**, **Consent**, **Pauses**, **Audio gaps**, **Session model**, **Tracks**, **Failure** and **Context**. On a narrow window everything stacks in one scroll. The list row's menu has **Open in new window** and **Open note in new window**.
 
 ### Live transcript and speaker labels
 
-Each track is transcribed as it is spoken; a line commits when you or they stop talking. By default the other side's lines are labelled by voice (`Speaker 1`, `Speaker 2`, …) about eight seconds after the words, at the cost of roughly a quarter of a CPU core; switch this off in Settings › Meetings › **Live speaker labels** to see `them:` instead (the post pass labels speakers either way). The switch takes effect from the next meeting. Your own lines are always `me:`.
+Each track is transcribed as it is spoken; a line commits when you or they stop talking. By default the other side's lines are labelled by voice (`Speaker 1`, `Speaker 2`, …) about eight seconds after the words, at the cost of roughly a quarter of a CPU core; switch this off in Settings › Meetings › Live › **Live speaker labels** (`meeting.live_diarization`) to see `them:` instead (the post pass labels speakers either way). The switch takes effect from the next meeting. Your own lines are always `me:`.
 
 ### Topics and briefs
 
-Every 25 seconds (`meeting.batch_secs`), or after six utterances, or at once when the other side asks a question, the new transcript lines go to the meeting session as one input. The session may answer with a **topic** — a button on the island with a label of at most four words — and, when you tap it, a **brief** of two or three bullets. Briefs also come from your requests (typed in either request box, or spoken while you hold the **Push-to-talk hotkey**, default ``Alt+` ``, which is registered only while a meeting records or is paused), from **deeper**, and from the brief cache: a subject briefed in an earlier meeting reappears on the island as soon as it is spoken, before any model turn. At most six topic buttons live at once (`meeting.max_topics`); an unmentioned one expires after ten minutes (`meeting.topic_ttl_secs`). Dismissing a topic (hover **×**) tells the session it was not useful.
+Every 25 seconds (`meeting.batch_secs`), or after six utterances (`meeting.batch_utterances`), or at once when the other side asks a question, the new transcript lines go to the meeting session as one input. The session may answer with a **topic** (a button on the island with a label of at most four words) and, when you tap it, a **brief** of two or three bullets. Briefs also come from your requests (typed in either request box, or spoken while you hold the **Push-to-talk hotkey**, default ``Alt+` ``, which is registered only while a meeting records or is paused), from **deeper**, and from the brief cache: a subject briefed in an earlier meeting, or a pre-meeting brief, reappears on the island as soon as it is spoken, before any model turn. At most six topic buttons live at once (`meeting.max_topics`); an unmentioned one expires after ten minutes (`meeting.topic_ttl_secs`). Dismissing a topic (hover **×**, or `E` on the companion) tells the session it was not useful.
 
 Cached briefs are a tab of their own, **Briefs**, beside the meeting list (`/meetings/briefs`): search, read, and prepare briefs for tomorrow's meeting by hand or by asking any chat session (`brief_put`).
 
 ### What the agent can do while recording
 
-The meeting session runs with a fixed toolset until you stop: `meeting_topic`, `meeting_brief`, `brief_search`, `brief_put`, `knowledge_search`, `knowledge_get`, `meeting_read`, `meeting_search`, `search_web` and `read_url` (`meeting.live_tools`), with the `meeting`, `knowledge` and `web` prompt blocks and no Python runtime. So during a call it can look up your [knowledge](/docs/workspace/knowledge), earlier meetings and the web, but cannot run code, edit files or send messages. After the stop the same session becomes an ordinary one with every tool, and you can chat with it about the meeting (**Session** on the meeting page).
+The meeting session runs with a fixed toolset until you stop: `meeting_topic`, `meeting_brief`, `brief_search`, `brief_put`, `knowledge_search`, `knowledge_get`, `meeting_read`, `meeting_search`, `search_web` and `read_url` (`meeting.live_tools`; edit it in Settings › Meetings › Live › **Allowed while a meeting runs**, with **Reset to default**), with the `meeting`, `knowledge` and `web` prompt blocks and no Python runtime. So during a call it can look up your [knowledge](/docs/workspace/knowledge), earlier meetings and the web, but cannot run code, edit files or send messages. After the stop the same session becomes an ordinary one with every tool, and you can chat with it about the meeting (**Session** on the meeting page).
+
+### Audio watchdog
+
+Capture is watched so a dead track does not go unnoticed. On the system track:
+
+- No audio for 3 seconds is a stall: the track is reopened, retrying after 1, 2, 5, 10 and then every 30 seconds.
+- When you record one app and it delivers exact silence for 15 seconds, theuth listens to all system audio for 4 seconds. If sound is playing elsewhere, the app's tap is treated as broken: it is reopened, moved to another process of the same app when the app now plays from there, and after three failed reopens the track falls back to recording all system audio. A probe of the app's own tap every 60 seconds switches back when it hears it again. If nothing is playing anywhere, the silence is genuine and is checked again after 30, 60 and 120 seconds.
+- The microphone track is reopened the same way when it stalls.
+
+What you see: a warning on the meeting page that starts `Not hearing <app> since HH:MM` (reconnecting, still silent with a device or permission hint, or `<app>'s audio tap failed; recording all system audio instead`), island badges (`reconnecting audio`, `system audio fallback`, `system audio lost`, `reconnecting mic`, `mic lost`, `no mic permission`, `no system audio permission`), and afterwards one **Audio gaps** entry per episode, for example `system 00:06:10 for 38 s (silent)`, with `tap moved to pid N` when it was retargeted. The degradation line names a fallback span (`app audio tap stalled: all system audio recorded from …`). Gaps are filled with silence so the tracks keep the recording clock.
 
 ## Consent and privacy
 
-You, not theuth, are responsible for the legality of recording a conversation. The start form will not start without the acknowledgement above; the time you ticked it is stored in the meeting's manifest and shown on the meeting page (**Consent**). Tell the other participants you are recording — the island, hidden or not, is not visible to them.
+You, not theuth, are responsible for the legality of recording a conversation. Every way of starting shows the consent line above; the time you pressed Start is stored in the meeting's manifest and shown on the meeting page (**Consent**). Tell the other participants you are recording: the island is not a notice to them.
 
 What stays on your machine, and what does not:
 
-| Stays local | Goes to the model provider of the meeting session |
+| Stays local | Goes to a model provider |
 |---|---|
-| The audio files, forever (nothing uploads them) | The transcript text, in batches as the meeting runs |
-| Live and post transcription (Nemotron, Parakeet) | Your **Context** line and any requests you type or speak |
-| Speaker diarization and speaker profiles | Taps, dismissals and *deeper* requests, as short notices |
-| Full-text search index and the brief cache | The summary turn after the review, and the title |
+| The audio files (nothing uploads them) | The transcript text, in batches as the meeting runs (meeting model) |
+| Live and post transcription (Nemotron, Parakeet) | Your **Context** line, the event's details and any requests you type or speak (meeting model) |
+| Speaker diarization, speaker profiles and speaker-name suggestions | Taps, dismissals and *deeper* requests, as short notices (meeting model) |
+| Full-text search index, the brief cache and the calendar store | The summary turn after the review, and the title (summary model, else meeting model) |
+| Meeting detection (which app holds the mic) | Pre-meeting briefs: excerpts of the project's previous summaries and the event (meeting model) |
 
-In other words: the words said in the meeting reach whichever provider the **Session model** runs on, exactly like a chat message would, and nothing else leaves the machine. A model served locally (an `ollama/...` entry in `models.json`, see [Models](/docs/getting-started/models)) keeps the transcript local too. If the local decision oracle is active for meetings (Settings › Labs), it pre-filters batches on your machine before they go out.
+In other words: the words said in the meeting reach whichever provider the meeting model (`meeting.model`, or the start form's **Session model**) and the summary model (`meeting.summary_model`) run on, exactly like a chat message would. ICS subscriptions are fetched from your machine; macOS Calendar events come from the companion on the same machine. A model served locally (an `ollama/...` entry in `models.json`, see [Models](/docs/getting-started/models)) keeps the transcript on your machine too; which model you pick is your call. If the local decision oracle is active for meetings (Settings › Learning › Decision models › **Local decision oracle**), it pre-filters batches on your machine before they go out. See [Security](/docs/reference/security) for the wider picture.
 
 ## After the meeting
 
-Stopping starts the post pass; the meeting page shows a strip `Transcribing → Diarizing → Aligning → Review → Summarizing → Done`.
+Stopping starts the post pass; the meeting page shows a strip `Transcribing → Diarizing → Aligning → Review → Summarizing → Done`. Words from your user [dictionary](/docs/workspace/voice) replace their misheard forms in the post transcript (user entries only).
 
-1. **Review.** The transcript of record appears with speaker chips. Click a name to **Rename** it; **Enroll…** saves the voice as a profile (name plus an optional knowledge entity) so the next meeting proposes it — `looks like <name> (NN%)` with **Accept**. Select segments to relabel or merge, click a word to split, click text to fix it, play a span to check. Then **Done reviewing** and **Summarize**. Enrolled speakers are listed and deletable under Settings › Meetings › **Enrolled speakers**.
-2. **Summary.** One turn in the meeting session edits the meeting's note: it regroups the blocks you wrote during the call under headings (moving, never rewriting them), then appends a title, a **Summary**, **Decisions**, **Action items** (owner — item — due if said), **Open questions**, and **Numbers and names said aloud**. The note is snapshotted before (`meeting-before-summary`) and after (`meeting-summary`); those snapshots are never pruned, so a bad rearrangement is one restore away in the [document](/docs/workspace/documents) history. The session is renamed to the title and the knowledge harvest runs on it.
-3. **Done.** The page shows the transcript (read-only), the note, the brief log, and the actions **Re-run post pipeline** (replaces review edits; the note goes back to before the summary) and **Delete**.
+1. **Review.** The transcript of record appears with speaker chips. Click a name to **Rename** it; **Enroll…** saves the voice as a profile (name plus an optional knowledge entity) so the next meeting proposes it: `looks like <name> (NN%)` with **Accept**. **Suggest names** proposes a name per speaker from calendar attendees, transcript cues (self-introductions, people addressed by name) and enrolled voiceprints, each with a confidence bar and its evidence; **Accept** renames and, when the voice is not linked to a profile yet, enrolls it if the sample passes the quality checks; **Not them** drops the row. Nothing changes until you click. Outside macOS the pane asks once *Did you use speakers (not headphones) in this meeting?* (**Speakers** / **Headphones**) to feed the echo count. Click a word to split, click text to fix it, then **Done reviewing** and **Summarize** in the header (Summarize is enabled once reviewed).
+2. **Summary.** One turn in the meeting session edits the meeting's note: it regroups the blocks you wrote during the call under headings (moving, never rewriting or deleting them), then appends a title if the note has none and one section per heading of the meeting's [template](#note-templates) (the default gives **Summary**, **Decisions**, **Action items** as checkboxes with the owner and a due date if one was said, **Open questions**, and **Numbers and names said aloud**). The turn is told to write only what the transcript supports, never guess identities, omit empty sections, keep what you bolded, keep the summary to 120 words under 15 minutes, 250 under an hour and 400 beyond, and use your dictionary's spellings (up to 40 terms). It runs on `meeting.summary_model` when set. The note is snapshotted before (`meeting-before-summary`) and after (`meeting-summary`); those snapshots are never pruned, so a bad rearrangement is one restore away in the [document](/docs/workspace/documents) history. The session is renamed to the title and the knowledge harvest runs on it.
+3. **Done.** The page shows the transcript (read-only), the note, the brief column, and **Re-run post pipeline** (it asks first: review edits are replaced; the note goes back to before the summary). **Delete meeting…** is in the **⋯** menu.
 
 Action items are text in the note; theuth does not create task records from them. If the summary fails the strip offers **Retry summary**; if the pipeline fails, **Re-run post pipeline**.
 
+### Playing and enrolling from the transcript
+
+In every ended state (Review, Summarizing, Done) the transcript plays: click a segment's timestamp to hear it, again to stop. Tick segments (Shift for a range) and a sticky bar shows `N selected · X s of speech` with **Enroll as new…**, **Add to ▸** (an enrolled speaker, with its sample count) and **Clear**; in Review it also has **Relabel →** and **Merge**. Each row's **⋯** menu has **Play segment**, **Split at a word…** (Review), **Enroll as new speaker…** and **Add to enrolled speaker**, acting on the whole selection when the row is part of one. Enrollment needs segments from one track and at least 1 s of speech; the engine keeps up to 30 s. Enrolled speakers are listed and deletable under Settings › Meetings › Speakers.
+
+### Note templates
+
+A template is a Markdown file with YAML front matter (`name`, `description`, `sections` with `title`, an optional `instruction` and `required`) under `~/.theuth/meetings/templates/<slug>.md`. Five are built in: **Meeting** (`meeting`, the default), **One-on-one**, **Standup**, **Interview** and **Customer call**. Settings › Meetings › Templates lists them with **New template**, **Edit**, **Reset to built-in** (for an edited built-in) and **Delete** (not for built-ins); your edits to a built-in are never overwritten by an update. A meeting's template is the start form's pick, else the one remembered for the event or project, else `meeting.template`, else `meeting`.
+
 ### Finding meetings again
 
-- The meeting list (`/meetings`) shows date, title, duration and state. Rows open the meeting, pop the note into its own window, **Attach to chat…** (or drag a row onto a composer) so a session can read it, or **Delete meeting**.
+- The meeting list (`/meetings`) shows date, title, project, meeting app, duration and state, with a project filter. Rows open the meeting, pop the meeting or its note into its own window, **Attach to chat…** (or drag a row onto a composer) so a session can read it, or **Delete meeting**.
 - The global search dialog has a **Meetings** category: titles and transcript passages. See [Search](/docs/workspace/search).
-- Any session can call `meeting_list`, `meeting_read`, `meeting_search` and `meeting_speakers` — ask "what did Ana say about the deadline last Tuesday?" in a normal chat.
+- Any session can call `meeting_list`, `meeting_read`, `meeting_search`, `meeting_speakers` and `meeting_suggest_speakers`: ask "what did Ana say about the deadline last Tuesday?" in a normal chat.
+- Other tools can reach meetings through theuth's own MCP server (Settings › MCP; off by default, loopback only, bearer token): read tools such as `meeting_list`, `meeting_get`, `meeting_transcript`, `meeting_summary`, `meeting_briefs`, `meeting_search`, `meeting_speakers`, `brief_search` and `calendar_events`, and write tools such as `meeting_edit`, `meeting_set_project`, `meeting_set_event`, `meeting_set_template`, `brief_put` and `calendar_source_add`. The write tools have no theuth-side approval: a client holding the token can use them. See [MCP](/docs/reference/mcp).
+- A meeting can be a source of a [notebook](/docs/workspace/notebooks).
 
 ### Storage and deletion
 
@@ -108,11 +187,13 @@ Everything is under `~/.theuth/meetings/`:
 
 ```text
 meetings/
-  meetings.sqlite          index, rebuilt from the manifests if missing
+  meetings.sqlite          index (rebuilt from the manifests if missing), plus calendar events,
+                           project memory and pre-meeting briefs
   briefs.sqlite            the brief cache
   speakers/<uuid>.json     enrolled speaker profiles
+  templates/<slug>.md      note templates
   <id>/
-    manifest.json          truth: state, times, consent, pauses, tracks, failure
+    manifest.json          truth: state, times, consent, pauses, audio gaps, tracks, event, project, template, failure
     mic.opus  system.opus  mix.opus     24 kHz Ogg Opus, 32 kbit/s
     live.jsonl             the live transcript as it was shown
     briefs.jsonl           every brief shown
@@ -124,55 +205,87 @@ meetings/
 
 ## Configuration
 
+Settings › Meetings has five tabs: **Defaults** (meeting model, summary model, template, transcript language, default project), **Detection**, **Live** (echo count outside macOS, live tools, hidden from capture, live speaker labels), **Speakers** and **Templates**. Settings › Calendar holds the calendar keys. All of it lives in `config.yaml`:
+
 ```yaml
 meeting:
   enabled: true            # false: no recorder; meeting_* answers "meetings are disabled"
   max_minutes: 180         # hard stop; "10 min left" at max_minutes - 10
+  model: ~                 # the meeting session's model; unset: agent.model
+  effort: ~                # its effort; unset: agent.effort
+  summary_model: ~         # the summary turn's model; unset: model
+  summary_effort: ~        # only with summary_model
+  template: meeting        # default note template slug
+  language: en             # stored; English is the only transcript language
+  project: ~               # project a meeting gets when nothing is remembered
+  context_tokens: 32000    # compaction trigger for the meeting session
   batch_secs: 25           # how often new transcript lines go to the session
-  batch_utterances: 6      # … or after this many lines
+  batch_utterances: 6      # or after this many lines
   topic_ttl_secs: 600      # a topic button unmentioned this long expires
   max_topics: 6
+  live_hint_limit: 2       # lines per knowledge note while recording; 0 = none
   live_model_dir: ~        # default ~/.theuth/models/nemotron-streaming-en
   models_dir: ~            # diarization models root; default ~/.theuth/models
-  live_diarization: true   # Speaker N labels while recording (Settings › Meetings)
+  live_diarization: true   # Speaker N labels while recording
   live_tools: [meeting_topic, meeting_brief, brief_search, brief_put, knowledge_search, knowledge_get, meeting_read, meeting_search, search_web, read_url]
   live_prompts: [meeting, knowledge, web]
+  detect:
+    enabled: true          # prompt when another app holds the mic for 15 s
+    poll_secs: 2           # 5 on Linux
+    ignore: [...]          # app ids that never prompt; "Never for <App>" appends here
+  calendar:
+    eventkit: false        # accept macOS Calendar events from the companion
+    prebrief: true         # pre-meeting briefs and the Upcoming card
+    poll_secs: 900         # ICS subscription refresh
 ```
 
-Hotkeys, the island's position and the hidden-from-capture switch are desktop-local settings (Settings › Meetings). The full key list is in [Configuration](/docs/reference/configuration).
+The 15-second hold, the 10-minute **Not now** cooldown and the 30-second release before **Stop recording?** are fixed. Hotkeys, the island's position and size, the hidden-from-capture switch, the brief column's width and the start form's model are desktop-local settings. The full key list is in [Configuration](/docs/reference/configuration).
 
 ## Limitations
 
-- **Language:** English only — the live, post and speaker models are English checkpoints; there is no language setting.
+- **Language:** English only. The live, post and speaker models are English checkpoints; `meeting.language` is stored but only `en` is offered.
 - **Speakers:** up to eight distinct voices on the other side; your microphone is always one speaker, `Me`. Labels arrive about eight seconds late while live.
 - **Length:** 180 minutes by default (`meeting.max_minutes`); one meeting at a time.
-- **Source:** `System audio` follows the *default* output device — an app routed to a different headset is silent to it; pick that app explicitly instead.
-- **No detection:** theuth does not notice that Zoom, Meet or Teams started, nor that you are screen sharing. You start, stop and hide by hand.
-- **No export or rename:** the files above are the export; the title comes from the start form or the summary.
+- **Source:** `System audio` follows the *default* output device: an app routed to a different headset is silent to it; pick that app explicitly instead.
+- **Detection is a prompt, not autopilot:** theuth asks when an app holds the microphone but never starts or stops a recording without your press, and it does not notice that you are screen sharing. You hide the island by hand.
+- **Calendars:** read-only; macOS Calendar needs the Mac companion; other calendars only through an ICS secret address.
+- **No export or rename:** the files above are the export; the title comes from the start form, the event or the summary.
 - **Terminal:** no meeting commands in the TUI; the terminal's search dialog can still find and attach meetings.
 
 ## Troubleshooting
 
-**No `Start meeting…` button.** You are on a phone, a browser, or an engine reached over the relay — the page says *Meetings are recorded from the Mac running the node. Start one there.* (the wording says Mac; Windows and Linux desktops record too). On Windows or Linux it also disappears when capture probes as unavailable: `no default render device` or `no PipeWire daemon (is pipewire running for this user?)`.
+**No `Start meeting…` button.** You are on a phone, a browser, or an engine reached over the relay; the start page says *Meetings are recorded from the Mac running the node. Start one there.* (the wording says Mac; Windows and Linux desktops record too). On Windows or Linux it also disappears when capture probes as unavailable: `no default audio device` or `no PipeWire daemon (is pipewire running for this user?)`.
 
 **Start fails with `process tap on pid …: … permission denied` or `microphone: permission denied`.** macOS denied one of the two prompts. The start form's **Microphone** / **System audio recording** rows show the state and **Open System Settings**; grant access and start again. The failed meeting is kept in the list with the failure shown.
 
-**The system track is silent.** The chosen app is playing through a device other than the default output, or you picked an app that stopped playing (`pid … is not playing audio`). Pick the app itself rather than `System audio`, or make the meeting device the default output.
+**The system track is silent.** The chosen app is playing through a device other than the default output, or you picked an app that stopped playing (`pid … is not playing audio`). Pick the app itself rather than `System audio`, or make the meeting device the default output. If the watchdog warning shows `Not hearing …`, check the output device and the System Audio Recording permission; the **Audio gaps** row lists what was lost.
 
-**The agent hears itself / the mic track echoes (Windows, Linux).** No echo cancellation on those platforms — the `headphones recommended` badge says so. Wear headphones.
+**No prompt when a call starts.** Detection is off, the app is on **Ignored apps** (a **Never for** answer adds it), you said **Not now** less than 10 minutes ago, the app has held the mic for under 15 seconds, or a meeting or theuth's own dictation already holds the mic. On macOS and Windows the island prompt needs the companion running; the Meetings page banner works without it.
+
+**The prompt shows the wrong event or none.** Pick it from **Which meeting is this?**; after the start use the event chip in the meeting page header. Check Settings › Calendar › Upcoming to see what theuth knows.
+
+**A subscription shows `URL rejected` and asks you to regenerate the secret address.** The calendar server refused the address (it was reset or revoked). Copy the new secret address from your calendar, delete the subscription and add it again.
+
+**No Upcoming card or pre-meeting brief.** The card needs **Pre-meeting briefs** on, a calendar event that has a project (set one on an earlier meeting of the series, or a default project), and the companion running on macOS or Windows. Its bullets also need finished earlier meetings in that project; without them the card shows no brief.
+
+**The agent hears itself / the mic track echoes (Windows, Linux).** No echo cancellation on those platforms; the `headphones recommended` badge says so. Wear headphones. Settings › Meetings › Live › Echo shows how often your microphone repeated the other side.
 
 **Transcript lines show `them:` instead of names.** Live speaker labels are off, or the badge `speaker labels down` is showing; the post pass labels speakers anyway.
 
 **Review says `Diarization skipped: models not found under …`.** The diarization models have not landed; let the desktop app finish downloading (or place `nemotron-diarization/model_quantized.onnx` and `pyannote/wespeaker_en_voxceleb_CAM++.onnx` under `~/.theuth/models/`), then **Re-run post pipeline**.
 
-**`Could not register Alt+…; another app holds it`.** Change the hotkey in Settings › Meetings.
+**`Could not register Alt+…; another app holds it`.** Change the hotkey in Settings › General › Shortcuts › Meetings.
 
-**`no note` badge / `no meeting note: the documents helper is missing`.** The meeting note could not be created: documents are turned off, or the documents runtime inside `t` failed while the meeting started (it is rebuilt on its own). The meeting has no note; the summary then goes to `summary.md` instead. See [Documents](/docs/workspace/documents).
+**`no note` badge / `no meeting note: the documents helper is missing`.** The meeting note could not be created: documents are turned off, or the documents runtime failed while the meeting started (it is rebuilt on its own). The meeting has no note; the summary then goes to `summary.md` instead. See [Documents](/docs/workspace/documents).
 
 ## Sources
 
-- `crates/meeting/src/lib.rs` — the recorder, config and events
-- `crates/meeting/src/capture/system.rs` — per-OS audio capture and support probing
-- `crates/meeting/src/note.rs` and `summary.rs` — the note and the summary turn
-- `crates/desktop/ui/src/components/meeting/StartForm.tsx` — the start form and consent text
-- `crates/desktop/src/island/mod.rs` — what the island can do on each OS
+- `crates/meeting/src/lib.rs`: the recorder, config and events
+- `crates/meeting/src/capture/system.rs` and `capture/watchdog.rs`: per-OS audio capture, support probing and the audio watchdog
+- `crates/meeting/src/detect/`: microphone-holder detection and its rules
+- `crates/meeting/src/calendar/`: ICS and EventKit sources, event matching, project memory and pre-meeting briefs
+- `crates/meeting/src/templates.rs`, `note.rs` and `summary.rs`: note templates, the note and the summary turn
+- `crates/meeting/src/post/suggest.rs`: speaker-name suggestions and enrollment checks
+- `crates/desktop/ui/src/components/meeting/`: the start form, detection banner, meeting page and review pane
+- `crates/desktop/companion/Sources/Companion/Island/` and `crates/desktop/companion-windows/src/Theuth.Companion/Island/`: the native islands
+- `crates/desktop/src/island/mod.rs`: what the desktop island can do on each OS

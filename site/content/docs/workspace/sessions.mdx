@@ -1,78 +1,213 @@
 ---
 title: Sessions
-description: What a theuth session holds, how to find and resume one, and how to rewrite, trim, fold or fork its conversation without losing the record.
+description: What a theuth session holds, how to find, resume, steer and stop one, how its context is kept (Fractal context or classic compaction), and how to rewrite, trim or fork its conversation without losing the record.
 ---
 
 ## What a session is
 
-A session is one conversation with its settings: the model and reasoning effort, the working directory it was started in, an optional project label, and the agent's full transcript. Every session has a UUID (shown by **Copy id** in the desktop app and in the `/sessions` picker in the terminal) and a title that the model writes for you after the first finished turn and refreshes now and then. Subagents spawned from a session are sessions of their own, nested under the parent — see [Delegation](/docs/automation/delegation).
+A session is one conversation with its settings: the model and reasoning effort, the working directory it was started in, an optional project label, its memory mode (**Fractal context** or epochs), an optional advisor, and the agent's full transcript. Every session has a UUID (shown by **Copy id** in the desktop app and in the `/sessions` picker in the terminal) and a title. Subagents spawned from a session are sessions of their own, nested under the parent (see [Delegation](/docs/automation/delegation)).
 
-Everything is stored in `~/.theuth/sessions.sqlite`: messages, compaction epochs, errors, cost meters. A session survives restarts, model switches and compactions; nothing is thrown away unless you ask for it.
+Everything is stored in `~/.theuth/sessions.sqlite`: messages, compaction epochs, the Fractal context tree, errors, cost meters and the durability journal. A session survives restarts, model switches and compactions; nothing is thrown away unless you ask for it.
 
-`/new private` starts a **private** session: a memory-only tree that is closed when you leave it and never written to disk, knowledge or search.
+**Private sessions.** `/new private` in the terminal, or the **Private** switch (the hat-and-glasses icon) on the desktop **New chat** view, starts a private session: theuth keeps the conversation, its artifacts and cost records in memory only, and leaving or closing it deletes them. Scratch files its tools write are real files in a temporary directory, removed on close (best effort: a crash or snapshot may keep them). It is not a sandbox: what a tool writes, sends or runs outside that directory is not undone, and model providers still receive the requests. In the desktop app a reload or a lost connection longer than 30 s closes it. A private chat always runs on the machine you are on, and it is left out of search, knowledge, the MCP server's session tools and anything a contact can list or reach (see [Security](/docs/reference/security)).
 
 ## Finding and resuming
 
-**Desktop.** The sidebar lists sessions under **Pinned**, then by day (**Today**, **Yesterday**, **Previous 7 days**, **Older**) — or, once any session carries a project label, under collapsible project headers with **Ungrouped** last — and **Archived (N)** at the bottom. The row menu (**Chat options**) offers **Rename**, **Pin**/**Unpin**, **Archive**/**Unarchive**, **Move to project**, **Open in new window**, **Copy id** and **Delete**. Archived sessions leave the sidebar but stay searchable. `/sessions` in the composer opens [Search](/docs/workspace/search) limited to sessions; `/resume <id>` opens one by id.
+**Desktop.** The sidebar starts with **Active**: chats whose turn is running, that hold a background job, open terminal or pending reminder, or that wait on you, plus chats that stopped working within the last 4 hours (set the hours, or `0` for off, under Settings › General › Appearance). Then **Pinned**, then the rest by day (**Today**, **Yesterday**, **Previous 7 days**, **Older**), or, once any session carries a project label, under collapsible project headers with **Ungrouped** last, and **Archived (N)** at the bottom. A chat in Fractal context shows `∞` after its title; one owned by another machine shows an engine chip.
+
+The row menu (**Chat options**) offers **Rename**, **Open in new window**, **Pin**/**Unpin**, **Archive**/**Unarchive**, **Continue here**, **Move to project**, **Remove from project**, **Select**, **Attach to chat…**, **Copy id** and **Delete** (which also deletes the chat's subagents, after a confirmation). On touch screens, swipe a row left to archive it or right to delete it. Archived sessions leave the main list but stay searchable. Drag a row onto the pane workspace to open it beside another chat (see [Desktop](/docs/workspace/desktop)). `/sessions` in the composer opens [Search](/docs/workspace/search) limited to sessions; `/resume <id>` opens one by id.
 
 **Terminal.**
 
 | Command | What it does |
 |---|---|
-| `/sessions` | Picker: `⏎` switches, `Esc` closes — the one you leave keeps running |
-| `/resume <id>` | Open a session by id |
+| `/sessions` | Picker: `⏎` switches, `Esc` closes; the session you leave keeps running. Sessions owned elsewhere carry an owner chip |
+| `/resume <id>` | Open a session by id; bare `/resume` on a stopped ACP child restarts its harness in the same context |
 | `/new [private]` | Start a new session |
 | `/project <label\|off>` | Label the session's root for grouping in `/sessions` and `/artifacts` |
 | `/agents` | Pick one of this session's subagents; `/parent` goes back up |
+| `/take` | Continue the open session on this machine (see [Durability and who runs the session](#durability-and-who-runs-the-session)) |
 
 `t --resume <id>` opens a session directly from the shell. The terminal has no rename, pin, archive or delete commands; use the desktop app for those.
 
-**Titles.** Titles are generated by the session's own model unless you set a cheaper one: `agent.title_model: anthropic/claude-haiku-4-5` in `config.yaml`, `/title <model>` (persists), or Settings › Agent loop. `/title off` goes back to the session's model. To set a title by hand use **Rename** in the desktop app.
+**One session inside another.** **Attach to chat…** on a row (or `/attach` in the terminal) attaches a past session to the next message of another chat; the agent then reads it with the `session_read` tool, as a numbered outline of turns or the full text of a turn range.
+
+## Titles and status
+
+A new session takes its first message as a placeholder title. After the first exchange the **title model** names it, and renames it when the task changes. The agent can also retitle its own session through `set_status` (below). Once the agent has done that, or you have renamed the session yourself (**Rename** in the desktop app), the title model leaves it alone, and after your own rename `set_status` cannot change it either.
+
+The title model is the session's own model unless you pick a cheaper one: Settings › Models › Helpers › **Title model**, `/title <model>` (persists), or `agent.title_model` in `config.yaml`. `/title off` goes back to the session's model.
+
+**Status line.** While it works, the agent reports what it is doing with `set_status`: one line of 3 to 12 words (at most 80 characters), optionally with a new 3 to 5 word title (at most 48 characters). The desktop shows it above the chat input and on the sidebar row, the terminal on its status line; it replaces the activity word until the turn ends. The harness reminds the agent after its first 2 tool calls without a status, then every `agent.status_every` calls (default 8).
+
+**What's next?** After an interactive chat turn ends normally, the title model proposes up to three short next messages. The desktop shows them as a **Next:** block above the input; click one (or focus it and press `↵`) to send it. They disappear when you send anything or a new turn starts, and are never stored. They are not offered on subagents, advisor sessions, desks or external harness sessions, and the terminal does not show them.
+
+The switches live in Settings › Agent › Loop under **Memory and status** and apply to sessions started from then on:
+
+```yaml
+agent:
+  title_model: anthropic/claude-haiku-4-5  # unset = the session's own model
+  auto_title: true      # Automatic titles: off keeps the first-message title
+  status_tool: true     # Status updates: off removes set_status and its reminders
+  status_every: 8       # Status reminder every N tool calls; 0 = no reminder
+  suggestions: true     # Next-step suggestions after each chat turn
+```
+
+## Steering and stopping a running turn
+
+You can type while a turn runs.
+
+- **Steer** (`⏎`, or the **Steer** button): the message is queued and enters the running turn at the end of the current tool batch, so the agent reads it before its next model call. Queued messages show as chips above the input; click one to take it back into the composer for editing, or **×** to withdraw it before it is delivered.
+- **Interrupt** (`⌘↩` in the desktop app, `Ctrl+↩` in terminals that report it; on touch, hold the **Steer** button): cancels the turn and sends the box as the next message. With an empty box, it delivers the queued chips now.
+
+Stopping is scoped:
+
+| Gesture | Stops |
+|---|---|
+| **Stop** button, `Esc`, or `/cancel` | The session's own turn; its running subagents keep going |
+| Desktop: hold `Esc` for 700 ms, press `Esc` three times, or hold the **Stop** button and slide up | The turn and every running subagent below it (a toast says how many) |
+| Terminal: `Esc` three times within 1 s | The turn and its subagents |
+
+A session that stops also lands in the desktop [Inbox](/docs/workspace/desktop) as a card with the outcome, any error, the summary, the agent's next steps as chips and a reply box; sending a reply there starts the session's next turn.
+
+## Advisor
+
+An advisor is an optional second model that reads each step of one session and posts short notes into it. It runs as a hidden child session with read-only tools (no shell, Python, browser or file writes), and a failing advisor never stalls the session. No session has one by default.
+
+- **Desktop:** the session's model picker has an **Advisor** level (with **Off** as its first row). While an advisor runs, a pill beside the subagent dots shows its state (idle, reviewing, notes, paused, halted); click it for model, context, tokens, cost, the last note, **Change model…** and **Turn advisor off**.
+- **Terminal:** `/advisor` opens the picker; `/advisor <provider/model>`, `/advisor on` (the last pick), `/advisor off`, `/advisor status`, `/advisor consults <n>`.
+
+The agent can also ask the advisor a direct question with the `consult` tool, up to `advisor.max_consults` times per user turn (default 6, range 0 to 32; 0 removes the tool). Defaults live in Settings › Agent › Advisor. Advisors are not available on external harness sessions.
 
 ## Durability and who runs the session
 
-theuth runs **one engine per data dir**. Whatever starts first — `t`, `t --headless`, the desktop app's daemon — takes `~/.theuth/engine.lock` and becomes the engine; a later `t` attaches to it as a client (the terminal status line shows `attached · pid N · desktop`, where the last word names which frontend started the engine: `tui`, `headless` or `desktop`). This matters for what happens when you quit:
+theuth runs **one engine per data dir**. Whatever starts first (`t`, `t --headless`, the desktop app's daemon) takes `~/.theuth/engine.lock` and becomes the engine; a later `t` attaches to it as a client (the terminal status line shows `attached · pid N · desktop`, where the last word names which frontend started the engine: `tui`, `headless` or `desktop`).
 
-- **Attached terminal.** `/quit` or `Ctrl+C` closes only your view; the engine, its sessions and any running turn carry on. Reopen with `t` or `t --resume <id>`.
-- **Terminal that is the engine.** Quitting stops the process. Messages already written are safe; a turn that was mid-reply stops with the process and is not re-sent when you come back — a dangling tool call is repaired on resume so the next turn works.
-- **Daemon.** `t --headless` (or the installed service, `t --install-service`) keeps sessions running with no UI attached; phones, Slack, Signal and Telegram talk to it (see [Channels](/docs/automation/channels)).
+**Crashes and restarts.** Every turn is journaled step by step, so a killed or restarted engine picks up where it stopped. With `durability.resume: auto` (the default) each open turn resumes at boot: a model call cut off mid-stream is re-issued, and tool calls that had not started, or are read-only, run again. A mutating or destructive call whose outcome is unknown is **not** re-run: the model gets an `interrupted:` error saying the call's effect is unknown and to check before repeating it, and decides. A graceful shutdown gives running tool calls `durability.drain_secs` (10 s) to finish, then suspends the turn instead of cancelling it. The transcript shows a `resumed after restart` or `resumed after update` divider, and the terminal status line summarises it (`resumed · 2 replayed · 1 skipped: … · 1 job(s) lost`).
 
-A second engine on the same data dir is refused with:
+Background shell and terminal (PTY) jobs are not durable: they die with the engine, and the model receives `<job_result exit="lost">` with the job's log path and last output. External harness children (ACP) are restarted in their own stored context.
 
-```text
-engine already running (pid N, tui, since HH:MM, ws://127.0.0.1:P) — run `t` to attach, or set THEUTH_DATA_DIR for a separate store
+```yaml
+durability:
+  resume: auto        # auto | ask (an Inbox item per open turn) | off (the next input resumes it)
+  drain_secs: 10      # graceful-shutdown budget for running tool calls
 ```
 
-With several engines in a [mesh](/docs/automation/mesh), every session is readable everywhere but has one **owner** engine that runs it. The `/sessions` picker and the desktop sidebar show an engine chip on sessions owned elsewhere. Typing into such a session, or changing its settings in **⋯**, runs on the owner without moving it, and the open chat streams the owner's reply live; if the owner is offline nothing runs and the composer offers **Continue here**. **Continue here** (desktop) or `/take` (terminal) moves ownership to the engine you are on, **Move to ▸ \<engine\>** in the desktop session menu sends a session to another one (a running turn resumes there, and both machines show a "Session moved to …" card), and **New chat on [machine ▾]** starts a chat on another machine in a folder there. Opening a session never moves it.
+What quitting does:
+
+- **Attached terminal.** `/quit` or `Ctrl+C` closes only your view; the engine, its sessions and any running turn carry on. Reopen with `t` or `t --resume <id>`.
+- **Terminal that is the engine.** Quitting stops the engine; open turns are suspended and resume the next time an engine starts on this data dir.
+- **Daemon.** `t --headless` (or the installed service, `t --install-service`) keeps sessions running with no UI attached; phones, Slack, Signal and Telegram talk to it (see [Channels](/docs/automation/channels)).
+
+A second engine on the same data dir is refused with a line that starts:
+
+```text
+engine already running (pid N, tui, since HH:MM, ws://127.0.0.1:P)
+```
+
+followed by a hint: run `t` to attach, or set `THEUTH_DATA_DIR` for a separate store.
+
+**Several machines.** With several engines in a [mesh](/docs/automation/mesh), every session is readable everywhere but has one **owner** engine that runs it. The `/sessions` picker and the desktop sidebar show an engine chip on sessions owned elsewhere. Typing into such a session, or changing its settings in the session menu (`…`, which then reads **Settings for this session on \<machine\>**), runs on the owner without moving it, and the open chat streams the owner's reply live. If the owner is offline nothing runs and a card above the composer offers **Continue here** (**Continue here and resume** when a turn was running). **Continue here** (desktop) or `/take` (terminal) moves ownership to the engine you are on. **Move to ▸ \<machine\>** in the desktop session menu sends a session to another paired machine: a running turn resumes there, both machines show a "Session moved to …" card, and running jobs stay behind (the menu says how many). Sessions that run an external harness process, a desk, or a paused agent's tree cannot move; the menu says why. **New chat on [machine ▾]** on the **New chat** view (or the **New chat on…** arrow beside the sidebar's **New chat**) starts a chat on another machine in a folder there. Opening a session never moves it.
+
+## Sharing a session
+
+The session menu's **Share with contact…** lets a [contact's](/docs/automation/contacts) agents send messages into this chat and receive what this chat's agent sends back; **Stop sharing with \<name\>** takes it back. Contacts cannot read the transcript or open the chat, and private chats are never listed or reachable by contacts. Everything you share is listed in Settings › Sharing (see [Sharing](/docs/automation/sharing)).
 
 ## Rewriting the conversation
 
-All of these work on **turns** — a message you sent and everything the agent did in reply. Turn numbers are the 1-based order shown in the pickers.
+All of these work on **turns**: a message you sent and everything the agent did in reply. Turn numbers are the 1-based order shown in the pickers.
 
 | Command | Effect |
 |---|---|
-| `/undo` | Hide the last turn; `undone: … — /redo restores` |
+| `/undo` | Hide the last turn; `/redo` restores it |
 | `/redo` | Bring back the last undone turn |
 | `/edit [n]` | Put turn n's message back in the editor; `⏎` sends it, replacing that turn and everything after it. Without `n`, a picker |
 | `/regen [n]` | Regenerate the reply to turn n, replaying your message as sent |
 | `/fork [n]` | New session containing the conversation through turn n; the original is untouched |
 | `/clear` | Drop the whole conversation but keep the session, its id, title, model and settings |
 
-Undo is reversible until you send something: the next message commits the cut and the hidden tail is deleted for good. **Edit** and **regenerate** are the same cut followed by a new turn, so they also destroy the old tail — fork first if you want to keep both branches. Fork is allowed while a turn is running (the in-flight reply is not copied); undo, edit and regenerate are refused with `turn in flight` until it finishes or you `/cancel`.
+Undo is reversible until you send something: the next message commits the cut and the hidden tail is deleted for good. **Edit** and **regenerate** are the same cut followed by a new turn, so they also destroy the old tail; fork first if you want to keep both branches. Fork is allowed while a turn is running (the in-flight reply is not copied); undo, edit and regenerate are refused with `turn in flight` until it finishes or you stop it.
 
-In the desktop app the same actions sit on the bubbles: **Edit** and **Fork from here** on your messages, **Regenerate** and **Fork from here** on replies, and **Undo**/**Redo**/**Clear** in the session menu (`⋯`). `/edit` is terminal-only; the desktop uses the bubble's **Edit**.
+In the desktop app the same actions sit on the bubbles: **Edit**, **Fork from here** and **Copy** on your messages, **Regenerate**, **Fork from here**, **Copy** and **Save answer as note** on replies, and **Undo**/**Redo**/**Clear** in the session menu (`…`). On the desktop `/regen` takes no turn number (it regenerates the last reply) and `/edit` does not exist; use the bubble's **Edit**.
 
-`/clear` is recorded as a compaction whose head says the context was cleared; the earlier transcript is still on disk and shows under a `── context cleared (epoch n) ──` divider when you scroll back. `/new` makes a fresh session instead.
+`/clear` is recorded as a compaction whose head says the context was cleared; the earlier transcript is still on disk and shows under a `context cleared (epoch n)` divider when you scroll back. `/new` makes a fresh session instead.
 
 ## Removing content from context
 
-`/shake [images|documents|messages|tools|summary]` removes specific items from what the model sees while keeping the transcript and everything said afterwards. Bare `/shake` opens a picker over the current context with nothing ticked; naming a category pre-selects it. Confirm with **Remove from context**. No model call is made and nothing is summarised; removed rows show a collapsed "Removed from context" marker in the transcript, and the next request simply omits them (which can miss the provider's prompt cache once).
+`/shake [images|documents|surfaces|tools|notes|agents|messages|summary]` removes specific items from what the model sees while keeping the transcript and everything said afterwards.
 
-Use it when a screenshot, a pasted document or a noisy tool result is eating the window but the rest of the conversation is fine. It is refused while a turn is running and on sessions run by an external ACP harness. Desktop: **Shake context…** in the session menu, or the small remove buttons on attachments and messages.
+| Category | What it lists |
+|---|---|
+| `images` | Every image: attachments, screenshots, tool images, images in a summary |
+| `documents` | Attached PDFs |
+| `surfaces` | Diagrams in replies, and the source of pages, apps and shown files |
+| `tools` | Tool calls with their results |
+| `notes` | Notes the harness injected |
+| `agents` | Messages from other agents |
+| `messages` | The conversation: your messages, replies and the summary |
+| `summary` | The current compaction summary |
 
-## Compaction
+Bare `/shake` opens a picker over the whole current context with nothing ticked; naming a category lists only that category with every item ticked (except `messages`, which starts unticked). The terminal shows a review of the exact removal set before `⏎` removes it. On the desktop, **Shake context…** in the session menu opens the same picker; confirm with **Remove from context**. Attachments, diagrams and messages also carry their own **Remove from context** button.
 
-When the context approaches the model's window, theuth **compacts**: it folds older history into a head and keeps the recent tail verbatim. The transcript on disk is untouched — a compaction only changes what the model is sent — and a `── context compacted (epoch n · style) ──` divider marks the point.
+No model call is made and nothing is summarised. Removed rows show a collapsed "Removed from context" marker; a removed diagram is cut out of its reply, leaving a one-line marker; a removed page, app or shown file keeps its card in your transcript while the model sees a one-line marker. The next request simply omits them, which can miss the provider's prompt cache once, and `/undo` does not bring them back. Use it when a screenshot, a pasted document or a noisy tool result is eating the window but the rest of the conversation is fine. It is refused while a turn is running and on sessions run by an external ACP harness.
+
+## Fractal context
+
+Fractal context is a memory mode in which the session's log is the memory: nothing is compacted away. Every request is built as the system prompt and tools, a small **state ledger**, a **summary view** of the older conversation, then the newest messages **verbatim** (the tail), then your input. Older turns are demoted into one-line summaries written by a background compactor; each line keeps an address, and the agent can bring any original back word for word with its `zoom`, `recall` (full-text search over the summarised messages) and `date` tools. The tail is trimmed only at turn boundaries, so the provider's prompt cache stays warm between trims.
+
+- **The ledger** is a short record of what is true now (goals, decisions, constraints, open tasks, files touched) that the agent keeps current with its `ledger` tool and reads every turn.
+- **Recall prefetch** adds up to 2,000 bytes of recall hits for your new message after the tail, so older detail arrives without the agent asking.
+- **Images** that leave the tail get a one-line description; `zoom` brings the original back.
+
+**Turning it on.** It is off by default for new chats and on by default for desks.
+
+- Desktop: the `∞` switch on the **New chat** view (it starts at Settings › Agent › Context › **New chats use fractal context**), or `/fractal on` / `/fractal off` in an idle session.
+- Terminal: `/fractal on`, `/fractal off` (the old name `/endless` still works).
+- An agent file's `memory: endless` or `memory: epochs` sets it for that desk's sessions.
+
+Switching on in an existing session backfills its history (at most the last 2,000 units). Switching off installs the current view as the head of a new epoch, with no model call, and the session continues with classic compaction.
+
+**Watching it.** A Fractal context session shows a `∞` badge in the desktop header instead of the context meter (hover: view size, line count and whether it is up to date). Click it for the **Context** panel: the view by band (open a line to see what it summarises), recall search, the tail's size and trim marks, and while summaries are pending a **Settling N lines** row with **Pause settling** / **Resume settling**. **Trim now** cuts the tail back to its low mark at once, at no cost (in meetings and while history is still being summarised it folds the waiting lines into excerpts instead). If the compactor keeps failing the panel says so, with **Retry now**, **Trim now** and **Change model**; lines that fail 3 times are folded as excerpts automatically.
+
+| Terminal | Effect |
+|---|---|
+| `/fractal` | Show the view state |
+| `/fractal on` / `off` | Switch the session's memory mode |
+| `/fractal fold` | Trim now (fold the waiting lines where there is no tail to trim) |
+| `/fractal pause` / `resume` | Pause or resume background summarising |
+| `/fractal model <id>` / `model clear` | Pick this chat's compactor model, or go back to the default |
+
+`/compact` in a Fractal context chat is the same as **Trim now**: no model call.
+
+**The compactor model** is `agent.endless.model` when set, else the title model, else the session's own model. Settings › Agent › Context › **Compactor model** sets it and **Test summary call** checks it on a fixed sample. Its summaries are model calls to that provider, charged like any other. A chat's compactor spend is capped per UTC day; reaching the cap pauses summarising for that chat (**Resume for today** lifts it) while turns keep fitting.
+
+```yaml
+agent:
+  endless:
+    default_chat: false          # ∞ switch on new chats
+    default_desk: true           # desks without an explicit memory: field
+    default_meeting: false       # meeting sessions
+    view_bytes: 128000           # summary view size (16000..256000)
+    model: null                  # compactor; unset = title model, else the session's model
+    tail_mode: fixed             # fixed | scaled (a share of each model's window)
+    tail_low_bytes: 24000        # kept after a trim
+    tail_high_bytes: 64000       # a trim is due above this
+    tail_low_share: 0.10         # scaled mode
+    tail_high_share: 0.25        # scaled mode
+    cold_after_secs: 0           # trim early after this idle time; 0 = the provider's cache lifetime
+    ledger: true
+    ledger_bytes: 4000
+    prefetch_bytes: 2000         # 0 turns recall prefetch off
+    describe_images: auto        # auto | off
+    max_usd_per_call: 0.10
+    max_usd_per_session_day: 5.0 # 0 = no daily cap
+```
+
+The same settings are in Settings › Agent › Context (sections **Defaults**, **View**, **Tail**, **Compactor**, **Ledger**, **Recall**).
+
+## Compaction (epochs)
+
+Sessions not in Fractal context keep their context in **epochs**. When the context approaches the model's window, theuth **compacts**: it folds older history into a head and keeps the recent tail verbatim. The transcript on disk is untouched (a compaction only changes what the model is sent) and a `context compacted (epoch n · style)` divider marks the point.
 
 Automatic compaction fires at `agent.compact_at` × the model's window (default `0.8`; `0` disables it). On demand:
 
@@ -84,19 +219,23 @@ Automatic compaction fires at `agent.compact_at` × the model's window (default 
 | `/compact snap` | Rasterise the folded span into images in the head. No model call; needs a vision-capable model, otherwise `snap needs a vision model (this one is text-only)` |
 | `/compact style` | Show the default; `/compact style <name>` writes `agent.compact_style` to `config.yaml` |
 
+The desktop session menu has **Compact ▸** (summary / cut / snap); the default style is also in Settings › Agent › Context › **Default compact style**.
+
 ```yaml
 agent:
   compact_at: 0.8          # compact when the context is this full; 0 disables
   compact_style: summary   # summary | cut | snap
 ```
 
-Automatic `snap` on a text-only model falls back to `cut`. Right before a cut the harness also runs a knowledge harvest in the background so durable facts are not lost — see [Knowledge](/docs/workspace/knowledge). The folded turns are kept verbatim in `~/.theuth/spill/<session>/epoch_<n>.txt` (and the summary in `epoch_<n>.summary.md`), which the agent can `read_file` if it needs something that was folded.
+Automatic `snap` on a text-only model falls back to `cut`. Right before a compaction the harness runs a knowledge harvest in the background so durable facts are not lost (see [Knowledge](/docs/workspace/knowledge)). The folded turns are also written to `~/.theuth/spill/<session>/epoch_<n>.txt` (and the summary to `epoch_<n>.summary.md`), which the agent can `read_file` if it needs something that was folded; these spill files are swept after 7 days, while the messages themselves stay in the session store.
 
-**The context gauge.** The terminal header shows `ctx 123k / 200k (61%) · cache 87%`; the desktop header pill shows `123k/200k · 61% · cache 87%` with a `≈` while the number is an estimate (before the provider reports). It turns amber above 75 % (`context filling up`), red above 90 % (`start a new session or summarise`) and pulses above 95 % (`next prompt may fail`). `t session context <id>` prints where the tokens go (head, tail, system prompt) for a session on a running daemon.
+**The context gauge.** The terminal header shows `ctx 123k / 200k (61%) · cache 87%`; the desktop header pill shows `123k/200k · 61% · cache 87%` with a `≈` while the number is an estimate (before the provider reports). It turns amber at 75 % (`context filling up`), red at 90 % (`start a new session or summarise`) and pulses above 95 % (`next prompt may fail`). Fractal context sessions show the `∞` badge instead. `t session context <id>` prints where the tokens go (head, tail, system prompt) for a session on a running daemon.
 
 ## Costs and tokens
 
-The terminal header shows a running `cost`; `/cost` lists the returned cost, an estimate where providers return none, history coverage and one row per child session. The desktop header has a **Cost** pill that opens the same breakdown (**Direct**, **Descendants**, **Total**, a **Harness tokens** table and per-child **Inclusive total**). Costs are what the providers reported; `~$` marks an estimate, and sessions that started before the cost ledger did say `Historical cost unknown`.
+The terminal header shows a running `cost`; `/cost` lists the returned cost, an estimate where providers return none, history coverage and one row per child session. The desktop header has a **Cost** pill that opens the same breakdown (**Direct**, **Descendants**, **Total**, a **Harness tokens** table and per-child **Inclusive total**). Costs are what the providers reported; `~$` marks an estimate, and sessions that started before the cost ledger say `Historical cost unknown`.
+
+Across sessions, **Costs** in the desktop sidebar opens the costs page: spend over a range (**Today**, **24H**, **7D**, **30D**, **MTD**, **90D**, **All** or a custom range) broken down by model, provider and session, with every dollar labelled by its basis: **Known** (returned by the provider), **Reported** (an external harness's own meter), **Estimated** (price table × tokens) or **Unpriced**. A **Usage limits** card shows subscription windows and rate-limit headroom for providers that report them, and the **Ledger** lists every model call.
 
 ## Subagents
 
@@ -104,17 +243,19 @@ A session that spawned subagents shows them nested under its row in the desktop 
 
 ## Errors in the transcript
 
-A failed model call or tool is recorded as an error row anchored to the message it followed. It stays in the transcript on resume (red text in the terminal, an alert in the desktop app) and is purely informational: there is no retry button on it. Send your next message, `/regen` the turn, or `/undo` to drop it with the turn it belongs to. A message that could not be *sent* at all is different — the desktop composer keeps it with a **Retry** button.
+A failed model call or tool is recorded as an error row anchored to the message it followed. It stays in the transcript on resume (red text in the terminal). The desktop renders it as an error card: a headline such as the provider being overloaded or rate-limited, the provider's message, chips for the model, provider and HTTP status, a one-line hint where there is one, and a **Full error** fold with **Copy error**. It is informational: there is no retry button on it. Send your next message, `/regen` the turn, or `/undo` to drop it with the turn it belongs to. A message that could not be *sent* at all is different: the desktop composer keeps it with a **Retry** button.
+
+Consecutive Python cells that called no tools collapse into one `ran code × N` card in the desktop transcript.
 
 ## Not available
 
-- **Exporting a session** as Markdown, PDF or JSON. Export exists for notes and boards (see [Documents](/docs/workspace/documents)) and for artifacts (`/artifacts`, key `e`), not for transcripts.
-- **Share links** are for documents, not sessions.
+- **Exporting a session** as Markdown, PDF or JSON. Export exists for notes and boards (see [Documents](/docs/workspace/documents)) and for artifacts (`/artifacts`, key `e`), not for transcripts. Copy single messages with their **Copy** button.
+- **Public links to a session.** Public web sharing publishes folders and local ports, not chats; a chat can only be shared with a contact (above).
 - Renaming, archiving or deleting from the terminal.
 
 ## Troubleshooting
 
-**"turn in flight" when I `/undo`, `/edit`, `/regen` or `/compact`.** Wait for the reply or `/cancel` first. `/fork` works while running.
+**"turn in flight" when I `/undo`, `/edit`, `/regen` or `/compact`.** Wait for the reply or stop it first. `/fork` works while running.
 
 **`/redo` says `nothing to redo` after an undo.** You sent a message in between; sending commits the cut and deletes the hidden turn. Fork before editing when you may want both branches.
 
@@ -122,14 +263,19 @@ A failed model call or tool is recorded as an error row anchored to the message 
 
 **`engine already running (pid N, …)`.** You tried to start `t --headless` or a second engine on the same data dir. Run plain `t` to attach, stop the other process, or point `THEUTH_DATA_DIR` at a separate store.
 
-**The gauge is red right after a compaction.** The model's window is too small for the fixed part of the frame (system prompt and tools), so no fold can help; theuth tells the model once (a `context_pressure` note) and stops auto-compacting that session. Switch to a model with a larger window or start a new session.
+**A tool result says `exit="lost"` after a restart.** The background job died with the engine; its log path is in the result. Run it again if it is still needed.
+
+**The gauge is red right after a compaction.** The model's window is too small for the fixed part of the frame (system prompt and tools), so no fold can help; theuth tells the model once (a `context_pressure` note) and stops auto-compacting that session. Switch to a model with a larger window, switch the session to Fractal context, or start a new session.
 
 **A snap compaction was refused.** `snap` needs a session model that accepts images (`agent.vision_model` does not count here); use `/compact summary` or `/compact cut`, or switch the session to a vision-capable model with `/model`.
 
+**The Context panel says summaries are failing.** The compactor model errors or times out. Use **Change model** (a cheaper cloud model or a local one), **Test summary call** in Settings › Agent › Context to check it, or **Trim now** to fold the waiting lines into excerpts without a model call.
+
 ## Related
 
-- [Search](/docs/workspace/search) — find a session by title or transcript text
-- [Knowledge](/docs/workspace/knowledge) — what survives beyond a session
-- [Terminal](/docs/workspace/terminal) and [Desktop](/docs/workspace/desktop) — the two front ends
-- [Configuration](/docs/reference/configuration) — `agent.compact_at`, `agent.compact_style`, `agent.title_model`
-- Source: `crates/agent/src/store.rs`
+- [Search](/docs/workspace/search): find a session by title or transcript text
+- [Knowledge](/docs/workspace/knowledge): what survives beyond a session
+- [Terminal](/docs/workspace/terminal) and [Desktop](/docs/workspace/desktop): the two front ends
+- [Mesh](/docs/automation/mesh) and [Contacts](/docs/automation/contacts): sessions across machines and people
+- [Configuration](/docs/reference/configuration): the full `config.yaml` reference
+- Source: `crates/agent/src/store.rs`, `crates/agent/src/endless/mod.rs`, `crates/agent/src/durability/mod.rs`, `crates/tui/src/model/slash.rs`

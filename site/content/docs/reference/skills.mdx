@@ -21,6 +21,7 @@ missing directory means no skills.
 | any other `*.md` | one skill named after the file stem |
 | `README.md`, `LICENSE.md`, `CHANGELOG.md`, `CONTRIBUTING.md` (any case) | ignored |
 | `.git/`, other extensions | ignored |
+| `learned/`, `retired/` (top level) | not skills: dreaming's learned notes per skill and the skills it retired (see [Learning](#learning)) |
 
 Subdirectories are organisation only and do not affect names. Duplicate
 names: the last file in path order wins and the log warns
@@ -28,9 +29,10 @@ names: the last file in path order wins and the log warns
 warning.
 
 There are no project-local skills: the harness reads `<data_dir>/skills/`
-only, not a `.theuth/` or `AGENTS.md` in the working directory. The flat
-skill files (not clones) also replicate to the other engines of your
-[mesh](/docs/automation/mesh).
+only, not a `.theuth/` or `AGENTS.md` in the working directory. The
+top-level `*.md` skill files replicate to the other engines of your
+[mesh](/docs/automation/mesh); directory skills, clones and `learned/` do
+not.
 
 ## Front matter
 
@@ -41,6 +43,7 @@ Optional YAML between `---` delimiters at the top of the file:
 | `name` | file stem, or directory name for `SKILL.md` | the name in the index and in `load_skill` |
 | `description` | first non-empty line of the body | one line shown in the index |
 | `always` | `false` | `true`: the body is inlined into every system prompt instead of being indexed |
+| `origin` | none | `dreaming` marks a skill the nightly routine made; such skills are listed after the others and only they can be retired by it |
 
 Unknown keys (`license`, `allowed-tools`, `metadata`, …) are ignored, so
 third-party `SKILL.md` repositories load as they are. Invalid front matter
@@ -79,9 +82,13 @@ Call `load_skill()` (python: `await load_skill(name="…")`) to get a skill's fu
 
 `load_skill{name}` returns the body; for a `SKILL.md` skill it appends
 `files (under <dir>):` and the relative paths of the supporting files, which
-the model reads with `read_file`. An unknown name returns
-`no skill named <name>`. The TUI status line lists the skills currently in
-context (`skills: commit, review`) and the `/skills` picker marks them `●`.
+the model reads with `read_file`. When `learned/<name>.md` exists, its
+bullets are appended under `## Learned (dreaming)`, in `load_skill`, in
+`always` bodies and in what an external harness receives. An unknown name
+returns `no skill named <name>`. The index is in name order. The TUI status
+line lists the skills currently in context (`skills: commit, review`) and the
+`/skills` picker marks them `●`. A capped contact session (an inbox answering
+someone outside your mesh) gets no skills.
 
 `prompt.md` and an `always` skill are indistinguishable to the model;
 `prompt.md` is the one place for "how I want you to behave", skills are the
@@ -92,7 +99,7 @@ reusable pieces. `/prompt` shows the assembled prompt.
 | Where | How |
 |---|---|
 | TUI | `/skills` then Enter on a row; or `/<skill> [words]` (for example `/commit fix the typo`); `s` shows the body |
-| Desktop | the Library's Skills page (`/skills` route) with a Use action, the composer's `+` › Skills picker, and the same chat slash commands; every pick (and every `/skill:<name>`) adds a chip, so one message can carry several skills |
+| Desktop | the Skills page (`/skills`) with Use, New skill, Repos and an `always` switch for local skills; the composer's `+` › Skills picker (searchable); the same chat slash commands. Every pick (and every `/skill:<name>`) adds a chip, so one message can carry several skills |
 | Slack, Signal, Telegram | `/theuth skills` and `/skills` list and manage; the model still loads skills itself with `load_skill` |
 | RPC | `use_skill{name, args}`; `use_skills{names, args}` for several at once |
 
@@ -136,33 +143,67 @@ everything else works. The same operations exist over RPC (`list_skills`,
 
 ## Bundled skills
 
-On every start the binary (re)writes six skills it owns; edits to them are
+On every start the binary rewrites the skills it owns when their text
+differs, so they always describe the running version; edits to them are
 overwritten, everything else in `skills/` is never touched:
 
 | File | Purpose |
 |---|---|
-| `harness.md` | the model's manual for this data dir: layout, config keys, vault, MCP gates, what only the user can do |
-| `visualize.md` | drawing in replies with Mermaid and json-render blocks |
+| `harness.md` | the model's manual for this data dir: layout, config keys, vault, MCP gates, skills, what only the user can do |
+| `visualize.md` | drawing in replies with json-render and Mermaid blocks, and when to show a live HTML page instead |
 | `pdf.md` | front matter, page breaks and Typst for `show` with a `.pdf` name |
-| `loops.md` | writing schedule and loop files |
+| `loops.md` | schedules that loop until done: retry loops and supervisors that fan out to subagents |
+| `routines.md` | designing or editing a routine (clock, sensor or loop) and proposing it as a draft card |
 | `apps.md` | OpenUI Lang, the component catalog and examples for the `app` tool |
-| `board.md` | the whiteboard document tools |
+| `board.md` | drawing a board: a long-form, scrollable explanation of code with diagrams, code links and a read-back |
+| `decide.md` | classifying many items with the local decision model (`decide_many`) |
+| `double.md` | reading and respecting the owner's double: its chip, the L0 to L3 ladder, the `double_*` functions |
+| `native-apps.md` | driving apps by script (`applescript`, `shortcuts`, `powershell`) with recipes and verify steps |
+| `cells.md` | writing cells and runbooks the user runs with one press |
+
+Plugins write three more when they start:
+
+| File | Written | Purpose |
+|---|---|---|
+| `autoresearch.md` | while `autoresearch.enabled` (default on); binary-owned | setting up a study: interview, write and run the benchmark once, draft it, then status and control; one section per study kind |
+| `dreaming.md` | while `dreaming.enabled` (default on); binary-owned | the nightly routine's own instructions |
+| `codeindex.md` | when the code index starts | the `code_*` functions; a copy you edited is kept, never overwritten |
 
 `apps.md` is written even when `app.enabled` is `false`.
 
 ## Learning
 
-The model can write a skill itself with `add_skill` when you ask it to
-remember a procedure, and that is the only automatic path: there is no
-background skill harvesting. Durable facts belong in
-[knowledge](/docs/workspace/knowledge) (`knowledge_put`, harvested
-automatically); reusable instructions belong in skills.
+The model writes a skill itself with `add_skill` when you ask it to remember
+a procedure. Durable facts belong in [knowledge](/docs/workspace/knowledge)
+(`knowledge_put`, harvested automatically); reusable instructions belong in
+skills.
+
+[Dreaming](/docs/workspace/knowledge#dreaming), the nightly routine, also
+tunes skills, within bounds:
+
+- It never edits a skill file, `prompt.md` or any text you wrote. Its
+  lessons go to a sidecar, `skills/learned/<skill>.md`: at most 12 bullets
+  of at most 140 characters, each with helpful and harmful counts, the cases
+  it came from and a date. The sidecar is appended to the skill's body (see
+  above).
+- An edit is written only when it passes a replay gate over held-out cases
+  of your past corrections; a rejected one is logged with the gate's numbers
+  and not applied. A bullet that three later cases contradict is retired.
+- A skill it made (`origin: dreaming`) that nobody loaded for 45 days is
+  moved to `skills/retired/`. It cannot retire a skill you wrote.
+- Every night's changes are backed up first and undone in one action, the
+  whole night or one group (`skill:<name>`, `edits`).
 
 ## External harnesses
 
 When a task is delegated to an ACP harness (`spawn_subagent{agent}`), the
-skills are materialised for it under `<cwd>/.agents/skills/<name>/SKILL.md`
-and exposed through a small MCP shim (`list_skills`, `load_skill`,
-`send_message`). `acp/agents.yaml` controls this per agent with
-`skills: true|false` and `skills_dir:`. See
+`always` skills plus any named in the call's `skills` list are written for it
+under `<cwd>/<skills_dir>/<name>/SKILL.md` (default `.agents/skills`, which
+omp, OpenCode, Codex and Gemini read; set `.claude/skills` for Claude Code). A
+directory that already exists is yours and is skipped; inside a git repo each
+new directory is added to `info/exclude`. The child also gets an MCP shim,
+`t mcp --session <id>`, with `list_skills`, `load_skill`, `send_message`
+and the text tools `read_file`, `edit`, `move_text`, `copy_text`, `indent`
+and `clip`. `acp/agents.yaml` controls this per agent with
+`skills: true|false`, `skills_dir:` and `mcp: true|false`. See
 [Delegation](/docs/automation/delegation).

@@ -1,56 +1,62 @@
 ---
 title: Development
-description: Repository anatomy, the Rust and Bun toolchain, just recipes for checking, testing, bindings and packaging, plugin authoring against the runtime trait, the desktop app, and how this site is built.
+description: Repository anatomy, the Rust and Bun toolchain, just recipes for checking, testing, the wire contract and packaging, plugin authoring against the runtime trait, the desktop app, and how this site is built.
 ---
 
-theuth is a single Rust workspace of 46 crates plus three small Bun projects
-(the desktop UI and the app-parser and documents bundles compiled into `t`) and this site.
-This page is the map and the exact commands. Design rationale lives in the
-numbered design documents inside the repository; they are internal working
-notes and are not published here.
+theuth is a single Rust workspace of 65 crates, three Bun projects (the
+desktop UI and the `packages/apps` and `packages/documents` bundles that `t`
+runs in-process) and this site. This page is the map and the exact commands.
+Design rationale lives in the numbered design documents inside the
+repository; they are internal working notes and are not published here.
 
 ## Repository anatomy
 
 | Path | What |
 |---|---|
 | `crates/` | every workspace member (`members = ["crates/*"]`, resolver 3, edition 2024) |
-| `docs/` | the plugin authoring guide (`plugins.md`), the skills format (`skills.md`) and the internal design documents |
+| `docs/` | the plugin authoring guide (`plugins.md`), the skills format (`skills.md`), update setup and the internal design documents |
 | `justfile` | every build, test, packaging and release recipe |
-| `scripts/` | packaging and release scripts, model fetching (`fetch-models.sh`), remote builds, smoke drivers under `scripts/apps/` and `scripts/tests/` |
-| `bindings/` | generated TypeScript wire types, `methods.json` (every RPC method name), `surface-catalog.json` |
-| `packages/apps`, `packages/documents` | TypeScript sources of the in-process bundles `t` embeds: the app parser (`crates/js-runtime/js`, `just apps-bundle`) and documents (`crates/js-runtime/js`, `just documents-bundle`) |
-| `deploy/relay`, `deploy/vm`, `deploy/update` | relay container and Kubernetes manifests; sandbox VM image; Linux CLI tarball builder |
-| `vendor/` | patched `libsqlite3-sys`, `pbjson-types`, `a2a-client` |
-| `site/` | this website: Vite + React marketing page and the docs under `site/content/docs/` |
-| `assets/`, `.cargo/config.toml`, `rust-toolchain.toml` | images; cmake policy shim and aarch64-linux linker; `channel = "stable"` |
+| `scripts/` | packaging and release scripts, model fetching (`fetch-models.sh`), remote builds, smoke drivers (`scripts/apps/`, `scripts/durability-mesh/`, `scripts/restart-clarity/`, `scripts/telegram-live-proof/`) and `scripts/tests/` |
+| `bindings/` | generated, not committed: `openrpc.json` (the composed wire contract), `methods.json`, `typescript/`, `surface-catalog.json` |
+| `packages/apps`, `packages/documents` | TypeScript sources of the in-process bundles: the OpenUI app check/merge and Mermaid parse bundles (`just apps-bundle`) and the documents helper (`just documents-bundle`), both committed under `crates/js-runtime/js` |
+| `deploy/relay`, `deploy/share-edge`, `deploy/computer`, `deploy/vm`, `deploy/update` | link relay and iroh relay images, compose and Kubernetes manifests; the share edge (image, compose, systemd unit, Kubernetes); an engine in a container; the sandbox VM image; the Linux CLI tarball builder |
+| `vendor/` | patched `libsqlite3-sys`, `pbjson-types`, `a2a-client`, `flexaudio-os-macos` and `ptts`; each patch says why in the root `Cargo.toml` |
+| `site/` | this website: React Router (SPA mode) with the docs under `site/content/docs/` |
+| `assets/`, `.cargo/config.toml`, `rust-toolchain.toml` | images; cmake policy shim and the aarch64-linux linker and flags; `channel = "stable"` |
 
 There is no CI configuration in the repository; the gates below are run by
-hand (`just check`, `just clippy`, `just test`) and by the release scripts.
+hand (`just check`, `just clippy`, `just test`, `just durability`) and by the
+release scripts.
 
 ### Crates
 
-Each crate is a plugin unless marked library. The binary crate `theuth`
-builds `t`.
+The binary crate `theuth` builds `t`. Plugins implement `runtime::Plugin`
+and are started by `t`; crates marked *library* have no actor, config section
+or events of their own.
 
 | Crate | Purpose |
 |---|---|
-| `theuth` | the `t` binary: load config, start the plugin list, wait for shutdown |
-| `runtime` | the `Plugin` trait, `Runtime` handle, bus helpers, config line rewriting |
-| `tools` | tool registry, approval gate, `shell` and PTY jobs, file tools, MCP client |
-| `agent` | the model loop (genai), sqlite sessions, compaction, skills, subagents, the Python runtime |
-| `rpc` | JSON-RPC 2.0 over WebSocket, the `search` tool, ACP server, bindings export |
+| `theuth` | the `t` binary: load config, start the plugin list, compose the RPC module, `t mcp`, the Python worker |
+| `runtime` (library), `wire` (library) | the `Plugin` trait, `Runtime` handle, bus and config helpers; plugin-owned wire event contracts and the ordered event fanout |
+| `rpc`, `rpc-core`, `rpc-core-macros` (libraries), `rpc-compose` | JSON-RPC 2.0 over WebSocket, connection auth and engine discovery; plugin-free RPC contracts; per-method discovery descriptors; cross-plugin composition, the `search` tool and the ACP server |
+| `tools` | tool registry, approval gate, `shell` and PTY jobs, file tools, the MCP client |
+| `agent` | the model loop (genai), sqlite sessions, Fractal context, skills, subagents, the Python runtime |
 | `tui` | the terminal UI (iocraft) |
-| `desktop` | Tauri 2 shell: macOS menubar app, Windows and Linux desktop, iOS link client; UI under `desktop/ui` |
+| `desktop` | Tauri 2 shell: macOS menubar app, Windows and Linux desktop, iOS link client; UI under `desktop/ui`, native companions under `desktop/companion*` |
 | `secrets`, `oauth` (library) | encrypted vault; PKCE loopback login and token store |
-| `models` (library), `markdown` (library), `cursor` (library) | bundled models.dev catalog and ONNX init; streaming markdown; Cursor protocol client |
-| `web`, `scrape`, `search-providers`, `search`, `routes` | `search_web`/`read_url`, crawler, external engines, shared fuzzy matching, learned site routes |
-| `browser`, `computer` | embedded headless browser; screen, mouse and keyboard |
-| `codeindex`, `knowledge`, `document`, `artifact`, `app`, `surface` | code symbol index; knowledge bundle; Yjs documents; `show` files and PDFs; OpenUI apps; Mermaid/json-render catalog |
-| `schedule`, `tasks`, `roster`, `decision` | scheduled prompts; task board; agents as files; local decision oracle |
-| `link`, `relay`, `nodes`, `mesh`, `replica`, `sessionsync`, `sandbox`, `a2a`, `acp` | phone/browser uplink and the `theuth-relay` binary; remote harnesses; iroh engine mesh; replication; transcript sync; VM/ssh/docker engines; A2A network; ACP client |
+| `models`, `markdown`, `cursor`, `chat-common` (libraries) | bundled models.dev catalog; streaming markdown; Cursor protocol client; helpers the chat adapters share |
+| `web`, `scrape`, `search-providers`, `search` (library), `routes`, `firecrawl-native` (library) | `search_web`/`read_url`, crawler, external engines, shared fuzzy matching, learned site routes, vendored crawler heuristics |
+| `browser`, `computer`, `webprofile` | embedded headless browser; screen, pointer, accessibility tree and clipboard; the shared, mesh-replicated browser profile |
+| `codeindex`, `knowledge`, `document`, `artifact`, `app`, `surface` (library) | code symbol index; knowledge bundle; Yjs documents; `show` files and PDFs; OpenUI apps; Mermaid/json-render catalog |
+| `js-runtime` (library), `app-parser-stub` | the in-process `deno_core` runtime for the documents and app bundles; the `theuth-app-parser-<hash>` compatibility stub kept for installed updaters |
+| `schedule`, `tasks`, `roster`, `cells` | routines; task board; agents as files; user cells |
+| `decision`, `double`, `dreaming`, `autoresearch`, `evalcore` (library) | local decision oracle; the owner's double; the nightly routine; measured experiment loops; the eval core autoresearch and dreaming share |
+| `link`, `relay`, `nodes`, `mesh`, `replica`, `sessionsync`, `sandbox`, `a2a`, `acp` | phone/browser uplink and the `theuth-relay` binary; remote harnesses; iroh engine mesh; replication; transcript sync; ssh/docker/VM engines; A2A and contacts; ACP client |
+| `share`, `share-edge`, `share-proto` (library) | public sharing client plugin; the `theuth-share-edge` binary; their wire contract |
+| `mcp-server` (library) | theuth as an MCP server (started by `t` when `mcp_server.enabled`) |
 | `signal`, `slack`, `telegram` | the three channel frontends |
-| `voice`, `talk`, `meeting` | TTS, STT and dictation; live spoken conversation; meeting recorder |
-| `update`, `platform`, `firecrawl-native` | CLI self-update; OS primitives and the supported-platform matrix; vendored crawler heuristics |
+| `voice`, `voice-mlx` (library), `talk`, `meeting` | TTS, STT and dictation; Parakeet on MLX (Apple silicon); live spoken conversation; meeting recorder |
+| `update`, `platform` (library) | CLI self-update; OS primitives and the supported-platform matrix |
 
 ## Toolchain
 
@@ -65,12 +71,17 @@ builds `t`.
   (`brew install cmake llvm`; on Ubuntu `scripts/setup-ubuntu-build.sh`
   lists the apt packages and pins Bun 1.4.0). The first build downloads a
   prebuilt V8 archive; `RUSTY_V8_ARCHIVE` points at a local copy for offline
-  builds. ONNX Runtime 1.27.0 is the pinned runtime for speech and decision
-  models (`scripts/ort-version.env`).
-- Bun is needed only for the UIs and to rebuild the committed in-process
-  bundles; an installed `t` needs neither Node nor Bun at run time.
+  builds. ONNX Runtime 1.32.0 (with the WebGPU plugin execution provider
+  0.6.0) is the pinned runtime for speech and decision models
+  (`scripts/ort-version.env`).
+- Bun is needed only for the UIs, the site and to rebuild the committed
+  in-process bundles; an installed `t` needs neither Node nor Bun at run time.
 - Cross-compiling to aarch64-linux uses `scripts/aarch64-linux-lld-cc.sh`
-  as the linker (`.cargo/config.toml`).
+  as the linker with `+fp16` (`.cargo/config.toml`).
+- `target/` hygiene: the dev profile keeps line tables only (`--profile
+  dev-full` for a debugger), gates build with `CARGO_INCREMENTAL=0` unless you
+  set it, and `just sweep [days]` (needs `cargo install cargo-sweep`) removes
+  artifacts no build used for three days.
 
 ### Platforms
 
@@ -79,23 +90,22 @@ From `crates/platform/src/target.rs`:
 | Host | Architectures | Floor |
 |---|---|---|
 | macOS | arm64, x86_64 | macOS 15; shipped packages are arm64 only |
-| Windows | x86_64, arm64 | Windows 10 22H2 |
-| Linux | x86_64, arm64 | glibc 2.35 declared; the shipped CLI tarballs are built on Ubuntu 24.04 and need glibc 2.39; musl unsupported |
+| Windows | x86_64, arm64 | Windows 10 22H2; meetings need Windows 11 |
+| Linux | x86_64, arm64 | glibc 2.35 declared; the shipped CLI tarballs are built on Ubuntu 24.04 and need glibc 2.39; systemd user sessions for the service, PipeWire 0.3 or later for meetings; musl unsupported |
 | iOS (link client only) | arm64 | iOS 17 |
 | Android (link client only) | arm64 | minSdk 26; no build recipe in the repository |
 
-The release pipeline can produce: the macOS app and CLI (arm64), Linux CLI
-tarballs (x86_64, arm64), Linux desktop `.deb`/`.rpm`/`.AppImage` (x86_64),
-a Windows installer and CLI zip (x86_64). Which of these ship for a given
-version depends on that release; Linux and Windows desktop builds are the
-least exercised. Meeting capture is full on macOS 15 and partial (no echo
-cancellation) on Windows and Linux.
+The release pipeline can produce: the macOS app (with the native companion
+nested inside) and CLI (arm64), Linux CLI tarballs (x86_64, arm64), Linux
+desktop `.deb`/`.rpm`/`.AppImage` (x86_64), a Windows installer and CLI zip
+(x86_64). Which of these ship for a given version depends on that release;
+Linux and Windows desktop builds are the least exercised.
 
 ## Everyday recipes
 
 ```sh
 just setup                      # toolchain
-just check                      # cargo check --workspace --all-targets
+just check                      # both *-bundle-check recipes, then cargo check --workspace --all-targets
 just clippy                     # cargo clippy --workspace --all-targets -- -D warnings
 just fmt                        # cargo fmt --all
 just test                       # cargo test --workspace
@@ -103,11 +113,13 @@ just test -p tools              # one crate (ARGS pass through)
 cargo test -p tools gate        # one crate, tests matching "gate"
 just run -- --headless          # debug build, runs t
 just run -- --data-dir /tmp/theuth-dev   # a scratch data dir
-just ts                         # TypeScript bindings → bindings/ (cargo test -p rpc --features ts --lib export_bindings)
+just ts                         # wire contract → bindings/, then TypeScript → bindings/typescript
 just ts-desktop                 # the same plus a copy into crates/desktop/ui/src/rpc/bindings
-just helper                     # cargo → the theuth-app-parser-<hash> compatibility stub (updaters only)
-just apps-bundle                # bun → rebuild the in-process app parser bundles in crates/js-runtime/js
+just wire-schema                # bindings/openrpc.json only (cargo test -p theuth --bin t export_bindings)
+just wire-schema-accept         # copy it over the tracked baseline after review
+just apps-bundle                # bun → rebuild the in-process app and mermaid bundles in crates/js-runtime/js
 just documents-bundle           # bun → rebuild the in-process documents bundle in crates/js-runtime/js
+just helper                     # cargo → the theuth-app-parser-<hash> compatibility stub (updaters only)
 just install                    # release t + the app-parser stub into ~/.cargo/bin (or $THEUTH_INSTALL_BIN)
 just models                     # refresh crates/models/data/models.json from models.dev
 just models-check               # fail when the committed catalog drifted
@@ -121,12 +133,24 @@ it:
 THEUTH_RPC__LISTEN=127.0.0.1:7791 ./target/debug/t --headless --data-dir /tmp/theuth-x
 ```
 
-The app parser and the documents helper run inside `t`. Their bundles are
-committed under `crates/js-runtime/js`; only a
-TypeScript change in `packages/apps` or `packages/documents` needs
-`just apps-bundle` / `just documents-bundle` (`just check` runs both
-`*-bundle-check` recipes). Release layouts still carry the
-`theuth-app-parser-<hash>` compatibility stub beside `t` for installed updaters.
+The app parser, the Mermaid checker and the documents helper run inside `t`
+on their own `deno_core` threads (`crates/js-runtime`); there is no
+`theuth-documents` or app-parser helper process any more. Their bundles are
+committed under `crates/js-runtime/js`; only a TypeScript change in
+`packages/apps` or `packages/documents` needs `just apps-bundle` /
+`just documents-bundle`, and `just check` fails while a bundle is stale.
+Release layouts still carry the `theuth-app-parser-<hash>` stub beside `t`
+for installed updaters.
+
+### The wire contract
+
+`just wire-schema` writes the composed contract the running engine serves
+(OpenRPC 1.3.2 with an `x-theuth` event catalog) to `bindings/openrpc.json`.
+The test `wire_schema_snapshot` compares it with the tracked baseline
+`crates/theuth/tests/fixtures/wire/openrpc-v1.json` and fails on any change,
+additive ones included; review the classified report, then run
+`just wire-schema-accept`. `just ts` generates the TypeScript client from
+the same file (`bun run wire:generate` in `crates/desktop/ui`).
 
 ### Desktop
 
@@ -135,59 +159,80 @@ just desktop                    # bindings, cargo build -p theuth, bun install, 
 just desktop-check              # cd crates/desktop/ui && bun run check && bun run test && bun run build
 just web-build                  # static browser UI → crates/desktop/ui/dist, served by theuth-relay --web
 just package-macos              # theuth.app + DMG (ad-hoc unless THEUTH_SIGN_IDENTITY or .env.signing)
+just install-macos              # copy the last package to /Applications
 just package-linux              # .deb/.rpm/.AppImage with the t sidecar, on a Linux host
 just package-windows            # NSIS installer + CLI zip, on a Windows host (pwsh 7)
-just package-ios                # signed IPA for TestFlight
+just package-ios                # signed IPA (just testflight uploads it)
+just companion                  # the macOS companion (needs Xcode) → target/release/companion/
+just companion-windows-test     # the Windows companion's portable half and its xUnit suites (.NET 10)
 ```
 
 The Tauri config (`crates/desktop/tauri.conf.json`) serves the Vite dev
 server on port 1420, builds `ui/dist`, bundles `t` as the external binary
-and reads the updater manifest from the release bucket. `just desktop` runs
-against `target/debug/t` (or `$THEUTH_BIN`) and honours `THEUTH_DATA_DIR`.
-The UI tests are vitest (`src/**/*.test.ts`); `bun run check` is
-`tsc -b --noEmit`.
+(`tauri.bundle.conf.json`) and reads the updater manifest from the release
+bucket. `just desktop` runs against `target/debug/t` (or `$THEUTH_BIN`) and
+honours `THEUTH_DATA_DIR`. The UI tests are vitest (`src/**/*.test.ts`);
+`bun run check` is `tsc -b --noEmit`.
 
-### Relay and this site
+### Relay, share edge and this site
 
 ```sh
 just relay                      # cargo run -p relay -- --listen 127.0.0.1:8787
 just site-build                 # cd site && bun install && bun run build → site/dist
 theuth-relay --web crates/desktop/ui/dist --site site/dist     # serve both; --site-listen defaults to 0.0.0.0:8788
+just relay-docker-push [tag]    # multi-arch relay image
+just iroh-relay-docker-push [tag]   # the stock iroh-relay for the mesh, pinned to the workspace iroh
+just share-edge-docker-push [tag]   # multi-arch theuth-share-edge image
 ```
 
-The site is a Vite + React project (`site/package.json`: `dev`, `build` =
-`tsc -b && vite build`, `preview`); its config reads the product version
-from `crates/desktop/tauri.conf.json` and the latest release manifest at
-build time. The documentation you are reading lives as MDX under
-`site/content/docs/` with one `meta.json` per section; it is built with the
-rest of the site and served by the relay container (`deploy/relay`), which
-exposes the browser UI on 8787 and the site on 8788.
+The site is a React Router project in SPA mode with Fumadocs
+(`site/package.json`: `dev`, `check` = `tsc -b` plus `scripts/check-docs.ts`,
+`build` = check, `react-router build` and `scripts/finish.ts`). Every docs
+page is prerendered to static HTML; `check-docs.ts` validates front matter,
+slugs, `meta.json` entries and every internal `/docs` link. The version comes
+from `crates/desktop/tauri.conf.json` and the latest release manifest at build
+time. The documentation lives as MDX under `site/content/docs/` with one
+`meta.json` per section and is served by the relay container
+(`deploy/relay`), which exposes the browser UI on 8787 and the site on 8788.
 
 ### Release
 
 `just bump-version <major|minor|patch|x.y.z>` edits `Cargo.toml`,
 `tauri.conf.json` and `Cargo.lock`. `just release` runs the macOS pipeline
 (package, notarize, update payloads, publish, tag); Windows and Linux
-artifacts are built first with `just build-remote <host> windows|linux`, and
-`just release-update` publishes any platform the live version is missing.
-Signing, notarization and publishing credentials come from a local
-`.env.signing` file whose variable names are listed in `.env.signing.example`.
-Sandbox VM images are built with `just vm-image <tag>`.
+artifacts are built first with `just build-remote <host> windows|linux`
+(`--no-wait` and `--resume` for long builds), the linux-aarch64 CLI tarball
+with `just stage-linux`, and `just release-update` publishes any platform the
+live version is missing. When a model origin or the ONNX Runtime pin changed,
+`just release-models` publishes the model files first. Signing, notarization
+and publishing credentials come from a local `.env.signing` file whose
+variable names are listed in `.env.signing.example`. Sandbox VM images are
+built with `just vm-image <tag>`.
 
 ## Testing
 
 - `cargo test --workspace` runs unit tests, doctests and the integration
   tests under `crates/*/tests/` (web SSRF and engine tests, codeindex,
-  replica loopback sync, document actor, artifact readers, decision and
-  meeting oracles, sandbox engines, browser live tests). No nextest.
+  replica and session sync, the MCP server catalogue, the share edge, the
+  shared browser profile, the in-process JS bundles' golden files, decision
+  and meeting oracles, sandbox engines, browser live tests, the wire
+  snapshot). No nextest.
+- `just durability`: the crash-injection suite (every crash point, drain and
+  suspend, journal store, reaper, waits, ACP respawn, jobs and PTY), about a
+  minute on an M-series laptop.
+- `just durability-mesh`: the two-engine rows in process (about 15 s);
+  `just durability-mesh smoke` adds the scripted run against two real
+  engines (about 7 min; needs bun and free ports 7931, 7932, 7941, 7942,
+  7950).
+- `just restart-clarity [P1..P6]`: one real engine with a real `omp` child,
+  `kill -9` and reboot (about 8 min; needs bun, omp and ports 7960 to 7966).
 - Frontend: vitest in `crates/desktop/ui`; `bun test` in `packages/apps` and
-  `packages/documents`.
+  `packages/documents`; `just companion-windows-test` for the Windows
+  companion.
 - Smoke drivers that talk to a running `t --headless` over WebSocket live in
   `scripts/apps/` (apps, steering, relay) and `scripts/codemap-smoke.ts`;
   `scripts/tests/fetch-models-test.sh` exercises the model fetcher against a
   fake origin.
-- `just ts` uses `--lib` so cargo does not also link `tests/prompts.rs`; the
-  bindings export is itself a test (`export_bindings`).
 
 ## Writing a plugin
 
@@ -197,6 +242,7 @@ The contract is small. From `crates/runtime/src/lib.rs`:
 #[async_trait]
 pub trait Plugin: Send {
     fn name(&self) -> &'static str;
+    async fn declare_wire(&mut self, _rt: &Runtime) -> anyhow::Result<()> { Ok(()) }
     async fn start(self: Box<Self>, rt: &Runtime) -> anyhow::Result<()>;
 }
 ```
@@ -206,6 +252,8 @@ shutdown token. Plugins talk to each other only through typed **events** on
 the bus (`rt.publish`, `rt.subscribe`) and **commands** (`ask` on an actor
 found by name through `rt.lookup_when::<A>(name)`). There is no shared event
 enum, no shared config struct, and no handle threading through `main`.
+`declare_wire` runs for every plugin before any `start`, so event contracts
+exist before their producers.
 
 The steps, each confirmed against the code:
 
@@ -213,13 +261,14 @@ The steps, each confirmed against the code:
    name the alternative they beat, the config section with every key and
    default, the commands and events exactly as declared, the tools with
    their `Risk`, the UI surface, what lives on disk, and a runnable check
-   per step. Amend the architecture document in the same commit.
+   per step.
 2. **Crate.** `crates/foo` with `[lints] workspace = true`, a
    `pub const FOO_ACTOR: &str`, a `FooConfig` that is `#[serde(default)]`
    and read with `rt.section::<FooConfig>("foo")` (a missing section is an
-   error you turn into `Default`), events as structs with
-   `#[serde(tag = "type")]`, `Serialize + Deserialize + JsonSchema` and, behind
-   a `ts` feature, `ts_rs::TS`.
+   error you turn into `Default`), and wire-visible types that are
+   `Serialize + Deserialize + JsonSchema`. Events implement
+   `wire::WireEvent` and are registered with
+   `rt.register_wire_event::<E>()` in `declare_wire`.
 3. **`start`.** Read the config; when disabled or broken, log and return
    `Ok(())` so the harness still runs. Spawn the actor and register it under
    `FOO_ACTOR`. Do cross-plugin registration in a task after
@@ -230,24 +279,29 @@ The steps, each confirmed against the code:
    `reg.ask(tools::RegisterTool(Arc::new(tool)))` after
    `rt.lookup_when::<tools::ToolRegistry>(tools::REGISTRY_ACTOR)`. A prompt
    block goes through `tools::RegisterPrompt { plugin, text }`.
-5. **Integrate.** Add the plugin to `engine_plugins()` in
-   `crates/theuth/src/main.rs`, a commented section to `DEFAULT_CONFIG`
-   there, an `Api` method in `crates/rpc/src/api.rs` (lookup + ask) with
-   events added to `forward!` in `bridge.rs` and to `export.rs`, and the
-   TUI command, event and render arms.
-6. **Verify.** `just check`, `just clippy`, `just test`,
-   `cargo check -p rpc --features ts`, a headless smoke over RPC including
-   `enabled: false`, and a Status section in the design doc saying what was
-   exercised.
+5. **RPC.** The crate owns its methods: a jsonrpsee `#[rpc(server, client)]`
+   trait in `src/rpc.rs` with `#[rpc_core_macros::rpc_descriptors(owner =
+   "foo", ...)]`, implemented on `rpc_core::Server` (lookup plus one `ask`),
+   exported as `rpc_module(server) -> rpc_core::DescribedModule`.
+6. **Integrate.** Add the plugin to `engine_plugins()` and its module to
+   `rpc_composition()` in `crates/theuth/src/main.rs`, a commented section
+   to `DEFAULT_CONFIG` there, and the TUI command, event and render arms.
+   The test `real_composition_descriptors_match_served_methods` fails when a
+   served method has no descriptor.
+7. **Verify.** `just check`, `just clippy`, `just test`, `just wire-schema`
+   and, after reviewing the change, `just wire-schema-accept`; a headless
+   smoke over RPC including `enabled: false`, and a Status section in the
+   design doc saying what was exercised.
 
 Nothing reads another plugin's config section or calls into its state
-directly. Libraries (`models`, `markdown`, `oauth`, `cursor`) have no actor,
-config or events and are deliberately not plugins.
+directly. Libraries have no actor, config or events and are deliberately not
+plugins.
 
 ## Public surfaces to code against
 
-- `bindings/methods.json` and `bindings/*.ts`: the RPC surface a frontend
-  codes against; regenerate with `just ts`.
+- `bindings/openrpc.json`, `bindings/methods.json` and
+  `bindings/typescript/`: the RPC methods and event topics a frontend codes
+  against; regenerate with `just ts`.
 - `bindings/surface-catalog.json`: the JSON schema of the json-render
   blocks a reply may contain.
 - `docs/plugins.md`: the full plugin guide the steps above summarise.
