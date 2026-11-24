@@ -176,7 +176,17 @@ where
         .put_name(&edge, &info.domain, &granted.name, NameKind::Reserved)
         .await?;
     engine.store.set_primary(&id).await?;
+    refresh(engine).await;
     held(engine, &granted.name).await
+}
+
+/// After a claim or release: the link's welcome lists the names as the edge now holds them.
+/// The `share_names` row already records the change, so a failed refresh only leaves the
+/// edge's state of the name unknown until the next `hello`.
+async fn refresh(engine: &Engine) {
+    if let Err(e) = engine.refresh_welcome().await {
+        tracing::warn!("share: welcome refresh after a name change: {e:#}");
+    }
 }
 
 /// `share_names_release`: stop the name's shares on every machine, then `DELETE` it.
@@ -194,6 +204,7 @@ pub async fn release(engine: &Engine, name: &str) -> anyhow::Result<share_proto:
         .await?;
     let id = format!("{}/{}/{name}", info.edge_id, info.domain);
     engine.store.release_name(&id, platform::time::now_ms()).await?;
+    refresh(engine).await;
     Ok(r)
 }
 
