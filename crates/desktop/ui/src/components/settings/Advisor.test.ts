@@ -99,7 +99,8 @@ const open = () => act(async () => void trigger().click())
 
 test('194: a default advisor model with efforts shows its effort and chips; a chip calls set_advisor_default_effort', async () => {
   advisor = { ...advisor, model: sonnet.id, effort: 'high' }
-  await mount('Claude Sonnet 4.5 · high')
+  // 215 C4: the quiet trigger's effort is its own span beside the name (no space in textContent).
+  await mount('Claude Sonnet 4.5· high')
   await open()
   const chips = [...document.querySelectorAll<HTMLElement>('[aria-label="Effort"] > *')]
   expect(chips.map((c) => c.textContent)).toEqual(['Default', 'low', 'high'])
@@ -117,7 +118,7 @@ test('194: the None row shows no chips', async () => {
 
 test('194: a model pick that drops the effort shows it: the trigger loses `· effort`, the Default chip is selected', async () => {
   advisor = { ...advisor, model: sonnet.id, effort: 'low' }
-  await mount('Claude Sonnet 4.5 · low')
+  await mount('Claude Sonnet 4.5· low')
   await open()
   // The selected chip carries the check mark (under a favorite/provider row the chips are cmdk items, no `aria-pressed`).
   const pressed = () => [...document.querySelectorAll<HTMLElement>('[aria-label="Effort"] > *')].filter((c) => c.querySelector('svg')).map((c) => c.textContent)

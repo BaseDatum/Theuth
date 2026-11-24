@@ -51,7 +51,7 @@ async function render(): Promise<string> {
 test('148: new sessions shows the live default with its effort; subagents reads subagent_model; theuth reads theuth_agent_model with "Same as new sessions" when unset', async () => {
   info = { default_model: sonnet.id, default_effort: 'high' }
   const html = await render()
-  expect(html).toMatch(/aria-label="New sessions model"[^>]*>.*?Claude Sonnet 4\.5 · high<\/span>/s)
+  expect(html).toMatch(/aria-label="New sessions model"[^>]*>.*?Claude Sonnet 4\.5<\/span><span class="shrink-0">· high<\/span>/s)
   expect(html).toContain('Picking a model inside a chat changes only that chat.')
   expect(html).toMatch(/aria-label="Subagent model"[^>]*>.*?Claude Haiku 4\.5<\/span>/s)
   expect(html).toContain('External harnesses (omp, OpenCode) keep their own model.')
@@ -67,7 +67,7 @@ test('148: the new-sessions row follows DefaultModelChanged (the Info patch), an
   info = { default_model: haiku.id, default_effort: 'high' }
   const html = await render()
   expect(html).toMatch(/aria-label="New sessions model"[^>]*>.*?Claude Haiku 4\.5<\/span>/s)
-  expect(html).not.toContain('Claude Haiku 4.5 · high')
+  expect(html).not.toContain('Claude Haiku 4.5</span><span class="shrink-0">· high')
 })
 
 // ── 194: the Subagents and theuth agent rows carry their effort chips ──────────────────────────────────────────────
@@ -93,7 +93,8 @@ test('194: a subagent model with efforts shows its stored effort and chips; a ch
   info = { default_model: sonnet.id }
   api.subagent_model.mockImplementation(async () => sonnet)
   api.subagent_effort.mockImplementation(async () => 'high')
-  await mount('Subagent model', 'Claude Sonnet 4.5 · high')
+  // 215 C4: the quiet trigger's effort is its own span beside the name (no space in textContent).
+  await mount('Subagent model', 'Claude Sonnet 4.5· high')
   await open('Subagent model')
   expect(chips().map((c) => c.textContent)).toEqual(['Default', 'low', 'high'])
   const reads = api.subagent_effort.mock.calls.length
