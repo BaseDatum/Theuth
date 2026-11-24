@@ -17,8 +17,9 @@ use parking_lot::Mutex;
 use tokio::sync::Semaphore;
 
 use crate::model::Access;
+use crate::page::{self, fail, html, wants_html};
 use crate::proxy::{Body, BoxError, full, text};
-use crate::routes::Mount;
+use crate::routes::{Mount, normalize_host};
 
 /// Gate endpoints below a mount (never forwarded upstream).
 pub const CONTINUE_PATH: &str = "/.theuth-share/continue";
@@ -225,7 +226,7 @@ impl Gate {
             };
             if !ok {
                 return Step::Respond(if navigate {
-                    html(StatusCode::UNAUTHORIZED, &password_page(m, false))
+                    html(StatusCode::UNAUTHORIZED, password_page(m, false))
                 } else {
                     text(StatusCode::UNAUTHORIZED, "password required")
                 });
@@ -239,7 +240,7 @@ impl Gate {
                 .is_some_and(|a| a.contains("text/html"))
             && self.signed(headers, &seen_cookie(&m.share)).as_deref() != Some(m.share.as_str())
         {
-            return Step::Respond(html(StatusCode::OK, &self.interstitial_page(m)));
+            return Step::Respond(html(StatusCode::OK, self.interstitial_page(m)));
         }
         Step::Pass
     }
@@ -247,7 +248,13 @@ impl Gate {
     /// `POST …/continue`: set the cookie and go back to the mount.
     pub fn proceed(&self, m: &Mount, headers: &HeaderMap) -> Response<Body> {
         if !same_origin(headers) {
-            return text(StatusCode::FORBIDDEN, "cross-site request refused");
+            let nav = wants_html(headers);
+            return fail(
+                StatusCode::FORBIDDEN,
+                "cross-site request refused",
+                nav,
+                Some(&shown(m)),
+            );
         }
         let mut r = redirect(&format!("{}/", m.prefix));
         r.headers_mut().append(
@@ -263,8 +270,11 @@ impl Gate {
         B: hyper::body::Body<Data = Bytes> + Send + 'static,
         B::Error: Into<BoxError>,
     {
+        let nav = wants_html(req.headers());
+        let host = shown(m);
+        let fail = |status, msg| fail(status, msg, nav, Some(&host));
         if !same_origin(req.headers()) {
-            return text(StatusCode::FORBIDDEN, "cross-site request refused");
+            return fail(StatusCode::FORBIDDEN, "cross-site request refused");
         }
         {
             let mut a = self.attempts.lock();
@@ -273,23 +283,23 @@ impl Gate {
             let e = a.entry(limiter_key(ip)).or_insert((now, 0));
             e.1 += 1;
             if e.1 > ATTEMPTS_PER_MIN {
-                return text(
+                return fail(
                     StatusCode::TOO_MANY_REQUESTS,
                     "too many attempts, wait a minute",
                 );
             }
         }
         let Some(phc) = self.passwords.lock().get(&m.share).map(|(h, _)| h.clone()) else {
-            return text(StatusCode::UNAUTHORIZED, "password required");
+            return fail(StatusCode::UNAUTHORIZED, "password required");
         };
         let Ok(body) = Limited::new(req.into_body(), 4096).collect().await else {
-            return text(StatusCode::PAYLOAD_TOO_LARGE, "too large");
+            return fail(StatusCode::PAYLOAD_TOO_LARGE, "too large");
         };
         let body = body.to_bytes();
         let password = form_field(&body, "password").unwrap_or_default();
         if self.waiting.fetch_add(1, Ordering::SeqCst) >= HASH_QUEUE + HASHING {
             self.waiting.fetch_sub(1, Ordering::SeqCst);
-            return text(StatusCode::TOO_MANY_REQUESTS, "busy, try again");
+            return fail(StatusCode::TOO_MANY_REQUESTS, "busy, try again");
         }
         let ok = {
             let _permit = self.hashing.acquire().await;
@@ -299,7 +309,7 @@ impl Gate {
         };
         self.waiting.fetch_sub(1, Ordering::SeqCst);
         if !ok {
-            return html(StatusCode::UNAUTHORIZED, &password_page(m, true));
+            return html(StatusCode::UNAUTHORIZED, password_page(m, true));
         }
         let mut r = redirect(&format!("{}/", m.prefix));
         if let Some(v) = self.pass_value(&m.share) {
@@ -313,59 +323,22 @@ impl Gate {
 
     fn interstitial_page(&self, m: &Mount) -> String {
         let op = self.operator.lock().clone();
-        let operator = if op.name.is_empty() {
-            "the edge's operator".into()
-        } else {
-            escape(&op.name)
-        };
-        let report = if op.abuse_url.is_empty() {
-            String::new()
-        } else {
-            format!(
-                r#" <a href="{}" rel="noopener">Report abuse ↗</a>"#,
-                escape(&op.abuse_url)
-            )
-        };
-        page(&format!(
-            "<p>This is an app a theuth user is sharing from their own computer. Neither theuth nor \
-             {operator} checked it. Don't enter passwords you use elsewhere.{report}</p>\
-             <form method=post action=\"{}{CONTINUE_PATH}\"><button>Continue</button></form>",
-            escape(&m.prefix)
-        ))
+        page::interstitial(
+            &shown(m),
+            &format!("{}{CONTINUE_PATH}", m.prefix),
+            &op.name,
+            &op.abuse_url,
+        )
     }
 }
 
+/// The address a visitor sees on a gate page: host and mount prefix.
+fn shown(m: &Mount) -> String {
+    format!("{}{}", normalize_host(&m.host), m.prefix)
+}
+
 fn password_page(m: &Mount, wrong: bool) -> String {
-    page(&format!(
-        "<p>{}</p><form method=post action=\"{}{LOGIN_PATH}\"><input type=password name=password \
-         autofocus autocomplete=off><button>Open</button></form>",
-        if wrong {
-            "Wrong password."
-        } else {
-            "This share needs a password."
-        },
-        escape(&m.prefix)
-    ))
-}
-
-fn page(body: &str) -> String {
-    format!(
-        "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width\">\
-         <title>Shared with theuth</title><body style=\"font:16px system-ui;max-width:36em;margin:4em auto\">{body}"
-    )
-}
-
-fn html(status: StatusCode, body: &str) -> Response<Body> {
-    let mut r = Response::new(full(body.to_owned()));
-    *r.status_mut() = status;
-    let h = r.headers_mut();
-    h.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/html; charset=utf-8"),
-    );
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    h.insert("x-frame-options", HeaderValue::from_static("DENY"));
-    r
+    page::password(&shown(m), &format!("{}{LOGIN_PATH}", m.prefix), wrong)
 }
 
 fn redirect(to: &str) -> Response<Body> {
@@ -379,13 +352,6 @@ fn redirect(to: &str) -> Response<Body> {
 
 fn same_origin(h: &HeaderMap) -> bool {
     h.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("same-origin")
-}
-
-fn escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 fn form_field(body: &[u8], name: &str) -> Option<String> {
@@ -440,6 +406,73 @@ mod tests {
         h.insert("sec-fetch-mode", HeaderValue::from_static("navigate"));
         h.insert("accept", HeaderValue::from_static("text/html"));
         h
+    }
+
+    async fn body_of(r: Response<Body>) -> String {
+        String::from_utf8(r.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap()
+    }
+
+    /// The interstitial as served: styled, the form posts to the continue path, the operator's
+    /// abuse link is kept, and the host is escaped.
+    #[tokio::test]
+    async fn interstitial_page_served() {
+        let g = Gate::new(Key::generate());
+        g.set_operator(Operator {
+            name: "tun.zip".into(),
+            abuse_url: "https://tun.zip/abuse".into(),
+        });
+        let mount = Mount {
+            host: "h3renow.sky.tun.zip".into(),
+            ..m(Access::Public)
+        };
+        let Step::Respond(r) = g.step(&mount, "/", &Method::GET, &nav()) else {
+            panic!("no interstitial");
+        };
+        assert_eq!(
+            r.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(r.headers()["x-frame-options"], "DENY");
+        let p = body_of(r).await;
+        assert!(p.contains("<meta name=color-scheme content=\"light dark\">"));
+        assert!(p.contains("prefers-color-scheme:dark"));
+        assert!(p.contains("<h1>h3renow.sky.tun.zip</h1>"));
+        assert!(p.contains(&format!("<form method=post action=\"{CONTINUE_PATH}\">")));
+        assert!(p.contains("<button>Continue to h3renow.sky.tun.zip</button>"));
+        assert!(p.contains("Neither theuth nor tun.zip checked it."));
+        assert!(p.contains("href=\"https://tun.zip/abuse\""));
+        assert!(!p.contains("<script") && !p.contains("<link") && !p.contains("src="));
+
+        let evil = Mount {
+            host: "a<b>\".sky.tun.zip".into(),
+            prefix: "/p\"<x>".into(),
+            ..m(Access::Public)
+        };
+        let Step::Respond(r) = g.step(&evil, "/", &Method::GET, &nav()) else {
+            panic!("no interstitial");
+        };
+        let p = body_of(r).await;
+        assert!(!p.contains("<b>") && !p.contains("<x>"));
+        assert!(p.contains("a&lt;b&gt;&quot;.sky.tun.zip/p&quot;&lt;x&gt;"));
+        assert!(p.contains("action=\"/p&quot;&lt;x&gt;/.theuth-share/continue\""));
+    }
+
+    /// A navigation that is refused gets the styled page; a script gets the plain text.
+    #[test]
+    fn refusal_follows_navigation() {
+        let g = Gate::new(Key::generate());
+        let mount = m(Access::Public);
+        let r = g.proceed(&mount, &nav());
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            r.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        let r = g.proceed(&mount, &HeaderMap::new());
+        assert_eq!(
+            r.headers()[header::CONTENT_TYPE],
+            "text/plain; charset=utf-8"
+        );
     }
 
     #[tokio::test]
