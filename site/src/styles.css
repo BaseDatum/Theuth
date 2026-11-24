@@ -4,7 +4,7 @@
 @import "@fontsource-variable/geist-mono/wght.css";
 
 /* theuth palette (docs/design/25-desktop.md §2.4). Dark is the default: bone on soot. Light is the alternate.
-   No #000, no #FFF, no blue. Accent only on focus rings, the active install tab, the primary button, the ibis eye. */
+   No #000, no #FFF, no blue. Accent only on focus rings, the active install tab, the primary button, the pen bar of the Θ mark. */
 :root {
   color-scheme: dark;
   --page: #12100e;

@@ -1,4 +1,4 @@
-// Design 134 W2 — renders the tray sprites (theuth's glyph from crates/desktop/icons/tray.svg + the count badge) into
+// Design 134 W2 — renders the tray sprites (theuth's Θ-moon glyph from crates/desktop/icons/tray.svg + the count badge) into
 // multi-size .ico files: tray-<dark|light>-<0…9|9plus>.ico, PNG entries at 16/20/24/32/40/48 px. "dark" = a dark taskbar
 // (white glyph), "light" = a light taskbar (black glyph). 149 NATIVE: monochrome like Windows 11's own tray icons — the count
 // badge is the glyph colour's disc with the taskbar colour's digits (white disc · black digits on a dark taskbar, and the inverse);
@@ -19,14 +19,22 @@ func color(_ hex: UInt32, _ a: CGFloat = 1) -> CGColor {
     CGColor(colorSpace: srgb, components: [CGFloat((hex >> 16) & 0xff) / 255, CGFloat((hex >> 8) & 0xff) / 255, CGFloat(hex & 0xff) / 255, a])!
 }
 
-/// tray.svg in its own units (viewBox 60 60 904 904, y down): the head + beak, the eye is cut out separately.
+/// tray.svg in its own units (assets/brand/theta-mark-mono.svg, viewBox 14 14 92 92, y down): T0 "Theta moon", the
+/// small-size cut — a crescent ring (outer disc minus an offset inner disc, even-odd) and the reed-pen bar.
 func glyph() -> CGPath {
     let p = CGMutablePath()
-    p.addEllipse(in: CGRect(x: 640 - 165, y: 340 - 165, width: 330, height: 330))
-    p.move(to: CGPoint(x: 660, y: 178))
-    p.addCurve(to: CGPoint(x: 186, y: 846), control1: CGPoint(x: 400, y: 196), control2: CGPoint(x: 230, y: 470))
-    p.addLine(to: CGPoint(x: 244, y: 890))
-    p.addCurve(to: CGPoint(x: 600, y: 500), control1: CGPoint(x: 300, y: 570), control2: CGPoint(x: 400, y: 380))
+    p.addEllipse(in: CGRect(x: 18, y: 18, width: 84, height: 84))
+    p.addEllipse(in: CGRect(x: 27.5, y: 24, width: 72, height: 72))
+    return p
+}
+
+func bar() -> CGPath {
+    let p = CGMutablePath()
+    p.move(to: CGPoint(x: 24, y: 56))
+    p.addLine(to: CGPoint(x: 85, y: 56))
+    p.addLine(to: CGPoint(x: 99.5, y: 60))
+    p.addLine(to: CGPoint(x: 85, y: 64))
+    p.addLine(to: CGPoint(x: 24, y: 64))
     p.closeSubpath()
     return p
 }
@@ -41,14 +49,14 @@ func render(size s: Int, label: String?, lightTaskbar: Bool) -> Data {
     ctx.saveGState()
     ctx.translateBy(x: 0, y: S)
     ctx.scaleBy(x: 1, y: -1)
-    let k = S / 904
+    let k = S / 92
     ctx.scaleBy(x: k, y: k)
-    ctx.translateBy(x: -60, y: -60)
+    ctx.translateBy(x: -14, y: -14)
     ctx.setFillColor(lightTaskbar ? color(0x000000) : color(0xffffff))
     ctx.addPath(glyph())
+    ctx.fillPath(using: .evenOdd)
+    ctx.addPath(bar())
     ctx.fillPath()
-    ctx.setBlendMode(.clear)
-    ctx.fillEllipse(in: CGRect(x: 610 - 36, y: 288 - 36, width: 72, height: 72))
     ctx.restoreGState()
 
     if let label {

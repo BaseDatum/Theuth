@@ -26,15 +26,21 @@ function detectOs(): Os {
   return "macos";
 }
 
-/** The brand mark (crates/desktop/icons): compact skull, one disk for an eye, a beak that tapers into a reed-pen nib. */
-function Ibis({ size = 22 }: { size?: number }) {
+/** The brand mark (assets/brand, T0 "Theta moon"): a Θ whose ring is a crescent moon and whose bar is a reed pen in ochre. */
+function Theta({ size = 22 }: { size?: number }) {
   return (
-    <svg viewBox="60 60 904 904" width={size} height={size} aria-hidden>
-      <g fill="currentColor">
-        <circle cx="640" cy="340" r="165" />
-        <path d="M 660 178 C 400 196, 230 470, 186 846 L 244 890 C 300 570, 400 380, 600 500 Z" />
-      </g>
-      <circle cx="610" cy="288" r="36" className="fill-accent" />
+    <svg viewBox="14 14 92 92" width={size} height={size} aria-hidden>
+      <path fill="currentColor" fillRule="evenodd" d="M18 60 a42 42 0 1 0 84 0 a42 42 0 1 0 -84 0 Z M27 60 a37 37 0 1 0 74 0 a37 37 0 1 0 -74 0 Z" />
+      <path fill="#b4531e" d="M24 56.5 H86 L101 60 L86 63.5 H24 Z" />
+    </svg>
+  );
+}
+
+/** The wordmark (assets/brand/wordmark.svg): "theuth" set in Copperplate, outlined, in `currentColor`. */
+function Wordmark({ height = 13 }: { height?: number }) {
+  return (
+    <svg viewBox="0 0 579.76 76" height={height} width={(height * 579.76) / 76} role="img" aria-label="theuth">
+      <path fill="currentColor" d="m 24.8,71.36 q 0.8,0 1.6,-0.48 0.8,-0.64 0.8,-1.92 V 15.68 H 6.4 Q 5.12,15.68 4,16.32 2.88,16.96 2.88,18.4 H 0 V 0 h 2.88 q 0,2.24 1.12,3.04 1.12,0.8 2.4,0.8 h 56.96 q 1.28,0 2.4,-0.8 1.12,-0.8 1.12,-3.04 h 2.88 v 18.4 h -2.88 q 0,-1.44 -1.12,-2.08 -1.12,-0.64 -2.4,-0.64 h -20.8 v 53.28 q 0,2.4 2.88,2.4 v 2.88 H 24.8 Z m 87.92,-2.4 q 0,1.28 0.64,1.92 0.8,0.48 1.76,0.48 v 2.88 H 94.96 v -2.88 q 0.96,0 1.6,-0.48 0.8,-0.64 0.8,-1.92 V 9.12 q 0,-1.28 -0.8,-1.76 -0.64,-0.64 -1.6,-0.64 V 3.84 h 20.16 v 2.88 q -0.96,0 -1.76,0.64 -0.64,0.48 -0.64,1.76 V 31.68 H 155.6 V 9.12 q 0,-1.28 -0.8,-1.76 -0.64,-0.64 -1.6,-0.64 V 3.84 h 20.16 v 2.88 q -0.96,0 -1.76,0.64 -0.64,0.48 -0.64,1.76 v 59.84 q 0,1.28 0.64,1.92 0.8,0.48 1.76,0.48 v 2.88 H 153.2 v -2.88 q 0.96,0 1.6,-0.48 0.8,-0.64 0.8,-1.92 V 44.8 H 112.72 Z M 268.47997,18.72 q 0,-3.04 -4.96,-3.04 h -39.04 v 16 h 24.64 q 2.72,0 4,-0.32 1.28,-0.48 1.28,-2.24 h 2.88 v 16.96 h -3.2 q 0.48,-1.76 -1.28,-2.08 -1.76,-0.48 -4.96,-0.48 h -23.36 V 62.4 h 40.96 q 1.92,0 3.2,-0.8 1.28,-0.96 1.28,-2.4 h 2.88 V 76 h -2.88 q 0,-1.44 -1.28,-1.6 -1.28,-0.16 -3.2,-0.16 h -58.72 v -2.88 q 0.8,0 1.6,-0.48 0.8,-0.64 0.8,-1.92 V 9.12 q 0,-1.28 -0.8,-1.76 -0.8,-0.64 -1.6,-0.64 V 3.84 h 56.8 q 4.96,0 4.96,-2.88 h 2.88 v 17.76 z m 54.79996,-12 q -3.52,0 -3.52,2.4 v 36.64 q 0,7.68 5.6,12.32 5.6,4.64 17.12,4.64 11.52,0 17.12,-4.64 5.6,-4.64 5.6,-12.32 V 9.12 q 0,-2.4 -4,-2.4 V 3.84 h 22.24 v 2.88 q -3.52,0 -3.52,2.4 V 49.6 q 0,4.96 -2.24,9.6 -2.24,4.48 -6.88,8 -4.48,3.52 -11.68,5.6 -7.04,1.92 -16.64,1.92 -9.6,0 -16.8,-1.92 -7.04,-2.08 -11.68,-5.6 -4.48,-3.52 -6.72,-8 -2.24,-4.64 -2.24,-9.6 V 9.12 q 0,-1.28 -0.96,-1.76 -0.96,-0.64 -3.68,-0.64 V 3.84 h 22.88 z M 431.1999,71.36 q 0.8,0 1.6,-0.48 0.8,-0.64 0.8,-1.92 V 15.68 h -20.8 q -1.28,0 -2.4,0.64 -1.12,0.64 -1.12,2.08 h -2.88 V 0 h 2.88 q 0,2.24 1.12,3.04 1.12,0.8 2.4,0.8 h 56.96 q 1.28,0 2.4,-0.8 1.12,-0.8 1.12,-3.04 h 2.88 v 18.4 h -2.88 q 0,-1.44 -1.12,-2.08 -1.12,-0.64 -2.4,-0.64 h -20.8 v 53.28 q 0,2.4 2.88,2.4 v 2.88 h -20.64 z m 87.92,-2.4 q 0,1.28 0.64,1.92 0.8,0.48 1.76,0.48 v 2.88 h -20.16 v -2.88 q 0.96,0 1.6,-0.48 0.8,-0.64 0.8,-1.92 V 9.12 q 0,-1.28 -0.8,-1.76 -0.64,-0.64 -1.6,-0.64 V 3.84 h 20.16 v 2.88 q -0.96,0 -1.76,0.64 -0.64,0.48 -0.64,1.76 v 22.56 h 42.88 V 9.12 q 0,-1.28 -0.8,-1.76 -0.64,-0.64 -1.6,-0.64 V 3.84 h 20.16 v 2.88 q -0.96,0 -1.76,0.64 -0.64,0.48 -0.64,1.76 v 59.84 q 0,1.28 0.64,1.92 0.8,0.48 1.76,0.48 v 2.88 h -20.16 v -2.88 q 0.96,0 1.6,-0.48 0.8,-0.64 0.8,-1.92 V 44.8 h -42.88 z" />
     </svg>
   );
 }
@@ -461,8 +467,8 @@ export function App() {
           href="#"
           className="nav-link gap-2.5 text-[15px] font-medium"
         >
-          <Ibis />
-          theuth
+          <Theta />
+          <Wordmark />
         </a>
         <nav aria-label="Primary" className="flex items-center gap-3 text-[14px] text-fg-2 sm:gap-6">
           <a href={DOCS} className="nav-link">
@@ -516,7 +522,7 @@ export function App() {
           </div>
           <div className="relative hidden min-h-[60vh] md:col-span-5 md:block">
             <div className="absolute top-0 right-0 text-fg-2">
-              <Ibis size={40} />
+              <Theta size={40} />
             </div>
           </div>
         </section>
@@ -907,8 +913,8 @@ export function App() {
             href="#"
             className="nav-link gap-2.5 text-[15px] font-medium"
           >
-            <Ibis />
-            theuth
+            <Theta />
+            <Wordmark />
           </a>
           <nav aria-label="Footer" className="flex flex-wrap items-center gap-x-8 gap-y-2 font-mono text-[13px] text-fg-3">
             <a href={DOCS} className="nav-link">

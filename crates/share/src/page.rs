@@ -66,12 +66,10 @@ a:hover{color:var(--link);text-decoration-thickness:2px}\
 a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}\
 @media (prefers-reduced-motion:reduce){button{transition:none}}";
 
-/// The ibis mark (`crates/desktop/ui/src/components/Mark.tsx`) in `currentColor`.
-const MARK: &str = "<svg viewBox=\"120 120 784 784\" aria-hidden=\"true\" focusable=\"false\">\
-<mask id=\"mark-eye\"><rect x=\"120\" y=\"120\" width=\"784\" height=\"784\" fill=\"#fff\"/>\
-<circle cx=\"610\" cy=\"288\" r=\"36\" fill=\"#000\"/></mask>\
-<g fill=\"currentColor\" mask=\"url(#mark-eye)\"><circle cx=\"640\" cy=\"340\" r=\"165\"/>\
-<path d=\"M 660 178 C 400 196, 230 470, 186 846 L 244 890 C 300 570, 400 380, 600 500 Z\"/></g></svg>";
+/// The theuth mark (T0 "Theta moon", `crates/desktop/ui/src/components/Mark.tsx`): ring in `currentColor`, pen bar in ochre.
+const MARK: &str = "<svg viewBox=\"14 14 92 92\" aria-hidden=\"true\" focusable=\"false\">\
+<path fill=\"currentColor\" fill-rule=\"evenodd\" d=\"M18 60 a42 42 0 1 0 84 0 a42 42 0 1 0 -84 0 Z M27 60 a37 37 0 1 0 74 0 a37 37 0 1 0 -74 0 Z\"/>\
+<path fill=\"#b4531e\" d=\"M24 56.5 H86 L101 60 L86 63.5 H24 Z\"/></svg>";
 
 /// HTML-escape text or a double-quoted attribute value.
 pub fn escape(s: &str) -> String {

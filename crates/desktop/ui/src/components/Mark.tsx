@@ -1,15 +1,10 @@
-/** The ibis mark from icons/icon.svg in `currentColor`; the eye is a hole so it sits on any surface. */
+/** The theuth mark (T0 "Theta moon", assets/brand): a Θ whose ring is a crescent moon in `currentColor` and whose
+ *  bar is a reed pen in ochre (#b4531e, the same in light and dark), so it sits on any surface. */
 export function Mark({ className }: { className?: string }) {
   return (
-    <svg viewBox="120 120 784 784" className={className} aria-hidden="true">
-      <mask id="mark-eye">
-        <rect x="120" y="120" width="784" height="784" fill="#fff" />
-        <circle cx="610" cy="288" r="36" fill="#000" />
-      </mask>
-      <g fill="currentColor" mask="url(#mark-eye)">
-        <circle cx="640" cy="340" r="165" />
-        <path d="M 660 178 C 400 196, 230 470, 186 846 L 244 890 C 300 570, 400 380, 600 500 Z" />
-      </g>
+    <svg viewBox="14 14 92 92" className={className} aria-hidden="true">
+      <path fill="currentColor" fillRule="evenodd" d="M18 60 a42 42 0 1 0 84 0 a42 42 0 1 0 -84 0 Z M27 60 a37 37 0 1 0 74 0 a37 37 0 1 0 -74 0 Z" />
+      <path fill="#b4531e" d="M24 56.5 H86 L101 60 L86 63.5 H24 Z" />
     </svg>
   )
 }

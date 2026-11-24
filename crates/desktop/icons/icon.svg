@@ -1,8 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <rect width="1024" height="1024" rx="224" fill="#E8DCC8"/>
-  <g fill="#1A1612">
-    <circle cx="640" cy="340" r="165"/>
-    <path d="M 660 178 C 400 196, 230 470, 186 846 L 244 890 C 300 570, 400 380, 600 500 Z"/>
-  </g>
-  <circle cx="610" cy="288" r="36" fill="#E8DCC8"/>
+  <title>theuth</title>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#12100e"/>
+  <g transform="translate(170.00 170.00) scale(5.7)"><path fill="#e8dcc8" fill-rule="evenodd" d="M18 60 a42 42 0 1 0 84 0 a42 42 0 1 0 -84 0 Z M27 60 a37 37 0 1 0 74 0 a37 37 0 1 0 -74 0 Z"/>
+  <path fill="#b4531e" d="M24 56.5 H86 L101 60 L86 63.5 H24 Z"/></g>
 </svg>
