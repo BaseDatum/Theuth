@@ -125,7 +125,7 @@ pub trait CompositionApi {
     async fn set_event_focus(&self, sessions: Vec<SessionId>) -> RpcResult<()>;
     /// 188: one [`ConfigFlagKey`] (`decision.enabled`, `a2a.enabled`, `computer.enabled`,
     /// `double.enabled`, `web.allow_private_network`, `browser.allow_private_network`,
-    /// and 212 §15's `agent.status_tool`, `agent.auto_title`, `knowledge.peek`) as
+    /// and 212 §15's `agent.status_tool`, `agent.auto_title`, `agent.suggestions`, `knowledge.peek`) as
     /// config.yaml holds it and as this engine started with it. Node-level, never
     /// forwarded; any other key is `INVALID_PARAMS` naming them.
     #[method(name = "config_flag_get")]

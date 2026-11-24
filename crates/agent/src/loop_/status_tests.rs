@@ -74,6 +74,7 @@ async fn scenarios() {
     direct_call_sets_state_events_and_title().await;
     user_named_session_keeps_its_title().await;
     title_model_is_held_by_either_guard().await;
+    suggestions_only_for_interactive_root_chats().await;
     nudge_cadence().await;
     status_tool_off().await;
     if let Some(pool) = worker_pool().await {
@@ -190,6 +191,101 @@ async fn title_model_is_held_by_either_guard() {
         (false, false),
         "auto_title off"
     );
+}
+
+/// "What's next?": a root chat's normal turn end asks the title model and publishes
+/// `Suggestions` after `TurnFinished`; a child session, an unattended (schedule) session,
+/// a channel-opened turn or `agent.suggestions: false` makes no call at all.
+async fn suggestions_only_for_interactive_root_chats() {
+    #[derive(Clone, Copy, Default)]
+    struct Case {
+        child: bool,
+        off: bool,
+        unattended: bool,
+        channel: bool,
+    }
+    let run = |c: Case| async move {
+        let mut h = Harness::new(Fake::harvest_held(Duration::ZERO)).await;
+        if c.unattended {
+            h.store.set_unattended(h.id).await.unwrap();
+        }
+        let cfg = AgentConfig {
+            suggestions: !c.off,
+            ..AgentConfig::default()
+        };
+        let (mut turn, tid) = h
+            .turn_with("openai/textonly", CancellationToken::new(), cfg)
+            .await;
+        if c.child {
+            turn.shared.depth = 1;
+        }
+        turn.channel_opened = c.channel;
+        let mut state = turn.run(tid, vec![h.input("Fix the parser", false)]).await;
+        let events = h.drain().await;
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Suggestions { .. })),
+            "never before TurnFinished"
+        );
+        if let Some(t) = state.title_task.take() {
+            let _ = t.await;
+        }
+        state.suggest_task.take()?.await.unwrap();
+        let late = h
+            .drain_until(|e| matches!(e, AgentEvent::Suggestions { .. }))
+            .await;
+        match late.last() {
+            Some(AgentEvent::Suggestions {
+                session,
+                turn,
+                items,
+            }) => {
+                assert_eq!((*session, *turn), (h.id, tid));
+                Some(items.clone())
+            }
+            other => panic!("{other:?}"),
+        }
+    };
+    // The fake answers every side call with `FINAL`: one line, one suggestion.
+    assert_eq!(
+        run(Case::default()).await,
+        Some(vec![super::vision_fallback_tests::FINAL.to_owned()]),
+        "interactive root chat"
+    );
+    let none = |c: Case, why: &'static str| async move { assert_eq!(run(c).await, None, "{why}") };
+    none(
+        Case {
+            child: true,
+            ..Case::default()
+        },
+        "child session",
+    )
+    .await;
+    none(
+        Case {
+            off: true,
+            ..Case::default()
+        },
+        "agent.suggestions off",
+    )
+    .await;
+    none(
+        Case {
+            unattended: true,
+            ..Case::default()
+        },
+        "schedule run",
+    )
+    .await;
+    none(
+        Case {
+            channel: true,
+            ..Case::default()
+        },
+        "channel turn",
+    )
+    .await;
 }
 
 /// The main model's script, by tool results so far: `steps[n]` is the call after `n`

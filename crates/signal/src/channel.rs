@@ -1869,6 +1869,8 @@ impl Channel {
                 self.flush(&to, session).await;
                 self.send_chunks(&to, &line).await;
             }
+            // "What's next?" chips are the desktop's; channel turns get none.
+            AgentEvent::Suggestions { .. } => {}
             _ => {}
         }
     }

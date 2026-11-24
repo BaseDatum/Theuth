@@ -32,6 +32,8 @@ pub(crate) struct Side {
     short: bool,
     /// 194 D4e: the reasoning effort the call carries ([`Side::effort`]); `None` = no setting.
     effort: Option<ReasoningEffort>,
+    /// Most reply tokens the call may spend ([`Side::cap`]); `None` = the model's budget.
+    cap: Option<u32>,
 }
 
 /// 194: the side-call roles' own efforts — `agent.title_effort`,
@@ -157,6 +159,7 @@ impl Shared {
             auth: self.auth.clone(),
             short: false,
             effort: None,
+            cap: None,
         }
     }
 }
@@ -166,6 +169,12 @@ impl Side {
     /// the thinking-off template kwargs on a local server.
     pub(crate) fn short(mut self, short: bool) -> Self {
         self.short = short;
+        self
+    }
+
+    /// Cap the reply at `tokens` (never below an Anthropic thinking floor).
+    pub(crate) fn cap(mut self, tokens: u32) -> Self {
+        self.cap = Some(tokens);
         self
     }
 
@@ -205,6 +214,10 @@ impl Side {
             0
         };
         let reply = compact::reply_budget(output, window, est, None, floor);
+        let reply = match self.cap {
+            Some(cap) if reply == 0 || reply > cap => cap.max(floor),
+            _ => reply,
+        };
         let frame = Frame {
             tools: &[],
             system,

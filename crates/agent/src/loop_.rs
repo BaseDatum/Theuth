@@ -86,6 +86,7 @@ use crate::store::Store;
 use crate::store::communication::CommError;
 use crate::store::durability::BatchRow;
 use crate::supervisor::{Auth, PeerContext, Roster};
+use crate::suggest;
 use crate::title;
 use crate::vision::{self, VisionImage, VisionSource, VisionStatus};
 use crate::{
@@ -111,6 +112,8 @@ const RETRY_MAX_PER_TURN: u32 = 10;
 const SUMMARISE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Wall clock on the title side call (07 §15).
 const TITLE_TIMEOUT: Duration = Duration::from_secs(45);
+/// Budget of the "What's next?" call: a late answer is a stale one.
+const SUGGEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Smallest a tool result is shrunk to by the batch budget: a spill marker plus a hint (36 §4.2).
 const TOOL_RESULT_FLOOR_CHARS: usize = 1000;
 /// Stored payload bytes one vision consultation batch may carry (52 §5.3).
@@ -449,6 +452,10 @@ pub struct GetToolset;
 /// `maybe_title` at every turn end.
 pub struct SetTitlePin(pub bool);
 
+/// `tell`: a live talk (voice) runs on this session, or ended ([`crate::SetTalk`]);
+/// read at every turn end — a spoken turn gets no "What's next?" suggestions.
+pub struct SetTalking(pub bool);
+
 /// `ask` → `Result<u32 /* new epoch */, String>`: compact now, threshold
 /// ignored (07 §8.6). `Err("turn in flight")` while a turn runs;
 /// `Err("nothing to compact")` when nothing can be folded.
@@ -683,6 +690,9 @@ pub struct SessionState {
     /// when a new one starts and when the session stops, never left to
     /// outlive the lifecycle.
     pub title_task: Option<JoinHandle<()>>,
+    /// The detached "What's next?" call of the last turn ([`suggest`]): aborted
+    /// when a new one starts and when the session stops.
+    pub suggest_task: Option<JoinHandle<()>>,
     /// The detached harvest of the finished frame (10 §5.2 as built): one per
     /// session — a trigger while it runs is skipped — aborted when the session
     /// stops. Its puts are individual commits, so a cut-off harvest is partial,
@@ -738,6 +748,7 @@ impl SessionState {
             last_view: None,
             tail_gen: None,
             title_task: None,
+            suggest_task: None,
             harvest_task: None,
             budget_note: None,
         }
@@ -831,7 +842,9 @@ impl Actor for Session {
         _: ActorStopReason,
     ) -> Result<(), Infallible> {
         self.shared.closed.cancel();
-        let detached = |s: &mut SessionState| [s.title_task.take(), s.harvest_task.take()];
+        let detached = |s: &mut SessionState| {
+            [s.title_task.take(), s.suggest_task.take(), s.harvest_task.take()]
+        };
         for task in self.state.as_mut().into_iter().flat_map(detached).flatten() {
             task.abort();
             let _ = task.await;
@@ -855,6 +868,11 @@ struct Shared {
     toolset: Arc<parking_lot::RwLock<Option<Toolset>>>,
     /// [`SetTitlePin`] (`meetings/06-live-toolset.md` §1.7); shared with the running turn.
     title_pinned: Arc<std::sync::atomic::AtomicBool>,
+    /// [`SetTalking`]: a live talk runs on this session; no suggestions.
+    talking: Arc<std::sync::atomic::AtomicBool>,
+    /// Turns this actor has entered, bumped as each one is driven: a detached
+    /// suggestions call made after turn N is stale once it moved ([`suggest`]).
+    turns_entered: Arc<std::sync::atomic::AtomicU64>,
     /// 212 §11: the agent named this session with `set_status`; the title model stays off.
     agent_titled: Arc<std::sync::atomic::AtomicBool>,
     /// 212 §11: the user renamed this session; neither the title model nor `set_status`
@@ -1090,6 +1108,8 @@ impl Session {
                 compaction: Arc::default(),
                 toolset: Arc::default(),
                 title_pinned: Arc::default(),
+                talking: Arc::default(),
+                turns_entered: Arc::default(),
                 agent_titled: Arc::default(),
                 user_titled: Arc::default(),
                 title_model,
@@ -1574,6 +1594,7 @@ impl Session {
         task.input_text = text.clone();
         task.state.title_chars += title::user_chars(texts.iter().map(String::as_str));
         let turn_seq = task.first_seq.unwrap_or(0);
+        task.channel_opened = channel.is_some();
         self.shared
             .rt
             .publish(AgentEvent::TurnStarted {
@@ -2789,6 +2810,16 @@ impl Message<SetTitlePin> for Session {
     }
 }
 
+impl Message<SetTalking> for Session {
+    type Reply = ();
+
+    async fn handle(&mut self, SetTalking(on): SetTalking, _: &mut Context<Self, Self::Reply>) {
+        self.shared
+            .talking
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 impl Message<GetToolset> for Session {
     type Reply = Option<Toolset>;
 
@@ -3163,6 +3194,9 @@ struct Turn {
     scope: TurnScope,
     /// Set when a peer exchange opened the turn (50 §8): its deadline.
     peer_work: Option<PeerWork>,
+    /// The opener (or a joined input) came from a Slack/Telegram/Signal channel
+    /// (`TurnStarted.channel`): the turn gets no "What's next?" suggestions.
+    channel_opened: bool,
     /// 178 W3: dropping it frees the boot scan's resume slot this turn holds.
     resume_slot: Option<tokio::sync::oneshot::Sender<()>>,
     /// Seq of this turn's first persisted row; bounds [`Turn::result_text`].
@@ -4078,6 +4112,7 @@ impl Turn {
             checkpoints: 0,
             scope: TurnScope::default(),
             peer_work: None,
+            channel_opened: false,
             resume_slot: None,
             first_seq: None,
             vision_failed: BTreeSet::new(),
@@ -6754,6 +6789,9 @@ impl Turn {
     /// The turn after its inputs: rounds until a stop, then the end-of-turn
     /// bookkeeping. `plan` = a resumed turn (109 §4.2).
     async fn drive(mut self, turn: TurnId, plan: Option<ResumePlan>) -> SessionState {
+        self.shared
+            .turns_entered
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         // 178 F1: the run clock the drain reads, from what the journal already ran.
         crate::durability::run_clock::start(
             self.shared.id,
@@ -6993,8 +7031,102 @@ impl Turn {
         if !interrupted && stop_reason != "error" && self.shared.depth == 0 {
             self.state.title_turns += 1;
             self.maybe_title().await;
+            if self.suggestions_wanted().await {
+                self.maybe_suggest(turn).await;
+            }
         }
         self.state
+    }
+
+    /// "What's next?" is for a person at a UI chat only: on while `agent.suggestions`
+    /// was on when the session started; never a child or advisor (`depth`, `kind`), a
+    /// turn opened from Slack/Telegram/Signal (`channel_opened`), a peer, A2A or
+    /// contact turn (`scope`, `peer_work`), a recording meeting (`toolset`,
+    /// `title_pinned`, `meeting_filter`), a live talk (`talking`) or an unattended
+    /// session — schedule and routine runs, autoresearch studies (`unattended`).
+    async fn suggestions_wanted(&self) -> bool {
+        let relaxed = std::sync::atomic::Ordering::Relaxed;
+        let s = &self.shared;
+        if !s.cfg.suggestions
+            || s.depth != 0
+            || !matches!(s.kind, SessionKind::Chat | SessionKind::Ask)
+            || self.channel_opened
+            || self.scope.scope.is_some()
+            || self.scope.cap.is_some()
+            || self.peer_work.is_some()
+            || s.toolset.read().is_some()
+            || s.title_pinned.load(relaxed)
+            || s.meeting_filter.load(relaxed)
+            || s.talking.load(relaxed)
+        {
+            return false;
+        }
+        match s.store.unattended(s.id).await {
+            Ok(unattended) => !unattended,
+            Err(e) => {
+                tracing::warn!(session = %s.id, "suggestions: unattended: {e:#}");
+                false
+            }
+        }
+    }
+
+    /// [`suggest`]: up to three next steps from the title model, on a detached
+    /// task so neither the turn's end, the next input nor the title call waits on
+    /// it. One at a time (the previous one is aborted), joined at stop like the
+    /// title task, accounted as [`CallKind::Title`]. Published only while no
+    /// newer turn has been entered and the session is open; nothing is stored.
+    /// Diagnostics carry no prompt or reply content.
+    async fn maybe_suggest(&mut self, turn: TurnId) {
+        let Some(digest) = suggest::digest(&self.state.history) else {
+            return;
+        };
+        let (model, effort) = match self.shared.role_model(&crate::ModelRole::Title) {
+            Ok(m) => m,
+            Err(e) => return tracing::warn!(session = %self.shared.id, "suggestions model: {e}"),
+        };
+        match self.shared.store.session(self.shared.id).await {
+            // An external harness or a desk drives its own chat.
+            Ok(Some(row)) if row.agent.is_none() && row.desk.is_none() => {}
+            Ok(_) => return,
+            Err(e) => return tracing::warn!(session = %self.shared.id, "suggestions: {e:#}"),
+        }
+        if let Some(prev) = self.state.suggest_task.take() {
+            prev.abort();
+            let _ = prev.await;
+        }
+        let session = self.shared.id;
+        let rt = self.shared.rt.clone();
+        let closed = self.shared.closed.clone();
+        let entered = self.shared.turns_entered.clone();
+        let at = entered.load(std::sync::atomic::Ordering::SeqCst);
+        let side = self
+            .shared
+            .side(Some(turn))
+            .effort(&model, effort.as_deref())
+            .cap(suggest::MAX_TOKENS);
+        self.state.suggest_task = Some(tokio::spawn(async move {
+            let reply = match side
+                .short(true)
+                .call(model, suggest::SYSTEM, digest, SUGGEST_TIMEOUT, CallKind::Title)
+                .await
+            {
+                Ok(r) => r.text,
+                Err(e) => return tracing::warn!(session = %session, "suggestions: {e}"),
+            };
+            let items = suggest::parse(&reply);
+            if items.is_empty() {
+                return tracing::debug!(session = %session, "suggestions: none");
+            }
+            if closed.is_cancelled() || entered.load(std::sync::atomic::Ordering::SeqCst) != at {
+                return tracing::debug!(session = %session, "suggestions: stale; discarded");
+            }
+            rt.publish(AgentEvent::Suggestions {
+                session,
+                turn,
+                items,
+            })
+            .await;
+        }));
     }
 
     /// 07 §15: when [`title::due`], name the session from a digest of this epoch

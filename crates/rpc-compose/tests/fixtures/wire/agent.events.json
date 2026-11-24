@@ -2878,6 +2878,31 @@
   },
   {
     "input": {
+      "type": "Suggestions",
+      "session": "00000000-0000-0000-0000-000000000001",
+      "turn": "00000000-0000-0000-0000-000000000001",
+      "items": [
+        "sample"
+      ]
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "Suggestions",
+          "session": "00000000-0000-0000-0000-000000000001",
+          "turn": "00000000-0000-0000-0000-000000000001",
+          "items": [
+            "sample"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "input": {
       "type": "SessionDeleted",
       "session": "00000000-0000-0000-0000-000000000001"
     },

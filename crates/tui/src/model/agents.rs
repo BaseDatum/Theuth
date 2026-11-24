@@ -546,6 +546,8 @@ impl Model {
             | AgentEvent::MessageDelivered { .. }
             | AgentEvent::InputWithdrawn { .. }
             | AgentEvent::TitleChanged { .. }
+            // "What's next?" chips are the desktop's.
+            | AgentEvent::Suggestions { .. }
             | AgentEvent::SessionDeleted { .. }
             | AgentEvent::ContextChanged { .. }
             | AgentEvent::TodoChanged { .. }

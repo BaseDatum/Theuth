@@ -2379,6 +2379,45 @@
             "type": "object"
           },
           {
+            "description": "\"What's next?\": up to three next steps the user might send after `turn`\nended normally, from the title model ([`suggest`]). Ephemeral UI state for\nthe latest turn only: never a transcript row, never persisted; a turn that\nstarted since makes it stale (it is then not published). Interactive\nroot chats only, while `agent.suggestions` is on.",
+            "properties": {
+              "items": {
+                "description": "Suggestions, each as the user would type it; never empty.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "session": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.output.SessionId"
+                  }
+                ],
+                "description": "Session."
+              },
+              "turn": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.output.TurnId"
+                  }
+                ],
+                "description": "The finished turn the suggestions follow."
+              },
+              "type": {
+                "const": "Suggestions",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "turn",
+              "items"
+            ],
+            "type": "object"
+          },
+          {
             "description": "The session's rows are gone ([`DeleteSession`]); lists drop it.",
             "properties": {
               "session": {
@@ -5745,6 +5784,45 @@
               "type",
               "session",
               "title"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "\"What's next?\": up to three next steps the user might send after `turn`\nended normally, from the title model ([`suggest`]). Ephemeral UI state for\nthe latest turn only: never a transcript row, never persisted; a turn that\nstarted since makes it stale (it is then not published). Interactive\nroot chats only, while `agent.suggestions` is on.",
+            "properties": {
+              "items": {
+                "description": "Suggestions, each as the user would type it; never empty.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "session": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.receiver.SessionId"
+                  }
+                ],
+                "description": "Session."
+              },
+              "turn": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.agent_2eevents.receiver.TurnId"
+                  }
+                ],
+                "description": "The finished turn the suggestions follow."
+              },
+              "type": {
+                "const": "Suggestions",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "turn",
+              "items"
             ],
             "type": "object"
           },
@@ -110195,6 +110273,11 @@
             "type": "string"
           },
           {
+            "const": "agent.suggestions",
+            "description": "`agent.suggestions`: \"What's next?\" suggestions after interactive chat turns.\nApplies to new sessions, no restart.",
+            "type": "string"
+          },
+          {
             "const": "knowledge.peek",
             "description": "`knowledge.peek` (212 §15): new sessions list `peek_memory` and its hint and\nprompt sentences; off, its calls are refused at once. No restart.",
             "type": "string"
@@ -110865,7 +110948,7 @@
             "type": "boolean"
           },
           "running": {
-            "description": "The value this process started with (its boot config); plugins keep it until a\nrestart. A 212 §15 switch (`agent.status_tool`, `agent.auto_title`, `knowledge.peek`)\nruns what the file holds: Settings applies it to new sessions at once.",
+            "description": "The value this process started with (its boot config); plugins keep it until a\nrestart. A 212 §15 switch (`agent.status_tool`, `agent.auto_title`, `agent.suggestions`, `knowledge.peek`)\nruns what the file holds: Settings applies it to new sessions at once.",
             "type": "boolean"
           }
         },
@@ -110918,6 +111001,11 @@
           {
             "const": "agent.auto_title",
             "description": "`agent.auto_title` (212 §15): the title model names and renames new sessions.\nApplies to new sessions, no restart.",
+            "type": "string"
+          },
+          {
+            "const": "agent.suggestions",
+            "description": "`agent.suggestions`: \"What's next?\" suggestions after interactive chat turns.\nApplies to new sessions, no restart.",
             "type": "string"
           },
           {
@@ -113478,7 +113566,7 @@
             "type": "boolean"
           },
           "running": {
-            "description": "The value this process started with (its boot config); plugins keep it until a\nrestart. A 212 §15 switch (`agent.status_tool`, `agent.auto_title`, `knowledge.peek`)\nruns what the file holds: Settings applies it to new sessions at once.",
+            "description": "The value this process started with (its boot config); plugins keep it until a\nrestart. A 212 §15 switch (`agent.status_tool`, `agent.auto_title`, `agent.suggestions`, `knowledge.peek`)\nruns what the file holds: Settings applies it to new sessions at once.",
             "type": "boolean"
           }
         },
@@ -113531,6 +113619,11 @@
           {
             "const": "agent.auto_title",
             "description": "`agent.auto_title` (212 §15): the title model names and renames new sessions.\nApplies to new sessions, no restart.",
+            "type": "string"
+          },
+          {
+            "const": "agent.suggestions",
+            "description": "`agent.suggestions`: \"What's next?\" suggestions after interactive chat turns.\nApplies to new sessions, no restart.",
             "type": "string"
           },
           {

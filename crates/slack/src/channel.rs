@@ -2902,6 +2902,8 @@ impl Worker {
             | AgentEvent::Harvested { .. }
             | AgentEvent::SkillsChanged { .. }
             | AgentEvent::TitleChanged { .. }
+            // "What's next?" chips are the desktop's; channel turns get none.
+            | AgentEvent::Suggestions { .. }
             | AgentEvent::ToolCallProgress { .. }
             | AgentEvent::SessionDeleted { .. }
             | AgentEvent::SessionOwnerChanged { .. }

@@ -124,6 +124,7 @@ pub mod spill;
 pub mod store;
 pub mod status;
 pub mod supervisor;
+pub mod suggest;
 pub mod title;
 pub mod todo;
 pub mod tokens;
@@ -809,6 +810,8 @@ pub enum LoopFlag {
     StatusTool,
     /// `agent.auto_title`.
     AutoTitle,
+    /// `agent.suggestions`.
+    Suggestions,
     /// `knowledge.peek` as the loop reads it ([`AgentConfig::knowledge_peek`]).
     KnowledgePeek,
 }
@@ -3885,6 +3888,19 @@ pub enum AgentEvent {
         #[serde(default)]
         tags: Vec<String>,
     },
+    /// "What's next?": up to three next steps the user might send after `turn`
+    /// ended normally, from the title model ([`suggest`]). Ephemeral UI state for
+    /// the latest turn only: never a transcript row, never persisted; a turn that
+    /// started since makes it stale (it is then not published). Interactive
+    /// root chats only, while `agent.suggestions` is on.
+    Suggestions {
+        /// Session.
+        session: SessionId,
+        /// The finished turn the suggestions follow.
+        turn: TurnId,
+        /// Suggestions, each as the user would type it; never empty.
+        items: Vec<String>,
+    },
     /// The session's rows are gone ([`DeleteSession`]); lists drop it.
     SessionDeleted {
         /// Session.
@@ -4161,6 +4177,7 @@ impl AgentEvent {
             | Self::Harvested { session, .. }
             | Self::SkillsChanged { session, .. }
             | Self::TitleChanged { session, .. }
+            | Self::Suggestions { session, .. }
             | Self::SessionDeleted { session }
             | Self::SessionOwnerChanged { session, .. }
             | Self::ContextChanged { session, .. }
@@ -4238,6 +4255,9 @@ pub struct AgentConfig {
     /// 212 §15: `false` stops the title model for sessions started from now on; the
     /// first-message placeholder title still lands.
     pub auto_title: bool,
+    /// `false` stops the "What's next?" suggestions after interactive chat turns
+    /// ([`suggest`]) for sessions started from now on.
+    pub suggestions: bool,
     /// Max characters of tool output sent back to the model.
     pub max_tool_output_chars: usize,
     /// With the runtime on, only `python` and the tools that talk to the user
@@ -4332,6 +4352,7 @@ impl Default for AgentConfig {
             status_every: 8,
             status_tool: true,
             auto_title: true,
+            suggestions: true,
             max_tool_output_chars: 32_000,
             runtime_only: true,
             communication: None,

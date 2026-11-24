@@ -402,14 +402,19 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
     #[tokio::test]
     async fn config_flag_loop_switches_apply_without_restart() {
         let flag = |key: &str, on: bool| serde_json::json!({ "key": key, "enabled": on, "running": on, "restart_required": false });
-        let keys = ["agent.status_tool", "agent.auto_title", "knowledge.peek"];
+        let keys = [
+            "agent.status_tool",
+            "agent.auto_title",
+            "agent.suggestions",
+            "knowledge.peek",
+        ];
         for key in keys {
             let (v, _dir) =
                 config_flag_call("", None, "config_flag_get", &format!(r#"["{key}"]"#)).await;
             assert_eq!(v["result"], flag(key, true), "{key} default: {v}");
         }
-        let boot = "agent:\n  status_tool: true\n  auto_title: true\nknowledge:\n  peek: true\n";
-        let file = "agent:\n  model: x  # keep\n  status_tool: false\n  auto_title: false\nknowledge:\n  peek: false\n";
+        let boot = "agent:\n  status_tool: true\n  auto_title: true\n  suggestions: true\nknowledge:\n  peek: true\n";
+        let file = "agent:\n  model: x  # keep\n  status_tool: false\n  auto_title: false\n  suggestions: false\nknowledge:\n  peek: false\n";
         for key in keys {
             let (v, _dir) =
                 config_flag_call(boot, Some(file), "config_flag_get", &format!(r#"["{key}"]"#))

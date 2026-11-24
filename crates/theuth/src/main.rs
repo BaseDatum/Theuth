@@ -900,6 +900,7 @@ agent:
   # status_every: 8           # tool calls between harness nudges asking the model to call set_status (212 §10); the first comes after 2; 0 = off; Settings → Agent loop
   # status_tool: true         # false: new sessions get no set_status tool, status prompt line or reminders (212 §15); Settings → Agent loop
   # auto_title: true          # false: the title model never names or renames new sessions (212 §15); Settings → Agent loop
+  # suggestions: true         # false: no What's next? suggestions from the title model after interactive chat turns; Settings → Agent loop
   # aws_profile: work          # Bedrock inference for every session; /aws or Settings → Connections
   # openrouter:               # built-in OpenRouter provider (85 §0.6); key = secret `openrouter` or OPENROUTER_API_KEY
   #   provider: {order: [anthropic], allow_fallbacks: false}  # OpenRouter `provider` preferences, sent verbatim when set

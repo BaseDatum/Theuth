@@ -193,6 +193,10 @@ pub enum ConfigFlagKey {
     /// Applies to new sessions, no restart.
     #[serde(rename = "agent.auto_title")]
     AgentAutoTitle,
+    /// `agent.suggestions`: "What's next?" suggestions after interactive chat turns.
+    /// Applies to new sessions, no restart.
+    #[serde(rename = "agent.suggestions")]
+    AgentSuggestions,
     /// `knowledge.peek` (212 §15): new sessions list `peek_memory` and its hint and
     /// prompt sentences; off, its calls are refused at once. No restart.
     #[serde(rename = "knowledge.peek")]
@@ -211,6 +215,7 @@ impl ConfigFlagKey {
             Self::BrowserPrivateNetwork => ("browser", "allow_private_network"),
             Self::AgentStatusTool => ("agent", "status_tool"),
             Self::AgentAutoTitle => ("agent", "auto_title"),
+            Self::AgentSuggestions => ("agent", "suggestions"),
             Self::KnowledgePeek => ("knowledge", "peek"),
         }
     }
@@ -244,10 +249,11 @@ impl ConfigFlagKey {
                 let c: browser::BrowserConfig = config.extract_inner(s).unwrap_or_default();
                 c.allow_private_network
             }
-            Self::AgentStatusTool | Self::AgentAutoTitle => {
+            Self::AgentStatusTool | Self::AgentAutoTitle | Self::AgentSuggestions => {
                 let c: agent::AgentConfig = config.extract_inner(s).unwrap_or_default();
                 match self {
                     Self::AgentStatusTool => c.status_tool,
+                    Self::AgentSuggestions => c.suggestions,
                     _ => c.auto_title,
                 }
             }
@@ -264,6 +270,7 @@ impl ConfigFlagKey {
         match self {
             Self::AgentStatusTool => Some(agent::LoopFlag::StatusTool),
             Self::AgentAutoTitle => Some(agent::LoopFlag::AutoTitle),
+            Self::AgentSuggestions => Some(agent::LoopFlag::Suggestions),
             Self::KnowledgePeek => Some(agent::LoopFlag::KnowledgePeek),
             _ => None,
         }
@@ -278,7 +285,7 @@ pub struct ConfigFlag {
     /// The value `<data_dir>/config.yaml` holds now (the section's default when absent).
     pub enabled: bool,
     /// The value this process started with (its boot config); plugins keep it until a
-    /// restart. A 212 §15 switch (`agent.status_tool`, `agent.auto_title`, `knowledge.peek`)
+    /// restart. A 212 §15 switch (`agent.status_tool`, `agent.auto_title`, `agent.suggestions`, `knowledge.peek`)
     /// runs what the file holds: Settings applies it to new sessions at once.
     pub running: bool,
     /// `enabled != running`: the saved value applies after theuth restarts. Always

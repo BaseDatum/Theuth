@@ -69,7 +69,7 @@ use crate::loop_::{
     ContextBreakdownNow, ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning,
     PEER_INTAKE, PeerInput, QueuedInputs, QuietInput, RedoTurn, RemoveContextNow, ResetRuntimeNow,
     RestartTurn, ResumedTurn, Session, SessionState, SetBudgetNow, SetCompactionOverride,
-    SetMemoryNow, SetPendingEffort, SetTitlePin, SetToolsetOverride, SuppressPeerInputs,
+    SetMemoryNow, SetPendingEffort, SetTalking, SetTitlePin, SetToolsetOverride, SuppressPeerInputs,
     SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
 };
 use crate::peers::{
@@ -4037,6 +4037,11 @@ impl Message<SetTalk> for Agents {
                 None
             }
         };
+        // No "What's next?" suggestions on spoken turns while the talk lasts.
+        let talking = self.talk.contains_key(&sid);
+        if let Some(Ok(native)) = self.live(sid).map(LiveActor::native) {
+            let _ = native.tell(SetTalking(talking)).await;
+        }
         if let Ok(Some(reg)) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR) {
             let _ = reg
                 .tell(SetPromoteAfter {
@@ -4701,6 +4706,7 @@ impl Message<crate::SetLoopFlag> for Agents {
         match m.flag {
             crate::LoopFlag::StatusTool => cfg.status_tool = m.on,
             crate::LoopFlag::AutoTitle => cfg.auto_title = m.on,
+            crate::LoopFlag::Suggestions => cfg.suggestions = m.on,
             crate::LoopFlag::KnowledgePeek => cfg.knowledge_peek = m.on,
         }
     }

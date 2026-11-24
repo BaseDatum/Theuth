@@ -567,6 +567,8 @@ impl Worker {
             AgentEvent::ContextUsed {
                 size: Some(size), ..
             } => self.context_size = Some(size),
+            // "What's next?" chips are the desktop's; channel turns get none.
+            AgentEvent::Suggestions { .. } => {}
             _ => {}
         }
     }
