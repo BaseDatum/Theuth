@@ -3,6 +3,7 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type * as Router from '@tanstack/react-router'
+import type * as Rpc from '@/lib/rpc'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { costsFixture, limitsFixture } from '@/dev/costs-fixture'
 import { CUBE_KEY, LIMITS_KEY } from '@/lib/costs/queries'
@@ -13,7 +14,8 @@ vi.mock('@tanstack/react-router', async (original) => ({
   ...(await original<typeof Router>()),
   useNavigate: () => () => undefined,
 }))
-vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
+// Partial: the Subscription value card's imports (deep links) read `queryKeys` at module load.
+vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
 vi.mock('@/components/ui/sidebar', () => ({ useSidebar: () => ({ open: true, isMobile: false, toggleSidebar: () => undefined }) }))
 vi.mock('@/components/sidebar/SearchTrigger', () => ({ SearchTrigger: () => null }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))

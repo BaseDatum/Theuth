@@ -17,12 +17,14 @@ import { type CostsSearch, effectiveGran, filtersOf, PRESET_LABEL, resolveRange,
 import { saveBlob } from '@/lib/files'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { useApi } from '@/lib/rpc'
+import { useOnboarding } from '@/lib/onboarding/state'
 import { cn } from '@/lib/utils'
 import { Breakdowns } from './Breakdowns'
 import { FilterChips } from './FilterChips'
 import { Kpis } from './Kpis'
 import { LedgerTable } from './LedgerTable'
 import { LimitsPanel } from './LimitsPanel'
+import { SubscriptionValue } from './SubscriptionValue'
 import { RangeBar } from './RangeBar'
 import { SessionsTable } from './SessionsTable'
 import { type ChartView, SpendChart } from './SpendChart'
@@ -78,6 +80,10 @@ export function CostsPage({ search, visible }: { search: CostsSearch; visible: b
   const sidebar = useSidebar()
   const mac = isMacDesktop()
   const tz = useMemo(defaultTz, [])
+  // 215: the resident page mounts hidden; only being on screen counts as a visit.
+  useEffect(() => {
+    if (visible) useOnboarding.getState().markVisited('costs')
+  }, [visible])
   // Deferred like the index: a minute tick (or catching up after being hidden) re-renders the panels after the paint.
   const now = useDeferredValue(useNow(visible))
   // The index changes with every cube delta; held while hidden and deferred, so showing the page or a live update
@@ -173,9 +179,12 @@ export function CostsPage({ search, visible }: { search: CostsSearch; visible: b
               <SpendChart out={out} view={chartView} ctl={ctl} rangeLabel={rangeLabel} onGroupBy={onGroupBy} onMetric={onMetric} onCompare={onCompare} onFilter={addFilter} onRange={onRange} />
             </>
           )}
-          <Later order={1} height={300}>
-            <LimitsPanel now={now} visible={visible} />
-          </Later>
+          <SubscriptionValue ix={ix} now={now} />
+          <div data-tour="costs-limits">
+            <Later order={1} height={300}>
+              <LimitsPanel now={now} visible={visible} />
+            </Later>
+          </div>
           {ix.n > 0 && (
             <>
               {/* R2: below the fold, each section mounts in its own idle slice (or as a scroll nears it), its height held. */}

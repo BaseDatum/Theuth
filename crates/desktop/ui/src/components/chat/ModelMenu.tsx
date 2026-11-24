@@ -506,7 +506,7 @@ export function ModelMenu({ small = false, ...props }: Props & { small?: boolean
   const effortLabel = m.agent ? harnessCurrent(harnessEffort, harnessEffort && m.pending[harnessEffort.id]) : m.effort
   const onOpenChange = (o: boolean) => (setOpen(o), !o && setAdvisor(false))
   const trigger = (
-    <Button variant="ghost" className={small ? 'h-7 max-w-full gap-1 rounded-md px-2 text-xs font-medium text-fg-secondary' : 'h-9 max-w-full gap-1 rounded-lg px-2.5 text-lg font-medium text-fg-secondary'}>
+    <Button variant="ghost" data-tour={small ? undefined : 'chat-model'} className={small ? 'h-7 max-w-full gap-1 rounded-md px-2 text-xs font-medium text-fg-secondary' : 'h-9 max-w-full gap-1 rounded-lg px-2.5 text-lg font-medium text-fg-secondary'}>
       <span className="min-w-0 truncate">{m.agent ? harnessLabel(m) : m.name}</span>
       {effortLabel && <span className={cn('shrink-0 font-normal text-fg-tertiary', small ? 'text-[11px]' : 'text-sm')}>· {effortLabel}</span>}
       {!m.agent && m.current?.local && <LocalTag />}

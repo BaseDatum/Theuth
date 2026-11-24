@@ -1403,6 +1403,7 @@ export function Composer({
       <div
         ref={box}
         data-composer=""
+        data-tour="chat-composer"
         className="relative rounded-[28px] border border-border-subtle bg-elevated px-2 py-[7px] shadow-sm"
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}

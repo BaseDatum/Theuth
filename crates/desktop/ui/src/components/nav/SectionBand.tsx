@@ -12,6 +12,7 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { cornerPad, headerToggle } from '@/lib/sidebar-corner'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { isMacDesktop } from '@/lib/hotkeys'
+import { LibraryOverview } from '@/components/library/Overview'
 import { GROUPS, type Group, type Tab, tabOf } from '@/lib/nav'
 import { POPOUT, isPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
@@ -27,11 +28,16 @@ export function SectionBand({ group }: { group: Group }) {
   const navigate = useNavigate()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   return (
-    <TabBand
-      tabs={GROUPS[group].filter(tab => supports(discovery, tab.required)).map(({ to, label, icon }) => ({ id: to, label, icon }))}
-      value={tabOf(group, pathname) ?? ''}
-      onValueChange={(to) => void navigate({ to: to as Tab })}
-    />
+    <>
+      <TabBand
+        tabs={GROUPS[group].filter(tab => supports(discovery, tab.required)).map(({ to, label, icon }) => ({ id: to, label, icon }))}
+        value={tabOf(group, pathname) ?? ''}
+        onValueChange={(to) => void navigate({ to: to as Tab })}
+        tour={group === 'library' ? 'library-tabs' : undefined}
+      />
+      {/* 215: what each Library tab holds, under the band. */}
+      {group === 'library' && <LibraryOverview />}
+    </>
   )
 }
 
@@ -44,11 +50,14 @@ export function TabBand({
   value,
   onValueChange,
   inset = true,
+  tour,
 }: {
   tabs: readonly BandTab[]
   value: string
   onValueChange: (id: string) => void
   inset?: boolean
+  /** 215: the band's `data-tour` anchor. */
+  tour?: string
 }) {
   const sidebar = useSidebar()
   const mac = isMacDesktop()
@@ -56,6 +65,7 @@ export function TabBand({
   return (
     <header
       data-tauri-drag-region={mac || undefined}
+      data-tour={tour}
       className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3 max-lg:h-auto max-lg:min-h-[52px]', inset && mac && cornerPad(sidebar))}
     >
       <SidebarLead />
