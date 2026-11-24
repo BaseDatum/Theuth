@@ -189,14 +189,7 @@ export function DomainsTab() {
 
       <MachinesSection />
 
-      <Section title="Certificates">
-        {/* TODO(210-M2): per-name state ("Getting a certificate…", queue position and ETA) needs the names RPC. */}
-        {activeShares(shares).some((s) => s.state === 'pending') ? (
-          <Empty>Waiting for a certificate: pending shares go live by themselves when it arrives.</Empty>
-        ) : (
-          <Empty>No certificate is pending.</Empty>
-        )}
-      </Section>
+      <CertificatesSection pending={activeShares(shares).some((s) => s.state === 'pending')} />
     </>
   )
 }
@@ -243,9 +236,39 @@ export function heldStateText(n: HeldName): string {
       return 'Banned by the edge'
     case 'released':
       return 'Released'
+    case null:
+    case undefined:
+      // No welcome seen on this engine: unknown, not "no certificate".
+      return 'Certificate state unknown — edge not contacted'
     default:
       return 'No certificate yet'
   }
+}
+
+/** A held name's certificate line: its state and, when known, the chain's `notAfter`. */
+export function certText(n: HeldName): string {
+  return n.cert_not_after_ms != null ? `${heldStateText(n)} · certificate until ${day(n.cert_not_after_ms)}` : heldStateText(n)
+}
+
+/** §7.4 item 4: per held name its certificate (`<name>.D` and `*.<name>.D`), state and expiry; pending shares wait. */
+export function CertificatesSection({ pending }: { pending: boolean }) {
+  const names = useQuery({ queryKey: NAMES_KEY, queryFn: () => namesApi.list(), retry: false })
+  const held = (names.data ?? []).filter((n) => n.state !== 'released')
+  return (
+    <Section title="Certificates">
+      {pending && <p className="py-2 text-sm text-fg-secondary">Waiting for a certificate: pending shares go live by themselves when it arrives.</p>}
+      {names.isError ? (
+        <Empty>{isNotOnEngine(names.error) ? 'Certificates: not available on this engine.' : `Certificates could not be read: ${errorText(names.error)}`}</Empty>
+      ) : held.length === 0 ? (
+        <Empty>{names.isLoading ? 'Loading…' : 'No name, so no certificate.'}</Empty>
+      ) : (
+        held.map((n) => {
+          const fqdn = `${n.name}.${n.domain}`
+          return <Row key={`${n.domain}/${n.name}`} label={<span data-cert-host={fqdn} className="font-mono wrap-anywhere">{`${fqdn} · *.${fqdn}`}</span>} description={certText(n)} />
+        })
+      )}
+    </Section>
+  )
 }
 
 function eta(s: number): string {

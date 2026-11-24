@@ -12,8 +12,8 @@ use http_body_util::{BodyExt as _, Full, Limited};
 use hyper_util::rt::TokioIo;
 use serde::de::DeserializeOwned;
 use share_proto::{
-    EndpointAddr, ErrorBody, ErrorCode, Event, Hello, Info, KillReason, PublicKey, RoutesPut,
-    ShareEdgeTicket, Signed, Welcome, limits, paths,
+    EndpointAddr, ErrorBody, ErrorCode, Event, Hello, Info, KillReason, NamesStatus,
+    NamesStatusRequest, PublicKey, RoutesPut, ShareEdgeTicket, Signed, Welcome, limits, paths,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, watch};
@@ -254,6 +254,14 @@ impl Control {
     pub async fn hello(&self, h: &Hello) -> Result<Welcome, EdgeError> {
         Ok(self
             .json(http::Method::POST, paths::HELLO, Some(h))
+            .await?
+            .1)
+    }
+
+    /// `POST /v1/names/status`: the mesh's names without attaching (§5.2).
+    pub async fn names_status(&self, r: &NamesStatusRequest) -> Result<NamesStatus, EdgeError> {
+        Ok(self
+            .json(http::Method::POST, paths::NAMES_STATUS, Some(r))
             .await?
             .1)
     }
@@ -540,6 +548,37 @@ pub fn compat(v: u32, min_client: &str, me: &str) -> Result<(), Incompatible> {
         });
     }
     Ok(())
+}
+
+/// One look at the mesh's names at `ticket`'s edge without attaching (§5.2: opening Settings is no
+/// presence): dial, `GET /v1/info`, the delegation a `hello` would carry, `POST /v1/names/status`,
+/// close. Never touches the state machine or its need. The edge's `info` comes with the answer.
+pub async fn names_status(
+    dialer: &dyn EdgeDialer,
+    delegation: &dyn DelegationSource,
+    ticket: &ShareEdgeTicket,
+) -> anyhow::Result<(Info, NamesStatus)> {
+    let control = Control::new(dialer.dial(ticket.addr.clone(), share_proto::ALPNS).await?);
+    let answer = async {
+        let info = control.info().await?;
+        anyhow::ensure!(
+            info.edge_id == ticket.edge_id(),
+            "the edge's key differs from the ticket"
+        );
+        let delegation = delegation
+            .delegate(info.edge_id, &info.domain, info.now_ms)
+            .await?;
+        let req = NamesStatusRequest {
+            v: share_proto::PROTOCOL_MAJOR,
+            client: share_proto::version::client_agent(platform::version::get()),
+            delegation,
+        };
+        let status = control.names_status(&req).await?;
+        Ok((info, status))
+    }
+    .await;
+    control.close();
+    answer
 }
 
 /// What the state machine asks of the rest of the plugin while attached.

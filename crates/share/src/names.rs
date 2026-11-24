@@ -26,7 +26,8 @@ pub struct HeldName {
     /// New shares use it (`share_names.is_primary`).
     pub primary: bool,
     /// The edge's state: `allocated` · `queued` · `slotted` · `valid` · `released` · `banned`;
-    /// `None` when this machine has not seen the edge's view of it.
+    /// `None` when the edge's view is unknown (detached and no names status answered), which
+    /// is not "no certificate".
     pub state: Option<String>,
     /// Slot queue position while `queued`.
     pub queue_position: Option<u32>,
@@ -38,6 +39,10 @@ pub struct HeldName {
     /// End of the transfer offer.
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub transfer_until_ms: Option<u64>,
+    /// The certificate's `notAfter`, Unix ms: the chain installed on this engine, else the
+    /// edge's (live `welcome`, or the names status while detached); `None` when unknown.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub cert_not_after_ms: Option<u64>,
 }
 
 /// One `share_names` row.
@@ -256,7 +261,11 @@ pub async fn rotate(engine: &Engine, name: &str) -> anyhow::Result<u32> {
 /// no row yet (an M1 random name) are listed too, the only one primary when none is.
 pub async fn list(engine: &Engine) -> anyhow::Result<Vec<HeldName>> {
     let rows = engine.store.names().await?;
-    let seen = engine.welcome_names();
+    // Attached: the live welcome. Detached: a names status (§5.2), which never attaches.
+    let seen = match engine.welcome_names() {
+        Some(w) => Some(w),
+        None => engine.detached_names().await,
+    };
     let info_of = |edge: &str, domain: &str, name: &str| {
         seen.as_ref().and_then(|(e, d, names)| {
             (e == edge && d == domain)
@@ -268,6 +277,11 @@ pub async fn list(engine: &Engine) -> anyhow::Result<Vec<HeldName>> {
         serde_json::to_value(i.state)
             .ok()
             .and_then(|v| v.as_str().map(str::to_owned))
+    };
+    let not_after = |name: &str, domain: &str, i: Option<&share_proto::NameInfo>| {
+        engine
+            .installed_not_after(&share_proto::names::host(name, None, domain))
+            .or_else(|| i.and_then(|i| i.not_after))
     };
     let mut out: Vec<HeldName> = rows
         .iter()
@@ -288,6 +302,11 @@ pub async fn list(engine: &Engine) -> anyhow::Result<Vec<HeldName>> {
                 queue_eta_s: i.as_ref().and_then(|i| i.queue.map(|q| q.eta_s)),
                 transfer_to: i.as_ref().and_then(|i| i.transfer_to.map(|k| k.to_string())),
                 transfer_until_ms: i.as_ref().and_then(|i| i.transfer_until_ms),
+                cert_not_after_ms: if r.released_ms.is_some() {
+                    None
+                } else {
+                    not_after(&r.name, &r.domain, i.as_ref())
+                },
             }
         })
         .collect();
@@ -309,6 +328,7 @@ pub async fn list(engine: &Engine) -> anyhow::Result<Vec<HeldName>> {
                 queue_eta_s: i.queue.map(|q| q.eta_s),
                 transfer_to: i.transfer_to.map(|k| k.to_string()),
                 transfer_until_ms: i.transfer_until_ms,
+                cert_not_after_ms: not_after(&i.name, domain, Some(i)),
             });
         }
     }

@@ -350,6 +350,8 @@ pub struct Limits {
     pub new_conns_per_ip_sec: u32,
     /// `GET /v1/info` requests per minute per client network (IPv4, IPv6 /64, or relay URL).
     pub info_per_ip_min: u32,
+    /// `POST /v1/names/status` requests per minute per client network (IPv4, IPv6 /64, or relay URL).
+    pub names_status_per_net_min: u32,
     /// Claims and allocations per hour per network (open meshes), burst `creates_burst`.
     pub creates_per_net_hour: u32,
     /// Burst of `creates_per_net_hour`.
@@ -448,6 +450,7 @@ impl Default for Limits {
             conns_per_ip: 64,
             new_conns_per_ip_sec: 20,
             info_per_ip_min: 30,
+            names_status_per_net_min: 12,
             creates_per_net_hour: 30,
             creates_burst: 10,
             new_meshes_per_net_day: 5,

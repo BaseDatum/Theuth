@@ -257,8 +257,9 @@ issuing CA, `not_after` and the ARI window, whether its two DNS records exist, `
   certificate is revoked (`cessationOfOperation`) and the new mesh orders with its own key. The same identifier set
   makes that order a renewal for Let's Encrypt's limits (§6.3): no new-name slot. The offline signed `Handover` is P2.
 - **Presence and expiry warnings:** the client attaches only while needed (a share live or pending, a name or
-  certificate operation, Settings › Sharing open, or a removal duty, D22), so switching sharing on is no continuous
-  presence log. The client tracks `last_attach_ms` and the expiry windows from `welcome.limits`, and warns 14 and
+  certificate operation, or a removal duty, D22), so switching sharing on is no continuous presence log. Settings ›
+  Sharing open does not attach: while detached it reads the names' states with one `POST /v1/names/status` (§5.3),
+  cached 30 s. The client tracks `last_attach_ms` and the expiry windows from `welcome.limits`, and warns 14 and
   3 days before a held name expires ("Keep sky.tun.zip"); Keep attaches once.
 
 The claim needs no signature beyond the delegation: the edge accepts it only on a connection whose QUIC handshake
@@ -283,13 +284,14 @@ side dialed); `share` depends on `iroh` as `a2a` does (`crates/a2a/Cargo.toml#L2
 
 **Control plane: HTTP/1.1, one request per bi-stream the engine opens**, served by an axum `Router` through
 `hyper::server::conn::http1::Builder::serve_connection` as a2a's `serve_http` does; the remote endpoint id rides in a
-request extension. JSON bodies ≤ 64 KiB, errors `4xx {code, …}`. Only `GET /v1/info` is answered before `hello`;
-everything else needs a valid delegation on the current connection (§5.7). Pre-`hello` connections are capped and
-time out (§9.4).
+request extension. JSON bodies ≤ 64 KiB, errors `4xx {code, …}`. Only `GET /v1/info` and `POST /v1/names/status`
+are answered before `hello`; everything else needs a valid delegation on the current connection (§5.7). Pre-`hello`
+connections are capped and time out (§9.4).
 
 | request | body | answer |
 |---|---|---|
 | `GET /v1/info` (before `hello`) | none | `200 {v, edge:"theuth-share-edge/<ver>", domain, edge_id, now_ms, min_client, admission, terms_url, terms_rev, abuse_url, full}` |
+| `POST /v1/names/status` (before `hello`; Settings while detached) | `{v:1, client:"theuth/<ver>", delegation: {body, sig}}` | `200 {now_ms, mesh, names}` (`names` as `welcome.names`, `not_after` on a certificated name) · the `hello` refusals that precede admission (`426`, `bad_delegation`, delegation clock codes, `banned`, `mesh_rekeyed {to}`, `revoked`) · `429 {code: rate_limited}` (`names_status_per_net_min` per client network). `hello`'s checks without the attach: no admission, engine count, eviction, `last_attach_ms` or session; the connection stays unbound |
 | `POST /v1/hello` (repeated with each renewed delegation) | `{v:1, delegation: {body, sig}, invite?, client:"theuth/<ver>", terms_rev?}` | `200` welcome `{v, now_ms, min_client, mesh, names: [{name, kind, state, ca, spki, not_after, queue?}], routes: [{host, engine}], revoked: [engine], stop_all_ms, domain, limits, terms_url, abuse_url, terms_rev, terms_ok, full}` · `403 {code: banned \| network_quota \| admission_closed \| invite_required \| bad_delegation \| revoked \| engines_quota}` · `403 {code: delegation_not_yet_valid \| delegation_expired, now_ms}` · `409 {code: mesh_rekeyed, to}` · `426 {code: client_too_old}` |
 | `GET /v1/names/{name}` | none | `200 {available, reason?}` (rate-limited per network) |
 | `POST /v1/names` | `{name}` (a client-drawn random candidate) | `201 {name}` · `409 {code: name_taken}` · `403 {code: terms_required \| quota \| network_quota \| banned}` · `429 {code: paced, retry_after_s}` · `503 {code: edge_full}` |

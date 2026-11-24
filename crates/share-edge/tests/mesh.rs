@@ -18,9 +18,9 @@ use share_edge::config::Config;
 use share_proto::version::client_agent;
 use share_proto::{
     CertChain, CsrQuery, Delegation, ErrorBody, ErrorCode, Hello, MeshStatus, NameAvailability,
-    NameReleased, NameRequest, PublicKey, Rekey, RekeyAccepted, RekeyConflict, RevokeRequest,
-    RouteEntry, RoutesPut, StopAll, TransferAccepted, TransferRequest, Welcome, names, paths,
-    rekey_conflict,
+    NameReleased, NameRequest, NamesStatus, NamesStatusRequest, PublicKey, Rekey, RekeyAccepted,
+    RekeyConflict, RevokeRequest, RouteEntry, RoutesPut, StopAll, TransferAccepted, TransferRequest,
+    Welcome, names, paths, rekey_conflict,
 };
 
 const D: &str = "tun.zip";
@@ -178,6 +178,59 @@ impl Eng {
             .await
             .is_ok()
     }
+
+    /// `POST /v1/names/status` with a delegation of `mesh` for `engine` (normally this connection's key).
+    async fn names_status(&self, rig: &Rig, mesh: &SecretKey, engine: PublicKey) -> (u16, Vec<u8>) {
+        let d = Delegation::new(D, rig.edge_id(), mesh.public(), engine, now_ms(), now_ms());
+        let req = NamesStatusRequest {
+            v: 1,
+            client: client_agent("2.25.5"),
+            delegation: d.sign(mesh).unwrap(),
+        };
+        self.send("POST", paths::NAMES_STATUS, &req).await
+    }
+}
+
+/// CERT-STATE: `POST /v1/names/status` answers the mesh's names on a connection without `hello` and attaches
+/// nothing (no engine row, tunnel, session); a delegation for another key, a revoked engine and a banned mesh are
+/// refused as `hello` refuses them.
+#[tokio::test(flavor = "multi_thread")]
+async fn names_status_reads_the_names_without_attaching() {
+    use share_proto::admin::{AdminCommand, AdminRequest, BanKind};
+    let rig = Rig::new().await;
+    let [m, ka, kb, gone] = keys();
+    let (a, _) = rig.attach(&ka, &m).await;
+    assert_eq!(a.call("PUT", &paths::name("sky"), None).await.0, 200);
+    let engines = a.mesh().await.engines.len();
+
+    let b = rig.dial(&kb).await;
+    let (status, body) = b.names_status(&rig, &m, kb.public()).await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let s: NamesStatus = serde_json::from_slice(&body).unwrap();
+    assert_eq!(s.mesh, m.public());
+    assert_eq!(s.names.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(), ["sky"]);
+    assert_eq!(a.mesh().await.engines.len(), engines, "no engine recorded");
+    assert_eq!(rig.run.edge.mesh_tunnels(&m.public()).len(), 1, "no tunnel attached");
+    assert!(rig.run.edge.tunnels.get(&kb.public()).is_none());
+    let (_, body) = b.call("GET", paths::MESH, None).await;
+    assert_eq!(err(&body).code, ErrorCode::HelloRequired, "the connection has no session");
+
+    let (status, body) = b.names_status(&rig, &m, gone.public()).await;
+    assert_eq!((status, err(&body).code), (403, ErrorCode::BadDelegation), "a delegation for another key");
+
+    let req = RevokeRequest { engines: vec![gone.public()] };
+    assert_eq!(a.send("POST", paths::MESH_REVOKE, &req).await.0, 200);
+    let (_, body) = rig.dial(&gone).await.names_status(&rig, &m, gone.public()).await;
+    assert_eq!(err(&body).code, ErrorCode::Revoked);
+
+    let ban = AdminRequest {
+        id: 1,
+        command: AdminCommand::Ban { kind: BanKind::Mesh, value: m.public().to_string(), reason: "test".into() },
+        reference: None,
+    };
+    assert!(share_edge::admin::handle(&rig.run.edge, ban).await.ok);
+    let (_, body) = rig.dial(&kb).await.names_status(&rig, &m, kb.public()).await;
+    assert_eq!(err(&body).code, ErrorCode::Banned);
 }
 
 /// §5.2: one reserved name per mesh at once, a random one only while none is held, first claim wins, release

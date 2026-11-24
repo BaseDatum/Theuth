@@ -33,7 +33,7 @@ use share_proto::{
 use tower::ServiceExt as _;
 
 use crate::state::{Edge, Route, Session, Tunnel, now_ms};
-use crate::store::{Claimed, NameRow, NewName, Rekeyed};
+use crate::store::{Claimed, MeshRow, NameRow, NewName, Rekeyed};
 
 /// Header read deadline of one control request.
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -245,6 +245,7 @@ fn api() -> Router {
     Router::new()
         .route(paths::INFO, get(info))
         .route(paths::HELLO, post(hello))
+        .route(paths::NAMES_STATUS, post(names_status))
         .route(paths::NAMES, post(allocate_random))
         .route(
             paths::NAME,
@@ -287,36 +288,32 @@ async fn info(Extension(c): Extension<Ctx>) -> ApiResult {
     )
 }
 
-/// `POST /v1/hello` (§5.7): protocol and client version, delegation check, bans, rekey, revoke, admission,
-/// engine count; then `welcome`.
-async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
-    let e = c.edge.clone();
-    let h: Hello = parse(&body)?;
-    // A protocol major this edge does not serve is `426 protocol_mismatch {supported}`; a client below
-    // `min_client` is `426 client_too_old`. Both before anything else is read.
-    if !protocol_ok(h.v) {
+/// `hello`'s checks before admission (§5.7): a protocol major this edge does not serve is `426 protocol_mismatch
+/// {supported}`, a client below `min_client` is `426 client_too_old` (both before anything else is read); then
+/// the delegation against this tunnel's engine key and the edge identity, `mesh != engine`, one mesh per
+/// connection.
+fn vet_delegation(c: &Ctx, v: u32, client: &str, delegation: &share_proto::Signed, now: u64) -> Result<Delegation, ApiError> {
+    let e = &c.edge;
+    if !protocol_ok(v) {
         let mut b = ErrorBody::protocol_mismatch(SUPPORTED_MAJORS.to_vec());
-        b.message = Some(format!("protocol v{} is not served here", h.v));
+        b.message = Some(format!("protocol v{v} is not served here"));
         return Err(b.into());
     }
-    if !client_ok(&h.client, &e.cfg.min_client) {
+    if !client_ok(client, &e.cfg.min_client) {
         let mut b = ErrorBody::new(ErrorCode::ClientTooOld);
-        b.message = Some(format!("client {:?} is older than min_client {}", h.client, e.cfg.min_client));
+        b.message = Some(format!("client {client:?} is older than min_client {}", e.cfg.min_client));
         return Err(b.into());
     }
-    let now = now_ms();
     let ident = EdgeIdentity {
         edge: e.id,
         domain: e.cfg.domain.clone(),
     };
     let max_ttl = u64::try_from(e.cfg.delegation_max_ttl.as_millis()).unwrap_or(u64::MAX);
-    let d = Delegation::verify(&h.delegation, &c.tunnel.engine, &ident, now, max_ttl).map_err(
-        |de| {
-            let mut b = ErrorBody::new(de.code());
-            b.now_ms = de.now_ms();
-            ApiError::from(b)
-        },
-    )?;
+    let d = Delegation::verify(delegation, &c.tunnel.engine, &ident, now, max_ttl).map_err(|de| {
+        let mut b = ErrorBody::new(de.code());
+        b.now_ms = de.now_ms();
+        ApiError::from(b)
+    })?;
     if d.mesh == d.engine {
         return Err(err(ErrorCode::BadDelegation));
     }
@@ -326,9 +323,13 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         // A connection is bound to one mesh; a different mesh needs a new connection.
         return Err(err(ErrorCode::BadDelegation));
     }
-    if e.paused.load(Ordering::Relaxed) || e.draining.load(Ordering::Relaxed) {
-        return Err(err(ErrorCode::AdmissionClosed));
-    }
+    Ok(d)
+}
+
+/// `hello`'s mesh checks: bans of the mesh, the engine key and the client network; a mesh rekeyed away answers
+/// `409 mesh_rekeyed {to}` with the end of the chain (§5.7); a revoked engine `revoked`. The mesh row, if known.
+async fn vet_mesh(c: &Ctx, d: &Delegation) -> Result<Option<MeshRow>, ApiError> {
+    let e = &c.edge;
     let mesh = d.mesh.to_string();
     let engine = d.engine.to_string();
     for (kind, value) in [
@@ -342,7 +343,6 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
     }
     let known = e.store.mesh(&mesh).await?;
     if known.as_ref().is_some_and(|m| m.rekeyed_to.is_some()) {
-        // The end of the chain: the mesh id the edge holds now (§5.7).
         let to = e.store.current_mesh(&mesh).await?;
         let to: PublicKey = to.parse().map_err(|_| anyhow::anyhow!("bad rekeyed_to"))?;
         return Err(ErrorBody::rekeyed(to).into());
@@ -350,6 +350,56 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
     if e.store.revoked(&mesh, &engine).await?.is_some() {
         return Err(err(ErrorCode::Revoked));
     }
+    Ok(known)
+}
+
+/// `welcome.names` and the names status: the mesh's held names with their slot queue positions (§6.5).
+async fn held_name_infos(e: &Edge, mesh: &str, now: u64) -> anyhow::Result<Vec<NameInfo>> {
+    let queue = match e.certs.get() {
+        Some(certs) => crate::queue::mesh_positions(e, certs.ca.id(), mesh, now).await?,
+        None => HashMap::new(),
+    };
+    Ok(e.store
+        .held_names(&e.cfg.domain, mesh)
+        .await?
+        .iter()
+        .map(|r| {
+            let mut n = name_info(r);
+            n.queue = queue.get(&r.name).copied();
+            n
+        })
+        .collect())
+}
+
+/// `POST /v1/names/status` (§5.2), answered without a session like `/v1/info`, `names_status_per_net_min` per
+/// client network: `hello`'s checks, then the names `welcome` would carry. Nothing is attached: no admission,
+/// engine count, eviction, `last_ms` or session, and the connection stays unbound.
+async fn names_status(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
+    if c.edge.names_status_rate.check_key(&c.tunnel.net).is_err() {
+        return Err(err(ErrorCode::RateLimited));
+    }
+    let r: share_proto::NamesStatusRequest = parse(&body)?;
+    let now = now_ms();
+    let d = vet_delegation(&c, r.v, &r.client, &r.delegation, now)?;
+    vet_mesh(&c, &d).await?;
+    let names = held_name_infos(&c.edge, &d.mesh.to_string(), now).await?;
+    json(StatusCode::OK, &share_proto::NamesStatus { now_ms: now, mesh: d.mesh, names })
+}
+
+/// `POST /v1/hello` (§5.7): protocol and client version, delegation check, bans, rekey, revoke, admission,
+/// engine count; then `welcome`.
+async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
+    let e = c.edge.clone();
+    let h: Hello = parse(&body)?;
+    let now = now_ms();
+    let d = vet_delegation(&c, h.v, &h.client, &h.delegation, now)?;
+    if e.paused.load(Ordering::Relaxed) || e.draining.load(Ordering::Relaxed) {
+        return Err(err(ErrorCode::AdmissionClosed));
+    }
+    let known = vet_mesh(&c, &d).await?;
+    let mesh = d.mesh.to_string();
+    let engine = d.engine.to_string();
+    let max_ttl = u64::try_from(e.cfg.delegation_max_ttl.as_millis()).unwrap_or(u64::MAX);
     let mut invited = false;
     // Checked here, consumed in the attach transaction below (FIX4-EDGE #20): a refusal in between spends no use.
     let mut invite_hash = None;
@@ -441,21 +491,7 @@ async fn hello(Extension(c): Extension<Ctx>, body: Bytes) -> ApiResult {
         e.detach(&old);
         old.conn.close(6u32.into(), b"replaced");
     }
-    let queue = match e.certs.get() {
-        Some(certs) => crate::queue::mesh_positions(&e, certs.ca.id(), &mesh, now).await?,
-        None => HashMap::new(),
-    };
-    let names = e
-        .store
-        .held_names(c.domain(), &mesh)
-        .await?
-        .iter()
-        .map(|r| {
-            let mut n = name_info(r);
-            n.queue = queue.get(&r.name).copied();
-            n
-        })
-        .collect();
+    let names = held_name_infos(&e, &mesh, now).await?;
     let stop_all_ms = known
         .and_then(|m| m.stop_all_ms)
         .and_then(|v| u64::try_from(v).ok());

@@ -117,7 +117,9 @@ pub trait ShareApi {
     async fn share_terms_get(&self) -> RpcResult<Option<EdgeTerms>>;
 
     /// The mesh's names: the replicated `share_names` rows (released ones included) joined
-    /// with the edge's view from the last `welcome`.
+    /// with the edge's view: the last `welcome` while attached, else a `POST /v1/names/status`
+    /// (cached 30 s, at most 5 s; never an attach, nothing with the switch off). States the
+    /// edge did not answer stay `null` (unknown).
     #[method(name = "share_names_list")]
     async fn share_names_list(&self) -> RpcResult<Vec<HeldName>>;
 
