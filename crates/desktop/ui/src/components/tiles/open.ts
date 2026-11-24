@@ -113,3 +113,8 @@ export const openDiffTile = (host: string, diff: DiffProps): string | null => op
 /** A sandbox VM's live desktop; one tile per VM name. */
 export type VmProps = { name: string }
 export const openVmTile = (host: string, name: string): string | null => openTile({ kind: 'vm', host, key: name, props: { name } satisfies VmProps })
+
+/** 214 D6: a project's live task graph (`null` = every project); one per chat, so opening it again retargets it. */
+export type TasksGraphProps = { project: string | null }
+export const openTasksGraphTile = (host: string, project: string | null): string | null =>
+  openTile({ kind: 'tasks-graph', host, props: { project } satisfies TasksGraphProps })
