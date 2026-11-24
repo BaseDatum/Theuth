@@ -1,0 +1,113 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{--paper:#f6f3ec;--ink:#1f6feb;--red:#d9480f}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--font-sans,-apple-system,system-ui,sans-serif);color:var(--foreground,#1a1612);background:transparent}
+.state{margin:0 0 28px}
+.cap{display:flex;gap:10px;align-items:baseline;margin:0 0 8px}
+.cap b{font-size:14px}.cap span{font-size:12.5px;color:color-mix(in srgb,var(--foreground,#1a1612) 60%,transparent)}
+.dev{position:relative;width:100%;aspect-ratio:4/3;border-radius:22px;background:#111;padding:10px;box-shadow:0 1px 0 rgba(0,0,0,.08)}
+.scr{position:relative;width:100%;height:100%;border-radius:14px;overflow:hidden;background:var(--paper);
+ background-image:radial-gradient(#d9d3c6 1px,transparent 1px);background-size:22px 22px}
+.stage{position:absolute;left:0;top:0;width:1000px;height:750px;transform-origin:0 0}
+.card{position:absolute;background:#fff;border:1px solid #e3ddd0;border-radius:12px;box-shadow:0 2px 10px rgba(40,30,10,.07);overflow:hidden}
+.card .h{font:600 12px/1 var(--font-sans,system-ui);padding:9px 11px;border-bottom:1px solid #eee7da;display:flex;justify-content:space-between;color:#3b352b}
+.card .h i{font-style:normal;font-weight:500;color:#9a907e}
+.phone{margin:12px auto;width:150px;height:270px;border:2px solid #2b2b2b;border-radius:22px;padding:14px 10px;background:#fbfaf7}
+.ph-h{height:22px;border-radius:6px;background:#2b2b2b;margin-bottom:8px}
+.ph-tabs{display:flex;gap:4px;margin-bottom:8px}.ph-tabs div{flex:1;height:12px;border-radius:4px;background:#d8d2c4}
+.grp{font:600 8px system-ui;color:#8a816f;margin:6px 0 3px}
+.row{height:17px;border-radius:5px;background:#ece7dc;margin-bottom:4px}
+.row.s{width:78%}
+.sticky{background:#fff6b8;border-color:#eadc85}
+.sticky ul{margin:8px 0 0;padding:0 14px 10px 26px;font-size:12px;line-height:1.5;color:#4a4224}
+.dim{opacity:.38;filter:grayscale(.7)}
+.tag{position:absolute;font:500 11px system-ui;background:#fff;border:1px solid #e3ddd0;color:#6b6252;border-radius:8px;padding:5px 8px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+svg.layer{position:absolute;left:0;top:0;width:1000px;height:750px;pointer-events:none;overflow:visible}
+.glass{background:rgba(255,255,255,.52);backdrop-filter:blur(18px) saturate(1.5);-webkit-backdrop-filter:blur(18px) saturate(1.5);
+ border:1px solid rgba(255,255,255,.7);box-shadow:0 8px 30px rgba(30,20,0,.14),inset 0 1px 0 rgba(255,255,255,.8)}
+.pill{position:absolute;right:22px;bottom:22px;width:330px;height:46px;border-radius:23px;display:flex;align-items:center;gap:10px;padding:0 8px 0 12px}
+.chip{display:flex;align-items:center;gap:6px;font:600 11.5px system-ui;color:#3b352b;background:rgba(255,255,255,.6);border-radius:14px;padding:5px 9px}
+.dot{width:7px;height:7px;border-radius:50%;background:#2f9e44}
+.ph{flex:1;font:14px system-ui;color:#857b69}
+.mic{width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.07);display:grid;place-items:center;font-size:14px}
+.cluster{position:absolute;right:22px;bottom:80px;width:58px;border-radius:22px;padding:8px 0;display:flex;flex-direction:column;align-items:center;gap:4px}
+.cb{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;font-size:17px;color:#3b352b;position:relative}
+.cb.on{background:rgba(31,111,235,.14);color:#1f6feb}
+.cb small{position:absolute;right:52px;white-space:nowrap;font:500 11px system-ui;background:rgba(30,26,20,.78);color:#fff;padding:4px 7px;border-radius:7px}
+.sep{width:30px;height:1px;background:rgba(0,0,0,.1);margin:2px 0}
+.touch{position:absolute;width:46px;height:46px;border-radius:50%;background:rgba(31,111,235,.18);border:2px solid rgba(31,111,235,.55)}
+.handle{position:absolute;width:12px;height:12px;border-radius:50%;background:#fff;border:2.5px solid #1f6feb}
+.sel{outline:2.5px solid #1f6feb;outline-offset:3px}
+.sheet{position:absolute;right:22px;bottom:22px;width:380px;border-radius:24px;padding:14px}
+.sheet .txt{font:14.5px/1.45 system-ui;color:#2a251d;min-height:44px}
+.thumbs{display:flex;gap:8px;margin:10px 0}
+.th{width:74px;height:56px;border-radius:10px;background:#fff;border:1px solid #e3ddd0;position:relative;overflow:hidden}
+.th:after{content:"×";position:absolute;right:3px;top:0;font-size:12px;color:#9a907e}
+.srow{display:flex;justify-content:space-between;align-items:center}
+.send{background:#1f6feb;color:#fff;font:600 13px system-ui;border-radius:16px;padding:8px 14px}
+.bubble{position:absolute;right:22px;bottom:80px;width:330px;border-radius:18px;padding:11px 13px;font:13px/1.45 system-ui;color:#2a251d}
+.chev{position:absolute;right:10px;top:50%;width:26px;height:46px;margin-top:-23px;border-radius:13px;display:grid;place-items:center;font-size:15px;color:#3b352b}
+.new{box-shadow:0 0 0 3px rgba(47,158,68,.35),0 8px 24px rgba(0,0,0,.1)}
+</style></head><body>
+<div id="root"></div>
+<script>
+const phoneA=`<div class="phone"><div class="ph-h"></div><div class="grp">GITHUB</div><div class="row"></div><div class="row s"></div><div class="grp">SLACK</div><div class="row"></div><div class="row"></div><div class="row s"></div><div class="grp">SCHEDULES</div><div class="row"></div><div class="row s"></div></div>`;
+const phoneB=`<div class="phone"><div class="ph-h" style="background:#5c5c5c;height:16px"></div><div class="ph-tabs"><div></div><div></div><div></div></div><div class="row"></div><div class="row"></div><div class="row s"></div><div class="row"></div><div class="row"></div><div class="row s"></div><div class="row"></div><div class="row"></div></div>`;
+const phoneC=`<div class="phone"><div class="ph-h"></div><div class="ph-tabs" style="margin-bottom:4px"><div style="background:#1f6feb55"></div><div></div></div><div style="display:flex;gap:3px;margin-bottom:7px"><div style="height:10px;width:30px;border-radius:5px;background:#cfe0fb"></div><div style="height:10px;width:24px;border-radius:5px;background:#e6e1d6"></div><div style="height:10px;width:34px;border-radius:5px;background:#e6e1d6"></div></div><div class="row"></div><div class="row"></div><div class="row s"></div><div class="row"></div><div class="row"></div><div class="row s"></div><div class="row"></div></div>`;
+function base(o={}){return `
+<div class="card ${o.dimA?'dim':''}" style="left:40px;top:70px;width:200px;height:340px"><div class="h">Mock A — grouped <i>page</i></div>${phoneA}</div>
+${o.dimA?`<div class="tag" style="left:40px;top:420px;width:200px">header kept · grouping rejected — too many sections on phone</div>`:''}
+<div class="card ${o.selB?'sel':''}" style="left:300px;top:70px;width:200px;height:340px"><div class="h">Mock B — flat list <i>page</i></div>${phoneB}</div>
+<div class="card sticky ${o.selS?'sel':''}" style="left:40px;top:500px;width:230px;height:150px"><div class="h" style="border-color:#eadc85">Requirements <i>sticky</i></div><ul><li>Triage in one thumb</li><li>Never lose a decision</li><li>Group only when &gt; 20 items</li></ul></div>
+<div class="card" style="left:330px;top:500px;width:250px;height:170px"><div class="h">Item lifecycle <i>diagram</i></div>
+<svg width="250" height="130" viewBox="0 0 250 130"><g font-family="system-ui" font-size="10" fill="#3b352b">
+<rect x="12" y="20" width="62" height="26" rx="7" fill="none" stroke="#9a907e"/><text x="27" y="37">new</text>
+<rect x="96" y="20" width="62" height="26" rx="7" fill="none" stroke="#1f6feb"/><text x="104" y="37">seen</text>
+<rect x="180" y="20" width="62" height="26" rx="7" fill="none" stroke="#2f9e44"/><text x="190" y="37">done</text>
+<rect x="96" y="84" width="62" height="26" rx="7" fill="none" stroke="#d9480f"/><text x="102" y="101">snoozed</text>
+<path d="M74 33h20M158 33h20M127 46v36" stroke="#9a907e" fill="none" marker-end="url(#a)"/></g>
+<defs><marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" fill="#9a907e"/></marker></defs></svg></div>
+${o.c?`<div class="card new" style="left:580px;top:70px;width:200px;height:340px"><div class="h">Mock C — v3 <i>page · agent</i></div>${phoneC}</div>`:''}
+<svg class="layer"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#7d7464"/></marker></defs>
+<path d="M240 240 C 262 240, 278 240, 298 240" stroke="#7d7464" stroke-width="2" fill="none" marker-end="url(#m)"/>
+<text x="244" y="230" font-family="system-ui" font-size="11" fill="#7d7464">v2</text>
+${o.c?`<path d="M500 240 C 530 240, 550 240, 578 240" stroke="#2f9e44" stroke-width="2.2" fill="none" marker-end="url(#m)"/><text x="503" y="230" font-family="system-ui" font-size="11" fill="#2f9e44">v3: A header + filters</text>`:''}
+</svg>`}
+function ink(){return `<svg class="layer">
+<path d="M86 104 C 64 106, 60 136, 92 141 C 140 147, 210 146, 214 120 C 218 98, 160 96, 108 98 C 96 99, 88 101, 84 106" stroke="var(--red)" stroke-width="3.2" fill="none" stroke-linecap="round"/>
+<path d="M330 140 L 470 138 L 472 168 L 331 170 Z" stroke="var(--ink)" stroke-width="2.8" fill="none" stroke-linejoin="round" stroke-dasharray="0" />
+<path d="M452 112 L 476 128 M 476 110 L 450 129" stroke="var(--red)" stroke-width="3.2" stroke-linecap="round"/>
+<path d="M480 156 C 520 150, 535 165, 548 180" stroke="var(--ink)" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+<text x="552" y="194" font-family="'Bradley Hand','Segoe Print',cursive" font-size="17" fill="var(--ink)">filters?</text>
+</svg>`}
+const pill=(t='Ask…',s='Attention inbox')=>`<div class="pill glass"><div class="chip"><span class="dot"></span>${s}</div><div class="ph">${t}</div><div class="mic">🎙</div></div>`;
+const states=[
+ {t:'1 · Idle — full screen',d:'Only the translucent composer pill is visible. Pencil ink (red/blue) was just drawn; nothing has been sent.',
+  b:()=>base()+ink()+pill()},
+ {t:'2 · Finger tap on empty canvas → controls',d:'The glass cluster rises above the pill; hides after 4 s, on any Pencil touch, or a second tap.',
+  b:()=>base()+ink()+`<div class="touch" style="left:700px;top:520px"></div>
+  <div class="cluster glass">
+   <div class="cb on">✎<small>Pencil tools</small></div><div class="cb">＋<small>Add card</small></div><div class="cb">⤳<small>Link</small></div><div class="cb">▢<small>Frame</small></div><div class="cb">⬚<small>Select</small></div>
+   <div class="sep"></div><div class="cb">⤢<small>Fit</small></div><div class="cb">◎<small>Follow agent</small></div><div class="cb">↶<small>Undo</small></div><div class="cb">⋯</div></div>`+pill()},
+ {t:'3 · Linking is explicit',d:'Select a card → four handles. Drag from a handle (finger or Pencil) to another card. A hand-drawn line stays ink.',
+  b:()=>base({selS:true})+`<div class="handle" style="left:149px;top:488px"></div><div class="handle" style="left:149px;top:654px"></div><div class="handle" style="left:274px;top:569px"></div><div class="handle" style="left:28px;top:569px"></div>
+  <svg class="layer"><path d="M280 575 C 330 575, 330 420, 400 414" stroke="#1f6feb" stroke-width="2.4" stroke-dasharray="6 5" fill="none"/></svg>
+  <div class="touch" style="left:378px;top:392px"></div>
+  <div class="tag" style="left:420px;top:430px;color:#1f6feb;border-color:#bcd3f8">release on “Mock B” to link</div>`+pill()},
+ {t:'4 · Send with ink → agent places v3',d:'The sheet shows the 3 fresh ink crops it will send with your words. The agent answers by placing Mock C, linking B → C and dimming A with the reason.',
+  b:()=>base({dimA:true,c:true})+ink()+`<div class="bubble glass">Placed <b>Mock C</b>: A’s header, filter chips where you drew the box, third tab dropped. Dimmed A — kept its header only.</div>
+  <div class="sheet glass" style="bottom:22px;transform:translateY(0)">
+   <div class="srow"><div class="chip"><span class="dot"></span>Attention inbox ▾</div><span style="font:12px system-ui;color:#857b69">3 marks · 2 cards changed</span></div>
+   <div class="thumbs">
+    <div class="th"><svg viewBox="0 0 74 56"><rect x="8" y="10" width="58" height="10" rx="3" fill="#2b2b2b"/><ellipse cx="37" cy="15" rx="33" ry="11" stroke="#d9480f" stroke-width="2" fill="none"/></svg></div>
+    <div class="th"><svg viewBox="0 0 74 56"><rect x="8" y="12" width="58" height="7" rx="3" fill="#ece7dc"/><rect x="10" y="24" width="54" height="14" stroke="#1f6feb" stroke-width="2" fill="none"/><rect x="8" y="42" width="58" height="7" rx="3" fill="#ece7dc"/></svg></div>
+    <div class="th"><svg viewBox="0 0 74 56"><rect x="6" y="22" width="18" height="10" rx="3" fill="#d8d2c4"/><rect x="28" y="22" width="18" height="10" rx="3" fill="#d8d2c4"/><rect x="50" y="22" width="18" height="10" rx="3" fill="#d8d2c4"/><path d="M50 18l18 18M68 18L50 36" stroke="#d9480f" stroke-width="2.4"/></svg></div>
+   </div>
+   <div class="txt">Keep A’s header. Filters go where I drew the box. Drop that tab.</div>
+   <div class="srow" style="margin-top:8px"><span style="font:12px system-ui;color:#857b69">🎙 hold to talk · ⌃ open session</span><span class="send">Send</span></div></div>`},
+];
+const root=document.getElementById('root');
+root.innerHTML=states.map((s,i)=>`<div class="state"><div class="cap"><b>${s.t}</b><span>${s.d}</span></div><div class="dev"><div class="scr"><div class="stage">${s.b()}</div></div></div></div>`).join('');
+function fit(){document.querySelectorAll('.scr').forEach(sc=>{const st=sc.querySelector('.stage');st.style.transform=`scale(${sc.clientWidth/1000})`;});}
+new ResizeObserver(fit).observe(document.body);fit();
+</script></body></html>
