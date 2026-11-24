@@ -8,10 +8,17 @@ import { NotFound } from './components/not-found'
 const SearchDialog = lazy(() => import('./components/search'))
 
 export const meta: MetaFunction = () => [
-  { title: 'theuth: the harness that does things' },
-  { name: 'description', content: 'A single-process AI harness that does things for the user.' },
-  { property: 'og:title', content: 'theuth' },
-  { property: 'og:description', content: 'A single-process AI harness that does things for the user.' },
+  { title: 'theuth: your agents, your machines, your keys' },
+  {
+    name: 'description',
+    content:
+      'theuth directs any model and any coding agent on computers you own, end to end encrypted between them. It shares the work and keeps the keys.',
+  },
+  { property: 'og:title', content: 'theuth: your agents, your machines, your keys' },
+  {
+    property: 'og:description',
+    content: 'One harness that directs any model and any coding agent on computers you own. It shares the work and keeps the keys.',
+  },
   { property: 'og:image', content: 'https://theuth.io/og.jpg' },
   { property: 'og:url', content: 'https://theuth.io' },
   { name: 'twitter:card', content: 'summary' },

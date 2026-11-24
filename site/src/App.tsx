@@ -1,7 +1,11 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import engraving from "./engraving.webp";
 import { Pyramid } from "./Pyramid";
 import { LEDGER } from "./ledger";
+import { Better } from "./sections/Better";
+import { DOCS, Doc } from "./sections/doc";
+import { Keys } from "./sections/Keys";
+import { Publish } from "./sections/Publish";
 
 declare const __APP_VERSION__: string;
 declare const __RELEASE_VERSION__: string;
@@ -11,7 +15,6 @@ const APP = "https://app.theuth.io";
 const RELEASES = "https://s3.rwx.dev/theuth/releases";
 /** Release artifacts live at releases/<version>/theuth_<version>_<target>; there is no latest/ path, latest.json names the version. */
 const artifact = (v: string, target: string) => `${RELEASES}/${v}/theuth_${v}_${target}`;
-const DOCS = "/docs";
 
 type Os = "macos" | "windows" | "linux";
 
@@ -33,15 +36,6 @@ function Ibis({ size = 22 }: { size?: number }) {
       </g>
       <circle cx="610" cy="288" r="36" className="fill-accent" />
     </svg>
-  );
-}
-
-/** A link into the docs at /docs/<path>; paths follow the docs' own tree (getting-started, workspace, automation, reference). docs-cta makes it tap-sized when it stands alone. */
-function Doc({ path = "", className = "", children }: { path?: string; className?: string; children: ReactNode }) {
-  return (
-    <a href={path ? `${DOCS}/${path}` : DOCS} className={`docs-link ${className}`.trim()}>
-      {children}
-    </a>
   );
 }
 
@@ -182,8 +176,10 @@ const FLAGS = [
   "t",
   "t --headless",
   "t --acp",
+  "t mcp",
   "t --link",
   "t --install-service",
+  "t mesh pair",
   "t mesh add --vm",
   "t tasks list",
   "t --slack-setup",
@@ -191,15 +187,17 @@ const FLAGS = [
   "t --telegram-setup",
 ];
 
+/** Counts verified in code for this release (crates/browser, crates/computer); recount when they change. */
 const TOOL_FAMILIES = [
   ["shell", "background jobs"],
   ["pty", "start, send, screen, wait"],
   ["files", "read, write, list, grep, glob, edit"],
-  ["code", "find, outline, refs, map, symbol, impact, project_profile"],
+  ["code", "find, outline, refs, symbol, impact, code_overview"],
   ["documents", "doc_read, insert, replace, delete, move"],
+  ["notebooks", "notebook_*, source_*, cited answers"],
   ["timers", "remind_me_in, cancel_reminder"],
-  ["browser", "sixteen tools, screenshots"],
-  ["computer", "eight tools, your desktop"],
+  ["browser", "eighteen tools, screenshots, your tile"],
+  ["computer", "sixteen tools, the accessibility tree"],
   ["web", "search_web, read_url, search_x"],
   ["scrape", "scrape_url, crawl, map_site"],
   ["mcp", "any mcp.json, hot-reloaded"],
@@ -208,6 +206,7 @@ const TOOL_FAMILIES = [
   ["tasks", "create, checkout, update, move, reassign, note, place"],
   ["agents", "agents_list, agent_draft, agent_put, agent_propose"],
   ["sandbox", "create, share, snapshot, restore, takeover"],
+  ["share", "share_publish, yours to approve"],
 ];
 
 const SURFACES: { group: string; doc: string; items: { name: string; href?: string; body: string }[] }[] = [
@@ -218,11 +217,15 @@ const SURFACES: { group: string; doc: string; items: { name: string; href?: stri
       { name: "t", body: "The terminal UI. The default." },
       {
         name: "theuth.app",
-        body: "Menubar app on macOS, tray app on Windows and Linux. Looks like a chat page and speaks JSON-RPC to the daemon. A globe in the header opens a live view of the browser the agent is driving.",
+        body: "The desktop app on macOS, Windows and Linux. Chats are panes in one workspace with tiles beside them: a live web page, a terminal, a diff. The Inbox and the agent graph live here.",
       },
       {
         name: "t --acp",
         body: "Agent Client Protocol on stdio, agent name theuth. Zed and any other ACP client.",
+      },
+      {
+        name: "t mcp",
+        body: "theuth as an MCP server, for Claude Desktop, an IDE or another agent: 44 tools over your meetings, notes, knowledge, tasks and sessions. Off by default, loopback only, behind a token, every call in an audit log.",
       },
     ],
   },
@@ -237,7 +240,7 @@ const SURFACES: { group: string; doc: string; items: { name: string; href?: stri
       },
       {
         name: "Slack",
-        body: "t --slack-setup, then t --headless. Replies stream into the thread with a card per tool call; /theuth carries the commands. theuth agent, in your workspace.",
+        body: "t --slack-setup, then t --headless. One card per batch of tools, a plan message that updates in place, tables and charts as native blocks; /theuth carries the commands.",
       },
       {
         name: "Signal",
@@ -251,12 +254,16 @@ const SURFACES: { group: string; doc: string; items: { name: string; href?: stri
   },
 ];
 
+/** The doors heading counts SURFACES, so adding a door cannot leave it wrong again. */
+const COUNT = ["None", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve"];
+const DOORS = SURFACES.reduce((n, g) => n + g.items.length, 0);
+
 const HANDS_BACK = [
   {
     name: "show",
-    title: "Documents",
+    title: "Documents and pages",
     doc: "workspace/documents",
-    body: "Markdown, CSV tables, images, SVG, Mermaid diagrams, archive listings, and PDFs compiled in-process from markdown or Typst. Every card is a versioned snapshot; the model gets the first page back as an image and fixes what it sees.",
+    body: "Markdown, CSV tables, images, SVG, Mermaid, diagrams, charts and PDFs compiled in-process. An HTML page renders live in the transcript, sandboxed and themed; the agent checks it for console errors before you see it. Every card is a versioned snapshot.",
   },
   {
     name: "app",
@@ -265,16 +272,28 @@ const HANDS_BACK = [
     body: "A dashboard, a control panel, a form. The agent publishes an interactive app whose buttons read your installed tools live, without another model turn. The press is the approval. A reply can carry a static card inline; Open as app keeps it.",
   },
   {
-    name: "schedule",
-    title: "Runs, loops and watchers",
-    doc: "automation/schedules",
-    body: "One markdown file per schedule with cron, every, or at in the front matter and the prompt as the body. Add until or max_runs and it repeats until the job is done, each report delivered to you. Add when: and a small Python sensor decides whether the model wakes at all.",
+    name: "show_web",
+    title: "Tiles beside the chat",
+    doc: "workspace/web-views",
+    body: "The agent opens your dev server, a dashboard or a docs site in a real web view next to the conversation, or a live terminal, a note, a source file that follows its edits, a split diff. Sign in once in a tile and the agent's browser on any of your machines carries on signed in.",
+  },
+  {
+    name: "notebooks",
+    title: "Research with sources",
+    doc: "workspace/notebooks",
+    body: "Files, URLs, meetings, past sessions, Confluence, Jira, YouTube, audio and video as sources. A dial per item sets what the model sees; answers cite down to the block; embeddings run on a local model. Ask across notebooks, or ask for a briefing, a timeline or an audio overview.",
+  },
+  {
+    name: "meetings",
+    title: "Notes without a bot in the call",
+    doc: "workspace/meetings",
+    body: "theuth notices the app holding the microphone, asks before it records, matches the call to your calendar and writes a brief from the series' earlier meetings. Afterwards it suggests who spoke and writes the notes to your template.",
   },
   {
     name: "voice",
     title: "Read aloud, dictate, talk",
     doc: "workspace/voice",
-    body: "Pocket TTS, Parakeet and Nemotron streaming speech models run inside the harness, on your machine: replies read back, dictation into any text field, hold-to-record voice notes, and talk, a live spoken conversation you can interrupt. Audio stays local; the text of the conversation goes to the model provider you chose, as in any chat.",
+    body: "Speech models run inside the harness, on your machine: replies read back, dictation into any app with your own dictionary, spoken commands and talk, a live conversation that keeps going while the work runs. Audio stays local; the text goes to the model provider you chose, as in any chat.",
   },
 ];
 
@@ -284,13 +303,19 @@ const TEAM = [
     name: "agents",
     title: "Hire a standing role",
     doc: "automation/agents",
-    body: "Hire a named agent in chat or from the Agents view: a title, a charter, who it reports to, a model, a tool ceiling, an MCP allowlist, an optional monthly budget. Agents can propose hires; those wait, paused, in the Hiring inbox until you decide.",
+    body: "A title, a charter, who it reports to, a model, a tool ceiling, an MCP allowlist, an optional monthly budget and, if you want, a memory of its own that never mixes with yours. Agents can propose hires; those wait, paused, until you decide.",
   },
   {
     name: "tasks",
     title: "A board, not a transcript",
     doc: "automation/tasks",
-    body: "Per project: backlog, todo, doing, review, blocked, done. You, theuth and its agents move the same cards, from chat or by dragging in the app; t tasks list shows the board from a shell. An attention inbox collects approvals, decisions, blocked cards and budgets.",
+    body: "Per project: backlog, todo, doing, review, blocked, done. You, theuth and its agents move the same cards, from chat or by dragging in the app; t tasks list shows the board from a shell. A task belongs to one agent on one machine, so two machines never work the same card.",
+  },
+  {
+    name: "schedules",
+    title: "Runs and loops",
+    doc: "automation/schedules",
+    body: "One markdown file per schedule with cron, every or at in the front matter and the prompt as the body. Add until or max_runs and it repeats until the job is done, each report delivered to you.",
   },
   {
     name: "watchers",
@@ -302,13 +327,25 @@ const TEAM = [
     name: "delegation",
     title: "Children with a leash",
     doc: "automation/delegation",
-    body: "spawn_subagent runs a child here, on another engine, or in an external harness over the Agent Client Protocol. Its tool ceiling is the minimum over its ancestors and cannot be raised. task_place hands a card to another agent.",
+    body: "spawn_subagent runs a child here, on another machine, or as Claude Code, Codex, OpenCode or omp. theuth shows their own subagents, steers a busy child, nudges a silent one and wakes when one stalls. A child's tool ceiling is the minimum over its ancestors.",
+  },
+  {
+    name: "contacts",
+    title: "Work with someone else's theuth",
+    doc: "automation/contacts",
+    body: "Pair with a colleague's theuth by a code you both confirm and export the agents and chats they may reach; your agents then message each other directly. A contact you add on one machine is a contact on all of them.",
+  },
+  {
+    name: "inbox",
+    title: "One queue, one map",
+    doc: "workspace/desktop",
+    body: "Every question, approval, notice and finished run lands in one Inbox, scored so what stops an agent comes first, answered on the card. Above it, a live graph of every session, subagent, harness child and contact, with the messages between them.",
   },
   {
     name: "mesh",
     title: "Several machines, one harness",
     doc: "automation/mesh",
-    body: "Engines pair with a short string and find each other on the LAN, through NAT or through the relay. Agents, tasks, schedules and sessions replicate; the most stable engine holds Slack, Signal, Telegram, schedule ticks and desks, and hands them over when it goes away.",
+    body: "Pair a laptop, a desktop and a server; sessions, agents, tasks, notes and the vault replicate. A session runs on one machine and you drive it from any other, or move it. The most stable engine holds the channels and schedule ticks.",
   },
   {
     name: "sandboxes",
@@ -318,17 +355,20 @@ const TEAM = [
   },
 ];
 
-const SOON = ["iOS app: a paired client over the link, TestFlight pipeline in the repo", "Android app"];
+const SOON = ["iPhone app: paired over the encrypted link, Liquid Glass chrome, web-view tiles", "Android app"];
 const NOT = [
   "Discord or WhatsApp",
   "Intel Mac builds",
   "A published Docker image: t mesh add --docker builds the engine container locally",
+  "Custom domains for public shares; run your own edge on your own domain instead",
 ];
 const LIMITS = [
   "Meetings are built for macOS 15; capture on Windows 11 and Linux with PipeWire exists but is partial and lightly exercised, without echo cancellation. Every device reads meetings.",
-  "Echo-cancelled voice input uses macOS voice processing; speech on Windows and Linux is less exercised.",
+  "Echo-cancelled voice input uses macOS voice processing; speech on Windows and Linux is less exercised. Speech recognition on the Apple GPU is Apple silicon only.",
   "Sandbox VMs need Apple silicon or Linux with KVM, and a published VM image for your release; the image is pulled on first create. Read the sandboxes doc for what the current release provides before relying on them. t mesh add --ssh does not target Windows hosts.",
   "computer_* needs Screen Recording and Accessibility on macOS and an X11 display on Linux.",
+  "A public share lives only while the machine serving it is awake and online: it is a tunnel, not hosting.",
+  "Autoresearch study kinds beyond a single metric do not run on Windows.",
 ];
 
 /** The docs tree, one column per section; the overview of each section lives at /docs/<section>. */
@@ -355,6 +395,8 @@ const DOCS_SECTIONS: { title: string; path: string; body: string; links: [string
       ["Voice", "workspace/voice"],
       ["Meetings", "workspace/meetings"],
       ["Documents", "workspace/documents"],
+      ["Notebooks", "workspace/notebooks"],
+      ["Web views", "workspace/web-views"],
       ["Knowledge", "workspace/knowledge"],
       ["Apps", "workspace/apps"],
       ["Search", "workspace/search"],
@@ -363,14 +405,17 @@ const DOCS_SECTIONS: { title: string; path: string; body: string; links: [string
   {
     title: "Automation",
     path: "automation",
-    body: "Agents, tasks, schedules, other machines, channels.",
+    body: "Agents, tasks, schedules, other machines, other people, channels.",
     links: [
       ["Agents", "automation/agents"],
       ["Delegation", "automation/delegation"],
       ["Tasks", "automation/tasks"],
       ["Schedules", "automation/schedules"],
       ["Watchers", "automation/watchers"],
+      ["Autoresearch", "automation/autoresearch"],
       ["Mesh", "automation/mesh"],
+      ["Contacts", "automation/contacts"],
+      ["Sharing", "automation/sharing"],
       ["Sandboxes", "automation/sandboxes"],
       ["Channels", "automation/channels"],
       ["Browser and desktop", "automation/browser-desktop"],
@@ -381,6 +426,7 @@ const DOCS_SECTIONS: { title: string; path: string; body: string; links: [string
     path: "reference",
     body: "Every switch, tool and command.",
     links: [
+      ["Security", "reference/security"],
       ["Configuration", "reference/configuration"],
       ["Tools and permissions", "reference/tools-permissions"],
       ["MCP", "reference/mcp"],
@@ -437,15 +483,16 @@ export function App() {
       <main id="main">
         <section className="mx-auto grid min-h-[calc(100dvh-4rem)] max-w-[1400px] grid-cols-1 items-center gap-12 px-6 pt-16 pb-24 md:grid-cols-12 md:px-10">
           <div className="md:col-span-7">
-            <h1 className="display text-[clamp(64px,10.5vw,128px)]">
-              The harness
+            <h1 className="display text-[clamp(52px,10.5vw,128px)]">
+              Your agents.
               <br />
-              that does
+              Your machines.
               <br />
-              things
+              Your keys.
             </h1>
             <p className="mt-8 max-w-[28em] text-[18px] leading-relaxed text-fg-2">
-              A single-process AI harness that does things for the user.
+              theuth directs any model and any coding agent on computers you
+              own. It shares the work and keeps the keys.
             </p>
             <div className="mt-10 flex flex-wrap gap-3">
               <a href="#install" className="btn btn-primary">
@@ -455,11 +502,16 @@ export function App() {
                 Download for {OSES[os].label}
               </a>
             </div>
-            <p className="mt-6 text-[14px] text-fg-3">
-              New here?{" "}
-              <Doc path="getting-started" className="docs-cta">
-                Read the quickstart →
-              </Doc>
+            <p className="mt-6 flex flex-wrap items-center gap-x-6 text-[14px] text-fg-3">
+              <span>
+                New here?{" "}
+                <Doc path="getting-started" className="docs-cta">
+                  Read the quickstart →
+                </Doc>
+              </span>
+              <a href="#keys" className="docs-link docs-cta">
+                How the keys stay home →
+              </a>
             </p>
           </div>
           <div className="relative hidden min-h-[60vh] md:col-span-5 md:block">
@@ -480,15 +532,16 @@ export function App() {
               loading="lazy"
             />
             <h2 className="display mt-12 text-[clamp(44px,5.4vw,76px)]">
-              Not a coding agent.
+              It runs the coding agents.
             </h2>
             <p className="mt-6 max-w-[34em] text-[17px] leading-relaxed text-fg-2">
-              theuth runs shell jobs, drives a real browser and your own
-              desktop, reads and writes files, and searches the web without a
-              key. What it makes, it hands back as documents and apps you can
-              open. It staffs a task board with agents you hire, each on a
-              leash you set, across the machines you pair. Mutating and
-              destructive tools ask first.
+              theuth is not one more coding agent. It briefs Claude Code, Codex,
+              OpenCode and omp as children over the Agent Client Protocol,
+              watches their own subagents, steers a busy one, nudges a silent one
+              and wakes when one stalls, then reads the diff before it reports
+              back. Around them it does the rest of the work: shell jobs, a real
+              browser, your desktop, files and the web. Mutating and destructive
+              tools ask first.
             </p>
             <p className="mt-4 max-w-[34em] text-[15px] leading-relaxed text-fg-3">
               A single-process Rust harness. Plugins over a typed bus. Frontends
@@ -503,11 +556,12 @@ export function App() {
               <p className="index">01</p>
               <h2 className="mt-3 text-[22px] font-medium">One process.</h2>
               <p className="mt-4 max-w-[38em] text-[15px] leading-relaxed text-fg-2">
-                t is the daemon, the terminal UI, the headless server and the
-                editor agent. Plugins are Rust crates on a typed message bus.
-                Every frontend attaches over JSON-RPC: the TUI, the macOS app, a
-                phone through the relay, Slack, Signal, Telegram, your editor. One
-                binary, one data directory, one set of approvals.
+                t is the daemon, the terminal UI, the headless server, the
+                editor agent and an MCP server. Plugins are Rust crates on a
+                typed message bus. Every frontend attaches over JSON-RPC: the
+                TUI, the desktop app, a phone through the relay, Slack, Signal,
+                Telegram, your editor. One binary, one data directory, one set
+                of approvals.
               </p>
               <ul className="mt-8 flex flex-wrap gap-x-6 gap-y-2 font-mono text-[13px] text-fg-3">
                 {FLAGS.map((f) => (
@@ -525,8 +579,9 @@ export function App() {
                 Quick shell commands answer inline; long ones run as jobs and
                 wake the model when they exit. Long-running programs get a
                 pseudo-terminal the agent types into and reads back. The browser
-                and the desktop are real, with screenshots. Every tool is also a
-                function inside a Python runtime that keeps its state.
+                is real, with screenshots; the desktop is read through the
+                accessibility tree. Every tool is also a function inside a
+                Python runtime that keeps its state.
               </p>
               <dl className="mt-7 grid grid-cols-[auto_1fr] gap-x-5 gap-y-1.5 font-mono text-[12.5px]">
                 {TOOL_FAMILIES.map(([k, v]) => (
@@ -550,9 +605,9 @@ export function App() {
                 allow, ask or deny. By default read-only tools run and
                 mutating and destructive ones ask, in the thread you are in: a
                 card in the TUI or the app, Allow and Deny in Slack or Telegram, a
-                thumbs-up on Signal. The class is the tool's, not the effect's: a browser
-                click is read-only. Secrets live in an encrypted vault; the
-                model uses them by name and never sees a value.
+                thumbs-up on Signal. Some tools are human-only: publishing to
+                the web waits for you, in person. Any builtin category can be
+                off for one chat or for good.
               </p>
               <pre className="mt-7 border border-well bg-well/60 p-4 font-mono text-[12.5px] leading-6 text-fg-2">
                 {
@@ -570,10 +625,10 @@ export function App() {
                 Knowledge is plain markdown under ~/.theuth/knowledge, indexed
                 for full-text search, every change a git commit made in-process,
                 so history and restore work everywhere. The harness harvests
-                what is worth keeping while you work. Sessions live in sqlite.
-                Compact by summary, cut, or snap; undo, redo, or shake images
-                and tool output out of the context; search everything you ever
-                showed it.
+                what is worth keeping while you work, and a local model checks
+                each memory against the question before it costs a token.
+                Sessions live in sqlite; shake images and tool output out of the
+                context; search everything you ever showed it.
               </p>
               <Doc path="workspace/knowledge" className="docs-cta mt-6">
                 Docs: knowledge →
@@ -584,14 +639,13 @@ export function App() {
               <h2 className="mt-3 text-[22px] font-medium">Other machines.</h2>
               <p className="mt-4 text-[15px] leading-relaxed text-fg-2">
                 Pair a phone or any browser with a QR through
-                wss://relay.theuth.io. Nothing listens on your machine; the link
-                is end-to-end encrypted with Noise, and the relay keeps no state
-                and no accounts. Other machines join as engines of one leaderless
-                mesh: t mesh pair, then t mesh add, with --ssh for a host you
-                can reach, --docker for a container here, --vm for an isolated
-                Linux desktop. Agents, tasks and schedules replicate; subagents
-                run where you say; approvals land in front of you.
-                Model-to-model talk stays off until agent.communication is on.
+                wss://relay.theuth.io; the link is end-to-end encrypted with
+                Noise and nothing listens on your machine. Other machines join
+                one leaderless mesh: t mesh pair, or a nearby code both screens
+                confirm, then t mesh add with --ssh for a host you can reach,
+                --docker for a container here, --vm for an isolated Linux
+                desktop. Sessions, agents, tasks, notes and the vault replicate;
+                drive a chat from any machine, or move it.
               </p>
               <Doc path="automation/mesh" className="docs-cta mt-6">
                 Docs: mesh and sandboxes →
@@ -607,11 +661,13 @@ export function App() {
               <div className="md:col-span-7">
                 <p className="mt-4 text-[15px] leading-relaxed text-fg-2 md:mt-0">
                   Sign in with the OpenAI, Anthropic, Cursor or xAI subscription
-                  you have. Put API keys in the vault, OpenCode Zen and
-                  OpenRouter among them. Use Bedrock through an AWS profile, SSO
-                  included, with no credentials in the UI. Add any
-                  OpenAI-compatible gateway, or a local model. A text-only model
-                  can borrow a vision model's eyes when an image comes in.
+                  you have. Put API keys in the vault, OpenCode Zen, OpenCode Go
+                  and OpenRouter among them. Use Bedrock through an AWS profile,
+                  SSO included, with no credentials in the UI. Add any
+                  OpenAI-compatible gateway, or a local server (Ollama, LM
+                  Studio, omlx, llama.cpp, vLLM), probed for its models and limits.
+                  A text-only model can borrow a vision model's eyes when an
+                  image comes in.
                 </p>
                 <Doc path="getting-started/models" className="docs-cta mt-6">
                   Docs: models and logins →
@@ -620,6 +676,10 @@ export function App() {
             </li>
           </ol>
         </section>
+
+        <Keys />
+
+        <Publish />
 
         <section className="mx-auto max-w-[1400px] px-6 pb-36 md:px-10">
           <h2 className="display text-[clamp(44px,5.4vw,76px)]">
@@ -638,7 +698,7 @@ export function App() {
                     {h.body}
                   </p>
                   <Doc path={h.doc} className="docs-cta mt-3">
-                    Docs: {h.title.toLowerCase()} →
+                    Docs: {h.doc.split("/").pop()!.replace("-", " ")} →
                   </Doc>
                 </div>
               </li>
@@ -646,13 +706,17 @@ export function App() {
           </ul>
         </section>
 
+        <Better />
+
         <section className="mx-auto max-w-[1400px] px-6 pb-36 md:px-10">
           <h2 className="display text-[clamp(44px,5.4vw,76px)]">
             It runs a team.
           </h2>
           <p className="mt-6 max-w-[34em] text-[17px] leading-relaxed text-fg-2">
-            Agents you hire, a board they work from, watchers that wake them,
-            and the machines they run on. One set of approvals over all of it.
+            Agents you hire, a board they work from, routines that wake them,
+            the coding agents they direct, the people they work with and the
+            machines they run on. One Inbox and one set of approvals over all
+            of it.
           </p>
           <ul className="mt-14 grid gap-px border border-well bg-well sm:grid-cols-2 md:grid-cols-3">
             {TEAM.map((t) => (
@@ -672,7 +736,7 @@ export function App() {
 
         <section className="mx-auto max-w-[1400px] px-6 pb-36 md:px-10">
           <h2 className="display text-[clamp(44px,5.4vw,76px)]">
-            Six doors, one daemon.
+            {COUNT[DOORS]} doors, one daemon.
           </h2>
           <div className="mt-14 grid gap-12 md:w-[54%] md:grid-cols-2">
             {SURFACES.map((g) => (
@@ -860,6 +924,7 @@ export function App() {
               app.theuth.io
             </a>
             <span>relay.theuth.io</span>
+            <span>tun.zip</span>
           </nav>
         </div>
       </footer>
