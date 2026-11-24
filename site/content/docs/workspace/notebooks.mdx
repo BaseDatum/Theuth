@@ -1,0 +1,161 @@
+---
+title: Notebooks
+description: Research containers that hold notes, sources, chats and generated overviews, with a per-item context dial, citations that jump to the exact block, and hybrid search on a local embedding model.
+---
+
+A notebook is a container for one piece of research: your **notes**, the **sources** you read, the **chats** you had about them and the **artifacts** they produced (overviews, audio). The notebook chat sees the notebook's contents at the level you choose per item, answers with citations that link back to the exact block, source passage, meeting moment or past chat, and can save an answer as a note. Notebooks and sources are documents, so they replicate between your machines and share like notes do (see [Documents](/docs/workspace/documents) and [Sharing](/docs/automation/sharing)).
+
+Notebooks are different from [knowledge](/docs/workspace/knowledge): knowledge is the agent's long-term memory, written mostly by the agent; a notebook is a workspace you curate for a topic.
+
+## How it works
+
+- **Three columns.** Sources, chat and notes side by side; under 768 px wide they stack as tabs. Each side column can be collapsed (**Collapse sources**, **Collapse notes**).
+- **Sources are read-only documents.** On ingest, theuth converts the original into markdown with block ids and keeps the original bytes in the local attachment store. Block ids are what citations point at.
+- **One insight per source.** At the end of ingest a cheap model writes one default insight (a dense summary). More insight kinds are available on demand from the source page (**Key insights**, **Open questions**, **Table of contents**), and any insight can be **Promoted to a note**.
+- **A context dial per item.** Each note, source and chat in the notebook has a four-state dial for each chat thread (see below).
+- **Hybrid search.** Notes and sources are chunked and indexed with SQLite FTS5 (keywords) and `vec0` (vectors) and the two rankings are fused. Embeddings come from a local model.
+
+## Sources
+
+Open a notebook and use **+ Add** on the Sources column.
+
+| Menu entry | What it adds |
+|---|---|
+| **File…** | A file from disk. Audio files are transcribed; for video files the audio track is transcribed. |
+| **URL** | A web page. A YouTube link is detected and its captions are fetched (falling back to the audio, transcribed locally). |
+| **Meeting…** | A recorded meeting's transcript (see [Meetings](/docs/workspace/meetings)) |
+| **Paste** | Pasted text, with an optional title |
+| **Chat…** | A past chat session |
+| **Confluence** | A Confluence page, by URL or id, read through your Confluence MCP server |
+| **Jira** | A Jira issue, by key, read through your Jira MCP server |
+
+So the origins are: file, URL, meeting, pasted text, past chat, Confluence page, Jira issue, YouTube video, audio file and video file. Confluence and Jira need the matching [MCP](/docs/reference/mcp) server configured. YouTube audio download uses `yt-dlp`.
+
+A source can be refreshed (re-fetched from its origin). A source that is in several notebooks shows **In notebooks** with links to each.
+
+## The context dial
+
+Every item has a dial with four states, per chat thread:
+
+| State | What the model sees |
+|---|---|
+| `off` | Nothing |
+| `mention` | One line: title and link, so the model can read it with a tool if needed |
+| `summary` | The item's insight |
+| `full` | The whole text |
+
+The default rule is: summary if an insight exists, else full. Right-click a dial to go **Back to the default rule**. Before you send, the chat shows an estimate of what the notebook will cost in tokens. If the notebook does not fit the model's context, items are demoted to `mention` and the block says so; the model never silently gets an empty context. **Scroll to the first omitted item** jumps to the first item that was cut.
+
+## Notebook chat
+
+Each notebook has its own chats (**New chat**, **Chat about this notebook**). A notebook chat is a normal session bound to the notebook:
+
+- The notebook block is injected **once**, on the first turn. After that, edits to notes, added or removed sources and dial changes reach the model as a short change notice on the next turn instead of re-sending the corpus. This keeps the prompt cache intact.
+- There is no fixed notebook budget: capacity is the session model's own context.
+- After [compaction](/docs/workspace/sessions), a compact manifest of the notebook replaces the full block.
+- The chat column has the full model picker and the **Fractal context** switch, like any chat.
+- **Open in the chat list** opens the thread as an ordinary session.
+
+## Citations
+
+Answers cite with `theuth://` links, rendered as numbered chips with a References footer. Clicking a chip opens the target:
+
+| Link | Points at |
+|---|---|
+| `theuth://notes/<id>#<block>` | A block in a note |
+| `theuth://sources/<id>#<block>` | A passage in a source |
+| `theuth://knowledge/<id>` | A knowledge concept |
+| `theuth://meetings/<id>@mm:ss` | A moment in a meeting recording |
+| `theuth://sessions/<id>#<turn>` | A turn in a past chat |
+
+Links survive copy and paste because they are ordinary markdown links.
+
+## Ask across notebooks
+
+**Ask across notebooks** (on the notebooks list) asks one question over several notebooks. theuth plans the question into branches, searches each branch's notebooks in parallel, writes a partial answer per branch and then one synthesis whose citations point into each notebook. Chips whose target was not among the retrieved passages are dropped. The run is shown live (plan, branches, answer) and is saved as a chat; **Save the answer as a note into** stores the answer in a notebook of your choice.
+
+## Overviews
+
+**Overviews** in the notebook header generates regenerable artifacts from the notebook's contents:
+
+- **Briefing**
+- **FAQ**
+- **Timeline**
+- **Mind map**
+- **Audio overview**: a two-host script, read aloud by the local text-to-speech model and saved as an MP3 beside the script.
+
+Each overview shows in the Overviews section and has **Regenerate**.
+
+## Pop-out window
+
+**Open in new window** (notebook actions) opens the notebook in its own desktop window.
+
+## Runnable cells in notes
+
+Notes in a notebook can contain runnable code cells, like any note. The agent can write a cell but cannot run it: a cell runs only when you press run, and the engine refuses to run a cell whose text changed since you looked at it. A cell runs on the machine you are viewing the note from.
+
+## Tools
+
+| Tool | Risk | What it does |
+|---|---|---|
+| `notebook_create` | mutating | Create a notebook |
+| `notebook_list` | read-only | List notebooks |
+| `notebook_get` | read-only | Read a notebook and its items |
+| `notebook_add` / `notebook_remove` | mutating | Add or remove a note, source, chat or artifact |
+| `source_add` | mutating | Ingest a source from any origin |
+| `source_list` / `source_get` | read-only | List or read sources |
+| `source_refresh` | mutating | Re-fetch a source from its origin |
+| `nb_search` | read-only | Hybrid search over notes and sources |
+| `notebook_context_set` | read-only | Set an item's dial in this thread |
+| `notebook_context_estimate` | read-only | Estimate the notebook's token cost |
+| `notebook_ask` | read-only | Ask across notebooks |
+| `notebook_overviews` | read-only | List a notebook's overviews |
+| `notebook_overview_run` | mutating | Generate or regenerate an overview |
+
+See [Tools and permissions](/docs/reference/tools-permissions) for what risk levels mean.
+
+## Configuration
+
+Keys live under `notebooks:` in `~/.theuth/config.yaml`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `embedding_model` | `embed-gte-modernbert-base` | Checkpoint directory under `<data_dir>/models/`; never a `provider/model` |
+| `chunk_tokens` | `400` | Chunk size for the search index |
+| `insight_default` | `true` | Write one insight per source at ingest |
+| `insight_model` | unset | `provider/model` for insights; unset uses `agent.title_model`, else the session model |
+| `insight_input_tokens` | `24000` | How much of a source the insight reads |
+| `max_source_bytes` | 25 MiB | Largest original accepted |
+| `max_source_chars` | `2000000` | Larger derived markdown is cut with a notice |
+| `ingest_concurrency` | `2` | Ingest jobs at once |
+| `youtube_route` | `auto` | `auto`, `captions` or `audio` |
+| `youtube_langs` | `[en]` | Caption languages in preference order |
+| `youtube_ytdlp` | unset | Path to `yt-dlp`; unset uses `PATH` |
+| `description_tokens` | `2000` | Size of the notebook description in the chat block |
+| `ask_model` | unset | Model for the Ask plan; unset uses the session model |
+| `ask_max_branches` | `5` | Branches per Ask |
+| `ask_hits_per_branch` | `10` | Search hits per branch |
+| `ask_context_tokens` | `40000` | Passages across all branches |
+| `audio_voices` | `[peter_yearsley, alba]` | Host voices for the audio overview |
+
+## What leaves the machine
+
+- **Stays local:** embeddings (no provider path exists), the search index, original source bytes, audio and video transcription, audio overview speech.
+- **Goes to your model provider:** notebook chat turns, insights, Ask and overview generation use the configured chat model like any other turn, so the context you dial in is sent to it. Pick a local model if that matters.
+- **Fetched from the network:** URL and YouTube sources, and Confluence or Jira through your MCP servers.
+
+## Limits
+
+- Without the embedding checkpoint under `<data_dir>/models/`, search runs on FTS5 keywords only.
+- A source over `max_source_bytes` is refused as too large; derived text over `max_source_chars` is cut.
+- Embeddings need the checkpoint on each machine that indexes; theuth does not call a remote embedding API as a fallback.
+
+## Related
+
+- [Knowledge](/docs/workspace/knowledge): the agent's long-term memory
+- [Documents](/docs/workspace/documents): the editor notes and sources open in
+- [Meetings](/docs/workspace/meetings): recordings you can add as sources
+- [Search](/docs/workspace/search)
+- [Agents](/docs/automation/agents): agents can use the notebook tools too
+- [Sharing](/docs/automation/sharing)
+- [Sessions](/docs/workspace/sessions): compaction and Fractal context

@@ -1,6 +1,6 @@
 ---
 title: Workspace
-description: The surfaces you work in and the things that live there — sessions, voice, meetings, documents, knowledge, apps and search.
+description: The surfaces you work in and the things that live there. Sessions, voice, meetings, documents, notebooks, knowledge, apps, web views and search.
 ---
 
 ## One harness, several surfaces
@@ -9,7 +9,7 @@ theuth is one engine with more than one face. Every surface talks to the same ru
 
 - **Desktop app** — a menubar/tray app with a sidebar, chat view, side panels for artifacts, terminals and the live browser, and a Settings dialog. The app finds a running engine or starts one for you. See [Desktop app](/docs/workspace/desktop).
 - **Terminal** — `t` in any terminal: the full-screen UI with slash commands and pickers, a print mode for scripts (`t -p`), and an ACP mode for editors (`t --acp`). See [Terminal](/docs/workspace/terminal).
-- **Phone or browser** — the same web UI, paired with a running engine through a relay. Pairing is a channels topic: see [Channels](/docs/automation/channels).
+- **Phone or browser**: the same web UI, paired with your mesh or one engine through the link relay, end-to-end encrypted. Pairing is a mesh topic: see [Mesh](/docs/automation/mesh) and [Security](/docs/reference/security).
 
 The desktop app and a terminal `t` share one engine. If the app is running, `t` attaches to it; if `t --headless` or `t --serve` is already listening, the app reuses it instead of starting a second daemon.
 
@@ -31,6 +31,10 @@ The desktop app can record a meeting — your microphone plus the audio of the m
 
 Notes are documents the agent and you edit together; a board is a note written for reading — prose with code excerpts and diagrams, a table of contents and a guided tour; anything the agent shows you is kept as a versioned artifact. See [Documents](/docs/workspace/documents).
 
+### Notebooks
+
+A notebook gathers notes, sources (files, web pages, meetings, past sessions and more) and chats around one subject. Answers cite the exact block or source they came from, and search runs on a local embedding model. See [Notebooks](/docs/workspace/notebooks).
+
 ### Knowledge
 
 The knowledge base holds concepts the agent harvests from sessions, meetings and notes, with a full history: `/knowledge` lists, searches, shows and restores revisions. See [Knowledge](/docs/workspace/knowledge).
@@ -38,6 +42,10 @@ The knowledge base holds concepts the agent harvests from sessions, meetings and
 ### Apps and artifacts
 
 Files the agent shows you are artifacts (`/artifacts`, the `▣ N` button in the desktop header). Interactive apps the agent builds run in the desktop app and the browser; the terminal shows their source and exports them. See [Apps](/docs/workspace/apps).
+
+### Web views and tiles
+
+The agent can open a live web page, a terminal, a note, a source file or a git diff in a tile beside the chat. The web tile shares one signed-in browser profile with the agent's own browser. See [Web views](/docs/workspace/web-views).
 
 ### Search
 

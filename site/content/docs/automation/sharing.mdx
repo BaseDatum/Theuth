@@ -1,0 +1,293 @@
+---
+title: Public sharing
+description: Publish a local dev server or a folder at a public https address with share_publish, approved by you in person, served from your own machine through a blind sharing edge, with expiry, passwords and one-press Stop.
+---
+
+**Public sharing** puts something running on your machine on the public internet at a real `https://` address: a dev server on a loopback port, or a folder of static files. The agent asks with the `share_publish` tool, or you publish from Settings › Sharing. Only you can approve it, in person. Your own machine terminates TLS and serves the pages; a separate service, the **sharing edge**, reads only the hostname a visitor asks for and copies encrypted bytes between the visitor and your machine. Every share expires (8 hours unless you pick otherwise) and one press stops everything.
+
+Public means public: anyone with the URL can open it. It is a tunnel to your computer, not hosting: the share stops when its machine quits or goes offline. For sharing a chat or an agent with another person's theuth, see [Contacts](/docs/automation/contacts); for sharing a note, see [Notebooks](/docs/workspace/notebooks).
+
+## Prerequisites
+
+- **Allow public sharing on this machine** switched on in Settings › Sharing › Public shares. It is off by default, per machine. While it is off, `share_publish` is refused with `Public sharing is off in Settings › Sharing`, and nothing dials the edge.
+- The edge's terms accepted once (Settings › Sharing › Public shares › Terms, or the card the first publish shows).
+- A sharing edge. Every install ships with the default edge, `tun.zip`, run by theuth's author. You can run your own ([Self-hosting the edge](#self-hosting-the-edge)).
+- For a `port` source: something listening on `localhost:<port>` on the machine that publishes.
+
+## How it works
+
+```
+visitor browser ──TLS (SNI: app.sky.tun.zip)──▶ edge :443 ──iroh QUIC──▶ your engine ──▶ localhost:5173 or a folder
+                                                (reads SNI,                (terminates TLS
+                                                 copies bytes)              with your name's key)
+```
+
+1. **Your engine dials out.** The engine that hosts a share connects to the edge over iroh QUIC, on its own protocol (`theuth/share/1`), from its mesh endpoint. It works behind NAT and without port forwarding: a direct path when one exists, else through the iroh relay. The engine connects only while it needs the edge (a share live or pending, a name or certificate operation), so having sharing switched on is not a continuous presence.
+2. **A visitor connects to the edge on TCP 443.** The edge reads the TLS ClientHello's server name (SNI), looks up which tunnel serves that host, and splices the raw bytes onto a new stream of that tunnel. It never presents a certificate and never decrypts; every refusal is a TCP reset.
+3. **Your engine terminates TLS** with the private key of your mesh's name, then routes by host and path, applies the interstitial and password gate, and either reverse-proxies to the loopback port or serves the folder.
+
+### Names and URLs
+
+Each mesh gets **one name** under the edge's domain, and every share lives under it:
+
+| Kind | Rule | Example |
+|---|---|---|
+| reserved | 3 to 32 characters `a-z`, `0-9`, `-`; no `-` at the start or end; no `xn--`; not a reserved word (`www`, `api`, `admin`, `login`, `mail`, `abuse`, `status`, `support`, `secure`, `account`, `theuth`, `edge`, `ns1`, `ns2`, plus the operator's list and brand blocklist); first claim wins | `sky.tun.zip` |
+| random | 6 characters from `a-z` and `2-7`, drawn by your engine | `nnsgqr.tun.zip` |
+
+A name is allocated only at your first publish or when you reserve one; switching sharing on or opening Settings costs nothing. A mesh holds at most one random name, only while it holds no reserved one, plus reserved names up to the edge's per-mesh limit (1 on the default configuration). The **primary** name is the one new shares use: the newest reserved name, else the random one, changeable in Settings. When you reserve your first name, the random one is released once its last share stops.
+
+Shares take one of two shapes:
+
+| Shape | When | Example |
+|---|---|---|
+| `https://<label>.<name>.<domain>/` | a `port` source (always a sub-label; 6 random characters when you give none), or a `dir` source with a `label` | `https://app.sky.tun.zip/` |
+| `https://<name>.<domain><path>/` | a `dir` source without a label: at the name itself (`/`) or mounted at a `path` such as `/docs` | `https://sky.tun.zip/docs/` |
+
+### Certificates and keys
+
+Each name has **one wildcard certificate** covering `<name>.<domain>` and `*.<name>.<domain>`, so every label and path under it is covered by the same certificate. The edge runs the ACME order with Let's Encrypt over DNS-01 and writes the DNS records for the name (two CNAMEs, and a temporary `_acme-challenge` TXT during an order). The **private key and the certificate request are made on your side**: the mesh's lease holder creates the name key in the mesh vault, and the edge only ever receives the CSR. Name keys and the mesh's share key are vault rows, replicated to every machine of your mesh like other [secrets](/docs/reference/secrets), so any of your machines can publish under the name. Renewals follow Let's Encrypt's renewal information, else happen at two thirds of the lifetime; certificates last at most 90 days.
+
+On the default edge (`tun.zip`) certificates come from Let's Encrypt's production CA.
+
+### Timing
+
+From the first live run on `tun.zip`:
+
+- **A new name:** issuing its certificate took about 2.5 minutes with working DNS. The share sits in `pending` meanwhile and goes live by itself; expiry counts from going live. A publish waits about 1.5 s for the certificate step and then answers `pending`, so the agent is not blocked.
+- **A name that already has a certificate:** 385 ms from the publish call to the first successful visit. Later publishes under the name, from any machine of the mesh, skip the certificate step.
+- **When the edge is short of certificates:** new names wait in a visible queue ("Waiting for a certificate slot", with position and an estimate); the share goes live when the slot arrives.
+
+## Publishing
+
+### From the agent: `share_publish`
+
+```json
+{ "source": { "port": 5173 }, "label": "app", "expiry": "24h", "access": "password" }
+```
+
+| Argument | Meaning |
+|---|---|
+| `source` | Exactly one of `{port: <u16>}` (a dev server on this machine's loopback) or `{dir: "/abs/path"}` (a folder served as static files). |
+| `label` | Sub-label: `<label>.<name>.<domain>`. Default for a `port` source: 6 random characters. |
+| `name` | One of the mesh's held names; default the primary. |
+| `path` | Mount for a `dir` source, such as `/docs`. A `port` source is always a sub-label, never a path. |
+| `expiry` | `1h`, `8h` (default), `24h` or `7d`, counted from going live. There is no "never". |
+| `access` | `public` (default) or `password`. The engine generates the password; it is never a tool argument and the model never sees it. |
+
+It returns `{id, url, expires_ms}` plus the state (`live` or `pending`). Before the card is raised, the engine runs the checks you could not approve away anyway: switch off, no edge configured (`No sharing edge configured`), edge unreachable, terms not accepted. The URL is computed before the ask and is exactly what goes live.
+
+What a source may not be:
+
+- **`port`:** port 0; a port that belongs to theuth itself (its own listeners or anything in its process tree): `that port is theuth itself`; a port nothing listens on: `nothing is listening on localhost:<port>`. The check runs again on every upstream connection, so a port re-bound to theuth after publishing is refused then.
+- **`dir`:** a relative path; a path with a hidden or dot component (`.ssh`, `..`); theuth's data directory or any of its ancestors, or your home directory itself. The rules apply to the typed path and to the resolved one, so a link into `~/.ssh` is refused. The folder is opened without following links, and every request is checked against the approved directory.
+
+### The approval card
+
+`share_publish` is a destructive, **human-only** tool. Its card is always raised, even with `tools.approvals: false` or an approvals pin on the session, and it never offers "always allow". It shows:
+
+- the heading **Publish to the public internet**, marked `destructive`;
+- the exact URL;
+- **Source** (`localhost:5173` or the folder), **Access** (`Anyone with the link` or `Password`), **Expires**;
+- "This makes it reachable by anyone on the internet who has the link. The app sees visitors as coming from this computer: do not share anything that trusts "localhost"."
+- "Only you can answer this, in person: not the agent, your double, an app or another chat user."
+- **Deny** and **Publish for 8 hours** (or the chosen expiry).
+
+Who can answer: you, on a surface you control: the desktop, web or iOS client, the terminal UI, or your own Slack, Telegram or Signal account. Who cannot: another user in a chat thread (on Slack and Telegram only the owner's click counts; Signal's `/approve` is owner-only), your double (the local model that can answer routine approvals for you never answers or learns from these), an app's button press, a policy switch, and the agent itself. While such a card is pending, the agent's `computer_*` input into theuth's own windows, `applescript` and `shortcuts`, and acting `browser_*` calls on theuth's own web-client origins are refused with `refused: theuth's own window can't be driven while your approval is pending`.
+
+An unanswered card is denied after `tools.approval_timeout_secs` (300 s). A card's preview stays usable for 30 minutes; a call approved later is refused with `the approval card for this call has expired; publish again`.
+
+`share_publish` is refused outright (not asked) in a contact's turn and in a session bound to a chat thread whose user is not you, including their subagents.
+
+### From Settings
+
+Settings › Sharing › Public shares › **Publish**: type a port (`5173`) or a folder, pick the expiry, tick **Password** if you want one, press **Publish**. Your own press in your own client is the consent, so no second card appears. The same applies to switching sharing on, accepting terms, reserving and transferring a name. The terminal UI cannot be told apart from the agent's side of the engine, so actions there always raise the card.
+
+### Terms
+
+The edge's terms must be accepted once per revision before any name is claimed or certificate ordered. Settings › Sharing › Public shares › **Terms** shows the link, the revision and **Accept** (then `Accepted revision …`). If the agent publishes first, its card in the chat becomes **Accept the edge's terms to publish** with an **I accept** checkbox; after accepting, ask the agent to publish again. No approval card is raised while the terms are unaccepted, so you never approve something that then fails on terms.
+
+### Passwords
+
+With `access: password` the engine makes the password, stores only an argon2id hash, and shows the password **once**, on the publish card in the chat or under the Settings publish form, with a copy button: "Shown once: copy it now and give it to the people you share with. The agent does not see it."
+
+## While a share is live
+
+Every machine of the mesh sees every live share, wherever it is hosted.
+
+| Indicator | What it shows |
+|---|---|
+| Red strip at the top of every window | `Sharing publicly · 1 live · 3 visitors` (or `Going public · 1 pending` while a certificate is on its way), with **Manage** (opens Settings › Sharing) and **Stop all**. Visitor counts cover this machine's shares. |
+| Chat card at the call | `Public on the internet`: the URL with **Copy link**, Source, Access, State, Time left, Visitors, and Stop. |
+| Tray (desktop) | Title `◉ LIVE <n>`, tooltip `theuth · sharing publicly (<n>)`, and a menu item **Stop public sharing (n)**. |
+| Island | While the main window is hidden and no meeting owns the island: `LIVE <n> · Sharing publicly` with **Stop** (stops all). |
+| OS notifications | "Live on the public internet" with the URL, and `First visitor on <host>`, when the window is hidden. |
+| Terminal UI | `/share` lists live shares. |
+| Slack, Telegram | One status message in your DM (Slack) or private chat (Telegram) listing every live URL with its expiry, edited in place and turned into `Public sharing stopped` at the end. Telegram pins it and gives it a **Stop all** button; Slack edits it in place without pinning. |
+
+### Stop and Stop all
+
+Stopping is never gated: no card, no confirmation, from any surface.
+
+- **Stop** one share (Settings, chat card, `share_stop {id}`, `/share stop <id>`): the route leaves the proxy table, open visitor connections are reset, and the edge drops the route. A share hosted on another of your machines is forwarded to it.
+- **Stop all** (strip, Settings, tray, island, `share_stop {id: "all"}`, `/share stop`): the edge closes every tunnel of the mesh at once; reachable machines stop their shares; a machine that was offline stops every share older than the Stop all when it next connects. If this machine cannot reach the edge, it hands the stop to the mesh's lease holder. When the edge has not confirmed yet the strip says `Stopped here · the edge stop is pending and will be retried (<why>)`.
+- **Switching sharing off** on a machine is Stop all for that machine plus refusal of new publishes.
+- **Quitting the engine** stops its shares. Only shares you started from Settings under a reserved name come back on restart, and they keep their original expiry.
+
+## Visitors
+
+What your engine serves to people who open the link:
+
+- **Interstitial** (on by default, `share.interstitial`): the first page load per browser per share shows "This is an app a theuth user is sharing from their own computer. Neither theuth nor (the edge's operator) checked it." and "Don't enter passwords you use elsewhere.", a `Continue to <host>` button and, when the edge has one, a **Report abuse** link. Continue sets a signed `__Host-` cookie.
+- **Password gate** for `password` shares: a form titled **Password required** ("This share needs a password."). A correct password sets a signed `__Host-` cookie for that share. 10 attempts per IP per minute; the form must be posted from the same site.
+- **Forwarding:** incoming `Forwarded`, `X-Forwarded-*` and `X-Real-IP` headers are stripped and set by your engine; `Host` is rewritten to `localhost:<port>`, and redirects back to the upstream's own origin are rewritten to the public URL. WebSockets pass through.
+- **Error pages:** `Nothing is shared here` (no share at that address, for example after Stop), `The app isn't answering` (nothing on the port), `The app did not answer in time`, `Slow down` (too many password attempts).
+
+## Settings › Sharing
+
+Settings › Sharing is the one place for everything you share. Tabs:
+
+| Tab | What it holds |
+|---|---|
+| Overview | Counts per kind and recent changes; each count links to its tab; a link to Settings › Network for the on/off switches. Hidden on an engine too old to list shares. |
+| Contacts | Your contacts, what each may reach, waiting first messages ([Contacts](/docs/automation/contacts)). |
+| Chats and agents | Every chat or agent you export to contacts, with the contacts granted each: pause, resume, stop sharing with one contact, remove the export. |
+| Notes and notebooks | Documents with members or links: remove a member, revoke a link, or revoke a link and remove the members who joined through it ([Notebooks](/docs/workspace/notebooks)). |
+| Public shares | The switch **Allow public sharing on this machine**, the warning when approvals are off, **Publish**, **Live shares** with Stop and Stop all, **Defaults**, **Terms**, **History (30 days)**, and **What the edge sees**. |
+| Domains | **Edge** (default or a custom ticket, connection state, a warning when this machine's clock is off the edge's), **Your name**, **Your machines** (what each serves publicly; which one is the hub), **Certificates**. |
+
+**Your name** (Domains tab): type a name to **Reserve a name** (checked live against the edge as you type); held names show `Reserved` or `Random`, their certificate state (`Getting a certificate…`, `Waiting for a certificate slot`, `Ready`) and a `primary` badge. Per name:
+
+| Action | Effect |
+|---|---|
+| Make primary | New shares use this name. |
+| Rotate key | `A new key and certificate for <name>; the old certificate is revoked. Shares stay up.` Asks for a confirmation line. |
+| Release | Stops the name's shares on every machine, deletes its DNS records and revokes its certificate. Only your mesh can claim it again for 30 days, longer while the old certificate is still valid. |
+| Transfer… | Reserved names only. Paste the other mesh's id (shown under **Your mesh id** on that mesh, with a copy button); it has 7 days to claim the name, with no cooldown, and orders a new certificate with its own key. |
+
+## Configuration
+
+The master switch and the edge choice are **not** config keys: they live in the share plugin's own database on each machine. A `share.enabled` or `share.edge` key in `config.yaml` or the environment is ignored with a warning.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `share.default_expiry` | `8h` | Expiry when the publish does not name one: `1h`, `8h`, `24h`, `7d`. Settings shows it read-only. |
+| `share.max_live` | `5` | Live shares per machine. Over it: `<n> shares are live on this machine (share.max_live): stop one first`. |
+| `share.interstitial` | `true` | Interstitial on for new shares. |
+
+## Tools and commands
+
+| Tool | Risk | Notes |
+|---|---|---|
+| `share_publish` | destructive, human-only | Always asks you, in person. |
+| `share_list` | read-only | The mesh's public shares: id, URL, state, source, expiry. |
+| `share_stop` | read-only | `id` or `all`. Never asks: it only removes exposure. |
+
+| Surface | Command |
+|---|---|
+| Terminal UI | `/share` or `/share list`; `/share stop [id\|all]` (no id stops all) |
+| Slack | `/theuth share [list \| stop [<id>\|all]]` |
+| Telegram, Signal | `/share [list \| stop [<id>\|all]]`, owner-only |
+
+Publishing is not a chat command: from a channel you ask the agent, and the owner-only card comes to you.
+
+## Safety and permissions
+
+What you can rely on:
+
+- Nothing goes public without your own approval of the exact URL, source, access and expiry. Sharing is off on a fresh install and nothing dials the edge until you switch it on.
+- TLS ends on your machine. The edge never holds your name's private key and cannot read the pages.
+- Shares expire, and Stop and Stop all are one press from every surface.
+
+What the edge **does** see, also stated in Settings › Sharing › What the edge sees: visitor IP addresses and the full hostname of every visit, your mesh id and your machines' engine keys (so which of your machines share under your name), byte counts and timing. The edge software keeps its connection log, with visitor IPs, for 30 days by default, for abuse handling. It does not see paths, headers, page content or passwords.
+
+Residual risks, stated plainly:
+
+- **The domain owner can issue certificates.** Whoever operates the edge owns its domain, its DNS and its ACME account, so it could get a certificate for any `<name>.<domain>` and impersonate a share. Such a certificate would be visible in public Certificate Transparency logs; it is not prevented. The blind edge protects against a curious or compromised edge process, not a malicious domain owner. Running your own edge removes this.
+- **An agent whose shell runs unapproved can approve its own publish.** The local RPC token is a file in the data directory (`<data_dir>/token`); a process that can read it is treated as your client and can answer approval cards. The guarantee holds while shell commands are approved or sandboxed. Settings warns when sharing is on and approvals are off: "Approvals are off. Publishing still asks you, but other tools run without asking."
+- **One machine exposes every name of the mesh.** Name keys replicate to every paired machine. A compromised machine can publish under your names, and a stolen name key stays usable for interception until its certificate expires (at most 90 days). When you unpair a machine, the mesh's lease holder revokes it at every edge the mesh uses and moves the mesh to a fresh share key there, even with its own sharing switched off (Settings says: "When a machine is removed from your mesh, the hub contacts the edge to revoke it there, even if sharing is off on the hub."). Use **Rotate key** on each name afterwards to replace the name keys the removed machine held.
+- **Anyone with the URL can read a public share.** Names appear in Certificate Transparency logs within minutes and sub-labels are guessable. Use `password` for anything not meant for everyone.
+- **The password gate and interstitial are enforced by your engine.** They protect what your engine serves; they cannot stop a visitor who already has the password.
+- **The shared app is on the internet.** It sees visitors as coming from `localhost`; do not share anything that trusts loopback (admin panels, dev tools with no auth).
+- **Shares under one domain count as one site to browsers** while the domain is not on the Public Suffix List: another app on the same edge domain can make your visitors' browsers send requests to your app with their cookies, and password managers may offer logins saved for one app on another.
+
+The full model across mesh, link, contacts, sharing and the vault is on [Security](/docs/reference/security).
+
+## Limits
+
+Your engine, per share and connection:
+
+| Limit | Value |
+|---|---|
+| Live shares per machine | 5 (`share.max_live`) |
+| Expiry | 1 h, 8 h, 24 h or 7 d; no permanent shares |
+| Password attempts | 10 per IP per minute; 2 hashes at once per engine, 16 waiting, then `429` |
+| Request head | 64 KiB, sent within 10 s |
+| HTTP/2 streams per visitor connection | 100 |
+| Upstream connect · response head | 10 s · 60 s |
+| History of ended shares | 30 days |
+| Sources | loopback `port` and `dir` only |
+
+The edge's defaults (the values the edge software ships with; an operator can change them):
+
+| Scope | Limit | Default |
+|---|---|---|
+| per mesh | reserved names · random names | 1 · 1 (only while no reserved) |
+| per mesh | new-name certificates | 2 per 7 days |
+| per mesh | machines attached | 8 |
+| per mesh | bytes, all machines | 20 GiB per day; over it the mesh's tunnels are closed until UTC midnight |
+| per tunnel | routes · visitor connections · bandwidth · new connections | 64 · 256 · 50 Mbit/s · 50 per second (burst 200) |
+| per visitor IP | connections · new connections | 64 · 20 per second |
+| per network | reserved names · tunnels · bytes | 6 · 10 · 50 GiB per day |
+| edge-wide | new-name certificates (Let's Encrypt's limit) | 45 per week, queued beyond that |
+| edge-wide | names holding a certificate | 1,200 |
+| names | release cooldown · unused name expiry | 30 days (longer while the certificate is valid) · 90 days without the mesh attaching |
+| idle tunnel | | 900 s |
+
+The edge can also close admission to new meshes (`invite`), ban a name, mesh, key or network, and pause; a share stopped by the operator shows the reason. Custom domains (your own domain instead of the edge's) are not supported; to use your own domain, run your own edge.
+
+## Self-hosting the edge
+
+The edge is a standalone binary, `theuth-share-edge`, with its own image (`ghcr.io/skymoore/theuth/share-edge`), a systemd unit, a compose file and Kubernetes manifests in `deploy/share-edge/` of the theuth repository. It has no theuth runtime, vault or mesh on the box.
+
+What it needs:
+
+- A public IP with **TCP 443** for visitors and a **UDP port** (7850 by default) for engines' iroh connections. No TCP 80: DNS validation needs no inbound port. A health and metrics port (9090) stays internal.
+- A domain whose DNS it can write. Porkbun is the supported provider; the API key comes from `dns.credential_file` or `THEUTH_SHARE_EDGE_DNS__CREDENTIAL`, never the config file.
+- An ACME account: `theuth-share-edge --config <path> acme register` prints two CAA lines to add to the zone; `run` refuses to start until they resolve.
+- A persistent data dir (`/var/lib/theuth-share-edge`): `iroh.key` (the edge's identity that clients pin), `share-edge.sqlite` and `admin.sock`. Back it up; an empty data dir is a new edge.
+
+Then print its ticket and give it to your engines:
+
+```sh
+theuth-share-edge --config <path> ticket
+```
+
+A ticket pins the edge's key, so a spoofed edge cannot pose as it. An engine stores its edge choice (`default`, `none` or a ticket) per machine, set with the `share_settings_set` RPC method's `edge` argument; like switching sharing on, changing the edge needs your approval. Settings › Sharing › Domains › Edge shows `Custom edge ticket` once one is set. Every key with its default is in `deploy/share-edge/config.example.yaml`; operating commands (`admin status`, `admin list tunnels`, `admin ban`, `admin admission invite`) and the cold-standby key procedure are in `deploy/share-edge/README.md`.
+
+## Troubleshooting
+
+| Message | Meaning |
+|---|---|
+| `Public sharing is off in Settings › Sharing` | Switch on **Allow public sharing on this machine** on the machine that should host it. |
+| `No sharing edge configured` | The edge choice is `none`; set it back to `default` or a ticket. |
+| `Can't reach the sharing edge; see Settings › Sharing` | The engine could not connect within 30 s. Domains › Edge shows the connection state (`Connecting…`, `Refused by the edge: …`, `The edge is restarting; reconnecting soon`). |
+| `accept the terms of <domain> first (<url>, revision <rev>): …` | Accept the terms in Settings › Sharing › Public shares › Terms, then publish again. |
+| `<n> shares are live on this machine (share.max_live): stop one first` | Stop a share or raise `share.max_live`. |
+| `that port is theuth itself` / `nothing is listening on localhost:<port>` | Start your dev server, or pick its real port. |
+| `a path with a hidden or dot component cannot be shared` / `<path> cannot be shared` | Pick a folder outside dot directories, your home root and theuth's data directory. |
+| `<url> is already shared (<id>)` | Stop the existing share first, or use another label. |
+| `the name shown was taken meanwhile; publish again` | Someone claimed the random name between the card and your Allow. |
+| `Stop all was pressed after this publish was asked for; ask again` | A Stop all overtook the approval. |
+| Share stays `pending` | Its name is getting a certificate (about 2.5 min) or waiting for a slot; Domains › Certificates shows which. It goes live by itself. |
+| `This machine's clock is N min off the edge's` | Fix the system clock; sharing may fail until then. |
+
+## Related
+
+- [Mesh](/docs/automation/mesh): pairing machines, the hub and the iroh relay
+- [Contacts](/docs/automation/contacts): sharing chats, agents and files with other people's theuth
+- [Notebooks](/docs/workspace/notebooks): sharing notes with members and links
+- [Channels](/docs/automation/channels): Slack, Telegram and Signal, where cards reach you
+- [Tools and permissions](/docs/reference/tools-permissions): risk levels and approvals
+- [Secrets](/docs/reference/secrets): the vault that holds name keys
+- [Security](/docs/reference/security): the full security model

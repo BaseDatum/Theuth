@@ -1,0 +1,120 @@
+---
+title: Web views and tiles
+description: Pages, terminals, notes, source files and diffs the agent opens beside the chat; the shared browser profile; the agent driving a tile; sign-in forms lifted into a chat card.
+---
+
+An agent can put things beside the chat instead of pasting them into it: a live web page (`show_web`), a terminal (`show_pty`), a note (`show_note`), a source file (`show_file`) or a git diff (`show_diff`). Each opens as a tile next to the conversation, leaves a card in the transcript that reopens it, and pops out into its own window. Web pages share one browser profile with the agent's own browser, so a site you sign into in a tile is signed in for the agent too, on every machine in your [mesh](/docs/automation/mesh).
+
+## How it works
+
+The engine validates the call and announces the tile; the app you are using opens it. Tiles join the chat's pane workspace like any other pane (see [Desktop app](/docs/workspace/desktop)), and showing the same thing again in the same session reuses its tile instead of opening a second one. A tile header has **Open in new window**. When no app is connected at the moment of the call, the agent is told so and the card in the transcript opens the tile later.
+
+## Web pages: show_web
+
+`show_web { url, title? }` opens a live page (a dev server on `localhost`, a dashboard, a docs site) in a tile you can click, scroll and type into.
+
+- `url` must be `http://` or `https://`. A bare `localhost:3000` or `127.0.0.1:3000/x` gets `http://` prepended. URLs over 2048 bytes are refused.
+- `title` names the tile and the card; the default is the address's `host[:port]`.
+- Each origin gets one tile per session: showing the same origin again navigates the existing tile.
+
+The page is a native web view laid over the tile (a child webview in the desktop app), not an iframe, so sites that refuse to be framed still render. It is treated as a stranger to the app: it gets no access to the app's internal interface, no app origin, none of the app's private URL schemes, and its own cookie store.
+
+The agent does not see the page it opened. It is told the tile id (`web:<id>`) and that it can read the page unseen with `read_url`, or attach its browser tools to the tile (below).
+
+Every open page is also an item in the [Inbox](/docs/workspace/desktop) until you close the tile, and the transcript card names the page and reopens it.
+
+### Addresses that are refused
+
+| Address | Result |
+| --- | --- |
+| any scheme other than `http`/`https` | `only http and https URLs (got <scheme>:)` |
+| credentials in the URL (`user:pass@host`) | `credentials in the URL are not allowed` |
+| link-local (`169.254.0.0/16`, also when embedded in an IPv6 address) | always refused |
+| loopback, private ranges, `.local`, `.lan`, `.internal`, `.home.arpa`, single-label names such as `nas` | allowed only when the call may reach the local network; otherwise `local network not allowed for this call` |
+
+Your own sessions may reach the local network. A turn running for a contact with a restricted grant may not (see [Contacts](/docs/automation/contacts)).
+
+### Where the page shows
+
+| Client | What you get |
+| --- | --- |
+| Desktop app (macOS, Windows, Linux) | the page in a tile beside the chat; pop it out into its own window |
+| Web client in a browser | the tile shows the address with **Open in browser**; there is no native layer to host the page |
+| Engine on another machine, page on its `localhost` | **Open in browser** too: that loopback address is the other machine's |
+
+An iPhone and iPad app with native tiles exists in development but is not released.
+
+## The shared browser profile
+
+The tile and the agent's headless browser (the `browser_*` tools, see [Browser and desktop](/docs/automation/browser-desktop)) use one cookie profile. Sign into a site in a tile and the agent's browser on any of your machines continues that signed-in session within seconds; a session the agent's browser establishes works in the tile too.
+
+The profile replicates across your mesh sealed with the mesh key. It is never written into the session database, logs, transcripts, tool results or events, and the stored rows do not name the sites they hold.
+
+| Config key | Values | Default |
+| --- | --- | --- |
+| `browser.profile` | `shared`, `off` | `shared` |
+
+With `off` nothing is shared, loaded or listed; what the profile already held stays until you sign out everywhere.
+
+Settings › Tools › **Browser** (desktop app only) shows the mode and lists the signed-in sites. Each site has **Forget and sign out**; **Sign out everywhere** forgets every site, signing out your web views on every device and the agents' browsers on every engine. It asks for confirmation first.
+
+What does not travel: passkeys, device-bound sessions, service workers and Cloudflare clearance. Sites that bind a session to an IP address, user agent or browser fingerprint may reject the moved session. For those, the agent can act inside the tile itself.
+
+## The agent driving a tile
+
+| Tool | Risk | What it does |
+| --- | --- | --- |
+| `web_views {}` | read-only | lists the tiles this session opened and what each shows now, as your app reports it: `web:<id> · <title> · <url> · loading\|loaded · <age>` |
+| `browser_attach { view? }` | read-only | points every `browser_*` tool of the session at the tile `view` (`web:<id>`), or back at the agent's own headless browser when `view` is left out |
+
+Only a tile opened by the session or its session tree can be attached. Once attached, the agent acts in your live, signed-in page in front of you:
+
+- `browser_open` navigates your tile; `browser_read` and `browser_elements` read it (main frame only; text you typed into fields is not shown, a field the agent did not fill reads `value=[set]`); `browser_click`, `browser_fill`, `browser_type`, `browser_press` and `browser_select` act; `browser_eval` runs in the page; `browser_screenshot` shows the visible part.
+- Every reply starts with `[tile web:<id> · <host>]`. Every acting call, and a read of a signed-in page, asks for your approval first.
+- `browser_tabs` and `browser_show` are not available on a tile; `browser_close` only detaches and never closes your tile.
+
+The call fails with `no client holds tile web:<id>` when none of your apps shows that tile.
+
+## Sign-in forms in a chat card: browser_show_element
+
+`browser_show_element { ref | selector, title? }` lifts one form (typically a sign-in form) from the agent's browser or an attached tile into a card in the chat. You type into the card; the values go into the page and the agent gets a receipt without the values. The call waits until you answer. It is `mutating`, approved by the card itself (no separate prompt), and a session capped at read-only does not get it.
+
+The card is a static copy: the site's scripts do not run in it, so there is no show-password toggle or live validation. A form inside a frame (a CAPTCHA, a third-party sign-in provider) cannot be shown; the agent opens the page with `show_web` and asks you to sign in there instead. A multi-step sign-in is one call per step.
+
+## Terminals, notes, files and diffs
+
+| Tool | Risk | Shows | Arguments |
+| --- | --- | --- | --- |
+| `show_pty` | mutating | a terminal from `start()` you can type into, or a `shell()` background job's live log; after the job ends, its final screen or log | `job` (job id like `j3`, or the name given to `start`); without `job` it starts a new terminal from `command`, `cwd`, `name`, or with no arguments your login shell; `title` |
+| `show_note` | read-only | a note, board, knowledge page or meeting note, editable beside the chat; it updates live as the agent edits it | `doc` (a document id, `knowledge:<concept id>` or `meeting:<id>`), `block` (block id to scroll to), `title` |
+| `show_file` | read-only | a source file, raw and syntax highlighted with line numbers, scrolled to and marking the given lines; follows the file as it changes on disk | `path` (absolute or relative to the working directory), `line`, `end_line` (1-based), `title` |
+| `show_diff` | read-only | a colourised diff, with a unified or split layout | default: working tree against `HEAD`, untracked files included; `staged: true`; `commit` (against its parent); `range` (`main..HEAD`, `main...HEAD`); `file_a` + `file_b` (two files, need not be in a repo); `paths` (pathspecs); `title` |
+
+`show_pty` is `mutating` because it can start a process; a terminal it starts is an ordinary job for `screen()`, `send()` and `cancel_job`. A finished terminal that has been evicted cannot be shown again; start it again.
+
+These four tiles fetch their content from the engine, so they work in the desktop app, the web client and other clients that connect through your engine's front door.
+
+## Safety and permissions
+
+- `show_web`, `web_views`, `browser_attach`, `show_note`, `show_file` and `show_diff` are read-only; `show_pty` and `browser_show_element` are mutating. Approval policy is described in [Tools and permissions](/docs/reference/tools-permissions).
+- The `show_*` tools belong to the **Output and apps** category under Settings › Tools › **Builtins** (the `browser_*` tools to the browser category), where a category or a single tool can be turned off for one chat or always.
+- A web tile cannot reach the app's internals and keeps its own cookie store. The shared profile is a credential: it is sealed with the mesh key, replicates only to your own machines, and is never shown to the model.
+- On a tile, browser input is synthetic (`isTrusted: false`, except on Windows). A site that checks for real input ignores it; the agent then asks you to do that step.
+
+See [Security](/docs/reference/security) for the full model.
+
+## Limits
+
+- No iframe fallback: where there is no native web view (the web client), you get **Open in browser**.
+- `show_file` opens files up to 2 MB (`show_diff` compares files up to the same size); the patch text a diff tile loads is capped at 1 MB.
+- Clicks on a tile are dispatched at the element's centre without a real hit test; canvas apps or custom pickers may ignore them.
+- Custom domains are not involved here: tiles show pages, they do not publish them. To publish a page, see [Sharing](/docs/automation/sharing).
+
+## Related
+
+- [Desktop app](/docs/workspace/desktop)
+- [Browser and desktop](/docs/automation/browser-desktop)
+- [Mesh](/docs/automation/mesh)
+- [Documents](/docs/workspace/documents)
+- [Tools and permissions](/docs/reference/tools-permissions)
+- [Security](/docs/reference/security)

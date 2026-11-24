@@ -1,0 +1,183 @@
+---
+title: Autoresearch
+description: Give theuth a goal and a benchmark, and it runs measured experiments unattended in its own git worktree, keeping only changes that beat the measured noise and pass your check.
+---
+
+An **autoresearch study** is an unattended experiment loop. You give theuth a goal, a benchmark command that prints a number, a correctness check and the files it may change. theuth then works in its own git worktree: one idea per experiment, the harness (not the model) runs the benchmark, and a change is kept only if it beats the current best by more than the measured noise and passes the check. Everything else is reverted, saved as a patch, and the lesson is written down for the next experiment. You come back to a chart, a table of what was tried and a set of changesets to review and merge.
+
+The design rule is that the model proposes and code decides. The model never scores its own work, cannot edit the evaluator, and every kept diff can be checked by a second model from another vendor.
+
+## What a study is
+
+| Field | Meaning |
+|---|---|
+| goal | One sentence: what to improve. |
+| repo, base | The repository and the commit the study starts from. |
+| metric | The number to optimise and its direction (lower or higher is better). |
+| bench | The benchmark command. It prints `METRIC` lines (and optionally `CASE` lines); the harness runs it, never the model. |
+| checks | The correctness check (tests, a validator). A candidate keep must pass it. |
+| holdout | Optional hidden command the study session never sees. It runs at the end, so an overfit benchmark shows up. |
+| evaluator paths | Files the bench and check depend on. They go into custody (below). |
+| scope | Paths the study may change. Edits outside scope are recorded and need a justification. |
+| off_limits | Paths that can never be part of a kept change. |
+| budget | Money, money per experiment, hours and number of experiments. |
+| parallel | Experiments per wave (1 = one at a time). |
+| models | Executor, reviewer and advisor, each optionally with a reasoning effort. |
+
+## How it works
+
+1. **Worktree.** The study gets an engine-managed git worktree on a branch named `autoresearch/<slug>`. Your own checkout is never touched; resets happen only inside the study worktree.
+2. **Custody.** At start, the evaluator files are copied to a custody directory with their sha256. The benchmark always runs the custody copy, and a worktree whose evaluator files differ from custody is refused before scoring.
+3. **Baseline.** The base is sampled `repeats` times (default 3) to measure noise. If the baseline's σ/mean is above `noise.max_cv` (default 0.05) the study refuses to start: the benchmark is too noisy to decide anything.
+4. **One experiment per fire.** The study runs as a routine named `autoresearch-<slug>`. Each fire is one experiment in a fresh context. The model calls `experiment_begin` and receives the **brief**: goal, incumbent, noise, recent experiments, dead ends, open ideas, your notes, budget left and the protocol. The brief, rendered from the study's ledger, is the study's memory.
+5. **Measure.** After editing, the model calls `experiment_run`. The harness checks the evaluator files and scope, runs the fixed benchmark, runs the correctness check if the change would be kept, and returns a verdict from the gate.
+6. **Close.** `experiment_log` applies the verdict: an improvement is committed, anything else is reverted with the change saved as a patch. A novelty check compares new ideas with past discarded ones (similarity threshold 0.6) so dead ends are not retried.
+7. **Review.** Every keep is judged by a reviewer model against a fixed rubric. A keep the reviewer calls gaming is, by default, reverted with its patch kept and an inbox row offering **Restore**.
+8. **Finish.** When a stop rule fires, the study finalizes: the changesets are re-measured against the base, the holdout runs, and a report is written.
+
+### The statistical gate
+
+Each measured sample is compared with the incumbent in units of the measured noise (z).
+
+| Result | Decision |
+|---|---|
+| z < 1 | Discard. |
+| z ≥ 3.5 on one sample | Keep. |
+| 1 ≤ z < 3.5 | Confirm band: 2 more runs, keep only if the means clear z ≥ 2. |
+| jump ≥ 8σ | Treated as suspicious: re-measured and reviewed before it counts. |
+
+The incumbent is re-sampled when its newest sample is more than 6 experiments old, and once every 5 keeps. A keep whose change is 10σ or more opens a new measurement segment automatically. At the end, the champion is confirmed with a t-test on the base and final samples; the headline ends in `confirmed` or `unconfirmed`.
+
+### Waves
+
+With `parallel` above 1, a study runs experiments in waves: several slots each try one idea at the same time, then the best is promoted. The spec may ask for at most `max_parallel` (default 4). Waves need agent messaging (`agent.communication`), because the slots are subagents; see [Delegation](/docs/automation/delegation).
+
+### Bench slot and machine load
+
+Scored samples take a bench lock so builds and benchmarks on the same machine do not overlap. The default `builtin` lock is a mkdir slot under `/tmp/theuth-bench-slots`; you can name a wrapper command instead. A sample also waits until the 1-minute load average divided by cores is under 0.5, for up to 20 minutes; past that it runs and is marked `noisy`.
+
+## Setting up a study
+
+Open **Agents › Autoresearch** in the desktop app and press **New study**, or type `/autoresearch <goal>` in any chat. Both start a setup chat: theuth reads your repository and drafts the study live into a side panel (a full-screen sheet on a phone). Each field carries a badge:
+
+| Badge | Meaning |
+|---|---|
+| verified | Measured by an engine probe that actually ran your benchmark, check or holdout. Only a probe produces this. |
+| confirmed | You agreed to the value. |
+| proposed | theuth's proposal; press OK or edit it. |
+| default | Taken from Settings › Autoresearch. |
+| missing | Required and not set yet. |
+| optional | Not required. |
+
+The probe (`autoresearch_probe`) runs the benchmark 3 to 10 times in a scratch worktree at `base` and shows samples, median and noise as a sparkline. Benchmark scripts written during setup go under the autoresearch drafts directory, not into your checkout.
+
+The footer says what still blocks the study. When it is ready the start buttons unlock: **Start now**, **Start in idle window**, and **Start with my uncommitted changes** (the base becomes a snapshot of your dirty tree). Nothing runs on your repo until you press one. A draft whose budget is above `confirm_budget_usd` (default $50) needs you to type the amount. After Start, the setup chat stays the study's chat and the panel becomes its status card.
+
+## Study kinds
+
+The loop above is the scalar kind. Seven other variants change what is measured or how ideas are found.
+
+| Kind | What changes | Keep rule |
+|---|---|---|
+| Pareto | Several objectives; keeps a front of non-dominated changes instead of one winner. | Corrected dominance. Front shown as a scatter with a staircase. |
+| Prompt and skill tuning | Scores prompt or skill changes per test case, engine-side, with train, validation and holdout splits. | Paired test per case (Student t below 30 cases, z above), threshold 2. Case by experiment heat strip. |
+| Judged | No scalar metric: a judge model compares blind pairs of outputs, each pair in both orders. | Wilson lower bound on the win share; Bradley-Terry rating ladder. Every 5 judged keeps you are shown one blind pair to judge yourself. |
+| Population | Search instead of a single ratchet: islands and an archive of stepping stones, run in waves. | Archive grid by descriptor. |
+| Literature | Pulls ideas from web search into the brief as quoted ideas with citations; also adds before and after hooks around experiments. | Same gate as the base kind. |
+| World | The metric is measured live in the real world: deploy, measure a treatment arm against a control arm, roll back. | Sequential test (mSPRT) over measurement windows. |
+| Meta | The loop improves the loop: rewrites the study mechanism (protocol, prompts, selection parameters) and scores it on a suite of small fixture studies, with one held out. | Paired, over the inner studies. |
+
+A meta study never changes theuth's own prompts or skills. A new mechanism version applies only when you adopt it in Settings › Autoresearch › Mechanism; running studies keep the version they started with, and **Revert** returns to the compiled defaults.
+
+## World studies: safety
+
+World studies touch live systems, so they have extra rules:
+
+- **Read-only metrics, no money.** Measurement is a command or a read-only tool; plugin-side tool calls may only name read-only tools.
+- **A press per launch.** Every deploy waits for you to press **Approve** or **Refuse** on a launch card in the study's chat. The card holds a token the model does not have; a wrong token is refused. The press is the approval.
+- **Exposure caps.** Both arms together get at most `exposure.max_fraction` of traffic (default 0.1). Above the cap, both arms are rolled back.
+- **Rollback.** Every launch closes with your rollback command, whether the result was a win, a harm or inconclusive.
+- Defaults: window 24h, at least 500 units and 2 windows, at most 14 windows, α 0.01 (harm α 0.05).
+
+## The Autoresearch tab
+
+**Agents › Autoresearch**, next to Routines, lists your studies. Opening one shows:
+
+- the **chart** of the metric over experiments (or the kind's view: front, case strip, rating ladder, archive grid, window chart or suite table),
+- the **run table**: every experiment, its verdict and its notes, with detail per experiment,
+- when finished, the **changesets**: independent changes to review and merge, plus the holdout result and the report.
+
+The study's routine also appears in Routines with a `study` badge and its headline. In the terminal UI, `/autoresearch` lists studies, `/autoresearch <slug>` opens one, `/autoresearch pause|resume|stop|stop_now <slug>` and `/autoresearch steer <slug> <text>` act directly, and anything else is treated as a goal.
+
+## Tools
+
+| Tool | Risk | Purpose |
+|---|---|---|
+| `autoresearch_draft` | read-only | Propose a study; shows the draft card. Writes nothing. |
+| `autoresearch_probe` | mutating | Measure a draft's bench, check or holdout in a scratch worktree. |
+| `autoresearch_status` | read-only | State, headline, experiments run and kept, budget left, phase. |
+| `autoresearch_control` | mutating | `pause`, `resume`, `stop_after`, `stop_now`, `run_once`, `segment`, `finalize`, `restore`, `keep_reverted`, `merge`, `discard`, `steer`, `idea`. |
+| `experiment_begin` | mutating | Start an experiment; returns the brief. Study session only. |
+| `experiment_run` | mutating | Measure the current change. Study session only. |
+| `experiment_log` | mutating | Close the experiment (`keep_simpler` and `discard` decisions). Study session only. |
+| `experiment_notes` | mutating | Update the playbook (cap 4 KiB) or add ideas. Study session only. |
+| `autoresearch_start`, `autoresearch_discard` | mutating | Internal: the Start and Discard presses. Need the card's token. |
+| `autoresearch_launch_card`, `autoresearch_launch` | read-only, mutating | Internal: a world study's launch card and its Approve/Refuse press. |
+
+`merge` runs `git merge --no-ff` of one finished changeset into the repo's current branch. It never pushes.
+
+## Configuration
+
+Settings › Autoresearch (under the Agent settings) edits the `autoresearch:` section of `config.yaml`.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | `false`: no tools, no prompt block; existing studies stay paused. |
+| `root` | `<data_dir>/autoresearch` | Where studies live. |
+| `defaults.repeats` | `3` | Baseline samples (UI: Baseline repeats). |
+| `defaults.bench_timeout` / `checks_timeout` | `600s` / `300s` | A sample past its timeout is a crash. |
+| `defaults.crash_retries` | `2` | Retries after a crash within one experiment. |
+| `defaults.budget` | `usd: 20, per_experiment_usd: 1.5, hours: 10, experiments: 120` | Pre-filled budget. |
+| `defaults.parallel` | `1` | Pre-filled wave width. |
+| `gate` | `z: 2.0, z_fast: 3.5, z_discard: 1.0, z_suspicious: 8.0, confirm_runs: 2, remeasure_after: 6, remeasure_every: 5, regime_sigma: 10` | The gate above. |
+| `noise.max_cv` | `0.05` | Baseline σ/mean above this refuses to start. |
+| `plateau.window` | `12` | Experiments without a keep before explore mode, then finalize. |
+| `pause.crash_streak` / `custody_refusals` | `4` / `2` | Consecutive crashes or custody refusals that pause the study. |
+| `review.model` | unset | Unset: first configured model of another vendor than the executor, else the executor. `off` disables review. |
+| `review.on_suspicious` | `revert` | `revert` or `flag`. |
+| `review.pause_after` | `3` | Review flags that pause the study. |
+| `models.executor` / `advisor` | unset | Executor defaults to `agent.model`; advisor to the Advisor model, else the executor. The advisor is consulted once at a plateau. |
+| `novelty.threshold` | `0.6` | Similarity to a past discard that counts as a repeat. |
+| `bench` | `lock: builtin, max_load: 0.5, wait: 20m` | Bench slot and load wait. |
+| `max_parallel` | `4` | Largest `parallel` a study may ask for. |
+| `confirm_budget_usd` | `50` | Drafts above this need the amount typed. |
+| `keep_finished_days` | `14` | Worktrees and sample logs of finished studies are removed after this; ledger, patches and report stay. |
+| `git.author` | `theuth autoresearch <noreply@theuth.local>` | Author of study commits. |
+| `notify.new_best` | `false` | Ping channels on a new best. |
+
+## Stop rules and budgets
+
+A study stops when it reaches its money, hours or experiment budget, or after `plateau.window` experiments without a keep (one explore round, then finalize). A fire that passes the per-experiment money cap ends at once and the experiment closes unlogged. Crash streaks, custody refusals and reviewer flags pause it until you resume. You can also `stop_after` (finish the experiment in flight, then finalize) or `stop_now`.
+
+## Safety and permissions
+
+- Your checkout is never modified; merging a changeset is an explicit action and never pushes.
+- Evaluator files run from custody with sha256 checks; `off_limits` paths are never kept; out-of-scope edits are recorded.
+- The holdout is hidden from the study session.
+- Study routines run without approval prompts, so choose `scope` and the bench command with care: they run unattended in the worktree.
+- See [Tools and permissions](/docs/reference/tools-permissions) and [Security](/docs/reference/security).
+
+## Limits
+
+- **Windows is not supported.** Bench, check and holdout commands run under `/bin/bash -lc`. On Windows the engine refuses with: "autoresearch needs a POSIX shell (/bin/bash) for bench, check and holdout commands". Run studies from WSL or a macOS or Linux engine.
+- Studies run on one machine: no mesh slots or shared ledgers across machines.
+- Your benchmark must be deterministic enough: a baseline noisier than 5 % refuses to start.
+- World studies read metrics only: they cannot spend money or take actions beyond your deploy and rollback commands.
+
+## Related
+
+- [Schedules](/docs/automation/schedules)
+- [Delegation](/docs/automation/delegation)
+- [Configuration](/docs/reference/configuration)
+- [Tools and permissions](/docs/reference/tools-permissions)
+- [Security](/docs/reference/security)

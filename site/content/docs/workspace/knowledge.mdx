@@ -53,6 +53,8 @@ agent:
 
 `harvest_every: 0` turns automatic harvest off; `/knowledge harvest` still works.
 
+**Harvester model.** By default each chat harvests with its own model. To use one cheaper model for every harvest, set **Knowledge harvester model** in Settings › Models › Helpers (config key `agent.knowledge_harvester_model`, with an optional `agent.knowledge_harvester_effort`). A single chat can pick its own harvester from the chat's model menu.
+
 ### The agent writing directly
 
 The model can also call `knowledge_put` at any time (and `knowledge_delete`, `knowledge_restore`, `knowledge_share`). Concepts written this way carry `source: model`; harvested ones carry `source: harvest`; files you write by hand have no `source`. `knowledge_put` on an existing id updates it. Writes from a private session (`/new private`) are refused: a private tree leaves no trace in the bundle.
@@ -66,6 +68,7 @@ Any editor is a knowledge editor. theuth re-syncs the directory by file mtime at
 - **Hints.** At the start of each turn, and again every `hint_rounds` tool rounds (default 4), the harness matches the recent conversation against the index and appends a short `<knowledge>` note listing up to `hint_limit` matching ids with title, type and a one-line description. Nothing is added when nothing matches, and each id is hinted once per epoch. The model is told to read a concept with `knowledge_get` before relying on it.
 - **Tools.** `knowledge_search(query, limit)` is a keyword search over type, title, description, tags and body (porter-stemmed FTS5, ranked by bm25; hints additionally require at least two of the query's terms to appear); `knowledge_get(id)` returns the file verbatim plus its links and the concepts citing it; `knowledge_list`, `knowledge_history`, `knowledge_restore` do what their names say. `knowledge_get("dir/slug@<commit>")` reads a past revision read-only.
 - **Scope.** A concept with a `scope:` directory is boosted when the session's working directory is under it and demoted elsewhere, so a fact about repo A is not hinted while you work in repo B.
+- **Peeks.** When hints name concepts the model is unsure of, it can call `peek_memory(question, ids)`. The local decision model judges each concept against the question (roughly 0.1 to 0.3 s per concept, no API tokens) and only the relevant ones come back in full, so irrelevant memories never enter the context. Toggle it with **Memory peeks** in Settings › Agent › Loop (`knowledge.peek`, default on); **Peek relevance threshold** (`knowledge.peek_threshold`, default `0.5`) sets how sure the model must be. Off removes `peek_memory` and its mention from the hints.
 
 The index is never pasted into the system prompt, so a growing knowledge base does not cost you prompt cache.
 
@@ -106,6 +109,48 @@ Every write is a commit, so a concept's history is complete whoever wrote it: ha
 
 Every concept has an `owner` (`user`, or `agent:<name>` when a named agent wrote it) and a `visibility`: `private`, `team` or `shared`. Your own sessions see everything. A named agent's session (see [Agents](/docs/automation/agents)) sees its own concepts, `shared` ones, and `team` ones from agents in its reporting line; concepts an agent records default to `private`, and it can widen them with `knowledge_share`. Files without these keys count as `owner: user`, `visibility: shared`. None of this affects what *you* can read in the Knowledge view or with `/knowledge`.
 
+### Isolated agent memory
+
+A persistent agent hired with `isolated_memory: true` (the **Isolated memory** switch in the desktop hire wizard and on the agent's page, or the field on the hire card) gets its own bundle at `<data_dir>/agents/<name>/knowledge/` with its own index. It has the same files, search, history and tools, but it sees nothing of your main memory and nothing it learns reaches it: its concepts never appear in your hints, search, history or Knowledge view, and dreaming skips its sessions. An isolated agent starts empty. The agent's page shows an **Isolated memory** badge and a read-only **Memory** tab.
+
+- Turning isolation on for an agent that already has concepts in main memory is refused; hire a new isolated agent instead.
+- Turning it off parks the bundle unread; turning it on again resumes it.
+- If the bundle cannot be resolved (for example it lives on another machine in a [mesh](/docs/automation/mesh)), the agent's knowledge tools refuse with a reason. They never fall back to main memory.
+- This separates memory; it is **not a security sandbox**. Isolated agents keep every tool, and anything with `read_file` or `shell` can still open either store.
+
+## Dreaming
+
+Dreaming is a built-in nightly routine that tidies knowledge and learns from your corrections while the machine is idle. It is on by default and is the only writer of consolidation: merging, superseding, archiving and re-titling concepts happen only in the dreaming session, as git commits with `source: dreaming`.
+
+What a night does:
+
+- **Tidy.** Merges near-duplicates, supersedes or archives stale concepts and re-verifies a sample of facts. Nothing is deleted: archive and supersede only.
+- **Learn.** Mines your corrections from the day's sessions into "cases" (secret-scrubbed excerpts, never raw transcripts), then proposes bounded edits to skills and to a small standing-preferences block. An edit is kept only if it passes a held-out **replay gate**: the cases are replayed with and without the edit and a judge model scores them; the edit must improve the mean by `gate.margin` (default `0.1`) without any case regressing by more than `gate.max_regression` (default `0.2`). The judge defaults to `agent.escalate_model` when set and different from the proposer.
+- **Journal.** Every change is recorded with the session ids that justify it.
+
+When it runs: inside `dreaming.window` (default `01:00` to `06:00` local), after `idle_minutes` (default 20) with no root session turn. In a mesh only one engine dreams, the home engine (`dreaming.home_engine`, default the engine that installed the routine); the hub wins knowledge conflicts. Isolated agents are skipped. The dreaming session gets no knowledge hints and never harvests itself.
+
+Budget and caps:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `dreaming.enabled` | `true` | Install the routine |
+| `dreaming.budget_usd` | `1.0` | Money per night; checked before every model call; any amount |
+| `dreaming.run_timeout` | `45m` | Longest night |
+| `dreaming.caps.triage` | `300` | Fresh concepts triaged per night |
+| `dreaming.caps.merges` | `40` | Merges per night |
+| `dreaming.caps.archives` | `60` | Archives per night |
+| `dreaming.caps.verifications` | `15` | Facts re-verified per night |
+| `dreaming.caps.cases` | `60` | New cases per night |
+| `dreaming.caps.targets` / `edits_per_target` | `3` / `4` | Skills or preferences edited, and edits each |
+| `dreaming.caps.rows_per_week` | `3` | Attention rows it may raise per week |
+| `dreaming.digest` | `Mon 08:00` | Weekly digest |
+| `dreaming.models.{triage,tidy,propose,judge}` | unset | Per-tier model; unset uses `agent.model` for tidy and the defaults above |
+
+**Settings › Dreaming** shows the next window, the budget left tonight, the backlog and pending proposals, and has **Dreaming enabled**, the window, **Budget per night**, the four model pickers, **Preferences and digest**, and **Dream now** to start a night immediately. **Recent nights** lists each night; **Undo** reverts that night's changes (knowledge changes are git reverts, skill edits restore from backup). The agent sees the same through `dreaming_state`, `dreaming_ledger`, `dreaming_journal` and `dreaming_undo`.
+
+To stop dreaming, switch off **Dreaming enabled** or set `dreaming.enabled: false`.
+
 ## Turning it off
 
 ```yaml
@@ -135,4 +180,6 @@ Files already in `~/.theuth/knowledge/` are left alone. To keep the store but st
 - [Search](/docs/workspace/search) — fuzzy search across current concepts and their history
 - [Documents](/docs/workspace/documents) — the editor concepts open in, and share links
 - [Configuration](/docs/reference/configuration) — every `knowledge.*` and `agent.knowledge.*` key
+- [Notebooks](/docs/workspace/notebooks): curated research with sources and citations, separate from memory
+- [Agents](/docs/automation/agents): named agents, their visibility and isolated memory
 - Source: `crates/knowledge`

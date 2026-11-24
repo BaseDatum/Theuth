@@ -166,6 +166,24 @@ $ gh run list --limit 1 --json conclusion,url
 
 Press **Allow**: the card rewrites itself to `✓ shell allowed by Ann` and the buttons collapse into one disabled `✓ allowed`. `ask_user` questions arrive one at a time as `❓ Question 1/3 — …` with a button per option plus **Skip** and **Dismiss**; typing your answer as a reply to the card works too. Send a voice note and the reply comes back as text and as a voice bubble, exactly as on Signal.
 
+## Pictures, origin chips and the desktop view
+
+- **Diagrams and cards as pictures.** When a reply contains a `json-render`, `mermaid` or `openui` block, Slack, Signal and Telegram receive it as a PNG image instead of the raw source. The image is drawn by a connected theuth client (the desktop app), so keep one running for pictures; while a streaming draft waits for the image it shows `_drawing…_`. When no client can draw it, the channel gets a plain-text rendering (a boxed table or list where one exists), or a one-line placeholder that names the diagram and tells you to open theuth to see it; the source of the block is never sent as text. On Slack, simple `json-render` cards (tables, bars, metrics, key-value lists, checklists, callouts) become native Block Kit blocks. Reasoning never carries a picture. The transcript stored in theuth is unchanged.
+- **Origin chips.** A message that arrived through a channel shows a small chip above its bubble in the desktop chat, with the channel icon and where it came from (for example `Slack · DM` or `Slack · #ops`), so you can tell a Telegram message from one you typed at the desk. A Slack message you forwarded or shared into the bot's DM shows as a card.
+- **Slack app manifest.** **Settings › Channels › Slack** has an **App manifest** row that shows the manifest and copies it, the same text `t --slack-manifest` prints.
+
+## Public shares from chat
+
+When theuth is sharing something publicly (see [Sharing](/docs/automation/sharing)), each channel tells the owner and lets them stop it. Stopping never asks for an approval.
+
+| | Slack | Telegram | Signal |
+|---|---|---|---|
+| Indicator | one message in the owner's DM, `● Sharing publicly · N live` with one line per share and its expiry, updated in place, with a **Stop** button per share and **Stop all** | one pinned message in the owner's private chat with the same list and a **Stop all** button, edited in place | a message to the owner when the first share goes live, listing each share with its id (Signal cannot pin or reliably edit) |
+| When the last share ends | the message becomes `Public sharing stopped`, without buttons | `Public sharing stopped`, then unpinned | `Public sharing stopped` |
+| Commands (owner only) | `/theuth share`, `/theuth share list`, `/theuth share stop [<id>\|all]` | `/share`, `/share list`, `/share stop [<id>\|all]` | `/share`, `/share list`, `/share stop [<id>\|all]` |
+
+`share stop` with no id stops everything; `share list` shows the ids. In a mesh only the hub keeps the Slack indicator; an engine that loses the hub edits its message to `Public sharing status moved to the hub machine`. When the share is hosted by another machine the reply is `stop sent to the machine hosting <url>`. An engine without the sharing plugin answers `sharing is not running on this engine` (Slack: `public sharing is not running on this machine`).
+
 ## Configuration
 
 All three sections live in `~/.theuth/config.yaml`; any key can be overridden with `THEUTH_SLACK__<KEY>` / `THEUTH_SIGNAL__<KEY>` / `THEUTH_TELEGRAM__<KEY>`. Allowlist edits made from chat or the desktop are written back to this file live; everything else needs a daemon restart.
@@ -212,6 +230,7 @@ All three sections live in `~/.theuth/config.yaml`; any key can be overridden wi
 | `enabled` | `true` | `false` disables transcription and spoken replies; audio arrives as a plain attachment line. |
 | `stt_model_dir` | `~/.theuth/models/parakeet-tdt` | Parakeet TDT ONNX checkpoint (`encoder-model.onnx`, `decoder_joint-model.onnx`, `vocab.txt`). |
 | `stt_idle_secs` | `600` | Unload the speech-to-text model after this long unused (about 1.7 GB resident); `0` keeps it loaded. |
+| `stt_engine` | `onnx` | `mlx` runs the same Parakeet TDT 0.6B v3 model on the Apple GPU (macOS on Apple silicon only, after an explicit download to `~/.theuth/models/parakeet-tdt-mlx/`); until it is downloaded, and after 3 consecutive failures, transcription uses the ONNX engine. |
 | `voice` | `peter_yearsley` | Pocket TTS voice used for spoken replies. |
 | `model_dir` | `~/.theuth/models/pocket-tts` | Pocket TTS checkpoint. |
 
@@ -246,6 +265,7 @@ Owner only (anyone else gets `This command is restricted to the owner.`):
 | `slack [status\|allow <U>\|rm <U>\|channel add <C>\|channel rm <C>]` | Connection state; edit `slack.allowed` / `slack.channels`. |
 | `communication [on\|off [always]]` | Session or global communication switch. |
 | `peers …`, `requests …`, `a2a [reload]`, `broadcast [--next] running\|roots\|<ids> <text>` | Same as the terminal commands of the same name. |
+| `share [list\|stop [<id>\|all]]` | Live public shares; stop one or all. Never asks for an approval. |
 
 Commands that need a session answer `no active thread here; run it in a DM with the bot or /theuth resume <id>` when run elsewhere.
 
@@ -270,6 +290,7 @@ Owner only:
 | `/approvals on\|off [always]` | Approval prompts for this session, or globally with `always`. |
 | `/signal [status\|link\|allow <n>\|rm <n>\|unlink]` | Connection state; issue a new linking QR; edit `signal.allowed`; unlink this device. |
 | `/communication`, `/peers`, `/requests`, `/a2a`, `/broadcast` | As in the terminal. |
+| `/share [list\|stop [<id>\|all]]` | Live public shares; stop one or all. Never asks for an approval. |
 
 Unknown or ambiguous commands print the help. Session commands before any message answer `no session yet: send a message first`.
 
@@ -296,6 +317,7 @@ Owner only (anyone else gets `This command is restricted to the owner.`):
 | `/approvals on\|off [always]` | Approval prompts for this session, or globally with `always`. |
 | `/telegram [status\|link\|allow <id>\|rm <id>\|group add <id>\|group rm <id>]` | Connection state; mint a new pairing link; edit `telegram.allowed` / `telegram.groups`. |
 | `/communication`, `/peers`, `/requests`, `/a2a`, `/broadcast` | As in the terminal (`/a2a reload` answers that it needs the terminal). |
+| `/share [list\|stop [<id>\|all]]` | Live public shares; stop one or all. Never asks for an approval. |
 
 There is no `/approve` or `/deny`: approvals are buttons. Unknown commands print the help. Session commands before any message answer `no session yet: send a message first` with a **Sessions** button; in General they act on your latest topic in that chat.
 
@@ -315,7 +337,9 @@ There is no `/approve` or `/deny`: approvals are buttons. Unknown commands print
 - **What the bot can read.** Slack: only its own DMs (`im:history`) and messages that mention it in `slack.channels`. Signal: only one-to-one messages from allowed numbers; groups are ignored. Telegram: its private chats and the groups in `telegram.groups`; in those groups only mentions, commands, replies to the bot and messages inside a topic already bound to a session are delivered.
 - **Approvals follow the normal policy.** Reading needs no prompt; mutating and destructive tools ask, unless `tools.policy` says otherwise. The prompt is a card with **Allow** / **Deny** on Slack and Telegram and a 👍/👎 or code message on Signal. Unanswered requests are denied after `tools.approval_timeout_secs` (300 s): Slack rewrites the card to `⌛ … timed out (denied)`, Telegram to `⌛ shell timed out`, Signal sends `⌛ <code> expired`. There is no per-tool "always allow"; `/approvals off` turns prompts off for the session, `/approvals off always` for every session.
 - **Who may answer.** On Slack: the owner, or the user who owns the thread. On Signal: only the number the session is bound to; reactions from anyone else and removed reactions are ignored. A code that was already used answers `<code> was already allowed` / `denied` / `timed out` for 600 s. On Telegram: the owner, or the user whose topic or chat the session is bound to; anyone else pressing a button gets a `not allowed` toast, and a card resolved elsewhere answers `already resolved`.
-- **Questions from the model** (`ask_user`) arrive as one card (Slack, Telegram) or one text message (Signal) per question and are answered by clicking or replying; they expire after `tools.ask_timeout_secs` (1 800 s). On Telegram **Dismiss** cancels the turn.
+- **Owner-only approvals.** A human-only tool such as `share_publish` (publishing something to the internet) can be approved only by the owner in person: in theuth itself, or from the owner's own Slack, Telegram or Signal account. Its card carries the line `Only the owner can answer this.`; a press or reaction by the thread's user is refused, and neither `/approvals off` nor `tools.approvals: false` skips the card. In a session bound to a non-owner's thread the tool is denied outright. See [Tools and permissions](/docs/reference/tools-permissions).
+- **Dismissed in the Inbox.** If you dismiss an approval in the desktop Inbox instead of answering it, the call is not run and not refused: it is left to the agent, which is told to find a way that needs no approval. The channel card is rewritten to `<tool> left to the agent (not run, not refused)` (Signal sends that line). Dismissed questions read `Questions left to the agent (not answered; the turn goes on)`.
+- **Questions from the model** (`ask_user`) arrive as one card (Slack, Telegram) or one text message (Signal) per question and are answered by clicking or replying; they expire after `tools.ask_timeout_secs` (1 800 s). On Telegram the card's own **Dismiss** button cancels the turn.
 - **Secrets never go through chat.** When the model needs a secret it posts a notice asking you to enter it on the desktop, in the terminal, or with `t --secret-set`. Do not paste API keys into Slack, Signal or Telegram — the bot token itself goes into the vault through `t --telegram-setup` or Settings, never into a Telegram message.
 - **Where approvals do not go.** Signal only carries approvals for the session directly bound to a contact — approvals raised by that session's subagents, or by sessions started in the terminal or the desktop, are not sent to the phone; answer those on the desktop or in the terminal. Slack routes approvals of subagents to their own thread (or the nearest bound ancestor), and approvals from non-Slack sessions to the owner's DM when `slack.approvals: all`. Telegram sends a subagent's approvals to its own topic (or its parent's chat when the chat has no topics), and approvals of any session without a Telegram thread to the owner's chat with a `session <last 8> · <title>` line when `telegram.approvals: all`.
 - **Communication scope.** Owner-opened channel sessions are `owner` scope; other allowed users' sessions are `isolated` and cannot reach your other sessions. The owner can change this with `/peers scope owner|isolated`. See [Delegation](/docs/automation/delegation).
@@ -392,5 +416,7 @@ Logs are in `~/.theuth/logs/theuth.log.<date>`; run the daemon with `RUST_LOG=de
 - [Schedules](/docs/automation/schedules) — routines that report back through `message_user`
 - [Voice](/docs/workspace/voice) — dictation and voice notes in the desktop and phone composer
 - [Tools and permissions](/docs/reference/tools-permissions) — risk levels, policy, approval timeouts
+- [Sharing](/docs/automation/sharing): publish a page or app, and stop it from chat
+- [Security](/docs/reference/security): what is encrypted, what leaves the machine
 - [Secrets](/docs/reference/secrets) — the vault that holds `slack_bot` / `slack_app` / `telegram_bot`
 - [CLI](/docs/reference/cli) — every `t` flag

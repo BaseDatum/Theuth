@@ -1,6 +1,6 @@
 ---
 title: Automation and orchestration
-description: How theuth runs work without you at the keyboard — subagents, a roster of hired agents with desks, a task board, routines and watchers, channels, other machines, sandbox VMs, and the browser and desktop controls — and the one permission gate that sits under all of it.
+description: How theuth runs work without you at the keyboard. Subagents, a roster of hired agents with desks, a task board, routines and watchers, autoresearch studies, channels, other machines, contacts, public sharing, sandbox VMs, and the browser and desktop controls, with the one permission gate that sits under all of it.
 ---
 
 A theuth session is one model talking to you and calling tools. Everything on this section's pages is a way to make work happen *beside* or *after* that conversation: a child session that does a sub-task, an agent you hired that owns a standing role, a task that waits on the board until someone picks it up, a routine that fires at 09:00, a watcher that fires when a sensor says so, a Slack thread or a phone, another machine, or an isolated Linux VM. All of it runs inside the same single process (`t`) on your data dir (`~/.theuth` unless you moved it), and all of it goes through the same tool-permission gate.
@@ -14,8 +14,11 @@ A theuth session is one model talking to you and calling tools. Everything on th
 | Task | A unit of work on a board with an owner, a state, blockers and a thread; agents are *woken* by task events | **Tasks** in the sidebar; `t tasks list`; `/tasks` | [Tasks](/docs/automation/tasks) |
 | Routine (schedule) | A markdown file with `cron:`, `every:` or `at:` and a prompt; each fire is a turn in that routine's own session, optionally looping until a check passes | **Routines** in the sidebar; `/schedules` | [Schedules](/docs/automation/schedules) |
 | Watcher | A routine with `when: <sensor>.py …`: a small Python sensor polled on a cadence; the prompt runs only when the sensor says *fire* | Same Routines list, with a **Test** button and a *last check* column | [Watchers](/docs/automation/watchers) |
+| Autoresearch study | A measured experiment loop: the agent tries one idea per run in its own git worktree, the harness runs your benchmark, and a change is kept only when it beats the noise | **Autoresearch** tab; `/autoresearch <goal>` | [Autoresearch](/docs/automation/autoresearch) |
 | Channel | Slack, Signal and Telegram as frontends: messages become turns, approvals become buttons or reactions, voice notes are transcribed | Settings › Channels | [Channels](/docs/automation/channels) |
 | Mesh / nodes / devices | Other engines (machines) that replicate your sessions and records, remote boxes reached over the link relay, and phones or browsers paired to the mesh | Settings › Network, Settings › Link; the engine switcher | [Mesh](/docs/automation/mesh) |
+| Contact | Another person's theuth, paired by a code both of you confirm; it reaches only the agents and chats you grant, and can exchange files | Settings › Sharing and the contact list | [Contacts](/docs/automation/contacts) |
+| Public share | A local dev server or folder published at a real `https://` URL through the sharing edge, with TLS ending on your machine; owner approval, expiry and one-press Stop | Settings › Sharing; the red "you are public" strip | [Sharing](/docs/automation/sharing) |
 | Sandbox VM | An isolated Linux desktop microVM on this machine that joins the mesh as an engine, with chosen host folders shared in | Settings › Network › Sandbox VMs; **Open desktop** | [Sandboxes](/docs/automation/sandboxes) |
 | Browser and desktop | An embedded headless browser per session, and native control of your own screen, mouse and keyboard | The globe (**Live browser**) in the chat header; Settings › Computer | [Browser and desktop](/docs/automation/browser-desktop) |
 
@@ -72,7 +75,7 @@ Unattended runs — routines with `approvals: false`, desks with approvals off �
 There is no global money or token cap per session or per day. What exists:
 
 - **Roster agents** can carry `budget: <amount> <CUR>/month`. At 80 % a task is filed for the agent's manager; at 100 % the agent is paused and a *Budget override* task is filed; un-pausing lifts the cap for the rest of that month. See [Agents](/docs/automation/agents).
-- **Structural limits** that bound a runaway session: `agent.max_tool_rounds` (32 tool rounds per turn), `agent.subagents.max_concurrent` (8), `max_runtime_secs` (600 s per child turn), `max_depth` (1: children cannot spawn children by default), `schedule.run_timeout_secs` (1800 s per routine run), and `tools.job_timeout_secs` (1800 s per shell job).
+- **Structural limits** that bound a runaway session: `agent.max_tool_rounds` (32 tool rounds per turn), `agent.subagents.max_concurrent` (16 native children per orchestrator tree) and `max_concurrent_external` (32 external harness children), `max_runtime_secs` (600 s per child turn), `max_depth` (1: children cannot spawn children by default), `schedule.run_timeout_secs` (1800 s per routine run), and `tools.job_timeout_secs` (1800 s per shell job).
 - **Cost tracking** everywhere: `/cost` in the terminal, the cost pill in the desktop chat header (direct, descendants, total), per-child cost in the sidebar tree, and per-session cost on a task's detail page. External harnesses report what they report; opencode before 2.0 reports the last request only, and the UI says so.
 
 ## Where things live
@@ -101,8 +104,11 @@ See [Configuration](/docs/reference/configuration) for the file format and the r
 | See what is in progress, blocked or waiting for my decision | [Tasks](/docs/automation/tasks) |
 | Run something every weekday morning, tonight at 21:30, or until a check passes | [Schedules](/docs/automation/schedules) |
 | Be told when a file appears or a pull request changes, without polling myself | [Watchers](/docs/automation/watchers) |
+| Let the agent improve a number overnight (speed, size, a score) without gaming the benchmark | [Autoresearch](/docs/automation/autoresearch) |
 | Talk to theuth from Slack or my phone, including voice notes | [Channels](/docs/automation/channels) |
 | Run work on my build server, or follow a session from the phone | [Mesh](/docs/automation/mesh) |
+| Let a colleague's theuth message one of my agents, or send it files | [Contacts](/docs/automation/contacts) |
+| Put a local dev server or a folder on the web for a few hours | [Sharing](/docs/automation/sharing) |
 | Let the model install and run things somewhere that cannot touch my machine | [Sandboxes](/docs/automation/sandboxes) |
 | Fill a web form, act as the signed-in me, or click through a native app | [Browser and desktop](/docs/automation/browser-desktop) |
 

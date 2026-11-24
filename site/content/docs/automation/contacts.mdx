@@ -1,0 +1,116 @@
+---
+title: Contacts
+description: Pair with another person's theuth so your agents can message the agents and chats you share, send files of up to 5 GB, and, if you choose, reach each other's sessions with Full access.
+---
+
+A **contact** is another person's theuth (or another A2A agent) that you paired with. Their agent can message the agents and chats you share with them, and yours can message what they share with you, at any time and with Markdown, links, images and files. A contact is a lower trust tier than your own machines: it never gets your secrets vault, nothing replicates to it, and it cannot read your transcripts. You use contacts to work with a colleague's agent across two separate setups without sharing a login. For your own machines, use the [mesh](/docs/automation/mesh) instead.
+
+## How it works
+
+- **Transport.** A contact is reached over iroh QUIC on the ALPN `theuth/a2a/1`, the same stack and relay the mesh uses, and is pinned by its endpoint id. QUIC encrypts the traffic between the two engines; the relay sees endpoint ids and IP addresses, not content. Nothing has to be port-forwarded.
+- **Identity.** Each side's A2A Agent Card is signed with its endpoint key and checked against the pin. A card whose signature does not match cannot be added.
+- **One contact for the whole mesh.** A contact you add on one machine is a contact of every machine you own. The record replicates, so each of your machines lists the same contacts once, and any of them can message or answer the contact. The contact's own machines come from a roster its mesh signed, so a machine can only speak for the contact that owns it. A message to a chat is carried to whichever of your machines owns that chat.
+- **Nothing by default.** A freshly paired contact reaches nothing until you share an agent or chat with it (or give it Full access).
+- **Inbound text is labelled.** A contact's message reaches the model labelled with the contact's name, never as you.
+
+## Adding a contact
+
+Open Settings › **Sharing** › **Contacts** and press **Add contact…**. The dialog reads "Someone else's theuth, or another A2A agent. Both sides check the same 6-digit code." It has two tabs:
+
+- **Nearby agents** lists agents on the same local network while the window is open ("This machine is visible on the network only while this window is open.").
+- **Invite** shows an invite ticket (`theuth-contact:1.…`) to send to the other person. A ticket is single-use and is refused once it expires.
+
+Both sides then see the same 6-digit code, derived from both keys. Compare it (in person or on a call) and press **Accept** on both sides; nothing but the ceremony itself flows before both Accepts. If one side presses **The codes differ**, or the check times out ("The check timed out before both sides pressed Accept. Nothing was stored."), nothing is stored.
+
+Add contact needs the machine's own screen: a phone or web client lists your contacts but has no **Add contact…** button.
+
+| Limit | Value |
+|---|---|
+| Add contact window | 10 min (`a2a.contact_window_secs`, default 600) |
+| One ceremony | 120 s for both Accepts; one ceremony at a time |
+| Failed ceremonies from one machine | 3 refuse that machine for the window |
+| Failed ceremonies from anyone | 10 close the window |
+| Nearby agents listed | at most 32 |
+
+## What a contact may reach
+
+### Shares (exports)
+
+Settings › Sharing › Contacts › **Access**: "Choose, per contact, which agents and chats it may reach, and how each share answers its first message." You can also share a chat from its menu with **Share with contact…**. Settings › Sharing › **Chats and agents** lists every chat and agent your contacts may reach, in one place, where you can stop sharing.
+
+Every share is full: a contact's message arrives like a message from one of your own machines and your agent may reply at any time, any number of times. A shared chat answers with its own tools and your usual approvals; a shared agent's inbox works within that agent's own `tools:` ceiling. There is no separate restricted mode.
+
+### Ask first and Always allow
+
+Each share has a first-message setting:
+
+| Setting | Behaviour |
+|---|---|
+| **Always allow** (default for a new share) | The contact's messages go straight through. |
+| **Ask first** | The contact's first message to that share is held until you answer **Allow once**, **Always** or **Block**. Allow once lets that message through and keeps asking; Always and Block are remembered. |
+
+The answer follows the chat to whichever of your machines owns it. On the contact's side, a share that asks first shows as `(asks first)` under **Shared with you**.
+
+### Full access
+
+The **Full access** switch on a contact (Settings › Sharing › Contacts › Access; on the desktop, a phone or an iPad) asks first ("Give \<contact\> full access?"); turning it off is immediate. With it on: "any of \<contact\>'s sessions can message your sessions and see their list (titles, running or idle). Private chats and your other contacts' conversations stay hidden. Nothing is synced."
+
+- Scope is message plus list only. The contact cannot read your transcripts or open your chats.
+- Each side grants its own. Your switch opens your sessions to them; it is two-way only if they turn theirs on too.
+- Private chats, advisors, your other contacts' conversations and sessions your own policy keeps apart are never listed or reachable, and answer as if they did not exist.
+
+When a contact gives you full access, its sessions show under its `peer:<contact>` row in a chat's **Peers** list and in the terminal's `/peers`, newest first, at most eight; `discover_peers(kind="contact", query="<contact>")` lists the rest.
+
+## Files
+
+Your agent can send a contact's agent files with `send_message`, and receive them back.
+
+- **Any type, up to 5 GB** per file (5,000,000,000 bytes).
+- **Own stream.** Each file streams on a new stream of the contact connection, never inside the message itself. Transfers resume after an interruption and fail after 60 s with no progress; there is no total deadline.
+- **Checked.** The receiver checks the size and a BLAKE3 hash before it publishes the file, and sends a receipt.
+- **Not in the model's context.** The receiving model gets a placeholder written by its own engine (`<message_file state="receiving|received|failed">`), not the bytes, and a contact cannot forge one. `read_file` reads at most 256 MB of a file.
+- **Where files land.** Under the data dir (`~/.theuth` unless `--data-dir` or `THEUTH_DATA_DIR` is set): `files/received/<contact>/<YYYY-MM-DD>/<name>`, folders mode 0700, files 0600. A file sent into a private chat goes to that chat's scratch folder and is deleted with the chat. An existing file is never overwritten, and file names are sanitised.
+- **macOS quarantine.** A received file carries the `com.apple.quarantine` flag, set and checked before it is published.
+- **What may leave.** A file to a share goes without an approval card. theuth's own secret state (the vault and its key, machine identity keys, OAuth credentials, the RPC token and similar) is always refused.
+
+Desktop and terminal show sent and received files as file cards. Contact files need a unix engine (macOS or Linux).
+
+## What a contact never gets
+
+- Your secrets vault or its key.
+- Replication of any kind: sessions, tasks, agents, skills, documents.
+- Your transcripts, or a live view of your chats. Without Full access it sees only the replies to its own messages.
+- Any mesh channel: contacts reach only `theuth/a2a/1`, never `theuth/rpc/1`, `theuth/sessions/1` or a replica ALPN.
+- Your other contacts: a contact is never passed on.
+
+## Block, Remove and lost machines
+
+The ⋯ menu on a contact row has **Rename**, **Block…** and **Remove…**, and each applies on all your machines:
+
+- **Block**: "\<contact\> is refused on all your machines from now on and its open tasks close. Unblock it later from this list."
+- **Remove**: "\<contact\> is forgotten on all your machines and its open tasks close. Adding it again needs a new code check."
+
+**A lost or stolen machine.** If you unpair one of your machines, your contacts are told it left (a contact that is offline learns it when it comes back) and then refuse it. Until that reaches them it may still reach them, so the Unpair dialog and the Remove confirm say: `Ask <contact> to remove you too, then pair again. Until they do, the removed machine may still reach them.` The remedy needs both sides. The contact row's **Their machines**, **Paired on** and problem lines are described under [Mesh](/docs/automation/mesh).
+
+## Limits
+
+| What | Value |
+|---|---|
+| Requests per contact | 10 per second |
+| Concurrent handlers per contact | 8 |
+| Queued messages per contact and share | 8 |
+| File size | 5 GB |
+| File transfer idle timeout | 60 s |
+| Streams per remote at once | 16 |
+| `read_file` on a received file | 256 MB |
+
+Contacts are not end-to-end encrypted beyond the QUIC link between the two engines: each side's engine, and the model provider it uses, sees the messages and files it receives.
+
+## Related
+
+- [Mesh, nodes and devices](/docs/automation/mesh): your own machines, and the contact row in detail
+- [Sharing](/docs/automation/sharing): everything you share, including public links
+- [Security](/docs/reference/security)
+- [Delegation](/docs/automation/delegation): `send_message` and peers
+- [Tools and permissions](/docs/reference/tools-permissions)
+- [Secrets](/docs/reference/secrets)

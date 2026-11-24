@@ -1,0 +1,178 @@
+---
+title: Security and privacy
+description: The whole model in one page. The five encrypted channels and the crypto behind each, what the link relay, the mesh relay and the sharing edge can and cannot see, where keys live, the secrets vault, approvals and owner-only actions, the residual risks, and how to self-host every server in the path.
+---
+
+theuth is one process on machines you own. There is no theuth account and no hosted copy of your sessions: config, the encrypted vault, sessions, knowledge, documents, artifacts, logs and downloaded models live under your data dir (`~/.theuth` unless you moved it). Three optional services sit in some paths, all run by the project by default and all self-hostable:
+
+| Service | Default | Used for | Needed when |
+|---|---|---|---|
+| Link relay (`theuth-relay`) | `wss://relay.theuth.io` | phones, browsers and remote desktop apps reaching a harness | `link.enabled: true` (default `false`) |
+| Mesh relay (stock `iroh-relay`) | `https://iroh.relay.theuth.io` | your machines and your contacts' machines, only when no direct path exists | two engines cannot reach each other directly |
+| Sharing edge (`theuth-share-edge`) | `tun.zip` | visitors reaching a public share | you publish something; public sharing is off by default |
+
+This page says what each of them can see, and what it cannot. Where a guarantee has a limit, the limit is stated next to it.
+
+## The five channels
+
+The crypto is different on each path, so they are listed separately.
+
+| Channel | Between | Crypto | Server in the middle |
+|---|---|---|---|
+| Mesh | your own machines (engines) | iroh QUIC, authenticated by each engine's Ed25519 endpoint key | the mesh relay, only when no direct path works |
+| Link | phone, browser or desktop app and a harness | Noise `IK` (first pairing `IKpsk2`), X25519, AES-GCM, SHA-256 | the link relay |
+| Contacts | your engine and another person's engine | iroh QUIC on ALPN `theuth/a2a/1`, peer pinned by endpoint id | the same mesh relay |
+| Public share | a visitor's browser and the engine hosting the share | ordinary TLS, terminated on your machine | the sharing edge, a blind TCP splice routed by SNI |
+| Vault at rest | on disk | XChaCha20-Poly1305 | none |
+
+## What stays on your machine and what leaves
+
+Stays local:
+
+- The data dir above, including the vault and every session transcript. [Private sessions](/docs/workspace/sessions) are memory-only and are deleted when you leave them; they never replicate.
+- The decision model (a ModernBERT encoder with a decision head, run natively), speech to text (Parakeet on Apple silicon, a built-in ONNX engine elsewhere), text to speech, the code index and the notebook embedding model.
+
+Leaves, because you set it up that way:
+
+- Prompts and context go to the model provider you configure. A local model server keeps them on your hardware; the choice is yours ([Models](/docs/getting-started/models)).
+- Web searches and page fetches the agent makes reach those sites.
+- Anything you publish ([Sharing](/docs/automation/sharing)) or send to a contact ([Contacts](/docs/automation/contacts)).
+- Replication between your own paired machines, encrypted in transit.
+
+"Nothing ever leaves your machine" is not a claim theuth makes. You decide what leaves.
+
+## Your machines: the mesh
+
+Engines talk iroh QUIC. A direct, hole-punched path is tried first; when there is none, traffic goes through `mesh.relay`. No port forwarding is needed.
+
+- **Keys.** Each engine has an Ed25519 secret in `<data_dir>/mesh/identity` (owner-only file, created on first run). Its public half is the engine id. It signs the endpoint's TLS certificate and never leaves the process.
+- **What the mesh relay sees.** It forwards end-to-end encrypted QUIC. It sees endpoint ids and IP addresses, not content. Anyone who learns an endpoint id can dial it, and every protocol on the engine refuses a peer that is not paired.
+- **Relay choices.** `mesh.relay` takes a URL (yours), `public` (n0's public relays) or `none` / `""` (never relay: LAN and direct paths only).
+- **Pairing is full trust.** A mesh pairing string (`t mesh pair`) carries the inviter's vault data key, so replicated secrets open on both machines. Treat the string as a secret: it is a key, not an invitation. Its one-time token expires after 5 minutes. Nearby pairing on the LAN shows the same 6-digit code on both machines, and nothing is stored and no key moves until both people press **Pair**.
+- **What a paired machine gets.** Everything: the vault key, replicated sessions, tasks, agents, documents and full RPC. Pair only machines you control.
+- **Unpair.** Removing a machine rotates the vault key: the remaining machines re-encrypt every secret under a new key and the removed machine receives nothing written afterwards. It keeps the old key and every row it already had; nothing can revoke a copy. The Unpair dialog lists the secret names it held so you can replace them at their providers.
+
+Details: [Mesh](/docs/automation/mesh).
+
+## Phones, browsers and the desktop app: the link
+
+A device reaches a harness through the link relay over a WebSocket (subprotocol `theuth-link-1`, binary frames). The harness dials out, so it needs no inbound port.
+
+- **End to end.** Every harness and every device has one X25519 static key. Pairing runs `Noise_IKpsk2_25519_AESGCM_SHA256` with a one-time 32-byte secret from the QR as the pre-shared key. Every later connection runs `Noise_IK_25519_AESGCM_SHA256`: one round trip, mutual authentication, forward secrecy per connection. Inside the channel the device speaks the same JSON-RPC the desktop app uses locally.
+- **The relay cannot squat or impersonate a harness.** The harness registers with the relay through a separate `Noise_NK` handshake that proves it holds the key for the id in its URL. The relay keeps only the proof, not the transport keys.
+- **The relay never learns which device connects.** `IK` sends the device's static key encrypted.
+- **Pairing.** The QR (or pasted text) is `https://<relay-host>/link#1.<harness key and secret>.<name>`. The part after `#` is a URL fragment that browsers never send, so the relay serving the page never sees the secret. The secret is single-use and valid for 5 minutes; the harness enrols the device only after one transport message decrypts. A pairing string stolen after use is dead.
+- **Keys.** The harness key is `<data_dir>/link/identity` (32 bytes, mode 0600). In a browser the device key is stored in IndexedDB and imported as a non-extractable WebCrypto key; nothing is in `localStorage`.
+- **Revoke.** Revoking a device in Settings › Link (or `t mesh devices revoke <id>`) closes its live connections, and its next handshake is refused at every hub of the mesh within about 2 seconds.
+- **No accounts, no database.** The relay holds an in-memory table of connected harnesses and nothing else. It exposes `/metrics` counters.
+
+What the link relay sees: client IP addresses, harness ids (public keys, already in the QR), when each is online, how many devices talk to it, frame sizes and timing. What it does not see: device identities, method names, message content, session ids, attachment bytes. The desktop app says it in one sentence: "The relay carries encrypted traffic between your devices and this node. It can see that they are connected, not what they say."
+
+**The browser caveat.** A web page trusts the origin that serves its JavaScript. A relay operator who served modified JavaScript could read plaintext in that browser tab. The native apps do not have this exposure. Self-hosting the relay, which also serves the web UI, removes it.
+
+## Other people: contacts
+
+A contact is another person's theuth, reached on the same iroh QUIC stack on the ALPN `theuth/a2a/1` and pinned by its endpoint id. It is a lower trust tier than your own machines:
+
+- **Adding one is a ceremony.** Both sides see a 6-digit code derived from both keys and both people press Accept; nothing but the ceremony frames flows before that. Invite tickets are single-use and the window lasts 10 minutes; three failed ceremonies from one machine refuse it, and ten from anyone close the window.
+- **What a contact never gets.** No vault key, no session replication, no transcripts, no live view. Contacts never reach the RPC, session or replica protocols; only `theuth/a2a/1`.
+- **What it gets.** Only the agents and chats you share with it. A shared chat runs with its own tools and your usual approvals; a shared agent stays within its own `tools:` ceiling. A new share starts on **Always allow**; **Ask first** holds the contact's first message until you press Allow once, Always or Block. **Full access** lets its sessions message and list yours (titles and running or idle), never read them; private chats are never listed. Each side grants its own.
+- **Inbound text** is labelled with the contact's name, never presented as you.
+- **Files.** Up to 5 GB, any type, streamed on their own stream of the contact connection and checked with BLAKE3. The receiving model gets an engine-written placeholder, not the bytes. Files sent to a share need no approval card; theuth's own secret state is always refused at the egress gate, which checks the opened file itself so symlinks and hard links do not bypass it.
+- **Remove and Block** take effect at once and apply on all your machines.
+
+Details: [Contacts](/docs/automation/contacts).
+
+## The public: shares through the edge
+
+`share_publish` (or Settings › Sharing) puts a loopback dev server (`port`) or a static folder (`dir`) at `https://<label>.<name>.<edge domain>/`. The design goal is that the edge forwards bytes it cannot read.
+
+```text
+visitor's browser ──TLS──▶ sharing edge ──same TLS bytes, over iroh QUIC──▶ your machine
+                           reads the SNI                                     terminates TLS
+                           copies bytes                                      serves the page
+```
+
+- **TLS ends on your machine.** The edge peeks at the ClientHello, routes on the SNI, and splices raw bytes to the hosting engine over a stream of the engine's tunnel. It never presents a certificate on port 443 and never decrypts; every refusal is a TCP reset. Your engine runs the TLS server with the name's key.
+- **The edge never holds your certificate key.** Each mesh name has one wildcard certificate (`<name>.<domain>` and `*.<name>.<domain>`). The key and the CSR are created on your side and stored as rows of your mesh vault. The edge runs the ACME order (Let's Encrypt, DNS-01), so it needs your CSR, never your key. The issued chain is not stored in the vault.
+- **Your engine dials out.** Engines connect to the edge over iroh QUIC (ALPN `theuth/share/1`), so sharing works behind NAT. An engine authenticates with its iroh key plus a signed delegation from the mesh's share key, valid for at most 24 hours and renewed at 12. There are no edge accounts.
+
+| The edge sees | The edge never sees |
+|---|---|
+| Visitor IP addresses (the edge software keeps its connection log 30 days by default, for abuse handling) | Page content, request paths, headers, cookies |
+| The full hostname of every visit | Passwords typed into the share's password gate |
+| Your mesh id, its engine keys, and which of your machines share under your name | Your certificate's private key |
+| Byte counts and timing | Your vault, sessions or anything outside the share |
+
+Settings › Sharing says it as: "Shared apps are public: anyone with the link can open them. The edge forwards encrypted connections and sees which address was visited and from where, not the pages."
+
+What protects whom:
+
+- **Public means public.** Anyone with the URL can read a public share.
+- **Passwords** are generated by your engine and shown once (never chosen by the model, never a tool argument), stored as an Argon2 hash, limited to 10 attempts per IP per minute, and remembered with a signed `__Host-` cookie. Your engine enforces the gate, so it holds against browsers and honest clients; it is not encryption to the viewer.
+- **Expiry.** 1 h, 8 h (default), 24 h or 7 d from going live. The model cannot extend an expiry or turn a password share public. A first-visit interstitial is on by default.
+- **Stop.** One press on any client stops a share; **Stop all** stops every share of the mesh. A red strip and the tray say when you are public.
+- **What can be shared.** A loopback port or a folder. theuth's own listeners are refused on every upstream connect.
+
+**The domain owner residual.** Whoever operates the edge owns its domain, DNS and ACME account, so it could mint a certificate for any `<name>.<domain>` and intercept. That would be visible in Certificate Transparency logs; it is not prevented. The blind edge protects you against a curious or compromised edge process, not against a malicious domain owner. If that matters, run your own edge (below). Custom domains for shares are not available.
+
+**A machine of your mesh** holds the name keys and the mesh share key. One compromised machine exposes every name of the mesh until you unpair it. Unpairing revokes the machine at every edge the mesh uses and moves the mesh to a fresh share key; **Rotate key** on a name (Settings › Sharing › Domains) replaces that name's key and revokes its old certificate. A stolen name key can still be used for interception until its certificate expires (at most 90 days), since browsers do not reliably check revocation.
+
+Details: [Sharing](/docs/automation/sharing).
+
+## The secrets vault
+
+- **At rest.** `<data_dir>/secrets.sqlite`. Each value is encrypted with XChaCha20-Poly1305 under the mesh key (one key every paired engine shares, so a row written on one machine opens on all), with the row id as associated data. That key is sealed under an engine key held in the OS keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager), or in `<data_dir>/secrets.key` (mode 0600) when no keychain is available.
+- **The model never sees values.** It sees names, notes, versions and dates; no tool returns a value. New values come from your masked entry (`secret_request`), from a tool's output stored quietly (`secret_capture`) or from an older version, never from the model's own arguments.
+- **Placeholders.** A tool argument carries `{{secret:NAME}}`. The harness substitutes the value after the approval gate and before the tool runs, so the approval card and the transcript show only the placeholder. A call that mentions a secret asks for approval even when the tool is read-only.
+- **Scrubbing.** Tool output has every kept version of every secret, and its base64 form, replaced by the placeholder.
+
+Limits, stated by the vault itself: the destination sees the value (a request, a file, a command line); only exact and base64 forms are scrubbed, so hex, URL-encoded, reversed or split values pass; values under 8 characters are not scrubbed; `key_store: file` leaves the engine key readable by your user account; losing the engine key loses every secret. Details: [Secrets](/docs/reference/secrets).
+
+The shared browser profile (cookies the agent's browser and your web tile share) is a credential and is treated like one: each site's cookies are sealed with the mesh key, and the row id is a keyed hash, so the file at rest names no site. See [Web views](/docs/workspace/web-views).
+
+## Approvals and owner-only actions
+
+Every tool call passes one gate: a risk (`read_only`, `mutating`, `destructive`), an optional cap on the session, and `tools.policy` (default: read-only allowed, mutating and destructive ask). An unanswered card is denied after 300 seconds. Full reference: [Tools and permissions](/docs/reference/tools-permissions).
+
+Some actions sit above that gate:
+
+- **Human-only tools.** `share_publish` is destructive and human-only, which means owner-only: it needs the owner, in person, on a surface the owner controls (the desktop, web or iOS client, the terminal UI at the console, or the owner's own Slack, Telegram or Signal account). Another chat user, the double, an app button, a policy switch, approvals off and the agent driving a UI cannot approve it. The card names the exact URL, source, expiry and access. While such a card is pending, the agent's input into theuth's own windows and its acting browser calls on theuth's own web client are refused.
+- **Public sharing is off by default, per machine.** "Allow public sharing on this machine" is stored by the sharing plugin, never in `config.yaml` or the environment, and a fresh install dials no edge, allocates no name and orders no certificate. You accept the edge's terms before the first share.
+- **Runnable cells** in chats and notes start only on a human press, and the press carries a digest of the text on screen; if the cell changed, the engine refuses.
+- **Dismissing an approval in the Inbox never approves it.** It is left to the agent, which sees no answer.
+- **The MCP server** (theuth as an MCP endpoint for other tools) is off by default, binds `127.0.0.1` only and requires a bearer token stored in the vault. Its write tools have no theuth-side approval; a client holding the token can use them. See [MCP](/docs/reference/mcp).
+
+## Residual risks
+
+These are known, stated and not hidden behind the claims above.
+
+- **An unapproved shell can approve its own publish.** An agent whose shell commands run without approval can read the local RPC token (`<data_dir>/token`) and answer its own `share_publish` card. Owner-only approval holds while shell commands are approved or sandboxed; Settings warns when sharing is on and approvals are off.
+- **The edge's domain owner can mint certificates** for your share names (visible in CT, not prevented). Self-host the edge to remove the third party.
+- **Browser sessions trust the relay's JavaScript.** Use a native app or self-host the relay.
+- **Removed machines keep what they had.** Unpairing rotates keys for the future, not the past. Rotate secrets at their providers.
+- **Scrubbing is for accidents.** A model that deliberately transforms a value defeats it; the approval card is the check.
+- **Public shares are public.** The password gate and interstitial are enforced by your engine for honest clients; the edge sees visitor IPs and hostnames.
+- **Shares on one edge domain count as one site to browsers** while that domain is not on the Public Suffix List: another app on the same domain can make a visitor's browser send requests to your share, and password managers may offer a login saved for one share on another.
+- **Forward secrecy is per channel.** Link sessions have it; QUIC sessions use TLS 1.3. The vault at rest and a share's name key (valid until its certificate expires) do not.
+- **No third-party audit.** theuth has not been externally audited or certified.
+
+## Self-hosting
+
+| Piece | How | Then |
+|---|---|---|
+| Link relay | `theuth-relay` binary, a Docker image, or `deploy/relay/compose.yaml` (relay plus Caddy with automatic TLS) | `link.relay: wss://relay.example.com`. See [Mesh › Self-hosting the relay](/docs/automation/mesh#self-hosting-the-relay). |
+| Mesh relay | the stock `iroh-relay` with `deploy/relay/iroh-relay.toml` | `mesh.relay: https://iroh.example.com`, or `public` for n0's relays, or `none` for LAN and direct paths only |
+| Sharing edge | `theuth-share-edge`: Docker image, `compose.yaml`, a systemd unit or Kubernetes manifests in `deploy/share-edge/`. Needs a public IP with TCP 443 and one UDP port (7850), a domain, and a DNS provider credential (Porkbun is supported) | Run `theuth-share-edge ticket` on the edge and point your engines at it (see [Sharing › Self-hosting the edge](/docs/automation/sharing#self-hosting-the-edge)). The edge's domain is its own configuration, so your edge serves shares under your domain. |
+| Everything else | The engine is a local binary. Mesh, vault, local models and the desktop app need no hosted component. | |
+
+A LAN-only setup (`mesh.relay: none`, link off, public sharing off) uses none of the hosted services.
+
+## Related
+
+- [Sharing](/docs/automation/sharing): publishing, names, expiry, passwords, running your own edge
+- [Contacts](/docs/automation/contacts): trust levels, Ask first, file transfer
+- [Mesh](/docs/automation/mesh): pairing, unpairing, devices and the link relay
+- [Secrets](/docs/reference/secrets): the vault in full
+- [Tools and permissions](/docs/reference/tools-permissions): risks, policy, approvals
+- [Installation](/docs/getting-started/installation): what is installed and where data lives
