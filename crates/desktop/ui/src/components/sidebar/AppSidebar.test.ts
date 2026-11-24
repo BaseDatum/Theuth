@@ -151,6 +151,28 @@ test('rail and expanded sidebar take the shell\'s band height, never a viewport 
   expect(viewportUnit(container())).toEqual([])
 })
 
+test('the rail settles its middle once mounted and again when the container ends its width transition (not other transitions)', async () => {
+  await mount({ open: false })
+  const nav = document.querySelector<HTMLElement>('nav[aria-label="Sidebar"]')!
+  const pos = { left: 0 }
+  Object.defineProperty(nav, 'scrollLeft', { get: () => pos.left, set: (v: number) => (pos.left = v) })
+  pos.left = 80
+  await act(async () => new Promise((r) => requestAnimationFrame(() => r(undefined))))
+  expect(pos.left).toBe(0)
+  const container = document.querySelector<HTMLElement>('[data-slot="sidebar-container"]')!
+  const end = (target: HTMLElement, propertyName: string) => {
+    const e = new Event('transitionend', { bubbles: true }) as TransitionEvent
+    Object.defineProperty(e, 'propertyName', { value: propertyName })
+    target.dispatchEvent(e)
+  }
+  pos.left = 80
+  end(container, 'left')
+  end(nav.querySelector<HTMLElement>('[aria-label="New chat"]')!, 'width')
+  expect(pos.left).toBe(80)
+  end(container, 'width')
+  expect(pos.left).toBe(0)
+})
+
 test('the rail\'s Chat opens a new chat; Talk talks where the row would', async () => {
   vi.mocked(talk.open).mockResolvedValueOnce('t2')
   await mount({ open: false })

@@ -15,7 +15,7 @@ import { usePanes } from '@/lib/panes'
 import { useSessions } from '@/store/sessions'
 import { empty } from '@/store/reduce'
 import type { AgentInfo } from '@/store/ui-events'
-import { CLOSE_DELAY, POPOVER_CAP, RailSections, railSections, workspaceTarget } from './Rail'
+import { CLOSE_DELAY, POPOVER_CAP, RailSections, railSections, settleRail, workspaceTarget } from './Rail'
 import { SessionItem } from './SessionItem'
 
 const s = (id: string, project: string | null, updated_at: string, pinned = false): SessionSummary =>
@@ -418,4 +418,33 @@ test('a popover chat row drags into the panes exactly as the expanded row does; 
   expect(await drag(expanded)).toEqual(fromPopover)
   await pointer(expanded, 'pointerup', 60)
   await act(async () => root.unmount())
+})
+
+/** A scroller whose geometry jsdom does not lay out: fixed sizes, writable offsets, a log of `overflow-y` while laid out. */
+function scroller({ scrollHeight, clientHeight, scrollTop, scrollLeft }: { scrollHeight: number; clientHeight: number; scrollTop: number; scrollLeft: number }) {
+  const el = document.createElement('nav')
+  el.style.overflowY = 'auto'
+  const laidOut: string[] = []
+  const pos = { scrollTop, scrollLeft }
+  Object.defineProperties(el, {
+    scrollHeight: { get: () => scrollHeight },
+    clientHeight: { get: () => clientHeight },
+    offsetHeight: { get: () => (laidOut.push(el.style.overflowY), clientHeight) },
+    scrollTop: { get: () => pos.scrollTop, set: (v: number) => (pos.scrollTop = v) },
+    scrollLeft: { get: () => pos.scrollLeft, set: (v: number) => (pos.scrollLeft = v) },
+  })
+  return { el, laidOut }
+}
+
+// iPad: the rail mounts mid-collapse (the container still animating its width) and its middle came up blank.
+test('settleRail: a sideways or past-the-end scroll is undone, and the scroll layer is rebuilt (overflow off for a layout, then back)', () => {
+  const { el, laidOut } = scroller({ scrollHeight: 400, clientHeight: 300, scrollTop: 900, scrollLeft: 120 })
+  settleRail(el)
+  expect([el.scrollLeft, el.scrollTop]).toEqual([0, 100])
+  expect(laidOut).toEqual(['hidden'])
+  expect(el.style.overflowY).toBe('auto')
+  // In range: the reader's place is kept.
+  const fits = scroller({ scrollHeight: 400, clientHeight: 300, scrollTop: 40, scrollLeft: 0 })
+  settleRail(fits.el)
+  expect(fits.el.scrollTop).toBe(40)
 })

@@ -47,7 +47,7 @@ import { takeReveal, useSidebarReveal } from '@/lib/sidebar-reveal'
 import { cn } from '@/lib/utils'
 import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 import { Desks } from './Desks'
-import { RAIL_ITEM, RailSections } from './Rail'
+import { RAIL_ITEM, RailSections, useSettledRail } from './Rail'
 import { SearchTrigger } from './SearchTrigger'
 import { SessionList } from './SessionList'
 import { SidebarPopoutButton } from './SidebarPopoutButton'
@@ -103,6 +103,9 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   }, [reveal, scrollEl])
   // Slot for `SessionList`'s multi-select bar: a sibling below the scroller, so the bar stays put while the list scrolls.
   const [barEl, setBarEl] = useState<HTMLDivElement | null>(null)
+  // The rail's scrolling middle, settled once the collapse animation ends (iPadOS left it blank; `settleRail`).
+  const [railNav, setRailNav] = useState<HTMLElement | null>(null)
+  useSettledRail(railNav)
   // 39 §4.2: the "subtle indicator" — a muted dot while an app update waits for quit.
   const pending = useUpdate((s) => s.pending)
   const newChat = useShortcuts((s) => s.chords['new-chat'])
@@ -166,7 +169,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               </RailTip>
             </Capability>
           </div>
-          <nav aria-label="Sidebar" className="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-x-hidden overflow-y-auto py-1 [scrollbar-width:none]">
+          <nav ref={setRailNav} aria-label="Sidebar" className="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-x-hidden overflow-y-auto py-1 [scrollbar-width:none]">
             <RailTip label={`New chat${newChat ? ` (${label(newChat)})` : ''}`}>
               <Link
                 to="/new"

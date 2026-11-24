@@ -31,6 +31,38 @@ export const RAIL_ITEM = cn(
   "[&_svg:not([class*='size-'])]:size-[18px]",
 )
 
+/**
+ * Puts the rail's scrolling middle back in view and has WebKit rebuild its scroll layer. The rail mounts while the
+ * sidebar container is still animating its width down to the rail's; on iPadOS that left the middle (Chat … the
+ * section icons) blank between the header and Settings. Undoes any sideways scroll (overflow-x is hidden but still
+ * scrolls programmatically), clamps a scroll past the end, and flips `overflow-y` off for a forced layout and back,
+ * which drops and re-creates the native scroll view at the settled size.
+ */
+export function settleRail(nav: HTMLElement): void {
+  nav.scrollLeft = 0
+  const max = Math.max(0, nav.scrollHeight - nav.clientHeight)
+  if (nav.scrollTop > max) nav.scrollTop = max
+  const prev = nav.style.overflowY
+  nav.style.overflowY = 'hidden'
+  void nav.offsetHeight
+  nav.style.overflowY = prev
+}
+
+/** `settleRail` on the rail's middle once it mounts (next frame) and whenever the sidebar container ends a width transition. */
+export function useSettledRail(nav: HTMLElement | null): void {
+  useEffect(() => {
+    if (!nav) return
+    const container = nav.closest<HTMLElement>('[data-slot="sidebar-container"]')
+    const frame = requestAnimationFrame(() => settleRail(nav))
+    const ended = (e: TransitionEvent) => e.target === container && e.propertyName === 'width' && settleRail(nav)
+    container?.addEventListener('transitionend', ended)
+    return () => {
+      cancelAnimationFrame(frame)
+      container?.removeEventListener('transitionend', ended)
+    }
+  }, [nav])
+}
+
 /** Chats a section's popover lists before "Show all N →". */
 export const POPOVER_CAP = 8
 /** How long a hover-opened popover outlives the pointer, so it can cross from the icon into the popover. */
