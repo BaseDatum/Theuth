@@ -67,11 +67,11 @@ test('215 C3: no model item; the title follows the sidebar toggle in the full ba
     expect(ids(order)).not.toContain('model')
     const full = ids(layout(order, 0).bar)
     expect(full.indexOf('title')).toBe(full.indexOf('sidebar') + 1)
-    // Compact: title · context · the one panel button · popout · chevron · ⋯ stay inline.
+    // Compact: title · the one panel button · popout · chevron · ⋯ stay inline.
     const t1 = layout(order, 1)
-    expect(ids(t1.bar)).toEqual(['sidebar', 'title', 'context', ...(panel ? [panel] : []), 'popout', 'more', 'menu', 'close'])
+    expect(ids(t1.bar)).toEqual(['sidebar', 'title', ...(panel ? [panel] : []), 'popout', 'more', 'menu', 'close'])
     expect(ids(t1.menu)).not.toContain('title')
-    // Tier 2 sheds the context chip and the panel button, never the title or the popout button.
+    // Tier 2 sheds the panel button, never the title or the popout button.
     const t2 = layout(order, 2)
     expect(ids(t2.bar)).toEqual(['sidebar', 'title', 'popout', 'more', 'menu', 'close'])
     expect(ids(t2.menu)).not.toContain('title')
@@ -111,9 +111,8 @@ test('141 R3 T11: a watch-only child keeps its Watching chip (the parent item) i
     expect(bar).toContain('parent')
     expect(bar.indexOf('parent')).toBeGreaterThan(bar.indexOf('title'))
   }
-  // Tier 2 still lists it in the menu as the "Watching inside" row too, and sheds the context chip first.
+  // Tier 2 still lists it in the menu as the "Watching inside" row too.
   expect(ids(layout(order, 2).menu)).toContain('parent')
-  expect(ids(layout(order, 2).bar)).not.toContain('context')
   // A native child's parent crumb stays behind the chevron as before.
   expect(ids(layout(headerOrder('artifacts', true), 1).bar)).not.toContain('parent')
 })
@@ -149,4 +148,12 @@ test('183 §4.5: the approvals pill follows the session\'s effective value on it
   expect(approvalsOff(undefined, { global: false, session: true })).toBe(true)
   expect(approvalsOff(undefined, own)).toBe(false)
   expect(approvalsOff(undefined, null)).toBe(false)
+})
+
+test('the context, cost and approvals-off chips are gone from the header at every tier (they live in the composer bar); the live panel buttons stay', () => {
+  for (const panel of ['artifacts', 'browser', 'terminals', 'codemap', null] as const) {
+    const order = ids(headerOrder(panel, true))
+    for (const gone of ['context', 'cost', 'approvalsOff']) expect(order).not.toContain(gone)
+    for (const kept of ['terminals', 'browser', 'artifacts', 'codemap', 'pending', 'more', 'menu', 'close']) expect(order).toContain(kept)
+  }
 })

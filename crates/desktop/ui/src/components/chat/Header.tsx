@@ -1,6 +1,6 @@
 import { Capability } from '@/rpc/capabilities'
 import { supports, type Requirements } from '@/rpc/discovery'
-import { memoryRequirements, sessionCostRequirements, messagingRequirements, toolsRequirements, contextRequirements, browserRequirements, approvalsRequirements, terminalRequirements, sessionMenuRequirements } from './requirements'
+import { memoryRequirements, sessionCostRequirements, messagingRequirements, toolsRequirements, browserRequirements, approvalsRequirements, terminalRequirements, sessionMenuRequirements } from './requirements'
 import { requirements as codemapRequirements } from '@/components/codemap/requirements'
 import { requirements as artifactRequirements } from '@/components/artifacts/requirements'
 import { requirements as vmRequirements } from '@/components/vm/requirements'
@@ -9,7 +9,7 @@ import { searchRequirements } from '@/components/sidebar/requirements'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, Contact, CornerLeftUp, Eye, LayoutGrid, MessageSquare, Monitor, Network, Search, ShieldOff, X } from 'lucide-react'
+import { AppWindow, Contact, CornerLeftUp, Eye, LayoutGrid, MessageSquare, Monitor, Network, Search, X } from 'lucide-react'
 import { Fragment, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
@@ -28,7 +28,7 @@ import { useViewDrag } from '@/hooks/use-view-drag'
 import { chatName } from '@/lib/attach'
 import { sharedLabel, useSharing } from '@/lib/contacts'
 import { chatTitle, popOutAndClose } from '@/components/tiles/TileFrame'
-import { type HeaderId, type Mode, approvalsOff as pillOff, decideTier, headerOrder, layout } from '@/lib/header'
+import { type HeaderId, type Mode, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { canPopout, isPopout, openPopout, popoutOpen, type PopoutTarget } from '@/lib/popout'
 import { ownerState, useEngineLabel, useOwnerOffline } from '@/lib/owner'
@@ -46,8 +46,7 @@ import { metaLine } from './ArtifactCard'
 import { ArtifactPanel } from './ArtifactPanel'
 import { CodeMapButton, CodeMapSheet, useCodemapAvailable } from '@/components/codemap/CodeMapHost'
 import { BrowserLive } from './BrowserLive'
-import { ContextMeter } from './ContextMeter'
-import { CostDialog, CostPill } from './CostPill'
+import { CostDialog } from './CostPill'
 import { HeaderMenu, MenuRow, useHeaderMenuClose } from './HeaderMenu'
 import { DraftMemory, MemoryBadge, MemoryPanel } from './MemoryPanel'
 import { BrowserButton, openTarget, useBrowserTargets } from './BrowserTargets'
@@ -61,7 +60,7 @@ import { surfaceOf } from './slash'
 // 215 C3: no `model` item — the picker lives in the chat input (`ComposerModel`).
 const HEADER_REQUIREMENTS: Partial<Record<HeaderId, Requirements>> = {
   search: searchRequirements, memory: memoryRequirements,
-  desktop: vmRequirements, context: contextRequirements, cost: sessionCostRequirements,
+  desktop: vmRequirements,
   terminals: terminalRequirements, artifacts: artifactRequirements,
   codemap: codemapRequirements, pending: approvalsRequirements, menu: sessionMenuRequirements,
 }
@@ -212,11 +211,9 @@ export function Header({
 }) {
   const discovery = useConnection(s => s.discovery)
   const canQuery2 = useQuerySupport(["list_sessions"])
-  const canQuery2_2 = useQuerySupport(["get_approvals"])
   const api = useApi()
   const sidebar = useSidebar()
   const { isMobile } = sidebar
-  const info = useConnection((s) => s.info)
   const pending = useApprovals((s) => s.pending.length)
   const parent = useSessionField(session ?? '', 'parent')
   const observed = useSessionField(session ?? '', 'observed')
@@ -266,11 +263,6 @@ export function Header({
       route: (w) => void navigate({ to: '/web/$id', params: { id: w.id }, search: { url: w.url, title: w.title } }),
     })
   }
-  // 183 §4.5: the session's effective value on its owner (pin, else that machine's `tools.approvals`), the ⋯ menu's
-  // reader (its setters invalidate the `['approvals', session]` prefix; a flip of this engine's switch re-reads);
-  // this engine's own switch until it answers, or with the owner offline.
-  const effective = useQuery({ queryKey: ['approvals', session, info?.approvals?.global], queryFn: () => api.get_approvals(session ?? null), enabled: canQuery2_2 && (!!session), retry: false })
-  const approvalsOff = pillOff(effective.data, info?.approvals ?? null)
   const mac = isMacDesktop()
   const ref = useRef<HTMLElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -358,20 +350,10 @@ export function Header({
         </Button>
       )
     },
-    context: (mode) => (session ? <ContextMeter session={session} memory={row?.memory} row={mode === 'row'} compact={mode === 'bar'} /> : null),
-    cost: (mode) => (session ? <CostPill session={session} row={mode === 'row'} onOpen={() => setCost(true)} /> : null),
     terminals: (mode) => (session ? <TerminalButton session={session} row={mode === 'row'} onOpen={() => (host === null ? setTerminal(true) : void openTerminalsTile(host))} /> : null),
     browser: (mode) => (session ? <BrowserButton targets={targets} busy={browserBusy} row={mode === 'row'} onOpen={openBrowserTarget} /> : null),
     artifacts: (mode) => (session ? <Artifacts session={session} row={mode === 'row'} /> : null),
     codemap: (mode) => (session && codemap ? <CodeMapButton session={session} row={mode === 'row'} /> : null),
-    approvalsOff: (mode) =>
-      !approvalsOff ? null : mode === 'row' ? (
-        <MenuRow icon={ShieldOff} label="Approvals off" />
-      ) : (
-        <Badge variant="outline" className="text-fg-secondary">
-          approvals off
-        </Badge>
-      ),
     pending: (mode) =>
       pending === 0 ? null : mode === 'row' ? (
         <MenuRow label="Pending approvals" detail={pending} className="text-warning" onSelect={() => setSheet(true)} />

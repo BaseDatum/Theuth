@@ -49,7 +49,11 @@ export function meterSource(
   return { used: context, estimated: !!estimated, limit: size }
 }
 
-export function ContextMeter({ session, memory, compact, row }: { session: string; memory?: SessionSummary['memory']; compact?: boolean; row?: boolean }) {
+/** What the context meter shows; `null` before the first reading and for an `endless` (autocontext) session. */
+export type ContextReading = { used: number; limit: number; pct: number | null; cache: number | null; estimated: boolean }
+
+/** The meter's reading of `session` (header pill and composer strip alike): used/limit tokens, percent, cache hit rate. */
+export function useContextReading(session: string, memory?: SessionSummary['memory']): ContextReading | null {
   const canQuery1 = useQuerySupport(["list_models"])
   const api = useApi()
   const context = useSessionField(session, 'context')
@@ -64,6 +68,13 @@ export function ContextMeter({ session, memory, compact, row }: { session: strin
   const limit = own ?? models?.find((m) => m.id === model)?.context ?? 0
   const pct = limit > 0 ? Math.round((used / limit) * 100) : null
   const cache = usage && usage.prompt > 0 ? Math.round((usage.cached / usage.prompt) * 100) : null
+  return { used, limit, pct, cache, estimated }
+}
+
+export function ContextMeter({ session, memory, compact, row }: { session: string; memory?: SessionSummary['memory']; compact?: boolean; row?: boolean }) {
+  const reading = useContextReading(session, memory)
+  if (!reading) return null
+  const { used, limit, pct, cache, estimated } = reading
   const [tone, warn] = BAND[band(pct)]
   const pill = (
     <NumberFlowGroup>

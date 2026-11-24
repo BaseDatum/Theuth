@@ -1,7 +1,8 @@
 /**
  * The pane header's layout tiers, chosen from the pane's own width (not the viewport): 0 = the full bar; 1 = the
- * compact bar (title · context % · one panel button · chevron · ⋯) with the rest behind the chevron; 2 = compact with
- * the sheddable items (context chip, panel button) also behind the chevron, for panes near the 240 px floor.
+ * compact bar (title · one panel button · chevron · ⋯) with the rest behind the chevron; 2 = compact with the sheddable
+ * items (the panel button) also behind the chevron, for panes near the 240 px floor. Context, cost and approvals are not
+ * header items: they live in the composer's bar (`ComposerMeta`, `ApprovalShield`).
  */
 export const TIERS = 3
 
@@ -39,13 +40,10 @@ export type HeaderId =
   | 'shared'
   /** 79 §6.5: the owner engine is a sandbox VM — its desktop in a pop-out. */
   | 'desktop'
-  | 'context'
-  | 'cost'
   | 'terminals'
   | 'browser'
   | 'artifacts'
   | 'codemap'
-  | 'approvalsOff'
   | 'pending'
   | 'popout'
   | 'more'
@@ -84,13 +82,10 @@ export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'termin
     { id: 'owner', slot: 'menu' },
     { id: 'shared', slot: 'menu' },
     { id: 'desktop', slot: 'menu' },
-    { id: 'context', slot: 'both', shed: true },
-    { id: 'cost', slot: 'menu' },
     { id: 'terminals', slot: panel === 'terminals' ? 'bar' : 'menu', shed: true },
     { id: 'browser', slot: panel === 'browser' ? 'bar' : 'menu', shed: true },
     { id: 'artifacts', slot: panel === 'artifacts' ? 'bar' : 'menu', shed: true },
     { id: 'codemap', slot: panel === 'codemap' ? 'bar' : 'menu', shed: true },
-    { id: 'approvalsOff', slot: 'menu' },
     { id: 'pending', slot: 'menu' },
     ...(popout ? [{ id: 'popout', slot: 'bar' } as const] : []),
     { id: 'more', slot: 'bar' },
@@ -126,7 +121,7 @@ export function panelGeometry(left: number, right: number, viewport: number): { 
 }
 
 /**
- * 183 §4.5 / §12.2: whether the header shows its `approvals off` pill. The session's effective value on its owner
+ * 183 §4.5 / §12.2: whether approvals are off for the session (the composer's shield). The session's effective value on its owner
  * (`get_approvals(session)`: its pin, an ancestor's, else that machine's switch) when that answered; until it does
  * (or with the owner offline), this engine's own switch.
  */

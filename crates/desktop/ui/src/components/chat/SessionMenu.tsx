@@ -49,7 +49,6 @@ import { ShareDialog, SharingItems } from '@/components/settings/Contacts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
-import type { ApprovalsState } from "@/rpc/bindings/method.agent.output"
 import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
 import type { CompactStyle } from "@/rpc/bindings/method.agent.output"
 import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
@@ -61,11 +60,12 @@ import { useToolsSheet } from './tools-sheet'
 import { type Ctx, openSurface, run, type Surface, surfaceOf } from './slash'
 import { JobsSheet } from './JobsSheet'
 import { shareRequirements } from './requirements'
+import { type ApprovalLevel, type ApprovalsChoice, type ApprovalsReading, approvalsChoice, setApprovalsLevel } from './approvals-level'
 
 /** One row of the ⋯ menu's settings block (183 §12.2, mock panel 3), in order; `move` is 181's Move to ▸. */
 export type SettingsRow =
   | { id: 'header' | 'offline' | 'separator' | 'move'; label: string }
-  | { id: 'approvals'; label: string; value: 'on' | 'off' | 'default' | undefined; options: { value: 'on' | 'off' | 'default'; label: string }[]; disabled: boolean; note?: string }
+  | ({ id: 'approvals'; label: string } & ApprovalsChoice)
   | { id: 'messaging'; label: string; checked: boolean; disabled: boolean }
   | { id: 'model' | 'continue'; label: string; disabled: boolean }
 
@@ -77,7 +77,7 @@ export function settingsRows(o: {
   owner?: string
   self: string
   offline: boolean
-  approvals?: Pick<ApprovalsState, 'global'> & { session?: boolean; pin?: ApprovalsState['pin'] | null }
+  approvals?: ApprovalsReading
   /** 183 R1 (S7): the owner is pre-183 and answered `get_approvals` -32601; the row says so instead of an error. */
   oldOwner?: boolean
   messaging?: Pick<CommunicationState, 'effective'>
@@ -86,26 +86,10 @@ export function settingsRows(o: {
   effort?: string | null
 }): SettingsRow[] {
   const off = o.offline && o.owner !== undefined
-  // §12.2 (R1): what inherit gives is the EFFECTIVE value (`session`: an ancestor's pin can differ from the machine's switch)
-  // when this session has no pin of its own; with a pin set, the machine's switch is the best the reader tells us.
-  const inherited = o.approvals ? (o.approvals.pin == null ? (o.approvals.session ?? o.approvals.global) : o.approvals.global) : undefined
-  const machine = inherited === undefined ? '' : ` (${inherited ? 'on' : 'off'})`
   return [
     ...(o.owner === undefined ? [] : [{ id: 'header' as const, label: `Settings for this session on ${o.owner}` }]),
     ...(off ? [{ id: 'offline' as const, label: `${o.owner} is offline · Continue here` }] : []),
-    {
-      id: 'approvals',
-      label: 'Approvals: Ask before risky tools',
-      // W-4 tri-state: the row's own pin (`ApprovalsState.pin`; the engine omits it, older builds sent null) — none inherits.
-      value: o.approvals && (o.approvals.pin == null ? 'default' : o.approvals.pin ? 'on' : 'off'),
-      options: [
-        { value: 'on', label: 'On' },
-        { value: 'off', label: 'Off' },
-        { value: 'default', label: `${o.owner === undefined ? 'Machine' : o.owner} default${machine}` },
-      ],
-      disabled: off || !o.approvals || !!o.oldOwner,
-      note: o.oldOwner && o.owner !== undefined ? `${o.owner} needs an update` : undefined,
-    },
+    { id: 'approvals', label: 'Approvals: Ask before risky tools', ...approvalsChoice(o) },
     { id: 'messaging', label: 'Agent messaging', checked: o.messaging?.effective ?? false, disabled: off || !o.messaging },
     // §12.2, 2026-11-11 (Sky): Model ›, with the effort, opens the standard picker; its effort chips replaced the Effort › submenu.
     { id: 'model', label: `Model: ${o.model}${o.effort ? ` · ${o.effort}` : ''}`, disabled: off },
@@ -324,7 +308,7 @@ export function SessionMenu({ session }: { session: string }) {
       .catch((e: unknown) => toast.error(e instanceof Error ? e.message : String(e)))
   const setApprovals = (v: string) => {
     if (!session) return useDrafts.getState().setSettings({ approvals: v === 'default' ? null : v === 'on' })
-    set(() => (v === 'default' ? api.set_approvals(session, approvals.data?.global ?? true, true) : api.set_approvals(session, v === 'on')))
+    set(() => setApprovalsLevel(api, session, v as ApprovalLevel, approvals.data?.global))
   }
 
   const focused = usePanes((s) => s.focused === session)

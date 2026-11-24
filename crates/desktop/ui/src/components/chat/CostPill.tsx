@@ -140,7 +140,8 @@ export function Breakdown({ cost, observed }: { cost: SessionCost; observed?: Ob
   )
 }
 
-const useCost = (session: string) => {
+/** The session's `session_cost`, shared by the composer strip and the breakdown dialog (one query key). */
+export const useCost = (session: string) => {
   const canQuery1 = useQuerySupport(["session_cost"])
   const api = useApi()
   return useQuery({ enabled: canQuery1, queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) }).data

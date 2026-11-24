@@ -87,6 +87,7 @@ import { StopButton } from './StopButton'
 import { CancelHint, DeleteNote, RecordingMeta, type Stage } from './VoiceHold'
 import { HeldStrip } from './HeldStrip'
 import { McpMenu } from './McpMenu'
+import { ApprovalShield, ComposerMeta } from './ComposerMeta'
 import { ComposerModel } from './ModelMenu'
 import { OwnerOfflineCard } from './OwnerOfflineCard'
 import { RecordingBox, VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
@@ -1471,7 +1472,7 @@ export function Composer({
           {(stage === 'held' || stage === 'cancelled') && <CancelHint ref={hint} />}
         </div>
         {/* 215 C2: row 2, the toolbar under the full-width text — Add and MCP left, the model and voice/send right. */}
-        <div className="mt-1 flex items-center gap-1">
+        <div className="@container/bar mt-1 flex items-center gap-1">
           {/* 89 VOICE-HOLD: a held or locked note takes the row — Delete (locked) · dot + timer stand in for Add. */}
           {stage === 'locked' && <DeleteNote onClick={() => stopRecording(true)} />}
           {stage !== 'idle' && <RecordingMeta secs={secs} stage={stage} />}
@@ -1577,12 +1578,16 @@ export function Composer({
           </Popover>
           {/* #4: this chat's MCP servers, beside `+`; a HUD composer sends into a chat named on demand, so it has none. */}
           {!readOnly && !resolveSession && <McpMenu session={session ?? ''} className={cn(stage !== 'idle' && 'hidden')} />}
+          {/* This chat's approval level, right of MCP: the one composer item that never sheds on a narrow bar. */}
+          {!readOnly && !resolveSession && session && stage === 'idle' && <ApprovalShield session={session} />}
           {/* 215 C2: `-ml-1` cancels the spacer's own gap — 4px that a 280px pane needs for the buttons. */}
           <div className="-ml-1 min-w-0 flex-1" />
           {/* 215 C1/C2: the model picker, a quiet label on the toolbar; a HUD composer's chat is named on demand, so none.
               A direct flex item: its `max-w-[40%]` reads the toolbar's width, and it is the one item that shrinks when
               the row runs out of room (every button is `shrink-0`). A voice note takes the row, so it goes meanwhile. */}
           {!resolveSession && stage === 'idle' && <ComposerModel session={session} own={ownModel} />}
+          {/* `13%  ~$44`: context and cost at a glance, right of the model (they left the chat header). */}
+          {!resolveSession && stage === 'idle' && session && <ComposerMeta session={session} />}
           {/* 76 §0.12: the former voice-note button is Talk — the live spoken conversation on this session. B3: while it
               runs here, the chat view keeps a compact indicator: tap opens the talk view, the x ends the talk. */}
           {talkHere ? (

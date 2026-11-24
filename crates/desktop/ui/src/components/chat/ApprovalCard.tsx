@@ -80,7 +80,7 @@ export const ApprovalCard = memo(function ApprovalCard({
   // 210 §7.3: human-only, so no double chip; the share layout replaces the generic argument dump.
   if (approval.tool === 'share_publish') return <SharePublishApproval args={approval.args} busy={busy} decide={(d) => void decide(d)} />
   return (
-    <DoubleCard ids={[approval.id]} className="my-2 rounded-xl border border-warning-border bg-warning-bg px-4 py-3 text-sm">
+    <DoubleCard ids={[approval.id]} anchor={approval.id} className="my-2 rounded-xl border border-warning-border bg-warning-bg px-4 py-3 text-sm">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <div className="font-medium text-warning">
           {relayed ? `${owner} asks: ${approval.tool}` : `approval: ${approval.tool} (${RISK[approval.risk]})`}

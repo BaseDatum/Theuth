@@ -207,7 +207,8 @@ function Explain({ p }: { p: DoublePredicted }) {
  * The card frame during an L2 grace: the whole card is the take-over target (a phone's bottom stack, 112) while the
  * card's own buttons stay live — a tap on a control is not a take-over, it is the answer.
  */
-export function DoubleCard({ ids, className, children }: { ids: readonly (string | null | undefined)[]; className?: string; children: ReactNode }) {
+/** `anchor`: the prompt id the composer's approval shield scrolls to (`data-prompt-card`). */
+export function DoubleCard({ ids, className, children, anchor }: { ids: readonly (string | null | undefined)[]; className?: string; children: ReactNode; anchor?: string }) {
   const api = useApi()
   const card = useDoubleCard(ids)
   const live = card.grace !== null && card.id !== undefined
@@ -217,6 +218,7 @@ export function DoubleCard({ ids, className, children }: { ids: readonly (string
   }
   return (
     <div
+      data-prompt-card={anchor}
       className={cn(className, live && 'cursor-pointer ring-2 ring-fg-accent/40')}
       role={live ? 'button' : undefined}
       tabIndex={live ? 0 : undefined}
