@@ -1,6 +1,6 @@
 import { useNavigate } from '@tanstack/react-router'
 import { AppWindow, FileText, PanelRight } from 'lucide-react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { type NoteProps, openNoteTile } from '@/components/tiles/open'
 import { useTileHost } from '@/components/tiles/host'
 import { Button } from '@/components/ui/button'

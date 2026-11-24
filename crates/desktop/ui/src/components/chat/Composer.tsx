@@ -32,7 +32,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'

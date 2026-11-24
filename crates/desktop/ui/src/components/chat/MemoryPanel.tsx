@@ -3,7 +3,7 @@ import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tansta
 import { useNavigate } from '@tanstack/react-router'
 import { LoaderCircle, TriangleAlert } from 'lucide-react'
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { SummaryTestCall } from '@/components/settings/SummaryTestCall'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'

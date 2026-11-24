@@ -8,7 +8,7 @@ import type { DiagramTokens } from '@/lib/diagram-theme'
 import { SequenceSvg } from './Sequence'
 
 // The `Code` copy button toasts; none of that exists in a node test.
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { message: vi.fn(), error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { message: vi.fn(), error: vi.fn() }) }))
 // `DiagramFrame` (around `Sequence`) reads the connection, the CSS tokens and the tooltip provider; none exist off the DOM.
 vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
 vi.mock('@/components/ui/tooltip', () => ({ Tooltip: ({ children }: { children: unknown }) => children, TooltipTrigger: ({ children }: { children: unknown }) => children, TooltipContent: () => null }))

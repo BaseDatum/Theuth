@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { liveRows, modelLabel } from '@/components/agents/sessions'
 import { backgroundColors } from '@/lib/background-colors'
 import { usePanes } from '@/lib/panes'

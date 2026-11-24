@@ -1,7 +1,7 @@
 import { useNavigate } from '@tanstack/react-router'
 import { AppWindow, BookOpen, Copy, ExternalLink, FileSearch, FileText, type LucideIcon, MessageSquare, Mic, NotebookText, Paperclip, StickyNote, X } from 'lucide-react'
 import type { DragEvent } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { type AttachRef, DRAG_TYPE, KIND_LABEL, type Kind, attachTo } from '@/lib/attach'

@@ -8,11 +8,11 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { FirstWaiting } from "@/rpc/bindings/method.a2a.output"
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { useToolRuns } from '@/lib/tool-runs'
 import { ContactAllowStrip } from './ContactAllowStrip'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
 const W: FirstWaiting = receiveComponent("method.a2a.output.FirstWaiting", { contact: 'sky', machine: "Sky's Mac", export: 'ops', session: 's1', since_ms: 1, waiting: 1, preview: 'ping from sky' })
 const api = {
   contact_first_waiting: vi.fn(async (): Promise<FirstWaiting[]> => [W]),

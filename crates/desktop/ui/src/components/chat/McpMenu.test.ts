@@ -12,7 +12,7 @@ import type { McpServer, McpToolInfo } from '@/rpc/bindings/method.mcp_2dserver.
 import { McpMenu } from './McpMenu'
 import { useToolsSheet } from './tools-sheet'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
 
 const tool = (name: string, over: Partial<BuiltinTool> = {}): BuiltinTool => ({ name, description: '', risk: 'read_only', direct: true, disabled: false, hidden: false, ...over })
 const category = (id: string, label: string, tools: BuiltinTool[]): BuiltinCategory => ({ id, label, description: `${label} tools`, tools })

@@ -1,6 +1,6 @@
 import { Unplug } from 'lucide-react'
 import { useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { type OwnerUnreachable, lastSeenText, ownerMidTurnText, ownerOfflineText, useEngineLabel } from '@/lib/owner'
 import { useApi } from '@/lib/rpc'

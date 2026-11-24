@@ -1,7 +1,7 @@
 import { useNavigate } from '@tanstack/react-router'
 import { AppWindow, ChevronDown, PanelRight, ScrollText, SquareTerminal } from 'lucide-react'
 import { useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { type JobRef, openJobLogTile, openJobTerminalTile } from '@/components/tiles/open'
 import { useTileHost } from '@/components/tiles/host'
 import { Button } from '@/components/ui/button'

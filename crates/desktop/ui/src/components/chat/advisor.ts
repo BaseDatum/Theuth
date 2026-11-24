@@ -2,7 +2,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
 // 125 §8.1: the advisor's live status and the one RPC that changes it, shared by the header row and the pill.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { AdvisorStatus } from "@/rpc/bindings/method.agent.output"
 

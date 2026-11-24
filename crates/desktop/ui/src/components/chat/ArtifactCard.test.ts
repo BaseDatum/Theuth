@@ -12,7 +12,7 @@ import { ArtifactCard, openShow, relistArtifacts } from './ArtifactCard'
 // The receipt card renders outside a QueryClient and before any connection; the inbox mark and the api are stubbed.
 const api = vi.hoisted(() => ({ get_artifact: vi.fn<(id: string) => Promise<Artifact>>() }))
 const toast = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }))
-vi.mock('sonner', () => ({ toast }))
+vi.mock('@/lib/notify', () => ({ notify: toast }))
 vi.mock('@/components/hud/queries', () => ({ useMarkShown: () => {} }))
 // The layout tiles only where a test says so (`tileable` reads the DOM: none here).
 const tiling = vi.hoisted(() => ({ on: false }))

@@ -3,7 +3,7 @@
 // `ApprovalCard`, `AskCard` (and its relay), the attention screens and rows. Behaviour lives in the engine; this file
 // renders `DoublePredicted` / `DoubleAnswered` (`store/double`) and calls `double_take_over` / `double_forget`.
 import { type MouseEvent, type ReactNode, useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'

@@ -9,7 +9,7 @@
 import { check, library } from '@theuth/apps'
 import { AppRenderer, type AppRendererProps } from '@theuth/apps/renderer'
 import { useContext, useMemo, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import type { CustomRendererProps } from 'streamdown'
 import { copyToClipboard } from '@/components/apps/openui-actions'
 import { OpenUITheme } from '@/components/apps/openui-theme'

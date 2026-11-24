@@ -24,7 +24,7 @@ import {
   useEffect,
   useState,
 } from "react";
-import { toast } from "sonner";
+import { notify as toast } from "@/lib/notify";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,

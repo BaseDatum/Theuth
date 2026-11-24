@@ -2,7 +2,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
 // The knowledge harvester (the model of the knowledge harvest): the chat's own pick, the default it falls back to, and the setter.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { ModelInfo, SessionKnowledgeHarvester } from '@/rpc/bindings/method.agent.output'

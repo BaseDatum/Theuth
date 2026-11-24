@@ -12,7 +12,7 @@ import { takeJump, useTranscriptJump } from './jump'
 import { buildRows } from './rows'
 
 vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: unknown }) => children, useNavigate: () => () => {} }))
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { message: vi.fn(), error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { message: vi.fn(), error: vi.fn() }) }))
 // A record fetch that never settles: the card shows what the tool output and the store hold.
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({ peer_message: () => Promise.withResolvers().promise }) }))
 

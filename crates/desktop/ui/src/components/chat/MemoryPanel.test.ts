@@ -2,7 +2,7 @@ import { receiveComponent } from '@/rpc/bindings/receive'
 import { MutationObserver, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { expect, test, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type * as Rpc from '@/lib/rpc'
@@ -49,7 +49,7 @@ vi.mock('@/lib/rpc', async (original) => ({
   useApi: () => ({ session_memory: async () => memory }),
 }))
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<object>()), useNavigate: () => () => {} }))
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 
 test('expanding a line puts its two children right under it, indented; collapsing hides them but keeps them cached', () => {
   const kids = [line(0, 32, 'first half'), line(32, 32, 'second half')]

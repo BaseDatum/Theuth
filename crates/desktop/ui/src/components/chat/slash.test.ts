@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import type { Api } from '@/rpc/bindings/client'
 import { NO_PICK, useDrafts } from '@/lib/drafts'
 import { active } from '@/store/engine-scope'
@@ -7,7 +7,7 @@ import { useSessions } from '@/store/sessions'
 import { type Ctx, isCommand, run, sendRaw, slashMenu } from './slash'
 import { useToolsSheet } from './tools-sheet'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
 
 /** One macrotask hop: every microtask queued so far (promise continuations) has run. */
 const flush = () => new Promise<void>((r) => setImmediate(r))

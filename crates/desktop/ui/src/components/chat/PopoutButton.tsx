@@ -1,5 +1,5 @@
 import { AppWindow } from 'lucide-react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { type PopoutTarget, canPopout, openPopout } from '@/lib/popout'

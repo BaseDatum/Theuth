@@ -1,6 +1,6 @@
 import { Braces, ChevronRight, Pilcrow } from 'lucide-react'
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { Api } from '@/rpc/bindings/client'

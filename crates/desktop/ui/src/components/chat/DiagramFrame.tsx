@@ -1,6 +1,6 @@
 import { Copy, FileDown, ImageDown, type LucideIcon, Maximize2, RotateCcw, X } from 'lucide-react'
 import { type PointerEvent as ReactPointerEvent, type ReactNode, useContext, useEffect, useRef, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { useTileHost } from '@/components/tiles/host'
 import { openDiagramTile } from '@/components/tiles/open'
 import { Button } from '@/components/ui/button'

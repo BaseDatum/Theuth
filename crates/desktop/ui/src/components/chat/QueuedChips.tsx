@@ -1,5 +1,5 @@
 import { AppWindow, Sparkles, X } from 'lucide-react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { parseAppInput } from '@/components/apps/lifecycle'
 import { ChannelIcon } from '@/components/icons/channels'
 import { originLabel, shownText } from '@/lib/channel-origin'

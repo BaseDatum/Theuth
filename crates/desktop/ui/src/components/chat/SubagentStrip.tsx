@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { type ReactNode, useMemo } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { dotLabel } from '@/components/agents/sessions'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { canPopout, openPopout } from '@/lib/popout'
