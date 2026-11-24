@@ -20,7 +20,7 @@ function TasksGraphTile({ tile, first, close }: TileRender) {
       title="Task graph"
       meta={project ?? 'All projects'}
       chat={tile.session}
-      popOut={() => void openPopout(graphPopout(project))}
+      popOut={() => openPopout(graphPopout(project))}
     >
       {supported ? <TaskGraph variant="tile" project={project} onProject={(p) => setTileProps(tile.id, { project: p } satisfies TasksGraphProps)} /> : <Unavailable />}
     </TileFrame>
