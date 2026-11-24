@@ -204,8 +204,15 @@ async function deadline<T>(p: Promise<T>): Promise<T> {
  * with the toolbar's first button; one line tall until it grows. */
 const BOX =
   'min-h-8 resize-none border-0 bg-transparent px-1 py-1 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent'
-/** The bottom bar's narrow-width fit (see the bar): tighter gaps and 32 px buttons under 300 px, no model label under 250. */
-export const BAR_FIT = '@max-[300px]/bar:gap-0.5 @max-[300px]/bar:[&_button.size-9]:size-8 @max-[250px]/bar:[&_[data-tour=chat-model]]:hidden'
+/**
+ * The bottom bar's narrow-width fit, from the box's measured content width (`useNarrow`, a ResizeObserver) rather than a
+ * CSS container query: `container-type` puts the bar in a containment context, and iOS WebKit has left content inside
+ * one unpainted. Under 300 px the gaps tighten and the round buttons go 36 → 32 px; under 250 px the model label goes.
+ */
+export const BAR_TIGHT_PX = 300
+export const BAR_TINY_PX = 250
+export const barFit = (tight: boolean, tiny: boolean): string =>
+  cn(tight && 'gap-0.5 [&_button.size-9]:size-8', tiny && '[&_[data-tour=chat-model]]:hidden')
 /** A press held this long on Send/Steer is the interrupt gesture (items 7/8): fingers have no ⌘↩. */
 const LONG_PRESS = 500
 
@@ -746,6 +753,9 @@ export function Composer({
   const isMobile = useIsMobile()
   // 183 R1: a narrow desktop pane (a split, a popout) gets the short placeholder by the box's own width, not the window's.
   const narrow = useNarrow(box, NARROW_BOX_PX)
+  // The bar's fit: the box's content width is the bar's (`contentRect` leaves out the box's padding).
+  const barTight = useNarrow(box, BAR_TIGHT_PX)
+  const barTiny = useNarrow(box, BAR_TINY_PX)
   // The box's top row (`13%  ~$44`): an existing session only, never the new-chat draft or a HUD composer.
   const meta = useComposerMeta(!resolveSession && session ? session : null)
   // The row counts toward the box: the text's max height gives up its 16 px, so a full box is no taller than before.
@@ -1482,10 +1492,9 @@ export function Composer({
         </div>
         {/* 215 C2: row 2, the toolbar under the full-width text — Add, MCP and the shield left, the model and voice/send
             right. It never overflows down to the 280 px pane floor: the model label shrinks first; on a narrow bar
-            (`@container/bar`) the gaps tighten and the round buttons go from 36 to 32 px; on the narrowest the label goes
+            (`barFit`) the gaps tighten and the round buttons go from 36 to 32 px; on the narrowest the label goes
             (the picker stays one `/model` away). Every button keeps its own conditions; none is dropped for room. */}
-        <div className="@container/bar mt-1">
-        <div data-composer-bar="" className={cn('flex items-center gap-1', BAR_FIT)}>
+        <div data-composer-bar="" className={cn('mt-1 flex items-center gap-1', barFit(barTight, barTiny))}>
           {/* 89 VOICE-HOLD: a held or locked note takes the row — Delete (locked) · dot + timer stand in for Add. */}
           {stage === 'locked' && <DeleteNote onClick={() => stopRecording(true)} />}
           {stage !== 'idle' && <RecordingMeta secs={secs} stage={stage} />}
@@ -1700,7 +1709,6 @@ export function Composer({
                 <ArrowUp className="size-5" />
               </Button>
             ))}
-        </div>
         </div>
       </div>
       {suggestion && suggestion.reporter === me.current && <DictionarySuggestion s={suggestion} api={api} className="mt-2" />}

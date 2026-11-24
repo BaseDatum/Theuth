@@ -162,17 +162,25 @@ test('recording: the row keeps its height but shows nothing and takes no focus',
   expect(row.querySelector<HTMLElement>('[data-meta="cost"]')!.tabIndex).toBe(-1)
 })
 
-test('the bar fits its pane instead of pushing buttons out: tighter gaps and 32 px buttons, then no model label; nothing else is dropped', () => {
-  const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
-  // The container is the bar's wrapper (a container query never matches the container itself), the fit on the bar.
-  expect(src).toContain('<div className="@container/bar mt-1">\n        <div data-composer-bar="" className={cn(\'flex items-center gap-1\', BAR_FIT)}>')
-  const fit = src.match(/export const BAR_FIT = '([^']+)'/)?.[1] ?? ''
-  expect(fit.split(' ').sort()).toEqual(['@max-[250px]/bar:[&_[data-tour=chat-model]]:hidden', '@max-[300px]/bar:[&_button.size-9]:size-8', '@max-[300px]/bar:gap-0.5'])
+test('the bar fits its pane instead of pushing buttons out: tighter gaps and 32 px buttons, then no model label; nothing else is dropped', async () => {
+  const { barFit, BAR_TIGHT_PX, BAR_TINY_PX } = await import('./Composer')
+  expect(barFit(false, false)).toBe('')
+  expect(barFit(true, false).split(' ').sort()).toEqual(['[&_button.size-9]:size-8', 'gap-0.5'])
+  expect(barFit(true, true)).toContain('[&_[data-tour=chat-model]]:hidden')
+  expect([BAR_TIGHT_PX, BAR_TINY_PX]).toEqual([300, 250])
   // Only the model label may go; no rule hides a button.
-  expect(fit).not.toMatch(/button[^ ]*:hidden/)
-  // The shield is 28 px wide (the mock), never shed.
+  expect(barFit(true, true)).not.toMatch(/button[^ ]*:hidden/)
+  const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
+  // Measured by a ResizeObserver, never a CSS container query: containment around the bar is what iOS WebKit has
+  // left unpainted.
+  expect(src).not.toMatch(/@container\/|@max-\[/)
+  expect(src).toContain("className={cn('mt-1 flex items-center gap-1', barFit(barTight, barTiny))}")
+  expect(src).toContain('const barTight = useNarrow(box, BAR_TIGHT_PX)')
+  // The shield is 28 px wide (the mock), never shed, and only pulses while an approval waits.
   const meta = readFileSync(new URL('./ComposerMeta.tsx', import.meta.url), 'utf8')
   expect(meta).toContain("'grid h-9 w-7 shrink-0 place-items-center")
+  expect(meta.match(/animate-pulse/g)).toHaveLength(1)
+  expect(meta).toContain("waiting: { icon: Shield, tone: 'text-danger motion-safe:animate-pulse'")
 })
 
 test('mic, send and talk keep exactly the conditions they had before the shield (86e625424~1)', () => {
