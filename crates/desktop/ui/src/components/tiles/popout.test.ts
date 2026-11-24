@@ -75,6 +75,7 @@ vi.mock('@/components/chat/Attachments', () => ({ Original: Stub }))
 vi.mock('@/components/chat/MessageAssistant', () => ({ RemoveButton: Stub }))
 vi.mock('@/components/chat/SessionMenu', () => ({ PROMPT_NOTE: '', PromptBody: Stub }))
 vi.mock('@/components/library/Skills', () => ({ SkillBody: Stub }))
+vi.mock('@/components/tasks/graph/TaskGraph', () => ({ TaskGraph: Stub }))
 vi.mock('@/components/chat/TerminalViewer', () => ({
   FocusWindowButton: Stub,
   Terminal: Stub,
@@ -103,6 +104,7 @@ const SAMPLES: Record<string, unknown> = {
   note: { doc: 'd1', title: 'Plan' },
   prompt: {},
   skill: { name: 'pdf' },
+  'tasks-graph': { project: 'theuth' },
   terminals: {},
   vm: { name: 'box' },
 }
@@ -113,6 +115,8 @@ const WINDOW: Record<string, string> = {
   diff: 'diff',
   file: 'file',
   'job-terminal': 'pty',
+  // The `/tasks/graph` page window: navigable, one per project.
+  'tasks-graph': 'page',
   note: 'note',
   terminals: 'pty',
   vm: 'vm',
@@ -161,8 +165,10 @@ test.each(Object.keys(SAMPLES))('the %s tile header carries Open in new window, 
     // What `openPopout` does before opening: a long payload (the diagram's svg) goes to the shared storage.
     stashTileProps(target, store)
   }
-  // The window's URL names the same target back (the popped window reads it from there, or from the stash).
-  expect(popoutTarget(popoutUrl(target))).toEqual(target)
+  // The window's URL names the same target back (the popped window reads it from there, or from the stash). A page
+  // window's key and query live in its label and URL only, never in the parsed target.
+  if (target.kind === 'page') expect(popoutTarget(popoutUrl(target))).toEqual({ kind: 'page', path: target.path.split('?')[0] })
+  else expect(popoutTarget(popoutUrl(target))).toEqual(target)
 })
 
 test("a draft's Context tile pops out too", () => {

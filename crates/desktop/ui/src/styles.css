@@ -1112,3 +1112,65 @@ html .bn-root .theuth-cite-pulse {
   font-size: 1rem;
   line-height: var(--default-line-height, 1.5);
 }
+
+/* 214 routine graph: a clickable card (Prompt, History) lifts on hover; keyboard focus draws the accent ring. */
+html .react-flow__node:hover .rg-card.cursor-pointer {
+  border-color: var(--fg-tertiary);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 0.08), 0 8px 20px -8px rgb(0 0 0 / 0.3);
+}
+html .react-flow__node:focus-visible .rg-card {
+  outline: 2px solid var(--fg-accent);
+  outline-offset: 3px;
+}
+
+/* 214 task graph: a card lifts on hover, the selected one carries the accent ring, keyboard focus the outline; cards
+   fade in when they first appear (a task an agent just created), still under reduced motion. */
+html .react-flow__node-task {
+  cursor: pointer;
+}
+html .react-flow__node:hover .tg-node {
+  border-color: var(--border-strong);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 0.08), 0 8px 20px -8px rgb(0 0 0 / 0.3);
+}
+html .tg-node.tg-selected {
+  border-color: var(--fg-accent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--fg-accent) 35%, transparent), 0 8px 20px -8px rgb(0 0 0 / 0.3);
+}
+html .react-flow__node:focus-visible .tg-node {
+  outline: 2px solid var(--fg-accent);
+  outline-offset: 3px;
+}
+html .tg-enter {
+  animation: tg-enter 0.45s ease-out backwards;
+}
+@keyframes tg-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html .tg-enter {
+    animation: none;
+  }
+}
+/* 214 task graph relayout: cards glide to their new place, edges (remounted per layout) fade in on their new route. */
+html .tg-canvas .react-flow__node {
+  transition: transform 0.35s ease-in-out;
+}
+html .tg-canvas .tg-edge {
+  animation: tg-edge 0.3s ease-out 0.2s backwards;
+}
+@keyframes tg-edge {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html .tg-canvas .react-flow__node {
+    transition: none;
+  }
+  html .tg-canvas .tg-edge {
+    animation: none;
+  }
+}

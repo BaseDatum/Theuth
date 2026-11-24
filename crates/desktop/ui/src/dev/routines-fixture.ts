@@ -43,11 +43,14 @@ const base: ScheduleFile = receiveComponent("method.schedule.output.ScheduleFile
   run_timeout: null,
   runtime: null,
   budget: null,
+  cap: null,
+  effort: null,
+  engine: null,
   prompt: '',
 })
 
 const files: ScheduleFile[] = [
-  receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'morning-brief', cron: '0 9 * * 1-5', quiet: true, prompt: 'Summarise overnight mail, calendar for today and open PRs. Keep it to ten lines.' }),
+  receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'morning-brief', cron: '0 9 * * 1-5', quiet: true, missed_run: true, model: 'claude-sonnet-4-5', effort: 'medium', budget: '0.50 USD', cap: 'read_only', run_timeout: '10m', prompt: 'Summarise overnight mail, calendar for today and open PRs. Keep it to ten lines.' }),
   receiveComponent("method.schedule.output.ScheduleFile", {
     ...base,
     name: 'pr-482',
@@ -61,12 +64,43 @@ const files: ScheduleFile[] = [
     quiet: true,
     approvals: false,
     created: ago(2 * 24 * H),
-    prompt: 'Babysit PR #482: when CI fails, read the log and push a fix; when a review lands, address it.',
+    prompt: [
+      'Babysit PR #482 until it merges.',
+      '',
+      'The envelope names what moved: `events=ci_failed,new_commits,review_requested,…`.',
+      '',
+      '- ci_failed: read the failing job log, reproduce locally, push the smallest fix.',
+      '- review_requested / changes_requested: address every comment; reply on the thread.',
+      '- new_commits from someone else: pull, re-run the tests, say nothing unless they break.',
+      '- stale: ping the reviewers once, politely.',
+      '- merged: message me a one-line summary and stop.',
+      '',
+      'Never force-push. Never touch files outside the PR diff.',
+      'If CI fails three times in a row on the same test, stop and message me instead.',
+      'Keep a short log of what you did in the PR description.',
+      'Use the repo formatter before every push.',
+    ].join('\n'),
   }),
   receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'yt-veritasium', every: '10m', when: 'rss.py urls=https://www.youtube.com/feeds/videos.xml?channel_id=UCHnyfMqiRRG1u-2MsSQLbXA', expires: '90d', created: ago(5 * H), prompt: 'Summarise the new video in five bullets and message me.' }),
   receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'port-tests', every: '0s', until: './scripts/missing-tests.sh', max_runs: 200, cwd: '~/port', approvals: false, run_timeout: '45m', enabled: false, prompt: 'Pick the next module without tests from `./scripts/missing-tests.sh` and write them.' }),
   receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'deploy-note', at: '2026-10-07T15:00', cwd: '~/src/app', prompt: 'Write the release note for 1.4 from the merged PRs since 1.3.' }),
   receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'nightly-ops', cron: '0 7 * * *', missed_run: true, agent: 'alice', project: 'web', prompt: 'Check the error budget and open a task for anything over 1%.' }),
+  receiveComponent("method.schedule.output.ScheduleFile", {
+    ...base,
+    name: 'ts-strict',
+    every: '0s',
+    until: 'bun run check 2>&1 | grep -q "error TS" && exit 1 || exit 0',
+    max_runs: 50,
+    agent: 'bob',
+    project: 'web',
+    cwd: '~/src/app',
+    model: 'claude-opus-4-5',
+    effort: 'high',
+    approvals: false,
+    cap: 'mutating',
+    run_timeout: '30m',
+    prompt: 'Turn on one more `strict` flag in tsconfig and fix every error it raises.\nOne flag per run; commit when `bun run check` is green.',
+  }),
   receiveComponent("method.schedule.output.ScheduleFile", { ...base, name: 'broken-one', cron: 'nope', prompt: 'x' }),
 ]
 
@@ -75,6 +109,7 @@ const extra: Record<string, Partial<ScheduleInfo>> = {
   'pr-482': { next: ahead(40_000), last: ago(3 * 60_000), last_result: 'quiet', session: 'ses-pr', runs: 3, last_check: { at: ago(20_000), outcome: 'quiet', elapsed_ms: 1234, hash: 'a1b2c3d4e5f6' } },
   'yt-veritasium': { next: ahead(6 * 60_000), last: null, last_result: 'unchanged', runs: 0, last_check: { at: ago(4 * 60_000), outcome: 'unchanged', elapsed_ms: 812, hash: 'ff00ff00' } },
   'port-tests': { next: null, last: ago(26 * H), last_result: 'max_runs 200 reached', session: 'ses-port', runs: 200 },
+  'ts-strict': { next: ahead(30_000), last: ago(4 * 60_000), last_result: 'task 812', runs: 12, engine: 'eng-7f3a9c' },
   'deploy-note': { next: ahead(30 * H) },
   'nightly-ops': { next: ahead(19 * H), last: ago(5 * H), last_result: 'error: gh: not logged in', session: 'ses-ops' },
   'broken-one': { error: 'cron: invalid expression', next: null },
@@ -200,7 +235,16 @@ const history: Record<string, RunInfo[]> = {
     run(19, { result: 'error: timeout', envelope: 'subject=pr/482 stage=review events=review_requested', kind: 'run' }),
   ],
   'port-tests': [run(26 * 60, { session: null, result: 'max_runs 200 reached', finished_at: null, kind: 'end' }), run(26 * 60 + 30, { session: 'ses-port', result: 'end_turn', report: 'Wrote tests for `store/replay.rs`.', kind: 'run' })],
-  'morning-brief': [run(10 * 60, { session: 'ses-brief', report: 'Three mails need you; the 11:00 moved to 14:00; PR #482 is red.', kind: 'run' })],
+  'morning-brief': [
+    run(10 * 60, { session: 'ses-brief', report: 'Three mails need you; the 11:00 moved to 14:00; PR #482 is red.', kind: 'run' }),
+    run(34 * 60, { session: 'ses-brief', result: 'timeout', kind: 'run' }),
+    run(58 * 60, { session: 'ses-brief', report: 'Quiet night: nothing needs you.', kind: 'run' }),
+    run(58 * 60 + 2, { session: 'ses-brief', result: 'skipped: busy', finished_at: null, kind: 'skip' }),
+  ],
+  'ts-strict': [
+    ...Array.from({ length: 7 }, (_, i) => run(4 + 35 * i, { session: null, result: `task ${812 - i}`, finished_at: ago((4 + 35 * i) * 60_000), kind: 'run' })),
+    run(400, { session: null, result: 'until broken: exit 2: bun: command not found', finished_at: null, kind: 'end' }),
+  ],
 }
 
 const verdict: Verdict = { sensor: 'pr_watch.py', elapsed_ms: 1234, fire: true, hash: 'a1b2c3d4e5f6', flaps: false, probe: 'repo ok, pr 482 open', would_fire: false, needs_approvals_off: true, error: null }

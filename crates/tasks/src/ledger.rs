@@ -13,8 +13,8 @@ use crate::packet;
 use crate::store::Store;
 use crate::thread::Thread;
 use crate::types::{
-    Checkout, DoneBecause, Owner, Priority, Task, TaskCreate, TaskEvent, TaskFilter, TaskId,
-    TaskPatch, TaskState, Wake, WakeReason,
+    Checkout, DoneBecause, Owner, Priority, Task, TaskChangeKind, TaskChanged, TaskCreate,
+    TaskEvent, TaskFilter, TaskId, TaskPatch, TaskState, Wake, WakeReason,
 };
 use serde::{Deserialize, Serialize};
 
@@ -237,6 +237,9 @@ pub struct Ledger {
     /// 182 S1: wakes already noted in their thread as undeliverable here
     /// (the agent lives on another engine).
     misplaced: HashSet<String>,
+    /// 214 D3: every committed change goes here as a [`TaskChanged`]; the
+    /// plugin publishes it on the bus. `None` = nobody listens.
+    pub changed: Option<tokio::sync::mpsc::UnboundedSender<TaskChanged>>,
 }
 
 type R<T> = Result<T, String>;
@@ -363,6 +366,7 @@ impl Ledger {
             unreachable_since: HashMap::new(),
             reported_busy: HashMap::new(),
             misplaced: HashSet::new(),
+            changed: None,
         }
     }
 
@@ -546,6 +550,23 @@ impl Ledger {
             (None, None) => format!("- {} **{actor}** {field}", stamp(e.at_ms)),
         };
         self.record(t, &e, &line).await;
+        let kind = match field {
+            "created" => TaskChangeKind::Created,
+            "state" => TaskChangeKind::Moved,
+            _ => TaskChangeKind::Updated,
+        };
+        self.changed(t, kind);
+    }
+
+    /// 214 D3: tell the listener `t` changed (`kind`).
+    fn changed(&self, t: &Task, kind: TaskChangeKind) {
+        if let Some(tx) = &self.changed {
+            let _ = tx.send(TaskChanged {
+                id: t.id.clone(),
+                project: t.project.clone(),
+                kind,
+            });
+        }
     }
 
     /// An event row plus its thread line.
@@ -829,14 +850,32 @@ impl Ledger {
             Owner::Agent(a) => Some(self.manager_of(a)),
             _ => Some(Owner::User),
         });
+        // 214 D2: blockers at create time, checked like an update's.
+        let mut blockers = self.check_blockers(input.blockers, &[]).await?;
         let id = TaskId::new();
+        self.check_cycle(&id, &blockers).await?;
+        // 214 A1: a task blocker already closed is a finished dependency.
+        let mut resolved_blockers = Vec::new();
+        for b in std::mem::take(&mut blockers) {
+            match self.closed_task(&b).await? {
+                true => resolved_blockers.push(TaskId(b)),
+                false => blockers.push(b),
+            }
+        }
+        // A `todo` task that already waits on something open starts `blocked`
+        // (its owner is woken `blockers_resolved` when the last one closes).
+        let state = if input.state == TaskState::Todo && self.any_open(&blockers).await? {
+            TaskState::Blocked
+        } else {
+            input.state
+        };
         let mut t = Task {
             title: input.title,
             brief: input.brief,
             owner: input.owner,
-            state: input.state,
+            state,
             reviewer,
-            blockers: vec![],
+            blockers,
             blocks: vec![],
             parent: input.parent,
             project: input.project.or_else(|| parent.and_then(|p| p.project)),
@@ -850,6 +889,7 @@ impl Ledger {
             created_ms: now,
             updated_ms: now,
             no_progress_count: 0,
+            resolved_blockers,
             next_wake_after_ms: None,
             done_when: input
                 .done_when
@@ -929,6 +969,7 @@ impl Ledger {
             done_when: None,
             attachments: vec![],
             priority: None,
+            blockers: vec![],
         };
         let mut t = self
             .create(input, "system", None, WakeReason::Schedule)
@@ -989,6 +1030,53 @@ impl Ledger {
             self.on_closed(&t).await?;
         }
         Ok(())
+    }
+
+    /// 214: a blockers list as stored — duplicates dropped (first wins), and a
+    /// bare entry shaped like a task id that `known` does not hold must name an
+    /// existing task. Free text (`blocked {on}`) and `kind:` entries pass.
+    async fn check_blockers(&self, blockers: Vec<String>, known: &[String]) -> R<Vec<String>> {
+        let mut out: Vec<String> = Vec::with_capacity(blockers.len());
+        for b in blockers {
+            if out.contains(&b) {
+                continue;
+            }
+            if !b.contains(':')
+                && !known.contains(&b)
+                && uuid::Uuid::parse_str(&b).is_ok()
+                && self.store.get(&TaskId(b.clone())).await.map_err(db)?.is_none()
+            {
+                return Err(format!(
+                    "blocker {b}: no such task (use decision:<id> or person:<name> for others)"
+                ));
+            }
+            out.push(b);
+        }
+        Ok(out)
+    }
+
+    /// Whether any of `blockers` still holds: anything but a task that is
+    /// `done`/`cancelled` (or gone).
+    async fn any_open(&self, blockers: &[String]) -> R<bool> {
+        for b in blockers {
+            if !self.closed_task(b).await? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// `b` names a task that is `done`/`cancelled` (or gone).
+    async fn closed_task(&self, b: &str) -> R<bool> {
+        if b.contains(':') || uuid::Uuid::parse_str(b).is_err() {
+            return Ok(false);
+        }
+        Ok(self
+            .store
+            .get(&TaskId(b.to_owned()))
+            .await
+            .map_err(db)?
+            .is_none_or(|t| matches!(t.state, TaskState::Done | TaskState::Cancelled)))
     }
 
     // ---- blockers ------------------------------------------------------------
@@ -1053,13 +1141,17 @@ impl Ledger {
 
     /// `t` reached `done`/`cancelled` (70 DESK-PROTOCOL (c): results come
     /// back as wakes, never by polling): drop it from every blockers list — a
-    /// task left with none returns to its previous state and its owner is
+    /// blocked task left with no open blocker (none, or only closed tasks)
+    /// returns to `todo` (`doing` under a live checkout) and its owner is
     /// woken `blockers_resolved`; when every child of its parent is now
     /// closed, the parent's owner is woken `children_completed`.
     async fn on_closed(&self, t: &Task) -> R<()> {
         for mut b in self.store.blocked_on(&t.id.0).await.map_err(db)? {
             let before = b.blockers.join(", ");
             b.blockers.retain(|x| *x != t.id.0);
+            if !b.resolved_blockers.contains(&t.id) {
+                b.resolved_blockers.push(t.id.clone());
+            }
             b.updated_ms = self.now();
             self.save(&b).await?;
             self.event(
@@ -1071,7 +1163,7 @@ impl Ledger {
                 Some(b.blockers.join(", ")),
             )
             .await;
-            if b.state == TaskState::Blocked && b.blockers.is_empty() {
+            if b.state == TaskState::Blocked && !self.any_open(&b.blockers).await? {
                 self.unblock(&mut b, "system", WakeReason::BlockersResolved)
                     .await?;
             }
@@ -1204,10 +1296,13 @@ impl Ledger {
             return Err(PRIORITY_IS_THE_USERS.into());
         }
 
-        if let Some(b) = &patch.blockers
-            && *b != t.blockers
-        {
-            self.check_cycle(id, b).await?;
+        let mut patch = patch;
+        if let Some(b) = patch.blockers.take() {
+            let b = self.check_blockers(b, &t.blockers).await?;
+            if b != t.blockers {
+                self.check_cycle(id, &b).await?;
+            }
+            patch.blockers = Some(b);
         }
         let blockers = patch.blockers.clone().unwrap_or_else(|| t.blockers.clone());
         if let Some(to) = patch.state
@@ -1987,6 +2082,7 @@ impl Ledger {
         {
             tracing::error!(task = %t.id, "event not recorded: {e:#}");
         }
+        self.changed(&t, TaskChangeKind::Commented);
         if progress {
             return Ok(());
         }
@@ -2057,6 +2153,7 @@ impl Ledger {
         let t = self.load(id).await?;
         self.say(&t, actor, text).await;
         self.wake(&t, &t.owner, WakeReason::Mention, actor).await;
+        self.changed(&t, TaskChangeKind::Commented);
         Ok(())
     }
 
@@ -3311,6 +3408,7 @@ pub(crate) mod tests {
                         done_when: None,
                         attachments: vec![],
                         priority: None,
+                        blockers: vec![],
                     },
                     "user",
                     None,
@@ -3453,6 +3551,7 @@ pub(crate) mod tests {
             done_when: None,
             attachments: vec![],
             priority: Some(Priority::Low),
+            blockers: vec![],
         };
         let e = r
             .ledger
@@ -3631,6 +3730,7 @@ pub(crate) mod tests {
             done_when: None,
             attachments: vec![],
             priority: None,
+            blockers: vec![],
         };
         let t = r
             .ledger
@@ -4006,6 +4106,7 @@ pub(crate) mod tests {
                         },
                     ],
                     priority: None,
+                    blockers: vec![],
                 },
                 "user",
                 None,
@@ -4103,6 +4204,7 @@ pub(crate) mod tests {
                         done_when: None,
                         attachments: vec![],
                         priority: None,
+                        blockers: vec![],
                     },
                     "agent:lead",
                     None,
@@ -4268,6 +4370,7 @@ pub(crate) mod tests {
                     done_when: None,
                     attachments: vec![],
                     priority: None,
+                    blockers: vec![],
                 },
                 "user",
                 None,
@@ -4292,6 +4395,7 @@ pub(crate) mod tests {
                     done_when: None,
                     attachments: vec![],
                     priority: None,
+                    blockers: vec![],
                 },
                 "user",
                 None,
@@ -7211,6 +7315,7 @@ pub(crate) mod tests {
             done_when: None,
             attachments: vec![],
             priority: Some(Priority::Low),
+            blockers: vec![],
         };
         let ranked = r
             .ledger
@@ -7586,6 +7691,7 @@ pub(crate) mod tests {
                     done_when: None,
                     attachments: vec![],
                     priority: None,
+                    blockers: vec![],
                 },
                 "user",
                 None,
@@ -7922,5 +8028,198 @@ pub(crate) mod tests {
             r.ledger.homes_offline(&down).await.unwrap().is_empty(),
             "moved: gone"
         );
+    }
+
+    fn planned(title: &str, project: Option<&str>, blockers: &[&str]) -> TaskCreate {
+        TaskCreate {
+            state: TaskState::Backlog,
+            title: title.into(),
+            brief: String::new(),
+            owner: Owner::User,
+            reviewer: None,
+            parent: None,
+            project: project.map(str::to_owned),
+            where_: None,
+            harness: None,
+            external: vec![],
+            done_when: None,
+            attachments: vec![],
+            priority: None,
+            blockers: blockers.iter().map(|b| (*b).to_owned()).collect(),
+        }
+    }
+
+    /// 214 D2: a planning agent creates a dependent task in one call.
+    #[tokio::test]
+    async fn create_takes_blockers_and_refuses_unknown_ids_and_cycles() {
+        let mut r = rig().await;
+        let design = r
+            .ledger
+            .create(planned("design", Some("p"), &[]), "agent:ops", None, WakeReason::Assigned)
+            .await
+            .unwrap();
+        let build = r
+            .ledger
+            .create(
+                planned("build", Some("p"), &[&design.id.0, "person:sam", &design.id.0]),
+                "agent:ops",
+                None,
+                WakeReason::Assigned,
+            )
+            .await
+            .unwrap();
+        assert_eq!(build.blockers, [design.id.0.clone(), "person:sam".into()], "deduped");
+        assert_eq!(r.ledger.get(&build.id).await.unwrap().blockers, build.blockers);
+        assert_eq!(r.ledger.blocks_of(&design.id).await.unwrap(), [build.id.clone()]);
+
+        let ghost = TaskId::new().0;
+        let e = r
+            .ledger
+            .create(planned("ship", None, &[&ghost]), "agent:ops", None, WakeReason::Assigned)
+            .await
+            .unwrap_err();
+        assert!(e.contains(&format!("blocker {ghost}: no such task")), "{e}");
+        assert_eq!(r.ledger.list(&TaskFilter::default()).await.unwrap().len(), 2, "nothing created");
+
+        // task_update: the same check and dedupe; free text (`blocked {on}`) passes.
+        let e = r
+            .blockers(&design.id, &[&ghost], "agent:ops")
+            .await
+            .unwrap_err();
+        assert!(e.contains(&format!("blocker {ghost}: no such task")), "{e}");
+        let t = r
+            .blockers(&design.id, &["waiting for CI", "waiting for CI"], "agent:ops")
+            .await
+            .unwrap();
+        assert_eq!(t.blockers, ["waiting for CI"]);
+
+        // A new id has no dependants, so the cycle a create could close is
+        // closed by the update that follows — and refused there.
+        let e = r
+            .blockers(&design.id, &[&build.id.0], "agent:ops")
+            .await
+            .unwrap_err();
+        assert!(e.starts_with("blockers would form a cycle"), "{e}");
+    }
+
+    /// 214: `todo` with an open blocker is created `blocked`, nobody woken; the
+    /// last blocker closing moves it to `todo` and wakes the owner.
+    #[tokio::test]
+    async fn todo_with_open_blocker_starts_blocked_until_it_closes() {
+        let mut r = rig().await;
+        let first = r
+            .ledger
+            .create(planned("first", None, &[]), "user", None, WakeReason::Assigned)
+            .await
+            .unwrap();
+        let mut input = planned("second", None, &[&first.id.0]);
+        input.state = TaskState::Todo;
+        input.owner = Owner::Agent("ops".into());
+        let second = r
+            .ledger
+            .create(input, "user", None, WakeReason::Assigned)
+            .await
+            .unwrap();
+        assert_eq!(second.state, TaskState::Blocked);
+        let woken = |w: &[Wake]| w.iter().any(|w| w.task.as_ref() == Some(&second.id));
+        assert!(!woken(&r.ledger.wakes().await.unwrap()), "blocked: nobody woken");
+
+        r.set_state(&first.id, TaskState::Cancelled, "user").await.unwrap();
+        let t = r.ledger.get(&second.id).await.unwrap();
+        assert_eq!(t.state, TaskState::Todo);
+        // 214 A1: the finished dependency stays, as resolved.
+        assert!(t.blockers.is_empty());
+        assert_eq!(t.resolved_blockers, [first.id.clone()]);
+        assert!(r.ledger.wakes().await.unwrap().iter().any(|w| {
+            w.task.as_ref() == Some(&second.id) && w.reason == WakeReason::BlockersResolved
+        }));
+
+        // Only closed tasks as blockers: plain `todo`, filed as resolved. A `kind:` blocker: `blocked`.
+        let mut input = planned("third", None, &[&first.id.0]);
+        input.state = TaskState::Todo;
+        let t = r.ledger.create(input, "user", None, WakeReason::Assigned).await.unwrap();
+        assert_eq!(t.state, TaskState::Todo);
+        assert!(t.blockers.is_empty());
+        assert_eq!(r.ledger.get(&t.id).await.unwrap().resolved_blockers, [first.id.clone()]);
+        let mut input = planned("fourth", None, &["person:sam"]);
+        input.state = TaskState::Todo;
+        let t = r.ledger.create(input, "user", None, WakeReason::Assigned).await.unwrap();
+        assert_eq!(t.state, TaskState::Blocked);
+
+        // A manual removal is not a resolution.
+        let open = r
+            .ledger
+            .create(planned("open", None, &[]), "user", None, WakeReason::Assigned)
+            .await
+            .unwrap();
+        let t = r
+            .ledger
+            .create(planned("waits", None, &[&open.id.0]), "user", None, WakeReason::Assigned)
+            .await
+            .unwrap();
+        let t = r.blockers(&t.id, &[], "user").await.unwrap();
+        assert!(t.blockers.is_empty() && t.resolved_blockers.is_empty(), "{t:?}");
+    }
+
+    /// 214 D3: every committed create / update / move / comment reaches the listener.
+    #[tokio::test]
+    async fn committed_changes_publish_task_changed() {
+        let mut r = rig().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        r.ledger.changed = Some(tx);
+        let mut drain = move || {
+            let mut got = vec![];
+            while let Ok(c) = rx.try_recv() {
+                got.push(c);
+            }
+            got
+        };
+        let t = r
+            .ledger
+            .create(planned("plan", Some("p"), &[]), "user", None, WakeReason::Assigned)
+            .await
+            .unwrap();
+        let change = |kind, project: Option<&str>| TaskChanged {
+            id: t.id.clone(),
+            project: project.map(str::to_owned),
+            kind,
+        };
+        assert_eq!(drain(), [change(TaskChangeKind::Created, Some("p"))]);
+
+        r.ledger
+            .update(
+                &t.id,
+                TaskPatch {
+                    title: Some("plan it".into()),
+                    project: Some("q".into()),
+                    ..Default::default()
+                },
+                "user",
+                None,
+            )
+            .await
+            .unwrap();
+        let got = drain();
+        assert!(!got.is_empty());
+        assert!(got.iter().all(|c| *c == change(TaskChangeKind::Updated, Some("q"))), "{got:?}");
+
+        r.ledger
+            .move_to(&t.id, TaskState::Todo, None, None, None, "user", None)
+            .await
+            .unwrap();
+        assert_eq!(drain(), [change(TaskChangeKind::Moved, Some("q"))]);
+
+        r.ledger
+            .comment(&t.id, "looks right", false, "user", None)
+            .await
+            .unwrap();
+        assert_eq!(drain(), [change(TaskChangeKind::Commented, Some("q"))]);
+
+        // A refused change publishes nothing.
+        let _ = r
+            .ledger
+            .move_to(&t.id, TaskState::Review, None, None, None, "agent:ops", None)
+            .await;
+        assert!(drain().is_empty());
     }
 }

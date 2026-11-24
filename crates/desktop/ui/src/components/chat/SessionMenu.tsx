@@ -40,7 +40,7 @@ import { openMeeting, useMeetingForSession } from '@/lib/meeting-link'
 import { useDrafts } from '@/lib/drafts'
 import { usePanes } from '@/lib/panes'
 import { tileable } from '@/lib/tiles'
-import { openJobsTile, openPromptTile } from '@/components/tiles/open'
+import { openJobsTile, openPromptTile, openTasksGraphTile } from '@/components/tiles/open'
 import { canPopout, openPopout } from '@/lib/popout'
 import { engineLabel, ownerUnreachable, parkIfOffline, routed, useOwnerOffline } from '@/lib/owner'
 import { RpcError } from '@/rpc/client'
@@ -495,6 +495,14 @@ export function SessionMenu({ session }: { session: string }) {
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => show('prompt')}>Show prompt</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => show('jobs')}>Jobs</DropdownMenuItem>
+          {/* 214 D6: the chat's project's task graph beside it (the page where nothing tiles). */}
+          <DropdownMenuItem
+            onSelect={() =>
+              tileable(session) ? void openTasksGraphTile(session, row?.project ?? null) : void navigate({ to: '/tasks/graph', search: { project: row?.project ?? '' } })
+            }
+          >
+            Task graph
+          </DropdownMenuItem>
           </> : <DropdownMenuItem onSelect={() => openSurface('memory')}>Memory…</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => useMessagingSheet.getState().show(session)}>Messaging…</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => useToolsSheet.getState().show(session)}>Tools…</DropdownMenuItem>

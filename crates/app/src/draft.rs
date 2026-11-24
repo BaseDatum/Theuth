@@ -83,7 +83,8 @@ impl Tool for TaskDraftTool {
          press arrives as the user's next message (it begins `[app task-drafts …]`) naming the draft id and the \
          choice — `add to backlog` → `task_create` with `state: backlog`; `start now` → `task_create` with \
          `state: todo`; `discard` → nothing. Create only what was approved, with the draft's fields (attachments \
-         included), and set blockers with `task_update` afterwards. Drafts are not tasks: nothing exists until approval."
+         included); create blockers first and pass a draft's `blocked_by` as `task_create`'s `blockers` (the \
+         created task ids) in the same call. Drafts are not tasks: nothing exists until approval."
             .into()
     }
 
@@ -153,7 +154,8 @@ impl Tool for TaskDraftTool {
             "drafted {} task card{} (record_call_id {}):\n{}\nWait for the user. Their press arrives as a message \
              beginning `[app {APP_NAME} …]` with `draft <id>: add to backlog | start now | discard`. Then call \
              `task_create` with `state: backlog` or `state: todo` using that draft's fields — `attachments` \
-             included, as `{{kind, id, title}}` — (nothing for discard), and `task_update` for its blockers.",
+             included, as `{{kind, id, title}}`, and `blockers` as the ids of the tasks it waits on, created \
+             first — (nothing for discard).",
             ids.len(),
             if ids.len() == 1 { "" } else { "s" },
             loaded.artifact.call_id,

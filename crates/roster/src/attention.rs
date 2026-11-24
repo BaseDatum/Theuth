@@ -3114,6 +3114,7 @@ mod tests {
             created_ms: updated_ms,
             updated_ms,
             no_progress_count: 0,
+            resolved_blockers: vec![],
             next_wake_after_ms: None,
         }
     }

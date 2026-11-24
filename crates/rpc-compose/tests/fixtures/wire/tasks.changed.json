@@ -1,0 +1,107 @@
+[
+  {
+    "input": {
+      "type": "TaskChanged",
+      "id": "0190f1a2-0000-7000-8000-000000000001",
+      "project": "theuth",
+      "kind": "created"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TaskChanged",
+          "id": "0190f1a2-0000-7000-8000-000000000001",
+          "project": "theuth",
+          "kind": "created"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TaskChanged",
+      "id": "0190f1a2-0000-7000-8000-000000000002",
+      "project": null,
+      "kind": "updated"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TaskChanged",
+          "id": "0190f1a2-0000-7000-8000-000000000002",
+          "project": null,
+          "kind": "updated"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TaskChanged",
+      "id": "0190f1a2-0000-7000-8000-000000000003",
+      "project": "theuth",
+      "kind": "moved"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TaskChanged",
+          "id": "0190f1a2-0000-7000-8000-000000000003",
+          "project": "theuth",
+          "kind": "moved"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TaskChanged",
+      "id": "0190f1a2-0000-7000-8000-000000000004",
+      "project": "theuth",
+      "kind": "commented"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TaskChanged",
+          "id": "0190f1a2-0000-7000-8000-000000000004",
+          "project": "theuth",
+          "kind": "commented"
+        }
+      }
+    }
+  },
+  {
+    "input": {
+      "type": "TaskChanged",
+      "id": "0190f1a2-0000-7000-8000-000000000005",
+      "project": null,
+      "kind": "deleted"
+    },
+    "notification": {
+      "jsonrpc": "2.0",
+      "method": "subscribe_events",
+      "params": {
+        "subscription": "<subscription>",
+        "result": {
+          "type": "TaskChanged",
+          "id": "0190f1a2-0000-7000-8000-000000000005",
+          "project": null,
+          "kind": "deleted"
+        }
+      }
+    }
+  }
+]

@@ -10,6 +10,7 @@ import {
   Map as MapIcon,
   Monitor,
   MousePointer2,
+  Network,
   NotebookText,
   ScrollText,
   Sparkles,
@@ -34,6 +35,7 @@ import { memoryTile } from './kinds/memory'
 import { noteTile } from './kinds/note'
 import { promptTile } from './kinds/prompt'
 import { skillTile } from './kinds/skill'
+import { tasksGraphTile } from './kinds/tasksGraph'
 import { jobTerminalTile, terminalsTile } from './kinds/terminals'
 import { vmTile } from './kinds/vm'
 
@@ -53,6 +55,7 @@ export const TILE_KINDS: Record<string, TileKind> = {
   note: noteTile,
   prompt: promptTile,
   skill: skillTile,
+  'tasks-graph': tasksGraphTile,
   terminals: terminalsTile,
   vm: vmTile,
 }
@@ -73,6 +76,7 @@ export const TILE_ICONS: Record<string, LucideIcon> = {
   note: NotebookText,
   prompt: ScrollText,
   skill: BookOpen,
+  'tasks-graph': Network,
   terminals: SquareTerminal,
   vm: Monitor,
 }

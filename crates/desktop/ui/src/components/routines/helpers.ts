@@ -1,7 +1,7 @@
 import { engineName } from '@/components/tasks/home'
 import type { LastCheck } from "@/rpc/bindings/method.schedule.output"
 import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
-import type { RunKind } from "@/rpc/bindings/method.schedule.output"
+import type { RunInfo, RunKind } from "@/rpc/bindings/method.schedule.output"
 import type { ScheduleFile } from "@/rpc/bindings/method.schedule.output"
 import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
 import type { SensorArg } from "@/rpc/bindings/method.schedule.output"
@@ -28,6 +28,38 @@ export function took(from: string, to: string): string {
 export function runCount(s: Pick<ScheduleInfo, 'runs' | 'max_runs' | 'until'>): string {
   if (s.max_runs !== null) return `${s.runs}/${s.max_runs}`
   return s.until !== null ? String(s.runs) : '—'
+}
+
+const UNIT_MS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }
+
+/** `14d` / `1h30m` → ms, `null` when a token is not humantime. */
+export function durationMs(s: string): number | null {
+  let total = 0
+  for (const m of s.trim().matchAll(/(\d+)\s*([smhdw])/g)) total += Number(m[1]) * (UNIT_MS[m[2] ?? ''] ?? 0)
+  return total > 0 ? total : null
+}
+
+/** `12d 4h` / `3h 20m` / `5m` remaining. */
+export function leftText(ms: number): string {
+  if (ms <= 0) return 'passed'
+  const d = Math.floor(ms / 86_400_000)
+  const h = Math.floor((ms % 86_400_000) / 3_600_000)
+  const m = Math.floor((ms % 3_600_000) / 60_000)
+  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
+/** Consecutive `check` rows folded into one (108 §4 History). */
+export type FoldedRun = { kind: 'one'; r: RunInfo } | { kind: 'checks'; rows: RunInfo[] }
+
+export function fold(runs: readonly RunInfo[]): FoldedRun[] {
+  const out: FoldedRun[] = []
+  for (const r of runs) {
+    const last = out[out.length - 1]
+    if (r.kind === 'check' && last?.kind === 'checks') last.rows.push(r)
+    else if (r.kind === 'check') out.push({ kind: 'checks', rows: [r] })
+    else out.push({ kind: 'one', r })
+  }
+  return out
 }
 
 const num = /^\d+$/

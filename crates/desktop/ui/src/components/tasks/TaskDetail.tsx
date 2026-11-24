@@ -38,7 +38,7 @@ import { OwnerSelect } from './OwnerSelect'
 import { TaskChips } from './TaskChips'
 import { askSecs, engineName, homeLine } from './home'
 import { actionsFor, age, ownerLabel, ownerText, parseBlocker, parseOwner, shortId, stateChip, wakePhrase } from './helpers'
-import { useAgents, useInvalidateTasks, useMesh, useMoveTask, useTask, useTaskEvents, useTasks } from './queries'
+import { doneBecause, useAgents, useCloseDone, useInvalidateTasks, useMesh, useMoveTask, useTask, useTaskEvents, useTasks } from './queries'
 
 /**
  * `/tasks/$id` (67 §12, 69): brief, blocked-by and blocks (editable chips), placement, the thread document with a
@@ -417,7 +417,8 @@ function Actions({ task: t, confirmCancel, setConfirmCancel }: { task: Task; con
     onError: (e) => toast.error(errorText(e)),
   })
   const move = useMoveTask()
-  const busy = patch.isPending || move.isPending
+  const close = useCloseDone()
+  const busy = patch.isPending || move.isPending || close.isPending
   return (
     <Section title="Actions">
       <div className="flex flex-col gap-3 text-sm">
@@ -474,7 +475,7 @@ function Actions({ task: t, confirmCancel, setConfirmCancel }: { task: Task; con
                 className="flex-1"
                 disabled={busy || !a.canMarkDone}
                 title={a.canMarkDone ? undefined : 'Only the reviewer (or the owner when that is you) can mark it done'}
-                onClick={() => move.mutate({ id: t.id, state: 'done' })}
+                onClick={() => close.mutate({ id: t.id, because: doneBecause(t) })}
               >
                 Mark done
               </Button>

@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { ChevronRight, FlaskConical, MessageSquarePlus, Play } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { useModels } from '@/components/agents/queries'
 import { Field } from '@/components/agents/RuntimeAccessFields'
@@ -35,7 +35,6 @@ import { Textarea } from '@/components/ui/textarea'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
-import type { RunInfo } from "@/rpc/bindings/method.schedule.output"
 import type { ScheduleInfo } from "@/rpc/bindings/method.schedule.output"
 import type { SensorInfo } from "@/rpc/bindings/method.schedule.output"
 import type { Verdict } from "@/rpc/bindings/method.schedule.output"
@@ -44,8 +43,11 @@ import { useSessions } from '@/store/sessions'
 import { RoutineChat } from './RoutineChat'
 import { KindBadge, RESULT_CLASS, RoutineChips, sensorArgs } from './RoutinesView'
 import { type Draft, type Form, NEW, draftToFile, fileText, latestDraft } from './draft'
-import { type Kind, SECTIONS, type Section, cronWords, fromFile, fromInfo, kindOf, lastCheckText, parseWhen, plainError, relative, resultKind, resultLabel, runCount, sentence, took, verdictText } from './helpers'
+import { type Kind, SECTIONS, type Section, cronWords, durationMs, fold, fromFile, fromInfo, kindOf, lastCheckText, leftText, parseWhen, plainError, relative, resultKind, resultLabel, runCount, sentence, took, verdictText } from './helpers'
 import { KEY, useNotHub, useRoutineFile, useRoutineHistory, useRoutines, useRoutinesApi, useSensors } from './queries'
+
+/** 214 D9: the routine graph loads in its own chunk with `@xyflow/react`. */
+const RoutineGraph = lazy(() => import('./graph/RoutineGraph'))
 
 /** Seconds as a short humantime: whole hours → `2h`, whole minutes → `30m`, else `90s`; unknown/0 → `30m`. */
 function shortDuration(secs: number | undefined): string {
@@ -53,24 +55,6 @@ function shortDuration(secs: number | undefined): string {
   if (secs % 3600 === 0) return `${secs / 3600}h`
   if (secs % 60 === 0) return `${secs / 60}m`
   return `${secs}s`
-}
-
-const UNIT_MS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }
-
-/** `14d` / `1h30m` → ms, `null` when a token is not humantime. */
-function durationMs(s: string): number | null {
-  let total = 0
-  for (const m of s.trim().matchAll(/(\d+)\s*([smhdw])/g)) total += Number(m[1]) * (UNIT_MS[m[2] ?? ''] ?? 0)
-  return total > 0 ? total : null
-}
-
-/** `12d 4h` / `3h 20m` / `5m` remaining. */
-function leftText(ms: number): string {
-  if (ms <= 0) return 'passed'
-  const d = Math.floor(ms / 86_400_000)
-  const h = Math.floor((ms % 86_400_000) / 3_600_000)
-  const m = Math.floor((ms % 3_600_000) / 60_000)
-  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
 const TITLES: Record<Section, string> = { overview: 'Overview', prompt: 'Prompt', history: 'History', danger: 'Danger' }
@@ -175,6 +159,15 @@ export function RoutineDetail({ name, section, chat }: { name: string | null; se
       </SectionRow>
       <div className="flex min-h-0 min-w-0 flex-1">
         <main className="min-h-0 min-w-0 overflow-y-auto" style={paneOpen && !mobile ? { flex: `${ratio} 1 0%` } : { flex: '1 1 0%' }}>
+          {name !== null && section === 'overview' && info && file.data && (
+            <section className="mx-auto w-full max-w-[1280px] px-4 pt-4" aria-label="How this routine works">
+              <div className="h-[420px] overflow-hidden rounded-xl border border-border-subtle">
+                <Suspense fallback={<div className="size-full bg-background" />}>
+                  <RoutineGraph info={info} file={file.data} sensors={sensors} chat={chat} />
+                </Suspense>
+              </div>
+            </section>
+          )}
           <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4 p-4">
             {name === null ? (
               <Editor initial={NEW} info={null} section="overview" isNew sensors={sensors} draft={draft} focusForm={focusForm} />
@@ -799,20 +792,6 @@ function SecretNames() {
       ))}
     </datalist>
   )
-}
-
-/** Consecutive `check` rows folded into one line (§4 History). */
-type Row = { kind: 'one'; r: RunInfo } | { kind: 'checks'; rows: RunInfo[] }
-
-function fold(runs: RunInfo[]): Row[] {
-  const out: Row[] = []
-  for (const r of runs) {
-    const last = out[out.length - 1]
-    if (r.kind === 'check' && last?.kind === 'checks') last.rows.push(r)
-    else if (r.kind === 'check') out.push({ kind: 'checks', rows: [r] })
-    else out.push({ kind: 'one', r })
-  }
-  return out
 }
 
 const hhmm = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })

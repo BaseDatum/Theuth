@@ -1552,6 +1552,7 @@ impl Channel {
                             done_when: None,
                             attachments: vec![],
                             priority: None,
+                            blockers: vec![],
                         },
                         created_by: "user".into(),
                         session: None,
