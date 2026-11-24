@@ -72,11 +72,14 @@ function Shell({
   const unread = useNotices((st) => st.unreadErrors)
   return (
     <NoticeHistory open={open} onOpenChange={setOpen}>
+      {/* iOS (`ios:`, keyed on `<html data-container>`): the bar is the home-indicator band itself, content centred in
+       * it, inset past the screen's rounded corners (~18pt on an iPad), and compact type so a ~20pt band holds it.
+       * `--statusbar-h` in routes/__root.tsx carries the same height. */}
       <footer
         data-status-bar
         data-down={down || undefined}
         aria-label="Status"
-        className="flex h-[22px] shrink-0 items-center gap-2 border-t border-border-subtle bg-sidebar px-2.5 font-sans text-[11px] leading-none text-fg-tertiary tabular-nums select-none"
+        className="flex h-[22px] shrink-0 items-center gap-2 border-t border-border-subtle bg-sidebar px-2.5 font-sans text-[11px] leading-none text-fg-tertiary tabular-nums select-none ios:h-[max(var(--safe-bottom),18px)] ios:pr-[max(var(--safe-right),28px)] ios:pl-[max(var(--safe-left),28px)] ios:text-[10px] ios:[&_.status-dot]:size-[6px]"
         style={down ? { backgroundImage: DOWN_TINT } : undefined}
       >
         {left}
@@ -94,7 +97,7 @@ function Shell({
   )
 }
 
-const Sep = () => <span aria-hidden className="h-3 w-px shrink-0 bg-border-subtle" />
+const Sep = () => <span aria-hidden className="h-3 w-px shrink-0 bg-border-subtle ios:h-2.5" />
 
 /**
  * One persistent live region whose content is swapped, so a screen reader hears each notice; an error speaks as an

@@ -1,6 +1,6 @@
 // `container()` from the webview's UA (31 §7.7): every Tauri shell, then a plain browser.
 import { afterEach, expect, test, vi } from 'vitest'
-import { container, deviceName, isDesktop } from './platform'
+import { container, deviceName, isDesktop, markContainer } from './platform'
 
 const UA = {
   mac: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)',
@@ -40,4 +40,20 @@ test('no __TAURI_INTERNALS__ → web, never desktop, whatever the UA says', () =
   }
   shell(UA.windows, 0, false)
   expect(deviceName()).toBe('Edge')
+})
+
+test('markContainer: <html data-container> is "ios" in the iOS shell, which turns on the compact status bar (ios: variant); never elsewhere', () => {
+  const run = (ua: string, touchPoints: number, tauri = true) => {
+    shell(ua, touchPoints, tauri)
+    const documentElement = { dataset: {} as DOMStringMap }
+    vi.stubGlobal('document', { documentElement })
+    markContainer()
+    return documentElement.dataset.container
+  }
+  expect(run(UA.mac, 5)).toBe('ios')
+  expect(run(UA.iphone, 5)).toBe('ios')
+  expect(run(UA.mac, 0)).toBe('macos')
+  expect(run(UA.windows, 10)).toBe('windows')
+  expect(run(UA.linux, 0)).toBe('linux')
+  expect(run(UA.mac, 5, false)).toBe('web')
 })

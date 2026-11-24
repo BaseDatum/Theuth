@@ -95,6 +95,12 @@ const SEED: Record<string, () => (() => void) | void> = {
     history()
     return stream(1_500)
   },
+  ipad: () => (connected(), stream(1_500)),
+  'ipad-history': () => {
+    connected()
+    history()
+    return stream(1_500)
+  },
 }
 
 function needsYou() {
@@ -105,10 +111,28 @@ function needsYou() {
 
 // Seeded before the first render, so no frame ever shows the unseeded defaults.
 if (state) SEED[state]?.()
+// The iOS shell as `main.tsx`'s `markContainer` marks it, and the 20pt home-indicator band an iPad reports; set before
+// the first render, like the real boot, so the `ios:` rules apply from the first frame.
+if (state?.startsWith('ipad')) {
+  document.documentElement.dataset.container = 'ios'
+  document.documentElement.style.setProperty('--safe-bottom', '20px')
+}
 
 function Scenario({ name }: { name: string }) {
   // Opened from the first render, not by a click after it.
-  const open = name === 'history' || name === 'phone-sheet'
+  const open = name === 'history' || name === 'phone-sheet' || name === 'ipad-history'
+  if (name.startsWith('ipad')) {
+    // A 1180×820 iPad window with its 18pt corner radius drawn on: anything the corners would clip is cut here too.
+    // The wrapper carries the shell's own `--statusbar-h` rules (routes/__root.tsx); the sidebar stand-in stops by it.
+    return (
+      <div className="relative flex h-[820px] w-[1180px] flex-col overflow-hidden rounded-[18px] bg-background [--statusbar-h:calc(22px_+_var(--safe-bottom))] md:bg-sidebar md:pb-[var(--safe-bottom)] md:ios:[--statusbar-h:max(var(--safe-bottom),18px)] md:ios:pb-0">
+        <div className="min-h-0 flex-1 bg-background" />
+        <div aria-hidden className="absolute top-0 left-0 h-[calc(100%_-_var(--statusbar-h))] w-64 border-r border-border-subtle bg-sidebar" />
+        <StatusBar defaultOpen={open} />
+        <span aria-hidden className="pointer-events-none absolute bottom-[7px] left-1/2 h-[5px] w-[134px] -translate-x-1/2 rounded-full bg-foreground/80" />
+      </div>
+    )
+  }
   if (name.startsWith('phone-')) {
     // The home-indicator band an iPhone reports; the frame has none of its own.
     document.documentElement.style.setProperty('--safe-bottom', '34px')
@@ -142,6 +166,10 @@ const DESKTOP: [string, string, number][] = [
   ['reconnecting', 'Reconnecting, with the countdown', 22],
   ['history', 'History popover open', 520],
 ]
+const IPAD: [string, string][] = [
+  ['ipad', 'iPad: the bar in the home-indicator band, 18pt corners'],
+  ['ipad-history', 'iPad: history popover open'],
+]
 const PHONE: [string, string][] = [
   ['phone-rate', 'Phone: rate'],
   ['phone-notice', 'Phone: notice'],
@@ -164,6 +192,14 @@ function Gallery() {
           <figure key={name} className="flex flex-col gap-1.5">
             <figcaption className="text-xs text-fg-tertiary">{label}</figcaption>
             <iframe title={label} src={src(name)} className="w-full max-w-[1100px] border border-border-subtle" style={{ height: h }} />
+          </figure>
+        ))}
+      </section>
+      <section className="mb-10 flex flex-col gap-5">
+        {IPAD.map(([name, label]) => (
+          <figure key={name} className="flex flex-col gap-1.5">
+            <figcaption className="text-xs text-fg-tertiary">{label}</figcaption>
+            <iframe title={label} src={src(name)} width={1180} height={820} className="border border-border-subtle" />
           </figure>
         ))}
       </section>

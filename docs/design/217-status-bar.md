@@ -76,6 +76,7 @@ The count is `useApprovals.pending.length + useAsks.pending.length + useSecretRe
 ## 6. Desktop bar — `components/status/StatusBar.tsx`
 
 - **Height and surface:** 22 px, full width below both sidebar and main pane, `bg-sidebar`, top border `border-border-subtle`, 11 px text in `text-fg-tertiary`, `tabular-nums` mono digits.
+- **iOS app (iPad, iPhone landscape on the md layout):** the bar is the home-indicator band itself, `max(var(--safe-bottom), 18px)` tall with its content centred, and nothing pads below it. The content row is inset `max(var(--safe-left/right), 28px)` to clear the ~18pt screen corners, and the history popover is inset by the same amount. Type is 10 px, the dot 6 px, and the separators 10 px. `--statusbar-h` equals the band. All of this is keyed on `<html data-container="ios">`, which `markContainer()` (`lib/platform.ts`) sets at boot, through the `ios:` Tailwind variant. Fixture: `?state=ipad` / `ipad-history`.
 - **No drag region:** never add `data-tauri-drag-region`.
 - **Segments, left to right:**
   1. Dot plus engine name (tooltip: engine, state, rtt if known).
