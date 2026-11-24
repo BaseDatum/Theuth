@@ -1576,14 +1576,12 @@ export function Composer({
           </Popover>
           {/* #4: this chat's MCP servers, beside `+`; a HUD composer sends into a chat named on demand, so it has none. */}
           {!readOnly && !resolveSession && <McpMenu session={session ?? ''} className={cn(stage !== 'idle' && 'hidden')} />}
-          <div className="min-w-0 flex-1" />
+          {/* 215 C2: `-ml-1` cancels the spacer's own gap — 4px that a 280px pane needs for the buttons. */}
+          <div className="-ml-1 min-w-0 flex-1" />
           {/* 215 C1/C2: the model picker, a quiet label on the toolbar; a HUD composer's chat is named on demand, so none.
-              `contents` keeps its own max width relative to the toolbar while a voice note hides it with the rest. */}
-          {!resolveSession && (
-            <div className={cn('contents', stage !== 'idle' && 'hidden')}>
-              <ComposerModel session={session} own={ownModel} />
-            </div>
-          )}
+              A direct flex item: its `max-w-[40%]` reads the toolbar's width, and it is the one item that shrinks when
+              the row runs out of room (every button is `shrink-0`). A voice note takes the row, so it goes meanwhile. */}
+          {!resolveSession && stage === 'idle' && <ComposerModel session={session} own={ownModel} />}
           {/* 76 §0.12: the former voice-note button is Talk — the live spoken conversation on this session. B3: while it
               runs here, the chat view keeps a compact indicator: tap opens the talk view, the x ends the talk. */}
           {talkHere ? (

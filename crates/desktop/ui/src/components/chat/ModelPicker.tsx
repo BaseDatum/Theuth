@@ -174,8 +174,10 @@ export function LocalTag() {
 /**
  * 215 C1/C4: the quiet model label every model trigger shares — the composer's toolbar (`ComposerModel`) and every form
  * field (`ModelCombobox`): ghost, no border, muted text tinted on hover and while open. The name truncates first; then
- * `· effort`, the local tag and the chevron, which never shrink. Every other prop (id, aria-label, disabled, size, the
- * Radix trigger's state and ref) reaches the `Button`; `className` merges last.
+ * `· effort`, the local tag and the chevron, which never shrink. The trigger itself shrinks (unlike `Button`'s
+ * `shrink-0`) and clips past its last glyph, so in a full row it gives way before any icon button and never pushes one
+ * out. Every other prop (id, aria-label, disabled, size, the Radix trigger's state and ref) reaches the `Button`;
+ * `className` merges last.
  */
 export function QuietModelTrigger({ name, effort, local, className, ...props }: ComponentProps<typeof Button> & { name: string; effort?: string | null; local?: boolean }) {
   return (
@@ -183,7 +185,7 @@ export function QuietModelTrigger({ name, effort, local, className, ...props }: 
       variant="ghost"
       {...props}
       className={cn(
-        'min-w-0 justify-start gap-1 rounded-md px-2 text-[13px] font-normal text-fg-tertiary hover:bg-layer-2 hover:text-fg-secondary has-[>svg]:px-2 dark:hover:bg-layer-2 data-[state=open]:bg-layer-2 data-[state=open]:text-fg-secondary',
+        'min-w-0 shrink justify-start gap-1 overflow-hidden rounded-md px-2 text-[13px] font-normal text-fg-tertiary hover:bg-layer-2 hover:text-fg-secondary has-[>svg]:px-2 dark:hover:bg-layer-2 data-[state=open]:bg-layer-2 data-[state=open]:text-fg-secondary',
         className,
       )}
     >
