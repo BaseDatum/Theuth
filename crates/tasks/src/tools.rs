@@ -176,7 +176,8 @@ pub struct TaskCreateArgs {
     pub priority: Option<Priority>,
     /// What this task waits on: ids of tasks that must finish first (the edges of a plan's
     /// dependency graph), `decision:<id>` or `person:<name>`. Set them here when you create the
-    /// dependent task; an unknown task id or a cycle is refused.
+    /// dependent task; an unknown task id or a cycle is refused. With `state: todo` and a blocker
+    /// still open the task starts `blocked`; its owner is woken when the last one closes.
     #[serde(default)]
     pub blockers: Vec<String>,
 }

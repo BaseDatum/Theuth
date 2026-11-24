@@ -3760,6 +3760,7 @@
             created_ms: 0,
             updated_ms: 0,
             no_progress_count: 0,
+            resolved_blockers: vec![],
             next_wake_after_ms: None,
             done_when: None,
             attachments: vec![],

@@ -67,6 +67,7 @@ struct Row {
     state: String,
     reviewer: Option<String>,
     blockers_json: String,
+    resolved_blockers_json: String,
     parent: Option<String>,
     project: Option<String>,
     where_: Option<String>,
@@ -122,6 +123,7 @@ impl From<Row> for Task {
             id: TaskId(r.id),
             title: r.title,
             brief: r.brief,
+            resolved_blockers: serde_json::from_str(&r.resolved_blockers_json).unwrap_or_default(),
             owner: r.owner.parse().unwrap_or(Owner::User),
             state: state_of(&r.state),
             reviewer: r.reviewer.and_then(|s| s.parse().ok()),
@@ -156,7 +158,7 @@ impl From<Row> for Task {
 const COLS: &str = "id, title, brief, owner, state, reviewer, blockers_json, parent, project, where_, \
                     harness, external_json, thread, checkout_json, schedule_name, schedule_fire_ms, \
                     created_by, created_ms, updated_ms, no_progress_count, next_wake_after_ms, done_when, \
-                    attachments_json, priority, home";
+                    attachments_json, priority, home, resolved_blockers_json";
 
 impl Store {
     /// Open or create the file and run the migrations.
@@ -199,7 +201,7 @@ impl Store {
         });
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO tasks ({COLS}, hlc) VALUES \
-             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26) \
+             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27) \
              ON CONFLICT(id) DO UPDATE SET {}",
             *SET
         )))
@@ -228,6 +230,7 @@ impl Store {
         .bind(serde_json::to_string(&t.attachments)?)
         .bind(t.priority.as_str())
         .bind(&t.home)
+        .bind(serde_json::to_string(&t.resolved_blockers)?)
         .bind(hlc(t.updated_ms))
         .execute(&self.pool)
         .await?;

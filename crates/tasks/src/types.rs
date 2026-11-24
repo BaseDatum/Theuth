@@ -215,6 +215,10 @@ pub struct Task {
     /// Tasks whose `blockers` name this one (the inverse, computed on read, never stored).
     #[serde(default)]
     pub blocks: Vec<TaskId>,
+    /// 214 A1: task ids that were in `blockers` until that task closed (done/cancelled) —
+    /// the finished dependencies, kept for the graph. A manual removal does not add here.
+    #[serde(default)]
+    pub resolved_blockers: Vec<TaskId>,
     /// Delegation tree.
     pub parent: Option<TaskId>,
     /// Project label (`agent`'s `projects.name`, the session project); `None` = no project.
@@ -546,9 +550,10 @@ pub struct TaskCreate {
     /// Priority; `None` = medium. The ledger refuses it from an agent.
     #[serde(default)]
     pub priority: Option<Priority>,
-    /// Tasks (ids) or `decision:<id>` / `person:<name>` entries this task waits on — the
-    /// dependency edges of a plan, set at create time. Refused like a `task_update`: an
-    /// unknown task id, or a list that would form a cycle.
+    /// Task ids or `decision:<id>` / `person:<name>` entries this task waits on — the
+    /// dependency edges of a plan, set at create time. Checked as in `task_update`: duplicates
+    /// dropped; an unknown task id or a list that would form a cycle refused. A `todo` task
+    /// with an open blocker is created `blocked`.
     #[serde(default)]
     pub blockers: Vec<String>,
 }
