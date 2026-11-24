@@ -1,6 +1,8 @@
-// 214 D9: the routine graph canvas — default export for `React.lazy` in RoutineDetail, so `@xyflow/react` and its
-// stylesheet load in their own chunk like the attention graph's. Read-only: cards are neither draggable nor
-// connectable; pan and pinch-zoom work, the wheel scrolls the page. Positions come from `routineGraph` (model.ts).
+// 214 D9: the routine graph canvas — default export for `React.lazy` in RoutineDetail and the `/routines/$name/graph`
+// page, so `@xyflow/react` and its stylesheet load in their own chunk like the attention graph's. Read-only: cards are
+// neither draggable nor connectable; pan and pinch-zoom work. Inline (the Overview's 420 px box) the wheel scrolls the
+// page; full screen (an overlay over the app) and in its own window the wheel zooms and a minimap shows. Positions come
+// from `routineGraph` (model.ts).
 import '@xyflow/react/dist/style.css'
 import { useNavigate } from '@tanstack/react-router'
 import {
@@ -13,20 +15,27 @@ import {
   EdgeLabelRenderer,
   type EdgeProps,
   getSmoothStepPath,
+  MiniMap,
+  type Node,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
 } from '@xyflow/react'
-import { Scan } from 'lucide-react'
-import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { AppWindow, Maximize2, Minimize2, Scan } from 'lucide-react'
+import { type KeyboardEvent, memo, type ReactNode, use, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
 import { engineName } from '@/components/tasks/home'
 import { useMesh } from '@/components/tasks/queries'
+import { canPopout, isPopout, openPopout } from '@/lib/popout'
 import type { ScheduleFile, ScheduleInfo, SensorInfo } from '@/rpc/bindings/method.schedule.output'
 import { useRoutineHistory } from '../queries'
-import { type EdgeKind, routineGraph } from './model'
-import { Card, type CardNode, HistoryCard, PromptCard } from './nodes'
+import { type EdgeKind, type GraphLink, linkPopout, type Role, routineGraph, routineGraphPopout } from './model'
+import { Card, type CardNode, HistoryCard, LinkOut, PromptCard } from './nodes'
 
-export type RoutineGraphProps = { info: ScheduleInfo; file: ScheduleFile; sensors: SensorInfo[] | undefined; chat: string | undefined }
+/** `inline` is the Overview's box (the default), `window` the `/routines/$name/graph` page, alone in the column. */
+export type RoutineGraphProps = { info: ScheduleInfo; file: ScheduleFile; sensors: SensorInfo[] | undefined; chat: string | undefined; variant?: 'inline' | 'window' }
+/** Where the canvas is drawn right now: its inline box, the full-screen overlay, or the page. */
+type Mode = 'inline' | 'full' | 'window'
 
 type EdgeData = { kind: EdgeKind; label: string | null; lane: number | null }
 type RoutineEdgeType = Edge<EdgeData, 'routine'>
@@ -103,7 +112,23 @@ const subscribeTheme = (cb: () => void) => {
   return () => o.disconnect()
 }
 
-function Flow({ info, file, sensors, chat }: RoutineGraphProps) {
+/** The minimap paints each card in its role's strip colour (nodes.tsx `ROLE`); a broken card in danger. */
+const MINI: Record<Role, string> = {
+  trigger: 'var(--color-info)',
+  gate: 'var(--color-project-ochre)',
+  until: 'var(--color-project-plum)',
+  run: 'var(--color-fg-accent)',
+  prompt: 'var(--color-project-slate)',
+  deliver: 'var(--color-project-malachite)',
+  end: 'var(--color-fg-tertiary)',
+  history: 'var(--color-project-sand)',
+}
+const miniColor = (n: Node): string => {
+  const d = (n as CardNode).data
+  return d.danger ? 'var(--color-danger)' : MINI[d.role]
+}
+
+function Flow({ info, file, sensors, chat, mode, onFull }: Omit<RoutineGraphProps, 'variant'> & { mode: Mode; onFull(full: boolean): void }) {
   const rf = useReactFlow()
   const navigate = useNavigate()
   const history = useRoutineHistory(info.name).data
@@ -115,6 +140,8 @@ function Flow({ info, file, sensors, chat }: RoutineGraphProps) {
     const t = setInterval(() => setNow(Date.now()), 60_000)
     return () => clearInterval(t)
   }, [])
+  const out = use(LinkOut)
+  const zoomable = mode !== 'inline'
   const g = useMemo(() => routineGraph(info, file, history ?? [], sensors, { now, machine: mesh ? (id) => engineName(mesh, id) : undefined }), [info, file, history, sensors, mesh, now])
   const nodes = useMemo<CardNode[]>(
     () =>
@@ -174,15 +201,17 @@ function Flow({ info, file, sensors, chat }: RoutineGraphProps) {
         onInit={() => fitRef.current()}
         minZoom={0.2}
         maxZoom={1.5}
-        zoomOnScroll={false}
-        preventScrolling={false}
+        zoomOnScroll={zoomable}
+        preventScrolling={zoomable}
         forceColorMode={dark ? 'dark' : 'light'}
         onMoveStart={(e) => {
           if (e) auto.current = false
         }}
         onNodeClick={(_, n) => {
           const section = (n as CardNode).data.section
-          if (section) void navigate({ to: '/routines/$name/$section', params: { name: info.name, section }, search: chat ? { chat } : {} })
+          if (!section) return
+          if (out) out({ kind: 'section', name: info.name, section })
+          else void navigate({ to: '/routines/$name/$section', params: { name: info.name, section }, search: chat ? { chat } : {} })
         }}
       >
         <Markers />
@@ -198,17 +227,106 @@ function Flow({ info, file, sensors, chat }: RoutineGraphProps) {
           >
             <Scan />
           </ControlButton>
+          {mode !== 'window' && (
+            <ControlButton onClick={() => onFull(mode === 'inline')} aria-label={mode === 'full' ? 'Exit full screen' : 'Full screen'} title={mode === 'full' ? 'Exit full screen (Esc)' : 'Full screen'}>
+              {mode === 'full' ? <Minimize2 /> : <Maximize2 />}
+            </ControlButton>
+          )}
+          {canPopout() && !isPopout() && (
+            <ControlButton
+              onClick={() => {
+                onFull(false)
+                void openPopout(routineGraphPopout(info.name))
+              }}
+              aria-label="Open in new window"
+              title="Open in new window"
+            >
+              <AppWindow />
+            </ControlButton>
+          )}
         </Controls>
+        {zoomable && (
+          <MiniMap
+            pannable
+            zoomable
+            nodeColor={miniColor}
+            nodeStrokeWidth={0}
+            nodeBorderRadius={10}
+            bgColor="var(--bg-layer-1)"
+            maskColor="color-mix(in oklab, var(--bg-page) 62%, transparent)"
+            maskStrokeColor="var(--color-fg-accent)"
+            maskStrokeWidth={2}
+            ariaLabel="Routine graph overview"
+            className="max-sm:!hidden"
+            style={{ width: 184, height: 104 }}
+          />
+        )}
       </ReactFlow>
     </div>
   )
 }
 
-/** The lazily loaded routine graph (default export for `React.lazy`). */
-export default function RoutineGraph(props: RoutineGraphProps) {
+/** The overlay a full-screen graph lies in, over the whole app (sidebar included). Esc inside it exits — never a key
+ * pressed elsewhere; it takes focus on entering so the key lands here. */
+function FullScreen({ name, onExit, children }: { name: string; onExit(): void; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => ref.current?.focus(), [])
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Escape' || e.defaultPrevented) return
+    e.stopPropagation()
+    onExit()
+  }
   return (
-    <ReactFlowProvider>
-      <Flow {...props} />
-    </ReactFlowProvider>
+    <div
+      ref={ref}
+      tabIndex={-1}
+      role="dialog"
+      aria-modal
+      aria-label={`${name}: how this routine works`}
+      className="fixed inset-0 z-40 flex flex-col bg-background pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)] outline-none"
+      onKeyDown={onKeyDown}
+    >
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
+        <h2 className="min-w-0 truncate text-sm font-semibold">{name}</h2>
+        <span className="ml-auto shrink-0 text-xs text-fg-tertiary">Esc to exit full screen</span>
+      </div>
+      <div className="min-h-0 flex-1">{children}</div>
+    </div>
+  )
+}
+
+/** The lazily loaded routine graph (default export for `React.lazy`). Full screen moves the canvas into a portal over
+ * the app — a fresh canvas, fitted to its new size; leaving it fits the inline box again and returns focus to the
+ * toggle. */
+export default function RoutineGraph({ variant = 'inline', ...props }: RoutineGraphProps) {
+  const [full, setFull] = useState(false)
+  const mode: Mode = variant === 'window' ? 'window' : full ? 'full' : 'inline'
+  const inline = useRef<HTMLDivElement>(null)
+  const wasFull = useRef(false)
+  useEffect(() => {
+    if (wasFull.current && !full) inline.current?.querySelector<HTMLElement>('[aria-label="Full screen"]')?.focus()
+    wasFull.current = full
+  }, [full])
+  // In a popped graph window a link opens a window of its own instead of taking the graph's window away (as TaskPanel's
+  // "Open full page" does); anywhere else it navigates the window it is in.
+  const out = useMemo(() => (mode === 'window' && isPopout() ? (l: GraphLink) => void openPopout(linkPopout(l)) : null), [mode])
+  const flow = (
+    <LinkOut value={out}>
+      <ReactFlowProvider>
+        <Flow {...props} mode={mode} onFull={setFull} />
+      </ReactFlowProvider>
+    </LinkOut>
+  )
+  if (mode !== 'full') return <div ref={inline} className="size-full">{flow}</div>
+  return (
+    <>
+      <div ref={inline} className="size-full bg-background" />
+      {createPortal(
+        <FullScreen name={props.info.name} onExit={() => setFull(false)}>
+          {flow}
+        </FullScreen>,
+        document.body,
+      )}
+    </>
   )
 }

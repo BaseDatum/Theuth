@@ -4,8 +4,27 @@
 // placement below is what keeps every edge clear): the main line is one row (Trigger → Gate → Until check → Run →
 // Deliver), the Prompt and a loop's End card hang above the card they belong to, the loop-back runs in a lane under
 // the row, and History stands beside the row's end — so no edge crosses another or a card.
+import { fnv } from '@/lib/diagram/elk'
+import type { PopoutTarget } from '@/lib/popout'
 import type { RunInfo, ScheduleFile, ScheduleInfo, SensorInfo } from '@/rpc/bindings/method.schedule.output'
 import { type Kind, type Result, type Section, cadence, durationMs, fold, fromInfo, kindOf, lastCheckText, leftText, parseWhen, relative, resultKind, resultLabel } from '../helpers'
+
+/** `/routines/$name/graph`: the routine's graph alone, full height (its pop-out window's page). A static segment, so it
+ * outranks `/routines/$name/$section`; `graph` is no section. */
+export const routineGraphPath = (name: string): string => `/routines/${encodeURIComponent(name)}/graph`
+
+/** The routine graph in its own window: one window per routine. The key is a hash of the name, as the window label keeps
+ * only `[A-Za-z0-9_-]` and the raw text would let `a.b` and `a_b` share a window. */
+export const routineGraphPopout = (name: string): PopoutTarget => ({ kind: 'page', path: routineGraphPath(name), key: `routine-graph-${fnv(name)}` })
+
+/** Where a link on a card leads: a run's chat, an `agent:` fire's task, or a routine section (a card click). */
+export type GraphLink = { kind: 'session'; session: string } | { kind: 'task'; id: string } | { kind: 'section'; name: string; section: Section }
+
+/** A link followed from a popped graph window: a window of its own (the chat's, or a page window), so the graph stays put. */
+export const linkPopout = (l: GraphLink): PopoutTarget =>
+  l.kind === 'session'
+    ? { kind: 'chat', session: l.session }
+    : { kind: 'page', path: l.kind === 'task' ? `/tasks/${encodeURIComponent(l.id)}` : `/routines/${encodeURIComponent(l.name)}/${l.section}` }
 
 export type Role = 'trigger' | 'gate' | 'until' | 'run' | 'prompt' | 'deliver' | 'end' | 'history'
 export type Tone = 'ok' | 'warn' | 'danger' | 'muted'
