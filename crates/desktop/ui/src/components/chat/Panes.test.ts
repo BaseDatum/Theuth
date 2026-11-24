@@ -113,7 +113,7 @@ test("beside other panes a tile header is no window drag region and hands its pr
   await act(async () => root.unmount())
 })
 
-test('the layout survives the panes unmounting (another page) and a sidebar drop on a tile’s centre replaces it', async () => {
+test('the layout survives the panes unmounting (another page) and a sidebar drop on a tile’s centre joins it as a tab', async () => {
   const first = await mount('a')
   await act(async () => void openTile({ kind: 'jobs', host: 'a', props: {} }))
   await act(async () => first.root.unmount())
@@ -126,8 +126,11 @@ test('the layout survives the panes unmounting (another page) and a sidebar drop
     usePanes.getState().startDrag('b', 'B', 0, 0)
     usePanes.getState().moveDrag(200, 200)
   })
-  expect(usePanes.getState().drag?.target?.edge).toBe('center')
+  expect(usePanes.getState().drag?.target?.edge).toBe('tab')
   await act(async () => void usePanes.getState().endDrag(true))
-  expect(usePanes.getState().leaves).toEqual(['a', 'b'])
+  expect(usePanes.getState().leaves).toEqual(['a', jobs, 'b'])
+  expect(usePanes.getState().ws!.view('b')!.panelId).toBe(usePanes.getState().ws!.view(jobs)!.panelId)
+  // Once per page mount; the drop mounts only `b`.
+  expect(mounts).toEqual({ a: 2, [jobs]: 2, b: 1 })
   await act(async () => root.unmount())
 })

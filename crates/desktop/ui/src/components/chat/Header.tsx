@@ -22,7 +22,7 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { SidebarToggle } from './SidebarToggle'
 import { useTileHost } from '@/components/tiles/host'
 import { openBrowserTile, openMemoryTile, openTerminalsTile, openVmTile, showArtifact } from '@/components/tiles/open'
-import { useViewTitle } from '@danfessler/trellis-react'
+import { useViewBadge, useViewTitle } from '@danfessler/trellis-react'
 import { useViewDrag } from '@/hooks/use-view-drag'
 import { chatName } from '@/lib/attach'
 import { sharedLabel, useSharing } from '@/lib/contacts'
@@ -225,6 +225,7 @@ export function Header({
   const terminals = useHasTerminals(session)
   const codemap = useCodemapAvailable(session)
   const liveTitle = useSessionField(session ?? '', 'title')
+  const running = useSessionField(session ?? '', 'running') === true
   // `list_sessions` rows: the title until `TitleChanged` lands, and the owner chip (68 §5) — patched live by `useInvalidateOn`.
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canQuery2 && (!!session) })
   const row = session ? sessions.data?.find((s) => s.id === session) : undefined
@@ -279,7 +280,9 @@ export function Header({
   const title = chatTitle(raw)
   // Beside other panes the bar drags this one (`useViewDrag`) and must not be a window drag region.
   const drag = useViewDrag()
+  // The pane's Trellis tab (shown while it shares a panel): the chat's title, a dot while its turn runs.
   useViewTitle(title)
+  useViewBadge(running || null)
   const region = (mac && drag.region) || undefined
   // A popped window has no sidebar to open and is already its own window: no toggle, no search, no popout button.
   const popped = isPopout()

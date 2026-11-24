@@ -34,7 +34,9 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { PhoneWebView } from '@/components/chat/PhoneWebView'
 
 /**
- * Drag a sidebar row onto a chat pane (`usePressDrag` owns the gesture and its DOM glue). Spread the result on the
+ * Drag a sidebar row onto the panes (`usePressDrag` owns the gesture and its DOM glue): a drop on a pane's edge band
+ * splits it there; on its middle or its panel's tab bar the chat joins that panel as its active tab (`targetAt`). A
+ * click still shows the chat in the focused pane (`show`). Spread the result on the
  * row's `Link`; a press that became a drag never navigates, selects or opens the row's context menu. `id === null`
  * is the New chat rail item: each drag carries a fresh draft id, and a drop opens a draft pane (`NewChatPane`)
  * without moving the URL. In the phone Sheet fingers never drag: phones do not tile.
@@ -53,17 +55,28 @@ export function useSessionDrag(id: string | null, title: string) {
   }).props
 }
 
-/** The drag ghost and the snapped drop zone; mounted once in the shell, renders nothing between drags. */
+/** The drag ghost and the snapped drop zone; mounted once in the shell, renders nothing between drags. A drop that
+ * makes the chat a tab of the panel under it (its middle or its tab bar) outlines that whole panel with the new tab
+ * drawn at its top; an edge drop shades the half the split will give it. */
 export function DragOverlay() {
   const drag = usePanes((s) => s.drag)
   if (!drag) return null
+  const tab = drag.target?.edge === 'tab'
   return (
     <>
       {drag.target && (
         <div
+          data-drop={drag.target.edge}
           className="pointer-events-none fixed z-50 rounded-xl border-2 border-fg-accent bg-fg-accent/10 transition-[left,top,width,height] duration-100"
           style={zone(drag.target)}
-        />
+        >
+          {tab && (
+            <div className="absolute top-1 left-1 flex max-w-56 items-center gap-1.5 truncate rounded-md border border-fg-accent bg-popover px-2 py-0.5 text-xs shadow-sm">
+              <span className="truncate">{drag.title}</span>
+              <span className="shrink-0 text-fg-tertiary">· new tab</span>
+            </div>
+          )}
+        </div>
       )}
       <div
         className="pointer-events-none fixed z-50 max-w-56 truncate rounded-md border bg-popover px-2 py-1 text-xs shadow-md"

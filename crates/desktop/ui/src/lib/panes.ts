@@ -13,8 +13,10 @@ import { useEngines } from '@/link/engines'
 import { openPopout } from '@/lib/popout'
 import { isWeb, type WebView, useWebViews, webId, webLeaf } from '@/lib/web-views'
 
-export type Edge = 'left' | 'right' | 'top' | 'bottom' | 'center'
-/** The pane under the pointer and which of its edges (or its middle) the drop snaps to. */
+/** Where a view lands beside `target`: one of its panel's edges (a split), `tab` (a tab of its panel, made active) or
+ * `center` (it takes `target`'s place, `target` closes). */
+export type Edge = 'left' | 'right' | 'top' | 'bottom' | 'center' | 'tab'
+/** The pane under the pointer and which of its edges (or its panel's tabs) the drop snaps to. */
 export type Target = { session: string; edge: Edge; rect: DOMRect }
 /** A sidebar row (a session, a draft for New chat) dragged onto the panes. */
 export type Drag = { session: string; title: string; x: number; y: number; target: Target | null }
@@ -96,10 +98,12 @@ type PanesStore = {
   drag: Drag | null
   focus(session: string): void
   select(leaf: string): void
-  /** The route landed on `session`: focus its pane, or show it in the selected frame's pane (taking it over), else in
-   * the focused chat's pane, else left of the frames when only frames are left. */
+  /** The route landed on `session`: focus its pane (the active tab of its panel, if it was a tab behind another), or
+   * show it in the selected frame's pane (taking it over), else in the focused chat's pane, else left of the frames
+   * when only frames are left. */
   show(session: string): void
-  /** Show `session` at `edge` of the pane showing `target` (`center` replaces it). A pane already showing `session` moves. */
+  /** Show `session` at `edge` of the pane showing `target` (`center` replaces it, `tab` joins its panel). A pane already
+   * showing `session` moves. */
   place(target: string, session: string, edge: Edge): void
   /** New chat where the user is looking: with ≥ 2 chat panes the focused one (fallback: the first) becomes a fresh
    * draft; a focused draft is kept, never stacked. Returns the draft to type into, or `null` for a single pane: go to `/`. */
@@ -232,25 +236,37 @@ function replace(ws: WorkspaceHandle, old: string, leaf: string, spec: ViewSpec)
   usePanes.setState({ focused: focused === old ? null : focused, selected: selected === old ? leaf : selected })
 }
 
-/** `leaf` at `edge` of `target`'s panel (`center` takes it over); beside the whole layout when `target` is not laid out. */
+/** `leaf` at `edge` of `target`'s panel (`center` takes it over, `tab` joins it as the active tab); beside the whole
+ * layout when `target` is not laid out. */
 function put(ws: WorkspaceHandle, target: string, leaf: string, edge: Edge, spec: ViewSpec): void {
   const doc = ws.getDocument()
   const panel = panelOf(doc.root, target)
   const open = doc.views[leaf] !== undefined
   if (!panel) {
     if (open) return
-    if (doc.root) openView(ws, leaf, spec, { beside: doc.root.id, edge: edge === 'center' ? 'right' : edge })
+    if (doc.root) openView(ws, leaf, spec, { beside: doc.root.id, edge: edge === 'center' || edge === 'tab' ? 'right' : edge })
     else openView(ws, leaf, spec, 'side')
   } else if (edge === 'center') replace(ws, target, leaf, spec)
-  else if (open) ws.dock(leaf, { beside: panel.id, edge })
+  else if (edge === 'tab') {
+    if (!open) openView(ws, leaf, spec, { into: panel.id })
+    else if (!panel.views.includes(leaf)) ws.dock(leaf, { into: panel.id })
+    ws.select(leaf)
+  } else if (open) ws.dock(leaf, { beside: panel.id, edge })
   else openView(ws, leaf, spec, { beside: panel.id, edge })
 }
 
-/** The focused pane `id` closed: the URL moves to the first real chat left (the return value), else focus stays on
- * the first draft left. */
-function refocus(id: string): string | null {
-  const { focused, leaves } = usePanes.getState()
+/** The focused pane `id` closed. When it was a tab, focus moves to the chat its panel (`panel`) shows now: a sibling
+ * tab takes its place on screen, so the URL follows it (the return value; a draft has none). Else the URL moves to the
+ * first real chat left, or focus stays on the first draft left. A selection on `id` follows focus. */
+function refocus(id: string, panel?: string): string | null {
+  const { ws, focused, selected, leaves } = usePanes.getState()
   if (focused !== id) return null
+  const node = panel && ws ? nodeOf(ws.getDocument().root, panel) : null
+  const sibling = node?.kind === 'panel' && node.selected !== id && !isFrame(node.selected) ? node.selected : null
+  if (sibling) {
+    usePanes.setState({ focused: sibling, selected: selected === id ? sibling : selected })
+    return isDraft(sibling) ? null : sibling
+  }
   const to = leaves.find((s) => !isDraft(s) && !isFrame(s)) ?? null
   usePanes.setState({ focused: to ?? chatLeaves(leaves)[0] ?? null })
   return to
@@ -320,6 +336,9 @@ export const usePanes = create<PanesStore>()((set, get) => ({
         // Only frames left: the chat goes left of all of them, not into one corner.
         else put(ws, '', session, 'left', chatSpec(session))
       })
+    } else if (ws) {
+      const panel = panelOf(ws.getDocument().root, session)
+      if (panel && panel.selected !== session) op(() => ws.select(session))
     }
     set({ focused: session, selected: session })
   },
@@ -338,8 +357,9 @@ export const usePanes = create<PanesStore>()((set, get) => ({
     return draft
   },
   close(session) {
+    const panel = get().ws?.view(session)?.panelId
     closeLeaves([session])
-    return refocus(session)
+    return refocus(session, panel)
   },
   startDrag(session, title, x, y) {
     document.body.classList.add('select-none')
@@ -360,9 +380,10 @@ export const usePanes = create<PanesStore>()((set, get) => ({
 }))
 
 /**
- * `leaf` (opened per `spec` when new) at `edge` of `target` (`center` replaces it; an open `leaf` moves). A frame never
- * takes focus (205 D5): the URL stays on the chat beside it, and it is selected only when it took over the selected
- * pane; a placed chat is focused and selected. `false` without a workspace.
+ * `leaf` (opened per `spec` when new) at `edge` of `target` (`center` replaces it, `tab` joins its panel as the active
+ * tab; an open `leaf` moves). A frame never takes focus (205 D5): the URL stays on the chat beside it, and it is
+ * selected only when it took over the selected pane or covered it as a tab; a placed chat is focused and selected.
+ * `false` without a workspace.
  */
 export function placeView(target: string, leaf: string, edge: Edge, spec: ViewSpec): boolean {
   const { ws, selected } = usePanes.getState()
@@ -371,10 +392,11 @@ export function placeView(target: string, leaf: string, edge: Edge, spec: ViewSp
     if (!isFrame(leaf)) usePanes.setState({ focused: leaf })
     return true
   }
+  const panel = panelOf(ws.getDocument().root, target)
   op(() => put(ws, target, leaf, edge, spec))
   touch(leaf)
-  const over = edge === 'center' && selected === target
-  // `replace` already dropped focus off a taken-over chat; a chat split beside keeps it.
+  const over = selected !== null && (edge === 'center' ? selected === target : edge === 'tab' && !!panel?.views.includes(selected))
+  // `replace` already dropped focus off a taken-over chat; a chat split beside (or tabbed behind) keeps it.
   const kept = usePanes.getState().focused ?? (isFrame(target) || edge === 'center' ? null : target)
   usePanes.setState({ focused: isFrame(leaf) ? kept : leaf, selected: !isFrame(leaf) || over ? leaf : usePanes.getState().selected })
   return true
@@ -422,19 +444,35 @@ export function picked(id: string): void {
   if (!isDraft(id)) go?.(id)
 }
 
-/** Edge bands are this share of the pane's width/height; the rest is `center` (replace). */
+/** Edge bands are this share of the pane's width/height (a split); the rest, and the panel's tab bar, is `tab`. */
 const BAND = 0.25
 
-/** The pane under (`x`, `y`) and the drop edge for that point; `null` off any pane. */
+/** The Trellis panel element holding `leaf`, if it is laid out. */
+function panelElement(leaf: string): Element | null {
+  const { ws } = usePanes.getState()
+  const id = ws?.view(leaf)?.panelId
+  if (!ws || !id) return null
+  return [...ws.element.querySelectorAll<HTMLElement>('[data-trellis-part="panel"]')].find((p) => p.dataset.panel === id) ?? null
+}
+
+/** The pane under (`x`, `y`) and the drop edge for that point; `null` off any pane. Over a panel's tab bar (shown while
+ * it holds several views) the drop is a tab of that panel. A `tab` target's rect is its whole panel, tab bar included. */
 export function targetAt(x: number, y: number): Target | null {
-  const el = document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-pane]')
+  const hit = document.elementFromPoint(x, y)
+  const bar = hit?.closest<HTMLElement>('[data-trellis-part="tabbar"]')
+  if (bar?.dataset.panel) {
+    const node = nodeOf(usePanes.getState().ws?.getDocument().root, bar.dataset.panel)
+    if (node?.kind !== 'panel') return null
+    return { session: node.selected, edge: 'tab', rect: (panelElement(node.selected) ?? bar).getBoundingClientRect() }
+  }
+  const el = hit?.closest<HTMLElement>('[data-pane]')
   const session = el?.dataset.pane
   if (!el || !session) return null
   const rect = el.getBoundingClientRect()
   const fx = (x - rect.left) / rect.width
   const fy = (y - rect.top) / rect.height
-  const edge: Edge = fx < BAND ? 'left' : fx > 1 - BAND ? 'right' : fy < BAND ? 'top' : fy > 1 - BAND ? 'bottom' : 'center'
-  return { session, edge, rect }
+  const edge: Edge = fx < BAND ? 'left' : fx > 1 - BAND ? 'right' : fy < BAND ? 'top' : fy > 1 - BAND ? 'bottom' : 'tab'
+  return { session, edge, rect: edge === 'tab' ? (panelElement(session)?.getBoundingClientRect() ?? rect) : rect }
 }
 
 /** The region a drop at `t` would fill, in viewport px. */
@@ -451,6 +489,7 @@ export function zone({ edge, rect: r }: Target): { left: number; top: number; wi
     case 'bottom':
       return { left: r.left, top: r.top + h, width: r.width, height: h }
     case 'center':
+    case 'tab':
       return { left: r.left, top: r.top, width: r.width, height: r.height }
   }
 }
@@ -486,6 +525,15 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
     setTimeout(() => (pressing = null), 0)
   }
   window.addEventListener('pointerdown', down, true)
+  // A tab clicked is a pick even when Trellis's own focus does not move (it already sat on that view while the facade
+  // focused another: a sidebar drop, a route), so no `focus` event comes. Trellis's handler on the tab runs first.
+  const tabClick = (e: MouseEvent) => {
+    const hit = e.target instanceof Element ? e.target : null
+    const id = hit?.closest<HTMLElement>('[data-trellis-part="tab"]')?.dataset.view
+    if (!id || hit?.closest('[data-trellis-part="tab-close"]') || !ws.getDocument().views[id]) return
+    picked(id)
+  }
+  ws.element.addEventListener('click', tabClick)
   // The camera reports every frame it moves; it has settled once `ZOOM_SETTLE_MS` pass without one.
   let still = 0
   const settle = () => {
@@ -508,10 +556,11 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
     }),
     ws.on('close', (v: ViewInfo) => {
       if (isWeb(v.id) && !useWebViews.getState().views[webId(v.id)]?.popped) useWebViews.getState().close(webId(v.id))
+      const panel = homes.get(v.id)
       homes.delete(v.id)
       used.delete(v.id)
       if (internal) return
-      const to = refocus(v.id)
+      const to = refocus(v.id, panel)
       if (to) go?.(to)
     }),
   ]
@@ -522,6 +571,7 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
     for (const off of offs) off()
     window.clearTimeout(still)
     window.removeEventListener('pointerdown', down, true)
+    ws.element.removeEventListener('click', tabClick)
     if (usePanes.getState().ws !== ws) return
     try {
       const doc = ws.getDocument()
