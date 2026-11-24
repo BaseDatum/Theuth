@@ -241,7 +241,7 @@ export function isCommand(line: string, skills: readonly string[] | null): boole
   return skills ? skills.includes(name) : !/[/.]/.test(name)
 }
 
-/** Header surfaces a command can open; the header listens for `theuth:open`. */
+/** Surfaces a command can open via `theuth:open`: the header's, and (215 C1) `model`, the composer's `ComposerModel`. */
 export type Surface = 'model' | 'prompt' | 'jobs' | 'todos' | 'memory'
 
 export function openSurface(surface: Surface): void {

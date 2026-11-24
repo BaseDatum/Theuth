@@ -4,9 +4,10 @@
 // 2026-11-17 (Sky): picking a model with effort levels keeps the picker open on its chips, focused; a chip, or a model
 // without levels, completes the choice (`onClose`). Outside click, Escape or Tab-away close it with the model kept.
 
-import { Check, ChevronLeft, ChevronRight, Star } from 'lucide-react'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Star } from 'lucide-react'
 import { useCommandState } from 'cmdk'
-import { Fragment, type KeyboardEvent, useEffect, useRef, useState } from 'react'
+import { type ComponentProps, Fragment, type KeyboardEvent, useEffect, useRef, useState } from 'react'
+import { Button } from '@/components/ui/button'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { cn } from '@/lib/utils'
 import { modelsOfProvider, providersOf, rankModels, searchTerms } from '@/lib/model-search'
@@ -168,6 +169,30 @@ const CHIP_ON = 'border-foreground bg-foreground text-background hover:bg-foregr
 /** 177 U4: the small tag of a model (or provider) served by a local model server. */
 export function LocalTag() {
   return <span className="shrink-0 rounded-sm border border-fg-tertiary/40 px-1 text-[10px] leading-4 text-fg-secondary">local</span>
+}
+
+/**
+ * 215 C1/C4: the quiet model label every model trigger shares — the composer's toolbar (`ComposerModel`) and every form
+ * field (`ModelCombobox`): ghost, no border, muted text tinted on hover and while open. The name truncates first; then
+ * `· effort`, the local tag and the chevron, which never shrink. Every other prop (id, aria-label, disabled, size, the
+ * Radix trigger's state and ref) reaches the `Button`; `className` merges last.
+ */
+export function QuietModelTrigger({ name, effort, local, className, ...props }: ComponentProps<typeof Button> & { name: string; effort?: string | null; local?: boolean }) {
+  return (
+    <Button
+      variant="ghost"
+      {...props}
+      className={cn(
+        'min-w-0 justify-start gap-1 rounded-md px-2 text-[13px] font-normal text-fg-tertiary hover:bg-layer-2 hover:text-fg-secondary has-[>svg]:px-2 dark:hover:bg-layer-2 data-[state=open]:bg-layer-2 data-[state=open]:text-fg-secondary',
+        className,
+      )}
+    >
+      <span className="min-w-0 truncate">{name}</span>
+      {effort && <span className="shrink-0">· {effort}</span>}
+      {local && <LocalTag />}
+      <ChevronDown className="size-3.5 opacity-60" />
+    </Button>
+  )
 }
 
 export function ModelPicker({ models, model, onSelect, onClose, effort, none, extra, favorites, onToggleFavorite, className, listClassName }: ModelPickerProps) {

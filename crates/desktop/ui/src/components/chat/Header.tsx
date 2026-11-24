@@ -1,6 +1,6 @@
 import { Capability } from '@/rpc/capabilities'
 import { supports, type Requirements } from '@/rpc/discovery'
-import { memoryRequirements, sessionCostRequirements, messagingRequirements, toolsRequirements, contextRequirements, browserRequirements, approvalsRequirements, modelRequirements, terminalRequirements, sessionMenuRequirements } from './requirements'
+import { memoryRequirements, sessionCostRequirements, messagingRequirements, toolsRequirements, contextRequirements, browserRequirements, approvalsRequirements, terminalRequirements, sessionMenuRequirements } from './requirements'
 import { requirements as codemapRequirements } from '@/components/codemap/requirements'
 import { requirements as artifactRequirements } from '@/components/artifacts/requirements'
 import { requirements as vmRequirements } from '@/components/vm/requirements'
@@ -49,7 +49,6 @@ import { BrowserLive } from './BrowserLive'
 import { ContextMeter } from './ContextMeter'
 import { CostDialog, CostPill } from './CostPill'
 import { HeaderMenu, MenuRow, useHeaderMenuClose } from './HeaderMenu'
-import { ModelDialog, ModelMenu, ModelRow } from './ModelMenu'
 import { DraftMemory, MemoryBadge, MemoryPanel } from './MemoryPanel'
 import { BrowserButton, openTarget, useBrowserTargets } from './BrowserTargets'
 import { nativeWebViews } from '@/lib/web-view-native'
@@ -59,8 +58,9 @@ import { ToolsSheet } from './ToolsSheet'
 import { TerminalButton, TerminalViewer, useHasTerminals } from './TerminalViewer'
 import { EyeMark } from './ObservedBar'
 import { surfaceOf } from './slash'
+// 215 C3: no `model` item — the picker lives in the chat input (`ComposerModel`).
 const HEADER_REQUIREMENTS: Partial<Record<HeaderId, Requirements>> = {
-  search: searchRequirements, memory: memoryRequirements, model: modelRequirements,
+  search: searchRequirements, memory: memoryRequirements,
   desktop: vmRequirements, context: contextRequirements, cost: sessionCostRequirements,
   terminals: terminalRequirements, artifacts: artifactRequirements,
   codemap: codemapRequirements, pending: approvalsRequirements, menu: sessionMenuRequirements,
@@ -245,7 +245,6 @@ export function Header({
   const [sheet, setSheet] = useState(false)
   const [cost, setCost] = useState(false)
   const [terminal, setTerminal] = useState(false)
-  const [picker, setPicker] = useState(false)
   const [memory, setMemory] = useState(false)
   // Inside a pane on the tiling layout, surfaces open as tiles beside this one; otherwise their sheets and dialogs.
   const host = useTileHost()
@@ -315,15 +314,6 @@ export function Header({
           </Link>
         </Button>
       ) : null,
-    // The new-chat page has its own picker right above the composer; the header's is for live sessions only.
-    model: (mode) =>
-      session === null ? null : mode === 'row' ? (
-        <ModelRow session={session} onOpen={() => setPicker(true)} />
-      ) : (
-        <div className="min-w-0">
-          <ModelMenu session={session} />
-        </div>
-      ),
     // `w-0 flex-1`: takes the slack without counting towards the bar's natural width, so a long title never pushes
     // the controls out; it truncates to nothing before they move (or, in the full bar, before the tier drops).
     title: () => (
@@ -449,7 +439,6 @@ export function Header({
       {!session && <DraftMemory open={memory} onOpenChange={setMemory} />}
       <Capability required={messagingRequirements} hide><MessagingSheet session={session ?? ''} /></Capability>
       <Capability required={toolsRequirements} hide><ToolsSheet session={session ?? ''} /></Capability>
-      {compact && <Capability required={modelRequirements} hide><ModelDialog session={session} open={picker} onOpenChange={setPicker} /></Capability>}
       {session && (
         <>
           <Capability required={sessionCostRequirements} hide><CostDialog session={session} open={cost} onOpenChange={setCost} /></Capability>

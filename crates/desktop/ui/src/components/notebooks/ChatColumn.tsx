@@ -5,7 +5,6 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Composer, PLAIN_DRAFT } from '@/components/chat/Composer'
 import { MemoryBadge, MemoryPanel } from '@/components/chat/MemoryPanel'
-import { ModelMenu } from '@/components/chat/ModelMenu'
 import { Transcript } from '@/components/chat/Transcript'
 import { NotebookContext, applyContextDefaults, useEndlessSettings, useNotebookSession, useOpenThread } from '@/components/notebooks/NotebookContext'
 import { useContextEstimate, useNotebook, useNotebookChats } from '@/components/notebooks/useNotebook'
@@ -49,8 +48,8 @@ const HEADER = 'flex h-10 shrink-0 items-center gap-2 border-b border-border-sub
  * `composerOnly`: the phone's Sources tab pins just the context line and the composer.
  * Wave 2 §5.2: the context line under the header comes from `notebook_context_estimate`; a new thread gets this
  * device's remembered dial positions (`notebook_context_set` per item) right after its session exists.
- * 157 D1–D3: the header carries the model picker (`ModelMenu`, the thread's or the draft's pick; `/model` opens it,
- * `own`), the ∞ switch for a new chat (NewChatPane's rule: `agent.endless.default_chat`, remembered per draft, the
+ * 157 D1–D3 / 215 C3: the composer carries the model picker (`ComposerModel` via `ownModel`, the thread's or the draft's
+ * pick; `/model` opens it, `own`), the header the ∞ switch for a new chat (NewChatPane's rule: `agent.endless.default_chat`, remembered per draft, the
  * compactor line under the composer while on; applied as `memory: 'endless'` on both creation paths) and, for an
  * existing endless thread, the ∞ badge that opens the Memory panel. `/endless on|off` switches an existing thread.
  */
@@ -98,7 +97,7 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
     <div className="shrink-0 border-t border-border-subtle bg-background">
       <ContextLine estimate={estimate.data} error={estimate.error} />
       {!session && endless && <p className="px-3 pt-1 text-[11px] text-fg-tertiary">Fractal context · compactor: {compactor}</p>}
-      <Composer key={session ?? 'new'} session={session} pinned={pinned} sessionTitle={title} draftCreate={{ ...PLAIN_DRAFT, endless }} onCreated={(id) => void onCreated(id)} compact />
+      <Composer key={session ?? 'new'} session={session} pinned={pinned} sessionTitle={title} draftCreate={{ ...PLAIN_DRAFT, endless }} onCreated={(id) => void onCreated(id)} compact ownModel />
     </div>
   )
   if (composerOnly) return composer
@@ -106,13 +105,11 @@ export function ChatColumn({ notebook, title, notes, composerOnly = false }: { n
   return (
     <section className="@container flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Chat about this notebook">
       <header className={HEADER}>
-        {/* A narrow column (the notes pane dragged wide) keeps the picker readable: the label and the New chat text go first. */}
+        {/* A narrow column (the notes pane dragged wide) drops the label and the New chat text first. */}
         <span className="hidden shrink-0 whitespace-nowrap @lg:inline">
           Chat <span className="font-normal text-fg-tertiary">· this notebook</span>
         </span>
-        <div className="min-w-0 flex-1">
-          <ModelMenu session={session} own small />
-        </div>
+        <div className="min-w-0 flex-1" />
         {session ? (
           <MemoryBadge session={session} summary={summary} open={memory} onToggle={() => setMemory((o) => !o)} />
         ) : (

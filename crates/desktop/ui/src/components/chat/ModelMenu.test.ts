@@ -9,8 +9,11 @@ import type { ConfigOption } from "@/rpc/bindings/method.agent.output"
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 import { dispatch, useSessions } from '@/store/sessions'
-import { AdvisorCommand, dialogPlacement, HarnessPicker, harnessCurrent, harnessGroups, KnowledgeHarvesterCommand, type Model, ModelMenu, slashTarget } from './ModelMenu'
+import { AdvisorCommand, dialogPlacement, HarnessPicker, harnessCurrent, harnessGroups, KnowledgeHarvesterCommand, ComposerModel, type Model, slashTarget } from './ModelMenu'
 import { useDrafts } from '@/lib/drafts'
+import { usePanes } from '@/lib/panes'
+import { modelRequirements } from './requirements'
+import { openSurface } from './slash'
 
 const rpc = vi.hoisted(() => ({ api: {} as Record<string, unknown> }))
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => rpc.api }))
@@ -170,8 +173,26 @@ test('harness picker: a model pick keeps it open on the thought_level chips, foc
   expect(done).toHaveBeenCalledTimes(1)
 })
 
-test('chat header (ModelMenu): a model with levels is set once and the popover stays on its chips, focused; Escape keeps it; a chip sets the effort once and closes; a model without levels closes at once', async () => {
-  useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'legacy' }, info: { favorite_models: [] } as never })
+/** 215 C1: `ComposerModel` hides without the model methods — an engine whose discovery document lists them, the
+ * knowledge harvester's, and the event topic. */
+function engine() {
+  const methods = [...modelRequirements.methods, 'session_knowledge_harvester', 'set_session_knowledge_harvester', 'knowledge_harvester_model', 'subscribe_topics', 'unsubscribe_topics']
+  const document = {
+    methods: methods.map((name) => ({ name, params: [], result: {} })),
+    'x-theuth': { subscriptions: [{ subscribe: 'subscribe_topics', unsubscribe: 'unsubscribe_topics', notification: 'subscribe_topics' }], events: [{ topic: 'agent.events', version: 1 }] },
+  } as never
+  useConnection.setState({ discovery: { phase: 'ready', capabilities: null, document, unavailable: new Set() }, info: { favorite_models: [] } as never })
+}
+
+test('215 C1: ComposerModel carries its own Capability — an engine without the model methods shows no label (hosts add none)', async () => {
+  useConnection.setState({ discovery: { phase: 'ready', capabilities: null, document: { methods: [], 'x-theuth': { subscriptions: [], events: [] } } as never, unavailable: new Set() } })
+  const qc = new QueryClient()
+  const p = await mount(createElement(QueryClientProvider, { client: qc }, createElement(ComposerModel, { session: null })))
+  expect(p.host.innerHTML).toBe('')
+})
+
+test('215 C1 composer label (ComposerModel): a model with levels is set once and the popover stays on its chips, focused; Escape keeps it; a chip sets the effort once and closes; a model without levels closes at once', async () => {
+  engine()
   const slice = (patch: object) => useSessions.setState((s) => ({ sessions: { ...s.sessions, s1: { ...s.sessions.s1, ...patch } as never } }))
   slice({ model: 'anthropic/claude-opus-4-1', effort: null })
   const calls: unknown[][] = []
@@ -183,12 +204,16 @@ test('chat header (ModelMenu): a model with levels is set once and the popover s
     set_effort: async (s: string, level: string | null) => (calls.push(['set_effort', s, level]), slice({ effort: level })),
   }
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
-  const p = await mount(createElement(QueryClientProvider, { client: qc }, createElement(ModelMenu, { session: 's1' })))
+  // `/model` reaches the focused pane's label (`slashTarget`).
+  usePanes.setState({ focused: 's1' })
+  const p = await mount(createElement(QueryClientProvider, { client: qc }, createElement(ComposerModel, { session: 's1' })))
   const trigger = p.host.querySelector('button')!
   await vi.waitFor(() => expect(trigger.textContent).toBe('Claude Opus 4.1'))
   const isOpen = () => document.querySelector('[cmdk-root]') !== null
   const at = (sel: string) => document.querySelector<HTMLElement>(sel)!
   await p.click(trigger)
+  // 215 C1: the quiet label opens its popover upward, above the input.
+  expect(document.querySelector('[data-slot="popover-content"]')?.getAttribute('data-side')).toBe('top')
   await p.click(at('[data-value="provider:openai"]'))
   await p.click(at('[data-value="model:openai/gpt-5.4"]'))
   await vi.waitFor(() => expect(document.activeElement?.textContent).toBe('Default'))
@@ -200,6 +225,11 @@ test('chat header (ModelMenu): a model with levels is set once and the popover s
   await p.click(at('[aria-label="Effort"] [data-value="effort:high"]'))
   expect(calls).toEqual([['set_model', 's1', 'openai/gpt-5.4'], ['set_effort', 's1', 'high']])
   expect(isOpen()).toBe(false)
+  expect(trigger.textContent).toBe('GPT-5.4· high')
+  // `/model` (and the ⋯ menu's `Model: …` row) reopen it: `theuth:open` 'model'.
+  await act(async () => openSurface('model'))
+  expect(isOpen()).toBe(true)
+  await act(async () => void document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
   await p.click(trigger)
   await p.click(at('[data-value="provider:anthropic"]'))
   await p.click(at('[data-value="model:anthropic/claude-opus-4-1"]'))
@@ -211,7 +241,7 @@ test('chat header (ModelMenu): a model with levels is set once and the popover s
 // ── Knowledge harvester: the knowledge harvest's model, a level beside Advisor ──────────────────────────────────────
 
 test('knowledge harvester row: the default (Helpers pick, else the chat model) until the chat has its own; it opens the level, whose lead row resets the pick', async () => {
-  useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'legacy' }, info: { favorite_models: [] } as never })
+  engine()
   useSessions.setState((s) => ({ sessions: { ...s.sessions, s1: { ...s.sessions.s1, model: 'anthropic/claude-opus-4-1', effort: null } as never } }))
   let own: { model: string | null; effort: string | null } = { model: null, effort: null }
   let fallback: ModelInfo | null = catalog[1]!
@@ -224,7 +254,7 @@ test('knowledge harvester row: the default (Helpers pick, else the chat model) u
     set_session_knowledge_harvester: set,
   }
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
-  const p = await mount(createElement(QueryClientProvider, { client: qc }, createElement(ModelMenu, { session: 's1' })))
+  const p = await mount(createElement(QueryClientProvider, { client: qc }, createElement(ComposerModel, { session: 's1' })))
   const trigger = p.host.querySelector('button')!
   await vi.waitFor(() => expect(trigger.textContent).toBe('Claude Opus 4.1'))
   const row = () => [...document.querySelectorAll('button')].find((b) => b.textContent?.startsWith('Knowledge harvester ·'))

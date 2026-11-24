@@ -16,7 +16,7 @@ import { openAdvisorPicker } from './ModelMenu'
  * 125 §8.2: the advisor's pill in the bottom-stack row beside the subagent dots — `Eye idle` · `reviewing…` (pulsing)
  * · `N notes` · `paused` · `halted` (`EyeOff`) — nothing when the session has no advisor. Tap → the status popover
  * (a bottom sheet under the mobile breakpoint) with model, state, context, tokens, cost, the last note and the two
- * actions: `Change model…` (the header picker on its Advisor level) and `Turn advisor off`.
+ * actions: `Change model…` (the composer's model picker on its Advisor level, 215 C1) and `Turn advisor off`.
  */
 export function AdvisorPill({ session }: { session: string }) {
   const status = useAdvisor(session)

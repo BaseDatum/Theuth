@@ -12,7 +12,7 @@ import { RuntimeFields } from '@/components/agents/RuntimeAccessFields'
 import { type Draft, emptyDraft } from '@/components/agents/wizard'
 import { LeafModel } from '@/components/autoresearch/DraftPanel'
 import { MemoryPanel } from '@/components/chat/MemoryPanel'
-import { ModelMenu } from '@/components/chat/ModelMenu'
+import { ComposerModel } from '@/components/chat/ModelMenu'
 import { StartForm } from '@/components/meeting/StartForm'
 import { RoutineDetail } from '@/components/routines/RoutineDetail'
 import { Advisor } from '@/components/settings/Advisor'
@@ -186,8 +186,8 @@ const ROWS: Record<number, { title: string; body: () => ReactNode }> = {
   },
   19: { title: 'Settings › Autoresearch › role models', body: () => <Autoresearch /> },
   20: { title: 'Autoresearch draft › leaf models', body: () => <Leaf /> },
-  // Row 21 (audit): the chat header's picker for a new chat; on touch it opens the top-of-band dialog (194 D1).
-  21: { title: 'Chat header (new chat)', body: () => <ModelMenu session={null} /> },
+  // Row 21 (audit): 215 C1 — the composer's model label for a new chat; opens upward, on touch the top-of-band dialog (194 D1).
+  21: { title: 'Composer model (new chat)', body: () => <ComposerModel session={null} /> },
 }
 
 function Fixture() {

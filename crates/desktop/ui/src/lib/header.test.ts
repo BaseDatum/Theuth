@@ -30,7 +30,7 @@ test('tier 2 sheds when even the compact bar overflows, and the top tier is a ce
 
 const items = [
   { id: 'nav', slot: 'bar' },
-  { id: 'model', slot: 'menu' },
+  { id: 'cost', slot: 'menu' },
   { id: 'context', slot: 'both', shed: true },
   { id: 'panel', slot: 'bar', shed: true },
   { id: 'menu', slot: 'bar' },
@@ -40,20 +40,20 @@ const ids = (xs: readonly { id: string }[]) => xs.map((x) => x.id)
 
 test('tier 0 shows every item inline and the chevron menu is empty', () => {
   const { bar, menu } = layout(items, 0)
-  expect(ids(bar)).toEqual(['nav', 'model', 'context', 'panel', 'menu'])
+  expect(ids(bar)).toEqual(['nav', 'cost', 'context', 'panel', 'menu'])
   expect(menu).toEqual([])
 })
 
 test('tier 1 keeps bar and both items inline; menu and both items go behind the chevron, in header order', () => {
   const { bar, menu } = layout(items, 1)
   expect(ids(bar)).toEqual(['nav', 'context', 'panel', 'menu'])
-  expect(ids(menu)).toEqual(['model', 'context'])
+  expect(ids(menu)).toEqual(['cost', 'context'])
 })
 
 test('tier 2 moves shed items out of the bar and into the menu, so nothing is lost', () => {
   const { bar, menu } = layout(items, 2)
   expect(ids(bar)).toEqual(['nav', 'menu'])
-  expect(ids(menu)).toEqual(['model', 'context', 'panel'])
+  expect(ids(menu)).toEqual(['cost', 'context', 'panel'])
   // Every item is reachable somewhere at every tier.
   for (let t = 0; t < TIERS; t++) {
     const l = layout(items, t)
@@ -61,12 +61,13 @@ test('tier 2 moves shed items out of the bar and into the menu, so nothing is lo
   }
 })
 
-test('the title follows the model picker in the full bar and opens the compact bar, whichever panel button the session has', () => {
+test('215 C3: no model item; the title follows the sidebar toggle in the full bar and opens the compact bar, whichever panel button the session has', () => {
   for (const panel of ['artifacts', 'browser', 'terminals', null] as const) {
     const order = headerOrder(panel, true)
+    expect(ids(order)).not.toContain('model')
     const full = ids(layout(order, 0).bar)
-    expect(full.indexOf('title')).toBe(full.indexOf('model') + 1)
-    // Compact: the picker is behind the chevron; title · context · the one panel button · popout · chevron · ⋯ stay inline.
+    expect(full.indexOf('title')).toBe(full.indexOf('sidebar') + 1)
+    // Compact: title · context · the one panel button · popout · chevron · ⋯ stay inline.
     const t1 = layout(order, 1)
     expect(ids(t1.bar)).toEqual(['sidebar', 'title', 'context', ...(panel ? [panel] : []), 'popout', 'more', 'menu', 'close'])
     expect(ids(t1.menu)).not.toContain('title')
@@ -74,7 +75,7 @@ test('the title follows the model picker in the full bar and opens the compact b
     const t2 = layout(order, 2)
     expect(ids(t2.bar)).toEqual(['sidebar', 'title', 'popout', 'more', 'menu', 'close'])
     expect(ids(t2.menu)).not.toContain('title')
-    expect(ids(t2.menu).indexOf('model')).toBe(1)
+    expect(ids(t2.menu).indexOf('memory')).toBe(1)
     // Open in new window is reachable without opening the chevron at every tier.
     for (let t = 0; t < TIERS; t++) expect(ids(layout(order, t).bar)).toContain('popout')
   }

@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
-import { ModelCombobox, pickerSurface, triggerLabel } from './ModelCombobox'
+import { ModelCombobox, pickerSurface, triggerName } from './ModelCombobox'
 
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
@@ -14,20 +14,30 @@ vi.mock('@/lib/rpc', async (original) => ({
 
 const sonnet = { id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', efforts: ['low', 'medium', 'high'] } as ModelInfo
 
-test('148: the trigger reads "name · effort" when an effort is set; the id, then `none`, when the catalog has no name', () => {
-  expect(triggerLabel(sonnet, sonnet.id, undefined, null)).toBe('Claude Sonnet 4.5')
-  expect(triggerLabel(sonnet, sonnet.id, undefined, 'high')).toBe('Claude Sonnet 4.5 · high')
-  expect(triggerLabel(undefined, 'x/gone', { label: 'Off' }, 'low')).toBe('x/gone · low')
-  expect(triggerLabel(undefined, null, { label: 'Same as new sessions' }, undefined)).toBe('Same as new sessions')
-  expect(triggerLabel(undefined, undefined, undefined, undefined)).toBe('Model')
+test('148: the trigger names the model; the id, then `none`, when the catalog has no name', () => {
+  expect(triggerName(sonnet, sonnet.id, undefined)).toBe('Claude Sonnet 4.5')
+  expect(triggerName(undefined, 'x/gone', { label: 'Off' })).toBe('x/gone')
+  expect(triggerName(undefined, null, { label: 'Same as new sessions' })).toBe('Same as new sessions')
+  expect(triggerName(undefined, undefined, undefined)).toBe('Model')
 })
 
-test('148: the rendered trigger shows the effort passed through `effort.current`; without the prop, the name alone (existing callers)', () => {
+test('148 / 215 C4: the rendered trigger shows the effort passed through `effort.current` beside the name; without the prop, the name alone (existing callers)', () => {
   const html = (effort?: { levels: string[]; current: string | null | undefined; onSelect(l: string | null): void }) =>
     renderToStaticMarkup(createElement(ModelCombobox, { models: [sonnet], value: sonnet.id, onChange() {}, effort, 'aria-label': 'New sessions model' }))
-  expect(html({ levels: sonnet.efforts, current: 'high', onSelect() {} })).toContain('Claude Sonnet 4.5 · high</span>')
+  expect(html({ levels: sonnet.efforts, current: 'high', onSelect() {} })).toContain('Claude Sonnet 4.5</span><span class="shrink-0">· high</span>')
   expect(html()).toContain('Claude Sonnet 4.5</span>')
-  expect(html()).not.toContain(' · ')
+  expect(html()).not.toContain('· ')
+})
+
+test('215 C4: the trigger is the quiet label (ghost, no border, muted, left-aligned) and still passes id, aria-label, disabled, size and className through', () => {
+  const host = document.createElement('div')
+  host.innerHTML = renderToStaticMarkup(createElement(ModelCombobox, { models: [sonnet], value: sonnet.id, onChange() {}, id: 'm1', size: 'sm', disabled: true, className: 'w-full', 'aria-label': 'Model' }))
+  const b = host.querySelector('button')!
+  expect([b.id, b.getAttribute('aria-label'), b.disabled, b.dataset.variant, b.dataset.size]).toEqual(['m1', 'Model', true, 'ghost', 'sm'])
+  const cls = b.className.split(' ')
+  expect(cls).toEqual(expect.arrayContaining(['justify-start', 'text-fg-tertiary', 'hover:bg-layer-2', 'w-full']))
+  expect(cls).not.toContain('border')
+  expect(cls).not.toContain('justify-between')
 })
 
 test('148 R2: a coarse pointer opens the picker in the top-of-band dialog, a fine one in the trigger-anchored popover', () => {
@@ -91,7 +101,7 @@ test('ModelCombobox: a model with levels keeps the popover open, its chips shown
   await f.click('[aria-label="Effort"] [data-value="effort:high"]')
   expect(f.onLevel.mock.calls).toEqual([['high']])
   expect(f.isOpen()).toBe(false)
-  expect(f.trigger.textContent).toBe('Claude Sonnet 4.5 · high')
+  expect(f.trigger.textContent).toBe('Claude Sonnet 4.5· high')
   expect(f.onChange).toHaveBeenCalledTimes(1)
 })
 

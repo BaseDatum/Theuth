@@ -1,5 +1,5 @@
 import { Capability, Unavailable, useSupported, useQuerySupport } from '@/rpc/capabilities'
-import { privateRequirements, endlessRequirements, modelRequirements } from './requirements'
+import { privateRequirements, endlessRequirements } from './requirements'
 import { useQuery } from '@tanstack/react-query'
 import { type UseNavigateResult, useNavigate } from '@tanstack/react-router'
 import { Check, ChevronDown, ChevronRight, Folder, HatGlasses } from 'lucide-react'
@@ -18,7 +18,6 @@ import { Label } from '@/components/ui/label'
 import { SidebarMenuAction } from '@/components/ui/sidebar'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { ModelMenu } from './ModelMenu'
 import { useDraftTarget, useDrafts } from '@/lib/drafts'
 import { draftProject, newDraft, usePanes } from '@/lib/panes'
 import { promoteDraft } from '@/lib/tiles'
@@ -265,12 +264,7 @@ export function NewChat({
       <MachineBar priv={priv} />
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
-        {/* The draft's model: the header's picker over the same `useDrafts.pick`; `/model` stays with the header's. */}
-        <Capability required={modelRequirements} hide>
-          <div className="mx-auto mb-2 flex w-full max-w-[768px] min-w-0 justify-center px-4">
-            <ModelMenu session={null} />
-          </div>
-        </Capability>
+        {/* 215 C3: the draft's model picker lives in the composer's toolbar (`ComposerModel`), which also answers `/model`. */}
         {(priv && !privateSupported) || (endlessOn && !canQuery2) ? <Unavailable /> : <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} onUncreated={onUncreated} />}
         <CreateOptions
           priv={priv}

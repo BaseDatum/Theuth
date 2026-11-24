@@ -30,7 +30,6 @@ export type HeaderId =
   | 'sidebar'
   /** The talk view's "Back to chat" (TALK-UI-B B3): the same session's `/c/$session`. */
   | 'chat'
-  | 'model'
   | 'title'
   /** 137 §11.3: the ∞ badge of an endless session (opens the Memory panel); behind the chevron on a narrow pane. */
   | 'memory'
@@ -65,8 +64,8 @@ export type HeaderItem = {
 }
 
 /**
- * The header's items in display order. The title follows the model picker in the full bar and, with the picker behind
- * the chevron, opens the compact bar. `panel` is the one panel button the compact bar keeps inline (artifacts, the
+ * The header's items in display order. 215 C3: no model picker (it lives in the chat input); the title follows the
+ * sidebar toggle and opens the compact bar. `panel` is the one panel button the compact bar keeps inline (artifacts, the
  * session's output surface, over the live browser over terminals); the other two move behind the chevron. `popout`
  * (open in a new window) stays inline at every tier: it is how a narrow pane gets room — absent entirely where no
  * second window exists (`canPopout()` false, or this is already the popped window). `chat` (the talk view only) sits
@@ -78,7 +77,6 @@ export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'termin
     { id: 'search', slot: 'menu' },
     { id: 'sidebar', slot: 'bar' },
     ...(chat ? [{ id: 'chat', slot: 'bar' } as const] : []),
-    { id: 'model', slot: 'menu' },
     { id: 'title', slot: 'bar' },
     { id: 'memory', slot: 'menu' },
     // 141 R3 T11: a watch-only child keeps its `Watching` chip inline at every tier; the crumb joins it in the full bar.

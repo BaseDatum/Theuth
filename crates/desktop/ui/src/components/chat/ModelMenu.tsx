@@ -1,6 +1,6 @@
-import { useQuerySupport } from '@/rpc/capabilities'
+import { Capability, useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, Cpu, Eye, RotateCcw } from 'lucide-react'
+import { Brain, ChevronLeft, ChevronRight, Eye, RotateCcw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { routed } from '@/lib/owner'
@@ -18,8 +18,8 @@ import type { ConfigOption } from "@/rpc/bindings/method.agent.output"
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { useAdvisor, useSetAdvisor } from './advisor'
 import { useKnowledgeHarvester, useKnowledgeHarvesterDefault, useSetKnowledgeHarvester } from './knowledge-harvester'
-import { MenuRow } from './HeaderMenu'
-import { LocalTag, ModelPicker, stubModel } from './ModelPicker'
+import { ModelPicker, QuietModelTrigger, stubModel } from './ModelPicker'
+import { modelRequirements } from './requirements'
 import { surfaceOf } from './slash'
 
 /** `harness_options(session)` (75 §8); refetched on `HarnessModelChanged` and at every turn end (a queued change lands then). */
@@ -58,7 +58,7 @@ export function dialogPlacement(touch: boolean): { content: string; list: string
   }
 }
 
-/** 127 §4: the engine-wide favorites and the toggle every picker surface shares (header, dialog, forms). */
+/** 127 §4: the engine-wide favorites and the toggle every picker surface shares (composer, dialog, forms). */
 export function useFavorites(): { favorites: string[]; toggleFavorite(id: string): Promise<void> } {
   const api = useApi()
   const info = useConnection((s) => s.info)
@@ -93,11 +93,11 @@ type Props = {
   session: string | null
   /** 157 D1: this picker's pane is the page's own (a notebook's chat column) — `/model` opens it whatever `usePanes` focuses. */
   own?: boolean
-  /** `false`: `/model` never opens this one (a second picker of the same draft, the new-chat page's under the header's). */
+  /** `false`: `/model` never opens this one (a second picker of a draft another picker already answers for). */
   slash?: boolean
 }
 
-/** The picker's state shared by the header button, the compact row and the dialog. */
+/** The picker's state shared by the composer's label, its popover and its touch dialog. */
 export type Model = {
   agent: string | null | undefined
   /** 141: a watch-only harness subagent — the label is the harness's model (or `—`), nothing opens. */
@@ -264,7 +264,7 @@ export function HarnessPicker({ m, className, listClassName }: { m: Model; class
   )
 }
 
-/** `agent · <current model>` for the header/row; a queued model shows as `→ value (after this turn)`. */
+/** `agent · <current model>` for the label; a queued model shows as `→ value (after this turn)`. */
 function harnessLabel(m: Model): string {
   const { model } = harnessGroups(m.harness ?? [])
   const current = harnessCurrent(model, model && m.pending[model.id]) ?? m.harnessModel
@@ -451,7 +451,7 @@ function ModelCommand({ m, session, advisor, className, listClassName, footerCla
   )
 }
 
-/** The picker in 127 §6's dialog (top of the band on touch): the compact header's, and the header's on touch (194 D1). */
+/** The picker in 127 §6's dialog (top of the band): `ComposerModel`'s on touch (194 D1). */
 function PickerDialogContent({ m, session, advisor }: { m: Model; session: string | null; advisor: boolean }) {
   const place = dialogPlacement(touch())
   const picker = cn('[&_[cmdk-input]]:h-12 **:data-[slot=command-input-wrapper]:h-12', place.picker)
@@ -466,16 +466,28 @@ function PickerDialogContent({ m, session, advisor }: { m: Model; session: strin
   )
 }
 
+/** 215 C1: the label's box, shared by the plain-text states so the toolbar never jumps when the harness comes and goes. */
+const QUIET = 'h-8 max-w-[40%] min-w-0'
+
 /**
- * ChatGPT's header slot: the model name with a cmdk-filtered list from
- * `list_models`, the selected model's effort levels as chips under its row. A fresh chat keeps its
- * model and effort pick in the UI until submit creates the session (148 R1: never the default).
- * An ACP child (75 §8) gets the same picker over its harness's own options (`HarnessPicker`);
- * with the process gone it shows `omp · <model>` as plain text.
- * `small` (157 D1): the 28 px, text-xs trigger of a column header (the notebook chat) instead of the 36 px headline.
- * 194 D1: on touch it opens the top-of-band dialog (as `ModelCombobox` does), not the anchored popover.
+ * 215 C1: the chat model picker — a quiet "Model · effort ⌄" label on the composer's toolbar row (every `<Composer>`
+ * host), opening the cmdk picker upward (desktop popover above the input; on touch 127 §6's top-of-band dialog, 194 D1).
+ * The model name with a cmdk-filtered list from `list_models`, the selected model's effort levels as chips under its
+ * row, the Advisor and Knowledge harvester rows under the list. A fresh chat keeps its model and effort pick in the UI
+ * until submit creates the session (148 R1: never the default). An ACP child (75 §8) gets the same picker over its
+ * harness's own options (`HarnessPicker`); with the process gone it shows `omp · <model>` as plain text and `Resume`.
+ * `/model`, `/effort` and the ⋯ menu's `Model: …` row open it (`useOpenOnSlash`); the advisor pill opens its Advisor
+ * level. Hidden where the engine lacks the model methods, so hosts need no `Capability` of their own.
  */
-export function ModelMenu({ small = false, ...props }: Props & { small?: boolean }) {
+export function ComposerModel(props: Props) {
+  return (
+    <Capability required={modelRequirements} hide>
+      <ComposerModelBody {...props} />
+    </Capability>
+  )
+}
+
+function ComposerModelBody(props: Props) {
   const [open, setOpen] = useState(false)
   // 125 §8.2: opened from the pill → the Advisor level first; a normal open starts on the models level.
   const [advisor, setAdvisor] = useState(false)
@@ -489,14 +501,14 @@ export function ModelMenu({ small = false, ...props }: Props & { small?: boolean
   )
   if (m.watching) {
     return (
-      <span className="flex h-9 max-w-full items-center px-2.5 text-lg font-medium text-fg-secondary" title="the harness runs this subagent; its model is not yours to pick" aria-disabled>
+      <span className={cn(QUIET, 'flex items-center px-2 text-[13px] text-fg-tertiary')} title="the harness runs this subagent; its model is not yours to pick" aria-disabled>
         <span className="min-w-0 truncate">{m.harnessModel ?? '—'}</span>
       </span>
     )
   }
   if (m.agent && !m.harness) {
     return (
-      <span className="flex h-9 max-w-full items-center gap-1 px-2.5 text-lg font-medium text-fg-secondary" title={m.harness === null ? 'harness process not running' : 'External harness'}>
+      <span className={cn(QUIET, 'flex items-center gap-1 px-2 text-[13px] text-fg-tertiary')} title={m.harness === null ? 'harness process not running' : 'External harness'}>
         <span className="min-w-0 truncate">{harnessLabel(m)}</span>
         {resume}
       </span>
@@ -505,14 +517,9 @@ export function ModelMenu({ small = false, ...props }: Props & { small?: boolean
   const { effort: harnessEffort } = harnessGroups(m.harness ?? [])
   const effortLabel = m.agent ? harnessCurrent(harnessEffort, harnessEffort && m.pending[harnessEffort.id]) : m.effort
   const onOpenChange = (o: boolean) => (setOpen(o), !o && setAdvisor(false))
-  const trigger = (
-    <Button variant="ghost" className={small ? 'h-7 max-w-full gap-1 rounded-md px-2 text-xs font-medium text-fg-secondary' : 'h-9 max-w-full gap-1 rounded-lg px-2.5 text-lg font-medium text-fg-secondary'}>
-      <span className="min-w-0 truncate">{m.agent ? harnessLabel(m) : m.name}</span>
-      {effortLabel && <span className={cn('shrink-0 font-normal text-fg-tertiary', small ? 'text-[11px]' : 'text-sm')}>· {effortLabel}</span>}
-      {!m.agent && m.current?.local && <LocalTag />}
-      <ChevronDown className={small ? 'size-3.5 opacity-70' : 'size-4 opacity-70'} />
-    </Button>
-  )
+  const trigger = <QuietModelTrigger size="sm" className={QUIET} name={m.agent ? harnessLabel(m) : m.name} effort={effortLabel} local={!m.agent && m.current?.local} />
+  // Above the input the list is capped by the visible band (a short window, the keyboard), as in `ModelCombobox`.
+  const list = 'max-h-[min(24rem,calc(var(--visible-band)-6rem))]'
   return (
     <>
       {touch() ? (
@@ -523,48 +530,12 @@ export function ModelMenu({ small = false, ...props }: Props & { small?: boolean
       ) : (
         <Popover open={open} onOpenChange={onOpenChange}>
           <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-          <PopoverContent align="start" className="w-80 p-0">
-            {m.agent ? <HarnessPicker m={m} /> : <ModelCommand m={m} session={props.session} advisor={advisor} />}
+          <PopoverContent side="top" align="end" sideOffset={8} className="w-80 p-0">
+            {m.agent ? <HarnessPicker m={m} listClassName={list} /> : <ModelCommand m={m} session={props.session} advisor={advisor} listClassName={list} />}
           </PopoverContent>
         </Popover>
       )}
       {resume}
     </>
   )
-}
-
-/** The compact menu's line: the model and effort (opens `ModelDialog`); for an ACP child the harness's model, a picker while its process runs. */
-export function ModelRow({ onOpen, ...props }: Props & { onOpen(): void }) {
-  const m = useModel(props, onOpen)
-  if (m.watching) return <MenuRow icon={Eye} label="Model" detail={m.harnessModel ?? '—'} />
-  if (m.agent) {
-    const { effort } = harnessGroups(m.harness ?? [])
-    const lvl = harnessCurrent(effort, effort && m.pending[effort.id])
-    const detail = lvl ? `${harnessLabel(m)} · ${lvl}` : harnessLabel(m)
-    return <MenuRow icon={Bot} label="Harness" detail={detail} onSelect={m.harness ? onOpen : undefined} />
-  }
-  const text = m.effort ? `${m.name} · ${m.effort}` : m.name
-  return <MenuRow icon={Cpu} label="Model" detail={m.current?.local ? <span className="inline-flex items-center gap-1">{text}<LocalTag /></span> : text} onSelect={onOpen} />
-}
-
-/** The same picker as a dialog: the compact header has no model button to anchor a popover to. */
-export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: boolean; onOpenChange(o: boolean): void }) {
-  const [advisor, setAdvisor] = useState(false)
-  const m = useModel(props, () => onOpenChange(false))
-  useOpenOnSlash(props, () => onOpenChange(true))
-  useOpenAdvisor(props.session, () => (setAdvisor(true), onOpenChange(true)))
-  if (m.watching || (m.agent && !m.harness)) return null
-  return (
-    <Dialog open={open} onOpenChange={(o) => (onOpenChange(o), !o && setAdvisor(false))}>
-      <PickerDialogContent m={m} session={props.session} advisor={advisor} />
-    </Dialog>
-  )
-}
-
-/**
- * 215 C1: the composer's quiet model label — "Model · effort ⌄" on the input's toolbar row, opening the same picker
- * upward. STUB in the contract commit (delegates to `ModelMenu small`); the pickers builder replaces the body.
- */
-export function ComposerModel(props: Props) {
-  return <ModelMenu {...props} small />
 }

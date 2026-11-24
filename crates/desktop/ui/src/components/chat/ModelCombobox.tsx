@@ -1,27 +1,25 @@
-// 124 §5: the form field over the model catalog — an outline trigger plus the shared `ModelPicker`,
+// 124 §5: the form field over the model catalog — a trigger plus the shared `ModelPicker`,
 // replacing the Radix `Select` of 388 rows. `none` is the "Engine default" / "Off" row; it reports `null`.
 // 148: `effort` passes through to the picker's effort chips; the trigger then reads `name · effort`.
-// 148 R2: on touch the picker opens in `ModelDialog`'s top-of-band dialog (127 §6), not a trigger-anchored popover
+// 148 R2: on touch the picker opens in the top-of-band dialog (127 §6), not a trigger-anchored popover
 // the keyboard would cover (the search input focuses on open); desktop keeps the popover.
 // 2026-10-10: the desktop popover is `modal`; inside the Settings dialog, the dialog's scroll lock otherwise cancels wheel events over the portaled list.
+// 215 C4: the trigger is the composer's quiet label (`QuietModelTrigger`), not an outline button.
 
-import { ChevronDown } from 'lucide-react'
 import { useState } from 'react'
-import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { touch } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { dialogPlacement, useFavorites } from './ModelMenu'
-import { type Effort, LocalTag, ModelPicker } from './ModelPicker'
+import { type Effort, ModelPicker, QuietModelTrigger } from './ModelPicker'
 
 const NONE = '__none__'
 
-/** The trigger's text: the model's name (else its id, else `none`'s label), with ` · <effort>` when one is set. */
-export function triggerLabel(current: ModelInfo | undefined, value: string | null | undefined, none: { label: string } | undefined, effort: string | null | undefined): string {
-  const name = current?.name ?? value ?? none?.label ?? 'Model'
-  return effort ? `${name} · ${effort}` : name
+/** The trigger's name: the model's (else its id, else `none`'s label); the effort shows beside it, not in it. */
+export function triggerName(current: ModelInfo | undefined, value: string | null | undefined, none: { label: string } | undefined): string {
+  return current?.name ?? value ?? none?.label ?? 'Model'
 }
 
 /** Where the picker opens: fingers get the top-of-band dialog (`dialogPlacement`), a mouse the trigger-anchored popover. */
@@ -56,11 +54,7 @@ export function ModelCombobox({
   const current = value ? models.find((m) => m.id === value) : undefined
   const { favorites, toggleFavorite } = useFavorites()
   const trigger = (
-    <Button id={id} variant="outline" size={size} disabled={disabled} aria-label={ariaLabel} className={cn('justify-between font-normal', className)}>
-      <span className="truncate">{triggerLabel(current, value, none, effort?.current)}</span>
-      {current?.local && <LocalTag />}
-      <ChevronDown className="size-4 opacity-70" />
-    </Button>
+    <QuietModelTrigger id={id} size={size} disabled={disabled} aria-label={ariaLabel} className={className} name={triggerName(current, value, none)} effort={effort?.current} local={current?.local} />
   )
   const picker = (className?: string, listClassName?: string) => (
     <ModelPicker

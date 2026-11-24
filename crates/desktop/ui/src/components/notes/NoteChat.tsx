@@ -5,9 +5,8 @@ import { ExternalLink, SquarePen, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Composer } from '@/components/chat/Composer'
-import { ModelMenu } from '@/components/chat/ModelMenu'
 import { ToolsSheet } from '@/components/chat/ToolsSheet'
-import { modelRequirements, toolsRequirements } from '@/components/chat/requirements'
+import { toolsRequirements } from '@/components/chat/requirements'
 import { Transcript } from '@/components/chat/Transcript'
 import { Button } from '@/components/ui/button'
 import { ResizeHandle } from '@/components/ui/resize-handle'
@@ -28,8 +27,8 @@ const PAGE = 60
  * keeps (`lib/note-chat`); with one, a resizable bottom panel with that session's transcript (`compact`) over the same
  * composer. Every message leads with the note's `[attached note …]` marker (66 §3.3). "New chat" forgets the session
  * (back to the bar); the session itself stays in the normal chat list. `about` names the document in the copy (an
- * agent's charter is one too). #8: both headers carry the main chat's model picker (`ModelMenu`): the session's model
- * and effort, or — before the first message — the draft's pick, which that message's `create_session` applies. The
+ * agent's charter is one too). 215 C3: the composer carries the main chat's model picker (`ComposerModel`): the session's
+ * model and effort, or — before the first message — the draft's pick, which that message's `create_session` applies. The
  * note page has no chat header, so the panel mounts the chat's Tools… sheet the composer's MCP button opens.
  */
 export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc: AttachRef; about?: string }) {
@@ -74,13 +73,6 @@ export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc
       <X />
     </Button>
   )
-  const picker = (
-    <Capability required={modelRequirements} hide>
-      <div className="min-w-0 shrink">
-        <ModelMenu session={session} small />
-      </div>
-    </Capability>
-  )
   const sheet = (
     <Capability required={toolsRequirements} hide>
       <ToolsSheet session={session ?? ''} />
@@ -104,7 +96,6 @@ export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc
           <span className="min-w-0 flex-1 truncate">
             Ask theuth about {about} {'\u2014'} the first message starts a chat with it attached
           </span>
-          {picker}
           {close}
         </header>
         {composer}
@@ -130,7 +121,6 @@ export function NoteChat({ note, doc, about = 'this note' }: { note: string; doc
       />
       <header className="flex h-8 shrink-0 items-center gap-1 px-2 text-xs text-fg-secondary">
         <span className="min-w-0 flex-1 truncate">{title || 'Chat'}</span>
-        {picker}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button

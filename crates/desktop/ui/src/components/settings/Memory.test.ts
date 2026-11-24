@@ -174,7 +174,8 @@ test('194: the compactor picker carries the picked model’s effort chips at age
   listed = []
   expect(compactor()?.effort?.levels).toEqual(['low', 'high'])
   expect(compactor()?.effort?.current).toBe('high')
-  expect(html).toContain('Claude Haiku 5.5 · high')
+  // 215 C4: the quiet trigger shows the effort beside the name.
+  expect(html).toContain('Claude Haiku 5.5</span><span class="shrink-0">· high</span>')
 })
 
 /** Fires `fire` and returns the config the page wrote. */
