@@ -1,15 +1,35 @@
+import { layout as L, useOptionalView, ViewType, Workspace, type MenuEntry, type WorkspaceHandle } from '@danfessler/trellis-react'
+import '@danfessler/trellis/style.css'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { type ReactNode, type RefObject, useEffect, useRef } from 'react'
-import { ResizeHandle } from '@/components/ui/resize-handle'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSidebar } from '@/components/ui/sidebar'
 import { usePressDrag } from '@/hooks/use-press-drag'
 import { TileHost } from '@/components/tiles/host'
-import { type Box, isDraft, isFrame, layout, type Layout, leaves, newDraft, shown, usePanes, zone } from '@/lib/panes'
+import { useEngines } from '@/link/engines'
+import {
+  attachWorkspace,
+  CHAT,
+  DRAFT_TYPE,
+  isDraft,
+  isFrame,
+  newDraft,
+  picked,
+  prepareStored,
+  shown,
+  STORAGE_KEY,
+  tileType,
+  usePanes,
+  VERSION,
+  WEB,
+  zone,
+} from '@/lib/panes'
+import { queryKeys, useApi } from '@/lib/rpc'
 import { closeAllTiles } from '@/lib/tiles'
-import { clampRatio, RATIO_MAX, RATIO_MIN, RATIO_STEP } from '@/lib/resize-drag'
 import { cn } from '@/lib/utils'
 import { crossLayout } from '@/lib/web-arrival'
 import { useWebViews } from '@/lib/web-views'
+import { useQuerySupport } from '@/rpc/capabilities'
 import { PhoneWebView } from '@/components/chat/PhoneWebView'
 
 /**
@@ -54,134 +74,141 @@ export function DragOverlay() {
   )
 }
 
-/** One leaf: the drop target for the pane it shows. A press inside selects it (`usePanes.selected`, any kind) and, for a
- * chat, focuses it and moves the URL there (a draft has no URL); a frame (a web view, 205 D5, or a generic tile) is
- * selected only — the URL stays on the chat. The selected pane is lit, the others dim. A press on a control in a chat
- * while a frame is selected changes nothing, so a surface that control opens takes over the selected frame's pane.
- * `tiles`: the layout tiles (not a phone), so the subtree's surfaces open as tiles beside this leaf (`useTileHost`).
- * `box`: where it sits in the panes area, in percent. `covered`: a phone page is full screen over it (209 §7), so it is
- * `inert`: out of the tab order and the accessibility tree, as under a modal. */
-function Leaf({ session, first, tiles, box, covered, render }: { session: string; first: boolean; tiles: boolean; box: Box; covered: boolean; render(session: string, first: boolean): ReactNode }) {
-  const navigate = useNavigate()
-  const focused = usePanes((s) => s.focused)
-  const lit = usePanes((s) => (s.selected !== null && s.root !== null && leaves(s.root).includes(s.selected) ? s.selected : s.focused))
-  const split = usePanes((s) => s.root !== null)
+type Render = (leaf: string, first: boolean) => ReactNode
+
+/**
+ * One view's content, whatever its kind: the sidebar drop target for its pane (`data-pane`). A press inside selects it
+ * (`usePanes.selected`, any kind) and, for a chat, focuses it and moves the URL there (a draft has no URL); a frame (a
+ * web view, 205 D5, or a generic tile) is selected only — the URL stays on the chat. The selected pane is lit, the
+ * others dim. A press on a control in a chat while a frame is selected changes nothing, so a surface that control
+ * opens takes over the selected frame's pane. The subtree's surfaces open as tiles beside this view (`useTileHost`).
+ */
+function ViewBody({ render }: { render: Render }) {
+  const id = useOptionalView()?.id ?? ''
+  const first = usePanes((s) => s.first === id)
+  const dim = usePanes((s) => {
+    if (s.leaves.length < 2) return false
+    const lit = s.selected !== null && s.leaves.includes(s.selected) ? s.selected : s.focused
+    return lit !== id
+  })
   return (
     <div
-      data-pane={session}
-      inert={covered}
-      className={cn('absolute flex min-h-0 min-w-0 flex-col', split && lit !== session && 'opacity-80')}
-      style={{ left: `${box.left}%`, top: `${box.top}%`, width: `${box.width}%`, height: `${box.height}%` }}
+      data-pane={id}
+      className={cn('absolute inset-0 flex min-h-0 min-w-0 flex-col', dim && 'opacity-80')}
       onPointerDownCapture={(e) => {
-        const { root, selected, select, focus } = usePanes.getState()
+        const { leaves, selected } = usePanes.getState()
         const control = e.target instanceof Element && e.target.closest('button,a,[role=button],[role=menuitem]') !== null
-        const frameLit = isFrame(selected) && selected !== session && root !== null && leaves(root).includes(selected)
-        if (control && !isFrame(session) && frameLit) return
-        select(session)
-        if (focused === session || isFrame(session)) return
-        focus(session)
-        if (!isDraft(session)) void navigate({ to: '/c/$session', params: { session } })
+        const frameLit = isFrame(selected) && selected !== id && leaves.includes(selected)
+        if (control && !isFrame(id) && frameLit) return
+        picked(id)
       }}
     >
-      <TileHost.Provider value={tiles ? session : null}>{render(session, first)}</TileHost.Provider>
+      <TileHost.Provider value={id}>{render(id, first)}</TileHost.Provider>
     </div>
   )
 }
 
+/** Built-in panel menu items that need what this app does not offer: floating, maximise, hiding (there is no dock). */
+const UNUSED_MENU: Record<string, true> = { float: true, dock: true, maximize: true, hide: true }
+const panelMenu = (entries: MenuEntry[]): MenuEntry[] => entries.filter((e) => e === 'separator' || !UNUSED_MENU[e.id ?? ''])
+
 /**
- * Between two flex children sized `flex: r 1 0%` / `flex: 1-r 1 0%`; a drag reports the new first-child share
- * (0.15–0.85) to `onRatio`. With `ratio` the separator also exposes its value and nudges it by 5 % per arrow key.
+ * The tiling layout: a Trellis workspace with one view type per leaf kind, its layout persisted on this machine. It
+ * mounts once the engine's session list is known (or cannot be asked for), after the persisted layout dropped what is
+ * gone (`prepareStored`), so no stale chat mounts and loads. Trellis keeps each view's content mounted while it moves,
+ * docks or resizes (iframes, terminals, VNC canvases and composers keep their state).
  */
-export function Divider({ dir, ratio, onRatio }: { dir: 'row' | 'col'; ratio?: number; onRatio: (ratio: number) => void }) {
-  const rect = useRef<DOMRect>(null)
-  return (
-    <ResizeHandle
-      orientation={dir === 'row' ? 'vertical' : 'horizontal'}
-      value={ratio === undefined ? undefined : { now: Math.round(ratio * 100), min: RATIO_MIN * 100, max: RATIO_MAX * 100 }}
-      onStart={(_, el) => (rect.current = el.parentElement?.getBoundingClientRect() ?? null)}
-      onMove={(x, y) => {
-        const r = rect.current
-        if (r) onRatio(clampRatio(dir === 'row' ? (x - r.left) / r.width : (y - r.top) / r.height))
-      }}
-      onNudge={ratio === undefined ? undefined : (d) => onRatio(clampRatio(ratio + d * RATIO_STEP))}
-    />
-  )
+function Tiled({ session, kinds, render }: { session: string; kinds: readonly string[]; render: Render }) {
+  const navigate = useNavigate()
+  const api = useApi()
+  const canList = useQuerySupport(['list_sessions'])
+  const sessions = useQuery({ enabled: canList, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  const types = useMemo(() => [CHAT, DRAFT_TYPE, WEB, ...kinds.map(tileType)], [kinds])
+  const ready = !canList || sessions.data !== undefined || sessions.isError
+  if (!ready) return null
+  return <Prepared session={session} types={types} sessions={sessions.data?.map((s) => s.id) ?? null} render={render} navigate={(s) => void navigate({ to: '/c/$session', params: { session: s } })} />
 }
 
-/** The divider of one split, laid over the line between its halves; the drag measures the split's own region of the
- * panes `area` and reports the new first-half share to `usePanes.resize`. */
-function SplitDivider({ split: s, area }: { split: Layout['splits'][number]; area: RefObject<HTMLDivElement | null> }) {
-  const region = useRef<{ left: number; top: number; width: number; height: number }>(null)
-  const row = s.dir === 'row'
-  const onRatio = (r: number) => usePanes.getState().resize(s.path, r)
+function Prepared({ session, types, sessions, render, navigate }: { session: string; types: string[]; sessions: string[] | null; render: Render; navigate(session: string): void }) {
+  const engine = useEngines((s) => s.active)
+  // Once, before the workspace reads the persisted layout (its mount, below).
+  useState(() => prepareStored({ engine, sessions: sessions && new Set(sessions), types: new Set(types) }))
+  const [initial] = useState(() => L.view(CHAT, { id: session, params: { engine } }))
+  const go = useRef(navigate)
+  go.current = navigate
+  const detach = useRef<(() => void) | null>(null)
+  const ref = useCallback((ws: WorkspaceHandle | null) => {
+    detach.current?.()
+    detach.current = ws ? attachWorkspace(ws, (s) => go.current(s)) : null
+  }, [])
   return (
-    <div
-      className={cn('absolute z-10 flex', row ? '-translate-x-1/2 flex-row' : '-translate-y-1/2 flex-col')}
-      style={
-        row
-          ? { left: `${s.box.left + s.box.width * s.ratio}%`, top: `${s.box.top}%`, height: `${s.box.height}%` }
-          : { top: `${s.box.top + s.box.height * s.ratio}%`, left: `${s.box.left}%`, width: `${s.box.width}%` }
-      }
+    <Workspace
+      ref={ref}
+      label="Panes"
+      theme="light"
+      floating={false}
+      navigation={false}
+      panelMenu={panelMenu}
+      storageKey={STORAGE_KEY}
+      version={VERSION}
+      defaultLayout={initial}
+      onMissingType={() => 'drop'}
     >
-      <ResizeHandle
-        orientation={row ? 'vertical' : 'horizontal'}
-        value={{ now: Math.round(s.ratio * 100), min: RATIO_MIN * 100, max: RATIO_MAX * 100 }}
-        onStart={() => {
-          const a = area.current?.getBoundingClientRect()
-          region.current = a
-            ? { left: a.left + (a.width * s.box.left) / 100, top: a.top + (a.height * s.box.top) / 100, width: (a.width * s.box.width) / 100, height: (a.height * s.box.height) / 100 }
-            : null
-        }}
-        onMove={(x, y) => {
-          const r = region.current
-          if (r) onRatio(clampRatio(row ? (x - r.left) / r.width : (y - r.top) / r.height))
-        }}
-        onNudge={(d) => onRatio(clampRatio(s.ratio + d * RATIO_STEP))}
-      />
-    </div>
+      {types.map((t) => (
+        <ViewType key={t} id={t} tabbar="auto" scaling={false}>
+          <ViewBody render={render} />
+        </ViewType>
+      ))}
+    </Workspace>
   )
 }
 
 /**
- * The chat area: the split tree when there is one, else the route's single chat (still a drop target). Every leaf is
- * one child of the same box, keyed by its leaf string and placed by `layout`, so opening, moving or closing a tile never
- * remounts another pane (a terminal, a VNC session, a composer keep their state); dividers are laid over the lines.
- * A phone (`isMobile`) does not tile (25 §12.3): whatever the tree holds, the focused leaf alone fills the screen as
- * `first`, so its header always carries the sidebar toggle — the Sheet's only opener. Crossing into the phone layout
- * closes the generic tiles (their surfaces open as sheets there), so widening again shows a consistent tree, and puts
- * the web tiles into the pill; a phone shows a web page full screen over the chat (`PhoneWebView`, 209 §7), which
- * becomes a tile beside its chat when the layout widens (`crossLayout`). That page belongs to its chat: a route to
- * another chat (a link, a notification, the agent showing another chat's page) puts it into the pill, and while it
- * shows the panes under it are `inert`.
+ * The chat area. Tiling (768 px and up): the Trellis workspace (`Tiled`) — splits, dividers, drag and drop and tabs
+ * are Trellis's; every leaf kind (chat, draft, web frame, each tile kind in `kinds`) is one of its view types. A phone
+ * (`isMobile`) does not tile (25 §12.3): the focused chat alone fills the screen as `first`, so its header always
+ * carries the sidebar toggle — the Sheet's only opener. Crossing into the phone layout closes the generic tiles (their
+ * surfaces open as sheets there) and puts the web tiles into the pill; a phone shows a web page full screen over the
+ * chat (`PhoneWebView`, 209 §7), which becomes a tile beside its chat once the layout tiles again (`crossLayout`). That
+ * page belongs to its chat: a route to another chat puts it into the pill, and while it shows the chat under it is
+ * `inert`.
  */
-export function Panes({ session, render }: { session: string; render(session: string, first: boolean): ReactNode }) {
-  const root = usePanes((s) => s.root)
-  const focused = usePanes((s) => s.focused)
+export function Panes({ session, kinds, render }: { session: string; kinds: readonly string[]; render: Render }) {
   const { isMobile } = useSidebar()
-  const area = useRef<HTMLDivElement>(null)
+  const leaves = usePanes((s) => s.leaves)
+  const focused = usePanes((s) => s.focused)
+  const attached = usePanes((s) => s.ws !== null)
   const covered = useWebViews((s) => isMobile && s.front !== null && s.views[s.front] !== undefined)
   // The route's chat at the crossing, not on every navigation: `session` is read, not a dependency.
   useEffect(() => {
-    if (isMobile) closeAllTiles()
-    crossLayout(isMobile, session)
+    if (!isMobile) return
+    closeAllTiles()
+    crossLayout(true, session)
   }, [isMobile])
+  // Back to tiling: the page shown full screen becomes its tile, once the workspace is there to take it.
+  useEffect(() => {
+    if (attached) crossLayout(false, session)
+  }, [attached])
   // On mount too: a page left full screen when the panes unmounted (Settings) must not reappear over another chat.
   useEffect(() => {
     const { front, views, minimise } = useWebViews.getState()
     const view = front === null ? undefined : views[front]
     if (view && view.session !== session) minimise(view.id)
   }, [session])
-  const full: Box = { left: 0, top: 0, width: 100, height: 100 }
-  const { leaves, splits } = isMobile ? { leaves: [{ session: shown(root, focused, session), box: full, first: true }], splits: [] } : layout(root ?? { session })
+  if (!isMobile) {
+    return (
+      <div className="relative min-h-0 min-w-0 flex-1">
+        <Tiled session={session} kinds={kinds} render={render} />
+      </div>
+    )
+  }
+  const leaf = shown(leaves, focused, session)
   return (
-    <div ref={area} className="relative min-h-0 min-w-0 flex-1">
-      {leaves.map((l) => (
-        <Leaf key={l.session} session={l.session} first={l.first} tiles={!isMobile} box={l.box} covered={covered} render={render} />
-      ))}
-      {splits.map((s) => (
-        <SplitDivider key={`split:${s.path.join('')}`} split={s} area={area} />
-      ))}
-      {isMobile && <PhoneWebView />}
+    <div className="relative min-h-0 min-w-0 flex-1">
+      <div key={leaf} data-pane={leaf} inert={covered} className="absolute inset-0 flex min-h-0 min-w-0 flex-col">
+        {render(leaf, true)}
+      </div>
+      <PhoneWebView />
     </div>
   )
 }

@@ -4,8 +4,9 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { TileHost } from '@/components/tiles/host'
 import { SidebarProvider } from '@/components/ui/sidebar'
-import { leaves, tileLeaf, usePanes } from '@/lib/panes'
-import { tileId, useTiles } from '@/lib/tiles'
+import { tileLeaf, usePanes } from '@/lib/panes'
+import { tileIds, tileProps, tiling, untile } from '@/lib/panes.testing'
+import { tileId } from '@/lib/tiles'
 import type { Entry } from '@/store/sessions'
 import { NoteViewCard, noteCall } from './NoteViewCard'
 
@@ -20,11 +21,11 @@ const result = (output: string, isError = false) => ({ output, isError, files: [
 const RECEIPT = `note view opened · Release plan · tile note:${DOC}\ntheuth://notes/${DOC}#b7\nIt updates live as you edit it with doc_insert/doc_replace.`
 
 beforeEach(() => {
-  usePanes.setState({ root: null, focused: 's1', selected: null, drag: null })
-  useTiles.setState({ tiles: {} })
+  tiling(['s1'])
   nav.navigate.mockClear()
 })
 afterEach(() => {
+  untile()
   document.body.innerHTML = ''
 })
 
@@ -54,8 +55,8 @@ test('Open puts the note tile beside the chat where the layout tiles', async () 
   const { el, root } = await mount(h(NoteViewCard, { tool: tool({ result: result(RECEIPT) }) }), 's1')
   await act(async () => openButton(el).click())
   const id = tileId('note', 's1', DOC)
-  expect(leaves(usePanes.getState().root!)).toEqual(['s1', tileLeaf(id)])
-  expect(useTiles.getState().tiles[id]?.props).toEqual({ doc: DOC, title: 'Release plan', block: 'b7' })
+  expect(usePanes.getState().leaves).toEqual(['s1', tileLeaf(id)])
+  expect(tileProps(id)).toEqual({ doc: DOC, title: 'Release plan', block: 'b7' })
   expect(nav.navigate).not.toHaveBeenCalled()
   await act(async () => root.unmount())
 })
@@ -64,6 +65,6 @@ test('with no tile host (a phone) Open goes to the note page at the block', asyn
   const { el, root } = await mount(h(NoteViewCard, { tool: tool({ result: result(RECEIPT) }) }), null)
   await act(async () => openButton(el).click())
   expect(nav.navigate).toHaveBeenCalledWith({ to: '/notes/$id', params: { id: DOC }, hash: 'b7' })
-  expect(useTiles.getState().tiles).toEqual({})
+  expect(tileIds()).toEqual([])
   await act(async () => root.unmount())
 })

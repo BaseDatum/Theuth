@@ -15,9 +15,8 @@ import { Button } from '@/components/ui/button'
 import { ResizeHandle } from '@/components/ui/resize-handle'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
-import { leaves, tileLeaf, usePanes } from '@/lib/panes'
 import { PX_STEP } from '@/lib/resize-drag'
-import { closeTile, tileId, useTiles } from '@/lib/tiles'
+import { closeTile, tileId, useTileOpen } from '@/lib/tiles'
 import { useSessionField, useSessions } from '@/store/sessions'
 import { CodeMapPanel } from './CodeMapPanel'
 
@@ -40,9 +39,8 @@ export function CodeMapButton({ session, row }: { session: string; row?: boolean
   const codemap = useSessionField(session, 'codemap')
   const panel = useSessionField(session, 'codemapPanel') ?? null
   const id = tileId('codemap', session)
-  const inTree = usePanes((s) => s.root !== null && leaves(s.root).includes(tileLeaf(id)))
-  const stored = useTiles((s) => id in s.tiles)
-  const open = host ? inTree && stored : panel !== null
+  const inTree = useTileOpen('codemap', session)
+  const open = host ? inTree : panel !== null
   const seen = useRef<number>(-1)
   const last = codemap?.last ?? null
   if (open && last) seen.current = last.seq

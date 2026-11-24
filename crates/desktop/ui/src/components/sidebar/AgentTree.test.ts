@@ -39,7 +39,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   rows = [row]
   useSessions.setState({ sessions: {} })
-  usePanes.setState({ root: null, focused: null, drag: null })
+  usePanes.setState({ focused: null, drag: null })
 })
 afterEach(async () => {
   await unmount()

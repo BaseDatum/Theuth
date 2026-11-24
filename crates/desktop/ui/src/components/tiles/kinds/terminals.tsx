@@ -10,7 +10,7 @@ import type { JobRef, JobTerminalProps, TerminalsProps } from '@/components/tile
 import { TileFrame } from '@/components/tiles/TileFrame'
 import type { TileKind, TileRender } from '@/components/tiles/types'
 import { openPopout } from '@/lib/popout'
-import { useTiles } from '@/lib/tiles'
+import { setTileProps } from '@/lib/tiles'
 
 /** The session's terminals (`TerminalViewer`'s dialog) beside the chat; the picker and pop-out sit in the header. */
 function Terminals({ tile, first, close }: TileRender) {
@@ -19,7 +19,8 @@ function Terminals({ tile, first, close }: TileRender) {
   const head = terminals[0]
   const job = picked ?? (head ? { session: head.session, job: head.id } : null)
   const elsewhere = usePoppedElsewhere(job)
-  const pick = (j: JobRef) => useTiles.getState().put({ ...tile, props: { job: j } satisfies TerminalsProps })
+  // Trellis remembers the pick (the view's params), so a restored layout shows the same terminal.
+  const pick = (j: JobRef) => setTileProps(tile.id, { job: j } satisfies TerminalsProps)
   return (
     <TileFrame
       first={first}

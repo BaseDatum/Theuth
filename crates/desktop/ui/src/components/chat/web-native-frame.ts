@@ -56,9 +56,10 @@ function useOverlayOver(ref: RefObject<HTMLElement | null>, enabled: boolean): b
   return over
 }
 
-/** The native layer must not show: a pane drag is in flight (its drop zones are DOM) or an overlay covers the frame. */
+/** The native layer must not show: a pane drag is in flight (a sidebar row's or a Trellis one: its previews are DOM)
+ * or an overlay covers the frame. */
 function useOccluded(ref: RefObject<HTMLElement | null>, enabled: boolean): boolean {
-  const dragging = usePanes((s) => s.drag !== null)
+  const dragging = usePanes((s) => s.drag !== null || s.dragging)
   return useOverlayOver(ref, enabled) || (enabled && dragging)
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { closePopout } from '@/lib/popout'
-import { closeTile, type Tile, tileId, useTiles } from '@/lib/tiles'
+import { closeTile, type Tile, tileId, useTile } from '@/lib/tiles'
 import { TileAlone, TileFrame } from './TileFrame'
 import type { TileKind } from './types'
 import { artifactTile } from './kinds/artifact'
@@ -41,7 +41,7 @@ export const TILE_KINDS: Record<string, TileKind> = {
 /** The `tile:<id>` leaf's body: its kind draws it; a tile whose payload is gone (or whose kind this build lacks) says so
  * and can still be closed. */
 export function TileLeaf({ id, first }: { id: string; first: boolean }) {
-  const tile = useTiles((s) => s.tiles[id])
+  const tile = useTile(id)
   const kind = tile && TILE_KINDS[tile.kind]
   const close = () => closeTile(id)
   if (!tile || !kind) {

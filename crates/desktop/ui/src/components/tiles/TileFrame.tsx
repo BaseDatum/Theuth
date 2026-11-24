@@ -3,7 +3,8 @@ import { createContext, type ReactNode, useContext } from 'react'
 import { SidebarToggle } from '@/components/chat/SidebarToggle'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
-import { usePaneDrag } from '@/hooks/use-pane-drag'
+import { useViewTitle } from '@danfessler/trellis-react'
+import { useViewDrag } from '@/hooks/use-view-drag'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { canPopout, isPopout } from '@/lib/popout'
 import { cn } from '@/lib/utils'
@@ -14,8 +15,9 @@ export const TileAlone = createContext(false)
 /**
  * Every generic tile's chrome: the 52 px header (the sidebar toggle and the traffic-light inset when `first`, like
  * `Header` and `WebFrame`; the title and its `meta` line; the kind's own `controls`; Open in new window when `popOut`
- * is given and this build has windows; Close — the last two not when the tile is its window alone, `TileAlone`) over the kind's body. The header is the tile's drag handle
- * (`usePaneDrag`); it moves the window instead only while the tree is the single chat, which a tile never is.
+ * is given and this build has windows; Close — the last two not when the tile is its window alone, `TileAlone`) over
+ * the kind's body. Beside other panes the header is the tile's drag handle (`useViewDrag`), and its title names the
+ * tile's Trellis tab; alone, it moves the window.
  */
 export function TileFrame({
   title,
@@ -43,7 +45,8 @@ export function TileFrame({
   // beside a popped chat keeps both.
   const popped = useContext(TileAlone)
   const nav = first && (!open || isMobile) && !isPopout()
-  const drag = usePaneDrag(title)
+  const drag = useViewDrag()
+  useViewTitle(title)
   const region = (mac && drag.region) || undefined
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">

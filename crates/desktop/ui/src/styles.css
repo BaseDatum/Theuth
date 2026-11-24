@@ -1109,3 +1109,35 @@ html .bn-root .theuth-cite-pulse {
   .inbox-dismiss-line { animation: none; }
   .inbox-dismiss-line::after { animation: none; left: 35%; }
 }
+
+/* Trellis panes (`components/chat/Panes.tsx`): every chrome token from the theuth palette, so light and dark follow
+   `.dark` like the rest of the app and none of Trellis's stock colours show. Panes sit edge to edge on a hairline, as
+   the split view always did; tab bars appear only for a panel holding several views (`tabbar: "auto"`). */
+.trellis {
+  --trellis-gap: 1px;
+  --trellis-radius: 0px;
+  --trellis-tab-radius: 6px;
+  --trellis-tabbar-height: 34px;
+  --trellis-font: var(--font-sans);
+  --trellis-font-size: 12.5px;
+  --trellis-bg: var(--border-default);
+  --trellis-panel: var(--background);
+  --trellis-tabbar: var(--bg-layer-1);
+  --trellis-tab-hover: var(--bg-layer-2);
+  --trellis-tab-active: var(--background);
+  --trellis-text: var(--fg-primary);
+  --trellis-text-muted: var(--fg-secondary);
+  --trellis-border: var(--border-subtle);
+  --trellis-accent: var(--fg-accent);
+  --trellis-accent-contrast: var(--fg-inverse);
+  --trellis-stage: var(--background);
+  --trellis-slot: color-mix(in srgb, var(--fg-accent) 14%, var(--background));
+  --trellis-menu: var(--popover);
+  --trellis-menu-hover: var(--bg-layer-2);
+  --trellis-shadow-float: 0 12px 32px -8px color-mix(in srgb, var(--fg-primary) 25%, transparent);
+  --trellis-shadow-lifted: 0 24px 48px -12px color-mix(in srgb, var(--fg-primary) 35%, transparent);
+  --trellis-focus-ring: 0 0 0 2px var(--fg-accent);
+}
+.trellis [data-trellis-part='content'] {
+  overflow: hidden;
+}

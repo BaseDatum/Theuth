@@ -5,7 +5,7 @@ import { isMobileLayout } from '@/hooks/use-mobile'
 import { useEngines } from '@/link/engines'
 import { useDrafts } from '@/lib/drafts'
 import { isLocal } from '@/lib/files'
-import { leaves, placeWeb, usePanes } from '@/lib/panes'
+import { placeWeb, usePanes } from '@/lib/panes'
 import * as native from '@/lib/web-view-native'
 import { arrival, isLoopback, isWeb, useWebViews, webId, webLeaf } from '@/lib/web-views'
 
@@ -47,8 +47,7 @@ export function webViewOpened(e: { id: string; session: string; url: string; tit
   const place = () => {
     if (how === 'tile') placeWeb(e.session, e.id)
   }
-  const { root } = usePanes.getState()
-  if (!old?.popped && !(root !== null && leaves(root).includes(webLeaf(e.id)))) return place()
+  if (!old?.popped && !usePanes.getState().leaves.includes(webLeaf(e.id))) return place()
   native.navigate(e.id, e.url).catch((err: unknown) => {
     if (!String(err).startsWith('no web view')) return console.warn('web_view_navigate', err)
     useWebViews.getState().patch(e.id, { popped: false })
@@ -58,15 +57,15 @@ export function webViewOpened(e: { id: string; session: string; url: string; tit
 
 /**
  * 209 §7: the layout crossed into a phone (`phone`) or out of it (a rotation past 768 px, a wider window). Into it:
- * each web tile of the tree goes into the pill (its leaf stays, so widening again shows the tile). Out of it: the page
- * shown full screen becomes its tile beside its chat when that chat is the route's (`route`) or in the tree; else it
- * is left as it is, not minimised (no pill shows off a phone), and its card places it.
+ * each web tile of the layout goes into the pill (its view stays, so widening again shows the tile). Out of it: the
+ * page shown full screen becomes its tile beside its chat when that chat is the route's (`route`) or laid out; else
+ * it is left as it is, not minimised (no pill shows off a phone), and its card places it.
  */
 export function crossLayout(phone: boolean, route: string): void {
   const web = useWebViews.getState()
-  const { root } = usePanes.getState()
+  const { leaves } = usePanes.getState()
   if (phone) {
-    for (const leaf of root ? leaves(root) : []) if (isWeb(leaf) && web.front !== webId(leaf)) web.minimise(webId(leaf))
+    for (const leaf of leaves) if (isWeb(leaf) && web.front !== webId(leaf)) web.minimise(webId(leaf))
     return
   }
   const front = web.front
@@ -74,6 +73,6 @@ export function crossLayout(phone: boolean, route: string): void {
   const view = web.views[front]
   useWebViews.setState({ front: null })
   if (!view) return
-  const here = view.session === route || (root !== null && leaves(root).includes(view.session))
+  const here = view.session === route || leaves.includes(view.session)
   if (here) placeWeb(view.session, front)
 }
