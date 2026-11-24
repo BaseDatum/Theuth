@@ -20,11 +20,15 @@ vi.stubGlobal('localStorage', {
 const S = 'sess-1'
 const TERSE = { id: 'terse', name: 'Terse', text: 'Answer in one paragraph.' }
 
+type Call = { method: string; session: string; skills: string[]; words: string; files?: string[] }
 function engine() {
-  const calls: { method: string; session: string; skills: string[]; words: string }[] = []
+  const calls: Call[] = []
+  // `files` only when the client passed the fourth parameter (no files: the old three-parameter call).
+  const call = (method: string, session: string, skills: string[], words: string, rest: unknown[]): Call =>
+    rest.length ? { method, session, skills, words, files: rest[0] as string[] } : { method, session, skills, words }
   const api = {
-    use_skill: vi.fn(async (session: string, name: string, words: string) => (calls.push({ method: 'use_skill', session, skills: [name], words }), session)),
-    use_skills: vi.fn(async (session: string, names: string[], words: string) => (calls.push({ method: 'use_skills', session, skills: names, words }), session)),
+    use_skill: vi.fn(async (session: string, name: string, words: string, ...rest: unknown[]) => (calls.push(call('use_skill', session, [name], words, rest)), session)),
+    use_skills: vi.fn(async (session: string, names: string[], words: string, ...rest: unknown[]) => (calls.push(call('use_skills', session, names, words, rest)), session)),
     new_session: vi.fn(async () => 'new-chat'),
   }
   return { api: api as unknown as Api, calls }
@@ -101,9 +105,34 @@ test('new chat: skill first (the chat exists), then the suffix on it: both go wi
   expect(leftover(id)).toEqual({ skills: [], suffix: null })
 })
 
-test('the composer sends parked skills through sendParked with its suffix chat, and passes the draft key to draftSkill', () => {
+test('skill, suffix and files: one call carries all three; nothing is left for the next message', async () => {
+  const { api, calls } = engine()
+  useSkillDraft.getState().add(S, 'review')
+  useSuffixes.getState().activate(S, TERSE.id, 'once')
+  await sendParked(api, S, 'what is wrong here?', S, ['/tmp/a/shot.png', '/tmp/a/log.pdf'])
+  expect(calls).toEqual([
+    { method: 'use_skill', session: S, skills: ['review'], words: 'what is wrong here?\n\nAnswer in one paragraph.', files: ['/tmp/a/shot.png', '/tmp/a/log.pdf'] },
+  ])
+  expect(leftover(S)).toEqual({ skills: [], suffix: null })
+})
+
+test('several skills with files: one use_skills call with the files; no files keeps the three-parameter call', async () => {
+  const { api, calls } = engine()
+  useSkillDraft.getState().add(S, 'review')
+  useSkillDraft.getState().add(S, 'rust')
+  await sendParked(api, S, 'go', S, ['/tmp/a/shot.png'])
+  useSkillDraft.getState().add(S, 'review')
+  await sendParked(api, S, 'again', S)
+  expect(calls).toEqual([
+    { method: 'use_skills', session: S, skills: ['review', 'rust'], words: 'go', files: ['/tmp/a/shot.png'] },
+    { method: 'use_skill', session: S, skills: ['review'], words: 'again' },
+  ])
+})
+
+test('the composer sends parked skills with their files through sendParked, clears the box only after, and refuses nothing', () => {
   const src = readFileSync(new URL('../components/chat/Composer.tsx', import.meta.url), 'utf8')
-  expect(src).toContain('await sendParked(api, session, pinned ? compose([pinned], words) : words, suffixChat)')
+  expect(src).toContain('await sendParked(api, session, pinned ? compose([pinned], words) : words, suffixChat, files)\n        reset()')
+  expect(src).not.toContain('Files cannot go with a skill')
   expect(src).toContain('draftSkill(api, navigate, null, name, text, suffixChat)')
   expect(src).toContain("draftSkill(api, navigate, session, name, words.join(' '), suffixChat)")
   expect(src).not.toContain('sendSkills(api')

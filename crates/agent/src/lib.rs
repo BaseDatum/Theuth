@@ -2613,6 +2613,10 @@ pub struct UseSkill {
     pub names: Vec<String>,
     /// What the user wants done with it; may be empty.
     pub args: String,
+    /// Image files attached to the input, as [`SendInput::files`] (17 §2);
+    /// absolute paths on this machine.
+    #[serde(default)]
+    pub files: Vec<PathBuf>,
 }
 
 /// `ask` → `Result<SkillMeta, String>`: write `<skills>/<name>.md`.

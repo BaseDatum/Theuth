@@ -46,7 +46,7 @@ impl SkillsPrompt {
                         let session = api.create_session(draft).await?.session;
                         Msg::Created { session, request: Request::UseSkill { session: Some(session), name, args, draft: None }, generation }
                     }
-                    Request::UseSkill { session, name, args, draft: None } => Msg::Used { session: api.use_skill(session, name, args).await?, generation },
+                    Request::UseSkill { session, name, args, draft: None } => Msg::Used { session: api.use_skill(session, name, args, None).await?, generation },
                 })
             }.await;
             result.unwrap_or_else(|error| Msg::Failed(crate::reason(error)))

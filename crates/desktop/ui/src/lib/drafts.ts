@@ -224,9 +224,12 @@ export const useSkillDraft = create<SkillStore>()((set) => {
 })
 
 /** Send the parked `names` with the typed `words`: the server builds one input, every `<skill>` block in order, then
- * the words. One skill keeps `use_skill`; several go in one `use_skills`. */
-export function sendSkills(api: Pick<Api, 'use_skill' | 'use_skills'>, session: string, names: readonly string[], words: string): Promise<string> {
-  return names.length === 1 ? api.use_skill(session, names[0]!, words) : api.use_skills(session, [...names], words)
+ * the words, with `files` attached as `send_input`'s. One skill keeps `use_skill`; several go in one `use_skills`.
+ * Without files the optional parameter is left out: the same three-parameter call an older engine takes. */
+export function sendSkills(api: Pick<Api, 'use_skill' | 'use_skills'>, session: string, names: readonly string[], words: string, files: readonly string[] = []): Promise<string> {
+  if (!files.length) return names.length === 1 ? api.use_skill(session, names[0]!, words) : api.use_skills(session, [...names], words)
+  const attached = [...files]
+  return names.length === 1 ? api.use_skill(session, names[0]!, words, attached) : api.use_skills(session, [...names], words, attached)
 }
 
 /** `create_session` options that give exactly what `new_session()` gives: every switch off, the engine's defaults. */
