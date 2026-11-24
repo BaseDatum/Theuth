@@ -1,7 +1,12 @@
-import { beforeEach, expect, test } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { BUCKETS, formatRate, rate, useEventRate } from './event-rate'
 
-beforeEach(() => useEventRate.getState().reset())
+beforeEach(() => {
+  vi.useFakeTimers()
+  vi.setSystemTime(1_000_000)
+  useEventRate.getState().reset()
+})
+afterEach(() => vi.useRealTimers())
 
 const st = () => useEventRate.getState()
 
@@ -23,17 +28,27 @@ test('formatRate', () => {
 })
 
 test('ticks fill the open second; rolling closes it, silent seconds count as zero', () => {
-  const t0 = 1_000_000
-  st().roll(t0)
   for (let i = 0; i < 40; i++) st().tick()
   st().tick(10)
   expect(st().buckets.at(-1)).toBe(0)
-  st().roll(t0 + 1_000)
+  vi.advanceTimersByTime(1_000)
+  st().roll()
   expect(st().buckets.slice(-1)).toEqual([50])
-  st().roll(t0 + 1_500)
-  st().roll(t0 + 4_000)
-  expect(st().buckets.slice(-4)).toEqual([50, 0, 0, 0])
+  vi.advanceTimersByTime(500)
+  st().tick(3)
+  vi.advanceTimersByTime(2_500)
+  st().roll()
+  expect(st().buckets.slice(-4)).toEqual([50, 3, 0, 0])
   expect(st().buckets).toHaveLength(BUCKETS)
+})
+
+test('a clock that steps back neither reopens nor loses a second', () => {
+  st().tick(5)
+  vi.setSystemTime(998_000)
+  st().tick(2)
+  vi.setSystemTime(1_001_000)
+  st().roll()
+  expect(st().buckets.at(-1)).toBe(7)
 })
 
 test('rate is the mean of the last two complete seconds', () => {
@@ -42,14 +57,14 @@ test('rate is the mean of the last two complete seconds', () => {
 })
 
 test('a long silence clears the ring; reset starts over', () => {
-  st().roll(0)
   st().tick(5)
-  st().roll(1_000)
-  st().roll(100_000)
+  vi.advanceTimersByTime(100_000)
+  st().roll()
   expect(st().buckets).toEqual(Array(BUCKETS).fill(0))
   st().tick(7)
   st().reset()
-  st().roll(200_000)
-  st().roll(201_000)
+  st().roll()
+  vi.advanceTimersByTime(1_000)
+  st().roll()
   expect(st().buckets.at(-1)).toBe(0)
 })

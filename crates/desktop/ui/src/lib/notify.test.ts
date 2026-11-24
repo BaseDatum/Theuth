@@ -61,6 +61,38 @@ test('identical text and kind within 2 s bumps the time instead of adding a row'
   expect(st().history).toHaveLength(3)
 })
 
+test('dedupe needs the same description and action too, and never touches an id\'d call', () => {
+  const open = { label: 'Open', onClick: () => {} }
+  notify('Saved', { description: 'a' })
+  notify('Saved', { description: 'b' })
+  notify('Saved', { description: 'b', action: open })
+  notify('Saved', { description: 'b', action: open })
+  expect(st().history).toHaveLength(3)
+  expect(notify('Saved', { id: 'mine' })).toBe('mine')
+  expect(notify('Saved', { id: 'theirs' })).toBe('theirs')
+  expect(st().history).toHaveLength(5)
+})
+
+test('a superseded sticky notice returns to the slot once the newer one expires; a dismissed one does not', () => {
+  notify.loading('Downloading speech models… 40%', { id: 'models' })
+  notify('cancelled 2 sessions')
+  st().expire(Date.now() + 4_000)
+  expect(st().current?.id).toBe('models')
+  notify.error('boom')
+  notify('hello')
+  st().expire(Date.now() + 4_000)
+  expect(st().current?.text).toBe('boom')
+  notify.dismiss()
+  expect(st().current?.id).toBe('models')
+  notify.dismiss('models')
+  expect(st().current).toBeNull()
+  expect(st().history.map((n) => [n.text, n.dismissed ?? false])).toEqual([
+    ['hello', false],
+    ['boom', true],
+    ['cancelled 2 sessions', false],
+  ])
+})
+
 test('default lifetimes, and what is sticky', () => {
   const now = Date.now()
   const life = (fn: () => unknown) => (fn(), st().current && { sticky: st().current!.sticky, expiresAt: st().current!.expiresAt })

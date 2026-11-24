@@ -10,21 +10,25 @@ import { formatRate } from '@/store/event-rate'
 import { useNotices } from '@/store/notices'
 import { isDown, secondsUntil, sparkPoints } from './model'
 import { NoticeHistory } from './NoticeHistory'
-import { type EngineStatus, KindTag, StatusDot, act, useEngineStatus, useShownNotice, useStatusClock } from './parts'
+import { type EngineStatus, KindTag, StatusDot, act, closeNotice, useEngineStatus, useShownNotice, useStatusClock } from './parts'
 
-/** `guest`: the `/d` page has no engine scope; notices only. */
-export function StatusBar({ guest = false }: { guest?: boolean }) {
+/** About 8 % carnelian over the sidebar: the bar says "down" without shouting. */
+const DOWN_TINT = 'linear-gradient(color-mix(in oklab, var(--status-danger-fg) 8%, transparent), color-mix(in oklab, var(--status-danger-fg) 8%, transparent))'
+
+/** `guest`: the `/d` page has no engine scope; notices only. `defaultOpen` opens the history (dev fixture). */
+export function StatusBar({ guest = false, defaultOpen = false }: { guest?: boolean; defaultOpen?: boolean }) {
   const mobile = useIsMobile()
   if (mobile) return null
-  return guest ? <GuestBar /> : <EngineBar />
+  return guest ? <GuestBar defaultOpen={defaultOpen} /> : <EngineBar defaultOpen={defaultOpen} />
 }
 
-function EngineBar() {
-  const now = useStatusClock()
+function EngineBar({ defaultOpen }: { defaultOpen: boolean }) {
+  useStatusClock()
   const s = useEngineStatus()
   const down = isDown(s.state)
   return (
     <Shell
+      defaultOpen={defaultOpen}
       down={down}
       left={
         <span className="flex min-w-0 shrink-0 items-center gap-1.5" title={`${s.name} · ${s.state}`}>
@@ -32,7 +36,7 @@ function EngineBar() {
           <span className={cn('max-w-48 truncate', down && 'text-danger')}>{down ? `${s.name} disconnected` : s.name}</span>
         </span>
       }
-      slot={(open) => (down ? <Reconnect s={s} now={now} /> : <NoticeSlot onOpen={open} />)}
+      slot={(open) => <NoticeSlot onOpen={open} after={down ? <Reconnect s={s} /> : null} />}
       right={
         <>
           {s.needsYou > 0 && <NeedsYou n={s.needsYou} />}
@@ -44,35 +48,36 @@ function EngineBar() {
   )
 }
 
-function GuestBar() {
+function GuestBar({ defaultOpen }: { defaultOpen: boolean }) {
   useStatusClock(false)
-  return <Shell slot={(open) => <NoticeSlot onOpen={open} />} />
+  return <Shell defaultOpen={defaultOpen} slot={(open) => <NoticeSlot onOpen={open} />} />
 }
 
 function Shell({
+  defaultOpen,
   down = false,
   left,
   slot,
   right,
   tail,
 }: {
+  defaultOpen: boolean
   down?: boolean
   left?: ReactNode
   slot(open: () => void): ReactNode
   right?: ReactNode
   tail?: ReactNode
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen)
   const unread = useNotices((st) => st.unreadErrors)
   return (
     <NoticeHistory open={open} onOpenChange={setOpen}>
       <footer
         data-status-bar
+        data-down={down || undefined}
         aria-label="Status"
-        className={cn(
-          'flex h-[22px] shrink-0 items-center gap-2 border-t border-border-subtle bg-sidebar px-2.5 font-sans text-[11px] leading-none text-fg-tertiary tabular-nums select-none',
-          down && 'bg-[color-mix(in_oklab,var(--status-danger-fg)_7%,var(--sidebar))]',
-        )}
+        className="flex h-[22px] shrink-0 items-center gap-2 border-t border-border-subtle bg-sidebar px-2.5 font-sans text-[11px] leading-none text-fg-tertiary tabular-nums select-none"
+        style={down ? { backgroundImage: DOWN_TINT } : undefined}
       >
         {left}
         {left && <Sep />}
@@ -91,45 +96,64 @@ function Shell({
 
 const Sep = () => <span aria-hidden className="h-3 w-px shrink-0 bg-border-subtle" />
 
-function NoticeSlot({ onOpen }: { onOpen(): void }) {
+/**
+ * One persistent live region whose content is swapped, so a screen reader hears each notice; an error speaks as an
+ * alert. The title keeps its room: the description gives way first, and the title truncates only on its own.
+ * `after` (the reconnect countdown) follows the notice, or stands alone.
+ */
+function NoticeSlot({ onOpen, after }: { onOpen(): void; after?: ReactNode }) {
   const { notice, leaving } = useShownNotice()
-  if (!notice)
-    return <button type="button" aria-label="Recent notices" className="h-full min-w-0 flex-1 self-stretch" onClick={onOpen} />
   return (
-    <div
-      key={`${notice.id}:${notice.at}`}
-      data-notice-slot
-      className={cn('notice-in group/notice flex min-w-0 flex-1 items-center gap-1.5 transition-opacity duration-200', leaving && 'opacity-0')}
-    >
-      <button type="button" className="flex min-w-0 items-center gap-1.5 text-left" onClick={onOpen}>
-        <KindTag kind={notice.kind} />
-        <span className="truncate text-fg-secondary">{notice.text}</span>
-        {notice.description && <span className="hidden truncate lg:inline">· {notice.description}</span>}
-      </button>
-      {notice.action && (
-        <button type="button" className="shrink-0 text-fg-secondary underline underline-offset-2 hover:text-foreground" onClick={() => act(notice, notice.action!)}>
-          {notice.action.label}
-        </button>
-      )}
-      {notice.sticky && (
-        <button
-          type="button"
-          aria-label="Dismiss"
-          className="shrink-0 opacity-0 group-hover/notice:opacity-100 focus-visible:opacity-100 hover:text-foreground"
-          onClick={() => useNotices.getState().dismiss(notice.id)}
-        >
-          <X className="size-3" />
-        </button>
-      )}
-      <button type="button" aria-hidden tabIndex={-1} className="h-full min-w-4 flex-1 self-stretch" onClick={onOpen} />
+    <div className="flex h-full min-w-0 flex-1 items-center gap-1.5">
+      <div role="status" aria-live="polite" aria-atomic="true" className="flex min-w-0 items-center">
+        {notice && (
+          <div
+            key={notice.id}
+            data-notice-slot
+            className={cn('notice-in group/notice flex min-w-0 items-center gap-1.5 transition-opacity duration-200', leaving && 'opacity-0')}
+          >
+            <button type="button" data-notice-open className="flex min-w-0 items-center gap-1.5 text-left" onClick={onOpen}>
+              <KindTag kind={notice.kind} />
+              <span role={notice.kind === 'error' ? 'alert' : undefined} className="min-w-0 truncate text-fg-secondary">
+                {notice.text}
+              </span>
+              {notice.description && <span className="min-w-0 flex-[0_1000_auto] truncate">· {notice.description}</span>}
+            </button>
+            {notice.action && (
+              <button type="button" className="shrink-0 text-fg-secondary underline underline-offset-2 hover:text-foreground" onClick={() => act(notice, notice.action!)}>
+                {notice.action.label}
+              </button>
+            )}
+            {notice.sticky && (
+              <button
+                type="button"
+                aria-label={notice.cancel ? notice.cancel.label : 'Dismiss'}
+                className="shrink-0 opacity-0 group-hover/notice:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+                onClick={() => closeNotice(notice)}
+              >
+                <X className="size-3" />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {notice && after && <span aria-hidden className="shrink-0">·</span>}
+      {after}
+      <button
+        type="button"
+        {...(notice ? { 'aria-hidden': true, tabIndex: -1 } : { 'data-notice-open': true, 'aria-label': 'Recent notices' })}
+        className="h-full min-w-4 flex-1 self-stretch"
+        onClick={onOpen}
+      />
     </div>
   )
 }
 
-function Reconnect({ s, now }: { s: EngineStatus; now: number }) {
+function Reconnect({ s }: { s: EngineStatus }) {
+  const now = Date.now()
   const wait = s.retryAt !== null && s.retryAt > now ? `Reconnecting in ${secondsUntil(s.retryAt, now)}s` : 'Reconnecting…'
   return (
-    <span className="flex min-w-0 items-center gap-1 truncate text-danger">
+    <span data-reconnect className="flex shrink-0 items-center gap-1 whitespace-nowrap text-fg-secondary">
       {wait}
       {s.attempt > 0 && <span> · attempt {s.attempt}</span>}
       {s.retryAt !== null && (
@@ -147,7 +171,7 @@ function Reconnect({ s, now }: { s: EngineStatus; now: number }) {
 function NeedsYou({ n }: { n: number }) {
   const navigate = useNavigate()
   return (
-    <button type="button" className="shrink-0 text-warning hover:underline" onClick={() => void navigate({ to: '/attention' })}>
+    <button type="button" className="shrink-0 text-warning hover:underline" onClick={() => void navigate({ to: '/attention', search: true })}>
       <span className="font-mono">{n}</span> need you
     </button>
   )

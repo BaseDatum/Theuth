@@ -372,6 +372,8 @@ async function cancelAll(): Promise<void> {
   if (running.length) notify(`cancelled ${running.length} sessions`)
 }
 
+const MODELS_PROGRESS_MS = 250
+
 /**
  * Tray / menu navigation, the quit handshake (macOS); notification permission (iOS); mounted once.
  * The island and popout webviews register nothing: a second registration of a global shortcut throws, and the quit
@@ -381,6 +383,8 @@ function useTauri(): void {
   useEffect(() => {
     if (POPOUT && isDesktop()) void setHiddenFromCapture(useMeetingSettings.getState().hidden)
     if (AUX) return
+    // The shell reports every chunk; the slot needs about four updates a second.
+    let progressAt = 0
     const unlistens = [
       onNavigate((path) => router.history.push(path)),
       onQuitRequested((p) => void quit(p.restart)),
@@ -388,9 +392,11 @@ function useTauri(): void {
       // `crates/desktop/src/models.rs`: one notice, updated in place, for the whole batch.
       onModelsProgress((p) => {
         const id = 'models'
-        if (p.state === 'downloading')
+        if (p.state === 'downloading') {
+          if (Date.now() - progressAt < MODELS_PROGRESS_MS) return
+          progressAt = Date.now()
           notify.loading(`Downloading speech models… ${Math.round((100 * p.done) / p.total)}%`, { id, description: p.file })
-        else if (p.state === 'verifying') notify.loading('Verifying models…', { id, description: p.file })
+        } else if (p.state === 'verifying') notify.loading('Verifying models…', { id, description: p.file })
         else if (p.state === 'ready') {
           notify.success('Speech models ready', { id, description: undefined })
           // The daemon reloads lazily but the UI gates the mic on `model.state`; ask again so the button unlocks without a restart.

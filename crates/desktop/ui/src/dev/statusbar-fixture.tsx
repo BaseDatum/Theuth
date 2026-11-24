@@ -4,7 +4,7 @@
 // under the phone breakpoint, so the phone states get the phone line and the desktop ones the bar.
 import '@/styles.css'
 import { RouterProvider, createMemoryHistory, createRootRoute, createRouter } from '@tanstack/react-router'
-import { StrictMode, useEffect } from 'react'
+import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { PhoneStatusLine } from '@/components/status/PhoneStatusLine'
 import { StatusBar } from '@/components/status/StatusBar'
@@ -62,26 +62,15 @@ function history() {
   notify.success('Saved as a note', { description: 'Notes › Status bar review\nfrom the chat "217 status bar"', action: { label: 'Open', onClick: noop } })
 }
 
-/** Opens what the state shows open, through the page's own controls; once, though StrictMode seeds twice. */
-let pressed = false
-function press(selector: string) {
-  if (pressed) return
-  pressed = true
-  setTimeout(() => document.querySelector<HTMLElement>(selector)?.click(), 300)
-}
-
 const SEED: Record<string, () => (() => void) | void> = {
   open: () => (connected(), stream(1_500)),
   idle: connected,
   done: () => {
     connected()
-    notify.success('Saved as a note', { action: { label: 'Open', onClick: noop } })
+    notify.success('Saved as a note', { description: 'Notes › Status bar review, from the chat "217 status bar"', action: { label: 'Open', onClick: noop } })
   },
-  'needs-you': () => {
-    connected()
-    pending(2)
-    return stream(40)
-  },
+  'needs-you': needsYou,
+  needs: needsYou,
   error: () => {
     connected()
     notify.error('Could not register ⌥Space; another app holds it')
@@ -91,7 +80,6 @@ const SEED: Record<string, () => (() => void) | void> = {
   history: () => {
     connected()
     history()
-    press('[data-notice-slot] button')
     return stream(1_500)
   },
   'phone-rate': () => (connected(), stream(1_500)),
@@ -105,13 +93,22 @@ const SEED: Record<string, () => (() => void) | void> = {
     connected()
     pending(2)
     history()
-    press('[data-phone-status]')
     return stream(1_500)
   },
 }
 
+function needsYou() {
+  connected()
+  pending(2)
+  return stream(40)
+}
+
+// Seeded before the first render, so no frame ever shows the unseeded defaults.
+if (state) SEED[state]?.()
+
 function Scenario({ name }: { name: string }) {
-  useEffect(() => SEED[name]?.() ?? undefined, [name])
+  // Opened from the first render, not by a click after it.
+  const open = name === 'history' || name === 'phone-sheet'
   if (name.startsWith('phone-')) {
     // The home-indicator band an iPhone reports; the frame has none of its own.
     document.documentElement.style.setProperty('--safe-bottom', '34px')
@@ -123,7 +120,7 @@ function Scenario({ name }: { name: string }) {
           <p className="text-fg-secondary">Done — it is in Notes as “Status bar review”.</p>
         </div>
         <div className="mx-3 mb-2 flex h-11 shrink-0 items-center rounded-2xl border border-border-subtle px-3 text-sm text-fg-tertiary">Message…</div>
-        <PhoneStatusLine />
+        <PhoneStatusLine defaultOpen={open} />
         <span aria-hidden className="pointer-events-none absolute bottom-2 left-1/2 h-[5px] w-[134px] -translate-x-1/2 rounded-full bg-foreground/80" />
       </div>
     )
@@ -131,7 +128,7 @@ function Scenario({ name }: { name: string }) {
   return (
     <div className="flex h-dvh flex-col bg-background">
       <div className="min-h-0 flex-1" />
-      <StatusBar />
+      <StatusBar defaultOpen={open} />
     </div>
   )
 }

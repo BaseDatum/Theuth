@@ -1,5 +1,5 @@
 import '../settings/test-dom'
-import { act, createElement as h } from 'react'
+import { act, createElement as h, type ReactElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { notify } from '@/lib/notify'
@@ -8,10 +8,13 @@ import { scope } from '@/store/engine-scope'
 import { useEventRate } from '@/store/event-rate'
 import { useNotices } from '@/store/notices'
 import { dotOf } from './model'
+import { PhoneStatusLine } from './PhoneStatusLine'
 import { StatusBar } from './StatusBar'
 
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<object>()), useNavigate: () => navigate }))
+const layout = vi.hoisted(() => ({ mobile: false }))
+vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => layout.mobile }))
 
 const st = scope('local')
 const retryNow = vi.fn()
@@ -25,15 +28,17 @@ beforeEach(() => {
   st.secretRequests.setState({ pending: [] })
   navigate.mockClear()
   retryNow.mockClear()
+  layout.mobile = false
 })
 afterEach(() => {
   document.body.innerHTML = ''
+  vi.useRealTimers()
 })
 
-const mount = async () => {
+const mount = async (el: ReactElement = h(StatusBar)) => {
   const host = document.body.appendChild(document.createElement('div'))
   const root = createRoot(host)
-  await act(async () => root.render(h(StatusBar)))
+  await act(async () => root.render(el))
   return { host, root, bar: () => host.querySelector<HTMLElement>('[data-status-bar]')! }
 }
 const dot = (host: HTMLElement) => host.querySelector<HTMLElement>('.status-dot')!
@@ -113,7 +118,7 @@ test('needs-you badge counts approvals, asks and secrets, and opens the inbox', 
   })
   expect(bar().textContent).toContain('3 need you')
   await act(async () => button(host, 'need you').click())
-  expect(navigate).toHaveBeenCalledWith({ to: '/attention' })
+  expect(navigate).toHaveBeenCalledWith({ to: '/attention', search: true })
   await act(async () => root.unmount())
 })
 
@@ -136,5 +141,99 @@ test('the unread-error chip opens the history, which reads them', async () => {
   expect(popover.textContent).toContain('Could not register ⌥Space')
   expect(useNotices.getState().unreadErrors).toBe(0)
   expect(host.querySelector('button[aria-label$="unread errors"]')).toBeNull()
+  await act(async () => root.unmount())
+})
+
+const slotText = (host: HTMLElement) => host.querySelector('[data-notice-slot]')?.textContent ?? ''
+
+test('the bar\'s clock expires a notice on time, then a superseded sticky one returns to the slot', async () => {
+  vi.useFakeTimers()
+  const { host, root } = await mount()
+  await act(async () => void notify.loading('Downloading speech models… 40%', { id: 'models' }))
+  await act(async () => void notify('cancelled 2 sessions'))
+  expect(slotText(host)).toContain('cancelled 2 sessions')
+  await act(async () => void vi.advanceTimersByTime(3_999))
+  expect(slotText(host)).toContain('cancelled 2 sessions')
+  await act(async () => void vi.advanceTimersByTime(1))
+  expect(slotText(host)).toContain('Downloading speech models… 40%')
+  // Same id updates in place: the slot keeps its element (no replayed slide).
+  const el = host.querySelector('[data-notice-slot]')
+  await act(async () => void notify.loading('Downloading speech models… 41%', { id: 'models' }))
+  expect(host.querySelector('[data-notice-slot]')).toBe(el)
+  expect(slotText(host)).toContain('41%')
+  await act(async () => root.unmount())
+})
+
+test('× on an offer runs its cancel, then dismisses it for good (the OnboardingHost shape)', async () => {
+  const start = vi.fn()
+  const later = vi.fn()
+  const { host, root } = await mount()
+  await act(async () => void notify('Take the two-minute tour?', { duration: Infinity, action: { label: 'Start', onClick: start }, cancel: { label: 'Not now', onClick: later } }))
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Not now"]')!.click())
+  expect(later).toHaveBeenCalledOnce()
+  expect(start).not.toHaveBeenCalled()
+  expect(useNotices.getState().current).toBeNull()
+  expect(useNotices.getState().history[0]?.dismissed).toBe(true)
+  await act(async () => void notify('later'))
+  useNotices.getState().expire(Date.now() + 4_000)
+  expect(useNotices.getState().current).toBeNull()
+  await act(async () => root.unmount())
+})
+
+test('down: a current notice keeps the slot with the countdown after it; no deadline reads "Reconnecting…"', async () => {
+  const { host, root, bar } = await mount()
+  await act(async () => void notify.error('Voice key: another app holds this chord'))
+  await act(async () => st.connection.setState({ state: 'reconnecting', retryAt: Date.now() + 5_000, attempt: 1 }))
+  expect(slotText(host)).toContain('Voice key: another app holds this chord')
+  expect(bar().querySelector('[data-reconnect]')!.textContent).toMatch(/^Reconnecting in [45]s · attempt 1 · Retry now$/)
+  await act(async () => st.connection.setState({ state: 'closed', retryAt: null, attempt: 0 }))
+  expect(bar().querySelector('[data-reconnect]')!.textContent).toBe('Reconnecting…')
+  expect(bar().textContent).not.toContain('Retry now')
+  expect(bar().textContent).toContain('– ev/s')
+  await act(async () => root.unmount())
+})
+
+test('the guest bar is notices only', async () => {
+  const { host, root, bar } = await mount(h(StatusBar, { guest: true }))
+  await act(async () => void notify('You can now only view this document'))
+  expect(slotText(host)).toContain('You can now only view this document')
+  expect(bar().querySelector('.status-dot')).toBeNull()
+  expect(bar().textContent).not.toContain('ev/s')
+  await act(async () => root.unmount())
+})
+
+test('the phone gets the line, never the bar: rate, then a notice, then offline', async () => {
+  vi.useFakeTimers()
+  layout.mobile = true
+  await act(async () => useEventRate.setState({ buckets: [...Array(28).fill(0), 1_500, 1_500] }))
+  const { host, root } = await mount(h('div', null, h(StatusBar), h(PhoneStatusLine)))
+  const line = () => host.querySelector<HTMLElement>('[data-phone-status]')!
+  expect(host.querySelector('[data-status-bar]')).toBeNull()
+  expect(line().textContent).toBe('1.5k ev/s')
+  expect(line().querySelector('.status-dot')!.className).toContain('size-[5px]')
+  await act(async () => void notify.success('Saved as a note'))
+  expect(line().textContent).toBe('Saved as a note')
+  await act(async () => void notify.dismiss())
+  await act(async () => st.connection.setState({ state: 'reconnecting', retryAt: Date.now() + 2_500, attempt: 1 }))
+  // The notice fades for 200 ms before the line returns.
+  await act(async () => void vi.advanceTimersByTime(250))
+  expect(line().textContent).toBe('offline · retry 3s')
+  await act(async () => root.unmount())
+})
+
+test('tapping the phone line opens the sheet: engine, rate, needs-you and the history, read', async () => {
+  layout.mobile = true
+  st.connection.setState({ info: { name: 'Studio' } as never })
+  st.approvals.setState({ pending: pending(2) })
+  const { host, root } = await mount(h(PhoneStatusLine))
+  await act(async () => void notify.error('boom'))
+  expect(useNotices.getState().unreadErrors).toBe(1)
+  await act(async () => host.querySelector<HTMLButtonElement>('[data-phone-status]')!.click())
+  const sheet = document.querySelector<HTMLElement>('[data-notice-popover]')!
+  expect(sheet.textContent).toContain('Studio')
+  expect(sheet.textContent).toContain('2 need you')
+  expect(sheet.textContent).toContain('Recent')
+  expect(sheet.textContent).toContain('boom')
+  expect(useNotices.getState().unreadErrors).toBe(0)
   await act(async () => root.unmount())
 })

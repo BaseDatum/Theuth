@@ -1,8 +1,9 @@
+import { X } from 'lucide-react'
 import { type ReactElement, useEffect } from 'react'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 import { type Notice, useNotices } from '@/store/notices'
-import { KindTag, act } from './parts'
+import { KindTag, act, closeNotice } from './parts'
 
 const hhmm = (at: number) => {
   const d = new Date(at)
@@ -12,7 +13,7 @@ const hhmm = (at: number) => {
 function Row({ notice }: { notice: Notice }) {
   const buttons = [notice.action, notice.cancel].filter((a) => a !== undefined)
   return (
-    <li className="flex gap-2 px-3 py-1.5 text-xs">
+    <li className="group/row flex gap-2 px-3 py-1.5 text-xs">
       <time className="shrink-0 pt-px font-mono text-[11px] text-fg-tertiary tabular-nums">{hhmm(notice.at)}</time>
       <div className="min-w-0 flex-1">
         <div className="flex items-start gap-1.5">
@@ -22,14 +23,24 @@ function Row({ notice }: { notice: Notice }) {
         {notice.description && <p className="mt-0.5 whitespace-pre-line break-words text-fg-tertiary">{notice.description}</p>}
         {buttons.length > 0 && (
           <div className="mt-1 flex gap-3">
-            {buttons.map((a) => (
-              <button key={a.label} type="button" className="text-fg-secondary underline underline-offset-2 hover:text-foreground" onClick={() => act(notice, a)}>
+            {buttons.map((a, i) => (
+              <button key={i} type="button" className="text-fg-secondary underline underline-offset-2 hover:text-foreground" onClick={() => act(notice, a)}>
                 {a.label}
               </button>
             ))}
           </div>
         )}
       </div>
+      {notice.sticky && !notice.dismissed && (
+        <button
+          type="button"
+          aria-label={notice.cancel ? notice.cancel.label : 'Dismiss'}
+          className="size-4 shrink-0 text-fg-tertiary opacity-60 group-hover/row:opacity-100 hover:text-foreground"
+          onClick={() => closeNotice(notice)}
+        >
+          <X className="size-3" />
+        </button>
+      )}
     </li>
   )
 }
@@ -84,6 +95,11 @@ export function NoticeHistory({ open, onOpenChange, children }: { open: boolean;
         className="flex max-h-[min(420px,70vh)] w-[340px] flex-col overflow-hidden p-0"
         // Focus would land on Clear, one Enter away from wiping the history.
         onOpenAutoFocus={(e) => e.preventDefault()}
+        // The anchor is not a trigger, so Radix has nowhere to return focus: back to the slot that opened it.
+        onCloseAutoFocus={(e) => {
+          e.preventDefault()
+          document.querySelector<HTMLElement>('[data-status-bar] [data-notice-open]')?.focus()
+        }}
         onInteractOutside={(e) => {
           if (e.target instanceof Element && e.target.closest('[data-status-bar]')) e.preventDefault()
         }}

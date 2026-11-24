@@ -16,10 +16,13 @@ export type Notice = {
   at: number
   sticky: boolean
   expiresAt: number | null
+  /** Dismissed or acted on: it stays in history but never returns to the slot. */
+  dismissed?: boolean
 }
 
 export type NoticeInput = {
-  id: string | number
+  /** The caller's id; same id replaces in place, and an id'd call is never deduped. */
+  id?: string | number
   kind: NoticeKind
   text: string
   description?: string
@@ -43,7 +46,7 @@ type NoticesState = {
   dismiss(id?: string | number): void
   clear(): void
   markRead(): void
-  /** Called by the host's timer: drops `current` once its lifetime is over. */
+  /** Called by the host's timer: once `current`'s lifetime is over, the newest sticky notice still open takes the slot. */
   expire(now?: number): void
 }
 
@@ -52,6 +55,11 @@ const lifetime = (n: NoticeInput, at: number): Pick<Notice, 'sticky' | 'expiresA
   return Number.isFinite(ms) ? { sticky: false, expiresAt: at + ms } : { sticky: true, expiresAt: null }
 }
 
+/** A superseded sticky notice (progress, an action, an offer) comes back when the slot frees up. */
+const fallback = (history: readonly Notice[]): Notice | null => history.find((h) => h.sticky && !h.dismissed) ?? null
+
+let seq = 0
+
 export const useNotices = create<NoticesState>()((set, get) => ({
   current: null,
   history: [],
@@ -59,11 +67,21 @@ export const useNotices = create<NoticesState>()((set, get) => ({
   push(n) {
     const at = Date.now()
     const { history, unreadErrors } = get()
-    const same = history.find((h) => h.id === n.id)
-    const twin = same ? undefined : history.find((h) => h.kind === n.kind && h.text === n.text && at - h.at < DEDUPE_MS)
+    const same = n.id === undefined ? undefined : history.find((h) => h.id === n.id)
+    const twin =
+      n.id === undefined
+        ? history.find(
+            (h) =>
+              h.kind === n.kind &&
+              h.text === n.text &&
+              h.description === n.description &&
+              h.action?.label === n.action?.label &&
+              at - h.at < DEDUPE_MS,
+          )
+        : undefined
     const prev = same ?? twin
     const notice: Notice = {
-      id: twin ? twin.id : n.id,
+      id: prev?.id ?? n.id ?? `n${++seq}`,
       kind: n.kind,
       text: n.text,
       description: n.description,
@@ -85,15 +103,16 @@ export const useNotices = create<NoticesState>()((set, get) => ({
     const { current, history } = get()
     const target = id === undefined ? current : (history.find((h) => h.id === id) ?? null)
     if (!target) return
-    set({
-      current: current?.id === target.id ? null : current,
-      history: target.kind === 'progress' ? history.filter((h) => h.id !== target.id) : history,
-    })
+    const next =
+      target.kind === 'progress'
+        ? history.filter((h) => h.id !== target.id)
+        : history.map((h) => (h.id === target.id ? { ...h, dismissed: true } : h))
+    set({ history: next, current: current?.id === target.id ? fallback(next) : current })
   },
   clear: () => set({ current: null, history: [], unreadErrors: 0 }),
   markRead: () => set({ unreadErrors: 0 }),
   expire(now = Date.now()) {
-    const { current } = get()
-    if (current?.expiresAt != null && now >= current.expiresAt) set({ current: null })
+    const { current, history } = get()
+    if (current?.expiresAt != null && now >= current.expiresAt) set({ current: fallback(history) })
   },
 }))

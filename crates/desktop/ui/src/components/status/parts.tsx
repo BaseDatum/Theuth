@@ -46,17 +46,17 @@ export function useEngineStatus(): EngineStatus {
 }
 
 /**
- * The bar's one clock: closes the event-rate second, expires the slot's notice and ticks the countdown, once a
- * second. Returns `Date.now()` as of the last tick.
+ * The bar's one clock: closes the event-rate second, expires the slot's notice and re-renders the countdown, once a
+ * second. Readers take `Date.now()` at render; the tick only forces the render.
  */
-export function useStatusClock(rate = true): number {
-  const [now, setNow] = useState(Date.now)
+export function useStatusClock(rate = true): void {
+  const [, setTick] = useState(0)
   useEffect(() => {
     const id = window.setInterval(() => {
       const t = Date.now()
       if (rate) useEventRate.getState().roll(t)
       useNotices.getState().expire(t)
-      setNow(t)
+      setTick((n) => n + 1)
     }, 1_000)
     return () => clearInterval(id)
   }, [rate])
@@ -67,7 +67,6 @@ export function useStatusClock(rate = true): number {
     const id = window.setTimeout(() => useNotices.getState().expire(), Math.max(0, expiresAt - Date.now()))
     return () => clearTimeout(id)
   }, [expiresAt])
-  return now
 }
 
 /** The slot's notice, held a moment after it leaves so it can fade. */
@@ -85,14 +84,13 @@ export function useShownNotice(): { notice: Notice | null; leaving: boolean } {
   return { notice: current ?? held, leaving: !current && held !== null }
 }
 
-export function StatusDot({ dot, size = 7 }: { dot: Dot; size?: number }) {
+export function StatusDot({ dot, small = false }: { dot: Dot; small?: boolean }) {
   return (
     <span
       aria-hidden
       data-tone={dot.tone}
       data-pulse={dot.pulse || undefined}
-      className={cn('status-dot inline-block shrink-0 rounded-full', DOT_BG[dot.tone])}
-      style={{ width: size, height: size }}
+      className={cn('status-dot inline-block aspect-square shrink-0 rounded-full', small ? 'size-[5px]' : 'size-[7px]', DOT_BG[dot.tone])}
     />
   )
 }
@@ -110,5 +108,11 @@ export function KindTag({ kind }: { kind: Notice['kind'] }) {
 /** Runs an action and settles its notice: acting on a sticky notice dismisses it. */
 export function act(notice: Notice, a: NonNullable<Notice['action']>): void {
   a.onClick()
+  useNotices.getState().dismiss(notice.id)
+}
+
+/** The × on a sticky notice: its `cancel` runs (an offer's "Not now" records the answer), then it is dismissed. */
+export function closeNotice(notice: Notice): void {
+  notice.cancel?.onClick()
   useNotices.getState().dismiss(notice.id)
 }

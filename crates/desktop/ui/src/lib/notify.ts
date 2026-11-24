@@ -17,12 +17,10 @@ export type NoticeOpts = {
   cancel?: NoticeAction
 }
 
-let seq = 0
-
 const emit =
   (kind: NoticeKind) =>
   (text: string, o: NoticeOpts = {}): string | number =>
-    useNotices.getState().push({ ...o, id: o.id ?? `n${++seq}`, kind, text })
+    useNotices.getState().push({ ...o, kind, text })
 
 const base = emit('info')
 

@@ -79,7 +79,7 @@ function Root() {
   // 217: the status bar runs under sidebar and column. `--statusbar-h` (its height, plus the home-indicator band on an
   // iPad) is what the fixed sidebar stops short by; the phone has no bar, its line closes the column instead.
   return (
-    <div className="flex h-band flex-col [--statusbar-h:calc(22px+var(--safe-bottom))] max-md:[--statusbar-h:0px] md:pb-[var(--safe-bottom)]">
+    <div className="flex h-band flex-col [--statusbar-h:calc(22px_+_var(--safe-bottom))] max-md:[--statusbar-h:0px] md:bg-sidebar md:pb-[var(--safe-bottom)]">
       <SidebarProvider open={open} onOpenChange={setOpen} rail className="min-h-0 flex-1">
         <AppSidebar session={session} />
         <Capability required={searchRequirements} hide><SearchHost /></Capability>

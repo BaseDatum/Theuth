@@ -29,7 +29,8 @@ export const useEventRate = create<EventRateState>()((set, get) => {
     },
     roll(now = Date.now()) {
       const s = Math.floor(now / 1000)
-      if (s === second) return
+      // A clock that steps back keeps counting into the open second rather than reopening a closed one.
+      if (s <= second) return
       if (second >= 0) {
         const silent = zeros(Math.min(s - second - 1, BUCKETS))
         set({ buckets: [...get().buckets, count, ...silent].slice(-BUCKETS) })

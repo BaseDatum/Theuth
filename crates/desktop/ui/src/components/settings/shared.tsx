@@ -221,10 +221,14 @@ export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/** Show `results` of `sync_mcp`/`sync_skills` as one toast. */
+/** Show `results` of `sync_mcp`/`sync_skills` as one notice: a warning when any repo failed. */
 export function toastSync(results: SyncResult[]): void {
   if (results.length === 0) toast.message('Nothing to sync')
-  else toast.message('Synced', { description: results.map((r) => `${r.name}: ${r.status}`).join('\n') })
+  else {
+    const description = results.map((r) => `${r.name}: ${r.status}`).join('\n')
+    if (results.some((r) => r.status.startsWith('error'))) toast.warning('Synced with errors', { description })
+    else toast.message('Synced', { description })
+  }
 }
 
 /** What `useAction` hands back: call `.mutate(vars)`, read `.isPending`. */
