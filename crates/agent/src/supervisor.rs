@@ -8450,10 +8450,42 @@ impl Message<ActivityOf> for Agents {
     }
 }
 
+/// A session doing work of its own (62 §0.2): state `Running | Awaiting |
+/// Approval`, or owning a running job or PTY. The desktop's `active`.
+fn broadcast_active(a: &SessionActivity) -> bool {
+    a.jobs + a.ptys > 0
+        || matches!(
+            a.state,
+            AgentState::Running | AgentState::Awaiting { .. } | AgentState::Approval { .. }
+        )
+}
+
+/// What [`BroadcastTargets::Running`] selects out of `rows` (every session):
+/// the roots that are [`broadcast_active`] themselves or have an active
+/// descendant (child, grandchild, …), walked with
+/// [`crate::auto_archive::root_of_each`]. Advisors don't count (125 §8.5).
+/// Matches the desktop "Running roots" chip (`runningRoots` in broadcast.ts).
+fn running_roots(
+    rows: &[SessionSummary],
+    activity: &HashMap<SessionId, SessionActivity>,
+) -> HashSet<SessionId> {
+    let members: Vec<SessionSummary> = rows
+        .iter()
+        .filter(|r| r.kind != SessionKind::Advisor)
+        .cloned()
+        .collect();
+    crate::auto_archive::root_of_each(&members)
+        .into_iter()
+        .filter(|(id, _)| activity.get(id).is_some_and(broadcast_active))
+        .map(|(_, root)| root)
+        .collect()
+}
+
 impl Agents {
     /// 62 §3.3 step 1: the rows `targets` names, in selector order, `before`
     /// filled, every resolved row `Skipped{"dry run"}` and an unknown id
-    /// `Failed{"unknown session"}`. `Running`/`Roots` never name a child.
+    /// `Failed{"unknown session"}`. `Running`/`Roots` never name a child;
+    /// `Running` names a root when it or any descendant subagent is active.
     async fn resolve_targets(&self, targets: &BroadcastTargets) -> Vec<BroadcastRow> {
         let view = self.view();
         let rows = view.all_rows().await;
@@ -8473,26 +8505,21 @@ impl Agents {
             }
         };
         match targets {
-            BroadcastTargets::Running | BroadcastTargets::Roots => rows
+            BroadcastTargets::Roots => rows
                 .iter()
                 .filter(|r| r.parent.is_none())
                 .filter_map(|r| {
                     let a = activity.remove(&r.id)?;
-                    let keep = match targets {
-                        BroadcastTargets::Roots => a.live,
-                        _ => {
-                            a.jobs + a.ptys > 0
-                                || matches!(
-                                    a.state,
-                                    AgentState::Running
-                                        | AgentState::Awaiting { .. }
-                                        | AgentState::Approval { .. }
-                                )
-                        }
-                    };
-                    keep.then(|| row(r.id, a))
+                    a.live.then(|| row(r.id, a))
                 })
                 .collect(),
+            BroadcastTargets::Running => {
+                let running = running_roots(&rows, &activity);
+                rows.iter()
+                    .filter(|r| running.contains(&r.id))
+                    .filter_map(|r| Some(row(r.id, activity.remove(&r.id)?)))
+                    .collect()
+            }
             BroadcastTargets::Sessions { ids } => {
                 let mut seen = HashSet::with_capacity(ids.len());
                 ids.iter()
@@ -18601,7 +18628,8 @@ pub(crate) mod tests {
     }
 
     /// 62 §0.2, §3.3: `Running` names roots only — a running child is never
-    /// swept in; a dry run fills `before` and routes nothing.
+    /// swept in, but makes its idle root count; a dry run fills `before` and
+    /// routes nothing.
     #[tokio::test]
     async fn broadcast_running_selects_roots_and_dry_run_sends_nothing() {
         let (_scratch, mut a) = agents().await;
@@ -18612,8 +18640,15 @@ pub(crate) mod tests {
         a.session(Some(child), Some((root, "kid")), None, (None, None))
             .await
             .unwrap();
+        // An idle root whose child runs: selected as a root, the child never.
+        let (parent, _) = a.session(None, None, None, (None, None)).await.unwrap();
+        let busy_kid = SessionId::new();
+        a.session(Some(busy_kid), Some((parent, "busy")), None, (None, None))
+            .await
+            .unwrap();
         a.running.insert(root);
         a.running.insert(child);
+        a.running.insert(busy_kid);
 
         let receipt = a
             .broadcast(BroadcastRequest {
@@ -18625,9 +18660,15 @@ pub(crate) mod tests {
             })
             .await
             .unwrap();
-        let ids: Vec<SessionId> = receipt.rows.iter().map(|r| r.session).collect();
-        assert_eq!(ids, [root], "running child and idle root excluded");
-        let row = &receipt.rows[0];
+        let ids: HashSet<SessionId> = receipt.rows.iter().map(|r| r.session).collect();
+        assert_eq!(
+            ids,
+            HashSet::from([root, parent]),
+            "running children and the idle root excluded; an idle root with a running child included"
+        );
+        let row = receipt.rows.iter().find(|r| r.session == root).unwrap();
+        let idle_parent = receipt.rows.iter().find(|r| r.session == parent).unwrap();
+        assert_eq!(idle_parent.before.state, AgentState::Idle);
         assert_eq!(row.before.state, AgentState::Running);
         assert!(row.before.live && row.parent.is_none());
         assert_eq!(
@@ -18637,6 +18678,95 @@ pub(crate) mod tests {
             }
         );
         assert!(a.last_input.is_empty(), "a dry run routes no input");
+    }
+
+    /// `Running` = the desktop "Running roots" chip: a root counts when it or
+    /// any descendant subagent is active (turn, approval, reply wait, job or
+    /// PTY); advisors don't count and a subagent is never itself selected.
+    #[test]
+    fn broadcast_running_follows_active_descendants() {
+        let summary = |id: SessionId, parent: Option<SessionId>| {
+            let mut r: SessionSummary = serde_json::from_value(serde_json::json!({
+                "id": id,
+                "created_at": Utc::now(),
+                "updated_at": Utc::now(),
+                "title": "t",
+                "model": "m",
+            }))
+            .unwrap();
+            r.parent = parent;
+            r
+        };
+        let act = |state: AgentState, jobs: u16, ptys: u16| SessionActivity {
+            state,
+            jobs,
+            ptys,
+            live: true,
+            ..SessionActivity::default()
+        };
+        let ids: Vec<SessionId> = (0..12).map(|_| SessionId::new()).collect();
+        let [
+            run_root,
+            kid_root,
+            kid,
+            pty_root,
+            mid,
+            pty_grandchild,
+            job_root,
+            job_kid,
+            quiet_root,
+            quiet_a,
+            quiet_b,
+            adv_root,
+        ] = ids[..]
+        else {
+            unreachable!()
+        };
+        let advisor = SessionId::new();
+        let mut adv = summary(advisor, Some(adv_root));
+        adv.kind = SessionKind::Advisor;
+        let rows = vec![
+            summary(run_root, None),
+            summary(kid_root, None),
+            summary(kid, Some(kid_root)),
+            summary(pty_root, None),
+            summary(mid, Some(pty_root)),
+            summary(pty_grandchild, Some(mid)),
+            summary(job_root, None),
+            summary(job_kid, Some(job_root)),
+            summary(quiet_root, None),
+            summary(quiet_a, Some(quiet_root)),
+            summary(quiet_b, Some(quiet_root)),
+            summary(adv_root, None),
+            adv,
+        ];
+        let activity: HashMap<SessionId, SessionActivity> = [
+            (run_root, act(AgentState::Running, 0, 0)),
+            (kid_root, act(AgentState::Idle, 0, 0)),
+            (kid, act(AgentState::Running, 0, 0)),
+            (pty_root, act(AgentState::Idle, 0, 0)),
+            (mid, act(AgentState::Idle, 0, 0)),
+            (pty_grandchild, act(AgentState::Idle, 0, 1)),
+            (job_root, act(AgentState::Idle, 0, 0)),
+            (job_kid, act(AgentState::Cancelled, 2, 0)),
+            (quiet_root, act(AgentState::Idle, 0, 0)),
+            (quiet_a, act(AgentState::Idle, 0, 0)),
+            (quiet_b, act(AgentState::Cancelled, 0, 0)),
+            (adv_root, act(AgentState::Idle, 0, 0)),
+            (advisor, act(AgentState::Running, 0, 0)),
+        ]
+        .into_iter()
+        .collect();
+        let got = super::running_roots(&rows, &activity);
+        assert_eq!(
+            got,
+            HashSet::from([run_root, kid_root, pty_root, job_root]),
+            "running root, running child, PTY grandchild, job child; not the \
+             quiet tree nor the root whose only active member is its advisor"
+        );
+        for sub in [kid, mid, pty_grandchild, job_kid, advisor] {
+            assert!(!got.contains(&sub), "a subagent is never selected");
+        }
     }
 
     /// 62 §3.3 step 4: a busy recipient queues (with the chosen delivery), an

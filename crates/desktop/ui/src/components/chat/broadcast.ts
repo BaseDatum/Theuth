@@ -47,7 +47,7 @@ export function activeDescendants(all: AgentInfo[]): Map<string, number> {
 
 /**
  * What the "Running roots" chip selects: roots that are `active` themselves, or idle with an `active` subagent
- * anywhere below them. (The engine's `BroadcastTargets::Running` still checks the root alone.)
+ * anywhere below them — the engine's `BroadcastTargets::Running` selects the same.
  */
 export function runningRoots(rows: AgentInfo[]): string[] {
   const below = activeDescendants(rows)

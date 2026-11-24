@@ -108,10 +108,10 @@ pub fn eligible(cfg: &AutoArchiveConfig, c: &Candidate, now: DateTime<Utc>) -> O
     (age >= cfg.after).then_some(age)
 }
 
-/// Group `rows` (every session, children included, as `list_sessions` reads
-/// them) into one [`Candidate`] per root. `busy` says whether one session is
-/// busy. A child whose root is not in `rows` is skipped; so is a cycle.
-pub fn candidates(rows: &[SessionSummary], busy: impl Fn(SessionId) -> bool) -> Vec<Candidate> {
+/// Every member of `rows` (every session, children included) mapped to its
+/// root: a root to itself, a child, grandchild, … to the root up its `parent`
+/// chain. A child whose root is not in `rows` is absent; so is a cycle.
+pub fn root_of_each(rows: &[SessionSummary]) -> HashMap<SessionId, SessionId> {
     let parent: HashMap<SessionId, Option<SessionId>> =
         rows.iter().map(|r| (r.id, r.parent)).collect();
     let root_of = |mut id: SessionId| -> Option<SessionId> {
@@ -126,6 +126,16 @@ pub fn candidates(rows: &[SessionSummary], busy: impl Fn(SessionId) -> bool) -> 
             }
         }
     };
+    rows.iter()
+        .filter_map(|r| Some((r.id, root_of(r.id)?)))
+        .collect()
+}
+
+/// Group `rows` (every session, children included, as `list_sessions` reads
+/// them) into one [`Candidate`] per root. `busy` says whether one session is
+/// busy. A child whose root is not in `rows` is skipped; so is a cycle.
+pub fn candidates(rows: &[SessionSummary], busy: impl Fn(SessionId) -> bool) -> Vec<Candidate> {
+    let root_of = root_of_each(rows);
     let mut out: HashMap<SessionId, Candidate> = rows
         .iter()
         .filter(|r| r.parent.is_none())
@@ -145,7 +155,7 @@ pub fn candidates(rows: &[SessionSummary], busy: impl Fn(SessionId) -> bool) -> 
         })
         .collect();
     for r in rows.iter().filter(|r| r.parent.is_some()) {
-        let Some(c) = root_of(r.id).and_then(|root| out.get_mut(&root)) else {
+        let Some(c) = root_of.get(&r.id).and_then(|root| out.get_mut(root)) else {
             continue;
         };
         c.last_activity = c.last_activity.max(r.updated_at);

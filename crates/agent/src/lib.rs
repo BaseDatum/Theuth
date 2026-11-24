@@ -1889,7 +1889,9 @@ impl Default for SessionActivity {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BroadcastTargets {
-    /// Roots whose state is `Running | Awaiting | Approval` or with `jobs + ptys > 0`.
+    /// Roots that are active themselves or have an active descendant subagent
+    /// (child, grandchild, …; advisors excluded). Active = state `Running |
+    /// Awaiting | Approval` or `jobs + ptys > 0`. Never names a subagent.
     Running,
     /// Every root with a live actor.
     Roots,
