@@ -19,6 +19,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
+import { cornerPad, headerToggle } from '@/lib/sidebar-corner'
 import { SidebarToggle } from './SidebarToggle'
 import { useTileHost } from '@/components/tiles/host'
 import { openBrowserTile, openMemoryTile, openTerminalsTile, openVmTile, showArtifact } from '@/components/tiles/open'
@@ -213,7 +214,8 @@ export function Header({
   const canQuery2 = useQuerySupport(["list_sessions"])
   const canQuery2_2 = useQuerySupport(["get_approvals"])
   const api = useApi()
-  const { open, isMobile } = useSidebar()
+  const sidebar = useSidebar()
+  const { isMobile } = sidebar
   const info = useConnection((s) => s.info)
   const pending = useApprovals((s) => s.pending.length)
   const parent = useSessionField(session ?? '', 'parent')
@@ -286,7 +288,7 @@ export function Header({
   const region = (mac && drag.region) || undefined
   // A popped window has no sidebar to open and is already its own window: no toggle, no search, no popout button.
   const popped = isPopout()
-  const nav = first && (!open || isMobile) && !popped
+  const nav = first && headerToggle(sidebar) && !popped
   /** The talk view (B3): the header carries the way back to the same session's chat; the talk keeps running. */
   const chat = popout?.kind === 'talk'
   /**
@@ -436,7 +438,7 @@ export function Header({
       <div
         ref={rowRef}
         data-tauri-drag-region={region}
-        className={cn('flex h-full w-full min-w-max items-center', compact ? 'gap-1 px-2' : 'gap-2 px-3', nav && !open && mac && 'pl-20')}
+        className={cn('flex h-full w-full min-w-max items-center', compact ? 'gap-1 px-2' : 'gap-2 px-3', first && !popped && mac && cornerPad(sidebar))}
       >
         {bar.map((i) => (
           <Fragment key={i.id}>{render[i.id](compact ? 'bar' : 'full')}</Fragment>

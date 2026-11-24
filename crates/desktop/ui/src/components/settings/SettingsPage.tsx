@@ -7,6 +7,7 @@ import { RestartBanner } from '@/components/settings/page/RestartBanner'
 import { placeOf, shownCategories, shownTab, shownTabs } from '@/components/settings/registry'
 import type { SettingsCategory } from '@/components/settings/types'
 import { useSidebar } from '@/components/ui/sidebar'
+import { cornerPad } from '@/lib/sidebar-corner'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { cn } from '@/lib/utils'
@@ -76,7 +77,7 @@ function Categories({ current }: { current: SettingsCategory }) {
       {/* With the rail closed this column meets the window's left edge, so it clears the traffic lights, not the band. */}
       <div
         data-tauri-drag-region={mac || undefined}
-        className={cn('flex h-[52px] shrink-0 items-center border-b border-border-subtle px-5 text-sm font-semibold', !sidebar.open && mac && 'pl-20')}
+        className={cn('flex h-[52px] shrink-0 items-center border-b border-border-subtle px-5 text-sm font-semibold', mac && cornerPad(sidebar))}
       >
         Settings
       </div>

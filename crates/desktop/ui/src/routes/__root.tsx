@@ -16,7 +16,7 @@ import { PublicShareStrip } from '@/components/public-share/PublicShareStrip'
 import { RoutineDraftBridge } from '@/components/routines/RoutineChat'
 import { AppSidebar } from '@/components/sidebar/AppSidebar'
 import { SearchDialog } from '@/components/sidebar/SearchDialog'
-import { SidebarInset, SidebarProvider, useSidebar } from '@/components/ui/sidebar'
+import { SidebarInset, SidebarProvider, readSidebarOpen, useSidebar, writeSidebarOpen } from '@/components/ui/sidebar'
 import { useHotkeys } from '@/lib/hotkeys'
 import { CostsPrefetch } from '@/lib/costs/queries'
 import { CostsResident, ResidentCtx } from '@/components/costs/Resident'
@@ -50,12 +50,15 @@ function Popped() {
 }
 
 /** The shell: resizable sidebar (⇧⌘S) beside the routed column; the meeting bar closes the column while a meeting records.
+ * On a desktop it collapses to the icon rail, never away; expanded or rail is kept in the `sidebar_state` cookie.
  * Routes render only once connected, so `useApi` is safe below. */
 function Root() {
   const { session } = useParams({ strict: false })
   const navigate = useNavigate()
-  const [open, setOpen] = useState(true)
+  const [open, setOpen] = useState(() => readSidebarOpen(globalThis.document?.cookie ?? ''))
   useHotkeys()
+  // Every path that changes it (the toggles, ⌘B, ⇧⌘S's event, a swipe) lands here.
+  useEffect(() => writeSidebarOpen(open), [open])
 
   useEffect(() => {
     const toggle = () => setOpen((o) => !o)
@@ -72,7 +75,7 @@ function Root() {
   }, [navigate])
 
   return (
-    <SidebarProvider open={open} onOpenChange={setOpen} className="h-band min-h-0">
+    <SidebarProvider open={open} onOpenChange={setOpen} rail className="h-band min-h-0">
       <AppSidebar session={session} />
       <Capability required={searchRequirements} hide><SearchHost /></Capability>
       <Capability required={routineRequirements} hide><RoutineDraftBridge /></Capability>

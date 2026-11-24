@@ -1,5 +1,5 @@
 import { useNavigate } from '@tanstack/react-router'
-import { Check, ChevronDown, Plus, RotateCw, Settings2 } from 'lucide-react'
+import { Check, ChevronDown, Plus, RotateCw, Server, Settings2 } from 'lucide-react'
 import { useStore } from 'zustand'
 import { Button } from '@/components/ui/button'
 import {
@@ -59,7 +59,7 @@ export function useMembersLine(id: string): string | null {
  * daemon is the only engine — today's desktop UI unchanged. Nodes include their
  * parent: `build-box · via Studio Mac`.
  */
-export function EngineSwitcher({ className }: { className?: string }) {
+export function EngineSwitcher({ className, compact = false }: { className?: string; compact?: boolean }) {
   const navigate = useNavigate()
   const engines = useEngines((s) => s.engines)
   const rows = useEngineTree()
@@ -80,17 +80,33 @@ export function EngineSwitcher({ className }: { className?: string }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" className={cn('h-9 min-w-0 gap-2 rounded-lg px-2.5 font-medium text-fg-secondary', className)}>
-          <Dot presence={presenceOf(active)} />
-          <span className="min-w-0 truncate">
-            {activeName}
-            {via && <span className="font-normal text-fg-tertiary"> · via {via}</span>}
-            {chip && <span className="font-normal text-fg-tertiary"> · {chip}</span>}
-          </span>
-          <ChevronDown className="size-4 opacity-70" />
-        </Button>
+        {compact ? (
+          // The collapsed sidebar rail: a server glyph with the presence dot in its corner; the name is the label.
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn('relative rounded-lg text-fg-secondary', className)}
+            aria-label={`Machine: ${activeName}${via ? ` · via ${via}` : ''}${chip ? ` · ${chip}` : ''}`}
+            title={activeName}
+          >
+            <Server className="size-[18px]" />
+            <span className="absolute top-1.5 right-1.5 flex rounded-full ring-2 ring-sidebar">
+              <Dot presence={presenceOf(active)} />
+            </span>
+          </Button>
+        ) : (
+          <Button variant="ghost" className={cn('h-9 min-w-0 gap-2 rounded-lg px-2.5 font-medium text-fg-secondary', className)}>
+            <Dot presence={presenceOf(active)} />
+            <span className="min-w-0 truncate">
+              {activeName}
+              {via && <span className="font-normal text-fg-tertiary"> · via {via}</span>}
+              {chip && <span className="font-normal text-fg-tertiary"> · {chip}</span>}
+            </span>
+            <ChevronDown className="size-4 opacity-70" />
+          </Button>
+        )}
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-64">
+      <DropdownMenuContent align="start" side={compact ? 'right' : undefined} className="w-64">
         {rows.map(({ engine: h, depth }) => {
           const p = presenceOf(h.id)
           const failed = pairError[h.id]

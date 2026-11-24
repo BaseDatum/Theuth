@@ -9,6 +9,7 @@ import { NewChat } from '@/components/chat/NewChatPane'
 import { LiveSession } from '@/routes/c.$session'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
+import { cornerPad } from '@/lib/sidebar-corner'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { isMacDesktop } from '@/lib/hotkeys'
@@ -333,7 +334,7 @@ export function Page() {
       <article className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header
           data-tauri-drag-region={mac || undefined}
-          className={cn('h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', !sidebar.open && mac && 'pl-20', active ? 'hidden md:flex' : 'flex')}
+          className={cn('h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', mac && cornerPad(sidebar), active ? 'hidden md:flex' : 'flex')}
         >
           <SidebarLead />
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">

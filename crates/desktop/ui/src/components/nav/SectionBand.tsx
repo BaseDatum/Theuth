@@ -9,6 +9,7 @@ import { type LucideIcon, PanelLeft } from 'lucide-react'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
+import { cornerPad, headerToggle } from '@/lib/sidebar-corner'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { GROUPS, type Group, type Tab, tabOf } from '@/lib/nav'
@@ -55,7 +56,7 @@ export function TabBand({
   return (
     <header
       data-tauri-drag-region={mac || undefined}
-      className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3 max-lg:h-auto max-lg:min-h-[52px]', inset && !sidebar.open && mac && 'pl-20')}
+      className={cn('flex h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3 max-lg:h-auto max-lg:min-h-[52px]', inset && mac && cornerPad(sidebar))}
     >
       <SidebarLead />
       <Tabs value={value} onValueChange={onValueChange} className="h-full min-w-0 flex-1 gap-0 max-lg:h-auto">
@@ -81,7 +82,7 @@ export function TabBand({
 /** Search and the sidebar toggle, at the left of a page's top bar while the rail is closed or a sheet (phone); never in a popped window, which has no rail. */
 export function SidebarLead() {
   const sidebar = useSidebar()
-  if (isPopout() || (sidebar.open && !sidebar.isMobile)) return null
+  if (isPopout() || !headerToggle(sidebar)) return null
   return (
     <div className="flex shrink-0 items-center">
       <SearchTrigger />

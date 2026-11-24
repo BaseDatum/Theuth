@@ -3,6 +3,7 @@ import { createContext, type ReactNode, useContext } from 'react'
 import { SidebarToggle } from '@/components/chat/SidebarToggle'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
+import { cornerPad, headerToggle } from '@/lib/sidebar-corner'
 import { useViewTitle } from '@danfessler/trellis-react'
 import { useViewDrag } from '@/hooks/use-view-drag'
 import { previewText } from '@/lib/channel-origin'
@@ -52,12 +53,12 @@ export function TileFrame({
   /** Merged onto the body (a flex column filling the rest of the tile). */
   className?: string
 }) {
-  const { open, isMobile } = useSidebar()
+  const sidebar = useSidebar()
   const mac = isMacDesktop()
   // A tile alone in its own window (`PoppedTile`): no pop-out of itself, no Close (the OS title bar closes it). A tile
   // beside a popped chat keeps both.
   const popped = useContext(TileAlone)
-  const nav = first && (!open || isMobile) && !isPopout()
+  const nav = first && headerToggle(sidebar) && !isPopout()
   const drag = useViewDrag()
   const owner = useSessionField(chat ?? '', 'title')
   useViewTitle(owner ? `${tab ?? title} · ${chatTitle(owner)}` : (tab ?? title))
@@ -68,7 +69,7 @@ export function TileFrame({
         {...drag.props}
         data-tauri-drag-region={region}
         data-tile-header=""
-        className={cn('relative flex h-[52px] shrink-0 items-center gap-1 px-2', nav && !open && mac && 'pl-20')}
+        className={cn('relative flex h-[52px] shrink-0 items-center gap-1 px-2', first && !isPopout() && mac && cornerPad(sidebar))}
       >
         {nav && <SidebarToggle />}
         <div data-tauri-drag-region={region} className="flex min-w-0 flex-1 flex-col justify-center px-1">

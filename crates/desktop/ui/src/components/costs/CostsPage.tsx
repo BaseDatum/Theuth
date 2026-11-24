@@ -9,6 +9,7 @@ import { toast } from 'sonner'
 import { SidebarLead } from '@/components/nav/SectionBand'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
+import { cornerPad } from '@/lib/sidebar-corner'
 import { type Dim, defaultTz, type Filters, HOUR_MS, type Index, type Metric, options, type Range, series, sessions, toCsv } from '@/lib/costs/cube'
 import { int } from '@/lib/costs/format'
 import { useCostIndex } from '@/lib/costs/queries'
@@ -146,7 +147,7 @@ export function CostsPage({ search, visible }: { search: CostsSearch; visible: b
 
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header data-tauri-drag-region={mac || undefined} className={cn('flex h-[52px] shrink-0 items-center gap-2.5 border-b border-border-subtle px-3 md:px-4', !sidebar.open && mac && 'pl-20')}>
+      <header data-tauri-drag-region={mac || undefined} className={cn('flex h-[52px] shrink-0 items-center gap-2.5 border-b border-border-subtle px-3 md:px-4', mac && cornerPad(sidebar))}>
         <SidebarLead />
         <h1 className="text-[15px] font-semibold tracking-[0.2px]">Costs</h1>
         <span className="hidden min-w-0 items-center gap-1.5 truncate font-mono text-[10px] tracking-[1.4px] text-fg-tertiary uppercase sm:inline-flex">

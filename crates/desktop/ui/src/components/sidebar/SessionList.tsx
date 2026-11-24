@@ -24,6 +24,7 @@ import { chatLeaves, usePanes } from '@/lib/panes'
 import { routed } from '@/lib/owner'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useLinger } from '@/lib/sidebar-linger'
+import { takeReveal, useSidebarReveal } from '@/lib/sidebar-reveal'
 import { cn } from '@/lib/utils'
 import { notAdvisor, notStudy, rootOf, subtrees } from '@/lib/session-tree'
 import { nextSelection, type SelectMode } from '@/lib/selection'
@@ -266,34 +267,13 @@ export function watchListOffset(
 }
 
 /**
- * The chat list (`list_sessions`), virtualized on the sidebar's scroll container.
- * ⌘-click toggles a chat into a selection, ⇧-click extends it from the last one
- * (Finder rules); a bar deletes or archives them together. Esc clears. The bar is
- * portaled into `barEl`, the sidebar's slot below the scroll container, so it stays
- * visible while the list scrolls. (It used to be a `sticky bottom-0` child of the
- * scroller, which is a flex column: the `<ul>` is a shrinkable flex item whose only
- * content is absolutely positioned, so past the viewport its virtualizer height
- * collapsed to the leftover space, the bar's static position landed right under it
- * and sticky — a one-sided constraint — let it scroll away with the list.)
+ * What the chat list and the collapsed rail's sections are built from: `list_sessions`, its subtrees, the roots in
+ * `Active` (ACTIVE-TOP) and those lingering there (LINGER), and which sessions wait on the user (`prompting`).
  */
-export function SessionList({
-  scrollEl,
-  barEl,
-  active,
-}: {
-  scrollEl: HTMLDivElement | null
-  barEl: HTMLDivElement | null
-  active: string | undefined
-}) {
+export function useSidebarSessions() {
   const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
-  const qc = useQueryClient()
-  const navigate = useNavigate()
   const { data: sessions = [] } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
-  const [archivedOpen, setArchivedOpen] = useState(false)
-  const leaves = usePanes((s) => s.leaves)
-  const open = useMemo(() => (leaves.length ? chatLeaves(leaves) : active ? [active] : []), [leaves, active])
   const subs = useMemo(() => subtrees(sessions), [sessions])
   const roots = useMemo(() => sessions.filter((s) => s.parent === null), [sessions])
   const approvals = useApprovals((s) => s.pending)
@@ -337,6 +317,37 @@ export function SessionList({
     const timer = setTimeout(() => setNow(Date.now()), Math.max(0, at - Date.now()) + 250)
     return () => clearTimeout(timer)
   }, [recent, windowMs])
+  return { sessions, subs, activeSet, recent, prompting }
+}
+
+/**
+ * The chat list (`list_sessions`), virtualized on the sidebar's scroll container.
+ * ⌘-click toggles a chat into a selection, ⇧-click extends it from the last one
+ * (Finder rules); a bar deletes or archives them together. Esc clears. The bar is
+ * portaled into `barEl`, the sidebar's slot below the scroll container, so it stays
+ * visible while the list scrolls. (It used to be a `sticky bottom-0` child of the
+ * scroller, which is a flex column: the `<ul>` is a shrinkable flex item whose only
+ * content is absolutely positioned, so past the viewport its virtualizer height
+ * collapsed to the leftover space, the bar's static position landed right under it
+ * and sticky — a one-sided constraint — let it scroll away with the list.)
+ */
+export function SessionList({
+  scrollEl,
+  barEl,
+  active,
+}: {
+  scrollEl: HTMLDivElement | null
+  barEl: HTMLDivElement | null
+  active: string | undefined
+}) {
+  const { sessions, subs, activeSet, recent } = useSidebarSessions()
+  const api = useApi()
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
+  const [archivedOpen, setArchivedOpen] = useState(false)
+  const leaves = usePanes((s) => s.leaves)
+  const open = useMemo(() => (leaves.length ? chatLeaves(leaves) : active ? [active] : []), [leaves, active])
   const rows = useMemo(
     () => buildRows(sessions, open, collapsed, archivedOpen, activeSet, recent),
     [sessions, open, collapsed, archivedOpen, activeSet, recent],
@@ -412,6 +423,27 @@ export function SessionList({
     overscan: 8,
     getItemKey: (i) => rows[i]?.key ?? i,
   })
+  // The rail's "Show all N →" expanded the sidebar for one section: open it if collapsed (the rows rebuild and this runs
+  // again), then scroll its header to the top. `p:` without a header row (no projects) is the plain list's first day.
+  const reveal = useSidebarReveal((s) => s.key)
+  useEffect(() => {
+    if (!reveal?.startsWith('h:') && !reveal?.startsWith('p:')) return
+    if (!scrollEl) return
+    const project = reveal.slice(2)
+    if (reveal.startsWith('p:') && collapsed.has(project)) {
+      setCollapsed((prev) => new Set([...prev].filter((k) => k !== project)))
+      return
+    }
+    const i = rows.findIndex((r) => r.key === reveal)
+    const at = i >= 0 || reveal !== 'p:' ? i : rows.findIndex((r) => r.key.startsWith('h::'))
+    if (at < 0) return takeReveal()
+    // A frame later: the list's offset (`scrollMargin`) is measured by then.
+    const frame = requestAnimationFrame(() => {
+      v.scrollToIndex(at, { align: 'start' })
+      takeReveal()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [reveal, scrollEl, rows, collapsed, v])
   return (
     <>
       {/* `shrink-0`: a flex item of the scroller; without it the column layout squeezes the measured height away. */}

@@ -3,6 +3,7 @@ import type * as Rpc from '@/lib/rpc'
 import type * as Popout from '@/lib/popout'
 import type * as Talk from '@/lib/talk'
 import type * as Discovery from '@/rpc/discovery'
+import type * as RailModule from './Rail'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, createElement, type ComponentProps, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -41,14 +42,16 @@ vi.mock('@/components/meeting/MeetingList', () => ({ useCanRecord: () => true })
 vi.mock('./SearchTrigger', () => ({ SearchTrigger: () => null }))
 vi.mock('./SessionList', () => ({ SessionList: () => null }))
 vi.mock('./Desks', () => ({ Desks: () => null }))
+vi.mock('./Rail', async (original) => ({ ...(await original<typeof RailModule>()), RailSections: () => createElement('div', { 'data-rail-sections': '' }) }))
 
 let unmount = async () => {}
 let client: QueryClient
-async function mount() {
+async function mount(props: { open?: boolean } = {}) {
   const host = document.body.appendChild(document.createElement('div'))
   const root = createRoot(host)
   client = new QueryClient()
-  await act(async () => root.render(createElement(QueryClientProvider, { client, children: createElement(SidebarProvider, null, createElement(AppSidebar, { session: 'root' })) })))
+  const shell = createElement(SidebarProvider, { rail: true, defaultOpen: props.open ?? true }, createElement(AppSidebar, { session: 'root' }))
+  await act(async () => root.render(createElement(QueryClientProvider, { client, children: shell })))
   unmount = async () => { await act(async () => root.unmount()) }
 }
 beforeEach(() => {
@@ -99,8 +102,43 @@ test('every page row pops its own route alone; the click on the button never nav
   expect(openPopout).toHaveBeenCalledTimes(pages.length)
   expect(navigate).not.toHaveBeenCalled()
   expect(openNewChat).not.toHaveBeenCalled()
-  // The home mark is not a destination row.
-  expect(row('THEUTH').button).toBeNull()
+})
+
+test('no THEUTH home row: Chat is the first row and nothing links to the retired overview', async () => {
+  await mount()
+  const rows = [...document.querySelectorAll<HTMLElement>('[data-sidebar="menu-item"]')].map((el) => el.textContent?.trim() ?? '')
+  expect(rows[0]).toMatch(/^Chat/)
+  expect(document.body.textContent).not.toContain('THEUTH')
+  expect(document.querySelector('[aria-label="theuth home"]')).toBeNull()
+  expect(document.querySelector('a[href="/"]:not([aria-label="Talk"]):not([aria-label^="Talk "])')).toBeNull()
+  expect(document.querySelector('a[aria-label="New chat"]')!.getAttribute('href')).toBe('/new')
+})
+
+test('collapsed on a desktop: the icon rail, its toggle expanding it again; expanded, the same toggle collapses it to the rail', async () => {
+  await mount({ open: false })
+  expect(document.querySelector('[data-sidebar="menu-item"]')).toBeNull()
+  expect(document.querySelector('[data-rail-sections]')).not.toBeNull()
+  const labels = [...document.querySelectorAll<HTMLElement>('[data-slot="sidebar"] [aria-label]')].map((el) => el.getAttribute('aria-label'))
+  for (const name of ['Expand sidebar', 'Broadcast…', 'New chat', 'Inbox', 'Talk (running)', 'New note', 'Meeting', 'Agents', 'Library', 'Costs', 'Settings'])
+    expect(labels).toContain(name)
+  // No popout buttons, no "New chat on" in the rail.
+  expect(document.querySelector('button[aria-label="Open in new window"]')).toBeNull()
+  expect(document.querySelector('[data-slot="sidebar"]')!.getAttribute('data-collapsible')).toBe('icon')
+  await click(document.querySelector<HTMLButtonElement>('button[aria-label="Expand sidebar"]')!)
+  expect(row('Chat').item).toBeDefined()
+  expect(document.querySelector('[data-rail-sections]')).toBeNull()
+  await click(document.querySelector<HTMLButtonElement>('button[aria-label="Collapse sidebar"]')!)
+  expect(document.querySelector('[data-rail-sections]')).not.toBeNull()
+})
+
+test('the rail\'s Chat opens a new chat; Talk talks where the row would', async () => {
+  vi.mocked(talk.open).mockResolvedValueOnce('t2')
+  await mount({ open: false })
+  await click(document.querySelector<HTMLElement>('a[aria-label="New chat"]')!)
+  expect(openNewChat).toHaveBeenCalledExactlyOnceWith(navigate)
+  await click(document.querySelector<HTMLElement>('button[aria-label="Talk (running)"]')!)
+  expect(talk.open).toHaveBeenCalledExactlyOnceWith({}, 'root')
+  expect(navigate).toHaveBeenCalledWith({ to: '/talk/$session', params: { session: 't2' } })
 })
 
 test('Inbox is the row right under Chat with the inbox tray icon (the route stays /attention)', async () => {

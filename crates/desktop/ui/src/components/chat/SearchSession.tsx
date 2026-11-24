@@ -5,6 +5,7 @@ import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
+import { cornerPad, headerToggle } from '@/lib/sidebar-corner'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { useApi } from '@/lib/rpc'
 import { type SearchDestination, isSearchDestination, useSearchOrigin } from '@/lib/search'
@@ -39,7 +40,7 @@ export function SearchSession({ session, seq }: { session: string; seq: number }
   const navigate = useNavigate()
   const origin = useSearchOrigin()
   const title = useSessionField(session, 'title')
-  const { open, isMobile } = useSidebar()
+  const sidebar = useSidebar()
   const mac = isMacDesktop()
   const destination = useMemo<SearchDestination>(() => ({ category: 'sessions', session, seq }), [session, seq])
   const [view, setView] = useState<View>({ status: 'loading' })
@@ -86,8 +87,8 @@ export function SearchSession({ session, seq }: { session: string; seq: number }
   // ponytail: plain list, no virtualizer; one page is at most 60 rows plus one seq group. Virtualize if pages grow.
   return (
     <>
-      <header data-tauri-drag-region={mac || undefined} className={cn('flex h-[52px] shrink-0 items-center gap-2 px-3', !open && mac && 'pl-20')}>
-        {(!open || isMobile) && (
+      <header data-tauri-drag-region={mac || undefined} className={cn('flex h-[52px] shrink-0 items-center gap-2 px-3', mac && cornerPad(sidebar))}>
+        {headerToggle(sidebar) && (
           <div className="flex shrink-0 items-center">
             <SearchTrigger />
             <SidebarToggle />

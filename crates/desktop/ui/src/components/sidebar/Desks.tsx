@@ -35,6 +35,15 @@ export function deskLabels(names: readonly string[]): string[] {
   })
 }
 
+/** The group's desks: every active roster agent (not proposed, not invalid), theuth first; `id` is its desk session, if open yet. */
+export function useDeskList(): { id: string | null; name: string; working: boolean }[] {
+  const agents = useAgents().data ?? []
+  return agents
+    .filter((a) => a.status !== 'proposed' && a.status !== 'invalid')
+    .map((a) => ({ id: a.desk, name: a.file.name, working: a.status === 'working' }))
+    .sort((x, y) => Number(y.name === THEUTH) - Number(x.name === THEUTH))
+}
+
 /**
  * Sky 2026-11-11: one tile per active roster agent (not proposed, not invalid), theuth first, in a grid that wraps with the
  * sidebar's width, whether or not its desk session exists yet: a tile with a desk (`AgentSummary.desk`, roster-owned)
@@ -46,20 +55,16 @@ export function deskLabels(names: readonly string[]): string[] {
 export function Desks({ active }: { active: string | undefined }) {
   const canQuery1 = useQuerySupport(["list_sessions"])
   const api = useApi()
-  const agents = useAgents().data ?? []
   const { data: sessions = [] } = useQuery({ enabled: canQuery1, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
   const subs = useMemo(() => subtrees(sessions), [sessions])
-  const desks = agents
-    .filter((a) => a.status !== 'proposed' && a.status !== 'invalid')
-    .map((a) => ({ id: a.desk, name: a.file.name, working: a.status === 'working' }))
-    .sort((x, y) => Number(y.name === THEUTH) - Number(x.name === THEUTH))
+  const desks = useDeskList()
   if (desks.length === 0) return null
   const labels = deskLabels(desks.map((d) => d.name))
   // The desk the open session belongs to (itself or a subagent of it); at most one.
   const open = desks.find((d) => d.id !== null && (d.id === active || (subs.get(d.id)?.some((s) => s.id === active) ?? false)))
   return (
     <>
-      <SidebarGroupLabel className="mt-2">
+      <SidebarGroupLabel className="mt-2" data-desks>
         Desks
         <Button
           variant="ghost"

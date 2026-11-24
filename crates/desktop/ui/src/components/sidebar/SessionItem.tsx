@@ -69,7 +69,7 @@ export const rowActivity = (shown: Activity, remoteRunning?: boolean): Activity 
 export const turnActivity = (s: Pick<SessionSummary, 'here' | 'running'>, slice: SessionSlice | undefined): Activity =>
   rowActivity(shownActivity(slice?.activity, slice?.harvesting), s.here && !s.running ? undefined : s.running)
 
-function SessionActivity({ id, here, running }: { id: string; here: boolean; running: boolean }) {
+export function SessionActivity({ id, here, running }: { id: string; here: boolean; running: boolean }) {
   const activity = useSessions((s) => turnActivity({ here, running }, s.sessions[id]))
   const reported = useSessionField(id, 'statusText')
   if (activity === 'idle') return null
@@ -102,7 +102,7 @@ const terminalLabel = (open: number, live: number): string =>
  * session with an open PTY (animated while a screen is changing, still while all are quiet: an idle terminal still wakes the agent on
  * its schedule), a timer (not pulsing: waiting, not working) per session with a reminder pending.
  * LIVE-GLYPHS (2026-10-07): the sets are seeded by `list_live_counts` and kept by `JobEvent`/`ReminderEvent`. */
-function SessionPending({ id }: { id: string }) {
+export function SessionPending({ id }: { id: string }) {
   const jobs = useSessionField(id, 'jobs')?.size ?? 0
   const ptys = useSessionField(id, 'ptys')
   const terminals = useSessionField(id, 'terminals')
@@ -201,6 +201,14 @@ export function EngineChip({ owner, epoch, className, prefix = '', state }: { ow
   )
 }
 
+/** A row's shown title: live from `TitleChanged`, else the listed one (or the chat's name by date); a voice note's, a
+ * talk's or a Slack message's marker becomes its text (45 §7.4, 172). */
+export function useRowTitle(id: string, title: string, created: string): string {
+  const live = useSessionField(id, 'title')
+  const raw = live || chatName({ title, created_at: created })
+  return parseNote(raw)?.body || parseSpoken(raw)?.text || previewText(raw)
+}
+
 /**
  * One chat in the list: title (live from `TitleChanged`; the tooltip adds its tags), project pill (51 §3), active
  * highlight, hover `…` menu with pin, archive, inline rename, move to project (existing or new) and delete. ⌘-click /
@@ -250,12 +258,8 @@ export const SessionItem = memo(function SessionItem({
   const api = useApi()
   const qc = useQueryClient()
   const navigate = useNavigate()
-  const live = useSessionField(id, 'title')
   const liveTags = useSessionField(id, 'tags') ?? tags
-  const raw = live || chatName({ title, created_at: created })
-  // A session opened by a voice note or a talk is titled from its input; the `[voice note, N s]` / `[spoken, N s]` marker is not a title (45 §7.4),
-  // nor is a Slack marker line (172).
-  const shown = parseNote(raw)?.body || parseSpoken(raw)?.text || previewText(raw)
+  const shown = useRowTitle(id, title, created)
   const tip = liveTags.length ? `${shown} · ${liveTags.join(', ')}` : shown
   const drag = useSessionDrag(id, shown)
   // Inline editor: the title, or the name of a new project.

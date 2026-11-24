@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils'
  * 44 px under a finger. `data-search-trigger` lets the root hand focus back here after a dismissed drawer
  * unmounted the trigger that opened search.
  */
-export function SearchTrigger({ className }: { className?: string }) {
+export function SearchTrigger({ className, side }: { className?: string; side?: 'top' | 'right' | 'bottom' | 'left' }) {
   const search = useShortcuts((s) => s.chords.search)
   return (
     <Capability required={searchRequirements} hide>    <Tooltip>
@@ -28,7 +28,7 @@ export function SearchTrigger({ className }: { className?: string }) {
           <Search className="size-[18px]" />
         </Button>
       </TooltipTrigger>
-      <TooltipContent>Search ({label(search)})</TooltipContent>
+      <TooltipContent side={side}>Search ({label(search)})</TooltipContent>
     </Tooltip></Capability>
   )
 }

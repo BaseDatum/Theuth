@@ -3,7 +3,8 @@ import { act, createElement as h, type ReactElement, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, expect, test } from 'vitest'
-import { readSidebarWidth, Sidebar, SidebarMenuAction, SidebarProvider, useSidebar } from './sidebar'
+import { readSidebarOpen, readSidebarWidth, Sidebar, SidebarMenuAction, SidebarProvider, useSidebar, writeSidebarOpen } from './sidebar'
+import { cornerPad, headerToggle } from '@/lib/sidebar-corner'
 
 const classes = (showOnHover: boolean) => /class="([^"]*)"/.exec(renderToStaticMarkup(h(SidebarMenuAction, { showOnHover })))![1]!.split(' ')
 
@@ -102,5 +103,33 @@ test('phones: the open off-canvas Sheet has no handle', async () => {
   const { root, handle } = await mount(shell({}, h(OpenSheet)))
   expect(document.querySelector('[data-mobile="true"]')).not.toBeNull()
   expect(handle()).toBeNull()
+  await act(async () => root.unmount())
+})
+
+test('expanded or rail is kept in the sidebar_state cookie; none (or garbage) is expanded', () => {
+  expect(readSidebarOpen('')).toBe(true)
+  expect(readSidebarOpen('sidebar_state=false; sidebar_width=300')).toBe(false)
+  expect(readSidebarOpen('sidebar_width=300; sidebar_state=true')).toBe(true)
+  writeSidebarOpen(false)
+  expect(readSidebarOpen(document.cookie)).toBe(false)
+  writeSidebarOpen(true)
+  expect(readSidebarOpen(document.cookie)).toBe(true)
+})
+
+test('a shell with a rail: collapsing shows the rail (no header toggle, only the lights\' overhang); without one it hides', async () => {
+  let seen: ReturnType<typeof useSidebar> | undefined
+  const Probe = () => ((seen = useSidebar()), null)
+  const { root } = await mount(h(SidebarProvider, { rail: true, defaultOpen: false }, h(Sidebar, { collapsible: 'icon' }, 'nav'), h(Probe)))
+  expect(seen!.rail).toBe(true)
+  expect(headerToggle(seen!)).toBe(false)
+  expect(cornerPad(seen!)).toBe('pl-6')
+  expect(document.querySelector('[data-slot="sidebar"]')!.getAttribute('data-collapsible')).toBe('icon')
+  await act(async () => seen!.toggleSidebar())
+  expect(seen!.rail).toBe(false)
+  expect(cornerPad(seen!)).toBeUndefined()
+  await act(async () => root.render(h(SidebarProvider, { key: 'plain', defaultOpen: false }, h(Sidebar, null, 'nav'), h(Probe))))
+  expect(seen!.rail).toBe(false)
+  expect(headerToggle(seen!)).toBe(true)
+  expect(cornerPad(seen!)).toBe('pl-20')
   await act(async () => root.unmount())
 })

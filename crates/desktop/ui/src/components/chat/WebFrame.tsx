@@ -5,6 +5,7 @@ import { SidebarToggle } from '@/components/chat/SidebarToggle'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useSidebar } from '@/components/ui/sidebar'
+import { cornerPad, headerToggle } from '@/lib/sidebar-corner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useViewTitle } from '@danfessler/trellis-react'
 import { useViewDrag } from '@/hooks/use-view-drag'
@@ -42,7 +43,8 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
   const { view, current, live, remote, engine, force } = useLiveFrame(id)
   const acting = useAgentActing(id)
   const stopping = useTileAgent((s) => s.tiles[id]?.stopping ?? false)
-  const { open, isMobile, setOpen } = useSidebar()
+  const sidebar = useSidebar()
+  const { open, isMobile, setOpen } = sidebar
   const ref = useRef<HTMLDivElement>(null)
   const occluded = useNativeLayer(id, ref, live, (e) => {
     // 205 D6: a pop-out window holds the page; focus it rather than leave an empty tile here.
@@ -58,7 +60,7 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
   useViewTitle(view?.title || hostOf(current) || 'Web')
   const region = (mac && drag.region) || undefined
   // `Header`'s rule: a popped window has no sidebar to open and is its own window.
-  const nav = first && (!open || isMobile) && !popped && !isPopout()
+  const nav = first && headerToggle(sidebar) && !popped && !isPopout()
 
   // 209 D11: a tile placed too narrow for its address field on the iPad folds the inline sidebar away, once per frame,
   // decided at its first real width (a pane not laid out yet measures 0).
@@ -101,7 +103,7 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
   }, [id, live, popped])
 
   const toggle = nav ? <SidebarToggle /> : null
-  const rowClass = cn('relative flex h-[52px] shrink-0 items-center gap-1 px-2', nav && !open && mac && 'pl-20')
+  const rowClass = cn('relative flex h-[52px] shrink-0 items-center gap-1 px-2', first && !popped && !isPopout() && mac && cornerPad(sidebar))
 
   if (!view) {
     return (

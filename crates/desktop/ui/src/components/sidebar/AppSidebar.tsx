@@ -10,9 +10,8 @@ import { broadcastRequirements } from '@/components/chat/requirements'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { AudioLines, Bot, ChartColumn, Inbox, Library, Megaphone, Mic, PanelLeft, Plus, Settings, SquarePen, StickyNote } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { Mark } from '@/components/Mark'
 import { EngineSwitcher } from '@/components/link/EngineSwitcher'
 import { Button } from '@/components/ui/button'
 import {
@@ -25,6 +24,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from '@/components/ui/sidebar'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { BroadcastDialog, openBroadcastDialog } from '@/components/chat/BroadcastDialog'
 import { NewChatOnMenu, machineRows, openNewChat } from '@/components/chat/NewChatPane'
 import { useMesh } from '@/components/tasks/queries'
@@ -42,9 +42,11 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { useShortcuts } from '@/lib/shortcuts'
 import * as talk from '@/lib/talk'
 import { useUpdate } from '@/lib/update'
+import { takeReveal, useSidebarReveal } from '@/lib/sidebar-reveal'
 import { cn } from '@/lib/utils'
 import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 import { Desks } from './Desks'
+import { RAIL_ITEM, RailSections } from './Rail'
 import { SearchTrigger } from './SearchTrigger'
 import { SessionList } from './SessionList'
 import { SidebarPopoutButton } from './SidebarPopoutButton'
@@ -54,6 +56,16 @@ declare const __APP_VERSION__: string
 
 /** 143 D2: the plus on the Note row — malachite (`--status-success-fg`); one token to swap for `text-project-nile` (olive). */
 export const NOTE_PLUS = 'text-success'
+
+/** A rail icon's name, to its right on hover (the rail shows no labels). */
+function RailTip({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
+  )
+}
 
 /**
  * ChatGPT's left rail: Chat, Inbox, Talk, Note, Meeting, Agents, Library, Costs, the desks, the chat list, Settings; Search sits in
@@ -65,7 +77,10 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   const agentsTab = GROUPS.agents.find(tab => supports(discovery, tab.required))
   const libraryTab = GROUPS.library.find(tab => supports(discovery, tab.required))
   const navigate = useNavigate()
-  const { isMobile, setOpenMobile, toggleSidebar } = useSidebar()
+  const { isMobile, setOpenMobile, toggleSidebar, state } = useSidebar()
+  // Desktop collapsed: the icon rail (a phone keeps the full Sheet).
+  const rail = !isMobile && state === 'collapsed'
+  const mac = isMacDesktop()
   // Phones: the sidebar is a sheet over the chat, so every tap that navigates (a chat, New chat,
   // Knowledge, Settings) also dismisses it. Selecting rows for deletion does not navigate.
   const href = useRouterState({ select: (s) => s.location.href })
@@ -78,6 +93,13 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   // State, not a ref: `SessionList`'s virtualizer reads the scroll element in its layout effect,
   // which runs before this parent's ref would attach; the state change re-renders it with the element.
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null)
+  // The rail's Desks "Show all →": the expanded sidebar scrolls the Desks group into view (the list's sections are `SessionList`'s).
+  const reveal = useSidebarReveal((s) => s.key)
+  useEffect(() => {
+    if (reveal !== 'desks' || !scrollEl) return
+    scrollEl.querySelector('[data-desks]')?.scrollIntoView({ block: 'start' })
+    takeReveal()
+  }, [reveal, scrollEl])
   // Slot for `SessionList`'s multi-select bar: a sibling below the scroller, so the bar stays put while the list scrolls.
   const [barEl, setBarEl] = useState<HTMLDivElement | null>(null)
   // 39 §4.2: the "subtle indicator" — a muted dot while an app update waits for quit.
@@ -91,7 +113,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
   // B3: talk is a mode of the session — from a chat (or its talk view) the entry talks there; only elsewhere does it open a new session.
   const current = /^\/(?:c|talk)\/([^/?#]+)/.exec(href)?.[1] ?? null
   // Dragged onto a pane, New chat opens as a draft pane in the split (25 §12.3); a click opens the draft in the
-  // focused pane when the view is split, else goes to `/` (the THEUTH mark above always does).
+  // focused pane when the view is split, else goes to `/new`.
   const dragNew = useSessionDrag(null, 'New chat')
   // The Chat row's ▸ ("New chat on", only with peers) sits at the right edge; the popout button moves left of it.
   const peers = machineRows(useMesh().data).length > 0
@@ -121,7 +143,126 @@ export function AppSidebar({ session }: { session: string | undefined }) {
 
   return (
     <>
-    <Sidebar collapsible="offcanvas" className="border-r-0">
+    <Sidebar collapsible="icon" className="border-r-0">
+      {rail ? (
+        <div className="flex h-full w-full flex-col items-center">
+          {/* The macOS traffic lights sit over the rail's top: this strip is theirs (and drags the window); the 3.5rem
+           * rail is narrower than they reach, so the header right of it adds the rest (`cornerPad`). */}
+          {mac && <div data-tauri-drag-region className="h-[52px] w-full shrink-0" />}
+          <div className={cn('flex shrink-0 flex-col items-center gap-1 pb-1', !mac && 'pt-2')}>
+            <RailTip label="Expand sidebar">
+              <button type="button" className={RAIL_ITEM} aria-label="Expand sidebar" onClick={toggleSidebar}>
+                <PanelLeft />
+              </button>
+            </RailTip>
+            <EngineSwitcher compact className="pointer-coarse:size-11" />
+            <SearchTrigger side="right" className="pointer-coarse:size-11" />
+            <Capability required={broadcastRequirements} hide>
+              <RailTip label="Broadcast…">
+                <button type="button" className={RAIL_ITEM} aria-label="Broadcast…" onClick={() => openBroadcastDialog({})}>
+                  <Megaphone />
+                </button>
+              </RailTip>
+            </Capability>
+          </div>
+          <nav aria-label="Sidebar" className="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-x-hidden overflow-y-auto py-1 [scrollbar-width:none]">
+            <RailTip label={`New chat${newChat ? ` (${label(newChat)})` : ''}`}>
+              <Link
+                to="/new"
+                aria-label="New chat"
+                className={RAIL_ITEM}
+                {...dragNew}
+                onClick={(e) => {
+                  e.preventDefault()
+                  openNewChat(navigate)
+                }}
+              >
+                <SquarePen />
+              </Link>
+            </RailTip>
+            <Capability required={attentionRequirements} hide>
+              <RailTip label="Inbox">
+                <Link to="/attention" aria-label="Inbox" className={RAIL_ITEM} data-active={section === 'attention' || undefined}>
+                  <Inbox />
+                  <AttentionBadge className="absolute -top-0.5 -right-0.5 ml-0 h-4 min-w-4 px-1 text-center text-[10px] leading-4 ring-2 ring-sidebar" />
+                </Link>
+              </RailTip>
+            </Capability>
+            <Capability required={talkRequirements} hide>
+              <RailTip label={live ? 'Talk (running)' : 'Talk'}>
+                <button
+                  type="button"
+                  aria-label={live ? 'Talk (running)' : 'Talk'}
+                  className={RAIL_ITEM}
+                  data-active={section === 'talk' || undefined}
+                  onClick={() => openTalk((session) => navigate({ to: '/talk/$session', params: { session } }))}
+                >
+                  <AudioLines />
+                  {live && <span className="absolute top-1.5 right-1.5 size-2 rounded-full bg-success ring-2 ring-sidebar" aria-label="talk running" />}
+                </button>
+              </RailTip>
+            </Capability>
+            <Capability required={noteRequirements} hide>
+              <RailTip label="New note">
+                <button type="button" aria-label="New note" className={RAIL_ITEM} disabled={createNoteAndOpen.isPending} onClick={() => createNoteAndOpen.mutate(false)}>
+                  <span className="relative inline-flex">
+                    <StickyNote className="size-[18px]" />
+                    <Plus className={cn('absolute -top-1.5 -right-1.5 size-3', NOTE_PLUS)} strokeWidth={3.5} aria-hidden />
+                  </span>
+                </button>
+              </RailTip>
+            </Capability>
+            {canRecord && (
+              <RailTip label="Meeting">
+                <Link to="/meetings/new" aria-label="Meeting" className={RAIL_ITEM} data-active={section === 'meeting' || undefined}>
+                  <span className="relative inline-flex">
+                    <Mic className="size-[18px]" />
+                    <span className="absolute -top-0.5 -right-0.5 size-1.5 rounded-full bg-danger" aria-hidden />
+                  </span>
+                </Link>
+              </RailTip>
+            )}
+            {agentsTab && (
+              <RailTip label="Agents">
+                <Link to={agentsTab.to} aria-label="Agents" className={RAIL_ITEM} data-active={section === 'agents' || undefined}>
+                  <Bot />
+                </Link>
+              </RailTip>
+            )}
+            {libraryTab && (
+              <RailTip label="Library">
+                <Link to={libraryTab.to} aria-label="Library" className={RAIL_ITEM} data-active={section === 'library' || undefined}>
+                  <Library />
+                </Link>
+              </RailTip>
+            )}
+            <Capability required={costsRequirements} hide>
+              <RailTip label="Costs">
+                <Link to="/costs" preload="intent" aria-label="Costs" className={RAIL_ITEM} data-active={section === 'costs' || undefined}>
+                  <ChartColumn />
+                </Link>
+              </RailTip>
+            </Capability>
+            <div role="separator" className="my-1.5 h-px w-8 shrink-0 bg-sidebar-border" />
+            <RailSections active={session} />
+          </nav>
+          <div className="flex shrink-0 flex-col items-center py-2">
+            <RailTip label={`Settings · v${__APP_VERSION__}`}>
+              <button
+                type="button"
+                aria-label="Settings"
+                className={RAIL_ITEM}
+                data-active={section === 'settings' || undefined}
+                onClick={() => void settings(navigate, 'appearance')}
+              >
+                <Settings />
+                {pending !== null && <span className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-fg-tertiary" aria-label="update ready" />}
+              </button>
+            </RailTip>
+          </div>
+        </div>
+      ) : (
+      <>
       <SidebarHeader
         data-tauri-drag-region={isMacDesktop() || undefined}
         className={cn('h-[52px] flex-row items-center', isMacDesktop() && 'pl-20')}
@@ -143,7 +284,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             variant="ghost"
             size="icon"
             className="rounded-lg text-fg-secondary"
-            aria-label="Close sidebar"
+            aria-label={isMobile ? 'Close sidebar' : 'Collapse sidebar'}
             onClick={toggleSidebar}
           >
             <PanelLeft className="size-5" />
@@ -152,17 +293,10 @@ export function AppSidebar({ session }: { session: string | undefined }) {
       </SidebarHeader>
       <SidebarContent ref={setScrollEl} className="gap-0 overflow-y-auto">
         <SidebarMenu className="px-1.5">
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={section === 'home'} className="h-9 rounded-[10px] px-2.5 font-semibold tracking-[.08em]">
-              <Link to="/" aria-label="theuth home">
-                <Mark /> THEUTH
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
           <SidebarMenuItem className="group/popout-row">
             <SidebarMenuButton asChild className={cn('h-9 rounded-[10px] px-2.5', canPopout() && (peers ? 'pointer-fine:pr-14' : 'pointer-fine:pr-8'))}>
               <Link
-                to="/"
+                to="/new"
                 aria-label="New chat"
                 {...dragNew}
                 onClick={(e) => {
@@ -287,6 +421,8 @@ export function AppSidebar({ session }: { session: string | undefined }) {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
+      </>
+      )}
     </Sidebar>
     {/* Beside, not inside: on phones the sidebar is a sheet that unmounts when closed (62 §5.2). */}
     <Capability required={broadcastRequirements} hide><BroadcastDialog /></Capability>

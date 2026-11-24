@@ -29,13 +29,24 @@ export const SIDEBAR_WIDTH = 256
 export const SIDEBAR_WIDTH_MIN = 192
 export const SIDEBAR_WIDTH_MAX = 448
 const SIDEBAR_WIDTH_MOBILE = '18rem'
-const SIDEBAR_WIDTH_ICON = '3rem'
+/** The collapsed desktop rail (`collapsible="icon"`): one column of 36 px icons. */
+const SIDEBAR_WIDTH_ICON = '3.5rem'
 const SIDEBAR_KEYBOARD_SHORTCUT = 'b'
 
 /** The width saved in the `sidebar_width` cookie, clamped; the default when there is none. */
 export function readSidebarWidth(cookie: string): number {
   const saved = /(?:^|;\s*)sidebar_width=(\d+)/.exec(cookie)
   return saved ? clamp(Number(saved[1]), SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX) : SIDEBAR_WIDTH
+}
+
+/** Whether the sidebar was expanded when last saved (`sidebar_state` cookie); expanded when there is none. */
+export function readSidebarOpen(cookie: string): boolean {
+  return /(?:^|;\s*)sidebar_state=(\w+)/.exec(cookie)?.[1] !== 'false'
+}
+
+/** Saves the expanded state in its cookie, which `readSidebarOpen` reads at the next load. */
+export function writeSidebarOpen(open: boolean): void {
+  document.cookie = `${SIDEBAR_COOKIE_NAME}=${open}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
 }
 
 type SidebarContextProps = {
@@ -50,6 +61,8 @@ type SidebarContextProps = {
   width: number
   /** Clamps to `SIDEBAR_WIDTH_MIN`–`SIDEBAR_WIDTH_MAX` and saves the width in its cookie. */
   setWidth: (px: number) => void
+  /** The collapsed desktop rail is on screen: collapsed (`!open`), not a phone, and the shell has a rail. */
+  rail: boolean
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -67,6 +80,7 @@ function SidebarProvider({
   defaultOpen = true,
   open: openProp,
   onOpenChange: setOpenProp,
+  rail: hasRail = false,
   className,
   style,
   children,
@@ -75,6 +89,8 @@ function SidebarProvider({
   defaultOpen?: boolean
   open?: boolean
   onOpenChange?: (open: boolean) => void
+  /** Collapsing leaves an icon rail on the desktop (`<Sidebar collapsible="icon">`) rather than hiding it. */
+  rail?: boolean
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
@@ -93,7 +109,7 @@ function SidebarProvider({
       }
 
       // This sets the cookie to keep the sidebar state.
-      document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
+      writeSidebarOpen(openState)
     },
     [setOpenProp, open],
   )
@@ -126,6 +142,7 @@ function SidebarProvider({
   // We add a state so that we can do data-state="expanded" or "collapsed".
   // This makes it easier to style the sidebar with Tailwind classes.
   const state = open ? 'expanded' : 'collapsed'
+  const rail = hasRail && !isMobile && !open
 
   const contextValue = React.useMemo<SidebarContextProps>(
     () => ({
@@ -138,8 +155,9 @@ function SidebarProvider({
       toggleSidebar,
       width,
       setWidth,
+      rail,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, width, setWidth],
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, width, setWidth, rail],
   )
 
   return (

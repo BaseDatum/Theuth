@@ -7,13 +7,13 @@ import { expect, test, vi } from 'vitest'
 import { SectionBand, TabBand } from './SectionBand'
 
 type State = { location: { pathname: string } }
-const env = vi.hoisted(() => ({ pathname: '/agents', popout: null as { kind: string } | null, open: true, isMobile: false, mac: false }))
+const env = vi.hoisted(() => ({ pathname: '/agents', popout: null as { kind: string } | null, open: true, isMobile: false, mac: false, rail: false }))
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => () => Promise.resolve(),
   useRouterState: ({ select }: { select: (s: State) => string }) => select({ location: { pathname: env.pathname } }),
 }))
 vi.mock('@/components/ui/sidebar', () => ({
-  useSidebar: () => ({ open: env.open, isMobile: env.isMobile, toggleSidebar: () => {} }),
+  useSidebar: () => ({ open: env.open, isMobile: env.isMobile, rail: env.rail, toggleSidebar: () => {} }),
 }))
 vi.mock('@/components/sidebar/SearchTrigger', () => ({ SearchTrigger: () => null }))
 vi.mock('@/lib/popout', () => ({ isPopout: () => env.popout !== null, get POPOUT() { return env.popout } }))
@@ -81,6 +81,20 @@ test('the sidebar toggle shows on a phone or when the rail is closed', () => {
   expect(render('library')).toContain('aria-label="Show sidebar"')
   env.open = true
   expect(render('library')).not.toContain('aria-label="Show sidebar"')
+})
+
+test('beside the collapsed icon rail: no toggle (the rail has its own), and only the traffic lights\' overhang as inset', () => {
+  env.pathname = '/notes'
+  env.open = false
+  env.rail = true
+  env.mac = true
+  const html = render('library')
+  expect(html).not.toContain('aria-label="Show sidebar"')
+  expect(html).toContain('pl-6')
+  expect(html).not.toContain('pl-20')
+  env.open = true
+  env.rail = false
+  env.mac = false
 })
 
 test('188: a band of any tabs marks its value active; beside a column it leaves the traffic-light inset to the column', () => {
