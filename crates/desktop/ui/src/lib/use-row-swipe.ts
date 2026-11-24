@@ -3,6 +3,9 @@
 // sidebar's session rows (archive / delete); the Inbox cards have their own hook with their bulk actions.
 import { type PointerEvent, useRef, useState } from 'react'
 
+/** Marks an element with its own horizontal swipe: the sidebar's edge swipe leaves a gesture that starts on it alone. */
+export const SWIPE_ATTR = 'data-swipe'
+
 export function useRowSwipe({ onSwipeLeft, onSwipeRight, threshold = 88 }: { onSwipeLeft?: () => void; onSwipeRight?: () => void; threshold?: number }) {
   const start = useRef<{ x: number; y: number; axis: 'x' | 'y' | null } | null>(null)
   const [dx, setDx] = useState(0)
@@ -36,7 +39,7 @@ export function useRowSwipe({ onSwipeLeft, onSwipeRight, threshold = 88 }: { onS
   }
 
   return {
-    handlers: { onPointerDown: down, onPointerMove: move, onPointerUp: up, onPointerCancel: up },
+    handlers: { [SWIPE_ATTR]: '', onPointerDown: down, onPointerMove: move, onPointerUp: up, onPointerCancel: up },
     dx,
     /** Translate + snap-back for the row; keeps the page's vertical scroll. */
     style: {

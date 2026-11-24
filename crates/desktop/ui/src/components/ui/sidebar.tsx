@@ -7,6 +7,7 @@ import { Slot } from 'radix-ui'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { touch } from '@/lib/hotkeys'
 import { clamp, PX_STEP } from '@/lib/resize-drag'
+import { SWIPE_ATTR } from '@/lib/use-row-swipe'
 import { ResizeHandle } from '@/components/ui/resize-handle'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -221,14 +222,17 @@ function Sidebar({
   const [resizing, setResizing] = React.useState(false)
 
   // Touch (phones and tablets): a rightward swipe from the screen's left edge opens the sidebar; a leftward swipe
-  // that starts inside it closes it. Gestures elsewhere are left to the content (a card's own swipe, scrolling).
+  // that starts inside it (its own element, whatever its width) closes it. Gestures elsewhere are left to the content
+  // (an Inbox card's swipe, scrolling), and so is a swipe that starts on a row with its own swipe (`SWIPE_ATTR`).
   React.useEffect(() => {
     if (!isMobile && !touch()) return
-    let start: { x: number; y: number; axis: 'x' | 'y' | null } | null = null
+    let start: { x: number; y: number; axis: 'x' | 'y' | null; inside: boolean } | null = null
     const down = (e: globalThis.PointerEvent) => {
       if (e.pointerType !== 'touch' || !e.isPrimary) return
       if (!openMobile && !open && e.clientX > 24) return
-      start = { x: e.clientX, y: e.clientY, axis: null }
+      const target = e.target instanceof Element ? e.target : null
+      const inside = !!target?.closest('[data-sidebar="sidebar"]') && !target?.closest(`[${SWIPE_ATTR}]`)
+      start = { x: e.clientX, y: e.clientY, axis: null, inside }
     }
     const move = (e: globalThis.PointerEvent) => {
       if (!start) return
@@ -243,11 +247,10 @@ function Sidebar({
       start = null
       if (s.axis !== 'x') return
       const dx = e.clientX - s.x
-      const inside = s.x < 300
       if (dx > 64 && s.x <= 24) {
         if (isMobile) setOpenMobile(true)
         else setOpen(true)
-      } else if (dx < -64 && inside) {
+      } else if (dx < -64 && s.inside) {
         if (isMobile) setOpenMobile(false)
         else setOpen(false)
       }

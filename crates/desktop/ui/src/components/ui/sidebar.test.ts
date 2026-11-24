@@ -184,3 +184,59 @@ describe('a mesh switch keeps the sidebar as it was', () => {
     await act(async () => root.unmount())
   })
 })
+
+// iPad (touch, not a phone): a leftward swipe collapses only from inside the sidebar itself, whatever its width — it
+// used to be any start left of 300 px, so an Inbox card's swipe-left (snooze) beside a 256 px sidebar collapsed it
+// too — and never from a row with its own swipe (a session row's swipe-left archives).
+describe('the touch edge swipe', () => {
+  let seen: ReturnType<typeof useSidebar> | undefined
+  const Probe = () => ((seen = useSidebar()), null)
+  const swipe = async (target: Element, from: number, to: number) => {
+    const ev = (type: string, x: number) => {
+      const e = new Event(type, { bubbles: true })
+      Object.defineProperties(e, { pointerType: { value: 'touch' }, isPrimary: { value: true }, clientX: { value: x }, clientY: { value: 100 } })
+      return e
+    }
+    await act(async () => {
+      target.dispatchEvent(ev('pointerdown', from))
+      target.dispatchEvent(ev('pointermove', (from + to) / 2))
+      target.dispatchEvent(ev('pointermove', to))
+      target.dispatchEvent(ev('pointerup', to))
+    })
+  }
+  const ipad = async () => {
+    window.matchMedia = ((q: string) => ({ ...desktop(q), matches: q.includes('coarse') })) as typeof window.matchMedia
+    return mount(
+      h(
+        SidebarProvider,
+        { rail: true, defaultOpen: true },
+        h(Sidebar, { collapsible: 'icon' }, h('div', { 'data-row': '' }, 'row'), h('div', { 'data-swipe': '', 'data-swiped-row': '' }, 'swipeable')),
+        h('main', { 'data-card': '' }, 'card'),
+        h(Probe),
+      ),
+    )
+  }
+
+  test('a swipe-left that starts outside the sidebar (an Inbox card beside it) leaves it open, even within 300 px', async () => {
+    const { root } = await ipad()
+    await swipe(document.querySelector('[data-card]')!, 280, 100)
+    expect(seen!.state).toBe('expanded')
+    await act(async () => root.unmount())
+  })
+
+  test('a swipe-left that starts on a row with its own swipe leaves it to the row', async () => {
+    const { root } = await ipad()
+    await swipe(document.querySelector('[data-swiped-row]')!, 200, 40)
+    expect(seen!.state).toBe('expanded')
+    await act(async () => root.unmount())
+  })
+
+  test('a swipe-left from inside the sidebar collapses it to the rail; one from the left edge expands it again', async () => {
+    const { root } = await ipad()
+    await swipe(document.querySelector('[data-row]')!, 200, 40)
+    expect(seen!.state).toBe('collapsed')
+    await swipe(document.querySelector('[data-card]')!, 10, 200)
+    expect(seen!.state).toBe('expanded')
+    await act(async () => root.unmount())
+  })
+})
