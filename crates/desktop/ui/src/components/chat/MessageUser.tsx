@@ -21,7 +21,7 @@ import { AttachChip } from './AttachChip'
 import { BoardQuoteCard } from './BoardQuoteCard'
 import { Attachments } from './Attachments'
 import { LongText } from './LongText'
-import { ActionButton, RemoveButton, rewind, useFork } from './MessageAssistant'
+import { ActionButton, CopyButton, RemoveButton, rewind, useFork } from './MessageAssistant'
 import { ScreenContextCard } from './ScreenContextCard'
 import { SkillCard } from './SkillCard'
 import { SentResults } from './SentResults'
@@ -296,6 +296,7 @@ export const MessageUser = memo(function MessageUser({
         <div className="-mr-2 flex items-center justify-end gap-2">
           {actions && (
             <div className="flex opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
+              {body.trim() && <CopyButton text={body} />}
               {turn != null && !running && (
                 <>
                   <ActionButton icon={Pencil} label="Edit" onClick={() => useDrafts.getState().beginEdit(session, { turn, text: body, refs })} />
