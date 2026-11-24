@@ -18,7 +18,7 @@ import {
   useReactFlow,
 } from '@xyflow/react'
 import { Scan } from 'lucide-react'
-import { memo, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { engineName } from '@/components/tasks/home'
 import { useMesh } from '@/components/tasks/queries'
 import type { ScheduleFile, ScheduleInfo, SensorInfo } from '@/rpc/bindings/method.schedule.output'
@@ -109,7 +109,13 @@ function Flow({ info, file, sensors, chat }: RoutineGraphProps) {
   const history = useRoutineHistory(info.name).data
   const mesh = useMesh().data
   const dark = useSyncExternalStore(subscribeTheme, () => document.documentElement.classList.contains('dark'))
-  const g = useMemo(() => routineGraph(info, file, history ?? [], sensors, { machine: mesh ? (id) => engineName(mesh, id) : undefined }), [info, file, history, sensors, mesh])
+  // A minute tick keeps `next in 3m`, `expires … left` and the History times current.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000)
+    return () => clearInterval(t)
+  }, [])
+  const g = useMemo(() => routineGraph(info, file, history ?? [], sensors, { now, machine: mesh ? (id) => engineName(mesh, id) : undefined }), [info, file, history, sensors, mesh, now])
   const nodes = useMemo<CardNode[]>(
     () =>
       g.nodes.map((n) => ({

@@ -93,8 +93,9 @@ export function routineGraph(info: ScheduleInfo, file: ScheduleFile, history: re
   const now = opts.now ?? Date.now()
   const kind = kindOf(fromInfo(info))
   const broken = info.error !== null
-  // A broken file never fires, so nothing comes round again.
-  const repeating = kind !== 'Once' && !broken
+  // A broken file never fires, and a `fire: once` watcher is done after its first go: nothing comes round again.
+  const once = kind === 'Once' || (kind === 'Watcher' && file.fire === 'once')
+  const repeating = !once && !broken
   const cards = new Map<Role, CardData>()
   const card = (role: Role, title: string, rows: Row[], extra: Partial<CardData> = {}): CardData => {
     const c: CardData = { role, title, badge: null, danger: false, rows, section: null, ...extra }
@@ -137,7 +138,10 @@ export function routineGraph(info: ScheduleInfo, file: ScheduleFile, history: re
   gate.push(broken ? { label: 'state', text: 'broken — never fires', tone: 'danger' } : info.enabled ? { label: 'state', text: 'enabled', tone: 'ok' } : { label: 'state', text: 'paused', tone: 'warn' })
   if (info.waiting) gate.push({ label: 'machine', text: info.waiting, tone: 'warn', title: info.waiting })
   else gate.push({ label: 'machine', text: info.engine ? (opts.machine?.(info.engine) ?? info.engine) : 'the hub', title: info.engine ?? undefined })
-  gate.push({ label: 'busy', text: kind === 'Watcher' ? (MODE[file.mode ?? 'skip'] ?? `mode ${file.mode}`) : 'a due fire waits for it' })
+  // Watchers: `mode` (40 §1.9). Others: the tick skips a running routine, so a fire due mid-run stays due and fires at
+  // the first tick after the run ends; only a forced Run now mid-run is recorded `skipped: busy` (lib.rs tick / fire_with).
+  if (kind === 'Watcher') gate.push({ label: 'busy', text: MODE[file.mode ?? 'skip'] ?? `mode ${file.mode}` })
+  else gate.push({ label: 'busy', text: 'a due fire waits for the run', title: 'A fire that comes due mid-run fires once the run ends; Run now while running is skipped: busy' })
   gate.push(info.approvals ? { label: 'approvals', text: 'asks before risky tools' } : { label: 'approvals', text: 'off — never prompts', tone: 'warn' })
   if (file.cap) gate.push({ label: 'cap', text: file.cap, mono: true })
   if (file.budget) gate.push({ label: 'budget', text: `${file.budget} per run` })
@@ -199,6 +203,7 @@ export function routineGraph(info: ScheduleInfo, file: ScheduleFile, history: re
   // End — how it stops.
   const end: Row[] = []
   if (kind === 'Once') end.push({ label: 'after', text: 'the one fire' })
+  if (kind === 'Watcher' && file.fire === 'once') end.push({ label: 'after', text: 'the first go' })
   if (info.until !== null) end.push({ label: 'until', text: 'the check exits 0' })
   if (info.max_runs !== null) end.push({ label: 'max_runs', text: `${info.max_runs} (${info.runs} so far)` })
   if (info.expires !== null) end.push({ label: 'expires', text: `${info.expires} after it was made` })

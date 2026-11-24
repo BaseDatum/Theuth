@@ -210,6 +210,28 @@ test('a broken routine says so on Trigger, Gate and History, and nothing loops b
   expect(g.edges.some((e) => e.kind === 'loop')).toBe(false)
 })
 
+test('watcher with fire: once ends after its first go: End on the row, no loop-back', () => {
+  const g = routineGraph(
+    info({ when: 'every 60s', when_sensor: 'pr_watch.py repo=o/r', sensor: 'pr_watch.py', fire: 'once', expires: '7d' }),
+    file({ every: '60s', when: 'pr_watch.py repo=o/r', fire: 'once', expires: '7d' }),
+    [],
+    [PR_SENSOR],
+    { now: NOW },
+  )
+  expect(g.edges.some((e) => e.kind === 'loop')).toBe(false)
+  expect(edgeIds(g)).toContain('deliver>end:flow')
+  expect(node(g, 'end').y).toBe(node(g, 'deliver').y)
+  expect(rowText(g, 'end')[0]).toBe('after: the first go')
+  expectNoOverlap(g)
+})
+
+test('busy: a watcher follows its mode; a clock routine waits and only Run now is skipped', () => {
+  const clock = routineGraph(info({}), file({ cron: '0 9 * * 1-5' }), [], undefined, { now: NOW })
+  expect(node(clock, 'gate').data.rows.find((r) => r.label === 'busy')).toMatchObject({ text: 'a due fire waits for the run', title: expect.stringContaining('skipped: busy') })
+  const restart = routineGraph(info({ when: 'every 60s', when_sensor: 'pr_watch.py', sensor: 'pr_watch.py', mode: 'restart', expires: '1d' }), file({ every: '60s', when: 'pr_watch.py', mode: 'restart', expires: '1d' }), [], [PR_SENSOR], { now: NOW })
+  expect(rowText(restart, 'gate')).toContain('busy: restart — restarts the run')
+})
+
 test('paused routine on another machine', () => {
   const g = routineGraph(info({ enabled: false, engine: 'eng-b', approvals: false }), file({ enabled: false, engine: 'eng-b', approvals: false }), [], undefined, { now: NOW, machine: (id) => (id === 'eng-b' ? 'studio' : id) })
   expect(rowText(g, 'gate').slice(0, 2)).toEqual(['state: paused', 'machine: studio'])
