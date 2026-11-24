@@ -10,7 +10,7 @@ test('a fresh install with no models opens the wizard', () => {
 
 test('models present but the default model is not among them (its provider unconfigured) opens the wizard', () => {
   expect(bootDecision({ ...configured, defaultModel: 'google/gemini-2.5-pro' })).toBe('wizard')
-  expect(bootDecision({ ...configured, defaultModel: null })).toBe('wizard')
+  expect(bootDecision({ ...configured, defaultModel: '' })).toBe('wizard')
 })
 
 test('an upgrading user with a working default gets the tour toast, never the modal', () => {
@@ -25,6 +25,7 @@ test('a completed flag means nothing modal, whatever the models say', () => {
 test('nothing is decided before the flag and the model list answer', () => {
   expect(bootDecision({ ...fresh, flagLoaded: false })).toBe('wait')
   expect(bootDecision({ ...fresh, models: undefined })).toBe('wait')
+  expect(bootDecision({ ...configured, defaultModel: undefined })).toBe('wait')
   // A completed flag needs no model list.
   expect(bootDecision({ ...fresh, completed: true, models: undefined })).toBe('none')
 })

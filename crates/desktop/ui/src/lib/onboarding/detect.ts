@@ -11,15 +11,15 @@ export type BootInput = {
   completed: boolean
   /** `list_models()`: `undefined` while loading, `null` when unavailable or failed. */
   models: readonly { id: string }[] | null | undefined
-  /** `info().default_model`. */
-  defaultModel: string | null | undefined
+  /** `info().default_model`: `undefined` until `info` is known. */
+  defaultModel: string | undefined
 }
 
 export function bootDecision(i: BootInput): BootDecision {
   if (!i.here) return 'none'
   if (!i.flagLoaded) return 'wait'
   if (i.completed) return 'none'
-  if (i.models === undefined) return 'wait'
+  if (i.models === undefined || i.defaultModel === undefined) return 'wait'
   // No model list to judge by: degrade to nothing rather than guess.
   if (i.models === null) return 'none'
   // An empty list, or a default whose provider is not configured (its model is not offered), means setup is due.

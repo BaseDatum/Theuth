@@ -23,6 +23,7 @@ import { openContextPicker } from './ContextPicker'
 import { SHAKE_USAGE, SHAKE_WORDS } from './shake'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { useToolsSheet } from './tools-sheet'
+import { useOnboarding } from '@/lib/onboarding/state'
 
 /** Slash commands (`tui::model::COMMANDS`): name, argument hint, description. */
 export const COMMANDS: readonly { name: string; hint: string; desc: string }[] = [
@@ -120,6 +121,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   { name: '/sessions', hint: '', desc: 'switch session (search, sessions only)' },
   { name: '/resume', hint: '<id>', desc: 'open a session' },
   { name: '/new', hint: '', desc: 'start a new session' },
+  { name: '/onboarding', hint: '', desc: 'restart the welcome tour (desktop app)' },
   {
     name: '/clear',
     hint: '',
@@ -382,6 +384,11 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     case '/new':
       await navigate({ to: '/new' })
+      return
+    // 215: as Settings › General › App › Restart the welcome tour.
+    case '/onboarding':
+      useOnboarding.getState().reset()
+      useOnboarding.getState().openWizard('welcome')
       return
     // 148 R1: a pick is this chat's only — the engine switches the session; with no session yet the draft keeps
     // it until the first send creates the session (never `set_model(null, …)`, which would set the default).
