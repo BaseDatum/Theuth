@@ -1,28 +1,28 @@
 ---
 title: Delegation and subagents
-description: How theuth hands work to child sessions — native theuth subagents, external coding harnesses over ACP (opencode, codex, claude), and theuth on other machines — and how results, approvals, cost and limits flow back to you.
+description: How theuth hands work to child sessions (native theuth subagents, external coding harnesses over ACP such as Claude Code, Codex, OpenCode and omp, and theuth on other machines) and how results, approvals, stalls, cost and limits flow back to you.
 ---
 
-Delegation is theuth spawning a **child session** to do part of a job: a research fan-out across several native children, or a repository task handed to an external coding harness such as opencode in a given directory. The parent keeps the conversation with you; the child gets only a written brief and reports back once with its final message. You use it whenever a task splits into independent pieces, needs a tool you have installed elsewhere, or should run on another machine.
+Delegation is theuth spawning a **child session** to do part of a job: a research fan-out across several native children, or a repository task handed to an external coding harness such as OpenCode, omp, Claude Code or Codex in a given directory. The parent keeps the conversation with you; the child gets only a written brief and reports back once with its final message. You use it whenever a task splits into independent pieces, needs a tool you have installed elsewhere, or should run on another machine.
 
 ## Prerequisites
 
-- **Communication switched on.** Model-to-model communication is on by default once this machine has a paired machine in a [mesh](/docs/automation/mesh), and off by default on a single machine (`agent.communication` absent in `~/.theuth/config.yaml`). While it is off, `spawn_subagent`, `discover_peers` and `send_message` are not offered to the model at all, and no child result is delivered. An explicit `agent.communication: true|false`, the env var or `/communication on|off always` always wins and is never moved. To turn it on from any chat:
+- **Communication switched on.** Model-to-model communication is on by default once this machine is paired into a [mesh](/docs/automation/mesh), and off by default on a single machine (`agent.communication` absent in `~/.theuth/config.yaml`). While it is off, `spawn_subagent`, `discover_peers` and `send_message` are not offered to the model at all, and no child result is delivered. An explicit `agent.communication: true|false`, the env var or `/communication on|off always` always wins and is never moved. To turn it on from any chat:
 
   ```text
   › /communication on always
   ```
 
-  This writes `agent.communication: true`. Alternatives: edit `config.yaml`, or set `THEUTH_AGENT__COMMUNICATION=true` in the daemon's environment (an env value wins over the file on every start; `/communication` tells you where the value came from).
-- **A model provider** for native children — a child runs on a model you have credentials for ([Models and providers](/docs/getting-started/models)).
-- **For external harnesses:** the harness installed and logged in, plus an entry in `~/.theuth/acp/agents.yaml` (added with `/acp add …` or Settings › Harnesses, below). Anything that speaks ACP v1 over stdio works.
-- **For other machines:** a paired node or mesh engine — see [Mesh](/docs/automation/mesh).
+  This writes `agent.communication: true`. Alternatives: edit `config.yaml`, set `THEUTH_AGENT__COMMUNICATION=true` in the daemon's environment (an env value wins over the file on every start; `/communication` tells you where the value came from), or use Settings › Network › **Messaging**.
+- **A model provider** for native children: a child runs on a model you have credentials for ([Models and providers](/docs/getting-started/models)).
+- **For external harnesses:** the harness installed and logged in, plus an entry in `~/.theuth/acp/agents.yaml` (added with `/acp add …` or Settings › Agent › **Harnesses**, below). Anything that speaks ACP v1 over stdio works.
+- **For other machines:** a paired node or mesh engine, see [Mesh](/docs/automation/mesh).
 
 No special mode is needed: delegation works in the desktop app, the terminal UI, and in `t --headless` behind Slack, Signal and Telegram.
 
 ## How it works
 
-When delegation is available, theuth is instructed to delegate by default: external harness (`agent:`, with `cwd`) for anything in a code repository; native theuth children for research, review and fan-out. It writes each child a complete brief, because **a child sees nothing of your conversation** — only the `task` text.
+When delegation is available, theuth is instructed to delegate by default: external harness (`agent:`, with `cwd`) for anything in a code repository; native theuth children for research, review and fan-out. It writes each child a complete brief, because **a child sees nothing of your conversation**, only the `task` text. A child that will compile or run a large test suite gets the parent's resource rules (lock, job cap, target directory) in its brief, because an external harness cannot discover peers.
 
 A spawn returns immediately. The parent reads:
 
@@ -31,7 +31,9 @@ Spawned `quiet-otter` (session:0192…). Its result will arrive as a <message fr
 when it finishes; message it with send_message to `quiet-otter` or `session:0192…`.
 ```
 
-The child is a real session: it appears in the sidebar under the parent, you can open it, read its transcript, answer its approvals, and `/cancel` it. Its lifecycle states are `idle`, `running`, `awaiting` (waiting on a peer reply), `approval` (blocked on an Allow/Deny card), `error`, `cancelled`.
+When every child slot of this orchestrator is taken, a second line follows: `Queued: all 16 native child slots of this orchestrator are busy (running: …); it starts when one frees. Messages you send it are delivered after its brief.` (see [Child pools](#child-pools)).
+
+The child is a real session: it appears in the sidebar under the parent, you can open it, read its transcript, answer its approvals, and stop it. Its lifecycle states are `idle`, `running`, `awaiting` (waiting on a peer reply), `approval` (blocked on an Allow/Deny card), `error`, `cancelled`.
 
 When the child finishes, its final assistant message is queued on the parent as a user-role input wrapped as:
 
@@ -49,14 +51,27 @@ The parent's turn then continues (or a new one starts) with that text. If the ch
 | `<harness>` | An external ACP harness from `acp/agents.yaml`, started as a subprocess in `cwd` | This machine |
 | `<node>` or `<harness>@<node>` | A theuth child, or that node's own harness, on another machine | The node, over the link |
 
-**Verification is yours and the parent's, not automatic.** theuth does not check a child's claims; the parent model is instructed to verify them (re-read the file, run the test) before passing them on. If a child says "tests pass", treat that like any other model claim until the parent — or you — has confirmed it.
+A fourth kind is never spawned by theuth: **watch-only children**, the subagents an ACP harness runs inside itself (see [Watch-only children](#watch-only-children)).
+
+**Verification is yours and the parent's, not automatic.** theuth does not check a child's claims; the parent model is instructed to verify them (re-read the file, run the test) before passing them on. If a child says "tests pass", treat that like any other model claim until the parent, or you, has confirmed it.
+
+### Child pools
+
+Each orchestrator tree (a root session and everything under it) has two pools of child slots, created on first use:
+
+| Pool | Key | Default | Counts |
+|---|---|---|---|
+| Native | `agent.subagents.max_concurrent` | 16 | Spawn turns of native theuth children this engine runs |
+| External | `agent.subagents.max_concurrent_external` | 32 | Spawn turns of ACP harness children and mesh-node children |
+
+The pools are per orchestrator, not engine-wide: two root chats each get their own 16 + 32 slots, and a long harness turn never starves a native spawn. A spawn past the limit still returns "Spawned …" at once, with the `Queued:` line; the child starts when a slot of its pool frees. Follow-up turns (a message to a finished child, your own steer) take no slot. Typing into a queued child yourself promotes it: its brief runs at once without waiting for a slot.
 
 ## Walkthrough: a research fan-out
 
 With communication on, ask for something that splits naturally:
 
 ```text
-› compare how tokio, async-std and smol handle task cancellation — one short section each,
+› compare how tokio, async-std and smol handle task cancellation, one short section each,
   then a recommendation for our use case
 
   ⠋ thinking…
@@ -65,11 +80,11 @@ With communication on, ask for something that splits naturally:
   ▸ spawn_subagent  task: "Research cancellation semantics in smol…"
 ```
 
-The three children show up in the desktop sidebar under this chat as a small tree (live rows first), each with a glyph for its state and, once known, a cost. In the terminal, `/agents` opens a picker of this session's subagents — running, awaiting, then newest finished first; ⏎ opens one. Each child reads docs and source on its own; reads need no approval under the default policy, so a research fan-out usually runs without interrupting you.
+The three children show up in the desktop sidebar under this chat as a small tree (live rows first), each with a glyph for its state and, once known, a cost. In the terminal, `/agents` opens a picker of this session's subagents (running, awaiting, then newest finished first; ⏎ opens one). Each child reads docs and source on its own; reads need no approval under the default policy, so a research fan-out usually runs without interrupting you.
 
-As each finishes, its report arrives in the parent transcript as an incoming message from that child (`tokio-research`, …), and the parent synthesises once all three are in. A child turn that runs longer than `agent.subagents.max_runtime_secs` (600 s of run time; a restart does not reset it, downtime does not count) is cancelled and its partial text is delivered prefixed `[timed out after 600s, stop=…]`; a child turn that failed says so (`[child turn ended: error — …]`, `[child turn cancelled]`, `[child turn ended with no reply]`).
+As each finishes, its report arrives in the parent transcript as an incoming message from that child (`tokio-research`, …), and the parent synthesises once all three are in. A child turn that runs longer than `agent.subagents.max_runtime_secs` (600 s of run time; a restart does not reset it, downtime does not count) is cancelled and its partial text is delivered prefixed `[timed out after 600s, stop=…]`; a child turn that failed says so (`[child turn ended: error` followed by the reason, `[child turn cancelled]`, `[child turn ended with no reply]`).
 
-## Walkthrough: a repo task through opencode
+## Walkthrough: a repo task through OpenCode
 
 First, register the harness once. In the terminal:
 
@@ -77,7 +92,7 @@ First, register the harness once. In the terminal:
 › /acp add opencode
 ```
 
-or in the desktop app: Settings › **Harnesses** › pick it from the registry list and **Add**. The entry lands in `~/.theuth/acp/agents.yaml`. Press `p` in the `/acp` menu (desktop: **Probe**) to check it: the status is `ok`, `login required: <cmd>`, or `spawn failed: <why>` (the probe runs `initialize` + `session/new` with a 10 s limit; a hang reads `spawn failed: timeout`).
+or in the desktop app: Settings › Agent › **Harnesses**, pick it from the registry list and **Add**. The entry lands in `~/.theuth/acp/agents.yaml`. Press `p` in the `/acp` menu (desktop: **Probe**) to check it: the status is `ok`, `login required: <cmd>`, or `spawn failed: <why>` (the probe runs `initialize` + `session/new` with a 10 s limit; a hang reads `spawn failed: timeout`).
 
 Then ask, naming the directory:
 
@@ -90,13 +105,102 @@ Then ask, naming the directory:
 
 What happens:
 
-1. theuth starts `opencode acp` in that `cwd`, sends `initialize`, authenticates if the harness asks, and opens a session. The harness's stderr goes to `~/.theuth/logs/acp-opencode.log`.
+1. theuth starts `opencode acp` in that `cwd`, sends `initialize`, authenticates if the harness asks, and opens a session (connect limit 120 s). The harness's stderr goes to `~/.theuth/logs/acp-opencode.log`.
 2. If you gave a `model`/`effort`, theuth applies them through the harness's own option menu when it offers one; otherwise the harness keeps its default. The chat header of the child shows the harness's live model picker and thought level, if it exposes them.
-3. The harness gets a small theuth MCP server inside its session (`list_skills`, `load_skill`, `send_message` back to the parent, plus `read_file`, `edit`, `move_text`, `copy_text`, `indent` and `clip` run in the child's session: its working directory and approvals), and any `skills` you asked for are written into `<cwd>/.agents/skills` for the run and removed when it stops.
-4. **Every permission the harness asks for comes to you** as a normal approval card on the child session (and surfaces in the parent transcript as "subagent `opencode-…` is waiting on you · open"). Allow/Deny there is forwarded as the harness's `allow_once`/`reject_once`.
-5. When opencode finishes, its final message (or, if it ended with no text after a rejected permission, its last tool output) arrives in the parent as the `<message from="session:…">` input; the parent verifies and reports to you.
+3. The harness gets a small theuth MCP server inside its session: `list_skills`, `load_skill`, `send_message` back to the parent, plus six tools that run in the child's theuth session (its working directory, approvals and secret handling): `read_file`, `edit`, and the text-reference tools `move_text`, `copy_text`, `indent` and `clip`, which move, copy or re-indent a block by line reference without the model retyping it. Any `skills` you asked for are written into `<cwd>/.agents/skills` for the run and removed when it stops.
+4. **Every permission the harness asks for comes to you** as a normal approval card on the child session, in the [Inbox](#inbox-and-agent-graph), and in the parent transcript as "subagent `opencode-…` is waiting on you · open". Allow/Deny there is forwarded as the harness's `allow_once`/`reject_once`.
+5. When OpenCode finishes, its final message (or, if it ended with no text after a rejected permission, its last tool output) arrives in the parent as the `<message from="session:…">` input; the parent verifies and reports to you.
 
-If the child stops and you want to continue in the *same* harness context — for example after denying something by mistake — open the child and run `/resume` with no argument (desktop: **Resume** in the child's header). This restarts the harness and reloads its session when the harness supports `loadSession`.
+If the child stops and you want to continue in the *same* harness context (for example after denying something by mistake), open the child and run `/resume` with no argument in the terminal, or press **Resume** beside the model picker in the child's header on the desktop. This restarts the harness and reloads its session when the harness supports `loadSession`; if the harness was interrupted mid-task it continues ("resuming the interrupted task"), otherwise it reconnects idle and waits for your message.
+
+## Steering a busy harness
+
+A `send_message` to an ACP child (from the parent, a sibling, or you typing in the child) while its harness is mid-turn does not wait for the turn to end. With the default `steer: interrupt`, messages arriving within `steer_window_ms` (1.5 s) of the first are batched, the turn gets `session/cancel`, and the harness is prompted again at once with the message(s) and the note "your previous turn was interrupted to deliver the message(s) below; handle them, then resume the work you were doing". The parent still gets one result for the turn. `steer: queue` holds the message until the harness's prompt returns, for a harness that mishandles `session/cancel`.
+
+A harness that goes silent after such a message is nudged: if no thought, text or tool activity streams within `nudge_after_secs` (20 s), theuth sends "you have a new message above; continue", up to `max_nudges` (1) times per silence; after that an error is shown and nothing more is sent. `nudge_after_secs: 0` turns the watch off.
+
+## Stalls, `wait_peer` and terminal idle
+
+theuth watches every ACP child's `session/update` stream and wakes the parent when a child stalls, once per episode:
+
+| Rule | Fires when | Key (`agent.activity`) |
+|---|---|---|
+| `no_first_update` | Nothing came back within 60 s of a delivered prompt | `first_update_secs: 60` (`0` = never) |
+| `silent` | No update for 180 s mid-turn, with no tool call in progress | `silent_secs: 180` (`0` = never) |
+
+The parent receives a `<child_stalled child="…" session="…" phase="…" quiet_secs="…" last="…">` input suggesting it ask the child with `send_message`, wait on it with `wait_peer`, or read its session with `session_read`. A stalled child shows `stalled_secs` in `discover_peers`.
+
+`wait_peer` lets the parent wait on a child's state instead of polling:
+
+| Argument | Meaning |
+|---|---|
+| `to` (required) | One of your subagents by name, or its `session:<uuid>` |
+| `until` (required) | Non-empty subset of `blocked` (an unanswered permission or question), `idle` (its turn ended), `done` (idle and its result delivered, nothing queued), `stalled` |
+| `timeout_secs` | Give up after this many seconds (at least 1); unset = no deadline |
+
+It returns at once with the child's current `state` and `holds` (true when the condition is already met). Otherwise the parent is woken later with `<peer_state child=… state=… since_secs=…>`, or `not_running` if the child goes away or is replaced, or `timeout`. The wait is pinned to that child (a new child under the same name does not satisfy it); one wait per child, a second call replaces the first. Waits are stored and survive an engine restart. For a harness that does not report turn end, `idle` and `done` are refused (``wait_peer: <name>'s harness does not report turn end; wait on blocked|stalled or use send_message{await_reply}``). `wait_peer` is read-only and works for native children too.
+
+Terminal jobs say why they went idle. A PTY job started with `start` wakes the model with `<job_idle>` once its screen stops changing, and the reason names what was checked: `screen unchanged for N s, process tree quiet`, or `no reaction to input` when nothing moved within `tools.pty_reaction_secs` (10 s) of a `send` (`0` = off). A job whose process tree uses more than `tools.pty_tree_cpu_pct` (2 %) of one core counts as busy and is not reported idle.
+
+## Watch-only children
+
+When a harness runs subagents of its own (omp's `task`, OpenCode's subagents, any agent that implements the ACP subagents proposal), theuth shows them as **watch-only children** under the harness session: an eye glyph and a source tag in the sidebar tree, a roster card on the spawning tool call, live state, transcript and cost where the harness reports it. They also appear in `/agents`, the agent graph and the Slack and Telegram boards.
+
+| Source | What theuth sees |
+|---|---|
+| ACP subagents proposal (`rfd`) | Announce plus the child's own `session/update`s; per-child stop when the harness advertises cancel |
+| OpenCode 2.x (`opencode_ext`) | Child updates through OpenCode's extension |
+| OpenCode 1.x (`opencode_task`) | The `task` tool's lifecycle only, no child traffic |
+| omp (`omp_task`) | Progress rows plus a tail of omp's on-disk subagent transcripts |
+
+Limits: theuth never prompts a watch-only child. The composer is replaced by a bar with the harness state, **Open parent** and **Stop subagent**; message its parent instead. Stop works only when the harness announced per-child cancel; otherwise the button is disabled and the terminal says `watch-only, <harness> runs this subagent · cannot be stopped here` (omp has no per-child stop). Its model is shown, never pickable. Cost follows the harness: omp background subagents are counted beside the harness, omp sync subagents are already inside the harness's total, others are display-only or `not reported by the harness` (OpenCode reports no per-child cost).
+
+## Advisor and `consult`
+
+An advisor is a second model that reads one session's transcript as it runs and posts short notes into it. Nothing has an advisor by default; you turn it on per session with `/advisor` (picker), `/advisor <provider/model>`, or the **Advisor** level of the chat's model menu. It runs as a hidden child session of kind `advisor`, capped at `read_only` with a fixed tool set (`read_file`, `grep`, `glob`, `list_dir`, the `code_*` lookups, `knowledge_search`, `knowledge_get`), no approval prompts, and is not addressable by peers. A failing advisor never stalls the session.
+
+With an advisor on, the advised model also gets `consult{question, context?}`: it asks the advisor one concrete question (1 to 2000 chars, `context` up to 4000) and gets a short answer, recommendation first. A native subagent of an advised session can consult too; its question is answered in one shot by the advisor model from the subagent's own transcript, without tools. Errors: `consult: advisor off`, `consult: cap reached (6/6 this turn)`, `consult: timed out after 90 s`, `consult: advisor unavailable (<reason>)`.
+
+| Command / key | Effect |
+|---|---|
+| `/advisor` | Picker (provider, model, effort, **None**) |
+| `/advisor on` / `off` | Turn on with the remembered model, or off |
+| `/advisor status` | State, model, note and consult counts |
+| `/advisor consults <n>` | Set `advisor.max_consults` (0 to 32) |
+| `advisor.max_consults` | `consult` calls per user turn, default 6, range 0 to 32; `0` removes the tool. Settings › Agent › Advisor › **Consults per turn** |
+| `advisor.max_notes_per_update` | Non-blocker notes per update, default 4 (1 to 32) |
+| `advisor.immune_turns` | Steps after a delivered concern during which further concerns are asides, default 3 (0 to 10) |
+| `advisor.sync_backlog` | `off` (default), `1`, `3`, `5`: updates the turn end waits for (up to 30 s) |
+
+`/advisor` is not available on an external harness session. When the advisor model is priced below the session model, theuth warns "advisor model prices below the session model (crude signal)".
+
+## Stopping
+
+Stop is scoped. A plain stop ends the **root only**; its running subagents keep working.
+
+| Surface | Stop this turn | Stop this turn and every running descendant |
+|---|---|---|
+| Desktop | Click the stop button, or press Esc | Press and hold the stop button, slide up to arm "Stop everything · N agents" and release; or hold Esc for 0.7 s; or tap Esc three times within 1 s |
+| Terminal UI | Esc, or `/cancel` | Esc three times within 1 s (prints `stopped N agents`) |
+| Slack, Signal, Telegram | Cancel commands and buttons | Not available |
+
+On an ACP child, a stop sends `session/cancel` and kills the process after 5 s. No model can stop a child: there is no `cancel_subagent` tool; stopping is a human action.
+
+## Restarts
+
+Children survive an engine restart or crash:
+
+- **Native children** resume like any session: an interrupted turn continues with its remaining run time (at least 60 s to land).
+- **ACP children** that were mid-prompt are respawned (`durability.acp_respawn_parallel`, 4 at a time, looking back `acp_respawn_window_days`, 7 days). The harness reloads its own session id with `session/load` when it supports it and gets a short restored note; otherwise it gets a handoff of the child's last report and state within `durability.handoff_tokens` (4000). A child that cannot come back is reported to its parent as `<child_lost>`; resume it with `send_message` or spawn a fresh child.
+- **Terminal jobs are not durable.** A shell or PTY job dies with the engine and the model is told `<job_result exit="lost">`.
+
+The Inbox shows one notice per restart, for example `Restarted 09:14 · 2 sessions resumed · 3 subagents back · 1 lost (relay-fix)`.
+
+## Inbox and agent graph
+
+Child approvals, questions and finished work land in the **Inbox** with everything else that needs you. Dismissing a harness child's permission ask does not refuse it: it is "left to the agent", answered with the harness's reject option and marked "not run: the user left this to you, choose another way or continue without it", so the harness chooses another way instead of ending its turn.
+
+Above the Inbox list, the agent graph draws your sessions, native subagents, ACP harness children, watch-only children and desks, with solid parent to child edges and dashed edges for peer messages. **Show in graph** on an Inbox card centres the source session. Nodes fade after their last event; **Fade times** sets the minutes: Subagents 10, Chats and peers 240, Desks 1440, Messages stay lit 5. Working and waiting nodes never fade.
 
 ## Reference
 
@@ -110,7 +214,7 @@ If the child stops and you want to continue in the *same* harness context — fo
 | `THEUTH_AGENT__COMMUNICATION=true` | Env override; wins over the file at start |
 | `/peers` | Who this session may message, and peer requests waiting for your answer (⏎ opens, `i` inspects, `a` answers) |
 | `/peers scope owner\|isolated [alias]` | Promote or isolate a root (owner only; no model tool does this) |
-| Settings › Communication | Desktop switches for the same global and per-chat state |
+| Settings › Network › Messaging | Desktop switches for the same global and per-chat state |
 
 Scope: roots you open from the desktop or terminal are `owner` scope and may also reach other owner roots; roots created by a routine, an ACP client (`t --acp`), or a non-owner Slack/Signal/Telegram contact are `isolated` to their own tree. Children always belong to their parent's tree. The model never sees another root's title, cwd or transcript.
 
@@ -118,42 +222,49 @@ Scope: roots you open from the desktop or terminal are `owner` scope and may als
 
 | Argument | Meaning | Default |
 |---|---|---|
-| `task` (required) | Complete, self-contained brief; the child sees nothing else | — |
+| `task` (required) | Complete, self-contained brief; the child sees nothing else | none |
 | `name` | Stable peer name used with `send_message` | Generated `adjective-noun`; `-2`, `-3` on collision |
 | `agent` | `<harness>` from `acp/agents.yaml`, `<node>`, or `<harness>@<node>` (a mesh engine may be named by its id prefix) | Native theuth child |
 | `cwd` | Absolute working directory for an external harness | theuth's cwd |
-| `model` | `provider/model` (see `list_models`); checked against catalog and credentials for a native child; applied to a harness if it offers a `model` option, else kept. The agent passes it only when you ask for a specific model | For a native child: the desk agent's model when the parent is a desk, else Settings › Chat › **Subagents**, else the new-session default |
-| `effort` | `low\|medium\|high\|off\|default` or a token budget; for a harness, applied when it lists that value (omp: `low\|medium\|high\|xhigh\|max`; opencode: the model's variants) | `agent.subagents.effort`, else configured |
-| `tools` | Risk ceiling `read_only\|mutating\|destructive`; enforced by the tool registry for theuth children and on nodes; for an external harness only prepended to the brief as `Limits: tools <cap>` | No ceiling |
+| `model` | `provider/model` (see `list_models`); checked against catalog and credentials for a native child; resolved on the node for a node target; applied to a harness if it offers a `model` option, else kept. The agent passes it only when you ask for a specific model | For a native child: the desk agent's model when the parent is a desk, else Settings › Models › Defaults › **Subagents**, else the new-session default |
+| `effort` | `low\|medium\|high\|off\|default` or a token budget; for a harness, applied when it lists that value (omp: `low\|medium\|high\|xhigh\|max`; OpenCode: the model's variants) | The subagent effort (the effort chips beside Settings › Models › Defaults › Subagents, `agent.subagents.effort`), else configured |
+| `tools` | Risk ceiling `read_only\|mutating\|destructive`; enforced by the tool registry for theuth children and on nodes; for an external harness only prepended to the brief as `Limits: tools <cap>`. A native child also inherits its spawner's own ceiling | No ceiling |
 | `skills` | theuth skill names written into an external harness's cwd; error on a native child, on a node target, or when the entry has `skills: false` | none |
 
-Errors the parent reads back: ``unknown agent `x`; configured: a, b`` (or ``unknown agent `x`; none configured - add one with /acp or in acp/agents.yaml``), `subagents are not available at depth N`, `remote agents are unavailable in a private session`, ``provider `p` has no credentials; list_models shows what is available``, ``unknown effort `e`; use low|medium|high|off|default or a token budget``.
+Errors the parent reads back: ``unknown agent `x`; configured: a, b`` (or ``unknown agent `x`; none configured - add one with /acp or in acp/agents.yaml``; registered nodes are listed after `; nodes:`), `subagents are not available at depth N`, `remote agents are unavailable in a private session`, ``provider `p` has no credentials; list_models shows what is available``, ``unknown effort `e`; use low|medium|high|off|default or a token budget``.
 
-Companion tools: `send_message{to, message, await_reply?, reply_to?, request_id?}` (`to` is `session:<uuid>`, `peer:<name>`, `parent`, a child's name, or a list of up to 16; body up to 32 KiB; `send_message` is a mutating tool and asks under the default policy), `discover_peers{query?, cursor?, limit?}` (25 per page, max 100), `peer_message{id}`, `list_models`.
+Companion tools: `send_message{to, message, await_reply?, reply_to?, request_id?, files?}` (`to` is `session:<uuid>`, `peer:<name>`, `parent`, a child's name, or a list of up to 16; body up to 32 KiB; `send_message` is a mutating tool and asks under the default policy), `discover_peers{query?, cursor?, limit?}` (25 per page, max 100), `peer_message{id}`, `wait_peer{to, until, timeout_secs?}`, `list_models`. All of them, with `spawn_subagent`, form the **Agents and peers** builtin category you can switch off per chat or always (`/builtins`, Settings › Tools › Builtins).
 
-### `agent.subagents` limits
+### `agent.subagents` and `agent.activity`
 
 ```yaml
 agent:
   subagents:
-    model: null             # preferred child model
+    model: null                  # preferred child model
     effort: null
-    max_depth: 1            # children at this depth cannot spawn further
-    max_concurrent: 8       # simultaneous child spawn turns; extra spawns queue
-    max_runtime_secs: 600   # run time per child turn (resumes continue it)
-    reply_timeout_secs: 120 # send_message{await_reply} deadline
+    max_depth: 1                 # children at this depth cannot spawn further
+    max_concurrent: 16           # native child spawn turns per orchestrator tree; extra spawns queue
+    max_concurrent_external: 32  # ACP harness and mesh-node child spawn turns per orchestrator tree
+    max_runtime_secs: 600        # run time per child turn (resumes continue it)
+    reply_timeout_secs: 120      # send_message{await_reply} deadline
+  activity:
+    first_update_secs: 60        # ACP child stall: no update after a prompt
+    silent_secs: 180             # ACP child stall: silence mid-turn, no tool in flight
 ```
 
 | Key | Default | Where to change it |
 |---|---|---|
-| `model` | `null` | Settings › Chat › **Models › Subagents**; desktop `/subagent <provider/model>` / `/subagent off`; `config.yaml`. When set, the parent's system prompt names it as the subagent default model. External harnesses keep their own model. |
-| `effort` | `null` | `config.yaml` |
-| `max_depth` | `1` | `config.yaml` (restart). At the limit `spawn_subagent` is hidden from the child and rejected at call time. |
-| `max_concurrent` | `8` | `config.yaml` (restart). The parent still receives "Spawned …" at once; the 9th child waits for a slot. |
-| `max_runtime_secs` | `600` | Settings › Agent loop › **Subagent timeout**; `config.yaml`. Per child turn, run time only (see Limits). Applies to turns from now on. |
-| `reply_timeout_secs` | `120` | `config.yaml` |
+| `subagents.model` | `null` | Settings › Models › Defaults › **Subagents**; desktop `/subagent <provider/model>` / `/subagent off`; `config.yaml`. When set, the parent's system prompt names it as the subagent default model. External harnesses keep their own model. |
+| `subagents.effort` | `null` | The effort chips on the Subagents picker; `config.yaml` |
+| `subagents.max_depth` | `1` | `config.yaml` (restart). At the limit `spawn_subagent` is hidden from the child and rejected at call time. |
+| `subagents.max_concurrent` | `16` | `config.yaml` (restart). Per orchestrator tree; the 17th native child waits for a slot. |
+| `subagents.max_concurrent_external` | `32` | `config.yaml` (restart). Per orchestrator tree; a separate pool for harness and node children. |
+| `subagents.max_runtime_secs` | `600` | Settings › Agent › Loop › **Subagent timeout**; `config.yaml`. Per child turn, run time only (see Limits). Applies to turns from now on. |
+| `subagents.reply_timeout_secs` | `120` | `config.yaml` |
+| `activity.first_update_secs` | `60` | `config.yaml`; `0` = never |
+| `activity.silent_secs` | `180` | `config.yaml`; `0` = never |
 
-Other caps: a child's result text is bounded by `agent.max_tool_output_chars` (32 000) with the remainder spilled to `~/.theuth/spill/<parent>/<child>.txt`, and vault values are redacted from it. A recipient with 32 pending unread peer inputs answers `busy`.
+Other caps: a child's result text is bounded by `agent.max_tool_output_chars` (32 000) with the remainder spilled to `~/.theuth/spill/<parent>/<child>.txt`, and vault values are redacted from it. A recipient with 64 pending messages or 2 MiB of pending bodies answers `busy: the recipient's intake is full; retry later` (1024 messages or 32 MiB across the engine).
 
 ### `~/.theuth/acp/agents.yaml`
 
@@ -165,6 +276,7 @@ opencode:
   args: [acp]
   description: OpenCode, local install     # shown to the model in the tool description
   env: {}                                  # merged over theuth's environment
+  model: null                              # display label when the harness reports no model; never sent
   skills: true                             # default; false = no theuth skills written into the child's cwd
   skills_dir: .agents/skills               # default; .claude/skills for Claude Code
   mcp: true                                # default; false opts out of the theuth MCP shim
@@ -172,14 +284,15 @@ opencode:
   steer_window_ms: 1500                    # default; messages inside the window share one interrupt
   nudge_after_secs: 20                     # default; 0 = no nudge when a message draws no activity
   max_nudges: 1                            # default; then an error is shown, nothing more is sent
+  reports: {permission: true, turn_end: true, session_load: false}   # optional; default from the built-in table
 codex-acp:
   command: npx
   args: [-y, "@agentclientprotocol/codex-acp"]
 ```
 
-The generated file ships these two entries commented out. `/acp add <registry id>` fills one in from the public ACP registry (fetched from `cdn.agentclientprotocol.com`, cached in `~/.theuth/acp/registry.json` for 24 h; offline, the cache is used): `npx` packages become `npx -y <pkg>`, `uvx` packages `uvx <pkg>`, binaries use the one on your PATH or are downloaded to `~/.theuth/acp/bin/<id>/` with a sha256 check. `/acp remove <name>` deletes the entry and that directory.
+The generated file ships the `opencode` and `codex-acp` entries commented out. `/acp add <registry id>` fills one in from the public ACP registry (fetched from `cdn.agentclientprotocol.com`, cached in `~/.theuth/acp/registry.json` for 24 h; offline, the cache is used): `npx` packages become `npx -y <pkg>`, `uvx` packages `uvx <pkg>`, binaries use the one on your PATH or are downloaded to `~/.theuth/acp/bin/<id>/` with a sha256 check. `/acp remove <name>` deletes the entry and that directory.
 
-Exercised in this repo as of this writing: **opencode 1.18.30 and 2.0.22**, **omp 18.3.1**. `codex-acp` and `claude-agent-acp` (`npx -y @agentclientprotocol/claude-agent-acp`) are template and registry entries. With opencode before 2.0, usage is reported per request rather than cumulatively, so its cost shows as "(last request only)".
+`reports` says what the harness reports reliably. When unset, theuth uses its built-in table: omp, OpenCode, `claude-agent-acp` (Claude Code, `npx -y @agentclientprotocol/claude-agent-acp`) and `codex-acp` report permissions and turn end; only omp also reloads a session id. Any other harness is treated as reporting none of them, so `wait_peer` accepts only `blocked` and `stalled` for it. With OpenCode before 2.0, usage is reported per request rather than cumulatively, so its cost shows as "(last request only)".
 
 ### Commands and UI
 
@@ -187,78 +300,88 @@ Exercised in this repo as of this writing: **opencode 1.18.30 and 2.0.22**, **om
 |---|---|
 | TUI `/acp` | List harnesses and registry; `p` probes, ⏎ adds a registry row, `d`/Backspace removes |
 | TUI/desktop `/acp add <registry-id>`, `/acp remove <name>` | Edit `agents.yaml` |
-| Desktop Settings › **Harnesses** | List, **Probe**, add from registry, remove |
+| Desktop Settings › Agent › **Harnesses** | List, **Probe**, add from registry, remove |
 | TUI `/agents` | Picker of this session's subagents with a cost tag per row |
 | Desktop sidebar | Tree under the open chat (and under each Desk): live rows first, 5 at a time, **Show more (N)** / **Show less**; the active child is always shown; a collapsed row pulses with the running-descendant count |
-| `/cancel` (on the child) | Stop the child's turn; an ACP child gets `session/cancel`, then the process is killed after 5 s |
-| `/resume` (no argument, on a stopped ACP child); desktop **Resume** | Restart the harness in the same context |
-| `/parent` | Open the parent from a child |
-| `/subagent [model\|off]` (desktop) | Default child model |
+| Inbox | Child approvals and questions, agent graph, restart notices |
+| `/cancel`, Esc (on the child) | Stop the child's turn; see [Stopping](#stopping) |
+| `/resume` (no argument, TUI, on a stopped ACP child); desktop **Resume** | Restart the harness in the same context |
+| `/parent`; desktop **Open parent** | Open the parent from a child |
+| `/subagent [model\|off]` (desktop) | Default child model; no argument opens Settings › Models |
+| `/advisor [off\|on\|status\|consults <n>\|<provider/model>]` | Advisor for this session |
 | `/cost`, desktop **CostPill** | Direct, descendants and total spend with a per-child table |
 | Slack | Each subagent gets its own thread; a live board of descendants in the parent thread; `/theuth agents` shows the tree |
 | Telegram | With Topics on, each subagent gets its own topic (`↳ <name>`, renamed to `↳ <name> · <title>`); without topics it runs inline behind a `↳ spawned **name**` marker that you can reply to; a live board of descendants in the parent (8 rows, then `… n more`, `agents · all idle` when done); `/agents` shows the tree with **Cancel** and **Close topic** buttons |
-| `t --acp` | Run theuth itself as an ACP agent inside an editor (Zed: `agent_servers: {"theuth": {"command": "t", "args": ["--acp"]}}`); sessions opened this way are `isolated` scope. This mode loads a reduced plugin set — tools, secrets, knowledge, documents, web, browser, code index, routes, computer, artifacts, apps, the agent loop — and **no** routines, roster, tasks, mesh, sandboxes, meetings or voice; Slack, Signal and Telegram load without their channel (status only) |
+| `t --acp` | Run theuth itself as an ACP agent inside an editor (Zed: `agent_servers: {"theuth": {"command": "t", "args": ["--acp"]}}`); sessions opened this way are `isolated` scope. With an engine already running it attaches to that engine. Otherwise it loads a reduced plugin set (tools, secrets, knowledge, documents, web, browser, code index, routes, computer, artifacts, apps, the agent loop, dreaming, autoresearch and cells) and **no** routines, roster, tasks, mesh, sandboxes, meetings or voice; Slack, Signal and Telegram load without their channel (status only) |
 
 ## Safety and permissions
 
-- **Nothing about spawning is a privilege by itself.** `spawn_subagent` is a read-only tool and does not ask. The gate is `agent.communication`: off hides the whole family of tools and blocks delivery; `/communication off` on a session opts that tree out underneath a global on. Session opt-outs are memory-only.
-- **Children ask you, not the parent.** A native child's mutating/destructive calls go through the normal `tools.policy` and surface as Allow/Deny cards on the child session (TUI `[y]`/`[n]`, desktop card, Slack or Telegram buttons, Signal 👍/👎 or `/approve <code>`); unanswered cards deny after `tools.approval_timeout_secs` (300 s). The parent transcript shows a pointer card to the waiting child.
-- **Harness permissions are forwarded through the same gate.** Every `session/request_permission` from an external harness becomes a theuth approval with the harness's tool title and arguments, classified by the kind the harness reports. Allow maps to the harness's allow option, Deny to its reject option; a cancelled turn answers `cancelled`.
+- **Nothing about spawning is a privilege by itself.** `spawn_subagent` is a read-only tool and does not ask. The gate is `agent.communication`: off hides the spawn and messaging tools and blocks delivery; `/communication off` on a session opts that tree out underneath a global on. Session opt-outs are memory-only.
+- **Children ask you, not the parent.** A native child's mutating/destructive calls go through the normal `tools.policy` and surface as Allow/Deny cards on the child session and in the Inbox (TUI `[y]`/`[n]`, desktop card, Slack or Telegram buttons, Signal 👍/👎 or `/approve <code>`); unanswered cards deny after `tools.approval_timeout_secs` (300 s). The parent transcript shows a pointer card to the waiting child.
+- **Harness permissions are forwarded through the same gate.** Every `session/request_permission` from an external harness becomes a theuth approval with the harness's tool title and arguments, classified by the kind the harness reports. Allow maps to the harness's allow option, Deny to its reject option, a dismissal to its reject option marked as left to the agent; a cancelled turn answers `cancelled`.
 - **`/approvals off` is inherited.** A session that opted out of prompts passes that to its children; `/approvals off always` writes `tools.approvals: false` for everyone. There is no per-tool "always allow". Details in [Tools and permissions](/docs/reference/tools-permissions).
-- **`tools:` ceilings are hard for theuth children only.** A native child capped at `read_only` is refused anything higher with `denied: subagent is capped at read_only`, and so are its descendants. An external harness only *reads* the cap as the first line of its brief — its own permission prompts are still forwarded to you, but the cap is advice, not enforcement.
+- **`tools:` ceilings are hard for theuth children only.** A native child capped at `read_only` is refused anything higher with `denied: subagent is capped at read_only`, and so are its descendants; a capped parent's ceiling passes to every native child it spawns. An external harness only *reads* the cap as the first line of its brief: its own permission prompts are still forwarded to you, but the cap is advice, not enforcement.
 - **Secrets stay in the vault.** Child results are redacted of vault values before the parent sees them.
 - **Private sessions cannot delegate to external agents.** `spawn_subagent{agent}` is refused in a private tree (`remote agents are unavailable in a private session`).
-- **No model can kill a child.** There is no `cancel_subagent`, `list_subagents` or `wait` tool; cancelling is a human action (`/cancel`, Slack `/theuth cancel`).
+- **No model can stop a child.** There is no `cancel_subagent` or `list_subagents` tool; `wait_peer` only waits. Stopping is a human action (Stop, `/cancel`, Slack `/theuth cancel`).
 
 ## Limits and lifecycle
 
 | Limit | Value |
 |---|---|
 | Nesting | `max_depth` 1: a child cannot spawn by default |
-| Concurrent spawn turns | `max_concurrent` 8; further spawns queue silently |
-| Child runtime | `max_runtime_secs` 600 per child turn (spawn, follow-up, human-opened, resumed) → turn cancelled, result prefixed `[timed out after 600s, stop=<reason>]`, child state `cancelled`. Only run time counts: a turn resumed after a restart continues its own cap (at least 60 s left to land); time the engine was stopped or the machine slept is not counted |
-| Failed child | Result prefixed `[child turn ended: error — <reason>]`, `[child turn cancelled]`, or `[child turn ended with no reply]`; nothing is retried automatically |
+| Concurrent spawn turns | Per orchestrator tree: `max_concurrent` 16 native, `max_concurrent_external` 32 harness and node; further spawns queue and the parent is told |
+| Child runtime | `max_runtime_secs` 600 per child turn (spawn, follow-up, human-opened, resumed), then the turn is cancelled, the result prefixed `[timed out after 600s, stop=<reason>]`, child state `cancelled`. Only run time counts: a turn resumed after a restart continues its own cap (at least 60 s left to land); time the engine was stopped or the machine slept is not counted |
+| Failed child | Result prefixed `[child turn ended: error` plus the reason, `[child turn cancelled]`, or `[child turn ended with no reply]`; nothing is retried automatically |
 | `await_reply` wait | `reply_timeout_secs` 120 |
 | Result size | `agent.max_tool_output_chars` 32 000, rest spilled to `spill/<parent>/<child>.txt` |
-| Peer intake | 32 unread inputs per recipient → `busy` |
+| Peer intake | 64 pending messages or 2 MiB per recipient, then `busy` |
 | Message body | 32 KiB; up to 16 recipients per `send_message` |
+| Harness connect | 120 s for `initialize` plus `session/new` or `session/load` |
 | Harness probe | 10 s |
-| Busy harness | `session/prompt` refused as busy is retried at 5, 10, 20, 30 s… until the runtime deadline |
-| Message to a busy harness | After `steer_window_ms` (1.5 s) the turn gets `session/cancel` and is re-prompted at once with the message(s) and a note to resume; the parent still gets one result for the turn. No streaming within `nudge_after_secs` (20 s) of a message prompt → one nudge, then an error. `steer: queue` waits for the turn instead |
+| Busy harness | `session/prompt` refused as busy is retried at 5, 10, 20, 30 s… for up to 600 s |
+| Message to a busy harness | After `steer_window_ms` (1.5 s) the turn gets `session/cancel` and is re-prompted at once with the message(s) and a note to resume; the parent still gets one result for the turn. No streaming within `nudge_after_secs` (20 s) of a message prompt: one nudge, then an error. `steer: queue` waits for the turn instead |
+| Stall wake | 60 s with no update after a prompt, 180 s silent mid-turn; once per episode |
 | Harness tail work | Output after the harness returned its prompt is a "continuation turn", closed after 120 s quiet and never delivered to the parent |
 | Cancel grace | ACP child: `session/cancel`, process killed after 5 s |
+| `consult` | `advisor.max_consults` 6 per user turn (0 to 32); 90 s per answer |
 
-Lifecycle: `spawn` → child `running` → (`awaiting` / `approval` as needed) → final message delivered as `<message from="session:…">` → child `idle`. A failure ends the child in `error` with the error text as its message; a timeout or `/cancel` ends it in `cancelled`. A finished ACP child can be resumed in its harness context; a native child can be messaged again with `send_message` to its name.
+Lifecycle: `spawn` (queued if the pool is full), then child `running`, then `awaiting` / `approval` as needed, then the final message is delivered as `<message from="session:…">` and the child goes `idle`. A failure ends the child in `error` with the error text as its message; a timeout or stop ends it in `cancelled`. A finished ACP child can be resumed in its harness context; a native child can be messaged again with `send_message` to its name.
 
-Cost rolls up: each child's spend (returned by the provider, or an estimate shown as `~$…`, or `—` when unavailable) is summed into the parent's **Descendants** figure in `/cost` and the desktop CostPill; the sidebar tree shows each child's own total. An ACP harness that reports a cumulative meter that later goes *down* is flagged as a suspected delta rather than silently accepted.
+Cost rolls up: each child's spend (returned by the provider, or an estimate shown as `~$…`, or a dash when unavailable) is summed into the parent's **Descendants** figure in `/cost` and the desktop CostPill; the sidebar tree shows each child's own total. An ACP harness that reports a cumulative meter that later goes *down* is flagged as a suspected delta rather than silently accepted.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| theuth answers that it cannot delegate / `spawn_subagent` never appears in tool cards | Messaging is off: `agent.communication` is `false`, or unset with no paired machine, or this session is opted out | `/communication` shows the exact blocker; `/communication on always` turns it on globally |
+| theuth answers that it cannot delegate / `spawn_subagent` never appears in tool cards | Messaging is off: `agent.communication` is `false`, or unset with no paired machine, or this session is opted out; or the Agents and peers builtins are switched off | `/communication` shows the exact blocker; `/communication on always` turns it on globally; check `/builtins` |
 | A child finished but the parent never reacted; log says `child result not delivered: communication off` | Communication was turned off between spawn and finish | Turn it back on and ask the parent to re-run; suppressed results do not revive |
-| ``unknown agent `opencode`; none configured - add one with /acp or in acp/agents.yaml`` | No entry in `~/.theuth/acp/agents.yaml` | `/acp add opencode` or Settings › Harnesses |
+| ``unknown agent `opencode`; none configured - add one with /acp or in acp/agents.yaml`` | No entry in `~/.theuth/acp/agents.yaml` | `/acp add opencode` or Settings › Agent › Harnesses |
 | `subagents are not available at depth 1` | A child tried to spawn; `max_depth` is 1 | Ask the parent to do the fan-out itself, or raise `agent.subagents.max_depth` and restart |
+| Spawn reply ends with `Queued: all 16 native child slots of this orchestrator are busy` | The tree's pool is full | Wait, type into the queued child to start it now, or raise `max_concurrent` / `max_concurrent_external` and restart |
 | ``provider `openai` has no credentials; list_models shows what is available`` | `model:` named a provider without a key or login | Add the key or pick a configured model ([Models](/docs/getting-started/models)) |
-| Probe shows `login required: <cmd>`, or the child fails with ``not logged in — run `<cmd>` in a terminal, then retry`` | The harness needs its own login | Run the quoted command in a terminal, then probe again |
+| Probe shows `login required: <cmd>`, or the child fails with `not logged in` and a command to run | The harness needs its own login | Run the quoted command in a terminal, then probe again |
 | Probe shows `spawn failed: <why>` or `spawn failed: timeout` | Command not on PATH, wrong args, or the harness hung before `session/new` | Check `~/.theuth/logs/acp-<name>.log`; fix `command`/`args` in `agents.yaml` |
-| Result arrives as `[timed out after 600s, stop=…]` | The child ran past `max_runtime_secs` | Raise Settings › Agent loop › Subagent timeout, or split the task |
-| Parent gets `result of subagent session:… is missing; inspect its transcript` or `subagent result not delivered: <reason>` | The hand-off failed internally | Open the child from the sidebar or `/agents` and read its last message |
-| An opencode child "finished" right after you denied a permission, with a tool output as its result | opencode ended the turn with no assistant text; theuth delivers the last tool output instead | Open the child, `/resume` to continue in the same context, and allow the step if intended |
+| Parent gets `<child_stalled … phase="no_first_update">` | The harness is loading or stuck at startup | Open the child; check its log; message it or stop it |
+| Result arrives as `[timed out after 600s, stop=…]` | The child ran past `max_runtime_secs` | Raise Settings › Agent › Loop › Subagent timeout, or split the task |
+| Parent gets `result of subagent session:… (turn …) is missing; inspect its transcript` or `subagent result not delivered: <reason>` | The hand-off failed internally | Open the child from the sidebar or `/agents` and read its last message |
+| Parent gets `<child_lost>` after a restart | The ACP child could not be respawned | Resume it with `send_message`, or spawn a fresh child |
+| An OpenCode child "finished" right after you denied a permission, with a tool output as its result | OpenCode ended the turn with no assistant text; theuth delivers the last tool output instead | Open the child, `/resume` to continue in the same context, and allow the step if intended |
 | A harness child ignores `model:`/`effort:` | The harness exposes no such option, or not that value | Check the child's header picker for what the harness offers; otherwise set it in the harness's own config |
 | `` `skills` is for an external harness; a theuth subagent loads skills itself with load_skill `` | `skills:` given on a native child (or a node target / an entry with `skills: false`) | Drop it; native children use `load_skill` themselves |
+| **Stop subagent** is disabled on a watch-only child | The harness has no per-child cancel | Stop the harness session itself |
 | Sidebar tree shows only 5 children | The tree caps at 5 rows per parent | Click **Show more (N)**; live children are always shown |
-| Cost pill reads "(last request only)" | opencode before 2.0 reports usage per request | Upgrade opencode, or treat the figure as a lower bound |
+| Cost pill reads "(last request only)" | OpenCode before 2.0 reports usage per request | Upgrade OpenCode, or treat the figure as a lower bound |
 
 ## Related
 
 - [Automation overview](/docs/automation)
-- [Agents](/docs/automation/agents) — named roster agents and desks, which also appear with subagent trees in the sidebar
-- [Mesh](/docs/automation/mesh) — nodes and engines you can delegate to with `agent: "<node>"`
+- [Agents](/docs/automation/agents): named roster agents and desks, which also appear with subagent trees in the sidebar
+- [Mesh](/docs/automation/mesh): nodes and engines you can delegate to with `agent: "<node>"`
 - [Tasks](/docs/automation/tasks)
-- [Channels](/docs/automation/channels) — subagent threads and approvals on Slack, Signal and Telegram
+- [Channels](/docs/automation/channels): subagent threads and approvals on Slack, Signal and Telegram
 - [Tools and permissions](/docs/reference/tools-permissions)
-- [Skills](/docs/reference/skills) — what `skills:` writes into a harness's cwd
+- [Skills](/docs/reference/skills): what `skills:` writes into a harness's cwd
 - [Configuration](/docs/reference/configuration)
 - [Sessions](/docs/workspace/sessions)
+- [Terminal](/docs/workspace/terminal): PTY jobs and `<job_idle>`
