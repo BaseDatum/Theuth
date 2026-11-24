@@ -17,6 +17,7 @@ import { useConnection } from '@/store/connection'
 import { active } from '@/store/engine-scope'
 import { useSessions } from '@/store/sessions'
 import { EMPTY, openDraftSession, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { useSuffixes } from '@/lib/suffixes'
 import { notebookKeys } from '@/lib/notebooks-rpc'
 import { openContextPicker } from './ContextPicker'
 import { SHAKE_USAGE, SHAKE_WORDS } from './shake'
@@ -332,10 +333,14 @@ export async function draftSkill(
   session: string | null,
   name: string,
   words = '',
+  suffixFrom?: string,
 ): Promise<string> {
   const id = session ?? (await openDraftSession(api)).id
   if (!session) useSessions.getState().loadHistory(id, FRESH, 'replace')
   useSkillDraft.getState().add(id, name)
+  // A new chat: the prompt suffix turned on in the draft (`suffixFrom`, its key) goes with it, like the words, so the
+  // first message carries skill and suffix together instead of leaving the suffix for the next new chat.
+  if (!session && suffixFrom !== undefined) useSuffixes.getState().carry(suffixFrom, id)
   // Before `navigate`: the chat's composer reads its text from the draft store as it mounts.
   useDrafts.getState().set(id, { text: words, pastes: EMPTY.pastes })
   await navigate({ to: '/c/$session', params: { session: id } })

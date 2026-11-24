@@ -52,7 +52,8 @@ import { VIEW, isPrivate, usePrivate } from '@/lib/private'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useMesh } from '@/components/tasks/queries'
 import type { CreateSessionOptions } from '@/rpc/bindings/method.sessionsync.input'
-import { EMPTY, PLAIN_OPTIONS, sendFirst, sendSkills, useDraftTarget, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { EMPTY, PLAIN_OPTIONS, sendFirst, useDraftTarget, useDrafts, useSkillDraft } from '@/lib/drafts'
+import { sendParked } from '@/lib/send-parked'
 import { type Suffix, activeFor, activeSuffix, useSuffixes, withSuffix } from '@/lib/suffixes'
 import { YOUNG_MS, useRemoteStart } from '@/lib/remote-start'
 import { DEBOUNCE_MS as PATH_DEBOUNCE_MS, type PathPopup, accept as acceptPath, pathKey, pathTrigger, step as stepPath } from '@/lib/path-complete'
@@ -385,7 +386,7 @@ export function Composer({
   const { text, pastes, unsent } = useDrafts((s) => s.by[draftKey] ?? EMPTY)
   const setText = (t: string) => useDrafts.getState().setText(draftKey, t)
   const setPastes = (p: Pastes | ((held: Pastes) => Pastes)) => useDrafts.getState().setPastes(draftKey, p)
-  /** Skills parked for the next send (`lib/drafts` `useSkillDraft`), in order: the send becomes `sendSkills`. */
+  /** Skills parked for the next send (`lib/drafts` `useSkillDraft`), in order: the send becomes `sendParked`. */
   const skills = useSkillDraft((s) => (session ? s.by[session] : undefined)) ?? NO_SKILLS
   /** `+` › Skills: park the pick here; a new chat is created and opened the way `/skill:` does (`draftSkill`), the
    * typed words and held chips moving with it. The menu closes; reopening it adds the next skill. */
@@ -398,7 +399,7 @@ export function Composer({
       return
     }
     const held = pastes
-    draftSkill(api, navigate, null, name, text).then(
+    draftSkill(api, navigate, null, name, text, suffixChat).then(
       (id) => {
         useDrafts.getState().setPastes(id, held)
         reset()
@@ -898,7 +899,7 @@ export function Composer({
         if (!name) throw new Error('usage: /skill:<name>')
         // The words stay in the box: `reset()` then `setText` when this composer stays mounted; a new chat's
         // composer reads them from `drafts` as it mounts.
-        await draftSkill(api, navigate, session, name, words.join(' '))
+        await draftSkill(api, navigate, session, name, words.join(' '), suffixChat)
         reset()
         if (session) setText(words.join(' '))
         return
@@ -908,19 +909,22 @@ export function Composer({
         reset()
         return
       }
-      // Parked skills: the server builds one input from their `<skill>` bodies and these words; `TurnStarted`
-      // (idle) or `InputQueued` (running) echoes it as the skill card, so nothing is marked sent here.
+      // Parked skills: the server builds one input from their `<skill>` bodies and these words — the pinned document
+      // leading and the prompt suffix closing them, as a plain send's body — and the `once` suffix is spent with it
+      // (`sendParked`). `TurnStarted` (idle) or `InputQueued` (running) echoes it as the skill card, so nothing is
+      // marked sent here. `use_skill(s)` carries no files: with files attached nothing is sent and the draft stays.
       if (!pick && session && skills.length) {
+        const { text: words, files: attached } = expand(line, pastes)
+        if (attached.length) throw new Error('Files cannot go with a skill yet: send them in their own message, or remove the skill.')
         reset()
-        useSkillDraft.getState().clear(session)
         mode(session)
         if (running && interject) await api.cancel(session, null, 'input')
-        await sendSkills(api, session, skills, expand(line, pastes).text)
+        await sendParked(api, session, pinned ? compose([pinned], words) : words, suffixChat)
         return
       }
       const expanded = expand(line, pick ? EMPTY.pastes : pastes)
       // 59 §7.3: the pinned document leads every message, so its id survives compaction.
-      // #3: the chat's prompt suffix closes every typed or spoken message (never a command or a skill).
+      // #3: the chat's prompt suffix closes every typed or spoken message and a skill send (never a command).
       body = withSuffix(pinned ? compose([pinned], expanded.text) : expanded.text, suffix?.text)
       const { files } = expanded
       const { markSent, applyEvents, loadHistory } = useSessions.getState()
