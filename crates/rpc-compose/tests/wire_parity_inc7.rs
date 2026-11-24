@@ -59,6 +59,7 @@ async fn remaining_owners_golden_parity() {
     share::declare_wire(&rt).await.unwrap();
     let mut events = rt.wire_events();
     family::<tasks::activity::ActivityAppended>(&rt, &mut events, "tasks.activity").await;
+    family::<tasks::TaskChanged>(&rt, &mut events, "tasks.changed").await;
     family::<codeindex::CodeindexEvent>(&rt, &mut events, "codeindex.events").await;
     family::<sandbox::SandboxEvent>(&rt, &mut events, "sandbox.events").await;
     family::<double::DoublePredicted>(&rt, &mut events, "double.predicted").await;

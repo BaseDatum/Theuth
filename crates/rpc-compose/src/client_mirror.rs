@@ -89,6 +89,14 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
             }
             return;
         }
+        // 214 D3: `TaskChanged { id, project, kind }` matched by tag — its field shape
+        // (`id`, `kind`) is too common to try in the list below.
+        Some("TaskChanged") => {
+            if let Ok(ev) = <tasks::TaskChanged as serde::Deserialize>::deserialize(v) {
+                rt.publish(ev).await;
+            }
+            return;
+        }
         _ => {}
     }
     macro_rules! republish {

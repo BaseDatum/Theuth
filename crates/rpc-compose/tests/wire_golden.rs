@@ -171,6 +171,7 @@ async fn legacy_event_families() {
     family::<meeting::CalendarEvent>(&rt, &mut stream, "meeting.calendar").await;
     family::<app::AppCallChanged>(&rt, &mut stream, "app.calls").await;
     family::<tasks::activity::ActivityAppended>(&rt, &mut stream, "tasks.activity").await;
+    family::<tasks::TaskChanged>(&rt, &mut stream, "tasks.changed").await;
     family::<codeindex::CodeindexEvent>(&rt, &mut stream, "codeindex.events").await;
     family::<mesh::MeshEvent>(&rt, &mut stream, "mesh.events").await;
     family::<sandbox::SandboxEvent>(&rt, &mut stream, "sandbox.events").await;
