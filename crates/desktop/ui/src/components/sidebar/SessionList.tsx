@@ -406,7 +406,7 @@ export function SessionList({
     void qc.invalidateQueries({ queryKey: queryKeys.sessions })
   }
 
-  // The list sits under the sidebar's menu (THEUTH · New chat · top · Attention · Library · Desks) in the same
+  // The list sits under the sidebar's menu (Chat · Inbox · … · Costs · Desks) in the same
   // scroller: `scrollMargin` is that content's height, tracked live (`watchListOffset`), so the virtual window
   // is culled from where the list really starts. Item starts include it; the translate takes it back out.
   const list = useRef<HTMLUListElement>(null)

@@ -31,7 +31,8 @@ test('groupOf names the section a path belongs to', () => {
 })
 
 test('sectionOf lights the right sidebar row', () => {
-  expect(sectionOf('/')).toBe('home')
+  // `/` redirects to `/new` (the overview is retired): no row of its own.
+  expect(sectionOf('/')).toBeNull()
   expect(sectionOf('/talk/abc')).toBe('talk')
   expect(sectionOf('/agents')).toBe('agents')
   expect(sectionOf('/tasks/abc')).toBe('agents')

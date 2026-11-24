@@ -48,11 +48,10 @@ export const tabOf = (group: Group, pathname: string): string | null =>
 export const groupOf = (pathname: string): Group | null =>
   tabOf('agents', pathname) ? 'agents' : tabOf('library', pathname) ? 'library' : null
 
-export type Section = 'home' | 'talk' | 'agents' | 'attention' | 'library' | 'meeting' | 'costs' | 'settings' | null
+export type Section = 'talk' | 'agents' | 'attention' | 'library' | 'meeting' | 'costs' | 'settings' | null
 
 /** Which sidebar row `pathname` lights up; null for chats and the rest. */
 export const sectionOf = (pathname: string): Section => {
-  if (pathname === '/') return 'home'
   if (pathname.startsWith('/talk/')) return 'talk'
   if (tabOf('agents', pathname)) return 'agents'
   if (pathname === '/attention' || pathname.startsWith('/attention/')) return 'attention'
