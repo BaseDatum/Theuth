@@ -792,11 +792,14 @@ export function shorterTail(live: readonly Entry[], page: readonly Entry[]): boo
 
 type Reply = Extract<Entry, { kind: "assistant" }>;
 
-/** cells-midturn D2: the closed replies of the running turn drawn live, so without their stored row's `context` yet, as
- * one key (`<turn>:<ids>`); `null` when there are none. */
+/** cells-midturn D2: the closed replies of the running turn drawn live, so without their stored row's `context` yet, and
+ * its opener when it is another client's echo (`echo`: its attachments are only in that `context`), as one key
+ * (`<turn>:<ids>`); `null` when there are none. */
 export function unstampedKey(s: Pick<SessionSlice, "entries" | "turnSeq" | "running">): string | null {
   if (!s.running || s.turnSeq === undefined) return null;
-  const ids = s.entries.flatMap((e) => (e.kind === "assistant" && e.turn === s.turnSeq && !e.open && !e.context ? [e.id] : []));
+  const ids = s.entries.flatMap((e) =>
+    (e.kind === "assistant" && !e.open) || (e.kind === "user" && e.echo) ? (e.turn === s.turnSeq && !e.context ? [e.id] : []) : [],
+  );
   return ids.length ? `${s.turnSeq}:${ids.join(" ")}` : null;
 }
 
@@ -822,15 +825,35 @@ export function stampTried(tries: StampTries | undefined, before: string, after:
 }
 
 /**
- * cells-midturn D2: `entries` with the stored rows' `context` copied onto the live replies of `turn` that lack it, as
- * a reload mid-turn would show them (a chat cell needs its reply's stored seq, 171 §3.4). `history` is a newest
- * `load_session` page; it must reach back to the turn's last stamped reply (else its opener): the stored replies after
- * that point pair in order with the closed unstamped live replies, each pair with identical text. Any doubt — the page
- * too short, more stored replies than live ones, one text differs — leaves `entries` as they are. Only `context` is
- * added; nothing is replaced, reordered or dropped.
+ * cells-midturn D2: `entries` with the stored rows' `context` copied onto the live rows of `turn` that lack it, as a
+ * reload mid-turn would show them: an echoed opener (`echo`) gets its stored row's, attachments and all (`stampEcho`);
+ * the live replies get theirs (a chat cell needs its reply's stored seq, 171 §3.4). `history` is a newest
+ * `load_session` page; for the replies it must reach back to the turn's last stamped reply (else its opener): the
+ * stored replies after that point pair in order with the closed unstamped live replies, each pair with identical text.
+ * Any doubt — the page too short, more stored replies than live ones, one text differs — leaves the replies as they
+ * are. Only `context` is added; nothing is replaced, reordered or dropped.
  */
 export function stampStored(entries: Entry[], history: readonly HistoryEntry[], turn: number | undefined): Entry[] {
   if (turn === undefined) return entries;
+  return stampReplies(stampEcho(entries, history, turn), history, turn);
+}
+
+type User = Extract<Entry, { kind: "user" }>;
+
+/** The `you` rows of `turn` drawn from another client's `TurnStarted` echo get the stored opener's `context` — its
+ * `attachments` are what the echo lacks. The opener is the user row stored with `turn` (its seq); every card of it
+ * shares that `context` (`userEntries`). Unchanged when the page does not hold the opener. */
+function stampEcho(entries: Entry[], history: readonly HistoryEntry[], turn: number): Entry[] {
+  const at = entries.flatMap((e, i) => (e.kind === "user" && e.echo && e.turn === turn && !e.context ? [i] : []));
+  if (!at.length) return entries;
+  const context = history.find((h) => h.role === "user" && h.turn === turn)?.context;
+  if (!context) return entries;
+  const out = [...entries];
+  for (const i of at) out[i] = { ...(out[i] as User), context };
+  return out;
+}
+
+function stampReplies(entries: Entry[], history: readonly HistoryEntry[], turn: number): Entry[] {
   const mine = (e: Entry): e is Reply => e.kind === "assistant" && e.turn === turn;
   const anchorAt = entries.findLastIndex((e) => mine(e) && !!e.context);
   if (entries.some((e, i) => i < anchorAt && mine(e) && !e.context)) return entries;
@@ -1175,7 +1198,9 @@ function turn(
     // as a plain `you` row). Own sends and injected steers are already on
     // screen: stamp them with the turn instead. 171F B4: parked cell results
     // lead the text; they ride on the user's entry, or show as result cards
-    // when no words follow them (a review wake), as the reload does.
+    // when no words follow them (a review wake), as the reload does. The
+    // echo has no attachments: its `you` row is marked `echo`, and the
+    // route's stamp read copies the stored row's `context` onto it.
     case "TurnStarted": {
       const { view, text: raw } = userText(e.text);
       const { cells, rest: text } = splitLeading(raw);
@@ -1195,7 +1220,9 @@ function turn(
           : [
               ...s.entries,
               ...(view ? [view] : []),
-              ...userEntries(text, cls, undefined, e.turn_seq, undefined, e.channel).map((x): Entry => ({ ...x, at: now, ...(cells.length && x.kind === "user" ? { cells } : {}) })),
+              ...userEntries(text, cls, undefined, e.turn_seq, undefined, e.channel).map((x): Entry =>
+                x.kind === "user" ? { ...x, at: now, echo: true, ...(cells.length ? { cells } : {}) } : { ...x, at: now },
+              ),
             ];
       return {
         ...s,

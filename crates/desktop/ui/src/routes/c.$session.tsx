@@ -353,6 +353,8 @@ export function useSessionLoad(session: string): void {
   // ends. The engine publishes `ContextUsed` just before it stores the round and the tool, injection events after, so
   // each asks when a closed reply lacks its row; one read in flight, calls meanwhile coalesce into one more. R1: reads
   // that stamp nothing for the same replies give up after two (`stampWanted`) until a reply closes or gets stamped.
+  // Another client's send arrives as a `TurnStarted` echo without its attachments; its opener row is stored by then, so
+  // the same read lands that row's `context` and its images show at once (`stampEcho`), not after the turn.
   const stamping = useRef(false)
   const restamp = useRef(false)
   const stampTries = useRef<StampTries | undefined>(undefined)
@@ -435,7 +437,7 @@ export function useSessionLoad(session: string): void {
         store.getState().markStale(session)
         settle(ctl.signal)
       }),
-      ...(['ContextUsed', 'ToolCallStarted', 'ToolCallFinished', 'InputInjected'] as const).map((type) =>
+      ...(['TurnStarted', 'ContextUsed', 'ToolCallStarted', 'ToolCallFinished', 'InputInjected'] as const).map((type) =>
         on("agent.events@1", type, (e) => {
           if (e.session === session) stamp(ctl.signal)
         }),
