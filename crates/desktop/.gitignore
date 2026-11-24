@@ -1,6 +1,6 @@
 binaries/
 gen/schemas/
-ui/node_modules/
+node_modules/
 ui/dist/
 ui/src/rpc/bindings/
 ui/.tanstack/
