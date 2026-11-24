@@ -20,7 +20,6 @@ import { OrphansBanner } from '@/components/chat/OrphansBanner'
 import { ResumeBanner } from '@/components/chat/ResumeBanner'
 import { Panes } from '@/components/chat/Panes'
 import { SearchSession } from '@/components/chat/SearchSession'
-import { NextStepsSlot } from '@/components/chat/NextSteps'
 import { BackgroundArea } from '@/components/chat/BackgroundArea'
 import { relistReminders, relistTerminals } from '@/components/chat/background'
 import { Transcript } from '@/components/chat/Transcript'
@@ -211,10 +210,9 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
           <SearchReturn />
         </div>
       )}
-      <Transcript key={`t:${session}`} session={session} />
+      {/* `next`: the "Next:" suggestions scroll with the chat as its last item; a pick is sent by the composer below. */}
+      <Transcript key={`t:${session}`} session={session} next={!watching} />
       {lost && <UnreachableCard session={session} machine={lost} />}
-      {/* "Next:" between the last message and the background area's dashes; a pick is sent by the composer below. */}
-      <NextStepsSlot key={`n:${session}`} session={session} watching={!!watching} />
       <BackgroundArea key={`d:${session}`} session={session} trailing={advised ? <AdvisorPill session={session} /> : undefined} />
       <WebPill session={session} />
       {aboveComposer}
