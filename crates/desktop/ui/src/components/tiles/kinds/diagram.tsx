@@ -14,6 +14,7 @@ function DiagramTile({ tile, first, close }: TileRender) {
       first={first}
       onClose={close}
       title="Diagram"
+      tab={`Diagram · ${label}`}
       meta={label}
       controls={
         <Tools markup={() => svg} name={name} size="icon" extra={<Tool icon={RotateCcw} label="Reset view" onClick={() => setView(HOME)} size="icon" />} />

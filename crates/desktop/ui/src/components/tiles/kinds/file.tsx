@@ -43,6 +43,7 @@ function File({ tile, first, close }: TileRender) {
       first={first}
       onClose={close}
       title={p.title}
+      tab={p.path.split('/').pop() || p.title}
       meta={meta}
       controls={<ViewControls refresh={() => void q.refetch()} fetching={q.isFetching} text={data?.text} what="file" />}
       popOut={() => void openPopout({ kind: 'file', session: p.session, path: p.path, line: p.line, end_line: p.end_line })}

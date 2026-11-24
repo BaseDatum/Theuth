@@ -26,7 +26,7 @@ import { useViewTitle } from '@danfessler/trellis-react'
 import { useViewDrag } from '@/hooks/use-view-drag'
 import { chatName } from '@/lib/attach'
 import { sharedLabel, useSharing } from '@/lib/contacts'
-import { previewText } from '@/lib/channel-origin'
+import { chatTitle } from '@/components/tiles/TileFrame'
 import { type HeaderId, type Mode, approvalsOff as pillOff, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { canPopout, isPopout, openPopout, popoutOpen, type PopoutTarget } from '@/lib/popout'
@@ -37,8 +37,6 @@ import { cn } from '@/lib/utils'
 import { closeTile, tileId, useTileOpen } from '@/lib/tiles'
 import { sourceTag } from '@/lib/session-tree'
 import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
-import { parseSpoken } from '@/lib/injected'
-import { parseNote } from '@/lib/voice-note'
 import { useApprovals } from '@/store/approvals'
 import { useConnection } from '@/store/connection'
 import { useBrowserBusy, useSessionField, useSessions } from '@/store/sessions'
@@ -278,7 +276,7 @@ export function Header({
   const compact = tier > 0
 
   const raw = session ? liveTitle || (row ? chatName(row) : 'Untitled chat') : 'New chat'
-  const title = parseNote(raw)?.body || parseSpoken(raw)?.text || previewText(raw)
+  const title = chatTitle(raw)
   // Beside other panes the bar drags this one (`useViewDrag`) and must not be a window drag region.
   const drag = useViewDrag()
   useViewTitle(title)

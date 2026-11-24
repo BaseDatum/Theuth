@@ -1,3 +1,22 @@
+import {
+  BookOpen,
+  Brain,
+  FileDiff,
+  FileText,
+  Image,
+  ListChecks,
+  Logs,
+  type LucideIcon,
+  Map as MapIcon,
+  Monitor,
+  MousePointer2,
+  NotebookText,
+  ScrollText,
+  Sparkles,
+  SquareTerminal,
+  Terminal,
+  Workflow,
+} from 'lucide-react'
 import { useEffect, useMemo } from 'react'
 import { closePopout } from '@/lib/popout'
 import { closeTile, type Tile, tileId, useTile } from '@/lib/tiles'
@@ -36,6 +55,26 @@ export const TILE_KINDS: Record<string, TileKind> = {
   skill: skillTile,
   terminals: terminalsTile,
   vm: vmTile,
+}
+
+/** Each kind's Trellis tab icon (the tab bar shows while views share a panel, e.g. tiles of one kind). */
+export const TILE_ICONS: Record<string, LucideIcon> = {
+  artifact: Sparkles,
+  browser: MousePointer2,
+  codemap: MapIcon,
+  diagram: Workflow,
+  diff: FileDiff,
+  file: FileText,
+  jobs: ListChecks,
+  'job-log': Logs,
+  'job-terminal': Terminal,
+  media: Image,
+  memory: Brain,
+  note: NotebookText,
+  prompt: ScrollText,
+  skill: BookOpen,
+  terminals: SquareTerminal,
+  vm: Monitor,
 }
 
 /** The `tile:<id>` leaf's body: its kind draws it; a tile whose payload is gone (or whose kind this build lacks) says so

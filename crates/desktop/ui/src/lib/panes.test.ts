@@ -190,3 +190,13 @@ test('a garbled or stale stored layout never crashes: the workspace starts from 
     untile()
   }
 })
+
+test('a pane framed by zoom navigation is the one at the window corner (`first`) until the layout is restored', () => {
+  const ws = tiling(['a'])
+  usePanes.getState().place('a', 'b', 'right')
+  expect(usePanes.getState().first).toBe('a')
+  expect(ws.navigation.toggle('b')).toBe(true)
+  expect(usePanes.getState().first).toBe('b')
+  ws.navigation.toggle('b')
+  expect(usePanes.getState().first).toBe('a')
+})

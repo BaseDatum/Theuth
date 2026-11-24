@@ -12,6 +12,9 @@ export const tileProps = (id: string): unknown => usePanes.getState().views[tile
 /** The ids of the laid-out tiles. */
 export const tileIds = (): string[] => usePanes.getState().leaves.filter((l) => isTile(l)).map(tileOf)
 
+/** How often each view's content was mounted (Trellis mounts a view once; a move, dock or tab switch never again). */
+export const mounts = new Map<string, number>()
+
 let current: { ws: WorkspaceHandle; host: HTMLElement; detach(): void } | null = null
 
 /**
@@ -25,9 +28,19 @@ export function tiling(leaves: string[] = [], o: { navigate?(session: string): v
   if (!o.persisted) localStorage.removeItem(STORAGE_KEY)
   const host = document.body.appendChild(document.createElement('div'))
   const ws = createWorkspace(host, {
-    types: Object.fromEntries(TYPES.map((t) => [t, {}])),
+    types: Object.fromEntries(
+      TYPES.map((t) => [
+        t,
+        {
+          mount: (_el: HTMLElement, view: { id: string }) => {
+            mounts.set(view.id, (mounts.get(view.id) ?? 0) + 1)
+            return () => undefined
+          },
+        },
+      ]),
+    ),
     floating: false,
-    navigation: false,
+    navigation: 'focus',
     persist: { key: STORAGE_KEY, version: VERSION },
     onMissingType: () => 'drop',
     defaultLayout: leaves.length ? L.row(leaves.map((l) => L.view(chatSpec(l).type, { id: l, params: chatSpec(l).params }))) : null,

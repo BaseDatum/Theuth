@@ -7,7 +7,7 @@ import type { TileKind } from '@/components/tiles/types'
 export const promptTile: TileKind = {
   title: () => 'System prompt',
   render: ({ tile, first, close }) => (
-    <TileFrame title="System prompt" meta={PROMPT_NOTE} first={first} onClose={close} popOut={popOutTile(tile)}>
+    <TileFrame title="System prompt" chat={tile.session} meta={PROMPT_NOTE} first={first} onClose={close} popOut={popOutTile(tile)}>
       <PromptBody session={tile.session} className="mt-4" />
     </TileFrame>
   ),

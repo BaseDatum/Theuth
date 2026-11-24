@@ -3,7 +3,7 @@
 
 import type { Item } from '@/components/chat/Attachments'
 import { openPopout } from '@/lib/popout'
-import { openTile, openTileOf, type Tile, tileable } from '@/lib/tiles'
+import { openTile, type Tile, tileable } from '@/lib/tiles'
 import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
 import { useSessions } from '@/store/sessions'
 
@@ -36,7 +36,9 @@ export const openCodemapTile = (host: string, root: string): string | null =>
 /** A diagram's fullscreen: the svg markup (mermaid's, or the mounted React svg), the export stem (a content hash, so
  * also the tile key) and the card's label. */
 export type DiagramProps = { svg: string; name: string; label: string }
-export const openDiagramTile = (host: string, props: DiagramProps): string | null => openTile({ kind: 'diagram', host, key: props.name, props })
+/** `refresh`: only an open diagram tile takes the new markup (a redraw), staying behind its panel's active tab. */
+export const openDiagramTile = (host: string, props: DiagramProps, refresh = false): string | null =>
+  openTile({ kind: 'diagram', host, key: props.name, props, refresh })
 
 /** An attachment's image or PDF (the desktop lightbox): the item, its chat, and the owning row's membership. */
 export type MediaProps = { item: Item; session?: string; active: boolean }
@@ -47,9 +49,10 @@ const mediaKey = (item: Item): string => (item.occurrence ? JSON.stringify(item.
 export const openMediaTile = (host: string, item: Item, session: string | undefined, active: boolean): string | null =>
   openTile({ kind: 'media', host, key: mediaKey(item), props: { item, session, active } satisfies MediaProps })
 
-/** Items whose tile is open beside `host` take their current state (an occurrence removed since, the row folded). */
+/** Items whose tile is open beside `host` take their current state (an occurrence removed since, the row folded); none
+ * comes to the front of its panel. */
 export function refreshMediaTiles(host: string, items: Item[], session: string | undefined, active: boolean): void {
-  for (const item of items) if (openTileOf('media', host, mediaKey(item))) openMediaTile(host, item, session, active)
+  for (const item of items) openTile({ kind: 'media', host, key: mediaKey(item), props: { item, session, active } satisfies MediaProps, refresh: true })
 }
 
 /** The Context panel beside the chat (or draft) in leaf `host`; one per chat. */

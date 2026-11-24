@@ -7,7 +7,7 @@ import { useMemo } from 'react'
 import type { ViewRecord } from '@danfessler/trellis'
 import { shallow } from 'zustand/shallow'
 import { isMobileLayout } from '@/hooks/use-mobile'
-import { chatSpec, closeLeaves, isDraft, isFrame, isTile, ownerOf, placeView, rename, tileLeaf, tileOf, tileSpec, usePanes, type ViewSpec } from '@/lib/panes'
+import { chatSpec, closeLeaves, groupView, isDraft, isFrame, isTile, ownerOf, placeView, rename, revealView, tileLeaf, tileOf, tileSpec, usePanes, type ViewSpec } from '@/lib/panes'
 
 export type Tile = {
   id: string
@@ -47,13 +47,15 @@ export function setTileProps(id: string, props: unknown): void {
 
 /**
  * Open (or retarget) tile `kind` for the chat shown in leaf `host` — the leaf a trigger sits in (`useTileHost`); a tile
- * leaf counts as its owner's chat. An open tile only takes the new props (Trellis reveals a view by its id: same key,
- * same view). A new one takes over the selected pane when that is a frame (a tile or web view) other than `host` — in
- * place, the old one closed, like a chat picked into a picked pane; otherwise it goes below the owner's last open
- * frame, else right of the owner's pane, else right of `host`. Returns the tile id, or `null` when nothing tiles here or
- * neither the owner nor `host` has a pane (nothing is opened).
+ * leaf counts as its owner's chat. An open tile takes the new props and becomes its panel's active tab (Trellis reveals
+ * a view by its id: same key, same view); with `refresh` it only takes the props, and nothing opens. A new one joins as
+ * the active tab the panel already holding a tile of its kind — of several, the one used last (`groupView`). Else it
+ * takes over the selected pane when that is a frame (a tile or web view) other than `host` — in place, the old one
+ * closed, like a chat picked into a picked pane; otherwise it goes below the owner's last open frame, else right of the
+ * owner's pane, else right of `host`. Returns the tile id, or `null` when nothing tiles here or neither the owner nor
+ * `host` has a pane (nothing is opened).
  */
-export function openTile(o: { kind: string; host: string; props: unknown; key?: string }): string | null {
+export function openTile(o: { kind: string; host: string; props: unknown; key?: string; refresh?: boolean }): string | null {
   const { ws, leaves, views, selected } = usePanes.getState()
   const session = isTile(o.host) ? ownerOf(o.host, views[o.host]) || o.host : o.host
   const id = tileId(o.kind, session, o.key)
@@ -61,10 +63,12 @@ export function openTile(o: { kind: string; host: string; props: unknown; key?: 
   if (!ws) return null
   if (leaves.includes(leaf)) {
     if (!shallow(views[leaf]?.params?.props, o.props)) setTileProps(id, o.props)
+    if (!o.refresh) revealView(leaf)
     return id
   }
-  if (!leaves.includes(session) && !leaves.includes(o.host)) return null
+  if (o.refresh || (!leaves.includes(session) && !leaves.includes(o.host))) return null
   const spec = tileSpec(o.kind, session, o.props)
+  if (groupView(leaf, spec)) return id
   if (selected && selected !== o.host && isFrame(selected) && leaves.includes(selected)) placeView(selected, leaf, 'center', spec)
   else {
     const anchor = leaves.filter((l) => isFrame(l) && ownerOf(l, views[l]) === session).at(-1)

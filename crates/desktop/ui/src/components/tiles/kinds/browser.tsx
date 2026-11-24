@@ -9,7 +9,7 @@ import { Capability } from '@/rpc/capabilities'
 export const browserTile: TileKind = {
   title: () => 'Live browser',
   render: ({ tile, first, close }) => (
-    <TileFrame first={first} onClose={close} title="Live browser" popOut={popOutTile(tile)} className="items-center justify-center bg-background p-2">
+    <TileFrame first={first} onClose={close} title="Live browser" chat={tile.session} popOut={popOutTile(tile)} className="items-center justify-center bg-background p-2">
       <Capability required={browserRequirements}>
         <BrowserScreen session={tile.session} fill />
       </Capability>

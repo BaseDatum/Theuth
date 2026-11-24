@@ -26,6 +26,7 @@ function Terminals({ tile, first, close }: TileRender) {
       first={first}
       onClose={close}
       title="Terminals"
+      chat={tile.session}
       controls={
         <>
           <TerminalSelect session={tile.session} terminals={terminals} job={job} onPick={pick} className="w-48 shrink" />
@@ -54,6 +55,7 @@ export const jobTerminalTile: TileKind = {
         first={first}
         onClose={close}
         title={`Terminal · ${job}`}
+        tab={label || undefined}
         meta={label}
         popOut={() => void openPopout({ kind: 'pty', session, job })}
         className="gap-2 p-2"

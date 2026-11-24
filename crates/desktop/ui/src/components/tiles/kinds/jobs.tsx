@@ -7,7 +7,7 @@ import type { TileKind, TileRender } from '@/components/tiles/types'
 function Jobs({ tile, first, close }: TileRender) {
   const jobs = useJobs(tile.session, true)
   return (
-    <TileFrame first={first} onClose={close} title="Jobs" meta={jobs.summary} popOut={popOutTile(tile)}>
+    <TileFrame first={first} onClose={close} title="Jobs" chat={tile.session} meta={jobs.summary} popOut={popOutTile(tile)}>
       <JobFilters jobs={jobs} className="px-4 py-3" />
       <JobList jobs={jobs} />
     </TileFrame>
@@ -25,7 +25,7 @@ export const jobLogTile: TileKind = {
   render: ({ tile, first, close }) => {
     const { session, job, label } = tile.props as JobLogProps
     return (
-      <TileFrame first={first} onClose={close} title={`Job · ${job}`} meta={label} popOut={popOutTile(tile)}>
+      <TileFrame first={first} onClose={close} title={`Job · ${job}`} tab={label || undefined} meta={label} popOut={popOutTile(tile)}>
         <LiveJob session={session} job={job} className="flex-1 px-3 pb-3" />
       </TileFrame>
     )

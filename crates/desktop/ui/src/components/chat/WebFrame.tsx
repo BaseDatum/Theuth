@@ -54,7 +54,8 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
   const mac = isMacDesktop()
   // Beside other panes the toolbar drags this one (`useViewDrag`); the address field and buttons stay interactive.
   const drag = useViewDrag()
-  useViewTitle(view?.title || 'Web')
+  // The tab (shown while web views share a panel): the page's title, else its host.
+  useViewTitle(view?.title || hostOf(current) || 'Web')
   const region = (mac && drag.region) || undefined
   // `Header`'s rule: a popped window has no sidebar to open and is its own window.
   const nav = first && (!open || isMobile) && !popped && !isPopout()
@@ -154,6 +155,15 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
       </div>
     </div>
   )
+}
+
+/** `url`'s host, or `''` for no valid address. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return ''
+  }
 }
 
 /** Frame `id` as this window shows it: its store entry, its address, and whether its native layer is live here —

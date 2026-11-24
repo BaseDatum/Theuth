@@ -48,6 +48,8 @@ export function webViewOpened(e: { id: string; session: string; url: string; tit
     if (how === 'tile') placeWeb(e.session, e.id)
   }
   if (!old?.popped && !usePanes.getState().leaves.includes(webLeaf(e.id))) return place()
+  // Laid out here: its tab comes to the front of its panel (`placeWeb`) as the page navigates in place.
+  if (!old?.popped) place()
   native.navigate(e.id, e.url).catch((err: unknown) => {
     if (!String(err).startsWith('no web view')) return console.warn('web_view_navigate', err)
     useWebViews.getState().patch(e.id, { popped: false })

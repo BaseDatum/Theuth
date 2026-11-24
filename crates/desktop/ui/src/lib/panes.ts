@@ -83,6 +83,9 @@ type PanesStore = {
   first: string | null
   /** A Trellis drag (a pane moved by its header or tab) is in flight. */
   dragging: boolean
+  /** Trellis zoom navigation is moving the camera (a pane maximised or restored): the panes' content is CSS-scaled
+   * meanwhile, so what cannot scale (a native web view) hides until it settles. */
+  zooming: boolean
   /** Pane that window-level actions (hotkeys, `document.title`) address; the route keeps the URL on it. Always a chat
    * (or draft) — never a frame, so no RPC, composer or sidebar highlight ever sees a `tile:`/`web:` id. */
   focused: string | null
@@ -141,6 +144,35 @@ function firstPanel(root: LayoutNode | null | undefined): PanelNode | null {
   if (root.kind === 'stage') return firstPanel(root.child)
   return firstPanel(root.children[0])
 }
+/** Every docked panel, in layout order. */
+function panels(root: LayoutNode | null | undefined): PanelNode[] {
+  if (!root) return []
+  if (root.kind === 'panel') return [root]
+  if (root.kind === 'stage') return panels(root.child)
+  return root.children.flatMap(panels)
+}
+
+/** When each view was last used: picked, opened, revealed, or moved by the user (a tab dragged out of its panel). It
+ * ranks the panels a new frame may join as a tab (`groupView`). */
+const used = new Map<string, number>()
+let clock = 0
+const touch = (leaf: string): void => void used.set(leaf, ++clock)
+
+/** The panel a new view of `type` joins: of the docked panels holding a view of that type, the one whose views were
+ * used last (the first in layout order when none was); `null` when none holds one. */
+function groupOf(doc: LayoutDocument, type: string): PanelNode | null {
+  let best: PanelNode | null = null
+  let rank = -1
+  for (const p of panels(doc.root)) {
+    if (!p.views.some((v) => doc.views[v]?.type === type)) continue
+    const r = Math.max(0, ...p.views.map((v) => used.get(v) ?? 0))
+    if (r > rank) {
+      best = p
+      rank = r
+    }
+  }
+  return best
+}
 function order(doc: LayoutDocument, extra: readonly string[] = []): string[] {
   const out: string[] = []
   const walk = (n: LayoutNode | undefined) => {
@@ -157,14 +189,27 @@ function order(doc: LayoutDocument, extra: readonly string[] = []): string[] {
 }
 const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i])
 
-/** The store follows `doc` (and the views a drag is carrying). */
-function mirror(doc: LayoutDocument, carried: readonly string[] = [], dragging = false): void {
+function nodeOf(root: LayoutNode | null | undefined, id: string): LayoutNode | null {
+  if (!root) return null
+  if (root.id === id) return root
+  if (root.kind === 'panel') return null
+  if (root.kind === 'stage') return nodeOf(root.child, id)
+  for (const c of root.children) {
+    const n = nodeOf(c, id)
+    if (n) return n
+  }
+  return null
+}
+
+/** The store follows `doc` (and the views a drag is carrying). While zoom navigation frames a part of the layout
+ * (`framed`), that part's top-left view is the one at the window's corner, so it is `first`. */
+function mirror(doc: LayoutDocument, carried: readonly string[] = [], dragging = false, framed: string | null = null): void {
   const s = usePanes.getState()
   const leaves = order(doc, carried)
   usePanes.setState({
     leaves: same(s.leaves, leaves) ? s.leaves : leaves,
     views: doc.views,
-    first: firstPanel(doc.root)?.selected ?? null,
+    first: firstPanel((framed && nodeOf(doc.root, framed)) || doc.root)?.selected ?? null,
     dragging,
   })
 }
@@ -251,6 +296,7 @@ export const usePanes = create<PanesStore>()((set, get) => ({
   views: {},
   first: null,
   dragging: false,
+  zooming: false,
   focused: null,
   selected: null,
   drag: null,
@@ -258,6 +304,7 @@ export const usePanes = create<PanesStore>()((set, get) => ({
     if (get().focused !== session && !isFrame(session)) set({ focused: session })
   },
   select(leaf) {
+    touch(leaf)
     if (get().selected !== leaf) set({ selected: leaf })
   },
   show(session) {
@@ -325,11 +372,44 @@ export function placeView(target: string, leaf: string, edge: Edge, spec: ViewSp
     return true
   }
   op(() => put(ws, target, leaf, edge, spec))
+  touch(leaf)
   const over = edge === 'center' && selected === target
   // `replace` already dropped focus off a taken-over chat; a chat split beside keeps it.
   const kept = usePanes.getState().focused ?? (isFrame(target) || edge === 'center' ? null : target)
   usePanes.setState({ focused: isFrame(leaf) ? kept : leaf, selected: !isFrame(leaf) || over ? leaf : usePanes.getState().selected })
   return true
+}
+
+/**
+ * Frame `leaf` (not laid out yet, opened per `spec`) joins as the active tab the panel that holds a view of its type —
+ * of several, the one used last (`groupOf`): agent surfaces of one kind gather in one panel rather than splitting the
+ * layout further. A selection in that panel moves to `leaf`, the view showing there now; focus stays. `false` (nothing
+ * opened) when no panel holds that type, or without a workspace.
+ */
+export function groupView(leaf: string, spec: ViewSpec): boolean {
+  const { ws, selected } = usePanes.getState()
+  if (!ws || !isFrame(leaf)) return false
+  const doc = ws.getDocument()
+  const panel = doc.views[leaf] ? null : groupOf(doc, spec.type)
+  if (!panel) return false
+  op(() => {
+    openView(ws, leaf, spec, { into: panel.id })
+    ws.select(leaf)
+  })
+  touch(leaf)
+  if (selected !== null && panel.views.includes(selected)) usePanes.setState({ selected: leaf })
+  return true
+}
+
+/** Laid-out `leaf` becomes its panel's active tab (a surface reopened on the same key); a selection in that panel
+ * moves to it, as in `groupView`. */
+export function revealView(leaf: string): void {
+  const { ws, selected } = usePanes.getState()
+  const panel = ws && panelOf(ws.getDocument().root, leaf)
+  if (!ws || !panel) return
+  if (panel.selected !== leaf) op(() => ws.select(leaf))
+  touch(leaf)
+  if (selected !== null && selected !== leaf && panel.views.includes(selected)) usePanes.setState({ selected: leaf })
 }
 
 /** The user picked pane `id` (a press in it, its tab, the keyboard): it is selected; a chat is focused too and, unless
@@ -379,6 +459,9 @@ export function zone({ edge, rect: r }: Target): { left: number; top: number; wi
  * pane's own pick (`ViewBody`), which may decline it (a control in a chat while a frame is selected). */
 let pressing: Element | null = null
 
+/** How long the camera must stay still before a zoom counts as settled (`zooming`): a few frames. */
+const ZOOM_SETTLE_MS = 120
+
 /**
  * `ws` is the layout now: the store follows its document; Trellis focus (a tab, the keyboard) is a user pick; a view
  * closed by Trellis (its tab's ×, ⌥⌘W) moves the URL off it; a web frame closed for good (not popped out) loses its
@@ -386,17 +469,38 @@ let pressing: Element | null = null
  */
 export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string) => void): () => void {
   go = navigate ?? null
+  // Each view's panel: a view the user moved to another one (a tab dragged out, or onto another panel) was just used.
+  const homes = new Map<string, string>()
   const sync = () => {
     const snap = ws.getSnapshot()
-    mirror(snap.document, snap.views.map((v) => v.id), snap.dragging)
+    mirror(snap.document, snap.views.map((v) => v.id), snap.dragging, snap.framed)
+    for (const v of snap.views) {
+      const was = homes.get(v.id)
+      if (!v.panelId || was === v.panelId) continue
+      if (was !== undefined && !internal) touch(v.id)
+      homes.set(v.id, v.panelId)
+    }
   }
   const down = (e: Event) => {
     pressing = e.target instanceof Element ? e.target : null
     setTimeout(() => (pressing = null), 0)
   }
   window.addEventListener('pointerdown', down, true)
+  // The camera reports every frame it moves; it has settled once `ZOOM_SETTLE_MS` pass without one.
+  let still = 0
+  const settle = () => {
+    still = 0
+    usePanes.setState({ zooming: false })
+  }
   const offs = [
     ws.subscribe(sync),
+    ws.on('camera', () => {
+      if (!usePanes.getState().zooming) usePanes.setState({ zooming: true })
+      window.clearTimeout(still)
+      still = window.setTimeout(settle, ZOOM_SETTLE_MS)
+    }),
+    // Framing a part of the layout moves `first` to its corner.
+    ws.on('navigate', sync),
     ws.on('focus', (id) => {
       if (internal || id === null || !ws.getDocument().views[id]) return
       if (pressing?.closest('[data-pane]')) return
@@ -404,6 +508,8 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
     }),
     ws.on('close', (v: ViewInfo) => {
       if (isWeb(v.id) && !useWebViews.getState().views[webId(v.id)]?.popped) useWebViews.getState().close(webId(v.id))
+      homes.delete(v.id)
+      used.delete(v.id)
       if (internal) return
       const to = refocus(v.id)
       if (to) go?.(to)
@@ -414,6 +520,7 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
   if (wanted) usePanes.getState().show(wanted)
   return () => {
     for (const off of offs) off()
+    window.clearTimeout(still)
     window.removeEventListener('pointerdown', down, true)
     if (usePanes.getState().ws !== ws) return
     try {
@@ -423,13 +530,14 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
     } catch {
       // Storage full or unavailable: Trellis's own debounced save is all there is.
     }
-    usePanes.setState({ ws: null, dragging: false })
+    usePanes.setState({ ws: null, dragging: false, zooming: false })
   }
 }
 
 /** The engine was switched or the app forgot its panes: nothing focused, nothing selected, no drag. */
 export function resetPanes(): void {
   wanted = null
+  used.clear()
   usePanes.setState({ focused: null, selected: null, drag: null })
 }
 
@@ -475,15 +583,19 @@ export function prepareStored(o: { engine: string; sessions: ReadonlySet<string>
 }
 
 /**
- * 205 D5: web frame `id` opens to the right of `session`'s pane. An open tile is left where it is. `false` when
- * `session` has no pane here: the frame then waits for its card.
+ * 205 D5: web frame `id` opens as a tab of the panel holding the other web frames (`groupView`), else to the right of
+ * `session`'s pane. An open frame is left where it is and becomes its panel's active tab. `false` when `session` has no
+ * pane here: the frame then waits for its card.
  */
 export function placeWeb(session: string, id: string): boolean {
   const { leaves } = usePanes.getState()
   const leaf = webLeaf(id)
-  if (leaves.includes(leaf)) return true
+  if (leaves.includes(leaf)) {
+    revealView(leaf)
+    return true
+  }
   if (!leaves.includes(session)) return false
-  return placeView(session, leaf, 'right', webSpec(leaf))
+  return groupView(leaf, webSpec(leaf)) || placeView(session, leaf, 'right', webSpec(leaf))
 }
 
 /** Close web frame `id` for good: its tile, its store entry and its native web view. */

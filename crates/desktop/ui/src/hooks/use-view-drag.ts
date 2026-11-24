@@ -1,4 +1,4 @@
-import type { HTMLAttributes, PointerEvent } from 'react'
+import type { HTMLAttributes, MouseEvent, PointerEvent } from 'react'
 import { useTileHost } from '@/components/tiles/host'
 import { usePanes } from '@/lib/panes'
 
@@ -19,7 +19,9 @@ export function onInteractive(target: EventTarget | null, handle: Element): bool
  * more than one view: then `region` is false and the header must drop `data-tauri-drag-region`, or macOS would take
  * the press to move the window. With one view (or outside the workspace, or on a phone) the header keeps moving the
  * window and `props` is empty. A press must start in the header's own DOM: React bubbles events out of portals (a
- * Select's list, a menu, a dialog mounted by the header), and those never drag.
+ * Select's list, a menu, a dialog mounted by the header), and those never drag. A double-click on the header frames
+ * the pane (zoom navigation, as on its tab bar), or restores the layout when it is framed — alone, the double-click
+ * stays macOS's window zoom.
  */
 export function useViewDrag(): { region: boolean; props: HTMLAttributes<HTMLElement> } {
   const leaf = useTileHost()
@@ -28,6 +30,10 @@ export function useViewDrag(): { region: boolean; props: HTMLAttributes<HTMLElem
   return {
     region: false,
     props: {
+      onDoubleClick(e: MouseEvent<HTMLElement>) {
+        if (!e.currentTarget.contains(e.target as Node) || onInteractive(e.target, e.currentTarget)) return
+        usePanes.getState().ws?.navigation.toggle(leaf)
+      },
       onPointerDown(e: PointerEvent<HTMLElement>) {
         if (e.button !== 0 || !e.currentTarget.contains(e.target as Node) || onInteractive(e.target, e.currentTarget)) return
         const root = usePanes.getState().ws?.element

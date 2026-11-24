@@ -1,4 +1,4 @@
-import { layout as L, useOptionalView, ViewType, Workspace, type MenuEntry, type WorkspaceHandle } from '@danfessler/trellis-react'
+import { layout as L, useOptionalView, ViewType, Workspace, type Keymap, type MenuEntry, type WorkspaceHandle } from '@danfessler/trellis-react'
 import '@danfessler/trellis/style.css'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
@@ -24,6 +24,7 @@ import {
   WEB,
   zone,
 } from '@/lib/panes'
+import { isMacDesktop } from '@/lib/hotkeys'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { closeAllTiles } from '@/lib/tiles'
 import { cn } from '@/lib/utils'
@@ -75,6 +76,9 @@ export function DragOverlay() {
 }
 
 type Render = (leaf: string, first: boolean) => ReactNode
+/** Each view type's tab icon (`chat`, `draft`, `web`, `tile:<kind>`). */
+type Icons = Readonly<Record<string, ReactNode>>
+const NO_ICONS: Icons = {}
 
 /**
  * One view's content, whatever its kind: the sidebar drop target for its pane (`data-pane`). A press inside selects it
@@ -108,9 +112,22 @@ function ViewBody({ render }: { render: Render }) {
   )
 }
 
-/** Built-in panel menu items that need what this app does not offer: floating, maximise, hiding (there is no dock). */
-const UNUSED_MENU: Record<string, true> = { float: true, dock: true, maximize: true, hide: true }
+/** Built-in panel menu items that need what this app does not offer: floating and hiding (there is no dock). */
+const UNUSED_MENU: Record<string, true> = { float: true, dock: true, hide: true }
 const panelMenu = (entries: MenuEntry[]): MenuEntry[] => entries.filter((e) => e === 'separator' || !UNUSED_MENU[e.id ?? ''])
+
+/**
+ * Zoom navigation, `focus` mode: a pane (or a part of the layout) is framed — maximised to the whole workspace at its
+ * real size, the rest kept mounted off screen — by double-clicking its tab bar or header (`useViewDrag`), the panel
+ * menu's Maximize or ⌘⌥↩; ⌘⌥↑ shows everything again, ⌘⌥← / ⌘⌥→ go back and forth, Escape steps out while focus is
+ * on the workspace itself (a tab, or the workspace after a double-click), never from inside a view (the composer, a
+ * terminal) nor from a dialog (portalled outside the workspace, whose key listener never sees it). The other keymap
+ * entries (F6, ⌘⌥[ / ⌘⌥], ⌘⌥W) were already live and clash with nothing in the app. `free` mode (pinch, ⌘⌥-drag)
+ * stays off: it would leave panes live at any size (a PTY, a VM session, a native web view resized with every
+ * pinch) and its ⌘⇧ / ⌘⌃ drag chords take presses from the content.
+ * Trellis's ⌘⇧↩ for framing collides with a notebook's Run all, hence ⌘⌥↩.
+ */
+const KEYMAP: Keymap = { 'frame.toggle': 'Mod+Alt+Enter' }
 
 /**
  * The tiling layout: a Trellis workspace with one view type per leaf kind, its layout persisted on this machine. It
@@ -118,7 +135,7 @@ const panelMenu = (entries: MenuEntry[]): MenuEntry[] => entries.filter((e) => e
  * gone (`prepareStored`), so no stale chat mounts and loads. Trellis keeps each view's content mounted while it moves,
  * docks or resizes (iframes, terminals, VNC canvases and composers keep their state).
  */
-function Tiled({ session, kinds, render }: { session: string; kinds: readonly string[]; render: Render }) {
+function Tiled({ session, kinds, icons, render }: { session: string; kinds: readonly string[]; icons: Icons; render: Render }) {
   const navigate = useNavigate()
   const api = useApi()
   const canList = useQuerySupport(['list_sessions'])
@@ -126,10 +143,20 @@ function Tiled({ session, kinds, render }: { session: string; kinds: readonly st
   const types = useMemo(() => [CHAT, DRAFT_TYPE, WEB, ...kinds.map(tileType)], [kinds])
   const ready = !canList || sessions.data !== undefined || sessions.isError
   if (!ready) return null
-  return <Prepared session={session} types={types} sessions={sessions.data?.map((s) => s.id) ?? null} render={render} navigate={(s) => void navigate({ to: '/c/$session', params: { session: s } })} />
+  return (
+    <Prepared
+      session={session}
+      types={types}
+      icons={icons}
+      sessions={sessions.data?.map((s) => s.id) ?? null}
+      render={render}
+      navigate={(s) => void navigate({ to: '/c/$session', params: { session: s } })}
+    />
+  )
 }
 
-function Prepared({ session, types, sessions, render, navigate }: { session: string; types: string[]; sessions: string[] | null; render: Render; navigate(session: string): void }) {
+function Prepared(p: { session: string; types: string[]; icons: Icons; sessions: string[] | null; render: Render; navigate(session: string): void }) {
+  const { session, types, icons, sessions, render, navigate } = p
   const engine = useEngines((s) => s.active)
   // Once, before the workspace reads the persisted layout (its mount, below).
   useState(() => prepareStored({ engine, sessions: sessions && new Set(sessions), types: new Set(types) }))
@@ -142,25 +169,39 @@ function Prepared({ session, types, sessions, render, navigate }: { session: str
     detach.current = ws ? attachWorkspace(ws, (s) => go.current(s)) : null
   }, [])
   return (
-    <Workspace
-      ref={ref}
-      label="Panes"
-      theme="light"
-      floating={false}
-      navigation={false}
-      panelMenu={panelMenu}
-      storageKey={STORAGE_KEY}
-      version={VERSION}
-      defaultLayout={initial}
-      onMissingType={() => 'drop'}
-    >
-      {types.map((t) => (
-        <ViewType key={t} id={t} tabbar="auto" scaling={false}>
-          <ViewBody render={render} />
-        </ViewType>
-      ))}
-    </Workspace>
+    <>
+      <CornerTabs />
+      <Workspace
+        ref={ref}
+        label="Panes"
+        theme="light"
+        floating={false}
+        navigation="focus"
+        keymap={KEYMAP}
+        panelMenu={panelMenu}
+        storageKey={STORAGE_KEY}
+        version={VERSION}
+        defaultLayout={initial}
+        onMissingType={() => 'drop'}
+      >
+        {types.map((t) => (
+          <ViewType key={t} id={t} icon={icons[t]} tabbar="auto" scaling={false}>
+            <ViewBody render={render} />
+          </ViewType>
+        ))}
+      </Workspace>
+    </>
   )
+}
+
+/** The tab bar of the pane at the window's top-left corner (`first`, shown while it holds several views) starts right
+ * of the macOS traffic lights while the sidebar is closed, as that pane's header does. */
+function CornerTabs() {
+  const { open } = useSidebar()
+  const first = usePanes((s) => s.first)
+  if (open || first === null || !isMacDesktop()) return null
+  const tab = `[data-trellis-part='tab'][data-view='${CSS.escape(first)}']`
+  return <style>{`.trellis [data-trellis-part='tabbar']:has(${tab}) { padding-inline-start: 5rem; }`}</style>
 }
 
 /**
@@ -173,7 +214,7 @@ function Prepared({ session, types, sessions, render, navigate }: { session: str
  * page belongs to its chat: a route to another chat puts it into the pill, and while it shows the chat under it is
  * `inert`.
  */
-export function Panes({ session, kinds, render }: { session: string; kinds: readonly string[]; render: Render }) {
+export function Panes({ session, kinds, icons = NO_ICONS, render }: { session: string; kinds: readonly string[]; icons?: Icons; render: Render }) {
   const { isMobile } = useSidebar()
   const leaves = usePanes((s) => s.leaves)
   const focused = usePanes((s) => s.focused)
@@ -198,7 +239,7 @@ export function Panes({ session, kinds, render }: { session: string; kinds: read
   if (!isMobile) {
     return (
       <div className="relative min-h-0 min-w-0 flex-1">
-        <Tiled session={session} kinds={kinds} render={render} />
+        <Tiled session={session} kinds={kinds} icons={icons} render={render} />
       </div>
     )
   }
