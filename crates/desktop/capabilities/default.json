@@ -26,7 +26,12 @@
     },
     {
       "identifier": "opener:allow-open-path",
-      "allow": [{ "path": "$HOME/.theuth/artifacts/**" }]
+      "allow": [
+        { "path": "$HOME/.theuth/artifacts/**" },
+        { "path": "$HOME/.theuth/files/**" },
+        { "path": "$HOME/.theuth/cells/**" },
+        { "path": "$HOME/.theuth/skills/**" }
+      ]
     },
     "core:tray:allow-get-by-id",
     "core:tray:allow-set-title",
