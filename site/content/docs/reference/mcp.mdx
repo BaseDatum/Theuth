@@ -1,12 +1,13 @@
 ---
 title: MCP
-description: Register local and remote MCP servers from JSON files, expand credentials from the shell or the vault, gate tools by risk, and log in to servers that need OAuth.
+description: Register local and remote MCP servers from JSON files, expand credentials from the shell or the vault, gate tools by risk, log in to servers that need OAuth, and serve theuth itself to other MCP clients.
 ---
 
 theuth is an MCP client. Drop server definitions as JSON into
 `<data_dir>/mcp/`; the directory is watched, each server is connected, and
 its tools register beside the built-ins under their own names. Risk gates and
-OAuth logins live beside the files.
+OAuth logins live beside the files. theuth is also an MCP server, off by
+default: see [theuth as an MCP server](#theuth-as-an-mcp-server).
 
 ## Files and shapes
 
@@ -30,7 +31,7 @@ are accepted, detected structurally (an entry is an object with `command` or
 ```
 
 ```json
-// one wrapper key of any name — the shape Claude Desktop, Cursor and OpenCode files use
+// one wrapper key of any name: the shape Claude Desktop, Cursor and OpenCode files use
 { "mcpServers": { "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"],
                                "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "$(gh auth token)" } } } }
 ```
@@ -107,8 +108,8 @@ differs.
 ## Hot reload
 
 A filesystem watcher on `<data_dir>/mcp/` (non-recursive) feeds a reconcile
-after a 300 ms debounce. Added or changed entries connect (10 s connect
-timeout, error `no response within 10s`), removed or changed entries drop
+after a 300 ms debounce. Added or changed entries connect (20 s connect
+timeout, error `no response within 20s`), removed or changed entries drop
 their child process and tools, and the gates file is re-read on every pass. A
 file with invalid JSON is skipped with `mcp file skipped` in the log and its
 servers disappear; other files still load. The harness's own writes
@@ -131,7 +132,7 @@ appear there.
 
 Settings › Tools › MCP shows each server's home and its state on this
 machine, with **Run everywhere** (start it on every machine; for servers
-whose runtime is installed everywhere, or remote URLs), **Only on <home>**,
+whose runtime is installed everywhere, or remote URLs), **Only on** `<home>`,
 **Move home here** and **Turn off here**.
 
 A start that fails because the command is not on this machine shows `not
@@ -172,13 +173,21 @@ invalid file logs `mcp gates invalid (values are read_only | mutating |
 destructive | off), all default` and every tool falls back to annotations.
 The `/mcp` menu writes this file (comments are not preserved): Space cycles
 annotations → `read_only` → `mutating` → `destructive`, Backspace resets the
-line, Enter on a running server asks `s` (hide for this session, in memory)
-or `a` (`off`, written to the file). Set `risk: read_only` once on a server
-you trust and its tools stop prompting.
+line, Enter on a running server asks `s` (hide for this chat) or `a` (`off`,
+written to the file). Set `risk: read_only` once on a server you trust and
+its tools stop prompting.
 
-On desktop the same switches are in a chat's ⋯ menu › **Tools…** (or `/tools`):
-**Off here** hides a server's tools from that chat and its subagents, a tool's
-switch hides one tool; like `s`, this lasts until the engine restarts.
+On desktop the same switches are in a chat's ⋯ menu › **Tools…** (or `/tools`,
+`/mcp`): **Off here** hides a server's tools from that chat and its
+subagents, a tool's switch hides one tool, **Off always** writes `off`. The
+composer's tools button beside `+` has the same per-chat checkbox for each
+server plus a switch that turns the server on or off for every chat (off
+writes the `off` gate and stops it; on clears that gate and starts it). Hides
+for one chat are saved with the chat, so they survive a restart and a move to
+another machine, and a hidden server stays hidden when it reconnects. The
+harness's own tools have the same two scopes by category on the **Builtins**
+tab of that popover and of Settings › Tools (see
+[Builtins switches](/docs/reference/tools-permissions#builtins-switches)).
 
 ## Remote servers and OAuth
 
@@ -243,3 +252,83 @@ cloning reports that git is missing and everything else keeps working.
 - `mcp/*.json` and `mcp/config.yaml` replicate to the other engines of your
   [mesh](/docs/automation/mesh); keep credentials as placeholders or shell
   expansions, never as literals, so a token never leaves the vault.
+
+## theuth as an MCP server
+
+theuth can serve its own meetings, notes, knowledge, notebooks, sessions,
+tasks, briefs and calendars to any MCP client (Claude Code, Codex, Cursor,
+another agent). It is **off by default** and lives in **Settings › Tools ›
+Serve over MCP**:
+
+| Control | Does |
+|---|---|
+| switch | starts or stops the listener and writes `mcp_server.enabled` to `config.yaml`; the row shows `running on http://127.0.0.1:<port>/mcp` |
+| Port | `mcp_server.port`, default `7788` (the engine's RPC is 7777); loopback only |
+| Token | the bearer token, shown as its first 8 characters; **Rotate** mints a new one and ends every open MCP session |
+| Copy MCP config | the block for Claude Code, Codex (`config.toml`), Cursor or stdio (`t mcp`), token filled in |
+| Recent calls | the last 20 audit lines |
+
+```yaml
+mcp_server:
+  enabled: false   # default
+  port: 7788
+```
+
+### Transports and auth
+
+- **Streamable HTTP** at `http://127.0.0.1:<port>/mcp`. The listener binds
+  `127.0.0.1` only; there is no setting for another address. Every request
+  needs `Authorization: Bearer <token>` (otherwise 401); a `Host` other than
+  `127.0.0.1:<port>` or `localhost:<port>` and a non-loopback `Origin` are
+  refused with 403 (DNS-rebinding guard); any other path is 404. No CORS
+  headers are sent.
+- The token is the vault row `mcp.server.token` (64 hex characters), created
+  the first time the server starts. It never appears in `config.yaml`.
+- **stdio**: `t mcp` (with `--data-dir` when not the default) bridges stdio to
+  the same catalogue for clients that only start commands:
+
+  ```json
+  { "mcpServers": { "theuth": { "command": "t", "args": ["--data-dir", "/Users/me/.theuth", "mcp"] } } }
+  ```
+
+  It talks to the running engine over its local RPC (the `<data_dir>/token`
+  credential, not the MCP bearer token), so it needs the engine up but not the
+  HTTP listener. It exits when stdin closes, its parent goes away or the
+  engine connection drops. Both transports return identical results.
+- `t mcp --session <id>` is a different server: the shim an external coding
+  agent gets from theuth (skills, `send_message` and text tools), see
+  [Delegation](/docs/automation/delegation).
+
+### Tools
+
+44 tools: 25 read-only (annotated `readOnlyHint`) and 19 that write. Lists
+page with `limit` (1 to 200, default 50) and an opaque cursor.
+
+| Area | Read | Write |
+|---|---|---|
+| Meetings | `meeting_list`, `meeting_get`, `meeting_transcript`, `meeting_summary`, `meeting_briefs`, `meeting_search`, `meeting_speakers` | `meeting_edit`, `meeting_set_project`, `meeting_set_event`, `meeting_set_template` |
+| Briefs | `brief_search`, `brief_get`, `brief_list` | `brief_put`, `brief_delete` |
+| Knowledge | `knowledge_search`, `knowledge_get`, `knowledge_list` | `knowledge_put`, `knowledge_delete` |
+| Documents | `doc_list`, `doc_markdown` | `doc_create`, `doc_set_project`, `doc_rename`, `doc_delete` (to the trash) |
+| Notebooks | `notebook_list`, `notebook_items`, `notebook_search` | |
+| Sessions | `session_list`, `session_read` | |
+| Tasks | `task_list`, `task_get` | `task_create`, `task_update`, `task_move`, `task_comment` |
+| Artifacts | `artifact_list` (metadata) | |
+| Calendar | `calendar_events`, `calendar_sources` | `calendar_source_add`, `calendar_source_delete`, `calendar_source_refresh` |
+
+### What is shared and what is kept
+
+- **Private sessions are excluded**: `session_list` never lists them,
+  `session_read` refuses them and `artifact_list` drops their artifacts.
+- Every result passes the vault's redaction, like tool output, so a stored
+  secret value comes back as its placeholder.
+- Every call, over either transport, appends one line to
+  `<data_dir>/mcp/server-audit.jsonl`: time, transport (`http` or `stdio`),
+  the client's name, the tool, a SHA-256 of the arguments (never the
+  arguments), success and duration. Past 50 MB the file moves to
+  `server-audit.jsonl.1` and a new one starts.
+- **Write tools have no theuth-side gate.** A client holding the token can
+  create, change and delete notes, knowledge, tasks, briefs and calendar
+  sources without an approval card; whatever approvals apply are the
+  client's. Rotating the token cuts off every HTTP client; `t mcp` does not
+  use it.
