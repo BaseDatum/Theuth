@@ -61,6 +61,7 @@ import { Route as CodemapSessionRootRouteImport } from './routes/codemap.$sessio
 import { Route as PtySessionJobRouteImport } from './routes/pty.$session.$job'
 import { Route as RoutinesNameIndexRouteImport } from './routes/routines.$name.index'
 import { Route as RoutinesNameSectionRouteImport } from './routes/routines.$name.$section'
+import { Route as RoutinesNameGraphRouteImport } from './routes/routines.$name.graph'
 import { Route as TileKindSessionRouteImport } from './routes/tile.$kind.$session'
 
 const IndexRoute = IndexRouteImport.update({
@@ -323,6 +324,11 @@ const RoutinesNameSectionRoute = RoutinesNameSectionRouteImport.update({
   path: '/routines/$name/$section',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RoutinesNameGraphRoute = RoutinesNameGraphRouteImport.update({
+  id: '/routines/$name/graph',
+  path: '/routines/$name/graph',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TileKindSessionRoute = TileKindSessionRouteImport.update({
   id: '/tile/$kind/$session',
   path: '/tile/$kind/$session',
@@ -380,6 +386,7 @@ export interface FileRoutesByFullPath {
   '/codemap/$session/$root': typeof CodemapSessionRootRoute
   '/pty/$session/$job': typeof PtySessionJobRoute
   '/routines/$name/$section': typeof RoutinesNameSectionRoute
+  '/routines/$name/graph': typeof RoutinesNameGraphRoute
   '/tile/$kind/$session': typeof TileKindSessionRoute
   '/agents/$name/': typeof AgentsNameIndexRoute
   '/routines/$name/': typeof RoutinesNameIndexRoute
@@ -434,6 +441,7 @@ export interface FileRoutesByTo {
   '/codemap/$session/$root': typeof CodemapSessionRootRoute
   '/pty/$session/$job': typeof PtySessionJobRoute
   '/routines/$name/$section': typeof RoutinesNameSectionRoute
+  '/routines/$name/graph': typeof RoutinesNameGraphRoute
   '/tile/$kind/$session': typeof TileKindSessionRoute
   '/agents/$name': typeof AgentsNameIndexRoute
   '/routines/$name': typeof RoutinesNameIndexRoute
@@ -490,6 +498,7 @@ export interface FileRoutesById {
   '/codemap/$session/$root': typeof CodemapSessionRootRoute
   '/pty/$session/$job': typeof PtySessionJobRoute
   '/routines/$name/$section': typeof RoutinesNameSectionRoute
+  '/routines/$name/graph': typeof RoutinesNameGraphRoute
   '/tile/$kind/$session': typeof TileKindSessionRoute
   '/agents/$name/': typeof AgentsNameIndexRoute
   '/routines/$name/': typeof RoutinesNameIndexRoute
@@ -547,6 +556,7 @@ export interface FileRouteTypes {
     | '/codemap/$session/$root'
     | '/pty/$session/$job'
     | '/routines/$name/$section'
+    | '/routines/$name/graph'
     | '/tile/$kind/$session'
     | '/agents/$name/'
     | '/routines/$name/'
@@ -601,6 +611,7 @@ export interface FileRouteTypes {
     | '/codemap/$session/$root'
     | '/pty/$session/$job'
     | '/routines/$name/$section'
+    | '/routines/$name/graph'
     | '/tile/$kind/$session'
     | '/agents/$name'
     | '/routines/$name'
@@ -656,6 +667,7 @@ export interface FileRouteTypes {
     | '/codemap/$session/$root'
     | '/pty/$session/$job'
     | '/routines/$name/$section'
+    | '/routines/$name/graph'
     | '/tile/$kind/$session'
     | '/agents/$name/'
     | '/routines/$name/'
@@ -706,6 +718,7 @@ export interface RootRouteChildren {
   CodemapSessionRootRoute: typeof CodemapSessionRootRoute
   PtySessionJobRoute: typeof PtySessionJobRoute
   RoutinesNameSectionRoute: typeof RoutinesNameSectionRoute
+  RoutinesNameGraphRoute: typeof RoutinesNameGraphRoute
   TileKindSessionRoute: typeof TileKindSessionRoute
   AgentsNameIndexRoute: typeof AgentsNameIndexRoute
   RoutinesNameIndexRoute: typeof RoutinesNameIndexRoute
@@ -1077,6 +1090,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RoutinesNameSectionRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/routines/$name/graph': {
+      id: '/routines/$name/graph'
+      path: '/routines/$name/graph'
+      fullPath: '/routines/$name/graph'
+      preLoaderRoute: typeof RoutinesNameGraphRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/tile/$kind/$session': {
       id: '/tile/$kind/$session'
       path: '/tile/$kind/$session'
@@ -1184,6 +1204,7 @@ const rootRouteChildren: RootRouteChildren = {
   CodemapSessionRootRoute: CodemapSessionRootRoute,
   PtySessionJobRoute: PtySessionJobRoute,
   RoutinesNameSectionRoute: RoutinesNameSectionRoute,
+  RoutinesNameGraphRoute: RoutinesNameGraphRoute,
   TileKindSessionRoute: TileKindSessionRoute,
   AgentsNameIndexRoute: AgentsNameIndexRoute,
   RoutinesNameIndexRoute: RoutinesNameIndexRoute,

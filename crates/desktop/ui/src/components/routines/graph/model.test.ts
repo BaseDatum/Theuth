@@ -1,7 +1,9 @@
 import { receiveComponent } from '@/rpc/bindings/receive'
 import { expect, test } from 'vitest'
 import type { RunInfo, ScheduleFile, ScheduleInfo, SensorInfo } from '@/rpc/bindings/method.schedule.output'
-import { type GraphNode, type RoutineGraph, routineGraph } from './model'
+import { isSection, SECTIONS } from '../helpers'
+import { popoutLabel, popoutTarget, popoutUrl } from '@/lib/popout'
+import { type GraphNode, linkPopout, type RoutineGraph, routineGraph, routineGraphPath, routineGraphPopout } from './model'
 
 const NOW = Date.parse('2026-11-24T12:00:00Z')
 const iso = (minsFromNow: number) => new Date(NOW + minsFromNow * 60_000).toISOString()
@@ -237,4 +239,28 @@ test('paused routine on another machine', () => {
   expect(rowText(g, 'gate').slice(0, 2)).toEqual(['state: paused', 'machine: studio'])
   expect(node(g, 'gate').data.rows.find((r) => r.label === 'approvals')).toMatchObject({ text: 'off — never prompts', tone: 'warn' })
   expect(rowText(g, 'trigger')).toContain('next: paused')
+})
+
+test('the graph window is the `/routines/$name/graph` page, one window per routine', () => {
+  // `graph` is a static segment beside `$section`, never a section: the section route would redirect it to overview.
+  expect(isSection('graph')).toBe(false)
+  expect(SECTIONS).not.toContain('graph')
+  expect(routineGraphPath('daily-digest')).toBe('/routines/daily-digest/graph')
+  expect(routineGraphPath('a b/c')).toBe('/routines/a%20b%2Fc/graph')
+  const t = routineGraphPopout('daily-digest')
+  expect(t).toMatchObject({ kind: 'page', path: '/routines/daily-digest/graph' })
+  // The window reads back as a page window at the graph's path, the routine name decodable from it.
+  const back = popoutTarget(`tauri://localhost${popoutUrl(t)}`)
+  expect(back).toEqual({ kind: 'page', path: '/routines/daily-digest/graph' })
+  expect(popoutTarget(`tauri://localhost${popoutUrl(routineGraphPopout('a b/c'))}`)).toEqual({ kind: 'page', path: '/routines/a%20b%2Fc/graph' })
+  // Same routine, same window; names the label filter would fold together still get their own.
+  expect(popoutLabel(routineGraphPopout('daily-digest'))).toBe(popoutLabel(t))
+  expect(popoutLabel(routineGraphPopout('a.b'))).not.toBe(popoutLabel(routineGraphPopout('a_b')))
+  expect(popoutLabel(t)).toMatch(/^popout-page-[A-Za-z0-9_-]+$/)
+})
+
+test('a link in a popped graph opens a window of its own', () => {
+  expect(linkPopout({ kind: 'session', session: 's1' })).toEqual({ kind: 'chat', session: 's1' })
+  expect(linkPopout({ kind: 'task', id: 't/1' })).toEqual({ kind: 'page', path: '/tasks/t%2F1' })
+  expect(linkPopout({ kind: 'section', name: 'a b', section: 'prompt' })).toEqual({ kind: 'page', path: '/routines/a%20b/prompt' })
 })

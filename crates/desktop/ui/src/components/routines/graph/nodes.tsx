@@ -4,12 +4,35 @@
 import { Link } from '@tanstack/react-router'
 import { Handle, type Node, type NodeProps, Position } from '@xyflow/react'
 import { Bot, CalendarClock, Clock, Eye, FileText, Flag, History, type LucideIcon, Repeat, Send, ShieldCheck, SquareTerminal } from 'lucide-react'
-import { memo, useState } from 'react'
+import { createContext, memo, type ReactNode, use, useState } from 'react'
 import { Pulse } from '@/components/chat/Pulse'
 import { cn } from '@/lib/utils'
 import type { Kind } from '../helpers'
 import { KindBadge, RESULT_CLASS } from '../RoutinesView'
-import { CARD_W, type CardData, HANDLE_Y, type Role, type Row, type Tone } from './model'
+import { CARD_W, type CardData, type GraphLink, HANDLE_Y, type Role, type Row, type Tone } from './model'
+
+/** Set in a popped graph window: a link opens there (a window of its own) instead of navigating the window away. */
+export const LinkOut = createContext<((l: GraphLink) => void) | null>(null)
+
+/** A run's chat or task link on a card; a click never reaches the card (its own section click). */
+function Out({ link, className, children }: { link: Extract<GraphLink, { kind: 'session' | 'task' }>; className: string; children: ReactNode }) {
+  const out = use(LinkOut)
+  const click = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!out) return
+    e.preventDefault()
+    out(link)
+  }
+  return link.kind === 'session' ? (
+    <Link to="/c/$session" params={{ session: link.session }} search={{}} className={className} onClick={click}>
+      {children}
+    </Link>
+  ) : (
+    <Link to="/tasks/$id" params={{ id: link.id }} className={className} onClick={click}>
+      {children}
+    </Link>
+  )
+}
 
 export type CardNode = Node<CardData & { w: number; h: number }, 'card' | 'prompt' | 'history'>
 
@@ -83,9 +106,9 @@ function Line({ row }: { row: Row }) {
       <span className="w-[68px] shrink-0 truncate text-fg-tertiary">{row.label}</span>
       <span className={cn('min-w-0 flex-1 truncate', row.mono && 'font-mono text-[11px]', row.tone ? TONE[row.tone] : 'text-fg-secondary')} title={row.title ?? row.text}>
         {row.session ? (
-          <Link to="/c/$session" params={{ session: row.session }} search={{}} className="nodrag underline underline-offset-2 hover:text-foreground" onClick={(e) => e.stopPropagation()}>
+          <Out link={{ kind: 'session', session: row.session }} className="nodrag underline underline-offset-2 hover:text-foreground">
             {row.text}
-          </Link>
+          </Out>
         ) : (
           row.text
         )}
@@ -169,14 +192,14 @@ export const HistoryCard = memo(function HistoryCard({ data }: NodeProps<CardNod
                 </span>
               )}
               {r.session ? (
-                <Link to="/c/$session" params={{ session: r.session }} search={{}} className="nodrag ml-auto shrink-0 text-fg-secondary underline underline-offset-2 hover:text-foreground" onClick={(e) => e.stopPropagation()}>
+                <Out link={{ kind: 'session', session: r.session }} className="nodrag ml-auto shrink-0 text-fg-secondary underline underline-offset-2 hover:text-foreground">
                   session
-                </Link>
+                </Out>
               ) : (
                 r.task && (
-                  <Link to="/tasks/$id" params={{ id: r.task }} className="nodrag ml-auto shrink-0 text-fg-secondary underline underline-offset-2 hover:text-foreground" onClick={(e) => e.stopPropagation()}>
+                  <Out link={{ kind: 'task', id: r.task }} className="nodrag ml-auto shrink-0 text-fg-secondary underline underline-offset-2 hover:text-foreground">
                     task
-                  </Link>
+                  </Out>
                 )
               )}
             </li>
