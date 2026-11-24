@@ -42,11 +42,17 @@ function pillLabel(b: Blocker): string {
   return b.raw
 }
 
+/** 214 A1: tasks that used to block `t` and were dropped from its `blockers` when they closed. Read loosely: the field
+ * lands with the next wire bindings, and an older engine never sends it. */
+export const resolvedBlockers = (t: Task): readonly string[] => (t as Task & { resolved_blockers?: string[] }).resolved_blockers ?? []
+
 /**
  * The graph of `tasks` (one project's, or every task for "All projects"). Node order is creation order (ELK keeps
  * model order, so a new task lands after its siblings); edges are deduplicated and a task blocking itself is ignored.
  * Cycles need no special care: nothing here walks the graph, and ELK's layered algorithm breaks them itself. The
- * hash covers node ids, pill sizes and edges only — never states, titles or owners — so a state change never moves a node.
+ * hash covers node ids, pill sizes and edges only — never states, titles or owners — so a state change never moves a
+ * node. A finished dependency (A1 `resolved_blockers`) keeps its edge, faded, under the same id as while it blocked:
+ * a blocker resolving never relayouts.
  */
 export function taskGraph(tasks: readonly Task[], opts: GraphOpts = DEFAULT_OPTS): GraphModel {
   const all = new Map(tasks.map((t) => [t.id, t]))
@@ -74,6 +80,12 @@ export function taskGraph(tasks: readonly Task[], opts: GraphOpts = DEFAULT_OPTS
       if (!pills.has(pid)) pills.set(pid, { kind: 'pill', id: pid, blocker: b, label: pillLabel(b) })
       const id = `p:${raw}>${t.id}`
       edges.set(id, { id, kind: 'pill', source: pid, target: t.id, open: true })
+    }
+    for (const id of resolvedBlockers(t)) {
+      const eid = `b:${id}>${t.id}`
+      // A live blocker wins; a hidden (done) or unknown one draws nothing.
+      if (id === t.id || edges.has(eid) || !visible.has(id)) continue
+      edges.set(eid, { id: eid, kind: 'blocks', source: id, target: t.id, open: false })
     }
     if (opts.parentEdges && t.parent && t.parent !== t.id && visible.has(t.parent)) {
       const id = `c:${t.parent}>${t.id}`
@@ -123,11 +135,32 @@ export function searchProject(v: unknown): string | undefined {
   return undefined
 }
 
-/** `/tasks/graph` for `project` (`null` = all projects, `''` in the URL like the board). */
-export const graphPath = (project: string | null): string => `/tasks/graph?project=${encodeURIComponent(project ?? '')}`
+/** `/tasks/graph` for `project` (`null` = all projects, `''` in the URL like the board). The value is JSON-quoted as
+ * the router's `stringifySearch` writes it, so a label like `007` or `1e3` reads back as the same text. */
+export const graphPath = (project: string | null): string => `/tasks/graph?project=${encodeURIComponent(JSON.stringify(project ?? ''))}`
 
-/** The graph in its own window (D6): one window per project. */
-export const graphPopout = (project: string | null): PopoutTarget => ({ kind: 'page', path: graphPath(project), key: `tasks-graph-${project ?? ''}` })
+/** The graph in its own window (D6): one window per project. The key is a hash of the label: the window label keeps
+ * only `[A-Za-z0-9_-]`, so the raw text would let `a b` and `a_b` share a window. */
+export const graphPopout = (project: string | null): PopoutTarget => ({ kind: 'page', path: graphPath(project), key: `tasks-graph-${fnv(project ?? '')}` })
+
+/**
+ * Every task that waits on `id`, directly or through others (its transitive `blocks`, read from the tasks' `blockers`):
+ * adding any of them as a blocker of `id` would close a cycle, so the picker hides them. Cycle-safe.
+ */
+export function dependents(tasks: readonly Pick<Task, 'id' | 'blockers'>[], id: string): Set<string> {
+  const waiting = new Map<string, string[]>()
+  for (const t of tasks) for (const b of t.blockers) waiting.set(b, [...(waiting.get(b) ?? []), t.id])
+  const out = new Set<string>()
+  const stack = [id]
+  while (stack.length) {
+    for (const next of waiting.get(stack.pop()!) ?? []) {
+      if (out.has(next) || next === id) continue
+      out.add(next)
+      stack.push(next)
+    }
+  }
+  return out
+}
 
 /** State badge tone (D8), a theme token so both themes read. */
 export const STATE_TONE: Record<TaskState, string> = {

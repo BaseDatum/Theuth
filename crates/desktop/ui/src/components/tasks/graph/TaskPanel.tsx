@@ -1,11 +1,9 @@
 // 214 D7: the task graph's inline editor — the right edge of the canvas, never a route change. Every field saves on its
-// own (`task_update`; a state move through `task_move`, closing as done with a `done_because`); text saves on blur.
-import { useMutation } from '@tanstack/react-query'
+// own (`task_update`, serialised per task; a state move through `task_move`; done through the shared close path); text
+// saves on blur.
 import { Link } from '@tanstack/react-router'
 import { ExternalLink, X } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
-import { toast } from 'sonner'
-import { errorText } from '@/components/settings/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -13,34 +11,75 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
-import { useApi } from '@/lib/rpc'
-import type { DoneBecause, TaskPatch } from '@/rpc/bindings/method.roster.input'
+import { isPopout, openPopout } from '@/lib/popout'
 import type { Priority, Task, TaskState } from '@/rpc/bindings/method.roster.output'
 import { ProjectCombobox } from '../NewTaskSheet'
 import { OwnerSelect } from '../OwnerSelect'
 import { TaskPicker } from '../TaskPicker'
 import { ownerText, parseBlocker, parseOwner, shortId, STATES } from '../helpers'
-import { useAgents, useInvalidateTasks, useMoveTask, useTask } from '../queries'
-import { PANEL_W, STATE_TONE } from './model'
+import { useAgents, useCloseDone, useMoveTask, useTask, useTaskUpdate } from '../queries'
+import { dependents, PANEL_W, STATE_TONE } from './model'
 
 const PRIORITIES: readonly Priority[] = ['urgent', 'high', 'medium', 'low']
 
-/** A text field's local draft: follows the record until focused, saves a changed value on blur. */
-function useDraft(value: string, save: (v: string) => void) {
-  const [draft, setDraft] = useState(value)
-  const [editing, setEditing] = useState(false)
+/**
+ * A text field over a record value. Focused, it is the user's draft; on blur a changed draft is saved and shown as
+ * `pending` until the save settles (no flash of the old value while the record catches up). When the record changed
+ * elsewhere while the user typed, nothing is overwritten: the draft stays in the field with `conflict` set, and the
+ * user keeps theirs (`keepMine`) or takes the record's (`takeTheirs`).
+ */
+function useDraft(value: string, save: (v: string, settled: () => void) => void) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const [pending, setPending] = useState<string | null>(null)
+  // What the field showed when editing began: the record's value and any save still in flight.
+  const [base, setBase] = useState<{ value: string; pending: string | null }>({ value, pending: null })
+  const [conflict, setConflict] = useState(false)
   useEffect(() => {
-    if (!editing) setDraft(value)
-  }, [value, editing])
+    if (pending !== null && value === pending) setPending(null)
+  }, [value, pending])
+  const commit = (v: string) => {
+    setDraft(null)
+    setConflict(false)
+    setPending(v)
+    save(v, () => setPending(null))
+  }
   return {
-    value: draft,
-    onChange: (e: { target: { value: string } }) => setDraft(e.target.value),
-    onFocus: () => setEditing(true),
-    onBlur: () => {
-      setEditing(false)
-      if (draft !== value) save(draft)
+    conflict,
+    keepMine: () => draft !== null && commit(draft),
+    takeTheirs: () => {
+      setDraft(null)
+      setConflict(false)
+    },
+    field: {
+      value: draft ?? pending ?? value,
+      onChange: (e: { target: { value: string } }) => setDraft(e.target.value),
+      onFocus: () => {
+        if (draft === null) setBase({ value, pending })
+      },
+      onBlur: () => {
+        if (draft === null || conflict) return
+        if (draft === (base.pending ?? base.value)) return setDraft(null)
+        if (value !== base.value && value !== base.pending) return setConflict(true)
+        commit(draft)
+      },
     },
   }
+}
+
+/** The note under a field whose record changed while the user typed. */
+function Conflict({ draft }: { draft: { conflict: boolean; keepMine(): void; takeTheirs(): void } }) {
+  if (!draft.conflict) return null
+  return (
+    <div role="status" className="flex flex-wrap items-center gap-2 text-xs text-warning">
+      Changed elsewhere while you typed — not saved.
+      <Button size="xs" variant="outline" onClick={draft.keepMine}>
+        Save mine
+      </Button>
+      <Button size="xs" variant="ghost" onClick={draft.takeTheirs}>
+        Use theirs
+      </Button>
+    </div>
+  )
 }
 
 export function TaskPanel({ id, known, onSelect, onClose }: { id: string; known: readonly Task[]; onSelect(id: string): void; onClose(): void }) {
@@ -55,16 +94,23 @@ export function TaskPanel({ id, known, onSelect, onClose }: { id: string; known:
     >
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle pr-1.5 pl-3">
         <span className="font-mono text-xs text-fg-tertiary">#{shortId(id)}</span>
-        <Button asChild variant="ghost" size="xs" className="ml-auto text-fg-secondary">
-          <Link to="/tasks/$id" params={{ id }}>
+        {/* In a popped graph window the task page opens in a window of its own, so the graph stays put. */}
+        {isPopout() ? (
+          <Button variant="ghost" size="xs" className="ml-auto text-fg-secondary" onClick={() => void openPopout({ kind: 'page', path: `/tasks/${encodeURIComponent(id)}` })}>
             <ExternalLink /> Open full page
-          </Link>
-        </Button>
+          </Button>
+        ) : (
+          <Button asChild variant="ghost" size="xs" className="ml-auto text-fg-secondary">
+            <Link to="/tasks/$id" params={{ id }}>
+              <ExternalLink /> Open full page
+            </Link>
+          </Button>
+        )}
         <Button variant="ghost" size="icon-sm" className="text-fg-secondary" aria-label="Close editor" onClick={onClose}>
           <X />
         </Button>
       </header>
-      {!t && task.isPending && (
+      {!t && task.isLoading && (
         <div className="space-y-3 p-4">
           <Skeleton className="h-8 w-full" />
           <Skeleton className="h-24 w-full" />
@@ -77,21 +123,16 @@ export function TaskPanel({ id, known, onSelect, onClose }: { id: string; known:
 }
 
 function Editor({ task: t, known, onSelect }: { task: Task; known: readonly Task[]; onSelect(id: string): void }) {
-  const api = useApi()
   const agents = useAgents()
-  const invalidate = useInvalidateTasks()
   const move = useMoveTask()
-  const patch = useMutation({
-    mutationFn: (p: TaskPatch) => api.task_update(t.id, p),
-    onSuccess: () => invalidate(t.id),
-    onError: (e) => toast.error(errorText(e)),
-  })
-  const busy = patch.isPending || move.isPending
+  const patch = useTaskUpdate(t.id)
+  const close = useCloseDone()
+  const busy = patch.isPending || move.isPending || close.isPending
   const [closing, setClosing] = useState(false)
   const [picking, setPicking] = useState(false)
-  const title = useDraft(t.title, (v) => (v.trim() ? patch.mutate({ title: v.trim() }) : undefined))
-  const brief = useDraft(t.brief, (v) => patch.mutate({ brief: v }))
-  const doneWhen = useDraft(t.done_when ?? '', (v) => patch.mutate({ done_when: v.trim() || null }))
+  const title = useDraft(t.title, (v, settled) => (v.trim() ? patch.mutate({ title: v.trim() }, { onSettled: settled }) : settled()))
+  const brief = useDraft(t.brief, (v, settled) => patch.mutate({ brief: v }, { onSettled: settled }))
+  const doneWhen = useDraft(t.done_when ?? '', (v, settled) => patch.mutate({ done_when: v.trim() || null }, { onSettled: settled }))
   const byId = new Map(known.map((x) => [x.id, x]))
   const setState = (s: TaskState) => {
     if (s === t.state) return
@@ -99,20 +140,25 @@ function Editor({ task: t, known, onSelect }: { task: Task; known: readonly Task
     setClosing(false)
     move.mutate({ id: t.id, state: s })
   }
-  const closeDone = (because: DoneBecause) => patch.mutate({ state: 'done', done_because: because }, { onSuccess: () => setClosing(false) })
-  const setBlockers = (blockers: string[]) => patch.mutate({ blockers })
+  const hasCriteria = !!t.done_when?.trim()
+  // Built from the latest saved record at send time (calls queue per task), so quick edits never drop one another.
+  const addBlocker = (id: string) => patch.mutate((latest) => ({ blockers: [...new Set([...(latest ?? t).blockers, id])] }))
+  const removeBlocker = (raw: string) => patch.mutate((latest) => ({ blockers: (latest ?? t).blockers.filter((x) => x !== raw) }))
   const blocks = t.blocks.map((b) => byId.get(b)).filter((x): x is Task => x !== undefined)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 text-sm">
-      <Input
-        aria-label="Title"
-        className="h-9 text-[15px] font-medium"
-        {...title}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') e.currentTarget.blur()
-        }}
-      />
+      <div className="flex flex-col gap-1.5">
+        <Input
+          aria-label="Title"
+          className="h-9 text-[15px] font-medium"
+          {...title.field}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur()
+          }}
+        />
+        <Conflict draft={title} />
+      </div>
       <div className="grid grid-cols-2 gap-3">
         <Field label="State" htmlFor="tp-state">
           <Select value={t.state} onValueChange={(v) => setState(v as TaskState)} disabled={busy}>
@@ -148,11 +194,16 @@ function Editor({ task: t, known, onSelect }: { task: Task; known: readonly Task
         <div role="group" aria-label="Close as done" className="flex flex-col gap-2 rounded-lg border border-success-border bg-success-bg p-3">
           <p className="text-[13px]">Close as done — why?</p>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={busy} onClick={() => closeDone({ type: 'criteria_met' })} title={t.done_when ?? undefined}>
+            <Button
+              size="sm"
+              disabled={busy || !hasCriteria}
+              title={hasCriteria ? (t.done_when ?? undefined) : 'No done-when criteria stated'}
+              onClick={() => close.mutate({ id: t.id, because: { type: 'criteria_met' } }, { onSuccess: () => setClosing(false) })}
+            >
               Criteria met
             </Button>
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => closeDone({ type: 'intent_met' })}>
-              Intent met
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => close.mutate({ id: t.id, because: { type: 'intent_met' } }, { onSuccess: () => setClosing(false) })}>
+              Done
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setClosing(false)}>
               Keep open
@@ -167,10 +218,12 @@ function Editor({ task: t, known, onSelect }: { task: Task; known: readonly Task
         <ProjectCombobox id="tp-project" value={t.project} onChange={(v) => v !== t.project && patch.mutate({ project: v?.trim() || null })} />
       </Field>
       <Field label="Brief" htmlFor="tp-brief" hint="markdown">
-        <Textarea id="tp-brief" rows={6} placeholder="Context, constraints, links" className="text-[13px]" {...brief} />
+        <Textarea id="tp-brief" rows={6} placeholder="Context, constraints, links" className="text-[13px]" {...brief.field} />
+        <Conflict draft={brief} />
       </Field>
       <Field label="Done when" htmlFor="tp-done-when" hint="acceptance criteria">
-        <Textarea id="tp-done-when" rows={3} placeholder="What has to be true to close it" className="text-[13px]" {...doneWhen} />
+        <Textarea id="tp-done-when" rows={3} placeholder="What has to be true to close it" className="text-[13px]" {...doneWhen.field} />
+        <Conflict draft={doneWhen} />
       </Field>
       <Field label={`Blocked by ${t.blockers.length}`}>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -186,30 +239,27 @@ function Editor({ task: t, known, onSelect }: { task: Task; known: readonly Task
                 ) : (
                   <span className="truncate font-mono">{b.kind === 'task' ? `task ${shortId(b.id)}` : raw}</span>
                 )}
-                <button
-                  type="button"
-                  aria-label={`Remove blocker ${other?.title ?? raw}`}
-                  className="rounded-full hover:bg-layer-2"
-                  disabled={busy}
-                  onClick={() => setBlockers(t.blockers.filter((x) => x !== raw))}
-                >
+                <button type="button" aria-label={`Remove blocker ${other?.title ?? raw}`} className="rounded-full hover:bg-layer-2" onClick={() => removeBlocker(raw)}>
                   <X className="size-3" />
                 </button>
               </Badge>
             )
           })}
-          <Button type="button" variant="outline" size="xs" disabled={busy} onClick={() => setPicking(true)}>
+          <Button type="button" variant="outline" size="xs" onClick={() => setPicking(true)}>
             Add blocker…
           </Button>
         </div>
-        <TaskPicker
-          open={picking}
-          onOpenChange={setPicking}
-          title="Blocked by"
-          project={t.project}
-          exclude={[t.id, ...t.blockers, ...t.blocks]}
-          onPick={(b) => setBlockers([...t.blockers, b.id])}
-        />
+        {picking && (
+          <TaskPicker
+            open
+            onOpenChange={setPicking}
+            title="Blocked by"
+            project={t.project}
+            // Every task that already waits on this one (transitively) would close a cycle.
+            exclude={[t.id, ...t.blockers, ...t.blocks, ...dependents(known, t.id)]}
+            onPick={(b) => addBlocker(b.id)}
+          />
+        )}
       </Field>
       {blocks.length > 0 && (
         <Field label={`Blocks ${t.blocks.length}`}>

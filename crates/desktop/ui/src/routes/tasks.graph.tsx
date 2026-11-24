@@ -22,7 +22,7 @@ function Page() {
   const navigate = Route.useNavigate()
   const projects = useBoardProjects()
   // The first project is known once the lists load; until then a bare URL waits instead of drawing every project.
-  const loading = useTasks().isPending
+  const loading = useTasks().isLoading
   const project = search.project ?? projects[0] ?? ''
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">

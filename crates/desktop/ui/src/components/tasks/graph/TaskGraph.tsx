@@ -4,7 +4,7 @@
 import { useMutation } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { AppWindow, KanbanSquare, Plus } from 'lucide-react'
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { type KeyboardEvent, lazy, Suspense, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { SectionRow } from '@/components/nav/SectionRow'
 import { errorText } from '@/components/settings/shared'
@@ -19,6 +19,7 @@ import { Switch } from '@/components/ui/switch'
 import { Toggle } from '@/components/ui/toggle'
 import { canPopout, isPopout, openPopout } from '@/lib/popout'
 import { useApi } from '@/lib/rpc'
+import { Unavailable } from '@/rpc/capabilities'
 import { USER } from '../helpers'
 import { useBoardProjects, useInvalidateTasks, useLiveTasks, useTasks } from '../queries'
 import { DEFAULT_OPTS, type GraphOpts, graphPopout } from './model'
@@ -51,17 +52,8 @@ function useOpts(): [GraphOpts, (o: GraphOpts) => void] {
   return [opts, set]
 }
 
-/** Esc closes the editor unless it belongs to something open over it (a select, the picker, a menu) or a field, which it blurs. */
-function escapeOwned(target: EventTarget | null): boolean {
-  const el = target instanceof HTMLElement ? target : null
-  if (!el) return false
-  if (el.closest('[role="dialog"],[role="listbox"],[role="menu"],[data-radix-popper-content-wrapper]')) return true
-  if (el.matches('input,textarea,[contenteditable="true"]')) {
-    el.blur()
-    return true
-  }
-  return false
-}
+/** A dismissible layer the Escape belongs to (an open select, the picker, a menu, the + Task popover). */
+const LAYER = '[role="dialog"],[role="listbox"],[role="menu"],[data-radix-popper-content-wrapper]'
 
 export function TaskGraph({ project, onProject, variant }: { project: string | null; onProject(p: string | null): void; variant: 'page' | 'tile' }) {
   useLiveTasks()
@@ -70,14 +62,16 @@ export function TaskGraph({ project, onProject, variant }: { project: string | n
   const [opts, setOpts] = useOpts()
   const [selected, setSelected] = useState<string | null>(null)
   useEffect(() => setSelected(null), [project])
-  useEffect(() => {
-    if (selected === null) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !e.defaultPrevented && !escapeOwned(e.target)) setSelected(null)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [selected])
+  // Esc inside the graph (never a key pressed elsewhere — the chat beside a tile keeps its own Esc): a field in the
+  // editor gives up focus first, then the editor closes. An open layer handles its own Escape.
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Escape' || selected === null || e.defaultPrevented) return
+    const el = e.target instanceof HTMLElement ? e.target : null
+    if (el?.closest(LAYER)) return
+    e.stopPropagation()
+    if (el?.matches('input,textarea,[contenteditable="true"]')) el.blur()
+    else setSelected(null)
+  }
 
   const toolbar = (
     <>
@@ -121,14 +115,16 @@ export function TaskGraph({ project, onProject, variant }: { project: string | n
     </>
   )
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onKeyDown}>
       {variant === 'page' ? (
         <SectionRow className="h-auto min-h-11 flex-wrap gap-2 py-1">{toolbar}</SectionRow>
       ) : (
         <div className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle px-3 py-1">{toolbar}</div>
       )}
       <div className="relative min-h-0 flex-1 overflow-hidden bg-background">
-        {tasks.isPending && (
+        {/* `isPending` alone is also a disabled query (an engine without `tasks_list`), which never loads. */}
+        {tasks.isPending && tasks.fetchStatus === 'idle' && <Unavailable />}
+        {tasks.isLoading && (
           <div className="flex gap-6 p-6">
             <Skeleton className="h-[84px] w-60" />
             <Skeleton className="mt-16 h-[84px] w-60" />
@@ -162,12 +158,7 @@ function NewTask({ project, selected, onCreated }: { project: string | null; sel
   const [blocked, setBlocked] = useState(true)
   const after = blocked && selected !== null ? selected : null
   const create = useMutation({
-    mutationFn: async () => {
-      const t = await api.task_create({ state: 'backlog', title: title.trim(), brief: '', owner: USER, project })
-      // Set after the create (as NewTaskSheet does), so this works on an engine whose `task_create` predates `blockers`.
-      if (after) await api.task_update(t.id, { blockers: [after] })
-      return t
-    },
+    mutationFn: () => api.task_create({ state: 'backlog', title: title.trim(), brief: '', owner: USER, project, blockers: after ? [after] : [] }),
     onSuccess: (t) => {
       invalidate()
       setTitle('')

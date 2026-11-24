@@ -10,7 +10,7 @@ import type { AgentSummary } from "@/rpc/bindings/method.roster.output"
 import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
 import type { Task } from "@/rpc/bindings/method.roster.output"
 import type { TaskEvent } from "@/rpc/bindings/method.roster.output"
-import type { TaskFilter } from '@/rpc/bindings/method.roster.input'
+import type { DoneBecause, TaskFilter, TaskPatch } from '@/rpc/bindings/method.roster.input'
 import type { TaskState } from "@/rpc/bindings/method.roster.output"
 import { on } from '@/store/sessions'
 import { ownerText } from './helpers'
@@ -132,30 +132,34 @@ export function useInvalidateTasks() {
   }
 }
 
-/** `on` for a topic this build may not know yet (`tasks.changed@1` lands with the next wire bindings): until the
- * bindings carry it the client drops its events and the listener simply never fires. */
-const onLoose = on as unknown as (topic: string, type: string, cb: (event: unknown) => void) => () => void
-
-/** Coalescing window of the live refresh (214 D5). */
+/** The live refresh (214 D5): a trailing debounce of `LIVE_MS`, but never more than `LIVE_MAX_MS` behind the first event
+ * of a burst (an agent writing tasks back to back still sees the graph move). */
 const LIVE_MS = 250
+const LIVE_MAX_MS = 1000
 
 /**
  * 214 D5: every task list (and open task) refetches shortly after a task changes anywhere — an agent planning in a
  * chat, another window, the board. `tasks.changed@1` names every committed write; `tasks.activity@1` is the fallback
- * an older engine still sends. A burst of events within `LIVE_MS` is one refetch.
+ * an older engine still sends. Listening by topic key only, so no generated event module is imported.
  */
 export function useLiveTasks(): void {
   const qc = useQueryClient()
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined
+    let first = 0
+    const fire = () => {
+      timer = undefined
+      first = 0
+      void qc.invalidateQueries({ queryKey: keys.tasks })
+    }
     const bump = () => {
-      timer ??= setTimeout(() => {
-        timer = undefined
-        void qc.invalidateQueries({ queryKey: keys.tasks })
-      }, LIVE_MS)
+      const now = Date.now()
+      if (first === 0) first = now
+      clearTimeout(timer)
+      timer = setTimeout(fire, Math.max(0, Math.min(LIVE_MS, first + LIVE_MAX_MS - now)))
     }
     const offs = [
-      onLoose('tasks.changed@1', 'TaskChanged', bump),
+      on('tasks.changed@1', 'TaskChanged', bump),
       on('tasks.activity@1', 'ActivityAppended', (e) => {
         if (/^(task_|child_|escalation_)/.test(e.entry.kind)) bump()
       }),
@@ -165,4 +169,44 @@ export function useLiveTasks(): void {
       for (const off of offs) off()
     }
   }, [qc])
+}
+
+/**
+ * `task_update` for one task: the answer lands in its `task(id)` cache at once (an editor shows the saved value with
+ * no flash of the old one), then the lists refetch. Calls are serialised per task (`scope`), and `patch` may be a
+ * function of the latest cached record, so two quick blocker edits never build on the same stale list.
+ */
+export function useTaskUpdate(id: string) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const invalidate = useInvalidateTasks()
+  return useMutation({
+    scope: { id: `task-update:${id}` },
+    mutationFn: (patch: TaskPatch | ((latest: Task | undefined) => TaskPatch)) =>
+      api.task_update(id, typeof patch === 'function' ? patch(qc.getQueryData<Task>(keys.task(id))) : patch),
+    onSuccess: (t) => {
+      qc.setQueryData(keys.task(id), t)
+      invalidate(id)
+    },
+    onError: (e) => toast.error(errorText(e)),
+  })
+}
+
+/** Why a task closes as done: its stated criteria when it has them, else the intent (the engine refuses
+ * `criteria_met` on a task with no `done_when`). */
+export const doneBecause = (t: Pick<Task, 'done_when'>): DoneBecause => (t.done_when?.trim() ? { type: 'criteria_met' } : { type: 'intent_met' })
+
+/** Close a task as done — the one path every "done" button takes: `task_update { state: done, done_because }`. */
+export function useCloseDone() {
+  const api = useApi()
+  const qc = useQueryClient()
+  const invalidate = useInvalidateTasks()
+  return useMutation({
+    mutationFn: ({ id, because }: { id: string; because: DoneBecause }) => api.task_update(id, { state: 'done', done_because: because }),
+    onSuccess: (t) => {
+      qc.setQueryData(keys.task(t.id), t)
+      invalidate(t.id)
+    },
+    onError: (e) => toast.error(errorText(e)),
+  })
 }

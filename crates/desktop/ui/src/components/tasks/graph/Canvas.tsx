@@ -71,6 +71,9 @@ function Flow(p: CanvasProps) {
       }),
     [model, pos, p.selected],
   )
+  // An edge is remounted per layout (its id carries the layout's hash), so after a relayout it fades in on its new
+  // route while the cards glide there (`.tg-canvas` styles) instead of jumping.
+  const drawnHash = shown?.hash ?? ''
   const edges = useMemo<TaskEdgeType[]>(
     () =>
       model.edges.flatMap((e, i): TaskEdgeType[] => {
@@ -78,7 +81,8 @@ function Flow(p: CanvasProps) {
         const touching = p.selected !== null && (e.source === p.selected || e.target === p.selected)
         return [
           {
-            id: e.id,
+            id: `${e.id}@${drawnHash}`,
+            className: 'tg-edge',
             type: 'task',
             source: e.source,
             target: e.target,
@@ -91,7 +95,7 @@ function Flow(p: CanvasProps) {
           },
         ]
       }),
-    [model, pos, routes, p.selected],
+    [model, pos, routes, p.selected, drawnHash],
   )
 
   // The whole drawing in the part of the canvas the side panel leaves visible.
@@ -104,16 +108,24 @@ function Flow(p: CanvasProps) {
   const fitRef = useRef(fit)
   fitRef.current = fit
 
-  // Fit on the first drawing and whenever more nodes are drawn than before; otherwise the viewport is the user's.
-  const drawn = useRef(0)
-  const count = nodes.length
+  // Fit on the first drawing and whenever a card appears that was not drawn before (a new task, done ones shown
+  // again); a card leaving keeps the viewport, which is otherwise the user's.
+  const drawn = useRef<ReadonlySet<string>>(new Set())
+  const ids = useMemo(() => nodes.map((n) => n.id).join('\n'), [nodes])
   useEffect(() => {
     const before = drawn.current
-    drawn.current = count
-    if (count === 0 || count <= before) return
-    const frame = requestAnimationFrame(() => fitRef.current(before === 0 || reduced ? 0 : MOVE_MS))
+    const now = new Set(ids ? ids.split('\n') : [])
+    if (![...now].some((id) => !before.has(id))) {
+      drawn.current = now
+      return
+    }
+    // Recorded when the fit runs, so an effect replayed before the frame (StrictMode) still fits.
+    const frame = requestAnimationFrame(() => {
+      drawn.current = now
+      fitRef.current(before.size === 0 || reduced ? 0 : MOVE_MS)
+    })
     return () => cancelAnimationFrame(frame)
-  }, [count, reduced])
+  }, [ids, reduced])
 
   // A selected card the side panel would cover slides left into view (pan only, the zoom stays).
   useEffect(() => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { popoutLabel } from '@/lib/popout'
 import type { Task } from '@/rpc/bindings/method.roster.output'
-import { graphPopout, searchProject, taskGraph, toElk } from './model'
+import { dependents, graphPath, graphPopout, searchProject, taskGraph, toElk } from './model'
 
 let clock = 1
 const task = (id: string, over: Partial<Task> = {}): Task => ({
@@ -99,6 +100,30 @@ describe('taskGraph', () => {
     const ts = [task('late', { created_ms: 50 }), task('early', { created_ms: 10 })]
     expect(taskGraph(ts).nodes.map((n) => n.id)).toEqual(['early', 'late'])
   })
+
+  it('A1: a resolved blocker keeps its edge, faded, and the hash does not move when it resolves', () => {
+    const blocking = [task('a', { blockers: ['b'] }), task('b')]
+    const resolved = [{ ...blocking[0]!, blockers: [], resolved_blockers: ['b'] } as Task, { ...blocking[1]!, state: 'done' as const }]
+    const before = taskGraph(blocking)
+    const after = taskGraph(resolved)
+    expect(after.edges.map((e) => [e.source, e.target, e.open])).toEqual([['b', 'a', false]])
+    expect(after.hash).toBe(before.hash)
+    expect(after.nodes.find((n) => n.id === 'a')).toMatchObject({ waiting: false })
+    // Hidden once done tasks are hidden; an unknown or self id draws nothing; a live blocker wins over a resolved one.
+    expect(taskGraph(resolved, { hideDone: true, parentEdges: false }).edges).toEqual([])
+    expect(taskGraph([{ ...task('x'), resolved_blockers: ['gone', 'x'] } as Task]).edges).toEqual([])
+    const both = taskGraph([{ ...task('y', { blockers: ['z'] }), resolved_blockers: ['z'] } as Task, task('z')])
+    expect(both.edges.map((e) => e.open)).toEqual([true])
+  })
+})
+
+describe('dependents', () => {
+  it('collects every task waiting on one, transitively and cycle-safe', () => {
+    const ts = [task('a'), task('b', { blockers: ['a'] }), task('c', { blockers: ['b'] }), task('d', { blockers: ['c', 'a'] }), task('e'), task('f', { blockers: ['d', 'f'] })]
+    expect([...dependents(ts, 'a')].sort()).toEqual(['b', 'c', 'd', 'f'])
+    expect([...dependents(ts, 'e')]).toEqual([])
+    expect([...dependents([task('p', { blockers: ['q'] }), task('q', { blockers: ['p'] })], 'p')]).toEqual(['q'])
+  })
 })
 
 describe('route helpers', () => {
@@ -110,8 +135,18 @@ describe('route helpers', () => {
     expect(searchProject({ a: 1 })).toBeUndefined()
   })
 
-  it('pops one window per project', () => {
-    expect(graphPopout('a b')).toEqual({ kind: 'page', path: '/tasks/graph?project=a%20b', key: 'tasks-graph-a b' })
-    expect(graphPopout(null)).toEqual({ kind: 'page', path: '/tasks/graph?project=', key: 'tasks-graph-' })
+  it('writes the project JSON-quoted, so number-like labels read back as text', () => {
+    for (const p of ['007', '1e3', 'true', 'a b', '']) {
+      const raw = new URL(graphPath(p), 'http://x').searchParams.get('project')!
+      expect(JSON.parse(raw)).toBe(p)
+    }
+    expect(new URL(graphPath(null), 'http://x').searchParams.get('project')).toBe('""')
+  })
+
+  it('pops one window per project; look-alike labels get different windows', () => {
+    expect(graphPopout('a b')).toMatchObject({ kind: 'page', path: graphPath('a b') })
+    expect(popoutLabel(graphPopout('a b'))).not.toBe(popoutLabel(graphPopout('a_b')))
+    expect(popoutLabel(graphPopout('a b'))).toBe(popoutLabel(graphPopout('a b')))
+    expect(popoutLabel(graphPopout('a b'))).toMatch(/^popout-page-tasks_graph[A-Za-z0-9_-]*-tasks-graph-[0-9a-f]{8}$/)
   })
 })
