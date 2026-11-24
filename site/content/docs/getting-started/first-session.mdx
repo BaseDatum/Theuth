@@ -1,14 +1,14 @@
 ---
 title: Your first session
-description: A guided first conversation with theuth on the desktop app and in the terminal — models, approvals, attachments, steering, and picking a session back up.
+description: A guided first conversation with theuth on the desktop app and in the terminal, covering models, approvals, attachments, steering, stopping and picking a session back up.
 ---
 
 ## Before you start
 
 You need two things:
 
-- theuth installed (`t` on your PATH for the terminal, or the desktop app) — see [Installation](/docs/getting-started/installation).
-- One model provider configured: an API key in the vault (`t --secret-set anthropic`, `/secrets` in the terminal, or the **Secrets** page under Library in the desktop sidebar), a subscription login (`/login`), or the provider's environment variable (`ANTHROPIC_API_KEY`, …). Until one exists, `/model` answers `no models: no provider is configured`. [Models and providers](/docs/getting-started/models) covers every option.
+- theuth installed (`t` on your PATH for the terminal, or the desktop app); see [Installation](/docs/getting-started/installation).
+- One model provider configured: an API key in the vault (`t --secret-set anthropic`, `/secrets` in the terminal, or the **Secrets** page under Library in the desktop sidebar), a subscription login (`/login`), a local model server (Settings › Models › Providers › Local servers), or the provider's environment variable (`ANTHROPIC_API_KEY`, …). Until one exists, `/model` answers `no models: no provider is configured`. [Models and providers](/docs/getting-started/models) covers every option.
 
 Everything theuth keeps lives in `~/.theuth` (relocate it with `--data-dir` or `THEUTH_DATA_DIR`). The directory and its skeleton are created on first run.
 
@@ -17,7 +17,7 @@ Everything theuth keeps lives in `~/.theuth` (relocate it with `--data-dir` or `
 **Terminal.** Run `t` in the directory you want to work in. There is no welcome screen: the transcript holds one line, `theuth <version>`, above a one-line header, the input box, and a status row:
 
 ```text
-theuth 2.5.1
+theuth 2.27.3
 
 anthropic/claude-sonnet-4-5  ·  ctx 0
 ╭──────────────────────────────────────────────╮
@@ -28,18 +28,26 @@ no session  idle
 
 The header shows the model, the reasoning effort when one is set (`· high`), and the context gauge. The status row says `no session` until you send your first message: a session is only created when the first input leaves the box. Type `/` to see every command with a one-line description (↑↓ move, ⇥ completes, ⏎ runs).
 
-**Desktop.** While the app starts you see *Starting…* then *Connecting…* over the daemon's log; once connected it opens on the overview. **New chat** in the sidebar (or ⇧⌘O) opens a blank chat that asks *Where should we begin?* above the composer. Below it are two options: a **Private** switch (a memory-only session that is deleted when you leave it; the app explains the terms and asks you to tick *I understand* the first time) and a **Project** picker, a label used to group sessions in the sidebar. The header already shows the default model as a dropdown. There is no setup wizard; if no provider is configured yet, the model picker is simply empty — add a key or log in first (Settings › Connections, or the Secrets page). As in the terminal, nothing exists on disk until the first send.
+**Desktop.** While the app starts, a *Starting theuth* card ticks through *Starting the engine*, *Connecting* and *Loading*, with the engine's launch log behind a disclosure. Once connected it opens on a new chat that asks *Where should we begin?*; **New chat** in the sidebar (or ⇧⌘O) brings you back to one. The model picker sits above the composer and already shows the default model. Under the composer are three options:
 
-The desktop app talks to a `t --headless` daemon it starts for you (through your login shell, so the environment matches a terminal tab). If a `t --serve` is already running on the configured port, it reuses that instead.
+- **Private** (the hat-and-glasses switch): a memory-only session that is deleted when you leave it; the app explains the terms and asks you to tick *I understand* the first time.
+- **∞** (Fractal context): every turn starts from a compressed view of the whole chat instead of compacting it; off by default for chats (`agent.endless.default_chat`, Settings › Agent › Context). See [Sessions](/docs/workspace/sessions).
+- **Project**: a label used to group sessions in the sidebar.
+
+With other machines paired in your [mesh](/docs/automation/mesh), a **New chat on** row above the prompt picks the machine the chat runs on (offline machines and ones on an older theuth cannot be picked) and a folder there: its default folder, one of its repositories, or **Browse**. That machine's models fill the picker. A private chat always runs on this machine. Without paired machines the row is not shown.
+
+There is no setup wizard; if no provider is configured yet, the model picker is empty: add a key, log in or add a local server first (Settings › Models › Providers, or the Secrets page). As in the terminal, nothing exists on disk until the first send.
+
+The desktop app talks to a `t --headless` engine it starts for you (through your login shell, so the environment matches a terminal tab). If an engine is already running on the same data directory, such as a terminal `t`, it reuses that one instead.
 
 ## Which model, and where that is shown
 
-Every session runs on one model. New sessions start on the default, `agent.model` in `~/.theuth/config.yaml` (`anthropic/claude-sonnet-4-5` out of the box; on the desktop, Settings › Chat › **Models › New sessions**). Choosing a model in a chat's picker — or on the new-chat screen before the first send — switches that chat only; the default stays where it is.
+Every session runs on one model. New sessions start on the default, `agent.model` in `~/.theuth/config.yaml` (`anthropic/claude-sonnet-4-5` out of the box; on the desktop, Settings › Models › Defaults › **New sessions**). Choosing a model in a chat's picker, or on the new-chat screen before the first send, switches that chat only; the default stays where it is.
 
-- Terminal: `/model` opens a picker listing only the models whose providers are configured — one row per model, `provider/model  name  200k`, with `· vision` on models that accept images; type to filter, ⏎ picks. `/model <provider/model>` switches directly. If the chosen model takes a reasoning effort, the effort picker opens next; `/effort [level|clear]` changes it later. The header reads, for example, `anthropic/claude-sonnet-4-5  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`.
-- Desktop: the model name in the chat header is the picker (a *Search models* box, the current model pinned first, an **Effort** group with a `clear` row under the models). Next to it a pill shows `used/limit · pct%` of the context window and the last turn's prefix-cache hit rate; the narrow layout keeps the percentage only. `/model` or `/effort` typed into the composer opens the same picker.
+- Terminal: `/model` opens a picker over the configured providers: favorites and the current model first, then one row per provider; ⏎ opens a provider, typing searches every model, ⇥ stars a favorite. Rows read `provider/model  name  200k`, with `· vision` on models that accept images and `· local` on local ones. `/model <provider/model>` switches directly. If the chosen model takes a reasoning effort, its effort chips open under it; `/effort [level|clear]` changes it later. The header reads, for example, `anthropic/claude-sonnet-4-5  ·  high  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`.
+- Desktop: the model name in the chat header is the picker (*Search models*, favorites with stars, providers, and the effort chips under the chosen model). Next to it a pill shows `used/limit · pct%` of the context window and the last turn's prefix-cache hit rate; the narrow layout keeps the percentage only, and a Fractal context chat shows none. `/model` or `/effort` typed into the composer opens the same picker.
 
-The context gauge turns yellow at 75 % and red at 90 %. By default theuth compacts the conversation on its own at 80 % (`agent.compact_at`), so you rarely hit the wall — [Sessions](/docs/workspace/sessions) explains compaction. Model ids, effort levels and what happens when a provider is missing are in [Models and providers](/docs/getting-started/models).
+The context gauge turns yellow at 75 % and red at 90 %. By default theuth compacts the conversation on its own at 80 % (`agent.compact_at`), so you rarely hit the wall; [Sessions](/docs/workspace/sessions) explains compaction and Fractal context. Model ids, favorites, effort levels, subagent defaults and what happens when a provider is missing are in [Models and providers](/docs/getting-started/models).
 
 ## An example conversation
 
@@ -57,9 +65,9 @@ Type a request and press **Enter**. Here is a small exchange in a Rust project, 
 ╚══════════════════════════════════════════════╝
 ```
 
-Reading `Cargo.toml` and the README needed no permission. Running a command did, so the turn paused on an approval box: press **y** to allow, **n** or **Esc** to deny; the model sees the denial and continues without the result. On the desktop the same request is a card headed `approval: shell (mutating)` with **Allow** / **Deny** buttons at the tool row, and a `●N` **Pending approvals** pill appears in the header while anything waits. There is no "always allow" button on either surface — the switches below are the way to stop prompts.
+Reading `Cargo.toml` and the README needed no permission. Running a command did, so the turn paused on an approval box: press **y** to allow, **n** or **Esc** to deny; the model sees the denial and continues without the result. On the desktop the same request is a card headed `approval: shell (mutating)` with **Allow** / **Deny** buttons at the tool row, a `●N` **Pending approvals** button appears in the header while anything waits, and every waiting approval is also in the **Inbox** in the sidebar. There is no "always allow" button on either surface; the switches below are the way to stop prompts.
 
-After the command runs, the reply streams in as markdown with tool cards you can expand (Ctrl+O in the terminal, click on the desktop). The status row shows the short session id, a spinner while the turn runs, and the last turn's token counts (`1234↑ 310↓`).
+After the command runs, the reply streams in as markdown with tool cards you can expand (Ctrl+O in the terminal, click on the desktop). While a turn runs, the agent keeps a one-line status of what it is doing (the `set_status` tool), shown above the desktop composer and in the terminal's activity row. The status row shows the short session id, a spinner while the turn runs, and the last turn's token counts (`1234↑ 310↓`). On the desktop, after a turn ends, *What's next?* offers two or three suggested follow-up messages above the input (`agent.suggestions`, Settings › Agent › Loop › *Next-step suggestions*).
 
 ### Why it asked, and how to stop it asking
 
@@ -68,28 +76,28 @@ Tools carry a risk: read-only tools run without asking, mutating and destructive
 | Command | Effect |
 |---|---|
 | `/approvals` | show the state: this session and the default |
-| `/approvals off` | no prompts in this session (needs a session — send a message first) |
+| `/approvals off` | no prompts in this session (terminal: needs a session, send a message first; desktop: on a new chat it applies to the chat about to be created) |
 | `/approvals off always` | no prompts anywhere; writes `tools.approvals: false` to `config.yaml` |
 | `/approvals on [always]` | the reverse |
 
-On the desktop, `/approvals` with no argument opens Settings › Approvals, where **Ask before risky tools** is the default saved to the config file and **Ask in this chat** overrides it for the open chat; `/approvals off` and `/approvals off always` work in the composer exactly as above. The header shows `approvals off` while prompts are disabled. Turning prompts off means mutating and destructive tools run without you; keep it on until you trust what a session does. Risk classes, per-tool overrides and MCP risk lines are in [Tools and permissions](/docs/reference/tools-permissions).
+On the desktop, `/approvals` with no argument opens Settings › Agent › Approvals, where **Ask before risky tools** is the default for every chat; a chat overrides it from its session menu (*Approvals: Ask before risky tools*: On, Off or the machine default). The header shows `approvals off` while prompts are disabled. Turning prompts off means mutating and destructive tools run without you; keep it on until you trust what a session does. Some tools, such as publishing a public share, always need you in person whatever this switch says. Risk classes, per-tool overrides and MCP risk lines are in [Tools and permissions](/docs/reference/tools-permissions).
 
 ## Where the agent works
 
-The agent's working directory is the directory theuth was started in: `t` uses the shell's current directory, and the system prompt tells the model `Working directory: <path>`. The `shell` tool keeps one persistent shell per session, so a `cd` in one command still holds in the next; the file tools resolve relative paths against the start directory.
+The agent's working directory is the directory the session was started in: `t` uses the shell's current directory, and the system prompt tells the model `Working directory: <path>`. The `shell` tool keeps one persistent shell per session, so a `cd` in one command still holds in the next; the file tools resolve relative paths against the start directory.
 
-On the desktop the daemon is started in your home directory, so a new chat begins there; there is no folder picker for a session (the only folder dialog in the app is for sandbox shares). Tell the model which project to work in by path, or run the terminal UI from the project directory.
+On the desktop the engine is started in your home directory, so a new chat begins there. A folder can be picked only through **New chat on** when other machines are paired (see above). Otherwise tell the model which project to work in by path, or run the terminal UI from the project directory.
 
 The **Project** field (desktop) and `/project <label|off>` (terminal) are labels for grouping sessions in the sidebar and in `/sessions`; they do not change the working directory.
 
 ## Attachments
 
-Images (PNG, JPEG, GIF, WebP, at most 5 MB each) and PDFs (at most 32 MB) travel with your message as native parts of the model request. Other file types are not accepted as attachments — point the model at them by path instead.
+Images (PNG, JPEG, GIF, WebP, at most 5 MB each) and PDFs (at most 32 MB) travel with your message as native parts of the model request. Other file types are not accepted as attachments; point the model at them by path instead.
 
-- **Desktop:** drop files onto the composer, paste an image from the clipboard, or use the **+** button › **Attach file** (a dialog filtered to images and PDF; the same menu has **Attach…** for saved things, **New note** and **Send to many…**). Each held file shows as a thumbnail (PDFs as a name chip) above the box with an × to remove it. In a private session, send the first message before attaching files.
-- **Terminal:** **Ctrl+V** attaches the clipboard image (not ⌘V — terminal paste carries text only, so a screenshot would paste nothing) and shows `[⎘ image 1: 1440×900]` in the box; dropping an image or PDF file onto the terminal window pastes its path, which theuth turns into an attachment the same way. A large text paste is held as `[⎘ paste 1: 69 lines]` instead of flooding the input.
+- **Desktop:** drop files onto the composer, paste an image from the clipboard, or use the **+** button › **Attach file** (a dialog filtered to images and PDF; the same menu has **Attach…** for saved things, skills, **New note** and **Send to many…**). Each held file shows as a thumbnail (PDFs as a name chip) above the box with an × to remove it. In a private session, send the first message before attaching files.
+- **Terminal:** **Ctrl+V** attaches the clipboard image (not ⌘V: terminal paste carries text only, so a screenshot would paste nothing) and shows `[⎘ image 1: 1440×900]` in the box; dropping an image or PDF file onto the terminal window pastes its path, which theuth turns into an attachment the same way. A large text paste is held as `[⎘ paste 1: 69 lines]` instead of flooding the input.
 
-Saved things — notes, knowledge concepts, artifacts, past chats, meetings — attach by reference: `/attach [query]` in the terminal, **Attach…** or `@` in the desktop composer. The model gets a title and an id and reads what it needs. If your model cannot see images, attaching one tells you so and offers a vision fallback (`/vision`, Settings › Agent loop); see [Models and providers](/docs/getting-started/models).
+Saved things (notes, knowledge concepts, artifacts, past chats, meetings) attach by reference: `/attach [query]` in the terminal, **Attach…** or `@` in the desktop composer. The model gets a title and an id and reads what it needs. If your model cannot see images, attaching one tells you so and offers a vision fallback (`/vision`, Settings › Models › Helpers); see [Models and providers](/docs/getting-started/models).
 
 ## Talking while the model works
 
@@ -102,8 +110,9 @@ You do not have to wait for a turn to finish.
 | Pull the newest queued message back into the editor | **⌥↑** | **⌥↑** |
 | Newline inside the box | **Shift+Enter** | **Shift+Enter** |
 | Stop the turn | **Esc** (or `/cancel`) | **Esc** or the stop button |
+| Stop the turn and every subagent under it | **Esc** three times within 1 s | **Esc** three times within 1 s, or hold **Esc** (0.7 s); or press and hold the stop button, slide up to *Stop everything · N agents* and release |
 
-A queued message is shown under the response as a `◇ queued` chip until it enters the context — after the current tool batch, or when the turn ends. Stopping a turn keeps what was already produced; the session is unchanged otherwise. `/undo` drops the last turn (yours and the reply), `/redo` restores it.
+A queued message is shown under the response as a `◇ queued` chip until it enters the context: after the current tool batch, or when the turn ends. A plain stop ends only the turn you are looking at; subagents it started keep running. Stopping keeps what was already produced; the session is unchanged otherwise. `/undo` drops the last turn (yours and the reply), `/redo` restores it.
 
 ## New session, resume, leave
 
@@ -114,14 +123,15 @@ A queued message is shown under the response as a `◇ queued` chip until it ent
 
 ## Troubleshooting
 
-- **`/model` says `no models: no provider is configured`** — add a key with `t --secret-set <provider>` or `/secrets add`, or `/login <provider>`, then open `/model` again. The vault name is the provider's genai adapter name (`anthropic`, `openai`, `gemini`, …); see [Models and providers](/docs/getting-started/models).
-- **The first turn errors instead of streaming** — `agent.model` names a model theuth cannot use (a typo, or a provider that is not configured); the error stays in the transcript. Pick a model from `/model`.
-- **Ctrl+V pastes nothing in the terminal** — the clipboard holds no image, or the terminal intercepts Ctrl+V; copy a screenshot to the clipboard and try again.
-- **`/approvals off` says `no session yet`** — the session is created on the first send; send a message first, or use `/approvals off always`.
+- **`/model` says `no models: no provider is configured`**: add a key with `t --secret-set <provider>` or `/secrets add`, `/login <provider>`, or a local server, then open `/model` again. The vault name is the provider's adapter name (`anthropic`, `openai`, `gemini`, …); see [Models and providers](/docs/getting-started/models).
+- **The first turn errors instead of streaming**: `agent.model` names a model theuth cannot use (a typo, or a provider that is not configured); the error card stays in the transcript. Pick a model from `/model`.
+- **Ctrl+V pastes nothing in the terminal**: the clipboard holds no image, or the terminal intercepts Ctrl+V; copy a screenshot to the clipboard and try again.
+- **`/approvals off` says `no session yet`** (terminal): the session is created on the first send; send a message first, or use `/approvals off always`.
+- **Esc stopped the chat but its subagents keep working**: that is the single-press scope; press Esc three times quickly, or hold it on the desktop.
 
 ## Next
 
-- [Desktop app](/docs/workspace/desktop) — panes, sidebar, settings, the artifact panel.
-- [Terminal UI](/docs/workspace/terminal) — every slash command and key.
-- [Sessions](/docs/workspace/sessions) — history, compaction, projects, private sessions.
-- [Models and providers](/docs/getting-started/models) — keys, logins, gateways, Bedrock, effort and vision.
+- [Desktop app](/docs/workspace/desktop): panes, sidebar, Inbox, settings.
+- [Terminal UI](/docs/workspace/terminal): every slash command and key.
+- [Sessions](/docs/workspace/sessions): history, compaction, Fractal context, projects, private sessions.
+- [Models and providers](/docs/getting-started/models): keys, logins, local servers, custom providers, Bedrock, effort, advisor and costs.
