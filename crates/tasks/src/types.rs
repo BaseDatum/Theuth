@@ -546,12 +546,52 @@ pub struct TaskCreate {
     /// Priority; `None` = medium. The ledger refuses it from an agent.
     #[serde(default)]
     pub priority: Option<Priority>,
+    /// Tasks (ids) or `decision:<id>` / `person:<name>` entries this task waits on — the
+    /// dependency edges of a plan, set at create time. Refused like a `task_update`: an
+    /// unknown task id, or a list that would form a cycle.
+    #[serde(default)]
+    pub blockers: Vec<String>,
 }
 
 impl TaskCreate {
     const fn default_state() -> TaskState {
         TaskState::Backlog
     }
+}
+
+/// What a [`TaskChanged`] reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum TaskChangeKind {
+    /// A new task.
+    Created,
+    /// Any field (title, brief, priority, project, blockers, owner, …) but the state.
+    Updated,
+    /// The state.
+    Moved,
+    /// A comment or progress note in the thread.
+    Commented,
+    /// The row is gone.
+    Deleted,
+}
+
+/// Bus event (214 D3): a task row changed — the UI's live board and graph refetch on it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[schemars(transform = wire::serde_type_tag::<Self>)]
+#[serde(tag = "type")]
+pub struct TaskChanged {
+    /// The task.
+    pub id: TaskId,
+    /// Its project label after the change.
+    pub project: Option<String>,
+    /// What changed.
+    pub kind: TaskChangeKind,
+}
+
+impl wire::WireEvent for TaskChanged {
+    const TOPIC: &'static str = "tasks.changed";
 }
 
 /// `task_update` patch: `Some` = set, `None` = leave. Guarded transitions
@@ -629,6 +669,7 @@ mod tests {
             done_when: None,
             attachments: vec![],
             priority: None,
+            blockers: vec![],
         };
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["where"], "build-A");

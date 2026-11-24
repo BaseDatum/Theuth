@@ -54,8 +54,8 @@ use serde::{Deserialize, Serialize};
 
 pub use config::TasksConfig;
 pub use types::{
-    Checkout, Disposition, DoneBecause, Owner, Priority, Task, TaskCreate, TaskEvent, TaskFilter,
-    TaskId, TaskPatch, TaskState, Wake, WakeReason,
+    Checkout, Disposition, DoneBecause, Owner, Priority, Task, TaskChangeKind, TaskChanged,
+    TaskCreate, TaskEvent, TaskFilter, TaskId, TaskPatch, TaskState, Wake, WakeReason,
 };
 
 /// Registry name of the [`Tasks`] actor.
@@ -1653,7 +1653,8 @@ impl schedule::TaskCreator for ScheduleTasks {
 /// Declare wire contracts before starting producers.
 pub async fn declare_wire(rt: &runtime::Runtime) -> anyhow::Result<()> {
     use wire::RuntimeWire as _;
-    rt.register_wire_event::<activity::ActivityAppended>().await
+    rt.register_wire_event::<activity::ActivityAppended>().await?;
+    rt.register_wire_event::<TaskChanged>().await
 }
 
 /// The plugin: reads `tasks`, opens the store, spawns [`Tasks`] as
@@ -1718,6 +1719,15 @@ impl runtime::Plugin for TasksPlugin {
         );
         // 182 D2: creates before `SetEngine` leave `home` unset; `set_engine` stamps them.
         ledger.homed = false;
+        // 214 D3: the ledger's committed changes, published as `tasks.changed`.
+        let (changed, mut changes) = tokio::sync::mpsc::unbounded_channel::<TaskChanged>();
+        ledger.changed = Some(changed);
+        let rt2 = rt.clone();
+        tokio::spawn(async move {
+            while let Some(c) = changes.recv().await {
+                rt2.publish(c).await;
+            }
+        });
         // A `dispatching` placeholder claim only lives between one process's
         // claim and its delivery; one found at start never returned.
         if let Err(e) = ledger.release_claims(ledger::DISPATCHING).await {

@@ -2247,6 +2247,7 @@ impl Roster {
             done_when: None,
             attachments: vec![],
             priority: None,
+            blockers: vec![],
         };
         if let Some(t) = budget::crossed(&f.budget, before, after) {
             let pct = if t == budget::Threshold::Warn {
@@ -5743,6 +5744,7 @@ mod tests {
                 done_when: None,
                 attachments: vec![],
                 priority: None,
+                blockers: vec![],
             },
             created_by: "user".into(),
             session: None,

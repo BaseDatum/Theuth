@@ -49,7 +49,9 @@ The board is for observation; work is filed from chat. When the user describes w
 with pieces, \"we should…\", \"have ops…\", a plan), do not create tasks straight away: call `task_draft()` with \
 the proposed tasks and wait for the user's approval, which arrives as their next message (`[app task-drafts …]` \
 naming a draft id and a choice). Then `task_create()` with `state: backlog` for \"add to backlog\", `state: todo` \
-for \"start now\" (the owner is woken and the work placed), nothing for \"discard\". Every task carries \
+for \"start now\" (the owner is woken and the work placed), nothing for \"discard\". When tasks depend on \
+each other (a plan), create them in dependency order and pass each one's `blockers` (the ids of the tasks it \
+waits on) in the same `task_create()` call; the board's task graph shows those edges. Every task carries \
 `done_when`, its acceptance criteria: take them from the user when stated, otherwise draft one to three \
 checkable lines from the brief. A task created in `backlog` \
 runs nothing until it is started. When the user asks to start, pull back, drop, approve or send back a task, \
@@ -172,6 +174,11 @@ pub struct TaskCreateArgs {
     /// an agent's call with it is refused.
     #[serde(default)]
     pub priority: Option<Priority>,
+    /// What this task waits on: ids of tasks that must finish first (the edges of a plan's
+    /// dependency graph), `decision:<id>` or `person:<name>`. Set them here when you create the
+    /// dependent task; an unknown task id or a cycle is refused.
+    #[serde(default)]
+    pub blockers: Vec<String>,
 }
 
 /// `task_create`: a new task record; owner and reviewer default per the line.
@@ -187,12 +194,14 @@ impl Tool for TaskCreateTool {
         "Create a task: a first-class record on the board with one owner (an agent or the user), a state \
          (`backlog` by default — not dispatched; `todo` when the user wants it started now: the owner is woken \
          with reason `assigned`), a project (the same project labels sessions carry; defaults to your session's), \
-         an optional reviewer, blockers, a parent for delegation, and a placement (`where` engine, \
-         `harness`). Use it to delegate work to another agent (set `parent` to your current task so the \
-         tree shows it), to hand something to the user, or to put your own future work on the board. \
-         When the user describes work in chat, prefer `task_draft` first and create only after approval. \
-         External tickets (Jira, GitHub) are links on the task, never the source of truth. Returns the task id \
-         and its line."
+         an optional reviewer, blockers (ids of the tasks this one waits on — set them at create time), a \
+         parent for delegation, and a placement (`where` engine, `harness`). Use it to delegate work to another \
+         agent (set `parent` to your current task so the tree shows it), to hand something to the user, or to \
+         put your own future work on the board. Planning a project: create the tasks in dependency order and \
+         give each its `blockers` (the ids returned for the tasks it depends on) — the board's task graph draws \
+         those edges. When the user describes work in chat, prefer `task_draft` first and create only after \
+         approval. External tickets (Jira, GitHub) are links on the task, never the source of truth. Returns \
+         the task id and its line."
             .into()
     }
 
@@ -225,6 +234,7 @@ impl Tool for TaskCreateTool {
             done_when: a.done_when,
             attachments: a.attachments,
             priority: a.priority,
+            blockers: a.blockers,
         };
         let r = flat(
             actor

@@ -13,8 +13,8 @@ use crate::packet;
 use crate::store::Store;
 use crate::thread::Thread;
 use crate::types::{
-    Checkout, DoneBecause, Owner, Priority, Task, TaskCreate, TaskEvent, TaskFilter, TaskId,
-    TaskPatch, TaskState, Wake, WakeReason,
+    Checkout, DoneBecause, Owner, Priority, Task, TaskChangeKind, TaskChanged, TaskCreate,
+    TaskEvent, TaskFilter, TaskId, TaskPatch, TaskState, Wake, WakeReason,
 };
 use serde::{Deserialize, Serialize};
 
@@ -237,6 +237,9 @@ pub struct Ledger {
     /// 182 S1: wakes already noted in their thread as undeliverable here
     /// (the agent lives on another engine).
     misplaced: HashSet<String>,
+    /// 214 D3: every committed change goes here as a [`TaskChanged`]; the
+    /// plugin publishes it on the bus. `None` = nobody listens.
+    pub changed: Option<tokio::sync::mpsc::UnboundedSender<TaskChanged>>,
 }
 
 type R<T> = Result<T, String>;
@@ -363,6 +366,7 @@ impl Ledger {
             unreachable_since: HashMap::new(),
             reported_busy: HashMap::new(),
             misplaced: HashSet::new(),
+            changed: None,
         }
     }
 
@@ -546,6 +550,23 @@ impl Ledger {
             (None, None) => format!("- {} **{actor}** {field}", stamp(e.at_ms)),
         };
         self.record(t, &e, &line).await;
+        let kind = match field {
+            "created" => TaskChangeKind::Created,
+            "state" => TaskChangeKind::Moved,
+            _ => TaskChangeKind::Updated,
+        };
+        self.changed(t, kind);
+    }
+
+    /// 214 D3: tell the listener `t` changed (`kind`).
+    fn changed(&self, t: &Task, kind: TaskChangeKind) {
+        if let Some(tx) = &self.changed {
+            let _ = tx.send(TaskChanged {
+                id: t.id.clone(),
+                project: t.project.clone(),
+                kind,
+            });
+        }
     }
 
     /// An event row plus its thread line.
@@ -829,14 +850,22 @@ impl Ledger {
             Owner::Agent(a) => Some(self.manager_of(a)),
             _ => Some(Owner::User),
         });
+        // 214 D2: blockers at create time, refused like an update's — and an
+        // entry without a `kind:` prefix must name an existing task.
+        for b in input.blockers.iter().filter(|b| !b.contains(':')) {
+            self.load(&TaskId(b.clone())).await.map_err(|_| {
+                format!("blocker {b}: no such task (use decision:<id> or person:<name> for others)")
+            })?;
+        }
         let id = TaskId::new();
+        self.check_cycle(&id, &input.blockers).await?;
         let mut t = Task {
             title: input.title,
             brief: input.brief,
             owner: input.owner,
             state: input.state,
             reviewer,
-            blockers: vec![],
+            blockers: input.blockers,
             blocks: vec![],
             parent: input.parent,
             project: input.project.or_else(|| parent.and_then(|p| p.project)),
@@ -929,6 +958,7 @@ impl Ledger {
             done_when: None,
             attachments: vec![],
             priority: None,
+            blockers: vec![],
         };
         let mut t = self
             .create(input, "system", None, WakeReason::Schedule)
@@ -1987,6 +2017,7 @@ impl Ledger {
         {
             tracing::error!(task = %t.id, "event not recorded: {e:#}");
         }
+        self.changed(&t, TaskChangeKind::Commented);
         if progress {
             return Ok(());
         }
@@ -2057,6 +2088,7 @@ impl Ledger {
         let t = self.load(id).await?;
         self.say(&t, actor, text).await;
         self.wake(&t, &t.owner, WakeReason::Mention, actor).await;
+        self.changed(&t, TaskChangeKind::Commented);
         Ok(())
     }
 
@@ -3311,6 +3343,7 @@ pub(crate) mod tests {
                         done_when: None,
                         attachments: vec![],
                         priority: None,
+                        blockers: vec![],
                     },
                     "user",
                     None,
@@ -3453,6 +3486,7 @@ pub(crate) mod tests {
             done_when: None,
             attachments: vec![],
             priority: Some(Priority::Low),
+            blockers: vec![],
         };
         let e = r
             .ledger
@@ -3631,6 +3665,7 @@ pub(crate) mod tests {
             done_when: None,
             attachments: vec![],
             priority: None,
+            blockers: vec![],
         };
         let t = r
             .ledger
@@ -4006,6 +4041,7 @@ pub(crate) mod tests {
                         },
                     ],
                     priority: None,
+                    blockers: vec![],
                 },
                 "user",
                 None,
@@ -4103,6 +4139,7 @@ pub(crate) mod tests {
                         done_when: None,
                         attachments: vec![],
                         priority: None,
+                        blockers: vec![],
                     },
                     "agent:lead",
                     None,
@@ -4268,6 +4305,7 @@ pub(crate) mod tests {
                     done_when: None,
                     attachments: vec![],
                     priority: None,
+                    blockers: vec![],
                 },
                 "user",
                 None,
@@ -4292,6 +4330,7 @@ pub(crate) mod tests {
                     done_when: None,
                     attachments: vec![],
                     priority: None,
+                    blockers: vec![],
                 },
                 "user",
                 None,
@@ -7211,6 +7250,7 @@ pub(crate) mod tests {
             done_when: None,
             attachments: vec![],
             priority: Some(Priority::Low),
+            blockers: vec![],
         };
         let ranked = r
             .ledger
@@ -7586,6 +7626,7 @@ pub(crate) mod tests {
                     done_when: None,
                     attachments: vec![],
                     priority: None,
+                    blockers: vec![],
                 },
                 "user",
                 None,
@@ -7922,5 +7963,126 @@ pub(crate) mod tests {
             r.ledger.homes_offline(&down).await.unwrap().is_empty(),
             "moved: gone"
         );
+    }
+
+    fn planned(title: &str, project: Option<&str>, blockers: &[&str]) -> TaskCreate {
+        TaskCreate {
+            state: TaskState::Backlog,
+            title: title.into(),
+            brief: String::new(),
+            owner: Owner::User,
+            reviewer: None,
+            parent: None,
+            project: project.map(str::to_owned),
+            where_: None,
+            harness: None,
+            external: vec![],
+            done_when: None,
+            attachments: vec![],
+            priority: None,
+            blockers: blockers.iter().map(|b| (*b).to_owned()).collect(),
+        }
+    }
+
+    /// 214 D2: a planning agent creates a dependent task in one call.
+    #[tokio::test]
+    async fn create_takes_blockers_and_refuses_unknown_ids_and_cycles() {
+        let mut r = rig().await;
+        let design = r
+            .ledger
+            .create(planned("design", Some("p"), &[]), "agent:ops", None, WakeReason::Assigned)
+            .await
+            .unwrap();
+        let build = r
+            .ledger
+            .create(
+                planned("build", Some("p"), &[&design.id.0, "person:sam"]),
+                "agent:ops",
+                None,
+                WakeReason::Assigned,
+            )
+            .await
+            .unwrap();
+        assert_eq!(build.blockers, [design.id.0.clone(), "person:sam".into()]);
+        assert_eq!(r.ledger.get(&build.id).await.unwrap().blockers, build.blockers);
+        assert_eq!(r.ledger.blocks_of(&design.id).await.unwrap(), [build.id.clone()]);
+
+        let e = r
+            .ledger
+            .create(planned("ship", None, &["no-such-id"]), "agent:ops", None, WakeReason::Assigned)
+            .await
+            .unwrap_err();
+        assert!(e.contains("blocker no-such-id: no such task"), "{e}");
+        assert_eq!(r.ledger.list(&TaskFilter::default()).await.unwrap().len(), 2, "nothing created");
+
+        // A new id has no dependants, so the cycle a create could close is
+        // closed by the update that follows — and refused there.
+        let e = r
+            .blockers(&design.id, &[&build.id.0], "agent:ops")
+            .await
+            .unwrap_err();
+        assert!(e.starts_with("blockers would form a cycle"), "{e}");
+    }
+
+    /// 214 D3: every committed create / update / move / comment reaches the listener.
+    #[tokio::test]
+    async fn committed_changes_publish_task_changed() {
+        let mut r = rig().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        r.ledger.changed = Some(tx);
+        let mut drain = move || {
+            let mut got = vec![];
+            while let Ok(c) = rx.try_recv() {
+                got.push(c);
+            }
+            got
+        };
+        let t = r
+            .ledger
+            .create(planned("plan", Some("p"), &[]), "user", None, WakeReason::Assigned)
+            .await
+            .unwrap();
+        let change = |kind, project: Option<&str>| TaskChanged {
+            id: t.id.clone(),
+            project: project.map(str::to_owned),
+            kind,
+        };
+        assert_eq!(drain(), [change(TaskChangeKind::Created, Some("p"))]);
+
+        r.ledger
+            .update(
+                &t.id,
+                TaskPatch {
+                    title: Some("plan it".into()),
+                    project: Some("q".into()),
+                    ..Default::default()
+                },
+                "user",
+                None,
+            )
+            .await
+            .unwrap();
+        let got = drain();
+        assert!(!got.is_empty());
+        assert!(got.iter().all(|c| *c == change(TaskChangeKind::Updated, Some("q"))), "{got:?}");
+
+        r.ledger
+            .move_to(&t.id, TaskState::Todo, None, None, None, "user", None)
+            .await
+            .unwrap();
+        assert_eq!(drain(), [change(TaskChangeKind::Moved, Some("q"))]);
+
+        r.ledger
+            .comment(&t.id, "looks right", false, "user", None)
+            .await
+            .unwrap();
+        assert_eq!(drain(), [change(TaskChangeKind::Commented, Some("q"))]);
+
+        // A refused change publishes nothing.
+        let _ = r
+            .ledger
+            .move_to(&t.id, TaskState::Review, None, None, None, "agent:ops", None)
+            .await;
+        assert!(drain().is_empty());
     }
 }
