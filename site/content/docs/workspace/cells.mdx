@@ -1,0 +1,182 @@
+---
+title: Cells
+description: Runnable code blocks in chat replies, notes and notebooks. The agent writes them, only you press Run. Options, kernels, Run all, secrets, results and configuration.
+---
+
+## What a cell is
+
+A cell is a fenced code block you run with one press. The agent writes it; theuth shows it with its folder, its shell or interpreter and a Run button named after its consequence; you press; the agent gets the result. Cells appear in chat replies, in notes and in notebook notes, and survive export as plain markdown.
+
+A fence is a cell when its language is runnable and its body starts with option lines (`#| key: value`):
+
+````markdown
+```bash
+#| name: preview-prod
+#| label: Preview
+#| cwd: ~/infra/stacks/web
+#| env: AWS_PROFILE=prod
+#| expect: 3 to update
+pulumi preview -s prod --diff
+```
+````
+
+- Runnable languages: `bash`, `zsh`, `sh`, `pwsh` (alias `powershell`) and `python` (alias `py`). Any other language is never a cell.
+- The header is the run of `#|` lines from the first body line (a shebang and blank lines before it are allowed); a bare `#| key` means true. The header is never sent to the shell; the code after it is what runs.
+- A fence without a header is an ordinary snippet: you read and copy it, nothing runs.
+
+The agent presents cells instead of running commands itself when you ask it to prepare but not run ("give me the commands", "I'll run it", "make me a run sheet", "step by step, I'll review each output"), and when a step changes production or shared state you did not ask it to change, needs your sign-in or MFA, is interactive, or you want to watch it. That mode is sticky for the work until you lift it ("go ahead, run it"). Up to five one-off steps go in the chat; a longer or repeatable procedure goes into a note, with one line in chat linking it.
+
+## Who can run a cell
+
+Only you, by pressing a control in the desktop app or the web client. The agent can write cells but has no tool to run one, and nothing else can start a run: no tool, MCP client, routine, subagent, channel or share-link guest. Guests of a shared note see the cells and their latest runs but no Run button (`Only the owner can run cells`).
+
+Each press carries a digest of the cell text you are looking at. If the cell changed in the meantime (the agent or a member edited it), the engine refuses the run and you look again. A cell last changed by a share-link member shows `Run <name>'s edit` instead of its label, so you know whose text runs; a run of a member's edit after your last run must be pressed on purpose. Nothing is ever re-run automatically.
+
+## Options
+
+The option set is closed; an unknown key shows a warning and is ignored.
+
+| Option | Value | Meaning |
+|---|---|---|
+| `cwd` | `~/…` or an absolute path in chat; in a note `~/…` or relative to the note's `cells` default | The folder it runs in. Required in chat. If it does not exist on the machine that runs it, the run is refused. |
+| `name` | slug of 1 to 48 lowercase letters, digits or dashes | Stable id. Presenting the same name again replaces the older cell. |
+| `label` | text | The Run button's text, naming the consequence ("Apply to prod"). Over 40 characters it is shown truncated. |
+| `danger` | bare | Red outline. Never part of **Run all**; runs from its own button only (no keyboard run); running a line or selection of it asks first. |
+| `after` | the `name` of another cell in the same chat or note | Advisory gate: armed when that cell's latest run on this machine, on its current code, exited 0 with every `expect` met, within the last 60 minutes. Before that, a press asks once (**Run anyway**). |
+| `expect` | text, or `/regex/`; repeatable | Must appear in the output; each line shows met or missed. |
+| `env` | `KEY=value`; repeatable | Exported before the run. Values may be `{{secret:NAME}}`. |
+| `python` | `monty`, `auto`, `.venv`, `uv` or an absolute path (`/…`, `~/…`) | Which interpreter runs a python cell (below). |
+| `review` | bare | The agent is woken when this run (or the **Run all** pass holding it) ends. |
+| `private` | bare | The agent gets the exit status and the expect results, never the output. |
+| `timeout` | `30s`, `10m`, `2h` | **Stop** when it elapses, **Kill** 5 s later. |
+
+### Note defaults
+
+The first fence with the language `cells` in a note holds defaults for every cell in it, header lines only:
+
+````markdown
+```cells
+#| cwd: ~/infra
+#| shell: bash
+#| python: .venv
+```
+````
+
+`cwd` is what relative cell folders resolve against, `shell` the program that runs `bash`/`zsh`/`sh` cells in this note (a program name resolved on the machine that runs the cell), `python` the default interpreter. One per note; the block's pencil (**Edit cell defaults**) edits it.
+
+## Running cells
+
+| Action | Where | Keys |
+|---|---|---|
+| Run the cell | the Run button (its `label`) | in a note, `Shift+Enter` runs and moves to the next cell (not for danger cells) |
+| Run a line, lines or a selection | hover a line, or select code: **Run line**, **Run lines** (for a range), **Run selection** | ⌘↵ / `Ctrl+Enter` at the caret; danger cells ask first |
+| Stop | **Stop** (sends Ctrl-C) | ⌘. / `Ctrl+.` |
+| Kill | **Kill** (enabled 5 s after Stop): closes the kernel; the next run starts fresh | |
+| Run all | the runbook bar of a reply or note | ⌘⇧↵ / `Ctrl+Shift+Enter` |
+| Run again | after an interrupted run | |
+
+While a cell runs you see its live terminal; a cell that waits for input gets an input field. Long output is shown as its tail (200 lines) once the run has finished. A run that took longer than 30 s and ends while the app is not focused sends a notification.
+
+**Run all** runs every cell top to bottom in one pass. It stops at a failed step (non-zero exit or a missed `expect`), and before every `danger` cell and every cell flagged by a chip that stops it; the bar then reads `Run all stopped before "<cell>" (2/5): <why>`.
+
+**Chips** warn about the code before you press:
+
+| Chip | Stops Run all |
+|---|---|
+| `N invisible characters` | yes |
+| `pipes a download into a shell` | yes |
+| `runs decoded base64` | yes |
+| `skips the tool's own prompt` (a `danger` cell with a flag like `--yes`) | no |
+| `asks for your password` (`sudo`) | no |
+| `uses secret NAME` | no |
+
+**Open as note** turns a reply's prose and cells into a note, each cell followed by its latest output and run line. The note's cells start with no runs of their own.
+
+## Where cells run
+
+- A chat cell runs on the engine that holds the chat.
+- A note's cell runs on the machine your app is connected to when you press it: its folders, its interpreters, its environment. That is why note cells use `~/…` or note-relative folders rather than one machine's absolute paths. The run line names the machine (`Run on <machine>`) in a [mesh](/docs/automation/mesh).
+
+## Kernels and interpreters
+
+Cells run in kernels that live between runs: a shell kernel is a terminal session, so a variable or `cd` from one run is there in the next; python cells that use the same interpreter share variables. A note shows one pill per live kernel beside its title (`python · .venv 3.12 · idle`) with **Restart** in its menu. A `bash` cell runs bash even when your login shell is zsh; kernels start with your login environment.
+
+| `python:` | Runs with |
+|---|---|
+| `monty` | Monty, a built-in sandbox (`Monty · sandboxed`): standard library only, no packages, no network, no subprocesses, no files outside the folder. Output appears when the run ends. theuth checks a Monty cell can run when the reply ends and says why not (`Monty can't run this cell: …`). |
+| `auto` | the nearest `.venv`, then a uv project, then pyenv or conda, then `python3` on your login PATH |
+| `.venv` | the `.venv` beside the folder |
+| `uv` | `uv python find` in the nearest project |
+| a path | that interpreter |
+
+The agent's read-only `interpreters(cwd)` tool lists what can run in a folder on its own machine and which one `auto` picks. A python cell's last expression is shown as its result; a pandas DataFrame shows as a table.
+
+An idle kernel closes after 12 hours; an extra kernel started for a concurrent run closes after 10 idle minutes. At most 16 kernels run engine-wide; past that a run is refused until you close one.
+
+## Secrets
+
+Put a secret in an `env` line and use the variable in the code:
+
+```bash
+#| cwd: ~/api
+#| env: TOKEN={{secret:github-token}}
+curl -H "Authorization: Bearer $TOKEN" https://api.github.com/user
+```
+
+The value is substituted from the [secrets vault](/docs/reference/secrets) only at run time. A `{{secret:…}}` placeholder in the code itself is an error, and a name the vault does not hold shows `no secret named NAME`. Vault values and common credential patterns are masked in the copy of the output the agent gets, in `cell_output` and in the run text replicated to your other machines.
+
+## What the agent gets
+
+When a run ends, the agent receives `<cell_result run="…" exit="…" expect="met 1/1" …>` with the cleaned output (head and tail, 8 KiB in all; `cell_output(run, offset)` reads the cut middle). It is delivered at once when the agent is working or the cell has `review`, otherwise with your next message. For a note's cell the full result goes to the chat whose agent wrote the cell; other chats bound to the notebook get a one-line notice. `private` cells send exit and expect results only.
+
+| Tool | Risk | What it does |
+|---|---|---|
+| `cell_runs` | read-only | runs of this chat's cells (or a note's, by doc id), newest first |
+| `cell_output` | read-only | a page of a run's output; refused for private cells and other chats' runs |
+| `interpreters` | read-only | interpreters available for a folder |
+
+`exit="lost"` means the engine restarted mid-run: the command may have half-applied, and the agent checks the real state before proposing anything. When the agent writes a cell that does not validate, it gets a `<cell_error>` once per turn and re-presents the corrected cell under the same name; `doc_insert` refuses a note insert whose cells do not validate.
+
+## Export and the TUI
+
+Exported notes (Markdown or PDF) carry each cell with its last output as an `output` block (capped at 8 KiB) and its run line, such as `ran 14:38 · exit 0 · 33 s · expect ✓`. The TUI shows cells as code and shows finished cell results as lines in the transcript; cells are run from the desktop app or the web client.
+
+## Configuration
+
+```yaml
+cells:
+  enabled: true              # false: no cells, no prompt block
+  kernel_idle_hours: 12
+  instance_idle_mins: 10     # extra kernels for concurrent runs
+  max_kernels: 16
+  monty_workers: 4
+  kill_after_secs: 5
+  agent_bytes: 8192          # head + tail of output the agent gets
+  correct_rounds: 1          # <cell_error> rounds per turn
+  notify_after_secs: 30
+  after_max_age_mins: 60
+  ui_tail_lines: 200
+  export_output_bytes: 8192
+  replicate_bytes: 16384     # latest-run text replicated to your other machines
+  retention_days: 30         # run history
+  store_max_mb: 2048
+  login_env_timeout_secs: 10
+  pty_cols: 100
+  pty_rows: 30
+```
+
+Run history is kept under `<data_dir>/cells/`. Full list: [Configuration](/docs/reference/configuration).
+
+## Related
+
+- [Documents, notes and boards](/docs/workspace/documents)
+- [Notebooks](/docs/workspace/notebooks)
+- [Secrets](/docs/reference/secrets)
+- [Tools and permissions](/docs/reference/tools-permissions)
+- [Security](/docs/reference/security)
+
+## Source
+
+- `crates/surface/src/cell.rs`: the cell grammar, options, validation and chips
+- `crates/cells`: kernels, runs, delivery, redaction, the `cell_runs`, `cell_output` and `interpreters` tools, the bundled `cells` skill
+- `crates/desktop/ui/src/components/cells`: cell, runbook bar and kernel pill
