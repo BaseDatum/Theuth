@@ -3,7 +3,7 @@ import { privateRequirements, endlessRequirements } from './requirements'
 import { useQuery } from '@tanstack/react-query'
 import { type UseNavigateResult, useNavigate } from '@tanstack/react-router'
 import { Check, ChevronDown, ChevronRight, Folder, HatGlasses } from 'lucide-react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { Composer, type DraftCreate } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
 import { LinkBanner } from '@/components/link/LinkFailure'
@@ -142,14 +142,16 @@ function BrowseDialog({ machine, open, onOpenChange, onPick }: { machine: Machin
 }
 
 /**
- * 183 §12.5: `New chat on [machine ▾]` and the folder there — the target's repos, its default, or "Browse <machine>…".
- * The pick lives in `useDraftTarget` until the first send's `create_session` spends it. A private chat stays here.
+ * 183 §12.5: `Node [machine ▾]` and the folder there — the target's repos, its default, or "Browse <machine>…"; drawn
+ * inside `CreateOptions`' row under the composer. The pick lives in `useDraftTarget` until the first send's
+ * `create_session` spends it. A private chat stays here.
  */
 export function MachineBar({ priv }: { priv: boolean }) {
   const { data: mesh } = useMesh()
   const rows = machineRows(mesh)
   const { engine, cwd, set } = useDraftTarget()
   const [browse, setBrowse] = useState(false)
+  const nid = useId()
   const chosen = rows.find((r) => r.id === engine) ?? rows[0]
   // 183 R1: a target that left the mesh (unpaired, or the last peer gone) would fail the first send: back to this machine.
   const vanished = vanishedTarget(rows, mesh !== undefined, engine)
@@ -158,11 +160,14 @@ export function MachineBar({ priv }: { priv: boolean }) {
   }, [vanished])
   if (!chosen) return null
   return (
-    <div className="mx-auto flex w-full max-w-[768px] flex-wrap items-center gap-2 px-4 pt-2 text-sm">
-      <span className="font-medium">New chat on</span>
+    <>
+      <div className="flex min-w-0 items-center gap-2">
+      <Label htmlFor={nid} className="text-fg-secondary">
+        Node
+      </Label>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm" disabled={priv} title={priv ? 'A private chat runs on this machine' : undefined} aria-label={`Machine: ${chosen.name}`}>
+          <Button id={nid} variant="outline" size="sm" disabled={priv} title={priv ? 'A private chat runs on this machine' : undefined} aria-label={`Machine: ${chosen.name}`}>
             {chosen.name}
             <ChevronDown className="size-4" aria-hidden="true" />
           </Button>
@@ -184,6 +189,7 @@ export function MachineBar({ priv }: { priv: boolean }) {
           ))}
         </DropdownMenuContent>
       </DropdownMenu>
+      </div>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="sm" className="min-w-0 text-fg-secondary" aria-label={`Folder: ${cwd ? tilde(cwd) : 'default folder'}`}>
@@ -213,7 +219,7 @@ export function MachineBar({ priv }: { priv: boolean }) {
       </DropdownMenu>
       {browse && <BrowseDialog machine={chosen} open onOpenChange={setBrowse} onPick={(c) => set({ cwd: c })} />}
       {chosen.older && <span role="alert" className="w-full text-xs text-warning">{olderText(chosen.name)}</span>}
-    </div>
+    </>
   )
 }
 
@@ -261,7 +267,6 @@ export function NewChat({
     <>
       <Header session={null} first={first} onClose={onClose} popout={newChatPopout(pane ?? mountKey, preset)} />
       <LinkBanner />
-      <MachineBar priv={priv} />
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
         {/* 215 C3: the draft's model picker lives in the composer's toolbar (`ComposerModel`), which also answers `/model`. */}
@@ -278,6 +283,7 @@ export function NewChat({
           endless={endlessOn}
           onEndless={(on) => setCreate({ memory: on ? 'endless' : 'epochs' })}
           settings={endlessSettings.data}
+          target={<MachineBar priv={priv} />}
         />
       </div>
     </>
@@ -363,7 +369,8 @@ export function NewChatPane({ id, first }: { id: string; first: boolean }) {
 
 /**
  * Private toggle, project picker, the ∞ (endless memory) toggle, and their notices (51 §1, §8.3; 137 §11.3); sits under
- * the composer. `settings` is `agent.endless` for the compactor line; absent before its first read.
+ * the composer. `settings` is `agent.endless` for the compactor line; absent before its first read. `target` (the
+ * `MachineBar` node and folder pickers) follows the project picker in the same row.
  */
 export function CreateOptions({
   priv,
@@ -373,6 +380,7 @@ export function CreateOptions({
   endless,
   onEndless,
   settings,
+  target,
 }: {
   priv: boolean
   onPriv(v: boolean): void
@@ -381,6 +389,7 @@ export function CreateOptions({
   endless: boolean
   onEndless(v: boolean): void
   settings: EndlessConfig | undefined
+  target?: ReactNode
 }) {
   const acknowledged = usePrivate((s) => s.acknowledged)
   const acknowledge = usePrivate((s) => s.acknowledge)
@@ -419,6 +428,7 @@ export function CreateOptions({
           </Label>
           <ProjectPicker id={pid} value={project} onChange={onProject} />
         </div>
+        {target}
       </div>
       {endless && (
         <div className="mt-3 rounded-xl border border-border-subtle bg-muted/40 p-3">
