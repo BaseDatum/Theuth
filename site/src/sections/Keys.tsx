@@ -56,7 +56,7 @@ const CHANNELS: [string, string, string][] = [
   [
     "other people",
     "Another person's theuth becomes a contact once a code derived from both keys is confirmed on both screens. You export the agents and chats they may reach; Ask first holds a contact's first message until you allow it. Remove is local and immediate.",
-    "A contact gets what you export and nothing else: no vault, no replication, a risk cap that starts read-only.",
+    "A contact gets what you export and nothing else: no vault, no replication, and their messages run under the approvals of the chat they reach.",
   ],
   [
     "secrets",
