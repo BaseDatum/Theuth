@@ -238,7 +238,7 @@ notify = "8"
 notify-debouncer-full = "0.7"  # 212 §6: show_file tiles follow the file
 kameo = "0.22"
 kameo_actors = "0.8"
-genai = { version = "0.7.3", features = ["bedrock-sigv4"] }
+genai = { version = "0.7.6", features = ["bedrock-sigv4"] }
 aws-config = "1"
 aws-types = "1"
 brush-core = "0.5"
@@ -478,8 +478,9 @@ taffy = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-202
 cosmic-text = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-22b" }
 wreq-util = { git = "https://github.com/skymoore/obscura", branch = "theuth/sync-2026-11-22b" }
 # genai: preserve ToolResponse.images (23 §5), plus upstream Bedrock profile selection,
-# credential refresh, region and explicit-profile isolation fixes (02 §2.2).
-genai = { git = "https://github.com/skymoore/rust-genai", branch = "main" }
+# credential refresh, region and explicit-profile isolation fixes (02 §2.2). Branch rebased
+# onto upstream jeremychone/rust-genai 2a8a5b39c on 2026-11-24.
+genai = { git = "https://github.com/skymoore/rust-genai", branch = "theuth/sync-2026-11-24" }
 # btls-sys (wreq's BoringSSL, under obscura's stealth): `links = "btls"` instead of "boringssl" so
 # it can coexist with libsignal's boring-sys, and `prefix-symbols` (every export renamed
 # `btls_sys_*`) works on macOS/iOS via llvm-objcopy and, on ELF, now also covers Itanium-mangled
