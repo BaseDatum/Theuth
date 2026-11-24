@@ -5,7 +5,7 @@ import { ChevronDown, Clock, EyeOff, Forward } from 'lucide-react'
 import { useState } from 'react'
 import { DoubleUndo } from '@/components/chat/DoubleChip'
 import { snoozeUntil } from '@/components/hud/model'
-import { useAttentionActions, useSecretRequestRows } from '@/components/hud/queries'
+import { useSecretRequestRows } from '@/components/hud/queries'
 import { useSandboxes } from '@/components/settings/sandbox-queries'
 import { useMesh } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils'
 import { useQuerySupport } from '@/rpc/capabilities'
 import type { AttentionItem, AttentionOutcome } from '@/rpc/bindings/method.roster.output'
 import { DISMISS_HINT, dismissLabel, doubleIds } from './labels'
-import { useAttentionBulk, useBulkPending } from './queries'
+import { setItemError, useAttentionBulk, useBulkPending, useInboxActions } from './queries'
 
 export type Size = 'xs' | 'sm' | 'default'
 
@@ -70,7 +70,7 @@ export function SnoozeMenu({ size, disabled, label = 'Snooze', onPick }: { size:
  */
 export function SnoozeDismiss({ item, ids = [item.id], size, onResolved }: { item: AttentionItem; ids?: readonly string[]; size: Size; onResolved?: () => void }) {
   const bulk = useAttentionBulk()
-  // `useAttentionBulk` toasts; the pane moves on only when something actually left the list.
+  // `useAttentionBulk` puts a failure on the item (no toast); the pane moves on only when something actually left the list.
   const done = (p: Promise<AttentionOutcome[]>) => void p.then((outs) => outs.some((o) => o.resolution !== 'failed') && onResolved?.())
   const leaves = useQuerySupport(['attention_dismiss_many'])
   const label = dismissLabel(item, leaves)
@@ -87,7 +87,7 @@ export function SnoozeDismiss({ item, ids = [item.id], size, onResolved }: { ite
 }
 
 /** 182: an offline machine's `node:<engine>` item of kind `home` — Move them here · Keep waiting; a `misplaced:<task>` item opens the task. */
-export function HomeActions({ item, size, busy, act, then }: { item: AttentionItem; size: Size; busy: boolean; act: ReturnType<typeof useAttentionActions>; then(p: Promise<unknown>): void }) {
+export function HomeActions({ item, size, busy, act, then }: { item: AttentionItem; size: Size; busy: boolean; act: ReturnType<typeof useInboxActions>; then(p: Promise<unknown>): void }) {
   const mesh = useMesh().data
   if (item.id.startsWith('misplaced:')) {
     return (
@@ -129,7 +129,7 @@ export function AllowOnce({ first, size, disabled, onClick }: { first: { contact
  * is its snooze). `onResolved` fires after a mutation that removes the item from the list succeeded (101 D11).
  */
 export function KindActions({ item, size = 'xs', onResolved }: { item: AttentionItem; size?: Size; onResolved?: () => void }) {
-  const act = useAttentionActions()
+  const act = useInboxActions()
   const [answer, setAnswer] = useState('')
   // Review 7: no second submit while this item's action or any bulk call runs.
   const bulkPending = useBulkPending()
@@ -139,13 +139,13 @@ export function KindActions({ item, size = 'xs', onResolved }: { item: Attention
   const handoffId = item.kind === 'handoff' ? item.id.replace(/^handoff:/, '') : null
   const rows = useSecretRequestRows(item.kind === 'secret')
   const first = item.kind === 'contact_first' ? contactFirstOf(item.id) : null
-  // `useAction` already toasts the failure; the swallowed rejection only keeps the screen where it is.
+  // `useInboxActions` puts the failure on the item (no toast); the swallowed rejection only keeps the screen where it is.
   const then = (p: Promise<unknown>) => void p.then(() => onResolved?.(), () => undefined)
   return (
     // In the pane the row fills the bar, so Snooze · Dismiss (`ml-auto`) sit at its right end.
     <div className={cn('flex shrink-0 flex-wrap items-center gap-1.5', size !== 'xs' && 'min-w-0 flex-1')}>
       {/* 126 §10: "answered for you" — undo while the grace runs (`double_take_over`); the digest row only dismisses. */}
-      {item.kind === 'double' && <DoubleUndo ids={doubleIds(item)} size={size} />}
+      {item.kind === 'double' && <DoubleUndo ids={doubleIds(item)} size={size} onError={(e) => setItemError([item.id], e)} />}
       {(item.kind === 'ask' || item.kind === 'show') && (
         // 104: the questions and the artifact need the screen; the card only points there.
         <Button asChild size={size} variant="outline" className={paneClass(size, TONE_NEUTRAL)}>

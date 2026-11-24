@@ -6,7 +6,6 @@ import { Link } from '@tanstack/react-router'
 import { type ReactNode, useState } from 'react'
 import { title } from '@/components/chat/broadcast'
 import { snoozeUntil } from '@/components/hud/model'
-import { useAttentionActions } from '@/components/hud/queries'
 import { age } from '@/components/tasks/helpers'
 import { itemHome } from '@/components/tasks/home'
 import { useMesh, useTask, useTasks } from '@/components/tasks/queries'
@@ -14,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { clampText, lastAssistantBefore, pathText } from './model'
+import { useInboxActions } from './queries'
 import { Chip } from './shared'
 
 /** `list_sessions` — the names behind every row's and screen's `from <session>`; one query, shared with the sidebar. */
@@ -111,7 +111,7 @@ export function ActionBar({ children }: { children: ReactNode }) {
 
 /** Snooze until 09:00 tomorrow; `onResolved` moves the pane on (101 D11). */
 export function SnoozeButton({ item, onResolved, size = 'sm' }: { item: AttentionItem; onResolved: () => void; size?: 'sm' | 'default' }) {
-  const act = useAttentionActions()
+  const act = useInboxActions()
   return (
     <Button variant="outline" size={size} className="border-warning-border bg-warning-bg text-warning hover:bg-warning-bg/80 hover:text-warning" disabled={act.snooze.isPending} title="Snooze until 09:00 tomorrow" onClick={() => void act.snooze.mutateAsync({ id: item.id, until: snoozeUntil('tomorrow') }).then(onResolved, () => undefined)}>
       Snooze

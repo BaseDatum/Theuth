@@ -8,6 +8,7 @@ import type { ReactNode } from 'react'
 import { SecretRequestCard, eventFields } from '@/components/chat/SecretRequestCard'
 import { KindActions } from './actions'
 import { doubleIds, stopWord } from './labels'
+import { setItemError } from './queries'
 import { Reply } from './Reply'
 import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useSecretRequestRows } from '@/components/hud/queries'
 import { useHandoffs, useSandboxes } from '@/components/settings/sandbox-queries'
@@ -77,16 +78,19 @@ export function SecretScreen({ item }: { item: AttentionItem }) {
   const local = useSecretRequests((s) => s.pending.find((p) => p.id === id))
   const origin = row ? (sandboxes.data?.find((s) => s.engine === row.engine)?.name ?? item.detail) : item.detail
   const one = row?.fields.length === 1 ? row.fields[0] : undefined
+  // The inbox never toasts: a failed answer shows under the item (`ItemError`), a good one clears it.
+  const failed = (e: string) => setItemError([item.id], e)
   const answered = () => {
+    setItemError([item.id], null)
     void qc.invalidateQueries({ queryKey: SECRET_REQUESTS_KEY })
     void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
   }
   return (
     <Plain item={item}>
       {row ? (
-        <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} expires={row.expires} origin={origin} onAnswered={answered} />
+        <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} expires={row.expires} origin={origin} onAnswered={answered} onError={failed} />
       ) : local ? (
-        <SecretRequestCard id={local.id} title={local.title} note={local.title ? undefined : local.note} fields={eventFields(local)} expires={local.expires} origin={origin} onAnswered={answered} />
+        <SecretRequestCard id={local.id} title={local.title} note={local.title ? undefined : local.note} fields={eventFields(local)} expires={local.expires} origin={origin} onAnswered={answered} onError={failed} />
       ) : (
         <p className="text-sm text-fg-secondary">{rows.isPending ? 'Loading the request…' : `Answer it in the session${item.detail ? ` on ${item.detail}` : ''}.`}</p>
       )}

@@ -11,6 +11,7 @@ import { DecisionScreen } from './DecisionScreen'
 import { BlockedScreen, BudgetScreen, ContactFirstScreen, DoubleScreen, FinishedScreen, HandoffScreen, HireScreen, HomeScreen, NodeScreen, ResumeScreen, SecretScreen } from './PlainScreens'
 import { ReviewScreen } from './ReviewScreen'
 import { ShowScreen } from './ShowScreen'
+import { ItemError } from './ItemError'
 import { Why } from './Why'
 import { WebViewScreen } from './WebViewScreen'
 
@@ -52,6 +53,7 @@ export function Screen({ item }: { item: AttentionItem }) {
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{TITLE[item.kind] ?? itemLabel(item)}</h2>
       </header>
       <Why item={item} />
+      <ItemError ids={[item.id]} className="shrink-0 border-b border-border-subtle bg-danger-bg px-4 py-2" />
       <Kind key={item.id} item={item} />
     </>
   )

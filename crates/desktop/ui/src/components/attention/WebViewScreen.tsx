@@ -1,9 +1,8 @@
 // 205 in the inbox: a `show_web` page as the detail pane — the live page itself (the frame's native web view laid over
 // the pane, `useNativeLayer`), its title and address above, and the footer of what to do with it.
 import { useNavigate } from '@tanstack/react-router'
-import { AppWindow, ArrowLeft, ArrowRight, Copy, ExternalLink, MessageSquare, RotateCw } from 'lucide-react'
+import { AppWindow, ArrowLeft, ArrowRight, Check, Copy, ExternalLink, MessageSquare, RotateCw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { toast } from 'sonner'
 import { openWebView } from '@/components/chat/WebViewCard'
 import { AddressField, FrameFace, Quiet, useLiveFrame } from '@/components/chat/WebFrame'
 import { useNativeLayer, warn } from '@/components/chat/web-native-frame'
@@ -19,6 +18,7 @@ import { TONE_ACCENT, TONE_NEUTRAL } from './actions'
 import { Footer, useResolved } from './shared'
 import { ActionBar, Source } from './source'
 import { webViewOf } from './model'
+import { setItemError } from './queries'
 
 /**
  * A `web_view` item (205): Source · the page's title and address · the live page filling the pane · Open in chat · Pop
@@ -54,7 +54,21 @@ export function WebViewScreen({ item }: { item: AttentionItem }) {
     // The chat's pane must be in the tree before the tile is placed beside it.
     void navigate({ to: '/c/$session', params: { session } }).then(() => requestAnimationFrame(() => openWebView(session, { id: page.id, url, title }, mobile && native.nativeWebViews())))
   }
-  const copy = () => void navigator.clipboard.writeText(url).then(() => toast('Copied'), () => toast.error('Copy failed'))
+  // The inbox never toasts: the button itself says Copied for a moment; a failure shows under the item.
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const t = setTimeout(() => setCopied(false), 1500)
+    return () => clearTimeout(t)
+  }, [copied])
+  const copy = () =>
+    void navigator.clipboard.writeText(url).then(
+      () => {
+        setItemError([item.id], null)
+        setCopied(true)
+      },
+      () => setItemError([item.id], 'Copy failed'),
+    )
 
   return (
     <>
@@ -109,8 +123,8 @@ export function WebViewScreen({ item }: { item: AttentionItem }) {
           </Button>
         )}
         <Button size="sm" variant="ghost" className={TONE_NEUTRAL} disabled={!url} onClick={copy}>
-          <Copy />
-          Copy URL
+          {copied ? <Check /> : <Copy />}
+          {copied ? 'Copied' : 'Copy URL'}
         </Button>
         <Footer item={item} onResolved={onResolved} />
       </ActionBar>

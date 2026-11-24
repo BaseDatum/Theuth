@@ -3,13 +3,14 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ArtifactView } from '@/components/artifacts/Viewer'
 import { metaLine } from '@/components/chat/ArtifactCard'
-import { useAttentionActions, useMarkShown } from '@/components/hud/queries'
+import { useMarkShown } from '@/components/hud/queries'
 import { ARTIFACT_SIM, simFlag } from '@/components/settings/sandbox-queries'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { TONE_DANGER } from './actions'
+import { useInboxActions } from './queries'
 import { Body, useResolved } from './shared'
 import { ActionBar, ContextLine, SnoozeButton, Source } from './source'
 
@@ -27,7 +28,7 @@ export function ShowScreen({ item }: { item: AttentionItem }) {
   const api = useApi()
   const callId = item.id.replace(/^show:/, '')
   const record = useQuery({ enabled: canQuery1, queryKey: queryKeys.artifact(callId), queryFn: () => (simFlag() ? (ARTIFACT_SIM[callId] ?? Promise.reject(new Error('no such artifact in the sim'))) : api.get_artifact(callId)) })
-  const act = useAttentionActions()
+  const act = useInboxActions()
   const onResolved = useResolved(item)
   useMarkShown(callId, SEEN_AFTER_MS)
   const a = record.data

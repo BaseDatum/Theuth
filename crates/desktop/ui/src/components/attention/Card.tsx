@@ -6,7 +6,7 @@ import { Check, ChevronDown, Clock, EyeOff, Minus, Network } from 'lucide-react'
 import { type ComponentProps, type MouseEvent, type ReactNode, memo, useState } from 'react'
 import { DoubleChip } from '@/components/chat/DoubleChip'
 import { SecretRequestCard, eventFields } from '@/components/chat/SecretRequestCard'
-import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useAttentionActions, useSecretRequestRows } from '@/components/hud/queries'
+import { ATTENTION_KEY, SECRET_REQUESTS_KEY, useSecretRequestRows } from '@/components/hud/queries'
 import { useSandboxes } from '@/components/settings/sandbox-queries'
 import { age } from '@/components/tasks/helpers'
 import { Button } from '@/components/ui/button'
@@ -16,8 +16,9 @@ import { useSecretRequests } from '@/store/approvals'
 import { KindActions, SnoozeDismiss } from './actions'
 import { chipLabel, doubleIds } from './labels'
 import { pathText, reasonLine, stackRisk, urlHost } from './model'
-import { useAttentionBulk, useAttentionPending, useBulkPending } from './queries'
+import { setItemError, useAttentionBulk, useAttentionPending, useBulkPending, useInboxActions } from './queries'
 import { useCardSwipe } from './swipe'
+import { ItemError } from './ItemError'
 import { Reply } from './Reply'
 
 /** 132 D1/D4: `urgent` and `high` show a chip after the kind chip (gold-ochre · the warning hue); medium/low show nothing. */
@@ -55,6 +56,8 @@ type FrameProps = {
   /** 208 §7.4: centre the item's session on the Attention graph (shown when set and the item carries a session). */
   onShowInGraph?: (session: string) => void
   detail?: ReactNode
+  /** Ids whose inline action error shows on this card (a stack's members); defaults to the item's id. */
+  errorIds?: readonly string[]
   children?: ReactNode
 } & Omit<ComponentProps<'li'>, 'onSelect' | 'children'>
 
@@ -69,7 +72,7 @@ const said = (segments: readonly string[], word: string) => segments.some((s) =>
  * facts (an approval's command in mono), where it came from (`project · root › child`, the agent when the path does not
  * already name it), why it sits here (the reason line, wrapping, never cut), then the actions.
  */
-function Frame({ item, now, entryKey = item.id, stack, active, focused, selected = false, selecting, onSelect, onOpen, onShowInGraph, detail, children, className, ...li }: FrameProps) {
+function Frame({ item, now, entryKey = item.id, errorIds, stack, active, focused, selected = false, selecting, onSelect, onOpen, onShowInGraph, detail, children, className, ...li }: FrameProps) {
   const session = typeof item.session === 'string' && item.session !== '' ? item.session : null
   const graph = onShowInGraph && session !== null && (
     <Button size="icon-xs" variant="ghost" aria-label="Show in graph" title="Show in graph" className="ml-auto text-fg-tertiary" onClick={() => onShowInGraph(session)}>
@@ -89,7 +92,7 @@ function Frame({ item, now, entryKey = item.id, stack, active, focused, selected
     else onOpen?.(entryKey)
   }
   // A dismissing/snoozing card collapses to a red line with a gap sweeping right to left; the cache is untouched
-  // until the call resolves, so a failure brings the card back (the bulk call toasts the error).
+  // until the call resolves, so a failure brings the card back with the error inline (never a toast).
   if (pending) {
     return (
       <li {...li} data-entry-key={entryKey} className={cn('group border-b border-border-subtle', className)}>
@@ -158,6 +161,7 @@ function Frame({ item, now, entryKey = item.id, stack, active, focused, selected
               {graph}
             </div>
           )}
+          <ItemError ids={errorIds ?? [item.id]} />
         </div>
       </div>
     </li>
@@ -196,18 +200,21 @@ export function SecretInline({ item }: { item: AttentionItem }) {
   const local = useSecretRequests((s) => s.pending.find((p) => p.id === id))
   const origin = row ? (sandboxes.data?.find((s) => s.engine === row.engine)?.name ?? item.detail) : item.detail
   const one = row?.fields.length === 1 ? row.fields[0] : undefined
+  // The inbox never toasts: a failed answer shows under the item (`ItemError`), a good one clears it.
+  const failed = (e: string) => setItemError([item.id], e)
   const answered = () => {
+    setItemError([item.id], null)
     void qc.invalidateQueries({ queryKey: SECRET_REQUESTS_KEY })
     void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
   }
-  if (row) return <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} expires={row.expires} origin={origin} onAnswered={answered} />
-  if (local) return <SecretRequestCard id={local.id} title={local.title} note={local.title ? undefined : local.note} fields={eventFields(local)} expires={local.expires} origin={origin} onAnswered={answered} />
+  if (row) return <SecretRequestCard id={row.id} title={row.title} note={one && one.label !== one.name ? one.label : undefined} fields={row.fields} expires={row.expires} origin={origin} onAnswered={answered} onError={failed} />
+  if (local) return <SecretRequestCard id={local.id} title={local.title} note={local.title ? undefined : local.note} fields={eventFields(local)} expires={local.expires} origin={origin} onAnswered={answered} onError={failed} />
   return <p className="text-xs text-fg-tertiary">{rows.isPending ? 'Loading the request…' : `Answer it in the session${item.detail ? ` on ${item.detail}` : ''}.`}</p>
 }
 
 /** A single question with options: one button per option (the recommended one filled); the answer goes straight to the agent. */
 function AskOptions({ item }: { item: AttentionItem }) {
-  const act = useAttentionActions()
+  const act = useInboxActions()
   const bulkPending = useBulkPending()
   const ask = item.ask
   const q = ask?.questions[0]
@@ -314,7 +321,7 @@ export type StackCardProps = Omit<FrameProps, 'item' | 'detail' | 'children' | '
 export const StackCard = memo(function StackCard({ items, expanded, onExpand, ...props }: StackCardProps) {
   const head = { ...(items[0] as AttentionItem), risk: stackRisk(items) }
   const bulk = useAttentionBulk()
-  const act = useAttentionActions()
+  const act = useInboxActions()
   const [local, setLocal] = useState(false)
   const open = expanded ?? local
   const key = props.entryKey ?? head.id
@@ -323,7 +330,7 @@ export const StackCard = memo(function StackCard({ items, expanded, onExpand, ..
   const approvals = items.flatMap((i) => (i.approval ? [i.approval] : []))
   const busy = bulk.pending || act.approve.isPending
   return (
-    <Frame {...props} item={head} stack={items.length} detail={<Detail item={head} />}>
+    <Frame {...props} item={head} stack={items.length} errorIds={ids} detail={<Detail item={head} />}>
       <Button size="xs" disabled={busy} onClick={() => void bulk.resolve(approvals, 'allow')}>
         Allow all {items.length}
       </Button>

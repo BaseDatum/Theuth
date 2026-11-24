@@ -53,15 +53,20 @@ export function preselect(p: Pick<DoublePredicted, 'rung' | 'choice' | 'index'> 
 export const disagrees = (p: Pick<DoublePredicted, 'rung' | 'choice'> | undefined, recommended: string | undefined): boolean =>
   !!p && p.rung >= 1 && recommended !== undefined && recommended !== p.choice && p.choice !== 'none'
 
-/** `double_take_over(id)`: `true` cancels the grace (or undoes); `false` means the double had already answered. */
-export async function takeOver(api: Pick<Api, 'double_take_over'>, id: string): Promise<boolean> {
+/**
+ * `double_take_over(id)`: `true` cancels the grace (or undoes); `false` means the double had already answered. With
+ * `onError` (the Attention window, which never toasts) a failure goes there and "already answered" says nothing.
+ */
+export async function takeOver(api: Pick<Api, 'double_take_over'>, id: string, onError?: (error: string) => void): Promise<boolean> {
   try {
     const ok = await api.double_take_over(id)
     if (ok) doubleStore.getState().takeOver(id)
-    else toast.message('double had already answered')
+    else if (!onError) toast.message('double had already answered')
     return ok
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : String(e))
+    const text = e instanceof Error ? e.message : String(e)
+    if (onError) onError(text)
+    else toast.error(text)
     return false
   }
 }
@@ -230,12 +235,12 @@ export function DoubleCard({ ids, className, children }: { ids: readonly (string
 }
 
 /** The undo line of an attention row / screen (the inbox carries undo too, §10). */
-export function DoubleUndo({ ids, size = 'xs' }: { ids: readonly (string | null | undefined)[]; size?: 'xs' | 'sm' | 'default' }) {
+export function DoubleUndo({ ids, size = 'xs', onError }: { ids: readonly (string | null | undefined)[]; size?: 'xs' | 'sm' | 'default'; onError?: (error: string) => void }) {
   const api = useApi()
   const card = useDoubleCard(ids)
   if (!card.answered || card.undo === null || !card.id) return null
   return (
-    <Button size={size} variant="outline" onClick={() => void takeOver(api, card.id as string)}>
+    <Button size={size} variant="outline" onClick={() => void takeOver(api, card.id as string, onError)}>
       Undo · {card.undo} s
     </Button>
   )

@@ -1,10 +1,10 @@
 import { DoubleChip, preselect, useDoubleCard } from '@/components/chat/DoubleChip'
-import { useAttentionActions } from '@/components/hud/queries'
 import { Button } from '@/components/ui/button'
 import { describe } from '@/lib/describe'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import type { Risk } from "@/rpc/bindings/method.agent.output"
 import { useApprovals } from '@/store/approvals'
+import { useInboxActions } from './queries'
 import { Body, Footer, SectionTitle, useResolved } from './shared'
 import { TONE_DANGER, TONE_SUCCESS } from './actions'
 import { ActionBar, ContextLine, Source } from './source'
@@ -18,7 +18,7 @@ const RISK: Record<Risk, string> = { read_only: 'read-only', mutating: 'mutating
  * request, the item's `detail` (the command) is what shows, with a note.
  */
 export function ApprovalScreen({ item }: { item: AttentionItem }) {
-  const act = useAttentionActions()
+  const act = useInboxActions()
   const onResolved = useResolved(item)
   const request = useApprovals((s) => s.pending.find((p) => p.id === item.approval))
   const tool = request?.tool ?? item.title.replace(/^.* wants to run /, '')

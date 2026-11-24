@@ -5,7 +5,7 @@ import { useModels } from '@/components/agents/queries'
 import { type PatchState, PATCH_START, type Removed, bulkTarget, patchEvent, patchSettled, restoreItems } from '@/components/attention/model'
 import { inboxFixture } from '@/components/settings/attention-fixtures'
 import { ATTENTION_SIM, SECRET_REQUESTS_SIM, crowdedFlag, simFlag } from '@/components/settings/sandbox-queries'
-import { errorText, useAction } from '@/components/settings/shared'
+import { errorText } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
@@ -299,15 +299,22 @@ export const ATTENTION_ACTION_KEY = ['attention-action'] as const
  * back where they stood when the call fails; on success the small task/agent `keys` refetch, the list itself only when
  * this engine does not patch it from `AttentionChanged` (a full refetch per click is what 176 forbids).
  */
-function useItemAction<V, R>(fn: (vars: V) => Promise<R>, gone: (vars: V, item: AttentionItem) => boolean, opts: { keys?: readonly QueryKey[]; onSuccess?: (result: R, vars: V) => void } = {}) {
+function useItemAction<V, R>(fn: (vars: V) => Promise<R>, gone: (vars: V, item: AttentionItem) => boolean, opts: { keys?: readonly QueryKey[]; onSuccess?: (result: R, vars: V) => void; report?: ReportItemError } = {}) {
   const qc = useQueryClient()
+  const { report } = opts
   return useMutation({
     mutationKey: ATTENTION_ACTION_KEY,
     mutationFn: fn,
-    onMutate: (vars: V) => takeFromList(qc, (i) => gone(vars, i)),
-    onError: (e, _vars, removed) => {
+    onMutate: (vars: V) => {
+      const removed = takeFromList(qc, (i) => gone(vars, i))
+      report?.(removed.map((r) => r.item.id), null)
+      return removed
+    },
+    onError: (e, vars, removed) => {
       if (removed) putBack(qc, removed)
-      toast.error(errorText(e))
+      if (!report) return void toast.error(errorText(e))
+      const ids = removed?.length ? removed.map((r) => r.item.id) : (qc.getQueryData<AttentionItem[]>(ATTENTION_KEY) ?? []).filter((i) => gone(vars, i)).map((i) => i.id)
+      report(ids, errorText(e))
     },
     onSuccess: (result, vars) => {
       for (const queryKey of opts.keys ?? []) void qc.invalidateQueries({ queryKey })
@@ -317,11 +324,25 @@ function useItemAction<V, R>(fn: (vars: V) => Promise<R>, gone: (vars: V, item: 
   })
 }
 
-/** The inline decisions of an attention card: each takes its item out of the list at once (back on failure). */
-export function useAttentionActions() {
+/** Sets (`error` a string) or clears (`null`) the inline error of the inbox items `ids`. */
+export type ReportItemError = (ids: readonly string[], error: string | null) => void
+
+/**
+ * The inline decisions of an attention card: each takes its item out of the list at once (back on failure). With
+ * `report` (the Attention window's `useInboxActions`) nothing toasts: a failure goes to `report` against the item's
+ * ids, the "already answered" notes are dropped (the item leaves the list either way). Without it (the chat's resume
+ * banner, the hand-off card) failures and notes toast as before.
+ */
+export function useAttentionActions(opts: { report?: ReportItemError } = {}) {
   const api = useApi()
+  const qc = useQueryClient()
   const many = useQuerySupport(['attention_dismiss_many'])
   const keys = [taskKeys.tasks, taskKeys.agents] as const
+  const { report } = opts
+  const note = (text: string) => {
+    if (!report) toast.message(text)
+  }
+  const taskItems = (task: string) => (qc.getQueryData<AttentionItem[]>(ATTENTION_KEY) ?? []).filter((i) => i.task === task).map((i) => i.id)
   return {
     /** 207 §5: through `attention_dismiss_many` when the engine has it (a request is left to its agent); a `failed` outcome is an error. */
     dismiss: useItemAction(
@@ -332,60 +353,74 @@ export function useAttentionActions() {
         return null
       },
       (id, i) => i.id === id,
+      { report },
     ),
     /** 109 §8.3: the Resume button of a `resume:` item under `durability.resume: ask`. */
     resume: useItemAction(
       async (session: string) => {
         const ok = await api.resume_turn(session)
-        if (!ok) toast.message('That turn was already resumed')
+        if (!ok) note('That turn was already resumed')
         return ok
       },
       (session, i) => i.kind === 'resume' && i.session === session,
+      { report },
     ),
-    snooze: useItemAction(({ id, until }: { id: string; until: number }) => api.attention_snooze(id, until), (v, i) => i.id === v.id),
+    snooze: useItemAction(({ id, until }: { id: string; until: number }) => api.attention_snooze(id, until), (v, i) => i.id === v.id, { report }),
     /** 104 A6: Send on the Ask screen and an option on the card. 132 D6: a late answer is not lost — the engine hands it to the session as a message; the toast says so. 207: never `null` (that ends the turn). */
     ask: useItemAction(
       async ({ id, answers }: { id: AskId; answers: Answer[] }) => {
         const ok = await api.answer_ask(id, answers)
-        if (!ok) toast.message('That question had already closed — your answer went to the session as a message.')
+        if (!ok) note('That question had already closed — your answer went to the session as a message.')
         return ok
       },
       (v, i) => i.ask?.id === v.id,
+      { report },
     ),
     approve: useItemAction(
       async ({ id, allow }: { id: ApprovalId; allow: boolean }) => {
         const ok = await api.resolve_approval(id, allow ? 'allow' : 'deny')
-        if (!ok) toast.message('That approval was already answered')
+        if (!ok) note('That approval was already answered')
         return ok
       },
       (v, i) => i.approval === v.id,
-      { keys },
+      { keys, report },
     ),
-    decide: useItemAction(({ decision, answer }: { decision: string; answer: string }) => api.task_decide(decision, answer), (v, i) => i.decision === v.decision, { keys }),
+    decide: useItemAction(({ decision, answer }: { decision: string; answer: string }) => api.task_decide(decision, answer), (v, i) => i.decision === v.decision, { keys, report }),
     /** 132 D4: the user sets a task's priority; the engine re-ranks the inbox on the refetch. */
-    priority: useAction(({ id, priority }: { id: string; priority: Priority }) => api.task_update(id, { priority }), { keys: [ATTENTION_KEY, ...keys] }),
-    hire: useItemAction((name: string) => api.agent_approve(name), (name, i) => i.kind === 'hire' && i.agent === name, { keys }),
-    decline: useItemAction((name: string) => api.agent_remove(name, null), (name, i) => i.kind === 'hire' && i.agent === name, { keys }),
+    priority: useMutation({
+      mutationFn: ({ id, priority }: { id: string; priority: Priority }) => api.task_update(id, { priority }),
+      onSuccess: (_r, v) => {
+        for (const queryKey of [ATTENTION_KEY, ...keys]) void qc.invalidateQueries({ queryKey })
+        report?.(taskItems(v.id), null)
+      },
+      onError: (e, v) => (report ? report(taskItems(v.id), errorText(e)) : toast.error(errorText(e))),
+    }),
+    hire: useItemAction((name: string) => api.agent_approve(name), (name, i) => i.kind === 'hire' && i.agent === name, { keys, report }),
+    decline: useItemAction((name: string) => api.agent_remove(name, null), (name, i) => i.kind === 'hire' && i.agent === name, { keys, report }),
     /** 101 D9: Approve → done / Send back → doing carry the reviewer's note into the thread. 132 D3: `next` (a review's picked next move) rides along only when picked, so an older engine sees the old three params. */
     move: useItemAction(
       ({ id, state, note = null, next }: { id: string; state: 'todo' | 'done' | 'doing'; note?: string | null; next?: number }) => (next === undefined ? api.task_move(id, state, note) : api.task_move(id, state, note, next)),
       (v, i) => i.task === v.id && (i.kind === 'review' || i.kind === 'blocked'),
-      { keys },
+      { keys, report },
     ),
     /** 182: the `home:<engine>` item's button — every task waiting on the offline engine moves to this one. */
     moveHome: useItemAction(({ from }: { from: string; to: string }) => api.task_move_home_waiting(from), (v, i) => i.id === `node:${v.from}`, {
       keys: [taskKeys.tasks],
+      report,
       onSuccess: (r, v) => {
         const m = movedToast(r, v.to)
+        // Quiet: only a refusal shows, inline on the offline machine's item; a move needs no word (the item leaves).
+        if (report) return void (m.error && report([`node:${v.from}`], [m.title, m.description].filter(Boolean).join('\n')))
         ;(m.error ? toast.error : toast)(m.title, { description: m.description })
       },
     }),
-    unpause: useItemAction((name: string) => api.agent_pause(name, false), (name, i) => i.kind === 'budget' && i.agent === name, { keys }),
+    unpause: useItemAction((name: string) => api.agent_pause(name, false), (name, i) => i.kind === 'budget' && i.agent === name, { keys, report }),
     /** 79 §6.6: Done / Cancel on a hand-off card; the pop-out's banner and the row's chip read the same list. */
-    handoff: useItemAction(({ id, outcome }: { id: string; outcome: 'done' | 'cancelled' }) => api.handoff_resolve(id, outcome), (v, i) => i.id === `handoff:${v.id}`, { keys: [HANDOFFS_KEY] }),
+    handoff: useItemAction(({ id, outcome }: { id: string; outcome: 'done' | 'cancelled' }) => api.handoff_resolve(id, outcome), (v, i) => i.id === `handoff:${v.id}`, { keys: [HANDOFFS_KEY], report }),
     /** 183 §7.6: a `contact_first` item's Allow once (`ask`) · Always (`allow`) · Block (`block`). */
     contactFirst: useItemAction(({ contact, exp, answer }: { contact: string; exp: string; answer: FirstContact }) => api.contact_first_answer(contact, exp, answer), (v, i) => i.id === `contact_first:${v.contact}:${v.exp}`, {
       keys: [queryKeys.contacts],
+      report,
     }),
   }
 }

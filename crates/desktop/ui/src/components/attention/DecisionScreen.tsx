@@ -1,7 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { DoubleChip, preselect } from '@/components/chat/DoubleChip'
-import { useAttentionActions } from '@/components/hud/queries'
 import { useTask } from '@/components/tasks/queries'
 import { age } from '@/components/tasks/helpers'
 import { Button } from '@/components/ui/button'
@@ -14,7 +13,7 @@ import { PacketMarkdown } from './PacketMarkdown'
 import { Pointers } from './Pointers'
 import { Bundle, type Pick, allAnswered, allRecommended, bundleAnswer } from './Bundle'
 import { usePrediction } from '@/store/double'
-import { usePacket } from './queries'
+import { useInboxActions, usePacket } from './queries'
 import { TONE_ACCENT, TONE_SUCCESS } from './actions'
 import { Body, Chip, Footer, IfWrong, OptionCards, PrioritySelect, SectionTitle, useResolved } from './shared'
 
@@ -28,7 +27,7 @@ import { Body, Chip, Footer, IfWrong, OptionCards, PrioritySelect, SectionTitle,
 export function DecisionScreen({ item }: { item: AttentionItem }) {
   const packet = usePacket(item.packet)
   const task = useTask(item.task ?? '', item.task !== null)
-  const act = useAttentionActions()
+  const act = useInboxActions()
   const onResolved = useResolved(item)
   // `undefined` = untouched, so the recommendation applies once the packet lands without an effect.
   const [picked, setPicked] = useState<number | null | undefined>(undefined)

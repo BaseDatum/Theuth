@@ -1,7 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { CheckCircle2, Circle } from 'lucide-react'
 import { useState } from 'react'
-import { useAttentionActions } from '@/components/hud/queries'
 import { age, ownerText } from '@/components/tasks/helpers'
 import { useTask } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
@@ -11,7 +10,7 @@ import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import { PacketBoard } from './PacketBoard'
 import { PacketMarkdown } from './PacketMarkdown'
 import { Pointers } from './Pointers'
-import { usePacket } from './queries'
+import { useInboxActions, usePacket } from './queries'
 import { Body, Chip, Footer, IfWrong, OptionCards, PrioritySelect, SectionTitle, useResolved } from './shared'
 
 /**
@@ -25,7 +24,7 @@ import { Body, Chip, Footer, IfWrong, OptionCards, PrioritySelect, SectionTitle,
 export function ReviewScreen({ item }: { item: AttentionItem }) {
   const packet = usePacket(item.packet)
   const task = useTask(item.task ?? '', item.task !== null)
-  const act = useAttentionActions()
+  const act = useInboxActions()
   const onResolved = useResolved(item)
   const [sendingBack, setSendingBack] = useState(false)
   const [note, setNote] = useState('')

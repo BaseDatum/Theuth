@@ -1,11 +1,11 @@
 // 101: what the three screens share — the D11 "move on" hook, the kind chip, the scrolling body, the footer actions.
 import { Link, useNavigate } from '@tanstack/react-router'
 import { type ReactNode, useRef } from 'react'
-import { useAttentionActions } from '@/components/hud/queries'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useIsMobile } from '@/hooks/use-mobile'
+import { useInboxActions } from './queries'
 import { cn } from '@/lib/utils'
 import type { AttentionItem } from "@/rpc/bindings/method.roster.output"
 import type { Packet } from "@/rpc/bindings/method.roster.output"
@@ -118,7 +118,7 @@ export const PRIORITIES: readonly Priority[] = ['urgent', 'high', 'medium', 'low
  * wraps with it at 390 px.
  */
 export function PrioritySelect({ item }: { item: AttentionItem }) {
-  const act = useAttentionActions()
+  const act = useInboxActions()
   if (!item.task) return null
   const task = item.task
   return (

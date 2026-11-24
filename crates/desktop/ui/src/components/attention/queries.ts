@@ -1,14 +1,13 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useIsMutating, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, useSyncExternalStore } from 'react'
-import { toast } from 'sonner'
-import { ATTENTION_KEY, PACKET_KEY, attentionPatched, dropFromList } from '@/components/hud/queries'
+import { ATTENTION_KEY, PACKET_KEY, attentionPatched, dropFromList, useAttentionActions } from '@/components/hud/queries'
 import { PACKET_SIM, crowdedFlag, simFlag } from '@/components/settings/sandbox-queries'
 import { errorText } from '@/components/settings/shared'
 import { keys as taskKeys } from '@/components/tasks/queries'
 import { useApi } from '@/lib/rpc'
 import type { ApprovalId, AttentionItem, AttentionOutcome, AttentionResolution } from '@/rpc/bindings/method.roster.output'
-import { type ResolveOutcome, bulkTarget, outcomeSummary, pathText, resolveSummary } from './model'
+import { type ResolveOutcome, bulkTarget, outcomeSummary, resolveSummary } from './model'
 
 /** 207 review 7: every bulk call carries this key, so the page's key map and every card's buttons wait for it. */
 export const ATTENTION_BULK_KEY = ['attention-bulk'] as const
@@ -26,6 +25,38 @@ const subscribePending = (cb: () => void) => {
   return () => PENDING_LISTENERS.delete(cb)
 }
 export const useAttentionPending = (id: string): boolean => useSyncExternalStore(subscribePending, () => PENDING.has(id), () => false)
+
+/**
+ * The owner's rule: nothing done in the Attention window toasts. A failed action is kept here per item id and shown on
+ * the card and the screen (`ItemError`) until the next action on that item starts or succeeds.
+ */
+const ERRORS = new Map<string, string>()
+const ERROR_LISTENERS = new Set<() => void>()
+/** Set (`error` a string) or clear (`null`) the inline error of `ids`. */
+export function setItemError(ids: readonly string[], error: string | null) {
+  let changed = false
+  for (const id of ids) {
+    if (error === null ? ERRORS.delete(id) : ERRORS.get(id) !== error) changed = true
+    if (error !== null) ERRORS.set(id, error)
+  }
+  if (changed) for (const cb of ERROR_LISTENERS) cb()
+}
+const subscribeErrors = (cb: () => void) => {
+  ERROR_LISTENERS.add(cb)
+  return () => ERROR_LISTENERS.delete(cb)
+}
+const firstError = (ids: readonly string[]): string | null => {
+  for (const id of ids) {
+    const e = ERRORS.get(id)
+    if (e !== undefined) return e
+  }
+  return null
+}
+/** The first inline error among `ids` (a card, or a stack's members). */
+export const useItemError = (ids: readonly string[]): string | null => useSyncExternalStore(subscribeErrors, () => firstError(ids), () => firstError(ids))
+
+/** `useAttentionActions` for the Attention window: no toasts; failures land on the item (`setItemError`). */
+export const useInboxActions = () => useAttentionActions({ report: setItemError })
 
 /** True while any bulk Dismiss / Snooze / Allow / Deny runs, on any surface. */
 export const useBulkPending = (): boolean => useIsMutating({ mutationKey: ATTENTION_BULK_KEY }) > 0
@@ -61,12 +92,13 @@ async function pooled<T, R>(xs: readonly T[], fn: (x: T) => Promise<R>): Promise
 }
 
 /**
- * 207: one RPC for N items (`attention_dismiss_many` / `attention_snooze_many`), toasting `outcomeSummary`; Allow / Deny N
+ * 207: one RPC for N items (`attention_dismiss_many` / `attention_snooze_many`); Allow / Deny N
  * loop `resolve_approval`. Only ids that really left (any outcome but `failed`; for approvals done or already answered)
  * leave the cached list; failed ones stay, and the outcomes say which (review 5) so a selection can keep them. A call
  * that fails as a whole reports every id `failed`. The task and agent lists refetch after Allow / Deny; `ATTENTION_KEY`
  * only when the engine does not patch the list from `AttentionChanged`. An engine before 207 gets one
- * `attention_dismiss` / `attention_snooze` per id. Under `?sim=` / `?mock=crowded` everything resolves locally.
+ * `attention_dismiss` / `attention_snooze` per id. Under `?sim=` / `?mock=crowded` everything resolves locally. Never
+ * toasts: a failed id carries its error inline (`setItemError`), a done one clears it.
  */
 export function useAttentionBulk() {
   const api = useApi()
@@ -85,15 +117,12 @@ export function useAttentionBulk() {
     if (!local && !attentionPatched(qc)) void qc.invalidateQueries({ queryKey: ATTENTION_KEY })
   }
   const report = (outcomes: AttentionOutcome[]) => {
-    const text = outcomeSummary(outcomes)
-    const failed = outcomes.find((o) => o.resolution === 'failed')
-    if (failed) toast.error(text, { description: failed.error ?? undefined })
-    else if (text) toast(text)
+    for (const o of outcomes) setItemError([o.id], o.resolution === 'failed' ? (o.error ?? outcomeSummary([o])) : null)
     settle(outcomes.filter((o) => o.resolution !== 'failed').map((o) => o.id))
     return outcomes
   }
   const allFailed = (ids: readonly string[]) => (e: unknown): AttentionOutcome[] => {
-    toast.error(errorText(e))
+    setItemError(ids, errorText(e))
     return ids.map((id) => ({ id, resolution: 'failed', error: errorText(e) }))
   }
   const perId = (ids: readonly string[], resolution: AttentionResolution, call: (id: string) => Promise<unknown>) =>
@@ -109,6 +138,7 @@ export function useAttentionBulk() {
       ids.length === 0
         ? Promise.resolve([])
         : run(async () => {
+            setItemError(ids, null)
             markPending(ids, true)
             try {
               if (local) return report(ids.map((id) => ({ id, resolution: 'hidden', error: null })))
@@ -122,6 +152,7 @@ export function useAttentionBulk() {
       ids.length === 0
         ? Promise.resolve([])
         : run(async () => {
+            setItemError(ids, null)
             markPending(ids, true)
             try {
               if (local) return report(ids.map((id) => ({ id, resolution: 'snoozed', error: null })))
@@ -136,6 +167,7 @@ export function useAttentionBulk() {
       approvals.length === 0
         ? Promise.resolve([])
         : run(async () => {
+            setItemError(approvals.map((a) => `approval:${a}`), null)
             const outcomes = await pooled(approvals, async (a): Promise<ResolveOutcome> => {
               const id = `approval:${a}`
               if (local) return { id, result: 'done', error: null }
@@ -145,9 +177,7 @@ export function useAttentionBulk() {
                 return { id, result: 'failed', error: errorText(e) }
               }
             })
-            const failed = outcomes.find((o) => o.result === 'failed')
-            if (failed) toast.error(resolveSummary(outcomes, decision), { description: failed.error ?? undefined })
-            else toast(resolveSummary(outcomes, decision))
+            for (const o of outcomes) setItemError([o.id], o.result === 'failed' ? (o.error ?? resolveSummary([o], decision)) : null)
             settle(outcomes.filter((o) => o.result !== 'failed').map((o) => o.id))
             return outcomes
           }),
@@ -157,7 +187,8 @@ export function useAttentionBulk() {
 
 /**
  * 207 R4: the stopped card's reply — `send_input(session, text.trim(), [], null)` starts the session's next turn (the one
- * action in the list that does); toast 'Sent to <pathText>'. Under `?sim=` / `?mock=crowded` it only toasts.
+ * action in the list that does). No toast: the card leaves the list on success; a failure shows on the item. Under
+ * `?sim=` / `?mock=crowded` it only drops the card.
  */
 export function useReply() {
   const api = useApi()
@@ -165,16 +196,21 @@ export function useReply() {
   const local = simFlag() !== null || crowdedFlag()
   const [inFlight, setInFlight] = useState(false)
   const send = async (session: string, text: string): Promise<string> => {
+    const card = () => qc.getQueryData<AttentionItem[]>(ATTENTION_KEY)?.find((i) => i.session === session && i.kind === 'finished')
+    const ids = () => {
+      const c = card()
+      return c ? [c.id] : []
+    }
     setInFlight(true)
+    setItemError(ids(), null)
     try {
       const sent = local ? session : await api.send_input(session, text.trim(), [], null)
-      const item = qc.getQueryData<AttentionItem[]>(ATTENTION_KEY)?.find((i) => i.session === session && i.kind === 'finished')
-      toast(`Sent to ${(item && pathText(item)) || session.slice(0, 8)}`)
+      const item = card()
       // The next turn removes the card on the engine (`TurnStarted`); drop it here so the list moves on now.
       if (item) dropFromList(qc, [item.id])
       return sent
     } catch (e) {
-      toast.error(errorText(e))
+      setItemError(ids(), errorText(e))
       throw e
     } finally {
       setInFlight(false)

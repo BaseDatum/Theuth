@@ -102,7 +102,8 @@ function ExpiryControl({ choice, onChange, disabled, now }: { choice: ExpiryChoi
  * field (37's wire), `answer_secret(id, null, { name: value }, at)` for several (79 H's `values`); Decline →
  * `answer_secret(id, null, null, null)`. `SecretResolved` drops the card; the tool row's result line is the receipt.
  * Values live only in this component's state. `origin` names where the request was raised (a VM's name, 79 §6.6);
- * `onAnswered` fires after a successful answer (the inbox refetches its rows).
+ * `onAnswered` fires after a successful answer (the inbox refetches its rows). `onError` (the inbox, which never
+ * toasts) takes a failure, or "already answered", instead of the toast.
  */
 export const SecretRequestCard = memo(function SecretRequestCard({
   id,
@@ -112,6 +113,7 @@ export const SecretRequestCard = memo(function SecretRequestCard({
   expires,
   origin,
   onAnswered,
+  onError,
 }: {
   id: string
   title?: string | null
@@ -120,6 +122,7 @@ export const SecretRequestCard = memo(function SecretRequestCard({
   expires?: string | null
   origin?: string | null
   onAnswered?: () => void
+  onError?: (error: string) => void
 }) {
   const api = useApi()
   const [values, setValues] = useState<Record<string, string>>({})
@@ -142,10 +145,10 @@ export const SecretRequestCard = memo(function SecretRequestCard({
       } else {
         // Answered elsewhere and the `SecretResolved` was missed: the tool row's result is the receipt.
         useSecretRequests.getState().resolve(id)
-        toast.error('the secret request was already answered')
+        ;(onError ?? toast.error)('the secret request was already answered')
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
+      ;(onError ?? toast.error)(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }

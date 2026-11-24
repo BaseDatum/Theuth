@@ -2,7 +2,6 @@ import { Link } from '@tanstack/react-router'
 import { QuestionBlock } from '@/components/chat/AskCard'
 import { allAnswered, recommendedLabel, toAnswer, useAskDraft } from '@/components/chat/ask-drafts'
 import { DoubleChip } from '@/components/chat/DoubleChip'
-import { useAttentionActions } from '@/components/hud/queries'
 import { Button } from '@/components/ui/button'
 import * as speech from '@/lib/speech'
 import type { Answer } from '@/rpc/bindings/method.tasks.input'
@@ -11,7 +10,7 @@ import { usePrediction } from '@/store/double'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { TONE_ACCENT, TONE_DANGER } from './actions'
 import { DISMISS_HINT, dismissLabel } from './labels'
-import { useAttentionBulk } from './queries'
+import { useAttentionBulk, useInboxActions } from './queries'
 import { Body, useResolved } from './shared'
 import { ActionBar, ContextLine, SnoozeButton, Source } from './source'
 
@@ -24,7 +23,7 @@ import { ActionBar, ContextLine, SnoozeButton, Source } from './source'
  */
 export function AskScreen({ item }: { item: AttentionItem }) {
   const ask = item.ask
-  const act = useAttentionActions()
+  const act = useInboxActions()
   const bulk = useAttentionBulk()
   const leaves = useQuerySupport(['attention_dismiss_many'])
   const onResolved = useResolved(item)
