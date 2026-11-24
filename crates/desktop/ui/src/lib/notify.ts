@@ -1,5 +1,5 @@
-// 217 §1: the drop-in for sonner's `toast`. Every notice lands in the status bar's slot (the phone line on a phone) and
-// its history; nothing covers the UI.
+// 217 §1: the drop-in for the toast library this replaced, same call shapes. Every notice lands in the status bar's
+// slot (the phone line on a phone) and its history; nothing covers the UI.
 
 import { type NoticeAction, type NoticeKind, useNotices } from '@/store/notices'
 
@@ -13,7 +13,7 @@ export type NoticeOpts = {
   /** Ms; `Infinity` is sticky until dismissed or acted on. */
   duration?: number
   action?: NoticeAction
-  /** Second button (sonner compat). */
+  /** Second button, as toasts had. */
   cancel?: NoticeAction
 }
 

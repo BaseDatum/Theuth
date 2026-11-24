@@ -53,7 +53,7 @@ test('identical text and kind within 2 s bumps the time instead of adding a row'
   vi.advanceTimersByTime(1_999)
   notify.warning('Events dropped')
   expect(st().history).toHaveLength(1)
-  expect(st().history[0].at).toBe(Date.now())
+  expect(st().history[0]?.at).toBe(Date.now())
   notify.error('Events dropped')
   expect(st().history).toHaveLength(2)
   vi.advanceTimersByTime(2_000)
@@ -118,5 +118,5 @@ test('unread errors count fresh errors until the history is opened', () => {
 test('history keeps the newest 50', () => {
   for (let i = 0; i < HISTORY_CAP + 5; i++) notify(`n${i}`)
   expect(st().history).toHaveLength(HISTORY_CAP)
-  expect(st().history[0].text).toBe(`n${HISTORY_CAP + 4}`)
+  expect(st().history[0]?.text).toBe(`n${HISTORY_CAP + 4}`)
 })
