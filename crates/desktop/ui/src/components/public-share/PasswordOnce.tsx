@@ -4,7 +4,7 @@
 
 import { Copy, KeyRound } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { takePassword } from '@/components/public-share/actions'
 import { Button } from '@/components/ui/button'
 

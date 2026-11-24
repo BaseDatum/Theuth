@@ -1,6 +1,6 @@
 import { receiveComponent } from '@/rpc/bindings/receive'
 import type { UseNavigateResult } from '@tanstack/react-router'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { limitsArgs, limitValue, probeLine, refreshedText } from '@/components/settings/providers'
 import type { SettingsTabId } from '@/components/settings/registry'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'

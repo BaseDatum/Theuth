@@ -10,7 +10,7 @@ import type { Share, Stopped } from './wire'
 import { PublicShareStrip } from './PublicShareStrip'
 
 vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: unknown }) => h('a', null, children as never) }))
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), warning: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), warning: vi.fn() }) }))
 
 const live = (id: string): Share => ({
   id,

@@ -11,7 +11,7 @@
  */
 import { Ban, CircleCheck, Clock, Lock, LockOpen, TriangleAlert, Users } from 'lucide-react'
 import { type RefObject, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { engines } from '@/components/tasks/home'
 import { useMesh } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'

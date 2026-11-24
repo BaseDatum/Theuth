@@ -1,6 +1,6 @@
 import { ChevronRight } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { FailureText, useLinkFailure } from '@/components/link/LinkFailure'
 import { PairScreen } from '@/components/link/PairScreen'
 import { Button } from '@/components/ui/button'

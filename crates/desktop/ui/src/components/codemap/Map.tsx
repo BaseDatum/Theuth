@@ -9,7 +9,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { buildTreeRows, chainOf, defaultOpen, localSearch, type Mark, marksFor, parentsOf, progressLine } from '@/lib/codemap/map'
 import type { MapApi } from '@/lib/codemap/map-adapter'

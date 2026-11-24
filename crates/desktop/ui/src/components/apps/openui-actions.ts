@@ -1,4 +1,4 @@
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 
 /** OpenUI's typed `@CopyToClipboard(text)` action, handled locally by every app host. */
 export function copyToClipboard(params: Record<string, unknown>): void {

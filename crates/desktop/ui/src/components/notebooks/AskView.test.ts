@@ -5,7 +5,7 @@ import { type AskState, EMPTY_ASK, applyAskEvent } from '@/lib/ask-rpc'
 import type { Notebook } from "@/rpc/bindings/method.agent.output"
 import { AskStructure, hitsMarkdown, planSteps } from './AskView'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children }: { children?: unknown }) => createElement('a', null, children as never),
   getRouteApi: () => ({ useParams: () => ({ session: 's1' }) }),

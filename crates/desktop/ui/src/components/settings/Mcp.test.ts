@@ -12,7 +12,7 @@ import type { McpServerConfig } from '@/rpc/bindings/method.mcp_2dserver.input'
 import type { McpServerStatus } from "@/rpc/bindings/method.mcp_2dserver.output"
 import { Mcp, ready } from './Mcp'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
 // The app's own engine listens on a port of its own, not a fixed one.
 vi.mock('@/lib/tauri', async (original) => ({
   ...await original<typeof Tauri>(),

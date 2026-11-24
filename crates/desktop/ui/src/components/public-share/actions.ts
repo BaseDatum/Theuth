@@ -1,7 +1,7 @@
 // 210 §7.4: Stop and Stop all are never gated (no approval, no confirmation). The store follows `share.changed@1`;
 // a Stop all's `edge_pending` goes to the store so the strip and the cards say the edge stop is still pending.
 
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { type Stopped, shareApi } from '@/components/public-share/wire'
 import { supports } from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'

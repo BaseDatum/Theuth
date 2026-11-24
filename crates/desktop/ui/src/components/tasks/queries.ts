@@ -1,7 +1,7 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { errorText } from '@/components/settings/shared'
 import { queryKeys, useApi } from '@/lib/rpc'

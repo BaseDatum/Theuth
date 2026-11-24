@@ -16,6 +16,12 @@ type ConnectionStore = {
   error?: string
   /** 176 U3: the socket has been down past `ROUTER_GRACE_MS`; the local engine's router gives way to the startup screen. */
   outage: boolean
+  /** 217 §4: when the client's pending backoff redials; `null` when none is pending. */
+  retryAt: number | null
+  /** Redials since the last open. */
+  attempt: number
+  /** Cancel the backoff and dial now. */
+  retryNow(): void
   setConnState(state: ConnState): void
   setClient(client: RpcClient | null, api: Api | null): void
   setDiscovery(discovery: Discovery): void
@@ -27,13 +33,16 @@ export type ConnectionApi = StoreApi<ConnectionStore>
 
 /** One engine's connection (31 §7.4); `useConnection` reads the enclosing engine's. */
 export const createConnection = (): ConnectionApi =>
-  createStore<ConnectionStore>()((set) => ({
+  createStore<ConnectionStore>()((set, get) => ({
     state: 'connecting',
     client: null,
     api: null,
     discovery: disconnected(),
     info: null,
     outage: false,
+    retryAt: null,
+    attempt: 0,
+    retryNow: () => get().client?.retryNow(),
     setConnState: (state) => set({ state }),
     setClient: (client, api) => set({ client, api }),
     setDiscovery: (discovery) => set({ discovery }),
@@ -41,8 +50,6 @@ export const createConnection = (): ConnectionApi =>
     setError: (error) => set({ error }),
   }))
 
-/** 176 U3: a drop shorter than this shows no toast. */
-export const TOAST_GRACE_MS = 3_000
 /** 176 U3: the local engine keeps its router mounted (with a "Reconnecting…" pill) through a drop this long. */
 export const ROUTER_GRACE_MS = 10_000
 
@@ -56,36 +63,29 @@ export const routerMounted = (s: ConnectionStore, local: boolean, refused: boole
 export type Drops = {
   /** Feed every client state; an `open` that ends a drop returns its gap in ms. */
   next(s: ConnState): number | undefined
-  /** The client is gone: cancel the pending toast and outage. */
+  /** The client is gone: cancel the pending outage. */
   stop(): void
 }
 
 /**
- * 176 U3: one client's drops as the screen shows them. "Connection lost, reconnecting…" only once a drop has lasted
- * `TOAST_GRACE_MS` (`toast` answers whether it showed one), "Reconnected" only after that toast; `outage` after
- * `ROUTER_GRACE_MS`.
+ * 176 U3: one client's drops as the screen shows them: `outage` after `ROUTER_GRACE_MS`. 217: the status bar's dot and
+ * countdown are the only connection signal; nothing toasts.
  */
-export function watchDrops(conn: ConnectionApi, toast: (text: string) => boolean): Drops {
+export function watchDrops(conn: ConnectionApi): Drops {
   let downAt: number | undefined
-  let toasted = false
-  let toastTimer: number | undefined
   let outageTimer: number | undefined
   const stop = () => {
-    clearTimeout(toastTimer)
     clearTimeout(outageTimer)
-    toastTimer = outageTimer = undefined
+    outageTimer = undefined
   }
   return {
     next(s) {
       if (s === 'reconnecting' && downAt === undefined) {
         downAt = Date.now()
-        toastTimer = window.setTimeout(() => (toasted = toast('Connection lost, reconnecting…')), TOAST_GRACE_MS)
         outageTimer = window.setTimeout(() => conn.setState({ outage: true }), ROUTER_GRACE_MS)
       } else if (s === 'open' && downAt !== undefined) {
         stop()
         conn.setState({ outage: false })
-        if (toasted) toast('Reconnected')
-        toasted = false
         const gap = Date.now() - downAt
         downAt = undefined
         return gap

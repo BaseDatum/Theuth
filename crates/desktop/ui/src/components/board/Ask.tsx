@@ -6,7 +6,7 @@
 // first-message-creates-a-session when none is bound); a popped window sends the bound session's chat window instead.
 import { MessageSquareQuote } from 'lucide-react'
 import { type CSSProperties, type RefObject, useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { prefillDraft } from '@/components/chat/Composer'
 import { excerptLines } from '@/components/chat/surface/parse'
 import type { AttachRef } from '@/lib/attach'

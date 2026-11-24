@@ -1,4 +1,4 @@
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { useMesh } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import { useAttentionActions } from '@/components/hud/queries'

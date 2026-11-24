@@ -5,6 +5,8 @@ import { readLegacy, readTopic } from '@/rpc/topics'
 import { type ConnState, type DropReason, LocalTransport, type Transport } from '@/rpc/transport'
 
 export type { ConnState } from '@/rpc/transport'
+/** The pending backoff: `at` the redial time (`null` when none is pending), `attempt` the redials since the last open. */
+export type Retry = { at: number | null; attempt: number }
 
 /** A JSON-RPC error object, or a transport failure (`code` -32300). */
 export class RpcError extends Error {
@@ -63,6 +65,9 @@ export class RpcClient {
   #listeners = new Set<(s: ConnState) => void>()
   #attempt = 0
   #timer: ReturnType<typeof setTimeout> | undefined
+  /** 217 §4: when the pending backoff redials, for the status bar's countdown. */
+  #retry: Retry = { at: null, attempt: 0 }
+  #retryListeners = new Set<(r: Retry) => void>()
   #probe: ReturnType<typeof setTimeout> | undefined
   #closed = false
   #source: string | undefined
@@ -95,6 +100,7 @@ export class RpcClient {
       if (this.#closed || generation !== this.#generation) return
       if (s === 'open') {
         this.#attempt = 0
+        this.#setRetry(null)
         void this.#negotiate(generation)
       } else if (s === 'reconnecting') this.#schedule()
     })
@@ -175,12 +181,29 @@ export class RpcClient {
     return () => this.#listeners.delete(cb)
   }
 
+  /** Observe the backoff deadline; called immediately. Returns the unlisten. */
+  onRetry(cb: (r: Retry) => void): () => void {
+    this.#retryListeners.add(cb)
+    cb(this.#retry)
+    return () => this.#retryListeners.delete(cb)
+  }
+
+  /** Skip the pending backoff and dial now; a failure schedules the next attempt as usual. */
+  retryNow(): void {
+    if (this.#closed || !this.#timer) return
+    clearTimeout(this.#timer)
+    this.#timer = undefined
+    this.#setRetry(null)
+    this.#t.connect().catch(() => this.#schedule())
+  }
+
   /** Close for good: no reconnect, pending calls rejected, subscriptions dropped. */
   close(): void {
     this.#closed = true
     clearTimeout(this.#timer)
     clearTimeout(this.#probe)
     this.#timer = this.#probe = undefined
+    this.#setRetry(null)
     this.#subs.clear()
     this.#bySubId.clear()
     if (typeof document !== 'undefined') {
@@ -287,6 +310,7 @@ export class RpcClient {
       clearTimeout(this.#timer)
       this.#timer = undefined
       this.#attempt = 0
+      this.#setRetry(null)
       this.#t.connect().catch(() => this.#schedule())
     } else if (!this.#t.loopback) this.probe()
   }
@@ -323,8 +347,10 @@ export class RpcClient {
   #schedule(): void {
     if (this.#closed || this.#timer) return
     const delay = backoff(this.#attempt++)
+    this.#setRetry(Date.now() + delay)
     this.#timer = setTimeout(() => {
       this.#timer = undefined
+      this.#setRetry(null)
       if (this.#closed) return
       this.#t.connect().catch(() => this.#schedule())
     }, delay)
@@ -402,5 +428,11 @@ export class RpcClient {
     if (this.#state === s) return
     this.#state = s
     for (const cb of this.#listeners) cb(s)
+  }
+
+  #setRetry(at: number | null): void {
+    if (this.#retry.at === at && this.#retry.attempt === this.#attempt) return
+    this.#retry = { at, attempt: this.#attempt }
+    for (const cb of this.#retryListeners) cb(this.#retry)
   }
 }

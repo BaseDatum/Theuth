@@ -1,5 +1,5 @@
 import { Copy, RotateCw } from 'lucide-react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { FileView, fileMeta, highlightedLines, langOf, linesOf, useFileFollow, useFileView } from '@/components/code/FileView'
 import type { FileProps } from '@/components/tiles/open'
 import { TileFrame } from '@/components/tiles/TileFrame'

@@ -1,6 +1,6 @@
 import { Link, useNavigate } from '@tanstack/react-router'
 import { FlaskConical, MessageSquarePlus, Play, Plus } from 'lucide-react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Pulse } from '@/components/chat/Pulse'
 import { useDreamStatus } from '@/components/dreaming/queries'
 import { KEY as AUTORESEARCH_KEY, useAutoresearchApi, useStudies } from '@/components/autoresearch/queries'

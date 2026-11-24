@@ -1,7 +1,7 @@
 // Owner: U2
 import { MoreHorizontal, Play } from 'lucide-react'
 import { type KeyboardEvent, useEffect } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { isApple } from '@/lib/chord'

@@ -6,7 +6,7 @@ import type { ContextEstimate } from "@/rpc/bindings/method.agent.output"
 import { ContextLine } from './ChatColumn'
 
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@/components/chat/Composer', () => ({ Composer: () => null }))
 vi.mock('@/components/chat/Transcript', () => ({ Transcript: () => null }))
 vi.mock('@/components/sidebar/AgentTree', () => ({ ago: () => '' }))

@@ -5,7 +5,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { MessageSquare, X } from 'lucide-react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { ExportChip, useChatMachine, who } from '@/components/settings/Contacts'
 import { Empty, Row, Section, errorText, useAction } from '@/components/settings/shared'
 import { type SharingKind, type SharingPartial, type SharingRow, ended, useSharingList } from '@/components/settings/sharing-wire'

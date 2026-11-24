@@ -24,7 +24,7 @@ import { RotationProgress, UnpairBody, UnpairDialog, useRotation } from './Unpai
 
 const state = vi.hoisted(() => ({ on: false }))
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<object>()), useNavigate: () => vi.fn() }))
 // Portals render nothing on the server: the dialogs' content renders in place. `state.on` (the DOM tests) uses the real ones.
 vi.mock('@/components/ui/dialog', async (original) => {

@@ -3,7 +3,7 @@
 // relay-linked client (§5.3) — streams the mic in and plays the Opus leg out through `speech.ts`.
 
 import { useSyncExternalStore } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { chime } from '@/lib/cue'
 import { closeTap, openTap, type Tap, wireTap } from '@/lib/mic-tap'
 import * as speech from '@/lib/speech'

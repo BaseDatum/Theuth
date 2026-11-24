@@ -2,7 +2,7 @@
 // form remembered one in `localStorage['meeting-settings'].model`: one toast, one RPC. Shown once either way; the
 // answer lives under its own key beside `meeting-settings` (that store's fields are untouched).
 
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import type { MeetingSettings } from "@/rpc/bindings/method.meeting.output"
 
 /** Beside `lib/meeting-settings.ts`'s `meeting-settings`; any value = already offered. */

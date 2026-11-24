@@ -6,7 +6,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
 // "not available yet" — the page renders the empty state and toasts the rejection.
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Fragment, useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { LineChartView } from '@/components/chat/surface/diagrams/LineChart'
 import { ConfigFlagRow, useConfigFlag } from '@/components/settings/ConfigFlagRow'
 import { flagRuns } from '@/components/settings/flag-runs'

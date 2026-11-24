@@ -1,21 +1,35 @@
-import { getCurrentWindow } from '@tauri-apps/api/window'
-import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification'
-import { container } from '@/lib/platform'
-import { isTauri } from '@/lib/tauri'
+// 217 §1: the drop-in for the toast library this replaced, same call shapes. Every notice lands in the status bar's
+// slot (the phone line on a phone) and its history; nothing covers the UI.
 
-/** 25 §4.5: a system notification only when the user is not looking at the window. */
-export async function notifyIfHidden(title: string, body: string): Promise<void> {
-  if (!isTauri()) return
-  if (document.hasFocus() && (await getCurrentWindow().isVisible())) return
-  const granted = (await isPermissionGranted()) || (await requestPermission()) === 'granted'
-  if (granted) sendNotification({ title, body })
+import { type NoticeAction, type NoticeKind, useNotices } from '@/store/notices'
+
+export type { NoticeAction, NoticeKind }
+
+export type NoticeOpts = {
+  /** Same id replaces in place (progress → done/error). */
+  id?: string | number
+  /** Second line; shown in history, truncated in the slot. */
+  description?: string
+  /** Ms; `Infinity` is sticky until dismissed or acted on. */
+  duration?: number
+  action?: NoticeAction
+  /** Second button, as toasts had. */
+  cancel?: NoticeAction
 }
 
-/**
- * iOS shows the permission prompt only while the app is on screen, and the first
- * `notifyIfHidden` runs precisely when it is not (31 §8): ask once at launch.
- */
-export async function primeNotifications(): Promise<void> {
-  if (container() !== 'ios' || (await isPermissionGranted())) return
-  await requestPermission()
-}
+const emit =
+  (kind: NoticeKind) =>
+  (text: string, o: NoticeOpts = {}): string | number =>
+    useNotices.getState().push({ ...o, kind, text })
+
+const base = emit('info')
+
+export const notify = Object.assign((text: string, o?: NoticeOpts) => base(text, o), {
+  message: base,
+  info: base,
+  success: emit('done'),
+  warning: emit('warn'),
+  error: emit('error'),
+  loading: emit('progress'),
+  dismiss: (id?: string | number) => useNotices.getState().dismiss(id),
+})

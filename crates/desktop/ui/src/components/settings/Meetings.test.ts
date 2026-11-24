@@ -8,7 +8,7 @@ import type { MeetingSettings } from "@/rpc/bindings/method.meeting.output"
 import type { ModelInfo } from "@/rpc/bindings/method.agent.output"
 import { DEFAULT_LIVE_TOOLS, MeetingDefaults, MeetingDetection, MeetingLive, added, echoSummary } from './Meetings'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@/lib/tauri', () => ({ setHiddenFromCapture: vi.fn() }))
 vi.mock('@/components/sidebar/ProjectStyle', () => ({ ProjectIcon: () => null }))
 

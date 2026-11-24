@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { queryKeys } from '@/lib/rpc'
 import type { Api } from '@/rpc/bindings/client'
 import type { DocSummary } from "@/rpc/bindings/method.agent.output"

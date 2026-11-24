@@ -1,6 +1,6 @@
 // "jump to message" (Sky, 2026-11-10): a send card asks; the transcript that renders the session scrolls, through its
 // own virtualiser. Nothing here belongs to the card, so the card's row leaving the virtual window mid-jump cannot stop it.
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { create } from 'zustand'
 import { disclosureKey, useToolRuns } from '@/lib/tool-runs'
 import type { Entry } from '@/store/sessions'

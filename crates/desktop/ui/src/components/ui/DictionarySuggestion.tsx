@@ -5,7 +5,7 @@
 
 import { Play } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { decode } from '@/lib/base64'
 import { type Suggestion, clearSuggestion } from '@/lib/dictation'

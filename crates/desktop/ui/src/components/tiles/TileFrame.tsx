@@ -1,5 +1,5 @@
 import { AppWindow, X } from 'lucide-react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { createContext, type ReactNode, useContext } from 'react'
 import { SidebarToggle } from '@/components/chat/SidebarToggle'
 import { Button } from '@/components/ui/button'

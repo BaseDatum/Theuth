@@ -27,7 +27,7 @@ vi.mock('@tanstack/react-router', async (original) => ({
   ...(await original<typeof Router>()),
   Link: ({ children }: { children: ReactNode }) => createElement('a', null, children),
 }))
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
 
 const client = () => new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
 const F = ATTENTION_FIXTURE

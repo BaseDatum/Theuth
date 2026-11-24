@@ -3,7 +3,7 @@
 // every `CellEvent` hint for the scope — events are hints only, the record is always re-read, never replayed.
 import { createStore, useStore } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
-import { notifyIfHidden } from '@/lib/notify'
+import { notifyIfHidden } from '@/lib/os-notify'
 import type { Api } from '@/rpc/bindings/client'
 import { RpcError } from '@/rpc/client'
 import type { CellLatest } from "@/rpc/bindings/method.cells.output"

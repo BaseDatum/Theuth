@@ -7,7 +7,7 @@ import { JsonRenderFence } from '../JsonRenderFence'
 import { parseSpec } from '../parse'
 import { type LoopData, loopDesc, loopLayout, LoopSvg } from './Loop'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { message: vi.fn(), error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { message: vi.fn(), error: vi.fn() }) }))
 vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
 vi.mock('@/components/ui/tooltip', () => ({ Tooltip: ({ children }: { children: unknown }) => children, TooltipTrigger: ({ children }: { children: unknown }) => children, TooltipContent: () => null }))
 vi.mock('@/lib/theme', () => ({ subscribeDark: () => () => {} }))

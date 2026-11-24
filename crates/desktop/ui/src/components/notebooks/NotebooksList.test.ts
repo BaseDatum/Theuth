@@ -10,7 +10,7 @@ import type { AskSummary } from "@/rpc/bindings/method.agent.output"
 import { NotebooksList } from './NotebooksList'
 
 const env = vi.hoisted(() => ({ search: {} as Record<string, unknown> }))
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children, to, params }: { children?: unknown; to: string; params?: Record<string, string> }) =>
     createElement('a', { href: Object.entries(params ?? {}).reduce((p, [k, v]) => p.replace(`$${k}`, v), to) }, children as never),

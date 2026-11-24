@@ -334,11 +334,12 @@ function Sidebar({
       />
       {/* The shell's own height (`h-band`: `--visible-band`, lib/viewport.ts), never a CSS viewport unit: the iOS/iPadOS
        * webview can leave `100svh` stale and short for the life of the page, which squeezed the rail's scrolling middle
-       * (between its fixed header and Settings) to nothing until the app restarted. */}
+       * (between its fixed header and Settings) to nothing until the app restarted. 217: less the status bar under it
+       * (`--statusbar-h`, set by the shell; unset where there is no bar). */}
       <div
         data-slot="sidebar-container"
         className={cn(
-          'fixed inset-y-0 z-10 hidden h-band w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear group-data-[resizing=true]:transition-none md:flex',
+          'fixed top-0 z-10 hidden h-band max-h-[calc(var(--visible-band)_-_var(--statusbar-h,0px))] w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear group-data-[resizing=true]:transition-none md:flex',
           side === 'left'
             ? 'left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]'
             : 'right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]',
@@ -353,7 +354,7 @@ function Sidebar({
         <div
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
-          className="flex h-full w-full flex-col bg-sidebar pt-[var(--safe-top)] pb-[var(--safe-bottom)] pl-[var(--safe-left)] group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow-sm"
+          className="flex h-full w-full flex-col bg-sidebar pt-[var(--safe-top)] pb-[var(--safe-bottom)] pl-[var(--safe-left)] group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow-sm md:pb-0"
         >
           {children}
         </div>

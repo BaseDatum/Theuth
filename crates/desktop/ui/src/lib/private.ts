@@ -6,7 +6,7 @@
 
 import type { AnyRouter } from '@tanstack/react-router'
 import { useEffect } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { queryKeys } from '@/lib/rpc'
 import { useEngines } from '@/link/engines'
 import { forgetPrivate } from '@/lib/files'

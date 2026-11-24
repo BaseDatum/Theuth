@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { useModels } from '@/components/agents/queries'
 import { bootDecision, onboardingHere } from '@/lib/onboarding/detect'
 import { useOnboarding, useOnboardingFlag } from '@/lib/onboarding/state'

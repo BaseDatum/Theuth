@@ -12,7 +12,7 @@ import type { DocSummary } from "@/rpc/bindings/method.agent.output"
 import type * as Hooks from './useNotebook'
 import { NotesColumn } from './NotesColumn'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children, to, search }: { children?: unknown; to: string; search?: Record<string, unknown> }) => createElement('a', { href: to, 'data-search': JSON.stringify(search ?? {}) }, children as never),
   useNavigate: () => vi.fn(),

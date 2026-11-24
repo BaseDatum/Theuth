@@ -1,7 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { Square, Volume2 } from 'lucide-react'
 import { type Ref, memo, useCallback, useRef, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { head } from '@/components/attention/Bundle'
 import { usePacket } from '@/components/attention/queries'
 import { Badge } from '@/components/ui/badge'

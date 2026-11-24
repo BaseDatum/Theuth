@@ -1,7 +1,7 @@
 import { open as pickFolder } from '@tauri-apps/plugin-dialog'
 import { FolderOpen, MessageSquarePlus } from 'lucide-react'
 import { type ReactNode, useId, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'

@@ -20,7 +20,7 @@ import type { FirstContact } from "@/rpc/bindings/method.a2a.output"
 import type { UiEvent as WireEvent } from '@/store/ui-events'
 import { on, onTopic } from '@/store/sessions'
 import { HANDOFFS_KEY } from '@/store/sandboxes'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { movedToast } from '@/components/tasks/home'
 import { ACTIVITY_CAP, appendActivity } from './model'
 import { sceneFixture } from './scene/fixtures'

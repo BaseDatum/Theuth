@@ -20,7 +20,6 @@ import { Checklist } from '@/components/onboarding/Checklist'
 import { LinkPhoneDialog, useLinkPhone } from '@/components/onboarding/LinkPhoneDialog'
 import { Wizard } from '@/components/onboarding/Wizard'
 import { SidebarProvider } from '@/components/ui/sidebar'
-import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { index } from '@/lib/costs/cube'
 import { LIMITS_KEY } from '@/lib/costs/queries'
@@ -195,7 +194,6 @@ function Fixture() {
       <Guard>
         <View />
       </Guard>
-      <Toaster />
     </TooltipProvider>
   )
 }

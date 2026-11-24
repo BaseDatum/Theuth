@@ -14,7 +14,7 @@ import { SessionMenu } from './SessionMenu'
 import { ToolsSheet } from './ToolsSheet'
 import { useToolsSheet } from './tools-sheet'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
 vi.mock('@tanstack/react-router', async (original) => ({
   ...(await original<object>()),
   useNavigate: () => vi.fn(),

@@ -17,10 +17,10 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { toast } from "sonner";
 import { useText } from "@/components/chat/ArtifactCard";
 import { registerDiagramHosts } from "@/components/chat/surface/diagram-hosts";
 import { Button } from "@/components/ui/button";
+import { notify as toast } from "@/lib/notify";
 import { privateOwner } from "@/lib/private";
 import { useApi } from "@/lib/rpc";
 import { cn } from "@/lib/utils";

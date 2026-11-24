@@ -1,7 +1,7 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { Link } from '@tanstack/react-router'
 import { Eye } from 'lucide-react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { useQuery } from '@tanstack/react-query'
 import { queryKeys, useApi } from '@/lib/rpc'

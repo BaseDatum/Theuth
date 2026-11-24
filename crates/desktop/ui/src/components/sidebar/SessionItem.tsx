@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Archive, Brain, Check, Cog, Eye, type LucideIcon, MoreHorizontal, Network, PencilLine, Shrink, Timer, Trash2, Wrench } from 'lucide-react'
 import { type ComponentType, memo, type ReactNode, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import {
   AlertDialog,
   AlertDialogAction,

@@ -5,7 +5,7 @@
 
 import { useEffect } from 'react'
 import { applyStopped, loadMachines, loadShares } from '@/components/public-share/actions'
-import { notifyIfHidden } from '@/lib/notify'
+import { notifyIfHidden } from '@/lib/os-notify'
 import { isDesktop } from '@/lib/platform'
 import { onShareStoppedAll, shareTray } from '@/lib/tauri'
 import { useConnection } from '@/store/connection'

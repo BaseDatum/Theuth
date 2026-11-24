@@ -5,7 +5,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import {
   AlertDialog,
   AlertDialogAction,

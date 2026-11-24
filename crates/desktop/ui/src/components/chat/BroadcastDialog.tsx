@@ -1,7 +1,7 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Branch, GLYPH, ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -156,7 +156,7 @@ export function Form({ req, onDone }: { req: Request; onDone(): void }) {
       const lines = outcomeLines(receipt, sessions)
       ;(failed > 0 ? toast.warning : toast.success)(
         failed > 0 ? `Sent to ${receipt.rows.length - failed} of ${receipt.rows.length} sessions` : `Sent to ${receipt.rows.length} sessions`,
-        { description: <pre className="whitespace-pre-wrap font-sans">{lines.join('\n')}</pre> },
+        { description: lines.join('\n') },
       )
       onDone()
     } catch (e) {

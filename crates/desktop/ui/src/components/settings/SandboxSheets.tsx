@@ -1,7 +1,7 @@
 import { open as pickFolders } from '@tauri-apps/plugin-dialog'
 import { Camera, ChevronRight, FolderPlus, RotateCcw, Trash2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Field } from '@/components/agents/RuntimeAccessFields'
 import type { Action } from '@/components/settings/shared'
 import { age } from '@/components/tasks/helpers'

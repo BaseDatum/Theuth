@@ -7,7 +7,7 @@ import type * as RailModule from './Rail'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, createElement, type ComponentProps, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { openNewChat } from '@/components/chat/NewChatPane'
 import { createNote } from '@/components/notes/create'
@@ -24,7 +24,7 @@ vi.mock('@tanstack/react-router', () => ({
   useRouterState: ({ select }: { select(s: { location: { href: string; pathname: string } }): unknown }) => select({ location: { href: '/c/root', pathname: '/c/root' } }),
   Link: ({ to, params = {}, ...props }: ComponentProps<'a'> & { to: string; params?: Record<string, string>; preload?: string }) => createElement('a', { ...props, href: to.replace(/\$(\w+)/g, (_, key: string) => encodeURIComponent(params[key]!)) }),
 }))
-vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
+vi.mock('@/lib/notify', () => ({ notify: { error: vi.fn() } }))
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
 vi.mock('@/lib/popout', async (original) => ({ ...(await original<typeof Popout>()), canPopout: vi.fn(() => true), openPopout: vi.fn(async () => {}) }))
 vi.mock('@/lib/talk', async (original) => {

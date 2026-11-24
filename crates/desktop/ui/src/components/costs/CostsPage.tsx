@@ -5,7 +5,7 @@
 import { useNavigate } from '@tanstack/react-router'
 import { Download } from 'lucide-react'
 import { memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { SidebarLead } from '@/components/nav/SectionBand'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'

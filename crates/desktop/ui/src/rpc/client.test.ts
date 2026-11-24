@@ -168,6 +168,25 @@ test('foreground while connecting resets and redials at once', () => {
   expect(t.connects).toBe(1)
 })
 
+test('the backoff deadline is observable, and retryNow dials at once and clears it', () => {
+  vi.setSystemTime(1_000_000)
+  const t = new Fake()
+  const c = new RpcClient(t)
+  const seen: { at: number | null; attempt: number }[] = []
+  c.onRetry((r) => seen.push(r))
+  t.state('open')
+  t.state('reconnecting')
+  expect(seen.at(-1)).toEqual({ at: expect.any(Number), attempt: 1 })
+  expect(seen.at(-1)!.at).toBeGreaterThan(Date.now())
+  c.retryNow()
+  expect(t.connects).toBe(1)
+  expect(seen.at(-1)).toEqual({ at: null, attempt: 1 })
+  t.state('open')
+  expect(seen.at(-1)).toEqual({ at: null, attempt: 0 })
+  c.retryNow()
+  expect(t.connects).toBe(1)
+})
+
 test('a send in flight when the socket drops is rejected at once, not left hanging', async () => {
   const t = new Fake()
   const c = new RpcClient(t)

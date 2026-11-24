@@ -4,7 +4,7 @@ import { expect, test, vi } from 'vitest'
 import { MermaidFence, svgCache, svgKey } from './Mermaid'
 
 vi.mock('mermaid', () => ({ default: { initialize: vi.fn(), render: vi.fn() } }))
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { message: vi.fn(), error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { message: vi.fn(), error: vi.fn() }) }))
 vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
 vi.mock('@/components/ui/tooltip', () => ({ Tooltip: ({ children }: { children: unknown }) => children, TooltipTrigger: ({ children }: { children: unknown }) => children, TooltipContent: () => null }))
 vi.mock('@/lib/theme', () => ({ subscribeDark: () => () => {} }))

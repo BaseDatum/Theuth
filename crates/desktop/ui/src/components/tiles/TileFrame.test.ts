@@ -2,7 +2,7 @@ import '../settings/test-dom'
 import type * as Popout from '@/lib/popout'
 import { act, createElement as h } from 'react'
 import { createRoot } from 'react-dom/client'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { afterEach, expect, test, vi } from 'vitest'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { routed } from '@/lib/owner'
@@ -11,7 +11,7 @@ import { closeTile } from '@/lib/tiles'
 import { popOutAndClose, TileFrame } from './TileFrame'
 
 vi.mock('@/lib/popout', async (original) => ({ ...(await original<typeof Popout>()), canPopout: () => true, isPopout: () => false }))
-vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
+vi.mock('@/lib/notify', () => ({ notify: { error: vi.fn() } }))
 // Every session action (archive, delete, stop, move…) goes through `routed`: a pop-out must never reach it.
 vi.mock('@/lib/owner', async (original) => ({ ...(await original<object>()), routed: vi.fn() }))
 

@@ -17,7 +17,7 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import { Children, type ComponentProps, isValidElement, type ReactNode } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Separator } from '@/components/ui/separator'

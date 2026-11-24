@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { beforeEach, expect, test, vi } from 'vitest'
 import { queryKeys } from '@/lib/rpc'
 import type { DocSummary } from "@/rpc/bindings/method.agent.output"
@@ -7,7 +7,7 @@ import type { DocumentChanged } from "@/rpc/bindings/event.document_2echanged.ou
 import { dispatch } from '@/store/sessions'
 import { createNote } from './create'
 
-vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
+vi.mock('@/lib/notify', () => ({ notify: { error: vi.fn() } }))
 
 const row = (id: string, title = 'Old'): DocSummary => ({ id, kind: 'note', title, binding: 'note', created_ms: 1, updated_ms: 1, bytes: 0, project: null })
 const changed = (doc: string, over: Partial<DocumentChanged> = {}): DocumentChanged => ({

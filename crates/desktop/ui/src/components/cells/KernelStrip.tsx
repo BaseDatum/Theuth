@@ -2,7 +2,7 @@
 import { openPath } from '@tauri-apps/plugin-opener'
 import { ChevronDown, MoreHorizontal } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { isDesktop } from '@/lib/platform'

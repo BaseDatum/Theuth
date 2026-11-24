@@ -24,14 +24,14 @@ import { dispatch } from '@/store/sessions'
 import { useConnection } from '@/store/connection'
 import { Dialog } from '@/components/ui/dialog'
 import { AddContact, CeremonyBody, type CeremonyView, ContactAccess, Contacts, ContactsTab, OLD_ENGINE, ShareDialog, SharingItems } from './Contacts'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { A2aSection } from './Communication'
 import { SharedChatsTab } from './SharingHub'
 import { CommunicationNotice, useCommunication } from '@/components/chat/CommunicationNotice'
 import type { A2AStatus as A2aStatus } from "@/rpc/bindings/method.a2a.output"
 import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
 // PlainScreens -> attention/shared -> attention/Page -> routes/c.$session -> chat/Transcript -> lib/nudges reads localStorage at import.
 vi.hoisted(() => vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined }))
 const navigate = vi.hoisted(() => vi.fn())
