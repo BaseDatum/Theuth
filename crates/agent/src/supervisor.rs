@@ -3953,7 +3953,7 @@ impl Message<UseSkill> for Agents {
                 sid,
                 Some(InputId::new()),
                 text,
-                Vec::new(),
+                m.files,
                 None,
                 InputOrigin::External,
                 Delivery::Steer,
@@ -20741,6 +20741,82 @@ pub(crate) mod tests {
             usage: crate::Usage::default(),
             context: 0,
         }
+    }
+
+    /// `use_skill(s)` with attachments: the skill's input carries them exactly as a
+    /// `send_input`'s do, the `<skill>` text first, then one `Binary` part per file, in
+    /// the user row the turn opens with. Without files it stays a plain text input.
+    #[tokio::test]
+    async fn use_skill_files_ride_on_the_skill_input() {
+        let (scratch, a) = agents_with(false).await;
+        let dir = skills::dir(&a.rt.data_dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("review.md"), "Review carefully.\n").unwrap();
+        let shot = scratch.path().join("shot.png");
+        let mut bytes = Vec::new();
+        let mut enc = png::Encoder::new(&mut bytes, 4, 4);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut w = enc.write_header().unwrap();
+        w.write_image_data(&[200u8, 30, 30].repeat(16)).unwrap();
+        drop(w);
+        std::fs::write(&shot, bytes).unwrap();
+        let mut rx = tap(&a.rt).await;
+        let store = a.store.clone();
+        let (agents, chat) = rooted(a).await;
+        let user_rows = |history: Vec<(i64, ChatMessage)>| {
+            history
+                .into_iter()
+                .filter(|(_, m)| m.role == genai::chat::ChatRole::User)
+                .map(|(_, m)| m)
+                .collect::<Vec<_>>()
+        };
+
+        agents
+            .ask(UseSkill {
+                session: Some(chat),
+                names: vec!["review".into()],
+                args: "look at this".into(),
+                files: vec![shot.clone()],
+            })
+            .await
+            .unwrap();
+        let text = next_turn(&mut rx, chat).await;
+        assert!(text.contains("<skill name=\"review\">") && text.contains("look at this"), "{text}");
+        let (_, _, history) = store.frame(chat).await.unwrap();
+        let rows = user_rows(history);
+        let opener = rows.last().expect("the skill's user row");
+        let parts = opener.content.parts();
+        assert!(
+            matches!(parts.first(), Some(genai::chat::ContentPart::Text(t)) if t.contains("look at this")),
+            "{parts:?}"
+        );
+        let binaries = parts
+            .iter()
+            .filter(|p| matches!(p, genai::chat::ContentPart::Binary(_)))
+            .count();
+        assert_eq!(binaries, 1, "one image part for the one file: {parts:?}");
+
+        // No files: the same skill input as before the field existed.
+        agents.tell(finished(chat)).await.unwrap();
+        agents
+            .ask(UseSkill {
+                session: Some(chat),
+                names: vec!["review".into()],
+                args: "again".into(),
+                files: Vec::new(),
+            })
+            .await
+            .unwrap();
+        next_turn(&mut rx, chat).await;
+        let (_, _, history) = store.frame(chat).await.unwrap();
+        let rows = user_rows(history);
+        let plain = rows.iter().rev().find(|m| text_of(&m.content).contains("again")).expect("second row");
+        assert!(
+            !plain.content.parts().iter().any(|p| matches!(p, genai::chat::ContentPart::Binary(_))),
+            "{:?}",
+            plain.content
+        );
     }
 
     /// A root session and the actor over `a`.

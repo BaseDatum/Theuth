@@ -912,14 +912,14 @@ export function Composer({
       // Parked skills: the server builds one input from their `<skill>` bodies and these words — the pinned document
       // leading and the prompt suffix closing them, as a plain send's body — and the `once` suffix is spent with it
       // (`sendParked`). `TurnStarted` (idle) or `InputQueued` (running) echoes it as the skill card, so nothing is
-      // marked sent here. `use_skill(s)` carries no files: with files attached nothing is sent and the draft stays.
+      // marked sent here. The attached files ride on the same input, as a plain send's do; the box (words and files)
+      // clears once the engine took it, and a failure leaves it for a retry.
       if (!pick && session && skills.length) {
-        const { text: words, files: attached } = expand(line, pastes)
-        if (attached.length) throw new Error('Files cannot go with a skill yet: send them in their own message, or remove the skill.')
-        reset()
+        const { text: words, files } = expand(line, pastes)
         mode(session)
         if (running && interject) await api.cancel(session, null, 'input')
-        await sendParked(api, session, pinned ? compose([pinned], words) : words, suffixChat)
+        await sendParked(api, session, pinned ? compose([pinned], words) : words, suffixChat, files)
+        reset()
         return
       }
       const expanded = expand(line, pick ? EMPTY.pastes : pastes)
