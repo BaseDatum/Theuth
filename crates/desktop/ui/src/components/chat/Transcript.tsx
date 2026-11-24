@@ -27,6 +27,7 @@ import { type Row, buildRows } from './rows'
 import { type Anchor, step } from './scroll-anchor'
 import { ToolRunCard } from './ToolRunCard'
 import { settleOn, takeJump, useTranscriptJump } from './jump'
+import { followViewport } from './viewport-follow'
 
 const PAGE = 60
 /** Distance from the bottom (px) within which new content keeps the view pinned. */
@@ -310,6 +311,18 @@ export function Transcript({ session, compact = false }: { session: string; comp
     height.current = el.scrollHeight
     if (stuck.current) el.scrollTop = el.scrollHeight
   })
+  // The viewport itself changed height with the content unchanged — the "Next:" block or the composer below took or
+  // gave back room — so the effect above never runs: re-pin when the view was at the bottom, before paint.
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    let last = el.clientHeight
+    const ro = new ResizeObserver(() => {
+      last = followViewport(el, stuck.current, last)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   // The compensated half of a rest write, in the same commit as the moved positions. Pinned, the effect above owns
   // the position (the bottom moved by the same amount).
   useLayoutEffect(() => {
