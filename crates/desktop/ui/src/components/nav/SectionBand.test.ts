@@ -16,6 +16,8 @@ vi.mock('@/components/ui/sidebar', () => ({
   useSidebar: () => ({ open: env.open, isMobile: env.isMobile, rail: env.rail, toggleSidebar: () => {} }),
 }))
 vi.mock('@/components/sidebar/SearchTrigger', () => ({ SearchTrigger: () => null }))
+// 215's Library overview strip under the band has its own data; the band's tests are about the band.
+vi.mock('@/components/library/Overview', () => ({ LibraryOverview: () => null }))
 vi.mock('@/lib/popout', () => ({ isPopout: () => env.popout !== null, get POPOUT() { return env.popout } }))
 vi.mock('@/lib/hotkeys', () => ({ isMacDesktop: () => env.mac }))
 vi.mock('@/store/connection', async (original) => {

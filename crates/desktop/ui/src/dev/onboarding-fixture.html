@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>215 onboarding fixture</title>
+    <script src="/theme.js"></script>
+    <link rel="stylesheet" href="/theme.css" />
+    <script>
+      // The checklist and the Library strip show only in the desktop shell (`hasLocal()`): pretend to be one for those
+      // two views, before any module reads it. Every Tauri call still fails; nothing here needs one.
+      if (/[?&]view=(checklist|library)\b/.test(location.search))
+        window.__TAURI_INTERNALS__ = {
+          metadata: { currentWindow: { label: 'main' }, currentWebview: { windowLabel: 'main', label: 'main' } },
+          invoke: () => Promise.reject(new Error('fixture: no Tauri')),
+          transformCallback: () => 0,
+          convertFileSrc: (p) => p,
+        }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/dev/onboarding-fixture.tsx"></script>
+  </body>
+</html>

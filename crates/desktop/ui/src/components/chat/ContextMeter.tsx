@@ -68,6 +68,7 @@ export function ContextMeter({ session, memory, compact, row }: { session: strin
   const pill = (
     <NumberFlowGroup>
       <span
+        data-tour={row ? undefined : 'chat-context'}
         className={cn('rounded-full border px-2.5 py-0.5 text-xs whitespace-nowrap tabular-nums', tone)}
         title={`${estimated ? 'Estimated context (≈) until the provider reports' : 'Context window used'}${compact ? '' : ' · last turn prefix cache hit rate'}${warn}`}
       >

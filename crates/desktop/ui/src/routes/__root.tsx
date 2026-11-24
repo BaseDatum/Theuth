@@ -24,6 +24,7 @@ import type { SearchRequest } from '@/lib/search'
 import { pageTitle } from '@/lib/nav'
 import { POPOUT, isPopout } from '@/lib/popout'
 import { isIsland, isOverlay } from '@/lib/tauri'
+import { OnboardingHost } from '@/components/onboarding/OnboardingHost'
 
 /** 03 §0.1: the island webview gets no sidebar, search or hotkeys — just its route; the trail overlay (96 §5.3) likewise. A popout gets the routed column alone. */
 export const Route = createRootRoute({ component: isIsland() || isOverlay() ? Outlet : isPopout() ? Popped : Root })
@@ -83,6 +84,8 @@ function Root() {
       <Capability required={studyRequirements} hide><StudyDraftBridge /></Capability>
       <DragOverlay />
       <PublicShareHost />
+      {/* 215: first-run wizard, upgrade toast and tours; the host itself stays out of pop-outs and remote engines. */}
+      <OnboardingHost />
       <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">
         {/* 210 §7.4 item 1: over every route while anything of the mesh is public. */}
         <PublicShareStrip />

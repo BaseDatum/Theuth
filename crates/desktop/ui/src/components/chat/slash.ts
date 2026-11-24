@@ -6,7 +6,7 @@ import type { SettingsTabId } from '@/components/settings/registry'
 import { gitUrl, mcpEntry } from '@/lib/mcpEntry'
 import { queryKeys } from '@/lib/rpc'
 import { openSearch } from '@/lib/search'
-import { LOCAL, useEngines } from '@/link/engines'
+import { LOCAL, hasLocal, useEngines } from '@/link/engines'
 import type { Api } from '@/rpc/bindings/client'
 import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
 import type { HarnessCommand } from "@/rpc/bindings/method.agent.output"
@@ -23,6 +23,10 @@ import { openContextPicker } from './ContextPicker'
 import { SHAKE_USAGE, SHAKE_WORDS } from './shake'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { useToolsSheet } from './tools-sheet'
+import { onboardingHere } from '@/lib/onboarding/detect'
+import { useOnboarding } from '@/lib/onboarding/state'
+import { isPopout } from '@/lib/popout'
+import { isIsland, isOverlay } from '@/lib/tauri'
 
 /** Slash commands (`tui::model::COMMANDS`): name, argument hint, description. */
 export const COMMANDS: readonly { name: string; hint: string; desc: string }[] = [
@@ -120,6 +124,7 @@ export const COMMANDS: readonly { name: string; hint: string; desc: string }[] =
   { name: '/sessions', hint: '', desc: 'switch session (search, sessions only)' },
   { name: '/resume', hint: '<id>', desc: 'open a session' },
   { name: '/new', hint: '', desc: 'start a new session' },
+  { name: '/onboarding', hint: '', desc: 'restart the welcome tour (desktop app)' },
   {
     name: '/clear',
     hint: '',
@@ -382,6 +387,15 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       return
     case '/new':
       await navigate({ to: '/new' })
+      return
+    // 215: as Settings › General › App › Restart the welcome tour; the wizard exists only where `OnboardingHost` runs.
+    case '/onboarding':
+      if (!onboardingHere({ hasLocal: hasLocal(), active: useEngines.getState().active, local: LOCAL, popout: isPopout(), island: isIsland(), overlay: isOverlay() })) {
+        toast.message('Open the desktop app on this computer to restart onboarding.')
+        return
+      }
+      useOnboarding.getState().reset()
+      useOnboarding.getState().openWizard('welcome')
       return
     // 148 R1: a pick is this chat's only — the engine switches the session; with no session yet the draft keeps
     // it until the first send creates the session (never `set_model(null, …)`, which would set the default).

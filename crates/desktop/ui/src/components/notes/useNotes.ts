@@ -2,11 +2,14 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { queryKeys, useApi } from '@/lib/rpc'
 
-/** The notes list, newest update first (59 §7.3); boards are notes too (71 §2.11). `DocumentChanged` invalidates it. */
-export function useNotes() {
+/**
+ * The notes list, newest update first (59 §7.3); boards are notes too (71 §2.11). `DocumentChanged` invalidates it.
+ * `enabled: false` reads the cache only (215's Library strip while it is hidden).
+ */
+export function useNotes(enabled = true) {
   const canQuery1 = useQuerySupport(["doc_list"])
   const api = useApi()
-  return useQuery({ enabled: canQuery1,
+  return useQuery({ enabled: enabled && canQuery1,
     queryKey: queryKeys.notes,
     queryFn: async () => {
       const [notes, boards] = await Promise.all([api.doc_list('note', 500), api.doc_list('board', 500)])

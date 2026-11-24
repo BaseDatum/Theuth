@@ -442,6 +442,43 @@ pub(crate) fn test_rpc_module(server: Server) -> jsonrpsee::RpcModule<Server> {
         );
     }
 
+    /// 215: `onboarding.completed` round-trips under that wire name, reads `false` when
+    /// absent (never a restart, whatever the boot config says), and `set` writes
+    /// `onboarding.completed` beside the file's other lines and comments.
+    #[tokio::test]
+    async fn config_flag_onboarding_completed() {
+        let key = ConfigFlagKey::OnboardingCompleted;
+        assert_eq!(serde_json::to_value(key).unwrap(), "onboarding.completed");
+        assert_eq!(
+            serde_json::from_value::<ConfigFlagKey>("onboarding.completed".into()).unwrap(),
+            key
+        );
+        let flag = |on: bool| serde_json::json!({ "key": "onboarding.completed", "enabled": on, "running": on, "restart_required": false });
+        let (v, _dir) =
+            config_flag_call("", None, "config_flag_get", r#"["onboarding.completed"]"#).await;
+        assert_eq!(v["result"], flag(false), "default: {v}");
+        let (v, _dir) = config_flag_call(
+            "onboarding:\n  completed: true\n",
+            Some("onboarding:\n  completed: false\n"),
+            "config_flag_get",
+            r#"["onboarding.completed"]"#,
+        )
+        .await;
+        assert_eq!(v["result"], flag(false), "file wins: {v}");
+        let (v, dir) = config_flag_call(
+            "",
+            Some("agent:\n  model: x  # keep\n"),
+            "config_flag_set",
+            r#"["onboarding.completed", true]"#,
+        )
+        .await;
+        assert_eq!(v["result"], flag(true), "{v}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.yaml")).unwrap(),
+            "agent:\n  model: x  # keep\n\nonboarding:\n  completed: true\n"
+        );
+    }
+
     /// 212 §15: `set_peek_threshold` writes `knowledge.peek_threshold` inside 0.05–0.95 and
     /// refuses anything else with the Settings message, writing nothing.
     #[tokio::test]

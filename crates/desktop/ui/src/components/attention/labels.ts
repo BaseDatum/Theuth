@@ -45,8 +45,20 @@ export function stopWord(stop: AttentionStop | null | undefined): string {
 /** The chip a card shows: a stopped session's outcome word, else the kind's. */
 export const chipLabel = (item: Pick<AttentionItem, 'id' | 'kind' | 'stop'>): string => (item.kind === 'finished' ? stopWord(item.stop) : itemLabel(item))
 
-/** The list's empty state (101, 104). */
-export const ATTENTION_EMPTY = 'Nothing needs you. Agents\u2019 questions and what they show you, tool approvals, decisions agents escalate, hires, blocked or review tasks, budgets at 80 %, unreachable nodes, desktop hand-offs, secret requests, stopped sessions and turns a restart could not finish cleanly land here.'
+/**
+ * The list's empty state (101, 104; 215 explains what arrives and why): agents work on their own and stop here only
+ * when they need you, so an empty Inbox is the good case.
+ */
+export const ATTENTION_EMPTY = {
+  title: 'Nothing needs you right now',
+  intro: 'Agents keep working on their own and come here only when they need you, so you can leave them running and check back.',
+  kinds: [
+    { id: 'approval', label: 'Approvals', text: 'a command or file change waiting for your yes or no' },
+    { id: 'ask', label: 'Questions', text: 'an agent asks you something, or escalates a decision' },
+    { id: 'finished', label: 'Finished work', text: 'what agents show you, and sessions that stopped' },
+    { id: 'alert', label: 'Alerts', text: 'budgets at 80 %, unreachable machines, secret requests, hand-offs, blocked tasks' },
+  ],
+} as const
 
 /** 126: every id the double may have keyed this item's card by — the approval, the ask, the packet, or the `double:<question_id>` item itself. */
 export const doubleIds = (item: AttentionItem): (string | null | undefined)[] => [item.approval, item.ask?.id, item.packet, item.decision, item.kind === 'double' ? item.id.replace(/^double:/, '') : null]

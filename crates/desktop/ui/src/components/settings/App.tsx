@@ -14,6 +14,8 @@ import { useUpdate } from '@/lib/update'
 import { INITIAL, diagnostics } from '@/lib/link-status'
 import { LOCAL, useEngines } from '@/link/engines'
 import { useConnection } from '@/store/connection'
+import { useOnboardingHere } from '@/components/onboarding/OnboardingHost'
+import { useOnboarding } from '@/lib/onboarding/state'
 
 const AUTOSTART = ['autostart'] as const
 const APP_VERSION = ['app-version'] as const
@@ -25,6 +27,7 @@ export function App() {
   const api = useApi()
   const qc = useQueryClient()
   const info = useConnection((s) => s.info)
+  const onboarding = useOnboardingHere()
   // Autostart and app updates belong to the desktop shell with its own daemon (31 §9).
   const desktop = useEngines((s) => s.active) === LOCAL && isDesktop()
   const autostart = useQuery({
@@ -78,6 +81,23 @@ export function App() {
                 {check.isPending ? 'Checking…' : 'Check for updates'}
               </Button>
             )}
+          </Row>
+        </Section>
+      )}
+      {onboarding && (
+        // 215: back to Welcome with the checklist, visits and tours reset; finishing or skipping sets the flag again.
+        <Section title="Onboarding">
+          <Row label="Welcome tour" description="Connect a model, pick a default and start a first chat again, then take the tour.">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                useOnboarding.getState().reset()
+                useOnboarding.getState().openWizard('welcome')
+              }}
+            >
+              Restart the welcome tour
+            </Button>
           </Row>
         </Section>
       )}

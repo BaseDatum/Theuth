@@ -1,0 +1,102 @@
+import { ArrowRight, Check, Cpu, LoaderCircle } from 'lucide-react'
+import { RadioGroup } from 'radix-ui'
+import { useState } from 'react'
+import { useModels } from '@/components/agents/queries'
+import { ModelCombobox } from '@/components/chat/ModelCombobox'
+import { errorText } from '@/components/settings/shared'
+import { Button } from '@/components/ui/button'
+import { useApi } from '@/lib/rpc'
+import { useQuerySupport } from '@/rpc/capabilities'
+import { useConnection } from '@/store/connection'
+import { CARD, Facts, StepFrame } from './Frame'
+import { contextLabel, modelFacts, providerLabel, recommendModels } from './content'
+
+/** Step 2 of 3: three to five good defaults from what is connected (the provider just connected first), or any model. */
+export function DefaultModel({ prefer, onBack, onNext }: { prefer: string | null; onBack(): void; onNext(): void }) {
+  const api = useApi()
+  const can = useQuerySupport(['set_model'])
+  const models = useModels().data ?? []
+  const info = useConnection((s) => s.info)
+  const current = info?.default_model
+  const recs = recommendModels(models, prefer, current)
+  const [picked, setPicked] = useState<string | null>(null)
+  const [state, setState] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null })
+  const chosen = picked ?? (recs.some((m) => m.id === current) ? current : recs[0]?.id) ?? null
+  const chosenModel = models.find((m) => m.id === chosen)
+  const name = chosenModel?.name ?? chosen
+  // 194 D5: the effort chips of the saved default only; a model not saved yet has no default effort to change.
+  const effort =
+    chosenModel && chosen === current && chosenModel.efforts.length > 0
+      ? { levels: chosenModel.efforts, current: info?.default_effort, onSelect: (level: string | null) => void api.set_effort(null, level, true) }
+      : undefined
+  const save = async () => {
+    if (!chosen || chosen === current || !can) return onNext()
+    setState({ busy: true, error: null })
+    try {
+      // `session: null` + `manual` sets the default; `info` follows through `DefaultModelChanged`.
+      await api.set_model(null, chosen, true)
+      onNext()
+    } catch (e) {
+      setState({ busy: false, error: errorText(e) })
+    }
+  }
+  return (
+    <StepFrame
+      eyebrow="Step 2 of 3"
+      title="Pick your default model"
+      description="Every new chat starts on it. You can switch any chat to another model at any time."
+      aside={
+        chosenModel && (
+          <div key={chosenModel.id}>
+            <Facts icon={<Cpu className="size-5" />} title={chosenModel.name} facts={modelFacts(chosenModel)} />
+          </div>
+        )
+      }
+      back={
+        <Button variant="ghost" onClick={onBack} className="text-fg-secondary">
+          Back
+        </Button>
+      }
+      primary={
+        <Button size="lg" onClick={() => void save()} disabled={state.busy}>
+          {state.busy && <LoaderCircle className="animate-spin motion-reduce:animate-none" />}
+          {chosen ? `Use ${name}` : 'Continue'} <ArrowRight />
+        </Button>
+      }
+    >
+      {recs.length === 0 ? (
+        <p className="max-w-2xl rounded-xl border border-border-subtle bg-layer-2 p-5 text-sm text-fg-secondary">
+          No models yet. Connect one in the previous step, or continue and add one later in Settings › Models.
+        </p>
+      ) : (
+        <div className="flex max-w-2xl flex-col gap-5">
+          <RadioGroup.Root value={chosen ?? ''} onValueChange={setPicked} aria-label="Recommended models" className="grid gap-3 sm:grid-cols-2">
+            {recs.map((m) => (
+              <RadioGroup.Item
+                key={m.id}
+                value={m.id}
+                className={`${CARD} group relative flex flex-col gap-1 p-4 data-[state=checked]:border-fg-accent data-[state=checked]:bg-layer-3 data-[state=checked]:shadow-[inset_0_0_0_1px_var(--fg-accent)]`}
+              >
+                <span className="pr-6 text-[15px] font-medium text-foreground">{m.name}</span>
+                <span className="text-[13px] text-fg-secondary">{[providerLabel(m.provider), contextLabel(m.context), m.local ? 'on this computer' : ''].filter(Boolean).join(' · ')}</span>
+                {m.id === current && <span className="text-[12px] text-fg-tertiary">Current default</span>}
+                <RadioGroup.Indicator className="absolute top-4 right-4 text-fg-accent">
+                  <Check className="size-4" aria-hidden />
+                </RadioGroup.Indicator>
+              </RadioGroup.Item>
+            ))}
+          </RadioGroup.Root>
+          <div className="flex flex-wrap items-center gap-3 text-sm text-fg-secondary">
+            <span aria-hidden>Or choose from every model</span>
+            <ModelCombobox aria-label="See all models" className="w-72 max-w-full" models={models} value={chosen} effort={effort} onChange={(id) => id && setPicked(id)} />
+          </div>
+          {state.error && (
+            <p role="alert" className="text-[13px] text-danger">
+              {state.error}
+            </p>
+          )}
+        </div>
+      )}
+    </StepFrame>
+  )
+}

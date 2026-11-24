@@ -517,7 +517,7 @@ function ComposerModelBody(props: Props) {
   const { effort: harnessEffort } = harnessGroups(m.harness ?? [])
   const effortLabel = m.agent ? harnessCurrent(harnessEffort, harnessEffort && m.pending[harnessEffort.id]) : m.effort
   const onOpenChange = (o: boolean) => (setOpen(o), !o && setAdvisor(false))
-  const trigger = <QuietModelTrigger size="sm" className={QUIET} name={m.agent ? harnessLabel(m) : m.name} effort={effortLabel} local={!m.agent && m.current?.local} />
+  const trigger = <QuietModelTrigger data-tour="chat-model" size="sm" className={QUIET} name={m.agent ? harnessLabel(m) : m.name} effort={effortLabel} local={!m.agent && m.current?.local} />
   // Above the input the list is capped by the visible band (a short window, the keyboard), as in `ModelCombobox`.
   const list = 'max-h-[min(24rem,calc(var(--visible-band)-6rem))]'
   return (

@@ -34,6 +34,7 @@ import { AttentionBadge } from '@/components/hud/AttentionBadge'
 import { useCanRecord } from '@/components/meeting/MeetingList'
 import { settings } from '@/components/chat/slash'
 import { errorText } from '@/components/settings/shared'
+import { Checklist } from '@/components/onboarding/Checklist'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { sectionOf } from '@/lib/nav'
 import { canPopout, noteOpenMode, openPopout } from '@/lib/popout'
@@ -182,7 +183,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             </RailTip>
             <Capability required={attentionRequirements} hide>
               <RailTip label="Inbox">
-                <Link to="/attention" aria-label="Inbox" className={RAIL_ITEM} data-active={section === 'attention' || undefined}>
+                <Link to="/attention" aria-label="Inbox" className={RAIL_ITEM} data-active={section === 'attention' || undefined} data-tour="nav-inbox">
                   <Inbox />
                   <AttentionBadge className="absolute -top-0.5 -right-0.5 ml-0 h-4 min-w-4 px-1 text-center text-[10px] leading-4 ring-2 ring-sidebar" />
                 </Link>
@@ -224,21 +225,21 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             )}
             {agentsTab && (
               <RailTip label="Agents">
-                <Link to={agentsTab.to} aria-label="Agents" className={RAIL_ITEM} data-active={section === 'agents' || undefined}>
+                <Link to={agentsTab.to} aria-label="Agents" className={RAIL_ITEM} data-active={section === 'agents' || undefined} data-tour="nav-agents">
                   <Bot />
                 </Link>
               </RailTip>
             )}
             {libraryTab && (
               <RailTip label="Library">
-                <Link to={libraryTab.to} aria-label="Library" className={RAIL_ITEM} data-active={section === 'library' || undefined}>
+                <Link to={libraryTab.to} aria-label="Library" className={RAIL_ITEM} data-active={section === 'library' || undefined} data-tour="nav-library">
                   <Library />
                 </Link>
               </RailTip>
             )}
             <Capability required={costsRequirements} hide>
               <RailTip label="Costs">
-                <Link to="/costs" preload="intent" aria-label="Costs" className={RAIL_ITEM} data-active={section === 'costs' || undefined}>
+                <Link to="/costs" preload="intent" aria-label="Costs" className={RAIL_ITEM} data-active={section === 'costs' || undefined} data-tour="nav-costs">
                   <ChartColumn />
                 </Link>
               </RailTip>
@@ -253,6 +254,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
                 aria-label="Settings"
                 className={RAIL_ITEM}
                 data-active={section === 'settings' || undefined}
+                data-tour="nav-settings"
                 onClick={() => void settings(navigate, 'appearance')}
               >
                 <Settings />
@@ -316,7 +318,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             />
             <NewChatOnMenu />
           </SidebarMenuItem>
-          <Capability required={attentionRequirements} hide><SidebarMenuItem className="group/popout-row">
+          <Capability required={attentionRequirements} hide><SidebarMenuItem className="group/popout-row" data-tour="nav-inbox">
             <SidebarMenuButton asChild isActive={section === 'attention'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <Link to="/attention">
                 <Inbox /> Inbox
@@ -373,7 +375,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
               <SidebarPopoutButton target={{ kind: 'page', path: '/meetings/new' }} className="top-2 right-2" />
             </SidebarMenuItem>
           )}
-          {agentsTab && (<SidebarMenuItem className="group/popout-row">
+          {agentsTab && (<SidebarMenuItem className="group/popout-row" data-tour="nav-agents">
             <SidebarMenuButton asChild isActive={section === 'agents'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <Link to={agentsTab.to}>
                 <Bot /> Agents
@@ -382,7 +384,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             <SidebarPopoutButton target={{ kind: 'page', path: agentsTab.to }} className="top-2 right-2" />
           </SidebarMenuItem>)}
           {/* Artifacts first (Sky, 2026-09-27): the most-opened Library entry; `/library` redirects there too. */}
-          {libraryTab && (<SidebarMenuItem className="group/popout-row">
+          {libraryTab && (<SidebarMenuItem className="group/popout-row" data-tour="nav-library">
             <SidebarMenuButton asChild isActive={section === 'library'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <Link to={libraryTab.to}>
                 <Library /> Library
@@ -391,7 +393,7 @@ export function AppSidebar({ session }: { session: string | undefined }) {
             <SidebarPopoutButton target={{ kind: 'page', path: libraryTab.to }} className="top-2 right-2" />
           </SidebarMenuItem>)}
           {/* Sky, 2026-11-02: the costs dashboard (160) gets its own row; the HUD SPEND button stays too. */}
-          <Capability required={costsRequirements} hide><SidebarMenuItem className="group/popout-row">
+          <Capability required={costsRequirements} hide><SidebarMenuItem className="group/popout-row" data-tour="nav-costs">
             <SidebarMenuButton asChild isActive={section === 'costs'} className={cn('h-9 rounded-[10px] px-2.5', pad)}>
               <Link to="/costs" preload="intent">
                 <ChartColumn /> Costs
@@ -405,8 +407,9 @@ export function AppSidebar({ session }: { session: string | undefined }) {
       </SidebarContent>
       <div ref={setBarEl} className="shrink-0 empty:hidden" />
       <SidebarFooter className="px-1.5">
+        <Checklist />
         <SidebarMenu>
-          <SidebarMenuItem className="group/popout-row">
+          <SidebarMenuItem className="group/popout-row" data-tour="nav-settings">
             {/* 188: Settings is a page; a phone opens its category list first. */}
             <SidebarMenuButton
               isActive={section === 'settings'}

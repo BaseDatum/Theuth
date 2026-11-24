@@ -125,7 +125,8 @@ pub trait CompositionApi {
     async fn set_event_focus(&self, sessions: Vec<SessionId>) -> RpcResult<()>;
     /// 188: one [`ConfigFlagKey`] (`decision.enabled`, `a2a.enabled`, `computer.enabled`,
     /// `double.enabled`, `web.allow_private_network`, `browser.allow_private_network`,
-    /// and 212 §15's `agent.status_tool`, `agent.auto_title`, `agent.suggestions`, `knowledge.peek`) as
+    /// 212 §15's `agent.status_tool`, `agent.auto_title`, `agent.suggestions`, `knowledge.peek`,
+    /// and 215's `onboarding.completed`) as
     /// config.yaml holds it and as this engine started with it. Node-level, never
     /// forwarded; any other key is `INVALID_PARAMS` naming them.
     #[method(name = "config_flag_get")]
@@ -667,15 +668,13 @@ pub(super) trait SettingsConfigExt {
 
 impl SettingsConfigExt for Server {
     /// 188: `key` in config.yaml now (read fresh) and in the boot config (never re-read).
-    /// 212 §15: a loop switch runs what the file holds (applied to new sessions at once).
+    /// 212 §15: a loop switch runs what the file holds (applied to new sessions at once);
+    /// so does 215's `onboarding.completed`, which only the UI reads.
     fn config_flag(&self, key: ConfigFlagKey) -> ConfigFlag {
         use figment::providers::{Format, Yaml};
         let file = figment::Figment::from(Yaml::file_exact(self.rt.data_dir.join("config.yaml")));
         let enabled = key.read(&file);
-        let running = match key.live() {
-            Some(_) => enabled,
-            None => key.read(&self.rt.config),
-        };
+        let running = if key.restartless() { enabled } else { key.read(&self.rt.config) };
         ConfigFlag {
             key,
             enabled,

@@ -4,7 +4,7 @@ import { createContext, type FocusEvent, type KeyboardEvent, useCallback, useCon
 import { snoozeUntil } from '@/components/hud/model'
 import { SEEN_ON_SCREEN, useAttention } from '@/components/hud/queries'
 import { SidebarLead } from '@/components/nav/SectionBand'
-import { ChevronLeft, Plus } from 'lucide-react'
+import { Bell, ChevronLeft, CircleCheck, type LucideIcon, MessageCircleQuestion, Plus, ShieldCheck } from 'lucide-react'
 import { NewChat } from '@/components/chat/NewChatPane'
 import { LiveSession } from '@/routes/c.$session'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { cn } from '@/lib/utils'
+import { useOnboarding } from '@/lib/onboarding/state'
 import type { AttentionItem } from '@/rpc/bindings/method.roster.output'
 import { BulkBar } from './BulkBar'
 import { Card, StackCard } from './Card'
@@ -88,6 +89,30 @@ export const CONTROL = 'button,a,input,textarea,select,[contenteditable="true"],
 /** Cards without a countdown get this coarse clock, so a per-second tick re-renders only the cards that count down. */
 const COARSE_MS = 15_000
 
+/** 215: the empty Inbox explains itself: what lands here and why it is empty most of the time. */
+const EMPTY_ICON: Record<(typeof ATTENTION_EMPTY.kinds)[number]['id'], LucideIcon> = { approval: ShieldCheck, ask: MessageCircleQuestion, finished: CircleCheck, alert: Bell }
+function Empty() {
+  return (
+    <div className="m-3 rounded-xl border border-border-subtle bg-elevated/60 px-4 py-4">
+      <p className="text-sm font-medium">{ATTENTION_EMPTY.title}</p>
+      <p className="mt-1 text-[13px] leading-relaxed text-fg-secondary">{ATTENTION_EMPTY.intro}</p>
+      <ul className="mt-3 flex flex-col gap-2">
+        {ATTENTION_EMPTY.kinds.map(({ id, label, text }) => {
+          const Icon = EMPTY_ICON[id]
+          return (
+            <li key={id} className="flex items-start gap-2.5 text-[13px] leading-snug">
+              <Icon aria-hidden className="mt-px size-4 shrink-0 text-[var(--fg-accent)]" />
+              <span className="text-fg-tertiary">
+                <span className="font-medium text-fg-secondary">{label}</span> · {text}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
 /**
  * `/attention` (101 D6, 207 §6): the 52 px header, then a 440 px rail with the toolbar and ONE flat, virtualised list of
  * cards in the engine's order (or the chosen sort) beside the selected item's screen (`<Outlet/>`). Under `md` one pane
@@ -108,6 +133,7 @@ function PaneBar({ onBack }: { onBack: () => void }) {
 }
 
 export function Page() {
+  useEffect(() => useOnboarding.getState().markVisited('inbox'), [])
   const sidebar = useSidebar()
   const mac = isMacDesktop()
   const attention = useAttention()
@@ -349,7 +375,7 @@ export function Page() {
           <GraphRegion items={items} live={live.length} highlight={graphHighlight} focus={graphFocus} subtree={filter.subtree?.session ?? null} onSubtree={onSubtree} onOpenSession={openChat} />
         </div>
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          <aside className={cn('w-full shrink-0 flex-col border-r border-border-subtle md:flex md:w-[440px]', active || pane !== 'attention' ? 'hidden' : 'flex')}>
+          <aside data-tour="inbox-list" className={cn('w-full shrink-0 flex-col border-r border-border-subtle md:flex md:w-[440px]', active || pane !== 'attention' ? 'hidden' : 'flex')}>
             {attention.isPending ? (
               <div className="flex flex-col gap-3 p-3">
                 <Skeleton className="h-24 w-full" />
@@ -359,7 +385,7 @@ export function Page() {
             ) : attention.isError ? (
               <p className="p-3 text-sm text-danger">{attention.error.message}</p>
             ) : live.length === 0 ? (
-              <p className="m-3 rounded-lg border border-dashed border-border-subtle px-3 py-3 text-sm text-fg-tertiary">{ATTENTION_EMPTY}</p>
+              <Empty />
             ) : (
               <>
                 <Toolbar filter={filter} sort={sort} kinds={kinds} projects={projects} searchRef={searchRef} onFilter={(f) => setView({ filter: f, sort })} onSort={(s) => setView({ filter, sort: s })} />
