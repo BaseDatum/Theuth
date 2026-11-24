@@ -116,9 +116,10 @@ export function ConnectModel({ onConnected, onBack, onNext }: { onConnected(prov
           <RadioGroup.Root value={mode} onValueChange={(v) => setMode(v as Mode)} aria-label="How to connect" className="grid gap-3 sm:grid-cols-3">
             {MODES.map(({ id, icon: Icon, label, hint }) => (
               <RadioGroup.Item key={id} value={id} className={`${CARD} flex flex-col gap-1.5 p-4 data-[state=checked]:border-fg-accent data-[state=checked]:bg-layer-3 data-[state=checked]:shadow-[inset_0_0_0_1px_var(--fg-accent)]`}>
+                {/* Its own line above the title: a tag beside it does not fit a third of the column. */}
+                {id === 'subscription' && <span className="w-fit rounded-full bg-layer-1 px-2 py-0.5 text-[11px] font-medium text-fg-accent">Recommended</span>}
                 <span className="flex items-center gap-2 text-sm font-medium text-foreground">
-                  <Icon className="size-4 text-fg-accent" aria-hidden /> {label}
-                  {id === 'subscription' && <span className="ml-auto rounded-full bg-layer-1 px-2 py-0.5 text-[11px] font-medium text-fg-secondary">Recommended</span>}
+                  <Icon className="size-4 shrink-0 text-fg-accent" aria-hidden /> {label}
                 </span>
                 <span className="text-[13px] text-fg-secondary">{hint}</span>
               </RadioGroup.Item>
@@ -208,8 +209,9 @@ function Subscriptions({ login: state, setLogin }: { login: Login; setLogin(f: (
       {offered(SUBSCRIPTIONS).map(card)}
       {extra.length > 0 && (
         <>
-          <button type="button" aria-expanded={more} onClick={() => setMore(!more)} className="flex w-fit items-center gap-1 rounded-md py-1 text-sm text-fg-secondary hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
-            <ChevronDown className={`size-4 transition-transform motion-reduce:transition-none ${more ? 'rotate-180' : ''}`} aria-hidden /> More subscriptions
+          <button type="button" aria-expanded={more} onClick={() => setMore(!more)} className="inline-flex w-fit shrink-0 items-center gap-1 rounded-md py-1 text-sm whitespace-nowrap text-fg-secondary hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+            <ChevronDown className={`size-4 shrink-0 transition-transform motion-reduce:transition-none ${more ? 'rotate-180' : ''}`} aria-hidden />
+            <span>More subscriptions</span>
           </button>
           {more && extra.map(card)}
         </>
