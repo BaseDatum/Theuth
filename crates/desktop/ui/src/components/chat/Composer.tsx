@@ -78,7 +78,7 @@ import { AttachPicker } from './AttachPicker'
 import { SkillChips, SkillPicker, SkillsEntry } from './SkillPicker'
 import { SuffixList, SuffixScopes } from './SuffixPicker'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
-import { NextSteps, nextSteps } from './NextSteps'
+import { useNextPick } from './NextSteps'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
 import { MicButton } from './MicButton'
@@ -358,8 +358,8 @@ export function Composer({
   const keys = useShortcuts((s) => s.chords)
   const model = useSessionField(session ?? '', 'model')
   const parent = useSessionField(session ?? '', 'parent')
-  const sessionKind = useSessionField(session ?? '', 'kind')
-  const suggestions = useSessionField(session ?? '', 'suggestions')
+  /** A "Next:" pick for this session (`NextStepsSlot` above the background area), sent here as typed. */
+  const nextPick = useNextPick((s) => (session ? s.by[session] : undefined))
   const agent = useSessionField(session ?? '', 'agent')
   const harnessCommands = useSessionField(session ?? '', 'harnessCommands')
   const defaultModel = useConnection((s) => s.info?.default_model)
@@ -861,19 +861,23 @@ export function Composer({
   }
 
   /** Send `spoken` (a `[voice note …]` line) or the textarea; a voice send enters voice mode, a typed one leaves it (45 §7.2).
-   * `typed`: text just put in the box (a "What's next?" pick) — sent as if typed, before this render sees it.
+   * `typed`: a "Next:" pick — sent as a typed plain message, beside the box: the draft (text, held pastes, parked
+   * skills, an unsent retry) stays as it is, and a failed pick is a toast, not the unsent banner.
    * `interject` (⌘/Ctrl+Enter) mid-turn: cancel the turn, then queue; the queued message starts the next turn now.
    * The box keeps its text until the engine acks (70 SEND-NEVER-LOSES): a failure leaves it flagged `unsent` with the
    * banner, and the retry (Retry, or Enter again) reuses the client input id so the engine never takes it twice. */
   const submit = async (spoken?: string, interject = false, typed?: string) => {
+    const pick = typed !== undefined
     const line = spoken ?? typed ?? text.trim()
     if ((!line && !skills.length && !held) || busy || starting) return
     // 153 §6.1: the typed box after a dictation is what was actually sent — the engine learns single-word edits from it.
     if (spoken === undefined && typed === undefined && lastDictation.current) dictation.correction(api, lastDictation.current, line, me.current)
     lastDictation.current = null
     setBusy(true)
+    // Something is sent: the last turn's "Next:" suggestions are spent (typing alone keeps them).
+    if (session) useSessions.getState().dismissSuggestions(session)
     const mode = (id: string) => speech.setVoiceMode(id, spoken !== undefined)
-    const clientId = unsent ?? crypto.randomUUID()
+    const clientId = (!pick && unsent) || crypto.randomUUID()
     /** The session the input went to (a new chat's once created), and how — for the rollback in `catch`. */
     let target: string | null = session
     let steered = false
@@ -882,14 +886,14 @@ export function Composer({
     let elsewhere = false
     try {
       // D15: a harness command picked from the menu with its arguments typed after it — the harness's, sent as typed.
-      if (session && rawCmd && (line === rawCmd || line.startsWith(`${rawCmd} `))) {
+      if (!pick && session && rawCmd && (line === rawCmd || line.startsWith(`${rawCmd} `))) {
         reset()
         setRawCmd(null)
         await sendRaw(api, session, line)
         return
       }
-      setRawCmd(null)
-      if (line.startsWith('/skill:')) {
+      if (!pick) setRawCmd(null)
+      if (!pick && line.startsWith('/skill:')) {
         const [name = '', ...words] = line.slice('/skill:'.length).trim().split(/\s+/)
         if (!name) throw new Error('usage: /skill:<name>')
         // The words stay in the box: `reset()` then `setText` when this composer stays mounted; a new chat's
@@ -899,14 +903,14 @@ export function Composer({
         if (session) setText(words.join(' '))
         return
       }
-      if (isCommand(line, skillIndex?.map((s) => s.name) ?? null)) {
+      if (!pick && isCommand(line, skillIndex?.map((s) => s.name) ?? null)) {
         await run(line, ctx)
         reset()
         return
       }
       // Parked skills: the server builds one input from their `<skill>` bodies and these words; `TurnStarted`
       // (idle) or `InputQueued` (running) echoes it as the skill card, so nothing is marked sent here.
-      if (session && skills.length) {
+      if (!pick && session && skills.length) {
         reset()
         useSkillDraft.getState().clear(session)
         mode(session)
@@ -914,7 +918,7 @@ export function Composer({
         await sendSkills(api, session, skills, expand(line, pastes).text)
         return
       }
-      const expanded = expand(line, pastes)
+      const expanded = expand(line, pick ? EMPTY.pastes : pastes)
       // 59 §7.3: the pinned document leads every message, so its id survives compaction.
       // #3: the chat's prompt suffix closes every typed or spoken message (never a command or a skill).
       body = withSuffix(pinned ? compose([pinned], expanded.text) : expanded.text, suffix?.text)
@@ -924,8 +928,10 @@ export function Composer({
       const sent = [...pastes.values()].flatMap((p) => (p.kind === 'ref' ? [p.ref] : []))
       if (sent.length > 0) saveRecents(active, pushRecents(loadRecents(active), sent))
       // A voice note has no text in the box: park the line there so a failure has something to restore.
-      if (spoken && !text) setText(spoken)
-      useDrafts.getState().sending(draftKey, clientId)
+      if (!pick) {
+        if (spoken && !text) setText(spoken)
+        useDrafts.getState().sending(draftKey, clientId)
+      }
       if (session && running) {
         steered = true
         // 171F4 N7: the chip and then the `you` row show the attached files at once (the engine's echo has none).
@@ -987,18 +993,18 @@ export function Composer({
               : {}),
         })
       }
-      useDrafts.getState().acked(draftKey, spoken ?? typed ?? text)
+      if (!pick) useDrafts.getState().acked(draftKey, spoken ?? text)
       // #3: a "this message" suffix is spent; an "every message" one follows a new chat onto its session.
       useSuffixes.getState().sent(suffixChat)
       if (target && !session && !resolveSession) useSuffixes.getState().carry(suffixChat, target)
       retried.current = false
       ownerRetried.current = false
-      shelf.current = new Map()
+      if (!pick) shelf.current = new Map()
       setSelected(0)
       // A retry the engine already had starts no turn, so the row shown at once would stay a ghost: drop it. A
       // routed retry is either stamped by its `TurnStarted` already (then this is a no-op) or echoed by it after.
       // A steer's chip self-heals: the engine's `InputInjected` for the same id removes it.
-      if (unsent && target && !steered) useSessions.getState().unmarkSent(target, body)
+      if (!pick && unsent && target && !steered) useSessions.getState().unmarkSent(target, body)
       if (target && !session && !elsewhere) {
         if (onCreated) onCreated(target)
         else await navigate({ to: '/c/$session', params: { session: target } })
@@ -1028,9 +1034,9 @@ export function Composer({
           draining.nextOwner ? `moving to ${engineLabel(draining.nextOwner, mesh?.peers)} — retrying…` : `pausing for ${draining.reason} — retrying…`,
           { duration: 2000 },
         )
-        setTimeout(() => void submit(spoken, interject), 2000)
+        setTimeout(() => void submit(spoken, interject, typed), 2000)
       } else if (unreachable && target) useOwnerOffline.getState().park(target, unreachable)
-      else if (target && retryNotOwner(e, target, ownerRetried, () => void submit(spoken, interject), () => toast.error(e instanceof Error ? e.message : String(e)))) {
+      else if (target && retryNotOwner(e, target, ownerRetried, () => void submit(spoken, interject, typed), () => toast.error(e instanceof Error ? e.message : String(e)))) {
         // 183 §13 row 2: the owner changed under the send — the draft stays in the box; it goes once more when the new owner is known.
       } else toast.error(e instanceof Error ? e.message : String(e))
     } finally {
@@ -1306,24 +1312,12 @@ export function Composer({
     }
   }
 
-  // "What's next?" after the last turn: hidden while a turn runs, on watch-only and child chats, and as soon as the
-  // user starts a message of their own. A pick goes through `submit` exactly as if typed and sent.
-  const steps = session
-    ? nextSteps({
-        suggestions: suggestions,
-        running,
-        kind: sessionKind,
-        parent,
-        drafting: text.trim() !== '' || held || skills.length > 0,
-        blocked: readOnly || busy || !!starting || !!unsent,
-      })
-    : null
-  const pickStep = (item: string) => {
-    if (!session) return
-    useSessions.getState().dismissSuggestions(session)
-    setText(item)
-    void submit(undefined, false, item)
-  }
+  // A "Next:" pick is sent at once through `submit`, exactly as if typed and sent; `take` makes it one send.
+  useEffect(() => {
+    if (!session || nextPick === undefined || busy || starting) return
+    const item = useNextPick.getState().take(session)
+    if (item !== undefined) void submit(undefined, false, item)
+  }, [session, nextPick, busy, starting])
 
   return (
     <div className={cn('mx-auto w-full max-w-[768px]', compact ? 'px-2 pb-1' : 'px-4 pb-2')}>
@@ -1377,7 +1371,6 @@ export function Composer({
         </div>
       )}
       {session && !compact && <ContextPicker session={session} />}
-      {steps && <NextSteps items={steps} onPick={pickStep} compact={compact} />}
       <input
         ref={fileInput}
         type="file"
