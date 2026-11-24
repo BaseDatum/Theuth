@@ -268,7 +268,7 @@ export function NewChat({
         {/* The draft's model: the header's picker over the same `useDrafts.pick`; `/model` stays with the header's. */}
         <Capability required={modelRequirements} hide>
           <div className="mx-auto mb-2 flex w-full max-w-[768px] min-w-0 justify-center px-4">
-            <ModelMenu session={null} slash={false} />
+            <ModelMenu session={null} />
           </div>
         </Capability>
         {(priv && !privateSupported) || (endlessOn && !canQuery2) ? <Unavailable /> : <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} onUncreated={onUncreated} />}

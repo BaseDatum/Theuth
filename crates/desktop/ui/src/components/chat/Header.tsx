@@ -315,8 +315,9 @@ export function Header({
           </Link>
         </Button>
       ) : null,
+    // The new-chat page has its own picker right above the composer; the header's is for live sessions only.
     model: (mode) =>
-      mode === 'row' ? (
+      session === null ? null : mode === 'row' ? (
         <ModelRow session={session} onOpen={() => setPicker(true)} />
       ) : (
         <div className="min-w-0">
