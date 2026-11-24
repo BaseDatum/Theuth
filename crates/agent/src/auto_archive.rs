@@ -59,9 +59,9 @@ pub fn check_after(d: Duration) -> Result<Duration, String> {
 /// hours, humantime otherwise.
 pub fn format_after(d: Duration) -> String {
     let s = d.as_secs();
-    if s > 0 && s % 86_400 == 0 && d.subsec_nanos() == 0 {
+    if s > 0 && s.is_multiple_of(86_400) && d.subsec_nanos() == 0 {
         format!("{}d", s / 86_400)
-    } else if s > 0 && s % 3600 == 0 && d.subsec_nanos() == 0 {
+    } else if s > 0 && s.is_multiple_of(3600) && d.subsec_nanos() == 0 {
         format!("{}h", s / 3600)
     } else {
         humantime::format_duration(d).to_string().replace(' ', "")
