@@ -1,0 +1,160 @@
+/* 215: the driver.js popover restyled from the app's tokens (src/styles.css), so it reads as part of theuth in light
+ * and dark. Buttons follow src/components/ui/button (default = soot on bone, outline, ghost; 8 px radius, h-8). */
+
+:root {
+  /* The overlay's tint (driver's `overlayColor`, opacity 1): soot at rest, deeper in dark. */
+  --tour-overlay: rgb(26 22 18 / 0.42);
+  --tour-shadow: 0 18px 48px -12px rgb(26 22 18 / 0.32), 0 2px 6px rgb(26 22 18 / 0.08);
+}
+.dark {
+  --tour-overlay: rgb(0 0 0 / 0.62);
+  --tour-shadow: 0 18px 48px -12px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(232 220 200 / 0.04);
+}
+
+.driver-popover.theuth-tour {
+  font-family: var(--font-sans);
+  color: var(--fg-primary);
+  background-color: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: calc(var(--radius) + 2px);
+  box-shadow: var(--tour-shadow);
+  min-width: 272px;
+  max-width: 336px;
+  padding: 16px 16px 12px;
+}
+
+.theuth-tour .driver-popover-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0.1px;
+  color: var(--fg-primary);
+}
+.theuth-tour .driver-popover-title::before {
+  /* A short ochre rule over the title: the app's accent, quietly. */
+  content: '';
+  display: block;
+  width: 20px;
+  height: 2px;
+  margin-bottom: 10px;
+  border-radius: 2px;
+  background: var(--fg-accent);
+}
+.theuth-tour .driver-popover-title:not([style*='none']) + .driver-popover-description {
+  margin-top: 6px;
+}
+.theuth-tour .driver-popover-description {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg-secondary);
+}
+
+.theuth-tour .driver-popover-footer {
+  margin-top: 14px;
+  gap: 8px;
+}
+.theuth-tour .driver-popover-progress-text {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.4px;
+  color: var(--fg-tertiary);
+  white-space: nowrap;
+}
+.theuth-tour .driver-popover-navigation-btns {
+  gap: 4px;
+  align-items: center;
+}
+.theuth-tour .driver-popover-navigation-btns button + button {
+  margin-inline-start: 0;
+}
+
+/* Every footer button: the kit's sm size. */
+.theuth-tour .driver-popover-footer-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: calc(var(--radius) - 4px);
+  font: 500 12px/1 var(--font-sans);
+  text-shadow: none;
+  transition:
+    background-color 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+  outline: none;
+}
+.theuth-tour .driver-popover-footer-btn:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--fg-accent) 50%, transparent);
+}
+
+/* Next / Done: the default (primary) button. */
+.theuth-tour .driver-popover-next-btn {
+  color: var(--fg-inverse);
+  background-color: var(--fg-primary);
+  border: 1px solid var(--fg-primary);
+}
+.theuth-tour .driver-popover-next-btn:hover,
+.theuth-tour .driver-popover-next-btn:focus-visible {
+  background-color: color-mix(in srgb, var(--fg-primary) 90%, transparent);
+}
+
+/* Back: outline. */
+.theuth-tour .driver-popover-prev-btn {
+  color: var(--fg-primary);
+  background-color: transparent;
+  border: 1px solid var(--border-default);
+}
+.theuth-tour .driver-popover-prev-btn:hover,
+.theuth-tour .driver-popover-prev-btn:focus-visible {
+  background-color: var(--bg-layer-2);
+}
+/* No Back on the first step: the slot goes rather than showing a dead button. */
+.theuth-tour .driver-popover-prev-btn.driver-popover-btn-disabled {
+  display: none;
+}
+
+/* Skip tour: ghost, set apart on the left of the buttons. */
+.theuth-tour .theuth-tour-skip {
+  margin-inline-end: auto;
+  color: var(--fg-tertiary);
+  background-color: transparent;
+  border: 1px solid transparent;
+}
+.theuth-tour .theuth-tour-skip:hover,
+.theuth-tour .theuth-tour-skip:focus-visible {
+  color: var(--fg-primary);
+  background-color: var(--bg-layer-2);
+}
+
+/* The arrow takes the popover's surface; driver colours one side of a 5 px border. */
+.theuth-tour .driver-popover-arrow {
+  border-width: 6px;
+  border-color: var(--bg-elevated);
+}
+.theuth-tour .driver-popover-arrow-side-left {
+  border-top-color: transparent;
+  border-bottom-color: transparent;
+  border-right-color: transparent;
+}
+.theuth-tour .driver-popover-arrow-side-right {
+  border-top-color: transparent;
+  border-bottom-color: transparent;
+  border-left-color: transparent;
+}
+.theuth-tour .driver-popover-arrow-side-top {
+  border-bottom-color: transparent;
+  border-left-color: transparent;
+  border-right-color: transparent;
+}
+.theuth-tour .driver-popover-arrow-side-bottom {
+  border-top-color: transparent;
+  border-left-color: transparent;
+  border-right-color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .driver-fade .driver-overlay,
+  .driver-fade .driver-popover.theuth-tour {
+    animation: none;
+  }
+}
