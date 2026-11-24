@@ -2,7 +2,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Copy } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { AllowList, ChannelStatusRow, useChannelEvents } from '@/components/settings/Channels'
 import { Dot, Row, Section, useAction } from '@/components/settings/shared'
 import {

@@ -7,7 +7,7 @@ import type * as Rpc from '@/lib/rpc'
 import type { SharingList, SharingRow } from './sharing-wire'
 import { SharedNotesTab, SharingOverviewTab } from './SharingHub'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
 const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', async (original) => ({ ...(await original<object>()), useNavigate: () => navigate }))
 vi.mock('@/rpc/capabilities', () => ({ useQuerySupport: () => true }))

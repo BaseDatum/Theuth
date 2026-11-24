@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { shortSha } from '@/components/autoresearch/model'
 import { KEY, useAutoresearchApi, useMechanism, useMechanismFiles } from '@/components/autoresearch/queries'
 import { Empty, Row, Section, useAction } from '@/components/settings/shared'

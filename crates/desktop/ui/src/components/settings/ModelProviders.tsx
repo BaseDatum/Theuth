@@ -2,7 +2,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, Radar, RefreshCw, Trash2 } from 'lucide-react'
 import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import {
   builtinKeyNote,
   BUILTIN_LABEL,

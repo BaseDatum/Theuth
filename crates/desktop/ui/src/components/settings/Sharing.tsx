@@ -6,7 +6,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Copy } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { stopAllShares, stopShare } from '@/components/public-share/actions'
 import { PasswordOnce, useSharePassword } from '@/components/public-share/PasswordOnce'
 import { type EdgeState, type Expiry, type HeldName, type NameCheck, type PublishArgs, isNotOnEngine, namesApi, shareApi, useShareMethod } from '@/components/public-share/wire'

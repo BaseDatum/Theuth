@@ -7,7 +7,7 @@ import { NEW_TEMPLATE, templateBody } from '@/lib/meeting-templates'
 import type { Template as MeetingTemplate } from "@/rpc/bindings/method.meeting.output"
 import { type Draft, MeetingTemplates } from './MeetingTemplates'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 // CodeMirror needs a document; the editor is a marker carrying its value.
 vi.mock('@/components/agents/CharterEditor', () => ({ CharterEditor: ({ value }: { value: string }) => createElement('textarea', { 'data-editor': '', defaultValue: value }) }))
 

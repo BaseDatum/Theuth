@@ -3,7 +3,7 @@
 
 import { useMutation } from '@tanstack/react-query'
 import { CircleCheck, LoaderCircle, TriangleAlert } from 'lucide-react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { summaryTestStats } from '@/components/settings/providers'
 import { Button } from '@/components/ui/button'
 import { useApi } from '@/lib/rpc'

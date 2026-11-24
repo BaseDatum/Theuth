@@ -1,6 +1,6 @@
 import { type QueryKey, type UseMutationResult, useMutation, useQueryClient } from '@tanstack/react-query'
 import { isValidElement, type ReactNode, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'

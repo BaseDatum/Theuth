@@ -9,7 +9,7 @@ import type * as Rpc from '@/lib/rpc'
 import type { Entry } from "@/rpc/bindings/method.talk.output"
 import { BUILTIN_LIMIT, VoiceDictionary, entryFromForm, filterEntries, formFor, heardForms, spokenForms } from './VoiceDictionary'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 // The select registers its setter under its trigger's label (Radix does not open in jsdom).
 const selects: Record<string, (v: string) => void> = {}
 const SelectCtx = createContext<{ value?: string; onValueChange?: (v: string) => void }>({})

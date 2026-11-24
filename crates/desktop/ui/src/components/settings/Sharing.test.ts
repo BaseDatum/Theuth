@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, createElement as h } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { afterEach, expect, test, vi } from 'vitest'
 import { isNotOnEngine, namesApi, NotOnEngine } from '@/components/public-share/wire'
 import { makeApi } from '@/rpc/bindings/client'
@@ -13,7 +13,7 @@ import { useConnection } from '@/store/connection'
 import { usePublicShares } from '@/store/public-shares'
 import { ApprovalsOffWarning, availabilityText, CertificatesSection, certText, d22Text, DomainsTab, heldStateText, MachinesSection, MeshIdRow, NameSection, nameProblem, publishArgs, SharingTab, TermsSection } from './Sharing'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), warning: vi.fn(), message: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), warning: vi.fn(), message: vi.fn() }) }))
 
 const warning = (sharing: boolean, approvals: boolean | null) => renderToStaticMarkup(h(ApprovalsOffWarning, { sharing, approvals }))
 

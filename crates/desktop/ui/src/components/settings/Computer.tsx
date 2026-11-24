@@ -1,7 +1,7 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { ConfigFlagRow } from '@/components/settings/ConfigFlagRow'
 import { useFlagRuns } from '@/components/settings/flag-runs'
 import { Dot, Empty, Row, Section, errorText } from '@/components/settings/shared'

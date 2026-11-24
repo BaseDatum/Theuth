@@ -6,7 +6,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
 
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Dot, Empty, Row, Section, bounded, errorText, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'

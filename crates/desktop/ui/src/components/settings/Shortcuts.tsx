@@ -1,4 +1,4 @@
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { ChordInput, Empty, Row, Section } from '@/components/settings/shared'
 import { touch } from '@/lib/hotkeys'
 import { label } from '@/lib/chord'
