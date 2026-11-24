@@ -1154,3 +1154,23 @@ html .tg-enter {
     animation: none;
   }
 }
+/* 214 task graph relayout: cards glide to their new place, edges (remounted per layout) fade in on their new route. */
+html .tg-canvas .react-flow__node {
+  transition: transform 0.35s ease-in-out;
+}
+html .tg-canvas .tg-edge {
+  animation: tg-edge 0.3s ease-out 0.2s backwards;
+}
+@keyframes tg-edge {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html .tg-canvas .react-flow__node {
+    transition: none;
+  }
+  html .tg-canvas .tg-edge {
+    animation: none;
+  }
+}
