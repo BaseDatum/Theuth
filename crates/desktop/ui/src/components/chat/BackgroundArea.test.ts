@@ -11,6 +11,7 @@ import type { JobView } from '@/rpc/bindings/method.agent.output'
 import { useSessions } from '@/store/sessions'
 import type { UiEvent } from '@/store/ui-events'
 import { BackgroundArea, countdown } from './BackgroundArea'
+import { stripRows } from '@/lib/session-tree'
 
 const navigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({
@@ -236,6 +237,40 @@ test('dashes flank the grabber in palette order, cap each category, blink on out
   expect(after).not.toBe(before)
   expect(after?.className).toContain('subagent-blink')
   expect(groups[3]?.querySelector('.subagent-blink')).toBeNull()
+})
+
+test('many dashes wrap upward (wrap-reverse) inside the pane instead of running off its sides; order and the bottom row stay', async () => {
+  populate()
+  const st = useSessions.getState()
+  st.setChildren('s1', Array.from({ length: 24 }, (_, i) => child(`child${i}`)))
+  useSessions.setState((s) => ({ sessions: { ...s.sessions, s1: { ...s.sessions.s1!, jobs: new Set(Array.from({ length: 24 }, (_, i) => `j${i}`)), reminders: new Set(Array.from({ length: 24 }, (_, i) => `r${i}`)) } } }))
+  await mount(createElement(BackgroundArea, { session: 's1', trailing: createElement('span', null, 'Advisor idle') }))
+  const cls = (el: Element | null | undefined) => (el?.getAttribute('class') ?? '').split(/\s+/)
+  const row = document.querySelector('[data-dash-row]')!
+  // The bar sits level with the bottom (first) row of dashes, however many rows stack above.
+  expect(cls(row)).toContain('items-end')
+  expect(cls(row)).toContain('grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]')
+  const groups = [...row.querySelectorAll('div[aria-label]')]
+  expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['24 subagents running', '24 jobs', '1 terminals', '24 reminders'])
+  // Every dash run and the right side's run of groups wrap upward and may shrink; nothing clips or scrolls sideways.
+  const right = groups[1]!.parentElement!
+  for (const el of [...groups, right]) {
+    expect(cls(el)).toContain('flex-wrap-reverse')
+    expect(cls(el)).toContain('min-w-0')
+    expect(cls(el)).not.toContain('shrink-0')
+  }
+  expect(cls(groups[0])).toContain('justify-end')
+  for (const el of [row, ...row.querySelectorAll('*')]) {
+    expect(cls(el).filter((c) => /^overflow-(x-)?(auto|scroll|hidden)$/.test(c))).toEqual([])
+  }
+  // DOM order is the reading order: the first dashes fill the bottom row, overflow continues above left to right.
+  const spawned = stripRows(useSessions.getState().sessions.s1!.children).shown.map((r) => `/c/${r.id}`)
+  expect([...groups[0]!.querySelectorAll('a')].map((a) => a.getAttribute('href'))).toEqual(spawned)
+  // Tap targets keep their height; rows stack 12 px apart.
+  const hit = groups[1]!.querySelector('button')!
+  expect(cls(hit)).toEqual(expect.arrayContaining(['h-6', '-my-1']))
+  await click('Job j3 · show running jobs')
+  expect(useSessions.getState().sessions.s1).toMatchObject({ todosShown: true, jobsExpanded: true })
 })
 
 test.each([[60, 0, '1:00'], [3601, 0, '1:00:01'], [61, 500, '1:01'], [1, 1001, 'due now'], [1, 2000, 'due now']])('countdown(%s, %s)', (at, now, expected) => {

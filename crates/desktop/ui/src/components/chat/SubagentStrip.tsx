@@ -12,7 +12,8 @@ import { useScope } from '@/store/engine-scope'
 import { useSessionField } from '@/store/sessions'
 
 /** Each dash keeps a full-height hit target; the visible dash is the bar's 4px. */
-const DASH_HIT = 'group/dash flex h-6 shrink-0 items-center rounded px-px outline-none focus-visible:ring-2 focus-visible:ring-ring'
+/** 24 px tall to tap, 16 px of layout (`-my-1`): wrapped rows stack 12 px apart, the hit areas overlapping a little. */
+const DASH_HIT = 'group/dash -my-1 flex h-6 shrink-0 items-center rounded px-px outline-none focus-visible:ring-2 focus-visible:ring-ring'
 
 /** The subagent dashes, right-aligned against the grabber's left end; the "+N" sits at the outer (left) end. */
 export function SubagentDashes({ session }: { session: string }) {
@@ -20,7 +21,8 @@ export function SubagentDashes({ session }: { session: string }) {
   const { shown, more } = useMemo(() => stripRows(children ?? {}), [children])
   if (!shown.length) return null
   return (
-    <div className="flex shrink-0 items-center gap-px" aria-label={`${shown.length + more} subagents running`}>
+    // `wrap-reverse`: the dashes that fit stay on the bottom row (nearest the composer), the rest stack above in order.
+    <div className="flex min-w-0 flex-wrap-reverse items-center justify-end gap-px" aria-label={`${shown.length + more} subagents running`}>
       {more > 0 && <span className="mr-1 shrink-0 tabular-nums">+{more}</span>}
       {shown.map((row) => <SubagentLink key={row.id} row={row} className={cn(DASH_HIT, 'subagent-dash-in origin-right')}><ActivityDash color={backgroundColors[row.state.state === 'approval' ? 'approval' : 'subagents'].bg} beat={row.beat} /></SubagentLink>)}
     </div>
@@ -49,7 +51,7 @@ export function BackgroundDashes({ session }: { session: string }) {
   ] as const) {
     if (!ids?.size) continue
     groups.push(
-      <div key={category} className="flex shrink-0 items-center gap-px" aria-label={`${ids.size} ${category.toLowerCase()}`}>
+      <div key={category} className="flex min-w-0 flex-wrap-reverse items-center gap-px" aria-label={`${ids.size} ${category.toLowerCase()}`}>
         {[...ids].slice(0, STRIP_CAP).map((id) => {
           const label = category === 'Reminders' ? `Reminder ${id} · ${details?.get(id)?.message ?? 'pending'}` : `${category === 'Jobs' ? 'Job' : 'Terminal'} ${id} · ${category === 'Jobs' ? 'show running jobs' : 'open terminal'}`
           const dash = <ActivityDash color={color} beat={category === 'Reminders' ? undefined : beats?.[id]} />

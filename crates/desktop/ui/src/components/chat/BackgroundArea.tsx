@@ -111,17 +111,19 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
           )}
         </div>
       )}
-      {/* 1fr auto 1fr keeps the bar centred whatever each side holds; the sides clip rather than push it. Their -m-3 lets the
-          dashes reach into the button's padding so they sit a dash-gap from the bar's ends. */}
-      <div className="mx-auto grid min-h-6 w-full max-w-[768px] shrink-0 select-none grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center px-4 text-xs text-fg-tertiary">
-        <div className="pointer-events-none relative z-10 -mr-3 flex min-w-0 items-center justify-end overflow-hidden py-0.5 [&>*]:pointer-events-auto">
+      {/* 1fr auto 1fr keeps the bar centred whatever each side holds. A side that runs out of width wraps upward
+          (`flex-wrap-reverse`): the first dashes stay on the bottom row, level with the bar (`items-end`), the rest
+          stack above in the same order; nothing overflows the pane sideways. Their -m-3 lets the dashes reach into the
+          button's padding so they sit a dash-gap from the bar's ends. */}
+      <div data-dash-row="" className="mx-auto grid min-h-6 w-full max-w-[768px] shrink-0 select-none grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-end px-4 text-xs text-fg-tertiary">
+        <div className="pointer-events-none relative z-10 -mr-3 flex min-w-0 items-end justify-end py-0.5 [&>*]:pointer-events-auto">
           <SubagentDashes session={session} />
         </div>
         <button type="button" aria-expanded={shown} aria-controls={blockId} aria-label={label} title={label} onClick={() => store.getState().setTodosShown(session, !shown)} className="group flex h-5 w-16 shrink-0 cursor-pointer touch-manipulation select-none items-center justify-center rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
           <span className="h-1 w-9 rounded-full bg-fg-tertiary/40 transition-colors group-hover:bg-fg-secondary group-active:bg-fg-secondary" />
         </button>
-        <div className="pointer-events-none relative z-10 -ml-3 flex min-w-0 items-center gap-3 [&>*]:pointer-events-auto">
-          <div className="flex min-w-0 items-center justify-start gap-[7px] overflow-hidden py-0.5">
+        <div className="pointer-events-none relative z-10 -ml-3 flex min-w-0 items-end gap-3 [&>*]:pointer-events-auto">
+          <div className="flex min-w-0 flex-wrap-reverse items-end justify-start gap-x-[7px] py-0.5">
             <BackgroundDashes session={session} />
           </div>
           {trailing && <div className="flex shrink-0 items-center">{trailing}</div>}
