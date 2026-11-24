@@ -366,7 +366,7 @@ export function Composer({
   const keys = useShortcuts((s) => s.chords)
   const model = useSessionField(session ?? '', 'model')
   const parent = useSessionField(session ?? '', 'parent')
-  /** A "Next:" pick for this session (`NextStepsSlot` above the background area), sent here as typed. */
+  /** A "Next:" pick for this session (the transcript's last item, `useNextSteps`), sent here as typed. */
   const nextPick = useNextPick((s) => (session ? s.by[session] : undefined))
   const agent = useSessionField(session ?? '', 'agent')
   const harnessCommands = useSessionField(session ?? '', 'harnessCommands')

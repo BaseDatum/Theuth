@@ -127,11 +127,26 @@ test('the composer sends a pick at once through its own submit, and any send dro
   expect(submit).toContain('dismissSuggestions(session)')
 })
 
-test('the chat route puts the block above the background area and the composer', () => {
-  const src = readFileSync(new URL('../../routes/c.$session.tsx', import.meta.url), 'utf8')
-  expect(src.indexOf('<Transcript')).toBeLessThan(src.indexOf('<NextStepsSlot'))
-  expect(src.indexOf('<NextStepsSlot')).toBeLessThan(src.indexOf('<BackgroundArea'))
-  expect(src.indexOf('<BackgroundArea')).toBeLessThan(src.indexOf('<Composer'))
+test('the suggestions are the transcript\'s last scrolling item, not a block pinned above the composer', () => {
+  const route = readFileSync(new URL('../../routes/c.$session.tsx', import.meta.url), 'utf8')
+  expect(route).not.toContain('NextSteps')
+  expect(route).toContain('<Transcript key={`t:${session}`} session={session} next={!watching} />')
+  expect(route.indexOf('<Transcript')).toBeLessThan(route.indexOf('<BackgroundArea'))
+  const t = readFileSync(new URL('./Transcript.tsx', import.meta.url), 'utf8')
+  const body = t.slice(t.indexOf('export function Transcript('))
+  // Inside the scroller (`ref={ref}`), after the virtual column (`ref={column}`) that holds every message, before the
+  // scroller closes (the Ruler and the scroll-to-bottom button are its siblings, outside).
+  const scroller = body.indexOf('<div ref={ref} onScroll={onScroll}')
+  const slot = body.indexOf('<NextSteps items={suggestions}')
+  expect(scroller).toBeGreaterThan(-1)
+  expect(body.indexOf('ref={column}')).toBeGreaterThan(scroller)
+  expect(slot).toBeGreaterThan(body.indexOf('</MeasuredContext>'))
+  expect(slot).toBeLessThan(body.indexOf('<Ruler'))
+  // Read by the Transcript itself, so their arrival re-renders it and the pin effect (`followContent`) sees the growth.
+  expect(body).toContain('const suggestions = useNextSteps(session, !suggest)')
+  expect(body).toContain('height.current = followContent(el, stuck.current, height.current)')
+  // Only the chat view opts in: talk and the compact panels never show them.
+  for (const f of ['../../routes/talk.$session.tsx', '../notes/NoteChat.tsx']) expect(readFileSync(new URL(f, import.meta.url), 'utf8')).not.toContain('next=')
 })
 
 test('dismissSuggestions drops the chips of that session only', () => {

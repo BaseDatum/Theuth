@@ -26,7 +26,7 @@ export function nextSteps(g: NextStepsGate): readonly string[] | null {
 }
 
 /**
- * A picked suggestion on its way to the session's composer: the block sits above the background area, the composer
+ * A picked suggestion on its way to the session's composer: the block is the transcript's last item, the composer
  * below it, and the send must be the composer's own (`submit`, as if typed). The composer `take`s it, so one pick is
  * sent once even when two composers show the session.
  */
@@ -51,7 +51,7 @@ export const useNextPick = create<Picks>()((set, get) => ({
 }))
 
 /**
- * "Next:" (between the last message and the background area): the title model's next steps as plain text rows in
+ * "Next:" (the transcript's last item, after the final reply): the title model's next steps as plain text rows in
  * the message column. Hover or keyboard focus tints a row and shows `↵ send` (never on touch). One line each,
  * truncated, the full text as the tooltip. A pick goes to `onPick`.
  */
@@ -83,17 +83,14 @@ export function NextSteps({ items, onPick, hint = !touch() }: { items: readonly 
   )
 }
 
-/** The chat route's "Next:" block for `session`, in the message column above the background area. */
-export function NextStepsSlot({ session, watching = false }: { session: string; watching?: boolean }) {
+/**
+ * The "Next:" items `session`'s transcript shows as its last scrolling item, or `null` (the `nextSteps` gate). `off`: a
+ * transcript that never shows them (talk, the note and notebook panels, a watch-only view).
+ */
+export function useNextSteps(session: string, off = false): readonly string[] | null {
   const suggestions = useSessionField(session, 'suggestions')
   const running = useSessionField(session, 'running') ?? false
   const kind = useSessionField(session, 'kind')
   const parent = useSessionField(session, 'parent')
-  const items = nextSteps({ suggestions, running, kind, parent, watching })
-  if (!items) return null
-  return (
-    <div className="mx-auto w-full max-w-[768px] shrink-0 px-4 pb-1 pt-2">
-      <NextSteps items={items} onPick={(text) => useNextPick.getState().pick(session, text)} />
-    </div>
-  )
+  return off ? null : nextSteps({ suggestions, running, kind, parent })
 }

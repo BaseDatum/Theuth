@@ -27,7 +27,8 @@ import { type Row, buildRows } from './rows'
 import { type Anchor, step } from './scroll-anchor'
 import { ToolRunCard } from './ToolRunCard'
 import { settleOn, takeJump, useTranscriptJump } from './jump'
-import { followViewport } from './viewport-follow'
+import { followContent, followViewport } from './viewport-follow'
+import { NextSteps, useNextPick, useNextSteps } from './NextSteps'
 
 const PAGE = 60
 /** Distance from the bottom (px) within which new content keeps the view pinned. */
@@ -154,8 +155,9 @@ function Ruler({ ticks, at, onJump }: { ticks: Tick[]; at: number; onJump(index:
 }
 
 /** The session's transcript: virtualized, pinned to the bottom until the user scrolls up, paged backwards from the top.
- * `compact` (59 §7.3, the panel under a note): no ruler, no centred column, tighter padding. */
-export function Transcript({ session, compact = false }: { session: string; compact?: boolean }) {
+ * `compact` (59 §7.3, the panel under a note): no ruler, no centred column, tighter padding. `next`: the chat view's
+ * "Next:" suggestions, the scrolling content's last item (they scroll away with the chat; a pick is sent by the composer). */
+export function Transcript({ session, compact = false, next: suggest = false }: { session: string; compact?: boolean; next?: boolean }) {
   const api = useApi()
   const all = useEntries(session)
   const showNudges = useNudges((s) => s.show)
@@ -172,6 +174,7 @@ export function Transcript({ session, compact = false }: { session: string; comp
   const visionStatus = useSessionField(session, 'visionStatus')
   const statusText = useSessionField(session, 'statusText')
   const children = useSessionField(session, 'children')
+  const suggestions = useNextSteps(session, !suggest)
   // This engine's store, read after the await: a page landing after a switch must not touch another engine's slice.
   const { sessions: store } = useScope()
   const ref = useRef<HTMLDivElement>(null)
@@ -305,14 +308,13 @@ export function Transcript({ session, compact = false }: { session: string; comp
 
   // Pinned: whenever the content grows (deltas, measurements) the view lands at the bottom.
   // Scroll-only renders leave it alone so a small upward scroll is not undone.
+  // The "Next:" suggestions are content too (the last item, read by this component so their arrival re-renders it).
   useLayoutEffect(() => {
     const el = ref.current
-    if (!el || el.scrollHeight === height.current) return
-    height.current = el.scrollHeight
-    if (stuck.current) el.scrollTop = el.scrollHeight
+    if (el) height.current = followContent(el, stuck.current, height.current)
   })
-  // The viewport itself changed height with the content unchanged — the "Next:" block or the composer below took or
-  // gave back room — so the effect above never runs: re-pin when the view was at the bottom, before paint.
+  // The viewport itself changed height with the content unchanged — the dash row or the composer below took or gave
+  // back room — so the effect above never runs: re-pin when the view was at the bottom, before paint.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
@@ -564,6 +566,11 @@ export function Transcript({ session, compact = false }: { session: string; comp
             </div>
           </MeasuredContext>
         </div>
+        {suggestions && (
+          <div data-next-slot="" className={cn('w-full pt-1 pb-3', compact ? 'px-2' : 'mx-auto md:max-w-[768px] px-4')}>
+            <NextSteps items={suggestions} onPick={(text) => useNextPick.getState().pick(session, text)} />
+          </div>
+        )}
         {(running || activity !== 'idle') && (
           <div className={cn('flex w-full items-center gap-2 py-3 text-sm text-fg-secondary', compact ? 'px-4' : 'mx-auto md:max-w-[768px] px-8')}>
             <ActivityIndicator activity={activity} />
