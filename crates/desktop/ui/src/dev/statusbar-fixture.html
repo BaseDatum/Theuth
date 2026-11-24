@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>217 status bar fixture</title>
+    <script>
+      // Dev only: over plain http on a LAN address the page is not a secure context, so crypto.randomUUID is missing
+      // (Safari, Chrome) and module code that calls it at load leaves the page blank.
+      if (!('randomUUID' in crypto)) crypto.randomUUID = () => {
+        const b = crypto.getRandomValues(new Uint8Array(16)); b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128
+        const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('')
+        return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+      }
+    </script>
+    <script src="/theme.js"></script>
+    <link rel="stylesheet" href="/theme.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/dev/statusbar-fixture.tsx"></script>
+  </body>
+</html>

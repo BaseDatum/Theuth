@@ -73,7 +73,7 @@ function Line({ label, header }: { label: ReactNode; header: ReactNode }) {
         <span className="flex h-[14px] max-w-full items-center gap-1 px-4 text-[10px] leading-none text-fg-tertiary tabular-nums">{label}</span>
       </button>
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="bottom" className="max-h-[60vh] gap-0 rounded-t-xl" data-notice-popover>
+        <SheetContent side="bottom" className="max-h-[60vh] gap-0 rounded-t-xl" data-notice-popover onOpenAutoFocus={(e) => e.preventDefault()}>
           <div className="flex shrink-0 items-center gap-2 px-4 pt-4 pb-2 pr-12 text-sm">
             <SheetTitle className="sr-only">Status</SheetTitle>
             {header}

@@ -82,6 +82,8 @@ export function NoticeHistory({ open, onOpenChange, children }: { open: boolean;
         align="end"
         sideOffset={4}
         className="flex max-h-[min(420px,70vh)] w-[340px] flex-col overflow-hidden p-0"
+        // Focus would land on Clear, one Enter away from wiping the history.
+        onOpenAutoFocus={(e) => e.preventDefault()}
         onInteractOutside={(e) => {
           if (e.target instanceof Element && e.target.closest('[data-status-bar]')) e.preventDefault()
         }}
