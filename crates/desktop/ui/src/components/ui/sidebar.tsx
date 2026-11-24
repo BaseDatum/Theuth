@@ -44,8 +44,28 @@ export function readSidebarOpen(cookie: string): boolean {
   return /(?:^|;\s*)sidebar_state=(\w+)/.exec(cookie)?.[1] !== 'false'
 }
 
-/** Saves the expanded state in its cookie, which `readSidebarOpen` reads at the next load. */
+/**
+ * The expanded state this page last saved, ahead of the cookie. A mesh switch remounts the whole shell (App's
+ * `EngineProvider key={engine}`), and the iOS/iPadOS webview keeps no cookie on the app's custom scheme, so a re-read
+ * of the cookie alone fell back to expanded: a collapsed iPad sidebar sprang open on every switch.
+ */
+let saved: boolean | undefined
+
+/** The expanded state a (re)mounting shell starts with: this page's last saved one, else the cookie's. */
+export function initialSidebarOpen(): boolean {
+  return saved ?? readSidebarOpen(globalThis.document?.cookie ?? '')
+}
+
+/** The shell's expanded state, saved on every change so a remount (a mesh switch) or the next load starts from it. */
+export function useSidebarOpen(): [boolean, React.Dispatch<React.SetStateAction<boolean>>] {
+  const [open, setOpen] = React.useState(initialSidebarOpen)
+  React.useEffect(() => writeSidebarOpen(open), [open])
+  return [open, setOpen]
+}
+
+/** Saves the expanded state for this page and in its cookie, which `readSidebarOpen` reads at the next load. */
 export function writeSidebarOpen(open: boolean): void {
+  saved = open
   document.cookie = `${SIDEBAR_COOKIE_NAME}=${open}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
 }
 

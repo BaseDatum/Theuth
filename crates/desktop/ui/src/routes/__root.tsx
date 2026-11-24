@@ -16,7 +16,7 @@ import { PublicShareStrip } from '@/components/public-share/PublicShareStrip'
 import { RoutineDraftBridge } from '@/components/routines/RoutineChat'
 import { AppSidebar } from '@/components/sidebar/AppSidebar'
 import { SearchDialog } from '@/components/sidebar/SearchDialog'
-import { SidebarInset, SidebarProvider, readSidebarOpen, useSidebar, writeSidebarOpen } from '@/components/ui/sidebar'
+import { SidebarInset, SidebarProvider, useSidebar, useSidebarOpen } from '@/components/ui/sidebar'
 import { useHotkeys } from '@/lib/hotkeys'
 import { CostsPrefetch } from '@/lib/costs/queries'
 import { CostsResident, ResidentCtx } from '@/components/costs/Resident'
@@ -56,10 +56,9 @@ function Popped() {
 function Root() {
   const { session } = useParams({ strict: false })
   const navigate = useNavigate()
-  const [open, setOpen] = useState(() => readSidebarOpen(globalThis.document?.cookie ?? ''))
+  // Every path that changes it (the toggles, ⌘B, ⇧⌘S's event, a swipe) lands here; a mesh switch keeps it.
+  const [open, setOpen] = useSidebarOpen()
   useHotkeys()
-  // Every path that changes it (the toggles, ⌘B, ⇧⌘S's event, a swipe) lands here.
-  useEffect(() => writeSidebarOpen(open), [open])
 
   useEffect(() => {
     const toggle = () => setOpen((o) => !o)

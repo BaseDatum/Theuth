@@ -1,9 +1,9 @@
 import '../settings/test-dom'
 import { act, createElement as h, type ReactElement, useEffect } from 'react'
-import { createRoot } from 'react-dom/client'
+import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, expect, test } from 'vitest'
-import { readSidebarOpen, readSidebarWidth, Sidebar, SidebarMenuAction, SidebarProvider, useSidebar, writeSidebarOpen } from './sidebar'
+import { afterEach, describe, expect, test } from 'vitest'
+import { readSidebarOpen, readSidebarWidth, Sidebar, SidebarMenuAction, SidebarProvider, useSidebar, useSidebarOpen, writeSidebarOpen } from './sidebar'
 import { cornerPad, headerToggle } from '@/lib/sidebar-corner'
 
 const classes = (showOnHover: boolean) => /class="([^"]*)"/.exec(renderToStaticMarkup(h(SidebarMenuAction, { showOnHover })))![1]!.split(' ')
@@ -132,4 +132,55 @@ test('a shell with a rail: collapsing shows the rail (no header toggle, only the
   expect(headerToggle(seen!)).toBe(true)
   expect(cornerPad(seen!)).toBe('pl-20')
   await act(async () => root.unmount())
+})
+
+// A mesh switch remounts the shell (App's `EngineProvider key={engine}`); `Mesh` stands in for it, `useSidebarOpen` for Root.
+// The jar is emptied before each switch: the iOS/iPadOS webview keeps no cookie on the app's custom scheme.
+describe('a mesh switch keeps the sidebar as it was', () => {
+  let seen: ReturnType<typeof useSidebar> | undefined
+  const Probe = () => ((seen = useSidebar()), null)
+  const Shell = () => {
+    const [open, setOpen] = useSidebarOpen()
+    return h(SidebarProvider, { open, onOpenChange: setOpen, rail: true }, h(Sidebar, null, 'nav'), h(Probe))
+  }
+  const Mesh = ({ engine }: { engine: string }) => h(Shell, { key: engine })
+  const switchTo = async (root: Root, engine: string) => {
+    jar.clear()
+    await act(async () => root.render(h(Mesh, { engine })))
+  }
+
+  test('collapsed (the rail) stays collapsed, expanded stays expanded', async () => {
+    writeSidebarOpen(true)
+    const { root } = await mount(h(Mesh, { engine: 'a' }))
+    expect(seen!.state).toBe('expanded')
+    await act(async () => seen!.toggleSidebar())
+    expect(seen!.state).toBe('collapsed')
+    await switchTo(root, 'b')
+    expect(seen!.state).toBe('collapsed')
+    expect(seen!.rail).toBe(true)
+    await switchTo(root, 'c')
+    expect(seen!.state).toBe('collapsed')
+    await act(async () => seen!.toggleSidebar())
+    // A stale cookie from an older page does not win over this page's choice either.
+    jar.set('sidebar_state', 'false')
+    await act(async () => root.render(h(Mesh, { engine: 'a' })))
+    expect(seen!.state).toBe('expanded')
+    await switchTo(root, 'b')
+    expect(seen!.state).toBe('expanded')
+    await act(async () => root.unmount())
+  })
+
+  test('phones: a closed Sheet stays closed and the desktop preference is untouched', async () => {
+    window.matchMedia = ((q: string) => ({ ...desktop(q), matches: true })) as typeof window.matchMedia
+    writeSidebarOpen(false)
+    const { root } = await mount(h(Mesh, { engine: 'a' }))
+    expect([seen!.isMobile, seen!.openMobile, seen!.open]).toEqual([true, false, false])
+    await switchTo(root, 'b')
+    expect([seen!.openMobile, seen!.open]).toEqual([false, false])
+    expect(document.querySelector('[data-mobile="true"]')).toBeNull()
+    writeSidebarOpen(true)
+    await switchTo(root, 'c')
+    expect([seen!.openMobile, seen!.open]).toEqual([false, true])
+    await act(async () => root.unmount())
+  })
 })
