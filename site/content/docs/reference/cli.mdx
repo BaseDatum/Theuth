@@ -1,74 +1,82 @@
 ---
 title: CLI
-description: Every flag and subcommand of the t binary, theuth-relay flags, the TUI slash commands and key bindings, and the Signal, Slack and Telegram command sets, as implemented.
+description: Every flag and subcommand of the t binary, the theuth-relay and theuth-share-edge flags, the TUI slash commands and key bindings, and the Signal, Slack and Telegram command sets, as implemented.
 ---
 
 The binary is `t` (`t --version` prints the release). From a checkout,
 `just run -- <args>` runs the same binary. Most flags are modes and exclude
-each other; the subcommands talk to a running daemon over JSON-RPC.
+each other; most subcommands talk to a running engine over JSON-RPC.
 
 ## Modes
 
 | Invocation | What it does |
 |---|---|
 | `t` | terminal UI. If an engine is already running on this data dir, the TUI attaches to it instead of starting a second one |
-| `t --headless` | daemon only: JSON-RPC on `rpc.listen` (default `127.0.0.1:7777`) with the bearer in `<data_dir>/token`; the Signal, Slack and Telegram channels run only here. Implies `--serve` |
+| `t --headless` | engine only: JSON-RPC on `rpc.listen` (default `127.0.0.1:7777`) with the bearer in `<data_dir>/token`; the Signal, Slack and Telegram channels run only here. Implies `--serve` |
 | `t --serve` | start the TUI and also bind `rpc.listen` (without it the engine still serves on an ephemeral loopback port recorded in `engine.json`) |
 | `t --resume <id>` | open an existing session in the TUI |
 | `t -p "prompt"`, `t --prompt "prompt"` | print mode: stream the reply as lines, exit when the turn ends; `-p` alone reads the prompt from stdin (`echo "prompt" \| t -p`). Approvals are answered by typing `y` or `n` on stdin; a closed stdin denies them |
-| `t --acp` | Agent Client Protocol on stdio, for editors: `agent_servers: {"theuth": {"command": "t", "args": ["--acp"]}}`. Runs a reduced plugin set: no schedules, mesh, roster, tasks, sandboxes, meetings, voice or talk |
-| `t --link-signal --owner +15551234567 [--device-name <n>]` | pair as a Signal linked device (one-shot QR), then run `--headless` |
-| `t --link` | pair a phone or browser with the running daemon on this machine (one-shot QR and key); needs `t --headless` here |
-| `t --install-service [--relay <url>] [--name <n>] [--no-pair]` | write a launchd LaunchAgent or systemd user unit that runs `exec t --headless --data-dir <dir>` through your login shell, set `link.enabled`, start it, print a pairing QR and key |
+| `t --acp` | Agent Client Protocol on stdio, for editors: `agent_servers: {"theuth": {"command": "t", "args": ["--acp"]}}`. Runs a reduced plugin set: no schedules, mesh, link, nodes, roster, tasks, sandboxes, public sharing, contacts, meetings, voice or talk |
+| `t --link-signal [--owner +15551234567] [--device-name <n>]` | pair as a Signal linked device: prints a QR, waits for the scan, writes `signal.owner` and `signal.device_name`, exits. `--owner` is prompted on a TTY when absent |
+| `t --link` | pair a phone or browser with the running engine on this machine (one-shot QR and key); needs `t --headless` here |
+| `t --install-service [--relay <url>] [--name <n>] [--no-pair]` | write a launchd LaunchAgent, systemd user unit or Windows Task Scheduler logon task that runs `t --headless` (through your login shell on macOS and Linux), set `link.enabled`, start it, print the key and QR to pair it as a node (`/nodes add <key>` on the main harness) |
 | `t --uninstall-service` | remove that unit; data dir and pairings stay |
 | `t --slack-setup [--app <A…>]` | create or update the Slack app from the bundled manifest, verify tokens, write secrets and config |
 | `t --slack-manifest` | print the Slack app manifest (no data dir needed) |
 | `t --telegram-setup` | verify a @BotFather token with `getMe`, store it as the `telegram_bot` secret, register the bot's command menus, print a `t.me/<bot>?start=<code>` pairing link and QR, wait up to 10 min for the owner's `/start`, write `telegram.owner` / `telegram.enabled`. Refuses while an engine runs on this data dir (`daemon running: use /telegram link or the telegram_link tool`) |
-| `t --update` | force an update check; logs to stderr (`RUST_LOG=debug t --update` for detail); exit 1 on `update: <error>`. Installs `.tar.gz` releases (macOS, Linux CLI); the Windows CLI zip is not self-updated |
+| `t --update [--stop-cells]` | one update check now; prints `up to date (<version>)`, `theuth <from> → <to>`, or asks for `sudo t --update` when the binary is not writable; exit 1 on `update: <error>`. A Homebrew install runs `brew upgrade --formula theuth`. Logs go to stderr (`RUST_LOG=debug t --update`). While user cells run on this data dir's engine it asks `wait / stop / cancel`; without a terminal it refuses unless `--stop-cells` |
 | `t --secret-set NAME [--secret-note <text>]`, `t --secret-rm NAME`, `t --secret-list` | vault management; see [Secrets](/docs/reference/secrets) |
-| `t --app-parser-hash` | print the app library hash this build embeds (release tooling and older self-updaters check it against the `theuth-app-parser-<hash>` payload file) |
-| `t --bench-models [--accelerator auto\|cpu\|webgpu\|directml\|cuda]` | benchmark the local speech and decision models; exit code from the benchmark |
+| `t --app-parser-hash` | print the app library hash this build embeds. Apps are validated in-process; the updater still probes a new binary with this flag, and releases ship a small `theuth-app-parser-<hash>` compatibility stub for older updaters |
+| `t --bench-models [--accelerator auto\|cpu\|webgpu\|directml\|cuda]` | load ONNX Runtime, run the speech encoder and the decision model once each, print the time and device of each; exit 2 naming what is missing |
 | `t --decision-export <prefix> [--since YYYY-MM-DD] [--out <file>] [--format fixture\|laya]` | fold decision training rows into a fixture |
 
 Global options: `--data-dir <path>` (env `THEUTH_DATA_DIR`, default
 `~/.theuth`), `--config <path>` (default `<data_dir>/config.yaml`),
-`--version`, `--help`.
+`-V`/`--version`, `-h`/`--help`.
 
-Exit codes worth knowing: a second headless engine on the same data dir
-prints the running one and exits 3; `t --update` exits 1 on failure; print
-mode exits 0 when the turn ends.
+One engine runs per data dir. A second `t --headless` (or the desktop app's
+engine) prints `engine already running (pid N, <host>, since HH:MM, ws://…)`
+and exits 0, so launchd, systemd and the desktop app do not restart-loop.
+The TUI, `-p` and `--acp` attach to the running engine instead; they exit 3
+when it has no socket yet or the attach fails, and so does a second
+`--link-signal`. `t --update` exits 1 on failure; print mode exits 0 when the
+turn ends.
 
 ## Subcommands
 
-All of these need a running daemon; otherwise they print
-`no harness on <listen>; start t --headless first` and exit 1. Results are
-pretty-printed JSON unless noted.
+`t mesh`, `t tasks`, `t session` and `t sandbox` need a running engine;
+otherwise they print `no harness on <listen>; start t --headless first` and
+exit 1. Results are pretty-printed JSON unless noted.
 
 | Command | Does |
 |---|---|
-| `t mesh status` | this engine's mesh view |
-| `t mesh pair` | print a pairing string for another engine |
+| `t mesh status` | this engine, its peers and who holds the hub lease |
+| `t mesh pair` | print a pairing string for another engine (it carries the vault key: treat it as a secret) |
 | `t mesh add <pairing>` | join an engine by pairing string |
-| `t mesh add --ssh <target> [--key <name> \| --system-ssh] [--name <n>] [--local-t <path>]` | bring `t` up on a host over ssh and join it as an engine |
-| `t mesh add --docker [--name <n>] [--image <i>]` | the same in a container (default name `engine`) |
-| `t mesh add --vm [--name <n>] [--cpus <n>] [--memory <size>] [--disk <size>] [--share HOST[:GUEST][:ro]]… [--no-desktop] [--network <policy>] [--image <i> \| --local-t <path> \| --bootstrap]` | create a sandbox VM and join it; see [Sandboxes](/docs/automation/sandboxes) |
+| `t mesh add --ssh <target> [--key <name> \| --system-ssh] [--name <n>]` | bring `t` up on a host over ssh and join it as an engine; `--key` names a vault secret holding the private key, `--system-ssh` uses your `ssh` binary and `~/.ssh/config` |
+| `t mesh add --docker [--name <n>] [--image <i> \| --local-t <path>]` | the same in a container (default name `engine`) |
+| `t mesh add --vm [--name <n>] [--cpus <n>] [--memory <size>] [--disk <size>] [--share HOST[:GUEST][:ro]]… [--no-desktop] [--network <policy>] [--image <i> \| --local-t <path> \| --bootstrap]` | create a sandbox VM and join it (default name `vm-1`, disk `20G`, network `public,host`); see [Sandboxes](/docs/automation/sandboxes) |
 | `t mesh remove <id>` | unpair an engine and rotate the vault key; see [Mesh](/docs/automation/mesh#unpair-vault-key-rotation-and-device-reset) |
 | `t mesh hub prefer\|eligible\|never` | this engine's willingness to hold the hub lease (`mesh.hub`) |
-| `t mesh devices list\|add [name]\|revoke <id>\|rename <id> <name>` | paired link devices; `add` prints a QR and `pending <id> — expires in 5 min` |
-| `t tasks list [--owner agent:<n>\|user] [--state todo,doing,…] [--engine] [--project]` | the task board; states `todo`, `doing`, `review`, `blocked`, `done`, `cancelled` |
+| `t mesh devices list\|add [name]\|revoke <id>\|rename <id> <name>` | paired link devices; `add` prints the QR, the string and a pending id that expires in 5 min |
+| `t tasks list [--owner agent:<n>\|user] [--state todo,doing,…] [--engine <n>] [--project <label>]` | the task board; states `todo`, `doing`, `review`, `blocked`, `done`, `cancelled` |
 | `t session context <session>` | the context-window breakdown of a session |
 | `t sandbox ls` | recorded sandboxes (`no sandboxes` when none) |
-| `t sandbox start <name>`, `t sandbox stop <name> [--force]` | lifecycle |
+| `t sandbox start <name>`, `t sandbox stop <name> [--force]` | lifecycle; `stop` refuses while sessions run unless `--force` |
 | `t sandbox rm <name> [--keep-snapshots true\|false]` | destroy; snapshots kept by default |
 | `t sandbox desktop <name>` | print the desktop URL, password and geometry |
-| `t mcp --session <id>` | the stdio MCP shim an ACP child uses to reach its parent's skills; not for interactive use |
-| `t subprocess` | the Python runtime worker; spawned by the daemon, never run by hand |
+| `t mcp` | theuth's own data catalogue (meetings, notes, knowledge, tasks, sessions) as an MCP server on stdio, for clients that cannot speak HTTP; the same tools the engine serves on `mcp_server.port`. Needs a running engine (`no engine on <listen>: …` otherwise); calls go to `<data_dir>/mcp/server-audit.jsonl`. See [MCP](/docs/reference/mcp) |
+| `t mcp --session <id>` | the stdio MCP shim an ACP child gets: `list_skills`, `load_skill`, `send_message`, `read_file`, `edit`, `move_text`, `copy_text`, `indent`, `clip`, run in its theuth session. Not for interactive use |
+| `t dreaming dry-run [--data-dir <dir>] [--json]` | the nightly dreaming routine's recall and rule-only tidy over a data dir with zero writes; prints the counts the night's journal would show. No engine needed; run it on a copy |
+| `t double train-b --bundle <dir> --out <dir> [--device auto\|metal\|cuda\|cpu]` | train a Tier B adapter for the double from a bundle, without an engine; needs a `t` built with `--features decision/train`. Exit 0 done, 2 bad input or missing checkpoint, 3 paused at the run cap (re-run to resume), 1 other failure |
+| `t subprocess` | the Python runtime worker; spawned by the engine, never run by hand |
 
 ## theuth-relay
 
-The relay is a separate binary (`cargo run -p relay`, or the
+The link relay is a separate binary (`cargo run -p relay`, or the
 `deploy/relay` image). It keeps no state and no accounts; see
-[Channels](/docs/automation/channels) for what it does and does not see.
+[Security](/docs/reference/security) for what it can and cannot see and
+[Mesh](/docs/automation/mesh#self-hosting-the-relay) for self-hosting.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -81,6 +89,22 @@ The relay is a separate binary (`cargo run -p relay`, or the
 
 Logging is `RUST_LOG` with `info` as the default.
 
+## theuth-share-edge
+
+Operator tooling for the public sharing edge (`deploy/share-edge`); users
+never run it. `--config <file>` (default `/etc/theuth-share-edge/config.yaml`)
+applies to every command, and env `THEUTH_SHARE_EDGE_<KEY>` (`__` between
+levels) overrides the file. See [Public sharing](/docs/automation/sharing).
+
+| Command | Does |
+|---|---|
+| `run` | run the edge |
+| `admin [--json] [--ref <ref>] <command>` | operator commands over the admin socket: `status`, `list [names\|meshes\|tunnels]`, `ban name\|mesh\|key\|net <value> --reason <r>`, `unban …`, `admission open\|invite\|closed`, `pause`, `resume`, `queue`, `mesh <id>`, `release <name>`, `evict-unpublished`, `recover <target> --to-mesh <id>`, `invite mint [--uses n] [--expires 7d] [--note …]\|list\|revoke <hash>`, `caa-check`, `revoke-cert <name> [reason]`, `cert retry <name>`, `reload`, `brake-status`. `--ref` logs an operator reference with a mutating command |
+| `acme register [--ca letsencrypt\|gts]` | create the ACME account and print the CAA lines |
+| `ticket [--standby]` | print the edge ticket users paste as `share.edge` (or the standby key's) |
+| `retire [--standby-key <file>] [--edge-key <file>]` | with the edge stopped, sign a retire notice of the live key with the standby key and promote the standby key |
+| `keygen --out <file>` | offline: write a new endpoint key (0600, never overwrites) and print its public key |
+
 ## Environment variables
 
 | Variable | Read by | Meaning |
@@ -90,15 +114,21 @@ Logging is `RUST_LOG` with `info` as the default.
 | `RUST_LOG` | `t`, `theuth-relay` | tracing filter; the log defaults to `info` |
 | `THEUTH_NO_LOGIN_PATH` | `shell` tool | `1`: do not seed `PATH` from the login shell |
 | `ORT_DYLIB_PATH` | models | ONNX Runtime library when not found beside the app or under `<data_dir>/models/onnxruntime/` |
+| `ORT_LOG` | models | keep ONNX Runtime's verbose logging (muted by default) |
+| `THEUTH_CAPTURE_BACKEND` | `computer_*` on macOS | `sck` or `screencapture` forces one screenshot path; unset tries ScreenCaptureKit first. For diagnosis |
 | `AWS_PROFILE`, `BEDROCK_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK` | agent | Bedrock authentication; see [Models](/docs/getting-started/models) |
-| `OPENROUTER_API_KEY`, `OPENCODE_API_KEY`, and each genai provider's key variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) | agent | provider keys when the vault has none |
+| `OPENROUTER_API_KEY`, `OPENCODE_API_KEY`, `OPENCODE_GO_API_KEY`, and each provider's key variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) | agent | provider keys when the vault has none |
 | `THEUTH_BIN`, `THEUTH_UPDATE_URL`, `THEUTH_MODELS_URL` | desktop app | which `t` to launch, where to check for updates and models |
 | `THEUTH_LAUNCH`, `THEUTH_PARENT_PID` | `t` | set by the desktop app and the service unit; not for users |
+| `THEUTH_RELAY_COOKIE_SECRET` | `theuth-relay` | see above |
+| `THEUTH_SHARE_EDGE_*` | `theuth-share-edge` | config overrides, including the DNS credential |
 
 ## TUI slash commands
 
 `/` opens the command popup (`↑↓` move, `Tab` complete, `Enter` run). The
-table is the complete list as implemented; `[…]` marks optional arguments.
+tables are the complete list as implemented; `[…]` marks optional arguments.
+An external harness child (ACP) adds its own commands to the popup, labelled
+with its name and sent as typed.
 
 ### Models and the loop
 
@@ -106,33 +136,38 @@ table is the complete list as implemented; `[…]` marks optional arguments.
 |---|---|
 | `/model [id]` | pick a model for this session (or the one about to start); the default is `agent.model` |
 | `/effort [level\|clear]` | reasoning effort for this session; the default is `agent.effort` |
-| `/vision [model\|off]`, `/title [model\|off]` | image fallback model; session-title model |
-| `/aws [profile\|clear]` | Bedrock profile |
-| `/provider [add\|rm <name>]` | named OpenAI-compatible gateways (`add` prompts for name, URL, key). The built-in Zen (`opencode`) and OpenRouter (`openrouter`) providers are not gateways: key them with `/secrets add opencode` / `openrouter` |
+| `/title [model\|off]` | the model that names sessions (`off`: the session's own model) |
+| `/vision [model\|off]` | the model that inspects images when the main one cannot (`off`: images are omitted) |
+| `/advisor [off\|on\|status\|consults <n>\|<provider/model>]` | a second model that reviews this session and answers its consults; picker without argument |
+| `/aws [profile\|clear]` | Bedrock profile, harness-wide |
+| `/provider [add [name [url [key]]] \| refresh <name> \| rm <name> \| limits <provider> <model> <context> [output] \| find]` | providers. `add` prompts for a custom provider's name, URL and key (no key for a local server); `refresh` lists a provider's models again; `limits` sets a model's context and output (`0` = unknown); `find` probes local model servers (Ollama, LM Studio, llama.cpp, vLLM, omlx) on loopback. Zen (`opencode`) and OpenRouter (`openrouter`) are built in: key them with `/secrets add opencode` / `openrouter` |
 | `/login [name]`, `/logout <name>` | provider or MCP server login |
 | `/prompt` | the assembled system prompt |
-| `/cost` | this session's token cost |
+| `/cost` | model cost of this session's tree: returned, estimated, coverage, per child |
 | `/compact [summary\|cut\|snap\|style …]` | fold the context now; `style` lists or sets the default |
-| `/shake [images\|documents\|messages\|tools\|summary]` | remove chosen content from the context without dropping what came after |
-| `/undo`, `/redo`, `/edit [n]`, `/regen [n]`, `/fork [n]` | turn-level history editing |
-| `/clear` | drop the conversation, keep the session |
-| `/cancel` | abort the running turn |
+| `/fractal [on\|off\|fold\|pause\|resume\|model <id>\|model clear]` | Fractal context for this session: switch it, fold the unsummarized backlog, pause or resume settling, pick this chat's compactor model; bare shows the view state. `/endless` is the old name, still accepted |
+| `/shake [images\|documents\|surfaces\|tools\|notes\|agents\|messages\|summary]` | remove chosen content from the context without dropping what came after |
+| `/undo`, `/redo`, `/edit [n]`, `/regen [n]`, `/fork [n]` | turn-level history editing (picker without `n`) |
+| `/clear` | drop the conversation, keep the session and its settings |
+| `/cancel` | abort the running turn (`Esc`; three `Esc` within 1 s also stop its subagents) |
 
 ### Sessions and navigation
 
 | Command | Does |
 |---|---|
-| `/new [private]`, `/sessions`, `/resume [id]` | sessions; `private` starts a memory-only tree closed when you leave it; `/resume` on a stopped ACP child restarts its harness in the same context |
-| `/search [query]` | search sessions, artifacts, knowledge and history live |
+| `/new [private]`, `/sessions`, `/resume [id]` | sessions; `private` starts a memory-only tree closed when you leave it; `/sessions` marks sessions owned by another machine; `/resume` on a stopped ACP child restarts its harness in the same context |
+| `/search [query]` | search sessions, artifacts, knowledge and history live (fzf syntax) |
 | `/attach [query]` | attach a note, concept, artifact, chat or meeting to the next message |
-| `/parent`, `/take` | open the parent session from a subagent; continue the open session on this node when another engine owns it |
+| `/parent`, `/take` | open the parent session from a subagent; continue the open session on this machine when another engine owns it |
 | `/agents`, `/todos`, `/tasks`, `/roster`, `/project <label\|off>` | the subagent tree; the plan card (F2); this project's tasks; the agent roster; a label grouping the root in `/sessions` and `/artifacts` |
 | `/broadcast [running\|roots] [text]` | send one message to many sessions |
-| `/artifacts`, `/apps` | files shown and apps built in this session |
+| `/artifacts`, `/apps`, `/files` | files shown, apps built, and files sent and received in this chat (`/files`: `Enter` opens, `r` reveals, `y` copies the path, `s` saves to `~/Downloads`, `f` fetches here) |
 | `/terminals`, `/jobs [kill <id>]` | PTY jobs of this session's tree (Enter opens a read-only observer; `i` types into it, `Ctrl+]` detaches); background shell jobs |
 | `/knowledge [query \| history [id] \| show <commit> [id] \| restore <id> [commit] \| harvest]` | the knowledge base |
 | `/schedules [run <name>\|test <name>\|history <name>\|pause <name>\|resume <name>]` | scheduled prompts: list, fire one now, show its runs, pause or resume a loop |
-| `/dictate`, `/talk` | dictation; live spoken conversation |
+| `/autoresearch [<goal> \| <slug> \| list \| pause\|resume\|stop\|stop_now <slug> \| steer <slug> <text>]` | autoresearch studies: list, open, pause, resume, stop or steer one; a goal hands the `autoresearch` skill to the model. See [Autoresearch](/docs/automation/autoresearch) |
+| `/double [status\|off\|pause [off]\|train [a\|b] [venue]\|rollback <version>\|cap <class> <rung> [opt-in]]` | the double: its numbers, learning on or off, a training run, caps |
+| `/dictate`, `/voice [mic <name\|default> \| shape <full\|plain\|off>]`, `/talk` | toggle dictation; pick the microphone and the TUI's shaping preset; live spoken conversation |
 | `/computer` | computer control: permissions and displays |
 | `/quit`, `/exit` | leave |
 
@@ -140,22 +175,27 @@ table is the complete list as implemented; `[…]` marks optional arguments.
 
 | Command | Does |
 |---|---|
-| `/approvals [on\|off] [always]` | approval prompts; see [Tools and permissions](/docs/reference/tools-permissions) |
-| `/communication [on\|off] [always]`, `/peers [scope owner\|isolated [alias]]`, `/a2a [reload]` | model-to-model communication |
-| `/mcp [add <url\|json>\|sync]` | MCP servers; see [MCP](/docs/reference/mcp) |
+| `/approvals [on\|off] [always]` | approval prompts; `always` persists to `config.yaml`. See [Tools and permissions](/docs/reference/tools-permissions) |
+| `/communication [on\|off] [always]`, `/peers [scope owner\|isolated [alias]]`, `/a2a [reload]` | agent-to-agent communication: status with its exact blocker; peers and pending requests (`Enter` opens, `i` inspects, `a` answers); network status, `reload` swaps `peers.yaml` |
+| `/mcp [add <url\|json>\|sync]`, `/tools` (same) | MCP servers; see [MCP](/docs/reference/mcp) |
 | `/skills [add <url>\|rm <name>\|sync]`, `/<skill> [words]` | skills; see [Skills](/docs/reference/skills) |
 | `/acp [add <registry-id>\|remove <name>]` | external ACP harnesses |
 | `/secrets [add [name]\|rm <name>\|restore <name> [n]]` | the vault |
+| `/share [list\|stop [id\|all]]` | public shares of the whole mesh; `stop` alone stops all, never asks. While anything is live the status line shows `● LIVE N · <domain>`. See [Public sharing](/docs/automation/sharing) |
 | `/link [on\|off\|pair\|rm <n>\|name <n> <name>\|relay <url>]` | phone and browser pairing |
 | `/mesh devices [list\|add [name]\|rm <id>\|name <id> <name>]` | the same devices from the mesh's view |
 | `/nodes [add <key>\|rm <n>\|name <n> <name>\|invite <n>]` | paired remote harnesses |
 | `/sandbox [desktop <name>]` | sandbox VMs |
 
 There is no `/help`, `/status` or `/doctor` in the TUI; `/status` exists on
-Signal and Telegram and `status` on Slack. The desktop app has its own command list that
-mirrors this one and adds `/escalate`, `/subagent` and `/skill:`; it lacks
-TUI-only commands such as `/dictate`, `/terminals`, `/secrets`, `/link`,
-`/mesh`, `/nodes` and `/sandbox`, which have Settings pages instead.
+Signal and Telegram and `status` on Slack. The desktop app has its own
+command list that mirrors this one and adds `/escalate [model|off]` (the
+decision model's tier-2 model), `/subagent [model|off]` (default model for
+subagents), `/builtins` (built-in tool switches), `/skill:<name>` (park a
+skill on the next message) and `/ask [question]` (ask across notebooks); it
+lacks `/dictate`, `/voice`, `/talk`, `/secrets`, `/share`, `/files`,
+`/double`, `/advisor`, `/link`, `/mesh`, `/nodes` and `/sandbox`, which have
+Settings pages or controls instead.
 
 ## TUI key bindings
 
@@ -165,7 +205,8 @@ TUI-only commands such as `/dictate`, `/terminals`, `/secrets`, `/link`,
 | `Ctrl+Enter` or `Cmd+Enter` | interject: cancel the turn and send now |
 | `Shift+Enter` | newline (needs a terminal with the kitty keyboard protocol) |
 | `Alt+↑` | pull the newest queued message back into the editor |
-| `Esc` | cancel a prompt, cancel `/edit`, else abort the turn |
+| `Esc` | cancel a prompt, cancel `/edit`, else abort the turn; three `Esc` within 1 s also stop its subagents |
+| `Tab` on a path | path completion from the session's machine (`Tab` accepts, a directory keeps completing, `Esc` closes) |
 | `Ctrl+C` | quit |
 | `Ctrl+V` | attach the clipboard image (`Cmd+V` pastes text only) |
 | drop a file | attach an image or PDF by path |
@@ -176,16 +217,17 @@ TUI-only commands such as `/dictate`, `/terminals`, `/secrets`, `/link`,
 | `Ctrl+D` | toggle dictation; `Esc` discards |
 | `F2` | focus the todo card (`↑↓`, `PgUp`/`PgDn`, `Esc` collapses, `Tab` back) |
 | approval modal: `y` / `n` or `Esc` / `o` | allow / deny / open the child session that asked |
+| question card: `↑↓` and `Enter`, or `1`-`9` / `s` or `Tab` / `Esc` | pick an option (`Enter` past the last option types your own answer) / skip this question / dismiss the card |
 | secret prompt: `Enter` / `Esc` | store / decline |
 
 Picker footers list their own keys: `/mcp` (`Enter` on/off, `Space` cycle
 risk, `Backspace` reset, `←`/`→` tools, `l` login/logout, `s` sync),
 `/skills` (`Enter` use, `s` show), `/artifacts` (`Enter` open, `s` show
-inline, `e` export to `~/Downloads`), `/knowledge` (`Enter`/`h` history of
-concept, `H` history of all), `/secrets` (`a` add, `r` replace, `h` history,
-`d` delete), `/terminals` (`↑↓ PgUp PgDn` history, `←→` pan, `r` refresh,
-`i` type, `Esc` close), `/search` (`Tab` filters, `↑↓` results, `Enter`
-open or attach).
+inline, `e` export to `~/Downloads`), `/apps` (`Enter` open, `s` show source,
+`e` export), `/knowledge` (`Enter`/`h` history of concept, `H` history of
+all), `/secrets` (`a` add, `r` replace, `h` history, `d` delete),
+`/terminals` (`↑↓ PgUp PgDn` history, `←→` pan, `r` refresh, `i` type, `Esc`
+close), `/search` (`Tab` filters, `↑↓` results, `Enter` open or attach).
 
 ## Signal commands
 
@@ -196,26 +238,32 @@ complete.
 `/compact [summary|cut|snap|style …]`, `/clear`, `/undo`, `/redo`,
 `/model [id]`, `/effort [level|clear]`, `/agents`, `/jobs [kill <id>]`,
 `/prompt`, `/skills [add <url>|rm <name>|sync]`, `/mcp [add <url|json>|sync]`,
-`/login [name]`, `/logout <name>`, `/provider [add <name> <url> <key>|rm <name>]`,
-`/approvals on|off [always]` (owner), `/approve <code>`, `/deny <code>` (a bare
-code counts as `/approve`), `/signal [status|link|allow <n>|rm <n>|unlink]`,
+`/login [name]`, `/logout <name>`,
+`/provider [add <name> <url> [key] | refresh <name> | rm <name>]` (no key
+for a local server).
+
+Owner only: `/approvals on|off [always]`, `/approve <code>`, `/deny <code>`
+(a bare code counts as `/approve`), `/signal [status|link|allow <n>|rm <n>|unlink]`,
 `/communication [on|off [always]]`, `/peers [<query> | scope owner|isolated [alias]]`,
 `/requests [<id> | answer <id> <text>]`, `/broadcast [--next] running|roots|<id>[,<id>…] <text>`,
-`/a2a [reload]`.
+`/a2a [reload]`, `/share [list|stop [<id>|all]]` (`/share stop` alone stops
+all).
 
 ## Slack commands
 
-All through the `/theuth` slash command; replies are ephemeral. An empty
-command shows help; owner-only commands answer
+All through the `/theuth` slash command; replies are ephemeral; prefixes
+complete. An empty command shows help; owner-only commands answer
 `This command is restricted to the owner.`
 
 `help`, `status`, `sessions`, `resume <id>`, `cancel [id]`, `compact [id]`,
 `model [id]`, `agents`, `prompt`, `skills [add <url>|rm <name>|sync]`,
-`mcp [add <url|json>|sync]`, `login [name]`, `logout <name>`,
-`approvals on|off [always]` (owner), `communication [on|off [always]]`,
+`mcp [add <url|json>|sync]`, `login [name]`, `logout <name>`.
+
+Owner only: `approvals on|off [always]`, `communication [on|off [always]]`,
 `peers [<query>|scope owner|isolated [alias]]`, `requests [<id>|answer <id> <text>]`,
-`a2a [reload]`, `broadcast [--next] …`,
-`slack [status|allow <U>|rm <U>|channel add <C>|channel rm <C>]` (owner).
+`a2a [reload]`, `broadcast [--next] …`, `share [list|stop [<id>|all]]`
+(the list carries Stop buttons),
+`slack [status|allow <U>|rm <U>|channel add <C>|channel rm <C>]`.
 
 ## Telegram commands
 
@@ -228,12 +276,13 @@ the help; replies in groups are ephemeral; owner-only commands answer
 `/clear`, `/undo`, `/redo`, `/model [id]`, `/effort [level|clear]`, `/agents`,
 `/jobs [kill <id>]`, `/prompt`, `/skills [add <url>|rm <name>|sync]`,
 `/mcp [add <url|json>|sync]`, `/login [name]`, `/logout <name>`,
-`/provider [add <name> <url> <key>|rm <name>]`.
+`/provider [add <name> <url> [key] | refresh <name> | rm <name>]`.
 
 Owner only: `/approvals on|off [always]`,
 `/telegram [status|link|allow <id>|rm <id>|group add <id>|group rm <id>]`,
 `/communication [on|off [always]]`, `/peers [<query> | scope owner|isolated [alias]]`,
 `/requests [<id> | answer <id> <text>]`, `/broadcast [--next] running|roots|<id>[,<id>…] <text>`,
-`/a2a [reload]`. There is no `/approve` or `/deny`: approvals are buttons.
+`/a2a [reload]`, `/share [list|stop [<id>|all]]`. There is no `/approve`
+or `/deny`: approvals are buttons.
 
 See [Channels](/docs/automation/channels) for pairing and threading on all three.
