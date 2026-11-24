@@ -5,7 +5,7 @@
 
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import { useEffect } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { useCompanionAlive } from '@/lib/companion'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { isDesktop } from '@/lib/platform'

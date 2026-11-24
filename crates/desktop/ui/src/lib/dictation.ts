@@ -5,7 +5,7 @@
 // are never touched.
 
 import { type RefObject, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { closeTap, openTap, type Tap, wireTap } from '@/lib/mic-tap'
 import { touch } from '@/lib/platform'
 import * as speech from '@/lib/speech'

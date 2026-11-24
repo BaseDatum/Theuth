@@ -5,7 +5,7 @@
 
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { LOCAL } from '@/link/engines'
 import type { Api } from '@/rpc/bindings/client'
 import { type RpcClient, isTransportError } from '@/rpc/client'
