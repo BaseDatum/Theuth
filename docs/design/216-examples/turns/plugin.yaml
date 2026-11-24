@@ -1,6 +1,6 @@
 # docs/design/216-examples/turns/plugin.yaml — design 216 §13.1
 name: turns
-version: 0.1.0
+version: 0.2.0
 description: Counts finished turns today; the sidebar dot turns amber past a daily limit.
 protocol: 1
 run: [python3, main.py]
@@ -12,6 +12,8 @@ subscribe:
 emits:
   limit_reached:
     description: The daily turn count reached TURNS_LIMIT.
+    version: 1
+    scope: global
     schema:
       type: object
       required: [day, turns]
@@ -25,6 +27,11 @@ placements:
     icon: gauge
     label: Turns today
     status: true
-    scope: global
     size: {width: 320, height: 220}
+    format: openui
+tools:
+  - name: turns_today
+    description: How many turns finished today and how many tokens they used.
+    input_schema: {type: object, properties: {}}
+    annotations: {readOnlyHint: true}
 capabilities: []

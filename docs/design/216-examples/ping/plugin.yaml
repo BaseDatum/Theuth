@@ -1,6 +1,6 @@
 # docs/design/216-examples/ping/plugin.yaml — design 216 §13.2
 name: ping
-version: 0.1.0
+version: 0.2.0
 description: Pings a host every 10 seconds; a status dot and the round trip in its tooltip.
 protocol: 1
 run: [bash, run.sh]
@@ -12,5 +12,4 @@ placements:
     icon: activity
     label: Ping
     status: true
-    scope: global
 capabilities: []
