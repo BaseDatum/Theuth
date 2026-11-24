@@ -19,10 +19,10 @@ test('garbage or absent storage reads as a fresh install', () => {
   expect(readOnboarding('42')).toEqual(ONBOARDING_DEFAULT)
 })
 
-test('stored values survive a round trip; bad parts fall back field by field', () => {
+test('stored values survive a round trip; bad parts fall back field by field; a stored step is ignored', () => {
   expect(readOnboarding(JSON.stringify({ step: 'first-chat', completed: true, checklistDismissed: true, visited: { costs: true } })))
-    .toEqual({ step: 'first-chat', completed: true, checklistDismissed: true, visited: { costs: true } })
-  expect(readOnboarding(JSON.stringify({ step: 'nope', completed: 'yes', visited: { inbox: true, settings: true, library: 1 } })))
+    .toEqual({ completed: true, checklistDismissed: true, visited: { costs: true } })
+  expect(readOnboarding(JSON.stringify({ completed: 'yes', visited: { inbox: true, settings: true, library: 1 } })))
     .toEqual({ ...ONBOARDING_DEFAULT, visited: { inbox: true } })
 })
 
@@ -33,8 +33,8 @@ test('actions persist the durable part and keep the session part out of storage'
   s.dismissChecklist()
   s.requestTour('main')
   const stored = JSON.parse(mem.get(ONBOARDING_KEY) ?? 'null')
-  expect(stored).toEqual({ step: 'model', completed: false, checklistDismissed: true, visited: { library: true } })
-  expect(useOnboarding.getState()).toMatchObject({ wizardOpen: true, pendingTour: 'main' })
+  expect(stored).toEqual({ completed: false, checklistDismissed: true, visited: { library: true } })
+  expect(useOnboarding.getState()).toMatchObject({ step: 'model', wizardOpen: true, pendingTour: 'main' })
 })
 
 test('reset returns to Welcome, clears visits, dismissal and the pending tour; the flag mirror and the open wizard stay', () => {

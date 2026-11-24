@@ -37,9 +37,9 @@ export interface OnboardingState {
 export const ONBOARDING_KEY = 'theuth-onboarding-v1'
 export const WIZARD_STEPS: readonly WizardStep[] = ['welcome', 'model', 'default-model', 'first-chat']
 
-/** The stored part of the state. */
-export type StoredOnboarding = Pick<OnboardingState, 'step' | 'completed' | 'checklistDismissed' | 'visited'>
-export const ONBOARDING_DEFAULT: StoredOnboarding = { step: 'welcome', completed: false, checklistDismissed: false, visited: {} }
+/** The stored part of the state; the wizard's step is per run (every open names its step). */
+export type StoredOnboarding = Pick<OnboardingState, 'completed' | 'checklistDismissed' | 'visited'>
+export const ONBOARDING_DEFAULT: StoredOnboarding = { completed: false, checklistDismissed: false, visited: {} }
 
 /** Parse the stored JSON; garbage or missing parts fall back to the defaults, unknown visit keys are dropped. */
 export function readOnboarding(raw: string | null): StoredOnboarding {
@@ -57,7 +57,6 @@ export function readOnboarding(raw: string | null): StoredOnboarding {
     for (const k of ['inbox', 'costs', 'library'] as const) if ((o.visited as Record<string, unknown>)[k] === true) visited[k] = true
   }
   return {
-    step: WIZARD_STEPS.includes(o.step as WizardStep) ? (o.step as WizardStep) : d.step,
     completed: typeof o.completed === 'boolean' ? o.completed : d.completed,
     checklistDismissed: typeof o.checklistDismissed === 'boolean' ? o.checklistDismissed : d.checklistDismissed,
     visited,
@@ -67,6 +66,7 @@ export function readOnboarding(raw: string | null): StoredOnboarding {
 export const useOnboarding = create<OnboardingState>()((set) => ({
   // `globalThis.` so the module loads under vitest's node environment.
   ...readOnboarding(globalThis.localStorage?.getItem(ONBOARDING_KEY) ?? null),
+  step: 'welcome',
   wizardOpen: false,
   pendingTour: null,
   openWizard: (step = 'welcome') => set({ wizardOpen: true, step }),
@@ -78,12 +78,12 @@ export const useOnboarding = create<OnboardingState>()((set) => ({
   requestTour: (pendingTour) => set({ pendingTour }),
   clearPendingTour: () => set({ pendingTour: null }),
   // The engine flag is not local state: `completed` keeps mirroring it, and finishing or skipping the wizard writes it.
-  reset: () => set((s) => ({ ...ONBOARDING_DEFAULT, visited: {}, completed: s.completed, pendingTour: null })),
+  reset: () => set((s) => ({ ...ONBOARDING_DEFAULT, step: 'welcome', visited: {}, completed: s.completed, pendingTour: null })),
 }))
 
 useOnboarding.subscribe((s, prev) => {
-  if (s.step === prev.step && s.completed === prev.completed && s.checklistDismissed === prev.checklistDismissed && s.visited === prev.visited) return
-  const stored: StoredOnboarding = { step: s.step, completed: s.completed, checklistDismissed: s.checklistDismissed, visited: s.visited }
+  if (s.completed === prev.completed && s.checklistDismissed === prev.checklistDismissed && s.visited === prev.visited) return
+  const stored: StoredOnboarding = { completed: s.completed, checklistDismissed: s.checklistDismissed, visited: s.visited }
   try {
     globalThis.localStorage?.setItem(ONBOARDING_KEY, JSON.stringify(stored))
   } catch {

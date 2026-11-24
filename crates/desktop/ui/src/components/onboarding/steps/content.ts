@@ -1,5 +1,28 @@
 // 215 wizard: the copy that carries meaning (subscriptions, key providers, starter prompts) and the pure choices behind
 // the steps, kept out of the components so they are tested without a DOM.
+import { providerName } from '@/components/chat/error-card'
+import { BUILTIN_LABEL } from '@/components/settings/providers'
+
+/** A provider id as people write it: `anthropic` → `Anthropic`, `opencode` → `OpenCode Zen`, `ollama` → `Ollama`. */
+export const providerLabel = (id: string): string => BUILTIN_LABEL[id] ?? providerName(id)
+
+export type ConnectMode = 'subscription' | 'key' | 'local'
+
+/** What each way of connecting means, three short facts each (the Connect step's side panel). */
+export const MODE_FACTS: Record<ConnectMode, { title: string; facts: readonly string[] }> = {
+  subscription: {
+    title: 'A plan you already pay for',
+    facts: ['No per-token bill: usage counts against your plan.', 'Limits reset on your plan\u2019s schedule; Costs shows where you stand.', 'You sign in once in the browser; the tokens stay on this computer.'],
+  },
+  key: {
+    title: 'Pay per use',
+    facts: ['Billed by the provider for exactly what you use.', 'Costs shows every call and its price.', 'The key is encrypted on this computer and never shown again.'],
+  },
+  local: {
+    title: 'Runs on this computer',
+    facts: ['Nothing leaves your machine; works offline.', 'Free to run; speed depends on your hardware.', 'Ollama, LM Studio, llama.cpp and others are found automatically.'],
+  },
+}
 
 /** A subscription sign-in: `login(ns)`; `provider` is the model provider it unlocks in `list_models`. */
 export type Subscription = { ns: string; label: string; plan: string; provider: string }
@@ -12,6 +35,19 @@ export const MORE_SUBSCRIPTIONS: readonly Subscription[] = [
   { ns: 'xai', label: 'SuperGrok', plan: 'Sign in with your xAI account', provider: 'xai' },
   { ns: 'cursor', label: 'Cursor', plan: 'Sign in with your Cursor account', provider: 'cursor' },
 ]
+
+/** A sign-in waiting on the browser (`url` once `login` answered), and the last one that failed. */
+export type Login = { pending: { ns: string; url: string | null } | null; failed: { ns: string; message: string } | null }
+
+/**
+ * `LoginFinished` folded into the sign-in state: only the event for the sign-in this step started counts (another
+ * window's or a stale one is ignored, and `next` is then `s` itself). `provider` is the connected model provider.
+ */
+export function loginFinished(s: Login, e: { provider: string; error?: string | null }): { next: Login; provider: string | null } {
+  if (!s.pending || e.provider !== s.pending.ns) return { next: s, provider: null }
+  if (e.error) return { next: { pending: null, failed: { ns: e.provider, message: e.error } }, provider: null }
+  return { next: { pending: null, failed: null }, provider: [...SUBSCRIPTIONS, ...MORE_SUBSCRIPTIONS].find((x) => x.ns === e.provider)?.provider ?? e.provider }
+}
 
 /** An API key provider: `secret` is the adapter's lower-case name the engine reads the key from (`set_secret`). */
 export type KeyProvider = { secret: string; label: string; provider: string; placeholder: string }
@@ -78,16 +114,37 @@ export function contextLabel(tokens: number): string {
 /** The providers behind a model list, in first-seen order. */
 export const connectedProviders = (models: readonly { provider: string }[]): string[] => [...new Set(models.map((m) => m.provider))]
 
+/** A model's facts for the Default model step's side panel. */
+export function modelFacts(m: { provider: string; context: number; reasoning: boolean; image: boolean; local: boolean; efforts: readonly string[] }): string[] {
+  return [
+    m.local ? 'Runs on this computer' : `Served by ${providerLabel(m.provider)}`,
+    m.context > 0 ? `Reads ${contextLabel(m.context).replace(' context', '')} tokens of context at once` : 'Context window not reported',
+    m.reasoning ? (m.efforts.length > 0 ? `Thinks before answering (${m.efforts.join(', ')})` : 'Thinks before answering') : 'Answers directly, without a thinking phase',
+    m.image ? 'Reads images and screenshots' : 'Text only',
+  ]
+}
+
+/** A few seconds of slack between the dialog's clock and the engine's stamp (same machine, separate processes). */
+const PAIR_SLACK_MS = 5_000
+
+/**
+ * Whether a just-paired device is the phone this dialog's code paired: paired after the dialog opened, and not another
+ * theuth node (`platform` `theuth` is a computer joining the mesh). The link events carry no pairing id to match.
+ */
+export function isNewPhone(d: { paired_ms: number; platform: string }, openedAt: number): boolean {
+  return d.platform !== 'theuth' && d.paired_ms >= openedAt - PAIR_SLACK_MS
+}
+
 export type StarterId = 'tour' | 'page' | 'research' | 'project'
 
 /** A first-chat card; `input` cards fill `{}` from their field before sending. */
-export type Starter = { id: StarterId; title: string; blurb: string; input?: { label: string; placeholder: string } }
+export type Starter = { id: StarterId; title: string; blurb: string; /** What lands in the chat and the Library. */ yields: readonly string[]; input?: { label: string; placeholder: string } }
 
 export const STARTERS: readonly Starter[] = [
-  { id: 'tour', title: 'Tour this computer', blurb: 'What is on this machine and where the space went, drawn as one picture.' },
-  { id: 'page', title: 'Make me a page', blurb: 'A calm start-of-day dashboard as one HTML file, built and shown to you.' },
-  { id: 'research', title: 'Research something', blurb: 'A short briefing from primary sources, every claim linked.', input: { label: 'Topic', placeholder: 'e.g. solid-state batteries' } },
-  { id: 'project', title: 'Explain a project', blurb: 'Point at a folder and get a map of how it works.', input: { label: 'Folder', placeholder: '/Users/you/code/project' } },
+  { id: 'tour', title: 'Tour this computer', blurb: 'What is on this machine and where the space went, drawn as one picture.', yields: ['A read-only look at the disk, apps and memory', 'One diagram of where the space went', 'Two or three safe ways to free some up'] },
+  { id: 'page', title: 'Make me a page', blurb: 'A calm start-of-day dashboard as one HTML file, built and shown to you.', yields: ['One self-contained HTML file in your Library', 'Shown to you as soon as it is built', 'Light and dark, no accounts needed'] },
+  { id: 'research', title: 'Research something', blurb: 'A short briefing from primary sources, every claim linked.', yields: ['A briefing built from primary sources', 'Every claim linked to where it came from', 'The three sources worth reading next'], input: { label: 'Topic', placeholder: 'e.g. solid-state batteries' } },
+  { id: 'project', title: 'Explain a project', blurb: 'Point at a folder and get a map of how it works.', yields: ['An overview board of the project', 'A diagram of how the pieces fit', 'Where to start to change something'], input: { label: 'Folder', placeholder: '/Users/you/code/project' } },
 ]
 
 /** The prompt each card sends; `value` is the card's field (topic or folder), for the tour the machine's noun (`Mac`). */

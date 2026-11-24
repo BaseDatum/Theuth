@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Check, ChevronDown, Cpu, KeyRound, LoaderCircle, Radar, Sparkles } from 'lucide-react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { RadioGroup } from 'radix-ui'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { useModels } from '@/components/agents/queries'
-import { BUILTIN_LABEL, freeName, localAddArgs, probeForm, runtimeLabel } from '@/components/settings/providers'
+import { freeName, localAddArgs, probeForm, runtimeLabel } from '@/components/settings/providers'
 import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,10 +13,8 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
 import type { LocalServer } from '@/rpc/bindings/method.agent.output'
 import { on } from '@/store/sessions'
-import { CARD, StepFrame } from './Frame'
-import { KEY_PROVIDERS, MORE_SUBSCRIPTIONS, SUBSCRIPTIONS, type Subscription, connectedProviders, keyNote } from './content'
-
-type Mode = 'subscription' | 'key' | 'local'
+import { CARD, Facts, StepFrame } from './Frame'
+import { type ConnectMode as Mode, KEY_PROVIDERS, type Login, MODE_FACTS, MORE_SUBSCRIPTIONS, SUBSCRIPTIONS, type Subscription, connectedProviders, keyNote, loginFinished, providerLabel } from './content'
 
 const MODES: readonly { id: Mode; icon: typeof Sparkles; label: string; hint: string }[] = [
   { id: 'subscription', icon: Sparkles, label: 'Subscription', hint: 'Use your plan, no per-token bill' },
@@ -34,15 +33,50 @@ export function ConnectModel({ onConnected, onBack, onNext }: { onConnected(prov
   const [mode, setMode] = useState<Mode>('subscription')
   const [another, setAnother] = useState(false)
   const qc = useQueryClient()
-  const connected = (provider: string) => {
-    for (const key of KEYS) void qc.invalidateQueries({ queryKey: key })
-    onConnected(provider)
-  }
+  const connected = useCallback(
+    (provider: string) => {
+      for (const key of KEYS) void qc.invalidateQueries({ queryKey: key })
+      onConnected(provider)
+    },
+    [qc, onConnected],
+  )
+  // The sign-in lives here, not in its panel: switching to API key or Local while the browser is open must not drop
+  // the `LoginFinished` that ends it.
+  const [login, setLogin] = useState<Login>({ pending: null, failed: null })
+  const loginRef = useRef(login)
+  loginRef.current = login
+  useEffect(
+    () =>
+      on('agent.login@1', 'LoginFinished', (e) => {
+        const { next, provider } = loginFinished(loginRef.current, e)
+        if (next === loginRef.current) return
+        setLogin(next)
+        if (provider) connected(provider)
+      }),
+    [connected],
+  )
+  const ModeIcon = MODES.find((m) => m.id === mode)?.icon ?? Sparkles
   return (
     <StepFrame
       eyebrow="Step 1 of 3"
       title="Connect a model"
       description="theuth thinks with the model you bring. A subscription you already pay for is the easiest start."
+      aside={
+        ready && !another ? (
+          <Facts
+            icon={<Check className="size-5" />}
+            title="Ready to go"
+            facts={connectedProviders(list).map((p) => {
+              const n = list.filter((m) => m.provider === p).length
+              return `${providerLabel(p)}: ${n} ${n === 1 ? 'model' : 'models'}`
+            })}
+          />
+        ) : (
+          <div key={mode}>
+            <Facts icon={<ModeIcon className="size-5" />} title={MODE_FACTS[mode].title} facts={MODE_FACTS[mode].facts} />
+          </div>
+        )
+      }
       back={
         <>
           <Button variant="ghost" onClick={onBack} className="text-fg-secondary">
@@ -67,7 +101,7 @@ export function ConnectModel({ onConnected, onBack, onNext }: { onConnected(prov
           <div className="flex min-w-0 flex-1 flex-col gap-0.5 text-sm">
             <span className="font-medium text-foreground">You're connected</span>
             <span className="text-fg-secondary">
-              {connectedProviders(list).map((p) => BUILTIN_LABEL[p] ?? p).join(', ')} · {list.length} models ready
+              {connectedProviders(list).map(providerLabel).join(', ')} · {list.length} models ready
             </span>
           </div>
           {!another && (
@@ -79,26 +113,19 @@ export function ConnectModel({ onConnected, onBack, onNext }: { onConnected(prov
       )}
       {(!ready || another) && (
         <div className="flex max-w-2xl flex-col gap-5">
-          <div role="radiogroup" aria-label="How to connect" className="grid gap-3 sm:grid-cols-3">
+          <RadioGroup.Root value={mode} onValueChange={(v) => setMode(v as Mode)} aria-label="How to connect" className="grid gap-3 sm:grid-cols-3">
             {MODES.map(({ id, icon: Icon, label, hint }) => (
-              <button
-                key={id}
-                type="button"
-                role="radio"
-                aria-checked={mode === id}
-                onClick={() => setMode(id)}
-                className={`${CARD} flex flex-col gap-1.5 p-4 ${mode === id ? 'border-fg-accent bg-layer-3 shadow-[inset_0_0_0_1px_var(--fg-accent)]' : ''}`}
-              >
+              <RadioGroup.Item key={id} value={id} className={`${CARD} flex flex-col gap-1.5 p-4 data-[state=checked]:border-fg-accent data-[state=checked]:bg-layer-3 data-[state=checked]:shadow-[inset_0_0_0_1px_var(--fg-accent)]`}>
                 <span className="flex items-center gap-2 text-sm font-medium text-foreground">
                   <Icon className="size-4 text-fg-accent" aria-hidden /> {label}
                   {id === 'subscription' && <span className="ml-auto rounded-full bg-layer-1 px-2 py-0.5 text-[11px] font-medium text-fg-secondary">Recommended</span>}
                 </span>
                 <span className="text-[13px] text-fg-secondary">{hint}</span>
-              </button>
+              </RadioGroup.Item>
             ))}
-          </div>
-          <div key={mode} className="animate-in fade-in-0 duration-200 motion-reduce:animate-none">
-            {mode === 'subscription' ? <Subscriptions onConnected={connected} /> : mode === 'key' ? <ApiKey onConnected={connected} /> : <LocalModels onConnected={connected} />}
+          </RadioGroup.Root>
+          <div key={mode} className="onb-fade">
+            {mode === 'subscription' ? <Subscriptions login={login} setLogin={setLogin} /> : mode === 'key' ? <ApiKey onConnected={connected} /> : <LocalModels onConnected={connected} />}
           </div>
         </div>
       )}
@@ -106,27 +133,14 @@ export function ConnectModel({ onConnected, onBack, onNext }: { onConnected(prov
   )
 }
 
-/** The sign-in cards: `login(ns)` opens the browser on the engine's host; `LoginFinished` ends the wait. */
-function Subscriptions({ onConnected }: { onConnected(provider: string): void }) {
+/** The sign-in cards: `login(ns)` opens the browser on the engine's host; `LoginFinished` (in `ConnectModel`) ends the wait. */
+function Subscriptions({ login: state, setLogin }: { login: Login; setLogin(f: (s: Login) => Login): void }) {
   const api = useApi()
   const canList = useQuerySupport(['list_logins'])
   const canLogin = useQuerySupport(['login'])
   const logins = useQuery({ enabled: canList, queryKey: queryKeys.logins, queryFn: () => api.list_logins() })
-  const [pending, setPending] = useState<{ ns: string; url: string | null } | null>(null)
-  const [failed, setFailed] = useState<{ ns: string; message: string } | null>(null)
+  const { pending, failed } = state
   const [more, setMore] = useState(false)
-  useEffect(
-    () =>
-      on('agent.login@1', 'LoginFinished', (e) => {
-        setPending(null)
-        if (e.error) setFailed({ ns: e.provider, message: e.error })
-        else {
-          setFailed(null)
-          onConnected([...SUBSCRIPTIONS, ...MORE_SUBSCRIPTIONS].find((s) => s.ns === e.provider)?.provider ?? e.provider)
-        }
-      }),
-    [onConnected],
-  )
   if (!canLogin) return <Note>This engine cannot sign in to subscriptions. Use an API key or a local model instead.</Note>
   // An engine that lists its logins offers only those; one that does not gets the known ones.
   const known = logins.data ? new Set(logins.data.map((l) => l.name)) : null
@@ -136,14 +150,12 @@ function Subscriptions({ onConnected }: { onConnected(provider: string): void })
     const waiting = pending?.ns === s.ns
     const error = failed?.ns === s.ns ? failed.message : null
     const signIn = async () => {
-      setFailed(null)
-      setPending({ ns: s.ns, url: null })
+      setLogin(() => ({ pending: { ns: s.ns, url: null }, failed: null }))
       try {
         const url = await api.login(s.ns)
-        setPending((p) => (p?.ns === s.ns ? { ns: s.ns, url } : p))
+        setLogin((l) => (l.pending?.ns === s.ns ? { ...l, pending: { ns: s.ns, url } } : l))
       } catch (e) {
-        setPending(null)
-        setFailed({ ns: s.ns, message: errorText(e) })
+        setLogin((l) => (l.pending?.ns === s.ns ? { pending: null, failed: { ns: s.ns, message: errorText(e) } } : l))
       }
     }
     return (
@@ -157,17 +169,24 @@ function Subscriptions({ onConnected }: { onConnected(provider: string): void })
             <span className="flex items-center gap-1.5 text-sm text-success">
               <Check className="size-4" aria-hidden /> Connected
             </span>
+          ) : waiting ? (
+            // The browser may be closed or the sign-in abandoned: the wait must always have a way out.
+            <span className="flex items-center gap-2">
+              <LoaderCircle className="size-4 animate-spin text-fg-secondary motion-reduce:animate-none" aria-hidden />
+              <Button variant="ghost" onClick={() => setLogin(() => ({ pending: null, failed: null }))} aria-label={`Cancel sign-in: ${s.label}`}>
+                Cancel
+              </Button>
+            </span>
           ) : (
             <Button variant={error ? 'outline' : 'default'} disabled={!!pending} onClick={() => void signIn()} aria-label={`${error ? 'Try again' : 'Sign in'}: ${s.label}`}>
-              {waiting && <LoaderCircle className="animate-spin motion-reduce:animate-none" />}
-              {waiting ? 'Waiting…' : error ? 'Try again' : 'Sign in'}
+              {error ? 'Try again' : 'Sign in'}
             </Button>
           )}
         </div>
         {waiting && (
           <p role="status" className="text-[13px] text-fg-secondary">
             Finish in your browser…
-            {pending.url && (
+            {pending?.url && (
               <>
                 {' '}
                 Browser didn't open? <code className="break-all font-mono text-xs text-fg-tertiary select-all">{pending.url}</code>

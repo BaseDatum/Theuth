@@ -31,7 +31,10 @@ export function OnboardingHost() {
   )
 }
 
-/** Decides once per run, as soon as the flag, the model list and `info` have answered ("Trigger and persistence"). */
+/**
+ * Acts once per run, as soon as the flag, the model list and `info` have answered ("Trigger and persistence"). Only an
+ * acted-on decision latches: a failed `list_models` waits for its refetch (focus, reconnect) instead of deciding nothing.
+ */
 function Boot() {
   const flag = useOnboardingFlag()
   const canModels = useQuerySupport(['list_models'])
@@ -43,11 +46,11 @@ function Boot() {
     here: true,
     flagLoaded: flag.loaded,
     completed: flag.completed,
-    models: !canModels || models.isError ? null : models.data,
+    models: !canModels ? null : models.isError ? undefined : models.data,
     defaultModel,
   })
   useEffect(() => {
-    if (decided.current || decision === 'wait') return
+    if (decided.current || (decision !== 'wizard' && decision !== 'toast')) return
     decided.current = true
     if (decision === 'wizard') {
       if (!useOnboarding.getState().wizardOpen) useOnboarding.getState().openWizard('welcome')

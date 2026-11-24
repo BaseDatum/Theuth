@@ -10,32 +10,65 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { CARD, StepFrame } from './Frame'
 import { STARTERS, type Starter, type StarterId, starterPrompt } from './content'
 
+/** The side panel: what the card under the pointer or focus produces, and the exact prompt it sends. */
+function Preview({ starter: s }: { starter: Starter }) {
+  const Icon = ICON[s.id]
+  const prompt = starterPrompt(s.id, s.id === 'tour' ? MACHINE : s.id === 'research' ? 'your topic' : s.id === 'project' ? 'your folder' : '')
+  return (
+    <div className="flex flex-col gap-5">
+      <span className="flex size-10 items-center justify-center rounded-lg bg-layer-1 text-fg-accent">
+        <Icon className="size-5" />
+      </span>
+      <p className="text-[17px] leading-snug font-medium text-foreground">What you get</p>
+      <ul className="flex flex-col gap-3">
+        {s.yields.map((y, i) => (
+          <li key={y} className="onb-rise flex gap-2.5 text-[13px] leading-relaxed text-fg-secondary" style={{ animationDelay: `${100 + 70 * i}ms` }}>
+            <span className="mt-[7px] size-1.5 shrink-0 rounded-full bg-fg-accent" />
+            {y}
+          </li>
+        ))}
+      </ul>
+      <div className="onb-rise flex flex-col gap-1.5 border-t border-border-subtle pt-4" style={{ animationDelay: '340ms' }}>
+        <span className="text-[11px] font-medium tracking-[0.08em] text-fg-tertiary uppercase">The prompt it sends</span>
+        <p className="line-clamp-6 text-[12px] leading-relaxed text-fg-tertiary">{prompt}</p>
+      </div>
+    </div>
+  )
+}
+
 const ICON: Record<StarterId, typeof HardDrive> = { tour: HardDrive, page: LayoutDashboard, research: Telescope, project: FolderTree }
 /** `This Mac` → `Mac`: the tour card names the machine it runs on. */
 const MACHINE = LOCAL_NAME.replace(/^This /, '')
 
-/** Step 4: one line on what chat is, then four prompts that show the reach, each sent at once; or the plain composer. */
+/** Step 3 of 3: one line on what chat is, then four prompts that show the reach, each sent at once; or the plain composer. */
 export function FirstChat({ onStart, onOwn, onBack }: { onStart(text: string): Promise<void>; onOwn(): void; onBack(): void }) {
   const canSend = useQuerySupport(['new_session', 'send_input'])
   const ready = (useModels().data?.length ?? 0) > 0
   const [busy, setBusy] = useState<StarterId | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<{ message: string; id: StarterId; value?: string } | null>(null)
   const send = async (id: StarterId, value?: string) => {
     setBusy(id)
     setError(null)
     try {
       await onStart(starterPrompt(id, id === 'tour' ? MACHINE : value))
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError({ message: e instanceof Error ? e.message : String(e), id, value })
       setBusy(null)
     }
   }
   const disabled = !canSend || !ready || busy !== null
+  const [preview, setPreview] = useState<StarterId>('tour')
+  const shown = STARTERS.find((s) => s.id === preview) ?? STARTERS[0]!
   return (
     <StepFrame
       eyebrow="Step 3 of 3"
       title="Your first chat"
       description="Ask in plain words. theuth plans, works on this computer and shows each step as it goes. Pick one to watch it work:"
+      aside={
+        <div key={shown.id}>
+          <Preview starter={shown} />
+        </div>
+      }
       back={
         <Button variant="ghost" onClick={onBack} className="text-fg-secondary">
           Back
@@ -50,13 +83,19 @@ export function FirstChat({ onStart, onOwn, onBack }: { onStart(text: string): P
       {!ready && <p className="mb-5 max-w-3xl rounded-xl border border-warning-border bg-warning-bg px-4 py-3 text-sm text-foreground">Connect a model first: go back one step, or later in Settings › Models.</p>}
       <div className="grid max-w-3xl gap-3 sm:grid-cols-2">
         {STARTERS.map((s) => (
-          <StarterCard key={s.id} starter={s} busy={busy === s.id} disabled={disabled} onSend={(v) => void send(s.id, v)} />
+          <div key={s.id} className="flex" onMouseEnter={() => setPreview(s.id)} onFocus={() => setPreview(s.id)}>
+            <StarterCard starter={s} busy={busy === s.id} disabled={disabled} onSend={(v) => void send(s.id, v)} />
+          </div>
         ))}
       </div>
       {error && (
-        <p role="alert" className="mt-4 text-[13px] text-danger">
-          Could not start the chat: {error}
-        </p>
+        <div role="alert" className="mt-4 flex max-w-3xl items-center gap-3 rounded-xl border border-danger-border bg-danger-bg px-4 py-3 text-[13px] text-danger">
+          <span className="flex-1">Could not start the chat: {error.message}</span>
+          {/* The retry sends into the chat the failed attempt created, never a second one. */}
+          <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void send(error.id, error.value)}>
+            Try again
+          </Button>
+        </div>
       )}
     </StepFrame>
   )
@@ -79,7 +118,7 @@ function StarterCard({ starter: s, busy, disabled, onSend }: { starter: Starter;
   )
   if (!s.input)
     return (
-      <button type="button" disabled={disabled} onClick={() => onSend()} className={`${CARD} group flex flex-col gap-3 p-4 disabled:pointer-events-none disabled:opacity-60`}>
+      <button type="button" disabled={disabled} onClick={() => onSend()} className={`${CARD} group flex w-full flex-col gap-3 p-4 disabled:pointer-events-none disabled:opacity-60`}>
         {head}
         <span className="mt-auto flex items-center gap-1 text-[13px] font-medium text-fg-accent">
           {busy ? 'Starting…' : 'Send'} <ArrowRight className="size-3.5 transition-transform group-hover:translate-x-0.5 motion-reduce:transition-none" aria-hidden />
@@ -90,7 +129,7 @@ function StarterCard({ starter: s, busy, disabled, onSend }: { starter: Starter;
   const folder = s.id === 'project' && isTauri()
   return (
     <form
-      className={`${CARD} flex flex-col gap-3 p-4 hover:bg-layer-2 focus-within:border-border-strong`}
+      className={`${CARD} flex w-full flex-col gap-3 p-4 hover:bg-layer-2 focus-within:border-border-strong`}
       aria-label={title}
       onSubmit={(e) => {
         e.preventDefault()

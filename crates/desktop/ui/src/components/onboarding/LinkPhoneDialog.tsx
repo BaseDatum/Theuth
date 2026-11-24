@@ -1,8 +1,9 @@
+import './wizard.css'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { CircleCheck, Copy, LoaderCircle, MessagesSquare, Monitor, RefreshCw } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { create } from 'zustand'
 import { settings } from '@/components/chat/slash'
@@ -13,6 +14,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { on } from '@/store/sessions'
+import { isNewPhone } from './steps/content'
 
 /** Open state of the dialog: the checklist's phone item and the end of the tour open it with `openLinkPhone()`. */
 export const useLinkPhone = create<{ open: boolean }>()(() => ({ open: false }))
@@ -58,21 +60,40 @@ function Unsupported() {
 function Pairing({ onDone }: { onDone(): void }) {
   const api = useApi()
   const qc = useQueryClient()
+  const canList = useQuerySupport(['devices_list'])
   const start = useMutation({ mutationFn: () => api.device_pair_start(null) })
   const [paired, setPaired] = useState(false)
   const [now, setNow] = useState(Date.now)
+  // StrictMode runs effects twice: one dialog open makes one code. `opened` dates this pairing: only a phone paired
+  // after it counts (the events carry no pairing id).
+  const opened = useRef<number | null>(null)
   const { mutate } = start
-  useEffect(() => mutate(), [mutate])
   useEffect(() => {
-    const done = () => {
+    if (opened.current !== null) return
+    opened.current = Date.now()
+    mutate()
+  }, [mutate])
+  useEffect(() => {
+    const check = (d: { paired_ms: number; platform: string }) => {
+      if (!isNewPhone(d, opened.current ?? Number.POSITIVE_INFINITY)) return
       setPaired(true)
       void qc.invalidateQueries({ queryKey: ['mesh', 'devices'] })
     }
-    const offs = [on('link.events@1', 'LinkPaired', done), on('link.events@1', 'DevicePaired', done)]
+    const offs = [
+      on('link.events@1', 'LinkPaired', (e) => check({ paired_ms: e.device.paired_at_ms, platform: e.device.platform })),
+      // `DevicePaired` names only the id: the registry row says when and what it is.
+      on('link.events@1', 'DevicePaired', (e) => {
+        if (!canList) return
+        void api.devices_list().then((list) => {
+          const d = list.find((x) => x.id === e.id)
+          if (d && !d.revoked) check(d)
+        }, () => undefined)
+      }),
+    ]
     return () => {
       for (const off of offs) off()
     }
-  }, [qc])
+  }, [api, qc, canList])
   const p = start.data
   // The QR is spent at expiry; one tick a second is enough to swap in "New code".
   useEffect(() => {
@@ -83,7 +104,7 @@ function Pairing({ onDone }: { onDone(): void }) {
   const expired = !!p && now >= p.expires_ms
   if (paired)
     return (
-      <div role="status" className="flex flex-col items-center gap-4 py-6 text-center animate-in fade-in-0 zoom-in-95 duration-300 motion-reduce:animate-none">
+      <div role="status" className="onb-pop flex flex-col items-center gap-4 py-6 text-center">
         <CircleCheck className="size-10 text-success" aria-hidden />
         <DialogTitle className="text-xl">Your phone is linked</DialogTitle>
         <DialogDescription>Your chats, Inbox and Library are on it now, wherever you are.</DialogDescription>
@@ -99,8 +120,8 @@ function Pairing({ onDone }: { onDone(): void }) {
         <DialogDescription className="text-[15px] leading-relaxed">Reach your agents from anywhere. Scan the code with your phone's camera.</DialogDescription>
       </DialogHeader>
       <div className="flex flex-col items-center gap-4">
-        <div className={`flex size-[236px] items-center justify-center rounded-xl bg-white p-2 ${expired ? 'opacity-30' : ''}`}>
-          {p ? <QRCodeSVG value={p.string} size={220} marginSize={2} aria-label="Pairing code" role="img" /> : start.isError ? null : <LoaderCircle className="size-6 animate-spin text-neutral-400 motion-reduce:animate-none" aria-label="Making a code" />}
+        <div className={`flex size-[236px] items-center justify-center rounded-xl p-2 ${p ? 'bg-white' : 'bg-layer-2'} ${expired ? 'opacity-30' : ''}`}>
+          {p ? <QRCodeSVG value={p.string} size={220} marginSize={2} aria-label="Pairing code" role="img" /> : start.isError ? null : <LoaderCircle className="size-6 animate-spin text-fg-tertiary motion-reduce:animate-none" aria-label="Making a code" />}
         </div>
         {start.isError && (
           <div role="alert" className="flex flex-col items-center gap-2 text-center text-[13px] text-danger">

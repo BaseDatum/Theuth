@@ -10,7 +10,10 @@ test('a fresh install with no models opens the wizard', () => {
 
 test('models present but the default model is not among them (its provider unconfigured) opens the wizard', () => {
   expect(bootDecision({ ...configured, defaultModel: 'google/gemini-2.5-pro' })).toBe('wizard')
-  expect(bootDecision({ ...configured, defaultModel: '' })).toBe('wizard')
+})
+
+test('models on offer with no default model at all is a configured user: the toast, not the wizard', () => {
+  expect(bootDecision({ ...configured, defaultModel: '' })).toBe('toast')
 })
 
 test('an upgrading user with a working default gets the tour toast, never the modal', () => {

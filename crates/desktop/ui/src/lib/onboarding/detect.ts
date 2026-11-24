@@ -22,8 +22,9 @@ export function bootDecision(i: BootInput): BootDecision {
   if (i.models === undefined || i.defaultModel === undefined) return 'wait'
   // No model list to judge by: degrade to nothing rather than guess.
   if (i.models === null) return 'none'
-  // An empty list, or a default whose provider is not configured (its model is not offered), means setup is due.
-  if (i.models.length === 0 || !i.defaultModel || !i.models.some((m) => m.id === i.defaultModel)) return 'wizard'
+  // An empty list, or a default whose provider is not configured (its model is not offered), means setup is due. No
+  // default at all with models on offer is an engine that picks per chat: that user is set up.
+  if (i.models.length === 0 || (i.defaultModel && !i.models.some((m) => m.id === i.defaultModel))) return 'wizard'
   return 'toast'
 }
 

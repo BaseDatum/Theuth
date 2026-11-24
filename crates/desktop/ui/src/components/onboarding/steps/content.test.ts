@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { STARTERS, connectedProviders, contextLabel, recommendModels, starterPrompt } from './content'
+import { type Login, STARTERS, connectedProviders, contextLabel, isNewPhone, loginFinished, providerLabel, recommendModels, starterPrompt } from './content'
 
 const m = (id: string, context = 200_000) => ({ id, name: id.split('/')[1] ?? id, provider: id.split('/')[0] ?? '', context })
 const catalog = [
@@ -46,4 +46,27 @@ test('every starter is a complete, specific prompt; input cards carry their valu
   expect(starterPrompt('tour', 'Mac')).toMatch(/^Give me a tour of this Mac\./)
   expect(starterPrompt('tour')).toMatch(/this computer/)
   expect(starterPrompt('project', 'x')).toMatch(/do not modify/)
+})
+
+test('only the LoginFinished of the sign-in in progress ends it', () => {
+  const waiting: Login = { pending: { ns: 'anthropic', url: 'https://x' }, failed: null }
+  // Another provider's, or one with nothing pending (a stale event, another window): ignored, same object back.
+  expect(loginFinished(waiting, { provider: 'openai', error: null }).next).toBe(waiting)
+  const idle: Login = { pending: null, failed: null }
+  expect(loginFinished(idle, { provider: 'anthropic', error: null })).toEqual({ next: idle, provider: null })
+  expect(loginFinished(waiting, { provider: 'anthropic', error: 'denied' })).toEqual({ next: { pending: null, failed: { ns: 'anthropic', message: 'denied' } }, provider: null })
+  expect(loginFinished(waiting, { provider: 'anthropic', error: null })).toEqual({ next: { pending: null, failed: null }, provider: 'anthropic' })
+})
+
+test('only a phone paired after the dialog opened counts as this pairing', () => {
+  const opened = 1_000_000
+  expect(isNewPhone({ paired_ms: opened + 30_000, platform: 'ios' }, opened)).toBe(true)
+  expect(isNewPhone({ paired_ms: opened - 60_000, platform: 'ios' }, opened)).toBe(false)
+  expect(isNewPhone({ paired_ms: opened + 30_000, platform: 'theuth' }, opened)).toBe(false)
+  // Not opened yet: nothing counts.
+  expect(isNewPhone({ paired_ms: opened, platform: 'ios' }, Number.POSITIVE_INFINITY)).toBe(false)
+})
+
+test('providers read as their names, never raw ids', () => {
+  expect(['anthropic', 'openai', 'ollama', 'google', 'openrouter', 'opencode'].map(providerLabel)).toEqual(['Anthropic', 'OpenAI', 'Ollama', 'Google', 'OpenRouter', 'OpenCode Zen'])
 })

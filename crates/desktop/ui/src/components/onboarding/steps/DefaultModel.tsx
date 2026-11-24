@@ -1,17 +1,17 @@
-import { ArrowRight, Check, LoaderCircle } from 'lucide-react'
+import { ArrowRight, Check, Cpu, LoaderCircle } from 'lucide-react'
+import { RadioGroup } from 'radix-ui'
 import { useState } from 'react'
 import { useModels } from '@/components/agents/queries'
 import { ModelCombobox } from '@/components/chat/ModelCombobox'
-import { BUILTIN_LABEL } from '@/components/settings/providers'
 import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useConnection } from '@/store/connection'
-import { CARD, StepFrame } from './Frame'
-import { contextLabel, recommendModels } from './content'
+import { CARD, Facts, StepFrame } from './Frame'
+import { contextLabel, modelFacts, providerLabel, recommendModels } from './content'
 
-/** Step 3: three to five good defaults from what is connected (the provider just connected first), or any model. */
+/** Step 2 of 3: three to five good defaults from what is connected (the provider just connected first), or any model. */
 export function DefaultModel({ prefer, onBack, onNext }: { prefer: string | null; onBack(): void; onNext(): void }) {
   const api = useApi()
   const can = useQuerySupport(['set_model'])
@@ -45,6 +45,13 @@ export function DefaultModel({ prefer, onBack, onNext }: { prefer: string | null
       eyebrow="Step 2 of 3"
       title="Pick your default model"
       description="Every new chat starts on it. You can switch any chat to another model at any time."
+      aside={
+        chosenModel && (
+          <div key={chosenModel.id}>
+            <Facts icon={<Cpu className="size-5" />} title={chosenModel.name} facts={modelFacts(chosenModel)} />
+          </div>
+        )
+      }
       back={
         <Button variant="ghost" onClick={onBack} className="text-fg-secondary">
           Back
@@ -63,29 +70,25 @@ export function DefaultModel({ prefer, onBack, onNext }: { prefer: string | null
         </p>
       ) : (
         <div className="flex max-w-2xl flex-col gap-5">
-          <div role="radiogroup" aria-label="Recommended models" className="grid gap-3 sm:grid-cols-2">
-            {recs.map((m) => {
-              const on = m.id === chosen
-              return (
-                <button
-                  key={m.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={on}
-                  onClick={() => setPicked(m.id)}
-                  className={`${CARD} relative flex flex-col gap-1 p-4 ${on ? 'border-fg-accent bg-layer-3 shadow-[inset_0_0_0_1px_var(--fg-accent)]' : ''}`}
-                >
-                  <span className="pr-6 text-[15px] font-medium text-foreground">{m.name}</span>
-                  <span className="text-[13px] text-fg-secondary">{[BUILTIN_LABEL[m.provider] ?? m.provider, contextLabel(m.context), m.local ? 'on this computer' : ''].filter(Boolean).join(' · ')}</span>
-                  {m.id === current && <span className="text-[12px] text-fg-tertiary">Current default</span>}
-                  {on && <Check className="absolute top-4 right-4 size-4 text-fg-accent" aria-hidden />}
-                </button>
-              )
-            })}
-          </div>
+          <RadioGroup.Root value={chosen ?? ''} onValueChange={setPicked} aria-label="Recommended models" className="grid gap-3 sm:grid-cols-2">
+            {recs.map((m) => (
+              <RadioGroup.Item
+                key={m.id}
+                value={m.id}
+                className={`${CARD} group relative flex flex-col gap-1 p-4 data-[state=checked]:border-fg-accent data-[state=checked]:bg-layer-3 data-[state=checked]:shadow-[inset_0_0_0_1px_var(--fg-accent)]`}
+              >
+                <span className="pr-6 text-[15px] font-medium text-foreground">{m.name}</span>
+                <span className="text-[13px] text-fg-secondary">{[providerLabel(m.provider), contextLabel(m.context), m.local ? 'on this computer' : ''].filter(Boolean).join(' · ')}</span>
+                {m.id === current && <span className="text-[12px] text-fg-tertiary">Current default</span>}
+                <RadioGroup.Indicator className="absolute top-4 right-4 text-fg-accent">
+                  <Check className="size-4" aria-hidden />
+                </RadioGroup.Indicator>
+              </RadioGroup.Item>
+            ))}
+          </RadioGroup.Root>
           <div className="flex flex-wrap items-center gap-3 text-sm text-fg-secondary">
             <span aria-hidden>Or choose from every model</span>
-            <ModelCombobox aria-label="See all models" className="max-w-72" models={models} value={chosen} effort={effort} onChange={(id) => id && setPicked(id)} />
+            <ModelCombobox aria-label="See all models" className="w-72 max-w-full" models={models} value={chosen} effort={effort} onChange={(id) => id && setPicked(id)} />
           </div>
           {state.error && (
             <p role="alert" className="text-[13px] text-danger">
