@@ -74,8 +74,7 @@ pub(crate) struct ProtocolTarget {
 
 /// The target for a Zen model (`opencode/*` with a key: kind from the catalog
 /// protocol, else the prefix guess), a Go model (`opencode-go/*` with a key,
-/// [`go_target`]) or a user gateway (kind OpenAI unless its
-/// `<data_dir>/models.json` entry names a `protocol`); `None` lets genai
+/// [`go_target`]) or a user gateway ([`gateway_kind`]); `None` lets genai
 /// resolve the id itself.
 pub(crate) fn target_for(resolved: &Resolved, auth: &Auth) -> Option<ProtocolTarget> {
     let provider = resolved.provider.as_deref()?;
@@ -105,6 +104,7 @@ fn protocol_target(
         });
     }
     let gw = gateway?;
+    let kind = gateway_kind(protocol, &gw);
     // 177 E4: a keyless local provider's calls still go through genai, whose
     // OpenAI adapter needs a key: a placeholder servers that check none ignore.
     let key = if gw.key.is_empty() {
@@ -112,11 +112,64 @@ fn protocol_target(
     } else {
         gw.key
     };
+    let endpoint = if kind == AdapterKind::Gemini {
+        gemini_base(&gw.base_url)
+    } else {
+        gw.base_url
+    };
     Some(ProtocolTarget {
-        kind: protocol.map_or(AdapterKind::OpenAI, kind_of),
-        endpoint: Endpoint::from_owned(gw.base_url),
+        kind,
+        endpoint: Endpoint::from_owned(endpoint),
         auth: AuthData::Key(key),
     })
+}
+
+/// A gateway's adapter: its model's `models.json` protocol, else its
+/// `providers.yaml` row's, else Gemini on Google's Gemini API host (its
+/// OpenAI-compatible surface rejects OpenAI's cache fields, and the native
+/// one reports implicit-cache hits), else OpenAI chat completions.
+fn gateway_kind(model: Option<Protocol>, gw: &Gateway) -> AdapterKind {
+    model
+        .map(kind_of)
+        .or_else(|| gw.protocol.map(|p| p.kind()))
+        .unwrap_or_else(|| {
+            if gemini_api_host(&gw.base_url) {
+                AdapterKind::Gemini
+            } else {
+                AdapterKind::OpenAI
+            }
+        })
+}
+
+/// Google's Gemini API host (`generativelanguage.googleapis.com`), whose
+/// models are the built-in `google/*` ones.
+pub(crate) const GEMINI_API_HOST: &str = "generativelanguage.googleapis.com";
+
+fn url_host(url: &str) -> Option<String> {
+    url::Url::parse(url)
+        .ok()?
+        .host_str()
+        .map(str::to_ascii_lowercase)
+}
+
+/// `url` is on [`GEMINI_API_HOST`].
+pub(crate) fn gemini_api_host(url: &str) -> bool {
+    url_host(url).is_some_and(|h| h == GEMINI_API_HOST)
+}
+
+/// `url` is on a Google API host (`*.googleapis.com`: the Gemini API, Vertex
+/// `aiplatform`), whose OpenAI-compatible endpoints reject OpenAI's
+/// `prompt_cache_key` / `prompt_cache_retention` with a 400.
+pub(crate) fn google_api_host(url: &str) -> bool {
+    url_host(url).is_some_and(|h| h == "googleapis.com" || h.ends_with(".googleapis.com"))
+}
+
+/// A Gemini-protocol base: genai appends `models/<id>:…`, so the
+/// OpenAI-compatible suffix (`…/v1beta/openai/`) goes (`…/v1beta/`).
+fn gemini_base(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    let base = trimmed.strip_suffix("/openai").unwrap_or(trimmed);
+    format!("{base}/")
 }
 
 /// A Go model's target: its catalog protocol's family, else chat completions —
@@ -337,18 +390,22 @@ impl Backend {
 
     /// Cache marks for `resolved` (07 §3): Cursor places none; a protocol
     /// target or gateway by the kind theuth chose (Zen Claude → Anthropic
-    /// breakpoints, Zen GPT → `prompt_cache_key`); genai adapters by resolved kind.
+    /// breakpoints, Zen GPT → `prompt_cache_key`); genai adapters by resolved
+    /// kind. Both by endpoint too: a Google host takes no cache fields.
     pub(crate) async fn transport(&self, resolved: &Resolved) -> Result<Transport, String> {
         match self {
             Backend::Cursor { .. } => Ok(Transport::Plain),
             Backend::Genai { client, auth } => match target_for(resolved, auth) {
-                Some(t) => Ok(Transport::of(t.kind)),
+                Some(t) => Ok(Transport::of(t.kind, t.endpoint.base_url())),
                 None => {
                     let target = client
                         .resolve_service_target(resolved.genai.as_str())
                         .await
                         .map_err(provider_error)?;
-                    Ok(Transport::of(target.model.adapter_kind))
+                    Ok(Transport::of(
+                        target.model.adapter_kind,
+                        target.endpoint.base_url(),
+                    ))
                 }
             },
         }
@@ -480,7 +537,7 @@ async fn genai_request<'a>(
                 ServiceTarget {
                     endpoint: t.endpoint,
                     auth: t.auth,
-                    model: ModelIden::new(t.kind, slug(resolved).to_owned()),
+                    model: ModelIden::new(t.kind, target_model(resolved, t.kind).to_owned()),
                 }
                 .into(),
                 label,
@@ -588,6 +645,18 @@ fn slug(resolved: &Resolved) -> &str {
         .map_or(resolved.id.as_str(), |(_, m)| m)
 }
 
+/// The model name a protocol target sends: the slug, without the `models/`
+/// prefix Google's OpenAI-compatible listing gives its ids
+/// (`gemini/models/gemini-2.5-pro`) when genai's Gemini adapter, which
+/// inserts `models/` itself, speaks it.
+fn target_model(resolved: &Resolved, kind: AdapterKind) -> &str {
+    let s = slug(resolved);
+    match kind {
+        AdapterKind::Gemini => s.strip_prefix("models/").unwrap_or(s),
+        _ => s,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use genai::resolver::ServiceTargetResolver;
@@ -657,7 +726,14 @@ mod tests {
         client.resolve_service_target(spec).await.unwrap()
     }
 
-    async fn assert_gateway_route(base: &str, protocol: Option<Protocol>, kind: AdapterKind) {
+    /// A `gateway` row at `base` (row `protocol`) serving `model` (its
+    /// `models.json` `protocol`): the routed target and the transport.
+    async fn gateway_route(
+        base: &str,
+        row: Option<crate::providers::GatewayProtocol>,
+        model: &str,
+        protocol: Option<Protocol>,
+    ) -> (ServiceTarget, Transport) {
         let (scratch, auth) = oauth_auth().await;
         auth.gateways.write().unwrap().insert(
             "gateway".into(),
@@ -665,29 +741,161 @@ mod tests {
                 base_url: base.into(),
                 key: "gateway-key".into(),
                 runtime: None,
+                protocol: row,
             },
         );
         std::fs::write(
             scratch.path().join("models.json"),
-            serde_json::json!({"gateway": {"models": {"x": {
-                "id": "x", "name": "x", "protocol": protocol,
+            serde_json::json!({"gateway": {"models": {model: {
+                "id": model, "name": model, "protocol": protocol,
                 "limit": {"context": 0, "output": 0}
             }}}})
             .to_string(),
         )
         .unwrap();
         let resolved = models::Catalog::load(scratch.path())
-            .resolve("gateway/x", &|_| true)
+            .resolve(&format!("gateway/{model}"), &|_| true)
             .unwrap();
         let target = routed_target(&resolved, &auth).await;
-        assert_eq!(target.endpoint.base_url(), base, "gateway endpoint changed");
-        assert_eq!(target.model.adapter_kind, kind, "gateway kind changed");
-        assert_eq!(&*target.model.model_name, "x");
         assert!(
             matches!(&target.auth, AuthData::Key(k) if k == "gateway-key"),
             "gateway key replaced: {:?}",
             target.auth
         );
+        let backend = Backend::Genai {
+            client: Client::new().unwrap(),
+            auth,
+        };
+        let transport = backend.transport(&resolved).await.unwrap();
+        (target, transport)
+    }
+
+    async fn assert_gateway_route(base: &str, protocol: Option<Protocol>, kind: AdapterKind) {
+        let (target, _) = gateway_route(base, None, "x", protocol).await;
+        assert_eq!(target.endpoint.base_url(), base, "gateway endpoint changed");
+        assert_eq!(target.model.adapter_kind, kind, "gateway kind changed");
+        assert_eq!(&*target.model.model_name, "x");
+    }
+
+    const GOOGLE_OPENAI: &str = "https://generativelanguage.googleapis.com/v1beta/openai/";
+
+    // A gateway on Google's Gemini API host speaks native Gemini by default:
+    // `openai/` dropped from the base, the listing's `models/` prefix dropped
+    // from the name (genai inserts it), its own key, no OpenAI cache fields.
+    #[tokio::test]
+    async fn google_host_gateway_routes_to_native_gemini() {
+        let (t, transport) =
+            gateway_route(GOOGLE_OPENAI, None, "models/gemini-2.5-flash", None).await;
+        assert_eq!(t.model.adapter_kind, AdapterKind::Gemini);
+        assert_eq!(
+            t.endpoint.base_url(),
+            "https://generativelanguage.googleapis.com/v1beta/"
+        );
+        assert_eq!(&*t.model.model_name, "gemini-2.5-flash");
+        assert_eq!(transport, Transport::Plain);
+    }
+
+    // `protocol: openai` on a Google host keeps the OpenAI adapter and URL,
+    // and the guard drops `prompt_cache_key` / retention (Plain transport).
+    #[tokio::test]
+    async fn google_host_gateway_explicit_openai_drops_cache_fields() {
+        use crate::providers::GatewayProtocol;
+        let (t, transport) = gateway_route(
+            GOOGLE_OPENAI,
+            Some(GatewayProtocol::Openai),
+            "models/gemini-2.5-flash",
+            None,
+        )
+        .await;
+        assert_eq!(t.model.adapter_kind, AdapterKind::OpenAI);
+        assert_eq!(t.endpoint.base_url(), GOOGLE_OPENAI);
+        assert_eq!(&*t.model.model_name, "models/gemini-2.5-flash");
+        assert_eq!(transport, Transport::Plain);
+        // A model's own `models.json` protocol still wins over the row's.
+        let (t, _) = gateway_route(
+            GOOGLE_OPENAI,
+            Some(GatewayProtocol::Openai),
+            "x",
+            Some(Protocol::Gemini),
+        )
+        .await;
+        assert_eq!(t.model.adapter_kind, AdapterKind::Gemini);
+        // Elsewhere an OpenAI gateway keeps its cache key.
+        let (_, transport) = gateway_route("https://gateway.example/v1/", None, "x", None).await;
+        assert_eq!(transport, Transport::OpenAiLike);
+    }
+
+    // `protocol: gemini` on any other host: native Gemini on the wire —
+    // `…/v1beta/models/<id>:streamGenerateContent`, the row's key as
+    // `x-goog-api-key`, through `Backend::stream`.
+    #[tokio::test]
+    async fn gemini_protocol_gateway_on_other_host_wire() {
+        let server = fake().await;
+        let dir = crate::test_dir("backend-gemini-gw");
+        let auth = crate::supervisor::Auth::stub(dir.path());
+        auth.gateways.write().unwrap().insert(
+            "gproxy".into(),
+            Gateway {
+                base_url: format!("{}/v1beta/openai/", server.uri()),
+                key: "gpk".into(),
+                runtime: None,
+                protocol: Some(crate::providers::GatewayProtocol::Gemini),
+            },
+        );
+        let backend = Backend::Genai {
+            client: Client::new().unwrap(),
+            auth,
+        };
+        let resolved = Resolved {
+            id: "gproxy/models/gemini-2.5-pro".into(),
+            genai: "gproxy::models/gemini-2.5-pro".into(),
+            provider: Some("gproxy".into()),
+            model: None,
+        };
+        assert_eq!(
+            backend.transport(&resolved).await.unwrap(),
+            Transport::Plain
+        );
+        let req = ChatRequest::new(vec![genai::chat::ChatMessage::user("hi")]);
+        let mut s = backend
+            .stream(&resolved, req, &ChatOptions::default(), SessionId::new())
+            .await
+            .unwrap();
+        while let Some(ev) = s.next().await {
+            if ev.is_err() {
+                break;
+            }
+        }
+        let reqs = server.received_requests().await.unwrap();
+        let req = reqs.last().unwrap();
+        assert_eq!(
+            req.url.path(),
+            "/v1beta/models/gemini-2.5-pro:streamGenerateContent"
+        );
+        assert_eq!(
+            req.headers
+                .get("x-goog-api-key")
+                .map(|v| v.to_str().unwrap()),
+            Some("gpk")
+        );
+    }
+
+    #[test]
+    fn gemini_base_drops_openai_segment_only() {
+        for (raw, want) in [
+            (
+                GOOGLE_OPENAI,
+                "https://generativelanguage.googleapis.com/v1beta/",
+            ),
+            (
+                "https://h.example/v1beta/openai",
+                "https://h.example/v1beta/",
+            ),
+            ("https://h.example/v1beta/", "https://h.example/v1beta/"),
+            ("https://h.example/myopenai/", "https://h.example/myopenai/"),
+        ] {
+            assert_eq!(gemini_base(raw), want, "{raw}");
+        }
     }
 
     #[tokio::test]
@@ -877,6 +1085,7 @@ mod tests {
                 base_url: "https://gw.example/v1/".into(),
                 key: "gk".into(),
                 runtime: None,
+                protocol: None,
             })
         };
         let mut g = r("rwx/claude-opus-5-5");
@@ -891,11 +1100,11 @@ mod tests {
         );
         // Transport follows the chosen kind, not the provider.
         assert_eq!(
-            Transport::of(zen(&r("opencode/claude-opus-5-5")).kind),
+            Transport::of(zen(&r("opencode/claude-opus-5-5")).kind, ZEN_ENDPOINT),
             Transport::Anthropic
         );
         assert_eq!(
-            Transport::of(zen(&r("opencode/gpt-5.6-sol")).kind),
+            Transport::of(zen(&r("opencode/gpt-5.6-sol")).kind, ZEN_ENDPOINT),
             Transport::OpenAiLike
         );
     }
@@ -1254,6 +1463,7 @@ mod tests {
                 base_url: format!("{}/v1/", server.uri()),
                 key: "gk".into(),
                 runtime: None,
+                protocol: None,
             },
         );
         let backend = Backend::Genai {

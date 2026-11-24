@@ -10449,10 +10449,13 @@ impl Message<ListModels> for Agents {
         _: ListModels,
         _: &mut Context<Self, Self::Reply>,
     ) -> Vec<ModelInfo> {
+        let hide_google =
+            google_shadowed(&self.auth.gateways.read().unwrap_or_else(|e| e.into_inner()));
         let mut out: Vec<ModelInfo> = self
             .catalog
             .providers()
             .filter(|p| (self.configured)(Catalog::adapter(&p.id)))
+            .filter(|p| !(hide_google && p.id == "google"))
             .flat_map(|p| {
                 let local = self.provider_local(&p.id);
                 p.models
@@ -10487,6 +10490,18 @@ impl Message<ListModels> for Agents {
 /// OpenCode itself, key or not: they are left out of the picker and the count.
 fn go_free(provider: &str, id: &str) -> bool {
     provider == "opencode-go" && id.ends_with("-free")
+}
+
+/// The picker lists Gemini once: a custom provider on Google's Gemini API host
+/// (now spoken natively, `backend::gateway_kind`) serves the built-in
+/// `google/*` models, so the user's configured provider stays and the
+/// built-in `google` block is hidden (still resolvable when typed) — unless
+/// that provider is itself named `google` (then the block is its own).
+fn google_shadowed(gateways: &HashMap<String, crate::providers::Gateway>) -> bool {
+    !gateways.contains_key("google")
+        && gateways
+            .values()
+            .any(|g| crate::backend::gemini_api_host(&g.base_url))
 }
 
 /// A Cursor listing row, its limits borrowed from the closest catalog
@@ -11421,17 +11436,18 @@ impl Message<AddProvider> for Agents {
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<ProviderInfo, String> {
         let base_url = crate::providers::normalize_url(&m.base_url)?;
-        let g = crate::providers::Gateway {
+        let mut g = crate::providers::Gateway {
             base_url,
             key: m.key.as_deref().unwrap_or_default().trim().to_owned(),
             runtime: m.runtime,
+            protocol: None,
         };
         crate::providers::validate_name(&m.name, g.local())?;
         if g.key.is_empty() && !g.local() {
             return Err("api key is empty".into());
         }
         let secrets = crate::providers::secrets_actor()?;
-        crate::providers::save(
+        g.protocol = crate::providers::save(
             &self.rt.data_dir,
             &secrets,
             &m.name,
@@ -14023,6 +14039,34 @@ pub(crate) mod tests {
     use crate::CreateSessionOptions;
     use crate::ObservedState;
     use crate::context::ContextAttachment;
+
+    /// The picker lists Gemini once: a gateway on Google's Gemini API host
+    /// hides the built-in `google` block, unless the gateway is `google` itself.
+    #[test]
+    fn google_gateway_hides_builtin_google_once() {
+        let gw = |url: &str| crate::providers::Gateway {
+            base_url: url.into(),
+            ..Default::default()
+        };
+        let google = "https://generativelanguage.googleapis.com/v1beta/openai/";
+        let set = |rows: &[(&str, &str)]| -> HashMap<_, _> {
+            rows.iter().map(|(n, u)| (n.to_string(), gw(u))).collect()
+        };
+        assert!(google_shadowed(&set(&[
+            ("gemini", google),
+            ("rwx", "https://api.ai.rwx.dev/v1/")
+        ])));
+        assert!(!google_shadowed(&set(&[(
+            "rwx",
+            "https://api.ai.rwx.dev/v1/"
+        )])));
+        assert!(!google_shadowed(&set(&[("google", google)])));
+        // Vertex is not the Gemini API's `google/*` catalog.
+        assert!(!google_shadowed(&set(&[(
+            "vx",
+            "https://us-central1-aiplatform.googleapis.com/v1/"
+        )])));
+    }
 
     #[tokio::test]
     async fn bedrock_profile_changes_reach_existing_clients_without_vault_keys() {
@@ -23873,6 +23917,7 @@ done
                 base_url: base_url.clone(),
                 key: "sk-old".into(),
                 runtime: None,
+                protocol: None,
             },
         );
 

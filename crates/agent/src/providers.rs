@@ -1,7 +1,8 @@
-//! Custom providers: named OpenAI-compatible endpoints (`<data_dir>/providers.yaml`)
-//! plus their keys in the secrets vault (37 §3.6), under the provider's name. User-facing
-//! ids are `name/model`; genai sees the OpenAI adapter with a rewritten endpoint.
-//! Internally (and in the persisted ids) they are still called gateways (162 D1).
+//! Custom providers: named endpoints (`<data_dir>/providers.yaml`) plus their keys in the
+//! secrets vault (37 §3.6), under the provider's name. User-facing ids are `name/model`;
+//! genai sees the adapter of the row's `protocol` (OpenAI unless set, or a Google AI host)
+//! with a rewritten endpoint. Internally (and in the persisted ids) they are still called
+//! gateways (162 D1).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
@@ -14,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::LocalRuntime;
 
-/// One custom provider (named OpenAI-compatible endpoint).
+/// One custom provider (named endpoint, OpenAI-compatible unless its `protocol` says otherwise).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Gateway {
     /// Base URL, trailing slash (`https://api.example/v1/`).
@@ -25,6 +26,31 @@ pub(crate) struct Gateway {
     pub key: String,
     /// 177: the runtime preset it was added with.
     pub runtime: Option<LocalRuntime>,
+    /// The wire protocol its row names; `None`: by host ([`crate::backend`]).
+    pub protocol: Option<GatewayProtocol>,
+}
+
+/// `protocol:` of a `providers.yaml` row: which genai adapter speaks to the endpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GatewayProtocol {
+    /// OpenAI chat completions (`…/chat/completions`, Bearer).
+    Openai,
+    /// Gemini generateContent (`…/models/{id}:…`, `x-goog-api-key`).
+    Gemini,
+    /// Anthropic Messages (`…/messages`, `x-api-key`).
+    Anthropic,
+}
+
+impl GatewayProtocol {
+    /// The genai adapter that speaks it.
+    pub fn kind(self) -> AdapterKind {
+        match self {
+            Self::Openai => AdapterKind::OpenAI,
+            Self::Gemini => AdapterKind::Gemini,
+            Self::Anthropic => AdapterKind::Anthropic,
+        }
+    }
 }
 
 impl Gateway {
@@ -57,6 +83,9 @@ struct Entry {
     /// keyless). Absent on rows written before 177, whose adds always stored one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     owns_key: Option<bool>,
+    /// Wire protocol (hand-set); absent: OpenAI, or Gemini on a Google AI host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protocol: Option<GatewayProtocol>,
 }
 
 impl Entry {
@@ -138,6 +167,14 @@ pub fn normalize_url(raw: &str) -> Result<String, String> {
 pub(crate) fn load(data_dir: &Path, vault: Option<&secrets::Vault>) -> HashMap<String, Gateway> {
     let mut out = HashMap::new();
     for (name, entry) in read_file(data_dir) {
+        // Rows are hand-editable, so `validate_name` never ran on them; a
+        // shadowing row still loads (existing files keep working).
+        if shadows_adapter(&name, entry.local()) {
+            tracing::warn!(
+                "providers.yaml: `{name}` shadows the built-in `{name}` adapter — `{name}/…` ids \
+                 route to this row and it shares the vault secret `{name}`; rename it to avoid confusion"
+            );
+        }
         let key = vault
             .and_then(|v| v.get(&name, 0))
             .filter(|k| !k.is_empty())
@@ -151,10 +188,17 @@ pub(crate) fn load(data_dir: &Path, vault: Option<&secrets::Vault>) -> HashMap<S
                 base_url: entry.base_url,
                 key: key.unwrap_or_default(),
                 runtime: entry.runtime,
+                protocol: entry.protocol,
             },
         );
     }
     out
+}
+
+/// `name` is a genai adapter's namespace ([`validate_name`] refuses it on add),
+/// except a local runtime's own name (177 E4).
+fn shadows_adapter(name: &str, local: bool) -> bool {
+    AdapterKind::from_lower_str(name).is_some() && !(local && RUNTIME_NAMES.contains(&name))
 }
 
 /// The running secrets actor, or why a gateway cannot be saved.
@@ -393,6 +437,7 @@ fn remove_models(data_dir: &Path, name: &str) -> Result<(), String> {
 /// Persist a custom provider: key into the vault (source `provider add`), url and
 /// runtime into `providers.yaml`. Overwrites the same name; its models are
 /// [`write_models`]'. An empty key is allowed only for a local provider (177 E4).
+/// Returns the row's hand-set `protocol`, kept by a re-add of the same URL.
 ///
 /// R2-3: the row records whether this provider wrote the vault secret of its
 /// name (`owns_key`). A keyless add deletes that secret only when it replaces
@@ -404,15 +449,22 @@ pub async fn save(
     base_url: &str,
     key: &str,
     runtime: Option<LocalRuntime>,
-) -> Result<(), String> {
+) -> Result<Option<GatewayProtocol>, String> {
     let key = key.trim();
+    let mut rows = read_file(data_dir);
+    let base_url = normalize_url(base_url)?;
+    // A re-add of the same endpoint (a new key) keeps the row's hand-set protocol.
+    let protocol = rows
+        .get(name)
+        .filter(|r| r.base_url == base_url)
+        .and_then(|r| r.protocol);
     let entry = Entry {
-        base_url: normalize_url(base_url)?,
+        base_url,
         runtime,
         owns_key: Some(!key.is_empty()),
+        protocol,
     };
     validate_name(name, entry.local())?;
-    let mut rows = read_file(data_dir);
     if key.is_empty() {
         if !entry.local() {
             return Err("api key is empty".into());
@@ -437,7 +489,8 @@ pub async fn save(
             .map_err(|e| e.to_string())?;
     }
     rows.insert(name.to_owned(), entry);
-    write_file(data_dir, rows)
+    write_file(data_dir, rows)?;
+    Ok(protocol)
 }
 
 /// Drop a custom provider's url, its key (only one its add stored, R2-3), and
@@ -597,6 +650,58 @@ mod tests {
         assert!(load(&dir, Some(&vault)).is_empty());
         assert!(load(&dir, None).is_empty());
         assert!(!dir.join("models.json").exists());
+    }
+
+    /// A hand-set `protocol:` loads and survives a re-add of the same URL (a
+    /// new key), not a new URL; a row named after a built-in adapter
+    /// (`gemini`) still loads — only a warning.
+    #[tokio::test]
+    async fn protocol_row_loads_and_survives_readd() {
+        use kameo::actor::Spawn;
+        use std::sync::Arc;
+        let scratch = crate::test_dir("prov-protocol");
+        let dir = scratch.path().to_path_buf();
+        let vault = Arc::new(
+            secrets::Vault::open(&dir, secrets::KeyStore::File)
+                .await
+                .unwrap(),
+        );
+        let rt = runtime::Runtime::new(figment::Figment::new(), dir.clone());
+        let actor = secrets::SecretsActor::spawn(secrets::SecretsActor::new(
+            vault.clone(),
+            rt,
+            std::time::Duration::from_secs(1),
+        ));
+        let google = "https://generativelanguage.googleapis.com/v1beta/openai/";
+        std::fs::write(
+            dir.join("providers.yaml"),
+            format!(
+                "gemini:\n  base_url: {google}\ngw:\n  base_url: https://gw.example/v1/\n  protocol: anthropic\n"
+            ),
+        )
+        .unwrap();
+        for name in ["gemini", "gw"] {
+            vault.set(name, "k", None, "test").await.unwrap();
+        }
+        assert!(shadows_adapter("gemini", false) && !shadows_adapter("gw", false));
+        let g = load(&dir, Some(&vault));
+        assert_eq!(
+            (g["gemini"].base_url.as_str(), g["gemini"].protocol),
+            (google, None)
+        );
+        assert_eq!(g["gw"].protocol, Some(GatewayProtocol::Anthropic));
+
+        save(&dir, &actor, "gw", "https://gw.example/v1", "k2", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            load(&dir, Some(&vault))["gw"].protocol,
+            Some(GatewayProtocol::Anthropic)
+        );
+        save(&dir, &actor, "gw", "https://other.example/v1", "k2", None)
+            .await
+            .unwrap();
+        assert_eq!(load(&dir, Some(&vault))["gw"].protocol, None);
     }
 
     /// R2-3: a keyless add and its remove never touch a secret the provider

@@ -155,17 +155,33 @@ pub enum Transport {
 }
 
 impl Transport {
-    /// The transport for a genai adapter. The `cursor` namespace never reaches
-    /// genai; the caller uses [`Transport::Plain`] for it.
-    pub fn of(kind: AdapterKind) -> Self {
+    /// The transport for a genai adapter speaking to `endpoint` (its base URL).
+    /// The `cursor` namespace never reaches genai; the caller uses
+    /// [`Transport::Plain`] for it.
+    pub fn of(kind: AdapterKind, endpoint: &str) -> Self {
         use AdapterKind::*;
-        match kind {
+        let t = match kind {
             Anthropic | MiniMax => Self::Anthropic,
             OpenAI | OpenAIResp | Groq | Xai | DeepSeek | Together | Fireworks | OpenRouter
             | Nebius | Moonshot | Kimi | Mimo | Zai | Aliyun | Baidu | Aihubmix | AtlasCloud
             | Omlx | OpenCodeGo => Self::OpenAiLike,
-            // Gemini, Vertex, Bedrock, Copilot, Ollama, Cohere, … and any kind genai adds later.
+            // Gemini relies on implicit caching (2.5+, automatic, no key): a
+            // stable prefix is all it needs, and genai maps its hits
+            // (`usageMetadata.cachedContentTokenCount`) to
+            // `prompt_tokens_details.cached_tokens`, which the loop counts.
+            // GeminiIx, Vertex, Bedrock, Copilot, Ollama, Cohere, … and any kind genai adds
+            // later. OpenAI-compatible pass-throughs not known to accept `prompt_cache_key`
+            // (Requesty, ApiRoute, Heabsy, Runcrate, CloudGpu, Cheapaimodel, StandardCompute,
+            // UberLlm) stay here: an unknown field can be a 400, as Google's is.
             _ => Self::Plain,
+        };
+        // Google's OpenAI-compatible endpoints (Gemini API, Vertex) answer
+        // `prompt_cache_key` / `prompt_cache_retention` with a 400
+        // INVALID_ARGUMENT; they cache implicitly, like native Gemini.
+        if t == Self::OpenAiLike && crate::backend::google_api_host(endpoint) {
+            Self::Plain
+        } else {
+            t
         }
     }
 }
@@ -822,6 +838,54 @@ mod tests {
         let mut tail = history[5..].to_vec();
         tail.extend(script());
         assert_prefix_chain(Some(&head), &tail);
+    }
+
+    /// An OpenAI-family adapter on a Google API host (Gemini API, Vertex
+    /// OpenAI-compat) sends no `prompt_cache_key` / retention (Google 400s on
+    /// them); every other host and kind keeps its transport.
+    #[test]
+    fn google_host_drops_openai_cache_fields() {
+        let google = [
+            "https://generativelanguage.googleapis.com/v1beta/openai/",
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/l/endpoints/openapi/",
+        ];
+        for url in google {
+            for kind in [AdapterKind::OpenAI, AdapterKind::OpenAIResp] {
+                assert_eq!(Transport::of(kind, url), Transport::Plain, "{kind:?} {url}");
+            }
+            assert_eq!(Transport::of(AdapterKind::Gemini, url), Transport::Plain);
+        }
+        for url in [
+            "https://api.openai.com/v1/",
+            "https://gateway.example/v1/",
+            "https://googleapis.com.evil.example/v1/",
+        ] {
+            assert_eq!(
+                Transport::of(AdapterKind::OpenAI, url),
+                Transport::OpenAiLike,
+                "{url}"
+            );
+        }
+        assert_eq!(
+            Transport::of(AdapterKind::Anthropic, "https://api.anthropic.com/v1/"),
+            Transport::Anthropic
+        );
+        let history = script();
+        let frame = Frame {
+            tools: &[],
+            system: "sys",
+            head: None,
+            history: &history,
+            vision: true,
+            strip_reasoning: false,
+            max_tokens: None,
+        };
+        let (_, opts) = frame.request(
+            Transport::of(AdapterKind::OpenAI, google[0]),
+            SessionId::new(),
+            None,
+        );
+        assert!(opts.prompt_cache_key.is_none() && opts.cache_control.is_none());
     }
 
     #[test]
