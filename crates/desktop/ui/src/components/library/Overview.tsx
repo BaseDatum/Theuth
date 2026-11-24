@@ -1,15 +1,15 @@
 // 215 value surface: the Library overview strip under the tab band — one tile per tab with what it holds and how much.
-// Shown while the getting-started checklist is up, or while the open tab is empty (when an explanation helps most).
-// Counts come from lists that are cheap or already cached; nothing here polls.
+// Shown while the getting-started checklist is up, or while the open tab is empty (when an explanation helps most);
+// only in the local desktop shell. Counts come from lists that are cheap or already cached; nothing here polls.
 
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { useNotebooks } from '@/components/notebooks/useNotebooks'
 import { useNotes } from '@/components/notes/useNotes'
+import { useChecklistShown, useGuidesHere } from '@/components/onboarding/visibility'
 import { GROUPS, type Tab, tabOf } from '@/lib/nav'
 import { useOnboarding } from '@/lib/onboarding/state'
-import { POPOUT, isPopout } from '@/lib/popout'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useQuerySupport } from '@/rpc/capabilities'
@@ -27,18 +27,20 @@ export const LIBRARY_PURPOSE: Readonly<Partial<Record<Tab, string>>> = {
   '/secrets': 'Keys and tokens agents may use',
 }
 
-/** Item counts per tab; `undefined` = not known without a fetch this strip does not make. */
-function useCounts(): Partial<Record<Tab, number>> {
+/**
+ * Item counts per tab; `undefined` = not known. Every list is read from the cache its own page fills; the small ones
+ * (skills, notes, notebooks) are fetched too, but only while the strip is up (`fetch`).
+ */
+function useCounts(fetch: boolean): Partial<Record<Tab, number>> {
   const api = useApi()
   const canSkills = useQuerySupport(['list_skills'])
-  // Already fetched by their own pages (whole lists): read from the cache, never fetched from here.
+  // The same keys and functions as the pages' own queries, so a page refetch never runs anything else.
   const artifacts = useQuery({ queryKey: queryKeys.artifacts, queryFn: () => api.list_artifacts(null, null), enabled: false }).data
   const knowledge = useQuery({ queryKey: queryKeys.knowledgeList, queryFn: () => api.knowledge_list(null, null, null, 100000), enabled: false }).data
   const secrets = useQuery({ queryKey: queryKeys.secrets, queryFn: () => api.list_secrets(), enabled: false }).data
-  // Small lists: fetched (and shared with their pages).
-  const skills = useQuery({ enabled: canSkills, queryKey: queryKeys.skills, queryFn: () => api.list_skills() }).data
-  const notes = useNotes().data
-  const notebooks = useNotebooks().data
+  const skills = useQuery({ enabled: fetch && canSkills, queryKey: queryKeys.skills, queryFn: () => api.list_skills() }).data
+  const notes = useNotes(fetch).data
+  const notebooks = useNotebooks(false, fetch).data
   return {
     '/artifacts': artifacts?.length,
     '/knowledge': knowledge?.length,
@@ -49,11 +51,12 @@ function useCounts(): Partial<Record<Tab, number>> {
   }
 }
 
-/** Marks the Library visited; on a tab's list page (not a note or notebook open under the band) shows the strip. */
+/** Marks the Library visited; in the desktop shell, on a tab's list page (not a note or notebook open under the band), the strip. */
 export function LibraryOverview() {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const here = useGuidesHere()
   useEffect(() => useOnboarding.getState().markVisited('library'), [])
-  if (isPopout() && POPOUT?.kind !== 'page') return null
+  if (!here) return null
   const current = tabOf('library', pathname)
   return current !== null && current === pathname.replace(/(.)\/$/, '$1') ? <Strip current={current as Tab} /> : null
 }
@@ -61,10 +64,11 @@ export function LibraryOverview() {
 function Strip({ current }: { current: Tab }) {
   const discovery = useConnection((s) => s.discovery)
   const navigate = useNavigate()
-  const dismissed = useOnboarding((s) => s.checklistDismissed)
-  const counts = useCounts()
-  if (dismissed && counts[current] !== 0) return null
+  const shown = useChecklistShown()
+  const counts = useCounts(shown)
+  if (!shown && counts[current] !== 0) return null
   const tabs = GROUPS.library.filter((t) => supports(discovery, t.required))
+  if (!tabs.length) return null
   return (
     <nav
       aria-label="Library overview"

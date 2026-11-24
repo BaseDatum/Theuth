@@ -1,11 +1,12 @@
 import { expect, test } from 'vitest'
-import { presentSteps, settled, TOUR_GIVE_UP_MS, TOUR_WAIT_MS, TOURS, tourSelector } from './tours'
+import { presentSteps, settled, TOUR_GIVE_UP_MS, TOUR_SETTLE_MS, TOURS, tourSelector } from './tours'
 
 const anchors = (id: keyof typeof TOURS) => TOURS[id].steps.map((s) => s.anchor)
 
 test('main tour: the contract order, ending on the checklist', () => {
   expect(anchors('main')).toEqual(['chat-composer', 'nav-inbox', 'nav-library', 'nav-costs', 'nav-agents', 'nav-settings', 'onboarding-checklist'])
-  expect(TOURS.main.route).toBeNull()
+  // From the toast or the checklist on another page: a new chat, where its first anchor lives.
+  expect(TOURS.main.route).toBe('chat')
 })
 
 test('focused tours open their page and highlight its anchors', () => {
@@ -15,8 +16,6 @@ test('focused tours open their page and highlight its anchors', () => {
   expect(anchors('library')[0]).toBe('library-tabs')
   expect(TOURS.costs.route).toBe('costs')
   expect(anchors('costs')).toEqual(['costs-subscription-value', 'costs-limits'])
-  expect(TOURS.devices.route).toBe('devices')
-  expect(anchors('devices')).toEqual(['devices-pair'])
   expect(anchors('chat')).toEqual(['chat-composer', 'chat-model', 'chat-context'])
 })
 
@@ -38,12 +37,13 @@ test('presentSteps keeps order, drops absent and skipped anchors', () => {
   expect(presentSteps(TOURS.main.steps, () => false)).toEqual([])
 })
 
-test('settled: all present at once; else the 4 s wait with something to show; else give up', () => {
-  expect(settled(0, 7, 7)).toBe(true)
-  expect(settled(TOUR_WAIT_MS - 1, 6, 7)).toBe(false)
-  expect(settled(TOUR_WAIT_MS, 6, 7)).toBe(true)
-  expect(settled(TOUR_WAIT_MS, 0, 7)).toBe(false)
-  expect(settled(TOUR_GIVE_UP_MS, 0, 7)).toBe(true)
+test('settled: all present at once; else a short settle after the first anchor appears; else give up', () => {
+  expect(settled(0, 0, 7, 7)).toBe(true)
+  expect(settled(3_000, null, 0, 7)).toBe(false)
+  expect(settled(3_000, 2_500, 6, 7)).toBe(false)
+  expect(settled(2_500 + TOUR_SETTLE_MS, 2_500, 6, 7)).toBe(true)
+  expect(settled(TOUR_GIVE_UP_MS - 1, null, 0, 7)).toBe(false)
+  expect(settled(TOUR_GIVE_UP_MS, null, 0, 7)).toBe(true)
 })
 
 test('selector', () => {

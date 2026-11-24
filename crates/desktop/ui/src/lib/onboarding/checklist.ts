@@ -9,15 +9,15 @@ import type { ChecklistId, OnboardingState } from './state'
 
 export type ChecklistItem = { id: ChecklistId; label: string; optional?: true }
 
-/** The items, in the card's order (ids fixed by the contract). */
+/** The items, in the card's order (ids fixed by the contract). Short enough for the sidebar card on one or two lines. */
 export const CHECKLIST_ITEMS: readonly ChecklistItem[] = [
   { id: 'model', label: 'Connect a model' },
   { id: 'chat', label: 'Start your first chat' },
   { id: 'inbox', label: 'Check your Inbox' },
-  { id: 'costs', label: 'See your costs and subscription' },
-  { id: 'library', label: 'Look inside your Library' },
+  { id: 'costs', label: 'See costs and your plan' },
+  { id: 'library', label: 'Open your Library' },
   { id: 'phone', label: 'Link your phone' },
-  { id: 'channel', label: 'Reach theuth from Slack, Telegram or Signal', optional: true },
+  { id: 'channel', label: 'Connect Slack, Telegram or Signal', optional: true },
 ]
 
 export type ChecklistInputs = {

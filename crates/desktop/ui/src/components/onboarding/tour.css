@@ -2,13 +2,16 @@
  * and dark. Buttons follow src/components/ui/button (default = soot on bone, outline, ghost; 8 px radius, h-8). */
 
 :root {
-  /* The overlay's tint (driver's `overlayColor`, opacity 1): soot at rest, deeper in dark. */
-  --tour-overlay: rgb(26 22 18 / 0.42);
-  --tour-shadow: 0 18px 48px -12px rgb(26 22 18 / 0.32), 0 2px 6px rgb(26 22 18 / 0.08);
+  /* The overlay's tint (driver's `overlayColor`, opacity 1) and the popover's shadow, mixed from the theme's ink: soot
+   * over bone in light, the page's soot deepened in dark. */
+  --tour-ink: var(--fg-primary);
+  --tour-overlay: color-mix(in srgb, var(--tour-ink) 42%, transparent);
+  --tour-shadow: 0 18px 48px -12px color-mix(in srgb, var(--tour-ink) 32%, transparent), 0 2px 6px color-mix(in srgb, var(--tour-ink) 8%, transparent);
 }
 .dark {
-  --tour-overlay: rgb(0 0 0 / 0.62);
-  --tour-shadow: 0 18px 48px -12px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(232 220 200 / 0.04);
+  --tour-ink: color-mix(in srgb, var(--bg-page) 70%, black);
+  --tour-overlay: color-mix(in srgb, var(--tour-ink) 72%, transparent);
+  --tour-shadow: 0 18px 48px -12px color-mix(in srgb, var(--tour-ink) 80%, transparent), 0 0 0 1px color-mix(in srgb, var(--fg-primary) 4%, transparent);
 }
 
 .driver-popover.theuth-tour {

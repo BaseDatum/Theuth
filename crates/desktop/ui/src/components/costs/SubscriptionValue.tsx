@@ -56,18 +56,23 @@ export function SubscriptionValue({ ix, now }: { ix: Index; now: number }) {
 }
 
 function Plan({ r, now }: { r: Row; now: number }) {
-  const who = [r.plan && `${r.plan} plan`, r.account].filter(Boolean).join(' · ')
+  const plan = r.plan && `${r.plan.charAt(0).toUpperCase()}${r.plan.slice(1)} plan`
   return (
     <div className="flex min-w-0 flex-col gap-2.5 rounded-[10px] border border-border px-3 py-2.5">
       <div className="min-w-0">
-        <div className="flex items-baseline gap-2">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <span className="font-mono text-[22px] font-semibold tabular-nums">{usd(r.month)}</span>
           <span className="text-[11.5px] text-fg-tertiary">this month</span>
+          {(plan || r.account) && (
+            <span className="ml-auto flex min-w-0 items-center gap-1.5 self-center">
+              {plan && <span className="shrink-0 rounded-md bg-layer-2 px-1.5 py-0.5 text-[11px] font-medium text-fg-secondary">{plan}</span>}
+              {r.account && <span className="min-w-0 truncate text-[11px] text-fg-tertiary" title={r.account}>{r.account}</span>}
+            </span>
+          )}
         </div>
         <p className="mt-0.5 text-[13px] text-fg-secondary">{coveredLine(r, usd)}.</p>
-        <p className="mt-1 font-mono text-[11px] text-fg-tertiary tabular-nums">
-          {usd(r.last30)} over the last 30 days · {int(r.calls30)} {r.calls30 === 1 ? 'call' : 'calls'}
-          {who && ` · ${who}`}
+        <p className="mt-1 text-[12px] text-fg-tertiary tabular-nums">
+          {usd(r.last30)} over the last 30 days, {int(r.calls30)} {r.calls30 === 1 ? 'call' : 'calls'}
         </p>
       </div>
       {r.windows.length > 0 && (

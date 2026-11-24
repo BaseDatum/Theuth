@@ -12,8 +12,10 @@ import type { TourId } from './state'
 
 export type TourStep = { anchor: string; title: string; body: string; side?: Side; align?: Alignment }
 /** Where a tour starts: a page to open first, or `null` to run where the user is. */
-export type TourRoute = 'attention' | 'library' | 'costs' | 'devices' | 'chat' | null
+export type TourRoute = 'attention' | 'library' | 'costs' | 'chat' | null
 export type Tour = { route: TourRoute; steps: readonly TourStep[] }
+/** `devices` has no spotlight: the phone is linked from its dialog, so a `devices` request opens Settings › Devices. */
+export type SpotlightTour = Exclude<TourId, 'devices'>
 
 const COMPOSER: TourStep = {
   anchor: 'chat-composer',
@@ -22,9 +24,10 @@ const COMPOSER: TourStep = {
   side: 'top',
 }
 
-export const TOURS: Readonly<Record<TourId, Tour>> = {
+export const TOURS: Readonly<Record<SpotlightTour, Tour>> = {
   main: {
-    route: null,
+    // Started from the toast or the checklist on another page: the composer is its first anchor, so open a new chat.
+    route: 'chat',
     steps: [
       COMPOSER,
       {
@@ -113,18 +116,6 @@ export const TOURS: Readonly<Record<TourId, Tour>> = {
       },
     ],
   },
-  devices: {
-    route: 'devices',
-    steps: [
-      {
-        anchor: 'devices-pair',
-        title: 'Link your phone',
-        body: 'Pair a device shows a QR code and a key, valid for five minutes. Paste the key into the theuth app on your phone, and it reaches this Mac’s agents from anywhere.',
-        side: 'bottom',
-        align: 'end',
-      },
-    ],
-  },
   chat: {
     route: 'chat',
     steps: [
@@ -148,14 +139,17 @@ export const TOURS: Readonly<Record<TourId, Tour>> = {
 
 export const tourSelector = (anchor: string): string => `[data-tour="${anchor}"]`
 
-/** Wait for every anchor this long; then run with the ones present. */
-export const TOUR_WAIT_MS = 4_000
+/** Once the first anchor is on screen, wait this much longer for the rest, then run with the ones present. */
+export const TOUR_SETTLE_MS = 600
 /** No anchor at all yet (a page still opening, the chat view still mounting): wait up to this, then give up. */
 export const TOUR_GIVE_UP_MS = 10_000
 
-/** Whether the wait for anchors is over: all present, or the wait ran out with something to show, or nothing came at all. */
-export function settled(elapsed: number, present: number, total: number): boolean {
-  return present === total || (elapsed >= TOUR_WAIT_MS && present > 0) || elapsed >= TOUR_GIVE_UP_MS
+/**
+ * Whether the wait for anchors is over: all present; or `TOUR_SETTLE_MS` since the first one appeared (`firstAt`,
+ * `null` while none has); or nothing came at all.
+ */
+export function settled(elapsed: number, firstAt: number | null, present: number, total: number): boolean {
+  return present === total || (firstAt !== null && elapsed - firstAt >= TOUR_SETTLE_MS) || elapsed >= TOUR_GIVE_UP_MS
 }
 
 /** The steps to drive: not skipped, and whose anchor is on screen. */
@@ -176,7 +170,6 @@ function go(route: TourRoute, navigate: Navigate): void {
   if (route === 'attention' && !path.startsWith('/attention')) void navigate({ to: '/attention' })
   else if (route === 'library' && groupOf(path) !== 'library') void navigate({ to: '/artifacts' })
   else if (route === 'costs' && path !== '/costs') void navigate({ to: '/costs' })
-  else if (route === 'devices') void settings(navigate, 'devices')
   else if (route === 'chat' && !visible(COMPOSER.anchor)) void navigate({ to: '/new' })
 }
 
@@ -190,24 +183,36 @@ export function stopTour(): void {
   active = null
 }
 
+export type TourOptions = {
+  /** Anchors known to be absent (a hidden checklist): dropped without waiting. */
+  skip?: readonly string[]
+  /** The user went through to Done (not Skip, Esc or the overlay). */
+  onDone?: () => void
+}
+
 /**
  * Open the tour's page, wait for its anchors (`settled`), then spotlight the ones present. Esc, the overlay and
- * Skip tour end it. Never in a pop-out, the island or an overlay window. `skip`: anchors known to be absent.
+ * Skip tour end it. Never in a pop-out, the island or an overlay window. `devices` opens Settings › Devices.
  */
-export function startTour(id: TourId, navigate: Navigate, opts: { skip?: readonly string[] } = {}): void {
+export function startTour(id: TourId, navigate: Navigate, opts: TourOptions = {}): void {
   if (isPopout() || isIsland() || isOverlay()) return
   stopTour()
+  if (id === 'devices') return void settings(navigate, 'devices')
   const token = run
   const tour = TOURS[id]
   const wanted = tour.steps.filter((s) => !opts.skip?.includes(s.anchor))
   if (!wanted.length) return
   go(tour.route, navigate)
   const start = Date.now()
+  let firstAt: number | null = null
   const tick = (): void => {
     if (token !== run) return
     const steps = presentSteps(wanted, visible)
-    if (!settled(Date.now() - start, steps.length, wanted.length)) return void setTimeout(tick, 150)
+    const elapsed = Date.now() - start
+    if (steps.length && firstAt === null) firstAt = elapsed
+    if (!settled(elapsed, firstAt, steps.length, wanted.length)) return void setTimeout(tick, 100)
     if (!steps.length) return
+    const motion = !matchMedia('(prefers-reduced-motion: reduce)').matches
     const d = driver({
       steps: steps.map((s) => ({
         element: tourSelector(s.anchor),
@@ -231,7 +236,8 @@ export function startTour(id: TourId, navigate: Navigate, opts: { skip?: readonl
       stagePadding: 6,
       stageRadius: 12,
       popoverOffset: 12,
-      smoothScroll: true,
+      animate: motion,
+      smoothScroll: motion,
       focus: 'popover',
       onPopoverRender: (popover, { driver: dr }) => {
         if (dr.isLastStep()) return
@@ -242,8 +248,9 @@ export function startTour(id: TourId, navigate: Navigate, opts: { skip?: readonl
         skip.addEventListener('click', () => dr.destroy())
         popover.footerButtons.prepend(skip)
       },
-      onDestroyed: () => {
+      onDestroyed: (_el, _step, { reason }) => {
         if (active === d) active = null
+        if (reason === 'done') opts.onDone?.()
       },
     })
     active = d

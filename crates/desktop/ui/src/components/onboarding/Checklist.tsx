@@ -1,13 +1,12 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Check, ChevronDown, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, X } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import { useModels } from '@/components/agents/queries'
 import { requirements as attentionRequirements } from '@/components/attention/requirements'
 import { settings } from '@/components/chat/slash'
 import { requirements as costsRequirements } from '@/components/costs/requirements'
 import { Button } from '@/components/ui/button'
-import { useSidebar } from '@/components/ui/sidebar'
 import { GROUPS } from '@/lib/nav'
 import { type ChecklistItem, checklistDone, checklistView, progressLabel } from '@/lib/onboarding/checklist'
 import { type ChecklistId, useOnboarding } from '@/lib/onboarding/state'
@@ -18,10 +17,10 @@ import { supports } from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'
 import { on, useSessions } from '@/store/sessions'
 import { openLinkPhone } from './LinkPhoneDialog'
-import { useOnboardingHere } from './OnboardingHost'
+import { useChecklistShown, useGuidesHere } from './visibility'
 
-/** Settings › Devices' query key: the checklist shares its cache. */
-const DEVICES = ['mesh', 'devices'] as const
+/** Settings › Devices' query key: the checklist (and the end-of-tour phone offer) share its cache. */
+export const DEVICES = ['mesh', 'devices'] as const
 /** Live state, but nothing here needs to be fresher than a minute or a window focus. */
 const STALE = 60_000
 /** How long the one-time "all set" state stays before the card hides itself. */
@@ -31,15 +30,16 @@ const COLLAPSED_KEY = 'theuth-onboarding-checklist-collapsed'
 /**
  * 215 §Checklist: "Get started" in the sidebar footer, above Settings. Items tick themselves off from live engine
  * state; each undone one has Show me (a focused tour, the wizard, the phone dialog or a deep link). Hide dismisses it
- * (Settings › General brings it back). All done: a quiet completion line, then it hides for good. The expanded
- * sidebar only: never the collapsed rail, a pop-out, a phone or a remote engine.
+ * (Settings › General brings it back). All done: a quiet completion line, then it hides for good. Shown only after
+ * the wizard (finished or skipped), in the expanded sidebar: never the collapsed rail, a pop-out, a phone or a
+ * remote engine.
  */
 export function Checklist() {
-  const here = useOnboardingHere()
-  const { isMobile } = useSidebar()
-  const dismissed = useOnboarding((s) => s.checklistDismissed)
-  const show = here && !isMobile && !dismissed
-  return show ? <Card /> : null
+  return useGuidesHere() ? <Gate /> : null
+}
+
+function Gate() {
+  return useChecklistShown() ? <Card /> : null
 }
 
 function Card() {
@@ -151,7 +151,7 @@ function Card() {
         </Button>
       </div>
       {!collapsed && (
-        <ul id={listId} className="flex flex-col pb-1.5">
+        <ul id={listId} className="flex flex-col px-1 pb-1.5">
           {view.rows.map(({ item, done }) => (
             <Row key={item.id} item={item} done={done} next={item.id === next} onShow={() => showMe(item.id)} />
           ))}
@@ -161,36 +161,59 @@ function Card() {
   )
 }
 
-const CARD = 'mb-1.5 rounded-xl border border-border-subtle bg-elevated/70 shadow-xs'
+const CARD = 'rounded-xl border border-border-subtle bg-elevated/70 shadow-xs'
 
-function Row({ item, done, next, onShow }: { item: ChecklistItem; done: boolean; next: boolean; onShow(): void }) {
+/** Done: a filled ochre check. Not done: an empty ring (ochre for the one to do next). A status, not a control. */
+function Status({ done, next }: { done: boolean; next: boolean }) {
   return (
-    <li className="group/item flex min-h-8 items-center gap-2.5 px-3 text-[13px]">
-      <span
-        aria-hidden
+    <span
+      aria-hidden
+      className={cn(
+        'mt-px grid size-3.5 shrink-0 place-items-center rounded-full',
+        done ? 'bg-[var(--fg-accent)] text-[var(--fg-inverse)]' : cn('border-[1.5px]', next ? 'border-[var(--fg-accent)]' : 'border-border-strong'),
+      )}
+    >
+      {done && <Check className="size-2.5" strokeWidth={3.5} />}
+    </span>
+  )
+}
+
+/**
+ * One item. Its label wraps rather than truncates; an undone row is itself the Show me button (the chevron appears
+ * on hover and focus), so nothing competes with the label for the card's width.
+ */
+function Row({ item, done, next, onShow }: { item: ChecklistItem; done: boolean; next: boolean; onShow(): void }) {
+  const label = (
+    <span className="min-w-0 flex-1 leading-snug">
+      {item.label}
+      {item.optional && <span className="ml-1.5 rounded-sm bg-layer-2 px-1 py-px align-[1px] text-[10px] text-fg-tertiary">optional</span>}
+    </span>
+  )
+  if (done) {
+    return (
+      <li className="flex items-start gap-2.5 px-2 py-1.5 text-[13px] text-fg-tertiary">
+        <Status done next={false} />
+        {label}
+        <span className="sr-only">done</span>
+      </li>
+    )
+  }
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onShow}
+        title="Show me"
         className={cn(
-          'grid size-4 shrink-0 place-items-center rounded-full border',
-          done ? 'border-transparent bg-[var(--fg-accent)] text-[var(--fg-inverse)]' : next ? 'border-[var(--fg-accent)]' : 'border-border-strong',
+          'group/item flex w-full items-start gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] outline-none hover:bg-layer-2/60 focus-visible:bg-layer-2/60 focus-visible:ring-2 focus-visible:ring-ring/50',
+          next ? 'text-foreground' : 'text-fg-secondary',
         )}
       >
-        {done && <Check className="size-2.5" strokeWidth={3} />}
-      </span>
-      <span className={cn('min-w-0 flex-1 truncate', done ? 'text-fg-tertiary' : 'text-fg-secondary', next && 'text-foreground')} title={item.label}>
-        {item.label}
-        {item.optional && <span className="text-fg-tertiary"> (optional)</span>}
-        <span className="sr-only">{done ? ', done' : ', not done'}</span>
-      </span>
-      {!done && (
-        <Button
-          variant="ghost"
-          size="xs"
-          aria-label={`Show me: ${item.label}`}
-          className={cn('-mr-1.5 shrink-0 text-fg-tertiary hover:text-foreground', !next && 'opacity-0 group-hover/item:opacity-100 focus-visible:opacity-100')}
-          onClick={onShow}
-        >
-          Show me
-        </Button>
-      )}
+        <Status done={false} next={next} />
+        {label}
+        <span className="sr-only">, not done. Show me</span>
+        <ChevronRight aria-hidden className="mt-px size-3.5 shrink-0 text-fg-tertiary opacity-0 transition-opacity group-hover/item:opacity-100 group-focus-visible/item:opacity-100 motion-reduce:transition-none" />
+      </button>
     </li>
   )
 }

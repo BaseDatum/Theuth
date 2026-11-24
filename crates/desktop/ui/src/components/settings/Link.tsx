@@ -206,7 +206,7 @@ function Devices() {
     <Section
       title="Devices paired with this mesh"
       actions={
-        <Button variant="outline" size="sm" data-tour="devices-pair" disabled={start.isPending} onClick={() => start.mutate(undefined)}>
+        <Button variant="outline" size="sm" disabled={start.isPending} onClick={() => start.mutate(undefined)}>
           Pair a device
         </Button>
       }
