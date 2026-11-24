@@ -20,6 +20,7 @@ pub mod holder;
 pub mod keys;
 pub mod model;
 pub mod names;
+pub mod page;
 pub mod proxy;
 pub mod rekey;
 pub mod routes;

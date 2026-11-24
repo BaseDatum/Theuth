@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::gate::{Gate, Step};
 use crate::model::Source;
+use crate::page::{fail, wants_html};
 use crate::routes::{Lookup, Mount, Table, normalize_host};
 use crate::sources::PortGuard;
 
@@ -189,15 +190,29 @@ impl Proxy {
                     .map(str::to_owned)
             })
             .unwrap_or_default();
+        let nav = wants_html(req.headers());
+        let shown = normalize_host(&host);
         let (m, rest) = match self.table.lookup(&host, req.uri().path()) {
             Lookup::Misdirected => {
-                return text(StatusCode::MISDIRECTED_REQUEST, "misdirected request");
+                return fail(
+                    StatusCode::MISDIRECTED_REQUEST,
+                    "misdirected request",
+                    nav,
+                    Some(&shown),
+                );
             }
-            Lookup::NotFound => return text(StatusCode::NOT_FOUND, "not found"),
+            Lookup::NotFound => {
+                return fail(StatusCode::NOT_FOUND, "not found", nav, Some(&shown));
+            }
             Lookup::Found(m, rest) => (m, rest),
         };
         if m.name_of(sni).is_none() || m.name_of(sni) != m.name_of(&host) {
-            return text(StatusCode::MISDIRECTED_REQUEST, "misdirected request");
+            return fail(
+                StatusCode::MISDIRECTED_REQUEST,
+                "misdirected request",
+                nav,
+                Some(&shown),
+            );
         }
         // §7.4: stopping the share resets what is still streaming for it (bodies, upgrades).
         let stop = self.table.stop_token(&m.share);
@@ -229,6 +244,9 @@ impl Proxy {
         B: hyper::body::Body<Data = Bytes> + Send + 'static,
         B::Error: Into<BoxError>,
     {
+        let nav = wants_html(req.headers());
+        let shown = format!("{}{}", normalize_host(&m.host), m.prefix);
+        let fail = |status, msg: &str| fail(status, msg, nav, Some(&shown));
         let connect = async {
             let stream = self.ports.connect(port).await.map_err(|e| e.to_string())?;
             hyper::client::conn::http1::handshake(TokioIo::new(stream))
@@ -238,8 +256,13 @@ impl Proxy {
         let (mut sender, conn) = match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, connect).await
         {
             Ok(Ok(x)) => x,
-            Ok(Err(e)) => return text(StatusCode::BAD_GATEWAY, &e),
-            Err(_) => return text(StatusCode::GATEWAY_TIMEOUT, "the app did not answer in time"),
+            Ok(Err(e)) => return fail(StatusCode::BAD_GATEWAY, &e),
+            Err(_) => {
+                return fail(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "the app did not answer in time",
+                );
+            }
         };
         let upgrade = is_upgrade(req.headers());
         let visitor_up = upgrade.then(|| hyper::upgrade::on(&mut req));
@@ -250,7 +273,7 @@ impl Proxy {
         };
         parts.uri = match pq.parse() {
             Ok(u) => u,
-            Err(_) => return text(StatusCode::BAD_REQUEST, "bad path"),
+            Err(_) => return fail(StatusCode::BAD_REQUEST, "bad path"),
         };
         parts.version = Version::HTTP_11;
         request_headers(
@@ -264,13 +287,17 @@ impl Proxy {
         tokio::spawn(async move {
             let _ = conn.with_upgrades().await;
         });
-        let mut resp = match tokio::time::timeout(UPSTREAM_HEAD_TIMEOUT, sender.send_request(req))
-            .await
-        {
-            Ok(Ok(r)) => r,
-            Ok(Err(e)) => return text(StatusCode::BAD_GATEWAY, &e.to_string()),
-            Err(_) => return text(StatusCode::GATEWAY_TIMEOUT, "the app did not answer in time"),
-        };
+        let mut resp =
+            match tokio::time::timeout(UPSTREAM_HEAD_TIMEOUT, sender.send_request(req)).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => return fail(StatusCode::BAD_GATEWAY, &e.to_string()),
+                Err(_) => {
+                    return fail(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "the app did not answer in time",
+                    );
+                }
+            };
         let upgraded = resp.status() == StatusCode::SWITCHING_PROTOCOLS;
         if upgraded && let Some(visitor_up) = visitor_up {
             let upstream_up = hyper::upgrade::on(&mut resp);
@@ -341,17 +368,19 @@ impl hyper::body::Body for UntilStopped {
 
 /// Serve a file of a `dir` source (§5.6, F-m8): full bodies with an `ETag` from size and mtime.
 /// Opened below the mount's pinned root only ([`crate::sources::DirPin::open`]).
-async fn serve_dir(
-    m: &Mount,
-    rest: &str,
-    method: &Method,
-    headers: &HeaderMap,
-) -> Response<Body> {
+async fn serve_dir(m: &Mount, rest: &str, method: &Method, headers: &HeaderMap) -> Response<Body> {
+    let nav = wants_html(headers);
+    let shown = format!("{}{}", normalize_host(&m.host), m.prefix);
     if method != Method::GET && method != Method::HEAD {
-        return text(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+        return fail(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "method not allowed",
+            nav,
+            Some(&shown),
+        );
     }
     let Some(pin) = m.dir.clone() else {
-        return text(StatusCode::NOT_FOUND, "not found");
+        return fail(StatusCode::NOT_FOUND, "not found", nav, Some(&shown));
     };
     let rest = rest.to_owned();
     let opened = tokio::task::spawn_blocking(move || {
@@ -363,7 +392,7 @@ async fn serve_dir(
     .ok()
     .flatten();
     let Some((canon, f, meta)) = opened else {
-        return text(StatusCode::NOT_FOUND, "not found");
+        return fail(StatusCode::NOT_FOUND, "not found", nav, Some(&shown));
     };
     let mtime = meta
         .modified()
@@ -467,7 +496,13 @@ mod tests {
         assert_eq!(up["x-forwarded-prefix"], "/p");
 
         let mut mapped = HeaderMap::new();
-        request_headers(&mut mapped, "::ffff:188.251.216.205".parse().unwrap(), "h", "", 1);
+        request_headers(
+            &mut mapped,
+            "::ffff:188.251.216.205".parse().unwrap(),
+            "h",
+            "",
+            1,
+        );
         assert_eq!(mapped["x-forwarded-for"], "188.251.216.205");
         let mut v6 = HeaderMap::new();
         request_headers(&mut v6, "2001:db8::7".parse().unwrap(), "h", "", 1);
@@ -557,16 +592,26 @@ mod tests {
         let p = proxy(table);
         let v: SocketAddr = "198.51.100.7:4000".parse().unwrap();
 
-        let r = p.handle(get("docs.sky.tun.zip", "/"), v, "sky.tun.zip").await;
+        let r = p
+            .handle(get("docs.sky.tun.zip", "/"), v, "sky.tun.zip")
+            .await;
         assert_eq!(r.status(), StatusCode::MISDIRECTED_REQUEST);
-        let r = p.handle(get("sky.tun.zip", "/other"), v, "sky.tun.zip").await;
+        let r = p
+            .handle(get("sky.tun.zip", "/other"), v, "sky.tun.zip")
+            .await;
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
         // m5: a routed host of another name than the connection's SNI is misdirected.
-        let r = p.handle(get("sky.tun.zip", "/docs/"), v, "other.tun.zip").await;
+        let r = p
+            .handle(get("sky.tun.zip", "/docs/"), v, "other.tun.zip")
+            .await;
         assert_eq!(r.status(), StatusCode::MISDIRECTED_REQUEST);
-        let r = p.handle(get("sky.tun.zip", "/docs/"), v, "app.sky.tun.zip").await;
+        let r = p
+            .handle(get("sky.tun.zip", "/docs/"), v, "app.sky.tun.zip")
+            .await;
         assert_eq!(r.status(), StatusCode::OK, "same name, coalesced sub-label");
-        let r = p.handle(get("sky.tun.zip", "/docs/"), v, "sky.tun.zip").await;
+        let r = p
+            .handle(get("sky.tun.zip", "/docs/"), v, "sky.tun.zip")
+            .await;
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(
             r.into_body().collect().await.unwrap().to_bytes(),
