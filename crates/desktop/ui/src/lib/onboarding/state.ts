@@ -91,8 +91,7 @@ useOnboarding.subscribe((s, prev) => {
   }
 })
 
-// TODO(215 B-engine): drop the cast once the regenerated bindings carry `onboarding.completed`.
-const FLAG = 'onboarding.completed' as string as ConfigFlagKey
+const FLAG: ConfigFlagKey = 'onboarding.completed'
 export const onboardingFlagQuery = ['config-flag', FLAG] as const
 
 /**

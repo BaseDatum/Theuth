@@ -16,12 +16,19 @@ export function DefaultModel({ prefer, onBack, onNext }: { prefer: string | null
   const api = useApi()
   const can = useQuerySupport(['set_model'])
   const models = useModels().data ?? []
-  const current = useConnection((s) => s.info?.default_model)
+  const info = useConnection((s) => s.info)
+  const current = info?.default_model
   const recs = recommendModels(models, prefer, current)
   const [picked, setPicked] = useState<string | null>(null)
   const [state, setState] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null })
   const chosen = picked ?? (recs.some((m) => m.id === current) ? current : recs[0]?.id) ?? null
-  const name = models.find((m) => m.id === chosen)?.name ?? chosen
+  const chosenModel = models.find((m) => m.id === chosen)
+  const name = chosenModel?.name ?? chosen
+  // 194 D5: the effort chips of the saved default only; a model not saved yet has no default effort to change.
+  const effort =
+    chosenModel && chosen === current && chosenModel.efforts.length > 0
+      ? { levels: chosenModel.efforts, current: info?.default_effort, onSelect: (level: string | null) => void api.set_effort(null, level, true) }
+      : undefined
   const save = async () => {
     if (!chosen || chosen === current || !can) return onNext()
     setState({ busy: true, error: null })
@@ -78,7 +85,7 @@ export function DefaultModel({ prefer, onBack, onNext }: { prefer: string | null
           </div>
           <div className="flex flex-wrap items-center gap-3 text-sm text-fg-secondary">
             <span aria-hidden>Or choose from every model</span>
-            <ModelCombobox aria-label="See all models" className="max-w-72" models={models} value={chosen} onChange={(id) => id && setPicked(id)} />
+            <ModelCombobox aria-label="See all models" className="max-w-72" models={models} value={chosen} effort={effort} onChange={(id) => id && setPicked(id)} />
           </div>
           {state.error && (
             <p role="alert" className="text-[13px] text-danger">
