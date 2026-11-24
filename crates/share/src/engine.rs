@@ -44,6 +44,9 @@ pub const ATTACH_WAIT: Duration = Duration::from_secs(30);
 pub const PUBLISH_CERT_WAIT: Duration = Duration::from_millis(1500);
 /// How long Stop all waits to attach before handing the edge stop to the lease holder.
 pub const STOP_ALL_ATTACH_WAIT: Duration = Duration::from_secs(10);
+/// How long Settings › Sharing keeps the edge needed after it first reads the names (§5.2:
+/// "Settings › Sharing open" is a need); the page reads the names again on every attach.
+pub const SETTINGS_ATTACH_HOLD: Duration = Duration::from_secs(60);
 /// The approval cards Stop all and the switch turned off withdraw.
 const PUBLISH_TOOL: &str = "share_publish";
 /// `approved_by.surface` of an act the owner pressed in their own client ([`Consent::of_press`]).
@@ -317,6 +320,10 @@ pub struct Engine {
     fresh: Mutex<std::collections::BTreeSet<String>>,
     /// The edge state machine runs (set by `start`): Stop all may wait for it to attach.
     client: std::sync::atomic::AtomicBool,
+    /// Settings › Sharing asked for the names within [`SETTINGS_ATTACH_HOLD`]: a need (§5.2).
+    settings_open: std::sync::atomic::AtomicBool,
+    /// The last edge state reported on `share.status`, republished when Settings opens.
+    last_state: Mutex<Option<(EdgeState, Option<i64>)>>,
 }
 
 /// Six random bytes (names, labels).
@@ -374,6 +381,8 @@ impl Engine {
             unmounted: Mutex::new(std::collections::BTreeSet::new()),
             fresh: Mutex::new(std::collections::BTreeSet::new()),
             client: std::sync::atomic::AtomicBool::new(false),
+            settings_open: std::sync::atomic::AtomicBool::new(false),
+            last_state: Mutex::new(None),
         }))
     }
 
@@ -436,9 +445,35 @@ impl Engine {
     }
 
     async fn refresh_need(&self) {
-        let busy = self.mine().await.map(|v| !v.is_empty()).unwrap_or(false);
+        let settings = self.settings_open.load(Ordering::SeqCst)
+            && self.store.enabled().await.unwrap_or(false);
+        let busy = settings || self.mine().await.map(|v| !v.is_empty()).unwrap_or(false);
         self.need
             .send_if_modified(|n| std::mem::replace(n, busy) != busy);
+    }
+
+    /// Settings › Sharing is open (§5.2, a need): with the switch on and an edge client
+    /// running, start attaching without waiting, so the next `welcome` brings the names' real
+    /// states; the need lapses [`SETTINGS_ATTACH_HOLD`] after the first call. The last edge
+    /// state is published again so a page opened after the attach still shows it.
+    pub async fn settings_open(&self) {
+        if !self.client.load(Ordering::SeqCst) || !self.store.enabled().await.unwrap_or(false) {
+            return;
+        }
+        let last = self.last_state.lock().clone();
+        if let Some((state, clock_off_ms)) = last {
+            Attachment::state(self, &state, clock_off_ms);
+        }
+        if !self.settings_open.swap(true, Ordering::SeqCst) {
+            let me = self.me.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(SETTINGS_ATTACH_HOLD).await;
+                let Some(me) = me.upgrade() else { return };
+                me.settings_open.store(false, Ordering::SeqCst);
+                me.refresh_need().await;
+            });
+        }
+        self.need.send_replace(true);
     }
 
     /// The current link, dropping it first when its connection is gone (the edge closes the
@@ -1485,6 +1520,13 @@ impl Engine {
         Ok((link.control.clone(), link.info.clone()))
     }
 
+    /// The `notAfter` (Unix ms) of `<name>.D`'s chain installed on this engine, as the welcome
+    /// that installed it reported it (B2); `None` without an installed chain.
+    pub(crate) fn installed_not_after(&self, name_host: &str) -> Option<u64> {
+        self.certs.lookup(name_host)?;
+        self.installed.lock().get(name_host).and_then(|i| i.not_after)
+    }
+
     /// The last `welcome`'s names with its edge id and domain; `None` while detached.
     pub(crate) fn welcome_names(&self) -> Option<(String, String, Vec<NameInfo>)> {
         self.link.lock().as_ref().map(|l| {
@@ -1764,6 +1806,7 @@ impl Attachment for Engine {
     }
 
     fn state(&self, state: &EdgeState, clock_off_ms: Option<i64>) {
+        *self.last_state.lock() = Some((state.clone(), clock_off_ms));
         let Some(rt) = self.rt.clone() else { return };
         let (edge, domain) = match self.link.lock().as_ref() {
             Some(l) => (l.info.edge_id.to_string(), Some(l.info.domain.clone())),
@@ -1918,6 +1961,10 @@ mod tests {
 
         e.welcome(&control, &info, &welcome).await;
         assert_eq!(leaf_of(&e), Some(der1), "welcome installs the valid name's chain");
+        let held = crate::names::list(&e).await.unwrap();
+        let sky = held.iter().find(|h| h.name == "sky").unwrap();
+        assert_eq!(sky.state.as_deref(), Some("valid"));
+        assert_eq!(sky.cert_not_after_ms, Some(u64::MAX / 2), "the installed chain's notAfter");
 
         *chain.lock() = pem2;
         e.event(
@@ -1926,6 +1973,29 @@ mod tests {
         )
         .await;
         assert_eq!(leaf_of(&e), Some(der2), "the renewed chain replaced the old one");
+    }
+
+    /// §5.2: Settings open is a need only with the switch on and an edge client running.
+    #[tokio::test]
+    async fn settings_open_needs_the_edge_only_with_the_switch_on() {
+        let (_d, e) = engine(8).await;
+        e.settings_open().await;
+        assert!(!*e.need.borrow(), "no edge client: nothing to attach");
+
+        e.client.store(true, Ordering::SeqCst);
+        e.store.set_enabled(false).await.unwrap();
+        e.settings_open().await;
+        assert!(!*e.need.borrow(), "switch off: Settings never dials");
+
+        e.store.set_enabled(true).await.unwrap();
+        e.settings_open().await;
+        assert!(*e.need.borrow(), "switch on: attach in the background");
+        e.refresh_need().await;
+        assert!(*e.need.borrow(), "a share change keeps the Settings need");
+
+        e.store.set_enabled(false).await.unwrap();
+        e.refresh_need().await;
+        assert!(!*e.need.borrow(), "switching off drops it");
     }
 
     /// A share row this engine's consent path wrote (row + local approval), switch on.

@@ -26,7 +26,8 @@ pub struct HeldName {
     /// New shares use it (`share_names.is_primary`).
     pub primary: bool,
     /// The edge's state: `allocated` · `queued` · `slotted` · `valid` · `released` · `banned`;
-    /// `None` when this machine has not seen the edge's view of it.
+    /// `None` when this machine has not seen the edge's view of it (unknown, not "no
+    /// certificate": Settings attaches and reads the list again).
     pub state: Option<String>,
     /// Slot queue position while `queued`.
     pub queue_position: Option<u32>,
@@ -38,6 +39,10 @@ pub struct HeldName {
     /// End of the transfer offer.
     #[cfg_attr(feature = "ts", ts(type = "number | null"))]
     pub transfer_until_ms: Option<u64>,
+    /// The certificate's `notAfter`, Unix ms: the chain installed on this engine, else the
+    /// edge's from the last `welcome`; `None` when neither is known.
+    #[cfg_attr(feature = "ts", ts(type = "number | null"))]
+    pub cert_not_after_ms: Option<u64>,
 }
 
 /// One `share_names` row.
@@ -269,6 +274,11 @@ pub async fn list(engine: &Engine) -> anyhow::Result<Vec<HeldName>> {
             .ok()
             .and_then(|v| v.as_str().map(str::to_owned))
     };
+    let not_after = |name: &str, domain: &str, i: Option<&share_proto::NameInfo>| {
+        engine
+            .installed_not_after(&share_proto::names::host(name, None, domain))
+            .or_else(|| i.and_then(|i| i.not_after))
+    };
     let mut out: Vec<HeldName> = rows
         .iter()
         .map(|r| {
@@ -288,6 +298,11 @@ pub async fn list(engine: &Engine) -> anyhow::Result<Vec<HeldName>> {
                 queue_eta_s: i.as_ref().and_then(|i| i.queue.map(|q| q.eta_s)),
                 transfer_to: i.as_ref().and_then(|i| i.transfer_to.map(|k| k.to_string())),
                 transfer_until_ms: i.as_ref().and_then(|i| i.transfer_until_ms),
+                cert_not_after_ms: if r.released_ms.is_some() {
+                    None
+                } else {
+                    not_after(&r.name, &r.domain, i.as_ref())
+                },
             }
         })
         .collect();
@@ -309,6 +324,7 @@ pub async fn list(engine: &Engine) -> anyhow::Result<Vec<HeldName>> {
                 queue_eta_s: i.queue.map(|q| q.eta_s),
                 transfer_to: i.transfer_to.map(|k| k.to_string()),
                 transfer_until_ms: i.transfer_until_ms,
+                cert_not_after_ms: not_after(&i.name, domain, Some(i)),
             });
         }
     }

@@ -11,7 +11,7 @@ import { RpcError } from '@/rpc/client'
 import { disconnected } from '@/rpc/discovery'
 import { useConnection } from '@/store/connection'
 import { usePublicShares } from '@/store/public-shares'
-import { ApprovalsOffWarning, availabilityText, d22Text, DomainsTab, MachinesSection, MeshIdRow, NameSection, nameProblem, publishArgs, SharingTab, TermsSection } from './Sharing'
+import { ApprovalsOffWarning, availabilityText, CertificatesSection, certText, d22Text, DomainsTab, heldStateText, MachinesSection, MeshIdRow, NameSection, nameProblem, publishArgs, SharingTab, TermsSection } from './Sharing'
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), warning: vi.fn(), message: vi.fn() }) }))
 
@@ -161,6 +161,51 @@ test('213: Public shares keeps the switch, live shares and history; Domains hold
   await vi.waitFor(() => expect(text()).toContain('tun.zip · Connected'))
   for (const s of ['Your name', 'Certificates']) expect(text()).toContain(s)
   expect(text()).not.toContain('Allow public sharing on this machine')
+})
+
+const heldName = (over: Record<string, unknown>) =>
+  ({ name: 'sky', domain: 'tun.zip', edge: 'e', kind: 'reserved', primary: true, state: null, queue_position: null, queue_eta_s: null, transfer_to: null, transfer_until_ms: null, cert_not_after_ms: null, ...over }) as never
+
+test('a held name never seen in a welcome is unknown, not "no certificate"', () => {
+  expect(heldStateText(heldName({ state: null }))).toBe('Certificate state unknown — edge not contacted')
+  expect(heldStateText(heldName({ state: undefined }))).toBe('Certificate state unknown — edge not contacted')
+  expect(heldStateText(heldName({ state: 'valid' }))).toBe('Ready')
+  expect(heldStateText(heldName({ state: 'allocated' }))).toBe('Getting a certificate…')
+  expect(heldStateText(heldName({ state: 'none' }))).toBe('No certificate yet')
+  const notAfter = Date.UTC(2027, 1, 20, 12)
+  expect(certText(heldName({ state: 'valid', cert_not_after_ms: notAfter }))).toBe(`Ready · certificate until ${new Date(notAfter).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`)
+})
+
+test('Certificates: one row per held name with both hosts; pending shares still say they wait', async () => {
+  client({ share_names_list: () => [heldName({ state: 'queued', queue_position: 2 }), heldName({ name: 'old', state: 'released' })] })
+  await mount(() => h(CertificatesSection, { pending: true }))
+  await vi.waitFor(() => expect(text()).toContain('sky.tun.zip · *.sky.tun.zip'))
+  expect(text()).toContain('Waiting for a certificate slot — position 2')
+  expect(text()).toContain('pending shares go live by themselves')
+  expect(text()).not.toContain('old.tun.zip')
+})
+
+test('Domains: names read while detached are unknown; once the edge attaches they are read again with their real state', async () => {
+  const notAfter = Date.UTC(2027, 1, 20, 12)
+  let welcome = false
+  const calls = client({
+    share_settings_get: () => ({ enabled: true, edge: 'default', configured: true, mesh_id: null }),
+    share_names_list: () => [heldName(welcome ? { state: 'valid', cert_not_after_ms: notAfter } : {})],
+  })
+  const methods = ['share_settings_get', 'share_list', 'share_settings_set'].map((name) => ({ name, params: [], result: { schema: {} } }))
+  useConnection.setState({ discovery: { phase: 'ready', capabilities: null, unavailable: new Set(), document: { methods, 'x-theuth': { events: [], subscriptions: [] } } as never } })
+  await mount(DomainsTab)
+  await vi.waitFor(() => expect(text()).toContain('Certificate state unknown — edge not contacted'))
+  expect(text()).not.toContain('No certificate yet')
+  expect(text()).toContain('Not contacted yet')
+
+  welcome = true
+  await act(async () => usePublicShares.getState().setStatus({ domain: 'tun.zip', state: { state: 'attached' }, clock_off_ms: null } as never))
+  await vi.waitFor(() => expect(text()).toContain('Reserved · Ready'))
+  expect(text()).toContain('tun.zip · Connected')
+  expect(text()).toContain('Ready · certificate until')
+  expect(text()).not.toContain('Certificate state unknown')
+  expect(calls.filter(([m]) => m === 'share_names_list').length).toBeGreaterThanOrEqual(2)
 })
 
 test('M2 namesApi: typed calls with the generated shapes; a missing method is NotOnEngine', async () => {

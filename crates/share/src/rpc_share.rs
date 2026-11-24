@@ -117,7 +117,9 @@ pub trait ShareApi {
     async fn share_terms_get(&self) -> RpcResult<Option<EdgeTerms>>;
 
     /// The mesh's names: the replicated `share_names` rows (released ones included) joined
-    /// with the edge's view from the last `welcome`.
+    /// with the edge's view from the last `welcome`. With the switch on, the call also starts
+    /// attaching in the background (Settings open is a need, §5.2) and answers at once; the
+    /// names' states follow on the next read after `share.status` says `attached`.
     #[method(name = "share_names_list")]
     async fn share_names_list(&self) -> RpcResult<Vec<HeldName>>;
 
@@ -320,7 +322,10 @@ impl ShareApiServer for Server {
     }
 
     async fn share_names_list(&self) -> RpcResult<Vec<HeldName>> {
-        names::list(&*engine()?).await.map_err(err)
+        let e = engine()?;
+        // Settings › Sharing reads this on open: attach in the background (§5.2), never wait.
+        e.settings_open().await;
+        names::list(&e).await.map_err(err)
     }
 
     async fn share_names_reserve(&self, ext: &Extensions, name: String) -> RpcResult<HeldName> {
