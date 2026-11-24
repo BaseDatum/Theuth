@@ -144,7 +144,7 @@ export function Breakdown({ cost, observed }: { cost: SessionCost; observed?: Ob
 export const useCost = (session: string) => {
   const canQuery1 = useQuerySupport(["session_cost"])
   const api = useApi()
-  return useQuery({ enabled: canQuery1, queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) }).data
+  return useQuery({ enabled: canQuery1 && !!session, queryKey: queryKeys.sessionCost(session), queryFn: () => api.session_cost(session) }).data
 }
 
 /** Two fixed decimals, no grouping: `formatCents`'s digits. */

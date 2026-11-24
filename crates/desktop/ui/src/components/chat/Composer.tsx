@@ -87,7 +87,7 @@ import { StopButton } from './StopButton'
 import { CancelHint, DeleteNote, RecordingMeta, type Stage } from './VoiceHold'
 import { HeldStrip } from './HeldStrip'
 import { McpMenu } from './McpMenu'
-import { ApprovalShield, ComposerMeta } from './ComposerMeta'
+import { ApprovalShield, ComposerMeta, useComposerMeta } from './ComposerMeta'
 import { ComposerModel } from './ModelMenu'
 import { OwnerOfflineCard } from './OwnerOfflineCard'
 import { RecordingBox, VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
@@ -744,6 +744,10 @@ export function Composer({
   const isMobile = useIsMobile()
   // 183 R1: a narrow desktop pane (a split, a popout) gets the short placeholder by the box's own width, not the window's.
   const narrow = useNarrow(box, NARROW_BOX_PX)
+  // The box's top row (`13%  ~$44`): an existing session only, never the new-chat draft or a HUD composer.
+  const meta = useComposerMeta(!resolveSession && session ? session : null)
+  // The row counts toward the box: the text's max height gives up its 16 px, so a full box is no taller than before.
+  const textMax = meta ? (touch() ? 'max-h-[144px]' : 'max-h-[184px]') : touch() ? 'max-h-[160px]' : 'max-h-[200px]'
   const pathChanged = (next: string, caret: number) => {
     const t = pathTrigger(next, caret, pathWindows.current)
     const slashNow = /^\/\S*$/.test(next) && slashMenu(next, harnessMenu).length > 0
@@ -1399,10 +1403,13 @@ export function Composer({
         ref={box}
         data-composer=""
         data-tour="chat-composer"
-        className="relative rounded-2xl border border-border-subtle bg-elevated px-3 pt-2.5 pb-2 shadow-sm"
+        className={cn('relative rounded-2xl border border-border-subtle bg-elevated px-3 pb-2 shadow-sm', meta ? 'pt-1' : 'pt-2.5')}
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}
       >
+        {/* Row 0: `13%  ~$44`, a thin row inside the top of the box; the text starts under it at the full width. A voice
+            note keeps the row's height, empty (no jump); a chat with no reading and no cost (or a draft) has no row. */}
+        {meta && session && <ComposerMeta session={session} meta={meta} hidden={stage !== 'idle'} />}
         {slash && <SlashList items={slashItems} selected={selected} onPick={pick} />}
         {path && pathOpen && <PathList popup={path} mobile={isMobile} onPick={pickPath} />}
         <HeldStrip
@@ -1425,7 +1432,7 @@ export function Composer({
                   before={dict.active.before}
                   after={dict.active.after}
                   utts={dict.active.utts}
-                  className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
+                  className={cn(BOX, textMax)}
                 />
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1464,15 +1471,15 @@ export function Composer({
                 onPaste={onPaste}
                 rows={1}
                 placeholder={placeholderFor({ readOnly, running, exports: exports.length > 0, skill: skills.join(', ') || undefined, runsOn, short: isMobile || touch() || narrow })}
-                // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
-                className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
+                // ponytail: `field-sizing: content` grows the box to `textMax` (less the meta row's 16 px when it shows), then scrolls; older WebKit keeps one line.
+                className={cn(BOX, textMax)}
               />
             )}
           </RecordingBox>
           {(stage === 'held' || stage === 'cancelled') && <CancelHint ref={hint} />}
         </div>
         {/* 215 C2: row 2, the toolbar under the full-width text — Add and MCP left, the model and voice/send right. */}
-        <div className="@container/bar mt-1 flex items-center gap-1">
+        <div className="mt-1 flex items-center gap-1">
           {/* 89 VOICE-HOLD: a held or locked note takes the row — Delete (locked) · dot + timer stand in for Add. */}
           {stage === 'locked' && <DeleteNote onClick={() => stopRecording(true)} />}
           {stage !== 'idle' && <RecordingMeta secs={secs} stage={stage} />}
@@ -1586,8 +1593,6 @@ export function Composer({
               A direct flex item: its `max-w-[40%]` reads the toolbar's width, and it is the one item that shrinks when
               the row runs out of room (every button is `shrink-0`). A voice note takes the row, so it goes meanwhile. */}
           {!resolveSession && stage === 'idle' && <ComposerModel session={session} own={ownModel} />}
-          {/* `13%  ~$44`: context and cost at a glance, right of the model (they left the chat header). */}
-          {!resolveSession && stage === 'idle' && session && <ComposerMeta session={session} />}
           {/* 76 §0.12: the former voice-note button is Talk — the live spoken conversation on this session. B3: while it
               runs here, the chat view keeps a compact indicator: tap opens the talk view, the x ends the talk. */}
           {talkHere ? (

@@ -41,42 +41,66 @@ const PCT_TONE = { normal: '', warning: 'text-warning', danger: 'text-danger', c
 
 const ktok = (n: number) => `${Math.round(n / 1000)}k`
 
+/** What the composer's top row shows: the context reading (percent and its tooltip) and the cost glance. */
+export type MetaData = {
+  pct: number | null
+  estimated: boolean
+  ctxTitle?: string
+  cost: { short: string; exact: string; title: string } | null
+}
+
 /**
- * Right of the model picker: `13%  ~$44`, subdued and borderless. The percent's tooltip carries the tokens and the cache
- * hit rate; the cost's the exact total, and a click opens the breakdown (`CostDialog`, `/cost`). On a narrow bar
- * (`@container/bar`) the cost goes first, then the percent; the approval shield (left side) always stays.
+ * The composer's `13%  ~$44` for `session`, or `null` when there is none to show (no session: the new-chat draft; no
+ * context reading and nothing priced). The percent is the context meter's own reading (`useContextReading`), the cost
+ * the breakdown dialog's `session_cost` query (`useCost`).
  */
-export function ComposerMeta({ session }: { session: string }) {
+export function useComposerMeta(session: string | null | undefined): MetaData | null {
   const canSessions = useQuerySupport(['list_sessions'])
   const api = useApi()
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canSessions })
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canSessions && !!session })
   const memory = sessions.data?.find((s) => s.id === session)?.memory
-  const reading = useContextReading(session, memory)
-  const cost = useCost(session)
+  const reading = useContextReading(session ?? '', memory)
+  const cost = useCost(session ?? '')
+  if (!session) return null
   const glance = cost ? costGlance(cost.total) : null
   const pct = reading?.pct ?? null
   if (pct === null && !glance) return null
-  const ctxTitle = reading
-    ? [`${reading.estimated ? '≈ ' : ''}${ktok(reading.used)} / ${ktok(reading.limit)} tokens`, reading.cache === null ? null : `Cache ${reading.cache}%`].filter(Boolean).join('\n')
-    : undefined
+  return {
+    pct,
+    estimated: !!reading?.estimated,
+    ctxTitle: reading
+      ? [`${reading.estimated ? '≈ ' : ''}${ktok(reading.used)} / ${ktok(reading.limit)} tokens`, reading.cache === null ? null : `Cache ${reading.cache}%`].filter(Boolean).join('\n')
+      : undefined,
+    cost: glance && cost ? { ...glance, title: [glance.exact, costTitle(cost.total)].filter(Boolean).join('\n') } : null,
+  }
+}
+
+/**
+ * The thin row inside the top of the composer box, above the text: `13%  ~$44`, right-aligned, subdued, borderless,
+ * both always shown. The percent's tooltip carries the tokens and the cache hit rate; the cost's the exact total, and a
+ * click opens the breakdown (`CostDialog`, `/cost`). `hidden` (a voice note recording): the row keeps its height,
+ * empty, so the box does not jump.
+ */
+export function ComposerMeta({ session, meta, hidden = false }: { session: string; meta: MetaData; hidden?: boolean }) {
   return (
-    <div data-composer-meta="" className="flex shrink-0 items-center gap-2 pl-0.5 text-[12px] text-fg-tertiary tabular-nums">
-      {pct !== null && (
-        <span data-meta="context" className={cn('cursor-default @max-[260px]/bar:hidden', PCT_TONE[band(pct)])} title={ctxTitle}>
-          {reading?.estimated && '≈'}
-          {pct}%
+    <div data-composer-meta="" aria-hidden={hidden || undefined} className={cn('flex h-4 items-center justify-end gap-2 px-1 text-[11px] leading-4 text-fg-tertiary tabular-nums', hidden && 'invisible')}>
+      {meta.pct !== null && (
+        <span data-meta="context" className={cn('cursor-default', PCT_TONE[band(meta.pct)])} title={meta.ctxTitle}>
+          {meta.estimated && '≈'}
+          {meta.pct}%
         </span>
       )}
-      {glance && (
+      {meta.cost && (
         <button
           type="button"
           data-meta="cost"
-          className="rounded-sm outline-none hover:text-fg-secondary focus-visible:ring-2 focus-visible:ring-ring/50 @max-[340px]/bar:hidden"
-          title={[glance.exact, costTitle(cost!.total)].filter(Boolean).join('\n')}
-          aria-label={`Cost ${glance.exact}`}
+          tabIndex={hidden ? -1 : undefined}
+          className="rounded-sm outline-none hover:text-fg-secondary focus-visible:ring-2 focus-visible:ring-ring/50"
+          title={meta.cost.title}
+          aria-label={`Cost ${meta.cost.exact}`}
           onClick={() => window.dispatchEvent(new CustomEvent('theuth:open-cost', { detail: { session } }))}
         >
-          {glance.short}
+          {meta.cost.short}
         </button>
       )}
     </div>

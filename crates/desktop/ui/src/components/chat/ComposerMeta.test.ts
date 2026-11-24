@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, expect, test, vi } from 'vitest'
 import type { Api } from '@/rpc/bindings/client'
 import { approvalsChoice, setApprovalsLevel } from './approvals-level'
-import { ApprovalShieldView, costBallpark, shieldState } from './ComposerMeta'
+import { ApprovalShieldView, ComposerMeta, costBallpark, shieldState } from './ComposerMeta'
 
 vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
 
@@ -98,15 +98,67 @@ test('a level goes out through set_approvals exactly as the ⋯ menu sends it, a
   for (const f of ['./ComposerMeta.tsx', './SessionMenu.tsx']) expect(readFileSync(new URL(f, import.meta.url), 'utf8')).toContain('setApprovalsLevel(api, session,')
 })
 
-test('the composer bar: shield right of MCP on the left, the strip right of the model picker; cost sheds before context', () => {
+test('the meta is a row at the top of the box, before the text in DOM order, never in the bottom bar; the shield stays in the bar after MCP', () => {
   const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
   const at = (s: string) => src.indexOf(s)
+  const box = at('data-composer=""')
+  const row = at('<ComposerMeta session={session} meta={meta}')
+  const bar = at('{/* 215 C2: row 2, the toolbar')
+  expect(row).toBeGreaterThan(box)
+  expect(row).toBeLessThan(at('<HeldStrip'))
+  expect(row).toBeLessThan(at('<Textarea'))
+  expect(src.slice(bar).includes('<ComposerMeta')).toBe(false)
   expect(at('<McpMenu')).toBeLessThan(at('<ApprovalShield'))
+  expect(at('<ApprovalShield')).toBeGreaterThan(bar)
   expect(at('<ApprovalShield')).toBeLessThan(at('<div className="-ml-1 min-w-0 flex-1" />'))
-  expect(at('<ComposerModel')).toBeLessThan(at('<ComposerMeta'))
-  const meta = readFileSync(new URL('./ComposerMeta.tsx', import.meta.url), 'utf8')
-  const shed = (k: string) => Number(meta.match(new RegExp(`data-meta="${k}"[\\s\\S]*?@max-\\[(\\d+)px\\]/bar:hidden`))?.[1])
-  expect(shed('cost')).toBeGreaterThan(shed('context'))
-  // The shield has no container-query class: it never sheds.
-  expect(meta.slice(meta.indexOf('data-shield'), meta.indexOf('</PopoverTrigger>'))).not.toContain('@max-')
+  // No container-query shedding anywhere in the strip or the bar any more.
+  expect(readFileSync(new URL('./ComposerMeta.tsx', import.meta.url), 'utf8')).not.toMatch(/@max-|\/bar:hidden/)
+  expect(src).not.toContain('@container/bar')
+})
+
+test('the row exists for an existing session only (never the draft or a HUD composer), and its height comes out of the text\'s max', () => {
+  const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
+  expect(src).toContain('const meta = useComposerMeta(!resolveSession && session ? session : null)')
+  expect(src).toContain("const textMax = meta ? (touch() ? 'max-h-[144px]' : 'max-h-[184px]') : touch() ? 'max-h-[160px]' : 'max-h-[200px]'")
+  expect(src.match(/className=\{cn\(BOX, textMax\)\}/g)).toHaveLength(2)
+  // A voice note keeps the row (same height, empty): no jump.
+  expect(src).toContain('hidden={stage !== \'idle\'}')
+})
+
+const META = { pct: 78, estimated: false, ctxTitle: '780k / 1000k tokens\nCache 75%', cost: { short: '~$131', exact: '$131.40', title: '$131.40' } }
+
+test('the row: both numbers always shown, right-aligned 16 px, the % banded amber from 75, red from 90; the cost opens the breakdown', () => {
+  host = document.createElement('div')
+  document.body.append(host)
+  root = createRoot(host)
+  act(() => root!.render(h(ComposerMeta, { session: 's1', meta: META })))
+  const row = host.querySelector<HTMLElement>('[data-composer-meta]')!
+  expect(row.className).toContain('h-4')
+  expect(row.className).toContain('justify-end')
+  expect(row.className).not.toContain('invisible')
+  const pct = row.querySelector<HTMLElement>('[data-meta="context"]')!
+  expect(pct.textContent).toBe('78%')
+  expect(pct.className).toContain('text-warning')
+  expect(pct.title).toBe('780k / 1000k tokens\nCache 75%')
+  const cost = row.querySelector<HTMLElement>('[data-meta="cost"]')!
+  expect(cost.textContent).toBe('~$131')
+  const opened = vi.fn()
+  window.addEventListener('theuth:open-cost', opened)
+  click(cost)
+  window.removeEventListener('theuth:open-cost', opened)
+  expect((opened.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ session: 's1' })
+  act(() => root!.render(h(ComposerMeta, { session: 's1', meta: { ...META, pct: 91 } })))
+  expect(row.querySelector<HTMLElement>('[data-meta="context"]')!.className).toContain('text-danger')
+})
+
+test('recording: the row keeps its height but shows nothing and takes no focus', () => {
+  host = document.createElement('div')
+  document.body.append(host)
+  root = createRoot(host)
+  act(() => root!.render(h(ComposerMeta, { session: 's1', meta: META, hidden: true })))
+  const row = host.querySelector<HTMLElement>('[data-composer-meta]')!
+  expect(row.className).toContain('invisible')
+  expect(row.className).toContain('h-4')
+  expect(row.getAttribute('aria-hidden')).toBe('true')
+  expect(row.querySelector<HTMLElement>('[data-meta="cost"]')!.tabIndex).toBe(-1)
 })
