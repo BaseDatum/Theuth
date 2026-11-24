@@ -560,3 +560,11 @@ export function ModelDialog({ open, onOpenChange, ...props }: Props & { open: bo
     </Dialog>
   )
 }
+
+/**
+ * 215 C1: the composer's quiet model label — "Model · effort ⌄" on the input's toolbar row, opening the same picker
+ * upward. STUB in the contract commit (delegates to `ModelMenu small`); the pickers builder replaces the body.
+ */
+export function ComposerModel(props: Props) {
+  return <ModelMenu {...props} small />
+}
