@@ -6,7 +6,7 @@
  * disabled with the reason when the engine lacks the call.
  */
 import type { ReactNode } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { appendDraft, prefillDraft } from '@/components/chat/Composer'
 import { anchorOf, kindGlyph } from '@/lib/codemap/labels'
 import { detailChips, draftHead, evidenceCount, inferredReason, mapFence, provenanceLine } from '@/lib/codemap/map'

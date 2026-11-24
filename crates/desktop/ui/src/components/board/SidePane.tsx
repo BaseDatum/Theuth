@@ -5,7 +5,7 @@
 import { openPath } from '@tauri-apps/plugin-opener'
 import { ExternalLink, MessageSquareQuote, X } from 'lucide-react'
 import { type ReactNode, useEffect, useRef } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { useStore } from 'zustand'
 import { Excerpt } from '@/components/chat/surface/Excerpt'
 import { Button } from '@/components/ui/button'

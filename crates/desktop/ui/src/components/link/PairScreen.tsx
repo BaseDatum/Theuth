@@ -1,7 +1,7 @@
 import { Format, cancel, checkPermissions, requestPermissions, scan } from '@tauri-apps/plugin-barcode-scanner'
 import { ChevronLeft, Loader2, QrCode } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'

@@ -1,6 +1,6 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { notebookKeys, useNotebooksApi } from '@/lib/notebooks-rpc'
 
 /** `notebook_list(archived)` (144 §12.3), live notebooks by default. `enabled: false` reads the cache only. */

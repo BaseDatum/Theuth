@@ -4,7 +4,7 @@
 import { useMutation } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { type KeyboardEvent, useEffect, useMemo, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { useNotebooks } from '@/components/notebooks/useNotebooks'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'

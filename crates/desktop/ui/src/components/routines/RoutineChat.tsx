@@ -1,7 +1,7 @@
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { ExternalLink, MessageSquarePlus, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'

@@ -1,7 +1,7 @@
 import { useMutation } from '@tanstack/react-query'
 import { Check, ChevronsUpDown, Plus } from 'lucide-react'
 import { useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { errorText } from '@/components/settings/shared'
 import { ProjectIcon } from '@/components/sidebar/ProjectStyle'
 import { Button } from '@/components/ui/button'

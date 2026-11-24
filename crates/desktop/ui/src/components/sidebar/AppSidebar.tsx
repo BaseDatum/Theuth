@@ -11,7 +11,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { AudioLines, Bot, ChartColumn, Inbox, Library, Megaphone, Mic, PanelLeft, Plus, Settings, SquarePen, StickyNote } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { EngineSwitcher } from '@/components/link/EngineSwitcher'
 import { Button } from '@/components/ui/button'
 import {

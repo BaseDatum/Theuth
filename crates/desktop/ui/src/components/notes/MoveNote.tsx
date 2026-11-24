@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query'
 import { MoveRight } from 'lucide-react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { type Mesh, inMesh } from '@/components/notes/machine'
 import { useServerView } from '@/components/notes/ServerChip'
 import { errorText } from '@/components/settings/shared'

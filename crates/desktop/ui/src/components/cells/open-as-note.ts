@@ -3,7 +3,7 @@
 // when the run printed nothing) and the run line (§4.4), created with `doc_create`. The note's cells start with no
 // runs and their own kernel; a cell's first run in the note replaces that history (`historyAfter`, 171F4 T2-3).
 import type { QueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { queryKeys } from '@/lib/rpc'
 import type { Api } from '@/rpc/bindings/client'
 import type { CellRun } from "@/rpc/bindings/method.cells.output"

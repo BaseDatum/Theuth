@@ -4,7 +4,7 @@
 
 import { Copy, ExternalLink, Globe } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { PasswordOnce, useSharePassword } from '@/components/public-share/PasswordOnce'
 import { stopShare } from '@/components/public-share/actions'
 import { type Share, shareApi } from '@/components/public-share/wire'

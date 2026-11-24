@@ -4,7 +4,7 @@ import { languages } from '@codemirror/language-data'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import CodeMirror, { EditorView } from '@uiw/react-codemirror'
 import { type Ref, useImperativeHandle, useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import {
   AlertDialog,
   AlertDialogAction,

@@ -1,7 +1,7 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { receiveComponent } from '@/rpc/bindings/receive'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { useAction } from '@/components/settings/shared'
 import { AGENTS, mockOn } from '@/components/tasks/mock'
 import { THEUTH } from '@/components/tasks/helpers'
