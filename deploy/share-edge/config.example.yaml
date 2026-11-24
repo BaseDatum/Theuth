@@ -104,6 +104,7 @@ limits:                       # §9.4; "net" = IPv4 address or IPv6 /64; refusal
   pre_hello_conns: 256
   hello_timeout_secs: 10
   info_per_ip_min: 30
+  names_status_per_net_min: 12  # POST /v1/names/status (Settings' read-only look at the names) per client network
   lookups_per_net_min: 30     # GET /v1/names/{name} per IPv4 address / IPv6 /64 (429 rate_limited {scope: net})
   lookups_per_wide_min: 120   # … per IPv4 /24 / IPv6 /48 (scope: net_wide)
   lookups_per_tunnel_min: 30  # … per tunnel (engine key; scope: tunnel); a relayed tunnel's only lookup limit

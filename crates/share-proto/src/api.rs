@@ -419,6 +419,31 @@ pub struct RekeyAccepted {
     pub mesh: PublicKey,
 }
 
+/// `POST /v1/names/status`: the delegation a `hello` would carry, for a read-only look at the mesh's names.
+/// The edge runs `hello`'s checks (protocol, `min_client`, delegation, bans, rekey, revoke) and attaches nothing:
+/// no admission, engine count, eviction or session (§5.2: opening Settings is no presence).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamesStatusRequest {
+    /// Protocol major, `1`.
+    pub v: u32,
+    /// `theuth/<ver>` ([`crate::version::client_agent`]).
+    pub client: String,
+    /// `{body, sig}` of a [`crate::Delegation`].
+    pub delegation: Signed,
+}
+
+/// `POST /v1/names/status` answer: the names `welcome.names` would carry (state, queue, transfer, `not_after`
+/// of a valid name's certificate).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamesStatus {
+    /// The edge's clock.
+    pub now_ms: u64,
+    /// The mesh the delegation names.
+    pub mesh: PublicKey,
+    /// The mesh's held names.
+    pub names: Vec<NameInfo>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

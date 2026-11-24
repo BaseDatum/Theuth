@@ -44,9 +44,10 @@ pub const ATTACH_WAIT: Duration = Duration::from_secs(30);
 pub const PUBLISH_CERT_WAIT: Duration = Duration::from_millis(1500);
 /// How long Stop all waits to attach before handing the edge stop to the lease holder.
 pub const STOP_ALL_ATTACH_WAIT: Duration = Duration::from_secs(10);
-/// How long Settings › Sharing keeps the edge needed after it first reads the names (§5.2:
-/// "Settings › Sharing open" is a need); the page reads the names again on every attach.
-pub const SETTINGS_ATTACH_HOLD: Duration = Duration::from_secs(60);
+/// How long a `POST /v1/names/status` answer serves `share_names_list` while detached.
+pub const NAMES_STATUS_FRESH_MS: u64 = 30_000;
+/// How long `share_names_list` waits for a `POST /v1/names/status` answer while detached.
+pub const NAMES_STATUS_WAIT: Duration = Duration::from_secs(5);
 /// The approval cards Stop all and the switch turned off withdraw.
 const PUBLISH_TOOL: &str = "share_publish";
 /// `approved_by.surface` of an act the owner pressed in their own client ([`Consent::of_press`]).
@@ -320,10 +321,8 @@ pub struct Engine {
     fresh: Mutex<std::collections::BTreeSet<String>>,
     /// The edge state machine runs (set by `start`): Stop all may wait for it to attach.
     client: std::sync::atomic::AtomicBool,
-    /// Settings › Sharing asked for the names within [`SETTINGS_ATTACH_HOLD`]: a need (§5.2).
-    settings_open: std::sync::atomic::AtomicBool,
-    /// The last edge state reported on `share.status`, republished when Settings opens.
-    last_state: Mutex<Option<(EdgeState, Option<i64>)>>,
+    /// The last `POST /v1/names/status` answer: `(at_ms, edge id, domain, names)`.
+    names_status: Mutex<Option<(u64, String, String, Vec<NameInfo>)>>,
 }
 
 /// Six random bytes (names, labels).
@@ -381,8 +380,7 @@ impl Engine {
             unmounted: Mutex::new(std::collections::BTreeSet::new()),
             fresh: Mutex::new(std::collections::BTreeSet::new()),
             client: std::sync::atomic::AtomicBool::new(false),
-            settings_open: std::sync::atomic::AtomicBool::new(false),
-            last_state: Mutex::new(None),
+            names_status: Mutex::new(None),
         }))
     }
 
@@ -445,35 +443,57 @@ impl Engine {
     }
 
     async fn refresh_need(&self) {
-        let settings = self.settings_open.load(Ordering::SeqCst)
-            && self.store.enabled().await.unwrap_or(false);
-        let busy = settings || self.mine().await.map(|v| !v.is_empty()).unwrap_or(false);
+        let busy = self.mine().await.map(|v| !v.is_empty()).unwrap_or(false);
         self.need
             .send_if_modified(|n| std::mem::replace(n, busy) != busy);
     }
 
-    /// Settings › Sharing is open (§5.2, a need): with the switch on and an edge client
-    /// running, start attaching without waiting, so the next `welcome` brings the names' real
-    /// states; the need lapses [`SETTINGS_ATTACH_HOLD`] after the first call. The last edge
-    /// state is published again so a page opened after the attach still shows it.
-    pub async fn settings_open(&self) {
-        if !self.client.load(Ordering::SeqCst) || !self.store.enabled().await.unwrap_or(false) {
-            return;
+    /// One `POST /v1/names/status` at the configured edge (§5.2): the mesh's names as the edge
+    /// sees them, without attaching and without setting `need`; the answer is cached.
+    pub async fn names_status(&self) -> anyhow::Result<(String, String, Vec<NameInfo>)> {
+        let (Some(dialer), Some(delegation)) = (&self.hooks.dialer, &self.hooks.delegation) else {
+            anyhow::bail!("{NO_SHARING_EDGE}");
+        };
+        let Some(ticket) = self.store.edge().await?.tickets().into_iter().next() else {
+            anyhow::bail!("{NO_SHARING_EDGE}");
+        };
+        let (info, status) =
+            crate::edge::names_status(dialer.as_ref(), delegation.as_ref(), &ticket).await?;
+        let seen = (info.edge_id.to_string(), info.domain, status.names);
+        *self.names_status.lock() = Some((
+            platform::time::now_ms(),
+            seen.0.clone(),
+            seen.1.clone(),
+            seen.2.clone(),
+        ));
+        Ok(seen)
+    }
+
+    /// The names' edge view while detached, for `share_names_list`: a status answer under
+    /// [`NAMES_STATUS_FRESH_MS`] old, else [`Self::names_status`] within [`NAMES_STATUS_WAIT`].
+    /// `None` with the switch off or on any failure (an older edge's `404` included): the states
+    /// stay unknown.
+    pub(crate) async fn detached_names(&self) -> Option<(String, String, Vec<NameInfo>)> {
+        if !self.store.enabled().await.unwrap_or(false) {
+            return None;
         }
-        let last = self.last_state.lock().clone();
-        if let Some((state, clock_off_ms)) = last {
-            Attachment::state(self, &state, clock_off_ms);
+        let cached = self.names_status.lock().clone();
+        if let Some((at, edge, domain, names)) = cached
+            && platform::time::now_ms().saturating_sub(at) < NAMES_STATUS_FRESH_MS
+        {
+            return Some((edge, domain, names));
         }
-        if !self.settings_open.swap(true, Ordering::SeqCst) {
-            let me = self.me.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(SETTINGS_ATTACH_HOLD).await;
-                let Some(me) = me.upgrade() else { return };
-                me.settings_open.store(false, Ordering::SeqCst);
-                me.refresh_need().await;
-            });
+        match tokio::time::timeout(NAMES_STATUS_WAIT, self.names_status()).await {
+            Ok(Ok(seen)) => Some(seen),
+            Ok(Err(e)) => {
+                tracing::debug!("share: names status: {e:#}");
+                None
+            }
+            Err(_) => {
+                tracing::debug!("share: names status: no answer within {NAMES_STATUS_WAIT:?}");
+                None
+            }
         }
-        self.need.send_replace(true);
     }
 
     /// The current link, dropping it first when its connection is gone (the edge closes the
@@ -1806,7 +1826,6 @@ impl Attachment for Engine {
     }
 
     fn state(&self, state: &EdgeState, clock_off_ms: Option<i64>) {
-        *self.last_state.lock() = Some((state.clone(), clock_off_ms));
         let Some(rt) = self.rt.clone() else { return };
         let (edge, domain) = match self.link.lock().as_ref() {
             Some(l) => (l.info.edge_id.to_string(), Some(l.info.domain.clone())),
@@ -1975,27 +1994,104 @@ mod tests {
         assert_eq!(leaf_of(&e), Some(der2), "the renewed chain replaced the old one");
     }
 
-    /// §5.2: Settings open is a need only with the switch on and an edge client running.
-    #[tokio::test]
-    async fn settings_open_needs_the_edge_only_with_the_switch_on() {
-        let (_d, e) = engine(8).await;
-        e.settings_open().await;
-        assert!(!*e.need.borrow(), "no edge client: nothing to attach");
+    /// An edge answering `GET /v1/info` and `POST /v1/names/status` (one valid name) only.
+    struct StatusDialer {
+        edge: share_proto::SecretKey,
+        dials: std::sync::atomic::AtomicU32,
+    }
 
-        e.client.store(true, Ordering::SeqCst);
+    #[async_trait::async_trait]
+    impl EdgeDialer for StatusDialer {
+        async fn dial(
+            &self,
+            _: share_proto::EndpointAddr,
+            _: &[&[u8]],
+        ) -> anyhow::Result<Arc<dyn crate::edge::EdgeConn>> {
+            self.dials.fetch_add(1, Ordering::SeqCst);
+            let info = Info {
+                v: 1,
+                edge: "theuth-share-edge/0.1.0".into(),
+                domain: "tun.zip".into(),
+                edge_id: self.edge.public(),
+                now_ms: platform::time::now_ms(),
+                min_client: "0.0.1".into(),
+                admission: share_proto::Admission::Open,
+                terms_url: String::new(),
+                terms_rev: "1".into(),
+                abuse_url: String::new(),
+                full: false,
+            };
+            let status = share_proto::NamesStatus {
+                now_ms: platform::time::now_ms(),
+                mesh: share_proto::SecretKey::from_bytes(&[1; 32]).public(),
+                names: vec![NameInfo {
+                    name: "sky".into(),
+                    kind: NameKind::Reserved,
+                    state: NameState::Valid,
+                    ca: None,
+                    spki: None,
+                    not_after: Some(1_900_000_000_000),
+                    queue: None,
+                    transfer_to: None,
+                    transfer_until_ms: None,
+                }],
+            };
+            let app = axum::Router::new()
+                .route(
+                    share_proto::paths::INFO,
+                    axum::routing::get(move || std::future::ready(axum::Json(info.clone()))),
+                )
+                .route(
+                    share_proto::paths::NAMES_STATUS,
+                    axum::routing::post(move || std::future::ready(axum::Json(status.clone()))),
+                );
+            Ok(crate::edge::tests::FakeConn::new(app))
+        }
+    }
+
+    /// CERT-STATE: a detached `share_names_list` reads the edge's view with one names status
+    /// (cached), never attaches (`need` stays false), and asks nothing with the switch off.
+    #[tokio::test]
+    async fn detached_names_list_uses_the_names_status_and_never_attaches() {
+        let dir = tempfile::Builder::new().prefix("data").tempdir().unwrap();
+        let store = Store::open(&dir.path().join("share.sqlite")).await.unwrap();
+        let edge = share_proto::SecretKey::from_bytes(&[7; 32]);
+        let dialer = Arc::new(StatusDialer {
+            edge: edge.clone(),
+            dials: Default::default(),
+        });
+        let hooks = Hooks {
+            dialer: Some(dialer.clone()),
+            delegation: Some(Arc::new(crate::edge::SelfHolder {
+                mesh_key: share_proto::SecretKey::from_bytes(&[1; 32]),
+                engine: share_proto::SecretKey::from_bytes(&[2; 32]).public(),
+            })),
+            name_keys: None,
+            own_ports: Arc::new(OwnListeners),
+            process: Arc::new(NotTheuth),
+        };
+        let e = Engine::new(ShareConfig::default(), store, dir.path().to_path_buf(), "me".into(), hooks, None)
+            .unwrap();
+        let ticket = share_proto::ShareEdgeTicket {
+            addr: share_proto::EndpointAddr::new(edge.public()),
+            invite: None,
+        };
+        e.store.set_edge(&EdgeChoice::Ticket(Box::new(ticket))).await.unwrap();
+
         e.store.set_enabled(false).await.unwrap();
-        e.settings_open().await;
-        assert!(!*e.need.borrow(), "switch off: Settings never dials");
+        assert!(crate::names::list(&e).await.unwrap().is_empty());
+        assert_eq!(dialer.dials.load(Ordering::SeqCst), 0, "switch off: nothing dialled");
 
         e.store.set_enabled(true).await.unwrap();
-        e.settings_open().await;
-        assert!(*e.need.borrow(), "switch on: attach in the background");
-        e.refresh_need().await;
-        assert!(*e.need.borrow(), "a share change keeps the Settings need");
+        let held = crate::names::list(&e).await.unwrap();
+        let sky = held.iter().find(|h| h.name == "sky").unwrap();
+        assert_eq!(sky.state.as_deref(), Some("valid"));
+        assert_eq!(sky.cert_not_after_ms, Some(1_900_000_000_000), "the edge's notAfter");
+        assert!(!*e.need.borrow(), "a names status is no attach");
+        assert!(e.welcome_names().is_none());
 
-        e.store.set_enabled(false).await.unwrap();
-        e.refresh_need().await;
-        assert!(!*e.need.borrow(), "switching off drops it");
+        crate::names::list(&e).await.unwrap();
+        assert_eq!(dialer.dials.load(Ordering::SeqCst), 1, "the answer is cached");
     }
 
     /// A share row this engine's consent path wrote (row + local approval), switch on.

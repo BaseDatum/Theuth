@@ -170,12 +170,6 @@ export function DomainsTab() {
   const { supported, settings } = useShareSettings()
   const status = usePublicShares((s) => s.status)
   const shares = usePublicShares((s) => s.shares)
-  const qc = useQueryClient()
-  const attached = status?.state.state === 'attached'
-  // §5.2: reading the names makes the engine attach (switch on); the welcome brings their states, so read them again.
-  useEffect(() => {
-    if (attached) void qc.invalidateQueries({ queryKey: NAMES_KEY })
-  }, [attached, qc])
   if (!supported) return <Empty>{NO_PLUGIN}</Empty>
   const edgeName = status?.domain ?? 'the edge'
   return (

@@ -628,6 +628,11 @@ pub fn reload(edge: &Edge, cfg: &crate::config::Config) -> anyhow::Result<Reload
     fixed("limits.pre_hello_conns", sl.pre_hello_conns.to_string(), nl.pre_hello_conns.to_string());
     fixed("limits.new_conns_per_ip_sec", sl.new_conns_per_ip_sec.to_string(), nl.new_conns_per_ip_sec.to_string());
     fixed("limits.info_per_ip_min", sl.info_per_ip_min.to_string(), nl.info_per_ip_min.to_string());
+    fixed(
+        "limits.names_status_per_net_min",
+        sl.names_status_per_net_min.to_string(),
+        nl.names_status_per_net_min.to_string(),
+    );
     fixed("limits.lookups_per_net_min", sl.lookups_per_net_min.to_string(), nl.lookups_per_net_min.to_string());
     fixed("limits.lookups_per_wide_min", sl.lookups_per_wide_min.to_string(), nl.lookups_per_wide_min.to_string());
     fixed(

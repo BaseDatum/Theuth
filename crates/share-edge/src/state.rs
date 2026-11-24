@@ -293,6 +293,8 @@ pub struct Edge {
     pub ip_rate: DefaultKeyedRateLimiter<IpAddr>,
     /// `GET /v1/info` per client network ([`Tunnel::net`]).
     pub info_rate: DefaultKeyedRateLimiter<String>,
+    /// `POST /v1/names/status` per client network ([`Tunnel::net`]), `names_status_per_net_min`.
+    pub names_status_rate: DefaultKeyedRateLimiter<String>,
     /// `GET /v1/names/{name}` per client network (IPv4 address, IPv6 /64), `lookups_per_net_min`.
     pub lookup_net: DefaultKeyedRateLimiter<IpAddr>,
     /// `GET /v1/names/{name}` per wide network (IPv4 /24, IPv6 /48), `lookups_per_wide_min`.
@@ -330,6 +332,7 @@ impl Edge {
             info_rate: RateLimiter::keyed(Quota::per_minute(
                 NonZeroU32::new(cfg.limits.info_per_ip_min.max(1)).expect("nonzero"),
             )),
+            names_status_rate: per_minute(cfg.limits.names_status_per_net_min),
             lookup_net: per_minute(cfg.limits.lookups_per_net_min),
             lookup_wide: per_minute(cfg.limits.lookups_per_wide_min),
             lookup_tunnel: per_minute(cfg.limits.lookups_per_tunnel_min),
@@ -446,6 +449,8 @@ impl Edge {
         self.ip_rate.shrink_to_fit();
         self.info_rate.retain_recent();
         self.info_rate.shrink_to_fit();
+        self.names_status_rate.retain_recent();
+        self.names_status_rate.shrink_to_fit();
         self.lookup_net.retain_recent();
         self.lookup_net.shrink_to_fit();
         self.lookup_wide.retain_recent();

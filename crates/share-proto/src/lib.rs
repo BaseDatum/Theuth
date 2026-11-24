@@ -37,6 +37,8 @@ pub mod paths {
     pub const INFO: &str = "/v1/info";
     /// `POST`: delegation, invite, client version, terms revision.
     pub const HELLO: &str = "/v1/hello";
+    /// `POST`: the mesh's names, answered without a session: `hello`'s checks, no attach (§5.2).
+    pub const NAMES_STATUS: &str = "/v1/names/status";
     /// `POST`: allocate a client-drawn random name.
     pub const NAMES: &str = "/v1/names";
     /// `GET` availability · `PUT` claim a reserved name · `DELETE` release.
