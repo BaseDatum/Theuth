@@ -547,6 +547,31 @@ body.voice-hold {
   }
 }
 
+/* 217 status bar: a notice slides up into the slot; the dot breathes while events flow (or while connecting). */
+.notice-in {
+  animation: notice-in 350ms ease-out both;
+}
+.status-dot[data-pulse] {
+  animation: status-pulse 2.4s ease-in-out infinite;
+}
+@keyframes notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes status-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice-in,
+  .status-dot[data-pulse] {
+    animation: none;
+  }
+}
+
 /* Full-height shell: the layout viewport, or the band above the iOS keyboard (lib/viewport.ts). */
 @utility h-band {
   height: var(--visible-band, 100dvh);

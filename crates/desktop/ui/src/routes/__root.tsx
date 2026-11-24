@@ -24,6 +24,8 @@ import type { SearchRequest } from '@/lib/search'
 import { pageTitle } from '@/lib/nav'
 import { POPOUT, isPopout } from '@/lib/popout'
 import { isIsland, isOverlay } from '@/lib/tauri'
+import { PhoneStatusLine } from '@/components/status/PhoneStatusLine'
+import { StatusBar } from '@/components/status/StatusBar'
 import { OnboardingHost } from '@/components/onboarding/OnboardingHost'
 
 /** 03 §0.1: the island webview gets no sidebar, search or hotkeys — just its route; the trail overlay (96 §5.3) likewise. A popout gets the routed column alone. */
@@ -74,30 +76,37 @@ function Root() {
     }
   }, [navigate])
 
+  // 217: the status bar runs under sidebar and column. `--statusbar-h` (its height, plus the home-indicator band on an
+  // iPad) is what the fixed sidebar stops short by; the phone has no bar, its line closes the column instead.
   return (
-    <SidebarProvider open={open} onOpenChange={setOpen} rail className="h-band min-h-0">
-      <AppSidebar session={session} />
-      <Capability required={searchRequirements} hide><SearchHost /></Capability>
-      <Capability required={routineRequirements} hide><RoutineDraftBridge /></Capability>
-      <Capability required={costsRequirements} hide><CostsPrefetch /></Capability>
-      <Capability required={studyRequirements} hide><StudyDraftBridge /></Capability>
-      <DragOverlay />
-      <PublicShareHost />
-      {/* 215: first-run wizard, upgrade toast and tours; the host itself stays out of pop-outs and remote engines. */}
-      <OnboardingHost />
-      <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pb-[var(--safe-bottom)] pl-[var(--safe-left)]">
-        {/* 210 §7.4 item 1: over every route while anything of the mesh is public. */}
-        <PublicShareStrip />
-        {/* 160 R2: the routed page and the resident costs page share one column; the costs page lies over it. */}
-        <ResidentCtx value>
-          <div className="relative flex min-h-0 flex-1 flex-col">
-            <Outlet />
-            <Capability required={costsRequirements} hide><CostsResident /></Capability>
-          </div>
-        </ResidentCtx>
-        <Capability required={meetingRequirements} hide><MeetingBar /></Capability>
-      </SidebarInset>
-    </SidebarProvider>
+    <div className="flex h-band flex-col [--statusbar-h:calc(22px+var(--safe-bottom))] max-md:[--statusbar-h:0px] md:pb-[var(--safe-bottom)]">
+      <SidebarProvider open={open} onOpenChange={setOpen} rail className="min-h-0 flex-1">
+        <AppSidebar session={session} />
+        <Capability required={searchRequirements} hide><SearchHost /></Capability>
+        <Capability required={routineRequirements} hide><RoutineDraftBridge /></Capability>
+        <Capability required={costsRequirements} hide><CostsPrefetch /></Capability>
+        <Capability required={studyRequirements} hide><StudyDraftBridge /></Capability>
+        <DragOverlay />
+        <PublicShareHost />
+        {/* 215: first-run wizard, upgrade toast and tours; the host itself stays out of pop-outs and remote engines. */}
+        <OnboardingHost />
+        <SidebarInset className="min-h-0 overflow-hidden pt-[var(--safe-top)] pr-[var(--safe-right)] pl-[var(--safe-left)]">
+          {/* 210 §7.4 item 1: over every route while anything of the mesh is public. */}
+          <PublicShareStrip />
+          {/* 160 R2: the routed page and the resident costs page share one column; the costs page lies over it. */}
+          <ResidentCtx value>
+            <div className="relative flex min-h-0 flex-1 flex-col">
+              <Outlet />
+              <Capability required={costsRequirements} hide><CostsResident /></Capability>
+            </div>
+          </ResidentCtx>
+          <Capability required={meetingRequirements} hide><MeetingBar /></Capability>
+          {/* 217 §7: in the home-indicator band, under the composer. */}
+          <PhoneStatusLine />
+        </SidebarInset>
+      </SidebarProvider>
+      <StatusBar />
+    </div>
   )
 }
 
