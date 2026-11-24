@@ -7,7 +7,7 @@ import type { Api } from '@/rpc/bindings/client'
 import { approvalsChoice, setApprovalsLevel } from './approvals-level'
 import { ApprovalShieldView, costBallpark, shieldState } from './ComposerMeta'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
 
 test('cost: whole units from 1 up, cents only below 1', () => {
   expect(costBallpark(1.62)).toBe('~$2')

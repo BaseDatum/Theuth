@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Shield, ShieldCheck, ShieldOff } from 'lucide-react'
 import { useState } from 'react'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useMesh } from '@/components/tasks/queries'
 import { approvalsOff } from '@/lib/header'
