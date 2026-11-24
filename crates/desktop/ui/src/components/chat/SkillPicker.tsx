@@ -1,7 +1,8 @@
-import { Check, ChevronLeft, ChevronRight, Sparkles, X } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, MessageSquarePlus, Sparkles, X } from 'lucide-react'
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import type { SuffixScope, Suffix } from '@/lib/suffixes'
 import type { SkillMeta } from '@/rpc/bindings/method.agent.output'
 import { useQuerySupport } from '@/rpc/capabilities'
 
@@ -89,20 +90,59 @@ export function SkillPicker({
   )
 }
 
-/** One chip per parked skill, in send order, each with its own ✕. */
+/** One chip per parked skill, in send order, each with its own ✕. 215 C2: bare chips, the caller's `PillRow` lays them out. */
 export function SkillChips({ names, onRemove }: { names: readonly string[]; onRemove: (name: string) => void }) {
-  if (names.length === 0) return null
   return (
-    <div className="flex flex-wrap justify-end gap-1.5 pb-2">
+    <>
       {names.map((name) => (
-        <span key={name} data-skill-chip={name} className="flex items-center gap-1.5 rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary">
-          <Sparkles className="size-3.5" />
-          <span className="font-medium">{name}</span>
-          <button type="button" aria-label={`Remove skill ${name}`} onClick={() => onRemove(name)} className="ml-1 hover:text-foreground">
+        <span
+          key={name}
+          data-skill-chip={name}
+          className="flex min-w-0 max-w-[240px] items-center gap-1.5 rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary"
+        >
+          <Sparkles className="size-3.5 shrink-0" />
+          <span className="truncate font-medium">{name}</span>
+          <button type="button" aria-label={`Remove skill ${name}`} onClick={() => onRemove(name)} className="ml-1 shrink-0 hover:text-foreground">
             <X className="size-3" />
           </button>
         </span>
       ))}
+    </>
+  )
+}
+
+/**
+ * 215 C2/G5: the pills above the input box — parked skills, then the active prompt suffix — in one left-aligned row
+ * that wraps only when out of room; nothing when there is no pill.
+ */
+export function PillRow({
+  skills,
+  onRemoveSkill,
+  suffix,
+  onClearSuffix,
+}: {
+  skills: readonly string[]
+  onRemoveSkill: (name: string) => void
+  suffix: (Suffix & { scope: SuffixScope }) | null
+  onClearSuffix: () => void
+}) {
+  if (skills.length === 0 && !suffix) return null
+  return (
+    <div className="flex flex-wrap items-center justify-start gap-1.5 pb-2">
+      <SkillChips names={skills} onRemove={onRemoveSkill} />
+      {suffix && (
+        <span
+          className="flex min-w-0 max-w-[240px] items-center gap-1.5 rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary"
+          data-suffix={suffix.id}
+        >
+          <MessageSquarePlus className="size-3.5 shrink-0" />
+          <span className="truncate font-medium">{suffix.name}</span>
+          <span className="shrink-0 text-xs text-fg-tertiary">· {suffix.scope === 'once' ? 'this message' : 'every message'}</span>
+          <button type="button" aria-label="Turn off prompt suffix" onClick={onClearSuffix} className="ml-1 shrink-0 hover:text-foreground">
+            <X className="size-3" />
+          </button>
+        </span>
+      )}
     </div>
   )
 }

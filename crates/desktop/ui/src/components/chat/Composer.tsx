@@ -76,7 +76,7 @@ import { useSessionField, useSessions } from '@/store/sessions'
 import { createNote } from '@/components/notes/create'
 import { useNotes } from '@/components/notes/useNotes'
 import { AttachPicker } from './AttachPicker'
-import { SkillChips, SkillPicker, SkillsEntry } from './SkillPicker'
+import { PillRow, SkillPicker, SkillsEntry } from './SkillPicker'
 import { SuffixList, SuffixScopes } from './SuffixPicker'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { useNextPick } from './NextSteps'
@@ -87,6 +87,7 @@ import { StopButton } from './StopButton'
 import { CancelHint, DeleteNote, RecordingMeta, type Stage } from './VoiceHold'
 import { HeldStrip } from './HeldStrip'
 import { McpMenu } from './McpMenu'
+import { ComposerModel } from './ModelMenu'
 import { OwnerOfflineCard } from './OwnerOfflineCard'
 import { RecordingBox, VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
 import type { FrameSource, VisualFrame } from '@/lib/audio/types'
@@ -118,7 +119,8 @@ export function createOptions(draft: DraftCreate, pick: { model: string | null; 
 /** A machine name the box never breaks inside: no-break spaces, and a word joiner after each hyphen (`cloud-1`). */
 const unbroken = (name: string): string => name.replace(/ /g, '\u00a0').replace(/-/g, '-\u2060')
 
-/** The box width (px) under which the placeholder takes its short form. */
+/** The box width (px) under which the placeholder takes its short form. 215 C2: measured on the whole box now that the
+ * text runs its full width (the buttons sit on the toolbar row underneath). */
 const NARROW_BOX_PX = 480
 
 /** Whether `ref`'s element is narrower than `max` px, live. */
@@ -197,9 +199,10 @@ async function deadline<T>(p: Promise<T>): Promise<T> {
     clearTimeout(timer)
   }
 }
-/** The edit box, textarea and its read-only stand-in while dictating (54 §7). */
+/** The edit box, textarea and its read-only stand-in while dictating (54 §7). 215 C2: a slim inset so the text lines up
+ * with the toolbar's first button; one line tall until it grows. */
 const BOX =
-  'min-h-10 resize-none border-0 bg-transparent px-2 py-2 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent'
+  'min-h-8 resize-none border-0 bg-transparent px-1 py-1 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent'
 /** A press held this long on Send/Steer is the interrupt gesture (items 7/8): fingers have no ⌘↩. */
 const LONG_PRESS = 500
 
@@ -315,6 +318,7 @@ export function Composer({
   compact = false,
   readOnly = false,
   strip,
+  ownModel,
 }: {
   session: string | null
   /** The split pane this composer sits in when it is not `session`'s (a draft pane's id); `null` = not tiled, always addressed. */
@@ -338,6 +342,8 @@ export function Composer({
   readOnly?: boolean
   /** 171F B7: the kernel strip, drawn on top of the input box (below the queued chips). */
   strip?: ReactNode
+  /** 215 C2: forwarded as `own` to the toolbar's model picker (157 D1: the page's own pane, a notebook's chat column). */
+  ownModel?: boolean
 }) {
   const client = useConnection(s => s.client)
   const canQuery1 = useQuerySupport(["list_models"])
@@ -736,8 +742,7 @@ export function Composer({
   const pathSeq = useRef(0)
   const isMobile = useIsMobile()
   // 183 R1: a narrow desktop pane (a split, a popout) gets the short placeholder by the box's own width, not the window's.
-  const boxWrap = useRef<HTMLDivElement>(null)
-  const narrow = useNarrow(boxWrap, NARROW_BOX_PX)
+  const narrow = useNarrow(box, NARROW_BOX_PX)
   const pathChanged = (next: string, caret: number) => {
     const t = pathTrigger(next, caret, pathWindows.current)
     const slashNow = /^\/\S*$/.test(next) && slashMenu(next, harnessMenu).length > 0
@@ -1356,24 +1361,13 @@ export function Composer({
         </div>
       )}
       {session && <QueuedChips session={session} onEdit={editQueued} />}
-      <SkillChips names={skills} onRemove={(name) => session && useSkillDraft.getState().remove(session, name)} />
-      {suffix && (
-        <div className="flex justify-end pb-2">
-          <span className="flex max-w-full items-center gap-1.5 rounded-full bg-layer-2 px-3 py-1 text-sm text-fg-secondary" data-suffix={suffix.id}>
-            <MessageSquarePlus className="size-3.5 shrink-0" />
-            <span className="truncate font-medium">{suffix.name}</span>
-            <span className="shrink-0 text-xs text-fg-tertiary">· {suffix.scope === 'once' ? 'this message' : 'every message'}</span>
-            <button
-              type="button"
-              aria-label="Turn off prompt suffix"
-              onClick={() => useSuffixes.getState().clear(suffixChat)}
-              className="ml-1 hover:text-foreground"
-            >
-              <X className="size-3" />
-            </button>
-          </span>
-        </div>
-      )}
+      {/* 215 C2/G5: skills and the prompt suffix share one left-aligned, wrapping row. */}
+      <PillRow
+        skills={skills}
+        onRemoveSkill={(name) => session && useSkillDraft.getState().remove(session, name)}
+        suffix={suffix}
+        onClearSuffix={() => useSuffixes.getState().clear(suffixChat)}
+      />
       {session && !compact && <ContextPicker session={session} />}
       <input
         ref={fileInput}
@@ -1403,7 +1397,7 @@ export function Composer({
       <div
         ref={box}
         data-composer=""
-        className="relative rounded-[28px] border border-border-subtle bg-elevated px-2 py-[7px] shadow-sm"
+        className="relative rounded-2xl border border-border-subtle bg-elevated px-3 pt-2.5 pb-2 shadow-sm"
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}
       >
@@ -1418,7 +1412,65 @@ export function Composer({
             setPastes((held) => drop(i, held)) // a file or reference chip has no token
           }}
         />
-        <div className="flex items-end gap-1">
+        {/* 215 C2: row 1, the text region at the box's full width. */}
+        <div className="relative min-w-0">
+          {/* 82 §C: while a voice note records the wave is the box; the textarea stays mounted underneath. */}
+          <RecordingBox recording={recording} source={noteSource}>
+            {dictating && dict.active ? (
+              // 94 DICTATION-LAYOUT: text on top at full width, the voice bar (wave + stop) spread underneath.
+              <div className="flex flex-col">
+                <DictatedText
+                  before={dict.active.before}
+                  after={dict.active.after}
+                  utts={dict.active.utts}
+                  className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
+                />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="mt-1 flex h-9 w-full items-center overflow-hidden rounded-lg bg-fg-accent/10 px-1 text-fg-secondary hover:bg-fg-accent/15"
+                      aria-label="Stop dictation"
+                      onClick={dictate}
+                    >
+                      <VoiceWave state="listening" source={dictSource} label="Dictation level" className="h-full flex-1" />
+                      <Square className="size-3.5 shrink-0 fill-current" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>Stop dictation (Ctrl+D)</TooltipContent>
+                </Tooltip>
+                {dict.active.device && (
+                  <p role="status" className="mt-1 px-2 text-xs text-fg-tertiary">
+                    {dict.active.device.state === 'lost' ? 'mic lost — reconnecting…' : `mic changed → ${dict.active.device.name ?? 'default'}`}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <Textarea
+                readOnly={readOnly}
+                dictate={false}
+                ref={ref}
+                value={text}
+                onChange={(e) => {
+                  setText(e.target.value)
+                  reconcileHeld(e.target.value)
+                  setSelected(0)
+                  changed(e.target.value, e.target.selectionStart)
+                  pathChanged(e.target.value, e.target.selectionStart)
+                }}
+                onKeyDown={onKeyDown}
+                onPaste={onPaste}
+                rows={1}
+                placeholder={placeholderFor({ readOnly, running, exports: exports.length > 0, skill: skills.join(', ') || undefined, runsOn, short: isMobile || touch() || narrow })}
+                // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
+                className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
+              />
+            )}
+          </RecordingBox>
+          {(stage === 'held' || stage === 'cancelled') && <CancelHint ref={hint} />}
+        </div>
+        {/* 215 C2: row 2, the toolbar under the full-width text — Add and MCP left, the model and voice/send right. */}
+        <div className="mt-1 flex items-center gap-1">
           {/* 89 VOICE-HOLD: a held or locked note takes the row — Delete (locked) · dot + timer stand in for Add. */}
           {stage === 'locked' && <DeleteNote onClick={() => stopRecording(true)} />}
           {stage !== 'idle' && <RecordingMeta secs={secs} stage={stage} />}
@@ -1524,66 +1576,18 @@ export function Composer({
           </Popover>
           {/* #4: this chat's MCP servers, beside `+`; a HUD composer sends into a chat named on demand, so it has none. */}
           {!readOnly && !resolveSession && <McpMenu session={session ?? ''} className={cn(stage !== 'idle' && 'hidden')} />}
-          <div ref={boxWrap} className="relative min-w-0 flex-1">
-            {/* 82 §C: while a voice note records the wave is the box; the textarea stays mounted underneath. */}
-            <RecordingBox recording={recording} source={noteSource}>
-              {dictating && dict.active ? (
-                // 94 DICTATION-LAYOUT: text on top at full width, the voice bar (wave + stop) spread underneath.
-                <div className="flex flex-col">
-                  <DictatedText
-                    before={dict.active.before}
-                    after={dict.active.after}
-                    utts={dict.active.utts}
-                    className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
-                  />
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className="mt-1 flex h-9 w-full items-center overflow-hidden rounded-full bg-fg-accent/10 px-1 text-fg-secondary hover:bg-fg-accent/15"
-                        aria-label="Stop dictation"
-                        onClick={dictate}
-                      >
-                        <VoiceWave state="listening" source={dictSource} label="Dictation level" className="h-full flex-1" />
-                        <Square className="size-3.5 shrink-0 fill-current" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>Stop dictation (Ctrl+D)</TooltipContent>
-                  </Tooltip>
-                  {dict.active.device && (
-                    <p role="status" className="mt-1 px-2 text-xs text-fg-tertiary">
-                      {dict.active.device.state === 'lost' ? 'mic lost — reconnecting…' : `mic changed → ${dict.active.device.name ?? 'default'}`}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <Textarea
-                  readOnly={readOnly}
-                  dictate={false}
-                  ref={ref}
-                  value={text}
-                  onChange={(e) => {
-                    setText(e.target.value)
-                    reconcileHeld(e.target.value)
-                    setSelected(0)
-                    changed(e.target.value, e.target.selectionStart)
-                    pathChanged(e.target.value, e.target.selectionStart)
-                  }}
-                  onKeyDown={onKeyDown}
-                  onPaste={onPaste}
-                  rows={1}
-                  placeholder={placeholderFor({ readOnly, running, exports: exports.length > 0, skill: skills.join(', ') || undefined, runsOn, short: isMobile || touch() || narrow })}
-                  // ponytail: `field-sizing: content` grows the box (6 lines on touch, 8 on desktop, then scrolls); older WebKit keeps one line.
-                  className={cn(BOX, touch() ? 'max-h-[160px]' : 'max-h-[200px]')}
-                />
-              )}
-            </RecordingBox>
-            {(stage === 'held' || stage === 'cancelled') && <CancelHint ref={hint} />}
-          </div>
+          <div className="min-w-0 flex-1" />
+          {/* 215 C1/C2: the model picker, a quiet label on the toolbar; a HUD composer's chat is named on demand, so none.
+              `contents` keeps its own max width relative to the toolbar while a voice note hides it with the rest. */}
+          {!resolveSession && (
+            <div className={cn('contents', stage !== 'idle' && 'hidden')}>
+              <ComposerModel session={session} own={ownModel} />
+            </div>
+          )}
           {/* 76 §0.12: the former voice-note button is Talk — the live spoken conversation on this session. B3: while it
               runs here, the chat view keeps a compact indicator: tap opens the talk view, the x ends the talk. */}
           {talkHere ? (
-            <div className="flex shrink-0 items-center rounded-full bg-fg-accent/10">
+            <div className="flex shrink-0 items-center rounded-lg bg-fg-accent/10">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
