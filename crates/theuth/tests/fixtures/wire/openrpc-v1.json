@@ -121413,6 +121413,15 @@
       "method.share.output.HeldName": {
         "description": "`share_names_list` item: a name of the mesh, the replicated `share_names` row joined with\nthe edge's `NameInfo` from the last `welcome` (§5.2).",
         "properties": {
+          "cert_not_after_ms": {
+            "description": "The certificate's `notAfter`, Unix ms: the chain installed on this engine, else the\nedge's (live `welcome`, or the names status while detached); `None` when unknown.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "domain": {
             "description": "The edge's domain.",
             "type": "string"
@@ -121455,7 +121464,7 @@
             ]
           },
           "state": {
-            "description": "The edge's state: `allocated` · `queued` · `slotted` · `valid` · `released` · `banned`;\n`None` when this machine has not seen the edge's view of it.",
+            "description": "The edge's state: `allocated` · `queued` · `slotted` · `valid` · `released` · `banned`;\n`None` when the edge's view is unknown (detached and no names status answered), which\nis not \"no certificate\".",
             "type": [
               "string",
               "null"
@@ -121488,7 +121497,8 @@
           "queue_position",
           "queue_eta_s",
           "transfer_to",
-          "transfer_until_ms"
+          "transfer_until_ms",
+          "cert_not_after_ms"
         ],
         "type": "object"
       },
@@ -121996,6 +122006,15 @@
       "method.share.receiver.HeldName": {
         "description": "`share_names_list` item: a name of the mesh, the replicated `share_names` row joined with\nthe edge's `NameInfo` from the last `welcome` (§5.2).",
         "properties": {
+          "cert_not_after_ms": {
+            "description": "The certificate's `notAfter`, Unix ms: the chain installed on this engine, else the\nedge's (live `welcome`, or the names status while detached); `None` when unknown.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "domain": {
             "description": "The edge's domain.",
             "type": "string"
@@ -122038,7 +122057,7 @@
             ]
           },
           "state": {
-            "description": "The edge's state: `allocated` · `queued` · `slotted` · `valid` · `released` · `banned`;\n`None` when this machine has not seen the edge's view of it.",
+            "description": "The edge's state: `allocated` · `queued` · `slotted` · `valid` · `released` · `banned`;\n`None` when the edge's view is unknown (detached and no names status answered), which\nis not \"no certificate\".",
             "type": [
               "string",
               "null"
