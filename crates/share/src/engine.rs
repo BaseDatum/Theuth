@@ -907,13 +907,49 @@ impl Engine {
         });
     }
 
-    /// The names a publish may use without allocating: held at the edge, not released/banned.
-    fn held_names(link: &Link) -> Vec<&NameInfo> {
-        link.welcome
+    /// The names a publish may use without allocating, best first: the welcome's held names
+    /// (not released/banned) and this mesh's `share_names` rows at the link's edge and domain
+    /// not released. The rows cover a name claimed on a link whose welcome predates the claim
+    /// (a welcome is only as new as its `hello`). The primary row comes first, then reserved
+    /// names, then the rest.
+    async fn held_names(&self, link: &Link) -> anyhow::Result<Vec<String>> {
+        let (edge, domain) = (link.info.edge_id.to_string(), &link.info.domain);
+        let rows: Vec<_> = self
+            .store
+            .names()
+            .await?
+            .into_iter()
+            .filter(|r| r.edge == edge && r.domain == *domain && r.released_ms.is_none())
+            .collect();
+        let gone = |name: &str| {
+            link.welcome.names.iter().any(|n| {
+                n.name == name && matches!(n.state, NameState::Released | NameState::Banned)
+            })
+        };
+        let rank = |name: &str, reserved: bool| {
+            let row = rows.iter().find(|r| r.name == name);
+            if row.is_some_and(|r| r.is_primary) {
+                0
+            } else if reserved || row.is_some_and(|r| r.kind == "reserved") {
+                1
+            } else {
+                2
+            }
+        };
+        let mut held: Vec<(u8, String)> = Vec::new();
+        let seen = link
+            .welcome
             .names
             .iter()
-            .filter(|n| !matches!(n.state, NameState::Released | NameState::Banned))
-            .collect()
+            .map(|n| (n.name.as_str(), n.kind == NameKind::Reserved))
+            .chain(rows.iter().map(|r| (r.name.as_str(), r.kind == "reserved")));
+        for (name, reserved) in seen {
+            if !gone(name) && !held.iter().any(|(_, h)| h == name) {
+                held.push((rank(name, reserved), name.to_owned()));
+            }
+        }
+        held.sort_by_key(|(r, _)| *r);
+        Ok(held.into_iter().map(|(_, n)| n).collect())
     }
 
     /// The accepted terms revision when it is the edge's current one (`info.terms_rev`); else
@@ -956,6 +992,14 @@ impl Engine {
         Ok(())
     }
 
+    /// After a name claim or release on the live link: `hello` again so the link's welcome
+    /// lists the mesh's names as the edge now holds them (Domains' state, the held-name pick).
+    pub(crate) async fn refresh_welcome(&self) -> anyhow::Result<()> {
+        let link = self.wait_attached().await?;
+        let accepted = self.store.terms_rev(&link.info.edge_id.to_string()).await?;
+        self.rehello(&link, accepted).await.map(drop)
+    }
+
     /// TERMS-FIRST: the configured edge's current terms and whether this mesh accepted them, for
     /// Settings › Sharing. `None` while sharing is off or no edge is configured (nothing dials
     /// for it then); otherwise attaches like a name check.
@@ -986,35 +1030,28 @@ impl Engine {
             NO_SHARING_EDGE
         );
         let link = self.wait_attached().await?;
-        if want.is_none() && Self::held_names(&link).is_empty() {
+        if want.is_none() && self.held_names(&link).await?.is_empty() {
             self.current_terms(&link).await?;
         }
         Ok(())
     }
 
-    /// A name the publish may use without claiming one: the requested held one, else the
-    /// primary (newest reserved, else random), else one claimed earlier in this run that no
-    /// welcome lists yet. `None`: a fresh random name has to be claimed (§5.2, §7.6).
-    fn held_pick(&self, link: &Link, want: Option<&str>) -> anyhow::Result<Option<String>> {
-        let held = Self::held_names(link);
+    /// A name the publish may use without claiming one: the requested held one, else the best
+    /// held one ([`Self::held_names`]), else one claimed earlier in this run that no welcome
+    /// lists yet. `None`: a fresh random name has to be claimed (§5.2, §7.6); never while the
+    /// mesh holds a name here (the edge refuses a second random name, `quota`).
+    async fn held_pick(&self, link: &Link, want: Option<&str>) -> anyhow::Result<Option<String>> {
+        let held = self.held_names(link).await?;
         if let Some(w) = want {
-            if self.fresh.lock().contains(w) {
-                return Ok(Some(w.to_owned()));
-            }
-            return held
-                .iter()
-                .find(|n| n.name == w)
-                .map(|n| Some(n.name.clone()))
-                .ok_or_else(|| {
-                    anyhow::anyhow!("the mesh holds no name {w} at {}", link.info.domain)
-                });
+            anyhow::ensure!(
+                self.fresh.lock().contains(w) || held.iter().any(|n| n == w),
+                "the mesh holds no name {w} at {}",
+                link.info.domain
+            );
+            return Ok(Some(w.to_owned()));
         }
-        if let Some(n) = held
-            .iter()
-            .find(|n| n.kind == NameKind::Reserved)
-            .or_else(|| held.first())
-        {
-            return Ok(Some(n.name.clone()));
+        if let Some(n) = held.into_iter().next() {
+            return Ok(Some(n));
         }
         Ok(self.fresh.lock().iter().next().cloned())
     }
@@ -1025,11 +1062,11 @@ impl Engine {
     /// `name_taken`. The flag is `true` when this call claimed the name.
     async fn pick_name(
         &self,
-        link: &Link,
+        link: &Arc<Link>,
         want: Option<&str>,
         candidate: Option<&str>,
     ) -> anyhow::Result<(String, bool)> {
-        if let Some(n) = self.held_pick(link, want)? {
+        if let Some(n) = self.held_pick(link, want).await? {
             return Ok((n, false));
         }
         let accepted = self.current_terms(link).await?;
@@ -1060,7 +1097,7 @@ impl Engine {
     /// [`Self::publish_previewed`] claims it only after the owner's `Allow`.
     pub async fn publish_preview(&self, plan: &Plan) -> anyhow::Result<PublishPreview> {
         let link = self.wait_attached().await?;
-        let (name, drawn) = match self.held_pick(&link, plan.name.as_deref())? {
+        let (name, drawn) = match self.held_pick(&link, plan.name.as_deref()).await? {
             Some(n) => (n, false),
             None => (Self::draw_name(&link).await, true),
         };
@@ -1114,14 +1151,17 @@ impl Engine {
         }
     }
 
-    async fn rehello(&self, link: &Link, terms_rev: Option<String>) -> anyhow::Result<()> {
+    /// `hello` again on `link`; its welcome replaces the link's (while `link` is the current
+    /// one), so the held names and `terms_ok` are as new as this `hello`.
+    async fn rehello(&self, link: &Arc<Link>, terms_rev: Option<String>) -> anyhow::Result<Arc<Link>> {
         let Some(d) = &self.hooks.delegation else {
             anyhow::bail!("no delegation source");
         };
         let delegation = d
             .delegate(link.info.edge_id, &link.info.domain, link.info.now_ms)
             .await?;
-        link.control
+        let welcome = link
+            .control
             .hello(&Hello {
                 v: share_proto::PROTOCOL_MAJOR,
                 delegation,
@@ -1130,7 +1170,16 @@ impl Engine {
                 terms_rev,
             })
             .await?;
-        Ok(())
+        let renewed = Arc::new(Link {
+            control: link.control.clone(),
+            info: link.info.clone(),
+            welcome,
+        });
+        let mut cur = self.link.lock();
+        if cur.as_ref().is_some_and(|l| Arc::ptr_eq(l, link)) {
+            *cur = Some(renewed.clone());
+        }
+        Ok(renewed)
     }
 
     /// Have `<name>.D`'s pair installed: fetch the chain, or post the CSR.
@@ -1744,6 +1793,14 @@ mod tests {
         max_live: u32,
         name_keys: Option<Arc<dyn NameKeyStore>>,
     ) -> (tempfile::TempDir, Arc<Engine>) {
+        engine_full(max_live, name_keys, None).await
+    }
+
+    async fn engine_full(
+        max_live: u32,
+        name_keys: Option<Arc<dyn NameKeyStore>>,
+        delegation: Option<Arc<dyn DelegationSource>>,
+    ) -> (tempfile::TempDir, Arc<Engine>) {
         // No dot in the path: a dir share inside it must fail on the data-dir rule, not the dot rule.
         let dir = tempfile::Builder::new().prefix("data").tempdir().unwrap();
         let store = Store::open(&dir.path().join("share.sqlite")).await.unwrap();
@@ -1753,7 +1810,7 @@ mod tests {
         };
         let hooks = Hooks {
             dialer: None,
-            delegation: None,
+            delegation,
             name_keys,
             own_ports: Arc::new(OwnListeners),
             process: Arc::new(NotTheuth),
@@ -2830,5 +2887,100 @@ mod tests {
     fn name_host_of_strips_the_label() {
         assert_eq!(name_host_of("app.sky.tun.zip", "tun.zip"), "sky.tun.zip");
         assert_eq!(name_host_of("sky.tun.zip", "tun.zip"), "sky.tun.zip");
+    }
+
+    /// 210 live bug: a name reserved on the attached link is the publish's name, asked for or
+    /// not, and no random name is claimed. The reserve's `hello` brings the link's welcome up
+    /// to date; a welcome older than the claim alone is covered by the `share_names` row.
+    #[tokio::test]
+    async fn a_name_reserved_on_the_live_link_is_held_for_publishes() {
+        use axum::extract::Path;
+        use axum::routing::{post, put};
+
+        let delegation = Arc::new(crate::edge::SelfHolder {
+            mesh_key: share_proto::SecretKey::from_bytes(&[1; 32]),
+            engine: share_proto::SecretKey::from_bytes(&[2; 32]).public(),
+        });
+        let (_d, e) = engine_full(8, None, Some(delegation)).await;
+        e.store.set_enabled(true).await.unwrap();
+        let info = test_info();
+        e.store
+            .set_terms_rev(&info.edge_id.to_string(), &info.terms_rev)
+            .await
+            .unwrap();
+        let held = Arc::new(Mutex::new(Vec::<String>::new()));
+        let randoms = Arc::new(AtomicU32::new(0));
+        let (h1, h2, r) = (held.clone(), held.clone(), randoms.clone());
+        let app = axum::Router::new()
+            .route(
+                share_proto::paths::HELLO,
+                post(move || async move {
+                    let names: Vec<(String, NameState)> =
+                        h1.lock().iter().map(|n| (n.clone(), NameState::Allocated)).collect();
+                    let names: Vec<(&str, NameState)> =
+                        names.iter().map(|(n, s)| (n.as_str(), *s)).collect();
+                    axum::Json(test_welcome(&names))
+                }),
+            )
+            .route(
+                share_proto::paths::NAME,
+                put(move |Path(n): Path<String>| async move {
+                    h2.lock().push(n.clone());
+                    axum::Json(share_proto::NameGranted { name: n })
+                }),
+            )
+            .route(
+                share_proto::paths::NAMES,
+                post(move || async move {
+                    r.fetch_add(1, Ordering::SeqCst);
+                    axum::http::StatusCode::FORBIDDEN
+                }),
+            );
+        let control = Control::new(crate::edge::tests::FakeConn::new(app));
+        e.welcome(&control, &info, &test_welcome(&[])).await;
+        crate::names::reserve(&e, "sky", || async { Ok(Consent::test()) })
+            .await
+            .unwrap();
+        let listed = crate::names::held(&e, "sky").await.unwrap();
+        assert_eq!(listed.state.as_deref(), Some("allocated"), "the welcome lists the claim");
+
+        let plan = |name: Option<&str>| Plan {
+            source: Source::Port(1),
+            label: Some("h3renow".into()),
+            name: name.map(Into::into),
+            path: "/".into(),
+            expiry: Expiry::H1,
+            access: Access::Public,
+        };
+        let sky = PublishPreview {
+            name: "sky".into(),
+            url: "https://h3renow.sky.tun.zip/".into(),
+            drawn: false,
+        };
+        for stale in [false, true] {
+            if stale {
+                // The welcome of a session attached before the claim (what 2.26.1 kept).
+                e.welcome(&control, &info, &test_welcome(&[])).await;
+            }
+            for want in [Some("sky"), None] {
+                assert_eq!(e.publish_preview(&plan(want)).await.unwrap(), sky, "{stale} {want:?}");
+                let link = e.live_link().unwrap();
+                let (name, claimed) = e.pick_name(&link, want, None).await.unwrap();
+                assert_eq!((name.as_str(), claimed), ("sky", false));
+            }
+        }
+        assert_eq!(randoms.load(Ordering::SeqCst), 0, "never a random claim");
+
+        // Another edge's row and a released row are not held here.
+        e.store
+            .put_name("other", "tun.zip", "abcdef", NameKind::Random)
+            .await
+            .unwrap();
+        let sky_id = format!("{}/tun.zip/sky", info.edge_id);
+        e.store.release_name(&sky_id, 1).await.unwrap();
+        for want in ["abcdef", "sky"] {
+            let err = e.publish_preview(&plan(Some(want))).await.unwrap_err();
+            assert_eq!(err.to_string(), format!("the mesh holds no name {want} at tun.zip"));
+        }
     }
 }
