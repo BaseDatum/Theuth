@@ -151,6 +151,7 @@ export function Count({
   step,
   placeholder,
   blank,
+  disabled,
   action,
   'aria-label': ariaLabel,
 }: {
@@ -160,6 +161,8 @@ export function Count({
   step?: number
   placeholder?: number | string
   blank?: number
+  /** Greyed out regardless of the value (a row its switch turned off). */
+  disabled?: boolean
   action: { mutate: (n: number) => void; isPending: boolean }
   'aria-label'?: string
 }) {
@@ -173,7 +176,7 @@ export function Count({
       step={step}
       defaultValue={value}
       placeholder={placeholder?.toString()}
-      disabled={(value === undefined && placeholder === undefined) || action.isPending}
+      disabled={disabled || (value === undefined && placeholder === undefined) || action.isPending}
       className="w-28 text-right"
       onBlur={(e) => {
         const raw = e.currentTarget.value

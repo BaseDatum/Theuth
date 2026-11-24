@@ -53,6 +53,7 @@ agent:
   status_every: 8                      # tool calls between "status check" nudges asking for set_status (its line above the composer; 212); 0 = off
   status_tool: true                    # false: new sessions get no set_status, status prompt line or reminders (212 §15)
   auto_title: true                     # false: the title model never names new sessions (212 §15)
+  auto_archive: {enabled: true, after: 14d}  # archive root chats with no event for `after` (humantime, ≥ 1h: 14d, 36h); desks, pinned and busy chats stay; hourly; Settings → Agent → Loop
   max_tool_output_chars: 32000
   runtime_only: true                   # false: every tool is also a direct definition, not just python + user/agent tools
   compact_at: 0.8                      # auto-compact at this fraction of the context window; 0 = off

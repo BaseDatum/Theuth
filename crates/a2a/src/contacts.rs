@@ -2270,7 +2270,8 @@ impl Message<ChatDeleted> for A2aActor {
 }
 
 /// The subscriber of every [`agent::AgentEvent`] (token deltas included) that hands only
-/// `SessionDeleted` on to [`A2aActor`], so its mailbox never carries the stream.
+/// `SessionDeleted` and `SessionMetadataChanged` on to [`A2aActor`], so its mailbox never
+/// carries the stream.
 #[derive(kameo::Actor)]
 pub struct ChatDeletions(kameo::actor::ActorRef<A2aActor>);
 
@@ -2278,8 +2279,17 @@ impl Message<agent::AgentEvent> for ChatDeletions {
     type Reply = ();
 
     async fn handle(&mut self, ev: agent::AgentEvent, _: &mut Context<Self, Self::Reply>) {
-        if let agent::AgentEvent::SessionDeleted { session } = ev {
-            let _ = self.0.tell(ChatDeleted(session)).await;
+        match ev {
+            agent::AgentEvent::SessionDeleted { session } => {
+                let _ = self.0.tell(ChatDeleted(session)).await;
+            }
+            // `agent.auto_archive` archives off the RPC path, then publishes this: re-read
+            // the export rows' pause as `archive_session` does (W-41). A project change
+            // re-reads an unchanged pause; nothing moves for a chat that is not exported.
+            agent::AgentEvent::SessionMetadataChanged { session, .. } => {
+                let _ = self.0.tell(ChatArchived { session }).await;
+            }
+            _ => {}
         }
     }
 }

@@ -22,6 +22,12 @@ pub trait AgentSettingsApi {
     /// Persist `agent.subagents.max_runtime_secs` and use it for newly spawned turns.
     #[method(name = "set_subagent_timeout")]
     async fn set_subagent_timeout(&self, seconds: u64) -> RpcResult<()>;
+    /// Persist `agent.auto_archive` (`enabled`, `after`) and apply it at once: when on,
+    /// root chats (not desks, pinned or busy ones) with no event for `after_secs` are
+    /// archived now and by the hourly sweep. Under 3600 seconds:
+    /// `auto-archive needs at least 1 hour`.
+    #[method(name = "set_auto_archive")]
+    async fn set_auto_archive(&self, enabled: bool, after_secs: u64) -> RpcResult<()>;
     /// Persist `agent.max_tool_rounds`; new sessions use it.
     #[method(name = "set_max_tool_rounds")]
     async fn set_max_tool_rounds(&self, rounds: u32) -> RpcResult<()>;
@@ -344,6 +350,10 @@ impl AgentSettingsApiServer for Server {
 
     async fn set_subagent_timeout(&self, seconds: u64) -> RpcResult<()> {
         ask::<Agents, _>(agent::AGENT_ACTOR, SetSubagentTimeout { seconds }).await
+    }
+
+    async fn set_auto_archive(&self, enabled: bool, after_secs: u64) -> RpcResult<()> {
+        ask::<Agents, _>(agent::AGENT_ACTOR, agent::SetAutoArchive { enabled, after_secs }).await
     }
 
     async fn set_max_tool_rounds(&self, rounds: u32) -> RpcResult<()> {

@@ -57,6 +57,13 @@ pub struct Info {
     /// sessions; `0` = no hints. `0` from an older harness.
     #[serde(default)]
     pub hint_limit: u32,
+    /// `agent.auto_archive.enabled`: root chats with no event for
+    /// `auto_archive_after_secs` are archived. `false` from an older harness.
+    #[serde(default)]
+    pub auto_archive_enabled: bool,
+    /// `agent.auto_archive.after` in seconds (default 14 days). `0` from an older harness.
+    #[serde(default)]
+    pub auto_archive_after_secs: u64,
     /// `knowledge.peek_threshold` (212 §15): the live minimum P(true) for
     /// `peek_memory` to call a memory relevant. `0` from an older harness.
     #[serde(default)]

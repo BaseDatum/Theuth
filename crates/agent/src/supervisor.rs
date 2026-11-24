@@ -133,6 +133,7 @@ use tools::{
 // 109: handler bodies in their own files so the waves do not collide.
 mod acp_resume; // 109 W4
 mod activity; // 155 W1
+mod auto_archive;
 pub(crate) mod advisor; // 125 W1
 pub mod child_waits; // 139 W3
 mod drain;
@@ -10288,13 +10289,20 @@ impl Message<ArchiveSession> for Agents {
         m: ArchiveSession,
         _: &mut Context<Self, Self::Reply>,
     ) -> Result<(), String> {
-        self.store_for(m.session)
-            .set_archived(m.session, m.archived)
+        self.archive_session(m.session, m.archived).await
+    }
+}
+
+impl Agents {
+    /// [`ArchiveSession`]'s body, shared with the auto-archive sweep.
+    async fn archive_session(&mut self, session: SessionId, archived: bool) -> Result<(), String> {
+        self.store_for(session)
+            .set_archived(session, archived)
             .await
             .map_err(|e| e.to_string())?;
         // An archived child's queued spawn turn never starts (01 §2.6).
-        if m.archived {
-            self.drop_queued(m.session).await;
+        if archived {
+            self.drop_queued(session).await;
         }
         // Session hits carry the flag (49 §7): the next search rebuilds.
         self.search.invalidate();
@@ -10573,6 +10581,7 @@ impl Message<crate::GetInfoDefaults> for Agents {
             advisor: self.advisor_cfg.defaults(),
             status_every: self.cfg.status_every,
             hint_limit: self.cfg.knowledge.hint_limit,
+            auto_archive: self.cfg.auto_archive,
         })
     }
 }
@@ -12853,6 +12862,25 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<()> {
     );
     agents.register(AGENT_ACTOR)?;
     notice_authority(rt, &agents);
+    // `agent.auto_archive`: inactive chats are archived, looked for shortly after
+    // startup and then hourly; the switch is read per sweep, so Settings applies live.
+    {
+        let agents = agents.clone();
+        let shutdown = rt.shutdown.clone();
+        tokio::spawn(async move {
+            let mut wait = auto_archive::FIRST_SWEEP;
+            loop {
+                tokio::select! {
+                    () = shutdown.cancelled() => return,
+                    () = tokio::time::sleep(wait) => {}
+                }
+                if agents.tell(crate::AutoArchiveSweep).await.is_err() {
+                    return;
+                }
+                wait = auto_archive::SWEEP_EVERY;
+            }
+        });
+    }
     // 176 A1: idle ACP children are parked, checked once a minute.
     if !idle_stop.is_zero() {
         let agents = agents.clone();

@@ -901,6 +901,9 @@ agent:
   # status_tool: true         # false: new sessions get no set_status tool, status prompt line or reminders (212 §15); Settings → Agent loop
   # auto_title: true          # false: the title model never names or renames new sessions (212 §15); Settings → Agent loop
   # suggestions: true         # false: no What's next? suggestions from the title model after interactive chat turns; Settings → Agent loop
+  # auto_archive:             # archive root chats whose whole tree had no event for `after` (desks, pinned and busy chats stay); checked hourly
+  #   enabled: true            # Settings → Agent → Loop → Chats; unarchive from the sidebar's Archived list
+  #   after: 14d               # humantime, at least 1h: `14d`, `36h`, `2w`
   # aws_profile: work          # Bedrock inference for every session; /aws or Settings → Connections
   # openrouter:               # built-in OpenRouter provider (85 §0.6); key = secret `openrouter` or OPENROUTER_API_KEY
   #   provider: {order: [anthropic], allow_fallbacks: false}  # OpenRouter `provider` preferences, sent verbatim when set

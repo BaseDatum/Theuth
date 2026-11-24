@@ -36,6 +36,7 @@ similar = { workspace = true }
 schemars = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+humantime = { workspace = true }  # `agent.auto_archive.after` (`14d`, `36h`)
 tracing = { workspace = true }
 kameo = { workspace = true }
 genai = { workspace = true }

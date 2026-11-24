@@ -42,6 +42,8 @@ pub mod rpc_tooling;
 pub mod rpc_messaging;
 /// Hub RPC methods and typed clients.
 pub mod rpc_hub;
+/// `agent.auto_archive`: archive chats inactive for a while.
+pub mod auto_archive;
 /// Settings RPC methods and typed clients.
 pub mod rpc_settings;
 pub mod pathac;
@@ -199,6 +201,7 @@ pub mod private;
 pub use activity::{
     ActivityConfig, ChildStalled, PeerStateWord, PeerWaitRegistered, StallPhase, WaitPeer,
 };
+pub use auto_archive::AutoArchiveConfig;
 pub use aws::{AwsProfiles, ListAwsProfiles, SetAwsProfile};
 pub use communication::{
     AnswerPeerRequest, ChannelChat, ChannelOrigin, ChannelVia, CommunicationChanged,
@@ -754,6 +757,21 @@ pub struct SetSubagentTimeout {
 /// `ask` → `u64`: the live subagent runtime limit in seconds.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct GetSubagentTimeout;
+
+/// `ask` → `Result<(), String>`: persist `agent.auto_archive` (`enabled`, `after`),
+/// apply it at once and sweep. `after_secs` under one hour is refused.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SetAutoArchive {
+    /// Archive inactive chats at all.
+    pub enabled: bool,
+    /// Seconds without an event before a chat is archived; at least 3600.
+    pub after_secs: u64,
+}
+
+/// `tell`: archive every chat inactive for `agent.auto_archive.after` when it is on
+/// (the hourly sweep; [`SetAutoArchive`] runs one too).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AutoArchiveSweep;
 
 /// `ask` → `Result<(), String>`: persist `agent.max_tool_rounds` and use it for new sessions.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -2526,6 +2544,8 @@ pub struct InfoDefaults {
     pub status_every: u32,
     /// `agent.knowledge.hint_limit` (212 §15).
     pub hint_limit: u32,
+    /// `agent.auto_archive`.
+    pub auto_archive: AutoArchiveConfig,
 }
 
 /// `ask` → `Result<Vec<String>, String>`: star or unstar a model (127 §1).
@@ -4280,6 +4300,9 @@ pub struct AgentConfig {
     pub communication: Option<bool>,
     /// Subagent limits and model.
     pub subagents: SubagentsConfig,
+    /// Archive root chats with no event for a while (desks, pinned and busy
+    /// chats excluded); live through [`SetAutoArchive`].
+    pub auto_archive: AutoArchiveConfig,
     /// Auto-compaction threshold as a fraction of the model's context window;
     /// `0` disables it (design doc 07 §8.1).
     pub compact_at: f32,
@@ -4361,6 +4384,7 @@ impl Default for AgentConfig {
             runtime_only: true,
             communication: None,
             subagents: SubagentsConfig::default(),
+            auto_archive: AutoArchiveConfig::default(),
             compact_at: 0.8,
             compact_style: CompactStyle::Summary,
             title_model: None,

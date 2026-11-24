@@ -163,6 +163,7 @@ impl CompositionApiServer for Server {
             advisor,
             status_every,
             hint_limit,
+            auto_archive,
         } = ask::<Agents, _>(agent::AGENT_ACTOR, agent::GetInfoDefaults).await?;
         let approvals =
             ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, GetApprovals { session: None }).await?;
@@ -201,6 +202,8 @@ impl CompositionApiServer for Server {
             max_salvages,
             status_every,
             hint_limit,
+            auto_archive_enabled: auto_archive.enabled,
+            auto_archive_after_secs: auto_archive.after.as_secs(),
             peek_threshold: peek_threshold(&self.rt).await,
             pty_idle_secs,
             name,

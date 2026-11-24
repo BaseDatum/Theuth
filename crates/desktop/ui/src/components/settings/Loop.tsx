@@ -1,9 +1,11 @@
+import { AutoArchive } from '@/components/settings/AutoArchive'
 import { ConfigFlagRow } from '@/components/settings/ConfigFlagRow'
 import { Count, Row, Section, refreshInfo, useAction } from '@/components/settings/shared'
 import { useApi } from '@/lib/rpc'
+import { Capability } from '@/rpc/capabilities'
 import { useConnection } from '@/store/connection'
 
-/** Settings › Agent › Loop (188 A8): how a turn runs — model calls, recovery, routine run time; 212 §14: memory peeks, hints, status, titles and next-step suggestions. */
+/** Settings › Agent › Loop (188 A8): how a turn runs — model calls, recovery, routine run time; 212 §14: memory peeks, hints, status, titles and next-step suggestions; auto-archive of inactive chats. */
 export function Loop() {
   const api = useApi()
   const info = useConnection((s) => s.info)
@@ -77,6 +79,11 @@ export function Loop() {
           <Count value={info?.schedule_run_timeout_secs || undefined} min={30} action={setScheduleRunTimeout} />
         </Row>
       </Section>
+      <Capability required={{ methods: ['set_auto_archive'] }} hide>
+        <Section title="Chats">
+          <AutoArchive />
+        </Section>
+      </Capability>
       <Section title="Memory and status">
         <ConfigFlagRow
           flag="knowledge.peek"

@@ -111504,6 +111504,18 @@
             ],
             "description": "The global approval switch (`tools.approvals`)."
           },
+          "auto_archive_after_secs": {
+            "default": 0,
+            "description": "`agent.auto_archive.after` in seconds (default 14 days). `0` from an older harness.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "auto_archive_enabled": {
+            "default": false,
+            "description": "`agent.auto_archive.enabled`: root chats with no event for\n`auto_archive_after_secs` are archived. `false` from an older harness.",
+            "type": "boolean"
+          },
           "communication": {
             "allOf": [
               {
@@ -111638,6 +111650,8 @@
           "max_salvages",
           "status_every",
           "hint_limit",
+          "auto_archive_enabled",
+          "auto_archive_after_secs",
           "peek_threshold",
           "pty_idle_secs",
           "name",
@@ -114123,6 +114137,18 @@
               }
             ],
             "description": "The global approval switch (`tools.approvals`)."
+          },
+          "auto_archive_after_secs": {
+            "default": 0,
+            "description": "`agent.auto_archive.after` in seconds (default 14 days). `0` from an older harness.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "auto_archive_enabled": {
+            "default": false,
+            "description": "`agent.auto_archive.enabled`: root chats with no event for\n`auto_archive_after_secs` are archived. `false` from an older harness.",
+            "type": "boolean"
           },
           "communication": {
             "allOf": [
@@ -146356,6 +146382,44 @@
         },
         "x-theuth-receiverSchema": {
           "$ref": "#/components/schemas/method.agent.receiver.ApprovalsState"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_auto_archive",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "enabled",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "after_secs",
+          "required": true,
+          "schema": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": [
+            "afterSecs"
+          ]
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
         }
       },
       "x-theuth-audience": "owner",
