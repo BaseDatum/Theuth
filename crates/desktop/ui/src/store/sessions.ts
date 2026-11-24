@@ -302,6 +302,8 @@ export type SessionSlice = {
   title?: string;
   /** Keywords the title model assigned with the title (live from `TitleChanged`); the session list carries the stored set. */
   tags?: string[];
+  /** "What's next?" after the last turn (`Suggestions`): ephemeral, never stored; cleared by the next turn or a pick. */
+  suggestions?: string[];
   /** Turn whose `InputInjected` already moved a steer into the transcript; its `TurnStarted` echo is skipped. */
   lastInjected?: string;
   /** Opener seq of the running (or last) turn, from `TurnStarted`. */
@@ -421,6 +423,8 @@ type SessionsStore = {
   setChildren(id: string, agents: AgentInfo[]): void;
   /** Open or close the live browser dialog. */
   setBrowserLive(id: string, open: boolean): void;
+  /** Drop the "What's next?" chips (one was picked). */
+  dismissSuggestions(id: string): void;
   /** 181: this client moved the session to `to` (`session_move` answered). */
   setMoved(id: string, to: string): void;
   /** Replace the artifacts from `list_artifacts` (session load). */
@@ -694,6 +698,13 @@ export const createSessions = (): SessionsApi =>
           return {
             sessions: { ...st.sessions, [id]: { ...cur, browserLive: open } },
           };
+        });
+      },
+      dismissSuggestions(id) {
+        set((st) => {
+          const cur = st.sessions[id];
+          if (!cur?.suggestions) return st;
+          return { sessions: { ...st.sessions, [id]: { ...cur, suggestions: undefined } } };
         });
       },
       setMoved(id, to) {

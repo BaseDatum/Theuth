@@ -3,7 +3,7 @@ import { Count, Row, Section, refreshInfo, useAction } from '@/components/settin
 import { useApi } from '@/lib/rpc'
 import { useConnection } from '@/store/connection'
 
-/** Settings › Agent › Loop (188 A8): how a turn runs — model calls, recovery, routine run time; 212 §14: memory peeks, hints, status and titles. */
+/** Settings › Agent › Loop (188 A8): how a turn runs — model calls, recovery, routine run time; 212 §14: memory peeks, hints, status, titles and next-step suggestions. */
 export function Loop() {
   const api = useApi()
   const info = useConnection((s) => s.info)
@@ -120,6 +120,12 @@ export function Loop() {
           name="Automatic titles"
           label="Automatic titles"
           description="Lets the title model name and rename sessions. Off keeps the first-message title until you or the agent rename it."
+        />
+        <ConfigFlagRow
+          flag="agent.suggestions"
+          name="Next-step suggestions"
+          label="Next-step suggestions"
+          description="After each chat turn, the title model suggests two or three next messages above the input (What's next?). Off makes no call and shows none. New sessions only."
         />
       </Section>
     </>

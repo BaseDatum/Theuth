@@ -957,6 +957,7 @@ export function apply(
       const at = Date.parse(e.interrupted_at);
       return {
         ...slice,
+        suggestions: undefined,
         running: true,
         waiting: true,
         activity: "thinking",
@@ -1178,6 +1179,10 @@ export function apply(
     // The chat's knowledge harvester pick: the model menu's query holds it (`useInvalidateOn`) — no tail close, no `live` bump.
     case "KnowledgeHarvesterChanged":
       return slice;
+    // "What's next?" for the turn that just ended: UI state only, no transcript row, no `live` bump. One that lands
+    // while a turn runs is for an older turn (the engine drops those too); a new turn clears them (`TurnStarted`).
+    case "Suggestions":
+      return slice.running || !e.items.length ? slice : { ...slice, suggestions: e.items };
   }
   // Unknown events (approvals, speech, …) leave the slice — and a streaming tail — alone.
   const next = turn(closeTail(slice, e, ctx), e, ctx);
@@ -1233,6 +1238,8 @@ function turn(
         model: e.model,
         turnSeq: e.turn_seq,
         lastInjected: undefined,
+        // A new turn makes the last one's "What's next?" stale.
+        suggestions: undefined,
         // 186: the opener's `PeerDelivered` came first: its row's seq is this turn's.
         turnBy: s.entries.findLast((x): x is Extract<Entry, { kind: "peer" }> => x.kind === "peer" && x.seq === e.turn_seq && x.origin?.contact_mode === "full")?.from,
         // The actor is busy; the settled reload after `TurnDone` restores the authoritative flag.

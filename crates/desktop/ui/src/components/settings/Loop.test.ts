@@ -33,7 +33,7 @@ vi.mock('@/store/connection', async (original) => {
 })
 
 // config.yaml as the engine reports it: peeks and status on, automatic titles off; all three apply without a restart.
-const saved: Partial<Record<ConfigFlagKey, boolean>> = { 'knowledge.peek': true, 'agent.status_tool': true, 'agent.auto_title': false }
+const saved: Partial<Record<ConfigFlagKey, boolean>> = { 'knowledge.peek': true, 'agent.status_tool': true, 'agent.auto_title': false, 'agent.suggestions': true }
 const flag = (key: ConfigFlagKey) => ({ key, enabled: saved[key] ?? true, running: saved[key] ?? true, restart_required: false })
 const rpc = vi.hoisted(() => ({
   set_peek_threshold: vi.fn(async (_: number) => null),
@@ -63,10 +63,10 @@ async function render(): Promise<string> {
 
 const field = (html: string, label: string) => html.match(new RegExp(`<input[^>]*aria-label="${label}"[^>]*>`))?.[0] ?? ''
 
-test('212 §14: the Memory and status section shows its six rows with the engine values', async () => {
+test('212 §14: the Memory and status section shows its seven rows with the engine values', async () => {
   const html = await render()
   expect(html).toContain('Memory and status')
-  for (const label of ['Memory peeks', 'Peek relevance threshold', 'Memory hints per nudge', 'Status updates', 'Status reminder every N tool calls', 'Automatic titles']) {
+  for (const label of ['Memory peeks', 'Peek relevance threshold', 'Memory hints per nudge', 'Status updates', 'Status reminder every N tool calls', 'Automatic titles', 'Next-step suggestions']) {
     expect(html).toContain(`>${label}<`)
   }
   expect(html).toContain('Off removes peek_memory and its mention from the hints.')
@@ -74,10 +74,11 @@ test('212 §14: the Memory and status section shows its six rows with the engine
   expect(html).toMatch(/aria-checked="true"[^>]*aria-label="Memory peeks"/)
   expect(html).toMatch(/aria-checked="true"[^>]*aria-label="Status updates"/)
   expect(html).toMatch(/aria-checked="false"[^>]*aria-label="Automatic titles"/)
+  expect(html).toMatch(/aria-checked="true"[^>]*aria-label="Next-step suggestions"/)
   expect(field(html, 'Peek relevance threshold')).toMatch(/min="0.05" max="0.95" step="0.05"[^>]*value="0.65"/)
   expect(field(html, 'Memory hints per nudge')).toMatch(/min="0"[^>]*value="3"/)
   expect(field(html, 'Status reminder every N tool calls')).toMatch(/min="0"[^>]*value="8"/)
-  // No restart: the three switches apply to new sessions.
+  // No restart: the four switches apply to new sessions.
   expect(html).not.toContain('Applies after theuth restarts.')
   // The tab needs every method the section calls.
   const methods = agent.tabs.find((t) => t.id === 'loop')?.required?.methods ?? []
@@ -93,7 +94,8 @@ test('212 §15: each row writes through its own RPC', async () => {
   c('Memory peeks').onCheckedChange?.(false)
   c('Status updates').onCheckedChange?.(false)
   c('Automatic titles').onCheckedChange?.(true)
-  await vi.waitFor(() => expect(rpc.config_flag_set).toHaveBeenCalledTimes(3))
+  c('Next-step suggestions').onCheckedChange?.(false)
+  await vi.waitFor(() => expect(rpc.config_flag_set).toHaveBeenCalledTimes(4))
   expect(rpc.set_peek_threshold).toHaveBeenCalledWith(0.8)
   expect(rpc.set_hint_limit).toHaveBeenCalledWith(0)
   expect(rpc.set_status_every).toHaveBeenCalledWith(12)
@@ -101,5 +103,6 @@ test('212 §15: each row writes through its own RPC', async () => {
     ['knowledge.peek', false],
     ['agent.status_tool', false],
     ['agent.auto_title', true],
+    ['agent.suggestions', false],
   ])
 })

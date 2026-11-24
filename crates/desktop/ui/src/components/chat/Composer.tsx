@@ -78,6 +78,7 @@ import { AttachPicker } from './AttachPicker'
 import { SkillChips, SkillPicker, SkillsEntry } from './SkillPicker'
 import { SuffixList, SuffixScopes } from './SuffixPicker'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
+import { NextSteps, nextSteps } from './NextSteps'
 import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
 import { MicButton } from './MicButton'
@@ -357,6 +358,8 @@ export function Composer({
   const keys = useShortcuts((s) => s.chords)
   const model = useSessionField(session ?? '', 'model')
   const parent = useSessionField(session ?? '', 'parent')
+  const sessionKind = useSessionField(session ?? '', 'kind')
+  const suggestions = useSessionField(session ?? '', 'suggestions')
   const agent = useSessionField(session ?? '', 'agent')
   const harnessCommands = useSessionField(session ?? '', 'harnessCommands')
   const defaultModel = useConnection((s) => s.info?.default_model)
@@ -858,14 +861,15 @@ export function Composer({
   }
 
   /** Send `spoken` (a `[voice note …]` line) or the textarea; a voice send enters voice mode, a typed one leaves it (45 §7.2).
+   * `typed`: text just put in the box (a "What's next?" pick) — sent as if typed, before this render sees it.
    * `interject` (⌘/Ctrl+Enter) mid-turn: cancel the turn, then queue; the queued message starts the next turn now.
    * The box keeps its text until the engine acks (70 SEND-NEVER-LOSES): a failure leaves it flagged `unsent` with the
    * banner, and the retry (Retry, or Enter again) reuses the client input id so the engine never takes it twice. */
-  const submit = async (spoken?: string, interject = false) => {
-    const line = spoken ?? text.trim()
+  const submit = async (spoken?: string, interject = false, typed?: string) => {
+    const line = spoken ?? typed ?? text.trim()
     if ((!line && !skills.length && !held) || busy || starting) return
     // 153 §6.1: the typed box after a dictation is what was actually sent — the engine learns single-word edits from it.
-    if (spoken === undefined && lastDictation.current) dictation.correction(api, lastDictation.current, line, me.current)
+    if (spoken === undefined && typed === undefined && lastDictation.current) dictation.correction(api, lastDictation.current, line, me.current)
     lastDictation.current = null
     setBusy(true)
     const mode = (id: string) => speech.setVoiceMode(id, spoken !== undefined)
@@ -983,7 +987,7 @@ export function Composer({
               : {}),
         })
       }
-      useDrafts.getState().acked(draftKey, spoken ?? text)
+      useDrafts.getState().acked(draftKey, spoken ?? typed ?? text)
       // #3: a "this message" suffix is spent; an "every message" one follows a new chat onto its session.
       useSuffixes.getState().sent(suffixChat)
       if (target && !session && !resolveSession) useSuffixes.getState().carry(suffixChat, target)
@@ -1302,6 +1306,25 @@ export function Composer({
     }
   }
 
+  // "What's next?" after the last turn: hidden while a turn runs, on watch-only and child chats, and as soon as the
+  // user starts a message of their own. A pick goes through `submit` exactly as if typed and sent.
+  const steps = session
+    ? nextSteps({
+        suggestions: suggestions,
+        running,
+        kind: sessionKind,
+        parent,
+        drafting: text.trim() !== '' || held || skills.length > 0,
+        blocked: readOnly || busy || !!starting || !!unsent,
+      })
+    : null
+  const pickStep = (item: string) => {
+    if (!session) return
+    useSessions.getState().dismissSuggestions(session)
+    setText(item)
+    void submit(undefined, false, item)
+  }
+
   return (
     <div className={cn('mx-auto w-full max-w-[768px]', compact ? 'px-2 pb-1' : 'px-4 pb-2')}>
       {!compact && <CommunicationNotice session={session} state={comm} exports={exports} />}
@@ -1354,6 +1377,7 @@ export function Composer({
         </div>
       )}
       {session && !compact && <ContextPicker session={session} />}
+      {steps && <NextSteps items={steps} onPick={pickStep} compact={compact} />}
       <input
         ref={fileInput}
         type="file"
