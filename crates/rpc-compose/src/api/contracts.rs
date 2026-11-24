@@ -161,9 +161,9 @@ impl wire::WireEvent for StreamControl {
 
 /// 188: the flags Settings had no write path for: four `<section>.enabled` and
 /// the two `allow_private_network` keys behind Network's "Local network
-/// access" (16 §5, amended 2026-11-11), and 212 §15's three switches, which
-/// apply to new sessions without a restart. Any other string fails to
-/// deserialize, an `INVALID_PARAMS` error listing these.
+/// access" (16 §5, amended 2026-11-11), 212 §15's switches, which apply to new
+/// sessions without a restart, and 215's `onboarding.completed`. Any other string
+/// fails to deserialize, an `INVALID_PARAMS` error listing these.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum ConfigFlagKey {
     /// `decision.enabled` (57 §7.1): off, the decision actor escalates every ask.
@@ -201,6 +201,10 @@ pub enum ConfigFlagKey {
     /// prompt sentences; off, its calls are refused at once. No restart.
     #[serde(rename = "knowledge.peek")]
     KnowledgePeek,
+    /// `onboarding.completed` (215): the desktop's first-run wizard was finished or
+    /// skipped. UI state only, nothing in the engine reads it; absent is `false`. No restart.
+    #[serde(rename = "onboarding.completed")]
+    OnboardingCompleted,
 }
 
 impl ConfigFlagKey {
@@ -217,6 +221,7 @@ impl ConfigFlagKey {
             Self::AgentAutoTitle => ("agent", "auto_title"),
             Self::AgentSuggestions => ("agent", "suggestions"),
             Self::KnowledgePeek => ("knowledge", "peek"),
+            Self::OnboardingCompleted => ("onboarding", "completed"),
         }
     }
 
@@ -261,6 +266,9 @@ impl ConfigFlagKey {
                 let c: knowledge::KnowledgeConfig = config.extract_inner(s).unwrap_or_default();
                 c.peek
             }
+            Self::OnboardingCompleted => {
+                config.extract_inner::<bool>("onboarding.completed").unwrap_or(false)
+            }
         }
     }
 
@@ -275,6 +283,12 @@ impl ConfigFlagKey {
             _ => None,
         }
     }
+
+    /// Does the saved value take effect without a restart? The 212 §15 switches
+    /// ([`Self::live`]) and 215's `onboarding.completed`, which only the UI reads.
+    pub(super) fn restartless(self) -> bool {
+        self.live().is_some() || self == Self::OnboardingCompleted
+    }
 }
 
 /// 188: a [`ConfigFlagKey`] as config.yaml holds it and as this engine runs it.
@@ -286,10 +300,10 @@ pub struct ConfigFlag {
     pub enabled: bool,
     /// The value this process started with (its boot config); plugins keep it until a
     /// restart. A 212 §15 switch (`agent.status_tool`, `agent.auto_title`, `agent.suggestions`, `knowledge.peek`)
-    /// runs what the file holds: Settings applies it to new sessions at once.
+    /// or `onboarding.completed` (215) runs what the file holds: no restart.
     pub running: bool,
     /// `enabled != running`: the saved value applies after theuth restarts. Always
-    /// `false` for a 212 §15 switch.
+    /// `false` for a 212 §15 switch and `onboarding.completed`.
     pub restart_required: bool,
 }
 
