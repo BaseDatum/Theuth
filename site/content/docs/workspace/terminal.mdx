@@ -1,6 +1,6 @@
 ---
 title: Terminal
-description: The t command — the full-screen terminal UI, its slash commands, keys and pickers, plus print mode and ACP mode.
+description: The t command. The full-screen terminal UI, its slash commands, keys and pickers, plus print mode and ACP mode.
 ---
 
 ## Starting `t`
@@ -16,9 +16,9 @@ t --headless              # no UI: run the engine as a daemon for the desktop ap
 t --acp                   # Agent Client Protocol on stdio, for editors
 ```
 
-One engine runs per data directory. If an engine is already running — the desktop app's daemon, a `t --headless`, or another `t` — a new `t` attaches to it over its local WebSocket instead of starting a second one, and the status line shows `attached · pid <N> · <frontend>` (`tui`, `headless` or `desktop` — which kind of process started the engine). If the engine you attached to goes away, your `t` takes over and becomes the engine itself.
+One engine runs per data directory. If an engine is already running (the desktop app's daemon, a `t --headless`, or another `t`), a new `t` attaches to it over its local WebSocket instead of starting a second one, and the status line shows `attached · pid <N> · <frontend>`, where the frontend (`tui`, `headless` or `desktop`) is the kind of process that started the engine. If the engine you attached to goes away, your `t` takes over and becomes the engine itself.
 
-Logs go to `~/.theuth/logs/theuth.log` (daily files), because the UI owns the screen. The data directory follows `--data-dir` or `THEUTH_DATA_DIR`; see [CLI](/docs/reference/cli) for every flag and subcommand.
+Logs go to `~/.theuth/logs/theuth.log` (daily files), because the UI owns the screen. The data directory follows `--data-dir` or `THEUTH_DATA_DIR`. Subcommands such as `t mesh`, `t tasks`, `t session`, `t sandbox` and `t mcp` (an MCP server on stdio that needs a running engine) are covered in [CLI](/docs/reference/cli), with every flag.
 
 ### Print mode (`-p`)
 
@@ -30,11 +30,11 @@ The same line printer is used whenever stdout is not a terminal, so `t` inside a
 
 From top to bottom:
 
-- **Transcript** — your turns, the agent's replies, tool cards, artifact cards. It stays pinned to the bottom until you scroll.
-- **Queued cards** — a message you send while a turn is running is queued as a steer and shown as a `◇ queued · ⌥↑ edit` card until the agent picks it up.
-- **Header line** — `model  ·  effort  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`, then tags when relevant: cost, `approvals off`, communication, link and node counts, and an available update. The line turns amber at 75 % of the context window and red at 90 %. In a subagent it reads `↳ <name>  child · model`.
-- **Composer** — a multi-line box. While dictating or in the talk view the header line is replaced by a dictation meter or talk status.
-- **Status line** — short session id, `idle` or the current activity, the last turn's token counts (`1.2k↑ 300↓`), idle subagents, `N queued`, `N job(s)`, loaded skills, and hints such as `↑ history · PgDn follows` while you are scrolled up; MCP status on the right.
+- **Transcript**: your turns, the agent's replies, tool cards, artifact cards, advisor notes and file cards. It stays pinned to the bottom until you scroll. While the agent works, a trailing activity row shows the one-line status the agent reports with `set_status`, or `thinking…` while it waits on the model.
+- **Queued cards**: a message you send while a turn is running is queued as a steer and shown as a `◇ queued · ⌥↑ edit` card until the agent picks it up.
+- **Header line**: `model  ·  effort  ·  ctx 12.3k / 200k (6%)  ·  cache 94%`, then tags when relevant: `cost`, `advisor <cost>`, `approvals off`, communication, link and node counts, and an available update. The line turns amber at 75 % of the context window and red at 90 %. In a subagent it reads `↳ <name>  child · model`; in a watch-only child of an external harness it reads `◎ <name>  watching · <model>`. An ACP session shows the harness and the model it reported (`omp · <model>`).
+- **Composer**: a multi-line box. While dictating or in the talk view the header line is replaced by a dictation meter or talk status.
+- **Status line**: short session id, `idle` or the current activity (the agent's `set_status` line wins over generic words such as `streaming…`), the last turn's token counts (`1.2k↑ 300↓`), idle subagents, `N queued`, `N job(s)`, loaded skills, and hints such as `↑ history · PgDn follows` while you are scrolled up or `editing #N` during `/edit`. After a restart, an update or a takeover by another node, a resume note says what happened and when, and `resumed · N replayed` names any tools skipped (effect unknown) and jobs lost. Then `◎ advisor: idle|reviewing…|paused|halted` while an advisor is on, and `● LIVE <n> · <domain>` while public shares are live. MCP status is on the right.
 
 ## Keys
 
@@ -44,10 +44,11 @@ From top to bottom:
 | `Shift+Enter` | New line in the composer. |
 | `Ctrl+Enter` / `⌘Enter` | Interject: cancel the running turn and start a new one with this message now (`⌘Enter` needs a terminal that reports the Cmd modifier, such as kitty-protocol terminals). |
 | `⌥↑` (`Alt+Up`) | Pull the newest queued message back into an empty composer to edit it. |
-| `Esc` | Cancel the in-flight turn or compaction; otherwise cancel an open prompt or a pending `/edit`. |
+| `Esc` | Cancel the in-flight turn or compaction of this session only; its subagents keep running. Otherwise cancel an open prompt or a pending `/edit`. |
+| `Esc` ×3 within 1 s | Stop the turn and every running subagent of the session (`stopped N agents`). |
 | `Ctrl+C` | Quit immediately (no second press). `/quit` or `/exit` do the same. |
 | `PgUp` / `PgDn` | Scroll the transcript a page. `↑`/`↓` scroll a row while the composer is single-line; terminals without mouse capture send the wheel as these keys. |
-| `Ctrl+O` | Expand or collapse the newest tool card; on an artifact card it renders the file inline (`ctrl+o expands` / `ctrl+o collapses` hints appear on the card). |
+| `Ctrl+O` | Expand or collapse the newest tool card or advisor note; on an artifact card it renders the file inline (`ctrl+o expands` / `ctrl+o collapses` hints appear on the card). |
 | `o` | On an empty composer: open the newest artifact's file with the OS default handler. |
 | `Ctrl+V` | Attach the image on the OS clipboard (see below). |
 | `Tab` | On a path token, open path completion; in the `/` menu, complete the command name. |
@@ -56,13 +57,17 @@ From top to bottom:
 | `Ctrl+T` | Stop a running talk from anywhere. |
 | `y` / `n` / `Esc` | On an approval prompt: allow, deny, deny. `o` opens the subagent that asked, when the request came from a child. |
 
-Answering a model question (an "ask" card): `↑↓` move, `1`–`9` or `Enter` pick, `s` or `Tab` skip, `Esc` dismisses and ends the turn.
+Answering a model question (an ask card, titled `question 1/N`): `↑↓` move, `1` to `9` or `Enter` pick, `s` or `Tab` skip, `Esc` dismisses and ends the turn. The recommended option is preselected and marked `(recommended)`. The last row, `type your own…`, takes a free-text answer: `Enter` on it opens the composer, `Enter` sends, `Esc` goes back to the options.
 
 Mouse capture is deliberately off, so your terminal's native selection and copy work as usual. Links in artifact cards are emitted as terminal hyperlinks where the terminal supports them.
 
+### Watch-only subagents
+
+When an external harness (an ACP agent such as Claude Code or omp) spawns its own subagents, they appear in `/agents` as watch-only children. Opening one shows its transcript live with the `◎ … watching` header and a status hint naming the harness that runs the subagent, ending in `Esc stops it` or `cannot be stopped here` depending on whether the harness accepts a per-child cancel. Messages you type are not sent; the hint is shown instead.
+
 ## Slash commands
 
-Type `/` at the start of the composer to open the command menu (`↑↓ move  ⇥ complete  ⏎ run  esc close`); a prefix narrows it (`/mo` → `/model`). `/<skill-name> [words]` hands a loaded skill to the model. An unknown `/word` is sent as ordinary text. Argument syntax: `<x>` required, `[x]` optional.
+Type `/` at the start of the composer to open the command menu (`↑↓ move  ⇥ complete  ⏎ run  esc close`); a prefix narrows it (`/mo` → `/model`). `/<skill-name> [words]` hands a loaded skill to the model. In an ACP session the menu also lists the harness's own commands, tagged with its name. An unknown `/word` is sent as ordinary text. Argument syntax: `<x>` required, `[x]` optional.
 
 ### Session and conversation
 
@@ -72,19 +77,21 @@ Type `/` at the start of the composer to open the command menu (`↑↓ move  �
 | `/sessions` | | switch session (picker; owner chip on sessions owned elsewhere) |
 | `/resume` | `[id]` | open a session; on a stopped ACP child, restart its harness in the same context |
 | `/parent` | | open the parent session (from a subagent) |
-| `/agents` | | subagents of this session (picker: ⏎ opens one) |
+| `/agents` | | subagents of this session (picker: `⏎` opens one) |
 | `/take` | | continue the open session on this node |
-| `/project` | `<label\|off>` | label this session's root for grouping in `/sessions` and `/artifacts` |
+| `/project` | `<label\|off>` | label this session's root for grouping in `/sessions` and `/artifacts` (`off` clears) |
 | `/fork` | `[n]` | new session with the conversation through turn n (picker without n) |
 | `/edit` | `[n]` | edit turn n's message and regenerate from it (picker without n) |
 | `/regen` | `[n]` | regenerate the reply to turn n (picker without n) |
 | `/undo` | | drop the last turn (redo restores) |
 | `/redo` | | restore the last undone turn |
-| `/cancel` | | abort the in-flight turn |
+| `/cancel` | | abort the in-flight turn (same as `Esc`) |
 | `/clear` | | drop the conversation, keep the session and its settings |
 | `/compact` | `[summary\|cut\|snap\|style …]` | fold context; `style` sets the default |
-| `/shake` | `[images\|documents\|messages\|tools\|summary]` | remove images, messages or the summary from the model's context |
+| `/fractal` | `[on\|off\|fold\|pause\|resume\|model <id>\|model clear]` | fractal context: switch it, fold the unsummarized backlog, pause or resume settling, pick this chat's compactor model; bare shows the view state (`/endless` is accepted as the old name) |
+| `/shake` | `[images\|documents\|surfaces\|tools\|notes\|agents\|messages\|summary]` | remove images, diagrams, tool output, notes, messages or the summary from the model's context |
 | `/attach` | `[query]` | attach a note, concept, artifact, chat or meeting to the next message |
+| `/files` | | files sent and received in this chat (picker) |
 | `/broadcast` | `[running\|roots] [text]` | send one message to many sessions |
 | `/search` | `[query]` | search sessions, artifacts, knowledge and history (live; fzf syntax) |
 | `/todos` | | show or hide the plan card (F2) |
@@ -92,46 +99,49 @@ Type `/` at the start of the composer to open the command menu (`↑↓ move  �
 | `/prompt` | | show the assembled system prompt |
 | `/quit`, `/exit` | | exit |
 
-See [Sessions](/docs/workspace/sessions) and [Search](/docs/workspace/search).
+See [Sessions](/docs/workspace/sessions), [Search](/docs/workspace/search) and [Contacts](/docs/automation/contacts) for files exchanged with contacts.
 
 ### Models and providers
 
 | Command | Arguments | Description |
 | --- | --- | --- |
-| `/model` | `[id]` | switch model (picker without id) |
+| `/model` | `[id]` | switch model (picker without id: provider → model, word search, favorites) |
 | `/effort` | `[level\|clear]` | reasoning effort (picker without arg) |
-| `/title` | `[model\|off]` | model that names sessions in the history list |
-| `/vision` | `[model\|off]` | model that inspects images when the main model cannot |
+| `/advisor` | `[off\|on\|status\|consults <n>\|<provider/model>]` | a second model that reviews this session and answers its consults; `consults` sets the per-turn cap (0 to 32); picker without argument. Not available in an external-harness session. |
+| `/title` | `[model\|off]` | model that names sessions in the history list (`off`: each session names itself with its own model) |
+| `/vision` | `[model\|off]` | model that inspects images when the main model cannot (`off`: images are omitted) |
 | `/aws` | `[profile\|clear]` | AWS profile for Bedrock, harness-wide (picker without arg) |
-| `/provider` | `[add\|rm <name>]` | providers; `add` prompts for an OpenAI-compatible gateway's name, url, key |
+| `/provider` | `[add [name [url [key]]] \| refresh <name> \| rm <name> \| limits <provider> <model> <context> [output] \| find]` | providers; see below |
 | `/login` | `[name]` | log in to a provider or MCP server (picker without name) |
 | `/logout` | `<name>` | forget a login |
 
-See [Models](/docs/getting-started/models).
+`/provider` lists providers. The built-in `opencode` (Zen) and `openrouter` providers are keyed with `/secrets add`. `add` prompts for any missing name, url and key of a custom OpenAI-compatible provider (a local server needs no key); `refresh <name>` lists a provider's models again; `limits <provider> <model> <context> [output]` sets a model's context and output limits (`0` means unknown); `find` probes for local model servers. See [Models](/docs/getting-started/models).
 
 ### Tools, skills and approvals
 
 | Command | Arguments | Description |
 | --- | --- | --- |
 | `/mcp` | `[add <url\|json>\|sync]` | MCP servers: on/off (this session or always), risk lines |
+| `/tools` | `[add <url\|json>\|sync]` | same as `/mcp` |
 | `/acp` | `[add <registry-id>\|remove <name>]` | external harnesses (ACP) and the registry |
-| `/skills` | `[add <url>\|rm <name>\|sync]` | skills picker (⏎ hands one to the model, `s` shows it) |
-| `/approvals` | `[on\|off] [always]` | tool approval prompts; `always` persists to `config.yaml` |
+| `/skills` | `[add <url>\|rm <name>\|sync]` | skills picker (`⏎` hands one to the model, `s` shows it) |
+| `/approvals` | `[on\|off] [always]` | tool approval prompts; bare shows this session's and the default state; `always` persists to `config.yaml` |
 | `/secrets` | `[add [name]\|rm <name>\|restore <name> [n]]` | encrypted secrets the agent uses by name |
 | `/jobs` | `[kill <id>]` | list this session's background jobs |
-| `/terminals` | | PTY jobs of this session's tree (picker: ⏎ opens a read-only observer) |
+| `/terminals` | | PTY jobs of this session's tree (picker: `⏎` opens a read-only observer) |
 | `/computer` | | computer control: permissions and displays |
 | `/sandbox` | `[desktop <name>]` | sandbox VMs on this engine; `desktop` prints the noVNC URL |
+| `/share` | `[list\|stop [id\|all]]` | public web sharing: list live shares, stop one or all (never asks) |
 
-See [MCP](/docs/reference/mcp), [Skills](/docs/reference/skills), [Tools and permissions](/docs/reference/tools-permissions), [Secrets](/docs/reference/secrets), [Sandboxes](/docs/automation/sandboxes).
+`/approvals off` does not cover human-only tools such as `share_publish`: their approval card always needs you, in person. See [MCP](/docs/reference/mcp), [Skills](/docs/reference/skills), [Tools and permissions](/docs/reference/tools-permissions), [Secrets](/docs/reference/secrets), [Sandboxes](/docs/automation/sandboxes), [Sharing](/docs/automation/sharing), [Security](/docs/reference/security).
 
 ### Knowledge, artifacts and apps
 
 | Command | Arguments | Description |
 | --- | --- | --- |
 | `/knowledge` | `[query \| history [id] \| show <commit> [id] \| restore <id> [commit] \| harvest]` | knowledge base: list, search, history, show a commit, restore, harvest |
-| `/artifacts` | | files the agent showed (picker: ⏎ opens, `s` shows inline, `e` exports to `~/Downloads`) |
-| `/apps` | | interactive apps the agent built (picker: ⏎ opens, `s` shows source, `e` exports); only listed while the app plugin is enabled |
+| `/artifacts` | | files the agent showed (picker: `⏎` opens, `s` shows inline, `e` exports to `~/Downloads`) |
+| `/apps` | | interactive apps the agent built, which run on desktop and web (picker: `⏎` opens, `s` shows source, `e` exports); only listed while the app plugin is enabled |
 
 See [Knowledge](/docs/workspace/knowledge), [Documents](/docs/workspace/documents), [Apps](/docs/workspace/apps).
 
@@ -140,6 +150,7 @@ See [Knowledge](/docs/workspace/knowledge), [Documents](/docs/workspace/document
 | Command | Arguments | Description |
 | --- | --- | --- |
 | `/dictate` | | toggle dictation (Ctrl+D) |
+| `/voice` | `[mic <name\|default> \| shape <full\|plain\|off>]` | dictation: microphones and last timings; pick the mic; set the terminal's shaping preset |
 | `/talk` | | talk with the session aloud; `Esc` cancels the reply or leaves the view, `Ctrl+T` stops |
 
 See [Voice](/docs/workspace/voice).
@@ -148,17 +159,19 @@ See [Voice](/docs/workspace/voice).
 
 | Command | Arguments | Description |
 | --- | --- | --- |
-| `/schedules` | `[run <name>\|test <name>\|history <name>\|pause <name>\|resume <name>]` | scheduled prompts: list, fire one now, show its runs, pause or resume |
+| `/schedules` | `[run <name>\|test <name>\|history <name>\|pause <name>\|resume <name>]` | scheduled prompts: list, fire one now, show its runs, pause or resume a loop |
+| `/autoresearch` | `[<goal> \| <slug> \| list \| pause\|resume\|stop\|stop_now <slug> \| steer <slug> <text>]` | autoresearch studies: list them, show one with its last 10 experiments, control or steer one directly; a goal (or anything else) hands the `autoresearch` skill to the model |
 | `/tasks` | | this project's tasks: id, state, owner, title |
 | `/roster` | | the agent roster: name, status, open tasks |
-| `/communication` | `[on\|off] [always]` | agent-to-agent communication: status with its exact blocker |
-| `/peers` | `[scope owner\|isolated [alias]]` | peers this session may address and requests awaiting a human (picker: ⏎ opens, `i` inspects, `a` answers) |
-| `/a2a` | `[reload]` | network (A2A) status; `reload` swaps `peers.yaml` |
+| `/communication` | `[on\|off] [always]` | agent-to-agent communication: status with its exact blocker; `always` persists the global switch |
+| `/peers` | `[scope owner\|isolated [alias]]` | peers this session may address and requests awaiting a human (picker: `⏎` opens, `i` inspects, `a` answers) |
+| `/a2a` | `[reload]` | network (A2A) status: listener, configured peers and exports; `reload` swaps `peers.yaml` |
+| `/double` | `[status\|off\|pause [off]\|train [a\|b] [venue]\|rollback <version>\|cap <class> <rung> [opt-in]]` | the owner's double: its numbers, learning on or off, a training run, caps |
 | `/link` | `[on\|off\|pair\|rm <n>\|name <n> <name>\|relay <url>]` | pair and manage phones |
-| `/mesh` | `devices [list\|add [name]\|rm <id>\|name <id> <name>]` | devices paired with the mesh |
+| `/mesh` | `devices [list\|add [name]\|rm <id>\|name <id> <name>]` | devices paired with the mesh (any node serves them) |
 | `/nodes` | `[add <key>\|rm <n>\|name <n> <name>\|invite <n>]` | machines this harness can run sessions on |
 
-See [Schedules](/docs/automation/schedules), [Tasks](/docs/automation/tasks), [Agents](/docs/automation/agents), [Mesh](/docs/automation/mesh), [Channels](/docs/automation/channels).
+`/autoresearch steer` queues the text for the study's next experiment without pausing the loop. See [Schedules](/docs/automation/schedules), [Autoresearch](/docs/automation/autoresearch), [Tasks](/docs/automation/tasks), [Agents](/docs/automation/agents), [Mesh](/docs/automation/mesh), [Channels](/docs/automation/channels).
 
 ## Pickers
 
@@ -166,12 +179,13 @@ Most commands open a picker when run without an argument. Every picker shows its
 
 | Picker | Keys |
 | --- | --- |
-| `/model` | type to filter (`model  filter: …`), `⏎` set |
+| `/model`, `/advisor` | Opens on your favorites (`★`), the current model and the providers. `⏎`/`→` opens a provider (`‹provider› (N)`), `←`/`⌫` goes back; with a single provider its models show directly. Typing searches every model by words (`search: …`, `no match` when empty). `⇥` stars or unstars the highlighted model; on the effort chips row `←→` choose and `⏎` sets. |
 | `/effort` | `⏎ set` |
-| `/sessions`, `/agents` | `⏎` switch/open — the one you leave keeps running |
+| `/sessions`, `/agents` | `⏎` switch/open; the one you leave keeps running |
 | `/edit`, `/regen`, `/fork` | `⏎` recall / redo reply / fork through the highlighted turn |
 | `/artifacts` | `⏎ open  s show inline  e export to ~/Downloads` |
 | `/apps` | `⏎ open  s show source  e export to ~/Downloads` |
+| `/files` | `⏎ open  r reveal  y copy path  s save to ~/Downloads  f fetch here` |
 | `/skills` | `⏎ use  s show`; `●` marks skills already in context |
 | `/mcp` | `⏎` turn on/off (asks `s` = this session only, `a` = always), `␣` cycle risk, `⌫` reset risk, `→/←` show tools, `l` login/logout, `s` sync |
 | `/acp` | `p probe  ⏎ add from registry  d remove` |
@@ -185,31 +199,33 @@ Most commands open a picker when run without an argument. Every picker shows its
 | `/shake`, `/broadcast` | `␣` tick rows, `⏎` review/compose; `/broadcast` adds `r running  a all roots  n none  d delivery` |
 | `/search` | `⇥` cycles query → filters → results → footer; `⏎` opens a hit (or attaches it from `/attach`); in a preview `o` opens, `e` exports |
 
-`/jobs`, `/tasks`, `/roster`, `/computer`, `/a2a`, `/cost` and `/schedules` print a list or card instead of a picker.
+Model favorites are stored by the engine in `agent.favorite_models` in `config.yaml`, so the desktop app, phones and every attached `t` show the same list.
+
+`/jobs`, `/tasks`, `/roster`, `/computer`, `/a2a`, `/cost`, `/schedules`, `/share` and `/autoresearch` print a list or card instead of a picker.
 
 ### Watching and typing into a terminal job
 
-`/terminals` lists the PTY jobs of the session tree. `⏎` opens a read-only observer that refreshes every half second: `↑↓ PgUp PgDn history  ←→ pan  r refresh  i type  esc close`. While the job is running, `i` (or `⏎`) hands the keyboard to the program — every key including `Ctrl+C` and `Esc` goes to the process, and the title reads `typing · Ctrl-] to stop`. `Ctrl+]` returns to the observer; `Esc` in the observer closes the overlay and leaves the job running.
+`/terminals` lists the PTY jobs of the session tree. `⏎` opens a read-only observer that refreshes every half second: `↑↓ PgUp PgDn history  ←→ pan  r refresh  i type  esc close`. While the job is running, `i` (or `⏎`) hands the keyboard to the program: every key, including `Ctrl+C` and `Esc`, goes to the process, and the title reads `typing · Ctrl-] to stop`. `Ctrl+]` returns to the observer; `Esc` in the observer closes the overlay and leaves the job running.
 
 ## Images, files and paths
 
-- **Clipboard image** — `Ctrl+V` reads the image on the OS clipboard, downscales it so its long edge is at most 1568 px, stores it as `~/.theuth/attachments/<hash>.png` and attaches it to your next message. This is `Ctrl+V` even on macOS: `⌘V` is handled by the terminal and pastes text only, so an image-only clipboard pastes nothing.
-- **Dropped files** — dragging a file onto the terminal pastes its path. A single pasted path to a `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` file up to 5 MB, or a `.pdf` up to 32 MB, is attached as a file; anything else is treated as text.
-- **Long pastes** — multi-line text you paste becomes a paste token in the composer and is expanded back when you send.
-- **Path completion** — press `Tab` on a token that starts with `/`, `./`, `../` or `~` to list matching paths; `Tab` accepts (a directory keeps completing), `Esc` closes. The engine answers, so in a session owned by another node you complete that node's filesystem.
+- **Clipboard image**: `Ctrl+V` reads the image on the OS clipboard, downscales it so its long edge is at most 1568 px, stores it as `~/.theuth/attachments/<hash>.png` and attaches it to your next message. This is `Ctrl+V` even on macOS: `⌘V` is handled by the terminal and pastes text only, so an image-only clipboard pastes nothing.
+- **Dropped files**: dragging a file onto the terminal pastes its path. A single pasted path to a `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` file up to 5 MB, or a `.pdf` up to 32 MB, is attached as a file; anything else is treated as text.
+- **Long pastes**: multi-line text you paste becomes a paste token in the composer and is expanded back when you send.
+- **Path completion**: press `Tab` on a token that starts with `/`, `./`, `../` or `~` to list matching paths; `Tab` accepts (a directory keeps completing), `Esc` closes. The engine answers, so in a session owned by another node you complete that node's filesystem.
 
 ## What the terminal cannot do
 
 - **Run apps.** Interactive apps the agent builds run in the desktop app and the browser; `/apps` in the terminal opens the app's source file with the OS, shows it inline or exports it. See [Apps](/docs/workspace/apps).
 - **Record meetings.** Meetings are a desktop feature; see [Meetings](/docs/workspace/meetings).
-- **Boards and rich document editing.** The terminal renders artifacts inline (text, CSV, diffs) but notes and boards are edited in the desktop app; see [Documents](/docs/workspace/documents).
+- **Boards, notebooks and rich document editing.** The terminal renders artifacts inline (text, CSV, diffs) but notes, boards and notebooks are edited in the desktop app; see [Documents](/docs/workspace/documents) and [Notebooks](/docs/workspace/notebooks).
 - **Mouse interaction.** Scrolling and selection are your terminal's; there are no clickable controls.
 
 Voice *does* work here: `/talk` and `/dictate` need the speech models to be present (dictation reports `model missing` with the expected path under `~/.theuth/models` until they are). See [Voice](/docs/workspace/voice).
 
 ## ACP mode for editors
 
-`t --acp` speaks the Agent Client Protocol on stdio, so an editor that supports ACP can use theuth as its agent. It attaches to a running engine when there is one. When it has to start its own engine it runs a reduced one — tools, secrets, documents, knowledge, web, browser, code index, artifacts, apps and the agent loop — without schedules, mesh, roster, tasks, sandboxes, meetings, voice or Talk; run `t --headless` first if the editor session should see those. Configure theuth in the terminal first (model, logins, MCP servers); the editor is for turns. Zed, for example:
+`t --acp` speaks the Agent Client Protocol on stdio, so an editor that supports ACP can use theuth as its agent. It attaches to a running engine when there is one. When it has to start its own engine it runs a reduced one (tools, secrets, documents, knowledge, web, browser, scraping, code index, computer control, artifacts, apps, notebooks, autoresearch, dreaming and the agent loop) without schedules, mesh, roster, tasks, sandboxes, meetings, voice or Talk; run `t --headless` first if the editor session should see those. Configure theuth in the terminal first (model, logins, MCP servers); the editor is for turns. Zed, for example:
 
 ```json
 "agent_servers": {
@@ -217,20 +233,22 @@ Voice *does* work here: `/talk` and `/dictate` need the speech models to be pres
 }
 ```
 
-`--acp` cannot be combined with `--headless`, `--serve` or `-p`. The reverse direction — theuth driving other ACP agents as subagents — is `/acp` and is covered in [Delegation](/docs/automation/delegation).
+`--acp` cannot be combined with `--headless`, `--serve` or `-p`. The reverse direction (theuth driving other ACP agents as subagents) is `/acp` and is covered in [Delegation](/docs/automation/delegation).
 
 ## Troubleshooting
 
-**Pasting an image does nothing.** Use `Ctrl+V`, not `⌘V`; the UI reads the clipboard image itself. If you see `paste: …` in the transcript, the clipboard could not be read — on Linux this usually means no clipboard provider is reachable from the terminal's session.
+**Pasting an image does nothing.** Use `Ctrl+V`, not `⌘V`; the UI reads the clipboard image itself. If you see `paste: …` in the transcript, the clipboard could not be read. On Linux this usually means no clipboard provider is reachable from the terminal's session.
 
 **`⌘Enter` sends instead of interjecting.** Your terminal does not report the Cmd modifier. Use `Ctrl+Enter`, or a terminal with the kitty keyboard protocol.
 
 **`Shift+Enter` sends instead of inserting a newline.** Same cause: the terminal must distinguish Shift+Enter from Enter (kitty protocol or an equivalent keymap).
 
-**`t` says another engine is running and exits with status 3.** A `--headless`/`--serve` engine refuses to start twice for the same data directory. A plain `t` attaches instead; if it could not connect, the engine record under `~/.theuth/engine.json` points at a listener that is gone — check `~/.theuth/logs/theuth.log`, or start `t --headless` again.
+**`Esc` stopped the turn but subagents keep working.** That is intended: a single `Esc` stops only the session you are in. Press `Esc` three times within a second to stop its subagents too.
+
+**`t` says another engine is running and exits with status 3.** A `--headless`/`--serve` engine refuses to start twice for the same data directory. A plain `t` attaches instead; if it could not connect, the engine record under `~/.theuth/engine.json` points at a listener that is gone. Check `~/.theuth/logs/theuth.log`, or start `t --headless` again.
 
 **Dictation says `model missing`.** The speech model is not under `~/.theuth/models`; see [Voice](/docs/workspace/voice) for how models are fetched.
 
-**Approvals keep appearing.** `/approvals off` turns prompts off for this session, `/approvals off always` writes it to `config.yaml`; the policy itself is explained in [Tools and permissions](/docs/reference/tools-permissions).
+**Approvals keep appearing.** `/approvals off` turns prompts off for this session, `/approvals off always` writes it to `config.yaml`; human-only approvals still appear. The policy itself is explained in [Tools and permissions](/docs/reference/tools-permissions).
 
-Source: `crates/tui/src/model.rs` (command table and pickers), `crates/tui/src/ui.rs` (keys and layout), `crates/theuth/src/main.rs` (CLI).
+Source: `crates/tui/src/model/slash.rs` and `crates/tui/src/components/` (command table and pickers), `crates/tui/src/model/status.rs` (header and status line), `crates/tui/src/ui.rs` (keys and layout), `crates/theuth/src/main.rs` (CLI).
