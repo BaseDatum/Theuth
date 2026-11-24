@@ -17,6 +17,7 @@ import { useSandboxes } from '@/components/settings/sandbox-queries'
 import { EngineChip } from '@/components/sidebar/SessionItem'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
 import { cornerPad, headerToggle } from '@/lib/sidebar-corner'
@@ -65,9 +66,10 @@ const HEADER_REQUIREMENTS: Partial<Record<HeaderId, Requirements>> = {
   codemap: codemapRequirements, pending: approvalsRequirements, menu: sessionMenuRequirements,
 }
 
-/** `↳ parent` breadcrumb of a subagent's transcript; `row`: the compact menu's "Parent" line. A watch-only child (141 §9.2d)
- * shows the `Watching` chip and `inside <parent> · <source>` instead. */
-function Parent({ id, mode, observed }: { id: string; mode: Mode; observed?: ObservedMeta | null }) {
+/** A subagent's way to its parent: an up-arrow icon button ("Open parent: <title>"), so the subagent's own title keeps
+ * the room (a phone squeezed it to "Fea…" beside `↳ <parent title>`); `row`: the compact menu's "Parent" line. A
+ * watch-only child (141 §9.2d) shows the `Watching` chip and `inside <parent> · <source>` instead. */
+export function Parent({ id, mode, observed }: { id: string; mode: Mode; observed?: ObservedMeta | null }) {
   const canQuery1 = useQuerySupport(["list_sessions"])
   const row = mode === 'row'
   const api = useApi()
@@ -102,15 +104,28 @@ function Parent({ id, mode, observed }: { id: string; mode: Mode; observed?: Obs
       </>
     )
   }
+  const label = `Open parent: ${name}`
   return (
-    <Link
-      to="/c/$session"
-      params={{ session: id }}
-      className="truncate text-sm text-fg-secondary hover:text-foreground"
-    >
-      ↳ {name}
-    </Link>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="shrink-0 rounded-lg text-fg-secondary"
+          aria-label={label}
+          onClick={() => void navigate({ to: '/c/$session', params: { session: id } })}
+        >
+          <CornerLeftUp className="size-5" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   )
+}
+
+/** The header's `parent` item: a subagent's way up (`Parent`); nothing for a top-level chat. */
+export function ParentItem({ parent, mode, observed }: { parent: string | null | undefined; mode: Mode; observed?: ObservedMeta | null }) {
+  return parent ? <Parent id={parent} mode={mode} observed={observed} /> : null
 }
 
 /** `name · epoch N` for the compact menu's Owner line; 183 §12.1 (the phone): `name · live · epoch N`. */
@@ -315,7 +330,7 @@ export function Header({
       </span>
     ),
     memory: (mode) => (session ? <MemoryBadge session={session} summary={row} row={mode === 'row'} open={host === null ? memory : memoryTile} onToggle={toggleMemory} /> : null),
-    parent: (mode) => (parent ? <Parent id={parent} mode={mode} observed={observed} /> : null),
+    parent: (mode) => <ParentItem parent={parent} mode={mode} observed={observed} />,
     owner: (mode) =>
       row && !row.here ? (
         mode === 'row' ? (
