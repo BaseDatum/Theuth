@@ -131,6 +131,26 @@ test('collapsed on a desktop: the icon rail, its toggle expanding it again; expa
   expect(document.querySelector('[data-rail-sections]')).not.toBeNull()
 })
 
+// iPad: the iOS webview can leave `100svh` stale and short for the life of the page; a container sized by it squeezed the
+// rail's scrolling middle (Chat … the section icons) to nothing between its header and Settings until the app restarted.
+test('rail and expanded sidebar take the shell\'s band height, never a viewport unit; the rail\'s middle scrolls instead of collapsing', async () => {
+  const container = () => document.querySelector<HTMLElement>('[data-slot="sidebar-container"]')!.className.split(/\s+/)
+  const viewportUnit = (classes: string[]) => classes.filter((c) => /\d*[sdl]?vh\b|-screen\b/.test(c))
+  await mount({ open: false })
+  expect(container()).toContain('h-band')
+  expect(viewportUnit(container())).toEqual([])
+  const nav = document.querySelector<HTMLElement>('nav[aria-label="Sidebar"]')!
+  expect(nav.className.split(/\s+/)).toEqual(expect.arrayContaining(['flex-1', 'min-h-0', 'overflow-y-auto']))
+  expect(nav.querySelector('[aria-label="New chat"]')).not.toBeNull()
+  expect(nav.querySelector('[data-rail-sections]')).not.toBeNull()
+  // Its header and Settings keep their size; only the middle gives way.
+  expect(nav.previousElementSibling!.className).toContain('shrink-0')
+  expect(nav.nextElementSibling!.className).toContain('shrink-0')
+  await click(document.querySelector<HTMLButtonElement>('button[aria-label="Expand sidebar"]')!)
+  expect(container()).toContain('h-band')
+  expect(viewportUnit(container())).toEqual([])
+})
+
 test('the rail\'s Chat opens a new chat; Talk talks where the row would', async () => {
   vi.mocked(talk.open).mockResolvedValueOnce('t2')
   await mount({ open: false })
