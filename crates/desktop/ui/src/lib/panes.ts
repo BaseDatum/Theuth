@@ -10,7 +10,7 @@ import { useEffect } from 'react'
 import { create } from 'zustand'
 import { type LayoutDocument, type LayoutNode, type PanelNode, type Placement, sanitize, type ViewInfo, type ViewRecord, type WorkspaceHandle } from '@danfessler/trellis'
 import { useEngines } from '@/link/engines'
-import { openPopout } from '@/lib/popout'
+import { openPopout, POPOUT } from '@/lib/popout'
 import { isWeb, type WebView, useWebViews, webId, webLeaf } from '@/lib/web-views'
 
 /** Where a view lands beside `target`: one of its panel's edges (a split), `tab` (a tab of its panel, made active) or
@@ -72,6 +72,8 @@ export function ownerOf(leaf: string, record: ViewRecord | undefined): string {
 
 /** Persisted per machine (localStorage) by Trellis itself; `VERSION` drops documents of an older shape. */
 export const STORAGE_KEY = 'theuth.panes'
+/** A pop-out window shows the one chat it was opened for: it neither reads nor writes the main window's layout. */
+export const PERSIST = !POPOUT
 export const VERSION = 1
 
 type PanesStore = {
@@ -576,7 +578,7 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
     try {
       const doc = ws.getDocument()
       mirror(doc)
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...doc, version: VERSION }))
+      if (PERSIST) localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...doc, version: VERSION }))
     } catch {
       // Storage full or unavailable: Trellis's own debounced save is all there is.
     }
@@ -593,6 +595,7 @@ export function resetPanes(): void {
 
 /** `fn` applied to the persisted document; a garbled one is removed. */
 function editStored(fn: (doc: LayoutDocument) => LayoutDocument): void {
+  if (!PERSIST) return
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return

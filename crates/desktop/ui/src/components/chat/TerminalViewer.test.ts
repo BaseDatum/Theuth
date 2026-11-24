@@ -20,7 +20,7 @@ vi.mock('@/store/sessions', () => ({ useSessionField: () => null }))
 vi.mock('@/lib/platform', async (original) => ({ ...(await original<object>()), touch: () => touch() }))
 vi.mock('@/lib/chord', () => ({ isApple: () => true }))
 vi.mock('@/lib/owner', () => ({ useEngineLabel: (owner: string) => owner }))
-vi.mock('@/lib/popout', () => ({ canPopout: () => false, openPopout: async () => undefined }))
+vi.mock('@/lib/popout', () => ({ POPOUT: null, canPopout: () => false, openPopout: async () => undefined }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 
 /** The slice of xterm `attachSource` touches. */

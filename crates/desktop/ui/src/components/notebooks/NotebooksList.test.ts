@@ -20,7 +20,7 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 vi.mock('@/components/ui/sidebar', () => ({ useSidebar: () => ({ open: true, isMobile: false, toggleSidebar: () => {} }) }))
 vi.mock('@/components/sidebar/SearchTrigger', () => ({ SearchTrigger: () => null }))
-vi.mock('@/lib/popout', () => ({ isPopout: () => false, canPopout: () => true, openPopout: vi.fn() }))
+vi.mock('@/lib/popout', () => ({ POPOUT: null, isPopout: () => false, canPopout: () => true, openPopout: vi.fn() }))
 vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client: { call: vi.fn() }, discovery: { phase: 'legacy' } }) }))
 vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({ doc_markdown: async () => '' }) }))
