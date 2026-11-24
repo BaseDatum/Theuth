@@ -23,6 +23,7 @@ const task = (id: string, over: Partial<Task> = {}): Task => ({
   parent: null,
   priority: 'medium',
   project: 'p',
+  resolved_blockers: [],
   reviewer: null,
   schedule: null,
   state: 'todo',

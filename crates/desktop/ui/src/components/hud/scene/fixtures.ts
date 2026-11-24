@@ -32,6 +32,7 @@ const task = (id: string, title: string, owner: string, state: Task['state'], up
   owner: owner === 'user' ? { type: 'user' } : { type: 'agent', name: owner },
   state,
   reviewer: null,
+  resolved_blockers: [],
   blockers: [],
   blocks: [],
   parent: null,

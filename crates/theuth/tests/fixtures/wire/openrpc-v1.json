@@ -32165,6 +32165,151 @@
           }
         ]
       },
+      "event.tasks_2echanged.output.TaskChangeKind": {
+        "description": "What a [`TaskChanged`] reports.",
+        "oneOf": [
+          {
+            "const": "created",
+            "description": "A new task.",
+            "type": "string"
+          },
+          {
+            "const": "updated",
+            "description": "Any field (title, brief, priority, project, blockers, owner, …) but the state.",
+            "type": "string"
+          },
+          {
+            "const": "moved",
+            "description": "The state.",
+            "type": "string"
+          },
+          {
+            "const": "commented",
+            "description": "A comment or progress note in the thread.",
+            "type": "string"
+          },
+          {
+            "const": "deleted",
+            "description": "The row is gone.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.tasks_2echanged.output.TaskChanged": {
+        "description": "Bus event (214 D3): a task row changed — the UI's live board and graph refetch on it.",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.tasks_2echanged.output.TaskId"
+              }
+            ],
+            "description": "The task."
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.tasks_2echanged.output.TaskChangeKind"
+              }
+            ],
+            "description": "What changed."
+          },
+          "project": {
+            "description": "Its project label after the change.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "const": "TaskChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project",
+          "kind",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.tasks_2echanged.output.TaskId": {
+        "description": "Task id: uuidv7 as text.",
+        "type": "string"
+      },
+      "event.tasks_2echanged.receiver.TaskChangeKind": {
+        "description": "What a [`TaskChanged`] reports.",
+        "oneOf": [
+          {
+            "const": "created",
+            "description": "A new task.",
+            "type": "string"
+          },
+          {
+            "const": "updated",
+            "description": "Any field (title, brief, priority, project, blockers, owner, …) but the state.",
+            "type": "string"
+          },
+          {
+            "const": "moved",
+            "description": "The state.",
+            "type": "string"
+          },
+          {
+            "const": "commented",
+            "description": "A comment or progress note in the thread.",
+            "type": "string"
+          },
+          {
+            "const": "deleted",
+            "description": "The row is gone.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.tasks_2echanged.receiver.TaskChanged": {
+        "description": "Bus event (214 D3): a task row changed — the UI's live board and graph refetch on it.",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.tasks_2echanged.receiver.TaskId"
+              }
+            ],
+            "description": "The task."
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.tasks_2echanged.receiver.TaskChangeKind"
+              }
+            ],
+            "description": "What changed."
+          },
+          "project": {
+            "description": "Its project label after the change.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "const": "TaskChanged",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.tasks_2echanged.receiver.TaskId": {
+        "description": "Task id: uuidv7 as text.",
+        "type": "string"
+      },
       "event.telegram_2eevents.output.SessionId": {
         "description": "Identifies a conversation; every event carries one.",
         "format": "uuid",
@@ -104756,6 +104901,14 @@
             },
             "type": "array"
           },
+          "blockers": {
+            "default": [],
+            "description": "Task ids or `decision:<id>` / `person:<name>` entries this task waits on — the\ndependency edges of a plan, set at create time. Checked as in `task_update`: duplicates\ndropped; an unknown task id or a list that would form a cycle refused. A `todo` task\nwith an open blocker is created `blocked`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "brief": {
             "description": "Markdown.",
             "type": "string"
@@ -107407,6 +107560,14 @@
               "null"
             ]
           },
+          "resolved_blockers": {
+            "default": [],
+            "description": "214 A1: task ids that were in `blockers` until that task closed (done/cancelled) —\nthe finished dependencies, kept for the graph. A manual removal does not add here.",
+            "items": {
+              "$ref": "#/components/schemas/method.roster.output.TaskId"
+            },
+            "type": "array"
+          },
           "reviewer": {
             "anyOf": [
               {
@@ -107479,6 +107640,7 @@
           "reviewer",
           "blockers",
           "blocks",
+          "resolved_blockers",
           "parent",
           "project",
           "where",
@@ -109807,6 +109969,14 @@
               "string",
               "null"
             ]
+          },
+          "resolved_blockers": {
+            "default": [],
+            "description": "214 A1: task ids that were in `blockers` until that task closed (done/cancelled) —\nthe finished dependencies, kept for the graph. A manual removal does not add here.",
+            "items": {
+              "$ref": "#/components/schemas/method.roster.receiver.TaskId"
+            },
+            "type": "array"
           },
           "reviewer": {
             "anyOf": [
@@ -126994,6 +127164,14 @@
               "null"
             ]
           },
+          "resolved_blockers": {
+            "default": [],
+            "description": "214 A1: task ids that were in `blockers` until that task closed (done/cancelled) —\nthe finished dependencies, kept for the graph. A manual removal does not add here.",
+            "items": {
+              "$ref": "#/components/schemas/method.tasks.output.TaskId"
+            },
+            "type": "array"
+          },
           "reviewer": {
             "anyOf": [
               {
@@ -127066,6 +127244,7 @@
           "reviewer",
           "blockers",
           "blocks",
+          "resolved_blockers",
           "parent",
           "project",
           "where",
@@ -127479,6 +127658,14 @@
               "string",
               "null"
             ]
+          },
+          "resolved_blockers": {
+            "default": [],
+            "description": "214 A1: task ids that were in `blockers` until that task closed (done/cancelled) —\nthe finished dependencies, kept for the graph. A manual removal does not add here.",
+            "items": {
+              "$ref": "#/components/schemas/method.tasks.receiver.TaskId"
+            },
+            "type": "array"
           },
           "reviewer": {
             "anyOf": [
@@ -152078,6 +152265,16 @@
           "$ref": "#/components/schemas/event.tasks_2eactivity.output.ActivityAppended"
         },
         "topic": "tasks.activity",
+        "version": 1
+      },
+      {
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.tasks_2echanged.receiver.TaskChanged"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.tasks_2echanged.output.TaskChanged"
+        },
+        "topic": "tasks.changed",
         "version": 1
       },
       {
