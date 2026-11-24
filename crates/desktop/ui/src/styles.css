@@ -11,6 +11,9 @@
 @source inline("{text,bg}-project-{ochre,carnelian,malachite,faience,lapis,nile,umber,slate,sand,plum}");
 
 @custom-variant dark (&:is(.dark *):not(:where([data-snapshot-light], [data-snapshot-light] *)));
+/* 217: the iOS shell (iPad, iPhone in landscape). `<html data-container>` is set at boot (lib/platform.ts `markContainer`),
+   so this is pure CSS with no layout flash. `:is()` keeps the attribute's weight: an `ios:` utility beats its plain twin. */
+@custom-variant ios (&:is([data-container="ios"] *));
 /* OpenUI 0.18's typography shorthands name "Inter" directly; expose the bundled variable face under that family too. */
 @font-face {
   font-family: "Inter";

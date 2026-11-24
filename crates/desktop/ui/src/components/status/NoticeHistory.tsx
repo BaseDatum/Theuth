@@ -92,7 +92,9 @@ export function NoticeHistory({ open, onOpenChange, children }: { open: boolean;
         side="top"
         align="end"
         sideOffset={4}
-        className="flex max-h-[min(420px,70vh)] w-[340px] flex-col overflow-hidden p-0"
+        // iOS: the bar's content is inset from the corners; the right margin widens the popper wrapper, so the card's
+        // right edge lines up with the bar's last item.
+        className="flex max-h-[min(420px,70vh)] w-[340px] flex-col overflow-hidden p-0 ios:mr-[max(var(--safe-right),28px)]"
         // Focus would land on Clear, one Enter away from wiping the history.
         onOpenAutoFocus={(e) => e.preventDefault()}
         // The anchor is not a trigger, so Radix has nowhere to return focus: back to the slot that opened it.

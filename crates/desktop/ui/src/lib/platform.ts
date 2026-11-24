@@ -17,6 +17,11 @@ export function container(): Container {
   return navigator.maxTouchPoints > 1 ? 'ios' : 'macos'
 }
 
+/** Marks `<html data-container>` once at boot, before the first render, so CSS can key on the shell (the `ios:` variant). */
+export function markContainer(): void {
+  document.documentElement.dataset.container = container()
+}
+
 /** A desktop shell with its own daemon beside it (macOS, Linux, Windows): host paths, native drop, autostart, tray, global shortcuts. */
 export const isDesktop = (): boolean => {
   const c = container()
