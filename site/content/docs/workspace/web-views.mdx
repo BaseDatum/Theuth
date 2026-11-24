@@ -46,7 +46,7 @@ An iPhone and iPad app with native tiles exists in development but is not releas
 
 ## The shared browser profile
 
-The tile and the agent's headless browser (the `browser_*` tools, see [Browser and desktop](/docs/automation/browser-desktop)) use one cookie profile. Sign into a site in a tile and the agent's browser on any of your machines continues that signed-in session within seconds; a session the agent's browser establishes works in the tile too.
+The tile and the agent's headless browser (the `browser_*` tools, see [Browser and desktop](/docs/automation/browser-desktop)) use one cookie profile. Sign into a site in a tile and the agent's browser on any of your machines continues that signed-in session within seconds. The agent's browser writes back only to sites the profile already holds (a refreshed cookie, for example); a site it signs into on its own stays signed in for that session only, so new sites enter the profile through a tile.
 
 The profile replicates across your mesh sealed with the mesh key. It is never written into the session database, logs, transcripts, tool results or events, and the stored rows do not name the sites they hold.
 
