@@ -340,6 +340,7 @@ async fn local_summary_call_switches_thinking_off_by_chat_template() {
             base_url: "https://api.rwx.example/v1/".into(),
             key: "k".into(),
             runtime: None,
+            protocol: None,
         },
     );
     let mut cloud = zero_model("rwx");
@@ -520,6 +521,7 @@ fn lan_gateway_is_local_but_gets_no_thinking_kwargs() {
         base_url: "http://10.0.0.5:4000/v1/".into(),
         key: "sk".into(),
         runtime: None,
+        protocol: None,
     };
     assert!(lan.local() && !lan.on_this_machine());
     auth.gateways

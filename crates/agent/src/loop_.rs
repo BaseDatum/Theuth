@@ -13047,6 +13047,7 @@ mod tests {
                     base_url,
                     key: "k".into(),
                     runtime: None,
+                    protocol: None,
                 },
             );
         let model = Resolved {

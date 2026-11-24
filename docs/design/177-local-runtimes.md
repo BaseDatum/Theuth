@@ -160,11 +160,15 @@ type SummaryTest = {
 
 ### Storage
 
-- `providers.yaml`: `<name>: {base_url, runtime?, owns_key?}`; a local row loads
+- `providers.yaml`: `<name>: {base_url, runtime?, owns_key?, protocol?}`; a local row loads
   with no vault key (keyless). `owns_key: false` marks a keyless add: its
   remove (or a later keyless add) never deletes the vault secret of the same
   name, which may be the user's own (genai's `omlx` key). Rows without the
   field (pre-177) own their key.
+  `protocol: openai | gemini | anthropic` (hand-set, later than 177) picks the
+  genai adapter; absent is OpenAI chat completions, or native Gemini on
+  `generativelanguage.googleapis.com` (a trailing `openai/` is dropped from
+  the URL for it). A re-add of the same URL keeps it.
 - user `models.json`: a provider block may carry `"local": true`; a model's
   `limit` may carry `"source": "server" | "user"` (absent = unknown). Files
   without these fields load as before.

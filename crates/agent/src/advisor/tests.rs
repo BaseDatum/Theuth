@@ -218,6 +218,7 @@ impl Rig {
                     base_url: format!("{}/v1/", server.uri()),
                     key: "k".into(),
                     runtime: None,
+                    protocol: None,
                 },
             );
         let rt = a.rt.clone();
