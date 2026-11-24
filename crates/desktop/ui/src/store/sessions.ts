@@ -92,6 +92,9 @@ export type Entry = { id: string; context?: ContextEntry; at?: number } & (
       skill?: string;
       /** Attachment paths sent with the text: optimistic, our own sends only; `context.attachments` supersedes it once stored. */
       files?: string[];
+      /** Drawn from another client's `TurnStarted` echo, which carries no attachments: the stored row's `context` (its
+       * `attachments`) is read mid-turn and copied on (`stampStored`), so its images show before the turn ends. */
+      echo?: true;
       /** Seq of this row when it opens a turn (29 §5.1); steers and engine notes have none. */
       turn?: number;
       /** 172 D3: the channel that delivered it (Slack, Signal, Telegram); absent for desktop input and rows stored before 172. */
