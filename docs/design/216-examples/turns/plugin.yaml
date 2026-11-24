@@ -1,0 +1,30 @@
+# docs/design/216-examples/turns/plugin.yaml — design 216 §13.1
+name: turns
+version: 0.1.0
+description: Counts finished turns today; the sidebar dot turns amber past a daily limit.
+protocol: 1
+run: [python3, main.py]
+env:
+  TURNS_LIMIT: "50"
+subscribe:
+  - topic: agent.events
+    types: [TurnFinished]
+emits:
+  limit_reached:
+    description: The daily turn count reached TURNS_LIMIT.
+    schema:
+      type: object
+      required: [day, turns]
+      properties:
+        day: {type: string}
+        turns: {type: integer}
+placements:
+  - id: turns
+    kind: sidebar
+    open: popover
+    icon: gauge
+    label: Turns today
+    status: true
+    scope: global
+    size: {width: 320, height: 220}
+capabilities: []
