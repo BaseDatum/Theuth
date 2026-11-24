@@ -5,6 +5,7 @@ import { Briefcase, ChevronDown, ChevronRight, MessagesSquare, MoreHorizontal, P
 import { type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { openNewChat } from '@/components/chat/NewChatPane'
+import { useSessionDrag } from '@/components/chat/Panes'
 import { errorText } from '@/components/settings/shared'
 import { keys } from '@/components/tasks/queries'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -111,7 +112,8 @@ function useRailPopover() {
     leave: (e: PointerEvent) => {
       if (e.pointerType !== 'mouse') return
       cancel()
-      timer.current = setTimeout(() => setOpen((o) => (o?.via === 'hover' ? null : o)), CLOSE_DELAY)
+      // Not while a row of it is being dragged: its source row holds the pointer capture, and unmounting it would end the drag.
+      timer.current = setTimeout(() => !usePanes.getState().drag && setOpen((o) => (o?.via === 'hover' ? null : o)), CLOSE_DELAY)
     },
     click: (key: string, how: Via) => {
       if (open?.key === key && open.via !== 'hover') {
@@ -160,6 +162,9 @@ function RailPopover({
   children: ReactNode
 }) {
   const pointer = useRef<string>('mouse')
+  // A row dragged out of it toward a pane: the popover stays mounted (the row holds the pointer capture; unmounting
+  // it would end the drag) but steps aside — unseen and unhit, so `targetAt` finds the panes under it.
+  const dragging = usePanes((s) => s.drag !== null)
   return (
     <Popover open={pop.open?.key === id} onOpenChange={(o) => !o && pop.dismiss(id)}>
       <PopoverTrigger asChild>
@@ -199,7 +204,8 @@ function RailPopover({
         alignOffset={-6}
         collisionPadding={8}
         aria-label={label}
-        className="flex max-h-(--radix-popover-content-available-height) w-80 flex-col overflow-y-auto rounded-xl p-1.5"
+        data-dragging={dragging || undefined}
+        className={cn('flex max-h-(--radix-popover-content-available-height) w-80 flex-col overflow-y-auto rounded-xl p-1.5', dragging && 'pointer-events-none invisible')}
         onPointerEnter={(e) => e.pointerType === 'mouse' && pop.cancel()}
         onPointerLeave={pop.leave}
         onOpenAutoFocus={(e) => pop.via.current !== 'key' && e.preventDefault()}
@@ -309,6 +315,8 @@ function PopChat({
   pop: Pop
 }) {
   const title = useRowTitle(s.id, s.title, s.created_at)
+  // The expanded row's drag source: the same press-drag into a pane (`useSessionDrag`); a drag swallows the click.
+  const drag = useSessionDrag(s.id, title)
   const [editing, setEditing] = useState<RowEdit | null>(null)
   const [menu, setMenu] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -332,7 +340,7 @@ function PopChat({
   return (
     <>
       <div className={cn('group/pop-row relative flex items-center rounded-md', recent && 'opacity-70')}>
-        <Link to="/c/$session" params={{ session: s.id }} data-rail-item data-active={active || undefined} title={title} className={cn(POP_ROW, 'min-w-0 flex-1')} onClick={pop.close}>
+        <Link to="/c/$session" params={{ session: s.id }} {...drag} data-rail-item data-active={active || undefined} title={title} className={cn(POP_ROW, 'min-w-0 flex-1')} onClick={pop.close}>
           <SessionActivity id={s.id} here={s.here} running={s.running} />
           <SessionPending id={s.id} />
           <span className="min-w-0 flex-1 truncate">{title}</span>
@@ -402,16 +410,24 @@ function PopChat({
           <ul aria-label="Running subagents">
             {running.map((r) => (
               <li key={r.id}>
-                <Link to="/c/$session" params={{ session: r.id }} data-rail-item className={cn(POP_ROW, 'h-7 pl-6 text-xs')} onClick={pop.close}>
-                  <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-success" aria-hidden />
-                  <span className="min-w-0 flex-1 truncate">{r.name}</span>
-                </Link>
+                <PopSubagent {...r} onPick={pop.close} />
               </li>
             ))}
           </ul>
         )
       )}
     </>
+  )
+}
+
+/** A running subagent listed under its chat: opens it, or drags into a pane like the expanded tree's rows. */
+function PopSubagent({ id, name, onPick }: { id: string; name: string; onPick(): void }) {
+  const drag = useSessionDrag(id, name)
+  return (
+    <Link to="/c/$session" params={{ session: id }} {...drag} data-rail-item className={cn(POP_ROW, 'h-7 pl-6 text-xs')} onClick={onPick}>
+      <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-success" aria-hidden />
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+    </Link>
   )
 }
 
@@ -488,6 +504,16 @@ export function RailSections({ active }: { active: string | undefined }) {
   const leaves = usePanes((s) => s.leaves)
   const inPane = useMemo(() => new Set([...chatLeaves(leaves), ...(active ? [active] : [])]), [leaves, active])
   const pop = useRailPopover()
+  // A drag out of the popover ended (dropped on a pane or cancelled): the popover it stepped aside from closes.
+  const dragging = usePanes((s) => s.drag !== null)
+  const dragged = useRef(false)
+  useEffect(() => {
+    if (dragging) dragged.current = pop.open !== null
+    else if (dragged.current) {
+      dragged.current = false
+      pop.close()
+    }
+  }, [dragging]) // eslint-disable-line react-hooks/exhaustive-deps
   const showAll = (key: string) => {
     pop.close()
     revealSection(key)

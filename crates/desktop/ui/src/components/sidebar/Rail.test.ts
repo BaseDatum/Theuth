@@ -16,6 +16,7 @@ import { useSessions } from '@/store/sessions'
 import { empty } from '@/store/reduce'
 import type { AgentInfo } from '@/store/ui-events'
 import { CLOSE_DELAY, POPOVER_CAP, RailSections, railSections, workspaceTarget } from './Rail'
+import { SessionItem } from './SessionItem'
 
 const s = (id: string, project: string | null, updated_at: string, pinned = false): SessionSummary =>
   receiveComponent('method.agent.output.SessionSummary', {
@@ -363,4 +364,58 @@ test('a chat row has its ⋯ menu: opening it keeps the popover; Pin acts in pla
   await key(input, 'Enter')
   expect(api.rename_session).toHaveBeenCalledExactlyOnceWith('v1', 'Listings')
   expect(popover()).not.toBeNull()
+})
+
+test('a popover chat row drags into the panes exactly as the expanded row does; the popover steps aside, then closes', async () => {
+  // jsdom has no pointer capture; the press-drag sets it on its source row.
+  Object.assign(window.HTMLElement.prototype, { setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture: () => false })
+  const pointer = (el: Element, type: string, x: number) =>
+    act(async () => {
+      const e = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: 10 })
+      Object.defineProperties(e, { pointerType: { value: 'mouse' }, pointerId: { value: 1 } })
+      el.dispatchEvent(e)
+    })
+  /** Press, travel past the slop, and report the drag the panes see mid-gesture. */
+  const drag = async (row: Element) => {
+    await pointer(row, 'pointerdown', 10)
+    await pointer(row, 'pointermove', 60)
+    const live = usePanes.getState().drag
+    return live && { session: live.session, title: live.title }
+  }
+
+  await mount()
+  await click(icon('p:verified-listings'))
+  const row = popover()!.querySelector<HTMLAnchorElement>('a[href="/c/v1"]')!
+  expect(row.getAttribute('draggable')).toBe('false')
+  expect(row.hasAttribute('data-drag-row')).toBe(true)
+  const fromPopover = await drag(row)
+  expect(fromPopover).toEqual({ session: 'v1', title: 'Chat v1' })
+  // Mid-drag the popover is still mounted (its row holds the gesture) but unseen and unhit.
+  expect(popover()!.className).toContain('pointer-events-none')
+  expect(popover()!.className).toContain('invisible')
+  await pointer(row, 'pointerup', 60)
+  // The click that follows a drag is the drag's: no navigation; the popover closes once the drag is over.
+  await click(row)
+  expect(navigate).not.toHaveBeenCalled()
+  expect(usePanes.getState().drag).toBeNull()
+  expect(popover()).toBeNull()
+
+  // The expanded sidebar's row for the same chat: the same source, the same payload.
+  const host = document.body.appendChild(document.createElement('div'))
+  const root = createRoot(host)
+  const client = new QueryClient()
+  const v1 = env.sessions.find((x) => x.id === 'v1')!
+  await act(async () =>
+    root.render(
+      h(QueryClientProvider, { client }, h(SidebarProvider, null, h(SessionItem, {
+        id: 'v1', title: v1.title, created: v1.created_at, tags: [], pinned: false, archived: false, project: v1.project, owner: '', epoch: 1,
+        here: true, running: false, endless: false, subagents: undefined, active: false, selected: false, selecting: false, select: () => {},
+      }))),
+    ),
+  )
+  const expanded = host.querySelector<HTMLAnchorElement>('a[href="/c/v1"]')!
+  expect(expanded.getAttribute('draggable')).toBe('false')
+  expect(await drag(expanded)).toEqual(fromPopover)
+  await pointer(expanded, 'pointerup', 60)
+  await act(async () => root.unmount())
 })
