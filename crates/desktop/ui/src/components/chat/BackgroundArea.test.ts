@@ -19,7 +19,7 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 vi.mock('@/components/ui/sidebar', () => ({ useSidebar: () => ({ isMobile: false }) }))
 vi.mock('@/rpc/capabilities', () => ({ useQuerySupport: () => true }))
-vi.mock('@/lib/popout', () => ({ canPopout: () => true, openPopout: vi.fn(async () => {}) }))
+vi.mock('@/lib/popout', () => ({ POPOUT: null, canPopout: () => true, openPopout: vi.fn(async () => {}) }))
 const jobs: JobView[] = [
   { session: 's1', id: 'j1', command: 'mbx test -p tools', state: 'running', secs: 41, log: '/log', tail: '', name: null, pty: false },
   { session: 's1', id: 'j2', command: 'python3 -q', state: 'running', secs: 62, log: '/log', tail: '', name: null, pty: true },

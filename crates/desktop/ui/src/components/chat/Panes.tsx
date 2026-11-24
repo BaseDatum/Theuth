@@ -17,6 +17,7 @@ import {
   picked,
   prepareStored,
   shown,
+  PERSIST,
   STORAGE_KEY,
   tileType,
   usePanes,
@@ -172,7 +173,7 @@ function Prepared(p: { session: string; types: string[]; icons: Icons; sessions:
   const { session, types, icons, sessions, render, navigate } = p
   const engine = useEngines((s) => s.active)
   // Once, before the workspace reads the persisted layout (its mount, below).
-  useState(() => prepareStored({ engine, sessions: sessions && new Set(sessions), types: new Set(types) }))
+  useState(() => PERSIST && prepareStored({ engine, sessions: sessions && new Set(sessions), types: new Set(types) }))
   const [initial] = useState(() => L.view(CHAT, { id: session, params: { engine } }))
   const go = useRef(navigate)
   go.current = navigate
@@ -192,7 +193,7 @@ function Prepared(p: { session: string; types: string[]; icons: Icons; sessions:
         navigation="focus"
         keymap={KEYMAP}
         panelMenu={panelMenu}
-        storageKey={STORAGE_KEY}
+        storageKey={PERSIST ? STORAGE_KEY : undefined}
         version={VERSION}
         defaultLayout={initial}
         onMissingType={() => 'drop'}

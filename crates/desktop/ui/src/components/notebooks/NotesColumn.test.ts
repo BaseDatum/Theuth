@@ -20,7 +20,7 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }))
 vi.mock('@/store/sessions', () => ({ on: () => () => {} }))
 vi.mock('@/store/connection', () => ({ useConnection: (pick: (s: unknown) => unknown) => pick({ client: {} , discovery: { phase: 'legacy' } }) }))
-vi.mock('@/lib/popout', () => ({ canPopout: () => false, noteOpenMode: () => 'navigate', openPopout: vi.fn() }))
+vi.mock('@/lib/popout', () => ({ POPOUT: null, canPopout: () => false, noteOpenMode: () => 'navigate', openPopout: vi.fn() }))
 vi.mock('@/lib/citations', () => ({ provenanceOf: (md: string) => (md.includes('*Answer from [') ? 'chat' : null) }))
 vi.mock('@/components/chat/Citations', () => ({ citationCount: () => 2, CitationLink: () => null }))
 vi.mock('@/components/notebooks/NotebookContext', () => ({ useNotebookSession: () => 'sess1', useEnsureNotebookSession: () => async () => 'sess1' }))
