@@ -1140,4 +1140,8 @@ html .bn-root .theuth-cite-pulse {
 }
 .trellis [data-trellis-part='content'] {
   overflow: hidden;
+  /* Trellis sets its font size and line height on the whole workspace; that is for its chrome (tabs, menus). A view's
+     own text inherits the app's body type, as it did before Trellis. */
+  font-size: 1rem;
+  line-height: var(--default-line-height, 1.5);
 }
