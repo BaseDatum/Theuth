@@ -46,7 +46,7 @@ function File({ tile, first, close }: TileRender) {
       tab={p.path.split('/').pop() || p.title}
       meta={meta}
       controls={<ViewControls refresh={() => void q.refetch()} fetching={q.isFetching} text={data?.text} what="file" />}
-      popOut={() => void openPopout({ kind: 'file', session: p.session, path: p.path, line: p.line, end_line: p.end_line })}
+      popOut={() => openPopout({ kind: 'file', session: p.session, path: p.path, line: p.line, end_line: p.end_line })}
     >
       <FileView session={p.session} path={p.path} lang={p.lang} line={p.line} end={p.end_line} className="flex-1" />
     </TileFrame>

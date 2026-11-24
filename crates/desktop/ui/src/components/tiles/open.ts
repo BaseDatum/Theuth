@@ -9,7 +9,7 @@ import { useSessions } from '@/store/sessions'
 
 /** A tile kind's Open in new window when it has no window of its own (`TileFrame`'s `popOut`): the tile alone in
  * the generic tile window (`lib/popout.ts` kind `tile`), drawn by the same kind over the same props. */
-export const popOutTile = (tile: Tile) => (): void => void openPopout({ kind: 'tile', tile: tile.kind, session: tile.session, props: tile.props })
+export const popOutTile = (tile: Tile) => (): Promise<void> => openPopout({ kind: 'tile', tile: tile.kind, session: tile.session, props: tile.props })
 
 /** The artifact (or app draft) the session's one artifact tile shows. */
 export type ArtifactProps = { callId: string }

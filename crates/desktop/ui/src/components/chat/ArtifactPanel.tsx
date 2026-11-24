@@ -79,7 +79,7 @@ export type ArtifactParts = {
   title: string;
   meta: string;
   controls: ReactNode;
-  popOut?: () => void;
+  popOut?: () => Promise<unknown>;
   body: ReactNode;
 };
 

@@ -10,7 +10,7 @@ import { Capability } from '@/rpc/capabilities'
  * desktop there — the tile closes once the window opened (a refusal leaves it), so one RFB session per VM is on screen. */
 function VmTile({ tile, first, close }: TileRender) {
   const { name } = tile.props as VmProps
-  const popOut = () => void openPopout({ kind: 'vm', name }).then(close, (e: unknown) => console.warn('open_window', e))
+  const popOut = () => openPopout({ kind: 'vm', name })
   return (
     <TileFrame first={first} onClose={close} title={name} popOut={popOut}>
       <Capability required={requirements}>

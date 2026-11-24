@@ -93,7 +93,7 @@ export type PanelRoute = { tab: Tab; nav: MapNav; onRoute(tab: Tab, nav: MapNav,
 
 /** The header handed to an outer frame (the desktop tile's `TileFrame`) instead of drawn inline: the status line as
  * `meta`, the root picker and lens controls as `controls`, Open in new window as `popOut`; `body` is the rest. */
-export type PanelChrome = (p: { meta: string; controls: ReactNode; popOut?: () => void; body: ReactNode }) => ReactNode
+export type PanelChrome = (p: { meta: string; controls: ReactNode; popOut?: () => Promise<unknown>; body: ReactNode }) => ReactNode
 
 /** `onRoot` switches the shown root (default: the session's docked/sheet panel); `chrome` takes the header (see `PanelChrome`). */
 export function CodeMapPanel({
@@ -334,10 +334,10 @@ export function CodeMapPanel({
     setTab(lens.auto)
     setLens(follow)
   }
-  const openPopped = () => {
+  const openPopped = async () => {
     if (!realRoot) return
     localStorage.setItem(POPOUT_STATE_KEY, JSON.stringify({ key: `${session}:${realRoot}`, tab, nav }))
-    void openPopout({ kind: 'codemap', session, root: realRoot })
+    await openPopout({ kind: 'codemap', session, root: realRoot })
   }
 
   useEffect(() => {
@@ -516,7 +516,7 @@ export function CodeMapPanel({
       <nav className="ml-auto flex items-center gap-1" aria-label="Lens">
         {lensControls}
         {!popped && !mobile && !isPopout() && canPopout() && realRoot && (
-          <button type="button" className="inline-flex items-center rounded px-1.5 py-0.5 hover:bg-layer-2" title="Open in new window" aria-label="Open in new window" onClick={openPopped}>
+          <button type="button" className="inline-flex items-center rounded px-1.5 py-0.5 hover:bg-layer-2" title="Open in new window" aria-label="Open in new window" onClick={() => void openPopped().catch((e: unknown) => console.warn('open_window', e))}>
             <AppWindow className="size-3" />
           </button>
         )}

@@ -6,11 +6,11 @@ import type { Tile } from '@/lib/tiles'
 
 // Every tile kind's header must carry Open in new window. `TileFrame` is replaced by a probe that records the `popOut`
 // it was handed; the kinds' bodies are stubs (what they draw is not under test, only the header contract).
-const probe = vi.hoisted(() => ({ popOut: undefined as (() => void) | undefined, opened: [] as unknown[] }))
+const probe = vi.hoisted(() => ({ popOut: undefined as (() => unknown) | undefined, opened: [] as unknown[] }))
 
 vi.mock('@/components/tiles/TileFrame', () => ({
   TileAlone: createContext(false),
-  TileFrame: (p: { title: string; popOut?: () => void }) => {
+  TileFrame: (p: { title: string; popOut?: () => unknown }) => {
     probe.popOut = p.popOut
     return createElement('header', { 'data-title': p.title, 'data-popout': p.popOut ? 'yes' : 'no' })
   },
@@ -36,14 +36,14 @@ vi.mock('@/components/chat/ArtifactPanel', async () => {
   }
 })
 vi.mock('@/components/chat/ArtifactCard', () => ({
-  artifactPopout: (a: { call_id: string }) => () => probe.opened.push({ kind: 'artifact', callId: a.call_id }),
+  artifactPopout: (a: { call_id: string }) => async () => void probe.opened.push({ kind: 'artifact', callId: a.call_id }),
 }))
 vi.mock('@/components/chat/BrowserLive', () => ({ BrowserScreen: Stub }))
 vi.mock('@/components/codemap/CodeMapPanel', async () => {
   const { openPopout } = await import('@/lib/popout')
   return {
     CodeMapPanel: ({ chrome, session, root }: { chrome(p: unknown): ReactNode; session: string; root: string }) =>
-      chrome({ meta: '', controls: null, body: null, popOut: () => void openPopout({ kind: 'codemap', session, root }) }),
+      chrome({ meta: '', controls: null, body: null, popOut: () => openPopout({ kind: 'codemap', session, root }) }),
   }
 })
 vi.mock('@/components/codemap/requirements', () => ({ requirements: {} }))
@@ -150,8 +150,10 @@ test.each(Object.keys(SAMPLES))('the %s tile header carries Open in new window, 
   vi.stubGlobal('localStorage', store)
   const html = renderToStaticMarkup(createElement('div', null, TILE_KINDS[kind]!.render({ tile: tileOf(kind), first: false, close() {} })))
   expect(html).toContain('data-popout="yes"')
-  probe.popOut?.()
-  await Promise.resolve()
+  // The window's promise, not fire-and-forget: the frame closes the tile only once it resolved (`popOutAndClose`).
+  const opening = probe.popOut?.()
+  expect(opening).toBeInstanceOf(Promise)
+  await opening
   const target = probe.opened[0] as Popout.PopoutTarget
   expect(target.kind).toBe(WINDOW[kind] ?? 'tile')
   if (target.kind === 'tile') {

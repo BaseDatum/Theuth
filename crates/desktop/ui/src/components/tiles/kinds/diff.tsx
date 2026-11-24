@@ -24,7 +24,7 @@ function Diff({ tile, first, close }: TileRender) {
           <ViewControls refresh={() => void q.refetch()} fetching={q.isFetching} text={data?.text} what="patch" />
         </>
       }
-      popOut={() => void openPopout({ kind: 'diff', session: p.session, spec: p.spec })}
+      popOut={() => openPopout({ kind: 'diff', session: p.session, spec: p.spec })}
     >
       <div ref={ref} className="flex min-h-0 flex-1 flex-col">
         <DiffBody session={p.session} spec={p.spec} layout={layout} className="flex-1" />

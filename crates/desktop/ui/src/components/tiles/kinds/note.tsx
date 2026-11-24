@@ -33,7 +33,7 @@ function Note({ tile, first, close }: TileRender) {
   const body = useRef<HTMLDivElement>(null)
   useScrollToBlock(body, block)
   return (
-    <TileFrame title="Note" tab={noteTile.title(tile)} first={first} onClose={close} popOut={() => void openPopout({ kind: 'note', doc })}>
+    <TileFrame title="Note" tab={noteTile.title(tile)} first={first} onClose={close} popOut={() => openPopout({ kind: 'note', doc })}>
       <div ref={body} className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Capability required={panelRequirements}>
           <NoteView key={doc} id={doc} embedded hidePopout />

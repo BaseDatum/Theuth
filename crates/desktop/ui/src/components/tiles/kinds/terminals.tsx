@@ -33,7 +33,7 @@ function Terminals({ tile, first, close }: TileRender) {
           {job && elsewhere && <FocusWindowButton {...job} />}
         </>
       }
-      popOut={job ? () => void openPopout({ kind: 'pty', ...job }) : undefined}
+      popOut={job ? () => openPopout({ kind: 'pty', ...job }) : undefined}
       className="gap-2 p-2"
     >
       <TerminalScreen terminals={terminals} job={job} focus={false} />
@@ -57,7 +57,7 @@ export const jobTerminalTile: TileKind = {
         title={`Terminal · ${job}`}
         tab={label || undefined}
         meta={label}
-        popOut={() => void openPopout({ kind: 'pty', session, job })}
+        popOut={() => openPopout({ kind: 'pty', session, job })}
         className="gap-2 p-2"
       >
         <Terminal session={session} job={job} label={label} />

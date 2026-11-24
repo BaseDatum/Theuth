@@ -27,7 +27,7 @@ import { useViewBadge, useViewTitle } from '@danfessler/trellis-react'
 import { useViewDrag } from '@/hooks/use-view-drag'
 import { chatName } from '@/lib/attach'
 import { sharedLabel, useSharing } from '@/lib/contacts'
-import { chatTitle } from '@/components/tiles/TileFrame'
+import { chatTitle, popOutAndClose } from '@/components/tiles/TileFrame'
 import { type HeaderId, type Mode, approvalsOff as pillOff, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { canPopout, isPopout, openPopout, popoutOpen, type PopoutTarget } from '@/lib/popout'
@@ -391,10 +391,13 @@ export function Header({
     popout: (mode) => {
       const target = popout ?? (session ? ({ kind: 'chat', session } as const) : null)
       if (!target) return null
+      // A chat pane moved to its own window leaves this layout by its own Close (`onClose`, present only beside other
+      // chat panes): the pane alone goes, the session is untouched. A lone pane, a draft or a talk stays.
+      const pop = () => void (target.kind === 'chat' && onClose ? popOutAndClose(() => openPopout(target), onClose) : openPopout(target).catch((e: unknown) => console.warn('open_window', e)))
       return mode === 'row' ? (
-        <MenuRow icon={AppWindow} label="Open in new window" onSelect={() => void openPopout(target)} />
+        <MenuRow icon={AppWindow} label="Open in new window" onSelect={pop} />
       ) : (
-        <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Open in new window" onClick={() => void openPopout(target)}>
+        <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Open in new window" onClick={pop}>
           <AppWindow className="size-5" />
         </Button>
       )

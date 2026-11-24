@@ -1,4 +1,5 @@
 import { AppWindow, X } from 'lucide-react'
+import { toast } from 'sonner'
 import { createContext, type ReactNode, useContext } from 'react'
 import { SidebarToggle } from '@/components/chat/SidebarToggle'
 import { Button } from '@/components/ui/button'
@@ -16,6 +17,22 @@ import { useSessionField } from '@/store/sessions'
 
 /** A chat's title as its header shows it: a voice note's or spoken message's text, a channel message's preview. */
 export const chatTitle = (raw: string): string => parseNote(raw)?.body || parseSpoken(raw)?.text || previewText(raw)
+
+/**
+ * Open in new window, then the tile leaves this layout by its own Close (`onClose`: the pane closes, its siblings
+ * take the room, focus moves on — nothing else, its chat included, is touched). A window that failed to open leaves
+ * the tile where it is.
+ */
+export async function popOutAndClose(popOut: () => Promise<unknown>, onClose: () => void): Promise<boolean> {
+  try {
+    await popOut()
+  } catch (e) {
+    toast.error(`Could not open a window: ${e instanceof Error ? e.message : String(e)}`)
+    return false
+  }
+  onClose()
+  return true
+}
 
 /** True under `PoppedTile`: the tile is its window's whole content (`routes/tile.$kind.$session`). */
 export const TileAlone = createContext(false)
@@ -46,7 +63,8 @@ export function TileFrame({
   chat?: string
   meta?: ReactNode
   controls?: ReactNode
-  popOut?: () => void
+  /** Opens the tile's own window; once that worked the tile closes here (its Close), a failure leaves it and toasts. */
+  popOut?: () => Promise<unknown>
   onClose: () => void
   first?: boolean
   children: ReactNode
@@ -84,7 +102,7 @@ export function TileFrame({
         </div>
         {controls}
         {popOut && canPopout() && !popped && (
-          <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Open in new window" onClick={popOut}>
+          <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Open in new window" onClick={() => void popOutAndClose(popOut, onClose)}>
             <AppWindow className="size-5" />
           </Button>
         )}
