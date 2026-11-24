@@ -52,6 +52,7 @@ import { Route as SourcesIdRouteImport } from './routes/sources_.$id'
 import { Route as TalkSessionRouteImport } from './routes/talk.$session'
 import { Route as TasksIndexRouteImport } from './routes/tasks.index'
 import { Route as TasksIdRouteImport } from './routes/tasks.$id'
+import { Route as TasksGraphRouteImport } from './routes/tasks.graph'
 import { Route as VmNameRouteImport } from './routes/vm.$name'
 import { Route as WebIdRouteImport } from './routes/web.$id'
 import { Route as AgentsNameIndexRouteImport } from './routes/agents.$name.index'
@@ -277,6 +278,11 @@ const TasksIdRoute = TasksIdRouteImport.update({
   path: '/tasks/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TasksGraphRoute = TasksGraphRouteImport.update({
+  id: '/tasks/graph',
+  path: '/tasks/graph',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const VmNameRoute = VmNameRouteImport.update({
   id: '/vm/$name',
   path: '/vm/$name',
@@ -360,6 +366,7 @@ export interface FileRoutesByFullPath {
   '/sources/$id': typeof SourcesIdRoute
   '/talk/$session': typeof TalkSessionRoute
   '/tasks/$id': typeof TasksIdRoute
+  '/tasks/graph': typeof TasksGraphRoute
   '/vm/$name': typeof VmNameRoute
   '/web/$id': typeof WebIdRoute
   '/agents/': typeof AgentsIndexRoute
@@ -413,6 +420,7 @@ export interface FileRoutesByTo {
   '/sources/$id': typeof SourcesIdRoute
   '/talk/$session': typeof TalkSessionRoute
   '/tasks/$id': typeof TasksIdRoute
+  '/tasks/graph': typeof TasksGraphRoute
   '/vm/$name': typeof VmNameRoute
   '/web/$id': typeof WebIdRoute
   '/agents': typeof AgentsIndexRoute
@@ -468,6 +476,7 @@ export interface FileRoutesById {
   '/sources_/$id': typeof SourcesIdRoute
   '/talk/$session': typeof TalkSessionRoute
   '/tasks/$id': typeof TasksIdRoute
+  '/tasks/graph': typeof TasksGraphRoute
   '/vm/$name': typeof VmNameRoute
   '/web/$id': typeof WebIdRoute
   '/agents/': typeof AgentsIndexRoute
@@ -524,6 +533,7 @@ export interface FileRouteTypes {
     | '/sources/$id'
     | '/talk/$session'
     | '/tasks/$id'
+    | '/tasks/graph'
     | '/vm/$name'
     | '/web/$id'
     | '/agents/'
@@ -577,6 +587,7 @@ export interface FileRouteTypes {
     | '/sources/$id'
     | '/talk/$session'
     | '/tasks/$id'
+    | '/tasks/graph'
     | '/vm/$name'
     | '/web/$id'
     | '/agents'
@@ -631,6 +642,7 @@ export interface FileRouteTypes {
     | '/sources_/$id'
     | '/talk/$session'
     | '/tasks/$id'
+    | '/tasks/graph'
     | '/vm/$name'
     | '/web/$id'
     | '/agents/'
@@ -681,6 +693,7 @@ export interface RootRouteChildren {
   SourcesIdRoute: typeof SourcesIdRoute
   TalkSessionRoute: typeof TalkSessionRoute
   TasksIdRoute: typeof TasksIdRoute
+  TasksGraphRoute: typeof TasksGraphRoute
   VmNameRoute: typeof VmNameRoute
   WebIdRoute: typeof WebIdRoute
   AgentsIndexRoute: typeof AgentsIndexRoute
@@ -1001,6 +1014,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TasksIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/tasks/graph': {
+      id: '/tasks/graph'
+      path: '/tasks/graph'
+      fullPath: '/tasks/graph'
+      preLoaderRoute: typeof TasksGraphRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/vm/$name': {
       id: '/vm/$name'
       path: '/vm/$name'
@@ -1151,6 +1171,7 @@ const rootRouteChildren: RootRouteChildren = {
   SourcesIdRoute: SourcesIdRoute,
   TalkSessionRoute: TalkSessionRoute,
   TasksIdRoute: TasksIdRoute,
+  TasksGraphRoute: TasksGraphRoute,
   VmNameRoute: VmNameRoute,
   WebIdRoute: WebIdRoute,
   AgentsIndexRoute: AgentsIndexRoute,

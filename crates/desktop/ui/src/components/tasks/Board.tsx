@@ -1,5 +1,5 @@
 import { Link, getRouteApi } from '@tanstack/react-router'
-import { Blocks, Circle, Play, Plus } from 'lucide-react'
+import { Blocks, Circle, Network, Play, Plus } from 'lucide-react'
 import { type MutableRefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { SectionBand } from '@/components/nav/SectionBand'
 import { SectionRow } from '@/components/nav/SectionRow'
@@ -22,7 +22,7 @@ import { QueueBar, QueueList, useQueue, useQueueOpen } from './Queue'
 import { CardMenu } from './MoveHome'
 import { engines, homeEngine, isMuted, mutedTitle, onMachine } from './home'
 import { DRAG_STATES, STATES, age, canDrag, columns, nodesOf, ownerLabel, parseBlocker, stateChip } from './helpers'
-import { useAgents, useBoardProjects, useMesh, useMoveTask, useTasks } from './queries'
+import { useAgents, useBoardProjects, useLiveTasks, useMesh, useMoveTask, useTasks } from './queries'
 
 const route = getRouteApi('/tasks/')
 // Radix Select refuses '' as a value: `any` stands for no filter, `all` for every project, labels get a prefix.
@@ -75,6 +75,8 @@ export function Board() {
   const agents = useAgents()
   const mesh = useMesh()
   const move = useMoveTask()
+  // 214 D5: the board follows task changes made anywhere (an agent, another window).
+  useLiveTasks()
   const [creating, setCreating] = useState(false)
   // 115: the "does it need me" queue — collapsed by default, the choice kept per device.
   const queue = useQueue()
@@ -230,7 +232,12 @@ export function Board() {
           <Switch checked={search.cancelled === true} onCheckedChange={(v) => set({ cancelled: v || undefined })} />
           Cancelled
         </Label>
-        <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setCreating(true)}>
+        <Button asChild variant="ghost" size="sm" className="ml-auto">
+          <Link to="/tasks/graph" search={{ project }}>
+            <Network /> Graph
+          </Link>
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => setCreating(true)}>
           <Plus /> New task
         </Button>
       </SectionRow>

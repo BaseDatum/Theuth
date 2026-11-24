@@ -1,5 +1,6 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useEffect } from 'react'
 import { toast } from 'sonner'
 import { useProjects } from '@/components/chat/ProjectPicker'
 import { errorText } from '@/components/settings/shared'
@@ -11,6 +12,7 @@ import type { Task } from "@/rpc/bindings/method.roster.output"
 import type { TaskEvent } from "@/rpc/bindings/method.roster.output"
 import type { TaskFilter } from '@/rpc/bindings/method.roster.input'
 import type { TaskState } from "@/rpc/bindings/method.roster.output"
+import { on } from '@/store/sessions'
 import { ownerText } from './helpers'
 import { AGENTS, EVENTS, MESH, TASKS, mockOn } from './mock'
 
@@ -128,4 +130,39 @@ export function useInvalidateTasks() {
     void qc.invalidateQueries({ queryKey: keys.tasks })
     if (id) void qc.invalidateQueries({ queryKey: keys.taskEvents(id) })
   }
+}
+
+/** `on` for a topic this build may not know yet (`tasks.changed@1` lands with the next wire bindings): until the
+ * bindings carry it the client drops its events and the listener simply never fires. */
+const onLoose = on as unknown as (topic: string, type: string, cb: (event: unknown) => void) => () => void
+
+/** Coalescing window of the live refresh (214 D5). */
+const LIVE_MS = 250
+
+/**
+ * 214 D5: every task list (and open task) refetches shortly after a task changes anywhere — an agent planning in a
+ * chat, another window, the board. `tasks.changed@1` names every committed write; `tasks.activity@1` is the fallback
+ * an older engine still sends. A burst of events within `LIVE_MS` is one refetch.
+ */
+export function useLiveTasks(): void {
+  const qc = useQueryClient()
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const bump = () => {
+      timer ??= setTimeout(() => {
+        timer = undefined
+        void qc.invalidateQueries({ queryKey: keys.tasks })
+      }, LIVE_MS)
+    }
+    const offs = [
+      onLoose('tasks.changed@1', 'TaskChanged', bump),
+      on('tasks.activity@1', 'ActivityAppended', (e) => {
+        if (/^(task_|child_|escalation_)/.test(e.entry.kind)) bump()
+      }),
+    ]
+    return () => {
+      clearTimeout(timer)
+      for (const off of offs) off()
+    }
+  }, [qc])
 }
