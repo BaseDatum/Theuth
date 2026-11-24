@@ -1,46 +1,48 @@
 ---
 title: Voice
-description: Hear replies read aloud, send voice notes, dictate into any text field, or hold a live spoken conversation — all with speech models that run on your own machine.
+description: Hear replies read aloud, send voice notes, dictate into theuth or any other app, give spoken commands, or hold a live spoken conversation, with speech models that run on your own machine.
 ---
 
 ## What voice covers
 
-theuth has four spoken surfaces, all served by local models inside the engine (`t`). No audio is sent to a model provider; only the resulting text enters a session like a typed message.
+theuth's speech models run locally inside the engine (`t`). No audio is sent to a model provider: only the resulting text enters a session, like a typed message. (The text itself then goes to whichever chat model you use; see [Security](/docs/reference/security).)
 
 | Feature | What it does | Model |
 |---|---|---|
 | Read aloud | Speaks one assistant reply on request | Pocket TTS (Kyutai), CPU |
-| Voice notes | Record a clip, transcribe it, send it as a message | Parakeet TDT (ONNX) |
-| Dictation | Live speech to text into the composer or any text field | Nemotron streaming (ONNX) |
-| Talk | A live, interruptible conversation with one session | Nemotron streaming in, Pocket TTS out |
+| Voice notes | Record a clip, transcribe it, send it as a message | Parakeet TDT 0.6B v3 (ONNX int8, or MLX on Apple silicon) |
+| Dictation | Live speech to text into the composer or any text field, with spoken punctuation and a dictionary | Nemotron streaming (ONNX); final text optionally re-transcribed on MLX |
+| Dictate anywhere | Dictation into whatever app has focus, from the companion (macOS, Windows) | Same as dictation |
+| Command key | Speak an action for your computer; the desk carries it out and reports one line | Same as dictation |
+| Talk | A live, interruptible conversation with one session that keeps going while tools run | Nemotron streaming in, Pocket TTS out |
 
-Text channels get voice too: a voice note sent on Signal, Slack or Telegram is transcribed the same way and the reply comes back as text and as an audio clip. See [Channels](/docs/automation/channels). Recording a call with a live transcript is a separate feature — see [Meetings](/docs/workspace/meetings).
+Text channels get voice too: a voice note sent on Signal, Slack or Telegram is transcribed the same way and the reply comes back as text and as an audio clip. See [Channels](/docs/automation/channels). Recording a call with a live transcript is a separate feature: see [Meetings](/docs/workspace/meetings).
 
 ### Surface support
 
-| | Desktop app | Terminal (`t`) | Phone / web through the relay |
-|---|---|---|---|
-| Read aloud | Yes — speaker button on each reply | No | Yes — audio streams to the phone |
-| Voice notes | Yes — hold the mic button | No | Yes — same gesture, phone mic |
-| Dictation | Yes — tap the mic, or `Ctrl+D` | Yes — `/dictate` or `Ctrl+D` | Yes — the phone's mic streams to the engine |
-| Talk | Yes — **Talk** in the sidebar or composer | Yes — `/talk` or `Ctrl+T` | Yes — the phone's mic and speaker |
+| | Desktop app | Terminal (`t`) | Phone / web through the relay | Companion (macOS, Windows) |
+|---|---|---|---|---|
+| Read aloud | Yes: speaker button on each reply | No | Yes: audio streams to the phone | Opt-in spoken replies |
+| Voice notes | Yes: hold the mic button | No | Yes: same gesture, phone mic | No |
+| Dictation | Yes: tap the mic, or `Ctrl+D` | Yes: `/dictate` or `Ctrl+D` | Yes: the phone's mic streams to the engine | Its own fields, and any app |
+| Talk | Yes: **Talk** in the sidebar or composer | Yes: `/talk` or `Ctrl+T` | Yes: the phone's mic and speaker | No |
 
 The terminal plays and records through the engine's own devices, so it must run on a machine with a microphone and speaker. The desktop app on the same machine as its engine does the same for Talk; a phone through the relay sends and receives compressed audio instead.
 
 ## Prerequisites
 
-- **Models on disk.** Everything lives under `~/.theuth/models/`: `pocket-tts/` (speech), `parakeet-tdt/` (voice notes), `nemotron-streaming-en/` (dictation and Talk; about 0.9 GB). The **desktop app downloads whatever is missing at start** from the release bucket, with a `Downloading speech models… N%` toast that ends in `Speech models ready`; nothing else needs to be done. The engine itself never downloads: if you only run the CLI, run the desktop app once on that machine, or fetch the files yourself (from a checkout, `just fetch-models`). Models are opened lazily, so a file that lands while the engine is running is used on the next request — no restart.
-- **ONNX Runtime.** The speech-to-text models need `libonnxruntime`. The macOS app bundles it; the Windows installer ships `onnxruntime.dll`; on Linux (and for a bare `t` anywhere) it is downloaded to `~/.theuth/models/onnxruntime/` by the desktop app, or found through `$ORT_DYLIB_PATH` or a Homebrew install (`brew install onnxruntime`). Read aloud does not need it — Pocket TTS is pure Rust.
-- **Microphone permission.** On macOS the engine process asks for Microphone access the first time it opens the mic (dictation, Talk). When the engine runs inside the desktop app the prompt is the app's; for a `t` started from a terminal, grant it to your terminal application. Phones use the browser's or app's own microphone permission.
-- **Hardware.** Speech models run on the CPU by default. Pocket TTS needs a couple of cores; the streaming STT model is the heaviest. `models.accelerator` can move the ONNX sessions to a GPU — see [Diagnostics](#diagnostics-and-accelerators).
+- **Models on disk.** Everything lives under `~/.theuth/models/`: `pocket-tts-en-2026-10/` (speech, with the voices `peter_yearsley` and `alba`), `parakeet-tdt/` (voice notes), `nemotron-streaming-en/` (dictation and Talk; about 0.9 GB). The **desktop app downloads whatever is missing at start** from the release bucket, with a `Downloading speech models… N%` toast that ends in `Speech models ready`; nothing else needs to be done. The engine itself never downloads these: if you only run the CLI, run the desktop app once on that machine, or fetch the files yourself (from a checkout, `just fetch-models`). Models are opened lazily, so a file that lands while the engine is running is used on the next request, with no restart. The optional MLX model is a separate, explicit download (see [MLX speech model](#mlx-speech-model-apple-silicon)).
+- **ONNX Runtime.** The speech-to-text models need `libonnxruntime`. The macOS app bundles it and the Windows installer ships `onnxruntime.dll`; on Linux (and for a bare `t` anywhere) it is downloaded to `~/.theuth/models/onnxruntime/` by the desktop app, or found through `$ORT_DYLIB_PATH` or a Homebrew install (`brew install onnxruntime`). Read aloud does not need it: Pocket TTS is pure Rust.
+- **Microphone permission.** On macOS the engine process asks for Microphone access the first time it opens the mic (dictation, Talk). When the engine runs inside the desktop app the prompt is the app's; for a `t` started from a terminal, grant it to your terminal application. Phones use the browser's or app's own microphone permission. Dictate anywhere also needs Accessibility for the companion on macOS (see [Dictate anywhere](#dictate-anywhere-companion)).
+- **Hardware.** Speech models run on the CPU by default. Pocket TTS needs a couple of cores; the streaming STT model is the heaviest. `models.accelerator` can move the ONNX sessions to a GPU (see [Diagnostics](#diagnostics-and-accelerators)); on Apple silicon the MLX engine runs Parakeet on the GPU.
 
 ## Read aloud
 
-In the desktop app, every finished assistant reply has a **Read aloud** button in its action row (the speaker icon beside Copy). Press it to hear the reply; the same button becomes **Stop** while it plays. Starting a new utterance stops the current one — only one thing speaks at a time.
+In the desktop app, every finished assistant reply has a **Read aloud** button in its action row (the speaker icon beside Copy). Press it to hear the reply; the same button becomes **Stop** while it plays. Starting a new utterance stops the current one: only one thing speaks at a time.
 
 What you hear is the reply's markdown turned into speech text: emphasis and links keep their words, bare URLs are read as "link", code blocks are skipped as "Code block omitted", tables are read cell by cell.
 
-The first press loads the model (a toast says `Loading voice model…`); it stays resident afterwards. The voice is chosen with `voice.voice` — one of the `voices/<name>.safetensors` files in the checkpoint directory, `peter_yearsley` by default.
+The first press loads the model (a toast says `Loading voice model…`); it stays resident afterwards. The voice is chosen with `voice.voice`: one of the `voices/<name>.safetensors` files in the checkpoint directory (`peter_yearsley` by default, `alba` also ships).
 
 After you send a voice note, the session is in *voice mode*: every reply block is spoken automatically as it arrives, until you type a message again.
 
@@ -51,14 +53,14 @@ A voice note is a recording you make, transcribed on the engine and sent as a me
 | Gesture | Result |
 |---|---|
 | Tap | Toggles dictation (below) |
-| Press and hold (≥ 200 ms) | Records a voice note while held; a red orb and a timer appear |
+| Press and hold (200 ms or more) | Records a voice note while held; a red orb and a timer appear |
 | Slide left while holding | Cancels the note |
-| Slide up while holding | Locks the recording hands-free; the row becomes **Delete recording** · timer · **Send voice note** |
+| Slide up while holding | Locks the recording hands-free; the row becomes **Delete recording**, the timer, and **Send voice note** |
 | Release anywhere while holding | Sends the note |
 
 A release under 0.8 s is treated as a slip: nothing is sent and a toast says `Hold to record, release to send`. Losing the pointer mid-hold (the window blurs, the page is hidden) locks the recording instead of dropping it. `Esc` deletes a locked recording.
 
-On release the clip is uploaded to `~/.theuth/attachments/`, transcribed by Parakeet, and sent as a user line `[voice note, N s] <transcript>` through the ordinary send path — so it also works as a steer while the agent is busy. A prompt block tells the model what that prefix means (spoken input, read through recognition slips, answer briefly). The transcript is not stored separately: the message *is* the transcript. An empty result shows `Nothing recognized` and sends nothing. Notes longer than three minutes are transcribed in three-minute pieces.
+On release the clip is uploaded to `~/.theuth/attachments/`, transcribed by Parakeet, and sent as a user line `[voice note, N s] <transcript>` through the ordinary send path, so it also works as a steer while the agent is busy. A prompt block tells the model what that prefix means (spoken input, read through recognition slips, answer briefly). The transcript is not stored separately: the message *is* the transcript. An empty result shows `Nothing recognized` and sends nothing. Notes longer than three minutes are transcribed in three-minute pieces.
 
 The transcription model unloads after `voice.stt_idle_secs` (default `600`) seconds unused and reloads in under a second on the next note; `0` keeps it resident (about 1.7 GB).
 
@@ -66,22 +68,129 @@ Voice notes are not available in the terminal.
 
 ## Dictation
 
-Dictation streams what you say into a text field as you speak, with punctuation and casing.
+Dictation streams what you say into a text field as you speak. The engine shapes the text before it lands: spoken punctuation, numbers, code-style literals, your dictionary, and the end phrases below.
 
-- **Desktop composer:** tap the mic button, or press `Ctrl+D`; the text appears live in the box. Tap again (the button reads **Stop dictation**) or press `Ctrl+D` to finish; `Esc` discards what was dictated. Dictated text is inserted at the caret, replacing any selection, and is sent only when you press Send.
+- **Desktop composer:** tap the mic button, or press `Ctrl+D`; the text appears live in the box. Tap again (the button reads **Stop dictation**) or press `Ctrl+D` to finish; `Esc` discards what was dictated. Dictated text is inserted at the caret, replacing any selection, and is sent only when you press Send or say the send phrase.
 - **Every other text field:** inputs and text areas across the desktop app (task titles, agent names, search boxes, the notes editor…) carry a small **Dictate** button at their trailing edge. Password, number and date fields do not.
 - **Terminal:** `/dictate` or `Ctrl+D` toggles dictation into the input line; the header shows a level meter with `Ctrl+D stop · Esc discard`.
 - **Phone / web:** the same buttons; the phone's microphone is streamed to the engine.
+- **Companion:** the Ask bar and other companion fields, and any other app through [Dictate anywhere](#dictate-anywhere-companion).
 
-A running dictation stops itself after `voice.dictation_max_secs` (default `300`) seconds. Only one dictation runs per engine at a time: another field or surface shows the mic dimmed with the reason (`Dictating elsewhere`, `Dictation model loading…`, `Dictation model missing`). The model is English (`nemotron-streaming-en`); once loaded it stays resident.
+A running dictation stops itself after `voice.dictation_max_secs` (default `300`) seconds. Only one dictation runs per engine at a time: another field or surface shows the mic dimmed with the reason (`Dictating elsewhere`, `Dictation model loading…`, `Dictation model missing`). The model is English (`nemotron-streaming-en`); once loaded it stays resident. After a dictation ends the microphone stays open for `voice.standby_secs` (default `8`) so the next one starts without losing its first words; `0` closes it at once.
+
+### Spoken punctuation and formatting
+
+Say the mark's name where it belongs:
+
+| Say | Writes |
+|---|---|
+| "comma", "period", "full stop" | `,` `.` |
+| "question mark", "exclamation mark" / "exclamation point" / "bang" | `?` `!` |
+| "colon", "semicolon" | `:` `;` |
+| "open paren" / "close paren", "open bracket" / "close bracket", "open brace" / "close brace" | `(` `)` `[` `]` `{` `}` |
+| "open quote" / "close quote", "quote", "backtick" | `"` `` ` `` (a lone "quote" or "backtick" alternates open and close) |
+| "at sign", "hash" / "hash sign" / "pound sign", "dollar sign", "euro sign", "percent sign" | `@` `#` `$` `€` `%` |
+| "ampersand", "pipe", "tilde", "caret", "asterisk", "underscore", "double underscore" | `&` `\|` `~` `^` `*` `_` `__` |
+| "forward slash", "back slash" / "backslash", "less than", "greater than" | `/` `\` `<` `>` |
+| "new line" / "newline", "new paragraph", "tab" | A line break, a blank line, a tab |
+
+Ambiguous words ("dot", "point", "slash", "dash", "hyphen", "plus", "equals", "minus", "times") become symbols only in context, for example "dot" between a name and a known domain or file extension (`example.com`, `main.rs`), otherwise they stay words. Say the literal word (default `literal`) before a phrase to write it as spoken: "literal new line" writes "new line".
+
+### End phrases
+
+| Phrase (default) | Effect |
+|---|---|
+| "send it" | Said at the end, sends the message once you have been quiet for 1.5 s plus 0.35 s of silence. In the terminal, `⏎` sends at once and any other key keeps editing. In another app it presses Return (never into a password field). |
+| "scratch that" | Drops the last finished utterance |
+
+Change them in Settings › Voice › **Dictation** › **End phrases** (**Send**, **Scratch**, **Literal**, comma-separated) or under `voice.end_commands`.
+
+### Shaping presets
+
+Each surface has a preset: **Full** (everything above, plus the dictionary and end phrases), **Plain** (punctuation, literals and numbers only), or **Off** (the model's words as heard). Settings › Voice › **Dictation** › **Shaping** sets the **Composer** (the chat box and every desktop field) and **Phone** presets, and **Shape dictated text** turns shaping off on every surface at once (no punctuation words, numbers, dictionary terms or end phrases). The terminal uses `/voice shape <full|plain|off>`; the companion and any-app presets are set in config (`voice.shape.companion`, `voice.shape.any_app`).
+
+### Dictionary
+
+The dictionary fixes names and terms the model mishears. It has three layers: a built-in technical dataset (about 40,600 terms), your own entries, and corrections theuth learned. Matching is phonetic (Double Metaphone plus edit distance), so an entry catches near-misses as well as the forms you list.
+
+Settings › Voice › **Dictionary** lists them: search with **Search dictionary**, filter with the chips **Yours**, **Learned** and **Built-in** (Yours and Learned are on by default; Built-in searches the packaged set on the engine once you type two characters, showing at most 100 rows). **Add entry** opens a form:
+
+- **Written as**: the canonical form (required).
+- **Heard as**: spoken forms, comma-separated (for example `git hub, get hub`).
+- **Applies**: Everywhere, or one surface.
+- **Keep exact casing**: case-only differences are left alone and a lowercase term is never capitalised at a sentence start.
+
+Your and learned entries have **Edit** and **Delete entry**; a built-in entry has **Override**, which opens the form as a new entry of your own.
+
+**Learning from corrections.** When you edit dictated text before sending it in theuth's own fields (desktop, terminal, companion), the engine compares what it heard with what you sent. When the same single-word change (not just an inflection like a plural) happens twice within 7 days, a card asks whether to add it: **Add**, **Not now**, or **Never for this** in the desktop (in the terminal `y`, `n` or `Esc`, `N`). A card left unanswered for 20 s counts as ignored; after three ignored cards no more are shown until the engine restarts. Learning is on by default; `voice.history.learn: false` turns it off.
+
+### Dictation history
+
+The engine keeps the last 200 dictations locally in `~/.theuth/voice.db`: what was heard, what was written, the polished text when polish ran, the surface and timings. Audio is kept under `~/.theuth/voice/history/` (up to 120 s per dictation, 64 MiB in total, oldest first out). Settings › Voice › **History** shows the latest 50 with a play button per row, **Forget** per row and **Forget all**, plus a **Debug** row with the last dictation's latency (press to first audio, first partial, first final, stop to final). In the terminal, `/voice` prints the same timings and the microphones. Limits: `voice.history.rows`, `voice.history.audio_mib`; `voice.history.enabled: false` stores nothing.
+
+### Input device
+
+Settings › Voice › **Microphone** › **Input device** chooses the microphone dictation opens first (it falls back to the system default; the companion uses the same choice). In the terminal: `/voice mic <name|default>`. Config: `voice.input_devices`, an ordered list of device names; `[]` means the system default.
+
+## Polish
+
+Polish is an optional model rewrite of dictated text meant for people: it fixes recognition slips and punctuation with the smallest edits, and fails closed (on any error or a doubtful reply you get the shaped text unchanged). It never runs on what you dictate to an agent. Today it runs only for [Dictate anywhere](#dictate-anywhere-companion), and only into apps whose companion profile has **polish** switched on (off by default).
+
+Polish sends the dictated text to a chat model: `voice.polish_model` when set (Settings › Voice › **Dictation** › **Polish model**, with an effort picker when the model has one), else your title model, else the session's model. The global switch **Polish dictated text** (`voice.polish_enabled`, default `true`) turns it off everywhere: the engine then refuses every polish request and the text is delivered as shaped. `voice.polish_profiles` can add an instruction per destination kind.
+
+## MLX speech model (Apple silicon)
+
+On a Mac with Apple silicon, Parakeet TDT 0.6B v3 can run at full precision on the GPU through MLX, in the engine process (no Python, no helper). It is used for voice notes and for the final text of each utterance in dictation, Talk and live meeting text; the live preview while you speak still comes from the streaming model. The meeting transcript of record stays on ONNX.
+
+1. Open Settings › Voice › **Dictation** › **Speech model**.
+2. Press **Download** on the **MLX model** row. It fetches about 2.5 GB from Hugging Face (`mlx-community/parakeet-tdt-0.6b-v3`) into `~/.theuth/models/parakeet-tdt-mlx/`, resumes an interrupted download and checks each file's size and sha256. The row shows `Not downloaded`, `Downloading N%`, `Ready`, `Failed: …` or `Unavailable: …`.
+3. Choose **Parakeet TDT v3, MLX full precision** in the **Speech model** select (`voice.stt_engine: mlx`). You may choose it before the download finishes: ONNX is used until the model is ready, with no restart.
+
+The MLX model unloads after `voice.stt_idle_secs`, like the ONNX one. If it fails to load, or fails three transcriptions in a row, it is retired until the engine restarts and everything falls back to ONNX; a slow or empty MLX result for one utterance falls back to the streaming text for that utterance. MLX needs the Metal library the macOS app ships; a bare `t` without it reports MLX `Unavailable`, as do Intel Macs, Windows and Linux. The terminal has no switch: set `voice.stt_engine` in config.
+
+## Dictate anywhere (companion)
+
+The companion (the helper app at the screen edge, on macOS and Windows 11) types dictation into whatever app has focus.
+
+| Key (default) | macOS | Windows |
+|---|---|---|
+| Dictate anywhere | `⌃⌥D` | `Ctrl+Alt+D` |
+| Command | `⌃⌥C` | `Ctrl+Alt+C` |
+| Voice key (ask about the screen) | `⌃S` | `Ctrl+Alt+Space` |
+
+On Windows keyboard layouts where `Ctrl+Alt+D` or `+C` types a character (AltGr), the companion registers `Ctrl+Shift+Alt+D` / `+C` instead. All keys are rebindable in the companion's **Keys** settings.
+
+**Gesture.** Hold the key and speak; release to finish; double-tap to lock hands-free (**Hold · double-tap locks**, the default). **Automatic** instead toggles on a tap under 0.4 s and talks while held longer. With **Open the mic on key-down** (on by default) the microphone opens on the press so your first words are kept; a tap throws that audio away.
+
+**Delivery.** Words land as each sentence closes, with the same shaping as other surfaces (preset `voice.shape.any_app`). Text goes straight into text fields that accept it; everything else (terminals, web views, fields the companion cannot read) gets a paste, with your clipboard restored afterwards. **Check that the text landed** (on by default) reads the field back and, when a paste did not land, opens a card with your words. "send it" presses Return, except in password fields, which never receive Return; "scratch that" removes the last delivery. Password fields are refused outright, as are targets that are certainly not text (buttons, menus).
+
+**Rewrite.** Holding the key with text selected switches to rewrite: the pill reads `Rewrite · N chars selected · say what to change`, your words become an instruction, and the proposal appears in a card; hold again to refine it.
+
+**Companion settings** (macOS: Settings › **Dictation**; Windows: the matching page):
+
+- **Dictate anywhere**: on by default, with its key row and gesture picker. On macOS it shows whether Accessibility is granted; without it the companion pastes blind and cannot check fields.
+- **Apps**: per-app profiles with **terminal** (always paste, shell spacing), **polish** (see [Polish](#polish)) and **learn** (report your later edits for dictionary learning, needs Accessibility), plus a default row for other apps.
+- **Leave the dictated text on the clipboard** (off), **Check that the text landed** (on), **Pause media while dictating (may un-pause)** (off). Windows adds **Type short text directly**.
+
+### Command key
+
+Hold the command key and say an action ("move today's screenshots into Desktop/Shots"). Pressing it while the voice key is held switches that gesture to command mode. The request goes to theuth's desk session marked `[command, N s]`; the desk acts, verifies, and answers with one line starting with ✓ or ✗. Each step shows as a row in the card (`checking:`, `executing:`, `verifying:`). On macOS the desk can use the `applescript` and `shortcuts` tools, on Windows `powershell`, besides its usual tools, all under your normal [approval policy](/docs/reference/tools-permissions). A request stops after 12 steps (the card says so and you can hold again to continue). Approvals appear inside the card and can be answered by voice ("yes", "go ahead", "do it", "approve"; "no", "stop", "cancel", "deny") or keys. **Include the screen** (off by default) sends the pointer trail and a capture with the command. Turn the key off with **Command key** in the companion's **Command** settings.
+
+### Answer card and spoken replies
+
+Replies to the voice key, the Ask bar and the command key land in one answer card: streamed markdown, tool chips, a follow-up asked in place, and the earlier requests of the thread. The card shows each state (listening, finishing, thinking, answer, failed).
+
+Spoken replies are opt-in and off by default. macOS: Settings › Rail › **Spoken replies** has one toggle for voice-key answers and one for Ask replies. Windows: **Speak the answer aloud** on the Voice key page and **Speak the reply aloud** on the Ask bar page. A reply is spoken once it is final, never partly; a new ask, a voice-key gesture or `Esc` stops it.
+
+The desktop app has its own voice key on Settings › Voice › **Voice key** (hold the chord to ask about the screen; **Send the screen**, **Read what the pointer touched**, **Draw the trail**); its chord lives in the desktop's keyboard shortcuts.
 
 ## Talk
 
-Talk is a live spoken conversation with one session: you speak, the agent answers out loud, and you can cut it off mid-sentence. Everything you say enters the session as text marked `[spoken, N s]`; everything it says is its ordinary reply — the transcript is a normal chat you can read later.
+Talk is a live spoken conversation with one session: you speak, the agent answers out loud, and you can cut it off mid-sentence. Everything you say enters the session as text marked `[spoken, N s]`; everything it says is its ordinary reply, so the transcript is a normal chat you can read later.
 
 ### Starting and stopping
 
-- **Desktop:** **Talk** in the left sidebar (between *New chat* and *Agents*) creates a session and opens the talk view at `/talk/<session>`. In an existing chat, the **Talk** button in the composer (the waveform icon) starts Talk on that session. The view is an orb with two subtitle lines (the agent's sentence being played, your live partial); tapping the orb stops the talk (**Stop talking**) or starts one again (**Start talking**), and the transcript sits collapsed on the left. `Esc` while the agent is thinking or speaking cancels that turn; otherwise it leaves the view and the talk keeps running (the composer then shows a pulsing waveform, **Talk running — open**, and an **End talk** button). `⌘T` / `Ctrl+T` stops the talk, `⌘⇧T` / `Ctrl+Shift+T` shows or hides the transcript.
+- **Desktop:** **Talk** in the sidebar rail (after **Inbox**; it reads **Talk (running)** with a green dot while a talk is live) creates a session and opens the talk view at `/talk/<session>`. In an existing chat, the **Talk** button in the composer (the waveform icon) starts Talk on that session. The view is an orb with two subtitle lines (the agent's sentence being played, your live partial); tapping the orb stops the talk (**Stop talking**) or starts one again (**Start talking**), and the transcript sits collapsed on the left. `Esc` while the agent is thinking or speaking cancels that turn; otherwise it leaves the view and the talk keeps running (the composer then shows a pulsing waveform button that reopens the view, and an **End talk** button). `⌘T` / `Ctrl+T` stops the talk, `⌘⇧T` / `Ctrl+Shift+T` shows or hides the transcript.
 - **Terminal:** `/talk` starts a talk on the current session (creating one if needed) and opens a full-pane view with an orb and two subtitle lines; the header reads `● talk  (Esc cancels / leaves · Ctrl+T stops)`. `Esc` cancels the agent's turn while it thinks or speaks, otherwise leaves the view while the talk keeps running (the status row shows `● talk: <state> (/talk)`); `/talk` again re-enters it; `Ctrl+T` stops the talk from anywhere, or starts one when none runs.
 - **Phone / web:** the same **Talk** entry; the phone's microphone and speaker are used.
 
@@ -89,73 +198,123 @@ One talk runs per engine; a second start answers `already talking`. The talk end
 
 ### How it listens
 
-Talk is hands-free — there is no push-to-talk key. A voice-activity gate opens on speech and closes after about 300 ms of silence; the turn is submitted after `talk.end_of_turn_ms` (default `700`) more milliseconds of quiet, or `talk.end_of_turn_punct_ms` (`250`) when what you said ends in `.`, `?` or `!`. If you start again inside that window the utterances join into one turn. Speaking while the agent is still thinking (nothing heard yet) cancels that turn and submits what you just said instead.
+Talk is hands-free: there is no push-to-talk key. A voice-activity gate opens on speech and closes after about 300 ms of silence; the turn is submitted after `talk.end_of_turn_ms` (default `700`) more milliseconds of quiet, or `talk.end_of_turn_punct_ms` (`250`) when what you said ends in `.`, `?` or `!`. If you start again inside that window the utterances join into one turn. Speaking while the agent is still thinking (nothing heard yet) cancels that turn and submits what you just said instead.
 
 Interruption is two-staged so the agent does not stop on every "mhm":
 
-1. **Hold** — once you have spoken for `talk.barge_in_min_ms` (default `400`) playback pauses.
-2. **Decide** — the first words are classified: a word from `talk.backchannels` (`yeah`, `okay`, `right`, `got it`, …) said alone, or an echo of the agent's own last two seconds, resumes playback; anything else is a real cut-in. The agent's turn is cancelled and its history keeps only the sentences you actually heard, so the next turn does not reason about words you never got.
+1. **Hold:** once you have spoken for `talk.barge_in_min_ms` (default `400`) playback pauses.
+2. **Decide:** the first words are classified (within `talk.decide_ms`, default `900`, when no words have arrived yet). A word from `talk.backchannels` (`yeah`, `okay`, `right`, `got it`, …) said alone, or an echo of the agent's own last two seconds, resumes playback; anything else is a real cut-in. The agent's turn is cancelled and its history keeps only the sentences you actually heard, so the next turn does not reason about words you never got.
 
-`talk.hold: none` disables the pause stage (useful for measuring). Settings › Chat › **Turn chime** plays a soft two-tone cue when the model takes the turn.
+`talk.hold: none` disables the pause stage (useful for measuring). Settings › Voice › **Microphone** › **Turn chime** plays a soft two-tone cue when the model takes the turn.
+
+### While the agent works
+
+The conversation keeps going while tools run:
+
+- **Speaking during a tool run steers instead of cancelling.** While a tool call is running (the orb reads `Working…`), what you say is captured and, at the end of your turn, added to the running turn; the model reads it after the current tool batch. Saying "stop" or "cancel that" is ordinary speech the model acts on.
+- **Long tool calls become jobs.** A tool call still running after `talk.promote_after_ms` (default `5000`; `0` never) is moved to a background job: the call returns at once with a job handle, the work continues, and its result arrives later. Interactive and already job-shaped tools are never moved.
+- **Results wait for a pause.** Job results, reminders, messages from child agents or peers and schedule runs that arrive for the talk's session are held while you are speaking or the agent is talking, then spoken together as one turn (items arriving within 120 ms of each other join it). They are released after 60 s at the latest, when you say something (they join your turn), or when the talk ends.
+- **Approvals are announced.** An approval request is read out ("Waiting for your approval to run …"); you answer it on the card as usual.
+- **Spoken answers stay short:** one or two sentences, then "the rest is on screen". Tags and other machine text are never spoken.
 
 ### Echo cancellation
 
-On macOS the engine opens the microphone through Apple's voice-processing unit, which cancels whatever the speaker plays. Windows and Linux have no such unit: the talk runs anyway with the caption `no echo cancellation; headphones recommended` under the subtitles — use headphones there. `talk.aec: off` forces the plain microphone everywhere.
+On macOS the engine opens the microphone through Apple's voice-processing unit, which cancels whatever the speaker plays. Windows and Linux have no such unit: the talk runs anyway with the caption `No echo cancellation; headphones recommended` under the subtitles, so use headphones there. `talk.aec: off` forces the plain microphone everywhere.
 
 ## Configuration
 
-Voice is on by default. Keys live in the `voice:` and `talk:` sections of `~/.theuth/config.yaml` (see [Configuration](/docs/reference/configuration) for the file and env overrides):
+Voice is on by default. Keys live in the `voice:` and `talk:` sections of `~/.theuth/config.yaml` (see [Configuration](/docs/reference/configuration) for the file and env overrides). Most dictation keys are also set from Settings › Voice, which writes the same file.
 
 ```yaml
 voice:
   enabled: true              # false: no speech models, no speaker or mic buttons anywhere
-  voice: peter_yearsley      # a voices/<name>.safetensors in the Pocket TTS directory
-  model_dir: ~               # Pocket TTS checkpoint; default ~/.theuth/models/pocket-tts
-  stt_model_dir: ~           # Parakeet TDT (voice notes); default ~/.theuth/models/parakeet-tdt
-  stt_idle_secs: 600         # unload the voice-note model after this long unused; 0 = keep resident
+  voice: peter_yearsley      # a voices/<name>.safetensors in the Pocket TTS directory (peter_yearsley, alba)
+  model_dir: ~               # Pocket TTS checkpoint; default ~/.theuth/models/pocket-tts-en-2026-10
+  stt_model_dir: ~           # Parakeet TDT ONNX (voice notes); default ~/.theuth/models/parakeet-tdt
+  stt_idle_secs: 600         # unload the whole-utterance model (ONNX or MLX) after this long unused; 0 = keep resident
+  stt_engine: onnx           # onnx | mlx (Apple silicon, after the download; ONNX until then)
   dictation_model_dir: ~     # Nemotron streaming (dictation, Talk); default ~/.theuth/models/nemotron-streaming-en
   dictation_max_secs: 300    # a dictation stops itself after this long
+  standby_secs: 8            # keep the mic open this long after a dictation; 0 = close at once
+  input_devices: []          # microphone names in order of preference; [] = system default
+  duck_media: off            # off | duck | pause: what the companion does to media while dictating
   player_buffer_ms: 200      # how far ahead of the speaker synthesis may run (Talk, terminal)
   player_device: ~           # output device by name for the engine's speaker; default the system output
+  shape:
+    enabled: true            # false: the model's text verbatim on every surface
+    composer: full           # full | plain | off; desktop composer and fields
+    tui: full
+    companion: full          # the companion's own fields
+    phone: full
+    any_app: full            # Dictate anywhere
+  end_commands:
+    send: [send it]
+    scratch: [scratch that]
+    literal: literal
+  polish_enabled: true       # false: never polish, whatever a client asks
+  polish_model: ~            # model id; default the title model, then the session's model
+  polish_effort: ~           # reasoning effort for polish_model, when it has levels
+  polish_profiles: {}        # extra polish instruction per destination kind
+  history:
+    enabled: true
+    rows: 200
+    audio_mib: 64
+    learn: true              # suggest dictionary entries from your corrections
 
 talk:
   enabled: true              # false: Talk refuses with "talk is disabled"
   barge_in_min_ms: 400
+  decide_ms: 900
+  barge_in_vad: 0.7          # speech threshold while the agent speaks; higher is stricter
+  echo_ratio: 0.8            # similarity at which a cut-in counts as the agent's own echo
   end_of_turn_ms: 700
   end_of_turn_punct_ms: 250
   hold: pause                # pause | none
   backchannels: [yeah, yep, yes, mhm, mm, mm-hmm, uh-huh, ok, okay, right, sure, hm, hmm, i see, got it]
   aec: prefer                # prefer | off
+  promote_after_ms: 5000     # tool calls running longer become background jobs; 0 = never
 ```
 
-`voice.enabled: false` removes every voice control and leaves the files under `models/` untouched. Setting `enabled: false` under `talk:` keeps read-aloud, notes and dictation and removes only Talk.
+`voice.enabled: false` removes every voice control and leaves the files under `models/` untouched. Setting `enabled: false` under `talk:` keeps read-aloud, notes and dictation and removes only Talk. Companion-only settings (keys, gestures, app profiles, spoken replies) live in the companion, not in `config.yaml`.
 
 ## Diagnostics and accelerators
 
 `t --bench-models` loads ONNX Runtime, prints where it was found and which execution provider sessions get, runs the speech-to-text encoder once with timings, and says what is missing. Exit code `0` means everything ran. `t --bench-models --accelerator cpu` (or `webgpu`, `directml`, `cuda`) tries a different device without changing config.
 
-`models.accelerator` (`auto` by default) decides where the ONNX models run. `auto` uses the CPU unless a discrete GPU and the WebGPU plugin are present under `~/.theuth/models/onnxruntime/plugins/`; a GPU that fails to initialise logs one warning and that engine falls back to the CPU. `directml` must be chosen explicitly (Windows only). `cuda` moves only the decision models and needs a binary built with the `decision/cuda` feature — the release builds are not; ONNX speech sessions stay on the CPU with it. Pocket TTS always runs on the CPU.
+`models.accelerator` (`auto` by default) decides where the ONNX models run. `auto` uses the CPU unless a discrete GPU and the WebGPU plugin are present under `~/.theuth/models/onnxruntime/plugins/`; a GPU that fails to initialise logs one warning and that engine falls back to the CPU. `directml` must be chosen explicitly (Windows only). `cuda` moves only the decision models and needs a binary built with the `decision/cuda` feature (the release builds are not); ONNX speech sessions stay on the CPU with it. Pocket TTS always runs on the CPU. The MLX engine is separate from `models.accelerator`: it is chosen with `voice.stt_engine`.
 
 ## Troubleshooting
 
-**No speaker or mic buttons at all.** `voice.enabled` is `false`, or the engine is not running. The desktop also hides field mics while the dictation model is missing or failed to load — see the next items.
+**No speaker or mic buttons at all.** `voice.enabled` is `false`, or the engine is not running. The desktop also hides field mics while the dictation model is missing or failed to load: see the next items.
 
-**`dictation model not found at …/models/nemotron-streaming-en`** (or `no STT model in …/parakeet-tdt`). The files have not landed yet. In the desktop app, wait for the download toast to finish (`~/.theuth/models/` fills up); if you run only the CLI, run the desktop app once or fetch the models from a checkout with `just fetch-models`, then retry — no restart needed. A custom `model_dir` / `stt_model_dir` / `dictation_model_dir` must contain the files named in the config comments above.
+**`dictation model not found at …/models/nemotron-streaming-en`** (or `no STT model in …/parakeet-tdt`). The files have not landed yet. In the desktop app, wait for the download toast to finish (`~/.theuth/models/` fills up); if you run only the CLI, run the desktop app once or fetch the models from a checkout with `just fetch-models`, then retry, no restart needed. A custom `model_dir` / `stt_model_dir` / `dictation_model_dir` must contain the files those models need.
 
 **`no libonnxruntime… bundled, at ~/.theuth/models/onnxruntime/… (nor $ORT_DYLIB_PATH, nor Homebrew)`.** The runtime is missing. Start the desktop app (it downloads it), install it with Homebrew, or copy `libonnxruntime.{dylib,so}` / `onnxruntime.dll` from a Microsoft ONNX Runtime release (1.17 or newer) into that directory and write its version into `~/.theuth/models/onnxruntime/VERSION`. A missing runtime is retried on the next request; a runtime that was found but failed to load (`load …: … (ONNX Runtime stays unavailable until restart)`) needs an engine restart after you fix the file. `t --bench-models` confirms which copy is loaded.
 
-**`microphone: …` on start, or silence while dictating.** Microphone access was denied. macOS: System Settings › Privacy & Security › Microphone — enable theuth (desktop app) or your terminal (bare `t`), then start the dictation again. Browser or phone: allow the microphone for the site or app.
+**`microphone: …` on start, or silence while dictating.** Microphone access was denied. macOS: System Settings › Privacy & Security › Microphone, enable theuth (desktop app) or your terminal (bare `t`), then start the dictation again. Browser or phone: allow the microphone for the site or app.
 
 **`already dictating` / `talking`.** One microphone stream per engine for dictation and Talk: stop the other one first (a meeting records through its own microphone stream and does not block them).
 
+**Dictation writes the wrong word for a name or term.** Add it in Settings › Voice › **Dictionary** with the forms you hear in **Heard as**, or correct it once or twice after dictating and accept the suggestion card.
+
+**Dictated words come out as symbols, or symbol words stay words.** Say `literal` before the phrase to keep it as words, switch the surface to **Plain** or **Off**, or turn **Shape dictated text** off.
+
+**Dictate anywhere types nothing, or pastes into the wrong place (macOS).** Grant the companion Accessibility (System Settings › Privacy & Security › Accessibility); without it the companion pastes blind. A paste that did not land opens a card with your words so you can copy them.
+
+**MLX shows `Unavailable` or keeps using ONNX.** MLX runs only on Apple silicon with the Metal library the macOS app ships. Choosing MLX before **Download** finishes uses ONNX until the model is ready; after three failed transcriptions in a row it is retired until the engine restarts (check the engine log).
+
 **The agent interrupts itself on Windows or Linux.** No echo cancellation on those platforms: wear headphones, or lower the speaker volume. Raising `talk.barge_in_vad` (default `0.7`) makes the gate stricter while the agent speaks.
 
-**Read aloud works, nothing else does.** Read aloud needs no ONNX Runtime; the three speech-to-text features do. Run `t --bench-models`.
+**Read aloud works, nothing else does.** Read aloud needs no ONNX Runtime; the speech-to-text features do. Run `t --bench-models`.
 
 ## Sources
 
-- `crates/voice` — read aloud, voice notes, dictation, the microphone and speaker
-- `crates/talk` — the conversation loop and its config
-- `crates/desktop/ui/src/lib/hold.ts` — the mic button gesture
-- `crates/desktop/src/models.rs` — the model downloader
-- `crates/models/src/onnx.rs` — ONNX Runtime lookup and accelerators
+- `crates/voice`: read aloud, voice notes, dictation, shaping (`shape/`), dictionary, history, the MLX engine selection (`mlx.rs`), the microphone and speaker
+- `crates/voice-mlx`: Parakeet TDT on MLX
+- `crates/talk`: the conversation loop and its config; `crates/agent/src/supervisor.rs` parks results during a talk
+- `crates/desktop/ui/src/components/settings/Voice.tsx`, `VoiceDictionary.tsx`: Settings › Voice
+- `crates/desktop/ui/src/lib/hold.ts`: the mic button gesture
+- `crates/desktop/companion/Sources`, `crates/desktop/companion-windows/src`: Dictate anywhere, the command key, the answer card
+- `crates/computer/src/native.rs`: the `applescript`, `shortcuts` and `powershell` tools
+- `crates/desktop/src/models.rs`: the model downloader
+- `crates/models/src/onnx.rs`: ONNX Runtime lookup and accelerators
