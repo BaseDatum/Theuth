@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { chatLeaves, closeWeb, leaves, placeWeb, shown, usePanes } from './panes'
+import { chatLeaves, closeWeb, placeWeb, shown, usePanes } from './panes'
+import { tiling, untile } from './panes.testing'
 import {
   MAX_MINIMISED,
   STATE_EVERY_MS,
@@ -36,7 +37,7 @@ vi.mock('@/store/connection', () => ({ useConnection: { getState: () => ({ api: 
 vi.mock('@/rpc/discovery', () => ({ supports: () => true }))
 
 const reset = () => {
-  usePanes.setState({ root: null, focused: null, drag: null })
+  untile()
   useWebViews.setState({ views: {}, front: null })
   native.close.mockClear()
   engine.web_view_state.mockClear()
@@ -78,46 +79,48 @@ test('closing a frame forgets it, tells the engine once (`closed`) and destroys 
 
 test('a web tile opens right of its session without taking focus; the session-id consumers never see it', () => {
   reset()
-  // The single chat on screen counts as the session's pane.
+  tiling(['s1'])
   expect(placeWeb('s1', ID)).toBe(true)
-  const { root, focused } = usePanes.getState()
-  expect(leaves(root!)).toEqual(['s1', W])
+  const { leaves, focused } = usePanes.getState()
+  expect(leaves).toEqual(['s1', W])
   expect(focused).toBe('s1')
-  expect(chatLeaves(root!)).toEqual(['s1'])
+  expect(chatLeaves(leaves)).toEqual(['s1'])
   // A phone shows the chat, not the frame.
-  expect(shown(root, focused, 's1')).toBe('s1')
+  expect(shown(leaves, focused, 's1')).toBe('s1')
   // Placing it again leaves it where it is; a session with no pane here gets none.
   expect(placeWeb('s1', ID)).toBe(true)
-  expect(leaves(usePanes.getState().root!)).toEqual(['s1', W])
+  expect(usePanes.getState().leaves).toEqual(['s1', W])
   expect(placeWeb('s9', 'fedcba9876543210')).toBe(false)
   // Focus never lands on the frame.
   usePanes.getState().focus(W)
   expect(usePanes.getState().focused).toBe('s1')
 })
 
-test('closing the chat beside a web tile keeps the tile as a tree (no route names it) and the URL where it was', () => {
+test('closing the chat beside a web tile keeps the tile (no route names it) and the URL where it was', () => {
   reset()
+  tiling(['s1'])
   placeWeb('s1', ID)
   expect(usePanes.getState().close('s1')).toBeNull()
-  expect(usePanes.getState().root).toEqual({ session: W })
+  expect(usePanes.getState().leaves).toEqual([W])
   expect(usePanes.getState().focused).toBeNull()
   // A chat routed to next goes beside the frame, not over it.
   usePanes.getState().show('s2')
-  expect(leaves(usePanes.getState().root!)).toEqual(['s2', W])
+  expect(usePanes.getState().leaves).toEqual(['s2', W])
   expect(usePanes.getState().focused).toBe('s2')
   // Closing the frame instead leaves the single chat.
   closeWeb(ID)
-  expect(usePanes.getState().root).toBeNull()
+  expect(usePanes.getState().leaves).toEqual(['s2'])
 })
 
 test('New chat with a chat and a web tile is single-pane mode: the tile is no chat pane to turn into a draft', () => {
   reset()
+  tiling(['s1'])
   placeWeb('s1', ID)
   expect(usePanes.getState().fresh()).toBeNull()
   usePanes.getState().place('s1', 's2', 'bottom')
   const draft = usePanes.getState().fresh()
   expect(draft).not.toBeNull()
-  expect(leaves(usePanes.getState().root!)).toEqual(['s1', draft, W])
+  expect(usePanes.getState().leaves).toEqual(['s1', draft, W])
 })
 
 test('the address field and every external link take http(s) only: a bare host gets http://, any other scheme is refused', () => {

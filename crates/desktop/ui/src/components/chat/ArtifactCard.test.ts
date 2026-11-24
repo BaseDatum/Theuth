@@ -3,7 +3,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import { usePanes } from '@/lib/panes'
+import * as Layout from '@/lib/panes.testing'
 import * as Tiles from '@/lib/tiles'
 import type { Artifact } from "@/rpc/bindings/method.artifact.output"
 import { type Entry, createSessions, useSessions } from '@/store/sessions'
@@ -101,6 +101,7 @@ test('openShow: a failed get_artifact toasts "could not open <name>" and leaves 
 test('openShow where the layout tiles: one artifact tile per chat, retargeted on the next open; the panel stays shut', async () => {
   fresh()
   tiling.on = true
+  Layout.tiling([S])
   try {
     useSessions.getState().applyEvents([{ type: 'ArtifactShown', session: S, call_id: 'c1', artifact }])
     await openShow(api, S, 'c1', artifact.name)
@@ -108,12 +109,11 @@ test('openShow where the layout tiles: one artifact tile per chat, retargeted on
     useSessions.getState().applyEvents([{ type: 'ArtifactShown', session: S, call_id: 'c2', artifact: { ...artifact, call_id: 'c2' } }])
     await openShow(api, S, 'c2', artifact.name)
     expect(Tiles.openTileOf('artifact', S)?.props).toEqual({ callId: 'c2' })
-    expect(Object.values(Tiles.useTiles.getState().tiles).filter((t) => t.kind === 'artifact')).toHaveLength(1)
+    expect(Tiles.tiles().filter((t) => t.kind === 'artifact')).toHaveLength(1)
     expect(useSessions.getState().sessions[S]?.artifactPanel ?? null).toBeNull()
   } finally {
     tiling.on = false
-    Tiles.closeAllTiles()
-    usePanes.setState({ root: null })
+    Layout.untile()
   }
 })
 

@@ -22,7 +22,8 @@ import { useSidebar } from '@/components/ui/sidebar'
 import { SidebarToggle } from './SidebarToggle'
 import { useTileHost } from '@/components/tiles/host'
 import { openBrowserTile, openMemoryTile, openTerminalsTile, openVmTile, showArtifact } from '@/components/tiles/open'
-import { usePaneDrag } from '@/hooks/use-pane-drag'
+import { useViewTitle } from '@danfessler/trellis-react'
+import { useViewDrag } from '@/hooks/use-view-drag'
 import { chatName } from '@/lib/attach'
 import { sharedLabel, useSharing } from '@/lib/contacts'
 import { previewText } from '@/lib/channel-origin'
@@ -278,8 +279,9 @@ export function Header({
 
   const raw = session ? liveTitle || (row ? chatName(row) : 'Untitled chat') : 'New chat'
   const title = parseNote(raw)?.body || parseSpoken(raw)?.text || previewText(raw)
-  // A split tree: the bar drags this tile (`usePaneDrag`) and must not be a window drag region.
-  const drag = usePaneDrag(title)
+  // Beside other panes the bar drags this one (`useViewDrag`) and must not be a window drag region.
+  const drag = useViewDrag()
+  useViewTitle(title)
   const region = (mac && drag.region) || undefined
   // A popped window has no sidebar to open and is already its own window: no toggle, no search, no popout button.
   const popped = isPopout()

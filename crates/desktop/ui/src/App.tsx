@@ -21,7 +21,7 @@ import { FocusTracker, Throttle, deriveFocus } from '@/lib/event-focus'
 import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
 import { useMeetingSettings } from '@/lib/meeting-settings'
 import { notifyIfHidden, primeNotifications } from '@/lib/notify'
-import { chatLeaves, closeWeb, leaves, usePanes } from '@/lib/panes'
+import { chatLeaves, closeWeb, resetPanes, usePanes } from '@/lib/panes'
 import { closeAllWebViews, installWebViewEvents, useWebViews } from '@/lib/web-views'
 import { webViewOpened } from '@/lib/web-arrival'
 import { diffViewOpened, fileViewOpened, noteViewOpened, ptyViewOpened } from '@/lib/tile-arrival'
@@ -490,8 +490,7 @@ function usePointConfigure(): void {
 /** `session` is on screen: the URL's chat, or any pane split beside it. */
 function visible(session: string): boolean {
   if (router.state.location.pathname === `/c/${session}`) return true
-  const { root } = usePanes.getState()
-  return root !== null && leaves(root).includes(session)
+  return usePanes.getState().leaves.includes(session)
 }
 
 /** 129 D3: one resync per 5 s (later `Lagged`s in the window coalesce into one trailing run); the toast once a minute. */
@@ -647,10 +646,10 @@ function useEventFocus(st: Stores): void {
       timer = 0
       const { api, state, discovery } = st.connection.getState()
       if (!api || state !== 'open' || !ready(discovery) || (discovery.phase !== 'legacy' && !supports(discovery, { methods: ['set_event_focus'] }))) return
-      const { root } = usePanes.getState()
+      const { leaves } = usePanes.getState()
       const next = deriveFocus({
         pathname: router.state.location.pathname,
-        leaves: root ? chatLeaves(root) : [],
+        leaves: chatLeaves(leaves),
         popout: popoutSession(POPOUT),
         desk: voiceKey.useVoiceKey.getState().desk,
       })
@@ -666,7 +665,7 @@ function useEventFocus(st: Stores): void {
     }
     const offs = [
       router.subscribe('onResolved', schedule),
-      usePanes.subscribe((s, prev) => s.root !== prev.root && schedule()),
+      usePanes.subscribe((s, prev) => s.leaves !== prev.leaves && schedule()),
       voiceKey.useVoiceKey.subscribe((s, prev) => s.desk !== prev.desk && schedule()),
       st.connection.subscribe((s, prev) => {
         if (!ready(s.discovery) || (ready(prev.discovery) && s.client?.generation === prev.client?.generation && s.discovery.phase === prev.discovery.phase)) return
@@ -816,7 +815,7 @@ function Main() {
     if (!hydrated) return
     // Panes name sessions of the engine being left; its web frames and tiles go too (native views included).
     if (switcher.shown !== null && switcher.shown !== active) {
-      usePanes.setState({ root: null, focused: null, selected: null, drag: null })
+      resetPanes()
       closeAllWebViews()
       closeAllTiles()
     }

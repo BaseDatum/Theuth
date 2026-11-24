@@ -4,7 +4,8 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { useDrafts } from '@/lib/drafts'
-import { leaves, usePanes } from '@/lib/panes'
+import { usePanes } from '@/lib/panes'
+import { tiling, untile } from '@/lib/panes.testing'
 import { crossLayout, webViewOpened } from '@/lib/web-arrival'
 import { pillOf, useWebViews, webLeaf } from '@/lib/web-views'
 import { Panes } from './Panes'
@@ -45,7 +46,7 @@ beforeEach(() => {
   shell.phone = true
   captured.clear()
   window.matchMedia = () => ({ matches: shell.phone, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList
-  usePanes.setState({ root: null, focused: null, drag: null })
+  untile()
   useWebViews.setState({ views: {}, front: null })
   useDrafts.setState({ by: {} })
 })
@@ -219,7 +220,7 @@ test('a visual viewport resize or scroll, or a window scroll, frames the view ag
 })
 
 test('a route to another chat puts the full-screen page into the pill; the chat under a page is inert', async () => {
-  const panes = (session: string) => h(SidebarProvider, null, h(Panes, { session, render: (id: string) => h('div', { 'data-body': id }, h('button', { type: 'button' }, 'Header')) }))
+  const panes = (session: string) => h(SidebarProvider, null, h(Panes, { session, kinds: [], render: (id: string) => h('div', { 'data-body': id }, h('button', { type: 'button' }, 'Header')) }))
   page()
   useWebViews.getState().show(ID)
   const host = document.body.appendChild(document.createElement('div'))
@@ -273,7 +274,7 @@ test('show_web on a phone while the composer has focus or holds a draft arrives 
   webViewOpened({ id: OTHER, session: 's2', url: 'https://example.org/', title: 'Other' }, false)
   expect(useWebViews.getState().front).toBe(ID)
   expect(useWebViews.getState().views[OTHER]?.minimised).toBe(true)
-  expect(usePanes.getState().root).toBeNull()
+  expect(usePanes.getState().leaves).toEqual([])
 })
 
 test("show_web of a remote engine's loopback address arrives as the card on a phone: no full-screen placeholder, no pill", () => {
@@ -326,8 +327,9 @@ test("the pill shows the latest of its chat's pages and a count; the count lists
 
 test('a tablet keeps the tile: show_web places it beside the chat, the frame attaches in its pane, nothing goes full screen or into the pill', async () => {
   shell.phone = false
+  tiling(['s1'])
   webViewOpened({ id: ID, session: 's1', url: 'https://example.com/', title: 'Example' }, true)
-  expect(leaves(usePanes.getState().root!)).toEqual(['s1', webLeaf(ID)])
+  expect(usePanes.getState().leaves).toEqual(['s1', webLeaf(ID)])
   expect(useWebViews.getState().front).toBeNull()
   const { host, root } = await mount(h(Fragment, null, h(WebFrame, { id: ID }), h(WebPill, { session: 's1' })))
   await vi.waitFor(() => expect(shell.log).toEqual(['web_view_attach']))
@@ -339,20 +341,22 @@ test('a tablet keeps the tile: show_web places it beside the chat, the frame att
 
 test('crossing into the phone layout puts web tiles into the pill; widening again makes the full-screen page a tile beside its chat', () => {
   page()
+  tiling(['s1'])
   usePanes.getState().place('s1', webLeaf(ID), 'right')
   crossLayout(true, 's1')
   expect(useWebViews.getState().views[ID]?.minimised).toBe(true)
-  expect(leaves(usePanes.getState().root!)).toEqual(['s1', webLeaf(ID)])
-  usePanes.setState({ root: null })
+  expect(usePanes.getState().leaves).toEqual(['s1', webLeaf(ID)])
+  // Back on a layout without the tile (its pane went with the phone layout's own).
+  tiling(['s1'])
   useWebViews.getState().show(ID)
   crossLayout(false, 's1')
   expect(useWebViews.getState().front).toBeNull()
-  expect(leaves(usePanes.getState().root!)).toEqual(['s1', webLeaf(ID)])
+  expect(usePanes.getState().leaves).toEqual(['s1', webLeaf(ID)])
   // The page of a chat that is not on screen is left for its card: not minimised, since no pill shows off a phone.
   useWebViews.getState().open({ id: OTHER, session: 's9', url: 'https://example.org/', title: 'Other' })
   useWebViews.getState().show(OTHER)
   crossLayout(false, 's1')
   expect(useWebViews.getState().front).toBeNull()
   expect(useWebViews.getState().views[OTHER]?.minimised).toBe(false)
-  expect(leaves(usePanes.getState().root!)).not.toContain(webLeaf(OTHER))
+  expect(usePanes.getState().leaves).not.toContain(webLeaf(OTHER))
 })

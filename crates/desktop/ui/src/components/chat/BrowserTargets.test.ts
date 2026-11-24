@@ -2,7 +2,8 @@ import '../settings/test-dom'
 import { act, createElement as h } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
-import { leaves, usePanes } from '@/lib/panes'
+import { usePanes } from '@/lib/panes'
+import { tiling, untile } from '@/lib/panes.testing'
 import { type WebView, useWebViews, webLeaf } from '@/lib/web-views'
 import type { Entry } from '@/store/sessions'
 import { type BrowserTarget, BrowserButton, browserTargets, openTarget, targetAction } from './BrowserTargets'
@@ -26,7 +27,7 @@ const call = (id: string, url: string, title: string, callId = id): Entry => ({
 const view = (id: string, session: string, url: string, title: string): WebView => ({ id, session, url, title, current: url, loading: false })
 
 beforeEach(() => {
-  usePanes.setState({ root: null, focused: null, drag: null })
+  untile()
   useWebViews.setState({ views: {}, front: null })
 })
 
@@ -71,11 +72,10 @@ test('several: transcript order, the store’s live address and title win, store
 const page: BrowserTarget = { kind: 'web', id: A, url: 'https://example.com/x', title: 'Example' }
 
 test('open, tiling: a closed page goes back into the pane tree right of the chat, re-recorded in the store', () => {
-  usePanes.setState({ root: { session: S }, focused: S })
+  tiling([S])
   const ctx = { session: S, host: S, full: false, openAgent: vi.fn(), route: vi.fn() }
   openTarget(page, ctx)
-  const { root: tree } = usePanes.getState()
-  expect(tree && leaves(tree)).toEqual([S, webLeaf(A)])
+  expect(usePanes.getState().leaves).toEqual([S, webLeaf(A)])
   expect(useWebViews.getState().views[A]).toMatchObject({ session: S, url: page.url, title: 'Example' })
   expect(ctx.route).not.toHaveBeenCalled()
   openTarget({ kind: 'agent' }, ctx)
@@ -86,7 +86,7 @@ test('open, no tiles: a phone with native views shows the page full screen; othe
   const route = vi.fn()
   openTarget(page, { session: S, host: null, full: true, openAgent: vi.fn(), route })
   expect(useWebViews.getState().front).toBe(A)
-  expect(usePanes.getState().root).toBeNull()
+  expect(usePanes.getState().leaves).toEqual([])
   openTarget(page, { session: S, host: null, full: false, openAgent: vi.fn(), route })
   expect(route).toHaveBeenCalledWith(page)
 })

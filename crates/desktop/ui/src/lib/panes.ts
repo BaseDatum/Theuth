@@ -1,23 +1,23 @@
-// Tiled chats: a binary split tree over session ids, the focused pane (the URL follows it), and the
-// sidebar → pane drag in flight. `root === null` is the plain single chat the route names. In memory only.
-// A leaf may also hold a draft id (`draft:<uuid>[?project=<label>]`, 25 §12.3): a new chat opened from the sidebar whose
-// session does not exist until the first send; `place(draft, session, 'center')` then swaps it in.
-// A leaf may also hold a web frame (`web:<id>`, 205 D5, `lib/web-views.ts`) or a generic tile (`tile:<id>`, `lib/tiles.ts`):
-// both are frames — never focused, never in the URL.
+// Tiled panes on Trellis (`@danfessler/trellis`): the `Workspace` that `Panes` mounts owns the layout — splits,
+// dividers, drag and drop, tabs, persistence — and this module is the facade the rest of the app calls. Every pane is a
+// Trellis view whose id is its leaf: a session id, a draft (`draft:<uuid>[?project=<label>]`, 25 §12.3: a new chat whose
+// session does not exist until its first send), a web frame (`web:<id>`, 205 D5, `lib/web-views.ts`) or a generic
+// tile (`tile:<id>`, `lib/tiles.ts`). Web frames and tiles are frames: never focused, never in the URL.
+// The store mirrors the workspace's document (`leaves`, `views`); it keeps the last document while no workspace is
+// mounted (a phone, another page), and removals then edit the persisted copy.
 
 import { useEffect } from 'react'
 import { create } from 'zustand'
+import { type LayoutDocument, type LayoutNode, type PanelNode, type Placement, sanitize, type ViewInfo, type ViewRecord, type WorkspaceHandle } from '@danfessler/trellis'
+import { useEngines } from '@/link/engines'
 import { openPopout } from '@/lib/popout'
 import { isWeb, type WebView, useWebViews, webId, webLeaf } from '@/lib/web-views'
 
 export type Edge = 'left' | 'right' | 'top' | 'bottom' | 'center'
-export type Node = { session: string } | { dir: 'row' | 'col'; ratio: number; a: Node; b: Node }
-export type Path = ('a' | 'b')[]
 /** The pane under the pointer and which of its edges (or its middle) the drop snaps to. */
 export type Target = { session: string; edge: Edge; rect: DOMRect }
-/** `session`: the leaf being dragged (a sidebar row's session or draft, or any open leaf when `move`). `move`: a tile
- * header drag rearranging an open leaf (`usePanes.move`); otherwise a sidebar row placing a chat (`place`). */
-export type Drag = { session: string; title: string; x: number; y: number; target: Target | null; move?: boolean }
+/** A sidebar row (a session, a draft for New chat) dragged onto the panes. */
+export type Drag = { session: string; title: string; x: number; y: number; target: Target | null }
 
 const DRAFT = 'draft:'
 /** A pane id for a not-yet-created chat; `leaves` lists it beside real sessions, so check before an RPC. */
@@ -39,57 +39,310 @@ export const tileOf = (leaf: string): string => leaf.slice(TILE.length)
 /** A leaf that is not a chat: a web frame or a generic tile. Never focused, never in the URL. */
 export const isFrame = (leaf: string | null | undefined): leaf is string => isWeb(leaf) || isTile(leaf)
 
-/** Sessions shown, left-to-right, top-to-bottom. */
-export const leaves = (n: Node): string[] => ('session' in n ? [n.session] : [...leaves(n.a), ...leaves(n.b)])
 /** `leaves` without web frames and tiles: the chat panes (drafts included), for whatever expects a session id. */
-export const chatLeaves = (n: Node): string[] => leaves(n).filter((l) => !isFrame(l))
+export const chatLeaves = (leaves: readonly string[]): string[] => leaves.filter((l) => !isFrame(l))
 
-/** The one leaf a phone shows (it does not tile, 25 §12.3): the focused pane while the tree has it, else its first chat leaf; the route's `session` without a tree (or with only frames). */
-export const shown = (root: Node | null, focused: string | null, session: string): string => {
-  const all = root ? chatLeaves(root) : []
+/** The one leaf a phone shows (it does not tile, 25 §12.3): the focused pane while it is a chat of the layout, else its
+ * first chat leaf, else the route's `session`. */
+export const shown = (leaves: readonly string[], focused: string | null, session: string): string => {
+  const all = chatLeaves(leaves)
   return focused !== null && all.includes(focused) ? focused : (all[0] ?? session)
 }
 
-/** The tree with the leaf showing `session` swapped for `f(leaf)`. */
-function replace(n: Node, session: string, f: (leaf: Node) => Node): Node {
-  if ('session' in n) return n.session === session ? f(n) : n
-  return { ...n, a: replace(n.a, session, f), b: replace(n.b, session, f) }
+/** Trellis view types: one per leaf kind; a tile's is `tile:<kind>`. */
+export const CHAT = 'chat'
+export const DRAFT_TYPE = 'draft'
+export const WEB = 'web'
+export const tileType = (kind: string): string => `${TILE}${kind}`
+/** What `open()` needs for a leaf that is not open yet. Every view records the engine it belongs to (`prepareStored`). */
+export type ViewSpec = { type: string; params: Record<string, unknown> }
+const engine = (): string => useEngines.getState().active
+export const chatSpec = (leaf: string): ViewSpec => ({ type: isDraft(leaf) ? DRAFT_TYPE : CHAT, params: { engine: engine() } })
+const webSpec = (leaf: string): ViewSpec => ({ type: WEB, params: { engine: engine(), session: useWebViews.getState().views[webId(leaf)]?.session ?? '' } })
+export const tileSpec = (kind: string, session: string, props: unknown): ViewSpec => ({ type: tileType(kind), params: { engine: engine(), session, props } })
+
+/** The chat a view belongs to: a frame's `session` param, else the leaf itself. */
+export function ownerOf(leaf: string, record: ViewRecord | undefined): string {
+  if (!isFrame(leaf)) return leaf
+  const s = record?.params?.session
+  return typeof s === 'string' ? s : ''
 }
 
-/** The tree without the leaf showing `session`; its sibling takes the split's place. `null` when nothing is left. */
-function remove(n: Node, session: string): Node | null {
-  if ('session' in n) return n.session === session ? null : n
-  const a = remove(n.a, session)
-  const b = remove(n.b, session)
-  if (a === n.a && b === n.b) return n
-  return a && b ? { ...n, a, b } : a ?? b
+/** Persisted per machine (localStorage) by Trellis itself; `VERSION` drops documents of an older shape. */
+export const STORAGE_KEY = 'theuth.panes'
+export const VERSION = 1
+
+type PanesStore = {
+  /** The mounted workspace, `null` while none is (a phone, another page, tests that do not tile). */
+  ws: WorkspaceHandle | null
+  /** Every view, in layout order (left-to-right, top-to-bottom); a view mid-drag included. */
+  leaves: string[]
+  /** The document's view records: type and params, by leaf. */
+  views: Record<string, ViewRecord>
+  /** The top-left view: the one that carries the sidebar toggle and the traffic-light inset. */
+  first: string | null
+  /** A Trellis drag (a pane moved by its header or tab) is in flight. */
+  dragging: boolean
+  /** Pane that window-level actions (hotkeys, `document.title`) address; the route keeps the URL on it. Always a chat
+   * (or draft) — never a frame, so no RPC, composer or sidebar highlight ever sees a `tile:`/`web:` id. */
+  focused: string | null
+  /** The pane the user last picked, of any kind (a press inside it, its tab, a route landing): the one that is lit
+   * while the others dim, and the one a sidebar pick or a newly opened surface takes over when it is a frame. A stale
+   * value (no longer laid out) counts as none. */
+  selected: string | null
+  drag: Drag | null
+  focus(session: string): void
+  select(leaf: string): void
+  /** The route landed on `session`: focus its pane, or show it in the selected frame's pane (taking it over), else in
+   * the focused chat's pane, else left of the frames when only frames are left. */
+  show(session: string): void
+  /** Show `session` at `edge` of the pane showing `target` (`center` replaces it). A pane already showing `session` moves. */
+  place(target: string, session: string, edge: Edge): void
+  /** New chat where the user is looking: with ≥ 2 chat panes the focused one (fallback: the first) becomes a fresh
+   * draft; a focused draft is kept, never stacked. Returns the draft to type into, or `null` for a single pane: go to `/`. */
+  fresh(project?: string | null): string | null
+  /** Close the pane showing `session`; returns the session the URL should move to, or `null` to stay. */
+  close(session: string): string | null
+  startDrag(session: string, title: string, x: number, y: number): void
+  moveDrag(x: number, y: number): void
+  /** Drop (or cancel with `drop = false`); returns the dropped session when a pane took it. */
+  endDrag(drop: boolean): string | null
 }
 
-/** `f` applied to the split at `path`. */
-function at(n: Node, path: Path, f: (split: Extract<Node, { dir: string }>) => Node): Node {
-  if ('session' in n) return n
-  const [head, ...rest] = path
-  if (head === undefined) return f(n)
-  return head === 'a' ? { ...n, a: at(n.a, rest, f) } : { ...n, b: at(n.b, rest, f) }
+/** Nested calls into the workspace made by this facade: Trellis's own focus events are not user picks then. */
+let internal = 0
+function op<T>(fn: () => T): T {
+  internal++
+  try {
+    return fn()
+  } finally {
+    internal--
+  }
 }
 
-/** The tree with the leaves showing `x` and `y` trading places. */
-function swap(n: Node, x: string, y: string): Node {
-  if ('session' in n) return n.session === x ? { session: y } : n.session === y ? { session: x } : n
-  return { ...n, a: swap(n.a, x, y), b: swap(n.b, x, y) }
-}
+/** The route's session, remembered for a workspace that mounts after the route landed (`attachWorkspace`). */
+let wanted: string | null = null
+/** Moves the URL to a chat the user picked or closed into (`Panes` wires the router). */
+let go: ((session: string) => void) | null = null
 
-/** `n` with `leaf` split off at `edge` of the leaf showing `target` (`center` replaces that leaf). */
-function insert(n: Node, target: string, leaf: string, edge: Edge): Node {
-  const fresh: Node = { session: leaf }
-  if (edge === 'center') return replace(n, target, () => fresh)
-  return replace(n, target, (old) => {
-    const first = edge === 'left' || edge === 'top'
-    return { dir: edge === 'left' || edge === 'right' ? 'row' : 'col', ratio: 0.5, a: first ? fresh : old, b: first ? old : fresh }
+function panelOf(root: LayoutNode | null | undefined, leaf: string): PanelNode | null {
+  if (!root) return null
+  if (root.kind === 'panel') return root.views.includes(leaf) ? root : null
+  if (root.kind === 'stage') return panelOf(root.child, leaf)
+  for (const c of root.children) {
+    const p = panelOf(c, leaf)
+    if (p) return p
+  }
+  return null
+}
+function firstPanel(root: LayoutNode | null | undefined): PanelNode | null {
+  if (!root) return null
+  if (root.kind === 'panel') return root
+  if (root.kind === 'stage') return firstPanel(root.child)
+  return firstPanel(root.children[0])
+}
+function order(doc: LayoutDocument, extra: readonly string[] = []): string[] {
+  const out: string[] = []
+  const walk = (n: LayoutNode | undefined) => {
+    if (!n) return
+    if (n.kind === 'panel') out.push(...n.views)
+    else if (n.kind === 'stage') walk(n.child)
+    else n.children.forEach(walk)
+  }
+  walk(doc.root ?? undefined)
+  for (const f of doc.floating) out.push(...f.panel.views)
+  for (const h of doc.hidden) out.push(...h.panel.views)
+  for (const id of extra) if (!out.includes(id)) out.push(id)
+  return out
+}
+const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i])
+
+/** The store follows `doc` (and the views a drag is carrying). */
+function mirror(doc: LayoutDocument, carried: readonly string[] = [], dragging = false): void {
+  const s = usePanes.getState()
+  const leaves = order(doc, carried)
+  usePanes.setState({
+    leaves: same(s.leaves, leaves) ? s.leaves : leaves,
+    views: doc.views,
+    first: firstPanel(doc.root)?.selected ?? null,
+    dragging,
   })
 }
 
-/** Edge bands are this share of the pane's width/height; the rest is `center` (replace; a tile move swaps). */
+/** Open `leaf` (not laid out yet) per `spec` at `placement`, unfocused: the caret stays where the user put it. */
+function openView(ws: WorkspaceHandle, leaf: string, spec: ViewSpec, placement: Placement): void {
+  ws.open(spec.type, { id: leaf, params: spec.params, placement, focus: false })
+}
+
+/** `leaf` takes `old`'s place: same panel, same tab position; `old` closes. An open `leaf` moves there. */
+function replace(ws: WorkspaceHandle, old: string, leaf: string, spec: ViewSpec): void {
+  const doc = ws.getDocument()
+  const panel = panelOf(doc.root, old)
+  if (!panel || old === leaf) return
+  const index = panel.views.indexOf(old)
+  if (doc.views[leaf]) ws.dock(leaf, { into: panel.id, index })
+  else openView(ws, leaf, spec, { into: panel.id, index })
+  void ws.close(old, { force: true })
+  const { focused, selected } = usePanes.getState()
+  usePanes.setState({ focused: focused === old ? null : focused, selected: selected === old ? leaf : selected })
+}
+
+/** `leaf` at `edge` of `target`'s panel (`center` takes it over); beside the whole layout when `target` is not laid out. */
+function put(ws: WorkspaceHandle, target: string, leaf: string, edge: Edge, spec: ViewSpec): void {
+  const doc = ws.getDocument()
+  const panel = panelOf(doc.root, target)
+  const open = doc.views[leaf] !== undefined
+  if (!panel) {
+    if (open) return
+    if (doc.root) openView(ws, leaf, spec, { beside: doc.root.id, edge: edge === 'center' ? 'right' : edge })
+    else openView(ws, leaf, spec, 'side')
+  } else if (edge === 'center') replace(ws, target, leaf, spec)
+  else if (open) ws.dock(leaf, { beside: panel.id, edge })
+  else openView(ws, leaf, spec, { beside: panel.id, edge })
+}
+
+/** The focused pane `id` closed: the URL moves to the first real chat left (the return value), else focus stays on
+ * the first draft left. */
+function refocus(id: string): string | null {
+  const { focused, leaves } = usePanes.getState()
+  if (focused !== id) return null
+  const to = leaves.find((s) => !isDraft(s) && !isFrame(s)) ?? null
+  usePanes.setState({ focused: to ?? chatLeaves(leaves)[0] ?? null })
+  return to
+}
+
+/** Without a workspace: `ids` leave the persisted document (and the mirror). */
+function forget(ids: readonly string[]): void {
+  const s = usePanes.getState()
+  if (!ids.some((id) => s.views[id] || s.leaves.includes(id))) return
+  const views = { ...s.views }
+  for (const id of ids) delete views[id]
+  usePanes.setState({ leaves: s.leaves.filter((l) => !ids.includes(l)), views })
+  editStored((doc) => {
+    for (const id of ids) delete doc.views[id]
+    return doc
+  })
+}
+
+/** Close `ids` for good: through the workspace when one is mounted, else in the persisted document. */
+export function closeLeaves(ids: readonly string[]): void {
+  const { ws } = usePanes.getState()
+  if (!ws) return forget(ids)
+  op(() => {
+    for (const id of ids) void ws.close(id, { force: true })
+  })
+}
+
+/** Relabel leaves in place (`from → to`): a draft becoming its session, its tiles retargeted. Each `to` takes its
+ * `from`'s place; a `to` already laid out moves there. Focus and selection follow. */
+export function rename(map: Record<string, { leaf: string; spec: ViewSpec }>): void {
+  const { ws, focused, selected } = usePanes.getState()
+  if (!ws) return
+  op(() => {
+    for (const [from, { leaf, spec }] of Object.entries(map)) replace(ws, from, leaf, spec)
+  })
+  const after = (id: string | null) => (id && map[id] ? map[id].leaf : id)
+  usePanes.setState({ focused: after(focused), selected: after(selected) })
+}
+
+export const usePanes = create<PanesStore>()((set, get) => ({
+  ws: null,
+  leaves: [],
+  views: {},
+  first: null,
+  dragging: false,
+  focused: null,
+  selected: null,
+  drag: null,
+  focus(session) {
+    if (get().focused !== session && !isFrame(session)) set({ focused: session })
+  },
+  select(leaf) {
+    if (get().selected !== leaf) set({ selected: leaf })
+  },
+  show(session) {
+    wanted = session
+    const { ws, leaves, focused, selected } = get()
+    if (ws && !leaves.includes(session)) {
+      const chats = chatLeaves(leaves)
+      const target = focused && chats.includes(focused) ? focused : chats[0]
+      op(() => {
+        // The picked pane is a tile: the chat takes it over, as it would a picked chat pane.
+        if (selected && isFrame(selected) && leaves.includes(selected)) replace(ws, selected, session, chatSpec(session))
+        else if (target) replace(ws, target, session, chatSpec(session))
+        // Only frames left: the chat goes left of all of them, not into one corner.
+        else put(ws, '', session, 'left', chatSpec(session))
+      })
+    }
+    set({ focused: session, selected: session })
+  },
+  place(target, session, edge) {
+    placeView(target, session, edge, isWeb(session) ? webSpec(session) : chatSpec(session))
+  },
+  fresh(project) {
+    const { ws, leaves, focused } = get()
+    const all = chatLeaves(leaves)
+    const target = focused && all.includes(focused) ? focused : all[0]
+    if (target && isDraft(target)) return target
+    if (!ws || all.length < 2 || !target) return null
+    const draft = newDraft(project)
+    op(() => replace(ws, target, draft, chatSpec(draft)))
+    set({ focused: draft })
+    return draft
+  },
+  close(session) {
+    closeLeaves([session])
+    return refocus(session)
+  },
+  startDrag(session, title, x, y) {
+    document.body.classList.add('select-none')
+    set({ drag: { session, title, x, y, target: null } })
+  },
+  moveDrag(x, y) {
+    const { drag } = get()
+    if (drag) set({ drag: { ...drag, x, y, target: targetAt(x, y) } })
+  },
+  endDrag(drop) {
+    document.body.classList.remove('select-none')
+    const { drag } = get()
+    set({ drag: null })
+    if (!drop || !drag?.target) return null
+    get().place(drag.target.session, drag.session, drag.target.edge)
+    return drag.session
+  },
+}))
+
+/**
+ * `leaf` (opened per `spec` when new) at `edge` of `target` (`center` replaces it; an open `leaf` moves). A frame never
+ * takes focus (205 D5): the URL stays on the chat beside it, and it is selected only when it took over the selected
+ * pane; a placed chat is focused and selected. `false` without a workspace.
+ */
+export function placeView(target: string, leaf: string, edge: Edge, spec: ViewSpec): boolean {
+  const { ws, selected } = usePanes.getState()
+  if (!ws) return false
+  if (target === leaf) {
+    if (!isFrame(leaf)) usePanes.setState({ focused: leaf })
+    return true
+  }
+  op(() => put(ws, target, leaf, edge, spec))
+  const over = edge === 'center' && selected === target
+  // `replace` already dropped focus off a taken-over chat; a chat split beside keeps it.
+  const kept = usePanes.getState().focused ?? (isFrame(target) || edge === 'center' ? null : target)
+  usePanes.setState({ focused: isFrame(leaf) ? kept : leaf, selected: !isFrame(leaf) || over ? leaf : usePanes.getState().selected })
+  return true
+}
+
+/** The user picked pane `id` (a press in it, its tab, the keyboard): it is selected; a chat is focused too and, unless
+ * a draft, the URL moves to it. */
+export function picked(id: string): void {
+  const { focused, select, focus } = usePanes.getState()
+  select(id)
+  if (focused === id || isFrame(id)) return
+  focus(id)
+  if (!isDraft(id)) go?.(id)
+}
+
+/** Edge bands are this share of the pane's width/height; the rest is `center` (replace). */
 const BAND = 0.25
 
 /** The pane under (`x`, `y`) and the drop edge for that point; `null` off any pane. */
@@ -122,194 +375,115 @@ export function zone({ edge, rect: r }: Target): { left: number; top: number; wi
   }
 }
 
-/** A region of the panes area in percent of it: where `Panes` absolutely positions a leaf or a divider. */
-export type Box = { left: number; top: number; width: number; height: number }
-/** The tree flattened for rendering: every leaf with its box (and whether it is the top-left one), every split with its box. */
-export type Layout = {
-  leaves: { session: string; box: Box; first: boolean }[]
-  splits: { path: Path; dir: 'row' | 'col'; ratio: number; box: Box }[]
-}
-
-/** `n`'s leaves and splits with their boxes; leaves in `leaves` order. */
-export function layout(n: Node, box: Box = { left: 0, top: 0, width: 100, height: 100 }, path: Path = [], out: Layout = { leaves: [], splits: [] }): Layout {
-  if ('session' in n) {
-    out.leaves.push({ session: n.session, box, first: path.every((p) => p === 'a') })
-    return out
-  }
-  out.splits.push({ path, dir: n.dir, ratio: n.ratio, box })
-  const row = n.dir === 'row'
-  const a = row ? { ...box, width: box.width * n.ratio } : { ...box, height: box.height * n.ratio }
-  const b = row
-    ? { ...box, left: box.left + a.width, width: box.width - a.width }
-    : { ...box, top: box.top + a.height, height: box.height - a.height }
-  layout(n.a, a, [...path, 'a'], out)
-  layout(n.b, b, [...path, 'b'], out)
-  return out
-}
-
-type PanesStore = {
-  root: Node | null
-  /** Pane that window-level actions (hotkeys, `document.title`) address; the route keeps the URL on it. Always a chat
-   * (or draft) — never a frame, so no RPC, composer or sidebar highlight ever sees a `tile:`/`web:` id. */
-  focused: string | null
-  /** The pane the user last picked, of any kind (a press inside it, a route landing): the one that is lit while the
-   * others dim, and the one a sidebar pick or a newly opened surface takes over when it is a frame. A stale value (no
-   * longer in the tree) counts as none. */
-  selected: string | null
-  drag: Drag | null
-  focus(session: string): void
-  select(leaf: string): void
-  /** The route landed on `session`: focus its pane, or show it in the selected frame's pane (taking it over), else in
-   * the focused chat's pane, else left of the frames when only frames are left. */
-  show(session: string): void
-  /** Show `session` at `edge` of the pane showing `target` (`center` replaces it). A pane already showing `session` moves. */
-  place(target: string, session: string, edge: Edge): void
-  /** A header drag (any leaf): `source` moves to `edge` of `target`; `center` swaps the two. Focus never moves. */
-  move(source: string, target: string, edge: Edge): void
-  /** Relabel leaves in place, all in one update (`from → to`): a draft becoming its session together with its tiles.
-   * Focus and selection follow relabelled leaves. */
-  rename(map: Record<string, string>): void
-  /** New chat where the user is looking: with ≥ 2 panes the focused one (fallback: the first) becomes a fresh draft;
-   * a focused draft is kept, never stacked. Returns the draft to type into, or `null` for a single pane: go to `/`. */
-  fresh(project?: string | null): string | null
-  /** Close the pane showing `session`; returns the session the URL should move to, or `null` to stay (also
-   * when only a draft is left: the URL then names a chat no longer shown until the draft's first send replaces it). */
-  close(session: string): string | null
-  resize(path: Path, ratio: number): void
-  /** `move`: a tile header drag (`Drag.move`). */
-  startDrag(session: string, title: string, x: number, y: number, move?: boolean): void
-  moveDrag(x: number, y: number): void
-  /** Drop (or cancel with `drop = false`); returns the dropped session when a pane took it from the sidebar (a tile
-   * move returns `null`: nothing to navigate). */
-  endDrag(drop: boolean): string | null
-}
-
-/** A lone real leaf is the single-chat mode; a lone draft or frame stays a tree, since no route names it (closing
- * the chat beside a web tile leaves that tile on screen, and the URL on the closed chat, like a draft). */
-const normal = (n: Node | null): Node | null => (n && 'session' in n && !isDraft(n.session) && !isFrame(n.session) ? null : n)
-
-/** A web frame taken over (its pane given to something else) is closed for good: store entry and native view. Generic
- * tiles' payloads go with their leaf (`lib/tiles.ts`). */
-const dispose = (leaf: string) => isWeb(leaf) && useWebViews.getState().close(webId(leaf))
-
-export const usePanes = create<PanesStore>()((set, get) => ({
-  root: null,
-  focused: null,
-  selected: null,
-  drag: null,
-  focus(session) {
-    if (get().focused !== session && !isFrame(session)) set({ focused: session })
-  },
-  select(leaf) {
-    if (get().selected !== leaf) set({ selected: leaf })
-  },
-  show(session) {
-    const { root, focused, selected } = get()
-    if (root && !leaves(root).includes(session)) {
-      const all = leaves(root)
-      const chats = chatLeaves(root)
-      const target = focused && chats.includes(focused) ? focused : chats[0]
-      if (selected && isFrame(selected) && all.includes(selected)) {
-        // The picked pane is a tile: the chat takes it over, as it would a picked chat pane.
-        set({ root: normal(replace(root, selected, () => ({ session }))) })
-        dispose(selected)
-      }
-      // Only frames left: the chat goes left of all of them (the root splits), not into one corner.
-      else set({ root: target ? normal(replace(root, target, () => ({ session }))) : { dir: 'row', ratio: 0.5, a: { session }, b: root } })
-    }
-    set({ focused: session, selected: session })
-  },
-  place(target, session, edge) {
-    if (target === session) {
-      get().focus(session)
-      return
-    }
-    const { selected } = get()
-    // Moving an open pane: lift it first so the target's leaf is still there to split.
-    const root = (get().root && remove(get().root as Node, session)) ?? { session: target }
-    const next = insert(root, target, session, edge)
-    // A frame never takes focus (205 D5): the URL stays on the chat beside it. It is selected when it took over the
-    // selected pane; a placed chat is focused and selected.
-    const focused = get().focused ?? (isFrame(target) ? null : target)
-    const over = edge === 'center' && selected === target
-    set({ root: normal(next), focused: isFrame(session) ? focused : session, selected: !isFrame(session) || over ? session : selected })
-    if (edge === 'center') dispose(target)
-  },
-  move(source, target, edge) {
-    const { root } = get()
-    if (!root || source === target) return
-    const all = leaves(root)
-    if (!all.includes(source) || !all.includes(target)) return
-    if (edge === 'center') return set({ root: swap(root, source, target) })
-    // Both leaves stay, so the tree keeps ≥ 2 leaves and `remove` cannot empty it.
-    set({ root: insert(remove(root, source) as Node, target, source, edge) })
-  },
-  rename(map) {
-    const { root, focused, selected } = get()
-    const relabel = (n: Node): Node => ('session' in n ? (map[n.session] ? { session: map[n.session] as string } : n) : { ...n, a: relabel(n.a), b: relabel(n.b) })
-    set({ root: root && normal(relabel(root)), focused: (focused && map[focused]) ?? focused, selected: (selected && map[selected]) ?? selected })
-  },
-  fresh(project) {
-    const { root, focused } = get()
-    const all = root ? chatLeaves(root) : []
-    const target = focused && all.includes(focused) ? focused : all[0]
-    if (target && isDraft(target)) return target
-    if (all.length < 2) return null
-    const draft = newDraft(project)
-    set({ root: replace(root as Node, target as string, () => ({ session: draft })), focused: draft })
-    return draft
-  },
-  close(session) {
-    const { root, focused } = get()
-    if (!root) return null
-    const next = remove(root, session)
-    set({ root: normal(next) })
-    if (focused !== session || !next) return null
-    const to = leaves(next).find((s) => !isDraft(s) && !isFrame(s)) ?? null
-    set({ focused: to ?? chatLeaves(next)[0] ?? null })
-    return to
-  },
-  resize(path, ratio) {
-    const { root } = get()
-    if (root) set({ root: at(root, path, (s) => ({ ...s, ratio })) })
-  },
-  startDrag(session, title, x, y, move) {
-    document.body.classList.add('select-none')
-    set({ drag: { session, title, x, y, target: null, ...(move ? { move } : {}) } })
-  },
-  moveDrag(x, y) {
-    const { drag } = get()
-    if (!drag) return
-    let target = targetAt(x, y)
-    // A tile dropped on itself goes nowhere: no zone.
-    if (target && drag.move && target.session === drag.session) target = null
-    set({ drag: { ...drag, x, y, target } })
-  },
-  endDrag(drop) {
-    document.body.classList.remove('select-none')
-    const { drag } = get()
-    set({ drag: null })
-    if (!drop || !drag?.target) return null
-    if (drag.move) {
-      get().move(drag.session, drag.target.session, drag.target.edge)
-      return null
-    }
-    get().place(drag.target.session, drag.session, drag.target.edge)
-    return drag.session
-  },
-}))
+/** The press being dispatched (cleared once it is done): a Trellis focus it causes inside a pane's content is that
+ * pane's own pick (`ViewBody`), which may decline it (a control in a chat while a frame is selected). */
+let pressing: Element | null = null
 
 /**
- * 205 D5: web frame `id` opens to the right of `session`'s pane (the single chat on screen counts as one). An open
- * tile is left where it is. `false` when `session` has no pane here: the frame then waits for its card.
+ * `ws` is the layout now: the store follows its document; Trellis focus (a tab, the keyboard) is a user pick; a view
+ * closed by Trellis (its tab's ×, ⌥⌘W) moves the URL off it; a web frame closed for good (not popped out) loses its
+ * native view. Returns the detach, which flushes the document to storage and keeps the mirror.
+ */
+export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string) => void): () => void {
+  go = navigate ?? null
+  const sync = () => {
+    const snap = ws.getSnapshot()
+    mirror(snap.document, snap.views.map((v) => v.id), snap.dragging)
+  }
+  const down = (e: Event) => {
+    pressing = e.target instanceof Element ? e.target : null
+    setTimeout(() => (pressing = null), 0)
+  }
+  window.addEventListener('pointerdown', down, true)
+  const offs = [
+    ws.subscribe(sync),
+    ws.on('focus', (id) => {
+      if (internal || id === null || !ws.getDocument().views[id]) return
+      if (pressing?.closest('[data-pane]')) return
+      picked(id)
+    }),
+    ws.on('close', (v: ViewInfo) => {
+      if (isWeb(v.id) && !useWebViews.getState().views[webId(v.id)]?.popped) useWebViews.getState().close(webId(v.id))
+      if (internal) return
+      const to = refocus(v.id)
+      if (to) go?.(to)
+    }),
+  ]
+  usePanes.setState({ ws })
+  sync()
+  if (wanted) usePanes.getState().show(wanted)
+  return () => {
+    for (const off of offs) off()
+    window.removeEventListener('pointerdown', down, true)
+    if (usePanes.getState().ws !== ws) return
+    try {
+      const doc = ws.getDocument()
+      mirror(doc)
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...doc, version: VERSION }))
+    } catch {
+      // Storage full or unavailable: Trellis's own debounced save is all there is.
+    }
+    usePanes.setState({ ws: null, dragging: false })
+  }
+}
+
+/** The engine was switched or the app forgot its panes: nothing focused, nothing selected, no drag. */
+export function resetPanes(): void {
+  wanted = null
+  usePanes.setState({ focused: null, selected: null, drag: null })
+}
+
+/** `fn` applied to the persisted document; a garbled one is removed. */
+function editStored(fn: (doc: LayoutDocument) => LayoutDocument): void {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as LayoutDocument
+    if (parsed?.schema !== 1 || parsed.version !== VERSION) throw new Error('stale panes document')
+    const next = sanitize(fn(sanitize(parsed)))
+    // Nothing left: the workspace starts from its default (the route's chat), not from an empty layout.
+    if (Object.keys(next.views).length === 0) localStorage.removeItem(STORAGE_KEY)
+    else localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...next, version: VERSION }))
+  } catch {
+    try {
+      localStorage.removeItem(STORAGE_KEY)
+    } catch {
+      // No storage: nothing persisted either.
+    }
+  }
+}
+
+/**
+ * Before a workspace mounts on the persisted layout: views of another engine, web frames whose page this window no
+ * longer holds (a restart), and — once the engine's session list is known (`sessions`) — chats and frames of sessions
+ * that no longer exist are dropped (a draft's are kept). A garbled or stale document is removed, so the workspace
+ * starts from its default: the route's single chat.
+ */
+export function prepareStored(o: { engine: string; sessions: ReadonlySet<string> | null; types: ReadonlySet<string> }): void {
+  editStored((doc) => {
+    for (const [id, record] of Object.entries(doc.views)) {
+      const owner = ownerOf(id, record)
+      const gone =
+        record.params?.engine !== o.engine ||
+        !o.types.has(record.type) ||
+        (isWeb(id) && !useWebViews.getState().views[webId(id)]) ||
+        (o.sessions !== null && !isDraft(owner) && !o.sessions.has(owner))
+      if (gone) delete doc.views[id]
+    }
+    return doc
+  })
+}
+
+/**
+ * 205 D5: web frame `id` opens to the right of `session`'s pane. An open tile is left where it is. `false` when
+ * `session` has no pane here: the frame then waits for its card.
  */
 export function placeWeb(session: string, id: string): boolean {
-  const { root, place } = usePanes.getState()
+  const { leaves } = usePanes.getState()
   const leaf = webLeaf(id)
-  if (root && leaves(root).includes(leaf)) return true
-  if (root && !leaves(root).includes(session)) return false
-  place(session, leaf, 'right')
-  return true
+  if (leaves.includes(leaf)) return true
+  if (!leaves.includes(session)) return false
+  return placeView(session, leaf, 'right', webSpec(leaf))
 }
 
 /** Close web frame `id` for good: its tile, its store entry and its native web view. */
@@ -331,9 +505,9 @@ export async function popOutWeb(view: Pick<WebView, 'id' | 'session' | 'url' | '
   usePanes.getState().close(webLeaf(view.id))
 }
 
-/** The route's chat is shown: on a URL change, and again when the tree is left holding only frames while the URL
- * stayed (the chat closed beside a web tile, so a sidebar click on that same URL changes nothing else). */
+/** The route's chat is shown: on a URL change, and again when the layout is left holding only frames (or nothing)
+ * while the URL stayed (the chat closed beside a web tile, so a sidebar click on that same URL changes nothing else). */
 export function useRoutedPane(session: string): void {
-  const stranded = usePanes((s) => s.root !== null && leaves(s.root).every((l) => isFrame(l)))
+  const stranded = usePanes((s) => s.ws !== null && s.leaves.every((l) => isFrame(l)))
   useEffect(() => usePanes.getState().show(session), [session, stranded])
 }

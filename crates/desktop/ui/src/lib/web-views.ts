@@ -1,5 +1,6 @@
-// Web view frames (205 §4.4): the payload of a `web:<id>` pane leaf, in memory like the pane tree. `url` is what was
-// last asked for (the tool, the address field), `current` what the page reports (`web-view://state`).
+// Web view frames (205 §4.4): the payload of a `web:<id>` pane (a Trellis view, `lib/panes.ts`), in memory only: a
+// persisted layout drops a web pane whose frame this window no longer holds. `url` is what was last asked for (the
+// tool, the address field), `current` what the page reports (`web-view://state`).
 
 import { create } from 'zustand'
 import { openExternal } from '@/lib/platform'

@@ -6,7 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { usePaneDrag } from '@/hooks/use-pane-drag'
+import { useViewTitle } from '@danfessler/trellis-react'
+import { useViewDrag } from '@/hooks/use-view-drag'
 import { useEngines } from '@/link/engines'
 import { isMacDesktop } from '@/lib/hotkeys'
 import { container } from '@/lib/platform'
@@ -51,8 +52,9 @@ export function WebFrame({ id, first = false, onClose, popped = false }: { id: s
     } else warn('web_view_attach')(e)
   })
   const mac = isMacDesktop()
-  // The toolbar drags the tile (`usePaneDrag`) once the tree is split; the address field and buttons stay interactive.
-  const drag = usePaneDrag(view?.title || 'Web')
+  // Beside other panes the toolbar drags this one (`useViewDrag`); the address field and buttons stay interactive.
+  const drag = useViewDrag()
+  useViewTitle(view?.title || 'Web')
   const region = (mac && drag.region) || undefined
   // `Header`'s rule: a popped window has no sidebar to open and is its own window.
   const nav = first && (!open || isMobile) && !popped && !isPopout()

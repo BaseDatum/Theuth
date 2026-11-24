@@ -28,7 +28,7 @@ import { chatLeaves, closeWeb, isDraft, isTile, tileOf, usePanes, useRoutedPane 
 import { isWeb, webId } from '@/lib/web-views'
 import { WebFrame } from '@/components/chat/WebFrame'
 import { WebPill } from '@/components/chat/WebPill'
-import { TileLeaf } from '@/components/tiles/registry'
+import { TILE_KINDS, TileLeaf } from '@/components/tiles/registry'
 import { reportLoadError, useRemoteStart } from '@/lib/remote-start'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
 import { ownedElsewhere } from '@/lib/owner'
@@ -85,6 +85,7 @@ function SessionRoute() {
   return (
     <Panes
       session={session}
+      kinds={KINDS}
       render={(id, first) =>
         isWeb(id) ? (
           <WebFrame id={webId(id)} first={first} onClose={() => closeWeb(webId(id))} />
@@ -99,6 +100,9 @@ function SessionRoute() {
     />
   )
 }
+
+/** Every tile kind is one Trellis view type of the panes (`Panes`). */
+const KINDS = Object.keys(TILE_KINDS)
 
 /** 171 §14.3: scroll to and focus the newest cell named `cell` (or with that ordinal) once the transcript has mounted it; gives up after 10 s. */
 function scrollToCell(cell: string): () => void {
@@ -130,7 +134,7 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
   const navigate = useNavigate()
   const focused = usePanes((s) => s.focused) === session
   // A chat beside web tiles only is the URL's chat: it has no close (it would come straight back, `useRoutedPane`).
-  const split = usePanes((s) => s.root !== null && chatLeaves(s.root).length > 1)
+  const split = usePanes((s) => chatLeaves(s.leaves).length > 1)
   // The engine this route mounted under: an RPC landing after a switch writes to its own stores, never the new engine's (48 §5).
   const { sessions: store } = useScope()
   const title = useSessionField(session, 'title')

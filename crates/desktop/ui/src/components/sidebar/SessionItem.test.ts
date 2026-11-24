@@ -44,7 +44,7 @@ async function mount(subagents: SessionSummary[] = [child], endless = false) {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(canPopout).mockReturnValue(true)
-  usePanes.setState({ root: null, focused: null, drag: null })
+  usePanes.setState({ focused: null, drag: null })
   useSessions.setState({ sessions: {
     root: { ...empty('root'), activity: 'thinking', running: true, jobs: new Set(['j1', 'j2']), ptys: new Set(['pty1']), reminders: new Set(['r1']) },
     child: { ...empty('child'), running: true },

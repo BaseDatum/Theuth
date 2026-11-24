@@ -3,7 +3,8 @@ import { act, createElement as h, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { SidebarProvider } from '@/components/ui/sidebar'
-import { leaves, usePanes, useRoutedPane } from '@/lib/panes'
+import { usePanes, useRoutedPane } from '@/lib/panes'
+import { tiling, untile } from '@/lib/panes.testing'
 import { openPopout } from '@/lib/popout'
 import { installWebViewEvents, useWebViews, webLeaf } from '@/lib/web-views'
 import { IDLE, REFUSE_MS, started, useTileAgent } from '@/lib/web-view-agent'
@@ -60,12 +61,13 @@ beforeEach(() => {
   for (const f of Object.values(native)) if (typeof f === 'function') f.mockClear()
   native.attach.mockImplementation(async () => {})
   vi.mocked(openPopout).mockReset().mockImplementation(async () => {})
-  usePanes.setState({ root: null, focused: null, drag: null })
+  tiling(['s1'])
   useWebViews.setState({ views: {} })
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(RECT)
 })
 afterEach(() => {
   vi.restoreAllMocks()
+  untile()
   document.body.innerHTML = ''
 })
 
@@ -145,12 +147,12 @@ test('pop out waits for the window: a refusal leaves the tile; an open window ma
   const { host, root } = await mount(h(WebFrame, { id: ID }))
   vi.mocked(openPopout).mockRejectedValueOnce(new Error('no window'))
   await act(async () => button(host, 'Open in new window').click())
-  expect(leaves(usePanes.getState().root!)).toEqual(['s1', W])
+  expect(usePanes.getState().leaves).toEqual(['s1', W])
   expect(useWebViews.getState().views[ID]?.popped).toBeUndefined()
   await act(async () => button(host, 'Open in new window').click())
   expect(openPopout).toHaveBeenLastCalledWith({ kind: 'web', id: ID, url: 'https://example.com/', title: 'Example' })
   expect(useWebViews.getState().views[ID]?.popped).toBe(true)
-  expect(usePanes.getState().root).toBeNull()
+  expect(usePanes.getState().leaves).toEqual(['s1'])
   await act(async () => root.unmount())
 })
 
@@ -159,7 +161,7 @@ test('a view a pop-out window holds is not taken back: the refused attach focuse
   usePanes.getState().place('s1', W, 'right')
   native.attach.mockRejectedValueOnce('in-popout: popout-web-0123456789abcdef')
   const { root } = await mount(h(WebFrame, { id: ID }))
-  await vi.waitFor(() => expect(usePanes.getState().root).toBeNull())
+  await vi.waitFor(() => expect(usePanes.getState().leaves).toEqual(['s1']))
   expect(openPopout).toHaveBeenCalledWith({ kind: 'web', id: ID, url: 'https://example.com/', title: 'Example' })
   expect(useWebViews.getState().views[ID]?.popped).toBe(true)
   await act(async () => root.unmount())
@@ -213,7 +215,7 @@ test('the URL chat closed beside a web tile is shown again beside it (a sidebar 
   }
   const { root } = await mount(h(Route))
   await act(async () => void usePanes.getState().close('s1'))
-  expect(leaves(usePanes.getState().root!)).toEqual(['s1', W])
+  expect(usePanes.getState().leaves).toEqual(['s1', W])
   await act(async () => root.unmount())
 })
 
@@ -236,7 +238,7 @@ test('the card reads the frame from the receipt, the arguments while pending; Op
   const { host, root } = await mount(h(WebViewCard, { tool: done, session: 's1' }))
   const open = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Open')!
   await act(async () => open.click())
-  expect(leaves(usePanes.getState().root!)).toEqual(['s1', W])
+  expect(usePanes.getState().leaves).toEqual(['s1', W])
   expect(useWebViews.getState().views[ID]).toMatchObject({ session: 's1', url: 'http://localhost:3000/', title: 'Dev server' })
   await act(async () => root.unmount())
 })
@@ -247,7 +249,7 @@ test('after a restart (empty store) the card pop-out records the frame as popped
   expect(useWebViews.getState().views[ID]).toMatchObject({ session: 's1', popped: true })
   const open = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Open')!
   await act(async () => open.click())
-  expect(usePanes.getState().root).toBeNull()
+  expect(usePanes.getState().leaves).toEqual(['s1'])
   expect(openPopout).toHaveBeenCalledTimes(2)
   // A desktop window narrower than 768 px opens pages full screen (`full`): a popped page still focuses its window,
   // never an empty full-screen frame whose attach the shell refuses.

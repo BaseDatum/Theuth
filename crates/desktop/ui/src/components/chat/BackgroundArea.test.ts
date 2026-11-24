@@ -66,7 +66,7 @@ async function mount(element: ReactNode = createElement(BackgroundArea, { sessio
 beforeEach(() => {
   vi.clearAllMocks()
   useSessions.setState({ sessions: {} })
-  usePanes.setState({ root: null, focused: 's1', drag: null })
+  usePanes.setState({ focused: 's1', drag: null })
   api.list_jobs.mockResolvedValue(jobs)
 })
 afterEach(async () => {

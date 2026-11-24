@@ -4,9 +4,10 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { TileHost } from '@/components/tiles/host'
 import { SidebarProvider } from '@/components/ui/sidebar'
-import { leaves, tileLeaf, usePanes } from '@/lib/panes'
+import { tileLeaf, usePanes } from '@/lib/panes'
+import { tileIds, tileProps, tiling, untile } from '@/lib/panes.testing'
 import { openPopout } from '@/lib/popout'
-import { tileId, useTiles } from '@/lib/tiles'
+import { tileId } from '@/lib/tiles'
 import type { Entry } from '@/store/sessions'
 import { PtyViewCard, ptyCall } from './PtyViewCard'
 
@@ -21,12 +22,12 @@ const RECEIPT = 'pty view opened · Dev server · tile pty:s1/j3\nThe user can t
 const JOB_RECEIPT = 'job view opened · cargo build · tile job:s1/j4\nThe tile shows its live log.'
 
 beforeEach(() => {
-  usePanes.setState({ root: null, focused: 's1', selected: null, drag: null })
-  useTiles.setState({ tiles: {} })
+  tiling(['s1'])
   nav.navigate.mockClear()
   vi.mocked(openPopout).mockClear()
 })
 afterEach(() => {
+  untile()
   document.body.innerHTML = ''
 })
 
@@ -65,8 +66,8 @@ test('Open puts the terminal tile beside the chat where the layout tiles', async
   const { el, root } = await mount(h(PtyViewCard, { tool: tool({ result: result(RECEIPT) }) }), 's1')
   await act(async () => openButton(el).click())
   const id = tileId('job-terminal', 's1', 's1/j3')
-  expect(leaves(usePanes.getState().root!)).toEqual(['s1', tileLeaf(id)])
-  expect(useTiles.getState().tiles[id]?.props).toEqual({ session: 's1', job: 'j3', label: 'Dev server' })
+  expect(usePanes.getState().leaves).toEqual(['s1', tileLeaf(id)])
+  expect(tileProps(id)).toEqual({ session: 's1', job: 'j3', label: 'Dev server' })
   await act(async () => root.unmount())
 })
 
@@ -75,8 +76,8 @@ test('Open on a background job puts its log tile beside the chat, with no pop ou
   expect(el.querySelector('button[aria-label="Open in new window"]')).toBeNull()
   await act(async () => openButton(el).click())
   const id = tileId('job-log', 's1', 's1/j4')
-  expect(leaves(usePanes.getState().root!)).toEqual(['s1', tileLeaf(id)])
-  expect(useTiles.getState().tiles[id]?.props).toEqual({ session: 's1', job: 'j4', label: 'cargo build' })
+  expect(usePanes.getState().leaves).toEqual(['s1', tileLeaf(id)])
+  expect(tileProps(id)).toEqual({ session: 's1', job: 'j4', label: 'cargo build' })
   await act(async () => root.unmount())
 })
 
@@ -84,6 +85,6 @@ test('with no tile host Open pops the terminal out, never tiling', async () => {
   const { el, root } = await mount(h(PtyViewCard, { tool: tool({ result: result(RECEIPT) }) }), null)
   await act(async () => openButton(el).click())
   expect(openPopout).toHaveBeenCalledWith({ kind: 'pty', session: 's1', job: 'j3' })
-  expect(useTiles.getState().tiles).toEqual({})
+  expect(tileIds()).toEqual([])
   await act(async () => root.unmount())
 })
