@@ -1,5 +1,6 @@
 import '../settings/test-dom'
 import type * as SessionListModule from './SessionList'
+import type * as AgentTreeModule from './AgentTree'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, createElement as h, type ComponentProps, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -10,7 +11,11 @@ import { useSidebarReveal } from '@/lib/sidebar-reveal'
 import { receiveComponent } from '@/rpc/bindings/receive'
 import type { SessionSummary } from '@/rpc/bindings/method.agent.output'
 import { buildRows } from './SessionList'
-import { CLOSE_DELAY, POPOVER_CAP, RailSections, railSections } from './Rail'
+import { usePanes } from '@/lib/panes'
+import { useSessions } from '@/store/sessions'
+import { empty } from '@/store/reduce'
+import type { AgentInfo } from '@/store/ui-events'
+import { CLOSE_DELAY, POPOVER_CAP, RailSections, railSections, workspaceTarget } from './Rail'
 
 const s = (id: string, project: string | null, updated_at: string, pinned = false): SessionSummary =>
   receiveComponent('method.agent.output.SessionSummary', {
@@ -45,13 +50,23 @@ vi.mock('./SessionList', async (original) => {
 // The project glyph is the project style system's; the rail must ask it, not draw its own.
 vi.mock('./ProjectStyle', () => ({
   ProjectIcon: ({ project, className }: { project: string | null; className?: string }) => h('svg', { 'data-project-icon': project ?? '', className }),
+  ProjectStyleDialog: ({ project, open }: { project: string; open: boolean }) => (open ? h('div', { 'data-style-dialog': project }) : null),
+}))
+// The subtree is `AgentTree`'s (its own tests); here only which chat gets one, and that it is live-only.
+vi.mock('./AgentTree', async (original) => ({
+  ...(await original<typeof AgentTreeModule>()),
+  AgentTree: ({ session, liveOnly }: { session: string; liveOnly?: boolean }) =>
+    h('div', { 'data-agent-tree': session, 'data-live-only': String(!!liveOnly) }, h('a', { href: `/c/${session}-sub` }, 'sub')),
 }))
 vi.mock('./Desks', () => ({ useDeskList: () => [] }))
-vi.mock('@/rpc/capabilities', () => ({ Capability: ({ children }: { children: ReactNode }) => children }))
+vi.mock('@/rpc/capabilities', () => ({ Capability: ({ children }: { children: ReactNode }) => children, useQuerySupport: () => false }))
 vi.mock('@/components/chat/NewChatPane', () => ({ openNewChat: vi.fn() }))
-vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof import('@/lib/rpc')>()), useApi: () => ({}) }))
+const api = vi.hoisted(() => ({ pin_session: vi.fn(async () => {}), rename_session: vi.fn(async () => {}) }))
+vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof import('@/lib/rpc')>()), useApi: () => api }))
+vi.mock('@/lib/owner', async (original) => ({ ...(await original<typeof import('@/lib/owner')>()), routed: (_id: string, call: () => Promise<unknown>) => call() }))
+const navigate = vi.hoisted(() => vi.fn())
 vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => navigate,
   Link: ({ to, params = {}, ...props }: ComponentProps<'a'> & { to: string; params?: Record<string, string> }) =>
     h('a', { ...props, href: to.replace(/\$(\w+)/g, (_, key: string) => encodeURIComponent(params[key]!)) }),
 }))
@@ -86,6 +101,9 @@ beforeEach(() => {
   ]
   env.active = new Set(['run'])
   useSidebarReveal.setState({ key: null })
+  usePanes.setState({ leaves: [], focused: null })
+  useSessions.setState({ sessions: {} })
+  localStorage.clear()
 })
 afterEach(async () => {
   await unmount()
@@ -153,7 +171,10 @@ test('a section\'s popover lists its chats (capped, with Show all) under its nam
 
 test('clicking a chat in the popover closes it; the rail stays collapsed', async () => {
   await mount()
-  await click(icon('h:active'))
+  await click(icon('h:pinned'))
+  await click(popover()!.querySelector<HTMLAnchorElement>('a[href="/c/pin"]')!)
+  expect(popover()).toBeNull()
+  await act(async () => void icon('h:active').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })))
   const chat = popover()!.querySelector<HTMLAnchorElement>('a[href="/c/run"]')!
   await click(chat)
   expect(popover()).toBeNull()
@@ -216,4 +237,130 @@ test('keyboard: Enter/Space (a click without a pointer) opens with focus inside,
   await act(async () => new Promise((r) => setTimeout(r, 0)))
   expect(popover()).toBeNull()
   expect(document.activeElement).toBe(trigger)
+})
+
+const key = (el: Element, k: string) => act(async () => void el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true })))
+/** Live subagents of `id` in its slice's tree, as the agent events leave them. */
+const liveChildren = (id: string, names: string[]) =>
+  useSessions.setState((st) => ({
+    sessions: {
+      ...st.sessions,
+      [id]: { ...empty(id), children: Object.fromEntries(names.map((n) => [`${id}-${n}`, { id: `${id}-${n}`, name: n, depth: 1, state: { state: 'running' } } as unknown as AgentInfo])) },
+    },
+  }))
+
+test('workspaceTarget: the focused chat leaf, else the newest laid-out or stored chat leaf, else the newest chat; drafts and unlisted ids never', () => {
+  const sessions = env.sessions
+  const base = { leaves: [] as string[], focused: null, stored: [] as string[], sessions }
+  expect(workspaceTarget({ ...base, leaves: ['t1', 'pin', 'web:x'], focused: 'pin' })).toBe('pin')
+  // Focused is a draft (or nothing): the most recent chat of the layout.
+  expect(workspaceTarget({ ...base, leaves: ['t1', 'pin', 'draft:1'], focused: 'draft:1' })).toBe('pin')
+  // No workspace mounted since the load: the persisted layout's chats.
+  expect(workspaceTarget({ ...base, stored: ['u1', 'v1', 'gone'] })).toBe('v1')
+  // No layout: the most recently active chat.
+  expect(workspaceTarget(base)).toBe('run')
+  expect(workspaceTarget({ ...base, sessions: [] })).toBeNull()
+})
+
+test('Active: a mouse click opens the workspace at its focused chat; hover still shows the popover with "Open workspace"', async () => {
+  usePanes.setState({ leaves: ['t1', 'pin'], focused: 't1' })
+  await mount()
+  await click(icon('h:active'))
+  expect(navigate).toHaveBeenCalledExactlyOnceWith({ to: '/c/$session', params: { session: 't1' } })
+  expect(popover()).toBeNull()
+  await key(icon('h:active'), 'ArrowRight')
+  const open = [...popover()!.querySelectorAll('button')].find((b) => b.textContent === 'Open workspace')!
+  await click(open)
+  expect(navigate).toHaveBeenCalledTimes(2)
+  expect(popover()).toBeNull()
+})
+
+test('Active on touch: the first tap opens its popover, the second (while open) opens the workspace', async () => {
+  env.sessions = [s('x', null, '2026-11-24T10:00:00Z')]
+  env.active = new Set(['x'])
+  await mount()
+  const tap = async () => {
+    await act(async () => {
+      const e = new MouseEvent('pointerdown', { bubbles: true })
+      Object.defineProperty(e, 'pointerType', { value: 'touch' })
+      icon('h:active').dispatchEvent(e)
+    })
+    await act(async () => void icon('h:active').dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })))
+  }
+  await tap()
+  expect(popover()).not.toBeNull()
+  expect(navigate).not.toHaveBeenCalled()
+  await tap()
+  expect(navigate).toHaveBeenCalledExactlyOnceWith({ to: '/c/$session', params: { session: 'x' } })
+})
+
+test('a chat open in a pane shows its live-only subagent tree; a link in it closes the popover', async () => {
+  usePanes.setState({ leaves: ['pin'], focused: 'pin' })
+  await mount()
+  await click(icon('h:pinned'))
+  const tree = popover()!.querySelector<HTMLElement>('[data-agent-tree="pin"]')!
+  expect(tree.dataset.liveOnly).toBe('true')
+  await click(tree.querySelector('a')!)
+  expect(popover()).toBeNull()
+})
+
+test('another chat with subagents running: "⑂ N" (none when none run) whose ▸ lists them; one opens and closes the popover; the section icon lights', async () => {
+  liveChildren('v1', ['scout', 'critic'])
+  await mount()
+  expect(icon('p:verified-listings').querySelector('[aria-label="running"]')).not.toBeNull()
+  expect(icon('h:pinned').querySelector('[aria-label="running"]')).toBeNull()
+  await click(icon('p:verified-listings'))
+  expect(popover()!.querySelector('[data-agent-tree]')).toBeNull()
+  const count = popover()!.querySelector<HTMLButtonElement>('button[aria-label="2 subagents running"]')!
+  expect(count.textContent).toContain('⑂ 2')
+  expect(count.className).toContain('text-success')
+  await click(count)
+  const subs = [...popover()!.querySelectorAll<HTMLAnchorElement>('[aria-label="Running subagents"] a')]
+  expect(subs.map((a) => a.textContent)).toEqual(['scout', 'critic'])
+  await click(subs[1]!)
+  expect(popover()).toBeNull()
+  // A section without running subagents shows no count.
+  await click(icon('h:pinned'))
+  expect(popover()!.querySelector('button[aria-label$="running"]')).toBeNull()
+})
+
+test('a project header has its ⋯ menu beside the +: Icon & colour… opens the style dialog and the popover stays', async () => {
+  await mount()
+  await click(icon('p:verified-listings'))
+  const menu = popover()!.querySelector<HTMLButtonElement>('button[aria-label="Project options"]')!
+  expect(menu.previousElementSibling?.getAttribute('aria-label')).toBe('New chat in “verified-listings”')
+  menu.focus()
+  await key(menu, 'Enter')
+  const style = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent === 'Icon & colour…')!
+  await click(style)
+  expect(document.querySelector('[data-style-dialog="verified-listings"]')).not.toBeNull()
+  expect(popover()).not.toBeNull()
+})
+
+test('a chat row has its ⋯ menu: opening it keeps the popover; Pin acts in place; Rename edits inline and saves', async () => {
+  await mount()
+  await click(icon('p:verified-listings'))
+  const options = () => popover()!.querySelector<HTMLButtonElement>('button[aria-label="Chat options"]')!
+  options().focus()
+  await key(options(), 'Enter')
+  expect(popover()).not.toBeNull()
+  const item = (label: string) => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent === label)!
+  expect(item('Move to project')).toBeDefined()
+  await click(item('Pin'))
+  expect(api.pin_session).toHaveBeenCalledExactlyOnceWith('v1', true)
+  expect(popover()).not.toBeNull()
+
+  options().focus()
+  await key(options(), 'Enter')
+  await click(item('Rename'))
+  const input = popover()!.querySelector<HTMLInputElement>('input')!
+  expect(input.value).toBe('Chat v1')
+  await act(async () => {
+    const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!
+    set.call(input, 'Listings')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await key(input, 'Enter')
+  expect(api.rename_session).toHaveBeenCalledExactlyOnceWith('v1', 'Listings')
+  expect(popover()).not.toBeNull()
 })

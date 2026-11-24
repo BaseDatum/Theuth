@@ -1,7 +1,7 @@
 import { Capability } from '@/rpc/capabilities'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Briefcase, MessagesSquare, Pin, Plus, Zap } from 'lucide-react'
+import { Briefcase, ChevronDown, ChevronRight, MessagesSquare, MoreHorizontal, Pin, Plus, Zap } from 'lucide-react'
 import { type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { openNewChat } from '@/components/chat/NewChatPane'
@@ -11,15 +11,16 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useSidebar } from '@/components/ui/sidebar'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { revealSection } from '@/lib/sidebar-reveal'
-import { rootOf } from '@/lib/session-tree'
+import { chatLeaves, CHAT, isDraft, PERSIST, STORAGE_KEY, usePanes } from '@/lib/panes'
+import { live, notAdvisor, notStudy, rootOf } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
 import type { SessionSummary } from '@/rpc/bindings/method.agent.output'
-import { useSessionField } from '@/store/sessions'
-import { ago } from './AgentTree'
+import { type SessionSlice, useSessionField, useSessions } from '@/store/sessions'
+import { AgentTree, ago } from './AgentTree'
 import { useDeskList } from './Desks'
 import { ProjectIcon } from './ProjectStyle'
-import { SessionActivity, SessionPending, SessionSubagents, useRowTitle } from './SessionItem'
-import { buildRows, newChatLabel, type Row, UNGROUPED, useSidebarSessions } from './SessionList'
+import { type RowEdit, SessionActivity, SessionEdit, SessionMenu, SessionPending, subagentRunning, useRowTitle, useSessionActions } from './SessionItem'
+import { buildRows, newChatLabel, ProjectMenu, type Row, UNGROUPED, useSidebarSessions } from './SessionList'
 
 /** One icon of the collapsed rail: 36 px under a mouse, 44 px under a finger (the rail is 56 px). */
 export const RAIL_ITEM = cn(
@@ -87,9 +88,15 @@ function useRailPopover() {
     open,
     via,
     cancel,
+    show,
     close: () => {
       cancel()
       setOpen(null)
+    },
+    /** A menu, editor or dialog inside opened: the popover stays until it is done with, as if clicked open. */
+    pin: () => {
+      cancel()
+      setOpen((o) => (o?.via === 'hover' ? { ...o, via: 'click' } : o))
     },
     /** The popover Esc closed: the one whose focus goes back to its icon. Any other close (a chat, +, Show all, a click
      * elsewhere) leaves focus where that leads — a new chat's composer — read when Radix restores focus, a tick later. */
@@ -116,9 +123,11 @@ function useRailPopover() {
 }
 type Pop = ReturnType<typeof useRailPopover>
 
-/** ↑/↓ (and Home/End) between a popover's rows, wrapping. */
+/** ↑/↓ (and Home/End) between a popover's rows, wrapping. Not inside an editor, nor from a menu portaled out of it. */
 function arrows(e: KeyboardEvent<HTMLElement>) {
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return
+  const target = e.target as HTMLElement
+  if (e.defaultPrevented || !e.currentTarget.contains(target) || target.tagName === 'INPUT') return
   const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-rail-item]')]
   if (!items.length) return
   e.preventDefault()
@@ -128,8 +137,29 @@ function arrows(e: KeyboardEvent<HTMLElement>) {
   items[next]?.focus()
 }
 
-/** A section icon and its popover, to the right of the rail, top-aligned with the icon and kept inside the window. */
-function RailPopover({ id, pop, label, active, icon, children }: { id: string; pop: Pop; label: string; active?: boolean; icon: ReactNode; children: ReactNode }) {
+/**
+ * A section icon and its popover, to the right of the rail, top-aligned with the icon and kept inside the window.
+ * → opens it from the keyboard too. `go` (Active): a click goes there instead of pinning the popover — a mouse at
+ * once (hover already showed it), a finger on its second tap, once the first has opened it.
+ */
+function RailPopover({
+  id,
+  pop,
+  label,
+  active,
+  icon,
+  go,
+  children,
+}: {
+  id: string
+  pop: Pop
+  label: string
+  active?: boolean
+  icon: ReactNode
+  go?: () => void
+  children: ReactNode
+}) {
+  const pointer = useRef<string>('mouse')
   return (
     <Popover open={pop.open?.key === id} onOpenChange={(o) => !o && pop.dismiss(id)}>
       <PopoverTrigger asChild>
@@ -139,12 +169,24 @@ function RailPopover({ id, pop, label, active, icon, children }: { id: string; p
           aria-label={label}
           data-active={active || undefined}
           data-rail-section={id}
+          onPointerDown={(e) => (pointer.current = e.pointerType)}
           onPointerEnter={pop.enter(id)}
           onPointerLeave={pop.leave}
+          onKeyDown={(e) => {
+            if (e.key !== 'ArrowRight') return
+            e.preventDefault()
+            pop.show(id, 'key')
+          }}
           onClick={(e) => {
             // Ours, not Radix's toggle: a hover-opened popover stays open (pinned) on a click.
             e.preventDefault()
-            pop.click(id, e.detail === 0 ? 'key' : 'click')
+            const how = e.detail === 0 ? 'key' : 'click'
+            const finger = how === 'click' && pointer.current !== 'mouse'
+            pointer.current = 'mouse'
+            if (go && (!finger || pop.open?.key === id)) {
+              pop.close()
+              go()
+            } else pop.click(id, how)
           }}
         >
           {icon}
@@ -157,11 +199,15 @@ function RailPopover({ id, pop, label, active, icon, children }: { id: string; p
         alignOffset={-6}
         collisionPadding={8}
         aria-label={label}
-        className="flex max-h-(--radix-popover-content-available-height) w-72 flex-col overflow-y-auto rounded-xl p-1.5"
+        className="flex max-h-(--radix-popover-content-available-height) w-80 flex-col overflow-y-auto rounded-xl p-1.5"
         onPointerEnter={(e) => e.pointerType === 'mouse' && pop.cancel()}
         onPointerLeave={pop.leave}
         onOpenAutoFocus={(e) => pop.via.current !== 'key' && e.preventDefault()}
-        onEscapeKeyDown={() => (pop.escaped.current = id)}
+        onEscapeKeyDown={(e) => {
+          // Esc in a row's rename field ends the edit, not the popover.
+          if ((e.target as HTMLElement | null)?.tagName === 'INPUT') e.preventDefault()
+          else pop.escaped.current = id
+        }}
         onCloseAutoFocus={(e) => {
           if (pop.escaped.current === id) pop.escaped.current = null
           else e.preventDefault()
@@ -174,50 +220,198 @@ function RailPopover({ id, pop, label, active, icon, children }: { id: string; p
   )
 }
 
-function PopHeader({ icon, label, count, add }: { icon: ReactNode; label: string; count: number; add?: { label: string; run(): void } }) {
+const ICON_BUTTON =
+  'flex size-7 shrink-0 items-center justify-center rounded-md text-fg-secondary outline-hidden hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent data-[state=open]:bg-accent pointer-coarse:size-9'
+
+function PopHeader({ icon, label, count, add, menu, extra }: { icon: ReactNode; label: string; count: number; add?: { label: string; run(): void }; menu?: ReactNode; extra?: ReactNode }) {
   return (
     <div className="mb-1 flex items-center gap-2 border-b border-border-subtle px-2 pt-1 pb-1.5">
       {icon}
       <span className="min-w-0 truncate text-sm font-semibold">{label}</span>
       <span className="shrink-0 text-xs text-fg-tertiary tabular-nums">{count}</span>
-      {add && (
-        <button
-          type="button"
-          data-rail-item
-          aria-label={add.label}
-          title={add.label}
-          className="ml-auto flex size-7 shrink-0 items-center justify-center rounded-md text-fg-secondary outline-hidden hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent pointer-coarse:size-9"
-          onClick={add.run}
-        >
-          <Plus className="size-4" />
-        </button>
-      )}
+      <span className="ml-auto flex shrink-0 items-center gap-0.5">
+        {extra}
+        {add && (
+          <button type="button" data-rail-item aria-label={add.label} title={add.label} className={ICON_BUTTON} onClick={add.run}>
+            <Plus className="size-4" />
+          </button>
+        )}
+        {menu}
+      </span>
     </div>
+  )
+}
+
+/** The project header's ⋯ menu (`ProjectMenu`), next to the +; the popover stays while it or its dialog is open. */
+function PopProjectMenu({ project, pop, onNew }: { project: string; pop: Pop; onNew(): void }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <ProjectMenu
+      project={project}
+      newLabel={newChatLabel(project)}
+      onNew={onNew}
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o)
+        if (o) pop.pin()
+      }}
+      trigger={
+        <button type="button" aria-label="Project options" title="Project options" className={ICON_BUTTON} onPointerDown={() => pop.pin()}>
+          <MoreHorizontal className="size-4" />
+        </button>
+      }
+    />
   )
 }
 
 const POP_ROW =
   'flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] text-fg-secondary outline-hidden hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground data-[active=true]:font-medium data-[active=true]:text-foreground pointer-coarse:h-10'
 
-/** One chat of a popover: the expanded row's glyphs and title, then how long since it last changed. */
-function PopChat({ s, recent, subagents, active, onPick }: { s: SessionSummary; recent: boolean; subagents: readonly SessionSummary[] | undefined; active: boolean; onPick(): void }) {
+/** The running subagents of `id`, any depth: live in its slice's tree (`children`) or, before this client saw them,
+ * running in `list_sessions` (`subs`). Joined inside the selector so a streamed delta does not re-render the row. */
+function useRunningSubagents(id: string, subs: readonly SessionSummary[] | undefined): { id: string; name: string }[] {
+  const key = useSessions((st) => runningKey(id, subs, st.sessions))
+  return useMemo(() => (key ? key.split('\n').map((l) => { const [sid = '', name = ''] = l.split('\t'); return { id: sid, name } }) : []), [key])
+}
+
+function runningKey(id: string, subs: readonly SessionSummary[] | undefined, slices: Record<string, SessionSlice>): string {
+  const out = new Map<string, string>()
+  for (const r of Object.values(slices[id]?.children ?? {})) if (live(r.state.state)) out.set(r.id, r.name)
+  for (const d of subs ?? []) if (!out.has(d.id) && subagentRunning(d, slices)) out.set(d.id, d.name ?? d.title)
+  return [...out].map(([sid, name]) => `${sid}\t${name}`).join('\n')
+}
+
+/** A link inside the row's popover area closes the popover (a subagent of the tree, say). */
+const closeOnLink = (onPick: () => void) => (e: { target: EventTarget }) => {
+  if ((e.target as HTMLElement).closest('a')) onPick()
+}
+
+/**
+ * One chat of a popover: the expanded row's glyphs and title, then how long since it last changed, and its ⋯ menu
+ * (`SessionMenu`: shown on hover or focus, always under a finger). A chat open in a pane shows its live subagents
+ * below it (`AgentTree`); any other with subagents running shows `⑂ N` and a ▸ that lists them inline.
+ */
+function PopChat({
+  s,
+  recent,
+  inPane,
+  subagents,
+  active,
+  here,
+  pop,
+}: {
+  s: SessionSummary
+  recent: boolean
+  inPane: boolean
+  subagents: readonly SessionSummary[] | undefined
+  active: boolean
+  here: string | undefined
+  pop: Pop
+}) {
   const title = useRowTitle(s.id, s.title, s.created_at)
+  const [editing, setEditing] = useState<RowEdit | null>(null)
+  const [menu, setMenu] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const actions = useSessionActions(s.id, { shown: title, project: s.project, pinned: s.pinned, archived: s.archived, active })
+  const running = useRunningSubagents(s.id, subagents)
+  const hold = (o: boolean) => o && pop.pin()
+  if (editing) {
+    return (
+      <SessionEdit
+        editing={editing}
+        setEditing={(e) => {
+          if (e) pop.pin()
+          setEditing(e)
+        }}
+        actions={actions}
+        className="h-8 text-[13px]"
+      />
+    )
+  }
   return (
-    <Link
-      to="/c/$session"
-      params={{ session: s.id }}
-      data-rail-item
-      data-active={active || undefined}
-      title={title}
-      className={cn(POP_ROW, recent && 'opacity-70')}
-      onClick={onPick}
-    >
-      <SessionActivity id={s.id} here={s.here} running={s.running} />
-      <SessionPending id={s.id} />
-      <SessionSubagents subagents={subagents} />
-      <span className="min-w-0 flex-1 truncate">{title}</span>
-      <span className="shrink-0 text-[11px] text-fg-tertiary tabular-nums">{ago(s.updated_at)}</span>
-    </Link>
+    <>
+      <div className={cn('group/pop-row relative flex items-center rounded-md', recent && 'opacity-70')}>
+        <Link to="/c/$session" params={{ session: s.id }} data-rail-item data-active={active || undefined} title={title} className={cn(POP_ROW, 'min-w-0 flex-1')} onClick={pop.close}>
+          <SessionActivity id={s.id} here={s.here} running={s.running} />
+          <SessionPending id={s.id} />
+          <span className="min-w-0 flex-1 truncate">{title}</span>
+          <span className="shrink-0 text-[11px] text-fg-tertiary tabular-nums">{ago(s.updated_at)}</span>
+        </Link>
+        {!inPane && running.length > 0 && (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-label={`${running.length} subagent${running.length === 1 ? '' : 's'} running`}
+            title={`${running.length} subagent${running.length === 1 ? '' : 's'} running`}
+            className="flex h-6 shrink-0 items-center gap-0.5 rounded-md px-1 text-[11px] font-medium text-success tabular-nums hover:bg-accent"
+            onClick={() => {
+              pop.pin()
+              setExpanded((v) => !v)
+            }}
+          >
+            ⑂ {running.length}
+            {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+          </button>
+        )}
+        <SessionMenu
+          id={s.id}
+          shown={title}
+          pinned={s.pinned}
+          archived={s.archived}
+          project={s.project}
+          here={s.here}
+          actions={actions}
+          open={menu}
+          onOpenChange={(o) => {
+            hold(o)
+            setMenu(o)
+          }}
+          confirming={confirming}
+          onConfirmingChange={(o) => {
+            hold(o)
+            setConfirming(o)
+          }}
+          onEdit={(e) => {
+            pop.pin()
+            setEditing(e)
+          }}
+          trigger={
+            <button
+              type="button"
+              aria-label="Chat options"
+              title="Chat options"
+              className={cn(
+                ICON_BUTTON,
+                'size-6 pointer-fine:opacity-0 pointer-fine:group-hover/pop-row:opacity-100 pointer-fine:group-focus-within/pop-row:opacity-100 pointer-fine:data-[state=open]:opacity-100',
+              )}
+              onPointerDown={() => pop.pin()}
+            >
+              <MoreHorizontal className="size-4" />
+            </button>
+          }
+        />
+      </div>
+      {inPane ? (
+        <div onClickCapture={closeOnLink(pop.close)}>
+          <AgentTree session={s.id} active={here} liveOnly />
+        </div>
+      ) : (
+        expanded &&
+        running.length > 0 && (
+          <ul aria-label="Running subagents">
+            {running.map((r) => (
+              <li key={r.id}>
+                <Link to="/c/$session" params={{ session: r.id }} data-rail-item className={cn(POP_ROW, 'h-7 pl-6 text-xs')} onClick={pop.close}>
+                  <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-success" aria-hidden />
+                  <span className="min-w-0 flex-1 truncate">{r.name}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )
+      )}
+    </>
   )
 }
 
@@ -232,9 +426,58 @@ function ShowAll({ count, onClick }: { count: number; onClick(): void }) {
 const sectionIcon = (s: RailSection, size: string) =>
   s.kind === 'active' ? <Zap className={size} /> : s.kind === 'pinned' ? <Pin className={size} /> : s.kind === 'project' ? <ProjectIcon project={s.project} className={size} /> : <MessagesSquare className={size} />
 
+/** The green dot on a section icon: anything of Active running (`running`), or any subagent running under one of its chats. */
+function SectionDot({ section, subs, running }: { section: RailSection; subs: ReadonlyMap<string, readonly SessionSummary[]>; running: boolean }) {
+  const sub = useSessions((st) => section.items.some(({ session }) => runningKey(session.id, subs.get(session.id), st.sessions) !== ''))
+  if (!running && !sub) return null
+  return <span className="absolute top-1.5 right-1.5 size-2 rounded-full bg-success ring-2 ring-sidebar" aria-label="running" />
+}
+
+/** The newest of `ids` by `updated_at` among `sessions`; `undefined` when none is listed. */
+const newest = (ids: readonly string[], sessions: readonly SessionSummary[]): string | undefined =>
+  sessions.filter((s) => ids.includes(s.id)).sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]?.id
+
+/** The chat leaves of the layout `Panes` persisted (`theuth.panes`), for when no workspace has mounted since the load. */
+export function storedChats(): string[] {
+  if (!PERSIST) return []
+  try {
+    const doc = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null') as { views?: Record<string, { type?: string }> } | null
+    return Object.entries(doc?.views ?? {}).flatMap(([id, v]) => (v?.type === CHAT ? [id] : []))
+  } catch {
+    return []
+  }
+}
+
 /**
- * The rail's lower half: one icon per section the expanded list shows (Active with a green dot while anything runs,
- * Pinned, each project in its own glyph and colour, Ungrouped), then Desks. Each opens a popover of its chats.
+ * Where the Active icon goes: the chat workspace as it was left. The layout's focused chat, else its most recent chat
+ * leaf (this session's layout, else the persisted one); then the most recently active chat; `null` (→ `/new`) when
+ * there is no chat at all. Drafts and chats no longer listed never count, so landing adds no pane.
+ */
+export function workspaceTarget({
+  leaves,
+  focused,
+  stored,
+  sessions,
+}: {
+  leaves: readonly string[]
+  focused: string | null
+  stored: readonly string[]
+  sessions: readonly SessionSummary[]
+}): string | null {
+  const listed = new Set(sessions.map((s) => s.id))
+  const ok = (id: string): boolean => !isDraft(id) && listed.has(id)
+  const laid = chatLeaves(leaves).filter(ok)
+  if (focused !== null && laid.includes(focused)) return focused
+  const leaf = newest(laid, sessions) ?? newest(stored.filter(ok), sessions)
+  if (leaf) return leaf
+  const roots = sessions.filter((s) => s.parent === null && s.desk == null && !s.archived && notAdvisor(s) && notStudy(s))
+  return newest(roots.map((s) => s.id), roots) ?? null
+}
+
+/**
+ * The rail's lower half: one icon per section the expanded list shows (Active, Pinned, each project in its own glyph
+ * and colour, Ungrouped; a green dot while something under it runs), then Desks. Each opens a popover of its chats;
+ * Active's click opens the chat workspace (`workspaceTarget`).
  */
 export function RailSections({ active }: { active: string | undefined }) {
   const navigate = useNavigate()
@@ -242,16 +485,27 @@ export function RailSections({ active }: { active: string | undefined }) {
   const { sessions, subs, activeSet, recent } = useSidebarSessions()
   const sections = useMemo(() => railSections(buildRows(sessions, [], undefined, false, activeSet, recent)), [sessions, activeSet, recent])
   const here = useMemo(() => rootOf(sessions, active), [sessions, active])
+  const leaves = usePanes((s) => s.leaves)
+  const inPane = useMemo(() => new Set([...chatLeaves(leaves), ...(active ? [active] : [])]), [leaves, active])
   const pop = useRailPopover()
   const showAll = (key: string) => {
     pop.close()
     revealSection(key)
     setOpen(true)
   }
+  const workspace = () => {
+    const { leaves, focused } = usePanes.getState()
+    const target = workspaceTarget({ leaves, focused, stored: storedChats(), sessions })
+    void (target ? navigate({ to: '/c/$session', params: { session: target } }) : navigate({ to: '/new' }))
+  }
   return (
     <>
       {sections.map((s) => {
-        const add = s.kind === 'project' || s.kind === 'ungrouped' ? { label: newChatLabel(s.project), run: () => (pop.close(), openNewChat(navigate, s.project)) } : undefined
+        const onNew = () => {
+          pop.close()
+          openNewChat(navigate, s.project)
+        }
+        const add = s.kind === 'project' || s.kind === 'ungrouped' ? { label: newChatLabel(s.project), run: onNew } : undefined
         return (
           <RailPopover
             key={s.key}
@@ -259,20 +513,40 @@ export function RailSections({ active }: { active: string | undefined }) {
             pop={pop}
             label={`${s.label}, ${s.items.length} chat${s.items.length === 1 ? '' : 's'}`}
             active={here !== undefined && s.items.some((i) => i.session.id === here)}
+            go={s.kind === 'active' ? workspace : undefined}
             icon={
               <>
                 {sectionIcon(s, 'size-[18px]')}
-                {s.kind === 'active' && activeSet.size > 0 && (
-                  <span className="absolute top-1.5 right-1.5 size-2 rounded-full bg-success ring-2 ring-sidebar" aria-label="running" />
-                )}
+                <SectionDot section={s} subs={subs} running={s.kind === 'active' && activeSet.size > 0} />
               </>
             }
           >
-            <PopHeader icon={sectionIcon(s, 'size-4')} label={s.label} count={s.items.length} add={add} />
+            <PopHeader
+              icon={sectionIcon(s, 'size-4')}
+              label={s.label}
+              count={s.items.length}
+              add={add}
+              menu={s.kind === 'project' && s.project !== null ? <PopProjectMenu project={s.project} pop={pop} onNew={onNew} /> : undefined}
+              extra={
+                s.kind === 'active' ? (
+                  <button
+                    type="button"
+                    data-rail-item
+                    className="h-7 rounded-md px-2 text-xs text-fg-secondary outline-hidden hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent pointer-coarse:h-9"
+                    onClick={() => {
+                      pop.close()
+                      workspace()
+                    }}
+                  >
+                    Open workspace
+                  </button>
+                ) : undefined
+              }
+            />
             <ul>
               {s.items.slice(0, POPOVER_CAP).map(({ session, recent }) => (
                 <li key={session.id}>
-                  <PopChat s={session} recent={recent} subagents={subs.get(session.id)} active={session.id === here} onPick={pop.close} />
+                  <PopChat s={session} recent={recent} inPane={inPane.has(session.id)} subagents={subs.get(session.id)} active={session.id === here} here={active} pop={pop} />
                 </li>
               ))}
             </ul>

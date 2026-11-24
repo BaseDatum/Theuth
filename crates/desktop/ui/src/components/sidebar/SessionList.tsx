@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, MoreHorizontal, Plus, X } from 'lucide-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { toast } from 'sonner'
 import {
@@ -101,7 +101,6 @@ export function ProjectHeader({
 }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
-  const [styling, setStyling] = useState(false)
   const newLabel = create?.label ?? newChatLabel(project)
   const onNew = () => (create ? create.run() : openNewChat(navigate, project))
   return (
@@ -133,20 +132,58 @@ export function ProjectHeader({
       >
         <Plus />
       </SidebarMenuAction>
-      <DropdownMenu open={open} onOpenChange={setOpen}>
-        <DropdownMenuTrigger asChild>
+      <ProjectMenu
+        project={project}
+        newLabel={newLabel}
+        onNew={onNew}
+        open={open}
+        onOpenChange={setOpen}
+        fold={{ collapsed, toggle }}
+        trigger={
           <SidebarMenuAction showOnHover className="top-3.5 right-2" aria-label="Project options">
             <MoreHorizontal />
           </SidebarMenuAction>
-        </DropdownMenuTrigger>
+        }
+      />
+    </div>
+  )
+}
+
+/**
+ * A project's ⋯ menu (the list's project header, the rail popover's header): new chat in it, "Icon & colour…" (not
+ * for Ungrouped) with its dialog, and, where the project folds (`fold`), Expand / Collapse. Controlled, so a
+ * right-click can open it; `onOpenChange` also hears the style dialog (open while it is).
+ */
+export function ProjectMenu({
+  project,
+  newLabel,
+  onNew,
+  open,
+  onOpenChange,
+  fold,
+  trigger,
+}: {
+  project: string | null
+  newLabel: string
+  onNew(): void
+  open: boolean
+  onOpenChange(open: boolean): void
+  fold?: { collapsed: boolean; toggle(): void }
+  trigger: ReactNode
+}) {
+  const [styling, setStyling] = useState(false)
+  return (
+    <>
+      <DropdownMenu open={open} onOpenChange={onOpenChange}>
+        <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="start" className="w-48">
           <DropdownMenuItem onSelect={onNew}>{newLabel}</DropdownMenuItem>
           {project !== null && <DropdownMenuItem onSelect={() => setStyling(true)}>Icon &amp; colour…</DropdownMenuItem>}
-          <DropdownMenuItem onSelect={toggle}>{collapsed ? 'Expand' : 'Collapse'}</DropdownMenuItem>
+          {fold && <DropdownMenuItem onSelect={fold.toggle}>{fold.collapsed ? 'Expand' : 'Collapse'}</DropdownMenuItem>}
         </DropdownMenuContent>
       </DropdownMenu>
       {project !== null && <ProjectStyleDialog project={project} open={styling} onOpenChange={setStyling} />}
-    </div>
+    </>
   )
 }
 

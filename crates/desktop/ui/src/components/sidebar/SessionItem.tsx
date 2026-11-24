@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Archive, Brain, Check, Cog, Eye, type LucideIcon, MoreHorizontal, Network, PencilLine, Shrink, Timer, Trash2, Wrench } from 'lucide-react'
-import { type ComponentType, memo, useState } from 'react'
+import { type ComponentType, memo, type ReactNode, useState } from 'react'
 import { toast } from 'sonner'
 import {
   AlertDialog,
@@ -127,7 +127,7 @@ const NONE: SessionSummary[] = []
 
 /** A descendant with a turn in flight: the live slice (`TurnStarted`…`TurnFinished`, every session is subscribed) or, before this client saw one, the `list_sessions` snapshot.
  * A watch-only child (141) has no turn of its own; the harness's state (`running` / `requires_action`, live from `ObservedChildChanged`, else the snapshot) is its live bit. */
-const subagentRunning = (d: SessionSummary, slices: Record<string, SessionSlice>): boolean => {
+export const subagentRunning = (d: SessionSummary, slices: Record<string, SessionSlice>): boolean => {
   const observed = slices[d.id]?.observed ?? d.observed
   if (observed) return observed.state === 'running' || observed.state === 'requires_action'
   return !!(slices[d.id]?.running || d.running)
@@ -209,10 +209,190 @@ export function useRowTitle(id: string, title: string, created: string): string 
   return parseNote(raw)?.body || parseSpoken(raw)?.text || previewText(raw)
 }
 
+/** An inline edit of a row: its title (rename) or the name of a new project (move). */
+export type RowEdit = { field: 'title' | 'project'; value: string }
+
+/**
+ * A chat's menu actions (rename, move, pin, archive, continue here, delete), routed to the owning engine (183 §4.4);
+ * a failure toasts. `shown` is the title on screen (a rename to it is no change); deleting the `active` chat goes home.
+ */
+export function useSessionActions(id: string, { shown, project, pinned, archived, active }: { shown: string; project: string | null; pinned: boolean; archived: boolean; active: boolean }) {
+  const api = useApi()
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const run = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn()
+      void qc.invalidateQueries({ queryKey: queryKeys.sessions })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+  return {
+    remove: async () => {
+      try {
+        // 183 §4.4: a parked delete (owner offline) leaves the chat open — `routed` resolves undefined.
+        const done = await routed(id, async () => (await api.delete_session(id), true))
+        if (done && active) void navigate({ to: '/' })
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : String(e))
+      }
+    },
+    rename: async (value: string) => {
+      if (!value.trim() || value === shown) return
+      await run(() => routed(id, () => api.rename_session(id, value.trim())))
+    },
+    move: async (value: string | null) => {
+      const next = value?.trim() || null
+      if (next === project) return
+      await run(() => routed(id, () => api.set_session_project(id, next)))
+    },
+    pin: () => run(() => routed(id, () => api.pin_session(id, !pinned))),
+    archive: () => run(() => routed(id, () => api.archive_session(id, !archived))),
+    take: () => run(() => api.session_take(id, 'user')),
+  }
+}
+export type SessionActions = ReturnType<typeof useSessionActions>
+
+/** The inline editor `RowEdit` puts in place of a row: Enter commits (rename or move), Esc or leaving cancels. */
+export function SessionEdit({ editing, setEditing, actions, className }: { editing: RowEdit; setEditing(e: RowEdit | null): void; actions: SessionActions; className?: string }) {
+  const commit = () => {
+    setEditing(null)
+    void (editing.field === 'title' ? actions.rename(editing.value) : actions.move(editing.value))
+  }
+  return (
+    <Input
+      autoFocus
+      placeholder={editing.field === 'project' ? 'New project' : undefined}
+      maxLength={editing.field === 'project' ? 128 : undefined}
+      value={editing.value}
+      onChange={(e) => setEditing({ field: editing.field, value: e.target.value })}
+      onBlur={() => setEditing(null)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit()
+        if (e.key === 'Escape') {
+          // Only the edit: an enclosing popover stays.
+          e.stopPropagation()
+          setEditing(null)
+        }
+      }}
+      className={cn('h-9 rounded-[10px] text-sm', className)}
+    />
+  )
+}
+
+/**
+ * A chat's ⋯ menu (the sidebar row's, the rail popover's): rename, open in a window, its meeting, pin, archive, continue
+ * here, move to project (existing or new), remove from project, select (where the list selects), attach, copy id,
+ * delete — with its attach picker and delete confirmation. Controlled (`open`) so a right-click can open it; the
+ * confirmation too (`confirming`), so a swipe can ask it. `trigger` is the ⋯ button.
+ */
+export function SessionMenu({
+  id,
+  shown,
+  pinned,
+  archived,
+  project,
+  here,
+  actions,
+  open,
+  onOpenChange,
+  confirming,
+  onConfirmingChange,
+  onEdit,
+  select,
+  trigger,
+}: {
+  id: string
+  shown: string
+  pinned: boolean
+  archived: boolean
+  project: string | null
+  here: boolean
+  actions: SessionActions
+  open: boolean
+  onOpenChange(open: boolean): void
+  confirming: boolean
+  onConfirmingChange(open: boolean): void
+  onEdit(edit: RowEdit): void
+  /** The list's multi-selection: the Select / Deselect item. */
+  select?: { selected: boolean; toggle(): void }
+  trigger: ReactNode
+}) {
+  const qc = useQueryClient()
+  const navigate = useNavigate()
+  const [attaching, setAttaching] = useState(false)
+  const meeting = useMeetingForSession(id)
+  /** 66 §7.8: this chat as a reference — the list row's record when the sessions query has it. */
+  const asRef = (): AttachRef => {
+    const row = qc.getQueryData<SessionSummary[]>(queryKeys.sessions)?.find((x) => x.id === id)
+    return row ? toRef({ kind: 'session', session: row }) : { kind: 'session', id, title: shown, meta: `chat · ${project ?? 'no project'}${archived ? ' · archived' : ''}` }
+  }
+  return (
+    <>
+      <DropdownMenu open={open} onOpenChange={onOpenChange}>
+        <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+        <DropdownMenuContent side="right" align="start" className="w-48">
+          <DropdownMenuItem onSelect={() => onEdit({ field: 'title', value: shown })}>Rename</DropdownMenuItem>
+          {canPopout() && <DropdownMenuItem onSelect={() => void openPopout({ kind: 'chat', session: id })}>Open in new window</DropdownMenuItem>}
+          {meeting && (
+            <>
+              <DropdownMenuItem onClick={(e) => openMeeting(meeting, e.altKey, () => void navigate({ to: '/meetings/$id', params: { id: meeting } }))}>
+                Open meeting
+              </DropdownMenuItem>
+              {canPopout() && <DropdownMenuItem onSelect={() => void openPopout({ kind: 'meeting', meeting })}>Open meeting in new window</DropdownMenuItem>}
+            </>
+          )}
+          <DropdownMenuItem onSelect={() => void actions.pin()}>{pinned ? 'Unpin' : 'Pin'}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void actions.archive()}>{archived ? 'Unarchive' : 'Archive'}</DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={here}
+            title={here ? 'This session already runs on this node' : undefined}
+            onSelect={() => void actions.take()}
+          >
+            Continue here
+          </DropdownMenuItem>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>Move to project</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-48">
+              <ProjectItems current={project} onPick={(p) => void actions.move(p)} onNew={() => onEdit({ field: 'project', value: '' })} />
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          {project && <DropdownMenuItem onSelect={() => void actions.move(null)}>Remove from project</DropdownMenuItem>}
+          {select && <DropdownMenuItem onSelect={select.toggle}>{select.selected ? 'Deselect' : 'Select'}</DropdownMenuItem>}
+          <DropdownMenuItem onSelect={() => setAttaching(true)}>Attach to chat…</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(id)}>
+            Copy id
+          </DropdownMenuItem>
+          <DropdownMenuItem variant="destructive" onSelect={() => onConfirmingChange(true)}>
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {attaching && <ChatPicker open onOpenChange={setAttaching} item={asRef()} />}
+      <AlertDialog open={confirming} onOpenChange={onConfirmingChange}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete chat?</AlertDialogTitle>
+            <AlertDialogDescription>
+              “{shown}” and any subagent chats under it are removed for good.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void actions.remove()}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  )
+}
+
 /**
  * One chat in the list: title (live from `TitleChanged`; the tooltip adds its tags), project pill (51 §3), active
- * highlight, hover `…` menu with pin, archive, inline rename, move to project (existing or new) and delete. ⌘-click /
- * ⇧-click / menu > Select feed the list's multi-selection. An archived row (51 §3) renders muted and its menu offers Unarchive.
+ * highlight, hover `…` menu (`SessionMenu`) with pin, archive, inline rename, move to project (existing or new) and
+ * delete. ⌘-click / ⇧-click / menu > Select feed the list's multi-selection. An archived row (51 §3) renders muted and
+ * its menu offers Unarchive.
  */
 export const SessionItem = memo(function SessionItem({
   id,
@@ -255,87 +435,18 @@ export const SessionItem = memo(function SessionItem({
   selecting: boolean
   select(id: string, mode: SelectMode): void
 }) {
-  const api = useApi()
-  const qc = useQueryClient()
-  const navigate = useNavigate()
   const liveTags = useSessionField(id, 'tags') ?? tags
   const shown = useRowTitle(id, title, created)
   const tip = liveTags.length ? `${shown} · ${liveTags.join(', ')}` : shown
   const drag = useSessionDrag(id, shown)
   // Inline editor: the title, or the name of a new project.
-  const [editing, setEditing] = useState<{ field: 'title' | 'project'; value: string } | null>(null)
+  const [editing, setEditing] = useState<RowEdit | null>(null)
   const [confirming, setConfirming] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [attaching, setAttaching] = useState(false)
-  const meeting = useMeetingForSession(id)
-  /** 66 §7.8: this chat as a reference — the list row's record when the sessions query has it. */
-  const asRef = (): AttachRef => {
-    const row = qc.getQueryData<SessionSummary[]>(queryKeys.sessions)?.find((x) => x.id === id)
-    return row ? toRef({ kind: 'session', session: row }) : { kind: 'session', id, title: shown, meta: `chat · ${project ?? 'no project'}${archived ? ' · archived' : ''}` }
-  }
-
-  const remove = async () => {
-    try {
-      // 183 §4.4: a parked delete (owner offline) leaves the chat open — `routed` resolves undefined.
-      const done = await routed(id, async () => (await api.delete_session(id), true))
-      if (done && active) void navigate({ to: '/' })
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  const rename = async (value: string) => {
-    setEditing(null)
-    if (!value.trim() || value === shown) return
-    try {
-      await routed(id, () => api.rename_session(id, value.trim()))
-      void qc.invalidateQueries({ queryKey: queryKeys.sessions })
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  const move = async (value: string | null) => {
-    setEditing(null)
-    const next = value?.trim() || null
-    if (next === project) return
-    try {
-      await routed(id, () => api.set_session_project(id, next))
-      void qc.invalidateQueries({ queryKey: queryKeys.sessions })
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  const pin = async () => {
-    try {
-      await routed(id, () => api.pin_session(id, !pinned))
-      void qc.invalidateQueries({ queryKey: queryKeys.sessions })
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
-    }
-  }
+  const actions = useSessionActions(id, { shown, project, pinned, archived, active })
 
   // Touch: swipe left (right to left) archives; swipe right opens the same Delete confirmation as the menu.
-  const swipe = useRowSwipe({ onSwipeLeft: () => void archive(), onSwipeRight: () => setConfirming(true) })
-
-  const archive = async () => {
-    try {
-      await routed(id, () => api.archive_session(id, !archived))
-      void qc.invalidateQueries({ queryKey: queryKeys.sessions })
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  const take = async () => {
-    try {
-      await api.session_take(id, 'user')
-      void qc.invalidateQueries({ queryKey: queryKeys.sessions })
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
-    }
-  }
+  const swipe = useRowSwipe({ onSwipeLeft: () => void actions.archive(), onSwipeRight: () => setConfirming(true) })
 
   return (
     <div className="group/menu-item group/popout-row relative">
@@ -345,19 +456,7 @@ export const SessionItem = memo(function SessionItem({
         </div>
       )}
       {editing !== null ? (
-        <Input
-          autoFocus
-          placeholder={editing.field === 'project' ? 'New project' : undefined}
-          maxLength={editing.field === 'project' ? 128 : undefined}
-          value={editing.value}
-          onChange={(e) => setEditing({ field: editing.field, value: e.target.value })}
-          onBlur={() => setEditing(null)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') void (editing.field === 'title' ? rename(editing.value) : move(editing.value))
-            if (e.key === 'Escape') setEditing(null)
-          }}
-          className="h-9 rounded-[10px] text-sm"
-        />
+        <SessionEdit editing={editing} setEditing={setEditing} actions={actions} />
       ) : (
         <div {...swipe.handlers} style={swipe.style} className="relative rounded-[10px] bg-sidebar">
           <SidebarMenuButton
@@ -408,66 +507,26 @@ export const SessionItem = memo(function SessionItem({
             </Link>
           </SidebarMenuButton>
           <SidebarPopoutButton target={{ kind: 'chat', session: id }} className="top-2 right-8" />
-          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-            <DropdownMenuTrigger asChild>
+          <SessionMenu
+            id={id}
+            shown={shown}
+            pinned={pinned}
+            archived={archived}
+            project={project}
+            here={here}
+            actions={actions}
+            open={menuOpen}
+            onOpenChange={setMenuOpen}
+            confirming={confirming}
+            onConfirmingChange={setConfirming}
+            onEdit={setEditing}
+            select={{ selected, toggle: () => select(id, 'toggle') }}
+            trigger={
               <SidebarMenuAction showOnHover className="top-2 right-2" aria-label="Chat options">
                 <MoreHorizontal />
               </SidebarMenuAction>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent side="right" align="start" className="w-48">
-              <DropdownMenuItem onSelect={() => setEditing({ field: 'title', value: shown })}>Rename</DropdownMenuItem>
-              {canPopout() && <DropdownMenuItem onSelect={() => void openPopout({ kind: 'chat', session: id })}>Open in new window</DropdownMenuItem>}
-              {meeting && (
-                <>
-                  <DropdownMenuItem onClick={(e) => openMeeting(meeting, e.altKey, () => void navigate({ to: '/meetings/$id', params: { id: meeting } }))}>
-                    Open meeting
-                  </DropdownMenuItem>
-                  {canPopout() && <DropdownMenuItem onSelect={() => void openPopout({ kind: 'meeting', meeting })}>Open meeting in new window</DropdownMenuItem>}
-                </>
-              )}
-              <DropdownMenuItem onSelect={() => void pin()}>{pinned ? 'Unpin' : 'Pin'}</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void archive()}>{archived ? 'Unarchive' : 'Archive'}</DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={here}
-                title={here ? 'This session already runs on this node' : undefined}
-                onSelect={() => void take()}
-              >
-                Continue here
-              </DropdownMenuItem>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>Move to project</DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="w-48">
-                  <ProjectItems current={project} onPick={(p) => void move(p)} onNew={() => setEditing({ field: 'project', value: '' })} />
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-              {project && <DropdownMenuItem onSelect={() => void move(null)}>Remove from project</DropdownMenuItem>}
-              <DropdownMenuItem onSelect={() => select(id, 'toggle')}>
-                {selected ? 'Deselect' : 'Select'}
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setAttaching(true)}>Attach to chat…</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void navigator.clipboard.writeText(id)}>
-                Copy id
-              </DropdownMenuItem>
-              <DropdownMenuItem variant="destructive" onSelect={() => setConfirming(true)}>
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          {attaching && <ChatPicker open onOpenChange={setAttaching} item={asRef()} />}
-          <AlertDialog open={confirming} onOpenChange={setConfirming}>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete chat?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  “{shown}” and any subagent chats under it are removed for good.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={() => void remove()}>Delete</AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+            }
+          />
         </div>
       )}
     </div>
