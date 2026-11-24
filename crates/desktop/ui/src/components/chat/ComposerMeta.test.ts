@@ -111,9 +111,8 @@ test('the meta is a row at the top of the box, before the text in DOM order, nev
   expect(at('<McpMenu')).toBeLessThan(at('<ApprovalShield'))
   expect(at('<ApprovalShield')).toBeGreaterThan(bar)
   expect(at('<ApprovalShield')).toBeLessThan(at('<div className="-ml-1 min-w-0 flex-1" />'))
-  // No container-query shedding anywhere in the strip or the bar any more.
+  // No container-query shedding of the % or the cost.
   expect(readFileSync(new URL('./ComposerMeta.tsx', import.meta.url), 'utf8')).not.toMatch(/@max-|\/bar:hidden/)
-  expect(src).not.toContain('@container/bar')
 })
 
 test('the row exists for an existing session only (never the draft or a HUD composer), and its height comes out of the text\'s max', () => {
@@ -161,4 +160,38 @@ test('recording: the row keeps its height but shows nothing and takes no focus',
   expect(row.className).toContain('h-4')
   expect(row.getAttribute('aria-hidden')).toBe('true')
   expect(row.querySelector<HTMLElement>('[data-meta="cost"]')!.tabIndex).toBe(-1)
+})
+
+test('the bar fits its pane instead of pushing buttons out: tighter gaps and 32 px buttons, then no model label; nothing else is dropped', () => {
+  const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
+  // The container is the bar's wrapper (a container query never matches the container itself), the fit on the bar.
+  expect(src).toContain('<div className="@container/bar mt-1">\n        <div data-composer-bar="" className={cn(\'flex items-center gap-1\', BAR_FIT)}>')
+  const fit = src.match(/export const BAR_FIT = '([^']+)'/)?.[1] ?? ''
+  expect(fit.split(' ').sort()).toEqual(['@max-[250px]/bar:[&_[data-tour=chat-model]]:hidden', '@max-[300px]/bar:[&_button.size-9]:size-8', '@max-[300px]/bar:gap-0.5'])
+  // Only the model label may go; no rule hides a button.
+  expect(fit).not.toMatch(/button[^ ]*:hidden/)
+  // The shield is 28 px wide (the mock), never shed.
+  const meta = readFileSync(new URL('./ComposerMeta.tsx', import.meta.url), 'utf8')
+  expect(meta).toContain("'grid h-9 w-7 shrink-0 place-items-center")
+})
+
+test('mic, send and talk keep exactly the conditions they had before the shield (86e625424~1)', () => {
+  const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
+  // Talk: voice allowed, not dictating, no note held, an empty box.
+  expect(src).toContain(") : canDictate && !dictating && stage === 'idle' && !text.trim() && (")
+  // Mic: voice allowed, unless dictation is live (its stop lives in the voice bar).
+  expect(src).toContain('{canDictate && !(dictating && dict.active) && (')
+  expect(src).toContain('const canDictate = voice && !priv && !readOnly')
+  // Send (or Steer + Stop while a turn runs) whenever no voice note holds the row.
+  expect(src).toContain("{stage === 'idle' &&\n            (at !== 'idle' && session ? (")
+  expect(src).toContain('aria-label="Send"\n                disabled={!filled || busy || dictating || readOnly || !!starting}')
+})
+
+test('the box never clips its own content: no max height or overflow on the box, the text keeps a one-line floor', () => {
+  const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
+  const box = src.slice(src.indexOf('data-composer=""'), src.indexOf('onDragOver={(e) => e.preventDefault()}'))
+  expect(box).not.toMatch(/overflow-hidden|max-h-/)
+  // The max height is the text's alone (its own scroll area); the held strip and the top row add to the box.
+  expect(src).toMatch(/const BOX =\n\s+'min-h-8 /)
+  expect(src.match(/className=\{cn\(BOX, textMax\)\}/g)).toHaveLength(2)
 })

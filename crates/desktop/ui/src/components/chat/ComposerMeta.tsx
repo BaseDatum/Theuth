@@ -150,7 +150,7 @@ export function ApprovalShieldView({
           data-shield={state}
           aria-label={label}
           title={label}
-          className={cn('grid size-9 shrink-0 place-items-center rounded-lg outline-none hover:bg-foreground/6 focus-visible:ring-2 focus-visible:ring-ring/50', tone)}
+          className={cn('grid h-9 w-7 shrink-0 place-items-center rounded-lg outline-none hover:bg-foreground/6 focus-visible:ring-2 focus-visible:ring-ring/50', tone)}
         >
           <Icon className="size-4" fill={state === 'waiting' ? 'currentColor' : 'none'} />
         </button>

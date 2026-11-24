@@ -204,6 +204,8 @@ async function deadline<T>(p: Promise<T>): Promise<T> {
  * with the toolbar's first button; one line tall until it grows. */
 const BOX =
   'min-h-8 resize-none border-0 bg-transparent px-1 py-1 text-[17px] leading-6 shadow-none focus-visible:ring-0 md:text-[17px] dark:bg-transparent'
+/** The bottom bar's narrow-width fit (see the bar): tighter gaps and 32 px buttons under 300 px, no model label under 250. */
+export const BAR_FIT = '@max-[300px]/bar:gap-0.5 @max-[300px]/bar:[&_button.size-9]:size-8 @max-[250px]/bar:[&_[data-tour=chat-model]]:hidden'
 /** A press held this long on Send/Steer is the interrupt gesture (items 7/8): fingers have no ⌘↩. */
 const LONG_PRESS = 500
 
@@ -1478,8 +1480,12 @@ export function Composer({
           </RecordingBox>
           {(stage === 'held' || stage === 'cancelled') && <CancelHint ref={hint} />}
         </div>
-        {/* 215 C2: row 2, the toolbar under the full-width text — Add and MCP left, the model and voice/send right. */}
-        <div className="mt-1 flex items-center gap-1">
+        {/* 215 C2: row 2, the toolbar under the full-width text — Add, MCP and the shield left, the model and voice/send
+            right. It never overflows down to the 280 px pane floor: the model label shrinks first; on a narrow bar
+            (`@container/bar`) the gaps tighten and the round buttons go from 36 to 32 px; on the narrowest the label goes
+            (the picker stays one `/model` away). Every button keeps its own conditions; none is dropped for room. */}
+        <div className="@container/bar mt-1">
+        <div data-composer-bar="" className={cn('flex items-center gap-1', BAR_FIT)}>
           {/* 89 VOICE-HOLD: a held or locked note takes the row — Delete (locked) · dot + timer stand in for Add. */}
           {stage === 'locked' && <DeleteNote onClick={() => stopRecording(true)} />}
           {stage !== 'idle' && <RecordingMeta secs={secs} stage={stage} />}
@@ -1694,6 +1700,7 @@ export function Composer({
                 <ArrowUp className="size-5" />
               </Button>
             ))}
+        </div>
         </div>
       </div>
       {suggestion && suggestion.reporter === me.current && <DictionarySuggestion s={suggestion} api={api} className="mt-2" />}
