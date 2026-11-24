@@ -1,6 +1,7 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { Globe, MessageSquare, SquarePen } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -24,11 +25,11 @@ import { relistReminders, relistTerminals } from '@/components/chat/background'
 import { Transcript } from '@/components/chat/Transcript'
 import { SearchReturn } from '@/components/sidebar/SearchReturn'
 import { chatName } from '@/lib/attach'
-import { chatLeaves, closeWeb, isDraft, isTile, tileOf, usePanes, useRoutedPane } from '@/lib/panes'
+import { CHAT, chatLeaves, closeWeb, DRAFT_TYPE, isDraft, isTile, tileOf, tileType, usePanes, useRoutedPane, WEB } from '@/lib/panes'
 import { isWeb, webId } from '@/lib/web-views'
 import { WebFrame } from '@/components/chat/WebFrame'
 import { WebPill } from '@/components/chat/WebPill'
-import { TILE_KINDS, TileLeaf } from '@/components/tiles/registry'
+import { TILE_ICONS, TILE_KINDS, TileLeaf } from '@/components/tiles/registry'
 import { reportLoadError, useRemoteStart } from '@/lib/remote-start'
 import { disconnectText, inTree, remaining, resumed, usePrivate } from '@/lib/private'
 import { ownedElsewhere } from '@/lib/owner'
@@ -86,6 +87,7 @@ function SessionRoute() {
     <Panes
       session={session}
       kinds={KINDS}
+      icons={ICONS}
       render={(id, first) =>
         isWeb(id) ? (
           <WebFrame id={webId(id)} first={first} onClose={() => closeWeb(webId(id))} />
@@ -103,6 +105,13 @@ function SessionRoute() {
 
 /** Every tile kind is one Trellis view type of the panes (`Panes`). */
 const KINDS = Object.keys(TILE_KINDS)
+/** Every view type's tab icon. */
+const ICONS: Record<string, ReactNode> = {
+  [CHAT]: <MessageSquare />,
+  [DRAFT_TYPE]: <SquarePen />,
+  [WEB]: <Globe />,
+  ...Object.fromEntries(Object.entries(TILE_ICONS).map(([kind, Icon]) => [tileType(kind), <Icon />])),
+}
 
 /** 171 §14.3: scroll to and focus the newest cell named `cell` (or with that ordinal) once the transcript has mounted it; gives up after 10 s. */
 function scrollToCell(cell: string): () => void {

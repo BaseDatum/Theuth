@@ -11,11 +11,11 @@ export const memoryTile: TileKind = {
   title: () => 'Context',
   render: ({ tile, first, close }) =>
     isDraft(tile.session) ? (
-      <TileFrame title="Context" meta={DRAFT_NOTE} first={first} onClose={close} popOut={popOutTile(tile)}>
+      <TileFrame title="Context" chat={tile.session} meta={DRAFT_NOTE} first={first} onClose={close} popOut={popOutTile(tile)}>
         <DraftMemoryBody className="pt-4" />
       </TileFrame>
     ) : (
-      <TileFrame title="Context" first={first} onClose={close} popOut={popOutTile(tile)}>
+      <TileFrame title="Context" chat={tile.session} first={first} onClose={close} popOut={popOutTile(tile)}>
         <Capability required={memoryRequirements}>
           <MemoryBody session={tile.session} />
         </Capability>

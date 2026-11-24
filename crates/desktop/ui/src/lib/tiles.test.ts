@@ -32,10 +32,12 @@ test('a tile opens right of its chat; opening it again reuses the tile with the 
   expect(usePanes.getState().focused).toBe('a')
 })
 
-test('the same kind under another key is another tile; a session with tiles stacks the next below its last one', () => {
+test('the same kind under another key is another tile, a tab beside the first; another kind stacks below the last one', () => {
   openTile({ kind: 'skill', host: 'a', props: { name: 'x' }, key: 'x' })
   openTile({ kind: 'skill', host: 'a', props: { name: 'y' }, key: 'y' })
-  expect(shape()).toBe(`x(a, y(${T('skill', 'a', 'x')}, ${T('skill', 'a', 'y')}))`)
+  expect(shape()).toBe(`x(a, ${T('skill', 'a', 'x')}|${T('skill', 'a', 'y')})`)
+  openTile({ kind: 'prompt', host: 'a', props: {} })
+  expect(shape()).toBe(`x(a, y(${T('skill', 'a', 'x')}|${T('skill', 'a', 'y')}, ${T('prompt')}))`)
 })
 
 test('a web frame of the session counts as one of its tiles for placement', () => {
@@ -183,7 +185,8 @@ test('a deleted chat takes its tiles with it, and only its own, also while the p
   openTile({ kind: 'prompt', host: 'b', props: {} })
   openTile({ kind: 'jobs', host: 'b', props: {} })
   closeSessionTiles('a')
-  expect(tree()).toEqual(['a', 'b', T('prompt', 'b'), T('jobs', 'b')])
+  // `b`'s prompt joined `a`'s as a tab (one panel per kind); its jobs went below that panel.
+  expect(tree()).toEqual(['a', T('prompt', 'b'), T('jobs', 'b'), 'b'])
   // Another page: no workspace; the persisted layout and the mirror lose the tiles.
   unmount()
   closeSessionTiles('b')

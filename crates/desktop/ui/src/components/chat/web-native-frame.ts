@@ -1,7 +1,8 @@
 // The native layer of a web view frame (205 §4.4, §9): the shell's view `web-<id>` is laid over a DOM placeholder and
 // follows it. Shared by the tile (`WebFrame`, iPad and desktop) and the phone's full-screen page (`PhoneWebView`, 209 §7).
 
-import { type RefObject, useEffect, useRef, useState } from 'react'
+import { useOptionalView } from '@danfessler/trellis-react'
+import { type RefObject, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { usePanes } from '@/lib/panes'
 import * as native from '@/lib/web-view-native'
 import { useWebViews } from '@/lib/web-views'
@@ -56,11 +57,21 @@ function useOverlayOver(ref: RefObject<HTMLElement | null>, enabled: boolean): b
   return over
 }
 
-/** The native layer must not show: a pane drag is in flight (a sidebar row's or a Trellis one: its previews are DOM)
- * or an overlay covers the frame. */
+/** The Trellis view this frame renders in is on screen: the active tab of its panel. Trellis keeps a hidden view mounted at its panel's rectangle (only `visibility: hidden`), so the
+ * rectangle alone cannot tell. Always outside a workspace (a phone, a pop-out window). */
+function useViewShown(): boolean {
+  const view = useOptionalView()
+  const subscribe = useCallback((changed: () => void) => view?.on('visibility', changed) ?? (() => undefined), [view])
+  return useSyncExternalStore(subscribe, () => view?.visible ?? true)
+}
+
+/** The native layer must not show: its view is not on screen (an inactive tab), a pane drag is in flight (a sidebar
+ * row's or a Trellis one: its previews are DOM), or an overlay covers the frame. The layer is only hidden, never
+ * detached: the page keeps its state. */
 function useOccluded(ref: RefObject<HTMLElement | null>, enabled: boolean): boolean {
-  const dragging = usePanes((s) => s.drag !== null || s.dragging)
-  return useOverlayOver(ref, enabled) || (enabled && dragging)
+  const moving = usePanes((s) => s.drag !== null || s.dragging)
+  const shown = useViewShown()
+  return useOverlayOver(ref, enabled) || (enabled && (moving || !shown))
 }
 
 /** `el`'s viewport rectangle, as the shell takes it. */
@@ -91,14 +102,10 @@ export function useNativeLayer(id: string, ref: RefObject<HTMLElement | null>, l
     return () => void native.detach(id).catch(warn('web_view_visible'))
   }, [id, live, ref])
 
-  // Hide under an overlay or a drag, show again once it is gone; the module sends only what changed.
-  useEffect(() => {
-    if (live) void native.visible(id, !occluded).catch(warn('web_view_visible'))
-  }, [id, live, occluded])
-
   // Follow the placeholder (resizes, splits, scrolls, sidebar moves, the keyboard) once per frame while it shows. The
-  // rectangle is sent once first: it may have changed while the layer was hidden (an overlay, a rotation under it), and
-  // showing again would otherwise put the view at its old frame.
+  // rectangle is sent once first, before the layer shows again (the effect below): it may have changed while the layer
+  // was hidden (an overlay, another tab in front, a rotation under it), and showing again would otherwise put
+  // the view at its old frame.
   useEffect(() => {
     const el = ref.current
     if (!live || occluded || !el) return
@@ -114,6 +121,12 @@ export function useNativeLayer(id: string, ref: RefObject<HTMLElement | null>, l
     })
     return () => cancelAnimationFrame(frame)
   }, [id, live, occluded, ref])
+
+  // Hide under an overlay or a drag, or behind another tab; show again once that is over. The module sends
+  // only what changed.
+  useEffect(() => {
+    if (live) void native.visible(id, !occluded).catch(warn('web_view_visible'))
+  }, [id, live, occluded])
 
   return occluded
 }

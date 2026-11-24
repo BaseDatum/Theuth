@@ -11,7 +11,6 @@ import { isLocal, saveBlob } from '@/lib/files'
 import { container } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
 import { useSnapshot } from '@/lib/snapshot-mode'
-import { openTileOf } from '@/lib/tiles'
 import { cn } from '@/lib/utils'
 import { useEngines } from '@/link/engines'
 import { Reserve } from './Reserve'
@@ -260,7 +259,7 @@ export function DiagramFrame({
   const host = useTileHost()
   // An open tile follows a re-render of the same diagram (a theme switch redraws mermaid under the same name).
   useEffect(() => {
-    if (host && content && openTileOf('diagram', host, name)) openDiagramTile(host, { svg: markup(), name, label })
+    if (host && content) openDiagramTile(host, { svg: markup(), name, label }, true)
   }, [host, svg, name, label])
   return (
     <div className={cn('group relative rounded-xl border bg-layer-1 p-2', fill ? 'flex h-full flex-col' : 'my-4')} data-streamdown={kind} title={title}>

@@ -12,7 +12,7 @@ function CodemapTile({ tile, first, close }: TileRender) {
   const session = tile.session
   if (!useSupported(requirements))
     return (
-      <TileFrame first={first} onClose={close} title="CodeMap">
+      <TileFrame first={first} onClose={close} title="CodeMap" chat={session}>
         <Unavailable />
       </TileFrame>
     )
@@ -24,7 +24,7 @@ function CodemapTile({ tile, first, close }: TileRender) {
       onClose={close}
       onRoot={(r) => openCodemapTile(session, r)}
       chrome={({ meta, controls, popOut, body }) => (
-        <TileFrame first={first} onClose={close} title="CodeMap" meta={meta} controls={controls} popOut={popOut} className="bg-layer-1">
+        <TileFrame first={first} onClose={close} title="CodeMap" chat={session} meta={meta} controls={controls} popOut={popOut} className="bg-layer-1">
           {body}
         </TileFrame>
       )}
