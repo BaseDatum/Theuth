@@ -10,7 +10,7 @@ vi.mock('@/lib/speech', () => ({
 }))
 vi.mock('@/lib/mic-tap', () => ({}))
 vi.mock('@/link/engines', () => ({ LOCAL: 'local', useEngines: { getState: () => ({ active: 'local' }) } }))
-vi.mock('sonner', () => ({ toast: { error: () => undefined } }))
+vi.mock('@/lib/notify', () => ({ notify: { error: () => undefined } }))
 const chime = vi.hoisted(() => vi.fn())
 vi.mock('@/lib/cue', () => ({ chime }))
 vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined })

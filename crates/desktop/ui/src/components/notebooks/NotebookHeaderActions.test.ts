@@ -12,7 +12,7 @@ import { askKeys } from '@/lib/ask-rpc'
 import { NotebookHeaderActions, popOutNotebook } from './NotebookHeaderActions'
 
 const env = vi.hoisted(() => ({ mobile: false, popped: false, canPopout: true, openPopout: vi.fn(() => Promise.resolve()) }))
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => env.mobile }))
 vi.mock('@/lib/popout', async (original) => ({

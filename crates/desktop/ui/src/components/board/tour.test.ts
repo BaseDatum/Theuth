@@ -2,7 +2,7 @@ import { expect, test, vi } from 'vitest'
 import { activeStopForScroll, tourKeyIndex } from './Tour'
 
 // `Tour.tsx` pulls the diagram views (theme, tooltips, connection); only the pure rules are under test here.
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { message: vi.fn(), error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { message: vi.fn(), error: vi.fn() }) }))
 vi.mock('@/lib/rpc', () => ({ useApi: () => ({}) }))
 vi.mock('@/components/ui/tooltip', () => ({ Tooltip: ({ children }: { children: unknown }) => children, TooltipTrigger: ({ children }: { children: unknown }) => children, TooltipContent: () => null }))
 vi.mock('@/lib/theme', () => ({ subscribeDark: () => () => {} }))

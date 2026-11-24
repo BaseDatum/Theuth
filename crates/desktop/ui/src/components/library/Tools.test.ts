@@ -15,7 +15,7 @@ import type { McpToolInfo } from "@/rpc/bindings/method.mcp_2dserver.output"
 import type { MeshStatus } from "@/rpc/bindings/method.nodes.output"
 import { Tools } from './Tools'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
 
 // 187: this is xeus; mikrotik was added on 333.
 const mesh = {

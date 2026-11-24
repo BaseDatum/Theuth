@@ -14,7 +14,7 @@ import { DetectionBanner, ReleasePrompt } from './DetectionBanner'
 
 const navigate = vi.fn()
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@/lib/platform', async (original) => ({ ...(await original<typeof Platform>()), isDesktop: () => true }))
 vi.mock('@/store/sessions', async (original) => ({ ...(await original<typeof SessionsModule>()), on: () => () => {} }))
 vi.mock('@/store/connection', async (original) => {

@@ -7,7 +7,7 @@ import type { EngineProvider } from '@/lib/doc/provider'
 import { MoveNote, moveOptions, moveRefusal, moveRows } from './MoveNote'
 
 const toasts: [string, string][] = []
-vi.mock('sonner', () => ({ toast: Object.assign((m: string) => toasts.push(['ok', m]), { error: (m: string) => toasts.push(['error', m]) }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign((m: string) => toasts.push(['ok', m]), { error: (m: string) => toasts.push(['error', m]) }) }))
 const now = Date.UTC(2026, 10, 8, 12, 0)
 const peer = (id: string, name: string, reachable: boolean, last_seen_ms: number) => ({ id, name, addrs: [], reachable, last_seen_ms }) as never
 const mesh = { self_id: 'S', self_name: 'studio-mac', docs_homes_on: true, peers: [peer('X', 'xeus', true, now), peer('M', 'mini', false, now - 5 * 60_000)] }

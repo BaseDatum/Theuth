@@ -8,7 +8,7 @@ import type * as Popout from '@/lib/popout'
 import { NotebookPage } from './NotebookPage'
 
 const env = vi.hoisted(() => ({ popped: false, search: {} as Record<string, unknown> }))
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children, ...p }: { children?: unknown; 'aria-label'?: string }) => createElement('a', p, children as never),
   getRouteApi: () => ({ useParams: () => ({ id: 'nb1' }), useSearch: () => env.search }),

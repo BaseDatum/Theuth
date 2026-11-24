@@ -8,7 +8,7 @@ import { queryKeys } from '@/lib/rpc'
 import type { Overview } from "@/rpc/bindings/method.agent.output"
 import { OverviewsSection, versionsOf } from './OverviewsSection'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ children, to, params }: { children?: unknown; to: string; params?: Record<string, string> }) =>
     createElement('a', { href: Object.entries(params ?? {}).reduce((p, [k, v]) => p.replace(`$${k}`, v), to) }, children as never),

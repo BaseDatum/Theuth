@@ -6,7 +6,7 @@ import { useSkillDraft } from './drafts'
 import { sendParked } from './send-parked'
 import { activeFor, activeSuffix, useSuffixes } from './suffixes'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
 
 // No DOM in the test runner: the smallest `Storage` the stores need.
 const mem = new Map<string, string>()

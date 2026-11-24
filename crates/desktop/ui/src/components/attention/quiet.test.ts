@@ -12,7 +12,7 @@ import { ItemError } from './ItemError'
 import { setItemError, useAttentionBulk, useInboxActions, useReply } from './queries'
 
 const toast = vi.hoisted(() => Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }))
-vi.mock('sonner', () => ({ toast }))
+vi.mock('@/lib/notify', () => ({ notify: toast }))
 
 const rpc = vi.hoisted(() => ({
   attention_dismiss: vi.fn(async (_id: string) => null as unknown),

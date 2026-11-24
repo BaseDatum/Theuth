@@ -11,7 +11,7 @@ import { useDrafts } from '@/lib/drafts'
 import type * as Rpc from '@/lib/rpc'
 import { Builtins } from './Builtins'
 
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn(), success: vi.fn() }) }))
 
 const tool = (name: string, description: string, flags: Partial<BuiltinTool> = {}): BuiltinTool => ({
   name,

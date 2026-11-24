@@ -12,7 +12,7 @@ import type { Suggestion as SpeakerSuggestion } from "@/rpc/bindings/method.meet
 import { Review } from './Review'
 
 const toast = vi.hoisted(() => Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), message: vi.fn() }))
-vi.mock('sonner', () => ({ toast }))
+vi.mock('@/lib/notify', () => ({ notify: toast }))
 vi.mock('@/hooks/use-audio-context', () => ({ getSharedAudioContext: () => null }))
 vi.mock('@/lib/segment-audio', () => ({ SegmentPlayer: class {}, playError: String }))
 vi.mock('./EnrollDialog', () => ({ EnrollDialog: () => null }))

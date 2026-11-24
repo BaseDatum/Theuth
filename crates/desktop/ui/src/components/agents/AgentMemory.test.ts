@@ -18,7 +18,7 @@ import { DRAFT_KEY, emptyDraft } from './wizard'
 vi.hoisted(() => vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => undefined }))
 let fixture = memoryFixture()
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => fixture.api }))
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn() }) }))
 notifyManager.setScheduler(queueMicrotask)
 window.HTMLElement.prototype.scrollIntoView = () => {}
 window.scrollTo = () => {}

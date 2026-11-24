@@ -9,7 +9,7 @@ import type * as Rpc from '@/lib/rpc'
 import { queryKeys } from '@/lib/rpc'
 import type * as Popout from '@/lib/popout'
 import { openPopout } from '@/lib/popout'
-import { toast } from 'sonner'
+import { notify as toast } from '@/lib/notify'
 import { usePanes } from '@/lib/panes'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { AgentInfo } from '@/store/ui-events'
@@ -30,7 +30,7 @@ vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({ list_sessions: async () => SESSIONS, agents_list: async () => AGENTS, desk_open: deskOpen }),
 }))
-vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
+vi.mock('@/lib/notify', () => ({ notify: { error: vi.fn() } }))
 vi.mock('@/lib/popout', async (original) => ({ ...(await original<typeof Popout>()), canPopout: () => true, openPopout: vi.fn(async () => {}) }))
 
 const agent = (name: string, desk: string | null, status = 'idle') => ({ desk, status, file: { name } })
