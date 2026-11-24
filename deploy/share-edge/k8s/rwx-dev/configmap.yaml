@@ -1,6 +1,6 @@
-# P0 smoke config: admission closed, Let's Encrypt STAGING. Replaces the base's config.yaml whole.
-# Before production: the prod directory, terms/abuse pages, require_caa: true with the
-# CAA records of the production account (§8.2; the edge refuses to start without them), admission open|invite.
+# Production config since 2026-11-23: admission open, Let's Encrypt PRODUCTION, require_caa: true against the
+# CAA records now live at Porkbun for the production account (§8.2; the edge refuses to start without them).
+# The terms/abuse pages are still example.com placeholders (TBD, §9.5). Replaces the base's config.yaml whole.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,24 +19,25 @@ data:
     iroh: {listen: "[::]:7850", relay: https://iroh.relay.theuth.io, public_addrs: []}
     # Socket on the emptyDir the overlay mounts, not on the NFS data volume.
     admin: {socket: /run/theuth-share-edge/admin.sock, http: "[::]:9090"}
-    admission: closed
+    admission: open
     # Standby key is OFFLINE (§13): secret only in the owner's vault (tunzip.edge.standby.key.b64); the edge never
     # holds it. Rotation: theuth-share-edge retire --standby-key <file> --config <cfg>, edge stopped.
     standby_public: 8dc34c5495d079157b02ff81ddbd47de68b60ef9f579e86bb8d5fb46c670a075
-    terms_url: https://example.com/share-terms     # TBD before admission opens (§9.5)
+    terms_url: https://example.com/share-terms     # still a placeholder; admission opened with it (§9.5 TBD)
     terms_rev: "2026-11-23"
     abuse_url: https://example.com/share-abuse     # TBD
     abuse_contact: abuse@example.com               # TBD
-    # false is accepted only with admission closed|invite. A staging account's URI would not match the
-    # production accounturi CAA line anyway.
-    require_caa: false
+    # true since 2026-11-23: the production account's issue/issuewild CAA lines are live at Porkbun
+    # (0 issue/issuewild "letsencrypt.org; accounturi=https://acme-v02.api.letsencrypt.org/acme/acct/4035598822;
+    # validationmethods=dns-01"). A staging account's URI would not match that accounturi.
+    require_caa: true
     acme:
       contact: mailto:sky@rwx.dev   # passed verbatim as the ACME account contact URI
       profile: classic
       primary: letsencrypt
       cas:
         letsencrypt:
-          directory: https://acme-staging-v02.api.letsencrypt.org/directory   # prod: https://acme-v02.api.letsencrypt.org/directory
+          directory: https://acme-v02.api.letsencrypt.org/directory   # PRODUCTION since 2026-11-23 (staging: https://acme-staging-v02.api.letsencrypt.org/directory)
         gts: {enabled: false}
     dns:
       provider: porkbun
