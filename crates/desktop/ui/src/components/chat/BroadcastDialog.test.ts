@@ -11,7 +11,7 @@ import type { BroadcastRow } from "@/rpc/bindings/method.agent.output"
 import type { SessionActivity } from "@/rpc/bindings/method.agent.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { AgentInfo } from '@/store/ui-events'
-import { allRoots, deskRoots, groupRows, outcomeLines, runningRoots, sectionState, splitGroups, summarize, title } from './broadcast'
+import { activeDescendants, allRoots, deskRoots, groupRows, outcomeLines, runningRoots, sectionState, splitGroups, summarize, title } from './broadcast'
 import { Form } from './BroadcastDialog'
 
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
@@ -55,6 +55,31 @@ const rows = [
 
 test('"Running roots" ticks busy roots and roots with a running PTY, never children or idle roots', () => {
   expect(runningRoots(rows)).toEqual(['A', 'B', 'D'])
+})
+
+test('"Running roots" ticks an idle root whose subagent works, at any depth; idle/finished subagents and non-roots never', () => {
+  const tree = [
+    row('R', 'R', 0, { state: { state: 'running' } }), // running itself
+    row('P', 'P', 0), // idle, child running
+    row('p1', 'P', 1, { state: { state: 'running' } }),
+    row('p11', 'p1', 2, { state: { state: 'running' } }),
+    row('G', 'G', 0), // idle, grandchild owns a PTY under an idle child
+    row('g1', 'G', 1),
+    row('g11', 'g1', 2, { ptys: 1 }),
+    row('Q', 'Q', 0), // idle, children idle or finished
+    row('q1', 'Q', 1),
+    row('q2', 'Q', 1, { state: { state: 'cancelled' } }),
+    row('S', 'S', 0), // idle, grandchild approval-blocked
+    row('s1', 'S', 1, { state: { state: 'cancelled' } }),
+    row('s11', 's1', 2, { state: { state: 'approval', tool: 't' } }),
+    row('o1', 'gone', 1, { state: { state: 'running' } }), // orphan subagent: not a root, never ticked
+  ]
+  expect(runningRoots(tree)).toEqual(['R', 'P', 'G', 'S'])
+  expect([...activeDescendants(tree)]).toEqual([
+    ['P', 2],
+    ['G', 1],
+    ['S', 1],
+  ])
 })
 
 test('"All roots" ticks every root, never children', () => {

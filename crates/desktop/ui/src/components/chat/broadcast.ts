@@ -21,11 +21,37 @@ export function title(id: string, sessions: readonly SessionSummary[] | undefine
 export const busy = (a: SessionActivity | undefined) =>
   a?.state.state === 'running' || a?.state.state === 'awaiting' || a?.state.state === 'approval'
 
-/** What `BroadcastTargets::Running` selects: roots that are busy or own a running job/PTY (62 §0.2). */
+/** A session doing work of its own: mid-turn by state, or owning a running job/PTY (62 §0.2). */
+export const active = (a: SessionActivity | undefined) => busy(a) || (a?.jobs ?? 0) + (a?.ptys ?? 0) > 0
+
+/**
+ * Per root id, how many of its descendants (child, grandchild…, walked up `parent` through `rows`) are `active`.
+ * Roots with none are absent. Advisors don't count (125 §8.5), matching `groupRows`.
+ */
+export function activeDescendants(all: AgentInfo[]): Map<string, number> {
+  const rows = all.filter(notAdvisor)
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  const out = new Map<string, number>()
+  for (const r of rows) {
+    if (isRoot(r) || !active(r.activity)) continue
+    let p = byId.get(r.parent)
+    const seen = new Set<string>()
+    while (p && !isRoot(p) && !seen.has(p.id)) {
+      seen.add(p.id)
+      p = byId.get(p.parent)
+    }
+    if (p && isRoot(p)) out.set(p.id, (out.get(p.id) ?? 0) + 1)
+  }
+  return out
+}
+
+/**
+ * What the "Running roots" chip selects: roots that are `active` themselves, or idle with an `active` subagent
+ * anywhere below them. (The engine's `BroadcastTargets::Running` still checks the root alone.)
+ */
 export function runningRoots(rows: AgentInfo[]): string[] {
-  return rows
-    .filter((r) => isRoot(r) && (busy(r.activity) || (r.activity?.jobs ?? 0) + (r.activity?.ptys ?? 0) > 0))
-    .map((r) => r.id)
+  const below = activeDescendants(rows)
+  return rows.filter((r) => isRoot(r) && (active(r.activity) || below.has(r.id))).map((r) => r.id)
 }
 
 /** What `BroadcastTargets::Roots` selects. */

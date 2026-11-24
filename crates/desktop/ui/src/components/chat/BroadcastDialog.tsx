@@ -17,6 +17,7 @@ import type { Delivery } from "@/rpc/bindings/method.agent.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { AgentInfo } from '@/store/ui-events'
 import {
+  active,
   allRoots,
   busy,
   counts,
@@ -287,7 +288,14 @@ function Section({
       <ul aria-label={label}>
         {groups.map((g) => (
           <li key={g.root.id}>
-            <Row row={g.root} checked={ids.has(g.root.id)} now={now} sessions={sessions} onToggle={onToggle} />
+            <Row
+              row={g.root}
+              checked={ids.has(g.root.id)}
+              now={now}
+              sessions={sessions}
+              onToggle={onToggle}
+              subagents={g.children.filter((c) => active(c.activity)).length}
+            />
             <Branch
               parent={g.root.id}
               byParent={childrenOf(g.children)}
@@ -315,16 +323,20 @@ function Row({
   now,
   sessions,
   onToggle,
+  subagents = 0,
 }: {
   row: AgentInfo
   checked: boolean
   now: number
   sessions: SessionSummary[] | undefined
   onToggle(id: string): void
+  /** A root's `active` descendants: an idle root with any reads as running, as "Running roots" ticks it. */
+  subagents?: number
 }) {
   const a = row.activity
   const state = a?.state.state ?? row.state.state
-  const extra = a && counts(a)
+  const sub = subagents > 0 ? `${subagents} subagent${subagents === 1 ? '' : 's'} active` : ''
+  const extra = [a && counts(a), sub].filter(Boolean).join(' · ')
   const age = ago(a?.last_active ?? null, now)
   const desk = isRoot(row) ? deskOf(row.id, sessions) : undefined
   return (
@@ -336,7 +348,7 @@ function Row({
       <span className="min-w-0 flex-1 truncate">{desk ?? title(row.id, sessions, row.name)}</span>
       {desk && <span className="shrink-0 rounded-md bg-layer-2 px-1.5 text-[10px] uppercase tracking-wide text-fg-secondary">desk</span>}
       <span
-        className={cn('shrink-0 rounded-md bg-layer-2 px-1.5 text-xs text-fg-secondary', busy(a) && 'text-foreground')}
+        className={cn('shrink-0 rounded-md bg-layer-2 px-1.5 text-xs text-fg-secondary', (busy(a) || subagents > 0) && 'text-foreground')}
         title={state}
       >
         <span className={cn('mr-1', state === 'running' && 'animate-pulse')}>{GLYPH[state]}</span>
