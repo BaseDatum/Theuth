@@ -1,7 +1,7 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { Globe, MessageSquare, SquarePen } from 'lucide-react'
+import { Globe, HatGlasses, MessageSquare, SquarePen } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -464,7 +464,7 @@ function PrivateStrip({ session }: { session: string }) {
   if (!member) return null
   return (
     <div className="mx-auto flex w-full shrink-0 items-center gap-3 px-4 py-1 text-xs md:max-w-[768px]">
-      <Badge variant="outline">Private</Badge>
+      <Badge variant="outline"><HatGlasses aria-hidden />Private</Badge>
       {lost !== undefined && (
         <span role="status" className="text-warning">
           {disconnectText(remaining(lost, now))}

@@ -1,8 +1,8 @@
 import { Capability, Unavailable, useSupported, useQuerySupport } from '@/rpc/capabilities'
-import { privateRequirements, endlessRequirements } from './requirements'
+import { privateRequirements, endlessRequirements, modelRequirements } from './requirements'
 import { useQuery } from '@tanstack/react-query'
 import { type UseNavigateResult, useNavigate } from '@tanstack/react-router'
-import { Check, ChevronDown, ChevronRight, Folder } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Folder, HatGlasses } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { Composer, type DraftCreate } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
@@ -18,6 +18,7 @@ import { Label } from '@/components/ui/label'
 import { SidebarMenuAction } from '@/components/ui/sidebar'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { ModelMenu } from './ModelMenu'
 import { useDraftTarget, useDrafts } from '@/lib/drafts'
 import { draftProject, newDraft, usePanes } from '@/lib/panes'
 import { promoteDraft } from '@/lib/tiles'
@@ -264,6 +265,12 @@ export function NewChat({
       <MachineBar priv={priv} />
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
+        {/* The draft's model: the header's picker over the same `useDrafts.pick`; `/model` stays with the header's. */}
+        <Capability required={modelRequirements} hide>
+          <div className="mx-auto mb-2 flex w-full max-w-[768px] min-w-0 justify-center px-4">
+            <ModelMenu session={null} slash={false} />
+          </div>
+        </Capability>
         {(priv && !privateSupported) || (endlessOn && !canQuery2) ? <Unavailable /> : <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} onUncreated={onUncreated} />}
         <CreateOptions
           priv={priv}
@@ -391,10 +398,15 @@ export function CreateOptions({
   return (
     <div className="mx-auto mt-1 w-full max-w-[768px] px-4 text-sm">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-        <Capability required={privateRequirements} hide><label className="flex items-center gap-2">
-          <Switch checked={priv} disabled={opening !== null} onCheckedChange={onPriv} aria-label="Private session" />
-          <span>Private</span>
-        </label></Capability>
+        <Capability required={privateRequirements} hide><Tooltip>
+          <TooltipTrigger asChild>
+            <label className="flex items-center gap-2">
+              <Switch checked={priv} disabled={opening !== null} onCheckedChange={onPriv} aria-label="Private session" />
+              <HatGlasses aria-hidden className="size-4" />
+            </label>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Private</TooltipContent>
+        </Tooltip></Capability>
         <Capability required={endlessRequirements} hide><Tooltip>
           <TooltipTrigger asChild>
             <label className="flex items-center gap-2">

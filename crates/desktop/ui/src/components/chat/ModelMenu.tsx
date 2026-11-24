@@ -93,6 +93,8 @@ type Props = {
   session: string | null
   /** 157 D1: this picker's pane is the page's own (a notebook's chat column) — `/model` opens it whatever `usePanes` focuses. */
   own?: boolean
+  /** `false`: `/model` never opens this one (a second picker of the same draft, the new-chat page's under the header's). */
+  slash?: boolean
 }
 
 /** The picker's state shared by the header button, the compact row and the dialog. */
@@ -276,8 +278,8 @@ function harnessLabel(m: Model): string {
 export const slashTarget = (session: string | null, focused: string | null, own: boolean): boolean => own || session === null || focused === session
 
 /** `/model` opens the focused pane's picker (`slashTarget`). */
-function useOpenOnSlash({ session, own = false }: Props, open: () => void) {
-  const focused = usePanes((s) => slashTarget(session, s.focused, own))
+function useOpenOnSlash({ session, own = false, slash = true }: Props, open: () => void) {
+  const focused = usePanes((s) => slash && slashTarget(session, s.focused, own))
   const latest = useRef(open)
   latest.current = open
   useEffect(() => {

@@ -52,6 +52,12 @@ test('the ∞ switch sits in the options row after Private; off, no notice', () 
   expect(html).not.toContain('Every turn starts from a compressed view')
 })
 
+test('the Private switch is icon-only like ∞: the incognito hat-and-glasses glyph, no visible word', () => {
+  const html = render({})
+  expect(html).toMatch(/aria-label="Private session"[^]*?lucide-hat-glasses/)
+  expect(html).not.toMatch(/<span>Private<\/span>/)
+})
+
 test('on: the neutral notice with the three sentences and the compactor line; the model name when one is set', () => {
   const html = render({ endless: true })
   expect(html).toMatch(/aria-checked="true"[^>]*aria-label="Fractal context"/)
