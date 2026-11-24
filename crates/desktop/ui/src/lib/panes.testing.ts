@@ -40,7 +40,7 @@ export function tiling(leaves: string[] = [], o: { navigate?(session: string): v
       ]),
     ),
     floating: false,
-    navigation: false,
+    navigation: 'focus',
     persist: { key: STORAGE_KEY, version: VERSION },
     onMissingType: () => 'drop',
     defaultLayout: leaves.length ? L.row(leaves.map((l) => L.view(chatSpec(l).type, { id: l, params: chatSpec(l).params }))) : null,

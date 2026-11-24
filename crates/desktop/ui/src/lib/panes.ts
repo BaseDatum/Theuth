@@ -83,6 +83,9 @@ type PanesStore = {
   first: string | null
   /** A Trellis drag (a pane moved by its header or tab) is in flight. */
   dragging: boolean
+  /** Trellis zoom navigation is moving the camera (a pane maximised or restored): the panes' content is CSS-scaled
+   * meanwhile, so what cannot scale (a native web view) hides until it settles. */
+  zooming: boolean
   /** Pane that window-level actions (hotkeys, `document.title`) address; the route keeps the URL on it. Always a chat
    * (or draft) — never a frame, so no RPC, composer or sidebar highlight ever sees a `tile:`/`web:` id. */
   focused: string | null
@@ -186,14 +189,27 @@ function order(doc: LayoutDocument, extra: readonly string[] = []): string[] {
 }
 const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i])
 
-/** The store follows `doc` (and the views a drag is carrying). */
-function mirror(doc: LayoutDocument, carried: readonly string[] = [], dragging = false): void {
+function nodeOf(root: LayoutNode | null | undefined, id: string): LayoutNode | null {
+  if (!root) return null
+  if (root.id === id) return root
+  if (root.kind === 'panel') return null
+  if (root.kind === 'stage') return nodeOf(root.child, id)
+  for (const c of root.children) {
+    const n = nodeOf(c, id)
+    if (n) return n
+  }
+  return null
+}
+
+/** The store follows `doc` (and the views a drag is carrying). While zoom navigation frames a part of the layout
+ * (`framed`), that part's top-left view is the one at the window's corner, so it is `first`. */
+function mirror(doc: LayoutDocument, carried: readonly string[] = [], dragging = false, framed: string | null = null): void {
   const s = usePanes.getState()
   const leaves = order(doc, carried)
   usePanes.setState({
     leaves: same(s.leaves, leaves) ? s.leaves : leaves,
     views: doc.views,
-    first: firstPanel(doc.root)?.selected ?? null,
+    first: firstPanel((framed && nodeOf(doc.root, framed)) || doc.root)?.selected ?? null,
     dragging,
   })
 }
@@ -280,6 +296,7 @@ export const usePanes = create<PanesStore>()((set, get) => ({
   views: {},
   first: null,
   dragging: false,
+  zooming: false,
   focused: null,
   selected: null,
   drag: null,
@@ -442,6 +459,9 @@ export function zone({ edge, rect: r }: Target): { left: number; top: number; wi
  * pane's own pick (`ViewBody`), which may decline it (a control in a chat while a frame is selected). */
 let pressing: Element | null = null
 
+/** How long the camera must stay still before a zoom counts as settled (`zooming`): a few frames. */
+const ZOOM_SETTLE_MS = 120
+
 /**
  * `ws` is the layout now: the store follows its document; Trellis focus (a tab, the keyboard) is a user pick; a view
  * closed by Trellis (its tab's ×, ⌥⌘W) moves the URL off it; a web frame closed for good (not popped out) loses its
@@ -453,7 +473,7 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
   const homes = new Map<string, string>()
   const sync = () => {
     const snap = ws.getSnapshot()
-    mirror(snap.document, snap.views.map((v) => v.id), snap.dragging)
+    mirror(snap.document, snap.views.map((v) => v.id), snap.dragging, snap.framed)
     for (const v of snap.views) {
       const was = homes.get(v.id)
       if (!v.panelId || was === v.panelId) continue
@@ -466,8 +486,21 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
     setTimeout(() => (pressing = null), 0)
   }
   window.addEventListener('pointerdown', down, true)
+  // The camera reports every frame it moves; it has settled once `ZOOM_SETTLE_MS` pass without one.
+  let still = 0
+  const settle = () => {
+    still = 0
+    usePanes.setState({ zooming: false })
+  }
   const offs = [
     ws.subscribe(sync),
+    ws.on('camera', () => {
+      if (!usePanes.getState().zooming) usePanes.setState({ zooming: true })
+      window.clearTimeout(still)
+      still = window.setTimeout(settle, ZOOM_SETTLE_MS)
+    }),
+    // Framing a part of the layout moves `first` to its corner.
+    ws.on('navigate', sync),
     ws.on('focus', (id) => {
       if (internal || id === null || !ws.getDocument().views[id]) return
       if (pressing?.closest('[data-pane]')) return
@@ -487,6 +520,7 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
   if (wanted) usePanes.getState().show(wanted)
   return () => {
     for (const off of offs) off()
+    window.clearTimeout(still)
     window.removeEventListener('pointerdown', down, true)
     if (usePanes.getState().ws !== ws) return
     try {
@@ -496,7 +530,7 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
     } catch {
       // Storage full or unavailable: Trellis's own debounced save is all there is.
     }
-    usePanes.setState({ ws: null, dragging: false })
+    usePanes.setState({ ws: null, dragging: false, zooming: false })
   }
 }
 

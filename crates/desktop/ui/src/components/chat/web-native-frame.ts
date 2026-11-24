@@ -57,7 +57,8 @@ function useOverlayOver(ref: RefObject<HTMLElement | null>, enabled: boolean): b
   return over
 }
 
-/** The Trellis view this frame renders in is on screen: the active tab of its panel. Trellis keeps a hidden view mounted at its panel's rectangle (only `visibility: hidden`), so the
+/** The Trellis view this frame renders in is on screen: the active tab of its panel, and that panel not framed away
+ * by zoom navigation. Trellis keeps a hidden view mounted at its panel's rectangle (only `visibility: hidden`), so the
  * rectangle alone cannot tell. Always outside a workspace (a phone, a pop-out window). */
 function useViewShown(): boolean {
   const view = useOptionalView()
@@ -65,11 +66,12 @@ function useViewShown(): boolean {
   return useSyncExternalStore(subscribe, () => view?.visible ?? true)
 }
 
-/** The native layer must not show: its view is not on screen (an inactive tab), a pane drag is in flight (a sidebar
- * row's or a Trellis one: its previews are DOM), or an overlay covers the frame. The layer is only hidden, never
- * detached: the page keeps its state. */
+/** The native layer must not show: its view is not on screen (an inactive tab, a pane framed away), a pane drag is in
+ * flight (a sidebar row's or a Trellis one: its previews are DOM), zoom navigation is scaling the panes (a native view
+ * cannot scale with them; it comes back at the settled rectangle), or an overlay covers the frame. The layer is only
+ * hidden, never detached: the page keeps its state. */
 function useOccluded(ref: RefObject<HTMLElement | null>, enabled: boolean): boolean {
-  const moving = usePanes((s) => s.drag !== null || s.dragging)
+  const moving = usePanes((s) => s.drag !== null || s.dragging || s.zooming)
   const shown = useViewShown()
   return useOverlayOver(ref, enabled) || (enabled && (moving || !shown))
 }
@@ -104,7 +106,7 @@ export function useNativeLayer(id: string, ref: RefObject<HTMLElement | null>, l
 
   // Follow the placeholder (resizes, splits, scrolls, sidebar moves, the keyboard) once per frame while it shows. The
   // rectangle is sent once first, before the layer shows again (the effect below): it may have changed while the layer
-  // was hidden (an overlay, another tab in front, a rotation under it), and showing again would otherwise put
+  // was hidden (an overlay, a zoom, another tab in front, a rotation under it), and showing again would otherwise put
   // the view at its old frame.
   useEffect(() => {
     const el = ref.current
@@ -122,7 +124,7 @@ export function useNativeLayer(id: string, ref: RefObject<HTMLElement | null>, l
     return () => cancelAnimationFrame(frame)
   }, [id, live, occluded, ref])
 
-  // Hide under an overlay or a drag, or behind another tab; show again once that is over. The module sends
+  // Hide under an overlay, a drag or a zoom, or behind another tab; show again once that is over. The module sends
   // only what changed.
   useEffect(() => {
     if (live) void native.visible(id, !occluded).catch(warn('web_view_visible'))

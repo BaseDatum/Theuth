@@ -1,4 +1,4 @@
-import { layout as L, useOptionalView, ViewType, Workspace, type MenuEntry, type WorkspaceHandle } from '@danfessler/trellis-react'
+import { layout as L, useOptionalView, ViewType, Workspace, type Keymap, type MenuEntry, type WorkspaceHandle } from '@danfessler/trellis-react'
 import '@danfessler/trellis/style.css'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
@@ -112,9 +112,22 @@ function ViewBody({ render }: { render: Render }) {
   )
 }
 
-/** Built-in panel menu items that need what this app does not offer: floating, maximise, hiding (there is no dock). */
-const UNUSED_MENU: Record<string, true> = { float: true, dock: true, maximize: true, hide: true }
+/** Built-in panel menu items that need what this app does not offer: floating and hiding (there is no dock). */
+const UNUSED_MENU: Record<string, true> = { float: true, dock: true, hide: true }
 const panelMenu = (entries: MenuEntry[]): MenuEntry[] => entries.filter((e) => e === 'separator' || !UNUSED_MENU[e.id ?? ''])
+
+/**
+ * Zoom navigation, `focus` mode: a pane (or a part of the layout) is framed — maximised to the whole workspace at its
+ * real size, the rest kept mounted off screen — by double-clicking its tab bar or header (`useViewDrag`), the panel
+ * menu's Maximize or ⌘⌥↩; ⌘⌥↑ shows everything again, ⌘⌥← / ⌘⌥→ go back and forth, Escape steps out while focus is
+ * on the workspace itself (a tab, or the workspace after a double-click), never from inside a view (the composer, a
+ * terminal) nor from a dialog (portalled outside the workspace, whose key listener never sees it). The other keymap
+ * entries (F6, ⌘⌥[ / ⌘⌥], ⌘⌥W) were already live and clash with nothing in the app. `free` mode (pinch, ⌘⌥-drag)
+ * stays off: it would leave panes live at any size (a PTY, a VM session, a native web view resized with every
+ * pinch) and its ⌘⇧ / ⌘⌃ drag chords take presses from the content.
+ * Trellis's ⌘⇧↩ for framing collides with a notebook's Run all, hence ⌘⌥↩.
+ */
+const KEYMAP: Keymap = { 'frame.toggle': 'Mod+Alt+Enter' }
 
 /**
  * The tiling layout: a Trellis workspace with one view type per leaf kind, its layout persisted on this machine. It
@@ -163,7 +176,8 @@ function Prepared(p: { session: string; types: string[]; icons: Icons; sessions:
         label="Panes"
         theme="light"
         floating={false}
-        navigation={false}
+        navigation="focus"
+        keymap={KEYMAP}
         panelMenu={panelMenu}
         storageKey={STORAGE_KEY}
         version={VERSION}
