@@ -21,7 +21,7 @@ import { OwnerSelect } from '../OwnerSelect'
 import { TaskPicker } from '../TaskPicker'
 import { ownerText, parseBlocker, parseOwner, shortId, STATES } from '../helpers'
 import { useAgents, useInvalidateTasks, useMoveTask, useTask } from '../queries'
-import { STATE_TONE } from './model'
+import { PANEL_W, STATE_TONE } from './model'
 
 const PRIORITIES: readonly Priority[] = ['urgent', 'high', 'medium', 'low']
 
@@ -50,7 +50,8 @@ export function TaskPanel({ id, known, onSelect, onClose }: { id: string; known:
   return (
     <aside
       aria-label="Task editor"
-      className="absolute inset-y-0 right-0 z-10 flex w-[min(380px,100%)] flex-col border-l border-border-subtle bg-background shadow-[-8px_0_24px_-12px_rgb(0_0_0/0.25)]"
+      className="absolute inset-y-0 right-0 z-10 flex max-w-full flex-col border-l border-border-subtle bg-background shadow-[-8px_0_24px_-12px_rgb(0_0_0/0.25)]"
+      style={{ width: PANEL_W }}
     >
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border-subtle pr-1.5 pl-3">
         <span className="font-mono text-xs text-fg-tertiary">#{shortId(id)}</span>

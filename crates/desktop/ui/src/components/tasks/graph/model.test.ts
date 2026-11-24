@@ -63,12 +63,12 @@ describe('taskGraph', () => {
 
   it('survives cycles, self-blockers and duplicate blockers', () => {
     const ts = [task('a', { blockers: ['b', 'b', 'a'] }), task('b', { blockers: ['a'] })]
-    expect(edgeIds(ts)).toEqual(['blocks:b>a', 'blocks:a>b'])
+    expect(edgeIds(ts)).toEqual(['blocks:a>b', 'blocks:b>a'])
     const elk = toElk(taskGraph(ts))
     expect(elk.children?.map((c) => c.id)).toEqual(['n:a', 'n:b'])
     expect(elk.edges?.map((e) => [e.sources, e.targets])).toEqual([
-      [['n:b'], ['n:a']],
       [['n:a'], ['n:b']],
+      [['n:b'], ['n:a']],
     ])
   })
 

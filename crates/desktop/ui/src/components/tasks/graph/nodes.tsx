@@ -12,7 +12,9 @@ export type TaskNodeData = { model: TaskNodeModel; selected: boolean }
 export type PillNodeData = { model: PillNodeModel }
 export type TaskNodeType = Node<TaskNodeData, 'task'>
 export type PillNodeType = Node<PillNodeData, 'pill'>
-export type TaskEdgeData = { kind: EdgeModel['kind']; open: boolean; dim: boolean }
+export type Point = { x: number; y: number }
+/** `route`: ELK's orthogonal route (start, bends, end) when the drawn layout is the model's own; else smooth-step. */
+export type TaskEdgeData = { kind: EdgeModel['kind']; open: boolean; dim: boolean; route: Point[] | null }
 export type TaskEdgeType = Edge<TaskEdgeData, 'task'>
 
 const HANDLE = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0, pointerEvents: 'none' } as const
@@ -130,11 +132,34 @@ export function TaskEdgeMarkers() {
   )
 }
 
+/** An orthogonal polyline with its corners rounded (radius `r`, less where a segment is short). */
+function roundedPath(pts: readonly Point[], r = 10): string {
+  const [first, ...rest] = pts
+  if (!first) return ''
+  let d = `M ${first.x} ${first.y}`
+  for (let i = 0; i < rest.length; i++) {
+    const cur = rest[i]!
+    const prev = pts[i]!
+    const next = rest[i + 1]
+    if (!next) {
+      d += ` L ${cur.x} ${cur.y}`
+      break
+    }
+    const inLen = Math.hypot(cur.x - prev.x, cur.y - prev.y)
+    const outLen = Math.hypot(next.x - cur.x, next.y - cur.y)
+    const k = Math.min(r, inLen / 2, outLen / 2)
+    const a = { x: cur.x - ((cur.x - prev.x) / (inLen || 1)) * k, y: cur.y - ((cur.y - prev.y) / (inLen || 1)) * k }
+    const b = { x: cur.x + ((next.x - cur.x) / (outLen || 1)) * k, y: cur.y + ((next.y - cur.y) / (outLen || 1)) * k }
+    d += ` L ${a.x} ${a.y} Q ${cur.x} ${cur.y} ${b.x} ${b.y}`
+  }
+  return d
+}
+
 /** Blocks (solid; accent while the blocker is open, faint once it is done), a non-task blocker (dotted danger) or the
- * parent link (dashed, no layout weight of its own beyond ELK's). Edges touching the selected task stay bright. */
+ * parent link (dashed). ELK routes them around the cards; edges touching the selected task stay bright. */
 export const TaskEdge = memo(function TaskEdge(props: EdgeProps<TaskEdgeType>) {
-  const [path] = getSmoothStepPath({ ...props, borderRadius: 12, offset: 16 })
   const d = props.data
+  const path = d?.route && d.route.length >= 2 ? roundedPath(d.route) : getSmoothStepPath({ ...props, borderRadius: 12, offset: 16 })[0]
   const kind = d?.kind ?? 'blocks'
   const tone = kind === 'pill' ? 'pill' : kind === 'parent' ? 'parent' : d?.open ? 'open' : 'done'
   const marker = kind === 'parent' ? MARK.parent : kind === 'pill' || d?.open ? MARK.open : MARK.done

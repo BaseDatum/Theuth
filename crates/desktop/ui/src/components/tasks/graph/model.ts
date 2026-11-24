@@ -25,6 +25,8 @@ export type GraphModel = { nodes: NodeModel[]; edges: EdgeModel[]; hash: string 
 export const TASK_W = 240
 export const TASK_H = 84
 export const PILL_H = 28
+/** The inline editor's width (it lies over the canvas's right edge; fitting leaves it this much room). */
+export const PANEL_W = 380
 
 /** A pill's width from its label: icon + padding + ~7 px a character, clamped. */
 export const pillWidth = (label: string): number => Math.min(220, Math.max(88, 40 + label.length * 7))
@@ -80,7 +82,8 @@ export function taskGraph(tasks: readonly Task[], opts: GraphOpts = DEFAULT_OPTS
     nodes.push({ kind: 'task', id: t.id, task: t, closed: isClosed(t.state), waiting: waiting && !isClosed(t.state) })
   }
   nodes.push(...[...pills.values()].sort((a, b) => (a.id < b.id ? -1 : 1)))
-  const edgeList = [...edges.values()]
+  // Sorted by id: one hash is one edge order, so a cached layout's routes (`e:<index>`) always match these edges.
+  const edgeList = [...edges.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   return { nodes, edges: edgeList, hash: graphHash(nodes, edgeList) }
 }
 

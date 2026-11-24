@@ -8,7 +8,7 @@ import { Scan } from 'lucide-react'
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { fixedLayout, flattenElk, type Layout, useElkLayout } from '@/lib/graph-layout'
 import type { Task } from '@/rpc/bindings/method.roster.output'
-import { type GraphOpts, STATE_TONE, taskGraph, toElk } from './model'
+import { type GraphOpts, PANEL_W, STATE_TONE, TASK_W, taskGraph, toElk } from './model'
 import { PillNode, type PillNodeType, TaskEdge, TaskEdgeMarkers, type TaskEdgeType, TaskNode, type TaskNodeType } from './nodes'
 
 export type CanvasProps = {
@@ -22,7 +22,8 @@ export type CanvasProps = {
 
 const NODE_TYPES = { task: TaskNode, pill: PillNode }
 const EDGE_TYPES = { task: TaskEdge }
-const FIT = { padding: 0.12, maxZoom: 1, minZoom: 0.15 } as const
+/** Room around the drawing when it fits; the open side panel's width is added on the right. */
+const PAD = 32
 const MOVE_MS = 300
 
 const REDUCED = '(prefers-reduced-motion: reduce)'
@@ -52,6 +53,11 @@ function Flow(p: CanvasProps) {
   const layout = useMemo(() => (shown === null ? null : 'layout' in shown ? shown.layout : fixedLayout(toElk(model))), [shown, model])
   // While a new hash is laid out the previous layout stays: known cards keep their place, new ones wait for theirs.
   const pos = useMemo(() => new Map((layout?.nodes ?? []).map((n) => [n.id, n])), [layout])
+  // ELK's own edge routes (around the cards) only while the drawn layout is this model's; a pending one smooth-steps.
+  const routes = useMemo(() => {
+    if (!layout || !shown || shown.hash !== model.hash || !('layout' in shown)) return null
+    return new Map(layout.edges.map((e) => [e.index, e.sections[0] ? [e.sections[0].start, ...e.sections[0].bends, e.sections[0].end] : null]))
+  }, [layout, shown, model.hash])
 
   const nodes = useMemo<(TaskNodeType | PillNodeType)[]>(
     () =>
@@ -67,7 +73,7 @@ function Flow(p: CanvasProps) {
   )
   const edges = useMemo<TaskEdgeType[]>(
     () =>
-      model.edges.flatMap((e): TaskEdgeType[] => {
+      model.edges.flatMap((e, i): TaskEdgeType[] => {
         if (!pos.has(e.source) || !pos.has(e.target)) return []
         const touching = p.selected !== null && (e.source === p.selected || e.target === p.selected)
         return [
@@ -81,12 +87,22 @@ function Flow(p: CanvasProps) {
             selectable: false,
             focusable: false,
             zIndex: touching ? 1 : 0,
-            data: { kind: e.kind, open: e.open, dim: p.selected !== null && !touching },
+            data: { kind: e.kind, open: e.open, dim: p.selected !== null && !touching, route: routes?.get(i) ?? null },
           },
         ]
       }),
-    [model, pos, p.selected],
+    [model, pos, routes, p.selected],
   )
+
+  // The whole drawing in the part of the canvas the side panel leaves visible.
+  const box = useRef<HTMLDivElement>(null)
+  const panelOpen = useRef(p.panelOpen)
+  panelOpen.current = p.panelOpen
+  const covered = () => (panelOpen.current ? Math.min(PANEL_W, box.current?.clientWidth ?? 0) : 0)
+  const fit = (duration: number) =>
+    void rf.fitView({ maxZoom: 1, minZoom: 0.15, duration, padding: { top: `${PAD}px`, bottom: `${PAD}px`, left: `${PAD}px`, right: `${covered() + PAD}px` } })
+  const fitRef = useRef(fit)
+  fitRef.current = fit
 
   // Fit on the first drawing and whenever more nodes are drawn than before; otherwise the viewport is the user's.
   const drawn = useRef(0)
@@ -95,12 +111,28 @@ function Flow(p: CanvasProps) {
     const before = drawn.current
     drawn.current = count
     if (count === 0 || count <= before) return
-    const frame = requestAnimationFrame(() => void rf.fitView({ ...FIT, duration: before === 0 || reduced ? 0 : MOVE_MS }))
+    const frame = requestAnimationFrame(() => fitRef.current(before === 0 || reduced ? 0 : MOVE_MS))
     return () => cancelAnimationFrame(frame)
-  }, [count, rf, reduced])
+  }, [count, reduced])
+
+  // A selected card the side panel would cover slides left into view (pan only, the zoom stays).
+  useEffect(() => {
+    const el = box.current
+    const n = p.selected ? rf.getNode(p.selected) : undefined
+    if (!el || !n) return
+    const { x, y, zoom } = rf.getViewport()
+    const left = n.position.x * zoom + x
+    const right = left + TASK_W * zoom
+    const visible = el.clientWidth - covered() - 24
+    let dx = right > visible ? visible - right : 0
+    if (left + dx < 24) dx = 24 - left
+    if (dx !== 0) void rf.setViewport({ x: x + dx, y, zoom }, { duration: reduced ? 0 : MOVE_MS })
+    // Only a new selection pans.
+  }, [p.selected, rf])
 
   return (
     <div
+      ref={box}
       className="tg-canvas size-full"
       onKeyDown={(e) => {
         if (e.key !== 'Enter' && e.key !== ' ') return
@@ -130,7 +162,7 @@ function Flow(p: CanvasProps) {
         <TaskEdgeMarkers />
         <Background variant={BackgroundVariant.Dots} gap={24} size={1.25} color="color-mix(in oklab, var(--color-fg-tertiary) 38%, transparent)" />
         <Controls showInteractive={false} showFitView={false} position="bottom-left">
-          <ControlButton onClick={() => void rf.fitView({ ...FIT, duration: reduced ? 0 : MOVE_MS })} aria-label="Fit everything" title="Fit everything">
+          <ControlButton onClick={() => fit(reduced ? 0 : MOVE_MS)} aria-label="Fit everything" title="Fit everything">
             <Scan />
           </ControlButton>
         </Controls>
