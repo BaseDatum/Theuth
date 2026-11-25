@@ -4,7 +4,7 @@
 
 import { create } from 'zustand'
 
-export const BUCKETS = 30
+export const BUCKETS = 60
 
 const zeros = (n: number): number[] => Array.from({ length: n }, () => 0)
 

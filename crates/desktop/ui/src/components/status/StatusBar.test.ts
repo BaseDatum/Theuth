@@ -2,12 +2,13 @@ import '../settings/test-dom'
 import { act, createElement as h, type ReactElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import { useAnimations } from '@/lib/animations'
 import { notify } from '@/lib/notify'
 import type { RpcClient } from '@/rpc/client'
 import { scope } from '@/store/engine-scope'
 import { useEventRate } from '@/store/event-rate'
 import { useNotices } from '@/store/notices'
-import { dotOf } from './model'
+import { SPARK_COMPACT_W, SPARK_FULL_W, SPARK_H, dotOf, smoothBuckets, sparkPath } from './model'
 import { PhoneStatusLine } from './PhoneStatusLine'
 import { StatusBar } from './StatusBar'
 
@@ -318,6 +319,61 @@ test('idle, the bar does not re-render every second; a reconnect countdown does;
     for (let i = 0; i < 3; i++) await act(async () => void vi.advanceTimersByTime(1_000))
     expect(renders).toBe(hidden)
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+    await act(async () => root.unmount())
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('sparkline: smoothed cubic path stretches to 4x idle, snaps back on notice (Plucked Cord), and obeys Appearance › Animations', async () => {
+  const sm = smoothBuckets([0, 100, 0])
+  expect(sm[0]).toBe(0)
+  expect(sm[1]).toBeCloseTo(56, 6)
+  expect(sm[2]).toBe(0)
+  const rest = sparkPath([0, 20, 80, 30, 10], SPARK_FULL_W, SPARK_H)
+  expect(rest.line).toContain(' C ')
+  expect(rest.fill).toContain(' Z')
+  const snapped = sparkPath([0, 20, 80, 30, 10], 110, SPARK_H, { age: 0.08, dir: -1 })
+  expect(snapped.line).not.toBe(sparkPath([0, 20, 80, 30, 10], 110, SPARK_H).line)
+
+  // With Animations off, width snaps immediately without running RAF.
+  useAnimations.getState().setEnabled(false)
+  try {
+    const { host, root } = await mount()
+    const svg = () => host.querySelector<SVGSVGElement>('[data-sparkline]')!
+    expect(Number(svg().getAttribute('width'))).toBe(SPARK_FULL_W)
+    expect(svg().getAttribute('data-compact')).toBeNull()
+
+    await act(async () => void notify.success('Merged fix'))
+    expect(svg().getAttribute('data-compact')).toBe('true')
+    expect(Number(svg().getAttribute('width'))).toBe(SPARK_COMPACT_W)
+
+    await act(async () => void notify.dismiss())
+    expect(svg().getAttribute('data-compact')).toBeNull()
+    expect(Number(svg().getAttribute('width'))).toBe(SPARK_FULL_W)
+    await act(async () => root.unmount())
+  } finally {
+    useAnimations.getState().setEnabled(true)
+  }
+
+  // With Animations on, RAF drives the Plucked Cord spring from 184 → 46 and settles cleanly.
+  vi.useFakeTimers()
+  try {
+    const { host, root } = await mount()
+    const svg = () => host.querySelector<SVGSVGElement>('[data-sparkline]')!
+    expect(Number(svg().getAttribute('width'))).toBe(SPARK_FULL_W)
+
+    await act(async () => void notify.info('Compacted context'))
+    expect(svg().getAttribute('data-compact')).toBe('true')
+    await act(async () => void vi.advanceTimersByTime(100))
+    const mid = Number(svg().getAttribute('width'))
+    expect(mid).toBeLessThan(SPARK_FULL_W)
+    await act(async () => void vi.advanceTimersByTime(1_500))
+    expect(Math.round(Number(svg().getAttribute('width')))).toBe(SPARK_COMPACT_W)
+
+    await act(async () => void notify.dismiss())
+    await act(async () => void vi.advanceTimersByTime(1_500))
+    expect(Math.round(Number(svg().getAttribute('width')))).toBe(SPARK_FULL_W)
     await act(async () => root.unmount())
   } finally {
     vi.useRealTimers()

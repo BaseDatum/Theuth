@@ -3,13 +3,14 @@
 
 import { useNavigate } from '@tanstack/react-router'
 import { X } from 'lucide-react'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { motionAllowed } from '@/lib/animations'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { cn } from '@/lib/utils'
 import { StatusStrip } from '@/components/plugins/StatusStrip'
-import { formatRate } from '@/store/event-rate'
+import { BUCKETS, formatRate } from '@/store/event-rate'
 import { useNotices } from '@/store/notices'
-import { isDown, secondsUntil, sparkPoints } from './model'
+import { SPARK_COMPACT_W, SPARK_FULL_W, SPARK_H, isDown, secondsUntil, sparkPath } from './model'
 import { NoticeHistory } from './NoticeHistory'
 import { type EngineStatus, KindTag, StatusDot, act, closeNotice, useEngineStatus, useShownNotice, useStatusClock } from './parts'
 
@@ -183,14 +184,140 @@ function NeedsYou({ n }: { n: number }) {
   )
 }
 
+/**
+ * Smoothed 4× events-per-second ribbon (`SPARK_FULL_W` idle → `SPARK_COMPACT_W` while a notice occupies the bar).
+ * Uses C · Plucked Cord spring physics: releasing the left end near the notification whips the cord back toward the
+ * right `ev/s` anchor with a damped traveling wave. Zero idle RAF — the loop runs only while snapping or stretching
+ * and stops the instant the spring settles; under Reduce Motion or Appearance › Animations off, widths snap cleanly.
+ */
 function Rate({ s }: { s: EngineStatus }) {
   const live = s.state === 'open'
+  const compact = useNotices((st) => st.current !== null)
+  const { boxRef, svgRef, lineRef, fillRef, initialW, initial } = usePluckedSpark(s.buckets, compact)
   return (
-    <span className="flex shrink-0 items-center gap-1.5" title="Engine events per second, last 30 s">
-      <svg width={46} height={12} viewBox="0 0 46 12" aria-hidden className={cn(!live && 'opacity-40')}>
-        <polyline points={sparkPoints(s.buckets, 46, 12)} fill="none" stroke="var(--status-success-fg)" strokeWidth={1} strokeLinejoin="round" />
-      </svg>
+    <span className="flex shrink-0 items-center gap-1.5" title={`Engine events per second, last ${BUCKETS} s`}>
+      <span ref={boxRef} className="inline-flex h-[14px] items-center justify-end overflow-visible" style={{ width: initialW }}>
+        <svg
+          ref={svgRef}
+          data-sparkline
+          data-compact={compact ? 'true' : undefined}
+          width={initialW}
+          height={SPARK_H}
+          viewBox={`0 0 ${initialW} ${SPARK_H}`}
+          aria-hidden
+          className={cn('block overflow-visible', !live && 'opacity-40')}
+        >
+          <path ref={fillRef} d={initial.fill} fill="color-mix(in oklab, var(--status-success-fg) 11%, transparent)" />
+          <path ref={lineRef} d={initial.line} fill="none" stroke="var(--status-success-fg)" strokeWidth={1.25} strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
       <span className="font-mono">{live ? formatRate(s.rate) : '–'} ev/s</span>
     </span>
   )
+}
+
+function usePluckedSpark(buckets: readonly number[], compact: boolean) {
+  const boxRef = useRef<HTMLSpanElement>(null)
+  const svgRef = useRef<SVGSVGElement>(null)
+  const lineRef = useRef<SVGPathElement>(null)
+  const fillRef = useRef<SVGPathElement>(null)
+  const bucketsRef = useRef(buckets)
+  bucketsRef.current = buckets
+
+  const initialW = compact ? SPARK_COMPACT_W : SPARK_FULL_W
+  const stateRef = useRef<{ w: number; vel: number; targetW: number; age: number; dir: -1 | 0 | 1; raf: number; lastTs: number }>({
+    w: initialW,
+    vel: 0,
+    targetW: initialW,
+    age: 99,
+    dir: 0,
+    raf: 0,
+    lastTs: 0,
+  })
+  const prevCompact = useRef(compact)
+
+  const paint = (w: number, snap?: { age: number; dir: -1 | 0 | 1 }) => {
+    const layoutW = Math.max(SPARK_COMPACT_W - 8, Math.min(SPARK_FULL_W + 6, w))
+    const wStr = layoutW.toFixed(1)
+    if (boxRef.current) boxRef.current.style.width = `${wStr}px`
+    if (svgRef.current) {
+      svgRef.current.setAttribute('width', wStr)
+      svgRef.current.setAttribute('viewBox', `0 0 ${wStr} ${SPARK_H}`)
+    }
+    const { line, fill } = sparkPath(bucketsRef.current, layoutW, SPARK_H, snap)
+    if (lineRef.current) lineRef.current.setAttribute('d', line)
+    if (fillRef.current) fillRef.current.setAttribute('d', fill)
+  }
+
+  // Trigger Plucked Cord spring whenever a notice arrives or clears.
+  useEffect(() => {
+    if (prevCompact.current === compact) return
+    prevCompact.current = compact
+    const st = stateRef.current
+    const target = compact ? SPARK_COMPACT_W : SPARK_FULL_W
+    st.targetW = target
+
+    if (!motionAllowed() || typeof requestAnimationFrame !== 'function') {
+      if (st.raf) {
+        cancelAnimationFrame(st.raf)
+        st.raf = 0
+      }
+      st.w = target
+      st.vel = 0
+      st.age = 99
+      st.dir = 0
+      paint(target)
+      return
+    }
+
+    st.age = 0
+    st.dir = compact ? -1 : 1
+    st.vel = compact ? -640 : 120
+    st.lastTs = performance.now()
+
+    if (st.raf) return
+    const step = (ts: number) => {
+      const dt = Math.min(0.05, Math.max(0.001, (ts - st.lastTs) / 1000))
+      st.lastTs = ts
+      st.age += dt
+
+      const retracting = st.targetW < SPARK_FULL_W
+      const stiffness = retracting ? 300 : 115
+      const damping = retracting ? 16 : 18
+      const force = (st.targetW - st.w) * stiffness
+      st.vel = (st.vel + force * dt) * Math.exp(-damping * dt)
+      st.w = Math.max(24, st.w + st.vel * dt)
+
+      const energy = st.dir === -1 ? Math.exp(-st.age * 5.8) : Math.exp(-st.age * 7.5) * 0.25
+      const settled = Math.abs(st.targetW - st.w) < 0.25 && Math.abs(st.vel) < 0.8 && energy < 0.008
+
+      if (settled) {
+        st.w = st.targetW
+        st.vel = 0
+        st.dir = 0
+        st.raf = 0
+        paint(st.targetW)
+        return
+      }
+
+      paint(st.w, { age: st.age, dir: st.dir })
+      st.raf = requestAnimationFrame(step)
+    }
+    st.raf = requestAnimationFrame(step)
+  }, [compact])
+
+  // Static data ticks when the spring is at rest.
+  useEffect(() => {
+    const st = stateRef.current
+    if (st.raf === 0) paint(st.w)
+  }, [buckets])
+
+  useEffect(
+    () => () => {
+      if (stateRef.current.raf) cancelAnimationFrame(stateRef.current.raf)
+    },
+    [],
+  )
+
+  return { boxRef, svgRef, lineRef, fillRef, initialW, initial: sparkPath(buckets, initialW, SPARK_H) }
 }
