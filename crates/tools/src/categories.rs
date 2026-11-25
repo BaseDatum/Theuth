@@ -32,7 +32,17 @@ pub const DEFAULT_CATEGORIES: &[DefaultCategoryDef] = &[
     DefaultCategoryDef {
         id: "engineering",
         label: "Engineering",
-        description: "Files, shell, code index, sandboxes and experiments",
+        description: "Files, shell, jobs and code index",
+    },
+    DefaultCategoryDef {
+        id: "sandbox",
+        label: "Sandbox",
+        description: "Create and manage isolated sandbox VMs",
+    },
+    DefaultCategoryDef {
+        id: "autoresearch",
+        label: "Autoresearch",
+        description: "Run measured experiments and autoresearch loops",
     },
     DefaultCategoryDef {
         id: "web",
@@ -91,10 +101,13 @@ pub fn default_category_for_builtin(tool_name: &str) -> &'static str {
     match tool_name {
         "message_user" => return "comms",
         "ask_user" => return "harness",
+        "web_views" => return "interface",
         _ => {}
     }
     match crate::builtins::category_of(tool_name) {
-        "files" | "shell" | "code" | "sandbox" | "autoresearch" => "engineering",
+        "files" | "shell" | "code" => "engineering",
+        "sandbox" => "sandbox",
+        "autoresearch" => "autoresearch",
         "web" | "browser" => "web",
         "computer" => "computer",
         "output" => "interface",
@@ -236,6 +249,8 @@ mod tests {
             ids,
             [
                 "engineering",
+                "sandbox",
+                "autoresearch",
                 "web",
                 "computer",
                 "interface",
@@ -248,14 +263,16 @@ mod tests {
                 "harness"
             ]
         );
-        assert_eq!(DEFAULT_CATEGORIES[1].label, "Web");
-        assert_eq!(DEFAULT_CATEGORIES[2].label, "Computer");
-        assert_eq!(DEFAULT_CATEGORIES[3].label, "Interface");
-        assert_eq!(DEFAULT_CATEGORIES[5].label, "Knowledge");
-        assert_eq!(DEFAULT_CATEGORIES[6].label, "Comms");
-        assert_eq!(DEFAULT_CATEGORIES[7].label, "Agents");
-        assert_eq!(DEFAULT_CATEGORIES[8].label, "Meetings");
-        assert_eq!(DEFAULT_CATEGORIES[9].label, "Secrets");
+        assert_eq!(DEFAULT_CATEGORIES[1].label, "Sandbox");
+        assert_eq!(DEFAULT_CATEGORIES[2].label, "Autoresearch");
+        assert_eq!(DEFAULT_CATEGORIES[3].label, "Web");
+        assert_eq!(DEFAULT_CATEGORIES[4].label, "Computer");
+        assert_eq!(DEFAULT_CATEGORIES[5].label, "Interface");
+        assert_eq!(DEFAULT_CATEGORIES[7].label, "Knowledge");
+        assert_eq!(DEFAULT_CATEGORIES[8].label, "Comms");
+        assert_eq!(DEFAULT_CATEGORIES[9].label, "Agents");
+        assert_eq!(DEFAULT_CATEGORIES[10].label, "Meetings");
+        assert_eq!(DEFAULT_CATEGORIES[11].label, "Secrets");
         assert_eq!(default_category("web").unwrap().id, "web");
         assert!(default_category("missing").is_none());
     }
@@ -270,14 +287,14 @@ mod tests {
             ("web", "search_web", "web"),
             ("browser", "browser_open", "web"),
             ("computer", "computer_screenshot", "computer"),
-            ("sandbox", "sandbox_create", "engineering"),
+            ("sandbox", "sandbox_create", "sandbox"),
             ("knowledge", "knowledge_search", "knowledge"),
             ("documents", "doc_read", "documentation"),
             ("output", "show", "interface"),
             ("agents", "spawn_subagent", "agents"),
             ("tasks", "task_create", "agents"),
             ("schedules", "schedule", "harness"),
-            ("autoresearch", "experiment_run", "engineering"),
+            ("autoresearch", "experiment_run", "autoresearch"),
             ("meetings", "meeting_join", "meetings"),
             ("secrets", "secret_get", "secrets"),
             ("decisions", "decide", "harness"),
@@ -296,6 +313,7 @@ mod tests {
         }
         assert_eq!(default_category_for_builtin("message_user"), "comms");
         assert_eq!(default_category_for_builtin("ask_user"), "harness");
+        assert_eq!(default_category_for_builtin("web_views"), "interface");
     }
 
     #[test]
