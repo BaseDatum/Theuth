@@ -27,7 +27,7 @@ test('188: twelve categories in column order (#3 Prompt suffixes after Agent, 21
   expect(CATEGORIES.map((category) => category.id)).toEqual(['general', 'models', 'agent', 'suffixes', 'learning', 'voice', 'meetings', 'calendar', 'network', 'sharing', 'channels', 'tools'])
   for (const category of CATEGORIES) {
     expect(category.tabs.length).toBeGreaterThanOrEqual(1)
-    expect(category.tabs.length).toBeLessThanOrEqual(6)
+    expect(category.tabs.length).toBeLessThanOrEqual(7)
   }
 })
 
@@ -41,6 +41,7 @@ test('every old id redirects to a tab and is no tab itself', () => {
 test('Sky 2026-11-11: Tools opens on MCP (the servers theuth uses, at `tools`), then 206 Builtins; Serve over MCP keeps `mcp`; 209 Browser last', () => {
   const tools = CATEGORIES.find((category) => category.id === 'tools')
   expect(tools?.tabs.map((tab) => [tab.id, tab.label])).toEqual([
+    ['categories', 'Categories'],
     ['tools', 'MCP'],
     ['builtins', 'Builtins'],
     ['search', 'Web search'],

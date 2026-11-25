@@ -29,10 +29,10 @@ use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 use tools::{
     ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved,
-    InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId, JobKind, Jobs, ListPrompts,
-    ListTools, Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity, RegisterPrompt,
-    RegisterTool, ReminderEvent, RestoreApprovals, RestoreHidden, Risk, SetCap, SetParent,
-    SetPromoteAfter, Settle, ToolRegistry,
+    DefaultHiddenCategories, InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId,
+    JobKind, Jobs, ListPrompts, ListTools, Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity,
+    RegisterPrompt, RegisterTool, ReminderEvent, RestoreApprovals, RestoreHidden, Risk, SetCap,
+    SetParent, SetPromoteAfter, Settle, ToolRegistry,
 };
 use uuid::Uuid;
 
@@ -69,8 +69,9 @@ use crate::loop_::{
     ContextBreakdownNow, ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning,
     PEER_INTAKE, PeerInput, PromoteFence, QueuedInputs, QuietInput, RedoTurn, RemoveContextNow, ResetRuntimeNow,
     RestartTurn, ResumedTurn, Session, SessionState, SetBudgetNow, SetCompactionOverride,
-    SetMemoryNow, SetPendingEffort, SetTalking, SetTitlePin, SetToolsetOverride, SuppressPeerInputs,
-    SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
+    SetMemoryNow, SetPendingEffort, SetTalking, SetTitlePin, SetToolsetOverride,
+    SuppressPeerInputs, SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks,
+    text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
@@ -133,8 +134,8 @@ use tools::{
 // 109: handler bodies in their own files so the waves do not collide.
 mod acp_resume; // 109 W4
 mod activity; // 155 W1
-mod auto_archive;
 pub(crate) mod advisor; // 125 W1
+mod auto_archive;
 pub mod child_waits; // 139 W3
 mod drain;
 pub mod pause; // 179
@@ -1090,6 +1091,26 @@ impl Agents {
                         None,
                     )
                     .await?;
+                if parent.is_none()
+                    && desk.is_none()
+                    && let Some(reg) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+                        .ok()
+                        .flatten()
+                {
+                    let defaults = reg.ask(DefaultHiddenCategories).await?;
+                    if !defaults.is_empty() {
+                        store.set_session_hidden(id, &defaults).await?;
+                        if private_root.is_some() {
+                            // `inherit_approvals` reads the durable store; private roots
+                            // persist to their private store, so seed the registry directly.
+                            reg.ask(RestoreHidden {
+                                session: id,
+                                tools: defaults,
+                            })
+                            .await?;
+                        }
+                    }
+                }
                 if let Some(e) = &effort {
                     store.set_effort(id, Some(e)).await?;
                 }
@@ -20993,7 +21014,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let text = next_turn(&mut rx, chat).await;
-        assert!(text.contains("<skill name=\"review\">") && text.contains("look at this"), "{text}");
+        assert!(
+            text.contains("<skill name=\"review\">") && text.contains("look at this"),
+            "{text}"
+        );
         let (_, _, history) = store.frame(chat).await.unwrap();
         let rows = user_rows(history);
         let opener = rows.last().expect("the skill's user row");
@@ -21022,9 +21046,17 @@ pub(crate) mod tests {
         next_turn(&mut rx, chat).await;
         let (_, _, history) = store.frame(chat).await.unwrap();
         let rows = user_rows(history);
-        let plain = rows.iter().rev().find(|m| text_of(&m.content).contains("again")).expect("second row");
+        let plain = rows
+            .iter()
+            .rev()
+            .find(|m| text_of(&m.content).contains("again"))
+            .expect("second row");
         assert!(
-            !plain.content.parts().iter().any(|p| matches!(p, genai::chat::ContentPart::Binary(_))),
+            !plain
+                .content
+                .parts()
+                .iter()
+                .any(|p| matches!(p, genai::chat::ContentPart::Binary(_))),
             "{:?}",
             plain.content
         );

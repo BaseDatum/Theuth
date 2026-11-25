@@ -1,5 +1,6 @@
-import { Blocks, Globe, MousePointer2, Plug, Search as SearchIcon, Server, Wrench } from 'lucide-react'
+import { Blocks, FolderKanban, Globe, MousePointer2, Plug, Search as SearchIcon, Server, Wrench } from 'lucide-react'
 import { BuiltinsTab } from '@/components/library/Builtins'
+import { ToolCategoriesTab } from '@/components/library/ToolCategories'
 import { McpServersTab } from '@/components/library/Tools'
 import { BrowserProfile } from '@/components/settings/BrowserProfile'
 import { Computer } from '@/components/settings/Computer'
@@ -8,14 +9,15 @@ import { Search } from '@/components/settings/Search'
 import type { SettingsCategory } from '@/components/settings/types'
 import { nativeWebViews } from '@/lib/web-view-native'
 
-// 188: Tools (docs/design/188-settings-full-page.md). MCP first (Sky, 2026-11-11): the servers theuth uses, moved here
-// from Agents › Tools; its id is `tools`, so `/settings/tools` (and `/tools`) land on it. 206: Builtins, the harness's own
-// tools by category, right after it. 209 §6: Browser, the shared browser profile of the web views and agent browsers, where this shell hosts web views.
+// 188: Tools (docs/design/188-settings-full-page.md). Categories groups the harness's built-ins and MCP servers;
+// the MCP tab keeps id `tools`, so old `/settings/tools` and `/tools` links still land on it. 209 §6: Browser is the
+// shared browser profile of the web views and agent browsers, where this shell hosts web views.
 export const tools: SettingsCategory = { 
   id: 'tools',
   label: 'Tools',
   icon: Wrench,
   tabs: [
+    { required: { methods: ['list_tool_categories', 'upsert_tool_category', 'delete_tool_category', 'set_mcp_category', 'set_tool_category', 'set_default_tool_categories'], topics: [] }, id: 'categories', label: 'Categories', icon: FolderKanban, Component: ToolCategoriesTab },
     { required: {"methods":["add_mcp_repo","add_mcp_server","list_mcp","mcp_login","mcp_logout","mcp_status","mesh_status","remove_mcp_server","set_mcp_gate","set_mcp_hidden","set_mcp_home","sync_mcp"],"topics":[]}, id: 'tools', label: 'MCP', icon: Server, Component: McpServersTab },
     { required: {"methods":["list_builtins","set_builtins_disabled","set_mcp_hidden"],"topics":[]}, id: 'builtins', label: 'Builtins', icon: Blocks, Component: BuiltinsTab },
     { required: {"methods":["search_provider_test","search_settings_get","search_settings_set","search_status","search_test","set_secret"],"topics":[]}, id: 'search', label: 'Web search', icon: SearchIcon, Component: Search },

@@ -8,6 +8,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import type { BuiltinCategory, BuiltinTool } from '@/lib/builtins'
 import { useDrafts } from '@/lib/drafts'
+import type { ToolCategoryInfo } from '@/rpc/bindings/method.agent.output'
 import type { McpServer, McpToolInfo } from '@/rpc/bindings/method.mcp_2dserver.output'
 import { McpMenu } from './McpMenu'
 import { useToolsSheet } from './tools-sheet'
@@ -21,6 +22,22 @@ const categories: BuiltinCategory[] = [
   category('shell', 'Shell and jobs', [tool('shell', { hidden: true }), tool('start')]),
   category('web', 'Web', [tool('read_url', { hidden: true }), tool('search_web', { hidden: true })]),
   category('browser', 'Browser', [tool('browser_open', { disabled: true }), tool('browser_click', { disabled: true })]),
+]
+const toolCategory = (id: string, label: string, over: Partial<ToolCategoryInfo> = {}): ToolCategoryInfo => ({
+  id,
+  label,
+  description: `${label} description`,
+  custom: false,
+  default_enabled: true,
+  hidden: false,
+  builtin_count: 2,
+  builtin_tools: ['read_file', 'shell'],
+  mcp_servers: [],
+  ...over,
+})
+const toolCategories = [
+  toolCategory('engineering', 'Engineering', { builtin_count: 12, mcp_servers: ['fs'] }),
+  toolCategory('web', 'Web & Browser', { default_enabled: false, hidden: true, builtin_count: 4 }),
 ]
 const mcpTool = (name: string, hidden = false): McpToolInfo => ({ name, description: '', gate: null, risk: 'read_only', action: 'allow', registered: name, hidden })
 const server = (name: string, over: Partial<McpServer> = {}): McpServer => ({
@@ -50,6 +67,7 @@ const several = (): McpServer[] => [
 
 const calls: unknown[][] = []
 const listed: (string | null)[] = []
+const listedCategories: (string | null)[] = []
 let servers: McpServer[] = [fs]
 const power = {
   mcp_start: vi.fn(async (_server: string) => null),
@@ -58,6 +76,10 @@ const power = {
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
   useApi: () => ({
+    list_tool_categories: async (session: string | null) => {
+      listedCategories.push(session)
+      return toolCategories
+    },
     list_builtins: async (session: string | null) => {
       listed.push(session)
       return categories
@@ -84,12 +106,13 @@ vi.mock('@/rpc/capabilities', () => {
 afterEach(() => {
   calls.length = 0
   listed.length = 0
+  listedCategories.length = 0
   servers = [fs]
   power.mcp_start.mockReset().mockImplementation(async () => null)
   power.set_mcp_gate.mockReset().mockImplementation(async () => null)
   unsupported.clear()
   useDrafts.setState({ settings: {}, opening: null })
-  useToolsSheet.setState({ session: null, tab: 'builtins' })
+  useToolsSheet.setState({ session: null, tab: 'categories' })
 })
 
 async function mount(session = 's1') {
@@ -111,10 +134,16 @@ async function mount(session = 's1') {
   return { rows, row, tab, pick, unmount }
 }
 
-test('the popover has a Builtins and an MCP servers tab; Builtins lists one checkbox per category for this chat', async () => {
-  const { rows, row, tab, unmount } = await mount()
-  expect([...document.querySelectorAll('[role="tab"]')].map((t) => t.textContent)).toEqual(['Builtins', 'MCP servers'])
-  expect(tab('Builtins').getAttribute('aria-selected')).toBe('true')
+test('the popover opens on Categories, with Builtins and MCP servers after it', async () => {
+  const { rows, row, tab, pick, unmount } = await mount()
+  expect([...document.querySelectorAll('[role="tab"]')].map((t) => t.textContent)).toEqual(['Categories', 'Builtins', 'MCP servers'])
+  expect(tab('Categories').getAttribute('aria-selected')).toBe('true')
+  await vi.waitFor(() => expect(rows()).toHaveLength(2))
+  expect(listedCategories).toEqual(['s1'])
+  expect(rows().map((r) => r.getAttribute('aria-checked'))).toEqual(['true', 'false'])
+  expect(row('Engineering').textContent).toContain('12 tools · 1 MCP')
+  expect(row('Engineering').textContent).toContain('Engineering description')
+  await pick('Builtins')
   await vi.waitFor(() => expect(rows()).toHaveLength(4))
   expect(listed).toEqual(['s1'])
   expect(rows().map((r) => r.getAttribute('aria-checked'))).toEqual(['true', 'mixed', 'false', 'false'])
@@ -124,8 +153,35 @@ test('the popover has a Builtins and an MCP servers tab; Builtins lists one chec
   unmount()
 })
 
-test('an on category is hidden for this chat by its key; an off or mixed one is shown again with its tools', async () => {
+test('Categories toggles a live chat through its tcat hide key', async () => {
   const { row, rows, unmount } = await mount()
+  await vi.waitFor(() => expect(rows()).toHaveLength(2))
+  await act(async () => row('Engineering').click())
+  await vi.waitFor(() => expect(calls).toEqual([['s1', ['tcat:engineering'], true]]))
+  await vi.waitFor(() => expect(row('Web & Browser').disabled).toBe(false))
+  await act(async () => row('Web & Browser').click())
+  await vi.waitFor(() => expect(calls[1]).toEqual(['s1', ['tcat:web'], false]))
+  unmount()
+})
+
+test('Categories stores both hide and explicit unhide choices in a new-chat draft', async () => {
+  const { row, rows, unmount } = await mount('')
+  await vi.waitFor(() => expect(rows()).toHaveLength(2))
+  expect(listedCategories).toEqual([null])
+  expect(row('Web & Browser').getAttribute('aria-checked')).toBe('false')
+  await act(async () => row('Web & Browser').click())
+  await vi.waitFor(() => expect(useDrafts.getState().settings.hidden).toEqual({ 'tcat:web': false }))
+  await vi.waitFor(() => expect(row('Web & Browser').getAttribute('aria-checked')).toBe('true'))
+  await vi.waitFor(() => expect(row('Engineering').disabled).toBe(false))
+  await act(async () => row('Engineering').click())
+  await vi.waitFor(() => expect(useDrafts.getState().settings.hidden).toEqual({ 'tcat:web': false, 'tcat:engineering': true }))
+  expect(calls).toEqual([])
+  unmount()
+})
+
+test('an on category is hidden for this chat by its key; an off or mixed one is shown again with its tools', async () => {
+  const { row, rows, pick, unmount } = await mount()
+  await pick('Builtins')
   await vi.waitFor(() => expect(rows()).toHaveLength(4))
   await act(async () => row('Files').click())
   await vi.waitFor(() => expect(calls).toEqual([['s1', ['cat:files'], true]]))
@@ -139,7 +195,8 @@ test('an on category is hidden for this chat by its key; an off or mixed one is 
 })
 
 test('a category that is off always is greyed with the way to Settings and cannot be switched here', async () => {
-  const { row, rows, unmount } = await mount()
+  const { row, rows, pick, unmount } = await mount()
+  await pick('Builtins')
   await vi.waitFor(() => expect(rows()).toHaveLength(4))
   const browser = row('Browser')
   expect(browser.disabled).toBe(true)
@@ -148,8 +205,9 @@ test('a category that is off always is greyed with the way to Settings and canno
   unmount()
 })
 
-test('the new-chat draft keeps its category hides in the draft and calls no engine', async () => {
-  const { row, rows, unmount } = await mount('')
+test('the new-chat draft keeps its builtin category hides in the draft and calls no engine', async () => {
+  const { row, rows, pick, unmount } = await mount('')
+  await pick('Builtins')
   await vi.waitFor(() => expect(rows()).toHaveLength(4))
   expect(listed).toEqual([null])
   await act(async () => row('Files').click())
@@ -175,8 +233,19 @@ test('the MCP servers tab still switches a server, and the bottom button opens t
 
 const allTools = () => [...document.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.includes('All tools & servers'))
 
-test('an engine without list_builtins gets exactly the old popover: the server list alone, "MCP servers", w-64', async () => {
+test('an older engine without list_tool_categories falls back to Builtins first', async () => {
+  unsupported.add('list_tool_categories')
+  const { rows, tab, unmount } = await mount()
+  expect([...document.querySelectorAll('[role="tab"]')].map((t) => t.textContent)).toEqual(['Builtins', 'MCP servers'])
+  expect(tab('Builtins').getAttribute('aria-selected')).toBe('true')
+  await vi.waitFor(() => expect(rows()).toHaveLength(4))
+  expect(listedCategories).toEqual([])
+  unmount()
+})
+
+test('an engine without list_builtins or tool categories gets exactly the old popover: the server list alone, "MCP servers", w-64', async () => {
   unsupported.add('list_builtins')
+  unsupported.add('list_tool_categories')
   const { row, rows, unmount } = await mount()
   await vi.waitFor(() => expect(row('fs')).toBeDefined())
   expect(rows()).toHaveLength(1)
@@ -188,8 +257,9 @@ test('an engine without list_builtins gets exactly the old popover: the server l
   unmount()
 })
 
-test('an engine without the MCP methods gets the Builtins panel alone and no sheet button (no sheet is mounted)', async () => {
+test('an engine without the MCP methods or tool categories gets the Builtins panel alone and no sheet button', async () => {
   unsupported.add('list_mcp')
+  unsupported.add('list_tool_categories')
   const { rows, unmount } = await mount()
   await vi.waitFor(() => expect(rows()).toHaveLength(4))
   expect(document.querySelector('[role="tab"]')).toBeNull()
@@ -198,9 +268,10 @@ test('an engine without the MCP methods gets the Builtins panel alone and no she
   unmount()
 })
 
-test('an engine with neither shows no tools button at all', async () => {
+test('an engine with none of the tool list methods shows no tools button at all', async () => {
   unsupported.add('list_mcp')
   unsupported.add('list_builtins')
+  unsupported.add('list_tool_categories')
   const { rows, unmount } = await mount()
   expect(document.querySelector('[aria-label="Tools and MCP servers"], [aria-label="MCP servers"]')).toBeNull()
   expect(rows()).toHaveLength(0)
