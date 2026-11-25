@@ -390,6 +390,7 @@ mod desktop {
             commands::share_tray,
             commands::share_stop_all,
             commands::open_window,
+            commands::legal_text,
             update::check_update,
             update::install_update,
             island::set_hidden_from_capture,

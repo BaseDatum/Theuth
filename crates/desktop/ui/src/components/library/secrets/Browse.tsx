@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { notify } from '@/lib/notify'
+import { queryKeys } from '@/lib/rpc'
 import { secretKeys, useSecretsApi } from './api'
 import { placeholderOf, valueRefs } from './labels'
 import { Reveal } from './Reveal'
@@ -54,6 +55,14 @@ export function Browse({ info }: { info: ConnInfo }) {
   const remove = useAction((v: { ref: string; permanent: boolean }) => api.delete_external_secret(info.conn, v.ref, v.permanent ? 'permanent' : { recoverable: { days: null } }), {
     keys: [secretKeys.externalAll],
     onSuccess: (out, v) => notify.success(out.recoverable_until ? `Deleted ${v.ref}; restorable until ${day(out.recoverable_until)}` : `Deleted ${v.ref} permanently`),
+  })
+  const [importName, setImportName] = useState('')
+  const importRef = useAction((v: { ref: string; name: string }) => api.import_external_secret(info.conn, v.ref, v.name, null), {
+    keys: [queryKeys.secrets],
+    onSuccess: (s) => {
+      setImportName('')
+      notify.success(`Imported as ${s.name} v${s.current}; {{secret:${s.name}}}`)
+    },
   })
   const restore = useAction((ref: string) => api.restore_external_secret(info.conn, ref), {
     keys: [secretKeys.externalAll],
@@ -155,6 +164,20 @@ export function Browse({ info }: { info: ConnInfo }) {
               {open === e.ref && !deleted && (
                 <div className="mt-1 flex flex-col gap-1 pl-2">
                   <div className="font-mono text-xs text-fg-tertiary">{e.ref}</div>
+                  <form
+                    className="flex items-center gap-2"
+                    onSubmit={(ev) => {
+                      ev.preventDefault()
+                      const key = defaultKey(e, info.backend)
+                      if (importName.trim()) importRef.mutate({ ref: key ? `${e.ref}#${key}` : e.ref, name: importName.trim() })
+                    }}
+                  >
+                    <Input value={importName} onChange={(ev) => setImportName(ev.target.value)} placeholder="Local name" aria-label={`Local name for ${e.name}`} className="h-7 w-48 font-mono text-xs" spellCheck={false} />
+                    <Button type="submit" variant="outline" size="xs" disabled={!importName.trim() || importRef.isPending}>
+                      Import to vault
+                    </Button>
+                    <span className="text-xs text-fg-tertiary">a snapshot; it does not follow rotations</span>
+                  </form>
                   {info.settings.allow_reveal &&
                     valueRefs(e, info.backend).map((v) => (
                       <div key={v.ref} className="flex items-center justify-between gap-2">

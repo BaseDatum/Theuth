@@ -155,8 +155,8 @@ export interface UnlockRequested {
   reason: string
 }
 
-/** §12.3 `SendPassword`, plus the dialog's typed one (`value`). */
-export type SendPassword = { from: string } | { ask: boolean } | { value: string }
+/** §12.3 `SendPassword` (untagged). */
+export type SendPassword = { from: string } | { ask: boolean }
 
 /** §12.5 `create_send(conn, args)`: `SendCreateArgs` from the owner's dialog. Exactly one of `source` / `file`. */
 export interface SendArgs {

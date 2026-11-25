@@ -81,6 +81,28 @@ pub fn launch_log(launch: State<'_, Launch>) -> String {
     launch.log()
 }
 
+/// 221 D22/B10: the files the bundle carries in its resources (`tauri.conf.json` › `bundle.resources`).
+#[cfg(desktop)]
+const LEGAL_FILES: [&str; 3] = ["LICENSE", "NOTICE", "THIRD-PARTY-NOTICES"];
+
+/// The text of one bundled legal file (`LICENSE`, `NOTICE`, `THIRD-PARTY-NOTICES`), for Settings › App ›
+/// Licences. Any other name is refused; a dev build without the files says so.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn legal_text(app: AppHandle, name: String) -> Result<String, String> {
+    if !LEGAL_FILES.contains(&name.as_str()) {
+        return Err(format!("{name} is not a bundled legal file"));
+    }
+    let path = app
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?
+        .join(&name);
+    tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// Stop the daemon we own (if any) and connect again.
 #[cfg(desktop)]
 #[tauri::command]

@@ -7,6 +7,7 @@ import { notify as toast } from '@/lib/notify'
 import { Row, Section, useAction } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
+import { Licences } from '@/components/settings/Licences'
 import { isDesktop } from '@/lib/platform'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { checkUpdate, installUpdate, isTauri } from '@/lib/tauri'
@@ -82,6 +83,7 @@ export function App() {
               </Button>
             )}
           </Row>
+          <Licences />
         </Section>
       )}
       {onboarding && (

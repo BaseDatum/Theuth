@@ -19,7 +19,7 @@ import { EXTERNAL_DEFAULTS, type SendArgs, type SendPassword, type SendRecord } 
  */
 export type SendSource = { kind: 'text'; source: string; label: string } | { kind: 'file'; file: string | null; label: string; bytes: number | null }
 
-type PasswordMode = 'none' | 'from' | 'type'
+type PasswordMode = 'none' | 'from' | 'ask'
 
 /**
  * §12.5 Send dialog: connection, name, text or file (with the file name the recipient sees), expires (24 h), delete,
@@ -45,7 +45,6 @@ export function SendDialog({ initial, open, onOpenChange }: { initial: SendSourc
   const [maxOpens, setMaxOpens] = useState('1')
   const [pwMode, setPwMode] = useState<PasswordMode>('none')
   const [pwFrom, setPwFrom] = useState('')
-  const [pwValue, setPwValue] = useState('')
   const [hideEmail, setHideEmail] = useState(true)
   const [notes, setNotes] = useState('')
   const [busy, setBusy] = useState(false)
@@ -57,7 +56,8 @@ export function SendDialog({ initial, open, onOpenChange }: { initial: SendSourc
   // File mode is off when the file the dialog opened with is over the limit.
   const initialTooBig = initial.kind === 'file' && !fileFits(initial.bytes, maxMb)
   const opens = Number(maxOpens)
-  const password = (): SendPassword | null => (pwMode === 'from' ? { from: pwFrom.trim() } : pwMode === 'type' ? { value: pwValue } : null)
+  // `ask`: after Create, a masked one-field card asks for the password (§12.3 `SendPassword::Ask`); the dialog never holds it.
+  const password = (): SendPassword | null => (pwMode === 'from' ? { from: pwFrom.trim() } : pwMode === 'ask' ? { ask: true } : null)
   const args = (): SendArgs => ({
     source: source.kind === 'text' ? source.source : null,
     file: source.kind === 'file' ? source.file : null,
@@ -76,15 +76,13 @@ export function SendDialog({ initial, open, onOpenChange }: { initial: SendSourc
     target !== null &&
     (source.kind === 'text' ? source.source : source.file) &&
     !tooBig &&
-    (pwMode !== 'from' || pwFrom.trim()) &&
-    (pwMode !== 'type' || pwValue)
+    (pwMode !== 'from' || pwFrom.trim())
   const create = async (a: SendArgs) => {
     if (!target) return
     setBusy(true)
     setError(null)
     try {
       setCreated(await api.create_send(target, a))
-      setPwValue('')
       void conns.refetch()
     } catch (e) {
       setError(errorText(e))
@@ -193,10 +191,9 @@ export function SendDialog({ initial, open, onOpenChange }: { initial: SendSourc
             <ToggleGroup type="single" variant="outline" size="sm" aria-label="Password" value={pwMode} onValueChange={(m) => m && setPwMode(m as PasswordMode)}>
               <ToggleGroupItem value="none">No password</ToggleGroupItem>
               <ToggleGroupItem value="from">From a vault secret</ToggleGroupItem>
-              <ToggleGroupItem value="type">Type one</ToggleGroupItem>
+              <ToggleGroupItem value="ask">Type one on a card</ToggleGroupItem>
             </ToggleGroup>
             {pwMode === 'from' && <Input aria-label="password secret name" placeholder="Vault secret name" value={pwFrom} onChange={(e) => setPwFrom(e.target.value)} spellCheck={false} />}
-            {pwMode === 'type' && <Input aria-label="Send password" type="password" autoComplete="off" placeholder="Password" value={pwValue} onChange={(e) => setPwValue(e.target.value)} />}
             <label className="flex items-center justify-between gap-2">
               Hide my email from the recipient
               <Switch aria-label="Hide my email" checked={hideEmail} onCheckedChange={setHideEmail} />

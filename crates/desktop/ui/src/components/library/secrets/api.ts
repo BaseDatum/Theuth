@@ -4,6 +4,7 @@
 
 import type { RpcClient } from '@/rpc/client'
 import { supports } from '@/rpc/discovery'
+import type { SecretInfo } from '@/rpc/bindings/method.secrets.output'
 import { useConnection } from '@/store/connection'
 import type {
   ConnConfig,
@@ -45,6 +46,8 @@ export interface SecretsApi {
   delete_external_secret(conn: string, id: string, mode: DeleteMode): Promise<DeleteOutcome>
   restore_external_secret(conn: string, id: string): Promise<ExtVersion>
   reveal_external_secret(conn: string, ref: string): Promise<string>
+  /** §9.1 Import to vault: the value at `ref` becomes local secret `name` (a snapshot). */
+  import_external_secret(conn: string, ref: string, name: string, note: string | null): Promise<SecretInfo>
   create_send(conn: string, args: SendArgs): Promise<SendRecord>
   list_sends(conn: string): Promise<SendRecord[]>
   revoke_send(id: string): Promise<void>
@@ -64,7 +67,7 @@ const NAMES = [
   'list_secret_connections', 'probe_secret_connection', 'add_secret_connection', 'remove_secret_connection', 'connection_login',
   'connection_unlock', 'connection_lock', 'list_external_secrets', 'answer_unlock', 'set_connection_setting', 'get_external_settings',
   'set_external_setting', 'delete_external_secret', 'restore_external_secret', 'reveal_external_secret', 'create_send', 'list_sends',
-  'revoke_send', 'copy_send_link', 'secrets_power_event', 'answer_secret', 'set_always_ask',
+  'revoke_send', 'copy_send_link', 'secrets_power_event', 'answer_secret', 'set_always_ask', 'import_external_secret',
 ] as const satisfies readonly (keyof SecretsApi)[]
 
 /** Positional JSON-RPC calls on `client`, one per method. */
