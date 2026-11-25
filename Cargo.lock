@@ -20747,6 +20747,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "url",
  "uuid",
  "zeroize",
 ]
@@ -23985,6 +23986,8 @@ dependencies = [
  "scrape",
  "search-providers",
  "secrets",
+ "secrets-aws",
+ "secrets-bitwarden",
  "serde",
  "serde_json",
  "sessionsync",
@@ -24007,6 +24010,7 @@ dependencies = [
  "web",
  "webprofile",
  "wire",
+ "zeroize",
 ]
 
 [[package]]

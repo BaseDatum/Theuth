@@ -23,6 +23,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 zeroize = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }

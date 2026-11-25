@@ -1,7 +1,9 @@
 //! Against a local Vaultwarden (221 §13 B5). Ignored by default; run with
 //!
 //! ```sh
-//! docker run -d --name b221-vaultwarden -e SIGNUPS_ALLOWED=true -e SENDS_ALLOWED=true \
+//! docker run -d --name b221-vaultwarden -e I_REALLY_WANT_VOLATILE_STORAGE=true \
+//!   -e SIGNUPS_ALLOWED=true -e SENDS_ALLOWED=true -e USER_SEND_LIMIT=2048 \
+//!   -e LOGIN_RATELIMIT_MAX_BURST=1000 -e LOGIN_RATELIMIT_SECONDS=1 \
 //!   -p 127.0.0.1:18221:80 vaultwarden/server:1.37.5
 //! BW_VAULTWARDEN_URL=http://127.0.0.1:18221 cargo test -p secrets-bitwarden -- --ignored
 //! ```
@@ -14,7 +16,10 @@ use secrets::external::{
     BwField, BwKind, ConnStatus, DeleteMode, ExtError, ExtRef, ExternalBackend, ListQuery,
     Location, Value,
 };
-use secrets_bitwarden::{ApiKey, BwBackend, BwConfig, Server};
+use secrets_bitwarden::{
+    ApiKey, BwBackend, BwConfig, CredentialStore, KEY_DEVICE_ID, KEY_REFRESH_TOKEN, LoginKind,
+    LoginStep, PasswordLogin, Server, TwoFactorKind,
+};
 use zeroize::Zeroizing;
 
 const PASSWORD: &str = "correct horse battery staple 221";
@@ -23,9 +28,23 @@ fn base() -> String {
     std::env::var("BW_VAULTWARDEN_URL").unwrap_or_else(|_| "http://127.0.0.1:18221".into())
 }
 
+/// A registered test user.
+struct Account {
+    email: String,
+    /// Master password hash (server authorisation).
+    hash: String,
+    /// A web-client access token (fixture calls only).
+    access: String,
+    key: ApiKey,
+}
+
+async fn register() -> ApiKey {
+    register_full().await.key
+}
+
 /// Register a fresh user (Vaultwarden's two-step registration; without SMTP the verification
 /// token is the response body) and fetch its personal API key.
-async fn register() -> ApiKey {
+async fn register_full() -> Account {
     let base = base();
     let email = format!("b5-{}@example.org", &uuid::Uuid::new_v4().to_string()[..8]);
     let http = reqwest::Client::new();
@@ -108,9 +127,14 @@ async fn register() -> ApiKey {
         .json()
         .await
         .unwrap();
-    ApiKey {
-        client_id: format!("user.{}", profile["id"].as_str().unwrap()),
-        client_secret: Zeroizing::new(key["apiKey"].as_str().unwrap().to_owned()),
+    Account {
+        key: ApiKey {
+            client_id: format!("user.{}", profile["id"].as_str().unwrap()),
+            client_secret: Zeroizing::new(key["apiKey"].as_str().unwrap().to_owned()),
+        },
+        access: access.to_owned(),
+        hash,
+        email,
     }
 }
 
@@ -256,4 +280,139 @@ async fn idle_lock() {
     assert_eq!(b.status(), ConnStatus::Ready);
     tokio::time::sleep(std::time::Duration::from_millis(1600)).await;
     assert_eq!(b.status(), ConnStatus::Locked);
+}
+
+/// An in-memory [`CredentialStore`], shared across "restarts".
+#[derive(Default)]
+struct MemStore(std::sync::Mutex<std::collections::HashMap<String, String>>);
+
+#[async_trait::async_trait]
+impl CredentialStore for MemStore {
+    async fn load(&self, key: &str) -> Option<Zeroizing<String>> {
+        self.0.lock().unwrap().get(key).cloned().map(Zeroizing::new)
+    }
+    async fn save(&self, key: &str, value: Option<&str>) {
+        let mut m = self.0.lock().unwrap();
+        match value {
+            Some(v) => m.insert(key.to_owned(), v.to_owned()),
+            None => m.remove(key),
+        };
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a local Vaultwarden (see the module docs)"]
+async fn password_totp_login_then_restart_unlocks_without_2fa() {
+    let acct = register_full().await;
+    // Turn on authenticator 2FA: fetch the server's seed and verification token, then confirm.
+    let http = reqwest::Client::new();
+    let get: serde_json::Value = http
+        .post(format!("{}/api/two-factor/get-authenticator", base()))
+        .bearer_auth(&acct.access)
+        .json(&serde_json::json!({ "masterPasswordHash": acct.hash }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let seed = get["authenticator"]["key"]
+        .as_str()
+        .unwrap_or_else(|| panic!("authenticator key in {get}"))
+        .to_owned();
+    let seed = seed.as_str();
+    let now = bitwarden_vault::generate_totp(seed.into(), None)
+        .unwrap()
+        .code;
+    let r = http
+        .post(format!("{}/api/two-factor/authenticator", base()))
+        .bearer_auth(&acct.access)
+        .json(&serde_json::json!({
+            "key": seed, "token": now, "masterPasswordHash": acct.hash,
+            "userVerificationToken": get["userVerificationToken"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        r.status().is_success(),
+        "enable totp: {}",
+        r.text().await.unwrap()
+    );
+
+    let cfg = BwConfig {
+        login: LoginKind::Password,
+        email: Some(acct.email.clone()),
+        ..config(false)
+    };
+    let store = std::sync::Arc::new(MemStore::default());
+    let b = BwBackend::with_store("vw", cfg.clone(), Some(store.clone()));
+    assert_eq!(b.status(), ConnStatus::LoggedOut);
+    let form = |two_factor| PasswordLogin {
+        email: acct.email.to_uppercase(),
+        password: Zeroizing::new(PASSWORD.into()),
+        two_factor,
+        new_device_otp: None,
+    };
+    let step = b.login_password(form(None)).await.unwrap();
+    assert_eq!(
+        step,
+        LoginStep::NeedTwoFactor {
+            providers: vec![TwoFactorKind::Authenticator]
+        }
+    );
+    let wrong = b
+        .login_password(form(Some((
+            TwoFactorKind::Authenticator,
+            Zeroizing::new("000000".into()),
+        ))))
+        .await;
+    assert!(matches!(wrong, Err(ExtError::Denied(_))), "{wrong:?}");
+    // The enabling code is spent; the next time step's code is inside the server's drift window.
+    let next = bitwarden_vault::generate_totp(
+        seed.into(),
+        Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+    )
+    .unwrap()
+    .code;
+    let step = b
+        .login_password(form(Some((
+            TwoFactorKind::Authenticator,
+            Zeroizing::new(next),
+        ))))
+        .await
+        .unwrap();
+    assert_eq!(step, LoginStep::Done);
+    assert_eq!(b.status(), ConnStatus::Ready);
+    let loc = Location::Bw {
+        org: None,
+        collections: vec![],
+        folder: None,
+        kind: BwKind::SecureNote,
+        item_name: "B5b note".into(),
+        field: BwField::Notes,
+        username: None,
+        uri: None,
+    };
+    let (r, _) = b.create(&loc, Value::Plain("note body")).await.unwrap();
+    assert!(store.load(KEY_REFRESH_TOKEN).await.is_some());
+    assert!(store.load(KEY_DEVICE_ID).await.is_some());
+    drop(b);
+
+    // "Restart": a new backend over the same store. Unlock needs only the master password.
+    let b = BwBackend::with_store("vw", cfg, Some(store.clone()));
+    b.load_credentials().await;
+    assert_eq!(b.status(), ConnStatus::Locked);
+    let wrong = b.unlock(Zeroizing::new("nope".into())).await;
+    assert!(matches!(wrong, Err(ExtError::Denied(_))), "{wrong:?}");
+    assert_eq!(b.status(), ConnStatus::Locked);
+    assert_eq!(
+        b.unlock(Zeroizing::new(PASSWORD.into())).await.unwrap(),
+        ConnStatus::Ready
+    );
+    assert_eq!(b.get(&r).await.unwrap().0.as_str(), "note body");
+
+    b.logout().await;
+    assert_eq!(b.status(), ConnStatus::LoggedOut);
+    assert!(store.load(KEY_REFRESH_TOKEN).await.is_none());
 }
