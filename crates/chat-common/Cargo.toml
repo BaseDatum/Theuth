@@ -3,6 +3,7 @@ name = "chat-common"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Helpers the Signal, Slack and Telegram adapters share: command formatters, agent asks, media sniffing, dedup set, backoff"
 
 [dependencies]

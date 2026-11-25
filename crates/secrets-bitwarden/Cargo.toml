@@ -3,6 +3,7 @@ name = "secrets-bitwarden"
 version = "2.30.4"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Bitwarden Password Manager external secret backend (221 §5, §6.2), on bitwarden/sdk-internal"
 
 [dependencies]
