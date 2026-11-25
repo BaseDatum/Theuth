@@ -31,8 +31,8 @@ use tools::{
     ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved,
     DefaultHiddenCategories, InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId,
     JobKind, Jobs, ListPrompts, ListTools, Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity,
-    RegisterPrompt, RegisterTool, ReminderEvent, RestoreApprovals, RestoreHidden, Risk, SetCap,
-    SetParent, SetPromoteAfter, Settle, ToolRegistry,
+    RegisterPrompt, RegisterTool, ReminderEvent, RestoreAlwaysAsk, RestoreApprovals, RestoreHidden,
+    Risk, SetCap, SetParent, SetPromoteAfter, Settle, ToolRegistry,
 };
 use uuid::Uuid;
 
@@ -1527,10 +1527,11 @@ impl Agents {
         Ok(actor)
     }
 
-    /// Subagents inherit the parent's approval switch and hidden tools. 183
-    /// §4.5 (D4): the row's approvals pin, hidden tools and agent-messaging
-    /// opt-out are applied here, so a restart, resume or take keeps them
-    /// before the first tool call.
+    /// Subagents inherit the parent's approval switch, hidden tools and
+    /// always-ask entries. 183 §4.5 (D4): the row's approvals pin, hidden
+    /// tools, always-ask entries (219 §3.2) and agent-messaging opt-out are
+    /// applied here, so a restart, resume or take keeps them before the first
+    /// tool call.
     async fn inherit_approvals(&mut self, id: SessionId, parent: Option<SessionId>) {
         let reg = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
             .ok()
@@ -1563,6 +1564,14 @@ impl Agents {
                     let _ = reg.ask(RestoreHidden { session: id, tools }).await;
                 }
                 Err(e) => tracing::error!(session = %id, "hidden tools: {e:#}"),
+            }
+            // 219 §3.2: as the hides. A list that does not parse leaves the
+            // registry as it is.
+            match self.store.session_always_ask(id).await {
+                Ok(names) => {
+                    let _ = reg.ask(RestoreAlwaysAsk { session: id, names }).await;
+                }
+                Err(e) => tracing::error!(session = %id, "always-ask tools: {e:#}"),
             }
         }
         // 183 R1 (S1): the opt-out both ways, as every reader applies it.

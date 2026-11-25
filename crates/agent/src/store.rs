@@ -732,8 +732,9 @@ const ROOT_HOPS: usize = 32;
 /// [`crate::context::Mask::decode`] exists to prevent; so it must not take or
 /// apply these rows. **69 (201 PC):** `0069_endless_tail` adds the
 /// per-session tail override columns to `sessions`. **70 (201 P1):**
-/// `0070_endless_quality` adds `endless_nodes.quality`.
-pub const SESSIONS_WIRE_SCHEMA: u32 = 70;
+/// `0070_endless_quality` adds `endless_nodes.quality`. **77 (219):**
+/// `0077_session_always_ask` adds `sessions.always_ask`.
+pub const SESSIONS_WIRE_SCHEMA: u32 = 77;
 
 impl Store {
     /// Open (creating) the database in WAL mode and run migrations. Two
@@ -1553,6 +1554,42 @@ impl Store {
                 .await?;
         match row.and_then(|(j,)| j) {
             Some(j) => serde_json::from_str(&j).context("sessions.hidden_tools"),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// 219 §3.2: the session's own always-ask entries (tool names and
+    /// `mcp:<server>` keys) as `sessions.always_ask` (a JSON array; empty
+    /// stores NULL). Written by the owner's registry before it replies.
+    pub async fn set_session_always_ask(
+        &self,
+        id: SessionId,
+        names: &[String],
+    ) -> anyhow::Result<()> {
+        let json = (!names.is_empty())
+            .then(|| serde_json::to_string(names))
+            .transpose()?;
+        let mut tx = self.begin_write().await?;
+        sqlx::query("UPDATE sessions SET always_ask = ? WHERE id = ?")
+            .bind(json)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The entries [`Store::set_session_always_ask`] wrote; empty when none or
+    /// the session does not exist. `Err` on a list that does not parse. Read
+    /// by the supervisor when it spawns the actor (start, resume, take).
+    pub async fn session_always_ask(&self, id: SessionId) -> anyhow::Result<Vec<String>> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT always_ask FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&self.read)
+                .await?;
+        match row.and_then(|(j,)| j) {
+            Some(j) => serde_json::from_str(&j).context("sessions.always_ask"),
             None => Ok(Vec::new()),
         }
     }
@@ -4634,8 +4671,8 @@ mod tests {
     #[tokio::test]
     async fn sessions_wire_schema_tracks_the_replicated_columns() {
         const SNAPSHOT: (u32, &str) = (
-            70,
-            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools,endless_effort,endless_agent_effort,knowledge_identity,endless_tail_mode,endless_tail_low,endless_tail_high
+            77,
+            "sessions: id,created_at,title,model,parent,name,effort,cut_at,agent,acp_session,cwd,updated_at,pinned,todo_version,context_revision,scope,alias,project,archived,tags,harness_model,unattended,owner,epoch,desk,harness_commands,context_size,acp_skills,last_stop,finished_at,kind,memory,endless_base,endless_filter,endless_view_bytes,budget,observed_source,observed_state,observed_stop,observed_cancel,observed_description,observed_tool_call,observed_detail,observed_cursor,observed_cost_rule,notebook,acp_previous,endless_paused,endless_spend_override,endless_model,endless_agent_model,approvals,communication,contact_inbox,hidden_tools,endless_effort,endless_agent_effort,knowledge_identity,endless_tail_mode,endless_tail_low,endless_tail_high,always_ask
 messages: session_id,seq,body,excluded,vision,at,thinking_ms,advisory,channel,moved,peer
 epochs: session_id,n,at_seq,tail_from,head,created_at,excluded
 todo_snapshots: session_id,at_seq,k,source,items
@@ -6886,6 +6923,46 @@ endless_calls: call_id,session_id,l,i,try,bytes,guard,usage_json,usd_estimate,la
             .await
             .unwrap();
         assert!(store.session_hidden(id).await.is_err());
+    }
+
+    /// 219 §3.2: per-chat always-ask entries live on the row: set, still there
+    /// after a restart, cleared to NULL by an empty list; a row that does not
+    /// parse is `Err`.
+    #[tokio::test]
+    async fn session_always_ask_round_trips_and_survives_reopen() {
+        let (store, id, dir) = seeded().await;
+        assert!(store.session_always_ask(id).await.unwrap().is_empty());
+        let names = vec!["mcp:kubernetes".to_string(), "shell".to_string()];
+        store.set_session_always_ask(id, &names).await.unwrap();
+        store.close().await;
+        drop(store);
+        let store = Store::open(&dir.path().join("sessions.sqlite"), None)
+            .await
+            .unwrap();
+        assert_eq!(store.session_always_ask(id).await.unwrap(), names);
+        // Independent of the hides on the same row.
+        assert!(store.session_hidden(id).await.unwrap().is_empty());
+        store.set_session_always_ask(id, &[]).await.unwrap();
+        let raw: Option<String> =
+            sqlx::query_scalar("SELECT always_ask FROM sessions WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_one(&store.read)
+                .await
+                .unwrap();
+        assert_eq!(raw, None);
+        assert!(
+            store
+                .session_always_ask(SessionId::new())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        sqlx::query("UPDATE sessions SET always_ask = 'nope' WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&store.read)
+            .await
+            .unwrap();
+        assert!(store.session_always_ask(id).await.is_err());
     }
 
     /// 197: a fence and a `show` source come out under the revision guard,

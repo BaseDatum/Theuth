@@ -80,4 +80,13 @@ impl Journal for StoreJournal {
     fn hidden(&self, session: SessionId, tools: Vec<String>) -> BoxFuture<'_, ()> {
         Box::pin(async move { log("hidden", self.0.set_session_hidden(session, &tools).await) })
     }
+
+    fn always_ask(&self, session: SessionId, names: Vec<String>) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            log(
+                "always_ask",
+                self.0.set_session_always_ask(session, &names).await,
+            )
+        })
+    }
 }

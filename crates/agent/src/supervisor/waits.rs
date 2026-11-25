@@ -656,6 +656,7 @@ mod tests {
                 args: json!({}),
                 risk: Risk::Destructive,
                 call_id: Some("c2".into()),
+                always_ask: false,
             })
             .await
             .unwrap();
@@ -671,6 +672,7 @@ mod tests {
                 args: json!({}),
                 risk: Risk::Destructive,
                 call_id: Some("c4".into()),
+                always_ask: false,
             })
             .await
             .unwrap();
@@ -686,6 +688,7 @@ mod tests {
                 args: json!({}),
                 risk: Risk::Destructive,
                 call_id: Some("c1".into()),
+                always_ask: false,
             })
             .await
             .unwrap();
