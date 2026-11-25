@@ -55,7 +55,9 @@ final class ToolPickerController: NSObject, PKToolPickerObserver {
     host?.pencilKitResponderState.toolPickerVisibility = visible ? .visible : .hidden
   }
 
-  /// Select `state`'s item, with its colour and width.
+  /// Select `state`'s item (always one of the picker's own items: a foreign item is not the picker's to
+  /// select), then its colour and width through `selectedTool` (deprecated in favour of items, which have
+  /// no setter for either; it updates the selected item).
   func select(_ state: ToolState) {
     selecting = true
     defer { selecting = false }
@@ -65,10 +67,11 @@ final class ToolPickerController: NSObject, PKToolPickerObserver {
       }
       return
     }
-    let item = PKToolPickerInkingItem(
-      type: inkType(state.tool), color: UIColor(inkHex: state.colour),
-      width: CGFloat(state.width), identifier: Self.id(state.tool))
-    picker.selectedToolItem = item
+    if let item = picker.toolItems.first(where: { $0.identifier == Self.id(state.tool) }) {
+      picker.selectedToolItem = item
+    }
+    picker.selectedTool = PKInkingTool(
+      inkType(state.tool), color: UIColor(inkHex: state.colour), width: CGFloat(state.width))
   }
 
   /// What the picker has selected now.
