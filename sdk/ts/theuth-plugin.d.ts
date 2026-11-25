@@ -49,6 +49,7 @@ export interface Request {
   /** tools/call: `params._meta.theuth.session`. */
   session?: string | null;
   client?: string;
+  /** `null` for OpenUI actions from the desktop: form field values arrive in `args` (through `$state`). */
   form?: unknown;
   activation?: string;
   id: string | number;

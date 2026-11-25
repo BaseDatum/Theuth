@@ -252,6 +252,8 @@ Readings chosen where design 216 §6 leaves room, matching `docs/design/216-exam
   neither answers `-32601`, which §6.2 allows for eager renderers.
 - Paint happens after `hello`, not before (§13.1 paints first): the default placement id comes from the grant.
 - `notifications/cancelled` does not stop the handler; its reply is still sent and the host discards it.
+- `form` in `action` params: OpenUI actions from the desktop always send `form: null`; form field values
+  arrive inside `args` (bound through `$state`).
 - A request that arrives before `hello` is answered `-32601`; `hello.protocol != 1` logs an error and exits 1.
 - Pending `call`/`request`s fail with `-32006` when stdin closes.
 - `log` omits `fields` when empty; `notify` always sends `body` (default `""`) and `level` (default `info`).

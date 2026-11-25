@@ -35,6 +35,7 @@ module Theuth
   end
 
   # A host request: action / query / command / tools/call / render / other. `args` and `raw` are Hashes.
+  # `form` is nil for OpenUI actions from the desktop: form field values arrive in `args` (through `$state`).
   Request = Struct.new(:placement, :name, :args, :session, :client, :form, :activation, :id, :raw,
                        keyword_init: true)
   # A host event. `data` is the JSON object the host sent (string keys).

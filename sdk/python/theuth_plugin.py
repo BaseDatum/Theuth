@@ -35,7 +35,10 @@ class RpcError(Exception):
 
 
 class Msg(dict):
-    """A dict whose keys are also attributes: `ev.data`, `req.args`. Missing keys read as None."""
+    """A dict whose keys are also attributes: `ev.data`, `req.args`. Missing keys read as None.
+
+    `req.form` is None for OpenUI actions from the desktop: form field values arrive in `req.args` (through `$state`).
+    """
 
     def __getattr__(self, k):
         return self.get(k)

@@ -53,6 +53,7 @@ func (e *RpcError) Error() string { return e.Message }
 
 // Request is what action, query, command, render and tool handlers get. Args is params.args (tools:
 // params.arguments); Session falls back to params._meta.theuth.session; Raw is the whole message.
+// Form is nil for OpenUI actions from the desktop: form field values arrive in Args (through $state).
 type Request struct {
 	Placement, Name, Session, Client, Activation string
 	Args, Form, ID                               any

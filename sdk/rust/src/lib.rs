@@ -100,6 +100,7 @@ text_fail!(String, &str, io::Error, serde_json::Error, fmt::Error,
 
 /// A host request (`action`, `query`, `command`, `tools/call`, `render`, ...). `name`: action / query /
 /// command / tool name. `args`: `params.args` (`tools/call`: `params.arguments`). `raw`: the whole message.
+/// `form` is null for OpenUI actions from the desktop: form field values arrive in `args` (through `$state`).
 #[derive(Debug, Clone, Default)]
 pub struct Req {
     pub placement: Option<String>, pub name: String, pub args: Value, pub session: Option<String>,
