@@ -306,3 +306,49 @@ test('a quiet terminal keeps its dash until exit; the Advisor pill can render al
   expect(body()).toBe('Advisor idle')
   expect(document.querySelector('button')).toBeNull()
 })
+
+// 218 (owner): "if a chat creates or references a whiteboard, that whiteboard should be accessible from the bar directly
+// above the chat input." Dash W1 (nile, dot grid), after the browsers; the tray tile opens one, lists several.
+const WB1 = '01jabcdefghjkmnpqrstvwxyz1'
+const WB2 = '01jabcdefghjkmnpqrstvwxyz2'
+const wbTool = (callId: string, name: string, output: string) => ({ id: callId, kind: 'tool' as const, callId, name, args: {}, pending: false, child: callId.includes('.'), result: { output, isError: false, files: [] } })
+function transcript(...entries: ReturnType<typeof wbTool>[]) {
+  const st = useSessions.getState()
+  st.ensure('s1')
+  useSessions.setState((s) => ({ sessions: { ...s.sessions, s1: { ...s.sessions.s1!, entries } } }))
+}
+const created = (doc: string, title: string) => `created whiteboard "${title}" ${doc} — show it to the user with show_whiteboard("${doc}")\ntheuth://whiteboards/${doc}\n0 cards`
+const shown = (doc: string, title: string) => `opened whiteboard "${title}"\ntheuth://whiteboards/${doc}\n2 cards`
+
+test('a whiteboard the chat created gets a nile dotted dash after the browsers; the dash and the one-item tile open it', async () => {
+  transcript(wbTool('c1.1', 'wb_create', created(WB1, 'Checkout ideas')))
+  await mount()
+  const group = document.querySelector('div[aria-label="1 whiteboards"]')!
+  const dash = group.querySelector<HTMLButtonElement>('button[aria-label="Whiteboard Checkout ideas · open"]')!
+  expect(dash.querySelector('.activity-dash')!.className.split(' ')).toEqual(expect.arrayContaining(['bg-project-nile', 'bg-size-[4px_5px]', 'w-4', 'h-[5px]']))
+  await run(() => dash.click())
+  // No tile host in this layout: the whiteboard's page, bound to the chat.
+  expect(navigate).toHaveBeenLastCalledWith({ to: '/whiteboards/$id', params: { id: WB1 }, search: { session: 's1' } })
+  await click('Show background activity')
+  const tiles = [...document.querySelectorAll('[data-tray-tiles] > *')]
+  expect(tiles.map((t) => t.textContent)).toEqual(['WhiteboardCheckout ideas1'])
+  navigate.mockClear()
+  await run(() => (tiles[0] as HTMLButtonElement).click())
+  expect(navigate).toHaveBeenCalledWith({ to: '/whiteboards/$id', params: { id: WB1 }, search: { session: 's1' } })
+})
+
+test('several whiteboards (created, then another shown) give a dash each in order and a tile that lists them', async () => {
+  transcript(wbTool('c1.1', 'wb_create', created(WB1, 'Checkout ideas')), wbTool('c2', 'show_whiteboard', shown(WB2, 'Pricing')), wbTool('c3', 'show_whiteboard', shown(WB1, 'Checkout ideas')))
+  await mount()
+  const dashes = [...document.querySelectorAll<HTMLButtonElement>('div[aria-label="2 whiteboards"] button')]
+  expect(dashes.map((d) => d.getAttribute('aria-label'))).toEqual(['Whiteboard Checkout ideas · open', 'Whiteboard Pricing · open'])
+  await click('Show background activity')
+  const tile = document.querySelector<HTMLButtonElement>('[data-tray-tiles] > button[title="Whiteboards (2)"]')!
+  expect(tile.textContent).toBe('WhiteboardCheckout ideas · Pricing2')
+  // jsdom has no PointerEvent; Radix's trigger reads only `button` and `ctrlKey`.
+  await run(() => tile.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, ctrlKey: false })))
+  const items = [...document.querySelectorAll('[role="menuitem"]')]
+  expect(items.map((i) => i.textContent)).toEqual(['Checkout ideas', 'Pricing'])
+  await run(() => (items[1] as HTMLElement).click())
+  expect(navigate).toHaveBeenLastCalledWith({ to: '/whiteboards/$id', params: { id: WB2 }, search: { session: 's1' } })
+})

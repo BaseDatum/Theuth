@@ -13,6 +13,8 @@ export const backgroundColors = {
   browser: { bg: 'bg-project-lapis bg-[radial-gradient(circle,var(--foreground)_0_1.6px,transparent_2px)]', text: 'text-project-lapis' },
   /** A1: solid sand, 70 % of the standard dash's width. */
   artifacts: { bg: 'bg-project-sand', text: 'text-project-sand', dash: 'w-[11px]' },
+  /** W1: nile with a fine dot grid in the page colour (the canvas's dots), so light and dark both follow the theme. */
+  whiteboard: { bg: 'bg-project-nile bg-[radial-gradient(circle,var(--background)_0_0.8px,transparent_1.1px)] bg-size-[4px_5px]', text: 'text-project-nile' },
   /** V4: slate with an umber end cap. */
   desktop: { bg: 'bg-[linear-gradient(90deg,var(--project-slate)_0_68%,var(--project-umber)_68%_100%)]', text: 'text-project-slate' },
   /** The tray's Code map tile only: the CodeMap has no dash on the bar. */

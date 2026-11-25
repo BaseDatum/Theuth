@@ -55,6 +55,7 @@ export function BackgroundDashes({ session, tray }: { session: string; tray: Tra
     ['jobs', [...(jobs ?? [])].map((id) => ({ key: id, label: `Job ${id} · show running jobs`, color: backgroundColors.jobs.bg, beat: beats?.[id], open: reveal('jobs') }))],
     ['terminals', [...terminalIds].map((id) => ({ key: id, label: `Terminal ${id} · open terminal`, color: backgroundColors.terminals.bg, beat: beats?.[id], open: { terminal: id } }))],
     ['browsers', tray.browsers.map((t) => ({ key: t.kind === 'agent' ? 'agent' : t.id, label: targetAction(t), color: backgroundColors.browser.bg, open: () => tray.openBrowser(t) }))],
+    ['whiteboards', tray.whiteboards.map((w) => ({ key: w.doc, label: `Whiteboard ${w.title} · open`, color: backgroundColors.whiteboard.bg, open: () => tray.openWhiteboard(w) }))],
     ['artifacts', tray.artifacts.map((a) => ({ key: a.call_id, label: `Artifact ${a.title} · open`, color: backgroundColors.artifacts.bg, width: backgroundColors.artifacts.dash, open: () => showArtifact(session, a.call_id) }))],
     ['desktops', tray.vm ? [{ key: tray.vm.name, label: `Desktop of ${tray.vm.name}`, color: backgroundColors.desktop.bg, open: tray.vm.open }] : []],
     ['reminders', [...(reminders ?? [])].map((id) => ({ key: id, label: `Reminder ${id} · ${details?.get(id)?.message ?? 'pending'}`, color: backgroundColors.reminders.bg, open: reveal('reminders') }))],

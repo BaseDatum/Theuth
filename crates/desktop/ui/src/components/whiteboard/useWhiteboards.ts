@@ -8,14 +8,14 @@ import { WHITEBOARD_KIND, wbRpc } from './wire'
 
 export const whiteboardsKey = ['whiteboards'] as const
 
-/** 218: every whiteboard, newest update first; `document.changed@1` invalidates it. */
-export function useWhiteboards(limit = 500) {
+/** 218: every whiteboard, newest update first; `document.changed@1` invalidates it. `enabled: false` skips the fetch. */
+export function useWhiteboards(limit = 500, enabled = true) {
   const canQuery = useQuerySupport(['doc_list'])
   const api = useApi()
   const qc = useQueryClient()
   useEffect(() => on('document.changed@1', 'DocumentChanged', () => void qc.invalidateQueries({ queryKey: whiteboardsKey })), [qc])
   return useQuery({
-    enabled: canQuery,
+    enabled: canQuery && enabled,
     queryKey: [...whiteboardsKey, limit],
     queryFn: async () =>
       (await api.doc_list(WHITEBOARD_KIND, limit)).sort((a, b) => Number(b.updated_ms - a.updated_ms)),

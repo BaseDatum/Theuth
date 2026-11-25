@@ -1,6 +1,6 @@
 // The session's panels, moved out of the header to the bar above the composer (thumb reach): terminals, browsers,
-// artifacts, the sandbox desktop and the CodeMap. `useTray` gathers what the header used to (same queries, same
-// capability gates) with each panel's opener; `BackgroundDashes` draws one dash per item and `TrayTiles` the opened
+// whiteboards, artifacts, the sandbox desktop and the CodeMap. `useTray` gathers what the header used to (same queries,
+// same capability gates) with each panel's opener; `BackgroundDashes` draws one dash per item and `TrayTiles` the opened
 // tray's grid.
 
 import { useQuery } from '@tanstack/react-query'
@@ -31,6 +31,8 @@ import { type BrowserTarget, BrowserButton, hostOf, openTarget, targetLabel, use
 import { browserRequirements, terminalRequirements } from './requirements'
 import { ActivityDash, SubagentLink, TerminalLink } from './SubagentStrip'
 import { TerminalButton, useHasTerminals, useTerminals } from './TerminalViewer'
+import { useOpenWhiteboard } from './WhiteboardViewCard'
+import { type SessionWhiteboard, useSessionWhiteboards } from '@/components/whiteboard/useSessionWhiteboards'
 
 export type Tray = {
   session: string
@@ -41,6 +43,9 @@ export type Tray = {
   openBrowser(t: BrowserTarget): void
   /** Newest first. */
   artifacts: Artifact[]
+  /** 218: the whiteboards this chat created, showed or is bound to (`useSessionWhiteboards`), and their opener. */
+  whiteboards: SessionWhiteboard[]
+  openWhiteboard(w: SessionWhiteboard): void
   /** The owner engine is a sandbox VM with a desktop this window can show. */
   vm: { name: string; open(): void } | null
   codemap: boolean
@@ -63,6 +68,9 @@ export function useTray(session: string): Tray {
   const artifacts = useMemo(() => (artifactsOk ? [...(artifactMap?.values() ?? [])].sort((x, y) => y.created_at - x.created_at) : []), [artifactMap, artifactsOk])
   const terminals = useHasTerminals(session) && supports(discovery, terminalRequirements)
   const codemap = useCodemapAvailable(session) && supports(discovery, codemapRequirements)
+  const whiteboards = useSessionWhiteboards(session)
+  const openWb = useOpenWhiteboard(session)
+  const openWhiteboard = (w: SessionWhiteboard) => openWb({ doc: w.doc, title: w.title })
   // 79 §6.5: the owner engine is a sandbox VM (`SessionSummary.owner` ↔ `SandboxInfo.engine`) → its desktop is one click away.
   const canSessions = useQuerySupport(['list_sessions'])
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canSessions })
@@ -91,11 +99,11 @@ export function useTray(session: string): Tray {
       openAgent: () => (host === null ? useSessions.getState().setBrowserLive(session, true) : void openBrowserTile(host)),
       route: (w) => void navigate({ to: '/web/$id', params: { id: w.id }, search: { url: w.url, title: w.title } }),
     })
-  return { session, terminals, browsers, browserBusy, openBrowser, artifacts, vm, codemap }
+  return { session, terminals, browsers, browserBusy, openBrowser, artifacts, whiteboards, openWhiteboard, vm, codemap }
 }
 
 /** The tray has something besides the background work `BackgroundArea` counts itself. */
-export const trayHasItems = (t: Tray): boolean => t.terminals || !!t.browsers.length || !!t.artifacts.length || !!t.vm || t.codemap
+export const trayHasItems = (t: Tray): boolean => t.terminals || !!t.browsers.length || !!t.whiteboards.length || !!t.artifacts.length || !!t.vm || t.codemap
 
 /** The artifacts, newest first: one opens on a click, several list first (the header's `▣ N` dropdown). */
 export function ArtifactsButton({ session, artifacts, className, children }: { session: string; artifacts: Artifact[]; className?: string; children: ReactNode }) {
@@ -122,6 +130,34 @@ export function ArtifactsButton({ session, artifacts, className, children }: { s
               {metaLine(a)}
               {a.version > 1 ? ` · v${a.version}` : ''}
             </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+/** The whiteboards: one opens on a click, several list first (like the artifacts). */
+function WhiteboardsButton({ tray, className, children }: { tray: Tray; className?: string; children: ReactNode }) {
+  const only = tray.whiteboards.length === 1 ? tray.whiteboards[0] : undefined
+  if (only) {
+    return (
+      <button type="button" className={className} title={`Open ${only.title}`} onClick={() => tray.openWhiteboard(only)}>
+        {children}
+      </button>
+    )
+  }
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" className={className} title={`Whiteboards (${tray.whiteboards.length})`}>
+          {children}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-72">
+        {tray.whiteboards.map((w) => (
+          <DropdownMenuItem key={w.doc} onSelect={() => tray.openWhiteboard(w)}>
+            <span className="w-full truncate">{w.title}</span>
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -187,6 +223,13 @@ export function TrayTiles({ tray }: { tray: Tray }) {
       <BrowserButton key="browser" targets={tray.browsers} busy={tray.browserBusy} onOpen={tray.openBrowser} className={TILE}>
         <TileBody color={backgroundColors.browser.bg} name="Browser" detail={tray.browsers.map((t) => (t.kind === 'web' ? hostOf(t.url) || t.title : targetLabel(t))).join(' · ')} count={tray.browsers.length} />
       </BrowserButton>,
+    )
+  }
+  if (tray.whiteboards.length) {
+    tiles.push(
+      <WhiteboardsButton key="whiteboards" tray={tray} className={TILE}>
+        <TileBody color={backgroundColors.whiteboard.bg} name="Whiteboard" detail={tray.whiteboards.map((w) => w.title).join(' · ')} count={tray.whiteboards.length} />
+      </WhiteboardsButton>,
     )
   }
   if (tray.artifacts.length) {
