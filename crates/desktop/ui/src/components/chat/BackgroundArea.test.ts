@@ -211,7 +211,7 @@ test('dashes flank the grabber in palette order, cap each category, blink on out
   // "+N" at each side's outer end: left of the subagents, right of each right-side category.
   expect(groups[0]?.firstElementChild?.textContent).toBe('+2')
   expect(groups.slice(1).map((g) => g.lastElementChild?.textContent)).toEqual(['+3', '+1', '+4'])
-  expect(groups.map((g) => g.querySelector('.activity-dash')?.className)).toEqual([expect.stringContaining('bg-warning'), expect.stringContaining('bg-project-lapis'), expect.stringContaining('bg-project-faience'), expect.stringContaining('bg-project-plum')])
+  expect(groups.map((g) => g.querySelector('.activity-dash')?.className)).toEqual([expect.stringContaining('bg-warning'), expect.stringContaining('bg-project-lapis'), expect.stringContaining('border-foreground'), expect.stringContaining('bg-project-plum')])
   expect(groups.every((g) => [...g.querySelectorAll('.activity-dash')].every((d) => d.className.split(' ').includes('h-[5px]') && d.className.split(' ').includes('w-4')))).toBe(true)
   expect(groups[0]?.querySelectorAll('.bg-project-malachite').length).toBe(23)
   expect(document.querySelectorAll('[role="separator"]')).toHaveLength(0)

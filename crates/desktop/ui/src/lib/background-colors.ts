@@ -7,7 +7,8 @@ export const backgroundColors = {
   subagents: { bg: 'bg-project-malachite', text: 'text-project-malachite' },
   approval: { bg: 'bg-warning', text: 'text-warning' },
   jobs: { bg: 'bg-project-lapis', text: 'text-project-lapis' },
-  terminals: { bg: 'bg-project-faience', text: 'text-project-faience' },
+  /** Half light, half dark, outlined in the foreground colour, so it reads on both themes. */
+  terminals: { bg: 'box-border border border-foreground bg-[linear-gradient(90deg,#f4ecdf_0_50%,#0c0a09_50%_100%)]', text: 'text-project-faience' },
   /** B2: a lapis pill with a small foreground dot at its centre. */
   browser: { bg: 'bg-project-lapis bg-[radial-gradient(circle,var(--foreground)_0_1.6px,transparent_2px)]', text: 'text-project-lapis' },
   /** A1: solid sand, 70 % of the standard dash's width. */
