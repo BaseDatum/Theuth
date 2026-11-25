@@ -4,14 +4,12 @@
  * strip, 360–920 px, persisted); under 768 px `CodeMapSheet` (mounted from the header) shows the list forms in a bottom
  * Sheet instead. Availability = `codemap.roots` non-empty, exactly like `browser` / `terminal` (§0.2).
  */
-import { MapIcon } from 'lucide-react'
 import { useSupported } from '@/rpc/capabilities'
 import { requirements } from './requirements'
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
-import { MenuRow } from '@/components/chat/HeaderMenu'
+import { cn } from '@/lib/utils'
 import { useTileHost } from '@/components/tiles/host'
 import { openCodemapTile } from '@/components/tiles/open'
-import { Button } from '@/components/ui/button'
 import { ResizeHandle } from '@/components/ui/resize-handle'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
@@ -31,10 +29,11 @@ export const useCodemapAvailable = (session: string | null): boolean =>
   (useSessionField(session ?? '', 'codemap')?.roots.length ?? 0) > 0
 
 /**
- * The header button: toggles the CodeMap on the last touched root — the tile when the chat sits in a pane, else the
- * docked pane / phone Sheet (`codemapPanel`); a dot while a call arrived that the CodeMap has not shown.
+ * The tray's Code map tile (`children` in a plain button styled by `className`): toggles the CodeMap on the last touched
+ * root — the tile when the chat sits in a pane, else the docked pane / phone Sheet (`codemapPanel`); a dot while a call
+ * arrived that the CodeMap has not shown.
  */
-export function CodeMapButton({ session, row }: { session: string; row?: boolean }) {
+export function CodeMapButton({ session, className, children }: { session: string; className?: string; children: ReactNode }) {
   const host = useTileHost()
   const codemap = useSessionField(session, 'codemap')
   const panel = useSessionField(session, 'codemapPanel') ?? null
@@ -52,12 +51,11 @@ export function CodeMapButton({ session, row }: { session: string; row?: boolean
       else if (root !== null) openCodemapTile(host, root)
     } else useSessions.getState().setCodemapPanel(session, open ? null : root)
   }
-  if (row) return <MenuRow icon={MapIcon} label={open ? 'Close CodeMap' : 'CodeMap'} onSelect={toggle} />
   return (
-    <Button variant="ghost" className="relative size-9 rounded-lg text-fg-secondary" aria-label="CodeMap" aria-pressed={open} onClick={toggle}>
-      <MapIcon className="size-5" />
-      {dot && <span aria-hidden className="absolute top-2 right-2 size-1.5 rounded-full bg-fg-accent" />}
-    </Button>
+    <button type="button" className={cn('relative', className)} aria-label={open ? 'Close CodeMap' : 'CodeMap'} aria-pressed={open} onClick={toggle}>
+      {children}
+      {dot && <span aria-hidden className="absolute right-2.5 bottom-2.5 size-1.5 rounded-full bg-fg-accent" />}
+    </button>
   )
 }
 

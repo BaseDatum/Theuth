@@ -96,7 +96,7 @@ function mount(targets: BrowserTarget[]) {
   const el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
-  act(() => root?.render(h(BrowserButton, { targets, busy: false, onOpen })))
+  act(() => root?.render(h(BrowserButton, { targets, busy: false, onOpen, children: 'Browser' })))
   return { onOpen, button: el.querySelector('button') as HTMLButtonElement }
 }
 const items = () => [...document.querySelectorAll('[role="menuitem"]')]

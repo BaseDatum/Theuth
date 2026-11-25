@@ -1,13 +1,11 @@
-// The header's globe: every browser a chat has — the agent's headless browser (`browser_*`, the `browser` tile /
-// `BrowserLive`) and the pages its `show_web` calls opened (205, `web:<id>` leaves) — behind one button.
+// A chat's browsers — the agent's headless browser (`browser_*`, the `browser` tile / `BrowserLive`) and the pages its
+// `show_web` calls opened (205, `web:<id>` leaves) — behind one trigger: the tray's Browser tile and dashes.
 
 import { Globe } from 'lucide-react'
-import { useMemo, useState } from 'react'
-import { Button } from '@/components/ui/button'
+import { type MouseEvent, type ReactNode, useMemo, useState } from 'react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { type WebView, useWebViews } from '@/lib/web-views'
 import { type Entry, useEntries } from '@/store/sessions'
-import { MenuRow, useHeaderMenuClose } from './HeaderMenu'
 import { BrowserIndicator } from './Indicators'
 import { openWebView, webCall } from './WebViewCard'
 
@@ -85,57 +83,39 @@ function TargetIcon({ t, busy, size = 16 }: { t: BrowserTarget; busy: boolean; s
 }
 
 /**
- * The globe, inline (`row`: the compact menu's line). One target: a click opens it. Several: a click or a right-click
- * lists them; picking one opens it.
+ * The chat's browsers behind one trigger: `children` in a plain button styled by `className` (the tray's Browser tile).
+ * One target: a click opens it. Several: a click or a right-click lists them; picking one opens it.
  */
-export function BrowserButton({ targets, busy, row, onOpen }: { targets: BrowserTarget[]; busy: boolean; row?: boolean; onOpen(t: BrowserTarget): void }) {
-  const close = useHeaderMenuClose()
+export function BrowserButton({ targets, busy, onOpen, className, children }: { targets: BrowserTarget[]; busy: boolean; onOpen(t: BrowserTarget): void; className?: string; children: ReactNode }) {
   const [menu, setMenu] = useState(false)
   const first = targets[0]
   if (!first) return null
-  const agent = targets.some((t) => t.kind === 'agent')
-  const icon = <TargetIcon t={agent ? { kind: 'agent' } : first} busy={busy} size={row ? 16 : 20} />
-  if (targets.length === 1) {
-    const label = targetAction(first)
-    return row ? (
-      <MenuRow icon={icon} label={agent ? 'Live browser' : 'Web page'} detail={agent ? undefined : hostOf(first.kind === 'web' ? first.url : '')} aria-label={label} onSelect={() => onOpen(first)} />
-    ) : (
-      <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label={label} title={label} onClick={() => onOpen(first)}>
-        {icon}
-      </Button>
-    )
-  }
-  const label = `Browsers (${targets.length})`
+  const one = targets.length === 1
+  const label = one ? targetAction(first) : `Browsers (${targets.length})`
+  const handlers = one
+    ? { onClick: () => onOpen(first) }
+    : {
+        onContextMenu: (e: MouseEvent) => {
+          e.preventDefault()
+          setMenu(true)
+        },
+      }
+  const trigger = (
+    <button type="button" className={className} aria-label={label} title={label} {...handlers}>
+      {children}
+    </button>
+  )
+  if (one) return trigger
   return (
     <DropdownMenu open={menu} onOpenChange={setMenu}>
-      <DropdownMenuTrigger asChild>
-        {row ? (
-          <MenuRow icon={icon} label="Browsers" detail={targets.length} aria-label={label} />
-        ) : (
-          <Button
-            variant="ghost"
-            className="size-9 rounded-lg text-fg-secondary"
-            aria-label={label}
-            title={label}
-            onContextMenu={(e) => {
-              e.preventDefault()
-              setMenu(true)
-            }}
-          >
-            {icon}
-          </Button>
-        )}
-      </DropdownMenuTrigger>
+      <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-72">
         {targets.map((t) => (
           <DropdownMenuItem
             key={t.kind === 'agent' ? 'agent' : t.id}
             data-browser-target={t.kind === 'agent' ? 'agent' : t.id}
             className="gap-2"
-            onSelect={() => {
-              close()
-              onOpen(t)
-            }}
+            onSelect={() => onOpen(t)}
           >
             <TargetIcon t={t} busy={busy} />
             <span className="flex min-w-0 flex-col">

@@ -1,8 +1,9 @@
 /**
  * The pane header's layout tiers, chosen from the pane's own width (not the viewport): 0 = the full bar; 1 = the
- * compact bar (title · one panel button · chevron · ⋯) with the rest behind the chevron; 2 = compact with the sheddable
- * items (the panel button) also behind the chevron, for panes near the 240 px floor. Context, cost and approvals are not
- * header items: they live in the composer's bar (`ComposerMeta`, `ApprovalShield`).
+ * compact bar (title · popout · chevron · ⋯) with the rest behind the chevron; 2 = compact with any sheddable items
+ * also behind the chevron, for panes near the 240 px floor. Context, cost and approvals are not header items: they live
+ * in the composer's bar (`ComposerMeta`, `ContextButton`, `ApprovalShield`); terminals, browser, artifacts, the desktop
+ * and the CodeMap live on the bar above the composer (`BackgroundArea`, `TrayItems`).
  */
 export const TIERS = 3
 
@@ -38,12 +39,6 @@ export type HeaderId =
   | 'owner'
   /** 183 §12.10: `Shared with bob` — a contact's agents can message this exported chat. */
   | 'shared'
-  /** 79 §6.5: the owner engine is a sandbox VM — its desktop in a pop-out. */
-  | 'desktop'
-  | 'terminals'
-  | 'browser'
-  | 'artifacts'
-  | 'codemap'
   | 'pending'
   | 'popout'
   | 'more'
@@ -63,14 +58,13 @@ export type HeaderItem = {
 
 /**
  * The header's items in display order. 215 C3: no model picker (it lives in the chat input); the title follows the
- * sidebar toggle and opens the compact bar. `panel` is the one panel button the compact bar keeps inline (artifacts, the
- * session's output surface, over the live browser over terminals); the other two move behind the chevron. `popout`
+ * sidebar toggle and opens the compact bar. `popout`
  * (open in a new window) stays inline at every tier: it is how a narrow pane gets room — absent entirely where no
  * second window exists (`canPopout()` false, or this is already the popped window). `chat` (the talk view only) sits
  * top-left after the sidebar toggle and stays inline at every tier: it is the way back. `watching` (a watch-only
  * child, 141) keeps the `parent` item — the `Watching` chip — inline at every tier.
  */
-export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'terminals' | null, popout: boolean, chat = false, watching = false): HeaderItem[] {
+export function headerOrder(popout: boolean, chat = false, watching = false): HeaderItem[] {
   return [
     { id: 'search', slot: 'menu' },
     { id: 'sidebar', slot: 'bar' },
@@ -81,11 +75,6 @@ export function headerOrder(panel: 'artifacts' | 'codemap' | 'browser' | 'termin
     { id: 'parent', slot: watching ? 'both' : 'menu' },
     { id: 'owner', slot: 'menu' },
     { id: 'shared', slot: 'menu' },
-    { id: 'desktop', slot: 'menu' },
-    { id: 'terminals', slot: panel === 'terminals' ? 'bar' : 'menu', shed: true },
-    { id: 'browser', slot: panel === 'browser' ? 'bar' : 'menu', shed: true },
-    { id: 'artifacts', slot: panel === 'artifacts' ? 'bar' : 'menu', shed: true },
-    { id: 'codemap', slot: panel === 'codemap' ? 'bar' : 'menu', shed: true },
     { id: 'pending', slot: 'menu' },
     ...(popout ? [{ id: 'popout', slot: 'bar' } as const] : []),
     { id: 'more', slot: 'bar' },

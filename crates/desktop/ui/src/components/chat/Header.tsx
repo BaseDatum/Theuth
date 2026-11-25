@@ -3,27 +3,24 @@ import { supports, type Requirements } from '@/rpc/discovery'
 import { memoryRequirements, sessionCostRequirements, messagingRequirements, toolsRequirements, browserRequirements, approvalsRequirements, terminalRequirements, sessionMenuRequirements } from './requirements'
 import { requirements as codemapRequirements } from '@/components/codemap/requirements'
 import { requirements as artifactRequirements } from '@/components/artifacts/requirements'
-import { requirements as vmRequirements } from '@/components/vm/requirements'
 import { searchRequirements } from '@/components/sidebar/requirements'
 
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { AppWindow, Contact, CornerLeftUp, Eye, LayoutGrid, MessageSquare, Monitor, Network, Search, X } from 'lucide-react'
+import { AppWindow, Contact, CornerLeftUp, Eye, MessageSquare, Network, Search, X } from 'lucide-react'
 import { Fragment, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SearchTrigger } from '@/components/sidebar/SearchTrigger'
-import { useSandboxes } from '@/components/settings/sandbox-queries'
 import { EngineChip } from '@/components/sidebar/SessionItem'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useSidebar } from '@/components/ui/sidebar'
 import { cornerPad, headerToggle } from '@/lib/sidebar-corner'
 import { SidebarToggle } from './SidebarToggle'
 import { useTileHost } from '@/components/tiles/host'
-import { openBrowserTile, openMemoryTile, openTerminalsTile, openVmTile, showArtifact } from '@/components/tiles/open'
+import { openBrowserTile, openMemoryTile } from '@/components/tiles/open'
 import { useViewBadge, useViewTitle } from '@danfessler/trellis-react'
 import { useViewDrag } from '@/hooks/use-view-drag'
 import { chatName } from '@/lib/attach'
@@ -31,7 +28,7 @@ import { sharedLabel, useSharing } from '@/lib/contacts'
 import { chatTitle, popOutAndClose } from '@/components/tiles/TileFrame'
 import { type HeaderId, type Mode, decideTier, headerOrder, layout } from '@/lib/header'
 import { isMacDesktop } from '@/lib/hotkeys'
-import { canPopout, isPopout, openPopout, popoutOpen, type PopoutTarget } from '@/lib/popout'
+import { canPopout, isPopout, openPopout, type PopoutTarget } from '@/lib/popout'
 import { ownerState, useEngineLabel, useOwnerOffline } from '@/lib/owner'
 import { useMesh } from '@/components/tasks/queries'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -41,29 +38,25 @@ import { sourceTag } from '@/lib/session-tree'
 import type { ObservedMeta } from "@/rpc/bindings/method.agent.output"
 import { useApprovals } from '@/store/approvals'
 import { useConnection } from '@/store/connection'
-import { useBrowserBusy, useSessionField, useSessions } from '@/store/sessions'
+import { useSessionField, useSessions } from '@/store/sessions'
 import { ApprovalsSheet } from './ApprovalCard'
-import { metaLine } from './ArtifactCard'
 import { ArtifactPanel } from './ArtifactPanel'
-import { CodeMapButton, CodeMapSheet, useCodemapAvailable } from '@/components/codemap/CodeMapHost'
+import { CodeMapSheet } from '@/components/codemap/CodeMapHost'
 import { BrowserLive } from './BrowserLive'
 import { CostDialog } from './CostPill'
-import { HeaderMenu, MenuRow, useHeaderMenuClose } from './HeaderMenu'
+import { HeaderMenu, MenuRow } from './HeaderMenu'
 import { DraftMemory, MemoryBadge, MemoryPanel } from './MemoryPanel'
-import { BrowserButton, openTarget, useBrowserTargets } from './BrowserTargets'
-import { nativeWebViews } from '@/lib/web-view-native'
 import { SessionMenu } from './SessionMenu'
 import { MessagingSheet } from './MessagingSheet'
 import { ToolsSheet } from './ToolsSheet'
-import { TerminalButton, TerminalViewer, useHasTerminals } from './TerminalViewer'
+import { TerminalViewer } from './TerminalViewer'
 import { EyeMark } from './ObservedBar'
 import { surfaceOf } from './slash'
 // 215 C3: no `model` item — the picker lives in the chat input (`ComposerModel`).
+// The panels (terminals, browser, artifacts, CodeMap, a sandbox's desktop) live on the bar above the composer (`TrayItems`).
 const HEADER_REQUIREMENTS: Partial<Record<HeaderId, Requirements>> = {
   search: searchRequirements, memory: memoryRequirements,
-  desktop: vmRequirements,
-  terminals: terminalRequirements, artifacts: artifactRequirements,
-  codemap: codemapRequirements, pending: approvalsRequirements, menu: sessionMenuRequirements,
+  pending: approvalsRequirements, menu: sessionMenuRequirements,
 }
 
 /** A subagent's way to its parent: an up-arrow icon button ("Open parent: <title>"), so the subagent's own title keeps
@@ -134,45 +127,6 @@ function OwnerDetail({ owner, epoch, state }: { owner: string; epoch: number; st
   return <span title={`owned by ${owner}`}>{[label, state === 'connected' ? undefined : state, `epoch ${epoch}`].filter(Boolean).join(' · ')}</span>
 }
 
-/** `▣ N`: the session's artifacts, newest first; picking one opens the panel (35 §7.2). `row`: the compact menu's line. */
-function Artifacts({ session, row }: { session: string; row?: boolean }) {
-  const artifacts = useSessionField(session, 'artifacts')
-  const close = useHeaderMenuClose()
-  if (!artifacts?.size) return null
-  const list = [...artifacts.values()].sort((x, y) => y.created_at - x.created_at)
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        {row ? (
-          <MenuRow icon={LayoutGrid} label="Artifacts" detail={list.length} />
-        ) : (
-          <Button variant="ghost" className="h-9 gap-1 rounded-lg px-2 text-fg-secondary" aria-label="Artifacts">
-            ▣<span className="text-xs">{list.length}</span>
-          </Button>
-        )}
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-72">
-        {list.map((a) => (
-          <DropdownMenuItem
-            key={a.call_id}
-            className="flex-col items-start gap-0"
-            onSelect={() => {
-              close()
-              showArtifact(session, a.call_id)
-            }}
-          >
-            <span className="w-full truncate">{a.title}</span>
-            <span className="w-full truncate text-xs text-fg-tertiary">
-              {metaLine(a)}
-              {a.version > 1 ? ` · v${a.version}` : ''}
-            </span>
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
-
 /**
  * The layout tier (lib/header.ts) for the pane this header sits in, from measurement rather than a viewport
  * breakpoint: `row` has `min-w-max`, so its width is the bar's natural width whenever that exceeds the pane's, and
@@ -204,12 +158,13 @@ function useTier(header: RefObject<HTMLElement | null>, row: RefObject<HTMLEleme
 
 /**
  * 52 px bar over the column. Every control is one `HeaderItem` (`headerOrder`), rendered inline by the full bar and,
- * when the pane is too narrow for that (`useTier`), either kept in the compact bar (title · context % · one panel
- * button · chevron · ⋯) or listed as a labelled row behind the chevron (`HeaderMenu`), so the two layouts share one
- * source of truth.
+ * when the pane is too narrow for that (`useTier`), either kept in the compact bar (title · popout · chevron · ⋯) or
+ * listed as a labelled row behind the chevron (`HeaderMenu`), so the two layouts share one source of truth.
  * The dialogs and sheets the items open live here, not in the items, so a menu that closes on selection cannot
- * unmount them. Draggable window region. `first` (default): this column touches the window's top-left, so it carries
- * the sidebar toggle and the traffic-light inset; `onClose` adds a close control for a split pane.
+ * unmount them; that includes the panels opened from the bar above the composer (`TrayItems`: the terminal viewer, the
+ * live browser, the artifact panel, the CodeMap sheet). Draggable window region. `first` (default): this column touches
+ * the window's top-left, so it carries the sidebar toggle and the traffic-light inset; `onClose` adds a close control
+ * for a split pane.
  */
 export function Header({
   session,
@@ -232,20 +187,12 @@ export function Header({
   const pending = useApprovals((s) => s.pending.length)
   const parent = useSessionField(session ?? '', 'parent')
   const observed = useSessionField(session ?? '', 'observed')
-  const browser = useSessionField(session ?? '', 'browser')
-  const browserBusy = useBrowserBusy(session ?? '')
   const live = useSessionField(session ?? '', 'browserLive')
-  const artifacts = useSessionField(session ?? '', 'artifacts')
-  const terminals = useHasTerminals(session)
-  const codemap = useCodemapAvailable(session)
   const liveTitle = useSessionField(session ?? '', 'title')
   const running = useSessionField(session ?? '', 'running') === true
   // `list_sessions` rows: the title until `TitleChanged` lands, and the owner chip (68 §5) — patched live by `useInvalidateOn`.
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canQuery2 && (!!session) })
   const row = session ? sessions.data?.find((s) => s.id === session) : undefined
-  // 79 §6.5: the owner engine is a sandbox VM (`SessionSummary.owner` ↔ `SandboxInfo.engine`) → its desktop is one click away.
-  const sandboxes = useSandboxes()
-  const vm = row?.owner ? sandboxes.data?.find((s) => s.engine === row.owner && s.vm?.desktop?.enabled) : undefined
   // 183 §12.1: a remote chat's chip is live only while the follow stream is up (`FollowState`), offline when the owner is
   // not connected (or a routed call said so).
   const mesh = useMesh()
@@ -263,21 +210,6 @@ export function Header({
   const memoryTile = useTileOpen('memory', host ?? '')
   const toggleMemory = () =>
     host === null ? setMemory((o) => !o) : memoryTile ? closeTile(tileId('memory', host)) : void openMemoryTile(host)
-  const openBrowser = (session: string) => (host === null ? useSessions.getState().setBrowserLive(session, true) : void openBrowserTile(host))
-  // The globe's targets: the agent's headless browser (where this engine serves it) and the chat's `show_web` pages,
-  // closed ones included (`useBrowserTargets`); the item is gated here, not by `HEADER_REQUIREMENTS`, since a page needs no `browser_*`.
-  const targets = useBrowserTargets(session ?? '', !!session && !!browser && supports(discovery, browserRequirements))
-  const navigate = useNavigate()
-  const openBrowserTarget = (t: (typeof targets)[number]) => {
-    if (!session) return
-    openTarget(t, {
-      session,
-      host,
-      full: isMobile && nativeWebViews(),
-      openAgent: () => openBrowser(session),
-      route: (w) => void navigate({ to: '/web/$id', params: { id: w.id }, search: { url: w.url, title: w.title } }),
-    })
-  }
   const mac = isMacDesktop()
   const ref = useRef<HTMLElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -297,12 +229,7 @@ export function Header({
   const nav = first && headerToggle(sidebar) && !popped
   /** The talk view (B3): the header carries the way back to the same session's chat; the talk keeps running. */
   const chat = popout?.kind === 'talk'
-  /**
-   * The one panel button the compact bar keeps: artifacts (the session's output surface, with its count) over the
-   * live browser over terminals (a job detail); the others move behind the chevron.
-   */
-  const panel = artifacts?.size ? 'artifacts' : codemap ? 'codemap' : targets.length ? 'browser' : terminals ? 'terminals' : null
-  const { bar, menu } = layout(headerOrder(panel, canPopout() && !popped, chat, !!observed).filter(item => !HEADER_REQUIREMENTS[item.id] || supports(discovery, HEADER_REQUIREMENTS[item.id]!)), tier)
+  const { bar, menu } = layout(headerOrder(canPopout() && !popped, chat, !!observed).filter(item => !HEADER_REQUIREMENTS[item.id] || supports(discovery, HEADER_REQUIREMENTS[item.id]!)), tier)
 
   const render: Record<HeaderId, (mode: Mode) => ReactNode> = {
     search: (mode) =>
@@ -348,27 +275,6 @@ export function Header({
           <span className="truncate">{shared}</span>
         </Badge>
       ),
-    desktop: (mode) => {
-      if (!vm || (host === null && !canPopout())) return null
-      // A desktop already in its own window is focused there, never opened twice (one RFB session per VM).
-      const show = async () => {
-        const target = { kind: 'vm', name: vm.name } as const
-        if (host === null || (await popoutOpen(target))) await openPopout(target)
-        else openVmTile(host, vm.name)
-      }
-      return mode === 'row' ? (
-        <MenuRow icon={Monitor} label="Desktop" detail={vm.name} onSelect={() => void show().catch((e: unknown) => console.warn('open_window', e))} />
-      ) : (
-        <Button variant="ghost" size="sm" className="rounded-lg text-fg-secondary" aria-label={`Desktop of ${vm.name}`} onClick={() => void show().catch((e: unknown) => console.warn('open_window', e))}>
-          <Monitor className="size-5" />
-          {!compact && vm.name}
-        </Button>
-      )
-    },
-    terminals: (mode) => (session ? <TerminalButton session={session} row={mode === 'row'} onOpen={() => (host === null ? setTerminal(true) : void openTerminalsTile(host))} /> : null),
-    browser: (mode) => (session ? <BrowserButton targets={targets} busy={browserBusy} row={mode === 'row'} onOpen={openBrowserTarget} /> : null),
-    artifacts: (mode) => (session ? <Artifacts session={session} row={mode === 'row'} /> : null),
-    codemap: (mode) => (session && codemap ? <CodeMapButton session={session} row={mode === 'row'} /> : null),
     pending: (mode) =>
       pending === 0 ? null : mode === 'row' ? (
         <MenuRow label="Pending approvals" detail={pending} className="text-warning" onSelect={() => setSheet(true)} />

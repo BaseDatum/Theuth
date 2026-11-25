@@ -61,51 +61,45 @@ test('tier 2 moves shed items out of the bar and into the menu, so nothing is lo
   }
 })
 
-test('215 C3: no model item; the title follows the sidebar toggle in the full bar and opens the compact bar, whichever panel button the session has', () => {
-  for (const panel of ['artifacts', 'browser', 'terminals', null] as const) {
-    const order = headerOrder(panel, true)
-    expect(ids(order)).not.toContain('model')
-    const full = ids(layout(order, 0).bar)
-    expect(full.indexOf('title')).toBe(full.indexOf('sidebar') + 1)
-    // Compact: title · the one panel button · popout · chevron · ⋯ stay inline.
-    const t1 = layout(order, 1)
-    expect(ids(t1.bar)).toEqual(['sidebar', 'title', ...(panel ? [panel] : []), 'popout', 'more', 'menu', 'close'])
-    expect(ids(t1.menu)).not.toContain('title')
-    // Tier 2 sheds the panel button, never the title or the popout button.
-    const t2 = layout(order, 2)
-    expect(ids(t2.bar)).toEqual(['sidebar', 'title', 'popout', 'more', 'menu', 'close'])
-    expect(ids(t2.menu)).not.toContain('title')
-    expect(ids(t2.menu).indexOf('memory')).toBe(1)
-    // Open in new window is reachable without opening the chevron at every tier.
-    for (let t = 0; t < TIERS; t++) expect(ids(layout(order, t).bar)).toContain('popout')
+test('215 C3: no model item; the title follows the sidebar toggle in the full bar and opens the compact bar', () => {
+  const order = headerOrder(true)
+  expect(ids(order)).not.toContain('model')
+  const full = ids(layout(order, 0).bar)
+  expect(full.indexOf('title')).toBe(full.indexOf('sidebar') + 1)
+  // Compact and narrowest: title · popout · chevron · ⋯ stay inline; never the title or the popout button behind the chevron.
+  for (const tier of [1, 2]) {
+    const l = layout(order, tier)
+    expect(ids(l.bar)).toEqual(['sidebar', 'title', 'popout', 'more', 'menu', 'close'])
+    expect(ids(l.menu)).not.toContain('title')
+    expect(ids(l.menu).indexOf('memory')).toBe(1)
   }
+  // Open in new window is reachable without opening the chevron at every tier.
+  for (let t = 0; t < TIERS; t++) expect(ids(layout(order, t).bar)).toContain('popout')
 })
 
 test('where no second window exists (iOS, or the popped window itself) the popout item is absent at every tier', () => {
-  for (const panel of ['artifacts', null] as const) {
-    const order = headerOrder(panel, false)
-    for (let t = 0; t < TIERS; t++) {
-      const l = layout(order, t)
-      expect(ids(l.bar)).not.toContain('popout')
-      expect(ids(l.menu)).not.toContain('popout')
-    }
-    // Everything else is where it was.
-    expect(ids(layout(order, 2).bar)).toEqual(['sidebar', 'title', 'more', 'menu', 'close'])
+  const order = headerOrder(false)
+  for (let t = 0; t < TIERS; t++) {
+    const l = layout(order, t)
+    expect(ids(l.bar)).not.toContain('popout')
+    expect(ids(l.menu)).not.toContain('popout')
   }
+  // Everything else is where it was.
+  expect(ids(layout(order, 2).bar)).toEqual(['sidebar', 'title', 'more', 'menu', 'close'])
 })
 
 test('the talk view keeps Back to chat inline top-left at every tier; the chat view has no such item', () => {
-  const order = headerOrder('artifacts', true, true)
+  const order = headerOrder(true, true)
   for (let t = 0; t < TIERS; t++) {
     const bar = ids(layout(order, t).bar)
     expect(bar.indexOf('chat')).toBe(bar.indexOf('sidebar') + 1)
     expect(bar.indexOf('chat')).toBeLessThan(bar.indexOf('title'))
   }
-  expect(ids(headerOrder('artifacts', true))).not.toContain('chat')
+  expect(ids(headerOrder(true))).not.toContain('chat')
 })
 
 test('141 R3 T11: a watch-only child keeps its Watching chip (the parent item) inline at every tier, ahead of shed items', () => {
-  const order = headerOrder('artifacts', true, false, true)
+  const order = headerOrder(true, false, true)
   for (let t = 0; t < TIERS; t++) {
     const bar = ids(layout(order, t).bar)
     expect(bar).toContain('parent')
@@ -114,7 +108,7 @@ test('141 R3 T11: a watch-only child keeps its Watching chip (the parent item) i
   // Tier 2 still lists it in the menu as the "Watching inside" row too.
   expect(ids(layout(order, 2).menu)).toContain('parent')
   // A native child's parent crumb stays behind the chevron as before.
-  expect(ids(layout(headerOrder('artifacts', true), 1).bar)).not.toContain('parent')
+  expect(ids(layout(headerOrder(true), 1).bar)).not.toContain('parent')
 })
 
 test('the panel is centred on a wide pane and never wider than PANEL_MAX', () => {
@@ -150,10 +144,8 @@ test('183 §4.5: the approvals pill follows the session\'s effective value on it
   expect(approvalsOff(undefined, null)).toBe(false)
 })
 
-test('the context, cost and approvals-off chips are gone from the header at every tier (they live in the composer bar); the live panel buttons stay', () => {
-  for (const panel of ['artifacts', 'browser', 'terminals', 'codemap', null] as const) {
-    const order = ids(headerOrder(panel, true))
-    for (const gone of ['context', 'cost', 'approvalsOff']) expect(order).not.toContain(gone)
-    for (const kept of ['terminals', 'browser', 'artifacts', 'codemap', 'pending', 'more', 'menu', 'close']) expect(order).toContain(kept)
-  }
+test('the context, cost and approvals-off chips and the panel buttons are gone from the header at every tier (composer bar and the bar above it); the rest stays', () => {
+  const order = ids(headerOrder(true))
+  for (const gone of ['context', 'cost', 'approvalsOff', 'terminals', 'browser', 'artifacts', 'codemap', 'desktop']) expect(order).not.toContain(gone)
+  for (const kept of ['title', 'memory', 'parent', 'owner', 'shared', 'pending', 'popout', 'more', 'menu', 'close']) expect(order).toContain(kept)
 })

@@ -21,6 +21,8 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('@/components/ui/sidebar', () => ({ useSidebar: () => ({ isMobile: false }) }))
 vi.mock('@/rpc/capabilities', () => ({ useQuerySupport: () => true }))
 vi.mock('@/lib/popout', () => ({ POPOUT: null, canPopout: () => true, openPopout: vi.fn(async () => {}) }))
+// Every engine method is there: the tray's panels pass their capability gates.
+vi.mock('@/rpc/discovery', async (original) => ({ ...(await original<object>()), supports: () => true }))
 const jobs: JobView[] = [
   { session: 's1', id: 'j1', command: 'mbx test -p tools', state: 'running', secs: 41, log: '/log', tail: '', name: null, pty: false },
   { session: 's1', id: 'j2', command: 'python3 -q', state: 'running', secs: 62, log: '/log', tail: '', name: null, pty: true },
@@ -210,7 +212,7 @@ test('dashes flank the grabber in palette order, cap each category, blink on out
   expect(groups[0]?.firstElementChild?.textContent).toBe('+2')
   expect(groups.slice(1).map((g) => g.lastElementChild?.textContent)).toEqual(['+3', '+1', '+4'])
   expect(groups.map((g) => g.querySelector('.activity-dash')?.className)).toEqual([expect.stringContaining('bg-warning'), expect.stringContaining('bg-project-lapis'), expect.stringContaining('bg-project-faience'), expect.stringContaining('bg-project-plum')])
-  expect(groups.every((g) => [...g.querySelectorAll('.activity-dash')].every((d) => /\bh-1\b/.test(d.className) && /\bw-3\b/.test(d.className)))).toBe(true)
+  expect(groups.every((g) => [...g.querySelectorAll('.activity-dash')].every((d) => d.className.split(' ').includes('h-[5px]') && d.className.split(' ').includes('w-4')))).toBe(true)
   expect(groups[0]?.querySelectorAll('.bg-project-malachite').length).toBe(23)
   expect(document.querySelectorAll('[role="separator"]')).toHaveLength(0)
   // One row: [subagents] [grabber] [jobs · terminals · reminders, then the Advisor pill].
@@ -237,6 +239,22 @@ test('dashes flank the grabber in palette order, cap each category, blink on out
   expect(after).not.toBe(before)
   expect(after?.className).toContain('subagent-blink')
   expect(groups[3]?.querySelector('.subagent-blink')).toBeNull()
+})
+
+test('artifacts left the header for the bar: a narrow sand dash each opens it; the opened tray lists them in a tile', async () => {
+  const st = useSessions.getState()
+  st.ensure('s1')
+  const art = (n: number) => ({ id: `a${n}`, session: 's1', call_id: `c${n}`, name: `a${n}.md`, title: `report ${n}`, kind: 'markdown' as const, mime: 'text/markdown', bytes: 10, version: 1, path: `/a${n}.md`, source: null, preview: null, pages: null, origin: null, created_at: n })
+  st.setArtifacts('s1', [art(1), art(2)])
+  await mount()
+  const dashes = [...document.querySelectorAll<HTMLButtonElement>('div[aria-label="2 artifacts"] button')]
+  expect(dashes.map((d) => d.getAttribute('aria-label'))).toEqual(['Artifact report 2 · open', 'Artifact report 1 · open'])
+  expect(dashes[0]!.querySelector('.activity-dash')!.className.split(' ')).toEqual(expect.arrayContaining(['bg-project-sand', 'w-[11px]']))
+  await run(() => dashes[1]!.click())
+  expect(useSessions.getState().sessions.s1?.artifactPanel).toBe('c1')
+  await click('Show background activity')
+  const tiles = [...document.querySelectorAll('[data-tray-tiles] > *')]
+  expect(tiles.map((t) => t.textContent)).toEqual(['Artifactsreport 2 · report 12'])
 })
 
 test('many dashes wrap upward (wrap-reverse) inside the pane instead of running off its sides; order and the bottom row stay', async () => {

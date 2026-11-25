@@ -4,11 +4,10 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal as Xterm } from '@xterm/xterm'
 import { useQuery } from '@tanstack/react-query'
 import { AppWindow, Keyboard } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { openTerminalsTile } from '@/components/tiles/open'
-import { PtyIcon } from './Indicators'
 import { Sheet, SheetClose, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { decode, utf8ToB64 } from '@/lib/base64'
@@ -31,7 +30,6 @@ import type { RpcClient } from '@/rpc/client'
 import type { TerminalSummary } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 import { useSessionField } from '@/store/sessions'
-import { MenuRow } from './HeaderMenu'
 
 // Fixed soot canvas so the 16-colour palette reads on either app theme.
 const BG = '#12100e'
@@ -581,14 +579,12 @@ export function useHasTerminals(session: string | null): boolean {
 }
 
 /**
- * Header icon (or compact menu `row`) opening `TerminalViewer`, which the header owns; shown once `useHasTerminals`.
- * ⌥-click opens the session's first terminal in its own window instead (the POPOUT ⌥ convention).
+ * The tray's Terminals tile (`children` in a plain button styled by `className`) opening `TerminalViewer`, which the
+ * header owns; shown once `useHasTerminals`. ⌥-click opens the session's first terminal in its own window instead (the
+ * POPOUT ⌥ convention).
  */
-export function TerminalButton({ session, row, onOpen }: { session: string; row?: boolean; onOpen(): void }) {
+export function TerminalButton({ session, onOpen, className, children }: { session: string; onOpen(): void; className?: string; children: ReactNode }) {
   const api = useApi()
-  const alt = useRef(false)
-  // A retained-only terminal (found by `list_terminals`) is not live: the glyph animates on `terminal` alone.
-  const live = !!useSessionField(session, 'terminal')
   if (!useHasTerminals(session)) return null
   const open = (popout: boolean) => {
     if (!popout || !canPopout()) return onOpen()
@@ -597,10 +593,9 @@ export function TerminalButton({ session, row, onOpen }: { session: string; row?
       .then((ts) => (ts[0] ? openPopout({ kind: 'pty', session: ts[0].session, job: ts[0].id }) : onOpen()))
       .catch(onOpen)
   }
-  if (row) return <MenuRow icon={<PtyIcon live={live} className="size-4 shrink-0 text-fg-secondary" />} label="Terminals" onClick={(e) => (alt.current = e.altKey)} onSelect={() => open(alt.current)} />
   return (
-    <Button variant="ghost" className="size-9 rounded-lg text-fg-secondary" aria-label="Terminals" onClick={(e) => open(e.altKey)}>
-      <PtyIcon live={live} className="size-5" />
-    </Button>
+    <button type="button" className={className} aria-label="Terminals" title="Terminals" onClick={(e) => open(e.altKey)}>
+      {children}
+    </button>
   )
 }

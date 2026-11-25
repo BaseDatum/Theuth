@@ -475,7 +475,7 @@ body.voice-hold {
 }
 :is(a, button):is(:hover, :focus-visible) > .activity-dash {
   opacity: 1;
-  height: 6px;
+  height: 8px;
 }
 @keyframes subagent-in {
   from {

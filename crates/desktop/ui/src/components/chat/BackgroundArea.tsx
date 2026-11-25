@@ -14,6 +14,7 @@ import { BackgroundCard } from './BackgroundCard'
 import { ActivityDot, BackgroundDashes, SubagentDashes, SubagentLink, TerminalLink } from './SubagentStrip'
 import { openSurface, surfaceOf } from './slash'
 import { TodoCard } from './TodoCard'
+import { TrayTiles, trayHasItems, useTray } from './TrayItems'
 
 function useClock(enabled: boolean) {
   const [now, setNow] = useState(Date.now)
@@ -36,8 +37,10 @@ export function countdown(firesAt: number, now: number): string {
 }
 
 /**
- * One grabber, fixed against the composer; every populated category opens above it. The activity dashes grow out of
- * the bar's ends on its row (subagents left, jobs · terminals · reminders right), the `trailing` Advisor pill last.
+ * One grabber, fixed against the composer; every populated category opens above it: the to-dos, the tiles (terminals,
+ * browser, artifacts, subagents, jobs, desktop, CodeMap — the panels moved out of the header), then the cards. The
+ * activity dashes grow out of the bar's ends on its row (subagents left; jobs · terminals · browsers · artifacts ·
+ * desktop · reminders right), the `trailing` Advisor pill last.
  */
 export function BackgroundArea({ session, trailing }: { session: string; trailing?: ReactNode }) {
   const { sessions: store } = useScope()
@@ -55,6 +58,7 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
   const jobsExpanded = useSessionField(session, 'jobsExpanded') ?? false
   const remindersExpanded = useSessionField(session, 'remindersExpanded') ?? false
   const now = useClock(shown)
+  const tray = useTray(session)
   const focused = usePanes((s) => s.focused === session)
   useEffect(() => {
     if (!focused) return
@@ -69,8 +73,9 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
   const terminalCount = new Set([...(terminals ?? []), ...(ptys ?? [])]).size
   const jobCount = jobs?.size ?? 0
   const reminderCount = reminders?.size ?? 0
-  // `agents` (liveRows) is the uncapped stripRows, so every dash the row could show keeps the bar visible.
-  if (!hasTodos && !agents.length && !jobCount && !terminalCount && !reminderCount) {
+  // `agents` (liveRows) is the uncapped stripRows, so every dash the row could show keeps the bar visible; so does any
+  // panel (`trayHasItems`), the bar being its only way in.
+  if (!hasTodos && !agents.length && !jobCount && !terminalCount && !reminderCount && !trayHasItems(tray)) {
     return trailing ? <div className="mx-auto flex min-h-7 w-full shrink-0 select-none items-center justify-center px-4 text-xs text-fg-tertiary md:max-w-[768px]">{trailing}</div> : null
   }
   const waiting = agents.filter((a) => a.state.state === 'approval').length
@@ -83,6 +88,7 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
       {shown && (
         <div id={blockId} className="mx-auto flex max-h-[calc(var(--visible-band,100dvh)/2)] w-full max-w-[768px] shrink-0 flex-col gap-1.5 overflow-y-auto px-4">
           {hasTodos && <TodoCard session={session} />}
+          <TrayTiles tray={tray} />
           {!!agents.length && (
             <BackgroundCard title="Subagents" color={backgroundColors.subagents.bg} summary={`${agents.length} live${waiting ? ` · ${waiting} waiting on approval` : ''}`} expanded={subagentsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'subagents', open)}>
               <ul>
@@ -119,12 +125,12 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
         <div className="pointer-events-none relative z-10 -mr-3 flex min-w-0 items-end justify-end py-0.5 [&>*]:pointer-events-auto">
           <SubagentDashes session={session} />
         </div>
-        <button type="button" aria-expanded={shown} aria-controls={blockId} aria-label={label} title={label} onClick={() => store.getState().setTodosShown(session, !shown)} className="group flex h-5 w-16 shrink-0 cursor-pointer touch-manipulation select-none items-center justify-center rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
-          <span className="h-1 w-9 rounded-full bg-fg-tertiary/40 transition-colors group-hover:bg-fg-secondary group-active:bg-fg-secondary" />
+        <button type="button" aria-expanded={shown} aria-controls={blockId} aria-label={label} title={label} onClick={() => store.getState().setTodosShown(session, !shown)} className="group flex h-6 w-20 shrink-0 cursor-pointer touch-manipulation select-none items-center justify-center rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          <span className="h-[5px] w-12 rounded-full bg-fg-tertiary/40 transition-colors group-hover:bg-fg-secondary group-active:bg-fg-secondary" />
         </button>
         <div className="pointer-events-none relative z-10 -ml-3 flex min-w-0 items-end gap-3 [&>*]:pointer-events-auto">
           <div className="flex min-w-0 flex-wrap-reverse items-end justify-start gap-x-[7px] py-0.5">
-            <BackgroundDashes session={session} />
+            <BackgroundDashes session={session} tray={tray} />
           </div>
           {trailing && <div className="flex shrink-0 items-center">{trailing}</div>}
         </div>
