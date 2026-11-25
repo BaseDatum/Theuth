@@ -11,6 +11,8 @@ import type { BroadcastRow } from "@/rpc/bindings/method.agent.output"
 import type { SessionActivity } from "@/rpc/bindings/method.agent.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import type { AgentInfo } from '@/store/ui-events'
+import type { AgentSummary } from '@/rpc/bindings/method.roster.output'
+import { deskList, deskSessions } from '@/lib/desks'
 import { activeDescendants, allRoots, deskRoots, groupRows, outcomeLines, runningRoots, sectionState, splitGroups, summarize, title } from './broadcast'
 import { Form } from './BroadcastDialog'
 
@@ -172,27 +174,55 @@ test('outcome lines put failures first and name rows like the picker: the list, 
   ])
 })
 
-// B is the scout's desk, D is theuth's; a1 (A's child) carries a desk id by mistake and C has an empty one.
-const deskSessions = [
+// The roster: scout's current desk is B, theuth's is D; maya has no desk yet; ghost is only proposed. Every session
+// that ever was a desk keeps `SessionSummary.desk`: C is theuth's earlier desk, a1 carries one by mistake, and E (a
+// root added below) is the desk of seed-1, an agent gone from the roster. Only the roster's current desks count.
+const agent = (name: string, desk: string | null, status = 'idle') => ({ desk, status, file: { name } }) as unknown as AgentSummary
+const ROSTER = [agent('scout', 'B'), agent('theuth', 'D', 'working'), agent('maya', null), agent('ghost', 'G', 'proposed')]
+const DESKS = deskSessions(deskList(ROSTER))
+const deskSummaries = [
   summary('B', { desk: 'scout' }),
   summary('a1', { desk: 'stray', parent: 'A' }),
-  summary('C', { desk: '' }),
+  summary('C', { desk: 'theuth' }),
   summary('D', { desk: 'theuth' }),
+  summary('E', { desk: 'seed-1' }),
 ]
+const withStale = [...rows, row('E', 'E', 0), row('G', 'G', 0)]
 
-test('"All desks" picks only roots whose session has a desk, theuth first; a desk child is not a desk root', () => {
-  expect(deskRoots(rows, deskSessions)).toEqual(['D', 'B'])
-  expect(deskRoots(rows, [])).toEqual([])
-  expect(deskRoots(rows, undefined)).toEqual([])
+test('the desks are the sidebar\'s: one per active roster agent, at its current desk session, theuth first', () => {
+  expect(deskList(ROSTER).map((d) => [d.name, d.id])).toEqual([['theuth', 'D'], ['scout', 'B'], ['maya', null]])
+  expect([...DESKS]).toEqual([['D', 'theuth'], ['B', 'scout']])
 })
 
-test('the picker splits groups by the root\'s desk: desks (theuth first), then the rest in order', () => {
-  const { desks, rest } = splitGroups(groupRows(rows), deskSessions)
+test('"All desks" picks only current desks: an agent\'s older desk, a removed agent\'s desk and a proposed one are not', () => {
+  expect(deskRoots(withStale, DESKS)).toEqual(['D', 'B'])
+  expect(deskRoots(withStale, new Map())).toEqual([])
+})
+
+test('the picker splits groups by the roster\'s desks (the sidebar\'s order); stale desk sessions list under Sessions', () => {
+  const { desks, rest } = splitGroups(groupRows(withStale), DESKS)
   expect(desks.map((g) => [g.root.id, g.children.map((c) => c.id)])).toEqual([
     ['D', []],
     ['B', ['b1']],
   ])
-  expect(rest.map((g) => g.root.id)).toEqual(['A', 'C'])
+  expect(rest.map((g) => g.root.id)).toEqual(['A', 'C', 'E', 'G'])
+})
+
+test('the desks preset: the Desks section and "Send to N" count the roster\'s desks only, one row per agent', () => {
+  useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'legacy' } })
+  const qc = new QueryClient()
+  qc.setQueryData(['activity'], withStale)
+  qc.setQueryData(queryKeys.sessions, deskSummaries)
+  qc.setQueryData(queryKeys.roster, ROSTER)
+  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(Form, { req: { text: 'hi', preset: 'desks' }, onDone: () => {} })))
+  expect(html.match(/>Send to \d+ sessions?</g)).toEqual(['>Send to 2 sessions<'])
+  const desks = html.slice(html.indexOf('aria-label="Desks"'), html.lastIndexOf('<input', html.indexOf('aria-label="All sessions"')))
+  // Two desk rows and scout's subagent b1 under its desk.
+  expect(desks.match(/type="checkbox"/g)).toHaveLength(3)
+  expect(desks.match(/>(theuth|scout|seed-1|b1)</g)).toEqual(['>theuth<', '>scout<', '>b1<'])
+  // The Desks header reads 2 of 2; the Sessions header 0 of its roots (A, C, E, G).
+  const headers = [...html.matchAll(/tabular-nums text-fg-tertiary">(.*?)<\/span>/g)].map((m) => m[1]!.replace(/<!-- -->/g, ''))
+  expect(headers.filter((t) => / of /.test(t))).toEqual(['2 of 2', '0 of 4'])
 })
 
 test('a section header is all / some / none by its roots alone; an empty section is none', () => {
@@ -206,7 +236,8 @@ test('broadcast-top: message, one Send button and the preview line render above 
   useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'legacy' } })
   const qc = new QueryClient()
   qc.setQueryData(['activity'], rows)
-  qc.setQueryData(queryKeys.sessions, deskSessions)
+  qc.setQueryData(queryKeys.sessions, deskSummaries)
+  qc.setQueryData(queryKeys.roster, ROSTER)
   const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, createElement(Form, { req: { text: 'hi' }, onDone: () => {} })))
   const firstRow = html.indexOf('type="checkbox"')
   expect(firstRow).toBeGreaterThan(0)

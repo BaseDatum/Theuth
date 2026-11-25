@@ -7,7 +7,6 @@ import { notify as toast } from '@/lib/notify'
 import { openBroadcastDialog } from '@/components/chat/BroadcastDialog'
 import { useSessionDrag } from '@/components/chat/Panes'
 import { errorText } from '@/components/settings/shared'
-import { THEUTH } from '@/components/tasks/helpers'
 import { keys, useAgents } from '@/components/tasks/queries'
 import { Button } from '@/components/ui/button'
 import { SidebarGroupLabel, SidebarMenuButton, SidebarMenuItem } from '@/components/ui/sidebar'
@@ -16,6 +15,7 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { canPopout, openPopout } from '@/lib/popout'
 import { live, subtrees } from '@/lib/session-tree'
 import { cn } from '@/lib/utils'
+import { type Desk, deskList } from '@/lib/desks'
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { useSessionField, useSessions } from '@/store/sessions'
 import { AgentTree } from './AgentTree'
@@ -35,13 +35,9 @@ export function deskLabels(names: readonly string[]): string[] {
   })
 }
 
-/** The group's desks: every active roster agent (not proposed, not invalid), theuth first; `id` is its desk session, if open yet. */
-export function useDeskList(): { id: string | null; name: string; working: boolean }[] {
-  const agents = useAgents().data ?? []
-  return agents
-    .filter((a) => a.status !== 'proposed' && a.status !== 'invalid')
-    .map((a) => ({ id: a.desk, name: a.file.name, working: a.status === 'working' }))
-    .sort((x, y) => Number(y.name === THEUTH) - Number(x.name === THEUTH))
+/** The group's desks (`deskList`): every active roster agent, theuth first; `id` is its desk session, if open yet. */
+export function useDeskList(): Desk[] {
+  return deskList(useAgents().data ?? [])
 }
 
 /**

@@ -1,6 +1,6 @@
 import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { Branch, GLYPH, ago } from '@/components/sidebar/AgentTree'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,8 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { childrenOf } from '@/lib/session-tree'
+import { deskList, deskSessions } from '@/lib/desks'
+import { useAgents } from '@/components/tasks/queries'
 import { cn } from '@/lib/utils'
 import type { BroadcastReceipt } from "@/rpc/bindings/method.agent.output"
 import type { Delivery } from "@/rpc/bindings/method.agent.output"
@@ -93,6 +95,10 @@ export function Form({ req, onDone }: { req: Request; onDone(): void }) {
   const api = useApi()
   const { data: rows, error: loadError } = useQuery({ enabled: canQuery1, queryKey: ['activity'], queryFn: () => api.list_activity() })
   const { data: sessions } = useQuery({ enabled: canQuery1_2, queryKey: queryKeys.sessions, queryFn: () => api.list_sessions() })
+  // The sidebar's desks, exactly: each active roster agent's current desk session (`deskList`), never a session that
+  // only once was a desk or whose agent left the roster (those list under Sessions).
+  const roster = useAgents()
+  const deskMap = useMemo(() => deskSessions(deskList(roster.data ?? [])), [roster.data])
   const [picked, setPicked] = useState<Set<string> | null>(null)
   const [text, setText] = useState(req.text ?? '')
   const [delivery, setDelivery] = useState<Delivery>('steer')
@@ -105,12 +111,12 @@ export function Form({ req, onDone }: { req: Request; onDone(): void }) {
   }, [])
 
   // Untouched selection follows the rows until the first click: the preset applies to whatever loads (a desks preset
-  // also waits for the session list, which is where `desk` lives).
+  // also waits for the roster, which is where the desks come from).
   const initial = (rows: AgentInfo[]) => {
     if (req.preset === 'roots') return allRoots(rows)
     if (req.preset === 'desks') {
-      const desks = deskRoots(rows, sessions)
-      if (desks.length > 0 || !sessions) return desks
+      const desks = deskRoots(rows, deskMap)
+      if (desks.length > 0 || !roster.data) return desks
     }
     return runningRoots(rows)
   }
@@ -167,9 +173,9 @@ export function Form({ req, onDone }: { req: Request; onDone(): void }) {
   }
 
   const n = ids.size
-  const { desks, rest } = splitGroups(rows ? groupRows(rows) : [], sessions)
+  const { desks, rest } = splitGroups(rows ? groupRows(rows) : [], deskMap)
   const deskIds = desks.map((g) => g.root.id)
-  const section = { ids, now, sessions, onToggle: toggle, onPick: setPicked }
+  const section = { ids, now, sessions, desks: deskMap, onToggle: toggle, onPick: setPicked }
   return (
     <>
       <section className="space-y-2 text-sm">
@@ -245,6 +251,7 @@ function Section({
   ids,
   now,
   sessions,
+  desks,
   onToggle,
   onPick,
 }: {
@@ -253,6 +260,7 @@ function Section({
   ids: Set<string>
   now: number
   sessions: SessionSummary[] | undefined
+  desks: ReadonlyMap<string, string>
   onToggle(id: string): void
   onPick(ids: Set<string>): void
 }) {
@@ -293,6 +301,7 @@ function Section({
               checked={ids.has(g.root.id)}
               now={now}
               sessions={sessions}
+              desks={desks}
               onToggle={onToggle}
               subagents={g.children.filter((c) => active(c.activity)).length}
             />
@@ -304,7 +313,7 @@ function Section({
               moreClass="flex min-h-11 w-full items-center rounded-lg py-2 pr-2 text-left text-fg-tertiary hover:bg-layer-2"
               render={(r, sub) => (
                 <>
-                  <Row row={r} checked={ids.has(r.id)} now={now} sessions={sessions} onToggle={onToggle} />
+                  <Row row={r} checked={ids.has(r.id)} now={now} sessions={sessions} desks={desks} onToggle={onToggle} />
                   {sub}
                 </>
               )}
@@ -322,6 +331,7 @@ function Row({
   checked,
   now,
   sessions,
+  desks,
   onToggle,
   subagents = 0,
 }: {
@@ -329,6 +339,7 @@ function Row({
   checked: boolean
   now: number
   sessions: SessionSummary[] | undefined
+  desks: ReadonlyMap<string, string>
   onToggle(id: string): void
   /** A root's `active` descendants: an idle root with any reads as running, as "Running roots" ticks it. */
   subagents?: number
@@ -338,7 +349,7 @@ function Row({
   const sub = subagents > 0 ? `${subagents} subagent${subagents === 1 ? '' : 's'} active` : ''
   const extra = [a && counts(a), sub].filter(Boolean).join(' · ')
   const age = ago(a?.last_active ?? null, now)
-  const desk = isRoot(row) ? deskOf(row.id, sessions) : undefined
+  const desk = isRoot(row) ? deskOf(row.id, desks) : undefined
   return (
     <label
       className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg py-2 pr-2 hover:bg-layer-2 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"

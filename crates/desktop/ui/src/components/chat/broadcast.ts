@@ -57,28 +57,33 @@ export function runningRoots(rows: AgentInfo[]): string[] {
 /** What `BroadcastTargets::Roots` selects. */
 export const allRoots = (rows: AgentInfo[]): string[] => rows.filter(isRoot).map((r) => r.id)
 
-/** The roster name of a desk root (`SessionSummary.desk`, 66 §8); `undefined` for every other session. */
-export const deskOf = (id: string, sessions: readonly SessionSummary[] | undefined): string | undefined =>
-  sessions?.find((s) => s.id === id)?.desk || undefined
+/**
+ * The roster name of a desk root, `undefined` for every other session. `desks` is the sidebar's set (`deskSessions` of
+ * `deskList`): each active roster agent's CURRENT desk session. Not `SessionSummary.desk`: an agent's earlier desk
+ * sessions keep that field, and so do the desks of agents gone from the roster; those are plain sessions here.
+ */
+export const deskOf = (id: string, desks: ReadonlyMap<string, string>): string | undefined => desks.get(id)
 
-/** Stable sort key: the `theuth` desk ahead of the rest (the sidebar's Desks order). */
-const theuthFirst = (sessions: readonly SessionSummary[] | undefined) => (x: string, y: string) =>
-  Number(deskOf(y, sessions) === 'theuth') - Number(deskOf(x, sessions) === 'theuth')
-
-/** What "All desks" selects: roots whose session is a desk, in `rows` order with the `theuth` desk first (BROADCAST-DESKS D1). */
-export function deskRoots(rows: AgentInfo[], sessions: readonly SessionSummary[] | undefined): string[] {
-  return rows
-    .filter((r) => isRoot(r) && deskOf(r.id, sessions))
-    .map((r) => r.id)
-    .sort(theuthFirst(sessions))
+/** Stable sort key: the sidebar's Desks order (`deskList`: theuth first, then the roster's). */
+const deskOrder = (desks: ReadonlyMap<string, string>) => {
+  const at = new Map([...desks.keys()].map((id, i) => [id, i]))
+  return (x: string, y: string) => (at.get(x) ?? 0) - (at.get(y) ?? 0)
 }
 
-/** The picker's two sections: groups whose root is a desk (theuth first), then the rest in input order (D2). */
-export function splitGroups(groups: Group[], sessions: readonly SessionSummary[] | undefined): { desks: Group[]; rest: Group[] } {
-  const by = theuthFirst(sessions)
+/** What "All desks" selects: the live roots that are a current desk, in the sidebar's order (BROADCAST-DESKS D1). */
+export function deskRoots(rows: AgentInfo[], desks: ReadonlyMap<string, string>): string[] {
+  return rows
+    .filter((r) => isRoot(r) && desks.has(r.id))
+    .map((r) => r.id)
+    .sort(deskOrder(desks))
+}
+
+/** The picker's two sections: groups whose root is a current desk (the sidebar's order), then the rest in input order (D2). */
+export function splitGroups(groups: Group[], desks: ReadonlyMap<string, string>): { desks: Group[]; rest: Group[] } {
+  const by = deskOrder(desks)
   return {
-    desks: groups.filter((g) => deskOf(g.root.id, sessions)).sort((x, y) => by(x.root.id, y.root.id)),
-    rest: groups.filter((g) => !deskOf(g.root.id, sessions)),
+    desks: groups.filter((g) => desks.has(g.root.id)).sort((x, y) => by(x.root.id, y.root.id)),
+    rest: groups.filter((g) => !desks.has(g.root.id)),
   }
 }
 
