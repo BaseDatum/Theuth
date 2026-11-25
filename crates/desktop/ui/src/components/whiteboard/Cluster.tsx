@@ -8,6 +8,7 @@ import {
   Ellipsis,
   Eraser,
   FileText,
+  FileCode,
   Frame,
   GitCompare,
   Globe,
@@ -33,7 +34,7 @@ import type { InkColour, InkTool } from './canvas/model'
 import type { Mode, WbStore } from './canvas/store'
 import { PALETTE, resolveColour } from './native-ink'
 
-export type AddKind = 'sticky' | 'note' | 'artifact' | 'diff' | 'terminal' | 'web' | 'image' | 'clipboard'
+export type AddKind = 'sticky' | 'note' | 'artifact' | 'excerpt' | 'diff' | 'terminal' | 'web' | 'image' | 'clipboard'
 
 export type ClusterProps = {
   store: WbStore
@@ -62,6 +63,7 @@ const ADD: { kind: AddKind; label: string; icon: ReactNode }[] = [
   { kind: 'sticky', label: 'Sticky', icon: <StickyNote className="size-4" /> },
   { kind: 'note', label: 'Note', icon: <FileText className="size-4" /> },
   { kind: 'artifact', label: 'Artifact from the session', icon: <Presentation className="size-4" /> },
+  { kind: 'excerpt', label: 'File excerpt', icon: <FileCode className="size-4" /> },
   { kind: 'diff', label: 'Diff of the working tree', icon: <GitCompare className="size-4" /> },
   { kind: 'terminal', label: 'Terminal', icon: <SquareTerminal className="size-4" /> },
   { kind: 'web', label: 'Web page', icon: <Globe className="size-4" /> },

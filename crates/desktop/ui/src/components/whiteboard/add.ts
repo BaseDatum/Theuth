@@ -87,3 +87,32 @@ export async function placeFromClipboard(doc: Y.Doc, spot: Spot, blobPut: (key: 
   if (url) return place(doc, spot, 'web', new URL(url).hostname, { t: 'web', url })
   return place(doc, spot, 'sticky', 'Sticky', { t: 'sticky', text: text.trim().slice(0, 280) })
 }
+
+/** `excerpt.text` limit (contract §2.2) and the lines a whole-file excerpt takes. */
+export const EXCERPT_MAX = 16_000
+export const EXCERPT_LINES = 80
+
+/** `src/app.ts`, `src/app.ts:10`, `src/app.ts:10-40`, `src/app.ts#L10-L40` → path and an optional 1-based line range. */
+export function parseFileRef(s: string): { path: string; start?: number; end?: number } | null {
+  const t = s.trim()
+  if (!t) return null
+  const m = /^(.*?)(?:#L(\d+)(?:-L?(\d+))?|:(\d+)(?:-(\d+))?)$/.exec(t)
+  if (!m || !m[1]) return { path: t }
+  const a = Number(m[2] ?? m[4])
+  const b = m[3] ?? m[5]
+  return { path: m[1], start: a, end: b ? Math.max(a, Number(b)) : a }
+}
+
+/** The excerpt card's source for `text` (the whole file) and a range; no range → the first `EXCERPT_LINES` lines. */
+export function excerptOf(path: string, text: string, lang: string | undefined, start?: number, end?: number): Extract<Source, { t: 'excerpt' }> {
+  const lines = text.split('\n')
+  const a = Math.min(Math.max(1, start ?? 1), Math.max(1, lines.length))
+  const b = Math.min(lines.length, end ?? a + EXCERPT_LINES - 1)
+  let body = lines.slice(a - 1, b).join('\n')
+  let last = b
+  if (body.length > EXCERPT_MAX) {
+    body = body.slice(0, EXCERPT_MAX)
+    last = a + body.split('\n').length - 1
+  }
+  return { t: 'excerpt', path, start: a, end: last, text: body, ...(lang ? { lang } : {}) }
+}

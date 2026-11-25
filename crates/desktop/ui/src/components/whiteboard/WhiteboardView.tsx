@@ -33,7 +33,7 @@ import { CardSheet } from './CardSheet'
 import { OutlineView, outlineText } from './OutlineView'
 import { Pill, type SessionPick, useSessionTitle } from './Pill'
 import { Sheet } from './Sheet'
-import { asUrl, place, placeFromClipboard, placeImage } from './add'
+import { asUrl, excerptOf, parseFileRef, place, placeFromClipboard, placeImage } from './add'
 import { bubbleAnchor, lastReply } from './reply'
 import type { PlannedImage, SendPlan, WhiteboardCanvasHandle } from './canvas/api'
 import type { Board, Id, Meta } from './canvas/model'
@@ -451,6 +451,25 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
           const id = await placeFromClipboard(d, spot, host.blobPut)
           return id ? select(id) : notify('The clipboard is empty')
         }
+        case 'excerpt':
+          if (!session) return
+          return setChooser({
+            title: 'Add a file excerpt',
+            input: '',
+            placeholder: 'src/app.ts:10-40',
+            run: (v) => {
+              const ref = parseFileRef(v)
+              if (!ref) return
+              api.file_view_read(session, ref.path, null).then(
+                (f) => {
+                  const source = excerptOf(ref.path, f.text, f.lang || undefined, ref.start, ref.end)
+                  const name = ref.path.split('/').pop() || ref.path
+                  select(place(d, spot, 'excerpt', `${name} ${source.start}–${source.end}`, source))
+                },
+                (e: Error) => notify.error(`Could not read ${ref.path}: ${e.message}`),
+              )
+            },
+          })
         case 'diff':
           if (!session) return
           return select(place(d, spot, 'diff', 'Working tree', { t: 'diff', session, spec: { mode: 'worktree' }, as_of: Date.now() }))
@@ -484,7 +503,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
       notify.error(e instanceof Error ? e.message : String(e))
     }
   }
-  const addable: Record<AddKind, boolean> = { sticky: true, note: true, web: true, image: true, clipboard: true, artifact: !!session, diff: !!session, terminal: !!session && terminals.length > 0 }
+  const addable: Record<AddKind, boolean> = { sticky: true, note: true, web: true, image: true, clipboard: true, artifact: !!session, excerpt: !!session, diff: !!session, terminal: !!session && terminals.length > 0 }
 
   // ── Keyboard (desktop, full window): V P E L F N O, ⌘0, ⌘↵, Esc.
   useEffect(() => {
@@ -646,7 +665,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
           canUndo={handle.current?.canUndo() ?? false}
           canRedo={handle.current?.canRedo() ?? false}
           more={more}
-          addable={readOnly ? { sticky: false, note: false, web: false, image: false, clipboard: false, artifact: false, diff: false, terminal: false } : addable}
+          addable={readOnly ? { sticky: false, note: false, web: false, image: false, clipboard: false, artifact: false, excerpt: false, diff: false, terminal: false } : addable}
         />
       )}
       {!embedded && onClose && clusterOpen && !outline && (
