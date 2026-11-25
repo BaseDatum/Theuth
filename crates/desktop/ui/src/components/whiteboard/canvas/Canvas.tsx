@@ -30,7 +30,7 @@ import { MultiTap, PALM_MS, pointerKind, routePointer, type PointerKind } from '
 import { LinkEdge } from './LinkEdge'
 import { assignLod, emptyLodState, type Lod } from './lod'
 import { WB_SCHEMA, type Board, type Box, type Id, type Port, type Stroke } from './model'
-import { addCard, addFrame, addLink, addStrokes, eraseStrokes, moveItems, pinMark, raise, setSnap, archive, removeLink, removeFrame, dim } from './ops'
+import { addCard, addFrame, addLink, addStrokes, eraseStrokes, holdGroup, moveItems, pinMark, raise, setSnap, archive, removeLink, removeFrame, dim } from './ops'
 import { lassoSelect } from './lasso'
 import { InkSelection, LassoPath, Offscreen, SelectionBar } from './Overlays'
 import { CARD_HEADER, commitSend as writeSend, planSend as plan, type Caption } from './send'
@@ -157,21 +157,27 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const lassoRef = useRef(lasso)
   const [markMenu, setMarkMenu] = useState<{ x: number; y: number; mark: Id } | null>(null)
 
+  /** One eraser drag is one undo step (its writes stay separate, bounded transactions). */
+  const releaseErase = useRef<(() => void) | null>(null)
   /** Delete = archive cards, remove links and frames (their cards stay), erase lassoed ink. One undo step. */
   const deleteSelection = useCallback(() => {
     const s = store.getState()
     const b = boardRef.current
-    const cards = s.selection.filter((id) => b.cards[id])
-    if (cards.length) archive(doc, cards)
-    for (const id of s.selection) {
-      if (b.links[id]) removeLink(doc, id)
-      if (b.frames[id]) removeFrame(doc, id)
+    const release = holdGroup()
+    try {
+      const cards = s.selection.filter((id) => b.cards[id])
+      if (cards.length) archive(doc, cards)
+      for (const id of s.selection) {
+        if (b.links[id]) removeLink(doc, id)
+        if (b.frames[id]) removeFrame(doc, id)
+      }
+      if (inkSelRef.current.length) eraseStrokes(doc, inkSelRef.current)
+    } finally {
+      release()
     }
-    if (inkSelRef.current.length) eraseStrokes(doc, inkSelRef.current)
-    undo.stopCapturing()
     s.set({ selection: [] })
     setInkSel([])
-  }, [doc, store, undo])
+  }, [doc, store])
 
   // ---- geometry ----
   const worldView = useCallback((): Box => {
@@ -460,8 +466,11 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       wet.current = { id: PAGE_PEN, kind: 'pen', erase, pts: [[x, y, hasPressure ? p : 0.5, 0]], t0: t, hasPressure }
       store.getState().set({ penDown: true })
       onPenActivity?.(true)
-      if (erase) eraseAt(x, y)
-      else requestAnimationFrame(drawWet)
+      if (erase) {
+        releaseErase.current?.()
+        releaseErase.current = holdGroup()
+        eraseAt(x, y)
+      } else requestAnimationFrame(drawWet)
       return
     }
     const w = wet.current
@@ -479,7 +488,8 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     store.getState().set({ penDown: false })
     onPenActivity?.(false)
     if (w.erase) {
-      undo.stopCapturing()
+      releaseErase.current?.()
+      releaseErase.current = null
       return
     }
     if (m.phase === 'cancel' && w.pts.length < 2) {
@@ -572,8 +582,11 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         store.getState().set({ penDown: true })
         propsRef.current.onPenActivity?.(true)
       }
-      if (route === 'erase') eraseAt(p.x, p.y)
-      else requestAnimationFrame(drawWet)
+      if (route === 'erase') {
+        releaseErase.current?.()
+        releaseErase.current = holdGroup()
+        eraseAt(p.x, p.y)
+      } else requestAnimationFrame(drawWet)
     }
 
     const move = (e: PointerEvent) => {
@@ -676,7 +689,8 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       suppressClick.current = true // the click that follows a stroke is not a tap on the canvas
       if (wt.kind === 'pen') penUp()
       if (wt.erase) {
-        undo.stopCapturing()
+        releaseErase.current?.()
+        releaseErase.current = null
         return
       }
       if (e.type === 'pointercancel' && wt.pts.length < 2) {

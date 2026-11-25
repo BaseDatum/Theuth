@@ -5,7 +5,7 @@ import { pack, type Pt } from '../ink/pack'
 import { buildStrokes } from '../ink/stroke'
 import { hundredCards, strokes as fillStrokes } from './fixtures/generate'
 import { ENGINE, LOCAL, OWNER, readBoard } from './model'
-import { addCard, addStrokes, chunked, eraseStrokes, moveItems, patchCard, pinMark, pushVersion, removeFrame, addFrame, setSticky, dim, archive, restore } from './ops'
+import { addCard, addStrokes, chunked, eraseStrokes, holdGroup, moveItems, patchCard, pinMark, pushVersion, removeFrame, addFrame, setSticky, dim, archive, restore } from './ops'
 import { createUndo } from './undo'
 import { dragEnd } from './binding'
 
@@ -149,6 +149,49 @@ describe('owner ops (§8.3, §2.9)', () => {
     removeFrame(doc, f)
     expect(readBoard(doc).cards[a]!.frame).toBeUndefined()
     expect(readBoard(doc).frames[f]).toBeUndefined()
+  })
+
+  it('review M1: undo and redo of a bulk erase replay in chunks under the 48 KiB cap, in one press each', () => {
+    const doc = new Y.Doc()
+    const undo = createUndo(doc)
+    // 60 heavy strokes (4 000 points, 24 kB each): ≈ 1.4 MB of ink, far over one update.
+    const ids: string[] = []
+    for (let k = 0; k < 60; k++) {
+      const pts: Pt[] = Array.from({ length: 4000 }, (_, i) => [k * 50 + Math.cos(i / 7) * 20, Math.sin(i / 7) * 20 + i / 40, 0.5, i * 4])
+      const { strokes } = buildStrokes({ pts, tool: 'pen', colour: 'ink', width: 2.8, hasPressure: true, at: k }, 1e6, [])
+      addStrokes(doc, strokes)
+      ids.push(...strokes.map((s) => s.id))
+    }
+    const log = record(doc)
+    eraseStrokes(doc, ids)
+    expect(readBoard(doc).ink).toEqual({})
+    const erased = log.length
+    undo.undo() // one press
+    expect(Object.keys(readBoard(doc).ink).sort()).toEqual([...ids].sort())
+    expect(log.length - erased).toBeGreaterThan(1) // replayed chunk by chunk
+    undo.redo() // one press
+    expect(readBoard(doc).ink).toEqual({})
+    undo.undo()
+    for (const l of log) expect(b64Len(l.bytes)).toBeLessThanOrEqual(MAX_UPDATE_B64)
+    // Undo goes on to the strokes, one drawn stroke a press.
+    undo.undo()
+    expect(Object.keys(readBoard(doc).ink)).toHaveLength(ids.length - 1)
+  })
+
+  it('an eraser drag (a held group) is one undo step, each write still its own bounded transaction', () => {
+    const doc = new Y.Doc()
+    const undo = createUndo(doc)
+    for (let k = 0; k < 5; k++) addStrokes(doc, buildStrokes({ pts: [[k * 30, 0, 0.5, 0], [k * 30 + 10, 5, 0.5, 8]], tool: 'pen', colour: 'ink', width: 2, hasPressure: false, at: k }, 1, []).strokes)
+    const ids = Object.keys(readBoard(doc).ink)
+    const log = record(doc)
+    const release = holdGroup()
+    for (const id of ids) eraseStrokes(doc, [id])
+    release()
+    expect(log).toHaveLength(5)
+    undo.undo()
+    expect(Object.keys(readBoard(doc).ink)).toHaveLength(5)
+    undo.undo()
+    expect(Object.keys(readBoard(doc).ink)).toHaveLength(4) // the strokes were drawn one undo step each
   })
 
   it('pin / unpin a mark', () => {

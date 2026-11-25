@@ -8,6 +8,7 @@ import {
   LOCAL, OWNER,
   type Board, type CardKind, type DeviceViewport, type Frame, type FrameColour, type Id, type Link, type Meta, type Port, type Source, type Stroke,
 } from './model'
+import { GROUP } from './undo'
 
 /** Entry writes per transaction (§2.9). */
 export const CHUNK_WRITES = 60
@@ -54,22 +55,47 @@ function maxZ(doc: Y.Doc): number {
   return z
 }
 
+let groups = 0
+let held: number | null = null
+const nextGroup = () => held ?? ++groups
+
+/**
+ * Makes every owner write until the returned release one undo step (an eraser drag, a lasso delete of cards and
+ * ink). Each write keeps its own bounded transaction; Undo replays them all, one per transaction.
+ */
+export function holdGroup(): () => void {
+  const g = ++groups
+  held = g
+  return () => {
+    if (held === g) held = null
+  }
+}
+
 /**
  * Runs `ops` in as few transactions as the bounds allow: ≤ 60 entry writes and ≈ 30 kB of update payload each. The
  * payload is measured as the transaction goes (the diff against the state vector taken before it).
+ *
+ * Undo replays a chunk as one transaction (undo.ts), so the bound must hold for the inverse too: `inverse[i]` is the
+ * bytes op `i`'s inverse re-inserts (a deleted stroke's points, say), which the forward update does not show. All
+ * chunks of one call share a `GROUP` id, so one Undo press replays them all, chunk by chunk (review M1).
  */
-export function chunked(doc: Y.Doc, origin: unknown, ops: (() => void)[]): void {
+export function chunked(doc: Y.Doc, origin: unknown, ops: (() => void)[], inverse?: readonly number[]): void {
+  const group = nextGroup()
   let i = 0
   while (i < ops.length) {
     const sv = Y.encodeStateVector(doc)
-    doc.transact(() => {
+    doc.transact((tr) => {
+      tr.meta.set(GROUP, group)
       let n = 0
       let size = 0
+      let back = 0
       while (i < ops.length && n < CHUNK_WRITES) {
         ops[i]!()
+        back += inverse?.[i] ?? 0
         i++
         n++
         if (i >= ops.length) break
+        if (back + (inverse?.[i] ?? 0) >= CHUNK_BYTES) break
         // Stop before the next write would likely pass the bound (the last write's size as the estimate).
         const now = Y.encodeStateAsUpdate(doc, sv).length
         if (now + (now - size) >= CHUNK_BYTES) break
@@ -182,7 +208,10 @@ export function patchLink(doc: Y.Doc, id: Id, patch: Partial<Omit<Link, 'id' | '
 }
 
 export function removeLink(doc: Y.Doc, id: Id): void {
-  doc.transact(() => doc.getMap<unknown>('links').delete(id), OWNER)
+  doc.transact((tr) => {
+    tr.meta.set(GROUP, nextGroup()) // joins a held group (a lasso delete) as one undo step
+    doc.getMap<unknown>('links').delete(id)
+  }, OWNER)
 }
 
 export function addFrame(doc: Y.Doc, f: { title: string; x: number; y: number; w: number; h: number; colour?: FrameColour; preset?: Frame['preset']; cards?: Id[] }): Id {
@@ -218,15 +247,29 @@ export function pinMark(doc: Y.Doc, id: Id, pinned: boolean): void {
   doc.transact(() => m.set('state', pinned ? 'pinned' : 'answered'), OWNER)
 }
 
-/** One stroke per transaction (§2.9), all under OWNER. */
+/** One stroke per transaction (§2.9), all under OWNER; the parts of one call are one undo step (one `GROUP`). */
 export function addStrokes(doc: Y.Doc, strokes: Stroke[]): void {
   const ink = doc.getMap<unknown>('ink')
-  for (const s of strokes) doc.transact(() => ink.set(s.id, strokeValue(s)), OWNER)
+  const group = nextGroup()
+  for (const s of strokes) {
+    doc.transact((tr) => {
+      tr.meta.set(GROUP, group)
+      ink.set(s.id, strokeValue(s))
+    }, OWNER)
+  }
 }
+
+/** Bytes an erased stroke's undo re-inserts: its points plus the other fields. */
+const STROKE_OVERHEAD = 200
 
 export function eraseStrokes(doc: Y.Doc, ids: Id[]): void {
   const ink = doc.getMap<unknown>('ink')
-  chunked(doc, OWNER, ids.map((id) => () => ink.delete(id)))
+  const back = ids.map((id) => {
+    const v = ink.get(id)
+    const pts = v && typeof v === 'object' && 'pts' in v && v.pts instanceof Uint8Array ? v.pts.length : 0
+    return pts + STROKE_OVERHEAD
+  })
+  chunked(doc, OWNER, ids.map((id) => () => ink.delete(id)), back)
 }
 
 export function setBg(doc: Y.Doc, bg: Meta['bg']): void {
