@@ -15,7 +15,9 @@ a personal or family Bitwarden vault. Today the only way to use one is to copy i
 hand. This doc adds two **external backends**. Through them the agent can:
 - use an external secret by reference, with the same "use, never read" guarantee;
 - browse external secrets' metadata;
-- store a value the user typed into theuth's masked card *into* the external manager.
+- store a value the user typed into theuth's masked card *into* the external manager;
+- share one secret (from Bitwarden or the local vault) through a Bitwarden Send, whose link the
+  agent can deliver but never read (§12).
 
 Every external read and every external write raises an approval card a human must answer, unless the
 user turns that off for one connection in Settings.
@@ -67,7 +69,8 @@ whose answer goes anywhere but the local vault.
 
 ## 1. Decisions
 
-Each says what it beat. D1–D7 are the owner's and are fixed. D8 onward are this doc's.
+Each says what it beat. D1–D7 are the owner's and are fixed. D8 onward are this doc's. D16–D19
+(Bitwarden Send, an owner requirement added the same day) are in §12.1.
 
 **D1 — Two backends now: AWS Secrets Manager and Bitwarden Password Manager (owner).** Bitwarden
 here means the personal/organisation vault (logins, secure notes, custom fields). It is **not**
@@ -197,7 +200,9 @@ derived user key lives only in the SDK client's key store and is dropped on lock
 
 **D13 — No delete, anywhere, in v1.** Not a tool, not an RPC method, not a UI button. 37 D5 already
 keeps deletion away from the agent. For the user, the vendor's own UI deletes better than we would:
-Bitwarden's trash and restore, and AWS's recovery window. The trait has no `delete` (§4).
+Bitwarden's trash and restore, and AWS's recovery window. The trait has no `delete` (§4). The one
+exception is a Bitwarden Send that theuth itself created (D19, §12): deleting it removes exposure,
+not data.
 
 **D14 — Values never reach the model, and `secret_request` with a destination is at least
 `Mutating`.** The `secret_external_*` tools return metadata, receipts and references (§7). A
@@ -776,8 +781,8 @@ LoggedOut ──login(api key | password+2FA)──▶ Locked ──unlock(maste
   `Zeroizing<String>` from the RPC to the SDK request, where it becomes a plain `String`
   (§5.3, §11). The user key stays in the SDK client's key store, in memory.
 - **Lock.** After `lock_after_idle_secs` without a `get` / `create` / `update`, on engine quit, on
-  the user's Lock button, and when the machine sleeps (desktop sends the existing power event; §14 Q2
-  asks whether to extend this). Lock drops the SDK client and keeps the refresh token.
+  the user's Lock button (§14 Q2 asks about sleep and screen lock). Lock calls `unlock().lock()` and
+  drops the SDK client; the `meta` credentials stay.
 - **KDF.** The SDK handles both PBKDF2 and Argon2id. theuth never picks parameters. Argon2id at
   Bitwarden's defaults (64 MiB, 3 iterations, 4 lanes) takes about a second; unlock runs on
   `spawn_blocking`.
@@ -834,6 +839,7 @@ length (37 D1).
 | `secret_external_update` | `Destructive` (a Bitwarden field edit keeps no history; AWS keeps one previous stage) | `…:write` | false |
 | `secret_request` + `destination` | `ReadOnly` → `Mutating` via `credentialed` (D14) | `…:write` | false (as today) |
 | any tool with `{{secret:aws/…}}` / `{{secret:bw/…}}` | its own | `…:read` | true |
+| `secret_send_create` / `_list` / `_revoke` | §12.3 | `HUMAN_ONLY` / `…:read` / policy | false |
 
 `CONSUMES_SECRETS = false` on every `secret_external_*` tool: their args are references *as data*.
 `secret_external_list` with `query: "{{secret:bw/…}}"` must not expand, the same argument
@@ -1081,6 +1087,8 @@ connection from a phone lists the *engine's* profiles, which is correct.
 | `secret_requests` rows with `destination` | `secret_requests` | Yes (metadata only, as today) | Any app shows the card; the answer is forwarded to the owner engine (D15) |
 | A value imported into the local vault | `vault` | Yes | It is a local secret from then on (37) |
 | Scrub set additions from external fetches | process memory | No | Each engine scrubs what it fetched; a peer never received the value |
+| `external_sends` rows (§12.4) | `secrets.sqlite`, not in `TABLES` | No | The Send belongs to this engine's connection |
+| A Send's link and password secrets | `vault` (expiring) | Yes | They are local secrets (D18); revocation deletes them everywhere, the expiry sweep too |
 
 Consequences:
 - **References are engine-relative.** A session on engine B that writes `{{secret:bw/personal/…}}`
@@ -1113,6 +1121,9 @@ larger than the local vault: a whole password manager. The new risks:
    (37 §0.6). Someone who steals the engine key gets them, and can then log in but **not** decrypt
    anything without the master password.
 5. **Key material in memory.** The SDK holds keys in its key store with `ZeroizeOnDrop` (§5.3).
+   theuth must build it with `no-memory-hardening` (its own `#[global_allocator]`), so the SDK's
+   zeroizing allocator is off and freed SDK buffers (decrypted ciphers in `CipherView`s, request
+   bodies) are not wiped.
    theuth holds the master password only in a `Zeroizing<String>` from the RPC parameter to the unlock
    call. Values fetched for a call live in `Fetched` (`Zeroizing`) until `expand_with` copies them into
    the args `Value`, which is an ordinary `String` dropped after `tool.call`. That is the same ceiling
@@ -1146,6 +1157,247 @@ a GPL-3.0 work. theuth's own licence must be GPL-3.0-compatible for that binary 
 unaffected. `rbw` (D4) is the fallback if the licence or the pin ever becomes unworkable. It would
 sit behind the same `ExternalBackend` trait.
 
+## 12. Bitwarden Send
+
+Owner requirement (2026-11-25):
+- the user or the agent creates a **Bitwarden Send** on a chosen Bitwarden connection (cloud or
+  self-hosted);
+- its text comes from either a Bitwarden item/field on any connection, or a secret in theuth's local
+  vault;
+- the value never passes through the model.
+
+A Send is a one-off, end-to-end encrypted share: anyone with its link can read the text until it
+expires, is used up or is deleted. It is the one feature in this doc whose purpose is to let a secret
+**leave** the user's control. It is therefore gated more strictly than any other operation here
+(D17).
+
+### 12.1 Decisions
+
+**D16 — Text Sends only, created by the SDK.** `SendClient::create(SendAddRequest)` does the key
+generation, the encryption and the `POST /sends` (§12.2). File Sends do not come free:
+- they need a second upload step (`create_file_send` + `upload_send_file`,
+  `sdk@2b06afa:crates/bitwarden-send/src/create_file_send.rs#L132-L320`);
+- on the official cloud they need Premium or a paid organisation (§12.6).
+
+Item Sends (`SendType::Item`, `sdk@2b06afa:crates/bitwarden-send/src/send.rs#L161-L168`) are new
+server-side and out of scope. The only gap is the share URL (G8), which theuth builds itself.
+
+**D17 — Creating a Send is `HUMAN_ONLY`, with no Settings knob.** `secret_send_create` sets
+`Tool::HUMAN_ONLY` (`crates/tools/src/lib.rs#L442-L448`). Its card is therefore always raised,
+whatever `tools.approvals`, a pin, the policy or the always-ask list say. Only the owner, in person,
+on an owner surface may answer it. The double, an app press and a non-owner chat user never can, and
+it is refused in contact turns. That is strictly more than the read/write always-ask of D6, so there
+is no `…:send` entry to remove. A Bitwarden source *also* counts as a read of its connection (§3.4),
+so both rules appear on the one card. Rejected:
+- *A third always-ask key `secret:bw/<conn>:send`.* It is removable, and a removed key would turn
+  "give a secret to anyone with a link" into a policy-level call.
+- *Treating a Send as an ordinary external write.* A write keeps the secret inside the user's
+  manager; a Send hands it out.
+
+**D18 — The Send link is stored as a local vault secret; the agent gets its placeholder; the user
+gets a copy button.**
+- The link `…/#/send/<access_id>/<key>` carries the decryption key in its fragment, so it *is* a
+  secret.
+- It is written with `Vault::set_expiring` (`crates/secrets/src/vault.rs#L754-L768`) under a local
+  name (default `send-<conn>-<8 hex of the Send id>`), expiring at the Send's deletion date.
+- The agent receives `{{secret:send-personal-3fa9c2d1}}`. It can still deliver the link: a Slack,
+  email or MCP tool expands it on use, under 37's `mentions` → `Ask` rule. The user's approval of the
+  Send already covered the intent to share.
+- Echoes are scrubbed back to the placeholder like any vault value.
+- Peer messages (`send_message`, A2A) are redacted before egress (37 §15.3), so the link cannot reach
+  another agent's transcript. This is intended: a link given to an agent lands in that agent's
+  context.
+
+Rejected:
+- *Return the URL to the model.* It would enter the transcript, `messages.body`, compaction notes and
+  the model provider's logs. That is the exact path 37 D1 closes, for a value that by design unlocks a
+  secret.
+- *Show it only to the user.* Then the agent cannot finish a task such as "send the DB password to
+  Alice on Slack", which is the main reason to create a Send from an agent.
+
+§14 Q5 asks whether the owner wants an opt-in "the agent may see this link" per Send.
+
+**D19 — Theuth may delete the Sends it created.** This is the one exception to D13. Deleting a Send
+removes exposure; it destroys no data the user keeps. Revocation is **not** always ask, by 219 §2.4's
+own rule that a change making things safer is never gated. It follows `tools.policy` for `Mutating`.
+theuth never edits or deletes Sends it did not create.
+
+### 12.2 SDK surface at `sdk@2b06afa`
+
+- `pm.sends() -> SendClient` (`sdk@2b06afa:crates/bitwarden-pm/src/lib.rs#L220`).
+- `SendClient::create(&self, request: SendAddRequest) -> Result<SendView, CreateSendError>`
+  (`sdk@2b06afa:crates/bitwarden-send/src/create.rs#L148`). In order:
+  1. `request.auth.validate()`;
+  2. a random 16-byte Send key (`generate_random_bytes::<[u8; 16]>`, `#L83`);
+  3. the shareable content key derived with `Send::derive_shareable_key` (HKDF `"send"`,
+     `send.rs#L498-L504`);
+  4. name, notes and text encrypted under it, and the 16-byte key encrypted under the user key
+     (`#L77-L120`);
+  5. `sends_api().post` = `POST /sends` (`#L136`), and the result stored in `Repository<Send>`.
+- `SendAddRequest { name, notes, view_type: SendViewType, max_access_count: Option<u32>, disabled,
+  hide_email, deletion_date: DateTime<Utc>, expiration_date: Option<DateTime<Utc>>, auth:
+  SendAuthType }` (`create.rs#L45-L64`).
+- `SendViewType::Text(SendTextView { text: Option<String>, hidden: bool })`
+  (`send.rs#L149-L154`, `#L290-L297`).
+- `SendAuthType::{None, Password { password }, HashedPassword { key_b64 }, Emails { emails }}`
+  (`send.rs#L202-L226`). With `Password`, the SDK runs the PBKDF2 over the Send key itself.
+- `SendView { id, access_id, name, key /* base64 */, has_password, access_count, max_access_count,
+  disabled, hide_email, revision_date, deletion_date, expiration_date, auth_type, … }`
+  (`send.rs#L428-L463`). `access_id` and `key` are what the link needs.
+- Lifecycle calls:
+  - `SendClient::delete(send_id)` → `DELETE /sends/{id}`, with a pending-deletion queue and
+    `retry_pending_deletions` for offline failures (`sdk@2b06afa:crates/bitwarden-send/src/delete.rs#L105-L135`);
+  - `edit` (`edit.rs#L235`) and `remove_password` (`remove_password.rs#L46`);
+  - `list` / `get` over the repository (`get_list.rs#L45-L53`), which `SendSyncHandler` fills on
+    every sync (`send_sync_handler.rs#L38-L60`, registered per §5.4). So `access_count` is current
+    after a sync.
+- **The link (G8).** The SDK has no URL builder. `bw` builds
+  `format!("{web_vault}/#/send/{access_id}/{url_key}")`, where `url_key` is the URL-safe, unpadded
+  form of `SendView.key` (`sdk@2b06afa:crates/bw/src/tools/send.rs#L1109-L1138`, `#L1216`). It
+  guesses the web-vault host with a heuristic (`#L1141-L1183`). theuth uses the connection's
+  `web_vault_url` instead (§6.2), which is exact for self-hosted.
+- `bw` creates text Sends through the same `SendAddRequest` (`crates/bw/src/tools/send.rs#L695-L699`,
+  `#L847-L850`). It is the working reference for this section, unlike vault items (§5.6).
+
+### 12.3 Tools
+
+| Tool | Risk | Gate | `CONSUMES_SECRETS` |
+|---|---|---|---|
+| `secret_send_create` | `Destructive` | `HUMAN_ONLY` (D17) + `…:read` of a `bw/` source's connection | false |
+| `secret_send_list` | `ReadOnly` | `…:read` of the connection (it syncs) | false |
+| `secret_send_revoke` | `Mutating` | policy only (D19) | false |
+
+```rust
+/// `secret_send_create`: share one secret through a Bitwarden Send. You never see the secret or the link.
+pub struct SendCreateArgs {
+    /// Bitwarden connection the Send is created on (`personal`).
+    pub connection: String,
+    /// What to share: a local vault NAME (current version) or `bw/CONN/ITEM#field` (any Bitwarden connection).
+    /// Not a placeholder and never a literal value. `aws/…` is refused in v1.
+    pub source: String,
+    /// Shown to the recipient on the Send page. Default "Shared from theuth". Never put the secret here.
+    pub name: Option<String>,
+    /// When the link stops working: `30m`, `2h`, `3d`, or an ISO-8601 instant (37/79 grammar). Default `24h`.
+    pub expires: Option<String>,
+    /// When Bitwarden deletes it; ≥ `expires`, ≤ 31 days. Default = `expires`.
+    pub delete: Option<String>,
+    /// How many times it may be opened. Default 1; `0` is refused (use a number).
+    pub max_access_count: Option<u32>,
+    /// Access password: from a local vault NAME, or asked from the user on a masked card. Default none.
+    pub password: Option<SendPassword>,
+    /// Hide the sender's email from the recipient. Default true.
+    pub hide_email: Option<bool>,
+    /// Private notes on the Send (visible to the user in Bitwarden, not to the recipient).
+    pub notes: Option<String>,
+    /// Local vault name for the link. Default `send-<connection>-<8 hex>`.
+    pub link_name: Option<String>,
+}
+#[serde(untagged)] pub enum SendPassword { From { from: String }, Ask { ask: bool } }
+// → "created Send on bw/personal: expires 2026-11-26 10:00, 1 open, password from SEND_PW, email hidden;
+//    the link is {{secret:send-personal-3fa9c2d1}} (deleted with the Send on 2026-11-26); the user can copy it from the card"
+// errors: "source PW does not exist" | "bw/work/… is locked; the user was asked to unlock it" | "Sends are disabled by
+//   your organisation's policy" | "text longer than Bitwarden accepts for a text Send" | "delete must be within 31 days"
+```
+
+- **Resolution in process.**
+  - A local source is read with `Vault::get(name, 0)`.
+  - A `bw/` source is read with that connection's `ExternalBackend::get`; it may be a different
+    connection from the one the Send is created on.
+  - The value goes straight into `SendTextView { text, hidden: true }` inside the
+    `secrets-bitwarden` crate and is zeroized after the call.
+  - Neither path goes through `expand`, because the args hold a reference, not a placeholder.
+- **The password.**
+  - `From` reads a local secret.
+  - `Ask` raises a one-field masked `SecretRequested` card (`Send password for "…"`), **after** the
+    approval. The typed password is stored as a local secret `<link_name>-password` expiring with
+    the Send, so the agent can deliver it by another channel as `{{secret:…-password}}`. Sending it
+    in the same message as the link defeats it, and the receipt says so.
+  - The password is passed as `SendAuthType::Password`. `Emails` (email-OTP access) is not offered in
+    v1 (§12.6).
+- **The approval card.** `secret_send_create` sets `APPROVAL_PREVIEW`
+  (`crates/tools/src/lib.rs#L450-L470`). Before the card, it resolves and merges in:
+  - `source`, with its resolved label (`local GITHUB_TOKEN v3` or `bw/work › login "Prod DB" #password,
+    rev 2026-10-30`);
+  - `connection`, with its server and account;
+  - expiry and deletion as absolute local times;
+  - `max_access_count`;
+  - `password: none | from SEND_PW | asked on the next card`;
+  - `hide_email`, and `link stored as send-personal-3fa9c2d1`.
+
+  A missing source or a locked connection fails at preview, before any card (210 §7.3's rule). The
+  call acts on exactly what the card showed.
+- `secret_send_list { connection: Option<String> }` lists the Sends theuth created: link name,
+  source ref, created / expires / deleted, `access_count / max`, `password: yes|no`, and status
+  (`active | expired | used up | revoked | deleted by Bitwarden`). It never includes a link.
+- `secret_send_revoke { send: String /* link name or Send id */ }` → `SendClient::delete`, then
+  deletes the link secret (and its `-password`) from the vault. Receipt: `revoked send-personal-3fa9c2d1
+  (opened 0 of 1 times)`.
+
+### 12.4 Record, lifecycle, audit
+
+- **Table.** `crates/secrets/migrations/0005_external_sends.sql` creates `external_sends`, one row per
+  Send theuth created:
+  - `id`, `conn`, `send_id`, `access_id`, `name`, `source_ref`, `source_version` (vault `vN` or the
+    Bitwarden revision date);
+  - `link_secret`, `password_secret`;
+  - `created_ms`, `expiration_ms`, `deletion_ms`, `max_access`;
+  - `session`, `call_id`, `revoked_ms`.
+
+  The table never holds the key or the link. It is **not** in `store::TABLES`
+  (`crates/secrets/src/store.rs#L17`), so it is engine-local, because the Send belongs to that
+  engine's connection.
+- **Expiry.** At the deletion date the vault's expiry sweep deletes the link and password secrets
+  (`crates/secrets/src/vault.rs#L754-L798`). Bitwarden deletes the Send. The row stays as history.
+- **Revocation.** From the tool, from the Secrets page, or automatically when the user removes the
+  connection (every active Send of that connection is deleted first; failures are queued by the
+  SDK's `retry_pending_deletions` and shown).
+- **Audit.** `logs/secrets-external.log` (§11) gains `send.create`, `send.revoke`, `send.copy` (the
+  user copied the link) and `send.expired` lines with the source ref, connection, options, session
+  and call id, never the link. `access_count` from the post-sync repository shows on every list, so
+  the user sees whether a link was opened.
+
+### 12.5 UI
+
+- **Desktop, Secrets page.**
+  - Each Bitwarden connection row gains a **Sends** tab that renders `secret_send_list`'s data, with
+    Revoke and **Copy link** per row.
+  - A **Send…** action sits on every local secret row and on every browsed Bitwarden item. It opens a
+    dialog with the §12.3 options and defaults: connection, name, expires (24 h), delete, max opens
+    (1), password (none / from a vault secret / type one, masked), hide email (on), notes.
+  - Create calls the owner RPC `create_send`. The user is the actor, so there is no approval card.
+  - The created row shows Copy link once, prominently.
+- **Copy link.** `copy_send_link(id) -> String` (owner audience) is the first RPC that returns a
+  value outbound. It is scoped to the link secrets of rows in `external_sends`, because a link exists
+  to be given away.
+  - It follows 219 §2.4's human-press rule: a desktop or iOS press runs directly; any other caller
+    (internal connection: the agent's halves, TUI, MCP console) gets a human-only card.
+  - The desktop writes the link straight to the clipboard and never renders it, then shows "Copied
+    (clipboard clears in 60 s)".
+- **Request card for a password.** This is the existing `SecretRequestCard`
+  (`crates/desktop/ui/src/components/chat/SecretRequestCard.tsx#L108`) with one field. No new
+  component is needed.
+- **TUI.** `/secrets` › connection › `s` lists Sends: `r` revokes, `y` copies the link via OSC 52
+  (through `copy_send_link`, so it raises the human-only card on the internal connection). The local
+  list gains `S` to create a Send from the selected secret, with prompt steps for the options.
+- **Slack / Telegram / Signal.** The notice line for the approval card only. Nothing is answerable
+  in-channel, and the link is never posted by theuth itself.
+
+### 12.6 Server compatibility and accounts
+
+- **Official cloud.** Text Sends are available to every account, including free ones, once the
+  account's email is verified. File Sends need Premium or a paid organisation ([Bitwarden help:
+  Create a Send](https://bitwarden.com/help/create-send/); the SDK has no premium check, so this is a
+  server rule).
+  - An unverified email or an organisation "Remove Send" / "Send options" policy (for example "hide
+    email" disallowed) returns a server error. theuth maps it to the text in §12.3.
+  - B0 confirms the free-account behaviour against a test account.
+- **Vaultwarden.** It implements Sends (text and file) behind its `SENDS_ALLOWED` setting, with
+  passwords, max access counts, hide email and the 31-day deletion limit. It is older than
+  `authType` email-OTP, which v1 does not use, and the SDK sends `authType` explicitly
+  (`create.rs#L95`). B5c's Vaultwarden suite confirms the version tested accepts the field.
+- **Self-hosted link host.** `web_vault_url` (§6.2) must be the address recipients reach, which is
+  not necessarily the API URL theuth uses on a LAN. The connection form asks for it when it differs.
+
 ## 13. Build plan
 
 Each milestone names what it touches and its check. The orchestrator runs builds and tests. This doc
@@ -1155,7 +1407,10 @@ runs none.
   §5 sequence (client with custom URLs → API-key login → unlock → sync → list → create login →
   edit field → decrypt) against a local Vaultwarden container. Record the exact calls that differ
   from §5. *Check:* the spike prints a created item's id and decrypts its password back; the same
-  against a Bitwarden test account on `vault.bitwarden.eu`. *Output:* amendments to §5 if any.
+  against a Bitwarden test account on `vault.bitwarden.eu`. The spike also creates a text Send with a
+  password, builds its link (G8) and opens it in a browser. It measures the dependency weight of
+  `bitwarden-pm` against core + vault + send + sync (§5.10). *Output:* amendments to §5 and §12 if
+  any.
 - **B1 — `aws-profiles` crate.** Move `AwsProfiles::load/from_sdk/select` and `has_profile` from
   `crates/agent/src/aws.rs`; `agent` re-exports. *Check:* `cargo test -p agent` (the existing
   `aws.rs` tests move along), `cargo test -p aws-profiles`, wire schema unchanged.
@@ -1200,6 +1455,26 @@ runs none.
   - API-key login → unlock → create login → `get #password` → update with a stale `expected` →
     `Conflict`;
   - an org collection item, then lock → `Locked`.
+
+  `bitwarden-pm` is built with `no-memory-hardening` (§5.3). B5 also checks that the lock still
+  resolves one `libsqlite3-sys` (§5.8).
+- **B5b — Password login (G7).** The own `/connect/token` request: per-connection device id, 2FA
+  steps (Authenticator, Email via `send_two_factor_email`, YubiKey OTP), `newDeviceOtp`, the legacy
+  prelogin fallback, the refresh token sealed in `meta`, and `set_tokens` + `USER_LOGIN_METHOD` on
+  restore. *Check:* unit tests on the request bodies. The ignored Vaultwarden suite runs password +
+  TOTP login → restart → unlock with no 2FA prompt.
+- **B5c — Bitwarden Send (§12).** `secret_send_create` / `_list` / `_revoke`, `APPROVAL_PREVIEW`,
+  `HUMAN_ONLY`, the link builder (G8), migration `0005_external_sends.sql`, the link and password
+  secrets via `set_expiring`, `create_send` / `copy_send_link` RPCs (human press), revoke on
+  connection removal, audit lines. *Check:*
+  - `cargo test -p secrets-bitwarden -p secrets`: the link format `…/#/send/<access_id>/<url-b64>` for
+    the `us`, `eu` and self-hosted URLs; the preview fields; a contact turn is refused; the double
+    and an app press cannot answer.
+  - The ignored Vaultwarden suite: create from a local secret and from a `bw/` item with password
+    `Ask`; open the link with the SDK's `SendReceiveClient::access_send`
+    (`sdk@2b06afa:crates/bitwarden-send/src/receive_client.rs#L66`), which decrypts the same text;
+    a second open → refused (max 1); revoke → the access fails; the vault link secret is gone.
+  - Manual: one text Send from a free account on the official cloud (§12.6).
 - **B6 — Tools + prompt.** `tools_external.rs`, the `secret_request` destination, the forward of
   destination answers. *Check:* headless against the fake backend and, ignored, localstack:
   - `secret_external_list{}` raises no card;
@@ -1235,3 +1510,8 @@ runs none.
    other people.
 4. **Release builds and GPL.** Do the published binaries (desktop app, `t` releases) enable the
    `bitwarden` feature, which makes them GPL-3.0 works, or is it a build-from-source opt-in?
+5. **May the agent ever see a Send link?** D18 stores the link as a local vault secret: the agent
+   gets a placeholder it can deliver through a tool, and the user gets Copy link. Should
+   `secret_send_create` also accept `show_link: true`? That would put the link in the transcript,
+   so the agent could paste it into a channel theuth has no tool for. The card would say so, and it
+   would still be `HUMAN_ONLY`. The default stays off either way.
