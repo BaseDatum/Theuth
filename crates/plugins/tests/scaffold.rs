@@ -65,7 +65,8 @@ fn check(lang: Lang, raw: bool, toolchain: &str) {
     let tmp = tempfile::tempdir().unwrap();
     let suffix = serde_json::to_value(lang).unwrap().as_str().unwrap().to_owned();
     let name = format!("demo-{suffix}{}", if raw { "-raw" } else { "" });
-    let report = match plugins::scaffold::new_plugin(tmp.path(), &name, lang, raw) {
+    // `<data_dir>/plugins`, as the host lays it out: the editor schema goes to `<data_dir>/sdk/`.
+    let report = match plugins::scaffold::new_plugin(&tmp.path().join("plugins"), &name, lang, raw) {
         Ok(r) => r,
         Err(plugins::PluginsError::Io { message }) if message.contains("not bundled") => {
             eprintln!("skipped {lang:?}: {message}");
@@ -74,6 +75,10 @@ fn check(lang: Lang, raw: bool, toolchain: &str) {
         Err(e) => panic!("{lang:?}: {e}"),
     };
     let dir = Path::new(&report.dir);
+    let header = std::fs::read_to_string(dir.join("plugin.yaml")).unwrap();
+    let schema = header.lines().next().and_then(|l| l.strip_prefix("# yaml-language-server: $schema="));
+    let schema = schema.unwrap_or_else(|| panic!("{lang:?}: plugin.yaml has no schema header"));
+    assert!(dir.join(schema).is_file(), "{lang:?}: {schema} does not exist beside the scaffold");
     if lang == Lang::Js {
         // Node 18–20 load theuth-plugin.js as ESM only with `"type": "module"` beside it.
         let pkg = std::fs::read_to_string(dir.join("package.json")).expect("js scaffold has package.json");

@@ -287,10 +287,10 @@ tool_impl!(
     "Enable a plugin: it starts if the owner approved exactly its current manifest and code; otherwise it stays awaiting approval.",
     |a| async move {
         let i: PluginInfo = ask(SetEnabled { name: a.name, on: true }).await?;
-        let text = if i.state == PluginRunState::AwaitingApproval {
-            "awaiting approval — the owner must approve first".to_owned()
-        } else {
-            "started".to_owned()
+        let text = match i.state {
+            PluginRunState::AwaitingApproval => "awaiting approval — the owner must approve first".to_owned(),
+            PluginRunState::Starting | PluginRunState::Running => "started".to_owned(),
+            ref s => format!("enabled; state {}", tag(s)),
         };
         Ok(out(text, &i))
     }

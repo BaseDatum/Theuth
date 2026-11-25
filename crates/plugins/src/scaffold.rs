@@ -71,16 +71,26 @@ fn rename(text: &str, name: &str) -> String {
         .replace(PLACEHOLDER, name)
 }
 
-/// Whether `rel` is source code whose bare words are identifiers (a hyphen would not parse).
-/// Shell, YAML, JSON, TOML and `go.mod` take the name as a plain word or string.
-fn is_code(rel: &str) -> bool {
-    [".py", ".rb", ".go", ".rs", ".mjs", ".js", ".ts"].iter().any(|ext| rel.ends_with(ext))
+/// The string delimiters of `rel` when it is source code whose bare words are identifiers (a
+/// hyphen would not parse); `None` for shell, YAML, JSON, TOML and `go.mod`, which take the name
+/// as a plain word or string. Rust and Go `'` opens a one-character literal (or is a Rust
+/// lifetime), never a string, so it is not a delimiter there; Rust has no `` ` `` strings.
+fn code_quotes(rel: &str) -> Option<&'static [char]> {
+    if rel.ends_with(".rs") {
+        Some(&['"'])
+    } else if rel.ends_with(".go") {
+        Some(&['"', '`'])
+    } else if [".py", ".rb", ".mjs", ".js", ".ts"].iter().any(|ext| rel.ends_with(ext)) {
+        Some(&['"', '\'', '`'])
+    } else {
+        None
+    }
 }
 
-/// [`rename`] for source code: inside a string literal (`"…"`, `'…'`, `` `…` ``) the plugin
-/// name stays as is (tool names, placement ids, which plugin.yaml spells the same); outside
-/// one it becomes an identifier (`-` → `_`).
-fn rename_code(text: &str, name: &str) -> String {
+/// [`rename`] for source code: inside a string literal (delimited by one of `quotes`) the
+/// plugin name stays as is (tool names, placement ids, which plugin.yaml spells the same);
+/// outside one it becomes an identifier (`-` → `_`).
+fn rename_code(text: &str, name: &str, quotes: &[char]) -> String {
     let snake = name.replace('-', "_");
     let mut out = String::with_capacity(text.len());
     for line in text.split_inclusive('\n') {
@@ -98,7 +108,7 @@ fn rename_code(text: &str, name: &str) -> String {
             match (quote, c) {
                 (Some(_), '\\') if !escaped => escaped = true,
                 (Some(q), c) if c == q && !escaped => quote = None,
-                (None, '"' | '\'' | '`') => quote = Some(c),
+                (None, c) if quotes.contains(&c) => quote = Some(c),
                 _ => escaped = false,
             }
             if c != '\\' {
@@ -148,6 +158,7 @@ pub fn new_plugin(
         return Err(PluginsError::Exists { name: name.into() });
     }
     std::fs::create_dir_all(plugins_dir).map_err(|e| io(&format!("create {}", plugins_dir.display()), e))?;
+    write_schema(plugins_dir)?;
     // A dot-folder beside the destination: the watcher never sees a half-written plugin.
     let tmp = plugins_dir.join(format!(".{name}.new-{:016x}", rand::random::<u64>()));
     let written = write_all(&tmp, &files).and_then(|()| {
@@ -170,6 +181,30 @@ pub fn new_plugin(
     })
 }
 
+/// The JSON Schema of `plugin.yaml` v1. Every template's first line points editors at it as
+/// `../../sdk/manifest.schema.json`.
+const MANIFEST_SCHEMA: &[u8] = include_bytes!("../../../sdk/manifest.schema.json");
+
+/// Put [`MANIFEST_SCHEMA`] where the templates' header resolves from
+/// `<plugins_dir>/<name>/plugin.yaml`: `<plugins_dir>/../sdk/manifest.schema.json` (with the
+/// default `dir`, `<data_dir>/sdk/`). Rewritten only when its bytes differ, atomically.
+fn write_schema(plugins_dir: &Path) -> Result<(), PluginsError> {
+    let dir = plugins_dir.join("..").join("sdk");
+    let path = dir.join("manifest.schema.json");
+    if std::fs::read(&path).is_ok_and(|b| b == MANIFEST_SCHEMA) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| io(&format!("create {}", dir.display()), e))?;
+    let tmp = dir.join(format!(".manifest.schema.json.{:016x}", rand::random::<u64>()));
+    let written = std::fs::write(&tmp, MANIFEST_SCHEMA)
+        .and_then(|()| std::fs::rename(&tmp, &path))
+        .map_err(|e| io(&format!("write {}", path.display()), e));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
 /// (relative path in the plugin folder, bytes, executable), sorted by path.
 type Planned = Vec<(String, Vec<u8>, bool)>;
 
@@ -187,8 +222,10 @@ fn plan(name: &str, lang: Lang, raw: bool) -> Result<Planned, PluginsError> {
         let Some(rel) = path.strip_prefix(&prefix) else { continue };
         let rel = rename(rel, name);
         let bytes = match std::str::from_utf8(bytes) {
-            Ok(text) if is_code(&rel) => rename_code(text, name).into_bytes(),
-            Ok(text) => rename(text, name).into_bytes(),
+            Ok(text) => match code_quotes(&rel) {
+                Some(quotes) => rename_code(text, name, quotes).into_bytes(),
+                None => rename(text, name).into_bytes(),
+            },
             Err(_) => bytes.to_vec(),
         };
         let exec = executable(&rel);
@@ -254,14 +291,18 @@ mod tests {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("plugins");
         for lang in ALL {
             let name = format!("demo-{}", serde_json::to_value(lang).unwrap().as_str().unwrap());
-            let r = new_plugin(tmp.path(), &name, lang, false).unwrap();
-            let dir = tmp.path().join(&name);
+            let r = new_plugin(&root, &name, lang, false).unwrap();
+            let dir = root.join(&name);
             assert_eq!(r.dir, dir.to_string_lossy());
             let manifest = std::fs::read_to_string(dir.join("plugin.yaml")).unwrap();
             assert!(manifest.contains(&format!("name: {name}\n")), "{lang:?}: {manifest}");
             assert!(!manifest.contains(PLACEHOLDER), "{lang:?}: placeholder left in plugin.yaml");
+            // The editor header names a file that exists.
+            let schema = manifest.lines().next().unwrap().strip_prefix("# yaml-language-server: $schema=").unwrap();
+            assert_eq!(std::fs::read(dir.join(schema)).unwrap(), MANIFEST_SCHEMA, "{lang:?}: {schema}");
             for (src, dst) in vendored(lang) {
                 let want = sdk_files().iter().find(|(p, _)| p == src).unwrap().1;
                 assert_eq!(std::fs::read(dir.join(dst)).unwrap(), want, "{lang:?}: {dst} vendored verbatim");
@@ -270,10 +311,10 @@ mod tests {
             assert!(r.files.iter().any(|f| f == "plugin.yaml"));
             assert_eq!(r.next, format!("awaiting approval: press Approve in theuth or run `t plugin approve {name}`"));
         }
-        // No temp folder is left behind.
-        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
-            .unwrap()
-            .flatten()
+        // No temp folder or file is left behind.
+        let leftovers: Vec<_> = [root, tmp.path().join("sdk")]
+            .iter()
+            .flat_map(|d| std::fs::read_dir(d).unwrap().flatten())
             .filter(|e| e.file_name().to_string_lossy().starts_with('.'))
             .collect();
         assert!(leftovers.is_empty());
@@ -282,24 +323,25 @@ mod tests {
     #[test]
     fn raw_only_for_py_and_sh() {
         let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("plugins");
         for lang in [Lang::Js, Lang::Go, Lang::Rb, Lang::Rs] {
-            let e = new_plugin(tmp.path(), "raw-demo", lang, true).unwrap_err();
+            let e = new_plugin(&root, "raw-demo", lang, true).unwrap_err();
             assert_eq!(e, PluginsError::Invalid { message: "--raw has templates for py and sh only".into() });
         }
-        assert!(!tmp.path().join("raw-demo").exists());
+        assert!(!root.join("raw-demo").exists());
         if sdk_files().is_empty() {
             return;
         }
         for lang in [Lang::Py, Lang::Sh] {
             let name = format!("raw-{}", serde_json::to_value(lang).unwrap().as_str().unwrap());
-            let r = new_plugin(tmp.path(), &name, lang, true).unwrap();
+            let r = new_plugin(&root, &name, lang, true).unwrap();
             assert!(r.raw);
             assert!(!r.files.iter().any(|f| f.starts_with("theuth")), "raw vendors no SDK: {:?}", r.files);
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(tmp.path().join("raw-sh/run.sh")).unwrap().permissions().mode();
+            let mode = std::fs::metadata(root.join("raw-sh/run.sh")).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o755);
         }
     }
@@ -309,16 +351,30 @@ mod tests {
         assert_eq!(rename("presses_count = presses", "my-tool"), "my_tool_count = my-tool");
         assert_eq!(rename("presses/presses_x", "a"), "a/a_x");
         assert_eq!(
-            rename_code("@plugin.tool(\"presses\")\ndef presses(_): return 'presses_x \\'presses'\n", "my-tool"),
+            rename_code(
+                "@plugin.tool(\"presses\")\ndef presses(_): return 'presses_x \\'presses'\n",
+                "my-tool",
+                code_quotes("main.py").unwrap()
+            ),
             "@plugin.tool(\"my-tool\")\ndef my_tool(_): return 'my_tool_x \\'my-tool'\n"
         );
-        assert!(is_code("main.py") && is_code("src/main.rs") && !is_code("run.sh") && !is_code("plugin.yaml"));
+        // Rust/Go `'` is a char literal or lifetime, not a string: the rest of the line stays code.
+        assert_eq!(
+            rename_code("let p: &'static str = presses(\"presses\");\n", "my-tool", code_quotes("src/main.rs").unwrap()),
+            "let p: &'static str = my_tool(\"my-tool\");\n"
+        );
+        assert_eq!(
+            rename_code("c := 'x'; presses(`presses`)\n", "my-tool", code_quotes("main.go").unwrap()),
+            "c := 'x'; my_tool(`my-tool`)\n"
+        );
+        assert!(code_quotes("run.sh").is_none() && code_quotes("plugin.yaml").is_none() && code_quotes("go.mod").is_none());
         if sdk_files().is_empty() {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
-        new_plugin(tmp.path(), "my-tool", Lang::Py, false).unwrap();
-        let manifest = std::fs::read_to_string(tmp.path().join("my-tool/plugin.yaml")).unwrap();
+        let root = tmp.path().join("plugins");
+        new_plugin(&root, "my-tool", Lang::Py, false).unwrap();
+        let manifest = std::fs::read_to_string(root.join("my-tool/plugin.yaml")).unwrap();
         assert!(manifest.contains("id: my-tool"), "{manifest}");
     }
 
