@@ -1,4 +1,5 @@
 use super::*;
+use std::fmt::Write as _;
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/whiteboard_outline.txt");
 const ID: &str = "01a2f3c4-5b6d-7e8f-9a0b-1c2d3e4f5a6b";
