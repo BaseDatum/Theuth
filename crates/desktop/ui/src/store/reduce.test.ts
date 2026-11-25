@@ -1084,6 +1084,12 @@ test('ContextChanged marks the slice stale and moves the generation; the install
   expect(apply({ ...base, context: 100 }, { type: 'ContextChanged', session: S, revision: '5', reason: 'settled' }, ctx()).contextEstimated).toBe(false)
 })
 
+test('219: a cell nudge (a fence rewritten as a cell in place) reloads like any context change', () => {
+  const base: SessionSlice = { ...empty(S), contextRevision: '3', contextEditable: true, loaded: true }
+  const s = apply(base, { type: 'ContextChanged', session: S, revision: '4', reason: 'cell_nudge' }, ctx())
+  expect(s).toMatchObject({ contextRevision: '4', contextStale: true, contextEditable: false, historyGeneration: 1 })
+})
+
 test('turn activity bumps live; bookkeeping (jobs, queue, title) does not; a turn disables editing until the settled reload', () => {
   const s0 = { ...empty(S), contextEditable: true }
   const s1 = apply(s0, { type: 'TurnStarted', session: S, turn: T, text: 'hi', model: 'm', turn_seq: 1 }, ctx())

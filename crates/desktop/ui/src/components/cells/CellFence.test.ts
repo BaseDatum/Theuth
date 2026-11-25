@@ -4,6 +4,7 @@ import { expect, test } from 'vitest'
 import { FenceContext } from '@/components/chat/surface/JsonRenderFence'
 import { classify } from '@/lib/injected'
 import { active } from '@/store/engine-scope'
+import { useConnection } from '@/store/connection'
 import type { Entry } from '@/store/sessions'
 import { cellDomId } from './Cell'
 import { CELL_LANGUAGES, CellFence, CellOrdinals, cellOrdinals } from './CellFence'
@@ -20,11 +21,12 @@ const assistant = (node: ReactNode, o: { session?: string; entry?: string | null
     h(CellOrdinals, { value: cellOrdinals(o.text ?? REPLY, o.entry === undefined ? '42' : o.entry, !!o.running) }, node),
   )
 
-test('a fence without a #| header renders exactly as streamdown’s own code path, controls included (171 §4.1)', () => {
+test('a fence without a #| header renders streamdown’s own code block, controls included (171 §4.1)', () => {
   for (const text of ['```bash\necho hi\nls -la\n```\n', '```python\nprint(1)\n```\n', '```sh\n# just a comment\n```\n']) {
     const html = render(assistant(md(text, withCells), { text }))
-    expect(html).toBe(render(md(text)))
     expect(html).toContain('data-streamdown="code-block"')
+    expect(html).toContain('data-streamdown="code-block-copy-button"')
+    expect(html).toContain('data-streamdown="code-block-download-button"')
     expect(html).not.toMatch(/data-cell/)
   }
 })
@@ -88,6 +90,48 @@ test('ordinals follow document order; identical cells get distinct ordinals', ()
   expect(o.claim('b', body)).toBe(2)
   expect(o.claim('a', body)).toBe(1)
   expect(o.claim('c', body)).toBeNull()
+})
+
+test('219: plain fences are numbered from 0 among closed, runnable, header-less fences; identical ones get distinct ordinals', () => {
+  const text = [
+    '```bash\necho a\n```',
+    '```bash\n#| cwd: /tmp\necho cell\n```',
+    '```js\nconsole.log(1)\n```',
+    '```rust\nfn main() {}\n```',
+    '```python\nprint(1)\n```',
+    '```bash\necho a\n```',
+    '```bash\necho open',
+  ].join('\n\n')
+  const o = cellOrdinals(text, '1', false)
+  expect(o.plain).toEqual([
+    { ordinal: 0, body: 'echo a' },
+    { ordinal: 1, body: 'print(1)' },
+    { ordinal: 2, body: 'echo a' },
+  ])
+  expect(o.claimPlain('a', 'echo a')).toBe(0)
+  expect(o.claimPlain('b', 'echo a')).toBe(2)
+  expect(o.claimPlain('a', 'echo a')).toBe(0)
+  expect(o.claimPlain('c', 'echo open')).toBeNull()
+})
+
+test('219: Make runnable shows only on plain runnable fences of a stored, settled reply in a live session', () => {
+  const text = 'Run this yourself:\n\n```bash\nsudo systemctl restart x\n```\n\n```bash\n#| cwd: /tmp\n#| label: Go\necho go\n```\n\n```python\nprint(1)\n```\n'
+  const marks = (html: string) => [...html.matchAll(/data-make-runnable="(\d+)"/g)].map((m) => m[1])
+  useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'legacy' } })
+  try {
+    const html = render(assistant(md(text, withCells), { text }))
+    expect(marks(html)).toEqual(['0', '1'])
+    expect(html).toContain('Make runnable')
+    // Not while the turn runs, before the reply is stored, read-only (no session), or outside an assistant reply.
+    expect(marks(render(assistant(md(text, withCells), { text, running: true })))).toEqual([])
+    expect(marks(render(assistant(md(text, withCells), { text, entry: null })))).toEqual([])
+    expect(marks(render(assistant(md(text, withCells), { text, session: undefined })))).toEqual([])
+    expect(marks(render(md(text, withCells)))).toEqual([])
+  } finally {
+    useConnection.setState({ discovery: { ...useConnection.getState().discovery, phase: 'connecting' } })
+  }
+  // An engine without `cell_promote` never offers it.
+  expect(marks(render(assistant(md(text, withCells), { text })))).toEqual([])
 })
 
 test('the host chip (§14.2, L11 `CellState.host`) shows only when the record names another engine', () => {
