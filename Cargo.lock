@@ -5820,7 +5820,7 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "2.31.0"
+version = "2.31.1"
 dependencies = [
  "anstream",
  "anyhow",
@@ -18713,7 +18713,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "relay"
-version = "2.31.0"
+version = "2.31.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -23506,7 +23506,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-ink"
-version = "2.31.0"
+version = "2.31.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -23937,7 +23937,7 @@ dependencies = [
 
 [[package]]
 name = "theuth"
-version = "2.31.0"
+version = "2.31.1"
 dependencies = [
  "a2a",
  "agent",
