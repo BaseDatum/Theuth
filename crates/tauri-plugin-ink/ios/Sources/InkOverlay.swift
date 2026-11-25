@@ -131,7 +131,10 @@ final class InkOverlay: NativeInkOverlay {
     surface?.raise()
   }
 
+  /// The tool JS holds. The same tool again touches nothing: PencilKit's canvas tool and the picker's selection are only
+  /// assigned when the tool changed.
   func setTool(_ tool: ToolState) {
+    guard tool != self.tool else { return }
     self.tool = tool
     picker?.select(tool)
     applyTool()

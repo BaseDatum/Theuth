@@ -128,19 +128,39 @@ export async function connectNativeInk(o: {
   const ink = attached
   if (!ink) return null
   let shown = true
+  // What the plugin was last told: each command goes only when its value changes. A repeated `set_tool` re-assigns
+  // PencilKit's canvas tool and re-selects the picker's item, so it never goes while nothing changed (a pen-down).
+  let sentTool = ''
+  let on: boolean | null = null
+  let picker: boolean | null = null
   const push = () => {
     const s = o.store.getState()
     // Off while the cluster is up: the recogniser covers the whole web view, so a Pencil tap on a cluster button would
     // be a native stroke (and its pen-down hides the cluster) instead of a tap. Pointer ink draws meanwhile.
-    const enabled = owned && shown && s.inkEngine === 'auto' && s.mode !== 'link' && s.mode !== 'erase' && !s.composerOpen && !s.clusterOpen
-    ink.setTool({ tool: s.mode === 'erase' ? 'eraser' : s.tool, colour: inkCss(s.colour, o.dark()), width: s.width })
-    ink.setEnabled(enabled)
-    ink.setPickerVisible(shown && !s.composerOpen && s.inkEngine === 'auto')
+    const want = owned && shown && s.inkEngine === 'auto' && s.mode !== 'link' && s.mode !== 'erase' && !s.composerOpen && !s.clusterOpen
+    // Never switched on under a pen that is down: with capture off that pen is a pointer stroke (its pen-down is what hid
+    // the cluster). Turned on under it, the recogniser met a touch already in flight; it comes on at that stroke's pen-up.
+    const enabled = want && (on === true || !s.penDown)
+    const tool = { tool: s.mode === 'erase' ? ('eraser' as const) : s.tool, colour: inkCss(s.colour, o.dark()), width: s.width }
+    const key = `${tool.tool} ${tool.colour} ${tool.width}`
+    if (key !== sentTool) {
+      sentTool = key
+      ink.setTool(tool)
+    }
+    if (enabled !== on) {
+      on = enabled
+      ink.setEnabled(enabled)
+    }
+    const visible = shown && !s.composerOpen && s.inkEngine === 'auto'
+    if (visible !== picker) {
+      picker = visible
+      ink.setPickerVisible(visible)
+    }
     if (s.nativeInk !== enabled) s.set({ nativeInk: enabled })
   }
   push()
   const unsub = o.store.subscribe((s, p) => {
-    if (s.mode !== p.mode || s.tool !== p.tool || s.colour !== p.colour || s.width !== p.width || s.composerOpen !== p.composerOpen || s.clusterOpen !== p.clusterOpen || s.inkEngine !== p.inkEngine) push()
+    if (s.mode !== p.mode || s.tool !== p.tool || s.colour !== p.colour || s.width !== p.width || s.composerOpen !== p.composerOpen || s.clusterOpen !== p.clusterOpen || s.inkEngine !== p.inkEngine || s.penDown !== p.penDown) push()
   })
   return {
     viewEnd: (view, frame) => ink.setViewport({ tx: view.x + frame.left, ty: view.y + frame.top, zoom: view.zoom }),

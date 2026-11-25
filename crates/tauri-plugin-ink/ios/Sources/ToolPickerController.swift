@@ -21,6 +21,8 @@ final class ToolPickerController: NSObject, PKToolPickerObserver {
   private weak var host: UIResponder?
   /// While JS is selecting (`set_tool`), the picker's change is JS's own echo: not reported.
   private var selecting = false
+  /// What the picker showed after the last `select` or reported change: a notification naming it again is no change.
+  private var shown: ToolState?
   private var visible = true
   /// Observers besides `self` (the route A canvas), re-added to a rebuilt picker.
   private let observers = NSHashTable<AnyObject>.weakObjects()
@@ -105,6 +107,7 @@ final class ToolPickerController: NSObject, PKToolPickerObserver {
       state.tool == .eraser
         ? candidate is PKToolPickerEraserItem : candidate.identifier == Self.id(state.tool)
     }
+    defer { shown = current() }
     guard let item = item, picker.selectedToolItem !== item else { return }
     picker.selectedToolItem = item
   }
@@ -141,7 +144,10 @@ final class ToolPickerController: NSObject, PKToolPickerObserver {
 
   nonisolated func toolPickerSelectedToolItemDidChange(_ toolPicker: PKToolPicker) {
     MainActor.assumeIsolated {
-      guard !selecting, let state = current() else { return }
+      // Only a change from what the picker last showed is the user's: should PencilKit report a programmatic selection
+      // (or a rebuilt picker's swap) after `select` returned, `selecting` is already off and this is that echo.
+      guard !selecting, let state = current(), state != shown else { return }
+      shown = state
       onChange?(state)
     }
   }
