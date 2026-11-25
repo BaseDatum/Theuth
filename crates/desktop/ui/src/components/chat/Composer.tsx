@@ -1,6 +1,6 @@
-import { useQuerySupport } from '@/rpc/capabilities'
+import { useQuerySupport, useSupported } from '@/rpc/capabilities'
 import { supports, UnsupportedCapability } from '@/rpc/discovery'
-import { privateRequirements, endlessRequirements } from './requirements'
+import { privateRequirements, endlessRequirements, modelRequirements } from './requirements'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { open as pickFiles } from '@tauri-apps/plugin-dialog'
@@ -207,12 +207,11 @@ const BOX =
 /**
  * The bottom bar's narrow-width fit, from the box's measured content width (`useNarrow`, a ResizeObserver) rather than a
  * CSS container query: `container-type` puts the bar in a containment context, and iOS WebKit has left content inside
- * one unpainted. Under 300 px the gaps tighten and the round buttons go 36 → 32 px; under 250 px the model label goes.
+ * one unpainted. Under 300 px the gaps tighten and the round buttons go 36 → 32 px (a running talk plus Steer and Stop
+ * still need it in a 280 px pane); nothing is ever hidden for room.
  */
 export const BAR_TIGHT_PX = 300
-export const BAR_TINY_PX = 250
-export const barFit = (tight: boolean, tiny: boolean): string =>
-  cn(tight && 'gap-0.5 [&_button.size-9]:size-8', tiny && '[&_[data-tour=chat-model]]:hidden')
+export const barFit = (tight: boolean): string => cn(tight && 'gap-0.5 [&_button.size-9]:size-8')
 /** A press held this long on Send/Steer is the interrupt gesture (items 7/8): fingers have no ⌘↩. */
 const LONG_PRESS = 500
 
@@ -755,11 +754,13 @@ export function Composer({
   const narrow = useNarrow(box, NARROW_BOX_PX)
   // The bar's fit: the box's content width is the bar's (`contentRect` leaves out the box's padding).
   const barTight = useNarrow(box, BAR_TIGHT_PX)
-  const barTiny = useNarrow(box, BAR_TINY_PX)
-  // The box's top row (`13%  ~$44`): an existing session only, never the new-chat draft or a HUD composer.
+  // The box's top row: the model picker left (any composer but a HUD one, whose chat is named on demand, where the
+  // engine has the model methods) and `13%  ~$44` right (an existing session only, never the new-chat draft).
   const meta = useComposerMeta(!resolveSession && session ? session : null)
+  const pickModel = useSupported(modelRequirements) && !resolveSession
+  const topRow = pickModel || meta !== null
   // The row counts toward the box: the text's max height gives up its 16 px, so a full box is no taller than before.
-  const textMax = meta ? (touch() ? 'max-h-[144px]' : 'max-h-[184px]') : touch() ? 'max-h-[160px]' : 'max-h-[200px]'
+  const textMax = topRow ? (touch() ? 'max-h-[144px]' : 'max-h-[184px]') : touch() ? 'max-h-[160px]' : 'max-h-[200px]'
   const pathChanged = (next: string, caret: number) => {
     const t = pathTrigger(next, caret, pathWindows.current)
     const slashNow = /^\/\S*$/.test(next) && slashMenu(next, harnessMenu).length > 0
@@ -1415,13 +1416,21 @@ export function Composer({
         ref={box}
         data-composer=""
         data-tour="chat-composer"
-        className={cn('relative rounded-2xl border border-border-subtle bg-elevated px-3 pb-2 shadow-sm', meta ? 'pt-1' : 'pt-2.5')}
+        className={cn('relative rounded-2xl border border-border-subtle bg-elevated px-3 pb-2 shadow-sm', topRow ? 'pt-1' : 'pt-2.5')}
         onDragOver={(e) => e.preventDefault()}
         onDrop={onDrop}
       >
-        {/* Row 0: `13%  ~$44`, a thin row inside the top of the box; the text starts under it at the full width. A voice
-            note keeps the row's height, empty (no jump); a chat with no reading and no cost (or a draft) has no row. */}
-        {meta && session && <ComposerMeta session={session} meta={meta} hidden={stage !== 'idle'} />}
+        {/* Row 0: `[model · effort ⌄] … 13%  ~$44`, a thin row inside the top of the box; the text starts under it at the
+            full width. The draft has the picker alone; a voice note keeps the row's height, empty (no jump), and the
+            picker goes meanwhile. No row only when neither side applies (a HUD composer with no reading). */}
+        {topRow && (
+          <ComposerMeta
+            session={session}
+            meta={meta}
+            model={pickModel && stage === 'idle' ? <ComposerModel session={session} own={ownModel} /> : undefined}
+            hidden={stage !== 'idle'}
+          />
+        )}
         {slash && <SlashList items={slashItems} selected={selected} onPick={pick} />}
         {path && pathOpen && <PathList popup={path} mobile={isMobile} onPick={pickPath} />}
         <HeldStrip
@@ -1490,11 +1499,11 @@ export function Composer({
           </RecordingBox>
           {(stage === 'held' || stage === 'cancelled') && <CancelHint ref={hint} />}
         </div>
-        {/* 215 C2: row 2, the toolbar under the full-width text — Add, MCP and the shield left, the model and voice/send
-            right. It never overflows down to the 280 px pane floor: the model label shrinks first; on a narrow bar
-            (`barFit`) the gaps tighten and the round buttons go from 36 to 32 px; on the narrowest the label goes
-            (the picker stays one `/model` away). Every button keeps its own conditions; none is dropped for room. */}
-        <div data-composer-bar="" className={cn('mt-1 flex items-center gap-1', barFit(barTight, barTiny))}>
+        {/* 215 C2: row 2, the toolbar under the full-width text — Add, MCP and the shield left, talk, mic and send right
+            (the model picker is in row 0). It never overflows down to the 280 px pane floor: on a narrow bar (`barFit`)
+            the gaps tighten and the round buttons go from 36 to 32 px. Every button keeps its own conditions; none is
+            dropped for room. */}
+        <div data-composer-bar="" className={cn('mt-1 flex items-center gap-1', barFit(barTight))}>
           {/* 89 VOICE-HOLD: a held or locked note takes the row — Delete (locked) · dot + timer stand in for Add. */}
           {stage === 'locked' && <DeleteNote onClick={() => stopRecording(true)} />}
           {stage !== 'idle' && <RecordingMeta secs={secs} stage={stage} />}
@@ -1604,10 +1613,6 @@ export function Composer({
           {!readOnly && !resolveSession && session && stage === 'idle' && <ApprovalShield session={session} />}
           {/* 215 C2: `-ml-1` cancels the spacer's own gap — 4px that a 280px pane needs for the buttons. */}
           <div className="-ml-1 min-w-0 flex-1" />
-          {/* 215 C1/C2: the model picker, a quiet label on the toolbar; a HUD composer's chat is named on demand, so none.
-              A direct flex item: its `max-w-[40%]` reads the toolbar's width, and it is the one item that shrinks when
-              the row runs out of room (every button is `shrink-0`). A voice note takes the row, so it goes meanwhile. */}
-          {!resolveSession && stage === 'idle' && <ComposerModel session={session} own={ownModel} />}
           {/* 76 §0.12: the former voice-note button is Talk — the live spoken conversation on this session. B3: while it
               runs here, the chat view keeps a compact indicator: tap opens the talk view, the x ends the talk. */}
           {talkHere ? (

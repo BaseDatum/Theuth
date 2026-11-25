@@ -271,7 +271,7 @@ export function NewChat({
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
         <Mark className="mx-auto mb-5 size-16 shrink-0" />
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
-        {/* 215 C3: the draft's model picker lives in the composer's toolbar (`ComposerModel`), which also answers `/model`. */}
+        {/* 215 C3: the draft's model picker lives at the left of the composer's top row (`ComposerModel`), which also answers `/model`. */}
         {(priv && !privateSupported) || (endlessOn && !canQuery2) ? <Unavailable /> : <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} onUncreated={onUncreated} />}
         <CreateOptions
           priv={priv}

@@ -467,11 +467,14 @@ function PickerDialogContent({ m, session, advisor }: { m: Model; session: strin
 }
 
 /** 215 C1: the label's box, shared by the plain-text states so the toolbar never jumps when the harness comes and goes. */
-const QUIET = 'h-8 max-w-[40%] min-w-0'
+/** The composer's top row (`ComposerMeta`): a 16 px label in the numbers' small type, one step brighter so it reads as
+ * clickable. `-my-2 py-2` gives a finger a 32 px target without making the row taller; `-mx-1 px-1` lines the text up
+ * with the box's text. It truncates (`min-w-0`) before the numbers on the right give way. */
+const QUIET = '-mx-1 -my-2 h-auto min-w-0 max-w-full px-1 py-2 text-[11px] leading-4 has-[>svg]:px-1 [&_svg]:size-3'
 
 /**
- * 215 C1: the chat model picker — a quiet "Model · effort ⌄" label on the composer's toolbar row (every `<Composer>`
- * host), opening the cmdk picker upward (desktop popover above the input; on touch 127 §6's top-of-band dialog, 194 D1).
+ * 215 C1: the chat model picker — a quiet "Model · effort ⌄" label at the left of the composer's top row (every
+ * `<Composer>` host, the new-chat draft too), opening the cmdk picker upward (desktop popover above the input; on touch 127 §6's top-of-band dialog, 194 D1).
  * The model name with a cmdk-filtered list from `list_models`, the selected model's effort levels as chips under its
  * row, the Advisor and Knowledge harvester rows under the list. A fresh chat keeps its model and effort pick in the UI
  * until submit creates the session (148 R1: never the default). An ACP child (75 §8) gets the same picker over its
@@ -495,20 +498,20 @@ function ComposerModelBody(props: Props) {
   useOpenOnSlash(props, () => setOpen(true))
   useOpenAdvisor(props.session, () => (setAdvisor(true), setOpen(true)))
   const resume = m.resume && (
-    <Button variant="ghost" size="sm" className="h-7 shrink-0 gap-1 px-2 text-xs text-fg-tertiary" title="restart the harness process in this session's stored context (session/load)" onClick={() => void m.resume?.()}>
+    <Button variant="ghost" size="sm" className="-my-2 h-auto shrink-0 gap-1 px-1 py-2 text-[11px] leading-4 text-fg-tertiary has-[>svg]:px-1 [&_svg]:size-3" title="restart the harness process in this session's stored context (session/load)" onClick={() => void m.resume?.()}>
       <RotateCcw className="size-3.5" /> Resume
     </Button>
   )
   if (m.watching) {
     return (
-      <span className={cn(QUIET, 'flex items-center px-2 text-[13px] text-fg-tertiary')} title="the harness runs this subagent; its model is not yours to pick" aria-disabled>
+      <span className={cn(QUIET, 'flex items-center text-fg-secondary')} title="the harness runs this subagent; its model is not yours to pick" aria-disabled>
         <span className="min-w-0 truncate">{m.harnessModel ?? '—'}</span>
       </span>
     )
   }
   if (m.agent && !m.harness) {
     return (
-      <span className={cn(QUIET, 'flex items-center gap-1 px-2 text-[13px] text-fg-tertiary')} title={m.harness === null ? 'harness process not running' : 'External harness'}>
+      <span className={cn(QUIET, 'flex items-center gap-1 text-fg-secondary')} title={m.harness === null ? 'harness process not running' : 'External harness'}>
         <span className="min-w-0 truncate">{harnessLabel(m)}</span>
         {resume}
       </span>
@@ -517,7 +520,7 @@ function ComposerModelBody(props: Props) {
   const { effort: harnessEffort } = harnessGroups(m.harness ?? [])
   const effortLabel = m.agent ? harnessCurrent(harnessEffort, harnessEffort && m.pending[harnessEffort.id]) : m.effort
   const onOpenChange = (o: boolean) => (setOpen(o), !o && setAdvisor(false))
-  const trigger = <QuietModelTrigger data-tour="chat-model" size="sm" className={QUIET} name={m.agent ? harnessLabel(m) : m.name} effort={effortLabel} local={!m.agent && m.current?.local} />
+  const trigger = <QuietModelTrigger data-tour="chat-model" size="sm" className={cn(QUIET, 'text-fg-secondary')} name={m.agent ? harnessLabel(m) : m.name} effort={effortLabel} local={!m.agent && m.current?.local} />
   // Above the input the list is capped by the visible band (a short window, the keyboard), as in `ModelCombobox`.
   const list = 'max-h-[min(24rem,calc(var(--visible-band)-6rem))]'
   return (
@@ -530,7 +533,7 @@ function ComposerModelBody(props: Props) {
       ) : (
         <Popover open={open} onOpenChange={onOpenChange}>
           <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-          <PopoverContent side="top" align="end" sideOffset={8} className="w-80 p-0">
+          <PopoverContent side="top" align="start" sideOffset={8} className="w-80 p-0">
             {m.agent ? <HarnessPicker m={m} listClassName={list} /> : <ModelCommand m={m} session={props.session} advisor={advisor} listClassName={list} />}
           </PopoverContent>
         </Popover>

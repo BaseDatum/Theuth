@@ -102,7 +102,7 @@ test('the meta is a row at the top of the box, before the text in DOM order, nev
   const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
   const at = (s: string) => src.indexOf(s)
   const box = at('data-composer=""')
-  const row = at('<ComposerMeta session={session} meta={meta}')
+  const row = at('<ComposerMeta\n')
   const bar = at('{/* 215 C2: row 2, the toolbar')
   expect(row).toBeGreaterThan(box)
   expect(row).toBeLessThan(at('<HeldStrip'))
@@ -115,10 +115,14 @@ test('the meta is a row at the top of the box, before the text in DOM order, nev
   expect(readFileSync(new URL('./ComposerMeta.tsx', import.meta.url), 'utf8')).not.toMatch(/@max-|\/bar:hidden/)
 })
 
-test('the row exists for an existing session only (never the draft or a HUD composer), and its height comes out of the text\'s max', () => {
+test('the numbers exist for an existing session only (never the draft or a HUD composer); the row for the picker or the numbers, and its height comes out of the text\'s max', () => {
   const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
   expect(src).toContain('const meta = useComposerMeta(!resolveSession && session ? session : null)')
-  expect(src).toContain("const textMax = meta ? (touch() ? 'max-h-[144px]' : 'max-h-[184px]') : touch() ? 'max-h-[160px]' : 'max-h-[200px]'")
+  // The picker shows where the engine has the model methods, in any composer but a HUD one (no picker there).
+  expect(src).toContain('const pickModel = useSupported(modelRequirements) && !resolveSession')
+  expect(src).toContain('const topRow = pickModel || meta !== null')
+  expect(src).toContain('{topRow && (')
+  expect(src).toContain("const textMax = topRow ? (touch() ? 'max-h-[144px]' : 'max-h-[184px]') : touch() ? 'max-h-[160px]' : 'max-h-[200px]'")
   expect(src.match(/className=\{cn\(BOX, textMax\)\}/g)).toHaveLength(2)
   // A voice note keeps the row (same height, empty): no jump.
   expect(src).toContain('hidden={stage !== \'idle\'}')
@@ -133,7 +137,7 @@ test('the row: both numbers always shown, right-aligned 16 px, the % banded ambe
   act(() => root!.render(h(ComposerMeta, { session: 's1', meta: META })))
   const row = host.querySelector<HTMLElement>('[data-composer-meta]')!
   expect(row.className).toContain('h-4')
-  expect(row.className).toContain('justify-end')
+  expect(row.querySelector('[data-meta-numbers]')!.className).toContain('ml-auto')
   expect(row.className).not.toContain('invisible')
   const pct = row.querySelector<HTMLElement>('[data-meta="context"]')!
   expect(pct.textContent).toBe('78%')
@@ -162,20 +166,19 @@ test('recording: the row keeps its height but shows nothing and takes no focus',
   expect(row.querySelector<HTMLElement>('[data-meta="cost"]')!.tabIndex).toBe(-1)
 })
 
-test('the bar fits its pane instead of pushing buttons out: tighter gaps and 32 px buttons, then no model label; nothing else is dropped', async () => {
-  const { barFit, BAR_TIGHT_PX, BAR_TINY_PX } = await import('./Composer')
-  expect(barFit(false, false)).toBe('')
-  expect(barFit(true, false).split(' ').sort()).toEqual(['[&_button.size-9]:size-8', 'gap-0.5'])
-  expect(barFit(true, true)).toContain('[&_[data-tour=chat-model]]:hidden')
-  expect([BAR_TIGHT_PX, BAR_TINY_PX]).toEqual([300, 250])
-  // Only the model label may go; no rule hides a button.
-  expect(barFit(true, true)).not.toMatch(/button[^ ]*:hidden/)
+test('the bar fits its pane instead of pushing buttons out: tighter gaps and 32 px buttons; nothing is dropped', async () => {
+  const { barFit, BAR_TIGHT_PX } = await import('./Composer')
+  expect(barFit(false)).toBe('')
+  expect(barFit(true).split(' ').sort()).toEqual(['[&_button.size-9]:size-8', 'gap-0.5'])
+  expect(BAR_TIGHT_PX).toBe(300)
+  expect(barFit(true)).not.toMatch(/:hidden/)
   const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
   // Measured by a ResizeObserver, never a CSS container query: containment around the bar is what iOS WebKit has
   // left unpainted.
   expect(src).not.toMatch(/@container\/|@max-\[/)
-  expect(src).toContain("className={cn('mt-1 flex items-center gap-1', barFit(barTight, barTiny))}")
+  expect(src).toContain("className={cn('mt-1 flex items-center gap-1', barFit(barTight))}")
   expect(src).toContain('const barTight = useNarrow(box, BAR_TIGHT_PX)')
+  expect(src).not.toContain('BAR_TINY_PX')
   // The shield is 28 px wide (the mock), never shed, and only pulses while an approval waits.
   const meta = readFileSync(new URL('./ComposerMeta.tsx', import.meta.url), 'utf8')
   expect(meta).toContain("'grid h-9 w-7 shrink-0 place-items-center")
@@ -202,4 +205,77 @@ test('the box never clips its own content: no max height or overflow on the box,
   // The max height is the text's alone (its own scroll area); the held strip and the top row add to the box.
   expect(src).toMatch(/const BOX =\n\s+'min-h-8 /)
   expect(src.match(/className=\{cn\(BOX, textMax\)\}/g)).toHaveLength(2)
+})
+
+/** The bottom bar's source: from its opening tag to the end of the box. */
+function barSource(): string {
+  const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
+  return src.slice(src.indexOf('<div data-composer-bar=""'), src.indexOf('function DictatedText'))
+}
+
+test('the model picker is in the top row, before the numbers and the text, and not in the bottom bar', () => {
+  const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
+  const at = (s: string) => src.indexOf(s)
+  const model = at('<ComposerModel session={session} own={ownModel} />')
+  expect(src.match(/<ComposerModel /g)).toHaveLength(1)
+  expect(model).toBeGreaterThan(at('<ComposerMeta\n'))
+  expect(model).toBeLessThan(at('<Textarea'))
+  expect(model).toBeLessThan(at('<div data-composer-bar=""'))
+  // It goes during a voice note, as it did in the bar.
+  expect(src).toContain("model={pickModel && stage === 'idle' ? <ComposerModel session={session} own={ownModel} /> : undefined}")
+  // Opened from the top of the box, it lines up with the label's start.
+  expect(readFileSync(new URL('./ModelMenu.tsx', import.meta.url), 'utf8')).toContain('<PopoverContent side="top" align="start"')
+})
+
+test('the bar holds only + · MCP · shield … spacer … talk · mic · send', () => {
+  const bar = barSource()
+  expect(bar).not.toMatch(/ComposerModel|ComposerMeta|data-tour="chat-model"/)
+  const order = ['<Popover', '<McpMenu', '<ApprovalShield', '<div className="-ml-1 min-w-0 flex-1" />', 'aria-label="Talk"', '<MicButton', 'aria-label="Send"']
+  const idx = order.map((s) => bar.indexOf(s))
+  expect(idx.every((i) => i >= 0)).toBe(true)
+  expect([...idx].sort((a, b) => a - b)).toEqual(idx)
+})
+
+const pick = () => h('button', { type: 'button', 'data-tour': 'chat-model' }, 'Claude Opus 5.5 · medium')
+
+test('the row: the picker left, truncating first, the numbers right after it', () => {
+  host = document.createElement('div')
+  document.body.append(host)
+  root = createRoot(host)
+  act(() => root!.render(h(ComposerMeta, { session: 's1', meta: META, model: pick() })))
+  const row = host.querySelector<HTMLElement>('[data-composer-meta]')!
+  expect(row.className).toContain('h-4')
+  const [first, second] = [...row.children] as HTMLElement[]
+  expect(first!.dataset.tour).toBe('chat-model')
+  expect(second!.hasAttribute('data-meta-numbers')).toBe(true)
+  expect(second!.className).toContain('shrink-0')
+  expect(second!.textContent).toBe('78%~$131')
+  // The label shrinks (min-w-0) and keeps the row 16 px tall: its 32 px tap target hangs into negative margins.
+  const quiet = readFileSync(new URL('./ModelMenu.tsx', import.meta.url), 'utf8')
+  expect(quiet).toMatch(/const QUIET = '-mx-1 -my-2 h-auto min-w-0 max-w-full px-1 py-2 text-\[11px\] leading-4/)
+})
+
+test('the draft: the picker top-left alone, no numbers', () => {
+  host = document.createElement('div')
+  document.body.append(host)
+  root = createRoot(host)
+  act(() => root!.render(h(ComposerMeta, { session: null, meta: null, model: pick() })))
+  const row = host.querySelector<HTMLElement>('[data-composer-meta]')!
+  expect(row.children).toHaveLength(1)
+  expect((row.firstElementChild as HTMLElement).dataset.tour).toBe('chat-model')
+  expect(row.querySelector('[data-meta-numbers]')).toBeNull()
+  // The draft's composer is the same `<Composer>` (session null): one picker, in the same row.
+  expect(readFileSync(new URL('./NewChatPane.tsx', import.meta.url), 'utf8')).toContain('<Composer')
+})
+
+test('recording with the picker: the row keeps its height, the picker goes, the numbers are invisible', () => {
+  host = document.createElement('div')
+  document.body.append(host)
+  root = createRoot(host)
+  // Composer passes no `model` while a note records (`stage !== 'idle'`).
+  act(() => root!.render(h(ComposerMeta, { session: null, meta: null, hidden: true })))
+  const row = host.querySelector<HTMLElement>('[data-composer-meta]')!
+  expect(row.className).toContain('h-4')
+  expect(row.className).toContain('invisible')
+  expect(row.querySelector('[data-tour="chat-model"]')).toBeNull()
 })
