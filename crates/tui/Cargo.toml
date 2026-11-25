@@ -33,6 +33,8 @@ document = { workspace = true }
 meeting = { workspace = true }
 web = { workspace = true }
 secrets = { workspace = true }
+zeroize = { workspace = true }  # 221: typed passwords / codes wiped after use
+base64 = { workspace = true }  # 221 §12.5: OSC 52 copy of a Send link
 update = { workspace = true }
 voice = { workspace = true }
 talk = { workspace = true }

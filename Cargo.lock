@@ -24959,6 +24959,7 @@ dependencies = [
  "artifact",
  "async-trait",
  "autoresearch",
+ "base64 0.23.1",
  "chrono",
  "computer",
  "crossterm",
@@ -25004,6 +25005,7 @@ dependencies = [
  "voice",
  "web",
  "wire",
+ "zeroize",
 ]
 
 [[package]]

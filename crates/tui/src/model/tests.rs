@@ -139,7 +139,7 @@
         assert!(m.input_focused());
         m.submit("private-value", &tx);
         assert!(matches!(&m.components.get::<Secrets>().unwrap().prompt,
-            Some(SecretPrompt::Note { name, value }) if name == "github" && value == "private-value"));
+            Some(SecretPrompt::Note { name, value }) if name == "github" && value.as_str() == "private-value"));
         assert!(rx.try_recv().is_err());
         assert!(!leaked(&m, "private-value"));
     }
@@ -2912,7 +2912,7 @@
         assert!(m.components.get::<Secrets>().unwrap().prompt.is_none());
         assert!(matches!(
             component_request::<SecretRpc>(&mut rx),
-            Ok(SecretRpc::SetSecret { name, value, note: None }) if name == "github" && value == "ghp_topsecret"
+            Ok(SecretRpc::SetSecret { name, value, note: None }) if name == "github" && value.as_str() == "ghp_topsecret"
         ));
         let mut list = secrets_list();
         list.secrets[0].current = 1;
@@ -3040,7 +3040,7 @@
         m.component_submit(password);
         assert!(matches!(
             component_request::<SecretRpc>(&mut rx),
-            Ok(SecretRpc::AnswerUnlock { id: i, password: Some(p) }) if i == id && p == password
+            Ok(SecretRpc::AnswerUnlock { id: i, password: Some(p), .. }) if i == id && p.as_str() == password
         ));
         assert!(m.components.get::<Secrets>().unwrap().unlocks.is_empty());
         // A wrong password: the engine raises the card again; nothing typed before shows.
@@ -3053,12 +3053,81 @@
         m.component_key(FocusClass::Secret, &iocraft::KeyEvent::new(iocraft::KeyEventKind::Press, KeyCode::Esc));
         assert!(matches!(
             component_request::<SecretRpc>(&mut rx),
-            Ok(SecretRpc::AnswerUnlock { id: i, password: None }) if i == again
+            Ok(SecretRpc::AnswerUnlock { id: i, password: None, .. }) if i == again
         ));
         m.apply(wire_event("secrets.events", secrets::SecretsEvent::UnlockResolved { id: again, unlocked: false }));
         assert!(!leaked(&m, password), "the master password must not land in the transcript");
         assert!(!screen(&m).contains(password));
         assert!(!format!("{m:?}").contains(password));
+    }
+
+    /// 221 T1/T12: the Bitwarden login's master password, 2FA code and new-device code are typed
+    /// masked and never land in the transcript, a rendered view or Debug; a Send link is copied
+    /// by id (the TUI never holds it) and never shown.
+    #[test]
+    fn secrets_login_codes_and_send_links_never_show() {
+        use crate::components::secrets::{Secrets, Menu as SecretMenu, Request as SecretRpc, Msg as SecretMsg};
+        use crate::components::{FocusClass, Surface, View};
+        use iocraft::prelude::ElementExt as _;
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.components.register(Secrets::default()).unwrap();
+        m.mount_components(&tx);
+        let screen = |m: &Model| -> String {
+            [Surface::Prompt(FocusClass::Secret), Surface::Modal].into_iter()
+                .flat_map(|at| m.component_views(at, 80, 24))
+                .map(|v| match v {
+                    View::Text(t) => t,
+                    View::Element { mut element, .. } | View::IntrinsicElement { mut element, .. } => element.render(Some(80)).to_string(),
+                    View::Editor { .. } => String::new(),
+                })
+                .collect()
+        };
+        let masked = |m: &Model| m.components.editor().is_some_and(|(_, e)| e.masked);
+        let conn = |status| secrets::connections::ConnInfo {
+            conn: "personal".into(), backend: "bw".into(), status, summary: "me@example.org · vault.bitwarden.com".into(),
+            ask: Default::default(), settings: Default::default(),
+        };
+        m.submit("/secrets connect bw", &tx);
+        for line in ["personal", "us", "me@example.org", "password"] { m.component_submit(line); }
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::AddConnection { .. })));
+        component_reply(&mut m, "secrets", SecretMsg::Added(Ok(conn(secrets::external::ConnStatus::LoggedOut))));
+        let (password, code, otp) = ("master-pw-never-shown", "246810", "135799");
+        assert!(masked(&m), "master password");
+        m.component_submit(password);
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::Login { .. })));
+        component_reply(&mut m, "secrets", SecretMsg::LoggedIn { conn: "personal".into(),
+            step: Ok(secrets::external::LoginStep::NeedTwoFactor { providers: vec!["authenticator".into()] }), connections: None });
+        assert!(masked(&m), "2FA code");
+        m.component_submit(code);
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::Login { .. })));
+        component_reply(&mut m, "secrets", SecretMsg::LoggedIn { conn: "personal".into(),
+            step: Ok(secrets::external::LoginStep::NeedNewDeviceOtp), connections: None });
+        assert!(masked(&m), "new-device code");
+        m.component_submit(otp);
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::Login { .. })));
+        component_reply(&mut m, "secrets", SecretMsg::LoggedIn { conn: "personal".into(),
+            step: Err("bw/personal: invalid new-device code".into()), connections: None });
+        for v in [password, code, otp] {
+            assert!(!leaked(&m, v), "{v} must not land in the transcript");
+            assert!(!screen(&m).contains(v), "{v} must not be rendered");
+            assert!(!format!("{m:?}").contains(v), "{v} must not be in Debug");
+        }
+        // Sends: `y` copies the link by row id; the reply names the link secret, never the link.
+        let record: secrets::tools_send::SendRecord = serde_json::from_value(serde_json::json!({
+            "id": "r1", "conn": "personal", "kind": "text", "name": "Shared from theuth", "file_name": null, "file_bytes": null,
+            "source_ref": "GITHUB_TOKEN", "link_secret": "send-personal-3fa9c2d1", "created_ms": 0, "expiration_ms": null,
+            "deletion_ms": 0, "access_count": 0, "max_access": 1, "has_password": false, "status": "active",
+        })).unwrap();
+        m.components.get_mut::<Secrets>().unwrap().connections = vec![conn(secrets::external::ConnStatus::Ready)];
+        component_reply(&mut m, "secrets", SecretMsg::Sends("personal".into(), Ok(vec![record])));
+        assert!(matches!(m.components.get::<Secrets>().unwrap().menu, Some(SecretMenu::Sends { .. })));
+        component_menu_key(&mut m, "secrets", KeyCode::Char('y'));
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::CopyLink { id, .. }) if id == "r1"));
+        component_reply(&mut m, "secrets", SecretMsg::Done(Ok(Some("send-personal-3fa9c2d1: link copied to the clipboard (OSC 52); it is never shown here".into()))));
+        let shown = screen(&m);
+        assert!(shown.contains("send-personal-3fa9c2d1") && !shown.contains("#/send/"), "{shown}");
+        assert!(!leaked(&m, "#/send/") && !format!("{m:?}").contains("#/send/"));
     }
 
     #[test]
