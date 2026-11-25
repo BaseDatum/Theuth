@@ -3,6 +3,7 @@ name = "app-parser-stub"
 version = "2.24.0"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "theuth-app-parser-<hash> compatibility stub for installed updaters; t validates apps in-process (docs/design/apps-inproc-as-built-P1.md)"
 
 [[bin]]

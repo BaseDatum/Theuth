@@ -3,11 +3,16 @@
 //! ([`RegisterBackendFactory`]); the actor then builds every configured connection of that
 //! backend (after seeding its always-ask entries), builds the ones added later, and unregisters
 //! removed ones. AWS is always linked; Bitwarden with the `bitwarden` feature (D3, D22).
+//! Also the engine's artifact lookup for `artifact:<id>` Send sources (§12.3), which `secrets`
+//! cannot do itself (`artifact` depends on `agent`, which depends on `secrets`).
 
 use std::sync::Arc;
 
-use secrets::connections::ConnConfig;
+use runtime::SessionId;
+use runtime::kameo::actor::ActorRef;
+use secrets::connections::{ConnConfig, SetArtifactSource};
 use secrets::external::ExternalBackend;
+use secrets::tools_send::{ArtifactRef, ArtifactSource};
 use secrets::{BackendFactory, ConnStore, RegisterBackendFactory, SECRETS_ACTOR, SecretsActor};
 
 /// Registers the factories once the secrets actor is up. Placed after `SecretsPlugin`.
@@ -32,6 +37,7 @@ impl runtime::Plugin for ExternalBackendsPlugin {
                     tracing::warn!("secrets: {backend} backend not registered: {e}");
                 }
             }
+            let _ = actor.ask(SetArtifactSource(Arc::new(Artifacts))).await;
         });
         Ok(())
     }
@@ -43,6 +49,32 @@ fn factories() -> Vec<Arc<dyn BackendFactory>> {
         #[cfg(feature = "bitwarden")]
         Arc::new(bitwarden::BwFactory),
     ]
+}
+
+/// `artifact:<id>`: the artifact `id` anywhere in the tree of `session` (from its root down).
+struct Artifacts;
+
+#[async_trait::async_trait]
+impl ArtifactSource for Artifacts {
+    async fn find(&self, session: SessionId, id: &str) -> Option<ArtifactRef> {
+        let agents = ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR).ok()??;
+        let chain = agents.ask(agent::Ancestors { session }).await.ok()?;
+        let root = chain.last().map_or(session, |a| a.id);
+        let store =
+            ActorRef::<artifact::ArtifactActor>::lookup(artifact::ARTIFACT_ACTOR).ok()??;
+        let all = store
+            .ask(artifact::List {
+                session: Some(root),
+                descendants: true,
+            })
+            .await
+            .ok()?;
+        all.into_iter().find(|a| a.id == id).map(|a| ArtifactRef {
+            path: a.path.to_string_lossy().into_owned(),
+            name: a.name,
+            bytes: a.bytes,
+        })
+    }
 }
 
 /// §6.1: AWS connections. No credentials in theuth: the user's `~/.aws` chain.
@@ -142,8 +174,8 @@ mod bitwarden {
         }
     }
 
-    /// [`CredentialStore`] over the connection's `ext/bw/<conn>/` rows. `ConnStore` has no
-    /// single-row delete, so a removal is an empty row, which `load` reads as absent.
+    /// [`CredentialStore`] over the connection's `ext/bw/<conn>/` rows. An empty row reads as
+    /// absent.
     struct MetaStore(ConnStore);
 
     #[async_trait::async_trait]
@@ -164,7 +196,11 @@ mod bitwarden {
         }
 
         async fn save(&self, key: &str, value: Option<&str>) {
-            if let Err(e) = self.0.put(key, value.unwrap_or("").as_bytes()).await {
+            let r = match value {
+                Some(v) => self.0.put(key, v.as_bytes()).await,
+                None => self.0.delete(key).await,
+            };
+            if let Err(e) = r {
                 tracing::warn!("secrets: bw credential {key} not saved: {e}");
             }
         }

@@ -1,11 +1,23 @@
-# cargo-deny (`cargo deny check licenses`). 221 §13 B2: the licence allow-list, with the GPL-3.0
-# option of `bitwarden/sdk-internal` (`GPL-3.0-only OR LicenseRef-Bitwarden-SDK`, D3) allowed only
-# for the `bitwarden-*` crates. B10 widens this to every GPL-3.0-compatible licence once theuth's
-# own crates carry `GPL-3.0-or-later` (D26).
+# cargo-deny (`cargo deny check licenses`), 221 D22/D26/B10. theuth is GPL-3.0-or-later and the
+# release binaries are GPL-3.0 works, so any GPL-3.0-compatible licence is allowed. Anything else
+# fails, including a crate under the Bitwarden SDK licence alone: `bitwarden/sdk-internal` is
+# `GPL-3.0-only OR LicenseRef-Bitwarden-SDK`, which passes through its GPL-3.0-only side (D3);
+# `LicenseRef-Bitwarden-SDK` itself is never allowed.
 
 [licenses]
-# Permissive licences, all GPL-3.0-compatible.
 allow = [
+    # Copyleft, GPL-3.0-compatible.
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "GPL-2.0-or-later",
+    "LGPL-2.1-only",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-only",
+    "LGPL-3.0-or-later",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+    "MPL-2.0",
+    # Permissive.
     "MIT",
     "MIT-0",
     "Apache-2.0",
@@ -16,110 +28,32 @@ allow = [
     "ISC",
     "Zlib",
     "BSL-1.0",
-    "MPL-2.0",
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "CC0-1.0",
     "CDLA-Permissive-2.0",
+    "Unlicense",
+    "WTFPL",
+    "BlueOak-1.0.0",
+    "bzip2-1.0.6",
 ]
 confidence-threshold = 0.9
 
-# theuth's own crates are `publish = false` and carry no `license` field until B10.
-[licenses.private]
-ignore = true
+# Deprecated SPDX ids that cargo-deny cannot match against the allow list, read as their
+# current equivalents (SPDX: the bare form means `-only`).
+[[licenses.clarify]]
+crate = "firecrawl-native"
+expression = "AGPL-3.0-only"
+license-files = []
+[[licenses.clarify]]
+crate = "mp3lame-encoder"
+expression = "LGPL-3.0-only"
+license-files = []
+[[licenses.clarify]]
+crate = "mp3lame-sys"
+expression = "LGPL-3.0-only"
+license-files = []
 
-# D3: the SDK taken under its GPL-3.0 option. Scoped by crate name, never a global allow, so a
-# crate under the Bitwarden SDK licence alone still fails. Names from the `sdk@2b06afa` graph.
-[[licenses.exceptions]]
-name = "bitwarden-api-api"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-api-base"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-api-identity"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-api-key-connector"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-auth"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-collections"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-core"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-core-macro"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-crypto"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-encoding"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-error"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-error-macro"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-ffi"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-ffi-macro"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-logging"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-logging-macro"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-managed-settings-types"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-organizations"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-pm"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-policies"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-random"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-send"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-sensitive-value"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-ssh"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-state"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-state-bridge-macro"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-sync"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-threading"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-uuid"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-uuid-macro"
-allow = ["GPL-3.0-only"]
-[[licenses.exceptions]]
-name = "bitwarden-vault"
-allow = ["GPL-3.0-only"]
+# theuth's own crates: `license.workspace = true` (GPL-3.0-or-later); checked like any other.
+[licenses.private]
+ignore = false

@@ -3,6 +3,7 @@ name = "platform"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "OS primitives: process trees, private files, open, service units, shell/PTY program, ORT library name, target matrix (design doc 58)"
 
 [dependencies]

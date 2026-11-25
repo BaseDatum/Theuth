@@ -3,6 +3,7 @@ name = "computer"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Screenshot, pointer/keyboard, accessibility-tree and clipboard tools over the user's desktop (design docs 27, 161)"
 
 [dependencies]

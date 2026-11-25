@@ -56,6 +56,11 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": false,
+    "resources": {
+      "../../LICENSE": "LICENSE",
+      "../../NOTICE": "NOTICE",
+      "../../THIRD-PARTY-NOTICES": "THIRD-PARTY-NOTICES"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/64x64.png",

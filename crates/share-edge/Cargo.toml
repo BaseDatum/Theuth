@@ -3,6 +3,7 @@ name = "share-edge"
 version = "0.1.0"  # its own version and `share-edge-v*` tags, released apart from theuth (210 §8.4)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "theuth-share-edge: blind SNI edge for public web sharing, ACME and name registry (design doc 210)"
 
 [lib]

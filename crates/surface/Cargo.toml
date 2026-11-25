@@ -3,6 +3,7 @@ name = "surface"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "json-render fences (design doc 30): parse, repair, validate; one catalog for prompt, TUI and desktop"
 
 [dependencies]

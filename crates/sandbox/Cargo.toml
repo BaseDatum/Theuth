@@ -3,6 +3,7 @@ name = "sandbox"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Make an engine: bring `t` up on new compute (ssh host, docker container, sandbox VM) and join it to the mesh (design doc 67 §13, 64 §4, 79)"
 
 [dependencies]

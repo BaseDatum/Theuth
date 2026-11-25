@@ -1957,6 +1957,17 @@ runs none.
   licenses` passes; `cargo tree -e features -i bitwarden-pm` shows `no-memory-hardening` on and
   `bitwarden-license` off.
 
+  *As built (deviation):* the `t` archives do **not** carry the three files. The self-updater's
+  `unpack` (`crates/update/src/lib.rs#L557-L570`) refuses any tarball entry other than `t` and the
+  helpers (the "unexpected" tarball-entry error), and that check is compiled into every installed `t`, so
+  an extra entry would break self-update on every existing install; `release-s3.sh` also pins the
+  members. Instead `t --licenses` prints the three texts (embedded with `include_str!`), and
+  `release-s3.sh` publishes `LICENSE`, `NOTICE` and `THIRD-PARTY-NOTICES` as their own objects under
+  `<ver>/`, listed in `SHA256SUMS`. The desktop bundle carries them as resources
+  (`crates/desktop/tauri.conf.json`). `bitwarden` is a default feature of `theuth`, so the release
+  scripts' plain `cargo build -p theuth` includes it. `THIRD-PARTY-NOTICES` comes from
+  `scripts/third-party-notices.sh` (cargo-about, `about.toml`).
+
 ## 14. Open questions for the owner
 
 None open. The last one, theuth's own source licence, is decided as GPL-3.0-or-later (D26).

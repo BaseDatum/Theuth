@@ -3,6 +3,7 @@ name = "aws-profiles"
 version = "2.30.4"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "AWS profile names from the SDK's config/credentials files, never credentials (02 §2.2, 221 §6.1)"
 
 # 221 B1: shared by `agent` (Bedrock) and `secrets-aws` (connections), so neither depends on the other.

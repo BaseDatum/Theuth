@@ -127,6 +127,10 @@ struct Cli {
     /// against it. Before config, logging or any plugin.
     #[arg(long, conflicts_with_all = ["headless", "serve", "acp", "prompt", "resume", "link_signal", "slack_manifest", "slack_setup", "telegram_setup", "link", "install_service", "uninstall_service", "secret_set", "secret_rm", "secret_list", "update"])]
     app_parser_hash: bool,
+    /// 221 B10: print NOTICE, LICENSE (GPL-3.0) and THIRD-PARTY-NOTICES, embedded at build time,
+    /// and exit. The CLI archives carry only `t` and its helper (the updater refuses other entries).
+    #[arg(long)]
+    licenses: bool,
     /// 57 §11.4: fold the captured training rows of a decision family prefix (`meeting`) into
     /// the phrasing-bench fixture shape (or laya's typed-decisions rows with --format laya),
     /// print (or --out) and exit. Reads <data_dir>/decisions/training/<prefix>/*.jsonl.
@@ -1592,6 +1596,15 @@ async fn run() -> anyhow::Result<()> {
     }
     if cli.app_parser_hash {
         println!("{}", app::HASH.trim());
+        return Ok(());
+    }
+    if cli.licenses {
+        print!(
+            "{}\n{}\n{}",
+            include_str!("../../../NOTICE"),
+            include_str!("../../../LICENSE"),
+            include_str!("../../../THIRD-PARTY-NOTICES")
+        );
         return Ok(());
     }
 

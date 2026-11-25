@@ -3,6 +3,7 @@ name = "app"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Interactive OpenUI apps: the `app` publishing tool, the in-process headless validator (js-runtime), and the app actor that runs one-press tool calls (design doc 46)"
 
 [dependencies]

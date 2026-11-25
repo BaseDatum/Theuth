@@ -3,6 +3,7 @@ name = "relay"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "theuth-relay: stateless encrypted-frame relay between harnesses and devices (design doc 31 §5)"
 
 [[bin]]

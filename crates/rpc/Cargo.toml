@@ -3,6 +3,7 @@ name = "rpc"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "JSON-RPC 2.0 over WebSocket: commands as methods, bus events as a subscription"
 
 [dependencies]

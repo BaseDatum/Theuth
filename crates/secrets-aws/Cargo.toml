@@ -3,6 +3,7 @@ name = "secrets-aws"
 version = "2.30.4"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "AWS Secrets Manager external secret backend (221 §4, §6.1)"
 
 [dependencies]

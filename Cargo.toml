@@ -6,6 +6,7 @@ members = ["crates/*"]
 version = "2.30.4"
 edition = "2024"
 publish = false
+license = "GPL-3.0-or-later"  # 221 D26
 
 [workspace.dependencies]
 # Knowledge bundle (design doc 10): OKF v0.2 format (okf-core only: no validator/studio), and local-only git history via gitoxide

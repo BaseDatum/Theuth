@@ -3,6 +3,7 @@ name = "tasks"
 version = "2.22.2"  # frozen: only the binaries carry the product version (platform::version)
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "Task records: states, wakes, checkout, disposition, no-progress back-off; schedules that name an agent become tasks (design doc 67 §7)"
 
 [dependencies]
