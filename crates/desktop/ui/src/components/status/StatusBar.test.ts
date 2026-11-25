@@ -119,6 +119,13 @@ test('needs-you badge counts approvals, asks and secrets, and opens the inbox', 
   expect(bar().textContent).toContain('3 need you')
   await act(async () => button(host, 'need you').click())
   expect(navigate).toHaveBeenCalledWith({ to: '/attention', search: true })
+  // Live state, not a notice: it leaves the moment nothing waits.
+  await act(async () => {
+    st.approvals.setState({ pending: [] })
+    st.asks.setState({ pending: [] })
+    st.secretRequests.setState({ pending: [] })
+  })
+  expect(bar().textContent).not.toContain('need you')
   await act(async () => root.unmount())
 })
 
@@ -146,21 +153,68 @@ test('the unread-error chip opens the history, which reads them', async () => {
 
 const slotText = (host: HTMLElement) => host.querySelector('[data-notice-slot]')?.textContent ?? ''
 
-test('the bar\'s clock expires a notice on time, then a superseded sticky one returns to the slot', async () => {
+test('the bar\'s clock expires a notice on time, and a superseded one never comes back', async () => {
   vi.useFakeTimers()
   const { host, root } = await mount()
   await act(async () => void notify.loading('Downloading speech models… 40%', { id: 'models' }))
-  await act(async () => void notify('cancelled 2 sessions'))
-  expect(slotText(host)).toContain('cancelled 2 sessions')
-  await act(async () => void vi.advanceTimersByTime(3_999))
-  expect(slotText(host)).toContain('cancelled 2 sessions')
-  await act(async () => void vi.advanceTimersByTime(1))
-  expect(slotText(host)).toContain('Downloading speech models… 40%')
   // Same id updates in place: the slot keeps its element (no replayed slide).
   const el = host.querySelector('[data-notice-slot]')
   await act(async () => void notify.loading('Downloading speech models… 41%', { id: 'models' }))
   expect(host.querySelector('[data-notice-slot]')).toBe(el)
   expect(slotText(host)).toContain('41%')
+  await act(async () => void notify('cancelled 2 sessions'))
+  expect(slotText(host)).toContain('cancelled 2 sessions')
+  await act(async () => void vi.advanceTimersByTime(3_999))
+  expect(slotText(host)).toContain('cancelled 2 sessions')
+  await act(async () => void vi.advanceTimersByTime(1))
+  // The fade, then an empty slot.
+  await act(async () => void vi.advanceTimersByTime(250))
+  expect(slotText(host)).toBe('')
+  await act(async () => root.unmount())
+})
+
+test('an error leaves the slot after 8 s and stays in history; the unread chip keeps count', async () => {
+  vi.useFakeTimers()
+  const { host, root } = await mount()
+  await act(async () => void notify.error('not connected'))
+  await act(async () => void vi.advanceTimersByTime(7_999))
+  expect(slotText(host)).toContain('not connected')
+  await act(async () => void vi.advanceTimersByTime(251))
+  expect(slotText(host)).toBe('')
+  expect(host.querySelector('button[aria-label="1 unread errors"]')).not.toBeNull()
+  expect(useNotices.getState().history[0]?.text).toBe('not connected')
+  await act(async () => root.unmount())
+})
+
+test('live: frames still arriving overrule a stale "reconnecting"; silence for 5 s shows it', async () => {
+  vi.useFakeTimers()
+  const client = { retryNow, lastRx: Date.now() }
+  const { host, root, bar } = await mount()
+  await act(async () => st.connection.setState({ state: 'reconnecting', retryAt: Date.now() + 3_000, attempt: 1, info: { name: 'Studio' } as never, client: client as unknown as RpcClient }))
+  expect(dot(host).dataset.tone).toBe('ok')
+  expect(bar().textContent).not.toContain('disconnected')
+  expect(bar().querySelector('[data-reconnect]')).toBeNull()
+  // Messages keep flowing: still connected.
+  for (let i = 0; i < 8; i++) {
+    client.lastRx = Date.now()
+    await act(async () => void vi.advanceTimersByTime(1_000))
+  }
+  expect(bar().textContent).not.toContain('disconnected')
+  // Silence: within a second of the 5 s mark the client's word stands.
+  for (let i = 0; i < 5; i++) await act(async () => void vi.advanceTimersByTime(1_000))
+  expect(dot(host).dataset.tone).toBe('down')
+  expect(bar().textContent).toContain('Studio disconnected')
+  expect(bar().querySelector('[data-reconnect]')).not.toBeNull()
+  await act(async () => root.unmount())
+})
+
+test('live on the phone: a stale "reconnecting" with traffic reads the rate, not offline', async () => {
+  vi.useFakeTimers()
+  layout.mobile = true
+  await act(async () => useEventRate.setState({ buckets: [...Array(28).fill(0), 40, 40] }))
+  const { host, root } = await mount(h(PhoneStatusLine))
+  await act(async () => st.connection.setState({ state: 'reconnecting', retryAt: null, attempt: 1, client: { retryNow, lastRx: Date.now() } as unknown as RpcClient }))
+  expect(host.querySelector('[data-phone-status]')!.textContent).toBe('40 ev/s')
   await act(async () => root.unmount())
 })
 

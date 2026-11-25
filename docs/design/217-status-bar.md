@@ -14,7 +14,7 @@ export type NoticeAction = { label: string; onClick: () => void }
 export type NoticeOpts = {
   id?: string | number          // same id replaces in place (progress → done/error)
   description?: string          // second line; shown in history, truncated in the slot
-  duration?: number             // ms; Infinity = sticky until dismissed/acted
+  duration?: number             // ms, capped at 10 s in the slot; Infinity = the 10 s hold, then history
   action?: NoticeAction
   cancel?: NoticeAction         // second button (sonner compat)
 }
@@ -24,7 +24,7 @@ notify.info     // 'info'
 notify.success  // 'done'
 notify.warning  // 'warn'
 notify.error    // 'error'
-notify.loading  // 'progress' (sticky until replaced by same id or dismissed)
+notify.loading  // 'progress' (holds the slot until replaced by same id or dismissed; 30 s without an update ends it)
 notify.dismiss  // (id?: string | number) => void   — no id = dismiss current
 ```
 
@@ -34,16 +34,17 @@ The property names must be exactly these, because existing tests mock `{ error, 
 
 ```ts
 type Notice = { id: string | number; kind: NoticeKind; text: string; description?: string;
-  action?: NoticeAction; cancel?: NoticeAction; at: number; sticky: boolean; expiresAt: number | null }
+  action?: NoticeAction; cancel?: NoticeAction; at: number; sticky: boolean; expiresAt: number }
 useNotices: { current: Notice | null; queue: number /* newer-than-shown count not needed */;
   history: Notice[] /* newest first, cap 50 */; unreadErrors: number;
   push(n), dismiss(id?), clear(), markRead() }
 ```
 
 Policy:
-- **Slot shows one notice:** the newest. A new notice replaces the current one, and the replaced one stays in history.
-- **Default lifetimes:** info 4 s, done 6 s, warn 8 s; error, progress, `duration: Infinity`, and anything carrying an `action` are sticky. An explicit `duration` overrides the default.
-- **Sticky notices** stay until dismissed (× on hover), acted on (clicking the action dismisses), replaced by id, or superseded by a newer notice (it then remains in history with its action still clickable).
+- **Slot shows one notice:** the newest. A new notice replaces the current one, and the replaced one stays in history. It never returns to the slot.
+- **Nothing lingers (owner ruling 2026-11-25):** the bar shows the current status at all times, so every notice leaves the slot on its lifetime: info 4 s, done 6 s, warn 8 s, error 8 s. A notice with an `action` or `duration: Infinity` holds the slot for 10 s, the cap for any explicit `duration`. After that it stays in history with its action (and `cancel`) still clickable; `unreadErrors` and the chip keep errors in sight.
+- **Progress is current state:** a `progress` notice holds the slot while it is in progress, until replaced by the same id or dismissed, and leaves it after 30 s without an update.
+- **Held notices** (an action, `duration: Infinity`, progress) carry a × (in the slot and in history) until dismissed or acted on.
 - **Same `id`** replaces in place: it updates text, kind and lifetime, and does not create a second history row.
 - **Dedupe:** an identical text+kind within 2 s bumps the time and does not add a row.
 - **`unreadErrors`** counts errors pushed since the history was last opened. Opening the history calls `markRead()`.
@@ -58,13 +59,14 @@ Policy:
 
 ## 4. Connection
 
-- **Source:** `useConnection(s => s.state)` for the active engine. For link engines, use `useEngines(s => s.link[id])`.
-- **Local retry deadline:** expose `retryAt: number | null` from `RpcClient.#schedule` (`rpc/client.ts`) through the connection store, plus `retryNow()`, which cancels the backoff and connects immediately. Link engines already have `LinkState.retryAt`.
+- **Source:** `useConnection(s => s.state)` for the active engine, mirrored from the `RpcClient` by `mirror()` (`store/connection.ts`). For link engines, use `useEngines(s => s.link[id])`.
+- **Live, not last-event (owner ruling 2026-11-25):** the bar shows `liveState()` (`components/status/model.ts`): any frame received on the active client in the last 5 s (`RpcClient.lastRx`) reads as `open`, whatever the last state event said. So "disconnected" and the reconnect text show only when the client says so and nothing has arrived for 5 s. `open` clears `retryAt`/`attempt` in the store unconditionally; a window becoming visible again re-reads `RpcClient.state`/`retry` into the store; a relaunch resets the store to `connecting`.
+- **Local retry deadline:** expose `retryAt: number | null` from `RpcClient.#schedule` (`rpc/client.ts`) through the connection store, plus `retryNow()`, which cancels the backoff and connects immediately. An `open` cancels a pending redial. Link engines already have `LinkState.retryAt`.
 - **Dot states:**
   - `open` and needs-you = 0 → malachite `--status-success-fg`, pulsing slowly while the rate is > 0, steady at 0.
   - `open` and needs-you > 0 → ochre `--status-warning-fg`.
   - `connecting` → `--fg-tertiary`, pulsing.
-  - `reconnecting` / `closed` → carnelian `--status-danger-fg`, the label "<engine> disconnected", and in the middle slot "Reconnecting in Ns · attempt k · Retry now". The bar gets a faint danger tint.
+  - `reconnecting` / `closed` (live, above) → carnelian `--status-danger-fg`, the label "<engine> disconnected", and in the middle slot "Reconnecting in Ns · attempt k · Retry now". The bar gets a faint danger tint.
 - **The dot never reflects a notice's kind:** an error notice does not turn the dot red.
 - **The connection toasts are removed:** "Connection lost, reconnecting…", "Reconnected" and the `watchDrops` toast sink go. The dot and countdown are the only connection signal. Remove `watchDrops`'s toast use and its tests, or keep `watchDrops` only if something else needs it. `LinkBanner` stays.
 - **"Events dropped, resyncing"** becomes `notify.warning` (throttled as today).

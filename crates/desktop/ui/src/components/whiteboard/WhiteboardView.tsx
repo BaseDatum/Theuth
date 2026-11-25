@@ -169,8 +169,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
   useEffect(() => {
     if (embedded || !notice || notice.dismissed) return setNoticeShown(null)
     setNoticeShown(notice.text)
-    const ms = notice.expiresAt ? Math.max(0, notice.expiresAt - Date.now()) : 8_000
-    const t = setTimeout(() => setNoticeShown(null), ms)
+    const t = setTimeout(() => setNoticeShown(null), Math.max(0, notice.expiresAt - Date.now()))
     return () => clearTimeout(t)
   }, [notice, embedded])
   const working = running ? (statusLine(activity ?? 'thinking', statusText) ?? (activity === 'tool' ? 'working…' : activity === 'idle' || !activity ? 'thinking…' : `${activity}…`)) : null
