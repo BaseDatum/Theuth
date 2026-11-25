@@ -10,6 +10,9 @@ import { receiveComponent } from '@/rpc/bindings/receive'
 import type { JobView } from '@/rpc/bindings/method.agent.output'
 import { useSessions } from '@/store/sessions'
 import type { UiEvent } from '@/store/ui-events'
+import type { KernelState } from '@/rpc/bindings/method.cells.output'
+import { backgroundColors } from '@/lib/background-colors'
+import { cells } from '@/components/cells/store'
 import { BackgroundArea, countdown } from './BackgroundArea'
 import { stripRows } from '@/lib/session-tree'
 
@@ -27,10 +30,13 @@ const jobs: JobView[] = [
   { session: 's1', id: 'j1', command: 'mbx test -p tools', state: 'running', secs: 41, log: '/log', tail: '', name: null, pty: false },
   { session: 's1', id: 'j2', command: 'python3 -q', state: 'running', secs: 62, log: '/log', tail: '', name: null, pty: true },
 ]
+let kernels: KernelState[] = []
+const kernel = (spec: KernelState['id']['spec'], label: string, phase: KernelState['phase'], cwd: string | null = null): KernelState => ({ id: { scope: { type: 'session', id: 's1' }, spec, instance: 0 }, phase, label, cwd, env_warning: null })
 const api = {
   list_jobs: vi.fn(async () => jobs),
   cancel_job: vi.fn(async (_session: string, _id: string) => {}),
   cancel_reminder: vi.fn(async (_session: string, _id: string) => {}),
+  cell_state: vi.fn(async () => ({ cells: [], kernels })),
 }
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => api }))
 
@@ -77,6 +83,8 @@ afterEach(async () => {
   client?.clear()
   document.body.innerHTML = ''
   vi.useRealTimers()
+  kernels = []
+  cells.setState({ scopes: {} })
 })
 
 test('grabber absent without a plan or live work; each category alone reveals it', async () => {
@@ -351,4 +359,41 @@ test('several whiteboards (created, then another shown) give a dash each in orde
   expect(items.map((i) => i.textContent)).toEqual(['Checkout ideas', 'Pricing'])
   await run(() => (items[1] as HTMLElement).click())
   expect(navigate).toHaveBeenLastCalledWith({ to: '/whiteboards/$id', params: { id: WB2 }, search: { session: 's1' } })
+})
+
+test('kernels left the chat for the bar: K1 dashes after terminals, pulsing while busy; a dash reveals the Kernels card with every row and its actions; the tile toggles it', async () => {
+  kernels = [kernel({ type: 'shell', kind: 'zsh', path: '/bin/zsh' }, 'zsh 5.9', 'busy', '/Users/sky/work'), kernel({ type: 'python', path: '/usr/bin/python3' }, '.venv 3.12', 'ready'), kernel({ type: 'monty' }, 'Monty', 'closed')]
+  useSessions.getState().ensure('s1')
+  await mount()
+  // Kernels alone keep the bar.
+  expect(button('Show background activity')).toBeDefined()
+  await run(() => useSessions.setState((s) => ({ sessions: { ...s.sessions, s1: { ...s.sessions.s1!, ptys: new Set(['pty0']), reminders: new Set(['r0']) } } })))
+  const groups = [...document.querySelectorAll('[data-dash-row] div[aria-label]')]
+  expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['1 terminals', '2 kernels', '1 reminders'])
+  const dashes = [...groups[1]!.querySelectorAll('button')]
+  expect(dashes.map((d) => d.getAttribute('aria-label'))).toEqual(['Kernel zsh 5.9 · busy · show kernels', 'Kernel .venv 3.12 · idle · show kernels'])
+  const cls = dashes.map((d) => d.querySelector('.activity-dash')!.className.split(' '))
+  for (const c of cls) expect(c).toEqual(expect.arrayContaining([backgroundColors.kernels.bg, 'w-4', 'h-[5px]']))
+  expect(backgroundColors.kernels.bg).toContain('var(--project-faience)_0_30%,transparent_30%_35%')
+  expect(cls[0]).toContain('motion-safe:animate-pulse')
+  expect(cls[1]).not.toContain('motion-safe:animate-pulse')
+  await run(() => dashes[0]!.click())
+  expect(useSessions.getState().sessions.s1).toMatchObject({ todosShown: true, kernelsExpanded: true, jobsExpanded: false })
+  const panel = document.getElementById('background-s1')!
+  const section = panel.querySelector('[role="region"][aria-label="Kernels"]')!
+  expect(section.textContent).toContain('zsh 5.9 · busy')
+  expect(section.textContent).toContain('/Users/sky/work')
+  expect(section.textContent).toContain('.venv 3.12 · idle')
+  expect(section.textContent).not.toContain('Monty')
+  expect([...section.querySelectorAll('button')].filter((b) => b.textContent === 'Restart')).toHaveLength(2)
+  expect([...section.querySelectorAll('button')].filter((b) => b.textContent === 'Close')).toHaveLength(2)
+  // The card sits between Jobs and Reminders; its header says how many are live and busy.
+  const headers = [...panel.querySelectorAll('button[data-slot="collapsible-trigger"]')].map((b) => b.textContent)
+  expect(headers).toEqual(['Jobs1 terminal', 'Kernels2 live · 1 busy', expect.stringMatching(/^Reminders/)])
+  const tile = [...panel.querySelectorAll('[data-tray-tiles] > button')].find((t) => t.textContent?.startsWith('Kernels'))!
+  expect(tile.textContent).toBe('Kernelszsh 5.9 · .venv 3.122')
+  expect(tile.getAttribute('aria-expanded')).toBe('true')
+  await run(() => (tile as HTMLButtonElement).click())
+  expect(useSessions.getState().sessions.s1?.kernelsExpanded).toBe(false)
+  expect(panel.querySelector('[role="region"][aria-label="Kernels"]')).toBeNull()
 })

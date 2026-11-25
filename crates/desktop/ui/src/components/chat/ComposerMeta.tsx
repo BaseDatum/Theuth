@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Shield, ShieldCheck, ShieldOff } from 'lucide-react'
-import { useState } from 'react'
+import { Check, Images, Scissors, ScrollText, Shield, ShieldCheck, ShieldOff } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useMesh } from '@/components/tasks/queries'
@@ -11,14 +11,14 @@ import { queryKeys, useApi } from '@/lib/rpc'
 import { cn } from '@/lib/utils'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { RpcError } from '@/rpc/client'
-import type { CostBucket } from '@/rpc/bindings/method.agent.output'
+import type { CompactStyle, CostBucket } from '@/rpc/bindings/method.agent.output'
 import { useApprovals } from '@/store/approvals'
 import { useConnection } from '@/store/connection'
 import { type ApprovalLevel, type ApprovalsChoice, approvalsChoice, setApprovalsLevel } from './approvals-level'
 import { alwaysAskCount, useAlwaysAsk } from '@/lib/always-ask'
 import { useToolsSheet } from './tools-sheet'
-import { type ContextReading, band, useContextReading } from './ContextMeter'
-import { contextCommand } from './slash'
+import { type ContextReading, useContextReading } from './ContextMeter'
+import { compactWith, contextCommand } from './slash'
 import { useCost } from './CostPill'
 
 /**
@@ -39,20 +39,14 @@ export function costGlance(bucket: CostBucket): { short: string; exact: string }
   return { short: costBallpark(value, prefix), exact }
 }
 
-/** Context % tone: muted, Egyptian blue from 75 %, carnelian from 90 % (the meter's bands). */
-const PCT_TONE = { normal: '', warning: 'text-warning', danger: 'text-danger', critical: 'text-danger' } as const
-
 const ktok = (n: number) => `${Math.round(n / 1000)}k`
 
-/** What the composer's top row shows: the context reading (percent and its tooltip) and the cost glance. */
+/** What the composer's top row shows: the cost glance (the context reading lives on the context button). */
 export type MetaData = {
-  pct: number | null
-  estimated: boolean
-  ctxTitle?: string
-  cost: { short: string; exact: string; title: string } | null
+  cost: { short: string; exact: string; title: string }
 }
 
-/** The context meter's reading of `session` (its memory mode from `list_sessions`): the strip's percent and the context button's ring. */
+/** The context meter's reading of `session` (its memory mode from `list_sessions`): the context button's ring and popover. */
 function useSessionContext(session: string | null | undefined): ContextReading | null {
   const canSessions = useQuerySupport(['list_sessions'])
   const api = useApi()
@@ -62,55 +56,37 @@ function useSessionContext(session: string | null | undefined): ContextReading |
 }
 
 /**
- * The composer's `13%  ~$44` for `session`, or `null` when there is none to show (no session: the new-chat draft; no
- * context reading and nothing priced). The percent is the context meter's own reading (`useContextReading`), the cost
- * the breakdown dialog's `session_cost` query (`useCost`).
+ * The composer's `~$44` for `session`, or `null` when there is none to show (no session: the new-chat draft; nothing
+ * priced). The cost is the breakdown dialog's `session_cost` query (`useCost`).
  */
 export function useComposerMeta(session: string | null | undefined): MetaData | null {
-  const reading = useSessionContext(session)
   const cost = useCost(session ?? '')
-  if (!session) return null
-  const glance = cost ? costGlance(cost.total) : null
-  const pct = reading?.pct ?? null
-  if (pct === null && !glance) return null
-  return {
-    pct,
-    estimated: !!reading?.estimated,
-    ctxTitle: reading
-      ? [`${reading.estimated ? '≈ ' : ''}${ktok(reading.used)} / ${ktok(reading.limit)} tokens`, reading.cache === null ? null : `Cache ${reading.cache}%`].filter(Boolean).join('\n')
-      : undefined,
-    cost: glance && cost ? { ...glance, title: [glance.exact, costTitle(cost.total)].filter(Boolean).join('\n') } : null,
-  }
+  if (!session || !cost) return null
+  const glance = costGlance(cost.total)
+  if (!glance) return null
+  return { cost: { ...glance, title: [glance.exact, costTitle(cost.total)].filter(Boolean).join('\n') } }
 }
 
 /**
- * The thin row inside the top of the composer box, above the text: `13%  ~$44`, right-aligned, subdued, borderless,
- * both always shown (the model picker is on the bar, left of talk/mic/send). The percent's tooltip carries the tokens
- * and the cache hit rate; the cost's the exact total, and a click opens the breakdown (`CostDialog`, `/cost`).
+ * The thin row inside the top of the composer box, above the text: `~$44`, right-aligned, subdued, borderless (the
+ * model picker is on the bar, left of talk/mic/send; the context reading is the bar's context button). The cost's
+ * tooltip is the exact total, and a click opens the breakdown (`CostDialog`, `/cost`).
  * `hidden` (a voice note recording): the row keeps its height, empty, so the box does not jump.
  */
 export function ComposerMeta({ session, meta, hidden = false }: { session: string; meta: MetaData; hidden?: boolean }) {
   return (
     <div data-composer-meta="" aria-hidden={hidden || undefined} className={cn('flex h-3 items-center justify-end gap-2 px-1 text-[11px] leading-3 text-fg-tertiary tabular-nums', hidden && 'invisible')}>
-      {meta.pct !== null && (
-        <span data-meta="context" className={cn('cursor-default', PCT_TONE[band(meta.pct)])} title={meta.ctxTitle}>
-          {meta.estimated && '≈'}
-          {meta.pct}%
-        </span>
-      )}
-      {meta.cost && (
-        <button
-          type="button"
-          data-meta="cost"
-          tabIndex={hidden ? -1 : undefined}
-          className="rounded-sm outline-none hover:text-fg-secondary focus-visible:ring-2 focus-visible:ring-ring/50"
-          title={meta.cost.title}
-          aria-label={`Cost ${meta.cost.exact}`}
-          onClick={() => window.dispatchEvent(new CustomEvent('theuth:open-cost', { detail: { session } }))}
-        >
-          {meta.cost.short}
-        </button>
-      )}
+      <button
+        type="button"
+        data-meta="cost"
+        tabIndex={hidden ? -1 : undefined}
+        className="rounded-sm outline-none hover:text-fg-secondary focus-visible:ring-2 focus-visible:ring-ring/50"
+        title={meta.cost.title}
+        aria-label={`Cost ${meta.cost.exact}`}
+        onClick={() => window.dispatchEvent(new CustomEvent('theuth:open-cost', { detail: { session } }))}
+      >
+        {meta.cost.short}
+      </button>
     </div>
   )
 }
@@ -277,17 +253,90 @@ export function ContextRing({ pct, className }: { pct: number | null; className?
   )
 }
 
-export type ContextAction = '/compact' | '/shake' | '/clear'
+type CompactPick = Exclude<CompactStyle, 'clear'>
 
-const CONTEXT_ROWS: readonly { action: ContextAction; label: string; detail: string; danger?: boolean }[] = [
-  { action: '/compact', label: 'Compact', detail: 'Fold older turns into a summary' },
-  { action: '/shake', label: 'Shake…', detail: 'Pick what to drop: tool output, files, images' },
-  { action: '/clear', label: 'Clear', detail: "Drop the conversation, keep this chat's settings", danger: true },
+/** A popover row: one compaction style, the context picker, or clearing the conversation. */
+export type ContextAction = { compact: CompactPick } | '/shake' | '/clear'
+
+const COMPACT_STYLES: readonly { style: CompactPick; icon: typeof ScrollText; does: string }[] = [
+  { style: 'snap', icon: Images, does: 'keep older turns as images' },
+  { style: 'cut', icon: Scissors, does: 'drop older turns, keep the recent ones' },
+  { style: 'summary', icon: ScrollText, does: 'fold older turns into a summary' },
 ]
+
+/** How long a first tap on Clear stays armed before it disarms itself. */
+export const CLEAR_CONFIRM_MS = 4000
+
+const ROW = 'flex min-h-9 w-full flex-col items-start justify-center rounded-md px-2 py-1.5 text-left'
+
+/**
+ * The popover's rows. Compact carries one icon button per style; Clear arms on the first tap (danger-filled, "Tap again
+ * to clear") and only the second within `CLEAR_CONFIRM_MS` clears. Mounted with the popover's content, so closing the
+ * popover disarms it too; using another row disarms it.
+ */
+function ContextActions({ onAction }: { onAction(action: ContextAction): void }) {
+  const [hint, setHint] = useState<CompactPick | null>(null)
+  const [armed, setArmed] = useState(false)
+  useEffect(() => {
+    if (!armed) return
+    const t = setTimeout(() => setArmed(false), CLEAR_CONFIRM_MS)
+    return () => clearTimeout(t)
+  }, [armed])
+  const run = (action: ContextAction) => {
+    setArmed(false)
+    onAction(action)
+  }
+  const hinted = COMPACT_STYLES.find((s) => s.style === hint)
+  return (
+    <>
+      <div data-context-row="compact" className="flex w-full flex-col rounded-md px-2 pt-0.5 pb-1.5">
+        <div className="flex items-center gap-0.5">
+          <span className="flex-1 font-medium">Compact</span>
+          {COMPACT_STYLES.map(({ style, icon: Icon, does }) => (
+            <button
+              key={style}
+              type="button"
+              data-compact-style={style}
+              aria-label={`Compact: ${style} — ${does}`}
+              title={`Compact: ${style} — ${does}`}
+              className="grid size-9 shrink-0 place-items-center rounded-md text-fg-secondary outline-none hover:bg-foreground/6 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+              onMouseEnter={() => setHint(style)}
+              onMouseLeave={() => setHint(null)}
+              onFocus={() => setHint(style)}
+              onBlur={() => setHint(null)}
+              onClick={() => run({ compact: style })}
+            >
+              <Icon className="size-4" aria-hidden />
+            </button>
+          ))}
+        </div>
+        <span data-compact-caption="" className="truncate text-[11px] text-fg-tertiary">
+          {hinted ? `${hinted.style[0]!.toUpperCase()}${hinted.style.slice(1)} — ${hinted.does}` : 'Fold older turns: snap, cut or summary'}
+        </span>
+      </div>
+      <button type="button" data-context-action="/shake" className={cn(ROW, 'hover:bg-foreground/6')} onClick={() => run('/shake')}>
+        <span className="font-medium">Shake…</span>
+        <span className="text-[11px] text-fg-tertiary">Pick what to drop: tool output, files, images</span>
+      </button>
+      <button
+        type="button"
+        data-context-action="/clear"
+        data-confirm={armed || undefined}
+        className={cn(ROW, armed ? 'bg-danger text-primary-foreground hover:bg-danger/90' : 'hover:bg-foreground/6')}
+        onClick={() => (armed ? run('/clear') : setArmed(true))}
+      >
+        <span className={cn('font-medium', !armed && 'text-danger')}>{armed ? 'Tap again to clear' : 'Clear'}</span>
+        <span className={cn('text-[11px]', armed ? 'text-primary-foreground/85' : 'text-fg-tertiary')}>
+          {armed ? 'This drops the whole conversation' : "Drop the conversation, keep this chat's settings"}
+        </span>
+      </button>
+    </>
+  )
+}
 
 /**
  * The context button and its popover, without data: the fill ring (muted, warning from 80 %, danger from 95 %), and
- * a popover with `<used> of <window> · N%`, a thin meter and the three ways to free room (`/compact`, `/shake`, `/clear`).
+ * a popover with `<used> of <window> · N%`, a thin meter and the ways to free room (compact by style, shake, clear).
  */
 export function ContextButtonView({
   reading,
@@ -331,26 +380,15 @@ export function ContextButtonView({
         <div className="mx-2 mt-2 mb-1.5 h-1 overflow-hidden rounded-full bg-foreground/10">
           <div className={cn('h-full rounded-full bg-current', tone === 'text-fg-tertiary' ? 'text-fg-secondary' : tone)} style={{ width: `${Math.min(100, Math.max(0, pct ?? 0))}%` }} />
         </div>
-        {CONTEXT_ROWS.map((r) => (
-          <button
-            key={r.action}
-            type="button"
-            data-context-action={r.action}
-            className="flex min-h-9 w-full flex-col items-start justify-center rounded-md px-2 py-1.5 text-left hover:bg-foreground/6"
-            onClick={() => onAction(r.action)}
-          >
-            <span className={cn('font-medium', r.danger && 'text-danger')}>{r.label}</span>
-            <span className="text-[11px] text-fg-tertiary">{r.detail}</span>
-          </button>
-        ))}
+        <ContextActions onAction={onAction} />
       </PopoverContent>
     </Popover>
   )
 }
 
 /**
- * Between the MCP button and the shield: how full this chat's context is (the strip's reading, `useContextReading`),
- * and a popover running `/compact`, `/shake` (the context picker) and `/clear` exactly as typed (`contextCommand`).
+ * Between the MCP button and the shield: how full this chat's context is (`useContextReading`), and a popover running
+ * `/compact <style>` (`compactWith`), `/shake` (the context picker) and `/clear` exactly as typed (`contextCommand`).
  */
 export function ContextButton({ session }: { session: string }) {
   const api = useApi()
@@ -358,7 +396,8 @@ export function ContextButton({ session }: { session: string }) {
   const [open, setOpen] = useState(false)
   const act = (action: ContextAction) => {
     setOpen(false)
-    contextCommand(api, session, action)
+    if (action === '/shake' || action === '/clear') contextCommand(api, session, action)
+    else compactWith(api, session, action.compact)
   }
   return <ContextButtonView reading={reading} onAction={act} open={open} onOpenChange={setOpen} />
 }

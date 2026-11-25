@@ -9,6 +9,8 @@ export const backgroundColors = {
   jobs: { bg: 'bg-project-lapis', text: 'text-project-lapis' },
   /** Half light, half dark, outlined in the foreground colour, so it reads on both themes. */
   terminals: { bg: 'box-border border border-foreground bg-[linear-gradient(90deg,#f4ecdf_0_50%,#0c0a09_50%_100%)]', text: 'text-project-faience' },
+  /** K1: faience in three short segments with gaps, a row of cells. */
+  kernels: { bg: 'bg-[linear-gradient(90deg,var(--project-faience)_0_30%,transparent_30%_35%,var(--project-faience)_35%_65%,transparent_65%_70%,var(--project-faience)_70%_100%)]', text: 'text-project-faience' },
   /** B2: a lapis pill with a small foreground dot at its centre. */
   browser: { bg: 'bg-project-lapis bg-[radial-gradient(circle,var(--foreground)_0_1.6px,transparent_2px)]', text: 'text-project-lapis' },
   /** A1: solid sand, 70 % of the standard dash's width. */

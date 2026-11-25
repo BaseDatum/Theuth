@@ -33,6 +33,7 @@ import { ActivityDash, SubagentLink, TerminalLink } from './SubagentStrip'
 import { TerminalButton, useHasTerminals, useTerminals } from './TerminalViewer'
 import { useOpenWhiteboard } from './WhiteboardViewCard'
 import { type SessionWhiteboard, useSessionWhiteboards } from '@/components/whiteboard/useSessionWhiteboards'
+import { kernelName, useSessionKernels } from '@/components/cells/KernelStrip'
 
 export type Tray = {
   session: string
@@ -213,11 +214,20 @@ export function TrayTiles({ tray }: { tray: Tray }) {
   const terminals = useSessionField(session, 'terminals')
   const subagentsExpanded = useSessionField(session, 'subagentsExpanded') ?? false
   const jobsExpanded = useSessionField(session, 'jobsExpanded') ?? false
+  const kernelsExpanded = useSessionField(session, 'kernelsExpanded') ?? false
+  const kernels = useSessionKernels(session)
   const codemap = useSessionField(session, 'codemap')
   const running = useMemo(() => [...new Set([...(terminals ?? []), ...(ptys ?? [])])], [terminals, ptys])
   const jobCount = jobs?.size ?? 0
   const tiles: ReactNode[] = []
   if (tray.terminals || running.length) tiles.push(<TerminalsTile key="terminals" session={session} running={running} />)
+  if (kernels.length) {
+    tiles.push(
+      <button key="kernels" type="button" className={TILE} aria-expanded={kernelsExpanded} onClick={() => store.getState().setBackgroundExpanded(session, 'kernels', !kernelsExpanded)}>
+        <TileBody color={backgroundColors.kernels.bg} name="Kernels" detail={kernels.map(kernelName).join(' · ')} count={kernels.length} />
+      </button>,
+    )
+  }
   if (tray.browsers.length) {
     tiles.push(
       <BrowserButton key="browser" targets={tray.browsers} busy={tray.browserBusy} onOpen={tray.openBrowser} className={TILE}>
