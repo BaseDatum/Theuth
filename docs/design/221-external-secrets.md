@@ -436,8 +436,14 @@ as a replicated staging row (§10).
 The new placeholder regex (one, `crates/secrets/src/vault.rs` `PLACEHOLDER`) is
 
 ```
-\{\{secret:(?:(aws|bw)/([a-z0-9-]{1,32})/([A-Za-z0-9/_+=.@\-]{1,512}?)(?:#([^:}]{1,128}))?|([A-Za-z0-9_.\-]+))(?::-([1-4]))?\}\}
+\{\{secret:(?:([A-Za-z0-9_.\-]+)/([A-Za-z0-9/_+=.@\-]{1,600}?)(?:#([^}]{1,128}?))?|([A-Za-z0-9_.\-]+))(?::-([1-4]))?\}\}
 ```
+
+*As built:* broader than the draft (`(aws|bw)/([a-z0-9-]{1,32})/…{1,512}`). Any `x/…` matches the
+external branch (group 1 any backend id, group 2 `CONN/REF` up to 600), and
+`crates/secrets/src/external.rs` `parse_ref` checks the backend, the connection name and the
+reference, so an unknown backend or a bad connection is an error rather than literal text. Group 3
+(`#KEY`) takes any text up to `}`; `parse_ref` splits `#key` / `#field:NAME`.
 
 `mentions` (`crates/tools/src/secrets.rs#L52-L61`) stays the cheap `contains("{{secret:")` scan: it
 already matches external references.
@@ -1159,7 +1165,8 @@ pub struct Destination {
   4. Write. The receipt names where it went, and the model learns the final ref from it.
 - **Which engine writes.** The engine that owns the asking session (D15). `answer_secret` on another
   engine forwards the answer there when the request row has a `destination`
-  (`crates/secrets/src/lib.rs#L111-L136` gains `destination`). The replicated row carries the
+  (`crates/secrets/src/lib.rs#L111-L136` gains `destination`, migration
+  `0005_request_destination.sql`). The replicated row carries the
   destination metadata, never the value.
 - **Username and URI.** These are not secret, and the card may show them unmasked
   (`SecretRequestField.masked = false`, `crates/secrets/src/lib.rs#L92-L105`). They still never reach
@@ -1699,7 +1706,7 @@ pub struct SendCreateArgs {
 
 ### 12.4 Record, lifecycle, audit
 
-- **Table.** `crates/secrets/migrations/0005_external_sends.sql` creates `external_sends`, one row per
+- **Table.** `crates/secrets/migrations/0006_external_sends.sql` creates `external_sends`, one row per
   Send theuth created:
   - `id`, `conn`, `send_id`, `access_id`, `kind` (`text` / `file`), `name`, `file_name`, `file_bytes`;
   - `source_ref`, `source_version` (vault `vN`, the Bitwarden revision date, the AWS VersionId, the
@@ -1867,7 +1874,7 @@ runs none.
   TOTP login → restart → unlock with no 2FA prompt.
 - **B5c — Bitwarden text Sends (§12).** `secret_send_create` (text sources) / `_list` / `_revoke`,
   `APPROVAL_PREVIEW`, the `send` direction and `send_owner_only` (with the `Tool::human_only(&self)`
-  change in `tools`), the link builder (G8), migration `0005_external_sends.sql`, the link and
+  change in `tools`), the link builder (G8), migration `0006_external_sends.sql`, the link and
   password secrets via `set_expiring`, `create_send` / `copy_send_link` RPCs (`copy_link_needs_press`),
   revoke on connection removal, audit lines. *Check:*
   - `cargo test -p secrets-bitwarden -p secrets -p tools`:
@@ -1971,3 +1978,61 @@ runs none.
 ## 14. Open questions for the owner
 
 None open. The last one, theuth's own source licence, is decided as GPL-3.0-or-later (D26).
+
+## 15. As built
+
+Where the build differs from the sections above, this list wins. Sources: the build's commit
+messages, the B0 note (`docs/design/221-as-built-B0.md`) and the fix round on the reviews.
+
+- **Migrations.** `0005_request_destination.sql` (the `secret_requests.destination` column) and
+  `0006_external_sends.sql` (§12.4), not `0005_external_sends.sql`.
+- **Placeholder regex.** Broader than the draft; `parse_ref` does the checking (§3.1 note).
+- **SDK (B0).** The light SDK crate set; the user id comes from `client_id`; the server's CAS is
+  coarse (revision date); Sends were checked against Vaultwarden 1.37.5. `argon2` is held at
+  `=0.6.0-rc.8` to share the SDK's semver slot. Vaultwarden's 400 for a missing item maps to
+  `NotFound`.
+- **Backend trait.** `ExternalBackend` gained default methods `login`, `unlock`, `logout`,
+  `apply_settings` and `sender`; `ListQuery.deleted` and `ExtEntry.recoverable_until` list the
+  trash / pending deletions. `tools::Tool` gained `human_only(&self)`.
+- **Copy sources.** `Vault::copy_source_allowed(&self, name)` (a method: it reads the current
+  version's source) refuses `/` rows (`mesh/*`, `oauth/*`, `share/*`, `plugins/*`, `sandbox/*`) and
+  Send link/password secrets as the `from` of `secret_external_create` / `_update` and the Send
+  sources and `password.from`.
+- **`send_owner_only`** is read per connection when the Send gate runs, from the Bitwarden backend's
+  own settings; no tool-wide switch.
+- **Owner RPCs and the press.** `delete_external_secret`, `restore_external_secret`, `create_send`
+  and `revoke_send` take the caller: the owner's own press runs directly; any other caller gets a
+  human-only card (`secrets.external.delete`, `secrets.external.restore`, `secrets.send.create`,
+  `secrets.send.revoke`) while the connection's `…:delete` / `…:write` / `…:send` always ask is in
+  force. `create_send` off a press is refused while `send_owner_only` is on. `copy_send_link` never
+  answers the internal peer or a share guest, whatever `copy_link_needs_press` says. Every
+  always-ask lookup in these RPCs fails closed (no registry, or a registry error, asks).
+- **Seeding.** The `ext/seeded/<conn>` stamp is written only after `seed_ask` ran. With
+  `secrets.tools: false` connections are built unseeded (nothing reads placeholders) and seeded on
+  the first start with the tools on.
+- **Scrubbing external values.** At most 256 fetched values are kept for scrubbing, most recently
+  used last; a value shorter than `MIN_REDACT` (8) characters is never kept, and the
+  `secret_external_*` descriptions say such values are not scrubbed.
+- **Storing an answer into a manager.** A `Network`, `Timeout`, `Locked` or `Conflict` failure keeps
+  the request open (not answered) and returns "…; the request is still open: try again"; other
+  failures answer it as `failed` with the error as the receipt.
+- **D15 forward.** `answer_secret` for an unanswered destination request asked on another engine
+  is forwarded to that engine through `secrets::rpc::install_engine_forward` (the RPC composition
+  installs `agent::rpc_forward::to_engine`); without the hook the old "answer it there" refusal
+  stands. `answer_unlock` is not forwarded: unlock cards are not replicated and
+  `secrets.events` is not relayed across the mesh, so a card only reaches apps attached to the
+  engine that raised it, which answer it there.
+- **Unlock cards.** One card per connection at a time: concurrent calls on a locked connection
+  wait behind it and share its outcome. `list_unlock_requests()` returns the open cards
+  (`UnlockRequestView`, the `ExternalUnlockRequested` fields) so an app reseeds after a reconnect.
+- **Server URLs.** Every Bitwarden URL (`base_url`, `api_url`, `identity_url`, `web_vault_url`)
+  must be `https://`, or `http://` to a loopback host; checked at add, probe and build.
+- **`secret_external_list` without `connection`** names the connections, status and account
+  summaries from config, contacts no manager and asks nothing.
+- **AWS update** is check-then-put: `PutSecretValue` has no version precondition, so a writer
+  landing between the `expected` check and the put is overwritten (its value stays reachable as
+  `:-1` until the next write).
+- **Desktop.** No CA-file field (the backends take no `ca_file`); `lock_after_idle_secs` and
+  `send_max_file_mb` have no UI clamps beyond AWS's 7–30 day recovery window.
+- **Packaging (B10).** See the B10 deviation above: the `t` archives do not carry the licence
+  files.
