@@ -1568,6 +1568,8 @@ impl ToolRegistry {
         }
         let server = self.tools.get(name).and_then(|t| match t.source() {
             ToolSource::Mcp { server, .. } => Some(mcp_server_key(&server)),
+            // 216: a plugin's tools sit under its `plugin.<name>` server key.
+            ToolSource::Plugin { name, .. } => Some(mcp_server_key(&crate::mcp::plugin_server_key(&name))),
             ToolSource::Native { .. } => None,
         });
         server.is_some_and(|k| sets.iter().any(|s| s.contains(&k)))
