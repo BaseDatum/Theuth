@@ -24,6 +24,10 @@ pub(crate) fn install_forward_hooks() {
             ))
         },
     });
+    // 221 D15: an answer to a destination request runs on the engine that asked.
+    secrets::rpc::install_engine_forward(|ext, engine, method, params| {
+        Box::pin(forward::to_engine(ext, Some(engine), method, params))
+    });
 }
 
 /// Install the existing forwarding and per-runtime insight hooks.
