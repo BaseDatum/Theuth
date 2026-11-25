@@ -31,7 +31,7 @@ import { Pill, type SessionPick, useSessionTitle } from './Pill'
 import { Sheet } from './Sheet'
 import { asUrl, place, placeFromClipboard, placeImage } from './add'
 import { bubbleAnchor, lastReply } from './reply'
-import type { SendPlan, WhiteboardCanvasHandle } from './canvas/api'
+import type { PlannedImage, SendPlan, WhiteboardCanvasHandle } from './canvas/api'
 import type { Board, Id, Meta } from './canvas/model'
 import * as ops from './canvas/ops'
 import { createWhiteboardStore } from './canvas/store'
@@ -193,8 +193,8 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
       native.current = null
     }
   }, [store, timer, readOnly])
-  useEffect(() => native.current?.visible(!outline && !openCard), [outline, openCard])
-  useEffect(() => store.getState().set({ colour: store.getState().colour }), [dark, store])
+  // Visibility and the theme (the native picker's colour for `ink` flips with it) both re-push the plugin's state.
+  useEffect(() => native.current?.visible(!outline && !openCard), [outline, openCard, dark])
 
   // ── Composer: plan when opened, tray removals, the off-screen opt-in.
   const [text, setText] = useState('')
@@ -206,6 +206,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
     const h = handle.current
     setPlan(h ? h.planSend({ offScreen: off }) : { marks: [], images: [], offScreen: 0 })
   }, [])
+  const composeThumb = useCallback((i: PlannedImage) => handle.current?.composeImage(i, 160) ?? Promise.reject(new Error('no canvas')), [])
   const openComposer = (focus = true) => {
     timer.hide()
     store.getState().set({ composerOpen: true })
@@ -289,12 +290,10 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
           frameOf: (c) => board.cards[c]?.frame,
         },
       )
-      if (r.session) {
-        if (r.session !== session) {
-          setTarget(r.session)
-          useSessions.getState().ensure(r.session)
-        }
-        useSessions.getState().markSent(r.session, text, [])
+      // A first send (R1) made the session: it becomes the target (and `?session=`); the engine's echo fills its rows.
+      if (r.session && r.session !== session) {
+        setTarget(r.session)
+        useSessions.getState().ensure(r.session)
       }
       refreshBound()
       setText('')
@@ -534,7 +533,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
             replan(on)
           }}
           onRemove={(i) => setPlan((p) => withoutImage(p, i))}
-          compose={(i) => handle.current?.composeImage(i, 160) ?? Promise.reject(new Error('no canvas'))}
+          compose={composeThumb}
           noVision={noVision}
           sending={sending}
           text={text}

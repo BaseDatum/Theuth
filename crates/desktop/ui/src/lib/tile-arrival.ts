@@ -25,11 +25,13 @@ export function noteViewOpened(e: { session: string; doc: string; title: string;
 
 /**
  * `WhiteboardViewOpened` (218 §8.8): whiteboard `doc`'s tile beside `session`'s chat when that chat is on screen in a
- * tiling layout; anywhere else (a phone, a hidden chat, no pane) the whiteboard's own page, bound to `session`.
+ * tiling layout; from a chat on screen where no tile can open (a phone, no pane) the whiteboard's own page, bound to
+ * `session`. A chat that is not on screen moves nobody: the user is elsewhere and the whiteboard is in the sidebar.
  * `go` pushes an app path (the router lives in `App.tsx`).
  */
 export function whiteboardViewOpened(e: WhiteboardViewOpened, visible: boolean, go: (href: string) => void): void {
-  if (visible && tileable(e.session) && openWhiteboardTile(e.session, { doc: e.doc, title: e.title }) !== null) return
+  if (!visible) return
+  if (tileable(e.session) && openWhiteboardTile(e.session, { doc: e.doc, title: e.title }) !== null) return
   go(`/whiteboards/${encodeURIComponent(e.doc)}?session=${encodeURIComponent(e.session)}`)
 }
 

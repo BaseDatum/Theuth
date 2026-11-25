@@ -132,15 +132,23 @@ test('218: a visible, tileable chat gets the whiteboard tile for the document; n
   expect(go).not.toHaveBeenCalled()
 })
 
-test('218: a hidden chat, one outside a tiling pane, or a tile that cannot open navigates to the whiteboard page', () => {
+test('218: an on-screen chat outside a tiling pane, or a tile that cannot open, navigates to the whiteboard page', () => {
   opened.mockClear()
   const go = vi.fn()
   onScreen('s1')
-  whiteboardViewOpened(board, false, go)
   opened.mockReturnValueOnce(null)
   whiteboardViewOpened(board, true, go)
   document.body.innerHTML = ''
   whiteboardViewOpened({ ...board, session: 's 2' }, true, go)
   expect(opened).toHaveBeenCalledTimes(1)
-  expect(go.mock.calls).toEqual([[`/whiteboards/${WB}?session=s1`], [`/whiteboards/${WB}?session=s1`], [`/whiteboards/${WB}?session=s%202`]])
+  expect(go.mock.calls).toEqual([[`/whiteboards/${WB}?session=s1`], [`/whiteboards/${WB}?session=s%202`]])
+})
+
+test('218: a chat that is not on screen opens nothing and moves nobody', () => {
+  opened.mockClear()
+  const go = vi.fn()
+  onScreen('s1')
+  whiteboardViewOpened(board, false, go)
+  expect(opened).not.toHaveBeenCalled()
+  expect(go).not.toHaveBeenCalled()
 })
