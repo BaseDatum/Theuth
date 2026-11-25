@@ -306,7 +306,7 @@ export function Cluster(p: ClusterProps) {
       role="toolbar"
       aria-label="Whiteboard controls"
       aria-orientation="vertical"
-      className="wb-glass wb-rise absolute right-[calc(24px+var(--safe-right,0px))] bottom-[var(--wb-dock,calc(80px+var(--safe-bottom,0px)))] z-20 flex max-h-[calc(100%-var(--wb-dock,80px)-16px)] w-[58px] flex-col items-center gap-0.5 overflow-y-auto rounded-[22px] py-1.5"
+      className="wb-glass wb-rise absolute right-[calc(24px+var(--safe-right,0px))] bottom-[var(--wb-dock,calc(80px+var(--safe-bottom,0px)))] z-20 flex max-h-[calc(100%-var(--wb-dock,80px)-72px-var(--safe-top,0px))] w-[58px] flex-col items-center gap-0.5 overflow-y-auto rounded-[22px] py-1.5"
       onPointerDown={p.onActivity}
       onKeyDown={p.onActivity}
     >
