@@ -7,11 +7,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { useEffect, useRef, useState } from 'react'
 import { errorText } from '@/components/settings/shared'
 import { openExternal } from '@/lib/platform'
-import type { LoginStep } from '@/rpc/bindings/method.secrets.output'
-import { useConnection } from '@/store/connection'
-
-/** `connection_sso_begin`'s answer. */
-export type SsoBegin = { authorize_url: string; state: string; redirect_port: number }
+import type { Api } from '@/rpc/bindings/client'
+import type { LoginStep, SsoBegin } from '@/rpc/bindings/method.secrets.output'
 
 /** What the flow needs from the shell and the engine; injected by tests. */
 export type SsoDeps = {
@@ -23,19 +20,16 @@ export type SsoDeps = {
   complete(conn: string, state: string, redirect: string, twoFactor: [string, string] | null): Promise<LoginStep>
 }
 
-function call<T>(method: string, params: unknown[]): Promise<T> {
-  const client = useConnection.getState().client
-  return client ? client.call<T>(method, params) : Promise.reject(new Error('not connected'))
-}
-
-/** The real shell and engine. */
-export const SSO_DEPS: SsoDeps = {
-  listen: () => invoke<number>('sso_listen'),
-  wait: (port) => invoke<string>('sso_wait', { port }),
-  cancel: () => invoke<void>('sso_cancel'),
-  open: openExternal,
-  begin: (conn, org, port) => call<SsoBegin>('connection_sso_begin', [conn, org, port]),
-  complete: (conn, state, redirect, twoFactor) => call<LoginStep>('connection_sso_complete', [conn, state, redirect, twoFactor]),
+/** The real shell and `api`'s engine. */
+export function ssoDeps(api: Api): SsoDeps {
+  return {
+    listen: () => invoke<number>('sso_listen'),
+    wait: (port) => invoke<string>('sso_wait', { port }),
+    cancel: () => invoke<void>('sso_cancel'),
+    open: openExternal,
+    begin: (conn, org, port) => api.connection_sso_begin(conn, org, port),
+    complete: (conn, state, redirect, twoFactor) => api.connection_sso_complete(conn, state, redirect, twoFactor),
+  }
 }
 
 export type SsoPhase =
@@ -49,7 +43,7 @@ export type SsoPhase =
  * One SSO login for `conn`. `start` runs listener → begin → browser → wait → complete; `twoFactor` answers a
  * `need_two_factor`; `cancel` (and unmounting) closes the listener. A cancelled or superseded run never writes state.
  */
-export function useSsoLogin(conn: string, onDone: () => void, deps: SsoDeps = SSO_DEPS) {
+export function useSsoLogin(conn: string, onDone: () => void, deps: SsoDeps) {
   const [state, setState] = useState<SsoPhase>({ phase: 'idle' })
   const [error, setError] = useState<string | null>(null)
   const run = useRef(0)

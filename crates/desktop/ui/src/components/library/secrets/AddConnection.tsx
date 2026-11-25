@@ -58,7 +58,7 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
   const cfg = (): ConnConfig =>
     backend === 'aws'
       ? { backend, profile: aws.profile || null, region: aws.region, kms_key_id: aws.kms.trim() || null, prefix: aws.prefix.trim() || null }
-      : ({
+      : {
           backend,
           server: bw.server,
           base_url: bw.server === 'self_hosted' ? bw.base.trim() || null : null,
@@ -68,7 +68,7 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
           email: bw.email.trim(),
           login: bw.login,
           org_identifier: bw.login === 'sso' ? bw.org.trim() || null : null,
-        } as ConnConfig)
+        }
   const ready = name && !nameError && (backend === 'aws' ? aws.region : bw.email.trim() && (bw.server !== 'self_hosted' || bw.base.trim().startsWith('https://')))
   const run = async <T,>(f: () => Promise<T>): Promise<T | undefined> => {
     setBusy(true)

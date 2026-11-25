@@ -34,6 +34,7 @@ function info(allow_reveal = true): ConnInfo {
   return {
     conn: 'personal',
     backend: 'bw',
+    login: 'api_key',
     status: { state: 'ready' },
     summary: 'me@example.org · vault.bitwarden.eu',
     ask: { read: true, write: true, delete: true, send: true },

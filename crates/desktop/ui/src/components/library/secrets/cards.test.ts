@@ -39,7 +39,7 @@ const fake = {
   create_send: vi.fn(() => new Promise<never>(() => undefined)),
   list_secret_connections: vi.fn(
     async (): Promise<ConnInfo[]> => [
-      { conn: 'personal', backend: 'bw', status: { state: 'ready' }, summary: 'me@example.org', ask: { read: true, write: true, delete: true, send: true }, settings: CONN_DEFAULTS },
+      { conn: 'personal', backend: 'bw', login: 'api_key', status: { state: 'ready' }, summary: 'me@example.org', ask: { read: true, write: true, delete: true, send: true }, settings: CONN_DEFAULTS },
     ],
   ),
   get_external_settings: vi.fn(async () => ({ send_max_file_mb: 100, copy_link_needs_press: true, timeout_secs: 20 })),

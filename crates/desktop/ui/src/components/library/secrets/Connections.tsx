@@ -11,7 +11,7 @@ import { Browse } from './Browse'
 import { AskSwitches, ConnSettingsPanel } from './ConnSettings'
 import { backendLabel, statusDetail, statusLabel } from './labels'
 import { Sends } from './Sends'
-import { type LoginMethod, LoginCard, UnlockCard } from './UnlockCard'
+import { LoginCard, UnlockCard } from './UnlockCard'
 import type { ConnInfo } from '@/rpc/bindings/method.secrets.output'
 
 /** Methods the Connections section needs before it renders. */
@@ -21,9 +21,6 @@ type Panel = 'browse' | 'sends' | 'settings' | 'unlock' | 'login'
 
 /** The account part of a Bitwarden summary (`me@… · vault.bitwarden.eu` → `me@…`). */
 const accountOf = (info: ConnInfo) => info.summary.split(' · ')[0] ?? info.conn
-
-/** §9.6: the connection's login kind (`ConnInfo.login`, absent from an older engine); the login card starts there. */
-const loginOf = (info: ConnInfo): LoginMethod => (info as ConnInfo & { login?: LoginMethod | null }).login ?? 'api_key'
 
 /** One connection: glyph, name, summary, status dot, Lock / Unlock / Log in, the four ask switches, Browse, Sends (Bitwarden), Settings, Remove. */
 function ConnectionRow({ info }: { info: ConnInfo }) {
@@ -116,7 +113,7 @@ function ConnectionRow({ info }: { info: ConnInfo }) {
         <LoginCard
           conn={info.conn}
           email={accountOf(info)}
-          method={loginOf(info)}
+          method={info.login ?? 'api_key'}
           onCancel={() => setPanel(null)}
           onDone={() => {
             setPanel('unlock')

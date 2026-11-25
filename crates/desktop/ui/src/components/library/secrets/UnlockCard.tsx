@@ -6,9 +6,9 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { notify } from '@/lib/notify'
 import { isDesktop } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
-import type { LoginForm } from '@/rpc/bindings/method.secrets.input'
+import type { BwLogin, LoginForm } from '@/rpc/bindings/method.secrets.input'
 import type { LoginStep, UnlockRequestView } from '@/rpc/bindings/method.secrets.output'
-import { type SsoDeps, useSsoLogin } from './sso'
+import { type SsoDeps, ssoDeps as realSsoDeps, useSsoLogin } from './sso'
 
 const CARD = 'flex flex-col gap-2 rounded-xl border border-info-border bg-info-bg px-4 py-3 text-sm'
 
@@ -109,7 +109,7 @@ export function UnlockRequestCard({ request, onDone }: { request: UnlockRequestV
 }
 
 /** `connection_login`'s two methods and §9.6's SSO, which runs its own flow (`sso.ts`). */
-export type LoginMethod = LoginForm['method'] | 'sso'
+export type LoginMethod = BwLogin
 
 const CLEARED = { client_id: '', client_secret: '', email: '', password: '', provider: '', code: '', otp: '', org: '' }
 
@@ -148,7 +148,7 @@ export function LoginCard({
     setF(CLEARED)
     onDone()
   }
-  const sso = useSsoLogin(conn, finish, ssoDeps)
+  const sso = useSsoLogin(conn, finish, ssoDeps ?? realSsoDeps(api))
   // SSO needs the shell's loopback listener, so a desktop app (ssoDeps: tests).
   const ssoHere = isDesktop() || ssoDeps !== undefined
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value })
