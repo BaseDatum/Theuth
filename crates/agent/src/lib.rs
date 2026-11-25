@@ -90,6 +90,7 @@ pub mod activity;
 pub mod advisor;
 pub mod ask;
 pub mod attach;
+pub mod cell_nudge;
 mod aws;
 mod backend;
 mod claude_code;
@@ -448,6 +449,22 @@ pub struct TrimAssistant {
     pub turn: i64,
     /// What the user heard of the reply.
     pub keep: String,
+}
+
+/// `ask` → `Result<CellPromotion, String>` (design doc 220): rewrite plain fence `fence` of
+/// the assistant row `seq` as a user cell via the cell-nudge side call, in place; the fence
+/// whose body equals `body` wins over the ordinal. `Err` only when the session has no native
+/// actor; every other refusal is an outcome.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CellPromote {
+    /// Target session.
+    pub session: SessionId,
+    /// Stored message seq of the assistant reply.
+    pub seq: i64,
+    /// 0-based ordinal among the reply's plain runnable fences.
+    pub fence: u32,
+    /// The fence body the client saw.
+    pub body: String,
 }
 
 /// `ask` → `Result<SessionId, String>`: new session with a copy of the
@@ -3959,7 +3976,8 @@ pub enum AgentEvent {
         session: SessionId,
         /// Committed session revision (decimal string).
         revision: String,
-        /// `"context_edit"`, `"settled"`, `"rewind"` or `"trim"`.
+        /// `"context_edit"`, `"settled"`, `"rewind"`, `"trim"` or `"cell_nudge"` (220: a
+        /// plain fence of a finished reply was rewritten as a user cell in place).
         reason: String,
     },
     /// The session's canonical plan changed (47 §5.1): a native `todo`
