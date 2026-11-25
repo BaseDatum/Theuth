@@ -36,21 +36,28 @@ pub enum Msg {
     Lines(Result<Vec<String>, String>),
 }
 
+/// A plugin whose placements are drawn and whose commands run: enabled and past approval (the desktop's `drawn`).
+fn drawn(p: &PluginInfo) -> bool {
+    p.enabled && !matches!(p.state, PluginRunState::Disabled | PluginRunState::Invalid | PluginRunState::AwaitingApproval)
+}
+
 impl Plugins {
-    /// `(slash, args hint, description)` of every plugin command, in plugin order.
+    /// Slash-popup rows `(slash, args hint, description)` of drawn plugins' commands, in plugin order; a hidden
+    /// placement's command is left out (it still runs when typed).
     pub fn commands(&self) -> Vec<(String, String, String)> {
         self.list
             .iter()
-            .flat_map(|p| p.placements.iter().filter_map(move |pl| {
+            .filter(|p| drawn(p))
+            .flat_map(|p| p.placements.iter().filter(|pl| !pl.hidden).filter_map(move |pl| {
                 let c = pl.command.as_ref()?;
                 Some((c.slash.clone(), c.args.clone().unwrap_or_default(), format!("[plugin {}] {}", p.name, c.description)))
             }))
             .collect()
     }
 
-    /// `(plugin, command name)` behind a typed `/plugin[:cmd]`.
+    /// `(plugin, command name)` behind a typed `/plugin[:cmd]` of a drawn plugin, hidden ones included.
     fn command(&self, slash: &str) -> Option<(String, String)> {
-        self.list.iter().find_map(|p| {
+        self.list.iter().filter(|p| drawn(p)).find_map(|p| {
             p.placements
                 .iter()
                 .filter_map(|pl| pl.command.as_ref())
@@ -59,10 +66,10 @@ impl Plugins {
         })
     }
 
-    /// Status-line segments: `(● label, dot)`, plugin order, hidden ones out, at most three.
+    /// Status-line segments: `(● label, dot)`, drawn plugins in order, hidden ones out, at most three.
     pub fn segments(&self) -> Vec<(String, Dot)> {
         let mut out = Vec::new();
-        for p in &self.list {
+        for p in self.list.iter().filter(|p| drawn(p)) {
             for pl in &p.placements {
                 let shows = match pl.kind {
                     PlacementKind::Status => true,
@@ -413,7 +420,12 @@ mod tests {
         let mut p = Plugins::default();
         let mut hidden = placement("h", PlacementKind::Status, true);
         hidden.hidden = true;
+        let mut off = plugin("off", PluginRunState::Disabled, vec![placement("off", PlacementKind::Status, true)]);
+        off.enabled = false;
         p.list = vec![
+            off,
+            plugin("new", PluginRunState::AwaitingApproval, vec![placement("new", PlacementKind::Status, true)]),
+            plugin("bad", PluginRunState::Invalid, vec![placement("bad", PlacementKind::Status, true)]),
             plugin("turns", PluginRunState::Running, vec![
                 placement("turns", PlacementKind::Sidebar, true),
                 placement("tile", PlacementKind::Tile, false),
@@ -442,6 +454,20 @@ mod tests {
         assert!(p.slash_fallback("/turns:reset"));
         assert!(!p.slash_fallback("/turns:other"));
         assert_eq!(p.command("/turns:reset"), Some(("turns".into(), "reset".into())));
+    }
+
+    #[test]
+    fn hidden_commands_leave_the_popup_and_undrawn_plugins_offer_none() {
+        let mut hidden = placement("reset", PlacementKind::Command, false);
+        hidden.hidden = true;
+        let mut p = Plugins::default();
+        p.list = vec![
+            plugin("turns", PluginRunState::Running, vec![hidden]),
+            plugin("new", PluginRunState::AwaitingApproval, vec![placement("go", PlacementKind::Command, false)]),
+        ];
+        assert!(p.commands().is_empty());
+        assert_eq!(p.command("/turns:reset"), Some(("turns".into(), "reset".into())));
+        assert!(!p.slash_fallback("/turns:go"));
     }
 
     #[test]
