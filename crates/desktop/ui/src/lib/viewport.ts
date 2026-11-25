@@ -41,11 +41,23 @@ export function applyViewport(): void {
   if (!edit || window.innerWidth !== base.width || tall > base.height) base = { width: window.innerWidth, height: tall }
   const full = touch() ? base.height : layout
   const open = edit && visible < full - SLACK
-  const root = document.documentElement
-  root.style.setProperty('--visible-band', `${open ? visible : layout}px`)
-  root.toggleAttribute('data-keyboard-open', open)
+  // Written only when it changes: a write on `<html>` invalidates style for the whole document, and the visual
+  // viewport's scroll and resize events (plus their settle re-read) fire far more often than the band moves.
+  const band = `${open ? visible : layout}px`
+  if (band !== written.band || open !== written.open) {
+    const root = document.documentElement
+    root.style.setProperty('--visible-band', band)
+    root.toggleAttribute('data-keyboard-open', open)
+    written = { band, open }
+  }
   if (window.scrollY || window.scrollX) window.scrollTo(0, 0)
 }
+
+/** What `applyViewport` last wrote on `<html>`. */
+let written: { band: string; open: boolean | null } = { band: '', open: null }
+
+/** Tests: forget the last write (each test stubs a fresh document). */
+export const resetViewportWrites = (): void => void (written = { band: '', open: null })
 
 /**
  * WebKit can report the old `innerHeight` / `visualViewport` while a resize is still settling (an iPadOS Stage Manager

@@ -2,13 +2,13 @@
 // idle height, never because the window is shorter than the screen (iPad Stage Manager, hardware keyboard).
 import { readFileSync } from 'node:fs'
 import { afterEach, expect, test, vi } from 'vitest'
-import { applyViewport, remeasureViewport, SETTLE_MS, trackViewport } from './viewport'
+import { applyViewport, remeasureViewport, resetViewportWrites, SETTLE_MS, trackViewport } from './viewport'
 
 class Input {}
 class TextArea {}
 class Element {}
 
-const root = { band: '', open: false }
+const root = { band: '', open: false, writes: 0 }
 let win: { innerWidth: number; innerHeight: number; visualViewport: { height: number }; scrollX: number; scrollY: number; scrollTo(): void }
 let active: unknown = null
 
@@ -24,8 +24,9 @@ function setup(opts: { touch: boolean; width?: number; height: number; visible?:
     get activeElement() {
       return active
     },
-    documentElement: { style: { setProperty: (_: string, v: string) => (root.band = v) }, toggleAttribute: (_: string, on: boolean) => (root.open = on) },
+    documentElement: { style: { setProperty: (_: string, v: string) => ((root.band = v), root.writes++) }, toggleAttribute: (_: string, on: boolean) => (root.open = on) },
   })
+  resetViewportWrites()
   applyViewport() // idle baseline for this window
 }
 
@@ -160,4 +161,15 @@ test('the page (html, body, #root) takes the band like the shell, not its own vi
   expect(css).toMatch(/html,\s*body,\s*#root \{\s*height: var\(--visible-band, 100dvh\);/)
   const root = readFileSync(new URL('../routes/__root.tsx', import.meta.url), 'utf8')
   expect(root).toContain('useEffect(remeasureViewport, [pathname])')
+})
+
+test('an unchanged reading writes nothing on <html> (a write restyles the whole document)', () => {
+  setup({ touch: true, width: 1024, height: 900 })
+  const before = root.writes
+  for (let i = 0; i < 5; i++) applyViewport()
+  expect(root.writes).toBe(before)
+  win.innerHeight = win.visualViewport.height = 800
+  applyViewport()
+  expect(root.writes).toBe(before + 1)
+  expect(root.band).toBe('800px')
 })
