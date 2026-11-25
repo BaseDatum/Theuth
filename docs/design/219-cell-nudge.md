@@ -204,4 +204,36 @@ Slack/Signal/Telegram renderers (they keep plain fences), JS/TS auto-promotion, 
 - **Store.** `replace_assistant_text` keeps a single text part in place (exclusion-mask coordinates stay
   valid); several text parts collapse into the first, refused when the mask addresses parts.
 - **Prompt.** Only `crates/cells/src/prompt.rs` carried the sentence; the skill (`cells.md`) words it
-  differently and is unchanged. `docs/design/171-cells.md` still quotes the old block verbatim.
+  differently and is unchanged. `docs/design/171-cells.md`'s quoted block carries the new sentence.
+
+### Review fixes (02:00)
+
+- **Option allowlist.** A repaired cell may carry only `cwd`, `label`, `danger`, `expect`, `name`,
+  `timeout`; any other key (`env`, `python`, `review`, `private`, `after`, `on`), an unparseable header
+  line (`options.unknown`) or an invisible/zero-width/bidi character (`lint` `invisible`) → `rejected`.
+- **Danger.** A fence with a state-changing command (`sudo`, `systemctl`, `kubectl apply|delete`,
+  `helm upgrade`, `terraform apply`, `brew|apt|dnf install`) must come back with `#| danger`; validate's
+  `changing_without_label` warning also rejects.
+- **Busy.** `PromoteFence` answers `stale` ("a turn is running") at once when the actor is not idle — no
+  side call; `ApplyPromotion`'s idle check stays the authority at replace time.
+- **Transient failures are `stale`** with a detail (store error, model resolution, provider error or
+  timeout, closed session), logged at warn. `rejected` is only a failed check; an empty answer is
+  `declined`.
+- **After a replace:** the frame is reloaded (one retry); if it still fails the outcome is `stale` with the
+  detail "converted, but the frame did not reload" (the row did change, `ContextChanged` still goes out).
+  The session then tells the supervisor `CellPromoted`, which invalidates the search cache and bumps the
+  continuation ledger like `TrimAssistant` — for the RPC and the automatic path alike.
+- **Per-session book.** `cell_nudges`/`nudged` moved from `SessionState` to `Shared.nudges`
+  (`cell_nudge::NudgeBook`), so the detached task can give an attempt back: an automatic attempt that ends
+  `stale` returns its count and digest (the fence may be tried after a later turn); `declined`/`rejected`
+  keep them.
+- **List-indented fences.** The scanner dedents a body by its opener's indent (as CommonMark does), and
+  `splice` re-indents every non-blank line of the cell by it. Note `surface`'s own scanner does not dedent,
+  so a cell inside a list item is a cell to the UI and to this module but not to `surface::cell_link`.
+- **Detector.** `let me know …` and `on your machine` are no longer signals. A bare `Run this:` /
+  `Run the following:` / `Now run:` clause right before the fence is a prose signal. A user-shell command
+  (`sudo`, `ssh -t`, `brew install`, …) fires only with a prose signal or an imperative `Run …` / `Now run …`
+  / `Then run …` clause right before the fence. Suppressors read only that clause (the last sentence of the
+  last line before the fence; `e.g. with` does not end a sentence).
+- **Side call** carries no reasoning effort, so the 800-token cap is all answer.
+- Detached tasks hold a `WeakActorRef`; the side call is fenced on the session's `closed` token.

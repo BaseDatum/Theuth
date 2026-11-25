@@ -4178,7 +4178,6 @@ impl Message<CellPromote> for Agents {
                 return reply;
             }
         };
-        self.search.invalidate();
         tokio::spawn(async move {
             tx.send(
                 actor
@@ -4187,6 +4186,7 @@ impl Message<CellPromote> for Agents {
                         ordinal: m.fence,
                         body: Some(m.body),
                         auto: false,
+                        digest: None,
                         reason: "user",
                     })
                     .await
@@ -4194,6 +4194,22 @@ impl Message<CellPromote> for Agents {
             );
         });
         reply
+    }
+}
+
+/// `tell` (219): a session rewrote a reply's fence as a cell in place — the RPC's or the
+/// automatic nudge. A context edit like [`TrimAssistant`]: cached searches and admitted
+/// candidates are stale.
+pub(crate) struct CellPromoted {
+    pub session: SessionId,
+}
+
+impl Message<CellPromoted> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: CellPromoted, _: &mut Context<Self, Self::Reply>) {
+        self.search.invalidate();
+        self.ledger.bump(m.session);
     }
 }
 

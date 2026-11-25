@@ -42,11 +42,13 @@ pub struct CellPromotion {
 pub enum PromoteOutcome {
     /// The fence is a user cell now; a `ContextChanged { reason: "cell_nudge" }` went out.
     Converted,
-    /// The model answered `OK`: it stays a snippet.
+    /// The model answered `OK` (or nothing): it stays a snippet.
     Declined,
-    /// The model's cell failed a check (or the call failed).
+    /// The model's cell failed a check.
     Rejected,
-    /// A turn is running: nothing was replaced.
+    /// Try again later: a turn is running, or a transient failure (the provider, a timeout,
+    /// the store) — `detail` says which. The only case where the reply did change is the
+    /// detail "converted, but the frame did not reload".
     Stale,
     /// No such reply or fence, or the reply changed meanwhile.
     NotFound,

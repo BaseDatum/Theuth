@@ -401,6 +401,9 @@ pub struct PromoteFence {
     pub body: Option<String>,
     /// Fired by the detector after a turn (hook B) rather than asked for.
     pub auto: bool,
+    /// The auto path's [`cell_nudge::NudgeBook`] entry: given back when the attempt ends
+    /// `stale` (no verdict), so the fence may be tried after a later turn.
+    pub digest: Option<String>,
     /// Why: the detector's signal, `"user"` for the RPC.
     pub reason: &'static str,
 }
@@ -418,6 +421,7 @@ pub struct NudgePlan {
     seq: i64,
     ordinal: u32,
     reason: &'static str,
+    digest: String,
 }
 
 /// `ask` → whether a turn is in flight.
@@ -738,10 +742,6 @@ pub struct SessionState {
     /// 136 §2.2: the `<budget>` note a refused call queued; appended once
     /// before the next turn's first model call.
     pub budget_note: Option<String>,
-    /// 219: automatic cell nudges this session (`cells.nudge_max` caps them); in memory.
-    pub cell_nudges: u8,
-    /// 219: `surface::cell::digest` of every fence a nudge was tried on; in memory.
-    pub nudged: BTreeSet<String>,
     /// 219: the nudge hook B planned for the reply that just finished; the actor takes it
     /// with the state ([`TurnDone`]) and sends itself a [`PromoteFence`].
     pub nudge_plan: Option<NudgePlan>,
@@ -793,8 +793,6 @@ impl SessionState {
             suggest_task: None,
             harvest_task: None,
             budget_note: None,
-            cell_nudges: 0,
-            nudged: BTreeSet::new(),
             nudge_plan: None,
         }
     }
@@ -915,6 +913,9 @@ struct Shared {
     title_pinned: Arc<std::sync::atomic::AtomicBool>,
     /// [`SetTalking`]: a live talk runs on this session; no suggestions.
     talking: Arc<std::sync::atomic::AtomicBool>,
+    /// 219: this session's automatic cell nudges; shared with the detached promote task,
+    /// which gives a stale attempt back.
+    nudges: Arc<parking_lot::Mutex<cell_nudge::NudgeBook>>,
     /// Turns this actor has entered, bumped as each one is driven: a detached
     /// suggestions call made after turn N is stale once it moved ([`suggest`]).
     turns_entered: Arc<std::sync::atomic::AtomicU64>,
@@ -1154,6 +1155,7 @@ impl Session {
                 toolset: Arc::default(),
                 title_pinned: Arc::default(),
                 talking: Arc::default(),
+                nudges: Arc::default(),
                 turns_entered: Arc::default(),
                 agent_titled: Arc::default(),
                 user_titled: Arc::default(),
@@ -2705,7 +2707,8 @@ impl Message<crate::SideCall> for Session {
 }
 
 /// 219: resolve the reply and the fence, run the repair side call detached, hand an accepted
-/// cell to [`ApplyPromotion`]; every attempt is logged on `surface`.
+/// cell to [`ApplyPromotion`]; every attempt is logged on `surface`. Refused `stale` at once
+/// while a turn runs — no side call is spent on a reply that may change under it.
 impl Message<PromoteFence> for Session {
     type Reply = kameo::reply::DelegatedReply<CellPromotion>;
 
@@ -2715,28 +2718,32 @@ impl Message<PromoteFence> for Session {
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
-        let me = ctx.actor_ref().clone();
-        let seq = match m.seq {
-            Some(seq) => Ok(seq),
-            None => match &self.state {
-                Some(state) => state
-                    .history
-                    .iter()
-                    .rev()
-                    .find(|(_, msg)| {
-                        msg.role == ChatRole::Assistant && msg.content.tool_calls().is_empty()
-                    })
-                    .map(|(seq, _)| *seq)
-                    .ok_or(PromoteOutcome::NotFound),
-                None => Err(PromoteOutcome::Stale),
-            },
+        let me = ctx.actor_ref().downgrade();
+        let seq = match (&self.state, m.seq) {
+            _ if !self.idle() => Err(promotion(PromoteOutcome::Stale, Some(BUSY.to_owned()))),
+            (_, Some(seq)) => Ok(seq),
+            (Some(state), None) => state
+                .history
+                .iter()
+                .rev()
+                .find(|(_, msg)| {
+                    msg.role == ChatRole::Assistant && msg.content.tool_calls().is_empty()
+                })
+                .map(|(seq, _)| *seq)
+                .ok_or_else(|| promotion(PromoteOutcome::NotFound, None)),
+            (None, None) => Err(promotion(PromoteOutcome::Stale, Some(BUSY.to_owned()))),
         };
         let shared = self.shared.clone();
         tokio::spawn(async move {
             let (out, lang) = match seq {
                 Ok(seq) => promote(&shared, &me, seq, &m).await,
-                Err(outcome) => (promotion(outcome, None), String::new()),
+                Err(out) => (out, String::new()),
             };
+            if out.outcome == PromoteOutcome::Stale
+                && let Some(digest) = &m.digest
+            {
+                shared.nudges.lock().give_back(digest);
+            }
             tracing::info!(
                 target: "surface",
                 session = %shared.id,
@@ -2759,35 +2766,40 @@ fn promotion(outcome: PromoteOutcome, detail: Option<String>) -> CellPromotion {
     CellPromotion { outcome, detail }
 }
 
-/// [`PromoteFence`] off the mailbox: the reply from the store, the fence, the side call, the
-/// checks, then the replace on the actor. Returns the outcome and the fence's language.
+/// A transient failure (store, model resolution, the provider, a closed session): `stale`
+/// with the reason, logged at warn.
+fn transient(session: SessionId, what: &str, e: impl std::fmt::Display) -> CellPromotion {
+    tracing::warn!(target: "surface", session = %session, "cell nudge: {what}: {e:#}");
+    promotion(PromoteOutcome::Stale, Some(format!("{what}: {e:#}")))
+}
+
+/// [`PromoteFence`] off the mailbox: the reply from the store, the fence, the side call (no
+/// reasoning effort, so the cap is all answer), the checks, then the replace on the actor.
+/// Returns the outcome and the fence's language.
 async fn promote(
     shared: &Shared,
-    me: &ActorRef<Session>,
+    me: &WeakActorRef<Session>,
     seq: i64,
     m: &PromoteFence,
 ) -> (CellPromotion, String) {
-    let text = match shared.store.assistant_text(shared.id, seq).await {
+    let id = shared.id;
+    let text = match shared.store.assistant_text(id, seq).await {
         Ok(Some(text)) => text,
         Ok(None) => return (promotion(PromoteOutcome::NotFound, None), String::new()),
-        Err(e) => {
-            let detail = Some(format!("{e:#}"));
-            return (promotion(PromoteOutcome::NotFound, detail), String::new());
-        }
+        Err(e) => return (transient(id, "store", e), String::new()),
     };
     let Some(fence) = cell_nudge::pick(&text, m.ordinal, m.body.as_deref()) else {
         return (promotion(PromoteOutcome::NotFound, None), String::new());
     };
     let lang = fence.lang.clone();
-    let (model, effort) = match shared.role_model(&crate::ModelRole::Title) {
-        Ok(m) => m,
-        Err(e) => return (promotion(PromoteOutcome::Rejected, Some(e)), lang),
+    let model = match shared.role_model(&crate::ModelRole::Title) {
+        Ok((model, _)) => model,
+        Err(e) => return (transient(id, "model", e), lang),
     };
-    let cwd = tools::seat::cwd(shared.id).unwrap_or_default();
+    let cwd = tools::seat::cwd(id).unwrap_or_default();
     let user = cell_nudge::repair_user(&text, &fence, &cwd.to_string_lossy());
     let answer = shared
         .side(None)
-        .effort(&model, effort.as_deref())
         .cap(cell_nudge::REPAIR_CAP)
         .short(true)
         .call(
@@ -2803,19 +2815,23 @@ async fn promote(
         Ok(cell_nudge::Repair::Declined) => {
             return (promotion(PromoteOutcome::Declined, None), lang);
         }
-        Ok(cell_nudge::Repair::Rejected(why)) | Err(why) => {
+        Ok(cell_nudge::Repair::Rejected(why)) => {
             return (promotion(PromoteOutcome::Rejected, Some(why)), lang);
         }
+        Err(e) => return (transient(id, "side call", e), lang),
     };
     let apply = ApplyPromotion {
         seq,
         text: cell_nudge::splice(&text, &fence, &cell),
         expected: text,
     };
-    let out = me
-        .ask(apply)
-        .await
-        .unwrap_or_else(|e| promotion(PromoteOutcome::Stale, Some(e.to_string())));
+    let Some(me) = me.upgrade() else {
+        return (transient(id, "session", "closed"), lang);
+    };
+    let out = match me.ask(apply).await {
+        Ok(out) => out,
+        Err(e) => transient(id, "session", e),
+    };
     (out, lang)
 }
 
@@ -2828,24 +2844,40 @@ impl Message<ApplyPromotion> for Session {
         _: &mut Context<Self, Self::Reply>,
     ) -> CellPromotion {
         if !self.idle() {
-            return promotion(PromoteOutcome::Stale, None);
+            return promotion(PromoteOutcome::Stale, Some(BUSY.to_owned()));
         }
         let id = self.shared.id;
-        let store = &self.shared.store;
+        let store = self.shared.store.clone();
         let revision = match store
             .replace_assistant_text(id, m.seq, &m.expected, &m.text)
             .await
         {
             Ok(Some(revision)) => revision,
-            Ok(None) => return promotion(PromoteOutcome::NotFound, Some("the reply changed".into())),
-            Err(e) => return promotion(PromoteOutcome::NotFound, Some(format!("{e:#}"))),
+            Ok(None) => {
+                return promotion(PromoteOutcome::NotFound, Some("the reply changed".into()));
+            }
+            Err(e) => return transient(id, "store", e),
         };
-        match store.frame(id).await {
-            Ok((epoch, head, history)) => self.install(epoch, head, history).await,
-            Err(e) => tracing::warn!(session = %id, "cell nudge: frame: {e:#}"),
-        }
+        let frame = match store.frame(id).await {
+            Ok(f) => Ok(f),
+            Err(_) => store.frame(id).await,
+        };
+        let out = match frame {
+            Ok((epoch, head, history)) => {
+                self.install(epoch, head, history).await;
+                promotion(PromoteOutcome::Converted, None)
+            }
+            Err(e) => transient(id, "converted, but the frame did not reload", e),
+        };
+        // The row is rewritten either way: clients reload, cached searches and admitted
+        // candidates are stale.
         self.context_changed(revision, "cell_nudge").await;
-        promotion(PromoteOutcome::Converted, None)
+        if let Ok(Some(agents)) = ActorRef::<Agents>::lookup(AGENT_ACTOR) {
+            let _ = agents
+                .tell(crate::supervisor::CellPromoted { session: id })
+                .await;
+        }
+        out
     }
 }
 
@@ -3146,17 +3178,20 @@ impl Message<TurnDone> for Session {
         }
         // 219 hook B: the planned nudge goes through the mailbox like an RPC's.
         if let Some(plan) = state.nudge_plan.take() {
-            let me = ctx.actor_ref().clone();
+            let me = ctx.actor_ref().downgrade();
             tokio::spawn(async move {
-                let _ = me
-                    .tell(PromoteFence {
-                        seq: Some(plan.seq),
-                        ordinal: plan.ordinal,
-                        body: None,
-                        auto: true,
-                        reason: plan.reason,
-                    })
-                    .await;
+                if let Some(me) = me.upgrade() {
+                    let _ = me
+                        .tell(PromoteFence {
+                            seq: Some(plan.seq),
+                            ordinal: plan.ordinal,
+                            body: None,
+                            auto: true,
+                            digest: Some(plan.digest),
+                            reason: plan.reason,
+                        })
+                        .await;
+                }
             });
         }
         self.state = Some(state);
@@ -7299,12 +7334,14 @@ impl Turn {
             return false;
         }
         let keys: CellsKeys = self.shared.rt.section("cells").unwrap_or_default();
-        keys.nudge && self.state.cell_nudges < keys.nudge_max && self.attended_chat().await
+        keys.nudge
+            && self.shared.nudges.lock().count() < keys.nudge_max
+            && self.attended_chat().await
     }
 
     /// 219 hook B: [`cell_nudge::detect`] on this turn's final reply; a fence it fires on,
-    /// tried for the first time this session, is counted and planned for the actor
-    /// ([`SessionState::nudge_plan`]), which runs the side call off the turn.
+    /// tried for the first time this session, is spent from [`Shared::nudges`] and planned
+    /// for the actor ([`SessionState::nudge_plan`]), which runs the side call off the turn.
     fn plan_nudge(&mut self) {
         let Some((seq, msg)) = self.state.history.last() else {
             return;
@@ -7324,14 +7361,21 @@ impl Turn {
         let Some(fence) = cell_nudge::pick(&text, ordinal, None) else {
             return;
         };
-        if !self.state.nudged.insert(surface::cell::digest(&fence.body)) {
+        let digest = surface::cell::digest(&fence.body);
+        let max = self
+            .shared
+            .rt
+            .section::<CellsKeys>("cells")
+            .unwrap_or_default()
+            .nudge_max;
+        if !self.shared.nudges.lock().take(&digest, max) {
             return;
         }
-        self.state.cell_nudges += 1;
         self.state.nudge_plan = Some(NudgePlan {
             seq,
             ordinal,
             reason,
+            digest,
         });
     }
 
@@ -11373,7 +11417,9 @@ mod tests {
         turn.input_text = "[spoken] reload alloy".into();
         assert!(!turn.nudge_wanted().await, "spoken");
         turn.input_text = "reload alloy on Admin".into();
-        turn.state.cell_nudges = 3;
+        for d in ["a", "b", "c"] {
+            assert!(turn.shared.nudges.lock().take(d, 3));
+        }
         assert!(!turn.nudge_wanted().await, "cap");
     }
 
@@ -11389,9 +11435,66 @@ mod tests {
         turn.plan_nudge();
         let plan = turn.state.nudge_plan.take().expect("planned");
         assert_eq!((plan.seq, plan.ordinal, plan.reason), (7, 0, "command"));
-        assert_eq!(turn.state.cell_nudges, 1);
+        assert_eq!(turn.shared.nudges.lock().count(), 1);
         turn.plan_nudge();
         assert!(turn.state.nudge_plan.is_none(), "same fence, not again");
+    }
+
+    /// 219 review: a promote asked while a turn runs is refused `stale` at once — no side
+    /// call; an idle one whose body matches no fence is `not_found`.
+    #[test]
+    fn cell_nudge_promote_is_stale_at_once_while_a_turn_runs() {
+        crate::with_test_registry(async {
+            use super::vision_fallback_tests::{Fake, Harness};
+            let scratch = crate::test_dir("cell-nudge-reg");
+            tools::registry::start(&Runtime::new(
+                figment::Figment::new(),
+                scratch.path().to_path_buf(),
+            ))
+            .await
+            .unwrap();
+            let mut h = Harness::new(Fake::harvest_held(Duration::ZERO)).await;
+            let reply = "Run this yourself:\n\n```bash\nsudo systemctl restart x\n```\n";
+            h.store.append(h.id, &ChatMessage::user("restart x")).await.unwrap();
+            let seq = h
+                .store
+                .append(h.id, &ChatMessage::assistant(reply))
+                .await
+                .unwrap();
+            let actor = h.actor("openai/textonly").await;
+            let promote = |body: &str| PromoteFence {
+                seq: Some(seq),
+                ordinal: 0,
+                body: Some(body.into()),
+                auto: false,
+                digest: None,
+                reason: "user",
+            };
+            let out = actor.ask(promote("pwd")).await.unwrap();
+            assert_eq!(out.outcome, PromoteOutcome::NotFound);
+            actor
+                .tell(UserInput {
+                    channel: None,
+                    id: None,
+                    text: "and now?".into(),
+                    files: Vec::new(),
+                    ticket: None,
+                    scope: None,
+                    defer: false,
+                })
+                .await
+                .unwrap();
+            let out = actor
+                .ask(promote("sudo systemctl restart x"))
+                .await
+                .unwrap();
+            assert_eq!(
+                (out.outcome, out.detail.as_deref()),
+                (PromoteOutcome::Stale, Some(BUSY))
+            );
+            h.drain_until(|e| matches!(e, AgentEvent::TurnFinished { .. }))
+                .await;
+        });
     }
 
     /// 171F3 R4: a reply whose pwsh cells no program on this engine would run gets one
