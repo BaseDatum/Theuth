@@ -12,6 +12,7 @@ pub mod config;
 pub mod fields;
 pub mod password;
 pub mod refs;
+pub mod send;
 mod sync;
 
 use std::collections::HashMap;
@@ -44,7 +45,7 @@ use bitwarden_vault::{
 use chrono::Utc;
 use secrets::external::{
     ConnStatus, DeleteMode, DeleteOutcome, ExtEntry, ExtError, ExtRef, ExtVersion, ExternalBackend,
-    ListPage, ListQuery, Location, Value,
+    ListPage, ListQuery, Location, LoginForm, Value,
 };
 use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
 use zeroize::Zeroizing;
@@ -132,7 +133,7 @@ struct Session {
 pub struct BwBackend {
     me: Weak<BwBackend>,
     conn: String,
-    cfg: BwConfig,
+    cfg: RwLock<BwConfig>,
     urls: Result<Urls, String>,
     status: RwLock<ConnStatus>,
     creds: Mutex<Creds>,
@@ -165,7 +166,7 @@ impl BwBackend {
         Arc::new_cyclic(|me| Self {
             me: me.clone(),
             conn: conn.into(),
-            cfg,
+            cfg: RwLock::new(cfg),
             urls,
             status: RwLock::new(status),
             creds: Mutex::new(Creds::default()),
@@ -177,8 +178,24 @@ impl BwBackend {
     }
 
     /// The connection's settings.
-    pub fn config(&self) -> &BwConfig {
-        &self.cfg
+    pub fn config(&self) -> BwConfig {
+        self.cfg
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Apply the connection's D20 settings (the trait's `apply_settings`).
+    pub fn set_settings(&self, s: &secrets::settings::ConnSettings) {
+        let mut c = self.cfg.write().unwrap_or_else(PoisonError::into_inner);
+        c.allow_permanent_delete = s.allow_permanent_delete;
+        c.lock_after_idle_secs = s.lock_after_idle_secs;
+        c.expose_password_history = s.expose_password_history;
+        c.expose_totp_seed = s.expose_totp_seed;
+        c.write_scope = match s.write_scope {
+            secrets::settings::WriteScope::Personal => WriteScope::Personal,
+            secrets::settings::WriteScope::PersonalAndOrg => WriteScope::PersonalAndOrg,
+        };
     }
 
     /// The web vault URL Send links are built on (§6.2), when the URLs are valid.
@@ -244,7 +261,7 @@ impl BwBackend {
     /// 2FA) and unlock with the master password. The KDF runs on a blocking thread. `Ready` on
     /// success; on failure the connection is left locked.
     pub async fn unlock(&self, password: Zeroizing<String>) -> Result<ConnStatus, ExtError> {
-        let r = match self.cfg.login {
+        let r = match self.config().login {
             LoginKind::ApiKey => self.open_api_key(password).await,
             LoginKind::Password => self.open_refresh(password).await,
         };
@@ -375,7 +392,7 @@ impl BwBackend {
     }
 
     async fn login_password_inner(&self, form: PasswordLogin) -> Result<LoginStep, ExtError> {
-        if self.cfg.login != LoginKind::Password {
+        if self.config().login != LoginKind::Password {
             return Err(ExtError::Unsupported(format!(
                 "bw/{} logs in with an API key",
                 self.conn
@@ -454,7 +471,7 @@ impl BwBackend {
             .refresh_token
             .clone()
             .ok_or(ExtError::LoggedOut)?;
-        let email = self.cfg.email.as_deref().map(salt).ok_or_else(|| {
+        let email = self.config().email.as_deref().map(salt).ok_or_else(|| {
             ExtError::Unsupported(format!("bw/{} has no email configured", self.conn))
         })?;
         let guard = self.fresh_slot().await;
@@ -635,7 +652,7 @@ impl BwBackend {
 
     /// A password connection's refresh token rotates on renewal; store the new one.
     async fn persist_rotated(&self, s: &Session) {
-        if self.cfg.login != LoginKind::Password {
+        if self.config().login != LoginKind::Password {
             return;
         }
         let Ok(Some(t)) = s
@@ -699,7 +716,7 @@ impl BwBackend {
     fn refresh_status(&self) {
         let logged_in = {
             let c = self.creds();
-            match self.cfg.login {
+            match self.config().login {
                 LoginKind::ApiKey => c.api_key.is_some(),
                 LoginKind::Password => c.refresh_token.is_some(),
             }
@@ -732,7 +749,7 @@ impl BwBackend {
     /// Record a use and (re)arm the idle lock.
     fn touch(&self) {
         *self.last_use.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
-        let idle = self.cfg.lock_after_idle_secs;
+        let idle = self.config().lock_after_idle_secs;
         if idle == 0 {
             return;
         }
@@ -763,7 +780,7 @@ impl BwBackend {
     }
 
     async fn timed<T>(&self, f: impl Future<Output = T>) -> Result<T, ExtError> {
-        tokio::time::timeout(Duration::from_secs(self.cfg.timeout_secs.max(1)), f)
+        tokio::time::timeout(Duration::from_secs(self.config().timeout_secs.max(1)), f)
             .await
             .map_err(|_| ExtError::Timeout)
     }
@@ -801,7 +818,7 @@ impl BwBackend {
     /// Sync when the last one is older than `sync_max_age_secs` (reads) or always (writes; the
     /// revision-date check keeps a no-change sync to one small request).
     async fn fresh(&self, s: &mut Session, write: bool) -> Result<(), ExtError> {
-        let max = Duration::from_secs(self.cfg.sync_max_age_secs);
+        let max = Duration::from_secs(self.config().sync_max_age_secs);
         if write || s.last_sync.is_none_or(|t| t.elapsed() > max) {
             self.sync(s, false).await?;
         }
@@ -839,7 +856,7 @@ impl BwBackend {
     }
 
     fn check_scope(&self, org: Option<OrganizationId>) -> Result<(), ExtError> {
-        if org.is_some() && self.cfg.write_scope == WriteScope::Personal {
+        if org.is_some() && self.config().write_scope == WriteScope::Personal {
             return Err(ExtError::Denied(format!(
                 "bw/{c} writes to the personal vault only; Settings › Secrets › {c} › write scope",
                 c = self.conn
@@ -1092,7 +1109,7 @@ impl ExternalBackend for BwBackend {
         let s = guard.as_mut().expect("ready() checked");
         self.fresh(s, false).await?;
         let v = self.live(s, id).await?;
-        let value = read_field(&v, key.as_ref(), r.back, &self.cfg, &self.conn, None)?;
+        let value = read_field(&v, key.as_ref(), r.back, &self.config(), &self.conn, None)?;
         Ok((value, version(v.revision_date)))
     }
 
@@ -1227,7 +1244,7 @@ impl ExternalBackend for BwBackend {
         expected: Option<&ExtVersion>,
     ) -> Result<DeleteOutcome, ExtError> {
         let id = cipher_id(r)?;
-        if mode == DeleteMode::Permanent && !self.cfg.allow_permanent_delete {
+        if mode == DeleteMode::Permanent && !self.config().allow_permanent_delete {
             return Err(ExtError::Denied(format!(
                 "permanent delete is off for bw/{c}; items go to the trash. Settings › Secrets › \
                  {c} › allow permanent delete",
@@ -1283,6 +1300,96 @@ impl ExternalBackend for BwBackend {
 
     async fn lock(&self) {
         self.lock_now().await;
+    }
+
+    async fn login(&self, form: LoginForm) -> Result<secrets::external::LoginStep, ExtError> {
+        use secrets::external::LoginStep as Step;
+        let kind = self.config().login;
+        match form {
+            LoginForm::ApiKey {
+                client_id,
+                client_secret,
+            } => {
+                if kind != LoginKind::ApiKey {
+                    return Err(ExtError::Unsupported(format!(
+                        "bw/{} logs in with email and master password",
+                        self.conn
+                    )));
+                }
+                self.set_api_key(ApiKey {
+                    client_id,
+                    client_secret: Zeroizing::new(client_secret),
+                })
+                .await;
+                Ok(Step::Done)
+            }
+            LoginForm::Password {
+                email,
+                password,
+                two_factor,
+                new_device_otp,
+            } => {
+                let two_factor = match two_factor {
+                    None => None,
+                    Some((p, code)) => Some((
+                        match p.as_str() {
+                            "authenticator" => TwoFactorKind::Authenticator,
+                            "email" => TwoFactorKind::Email,
+                            "yubikey" => TwoFactorKind::YubiKey,
+                            p => {
+                                return Err(ExtError::Unsupported(format!(
+                                    "second factor {p:?}: authenticator, email or yubikey"
+                                )));
+                            }
+                        },
+                        Zeroizing::new(code),
+                    )),
+                };
+                let step = self
+                    .login_password(PasswordLogin {
+                        email,
+                        password: Zeroizing::new(password),
+                        two_factor,
+                        new_device_otp: new_device_otp.map(Zeroizing::new),
+                    })
+                    .await?;
+                Ok(match step {
+                    LoginStep::Done => Step::Done,
+                    LoginStep::NeedNewDeviceOtp => Step::NeedNewDeviceOtp,
+                    LoginStep::NeedTwoFactor { providers } => Step::NeedTwoFactor {
+                        providers: providers
+                            .into_iter()
+                            .map(|k| {
+                                match k {
+                                    TwoFactorKind::Authenticator => "authenticator",
+                                    TwoFactorKind::Email => "email",
+                                    TwoFactorKind::YubiKey => "yubikey",
+                                }
+                                .to_owned()
+                            })
+                            .collect(),
+                    },
+                })
+            }
+        }
+    }
+
+    async fn unlock(&self, password: Zeroizing<String>) -> Result<ConnStatus, ExtError> {
+        BwBackend::unlock(self, password).await
+    }
+
+    async fn logout(&self) {
+        BwBackend::logout(self).await;
+    }
+
+    fn apply_settings(&self, settings: &secrets::settings::ConnSettings) {
+        self.set_settings(settings);
+    }
+
+    fn sender(&self) -> Option<Arc<dyn secrets::tools_send::SendBackend>> {
+        self.me
+            .upgrade()
+            .map(|b| b as Arc<dyn secrets::tools_send::SendBackend>)
     }
 }
 

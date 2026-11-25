@@ -24,7 +24,7 @@ use tools::{PreviewCx, RegisterTool, Risk, Tool, ToolCx, ToolOutput, ToolRegistr
 use zeroize::Zeroizing;
 
 use crate::connections::Audit;
-use crate::external::{ExtError, ExtRef, ExternalBackend};
+use crate::external::{ExtError, ExtRef};
 use crate::tools_external::ExtCx;
 use crate::{Request, SecretRequestField};
 
@@ -147,16 +147,23 @@ pub struct SendCx {
     plans: Arc<Mutex<HashMap<(SessionId, String), Plan>>>,
     /// `secrets.request_timeout_secs`, for the password card.
     pub request_timeout: Duration,
+    /// `artifact:<id>` lookups; `None` = artifact sources are refused.
+    pub artifacts: Option<Arc<dyn ArtifactSource>>,
 }
 
 impl SendCx {
     /// A context; `owner_only` starts on (the default).
-    pub fn new(ext: ExtCx, request_timeout: Duration) -> Self {
+    pub fn new(
+        ext: ExtCx,
+        request_timeout: Duration,
+        artifacts: Option<Arc<dyn ArtifactSource>>,
+    ) -> Self {
         Self {
             ext,
             owner_only: Arc::new(AtomicBool::new(true)),
             plans: Arc::default(),
             request_timeout,
+            artifacts,
         }
     }
 
@@ -217,7 +224,7 @@ pub async fn register(reg: &ActorRef<ToolRegistry>, cx: SendCx) {
 }
 
 /// Where the access password comes from.
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum SendPassword {
     /// A local vault secret's current value.
@@ -539,7 +546,8 @@ impl SendCx {
             )
         };
         if let Some(id) = f.strip_prefix("artifact:") {
-            let art = artifact(id)
+            let art = self
+                .artifact(id)
                 .await
                 .ok_or_else(|| format!("artifact {id} not found in this session's tree"))?;
             if art.bytes > max_bytes {
@@ -744,37 +752,48 @@ impl SendCx {
                     .vault
                     .get(&name, 0)
                     .ok_or("the Send password was not stored")?;
+                // Re-store under the Send source so `secret_delete` refuses it like the link.
+                self.ext
+                    .vault
+                    .set_expiring(
+                        &name,
+                        &v,
+                        Some(&format!("password of the Send {}", plan.link_name)),
+                        SEND_SOURCE,
+                        Some(plan.deletion.timestamp_millis().max(0) as u64),
+                    )
+                    .await
+                    .map_err(|e| format!("the Send password was not stored: {e}"))?;
                 Ok(Some((v, Some(name))))
             }
         }
     }
 }
 
-/// An artifact of the calling session's tree (the session and its descendants).
-struct ArtifactRef {
-    name: String,
-    path: String,
-    bytes: u64,
+/// An artifact a Send may carry: its name, blob path and size.
+pub struct ArtifactRef {
+    /// `report.pdf`.
+    pub name: String,
+    /// The blob on this engine.
+    pub path: String,
+    /// Blob size.
+    pub bytes: u64,
 }
 
-async fn artifact(id: &str) -> Option<ArtifactRef> {
-    let session = CURRENT_SESSION.try_with(|s| *s).ok()?;
-    let art = kameo::actor::ActorRef::<artifact::ArtifactActor>::lookup(artifact::ARTIFACT_ACTOR)
-        .ok()
-        .flatten()?;
-    art.ask(artifact::List {
-        session: Some(session),
-        descendants: true,
-    })
-    .await
-    .ok()?
-    .into_iter()
-    .find(|x| x.id == id)
-    .map(|x| ArtifactRef {
-        name: x.name,
-        path: x.path.to_string_lossy().into_owned(),
-        bytes: x.bytes,
-    })
+/// `artifact:<id>` sources (§12.3). `secrets` cannot depend on `artifact` (cycle through
+/// `agent`), so the engine supplies the lookup: `ARTIFACT_ACTOR` `List { session, descendants:
+/// true }` from the root of `session`'s tree, matched on `id`.
+#[async_trait::async_trait]
+pub trait ArtifactSource: Send + Sync {
+    /// The artifact `id` of `session`'s tree, or `None`.
+    async fn find(&self, session: SessionId, id: &str) -> Option<ArtifactRef>;
+}
+
+impl SendCx {
+    async fn artifact(&self, id: &str) -> Option<ArtifactRef> {
+        let session = CURRENT_SESSION.try_with(|s| *s).ok()?;
+        self.artifacts.as_ref()?.find(session, id).await
+    }
 }
 
 tokio::task_local! {
@@ -874,7 +893,7 @@ impl Tool for SendCreateTool {
             },
         };
         Ok(match self.0.create(&plan, cx.session, &cx.call_id).await {
-            Ok(text) => ToolOutput::ok(text),
+            Ok((_, text)) => ToolOutput::ok(text),
             Err(e) => ToolOutput::err(e),
         })
     }
@@ -886,7 +905,7 @@ impl SendCx {
         plan: &Plan,
         session: SessionId,
         call_id: &str,
-    ) -> Result<String, String> {
+    ) -> Result<(SendRecord, String), String> {
         let cx_ = self;
         let content = cx_.content(plan).await?;
         let (file_bytes, kind) = match &content {
@@ -1024,25 +1043,107 @@ impl SendCx {
                 local_time(plan.deletion)
             )
         };
-        Ok(format!(
+        let receipt = format!(
             "created {what}: expires {}, {opens}{password_line}, email {}; {link}",
             local_time(plan.expiration),
             if plan.hide_email { "hidden" } else { "shown" },
-        ))
+        );
+        let record = SendRecord {
+            id,
+            conn: plan.conn.clone(),
+            kind: kind.to_owned(),
+            name: plan.name.clone(),
+            file_name: plan.file_name.clone(),
+            file_bytes: file_bytes.map(|b| b as i64),
+            source_ref: plan.source_text.clone(),
+            link_secret,
+            created_ms: now_ms,
+            expiration_ms: Some(plan.expiration.timestamp_millis()),
+            deletion_ms: deletion_ms as i64,
+            access_count: 0,
+            max_access: Some(plan.max_access as i64),
+            has_password: plan.password.is_some(),
+            status: SendStatus::Active,
+        };
+        Ok((record, receipt))
     }
 }
 
 /// The owner's Send dialog (`create_send` RPC): the user is the actor, so there is no card. Same
-/// resolution and receipt as the tool; `session` is the owner console's (artifact scope, the
-/// password card), `call_id` names the request in the record.
+/// resolution as the tool; `session` is the owner console's (artifact scope, the password card),
+/// `call_id` names the request in the record. Returns the new record and the receipt text.
 pub async fn create_send(
     cx: &SendCx,
     args: SendCreateArgs,
     session: SessionId,
     call_id: &str,
-) -> Result<String, String> {
+) -> Result<(SendRecord, String), String> {
     let plan = CURRENT_SESSION.scope(session, cx.plan(&args)).await?;
     cx.create(&plan, session, call_id).await
+}
+
+/// A Send's state, as the Secrets page shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SendStatus {
+    /// Open-able.
+    Active,
+    /// Past its expiry.
+    Expired,
+    /// Opened `max_access` times.
+    UsedUp,
+    /// Revoked by theuth.
+    Revoked,
+    /// Gone on Bitwarden (deletion date, or deleted elsewhere).
+    DeletedByBitwarden,
+}
+
+impl SendStatus {
+    fn text(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Expired => "expired",
+            Self::UsedUp => "used up",
+            Self::Revoked => "revoked",
+            Self::DeletedByBitwarden => "deleted by Bitwarden",
+        }
+    }
+}
+
+/// One `external_sends` row with its live counts (§12.4); never the link
+/// (`crates/desktop/ui/src/components/library/secrets/types.ts` `SendRecord`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SendRecord {
+    /// Row id.
+    pub id: String,
+    /// Connection.
+    pub conn: String,
+    /// `text` | `file`.
+    pub kind: String,
+    /// Shown to the recipient.
+    pub name: String,
+    /// File name of a file Send.
+    pub file_name: Option<String>,
+    /// File size.
+    pub file_bytes: Option<i64>,
+    /// The source reference (vault name, `bw/…`, `aws/…`, path, `artifact:…`).
+    pub source_ref: String,
+    /// The vault name of the link (`None` with `send_link_to_agent`).
+    pub link_secret: Option<String>,
+    /// Unix ms.
+    pub created_ms: i64,
+    /// Unix ms.
+    pub expiration_ms: Option<i64>,
+    /// Unix ms.
+    pub deletion_ms: i64,
+    /// Times opened (after the last sync; 0 when unknown).
+    pub access_count: u32,
+    /// Opening limit.
+    pub max_access: Option<i64>,
+    /// Has an access password.
+    pub has_password: bool,
+    /// State.
+    pub status: SendStatus,
 }
 
 /// `secret_send_list` args.
@@ -1056,6 +1157,7 @@ pub struct SendListArgs {
 /// One row of `external_sends`.
 #[derive(sqlx::FromRow)]
 struct Row {
+    id: String,
     conn: String,
     send_id: String,
     kind: String,
@@ -1073,12 +1175,121 @@ struct Row {
     revoked_ms: Option<i64>,
 }
 
-const ROW_COLS: &str = "conn, send_id, kind, name, file_name, file_bytes, source_ref, link_secret, \
-                        link_meta, password_secret, created_ms, expiration_ms, deletion_ms, \
-                        max_access, revoked_ms";
+const ROW_COLS: &str = "id, conn, send_id, kind, name, file_name, file_bytes, source_ref, \
+                        link_secret, link_meta, password_secret, created_ms, expiration_ms, \
+                        deletion_ms, max_access, revoked_ms";
 
 fn ms_time(ms: i64) -> String {
     DateTime::from_timestamp_millis(ms).map_or_else(|| ms.to_string(), local_time)
+}
+
+/// `known` = the connection's live Send list was read (so absence means deleted).
+fn status_of(r: &Row, info: Option<&SendInfo>, known: bool, now: i64) -> SendStatus {
+    if r.revoked_ms.is_some() {
+        SendStatus::Revoked
+    } else if r.deletion_ms <= now || (known && info.is_none()) {
+        SendStatus::DeletedByBitwarden
+    } else if info.is_some_and(|i| i.max_access_count.is_some_and(|m| i.access_count >= m)) {
+        SendStatus::UsedUp
+    } else if r.expiration_ms.is_some_and(|e| e <= now) {
+        SendStatus::Expired
+    } else {
+        SendStatus::Active
+    }
+}
+
+/// The records of `conn` (or every connection), newest first, with live counts, plus the
+/// lines about Sends made elsewhere (`manage_all_sends`) and unreadable connections.
+async fn gather(cx: &SendCx, conn: Option<&str>) -> Result<(Vec<SendRecord>, Vec<String>), String> {
+    let rows: Vec<Row> = match conn {
+        Some(c) => {
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT {ROW_COLS} FROM external_sends WHERE conn = ? ORDER BY created_ms DESC"
+            )))
+            .bind(c)
+            .fetch_all(cx.pool())
+            .await
+        }
+        None => {
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT {ROW_COLS} FROM external_sends ORDER BY created_ms DESC"
+            )))
+            .fetch_all(cx.pool())
+            .await
+        }
+    }
+    .map_err(|e| format!("external_sends: {e}"))?;
+    let mut conns: Vec<String> = rows.iter().map(|r| r.conn.clone()).collect();
+    conns.extend(conn.map(str::to_owned));
+    conns.sort();
+    conns.dedup();
+    let mut live: HashMap<String, SendInfo> = HashMap::new();
+    let mut known: Vec<String> = Vec::new();
+    let mut lines = Vec::new();
+    for c in &conns {
+        let settings = cx.conn_settings(c).await.unwrap_or_default();
+        let list = match cx.sender(c).await {
+            Ok(s) => s.list_sends().await.map_err(|e| e.to_string()),
+            Err(e) => Err(e),
+        };
+        let list = match list {
+            Ok(l) => l,
+            Err(e) => {
+                lines.push(format!("bw/{c}: Sends not readable now ({e})"));
+                continue;
+            }
+        };
+        known.push(c.clone());
+        for i in list {
+            let ours = rows.iter().any(|r| &r.conn == c && r.send_id == i.send_id);
+            if settings.manage_all_sends && !ours {
+                lines.push(format!(
+                    "{} · bw/{c} · made elsewhere · {} · opened {}/{} · password {} · deleted {}",
+                    i.send_id,
+                    i.file_name
+                        .as_deref()
+                        .map_or_else(|| i.kind.clone(), |f| format!("file {f}")),
+                    i.access_count,
+                    i.max_access_count.map_or("∞".into(), |m| m.to_string()),
+                    if i.has_password { "yes" } else { "no" },
+                    i.deletion_date,
+                ));
+            }
+            live.insert(i.send_id.clone(), i);
+        }
+    }
+    let now = Utc::now().timestamp_millis();
+    let records = rows
+        .into_iter()
+        .map(|r| {
+            let info = live.get(&r.send_id);
+            let status = status_of(&r, info, known.contains(&r.conn), now);
+            SendRecord {
+                access_count: info.map_or(0, |i| i.access_count),
+                has_password: r.password_secret.is_some() || info.is_some_and(|i| i.has_password),
+                status,
+                id: r.id,
+                conn: r.conn,
+                kind: r.kind,
+                name: r.name,
+                file_name: r.file_name,
+                file_bytes: r.file_bytes,
+                source_ref: r.source_ref,
+                link_secret: r.link_secret,
+                created_ms: r.created_ms,
+                expiration_ms: r.expiration_ms,
+                deletion_ms: r.deletion_ms,
+                max_access: r.max_access,
+            }
+        })
+        .collect();
+    Ok((records, lines))
+}
+
+/// The Secrets page's Sends tab (`list_sends` RPC): the Sends theuth made on `conn` (or every
+/// connection), newest first, with live counts. Never a link.
+pub async fn list_records(cx: &SendCx, conn: Option<&str>) -> Result<Vec<SendRecord>, String> {
+    gather(cx, conn).await.map(|(r, _)| r)
 }
 
 /// The `secret_send_list` tool.
@@ -1098,84 +1309,14 @@ impl Tool for SendListTool {
     }
 
     async fn call(&self, a: SendListArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
-        let rows: Vec<Row> =
-            match &a.connection {
-                Some(c) => sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                    "SELECT {ROW_COLS} FROM external_sends WHERE conn = ? ORDER BY created_ms DESC"
-                )))
-                .bind(c)
-                .fetch_all(self.0.pool())
-                .await?,
-                None => {
-                    sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                        "SELECT {ROW_COLS} FROM external_sends ORDER BY created_ms DESC"
-                    )))
-                    .fetch_all(self.0.pool())
-                    .await?
-                }
-            };
-        let mut conns: Vec<String> = rows.iter().map(|r| r.conn.clone()).collect();
-        if let Some(c) = &a.connection
-            && !conns.contains(c)
-        {
-            conns.push(c.clone());
-        }
-        conns.sort();
-        conns.dedup();
-        let mut live: HashMap<String, SendInfo> = HashMap::new();
-        let mut lines = Vec::new();
-        for c in &conns {
-            let settings = self.0.conn_settings(c).await.unwrap_or_default();
-            match self.0.sender(c).await {
-                Ok(s) => match s.list_sends().await {
-                    Ok(list) => {
-                        let ours: Vec<&str> = rows
-                            .iter()
-                            .filter(|r| &r.conn == c)
-                            .map(|r| r.send_id.as_str())
-                            .collect();
-                        for i in list {
-                            if settings.manage_all_sends && !ours.contains(&i.send_id.as_str()) {
-                                lines.push(format!(
-                                    "{} · bw/{c} · made elsewhere · {} · opened {}/{} · password {} · deleted {}",
-                                    i.send_id,
-                                    i.file_name.as_deref().map_or_else(|| i.kind.clone(), |f| format!("file {f}")),
-                                    i.access_count,
-                                    i.max_access_count.map_or("∞".into(), |m| m.to_string()),
-                                    if i.has_password { "yes" } else { "no" },
-                                    i.deletion_date,
-                                ));
-                            }
-                            live.insert(i.send_id.clone(), i);
-                        }
-                    }
-                    Err(e) => lines.push(format!("bw/{c}: Sends not readable now ({e})")),
-                },
-                Err(e) => lines.push(format!("bw/{c}: {e}")),
-            }
-        }
-        let now = Utc::now().timestamp_millis();
-        for r in &rows {
-            let info = live.get(&r.send_id);
-            let status = if r.revoked_ms.is_some() {
-                "revoked"
-            } else if r.deletion_ms <= now || (info.is_none() && !live.is_empty()) {
-                "deleted by Bitwarden"
-            } else if info.is_some_and(|i| i.max_access_count.is_some_and(|m| i.access_count >= m))
-            {
-                "used up"
-            } else if r.expiration_ms.is_some_and(|e| e <= now) {
-                "expired"
-            } else {
-                "active"
-            };
-            let label = r
-                .link_secret
-                .clone()
-                .or_else(|| r.link_meta.as_ref().map(|_| r.send_id.clone()))
-                .unwrap_or_else(|| r.send_id.clone());
+        let (records, mut lines) = match gather(&self.0, a.connection.as_deref()).await {
+            Ok(x) => x,
+            Err(e) => return Ok(ToolOutput::err(e)),
+        };
+        for r in &records {
             lines.push(format!(
-                "{label} · bw/{} · {} · {} · from {} · created {} · expires {} · deleted {} · opened {}/{} · password {} · {status}",
+                "{} · bw/{} · {} · {} · from {} · created {} · expires {} · deleted {} · opened {}/{} · password {} · {}",
+                r.link_secret.clone().unwrap_or_else(|| r.id.clone()),
                 r.conn,
                 r.name,
                 match &r.file_name {
@@ -1187,9 +1328,10 @@ impl Tool for SendListTool {
                 ms_time(r.created_ms),
                 r.expiration_ms.map_or("-".into(), ms_time),
                 ms_time(r.deletion_ms),
-                info.map_or("?".into(), |i| i.access_count.to_string()),
+                r.access_count,
                 r.max_access.map_or("∞".into(), |m| m.to_string()),
-                if r.password_secret.is_some() || info.is_some_and(|i| i.has_password) { "yes" } else { "no" },
+                if r.has_password { "yes" } else { "no" },
+                r.status.text(),
             ));
         }
         if lines.is_empty() {
