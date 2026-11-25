@@ -44,6 +44,8 @@ mod quit;
 mod update;
 #[cfg(desktop)]
 mod share;
+#[cfg(desktop)]
+mod sso;
 #[cfg(any(desktop, target_os = "ios"))]
 mod web_rules;
 #[cfg(desktop)]
@@ -289,7 +291,7 @@ mod desktop {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
     use tauri::{AppHandle, Builder, Emitter, Manager, WebviewWindow, WindowEvent, Wry};
 
-    use crate::{commands, companion, island, launch, models, point, quit, update};
+    use crate::{commands, companion, island, launch, models, point, quit, sso, update};
 
     /// 166 R1: argv of the login item's launch (all desktops write it; only macOS reads it, `dock::launch`).
     pub(crate) const AUTOSTART_ARG: &str = "--autostart";
@@ -369,6 +371,7 @@ mod desktop {
             .manage(update::Pending::default())
             .manage(quit::Quit::default())
             .manage(Flags::default())
+            .manage(sso::Sso::default())
             .manage(crate::webview::Views::default())
             // 205 §5: Tauri's `asset` handler, minus `web-*` webviews (`asset.rs`).
             .register_asynchronous_uri_scheme_protocol(crate::asset::SCHEME, crate::asset::handler);
@@ -396,6 +399,9 @@ mod desktop {
             commands::legal_text,
             commands::pasteboard_change_count,
             commands::pasteboard_clear_if,
+            sso::sso_listen,
+            sso::sso_wait,
+            sso::sso_cancel,
             update::check_update,
             update::install_update,
             island::set_hidden_from_capture,
