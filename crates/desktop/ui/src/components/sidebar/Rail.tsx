@@ -32,6 +32,26 @@ export const RAIL_ITEM = cn(
 )
 
 /**
+ * One corner accent, 12 px, centered on the icon's top-right. Parent is the icon box
+ * (`relative inline-flex`), not the rail button — the button grows under a finger and the
+ * icon stays 18 px. The sidebar ring is a gap, not part of the mark. A count uses
+ * {@link ICON_COUNT} (same height, width may grow). The note plus uses {@link ICON_PLUS}:
+ * Lucide's plus only spans 14/24 of its box, so a 20 px glyph puts the arm tips on this
+ * same 12 px.
+ */
+export const ICON_MARK = 'pointer-events-none absolute -top-1.5 -right-1.5 size-3 rounded-full ring-2 ring-sidebar'
+
+/** The same mark, on the icon's bottom-right (a plugin dot sharing the corner with a count). */
+export const ICON_MARK_BOTTOM = 'pointer-events-none absolute -right-1.5 -bottom-1.5 size-3 rounded-full ring-2 ring-sidebar'
+
+/** {@link ICON_MARK} for a digit: height stays 12 px, width grows past one digit. */
+export const ICON_COUNT =
+  'pointer-events-none absolute -top-1.5 -right-1.5 ml-0 flex h-3 min-w-3 items-center justify-center rounded-full px-0.5 text-center text-[10px] leading-none font-semibold tabular-nums ring-2 ring-sidebar'
+
+/** The note plus, arm tips spanning the same 12 px as {@link ICON_MARK}. See the comment there. */
+export const ICON_PLUS = 'pointer-events-none absolute -top-2.5 -right-2.5 size-5'
+
+/**
  * Puts the rail's scrolling middle back in view and has WebKit rebuild its scroll layer. The rail mounts while the
  * sidebar container is still animating its width down to the rail's; on iPadOS that left the middle (Chat … the
  * section icons) blank between the header and Settings. Undoes any sideways scroll (overflow-x is hidden but still
@@ -479,7 +499,7 @@ const sectionIcon = (s: RailSection, size: string) =>
 function SectionDot({ section, subs, running }: { section: RailSection; subs: ReadonlyMap<string, readonly SessionSummary[]>; running: boolean }) {
   const sub = useSessions((st) => section.items.some(({ session }) => runningKey(session.id, subs.get(session.id), st.sessions) !== ''))
   if (!running && !sub) return null
-  return <span className="absolute top-1.5 right-1.5 size-2 rounded-full bg-success ring-2 ring-sidebar" aria-label="running" />
+  return <span className={cn(ICON_MARK, 'bg-success')} aria-label="running" />
 }
 
 /** The newest of `ids` by `updated_at` among `sessions`; `undefined` when none is listed. */
@@ -574,10 +594,10 @@ export function RailSections({ active }: { active: string | undefined }) {
             active={here !== undefined && s.items.some((i) => i.session.id === here)}
             go={s.kind === 'active' ? workspace : undefined}
             icon={
-              <>
+              <span className="relative inline-flex">
                 {sectionIcon(s, 'size-[18px]')}
                 <SectionDot section={s} subs={subs} running={s.kind === 'active' && activeSet.size > 0} />
-              </>
+              </span>
             }
           >
             <PopHeader

@@ -5,7 +5,7 @@
 // The context menu hides a placement (`plugin_set_hidden`).
 import { Ellipsis, EyeOff } from 'lucide-react'
 import { Fragment, type MouseEvent, type ReactNode, useState } from 'react'
-import { RAIL_ITEM } from '@/components/sidebar/Rail'
+import { ICON_COUNT, ICON_MARK, ICON_MARK_BOTTOM, RAIL_ITEM } from '@/components/sidebar/Rail'
 import { openPluginTile } from '@/components/tiles/open'
 import {
   DropdownMenu,
@@ -107,11 +107,11 @@ function Marks({ dot, badge }: { dot: Dot; badge: string | null }) {
   return (
     <>
       {badge !== null && (
-        <span className="absolute -top-0.5 -right-0.5 h-4 min-w-4 rounded-full bg-warning px-1 text-center text-[10px] leading-4 font-semibold tabular-nums text-primary-foreground ring-2 ring-sidebar">
+        <span className={cn(ICON_COUNT, 'bg-warning text-primary-foreground')}>
           {badge}
         </span>
       )}
-      <PluginDot dot={dot} className={cn('absolute size-2 ring-2 ring-sidebar', badge === null ? 'top-1.5 right-1.5' : 'right-1.5 bottom-1.5')} />
+      <PluginDot dot={dot} className={badge === null ? ICON_MARK : ICON_MARK_BOTTOM} />
     </>
   )
 }
@@ -142,8 +142,10 @@ function Item({ entry, variant, open, onOpenChange }: { entry: PlacementEntry; v
         <PlacementHost plugin={plugin.name} placement={surfaceOf(entry)} open={open} onOpenChange={onOpenChange}>
           <TooltipTrigger asChild>
             <button type="button" className={variant === 'rail' ? RAIL_ITEM : ROW_ITEM} aria-label={placement.label} data-plugin={plugin.name} onClick={click}>
-              <PluginIcon icon={placement.icon} />
-              <Marks dot={entryDot(entry)} badge={badgeText(entry.status?.badge)} />
+              <span className="relative inline-flex">
+                <PluginIcon icon={placement.icon} />
+                <Marks dot={entryDot(entry)} badge={badgeText(entry.status?.badge)} />
+              </span>
             </button>
           </TooltipTrigger>
         </PlacementHost>
@@ -183,8 +185,10 @@ function Overflow({
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button type="button" className={variant === 'rail' ? RAIL_ITEM : ROW_ITEM} aria-label={label} data-plugin-overflow="">
-            <Ellipsis />
-            <PluginDot dot={overflowDot(entries)} className="absolute top-1.5 right-1.5 size-2 ring-2 ring-sidebar" />
+            <span className="relative inline-flex">
+              <Ellipsis />
+              <PluginDot dot={overflowDot(entries)} className={ICON_MARK} />
+            </span>
           </button>
         </DropdownMenuTrigger>
         {/* The picked popover hangs from this button: focus must not come back to it and close that popover. */}
