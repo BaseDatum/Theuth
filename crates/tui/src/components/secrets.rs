@@ -7,7 +7,7 @@ use zeroize::Zeroizing;
 use rpc_compose::api::clients::*;
 use iocraft::prelude::{element, View as BoxView, Text, BorderStyle, FlexDirection, Weight, TextWrap};
 use ::secrets::connections::{AskInfo, BwLogin, BwServer, ConnConfig, ConnInfo, DestinationView};
-use ::secrets::external::{ConnStatus, DeleteMode, ExtEntry, ListPage, ListQuery, LoginForm, LoginStep, UnlockRequestView};
+use ::secrets::external::{ConnStatus, DeleteMode, ExtEntry, ListPage, ListQuery, LoginForm, LoginStep, SsoBegin, UnlockRequestView};
 use ::secrets::tools_send::SendRecord;
 use crate::model::{now_ms, when};
 use crate::ui::{FAIENCE, BONE_DIM};
@@ -38,6 +38,8 @@ pub struct Secrets {
     sending: usize,
     /// The unlock cards held when `list_unlock_requests` was sent; only these can be stale.
     reseed: Vec<::secrets::RequestId>,
+    /// §9.6: an SSO login waiting on its second factor (the pasted code is sent again).
+    sso: Option<PendingSso>,
 }
 // No Debug: `values` holds what the user typed until its one RPC submission.
 pub(crate) struct SecretRequest {
@@ -89,6 +91,11 @@ impl PendingLogin {
             new_device_otp,
         }
     }
+}
+// No Debug: the pasted redirect address carries a one-time code.
+struct PendingSso {
+    state: String,
+    code: Zeroizing<String>,
 }
 pub(crate) enum Menu {
     /// Connection rows first, then the local vault; `cursor` spans both.
@@ -258,6 +265,10 @@ pub(crate) enum Prompt {
     TwoFactorProvider { conn: String, providers: Vec<String> },
     TwoFactorCode { conn: String, provider: String },
     NewDeviceOtp { conn: String },
+    /// §9.6: the organisation's SSO identifier (`server` is set while adding).
+    SsoOrg { conn: String, server: Option<(BwServer, Option<String>)>, email: String },
+    /// §9.6: the address the browser landed on (it carries the one-time code).
+    SsoPaste { conn: String, state: String },
     /// A locked connection's master password.
     Unlock { conn: String, account: String },
     /// The local name an external value is imported under.
@@ -287,7 +298,10 @@ impl Prompt {
             Self::AwsPrefix { conn, .. } => format!("connect aws/{conn}  name prefix to browse  (⏎ all; esc cancel)"),
             Self::BwServer { conn } => format!("connect bw/{conn}  server  us · eu · https://vault.example.org  (http:// only for localhost; esc cancel)"),
             Self::BwEmail { conn, .. } => format!("connect bw/{conn}  account email  (esc cancel)"),
-            Self::BwMethod { conn, .. } => format!("login bw/{conn}  api_key (recommended) · password  (⏎ api_key; esc cancel)"),
+            Self::BwMethod { conn, .. } => format!("login bw/{conn}  api_key (recommended) · password · sso  (⏎ api_key; Organisation requires SSO? choose sso or api key; esc cancel)"),
+            Self::SsoOrg { conn, server: Some(_), .. } => format!("login bw/{conn}  SSO organisation identifier  (⏎ none, as on Vaultwarden; esc cancel)"),
+            Self::SsoOrg { conn, server: None, .. } => format!("login bw/{conn}  SSO organisation identifier  (⏎ the saved one; esc cancel)"),
+            Self::SsoPaste { conn, .. } => format!("login bw/{conn}  {SSO_HOWTO}  (esc cancel)"),
             Self::ClientId { conn } => format!("login bw/{conn}  client_id  (Account settings › Security › Keys; esc cancel)"),
             Self::ClientSecret { conn, .. } => format!("login bw/{conn}  client_secret  (esc cancel)"),
             Self::MasterLogin { conn, email } => format!("login bw/{conn} ({email})  master password  (esc cancel)"),
@@ -305,15 +319,17 @@ impl Prompt {
         }
     }
     pub(crate) fn masked(&self) -> bool {
-        matches!(self, Self::Value { .. } | Self::ClientSecret { .. } | Self::MasterLogin { .. } | Self::TwoFactorCode { .. } | Self::NewDeviceOtp { .. } | Self::Unlock { .. })
+        matches!(self, Self::Value { .. } | Self::ClientSecret { .. } | Self::MasterLogin { .. } | Self::TwoFactorCode { .. } | Self::NewDeviceOtp { .. } | Self::SsoPaste { .. } | Self::Unlock { .. })
     }
     fn submit_empty(&self) -> bool {
         match self {
             Self::Send(_, step) => *step != SendStep::Conn,
-            _ => matches!(self, Self::Note { .. } | Self::AwsProfile { .. } | Self::AwsKms { .. } | Self::AwsPrefix { .. } | Self::BwMethod { .. } | Self::RefField { .. }),
+            _ => matches!(self, Self::Note { .. } | Self::AwsProfile { .. } | Self::AwsKms { .. } | Self::AwsPrefix { .. } | Self::BwMethod { .. } | Self::SsoOrg { .. } | Self::RefField { .. }),
         }
     }
 }
+/// §9.6: what the TUI user does with the authorize URL.
+const SSO_HOWTO: &str = "Open this in your browser and sign in. The last page won't load; copy its address and paste it here.";
 /// RPC input; deliberately opaque to Debug because set/answer/login/unlock carry raw values.
 #[derive(Clone)]
 pub enum Request {
@@ -446,6 +462,24 @@ pub enum Request {
     },
     /// The unlock cards waiting on the engine (§9.4), to reseed them on (re)connect.
     ListUnlocks,
+    /// §9.6: start an SSO login; the authorize URL is shown and copied (OSC 52).
+    SsoBegin {
+        /// Connection name.
+        conn: String,
+        /// `None` = the saved identifier.
+        org_identifier: Option<String>,
+    },
+    /// §9.6: finish it with the pasted redirect address (or bare code).
+    SsoComplete {
+        /// Connection name.
+        conn: String,
+        /// From `SsoBegin`.
+        state: String,
+        /// The pasted line, never printed.
+        code: Zeroizing<String>,
+        /// `(provider, code)` on the second round.
+        two_factor: Option<(String, Zeroizing<String>)>,
+    },
     /// §12.5: create a Send from the owner's prompts.
     CreateSend {
         /// Bitwarden connection.
@@ -503,6 +537,15 @@ pub enum Msg {
     SendCreated(Result<SendRecord, String>),
     /// The engine's waiting unlock cards.
     Unlocks(Result<Vec<UnlockRequestView>, String>),
+    /// §9.6: an SSO login started; `copied` = the URL went to the clipboard.
+    SsoBegun {
+        /// Connection name.
+        conn: String,
+        /// The engine's answer.
+        begin: Result<SsoBegin, String>,
+        /// OSC 52 written.
+        copied: bool,
+    },
 }
 /// `prod · aws · ready` status words (221 §9.1).
 fn status_word(s: &ConnStatus) -> String {
@@ -665,6 +708,20 @@ impl Secrets {
                 }.await),
                 Request::CreateSend { conn, args } => Msg::SendCreated(api.create_send(conn, args).await.map_err(crate::reason)),
                 Request::ListUnlocks => Msg::Unlocks(api.list_unlock_requests().await.map_err(crate::reason)),
+                Request::SsoBegin { conn, org_identifier } => {
+                    let begin = api.connection_sso_begin(conn.clone(), org_identifier, None).await.map_err(crate::reason);
+                    let copied = begin.as_ref().is_ok_and(|b| osc52(&b.authorize_url).is_ok());
+                    Msg::SsoBegun { conn, begin, copied }
+                }
+                Request::SsoComplete { conn, state, code, two_factor } => {
+                    let two_factor = two_factor.map(|(p, c)| (p, c.to_string()));
+                    let step = api.connection_sso_complete(conn.clone(), state, code.to_string(), two_factor).await.map_err(crate::reason);
+                    let connections = match step {
+                        Ok(LoginStep::Done) => api.list_secret_connections().await.ok(),
+                        _ => None,
+                    };
+                    Msg::LoggedIn { conn, step, connections }
+                }
             }
         });
     }
@@ -806,7 +863,7 @@ impl Secrets {
             return;
         }
         if self.prompt.is_some() {
-            if code == KeyCode::Esc { self.prompt = None; self.login = None; cx.close(); cx.consume_key(); cx.core(CoreAction::Notice("secrets: cancelled".into())); }
+            if code == KeyCode::Esc { self.prompt = None; self.login = None; self.sso = None; cx.close(); cx.consume_key(); cx.core(CoreAction::Notice("secrets: cancelled".into())); }
             return;
         }
         match self.menu {
@@ -869,6 +926,8 @@ impl Secrets {
                     let account = c.summary.split(" · ").next().unwrap_or_default().to_owned();
                     self.menu = None; self.prompt = Some(Prompt::Unlock { conn, account });
                 }
+                // §9.6: an SSO connection logs in again with SSO (its stored identifier).
+                (ConnStatus::LoggedOut, "bw") if c.login == Some(BwLogin::Sso) => { self.menu = None; self.request(Request::SsoBegin { conn, org_identifier: None }, cx); }
                 (ConnStatus::LoggedOut, "bw") => {
                     let email = c.summary.split(" · ").next().unwrap_or_default().to_owned();
                     self.menu = None; self.prompt = Some(Prompt::BwMethod { conn, server: None, email });
@@ -877,6 +936,14 @@ impl Secrets {
             },
             _ => {}
         }
+    }
+    /// Probe and add a Bitwarden connection; its login opens on `Added(Ok)`.
+    #[allow(clippy::too_many_arguments)]
+    fn add_bw(&mut self, conn: String, server: BwServer, base_url: Option<String>, email: String, login: BwLogin, org_identifier: Option<String>, cx: &mut Cx<'_, '_, Msg>) -> Option<Request> {
+        let cfg = ConnConfig::Bw { server, base_url, api_url: None, identity_url: None, web_vault_url: None, email: email.clone(), login, org_identifier };
+        cx.core(CoreAction::Notice(format!("bw/{conn}: checking the server; the login follows")));
+        self.adding = Some((conn.clone(), login, email));
+        Some(Request::AddConnection { conn, cfg })
     }
     fn browse_key(&mut self, code: KeyCode, cx: &mut Cx<'_, '_, Msg>) {
         let Some(Menu::Browse { conn, back, cursor, entries, next, deleted }) = &mut self.menu else { return };
@@ -978,21 +1045,31 @@ impl Secrets {
                 _ => { reject(Prompt::BwEmail { conn, server, base_url }, "secrets: an email address".into(), self, cx); None }
             },
             Prompt::BwMethod { conn, server, email } => {
-                let login = match line.trim() { "" | "api_key" | "api key" => Some(BwLogin::ApiKey), "password" => Some(BwLogin::Password), _ => None };
-                match (login, server) {
-                    (None, server) => { reject(Prompt::BwMethod { conn, server, email }, "secrets: api_key or password".into(), self, cx); None }
+                // `Some(None)` = sso.
+                let method = match line.trim() { "" | "api_key" | "api key" => Some(Some(BwLogin::ApiKey)), "password" => Some(Some(BwLogin::Password)), "sso" => Some(None), _ => None };
+                match (method, server) {
+                    (None, server) => { reject(Prompt::BwMethod { conn, server, email }, "secrets: api_key, password or sso".into(), self, cx); None }
+                    // §9.6: the organisation identifier first; it belongs in the config.
+                    (Some(None), server) => { self.prompt = Some(Prompt::SsoOrg { conn, server, email }); None }
                     // Adding: the connection must exist before its login (the login RPC needs it),
                     // so the login prompt opens on `Added(Ok)`; a refused add asks for nothing.
-                    (Some(login), Some((server, base_url))) => {
-                        let request = Request::AddConnection { conn: conn.clone(), cfg: ConnConfig::Bw { server, base_url, api_url: None, identity_url: None, web_vault_url: None, email: email.clone(), login } };
-                        cx.core(CoreAction::Notice(format!("bw/{conn}: checking the server; the login follows")));
-                        self.adding = Some((conn, login, email));
-                        Some(request)
-                    }
-                    (Some(BwLogin::ApiKey), None) => { self.prompt = Some(Prompt::ClientId { conn }); None }
-                    (Some(BwLogin::Password), None) => { self.prompt = Some(Prompt::MasterLogin { conn, email }); None }
+                    (Some(Some(login)), Some((server, base_url))) => self.add_bw(conn, server, base_url, email, login, None, cx),
+                    (Some(Some(BwLogin::Password)), None) => { self.prompt = Some(Prompt::MasterLogin { conn, email }); None }
+                    (Some(Some(_)), None) => { self.prompt = Some(Prompt::ClientId { conn }); None }
                 }
             }
+            Prompt::SsoOrg { conn, server, email } => match server {
+                Some((server, base_url)) => self.add_bw(conn, server, base_url, email, BwLogin::Sso, opt(line), cx),
+                None => Some(Request::SsoBegin { conn, org_identifier: opt(line) }),
+            },
+            Prompt::SsoPaste { conn, state } => match opt(line) {
+                Some(pasted) => {
+                    let code = Zeroizing::new(pasted);
+                    self.sso = Some(PendingSso { state: state.clone(), code: code.clone() });
+                    Some(Request::SsoComplete { conn, state, code, two_factor: None })
+                }
+                None => { reject(Prompt::SsoPaste { conn, state }, "secrets: paste the address the browser landed on".into(), self, cx); None }
+            },
             Prompt::ClientId { conn } => match opt(line) {
                 Some(client_id) => { self.prompt = Some(Prompt::ClientSecret { conn, client_id }); None }
                 None => { reject(Prompt::ClientId { conn }, "secrets: the client_id".into(), self, cx); None }
@@ -1008,9 +1085,13 @@ impl Secrets {
                 Some(provider) => { self.prompt = Some(Prompt::TwoFactorCode { conn, provider: provider.clone() }); None }
                 None => { let why = format!("secrets: one of {}", providers.join(", ")); reject(Prompt::TwoFactorProvider { conn, providers }, why, self, cx); None }
             },
-            Prompt::TwoFactorCode { conn, provider } => match self.login.as_mut() {
-                Some(login) => { login.two_factor = Some((provider, Zeroizing::new(line.trim().to_owned()))); Some(Request::Login { conn, form: login.form(None) }) }
-                None => None,
+            Prompt::TwoFactorCode { conn, provider } => match (self.login.as_mut(), self.sso.as_ref()) {
+                (Some(login), _) => { login.two_factor = Some((provider, Zeroizing::new(line.trim().to_owned()))); Some(Request::Login { conn, form: login.form(None) }) }
+                // §9.6: the same code again, now with the second factor.
+                (None, Some(sso)) => Some(Request::SsoComplete {
+                    conn, state: sso.state.clone(), code: sso.code.clone(), two_factor: Some((provider, Zeroizing::new(line.trim().to_owned()))),
+                }),
+                (None, None) => None,
             },
             Prompt::NewDeviceOtp { conn } => self.login.as_ref().map(|login| Request::Login { conn, form: login.form(Some(line.trim().to_owned())) }),
             Prompt::Unlock { conn, .. } => Some(Request::Unlock { conn, password: Zeroizing::new(line.to_owned()) }),
@@ -1215,8 +1296,13 @@ impl Component for Secrets {
                     if self.adding.as_ref().is_some_and(|(c, ..)| *c == info.conn) {
                         let (conn, login, email) = self.adding.take().expect("adding");
                         if self.prompt.is_none() && self.unlocks.is_empty() && self.requests.is_empty() {
-                            self.prompt = Some(match login { BwLogin::ApiKey => Prompt::ClientId { conn }, BwLogin::Password => Prompt::MasterLogin { conn, email } });
-                            cx.focus(FocusClass::Modal);
+                            match login {
+                                BwLogin::ApiKey => self.prompt = Some(Prompt::ClientId { conn }),
+                                BwLogin::Password => self.prompt = Some(Prompt::MasterLogin { conn, email }),
+                                // The identifier was saved with the connection.
+                                BwLogin::Sso => self.request(Request::SsoBegin { conn, org_identifier: None }, cx),
+                            }
+                            if self.prompt.is_some() { cx.focus(FocusClass::Modal); }
                         } else {
                             cx.core(CoreAction::Notice(format!("bw/{conn}: u on its row logs in")));
                         }
@@ -1225,9 +1311,13 @@ impl Component for Secrets {
                 }
             },
             Input::Message(Msg::LoggedIn { conn, step, connections }) => match step {
-                Err(error) => { self.login = None; cx.error(error); }
+                Err(error) => {
+                    self.login = None; self.sso = None;
+                    // §9.6: a password login an organisation refuses.
+                    if error.contains("sso_required") { cx.error(format!("bw/{conn}: organisation requires SSO? choose sso or api key")); } else { cx.error(error); }
+                }
                 Ok(LoginStep::Done) => {
-                    self.login = None;
+                    self.login = None; self.sso = None;
                     if let Some(c) = connections { self.connections = c; }
                     let info = self.connections.iter().find(|c| c.conn == conn);
                     match info.map(|c| (&c.status, c.summary.split(" · ").next().unwrap_or_default().to_owned())) {
@@ -1239,7 +1329,7 @@ impl Component for Secrets {
                         None => cx.core(CoreAction::Notice(format!("bw/{conn}: logged in"))),
                     }
                 }
-                Ok(LoginStep::NeedTwoFactor { providers }) if self.login.is_some() => {
+                Ok(LoginStep::NeedTwoFactor { providers }) if self.login.is_some() || self.sso.is_some() => {
                     self.prompt = Some(match providers.as_slice() {
                         [one] => Prompt::TwoFactorCode { conn, provider: one.clone() },
                         _ => Prompt::TwoFactorProvider { conn, providers },
@@ -1247,7 +1337,20 @@ impl Component for Secrets {
                     cx.focus(FocusClass::Modal);
                 }
                 Ok(LoginStep::NeedNewDeviceOtp) if self.login.is_some() => { self.prompt = Some(Prompt::NewDeviceOtp { conn }); cx.focus(FocusClass::Modal); }
-                Ok(_) => cx.error(format!("bw/{conn}: the server asked for another step; log in again")),
+                Ok(_) => { self.login = None; self.sso = None; cx.error(format!("bw/{conn}: the server asked for another step; log in again")) }
+            },
+            Input::Message(Msg::SsoBegun { conn, begin, copied }) => match begin {
+                Err(error) => cx.error(error),
+                Ok(begin) => {
+                    if cx.core.reasoning { cx.plain(Plain::Text("\x1b[0m\n".into())); }
+                    let copied = if copied { " (copied to the clipboard)" } else { "" };
+                    cx.plain(Plain::Line(format!("bw/{conn} SSO: open {}{copied}", begin.authorize_url)));
+                    cx.core(CoreAction::Notice(format!("bw/{conn}: {SSO_HOWTO}")));
+                    if self.prompt.is_none() {
+                        self.prompt = Some(Prompt::SsoPaste { conn, state: begin.state });
+                        cx.focus(FocusClass::Modal);
+                    }
+                }
             },
             Input::Message(Msg::Conn(result)) => match result {
                 Err(error) => cx.error(error),
@@ -1315,12 +1418,12 @@ impl Component for Secrets {
                 for row in rows { if let Ok(event) = ::secrets::SecretsEvent::deserialize(row) { self.event(event, cx); } }
             },
             Input::Lifecycle(Lifecycle::CommandFailed(_)) => self.awaiting = false,
-            Input::Lifecycle(Lifecycle::FocusLost) => { self.awaiting = false; self.menu = None; self.prompt = None; self.login = None; self.adding = None; }
-            Input::Lifecycle(Lifecycle::SessionReset) => { self.awaiting = false; self.menu = None; self.prompt = None; self.login = None; self.adding = None; self.requests.clear(); }
+            Input::Lifecycle(Lifecycle::FocusLost) => { self.awaiting = false; self.menu = None; self.prompt = None; self.login = None; self.sso = None; self.adding = None; }
+            Input::Lifecycle(Lifecycle::SessionReset) => { self.awaiting = false; self.menu = None; self.prompt = None; self.login = None; self.sso = None; self.adding = None; self.requests.clear(); }
             Input::Lifecycle(Lifecycle::EngineChanged | Lifecycle::Resync) => {
                 self.awaiting = false; self.refresh = self.secrets.is_some();
                 if matches!(input, Input::Lifecycle(Lifecycle::EngineChanged)) {
-                    self.unlocks.clear(); self.login = None; self.adding = None; self.answered.clear(); self.sending = 0;
+                    self.unlocks.clear(); self.login = None; self.sso = None; self.adding = None; self.answered.clear(); self.sending = 0;
                 }
                 if self.menu.is_some() || self.prompt.is_some() { cx.focus(FocusClass::Modal); }
                 if cx.core.interactive {
@@ -1513,7 +1616,7 @@ mod tests {
 
     fn conn(name: &str, backend: &str, status: ConnStatus) -> ConnInfo {
         ConnInfo { conn: name.into(), backend: backend.into(), status, summary: "me@example.org · vault.bitwarden.com".into(),
-            ask: Default::default(), settings: Default::default() }
+            ask: Default::default(), settings: Default::default(), login: (backend == "bw").then_some(BwLogin::Password) }
     }
 
     #[test]

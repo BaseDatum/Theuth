@@ -3086,7 +3086,7 @@
         let masked = |m: &Model| m.components.editor().is_some_and(|(_, e)| e.masked);
         let conn = |status| secrets::connections::ConnInfo {
             conn: "personal".into(), backend: "bw".into(), status, summary: "me@example.org · vault.bitwarden.com".into(),
-            ask: Default::default(), settings: Default::default(),
+            ask: Default::default(), settings: Default::default(), login: Some(secrets::connections::BwLogin::Password),
         };
         m.submit("/secrets connect bw", &tx);
         for line in ["personal", "us", "me@example.org", "password"] { m.component_submit(line); }
@@ -3128,6 +3128,76 @@
         let shown = screen(&m);
         assert!(shown.contains("send-personal-3fa9c2d1") && !shown.contains("#/send/"), "{shown}");
         assert!(!leaked(&m, "#/send/") && !format!("{m:?}").contains("#/send/"));
+    }
+
+    /// 221 §9.6: the SSO login. The authorize URL (no secret) is shown; the pasted redirect address
+    /// and its code, and the 2FA code after it, are typed masked and never land in the transcript,
+    /// a rendered view or Debug. `u` on a logged-out SSO connection starts SSO again.
+    #[test]
+    fn secrets_sso_redirect_and_code_never_show() {
+        use crate::components::secrets::{Secrets, Menu as SecretMenu, Prompt as SecretPrompt, Request as SecretRpc, Msg as SecretMsg};
+        use crate::components::{FocusClass, Surface, View};
+        use secrets::connections::{BwLogin, ConnConfig, ConnInfo};
+        use secrets::external::{ConnStatus, LoginStep};
+        use iocraft::prelude::ElementExt as _;
+        let (tx, mut rx) = unbounded_channel();
+        let mut m = Model::default();
+        m.components.register(Secrets::default()).unwrap();
+        m.mount_components(&tx);
+        let screen = |m: &Model| -> String {
+            [Surface::Prompt(FocusClass::Secret), Surface::Modal].into_iter()
+                .flat_map(|at| m.component_views(at, 80, 24))
+                .map(|v| match v {
+                    View::Text(t) => t,
+                    View::Element { mut element, .. } | View::IntrinsicElement { mut element, .. } => element.render(Some(80)).to_string(),
+                    View::Editor { .. } => String::new(),
+                })
+                .collect()
+        };
+        let editor = |m: &Model| m.components.editor().map(|(_, e)| e).unwrap();
+        let conn = |status| ConnInfo {
+            conn: "work".into(), backend: "bw".into(), status, summary: "me@example.org · vault.example.org".into(),
+            ask: Default::default(), settings: Default::default(), login: Some(BwLogin::Sso),
+        };
+        m.submit("/secrets connect bw", &tx);
+        for line in ["work", "https://vault.example.org", "me@example.org"] { m.component_submit(line); }
+        assert!(editor(&m).hint.contains("Organisation requires SSO? choose sso or api key"));
+        m.component_submit("sso");
+        m.component_submit("acme");
+        assert!(matches!(component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::AddConnection { cfg: ConnConfig::Bw { login: BwLogin::Sso, org_identifier: Some(o), .. }, .. }) if o == "acme"));
+        component_reply(&mut m, "secrets", SecretMsg::Added(Ok(conn(ConnStatus::LoggedOut))));
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::SsoBegin { conn, org_identifier: None }) if conn == "work"));
+        let authorize = "https://vault.example.org/identity/connect/authorize?client_id=cli&state=st-1_identifier=acme";
+        component_reply(&mut m, "secrets", SecretMsg::SsoBegun { conn: "work".into(), copied: true,
+            begin: Ok(serde_json::from_value(serde_json::json!({ "authorize_url": authorize, "state": "st-1", "redirect_port": 8065 })).unwrap()) });
+        assert!(leaked(&m, "The last page won't load; copy its address and paste it here."));
+        let e = editor(&m);
+        assert!(e.masked && e.hint.contains("paste it here"), "{}", e.hint);
+        let (pasted, code, totp) = ("http://localhost:8065/?code=SSO-CODE-never-shown&state=st-1", "SSO-CODE-never-shown", "424242");
+        m.component_submit(pasted);
+        assert!(matches!(component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::SsoComplete { state, code: c, two_factor: None, .. }) if state == "st-1" && c.as_str() == pasted));
+        component_reply(&mut m, "secrets", SecretMsg::LoggedIn { conn: "work".into(),
+            step: Ok(LoginStep::NeedTwoFactor { providers: vec!["authenticator".into()] }), connections: None });
+        assert!(editor(&m).masked, "2FA code after SSO");
+        m.component_submit(totp);
+        assert!(matches!(component_request::<SecretRpc>(&mut rx),
+            Ok(SecretRpc::SsoComplete { code: c, two_factor: Some((p, t)), .. }) if c.as_str() == pasted && p == "authenticator" && t.as_str() == totp));
+        component_reply(&mut m, "secrets", SecretMsg::LoggedIn { conn: "work".into(), step: Ok(LoginStep::Done), connections: Some(vec![conn(ConnStatus::Locked)]) });
+        assert!(matches!(m.components.get::<Secrets>().unwrap().prompt, Some(SecretPrompt::Unlock { .. })), "the unlock prompt follows");
+        for v in [pasted, code, totp] {
+            assert!(!leaked(&m, v), "{v} must not land in the transcript");
+            assert!(!screen(&m).contains(v), "{v} must not be rendered");
+            assert!(!format!("{m:?}").contains(v), "{v} must not be in Debug");
+        }
+        // `u` on the logged-out SSO connection reruns SSO.
+        component_menu_key(&mut m, "secrets", KeyCode::Esc);
+        let s = m.components.get_mut::<Secrets>().unwrap();
+        s.connections = vec![conn(ConnStatus::LoggedOut)];
+        s.menu = Some(SecretMenu::Secrets { cursor: 0, history: None });
+        component_menu_key(&mut m, "secrets", KeyCode::Char('u'));
+        assert!(matches!(component_request::<SecretRpc>(&mut rx), Ok(SecretRpc::SsoBegin { org_identifier: None, .. })));
     }
 
     #[test]
