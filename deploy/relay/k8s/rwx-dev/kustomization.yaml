@@ -11,7 +11,8 @@ resources:
 
 images:
   - name: ghcr.io/skymoore/theuth/relay
-    newTag: 5cedcbf8
+    newName: ghcr.io/basedatum/theuth/relay
+    newTag: e35c6cc9e
 patches:
   - target:
       kind: Deployment
