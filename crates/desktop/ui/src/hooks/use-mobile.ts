@@ -10,7 +10,7 @@ const subscribe = (cb: () => void) => {
   return () => mql.removeEventListener('change', cb)
 }
 /** `useIsMobile` outside React: an event handler deciding whether the layout tiles. */
-export const isMobileLayout = () => window.matchMedia(QUERY).matches
+export const isMobileLayout = () => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(QUERY).matches
 const snapshot = isMobileLayout
 
 /**

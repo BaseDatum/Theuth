@@ -8,18 +8,26 @@
 
 import { useEffect } from 'react'
 import { create } from 'zustand'
-import { type LayoutDocument, type LayoutNode, type PanelNode, type Placement, sanitize, type ViewInfo, type ViewRecord, type WorkspaceHandle } from '@danfessler/trellis'
+import { type LayoutDocument, type LayoutNode, type PanelNode, type Placement, sanitize, type SplitNode, type ViewInfo, type ViewRecord, type WorkspaceHandle } from '@danfessler/trellis'
 import { useEngines } from '@/link/engines'
 import { openPopout, POPOUT } from '@/lib/popout'
+import { availableViews, normalizeViewPath, validateViewPath, type ViewCatalogEntry, viewTitle } from '@/lib/view-title'
 import { isWeb, type WebView, useWebViews, webId, webLeaf } from '@/lib/web-views'
 
 /** Where a view lands beside `target`: one of its panel's edges (a split), `tab` (a tab of its panel, made active) or
  * `center` (it takes `target`'s place, `target` closes). */
 export type Edge = 'left' | 'right' | 'top' | 'bottom' | 'center' | 'tab'
+/** Sentinel drop target when no Trellis workspace is mounted (`ws === null`, e.g. dragging from the sidebar onto a full-screen view). */
+export const INSET_TARGET = '__inset__'
+/** What is being dragged from the sidebar or a section band onto the panes. */
+export type DragPayload =
+  | { kind: 'chat'; session: string }
+  | { kind: 'view'; path: string; title: string }
+  | { kind: 'tile'; tileKind: string; props: unknown; key?: string; title: string }
 /** The pane under the pointer and which of its edges (or its panel's tabs) the drop snaps to. */
 export type Target = { session: string; edge: Edge; rect: DOMRect }
-/** A sidebar row (a session, a draft for New chat) dragged onto the panes. */
-export type Drag = { session: string; title: string; x: number; y: number; target: Target | null }
+/** A sidebar row (a session, a draft for New chat, an app view or a tile) dragged onto the panes. */
+export type Drag = { session: string; payload?: DragPayload; title: string; x: number; y: number; target: Target | null }
 
 const DRAFT = 'draft:'
 /** A pane id for a not-yet-created chat; `leaves` lists it beside real sessions, so check before an RPC. */
@@ -38,6 +46,9 @@ const TILE = 'tile:'
 export const isTile = (leaf: string | null | undefined): leaf is string => leaf?.startsWith(TILE) ?? false
 export const tileLeaf = (id: string): string => `${TILE}${id}`
 export const tileOf = (leaf: string): string => leaf.slice(TILE.length)
+/** Deterministic tile id `(kind, session, key)` — shared with `lib/tiles.ts`. */
+export const makeTileId = (kind: string, session: string, key = ''): string =>
+  [kind, session, key].map(encodeURIComponent).join(':')
 /** A leaf that is not a chat: a web frame or a generic tile. Never focused, never in the URL. */
 export const isFrame = (leaf: string | null | undefined): leaf is string => isWeb(leaf) || isTile(leaf)
 
@@ -113,8 +124,9 @@ type PanesStore = {
   /** Close the pane showing `session`; returns the session the URL should move to, or `null` to stay. */
   close(session: string): string | null
   startDrag(session: string, title: string, x: number, y: number): void
+  startPayloadDrag(payload: DragPayload, title: string, x: number, y: number): void
   moveDrag(x: number, y: number): void
-  /** Drop (or cancel with `drop = false`); returns the dropped session when a pane took it. */
+  /** Drop (or cancel with `drop = false`); returns the dropped leaf id when a pane (or pending inset drop) took it. */
   endDrag(drop: boolean): string | null
 }
 
@@ -133,6 +145,36 @@ function op<T>(fn: () => T): T {
 let wanted: string | null = null
 /** Moves the URL to a chat the user picked or closed into (`Panes` wires the router). */
 let go: ((session: string) => void) | null = null
+/** A drag dropped onto the main inset while `ws === null`: flushed as soon as `attachWorkspace` mounts. */
+let pendingDrop: { payload: DragPayload; edge: Edge } | null = null
+export const hasPendingDrop = (): boolean => pendingDrop !== null
+
+/** Resolve a `DragPayload` into its Trellis leaf id and `ViewSpec`. */
+export function payloadLeafAndSpec(payload: DragPayload): { leaf: string; spec: ViewSpec } {
+  if (payload.kind === 'chat') {
+    const leaf = payload.session
+    return { leaf, spec: isWeb(leaf) ? webSpec(leaf) : chatSpec(leaf) }
+  }
+  if (payload.kind === 'view') {
+    const path = normalizeViewPath(payload.path)
+    const leaf = tileLeaf(makeTileId('view', '', path))
+    const props = payload.title ? { path, title: payload.title } : { path }
+    return { leaf, spec: tileSpec('view', '', props) }
+  }
+  const leaf = tileLeaf(makeTileId(payload.tileKind, '', payload.key ?? ''))
+  return { leaf, spec: tileSpec(payload.tileKind, '', payload.props) }
+}
+
+/** Place any `DragPayload` (chat, standalone view, or standalone tile) at `edge` of `target`. */
+export function placePayload(target: string, payload: DragPayload, edge: Edge): boolean {
+  const { leaf, spec } = payloadLeafAndSpec(payload)
+  const { ws, leaves } = usePanes.getState()
+  if (!ws) return false
+  if (leaves.includes(leaf) && isTile(leaf)) {
+    ws.setParams(leaf, { props: spec.params.props })
+  }
+  return placeView(target, leaf, edge, spec)
+}
 
 function panelOf(root: LayoutNode | null | undefined, leaf: string): PanelNode | null {
   if (!root) return null
@@ -364,8 +406,12 @@ export const usePanes = create<PanesStore>()((set, get) => ({
     return refocus(session, panel)
   },
   startDrag(session, title, x, y) {
+    get().startPayloadDrag({ kind: 'chat', session }, title, x, y)
+  },
+  startPayloadDrag(payload, title, x, y) {
     document.body.classList.add('select-none')
-    set({ drag: { session, title, x, y, target: null } })
+    const { leaf } = payloadLeafAndSpec(payload)
+    set({ drag: { session: leaf, payload, title, x, y, target: null } })
   },
   moveDrag(x, y) {
     const { drag } = get()
@@ -373,10 +419,15 @@ export const usePanes = create<PanesStore>()((set, get) => ({
   },
   endDrag(drop) {
     document.body.classList.remove('select-none')
-    const { drag } = get()
+    const { drag, ws } = get()
     set({ drag: null })
     if (!drop || !drag?.target) return null
-    get().place(drag.target.session, drag.session, drag.target.edge)
+    const payload: DragPayload = drag.payload ?? { kind: 'chat', session: drag.session }
+    if (!ws || drag.target.session === INSET_TARGET) {
+      pendingDrop = { payload, edge: drag.target.edge }
+      return drag.session
+    }
+    placePayload(drag.target.session, payload, drag.target.edge)
     return drag.session
   },
 }))
@@ -469,12 +520,26 @@ export function targetAt(x: number, y: number): Target | null {
   }
   const el = hit?.closest<HTMLElement>('[data-pane]')
   const session = el?.dataset.pane
-  if (!el || !session) return null
-  const rect = el.getBoundingClientRect()
-  const fx = (x - rect.left) / rect.width
-  const fy = (y - rect.top) / rect.height
-  const edge: Edge = fx < BAND ? 'left' : fx > 1 - BAND ? 'right' : fy < BAND ? 'top' : fy > 1 - BAND ? 'bottom' : 'tab'
-  return { session, edge, rect: edge === 'tab' ? (panelElement(session)?.getBoundingClientRect() ?? rect) : rect }
+  if (el && session) {
+    const rect = el.getBoundingClientRect()
+    const fx = (x - rect.left) / rect.width
+    const fy = (y - rect.top) / rect.height
+    const edge: Edge = fx < BAND ? 'left' : fx > 1 - BAND ? 'right' : fy < BAND ? 'top' : fy > 1 - BAND ? 'bottom' : 'tab'
+    return { session, edge, rect: edge === 'tab' ? (panelElement(session)?.getBoundingClientRect() ?? rect) : rect }
+  }
+  if (usePanes.getState().ws === null) {
+    const inset = hit?.closest<HTMLElement>('[data-slot="sidebar-inset"], main')
+    if (inset) {
+      const rect = inset.getBoundingClientRect()
+      if (rect.width > 0 && rect.height > 0) {
+        const fx = (x - rect.left) / rect.width
+        const fy = (y - rect.top) / rect.height
+        const edge: Edge = fx < BAND ? 'left' : fx > 1 - BAND ? 'right' : fy < BAND ? 'top' : fy > 1 - BAND ? 'bottom' : 'tab'
+        return { session: INSET_TARGET, edge, rect }
+      }
+    }
+  }
+  return null
 }
 
 /** The region a drop at `t` would fill, in viewport px. */
@@ -569,6 +634,13 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
   usePanes.setState({ ws })
   sync()
   if (wanted) usePanes.getState().show(wanted)
+  if (pendingDrop) {
+    const { payload, edge } = pendingDrop
+    pendingDrop = null
+    const { focused, leaves } = usePanes.getState()
+    const anchor = focused ?? leaves[0] ?? ''
+    placePayload(anchor, payload, edge)
+  }
   return () => {
     for (const off of offs) off()
     window.clearTimeout(still)
@@ -589,6 +661,7 @@ export function attachWorkspace(ws: WorkspaceHandle, navigate?: (session: string
 /** The engine was switched or the app forgot its panes: nothing focused, nothing selected, no drag. */
 export function resetPanes(): void {
   wanted = null
+  pendingDrop = null
   used.clear()
   usePanes.setState({ focused: null, selected: null, drag: null })
 }
@@ -624,11 +697,12 @@ export function prepareStored(o: { engine: string; sessions: ReadonlySet<string>
   editStored((doc) => {
     for (const [id, record] of Object.entries(doc.views)) {
       const owner = ownerOf(id, record)
+      const standalone = isTile(id) && owner === ''
       const gone =
         record.params?.engine !== o.engine ||
         !o.types.has(record.type) ||
         (isWeb(id) && !useWebViews.getState().views[webId(id)]) ||
-        (o.sessions !== null && !isDraft(owner) && !o.sessions.has(owner))
+        (!standalone && o.sessions !== null && !isDraft(owner) && !o.sessions.has(owner))
       if (gone) delete doc.views[id]
     }
     return doc
@@ -675,4 +749,274 @@ export async function popOutWeb(view: Pick<WebView, 'id' | 'session' | 'url' | '
 export function useRoutedPane(session: string): void {
   const stranded = usePanes((s) => s.ws !== null && s.leaves.every((l) => isFrame(l)))
   useEffect(() => usePanes.getState().show(session), [session, stranded])
+}
+
+/** Agent layout control wire types (matching `/tmp/universal-panes-contract.md` and `crates/artifact/src/layout.rs`). */
+export type PaneEdge = Edge
+export type PanePlacement = 'beside' | 'left' | 'right' | 'top' | 'bottom' | 'tab' | 'replace'
+export type LayoutOp =
+  | { op: 'list' }
+  | { op: 'open_view'; path: string; title?: string; placement?: PanePlacement; target?: string; focus?: boolean }
+  | { op: 'close'; pane: string }
+  | { op: 'focus'; pane: string }
+  | { op: 'move'; pane: string; target: string; edge: PaneEdge }
+  | { op: 'resize'; pane: string; share: number }
+
+export type LayoutCommandAnswer =
+  | { kind: 'done'; result: unknown }
+  | { kind: 'failed'; reason: string }
+
+export type SerializedPane = {
+  id: string
+  kind: string
+  title: string
+  path?: string
+  session: string
+  panel_id: string | null
+  active_in_panel: boolean
+  tab_index: number
+}
+
+export type SerializedLayout = {
+  active_route: string
+  workspace_mounted: boolean
+  focused: string | null
+  selected: string | null
+  panes: SerializedPane[]
+  tree: LayoutNode | null
+  available_views: ViewCatalogEntry[]
+}
+
+function paneTitleOf(id: string, record: ViewRecord | undefined, ws: WorkspaceHandle | null): string {
+  const props = record?.params?.props as Record<string, unknown> | undefined
+  if (record?.type === tileType('view')) {
+    const path = typeof props?.path === 'string' ? props.path : '/'
+    const title = typeof props?.title === 'string' ? props.title : undefined
+    return viewTitle(path, title)
+  }
+  const liveTitle = ws?.view(id)?.title || record?.title
+  if (liveTitle) return liveTitle
+  if (isWeb(id)) return useWebViews.getState().views[webId(id)]?.title ?? ''
+  if (isDraft(id)) return 'New chat'
+  if (isTile(id)) {
+    const label = props?.title ?? props?.label ?? props?.name
+    if (typeof label === 'string' && label) return label
+    return record?.type.startsWith(TILE) ? record.type.slice(TILE.length) : ''
+  }
+  return ''
+}
+
+/** Snapshot the current workspace layout for the `pane_list` / `list` layout command. */
+export function serializeLayout(activeRoute: string): SerializedLayout {
+  const { ws, leaves, views, focused, selected } = usePanes.getState()
+  const doc = ws?.getDocument() ?? null
+  const panelByLeaf = new Map<string, PanelNode>()
+  if (doc) {
+    for (const p of panels(doc.root)) {
+      for (const v of p.views) panelByLeaf.set(v, p)
+    }
+  }
+  const panes: SerializedPane[] = leaves.map((id) => {
+    const record = doc?.views[id] ?? views[id]
+    const panel = panelByLeaf.get(id) ?? null
+    const kind = record?.type ?? (isWeb(id) ? WEB : isDraft(id) ? DRAFT_TYPE : CHAT)
+    const entry: SerializedPane = {
+      id,
+      kind,
+      title: paneTitleOf(id, record, ws),
+      session: ownerOf(id, record),
+      panel_id: panel?.id ?? null,
+      active_in_panel: panel ? panel.selected === id : false,
+      tab_index: panel ? panel.views.indexOf(id) : -1,
+    }
+    if (kind === tileType('view')) {
+      const props = record?.params?.props as { path?: unknown } | undefined
+      if (typeof props?.path === 'string') entry.path = props.path
+    }
+    return entry
+  })
+  return {
+    active_route: activeRoute,
+    workspace_mounted: ws !== null,
+    focused,
+    selected,
+    panes,
+    tree: doc?.root ?? null,
+    available_views: availableViews(),
+  }
+}
+
+function resizeInTree(node: LayoutNode, panelId: string, share: number): { node: LayoutNode; resized: boolean; found: boolean } {
+  if (node.kind === 'panel') return { node, resized: false, found: node.id === panelId }
+  if (node.kind === 'stage') {
+    if (!node.child) return { node, resized: false, found: false }
+    const inner = resizeInTree(node.child, panelId, share)
+    if (!inner.resized) return { node, resized: false, found: inner.found }
+    return { node: { ...node, child: inner.node as SplitNode | PanelNode }, resized: true, found: true }
+  }
+  for (let i = 0; i < node.children.length; i++) {
+    const child = node.children[i]
+    if (!child) continue
+    const inner = resizeInTree(child, panelId, share)
+    if (inner.resized) {
+      const children = node.children.slice()
+      children[i] = inner.node
+      return { node: { ...node, children }, resized: true, found: true }
+    }
+    if (inner.found) {
+      if (node.children.length < 2) return { node, resized: false, found: true }
+      const old = node.weights.length === node.children.length ? node.weights : node.children.map(() => 1 / node.children.length)
+      const otherSum = old.reduce((acc, w, j) => (j === i ? acc : acc + w), 0)
+      const rest = 1 - share
+      const weights = old.map((w, j) => (j === i ? share : otherSum > 0 ? (w / otherSum) * rest : rest / (node.children.length - 1)))
+      return { node: { ...node, weights }, resized: true, found: true }
+    }
+  }
+  return { node, resized: false, found: false }
+}
+
+function placementToEdge(placement: PanePlacement | undefined): Edge {
+  switch (placement) {
+    case 'left':
+    case 'right':
+    case 'top':
+    case 'bottom':
+    case 'tab':
+      return placement
+    case 'replace':
+      return 'center'
+    case 'beside':
+    default:
+      return 'right'
+  }
+}
+
+// View path validation lives in `lib/view-catalog.ts` (`validateViewPath`).
+
+/**
+ * Execute an agent layout command (`list`, `open_view`, `close`, `focus`, `move`, `resize`).
+ * Enforces standing invariants: chat tabs are user-only, `focused` stays a chat/draft leaf, and the last remaining pane
+ * cannot be closed.
+ */
+export function applyLayoutOp(
+  layoutOp: LayoutOp,
+  session: string,
+  navigate?: (href: string) => void,
+  activeRoute = typeof window !== 'undefined' ? `${window.location.pathname}${window.location.search}` : '/',
+): LayoutCommandAnswer {
+  const { ws, leaves, views, focused, selected } = usePanes.getState()
+
+  switch (layoutOp.op) {
+    case 'list':
+      return { kind: 'done', result: serializeLayout(activeRoute) }
+
+    case 'open_view': {
+      const checked = validateViewPath(layoutOp.path)
+      if (!checked.ok) {
+        return { kind: 'failed', reason: checked.reason }
+      }
+      const path = checked.normalized
+      const title = viewTitle(path, layoutOp.title)
+      const props = layoutOp.title ? { path, title: layoutOp.title } : { path }
+      const leaf = tileLeaf(makeTileId('view', '', path))
+      const spec = tileSpec('view', '', props)
+      const edge = placementToEdge(layoutOp.placement)
+
+      if (!ws) {
+        if (!navigate) return { kind: 'failed', reason: 'workspace is not mounted' }
+        pendingDrop = { payload: { kind: 'view', path, title }, edge }
+        navigate(session ? `/c/${encodeURIComponent(session)}` : '/new')
+        return { kind: 'done', result: { pane: leaf, path, title, reused: false } }
+      }
+
+      if (layoutOp.target && !leaves.includes(layoutOp.target)) {
+        return { kind: 'failed', reason: `target pane not found: ${layoutOp.target}` }
+      }
+
+      const reused = leaves.includes(leaf)
+      const anchor = layoutOp.target ?? (session && leaves.includes(session) ? session : (focused ?? selected ?? leaves[0] ?? ''))
+
+      if (reused) {
+        ws.setParams(leaf, { props })
+        if (layoutOp.target || (layoutOp.placement && layoutOp.placement !== 'beside')) {
+          placeView(anchor, leaf, edge, spec)
+        } else {
+          revealView(leaf)
+        }
+      } else if (!layoutOp.target && (!layoutOp.placement || layoutOp.placement === 'beside')) {
+        if (!groupView(leaf, spec)) placeView(anchor, leaf, 'right', spec)
+      } else {
+        placeView(anchor, leaf, edge, spec)
+      }
+
+      if (layoutOp.focus) {
+        // Frames are selected-only (`focused` always stays on a chat/draft leaf).
+        revealView(leaf)
+        usePanes.getState().select(leaf)
+      }
+      return { kind: 'done', result: { pane: leaf, path, title, reused } }
+    }
+
+    case 'close': {
+      if (!ws) return { kind: 'failed', reason: 'workspace is not mounted' }
+      if (!leaves.includes(layoutOp.pane)) return { kind: 'failed', reason: `pane not found: ${layoutOp.pane}` }
+      if (leaves.length <= 1) return { kind: 'failed', reason: 'cannot close the last remaining pane' }
+      const next = usePanes.getState().close(layoutOp.pane)
+      if (next && navigate) navigate(`/c/${encodeURIComponent(next)}`)
+      return { kind: 'done', result: { closed: layoutOp.pane } }
+    }
+
+    case 'focus': {
+      if (!ws) return { kind: 'failed', reason: 'workspace is not mounted' }
+      if (!leaves.includes(layoutOp.pane)) return { kind: 'failed', reason: `pane not found: ${layoutOp.pane}` }
+      revealView(layoutOp.pane)
+      usePanes.getState().select(layoutOp.pane)
+      if (!isFrame(layoutOp.pane)) {
+        usePanes.getState().focus(layoutOp.pane)
+        if (!isDraft(layoutOp.pane) && navigate) navigate(`/c/${encodeURIComponent(layoutOp.pane)}`)
+      }
+      return { kind: 'done', result: { focused: layoutOp.pane } }
+    }
+
+    case 'move': {
+      if (!ws) return { kind: 'failed', reason: 'workspace is not mounted' }
+      if (!leaves.includes(layoutOp.pane)) return { kind: 'failed', reason: `pane not found: ${layoutOp.pane}` }
+      if (!leaves.includes(layoutOp.target)) return { kind: 'failed', reason: `target pane not found: ${layoutOp.target}` }
+      if (layoutOp.edge === 'tab' && !isFrame(layoutOp.pane) && !isFrame(layoutOp.target)) {
+        return { kind: 'failed', reason: 'chat tabs are user-only; split instead of tabbing chats together' }
+      }
+      if (layoutOp.pane !== layoutOp.target) {
+        const record = views[layoutOp.pane]
+        const spec: ViewSpec = record ? { type: record.type, params: { ...(record.params ?? {}) } } : chatSpec(layoutOp.pane)
+        placeView(layoutOp.target, layoutOp.pane, layoutOp.edge, spec)
+      }
+      return { kind: 'done', result: { moved: layoutOp.pane, target: layoutOp.target, edge: layoutOp.edge } }
+    }
+
+    case 'resize': {
+      if (!ws) return { kind: 'failed', reason: 'workspace is not mounted' }
+      if (!leaves.includes(layoutOp.pane)) return { kind: 'failed', reason: `pane not found: ${layoutOp.pane}` }
+      if (!Number.isFinite(layoutOp.share) || layoutOp.share <= 0 || layoutOp.share >= 1) {
+        return { kind: 'failed', reason: 'share must be between 0 and 1' }
+      }
+      const doc = ws.getDocument()
+      const panel = panelOf(doc.root, layoutOp.pane)
+      if (!panel || !doc.root) return { kind: 'failed', reason: `pane not laid out: ${layoutOp.pane}` }
+      const updated = resizeInTree(doc.root, panel.id, layoutOp.share)
+      if (!updated.resized) return { kind: 'failed', reason: 'pane is not in a split; nothing to resize' }
+      op(() => ws.setDocument({ ...doc, root: updated.node }))
+      return { kind: 'done', result: { resized: layoutOp.pane, share: layoutOp.share } }
+    }
+  }
+}
+
+/** Chat leaves persisted in localStorage (`theuth.panes`), for routing back to the workspace when `ws === null`. */
+export function storedChatLeaves(): string[] {
+  if (!PERSIST) return []
+  try {
+    const doc = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null') as { views?: Record<string, { type?: string }> } | null
+    return Object.entries(doc?.views ?? {}).flatMap(([id, v]) => (v?.type === CHAT ? [id] : []))
+  } catch {
+    return []
+  }
 }

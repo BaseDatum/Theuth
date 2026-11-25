@@ -7,6 +7,7 @@ import { Download } from 'lucide-react'
 import { memo, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { SidebarLead } from '@/components/nav/SectionBand'
+import { useInsideTile } from '@/components/tiles/tile-context'
 import { Button } from '@/components/ui/button'
 import { useSidebar } from '@/components/ui/sidebar'
 import { cornerPad } from '@/lib/sidebar-corner'
@@ -79,6 +80,7 @@ export function CostsPage({ search, visible }: { search: CostsSearch; visible: b
   const api = useApi()
   const sidebar = useSidebar()
   const mac = isMacDesktop()
+  const insideTile = useInsideTile()
   const tz = useMemo(defaultTz, [])
   // 215: the resident page mounts hidden; only being on screen counts as a visit.
   useEffect(() => {
@@ -153,8 +155,15 @@ export function CostsPage({ search, visible }: { search: CostsSearch; visible: b
 
   return (
     <article className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header data-tauri-drag-region={mac || undefined} className={cn('flex h-[52px] shrink-0 items-center gap-2.5 border-b border-border-subtle px-3 md:px-4', mac && cornerPad(sidebar))}>
-        <SidebarLead />
+      <header
+        data-tauri-drag-region={(!insideTile && mac) || undefined}
+        className={cn(
+          'flex shrink-0 items-center gap-2.5 border-b border-border-subtle px-3 md:px-4',
+          insideTile ? 'h-10' : 'h-[52px]',
+          !insideTile && mac && cornerPad(sidebar),
+        )}
+      >
+        {!insideTile && <SidebarLead />}
         <h1 className="text-[15px] font-semibold tracking-[0.2px]">Costs</h1>
         <span className="hidden min-w-0 items-center gap-1.5 truncate font-mono text-[10px] tracking-[1.4px] text-fg-tertiary uppercase sm:inline-flex">
           <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-success motion-safe:animate-pulse" />

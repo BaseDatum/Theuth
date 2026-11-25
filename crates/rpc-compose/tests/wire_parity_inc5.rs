@@ -76,6 +76,18 @@ async fn feature_golden_parity() {
         .await;
     family::<artifact::WebViewCallResolved>(&rt, &mut feed, "artifact.web-view-call-resolved")
         .await;
+    family::<artifact::LayoutCommandRequested>(
+        &rt,
+        &mut feed,
+        "artifact.layout-command-requested",
+    )
+    .await;
+    family::<artifact::LayoutCommandResolved>(
+        &rt,
+        &mut feed,
+        "artifact.layout-command-resolved",
+    )
+    .await;
     family::<artifact::snapshot::FenceSnapshotRequested>(
         &rt,
         &mut feed,

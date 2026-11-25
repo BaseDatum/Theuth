@@ -29,6 +29,7 @@ import { closeAllTiles, closeSessionTiles } from '@/lib/tiles'
 import { AgentTileBanner } from '@/components/chat/AgentTileBanner'
 import { forgetArtifact } from '@/components/chat/ArtifactPanel'
 import { installFenceSnapshot } from '@/lib/fence-snapshot'
+import { installLayoutAgent } from '@/lib/layout-agent'
 import { installPagePreview } from '@/lib/page-preview'
 import { startWebProfileSync } from '@/lib/web-profile'
 import { startWebViewAgent } from '@/lib/web-view-agent'
@@ -751,6 +752,7 @@ function Main() {
   // 120 §11.3: only the main window renders `page_preview` requests; a popout or the island would race it.
   useEffect(() => (AUX ? undefined : installPagePreview()), [])
   useEffect(() => (AUX ? undefined : installFenceSnapshot()), [])
+  useEffect(() => (AUX ? undefined : installLayoutAgent((href) => void router.navigate({ href }), () => router.state.location.href)), [])
   // 209 §4.5: the device's tile store is one for every window; only the main window pushes it.
   useEffect(() => (AUX ? undefined : startWebProfileSync()), [])
   // 209 §4.7: a pop-out window may hold a tile too; each window claims only the tiles it holds.

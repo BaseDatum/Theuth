@@ -97,6 +97,16 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
             }
             return;
         }
+        // Universal panes: `LayoutCommandResolved { id }` is matched by tag so `{ id }`
+        // never collides with another single-field event in `republish!`.
+        Some("LayoutCommandResolved") => {
+            if let Ok(ev) =
+                <artifact::LayoutCommandResolved as serde::Deserialize>::deserialize(v)
+            {
+                rt.publish(ev).await;
+            }
+            return;
+        }
         _ => {}
     }
     macro_rules! republish {
@@ -139,6 +149,7 @@ async fn publish(rt: &Runtime, v: &serde_json::Value) {
         artifact::DiffViewOpened,
         artifact::WebViewCallRequested,
         artifact::WebViewCallResolved,
+        artifact::LayoutCommandRequested,
         secrets::SecretsEvent,
         update::UpdateReady,
         voice::VoiceEvent,

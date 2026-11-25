@@ -4,6 +4,7 @@ import { createContext, type FocusEvent, type KeyboardEvent, useCallback, useCon
 import { snoozeUntil } from '@/components/hud/model'
 import { SEEN_ON_SCREEN, useAttention } from '@/components/hud/queries'
 import { SidebarLead } from '@/components/nav/SectionBand'
+import { useInsideTile } from '@/components/tiles/tile-context'
 import { Bell, ChevronLeft, CircleCheck, type LucideIcon, MessageCircleQuestion, Plus, ShieldCheck } from 'lucide-react'
 import { NewChat } from '@/components/chat/NewChatPane'
 import { LiveSession } from '@/routes/c.$session'
@@ -136,6 +137,7 @@ export function Page() {
   useEffect(() => useOnboarding.getState().markVisited('inbox'), [])
   const sidebar = useSidebar()
   const mac = isMacDesktop()
+  const insideTile = useInsideTile()
   const attention = useAttention()
   const bulk = useAttentionBulk()
   const navigate = useNavigate()
@@ -359,10 +361,15 @@ export function Page() {
     <ViewContext.Provider value={{ entries }}>
       <article className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header
-          data-tauri-drag-region={mac || undefined}
-          className={cn('h-[52px] shrink-0 items-center gap-1 border-b border-border-subtle px-3', mac && cornerPad(sidebar), active ? 'hidden md:flex' : 'flex')}
+          data-tauri-drag-region={(!insideTile && mac) || undefined}
+          className={cn(
+            'shrink-0 items-center gap-1 border-b border-border-subtle px-3',
+            insideTile ? 'h-10' : 'h-[52px]',
+            !insideTile && mac && cornerPad(sidebar),
+            active ? 'hidden md:flex' : 'flex',
+          )}
         >
-          <SidebarLead />
+          {!insideTile && <SidebarLead />}
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">
             Inbox {items && <span className="font-normal text-fg-tertiary tabular-nums">{live.length}</span>}
           </h2>

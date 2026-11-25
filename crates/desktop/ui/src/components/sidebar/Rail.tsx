@@ -671,6 +671,7 @@ function PopDesk({ id, name, working, active, onPick }: { id: string | null; nam
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const running = useSessionField(id ?? '', 'running')
+  const drag = useSessionDrag(id, name)
   const open = useMutation({
     mutationFn: () => api.desk_open(name),
     onSuccess: (session) => {
@@ -702,7 +703,7 @@ function PopDesk({ id, name, working, active, onPick }: { id: string | null; nam
       {body}
     </button>
   ) : (
-    <Link to="/c/$session" params={{ session: id }} data-rail-item data-active={active || undefined} className={POP_ROW} onClick={onPick}>
+    <Link to="/c/$session" params={{ session: id }} {...drag} data-rail-item data-active={active || undefined} className={POP_ROW} onClick={onPick}>
       {body}
     </Link>
   )

@@ -4,7 +4,7 @@ import { createWorkspace, layout as L, type WorkspaceHandle } from '@danfessler/
 import { attachWorkspace, CHAT, chatSpec, DRAFT_TYPE, isTile, resetPanes, STORAGE_KEY, tileLeaf, tileOf, tileType, usePanes, VERSION, WEB } from './panes'
 
 /** The kinds `components/tiles/registry` draws (not imported here: it pulls every kind's body). */
-export const TILE_KIND_NAMES = ['artifact', 'browser', 'codemap', 'diagram', 'diff', 'file', 'jobs', 'job-log', 'job-terminal', 'media', 'memory', 'note', 'prompt', 'skill', 'terminals', 'vm']
+export const TILE_KIND_NAMES = ['artifact', 'browser', 'codemap', 'diagram', 'diff', 'file', 'jobs', 'job-log', 'job-terminal', 'media', 'memory', 'note', 'plugin', 'prompt', 'skill', 'tasks-graph', 'terminals', 'view', 'vm', 'whiteboard']
 export const TYPES = [CHAT, DRAFT_TYPE, WEB, ...TILE_KIND_NAMES.map(tileType)]
 
 /** Tile `id`'s props while it is laid out. */

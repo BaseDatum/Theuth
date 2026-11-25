@@ -151,6 +151,18 @@ async fn legacy_event_families() {
     .await;
     family::<artifact::WebViewCallResolved>(&rt, &mut stream, "artifact.web-view-call-resolved")
         .await;
+    family::<artifact::LayoutCommandRequested>(
+        &rt,
+        &mut stream,
+        "artifact.layout-command-requested",
+    )
+    .await;
+    family::<artifact::LayoutCommandResolved>(
+        &rt,
+        &mut stream,
+        "artifact.layout-command-resolved",
+    )
+    .await;
     family::<artifact::snapshot::FenceSnapshotRequested>(
         &rt,
         &mut stream,

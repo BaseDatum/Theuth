@@ -134,6 +134,8 @@ pub const WIRE_RELAYED: &[(&str, &str)] = &[
     ("PagePreviewResolved", "artifact.page-preview-resolved"),
     ("WebViewCallRequested", "artifact.web-view-call-requested"),
     ("WebViewCallResolved", "artifact.web-view-call-resolved"),
+    ("LayoutCommandRequested", "artifact.layout-command-requested"),
+    ("LayoutCommandResolved", "artifact.layout-command-resolved"),
     ("ElementFormRequested", "browser.element-form-requested"),
     ("ElementFormResolved", "browser.element-form-resolved"),
 ];
@@ -1378,6 +1380,8 @@ mod tests {
         for (kind, topic) in [
             ("WebViewCallRequested", "artifact.web-view-call-requested"),
             ("WebViewCallResolved", "artifact.web-view-call-resolved"),
+            ("LayoutCommandRequested", "artifact.layout-command-requested"),
+            ("LayoutCommandResolved", "artifact.layout-command-resolved"),
             ("WebViewOpened", "artifact.web-view-opened"),
             ("PtyViewOpened", "artifact.pty-view-opened"),
             ("NoteViewOpened", "artifact.note-view-opened"),

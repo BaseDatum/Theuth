@@ -7,7 +7,7 @@ import { useMemo } from 'react'
 import type { ViewRecord } from '@danfessler/trellis'
 import { shallow } from 'zustand/shallow'
 import { isMobileLayout } from '@/hooks/use-mobile'
-import { chatSpec, closeLeaves, groupView, isDraft, isFrame, isTile, ownerOf, placeView, rename, revealView, tileLeaf, tileOf, tileSpec, usePanes, type ViewSpec } from '@/lib/panes'
+import { chatSpec, closeLeaves, groupView, isDraft, isFrame, isTile, makeTileId, ownerOf, placeView, rename, revealView, tileLeaf, tileOf, tileSpec, usePanes, type ViewSpec } from '@/lib/panes'
 
 export type Tile = {
   id: string
@@ -18,8 +18,7 @@ export type Tile = {
 }
 
 /** Deterministic: the same kind, session and key name the same tile. */
-export const tileId = (kind: string, session: string, key = ''): string =>
-  [kind, session, key].map(encodeURIComponent).join(':')
+export const tileId = makeTileId
 
 /** The tile view `leaf` records, if it is one. */
 export function tileFrom(leaf: string, record: ViewRecord | undefined): Tile | undefined {

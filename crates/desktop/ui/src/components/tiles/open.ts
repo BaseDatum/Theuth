@@ -3,7 +3,9 @@
 
 import type { Item } from '@/components/chat/Attachments'
 import { openPopout } from '@/lib/popout'
-import { openTile, type Tile, tileable } from '@/lib/tiles'
+import { type Edge, isFrame, placeView, revealView, tileLeaf, tileSpec, usePanes } from '@/lib/panes'
+import { openTile, setTileProps, type Tile, tileable, tileId } from '@/lib/tiles'
+import { normalizeViewPath } from '@/lib/view-title'
 import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
 import { useSessions } from '@/store/sessions'
 
@@ -130,3 +132,32 @@ export type PluginTileProps = { plugin: string; placement: string }
 /** The plugin's tile beside the chat in leaf `host`; one tile per placement, so opening it again focuses it. */
 export const openPluginTile = (host: string, p: PluginTileProps): string | null =>
   openTile({ kind: 'plugin', host, key: `${p.plugin}/${p.placement}`, props: p satisfies PluginTileProps })
+
+/** A standalone `view` tile: any app route (`/tasks`, `/notebooks`, `/costs`, …) rendered inside a pane. */
+export type ViewProps = { path: string; title?: string }
+/** Open (or focus/retarget) a standalone `view` tile at `path`. Works without requiring a chat session owner (`session: ''`). */
+export function openViewTile(
+  props: ViewProps,
+  opts?: { target?: string; edge?: Edge; host?: string },
+): string | null {
+  const path = normalizeViewPath(props.path)
+  const clean: ViewProps = props.title ? { path, title: props.title } : { path }
+  const { ws, leaves, focused, selected } = usePanes.getState()
+  if (!ws) return null
+  const id = tileId('view', '', path)
+  const leaf = tileLeaf(id)
+  if (leaves.includes(leaf)) {
+    setTileProps(id, clean)
+    if (opts?.target && opts?.edge && opts.target !== leaf) {
+      placeView(opts.target, leaf, opts.edge, tileSpec('view', '', clean))
+    } else {
+      revealView(leaf)
+    }
+    return id
+  }
+  const spec = tileSpec('view', '', clean)
+  const anchor = opts?.target ?? opts?.host ?? focused ?? selected ?? leaves[0] ?? ''
+  const edge: Edge = opts?.edge ?? (opts?.target ? 'right' : isFrame(anchor) ? 'tab' : 'right')
+  placeView(anchor, leaf, edge, spec)
+  return id
+}

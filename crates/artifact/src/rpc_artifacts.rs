@@ -94,6 +94,16 @@ pub trait ArtifactArtifactsApi {
         answer: artifact::webview::WebViewCallAnswer,
         session: Option<SessionId>,
     ) -> RpcResult<bool>;
+    /// A client's answer to a `LayoutCommandRequested`: resolves the pending layout tool call.
+    /// Returns `true` if the command was still pending. Owner connections only; forwarded across
+    /// the mesh to the session's owner when another engine issued the command.
+    #[method(name = "answer_layout_command", with_extensions)]
+    async fn answer_layout_command(
+        &self,
+        id: artifact::layout::LayoutCallId,
+        answer: artifact::layout::LayoutCommandAnswer,
+        session: Option<SessionId>,
+    ) -> RpcResult<bool>;
     /// 192: draw one fence through the 164 renderer (a connected desktop/web client) and
     /// return the PNG — the native companions' pictures. `width` is clamped to 240..=1200
     /// CSS px, `scale` to 1..=3. Read-only; guest peers are refused.
@@ -339,6 +349,29 @@ impl ArtifactArtifactsApiServer for Server {
             }
         }
         Ok(webview::answer(&self.rt, id, answer, &by))
+    }
+
+    async fn answer_layout_command(
+        &self,
+        ext: &Extensions,
+        id: artifact::layout::LayoutCallId,
+        answer: artifact::layout::LayoutCommandAnswer,
+        session: Option<SessionId>,
+    ) -> RpcResult<bool> {
+        owner(ext)?;
+        if !artifact::layout::pending_here(id)
+            && let Some(session) = session
+            && let Some(r) = forward::route(
+                ext,
+                session,
+                "answer_layout_command",
+                (id, &answer, Some(session)),
+            )
+            .await?
+        {
+            return Ok(r);
+        }
+        Ok(artifact::layout::answer(id, answer))
     }
 
     async fn fence_snapshot(
