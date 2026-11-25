@@ -58,6 +58,23 @@ describe('cluster timer', () => {
     expect(t.isOpen()).toBe(false)
   })
 
+  it('an open popover holds it up past 4 s; closing restarts the 4 s; a pen still hides it', () => {
+    const { t } = rig()
+    t.tap()
+    t.hold(true)
+    vi.advanceTimersByTime(60_000)
+    expect(t.isOpen()).toBe(true)
+    t.hold(false)
+    vi.advanceTimersByTime(HIDE_MS - 1)
+    expect(t.isOpen()).toBe(true)
+    vi.advanceTimersByTime(1)
+    expect(t.isOpen()).toBe(false)
+    t.tap()
+    t.hold(true)
+    t.pen()
+    expect(t.isOpen()).toBe(false)
+  })
+
   it('activity while hidden does not raise it', () => {
     const { t } = rig()
     t.activity()

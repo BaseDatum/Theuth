@@ -733,6 +733,7 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
           canRedo={handle.current?.canRedo() ?? false}
           more={more}
           addable={readOnly ? { sticky: false, note: false, web: false, image: false, clipboard: false, artifact: false, excerpt: false, diff: false, terminal: false } : addable}
+          onHold={timer.hold}
         />
       )}
       {!embedded && onClose && clusterOpen && !outline && (

@@ -26,9 +26,10 @@ import {
   StickyNote,
   Undo2,
 } from 'lucide-react'
-import { type ComponentProps, type ReactNode, useState } from 'react'
+import { type ComponentProps, type ReactNode, useEffect, useState } from 'react'
 import { useStore } from 'zustand'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { usePointerCoarse } from '@/lib/mobile'
 import { useDark } from '@/lib/theme'
 import type { InkColour, InkTool } from './canvas/model'
 import { pickInkTool } from './canvas/input'
@@ -51,6 +52,8 @@ export type ClusterProps = {
   more: ReactNode
   /** What Add can offer: kinds that need a bound session are off without one. */
   addable: Record<AddKind, boolean>
+  /** A popover of the cluster opened (true) or every one closed (false): the auto-hide waits while one is open. */
+  onHold(open: boolean): void
 }
 
 const TOOLS: { tool: InkTool; label: string; icon: ReactNode }[] = [
@@ -91,7 +94,7 @@ export function ClusterButton({ label, on, children, ...rest }: { label: string;
 
 const Sep = () => <div className="my-0.5 h-px w-7 bg-current opacity-15" aria-hidden />
 
-function InkTools({ store, onActivity }: { store: WbStore; onActivity(): void }) {
+function InkTools({ store, onActivity, onOpenChange }: { store: WbStore; onActivity(): void; onOpenChange(open: boolean): void }) {
   const tool = useStore(store, (s) => s.tool)
   const colour = useStore(store, (s) => s.colour)
   const mode = useStore(store, (s) => s.mode)
@@ -102,7 +105,7 @@ function InkTools({ store, onActivity }: { store: WbStore; onActivity(): void })
   }
   const current = TOOLS.find((t) => t.tool === tool) ?? TOOLS[0]
   return (
-    <Popover>
+    <Popover onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <ClusterButton label={mode === 'erase' ? 'Ink tools: eraser (E)' : `Ink tools: ${current?.label} (P)`} on={mode === 'draw' || mode === 'erase'}>
           {mode === 'erase' ? <Eraser className="size-5" /> : current?.icon}
@@ -145,6 +148,16 @@ export function Cluster(p: ClusterProps) {
   const mode = useStore(p.store, (s) => s.mode)
   const follow = useStore(p.store, (s) => s.follow)
   const [addOpen, setAddOpen] = useState(false)
+  const [inkOpen, setInkOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
+  const held = addOpen || inkOpen || moreOpen
+  const { onHold } = p
+  useEffect(() => {
+    onHold(held)
+    return () => onHold(false)
+  }, [held, onHold])
+  // Touch: opening ⋯ must not focus its Title field (that raises the keyboard); a tap on the field focuses it.
+  const coarse = usePointerCoarse()
   const toggle = (m: Mode) => {
     p.store.getState().set({ mode: mode === m ? 'idle' : m })
     p.onActivity()
@@ -158,7 +171,7 @@ export function Cluster(p: ClusterProps) {
       onPointerDown={p.onActivity}
       onKeyDown={p.onActivity}
     >
-      <InkTools store={p.store} onActivity={p.onActivity} />
+      <InkTools store={p.store} onActivity={p.onActivity} onOpenChange={setInkOpen} />
       <Popover open={addOpen} onOpenChange={setAddOpen}>
         <PopoverTrigger asChild>
           <ClusterButton label="Add card">
@@ -219,13 +232,19 @@ export function Cluster(p: ClusterProps) {
       <ClusterButton label="Redo" onClick={p.onRedo} disabled={!p.canRedo}>
         <Redo2 className="size-5" />
       </ClusterButton>
-      <Popover>
+      <Popover open={moreOpen} onOpenChange={setMoreOpen}>
         <PopoverTrigger asChild>
           <ClusterButton label="More">
             <Ellipsis className="size-5" />
           </ClusterButton>
         </PopoverTrigger>
-        <PopoverContent side="left" align="end" className="wb-glass max-h-[70vh] w-72 overflow-y-auto rounded-2xl border-0 p-1.5" onPointerDown={p.onActivity}>
+        <PopoverContent
+          side="left"
+          align="end"
+          className="wb-glass max-h-[70vh] w-72 overflow-y-auto rounded-2xl border-0 p-1.5"
+          onPointerDown={p.onActivity}
+          onOpenAutoFocus={coarse ? (e) => e.preventDefault() : undefined}
+        >
           {p.more}
         </PopoverContent>
       </Popover>
