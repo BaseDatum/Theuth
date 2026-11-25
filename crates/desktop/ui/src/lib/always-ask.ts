@@ -56,7 +56,8 @@ export async function setAlwaysAsk(api: Api, session: string | null, tool: strin
 }
 
 /** Move `tool` from where it stands (`state`) to `to`. Harness-wide and chat entries are independent: `off` clears both;
- * `session` drops a harness-wide entry; `always` keeps the chat's own one (redundant, and removing it would need a card). */
+ * `session` drops a harness-wide entry; `always` keeps the chat's own one (redundant, and removing it would need a card).
+ * The new entry goes in before the old one comes out, so a failed (or denied) removal never leaves the tool unmarked. */
 export async function setAlwaysAskLevel(api: Api, session: string | null, state: AlwaysAskState | undefined, tool: string, to: AlwaysAskLevel): Promise<void> {
   const global = state?.global.includes(tool) ?? false
   const own = state?.session.includes(tool) ?? false
@@ -64,10 +65,9 @@ export async function setAlwaysAskLevel(api: Api, session: string | null, state:
     if (!global) await setAlwaysAsk(api, null, tool, true)
     return
   }
+  if (to === 'session' && session !== null && !own) await setAlwaysAsk(api, session, tool, true)
   if (global) await setAlwaysAsk(api, null, tool, false)
-  if (session === null) return
-  if (to === 'session' && !own) await setAlwaysAsk(api, session, tool, true)
-  if (to === 'off' && own) await setAlwaysAsk(api, session, tool, false)
+  if (to === 'off' && session !== null && own) await setAlwaysAsk(api, session, tool, false)
 }
 
 /** Every `get_always_ask` reading refetches (prefix `['always-ask']`): children inherit a chat's entries and every chat

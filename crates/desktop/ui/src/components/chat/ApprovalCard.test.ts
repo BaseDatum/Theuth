@@ -8,7 +8,7 @@ import type { AskRequested } from "@/rpc/bindings/method.roster.output"
 import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { active } from '@/store/engine-scope'
 import { dispatch } from '@/store/sessions'
-import { ApprovalCard, relayedLine } from './ApprovalCard'
+import { ApprovalCard, offersAlwaysAsk, relayedLine } from './ApprovalCard'
 
 const CLOUD = 'c10d'.repeat(16)
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<object>()), useApi: () => ({ list_sessions: async () => [] }) }))
@@ -89,6 +89,26 @@ test('219 §6.1: an always-ask card carries the badge and no offer; any other ca
     const plain = card(false)
     expect(plain).not.toContain('>always ask</span>')
     expect(plain).toContain('>Always ask for shell</button>')
+  } finally {
+    can.mark = false
+  }
+})
+
+test('219 §6.1: no "Always ask for" offer on a human-only card, the nil session, the removal card or an ACP title', () => {
+  const base = approval('0190a5b2-0000-7000-8000-000000000001')
+  expect(offersAlwaysAsk(base)).toBe(true)
+  expect(offersAlwaysAsk({ ...base, always_ask: true })).toBe(false)
+  expect(offersAlwaysAsk({ ...base, human_only: true })).toBe(false)
+  expect(offersAlwaysAsk({ ...base, session: '00000000-0000-0000-0000-000000000000' })).toBe(false)
+  expect(offersAlwaysAsk({ ...base, tool: 'always_ask.remove' })).toBe(false)
+  expect(offersAlwaysAsk({ ...base, tool: 'rm -rf build' })).toBe(false)
+  can.mark = true
+  try {
+    const client = new QueryClient()
+    client.setQueryData(queryKeys.sessions, [{ id: base.session, owner: 'me', here: true }])
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client, children: createElement(ApprovalCard, { approval: { ...base, human_only: true } }) as ReactNode }))
+    expect(html).toContain('>Allow</button>')
+    expect(html).not.toContain('Always ask for')
   } finally {
     can.mark = false
   }

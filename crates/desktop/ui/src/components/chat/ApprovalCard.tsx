@@ -43,6 +43,16 @@ export function relayedLine(risk: Risk, owner: string, deadline: number | null):
   return `${RISK[risk]} · relayed from ${owner} · denies at ${at}`
 }
 
+const NIL_SESSION = '00000000-0000-0000-0000-000000000000'
+
+/** 219 §6.1: whether a non-always-ask card offers "Always ask for <tool>". Not on a human-only card (already the human's),
+ * not without a chat to mark (the nil session), not on the removal card itself, and not on an ACP title (`rm -rf build`)
+ * that no registry entry can match. */
+export function offersAlwaysAsk(approval: ApprovalRequested): boolean {
+  return !approval.always_ask && !approval.human_only && approval.session !== NIL_SESSION
+    && approval.tool !== 'always_ask.remove' && !/\s/.test(approval.tool)
+}
+
 /** `approval: tool (risk)`, the described arguments, Allow / Deny. Rendered at the tool row or at the transcript's end.
  * 126 §10: the double's chip beside the title; at L1 its choice is the filled button; at L2 the whole card takes over.
  * 183 §12.3: a session owned elsewhere reads `<owner> asks: tool` with the relayed line; the answer forwards.
@@ -135,7 +145,7 @@ export const ApprovalCard = memo(function ApprovalCard({
         >
           Deny
         </Button>
-        {!always && canMark && !marked && (
+        {offersAlwaysAsk(approval) && canMark && !marked && (
           <Button variant="ghost" size="sm" className="ml-auto text-fg-secondary pointer-coarse:h-11" onClick={() => void mark()}>
             {`Always ask for ${approval.tool}`}
           </Button>
