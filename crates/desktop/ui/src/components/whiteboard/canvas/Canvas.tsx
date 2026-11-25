@@ -378,6 +378,8 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const rubberRef = useRef<Rubber | null>(null)
   const propsRef = useRef({ onPenActivity, onCanvasTap, readOnly })
   propsRef.current = { onPenActivity, onCanvasTap, readOnly }
+  /** Space held: a mouse drag pans (the grab cursor), whatever the tool. */
+  const [spaceHeld, setSpaceHeld] = useState(false)
 
   const drawWet = useCallback(() => {
     const cv = wetCanvas.current
@@ -516,9 +518,11 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       if (e.code !== 'Space') return
       const t = e.target as HTMLElement | null
       space = e.type === 'keydown' && !(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))
+      setSpaceHeld(space)
     }
     const release = () => {
       space = false
+      setSpaceHeld(false)
     }
     const stateNow = (e?: PointerEvent) => {
       const s = store.getState()
@@ -1013,9 +1017,11 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
 
   const bg = board.meta.bg
   const cls = ['wb-canvas relative size-full', mode === 'link' && 'link-mode', className].filter(Boolean).join(' ')
+  // The pointer's cursor follows the latched tool: React Flow's grab hand only to pan (no ink tool, Space held, a drag).
+  const cursor = readOnly || spaceHeld ? undefined : mode === 'draw' ? 'ink' : mode === 'erase' ? 'erase' : undefined
   return (
     <Ctx.Provider value={ctx}>
-      <div ref={wrap} className={cls} data-mode={mode}>
+      <div ref={wrap} className={cls} data-mode={mode} data-cursor={cursor}>
         <ReactFlow
           nodes={nodes}
           edges={edges}

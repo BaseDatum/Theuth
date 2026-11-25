@@ -3,7 +3,7 @@
 // popover, then stroke after stroke. On the iPad the first stroke goes through the pointer path (native capture is off
 // while the cluster is up) and its pen-down hides the cluster; the strokes after it are native. The fake plugin keeps
 // the plugin's own rules: its recogniser takes a Pencil touch only if it was on when the touch began, and the page
-// still gets every Pencil pointer event (route A). On the desktop the mouse inks.
+// still gets every Pencil pointer event (route A). On the desktop the mouse inks; the cursor follows the tool.
 import '../settings/test-dom'
 import { act, createElement as h, createRef } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -229,18 +229,45 @@ describe('iPad + Pencil: the picked tool draws every stroke', () => {
   })
 })
 
-describe('desktop + mouse: the picked tool draws every stroke', () => {
+describe('desktop + mouse: the picked tool draws every stroke and the cursor follows it', () => {
   beforeEach(() => mount(false))
 
-  it('pick Pen + blue with the mouse → stroke, stroke, stroke: each draws', async () => {
+  it('pick Pen + blue with the mouse → stroke, stroke, stroke: each draws; the cursor is the ink cursor throughout', async () => {
+    expect(pane().closest('.wb-canvas')!.getAttribute('data-cursor')).toBeNull()
     await openInkTools('mouse')
     await tap(button('Pen')!, 'mouse')
     await tap(document.querySelector('button[aria-label="blue"]')!, 'mouse')
+    const wrap = pane().closest('.wb-canvas')!
+    expect(wrap.getAttribute('data-cursor')).toBe('ink')
     for (let n = 1; n <= 3; n++) {
       await mouseStroke(n * 120)
       expect(strokes()).toHaveLength(n)
       expect(strokes().at(-1)).toMatchObject({ tool: 'pen', colour: 'blue' })
       expect(store.getState()).toMatchObject({ mode: 'draw', tool: 'pen', colour: 'blue' })
+      expect(wrap.getAttribute('data-cursor')).toBe('ink')
     }
+  })
+
+  it('cursor: eraser for the eraser, the grab hand while Space pans or with select, none for idle', async () => {
+    const wrap = pane().closest('.wb-canvas')!
+    await openInkTools('mouse')
+    await tap(button('Eraser')!, 'mouse')
+    expect(wrap.getAttribute('data-cursor')).toBe('erase')
+    await tap(button('Marker')!, 'mouse')
+    expect(wrap.getAttribute('data-cursor')).toBe('ink')
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ' }))
+    })
+    expect(wrap.getAttribute('data-cursor')).toBeNull() // React Flow's grab hand
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space', key: ' ' }))
+    })
+    expect(wrap.getAttribute('data-cursor')).toBe('ink')
+    await tap(button('Select')!, 'mouse')
+    expect(wrap.getAttribute('data-cursor')).toBeNull()
+    await act(async () => {
+      store.getState().set({ mode: 'idle' })
+    })
+    expect(wrap.getAttribute('data-cursor')).toBeNull()
   })
 })

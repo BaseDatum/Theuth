@@ -203,6 +203,17 @@
   .wb-canvas .react-flow__handle.wb-handle::after { content: ''; position: absolute; inset: -14px; border-radius: 50%; }
 }
 
+/* The cursor follows the latched ink tool (Canvas sets `data-cursor` while no Space pan is held): over the pane, cards and
+ * frame titles alike, since the mouse inks over all of them. A pan drag still shows React Flow's grabbing hand. */
+.wb-canvas[data-cursor='ink'] .react-flow__pane:not(.dragging)::before,
+.wb-canvas[data-cursor='ink'] .react-flow__node,
+.wb-canvas[data-cursor='ink'] .react-flow__node-frame .wb-frame-title { cursor: crosshair; }
+.wb-canvas[data-cursor='erase'] .react-flow__pane:not(.dragging)::before,
+.wb-canvas[data-cursor='erase'] .react-flow__node,
+.wb-canvas[data-cursor='erase'] .react-flow__node-frame .wb-frame-title {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20'%3E%3Ccircle cx='10' cy='10' r='7' fill='white' fill-opacity='.55' stroke='black' stroke-width='1.5'/%3E%3C/svg%3E") 10 10, cell;
+}
+
 .wb-canvas .react-flow__edge-path { stroke: var(--wb-link); stroke-width: 1.6; }
 .wb-canvas .react-flow__edge.selected .react-flow__edge-path { stroke: var(--wb-accent); stroke-width: 2.2; }
 .wb-link-label {
