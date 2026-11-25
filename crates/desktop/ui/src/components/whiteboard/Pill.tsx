@@ -59,7 +59,7 @@ export function SessionChip({ p, onOpen }: { p: SessionPick; onOpen?(open: boole
         <button
           type="button"
           aria-label={p.session ? `Session: ${p.title ?? 'untitled'}. Change session` : 'No session. Choose a session'}
-          className="wb-well flex h-8 max-w-[11rem] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-semibold"
+          className="wb-well flex h-8 min-w-[5.5rem] max-w-[11rem] shrink items-center gap-1.5 rounded-full px-2.5 text-[12px] font-semibold"
         >
           <span className="wb-dot" data-busy={p.busy} style={p.session ? { background: inkCss('green', dark) } : undefined} aria-hidden />
           <span className="min-w-0 truncate">{p.session ? shortName(p.title) : 'no session'}</span>
@@ -113,7 +113,8 @@ export function Pill({
       {recording ? (
         <div className="relative flex h-full min-w-0 flex-1 items-center justify-end">{recording}</div>
       ) : (
-        <button type="button" onClick={onOpen} aria-label={status ? `${status}. Write a message` : 'Write a message'} className="h-full min-w-0 flex-1 truncate text-left text-[14px]">
+        // A status (agent line, notice, approval) keeps ~20 characters: the session chip shrinks to make room.
+        <button type="button" onClick={onOpen} title={status ?? undefined} aria-label={status ? `${status}. Write a message` : 'Write a message'} className={`h-full flex-1 truncate text-left text-[14px] ${status ? 'min-w-[9.5rem]' : 'min-w-0'}`}>
           <span className={status ? '' : 'wb-muted'} aria-live="polite">
             {status ?? 'Ask…'}
           </span>

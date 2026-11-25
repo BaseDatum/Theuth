@@ -842,7 +842,11 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
         const b = boxOf(id)
         if (b) u = union(u, b)
       }
-      if (u) void rf.fitBounds({ x: u[0], y: u[1], width: u[2], height: u[3] }, { padding: 0.15, duration })
+      if (!u) return
+      // fitBounds has no maxZoom: one small card would fill the window at 3×+. Cap at 100 %, centred.
+      const r = wrap.current?.getBoundingClientRect()
+      const zoom = r ? Math.min(1, r.width / (u[2] * 1.3), r.height / (u[3] * 1.3)) : 1
+      void rf.setCenter(u[0] + u[2] / 2, u[1] + u[3] / 2, { zoom, duration })
     },
     focus,
     view: () => ({ ...viewRef.current }),
