@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, expect, test, vi } from 'vitest'
 import type { Api } from '@/rpc/bindings/client'
 import { approvalsChoice, setApprovalsLevel } from './approvals-level'
-import { ApprovalShieldView, ComposerMeta, costBallpark, shieldState } from './ComposerMeta'
+import { ApprovalShieldView, ComposerMeta, ContextButtonView, costBallpark, shieldState } from './ComposerMeta'
 
 vi.mock('@/lib/notify', () => ({ notify: Object.assign(vi.fn(), { error: vi.fn(), message: vi.fn() }) }))
 
@@ -260,4 +260,32 @@ test('219 §6.1: always-ask tools add a line that opens the Tools sheet; with ap
   expect(shield().getAttribute('title')).toBe('Approvals on: asks before risky tools')
   click(shield())
   expect(document.querySelector('[data-level="always-ask"]')).toBeNull()
+})
+
+test('context button: the ring fills with the used share and warns from 80 %, danger from 95 %; its rows run /compact, /shake and /clear', () => {
+  host = document.createElement('div')
+  document.body.append(host)
+  root = createRoot(host)
+  const onAction = vi.fn()
+  const show = (pct: number | null) => act(() => root!.render(h(ContextButtonView, { reading: pct === null ? null : { used: 128_000, limit: 200_000, pct, cache: null, estimated: false }, onAction })))
+  const button = () => document.querySelector<HTMLButtonElement>('[data-context-button]')!
+  const tone = () => button().className.split(' ').filter((c) => /^text-(fg-tertiary|warning|danger)$/.test(c))
+  show(null)
+  expect(tone()).toEqual(['text-fg-tertiary'])
+  expect(button().querySelector('[data-ring-used]')).toBeNull()
+  for (const [pct, want] of [[64, 'text-fg-tertiary'], [79, 'text-fg-tertiary'], [80, 'text-warning'], [94, 'text-warning'], [95, 'text-danger']] as const) {
+    show(pct)
+    expect(tone(), `${pct}%`).toEqual([want])
+  }
+  show(64)
+  const used = button().querySelector('[data-ring-used]')!.getAttribute('stroke-dasharray')!.split(' ').map(Number)
+  expect(used[0]! / used[1]!).toBeCloseTo(0.64)
+  click(button())
+  expect(document.body.textContent).toContain('128k of 200k · 64%')
+  const rows = [...document.querySelectorAll<HTMLElement>('[data-context-action]')]
+  expect(rows.map((r) => r.dataset.contextAction)).toEqual(['/compact', '/shake', '/clear'])
+  expect(rows.map((r) => r.firstElementChild?.textContent)).toEqual(['Compact', 'Shake…', 'Clear'])
+  expect(rows.every((r) => r.className.split(' ').includes('min-h-9'))).toBe(true)
+  click(rows[2]!)
+  expect(onAction).toHaveBeenCalledWith('/clear')
 })

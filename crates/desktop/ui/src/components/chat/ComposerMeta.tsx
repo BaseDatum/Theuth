@@ -17,7 +17,8 @@ import { useConnection } from '@/store/connection'
 import { type ApprovalLevel, type ApprovalsChoice, approvalsChoice, setApprovalsLevel } from './approvals-level'
 import { alwaysAskCount, useAlwaysAsk } from '@/lib/always-ask'
 import { useToolsSheet } from './tools-sheet'
-import { band, useContextReading } from './ContextMeter'
+import { type ContextReading, band, useContextReading } from './ContextMeter'
+import { contextCommand } from './slash'
 import { useCost } from './CostPill'
 
 /**
@@ -51,17 +52,22 @@ export type MetaData = {
   cost: { short: string; exact: string; title: string } | null
 }
 
+/** The context meter's reading of `session` (its memory mode from `list_sessions`): the strip's percent and the context button's ring. */
+function useSessionContext(session: string | null | undefined): ContextReading | null {
+  const canSessions = useQuerySupport(['list_sessions'])
+  const api = useApi()
+  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canSessions && !!session })
+  const memory = sessions.data?.find((s) => s.id === session)?.memory
+  return useContextReading(session ?? '', memory)
+}
+
 /**
  * The composer's `13%  ~$44` for `session`, or `null` when there is none to show (no session: the new-chat draft; no
  * context reading and nothing priced). The percent is the context meter's own reading (`useContextReading`), the cost
  * the breakdown dialog's `session_cost` query (`useCost`).
  */
 export function useComposerMeta(session: string | null | undefined): MetaData | null {
-  const canSessions = useQuerySupport(['list_sessions'])
-  const api = useApi()
-  const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: () => api.list_sessions(), enabled: canSessions && !!session })
-  const memory = sessions.data?.find((s) => s.id === session)?.memory
-  const reading = useContextReading(session ?? '', memory)
+  const reading = useSessionContext(session)
   const cost = useCost(session ?? '')
   if (!session) return null
   const glance = cost ? costGlance(cost.total) : null
@@ -251,4 +257,108 @@ export function ApprovalShield({ session }: { session: string }) {
     useToolsSheet.getState().show(session)
   }
   return <ApprovalShieldView state={state} choice={choice} waiting={waiting.length} alwaysAsk={alwaysAsk} onPick={pick} onJump={jump} onAlwaysAsk={openTools} open={open} onOpenChange={setOpen} />
+}
+
+/** The ring's tone: muted, then warning from 80 % and danger from 95 % of the window. */
+export function contextTone(pct: number | null): string {
+  return pct === null || pct < 80 ? 'text-fg-tertiary' : pct < 95 ? 'text-warning' : 'text-danger'
+}
+
+const RING = 2 * Math.PI * 8
+
+/** A faint full circle with the used fraction drawn over it clockwise from 12 o'clock (`pct`, clamped to 0–100). */
+export function ContextRing({ pct, className }: { pct: number | null; className?: string }) {
+  const used = Math.min(100, Math.max(0, pct ?? 0)) / 100
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" aria-hidden className={className}>
+      <circle cx="12" cy="12" r="8" opacity={0.28} />
+      {used > 0 && <circle data-ring-used="" cx="12" cy="12" r="8" strokeDasharray={`${used * RING} ${RING}`} transform="rotate(-90 12 12)" />}
+    </svg>
+  )
+}
+
+export type ContextAction = '/compact' | '/shake' | '/clear'
+
+const CONTEXT_ROWS: readonly { action: ContextAction; label: string; detail: string; danger?: boolean }[] = [
+  { action: '/compact', label: 'Compact', detail: 'Fold older turns into a summary' },
+  { action: '/shake', label: 'Shake…', detail: 'Pick what to drop: tool output, files, images' },
+  { action: '/clear', label: 'Clear', detail: "Drop the conversation, keep this chat's settings", danger: true },
+]
+
+/**
+ * The context button and its popover, without data: the fill ring (muted, warning from 80 %, danger from 95 %), and
+ * a popover with `<used> of <window> · N%`, a thin meter and the three ways to free room (`/compact`, `/shake`, `/clear`).
+ */
+export function ContextButtonView({
+  reading,
+  onAction,
+  open,
+  onOpenChange,
+}: {
+  reading: ContextReading | null
+  onAction(action: ContextAction): void
+  open?: boolean
+  onOpenChange?(open: boolean): void
+}) {
+  const pct = reading?.pct ?? null
+  const tone = contextTone(pct)
+  const label = pct === null ? 'Context' : `Context ${pct}% used`
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          data-context-button=""
+          aria-label={label}
+          title={label}
+          className={cn('grid h-9 w-8 shrink-0 place-items-center rounded-lg outline-none hover:bg-foreground/6 focus-visible:ring-2 focus-visible:ring-ring/50 data-[state=open]:bg-foreground/6', tone)}
+        >
+          <ContextRing pct={pct} className="size-[18px]" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" side="top" className="w-72 p-1 text-[13px]">
+        <div className="flex items-baseline justify-between gap-2 px-2 pt-1.5 font-medium">
+          <span>Context</span>
+          {reading && (
+            <span className="truncate text-[11px] font-normal text-fg-tertiary tabular-nums">
+              {reading.estimated && '≈ '}
+              {ktok(reading.used)}
+              {reading.limit > 0 && ` of ${ktok(reading.limit)}`}
+              {pct !== null && ` · ${pct}%`}
+            </span>
+          )}
+        </div>
+        <div className="mx-2 mt-2 mb-1.5 h-1 overflow-hidden rounded-full bg-foreground/10">
+          <div className={cn('h-full rounded-full bg-current', tone === 'text-fg-tertiary' ? 'text-fg-secondary' : tone)} style={{ width: `${Math.min(100, Math.max(0, pct ?? 0))}%` }} />
+        </div>
+        {CONTEXT_ROWS.map((r) => (
+          <button
+            key={r.action}
+            type="button"
+            data-context-action={r.action}
+            className="flex min-h-9 w-full flex-col items-start justify-center rounded-md px-2 py-1.5 text-left hover:bg-foreground/6"
+            onClick={() => onAction(r.action)}
+          >
+            <span className={cn('font-medium', r.danger && 'text-danger')}>{r.label}</span>
+            <span className="text-[11px] text-fg-tertiary">{r.detail}</span>
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/**
+ * Between the MCP button and the shield: how full this chat's context is (the strip's reading, `useContextReading`),
+ * and a popover running `/compact`, `/shake` (the context picker) and `/clear` exactly as typed (`contextCommand`).
+ */
+export function ContextButton({ session }: { session: string }) {
+  const api = useApi()
+  const reading = useSessionContext(session)
+  const [open, setOpen] = useState(false)
+  const act = (action: ContextAction) => {
+    setOpen(false)
+    contextCommand(api, session, action)
+  }
+  return <ContextButtonView reading={reading} onAction={act} open={open} onOpenChange={setOpen} />
 }

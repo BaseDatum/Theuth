@@ -773,7 +773,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       window.dispatchEvent(new CustomEvent('theuth:terminals', { detail: { session: need(session) } }))
       return
     case '/compact': {
-      if (!arg) return compact(api, need(session), null)
+      if (!arg) return contextCommand(api, need(session), '/compact')
       const s = style(sub)
       if (s) return compact(api, need(session), s)
       if (sub === 'style') {
@@ -791,7 +791,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       throw new Error('usage: /compact [summary|cut|snap|style …]')
     }
     case '/clear':
-      return compact(api, need(session), 'clear')
+      return contextCommand(api, need(session), '/clear')
     case '/cancel':
       if (session) await api.cancel(session, null, 'stop')
       return
@@ -821,7 +821,7 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
     // Literal categories only (48 §2.1, 197 §7): an unknown word is usage, never a skill or chat input.
     case '/shake': {
       const id = need(session)
-      if (!arg) return openContextPicker(id)
+      if (!arg) return contextCommand(api, id, '/shake')
       const w = SHAKE_WORDS.find((x) => x === arg)
       if (!w) throw new Error(SHAKE_USAGE)
       return openContextPicker(id, w)
@@ -850,6 +850,12 @@ export async function run(line: string, ctx: Ctx): Promise<void> {
       if (!session) await navigate({ to: '/c/$session', params: { session: id } })
     }
   }
+}
+
+/** `/compact`, `/shake` and `/clear` as typed without an argument: the composer's context button runs the same. */
+export function contextCommand(api: Api, session: string, cmd: '/compact' | '/shake' | '/clear'): void {
+  if (cmd === '/shake') return openContextPicker(session)
+  compact(api, session, cmd === '/clear' ? 'clear' : null)
 }
 
 // A command whose RPC waits on a model call must not be awaited by `submit` (it holds `busy`, locking the

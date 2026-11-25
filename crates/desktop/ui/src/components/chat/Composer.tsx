@@ -10,7 +10,6 @@ import {
   CircleAlert,
   FileUp,
   Loader2,
-  Megaphone,
   MessageSquarePlus,
   Paperclip,
   Plus,
@@ -78,7 +77,6 @@ import { PillRow, SkillPicker, SkillsEntry } from './SkillPicker'
 import { SuffixList, SuffixScopes } from './SuffixPicker'
 import { CommunicationNotice, useCommunication } from './CommunicationNotice'
 import { useNextPick } from './NextSteps'
-import { openBroadcastDialog } from './BroadcastDialog'
 import { ContextPicker } from './ContextPicker'
 import { MicButton } from './MicButton'
 import { useNoteRecorder } from './use-note-recorder'
@@ -87,7 +85,7 @@ import { CancelHint, DeleteNote, RecordingMeta, type Stage } from './VoiceHold'
 import { HeldStrip } from './HeldStrip'
 import { type Uploaded, uploadWait, useUploads } from './uploads'
 import { McpMenu } from './McpMenu'
-import { ApprovalShield, ComposerMeta, useComposerMeta } from './ComposerMeta'
+import { ApprovalShield, ComposerMeta, ContextButton, useComposerMeta } from './ComposerMeta'
 import { ComposerModel } from './ModelMenu'
 import { OwnerOfflineCard } from './OwnerOfflineCard'
 import { RecordingBox, VoiceWave, useVoiceSource } from '@/components/voice/VoiceWave'
@@ -1594,9 +1592,6 @@ export function Composer({
                   >
                     <StickyNote /> New note
                   </Button>
-                  <Button variant="ghost" className="w-full justify-start" onClick={() => openBroadcastDialog({ text })}>
-                    <Megaphone /> Send to many…
-                  </Button>
                   <SkillsEntry onOpen={() => setSkillStep(true)} />
                   <Button variant="ghost" className="w-full justify-start" onClick={() => setSuffixStep('list')}>
                     <MessageSquarePlus /> Add prompt suffix
@@ -1608,7 +1603,9 @@ export function Composer({
           </Popover>
           {/* #4: this chat's MCP servers, beside `+`; a HUD composer sends into a chat named on demand, so it has none. */}
           {!readOnly && !resolveSession && <McpMenu session={session ?? ''} className={cn(stage !== 'idle' && 'hidden')} />}
-          {/* This chat's approval level, right of MCP: the one composer item that never sheds on a narrow bar. */}
+          {/* How full this chat's context is, and compact / shake / clear: between tools and the shield. */}
+          {!readOnly && !resolveSession && session && stage === 'idle' && <ContextButton session={session} />}
+          {/* This chat's approval level, right of the context button: the one composer item that never sheds on a narrow bar. */}
           {!readOnly && !resolveSession && session && stage === 'idle' && <ApprovalShield session={session} />}
           {/* 215 C2: the spacer, and the model's slot at its right end: `flex-1` from a 0 basis, so its width is exactly
               the room left, whatever the label shows. `-ml-1` cancels its own gap — 4px a 280px pane needs. A HUD

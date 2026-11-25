@@ -66,10 +66,10 @@ test('183 §12.1 / mock panel 3: a chat owned elsewhere says where the message r
   expect(placeholderFor({ ...idle, readOnly: true, runsOn: 'cloud-1' })).toBe('Talking — speak, or stop the talk to type')
 })
 
-test('215 C2: inside the data-composer box the text comes first, then the toolbar row (Add … MCP … model … Send)', () => {
+test('215 C2: inside the data-composer box the text comes first, then the toolbar row (Add … MCP · context · shield … model … Send)', () => {
   const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
   const at = (s: string) => src.indexOf(s)
-  const order = ['data-composer=""', '<Textarea', 'aria-label="Add"', '<McpMenu', '<ComposerModel', '<MicButton', '<SendButton ', '{suggestion &&']
+  const order = ['data-composer=""', '<Textarea', 'aria-label="Add"', '<McpMenu', '<ContextButton', '<ApprovalShield', '<ComposerModel', '<MicButton', '<SendButton ', '{suggestion &&']
   for (const s of order) expect(at(s), s).toBeGreaterThan(0)
   for (let i = 1; i < order.length; i++) expect(at(order[i - 1]!), `${order[i - 1]} before ${order[i]}`).toBeLessThan(at(order[i]!))
   expect(src).not.toMatch(/rounded-\[28px\]/)
