@@ -55,7 +55,15 @@ export function UnlockCard({
         Unlock bw/{conn} <span className="font-normal text-fg-secondary">({account})</span>
       </div>
       {reason && <div className="text-xs text-fg-secondary">needed for <span className="font-mono">{reason}</span></div>}
-      <Input type="password" autoComplete="off" aria-label={`master password for ${conn}`} placeholder="Master password" value={password} onChange={(e) => setPassword(e.target.value)} disabled={busy} />
+      <Input
+        type="password"
+        autoComplete="off"
+        aria-label={`master password for ${conn}`}
+        placeholder="Master password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        disabled={busy}
+      />
       {error && <div className="text-xs text-danger">{error}</div>}
       <div className="flex gap-2">
         <Button type="submit" size="sm" disabled={busy || !password}>
@@ -169,7 +177,15 @@ export function LoginCard({
       {method === 'api_key' ? (
         <>
           <Input autoComplete="off" aria-label="client_id" placeholder="client_id (user.…)" value={f.client_id} onChange={set('client_id')} disabled={busy} spellCheck={false} />
-          <Input type="password" autoComplete="off" aria-label="client_secret" placeholder="client_secret" value={f.client_secret} onChange={set('client_secret')} disabled={busy} />
+          <Input
+            type="password"
+            autoComplete="off"
+            aria-label="client_secret"
+            placeholder="client_secret"
+            value={f.client_secret}
+            onChange={set('client_secret')}
+            disabled={busy}
+          />
           <div className="text-xs text-fg-tertiary">Bitwarden › Account settings › Security › Keys › View API key. No 2FA prompt applies.</div>
         </>
       ) : (
@@ -188,7 +204,16 @@ export function LoginCard({
               <Input autoComplete="one-time-code" aria-label="two-factor code" placeholder="Code" value={f.code} onChange={set('code')} disabled={busy} />
             </div>
           )}
-          {step?.step === 'need_new_device_otp' && <Input autoComplete="one-time-code" aria-label="new device code" placeholder="Code Bitwarden emailed for this new device" value={f.otp} onChange={set('otp')} disabled={busy} />}
+          {step?.step === 'need_new_device_otp' && (
+            <Input
+              autoComplete="one-time-code"
+              aria-label="new device code"
+              placeholder="Code Bitwarden emailed for this new device"
+              value={f.otp}
+              onChange={set('otp')}
+              disabled={busy}
+            />
+          )}
           <div className="text-xs text-fg-tertiary">Duo and WebAuthn need a browser and are not offered; use an API key instead.</div>
         </>
       )}

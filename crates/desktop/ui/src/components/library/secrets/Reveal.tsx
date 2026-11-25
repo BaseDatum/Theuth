@@ -63,7 +63,7 @@ export function Reveal({ conn, refText, label, allowed }: { conn: string; refTex
     )
   return (
     <span className="flex items-center gap-1">
-      <Input readOnly type={shown ? 'text' : 'password'} value={value} aria-label={`value of ${label}`} autoComplete="off" className="h-7 w-56 font-mono text-xs" />
+      <Input readOnly type={shown ? 'text' : 'password'} value={value} aria-label={`value of ${label}`} autoComplete="off" className="h-7 w-56 font-mono md:text-xs" />
       <Button variant="ghost" size="icon-sm" aria-label={shown ? `Mask ${label}` : `Show ${label}`} onClick={() => setShown(!shown)}>
         {shown ? <EyeOff /> : <Eye />}
       </Button>

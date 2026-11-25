@@ -117,7 +117,13 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
         <ToggleGroupItem value="bw">Bitwarden</ToggleGroupItem>
         <ToggleGroupItem value="aws">AWS Secrets Manager</ToggleGroupItem>
       </ToggleGroup>
-      <Input value={conn} onChange={(e) => setConn(e.target.value)} placeholder="Name (personal, prod)" aria-label="Connection name" spellCheck={false} />
+      <Input
+        value={conn}
+        onChange={(e) => setConn(e.target.value)}
+        placeholder="Name (personal, prod)"
+        aria-label="Connection name"
+        spellCheck={false}
+      />
       {nameError && <div className="text-xs text-danger">{nameError}</div>}
       {backend === 'aws' ? (
         <>
@@ -140,7 +146,13 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
             ))}
           </select>
           <Input value={aws.kms} onChange={(e) => setAws({ ...aws, kms: e.target.value })} placeholder="KMS key for new secrets (optional, alias/app)" aria-label="KMS key" spellCheck={false} />
-          <Input value={aws.prefix} onChange={(e) => setAws({ ...aws, prefix: e.target.value })} placeholder="Name prefix to browse (optional, app/)" aria-label="Prefix" spellCheck={false} />
+          <Input
+            value={aws.prefix}
+            onChange={(e) => setAws({ ...aws, prefix: e.target.value })}
+            placeholder="Name prefix to browse (optional, app/)"
+            aria-label="Prefix"
+            spellCheck={false}
+          />
           <div className="text-xs text-fg-tertiary">Credentials stay in ~/.aws; an expired SSO session needs `aws sso login` outside theuth.</div>
         </>
       ) : (
@@ -154,7 +166,13 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
           </ToggleGroup>
           {bw.server === 'self_hosted' && (
             <>
-              <Input value={bw.base} onChange={(e) => setBw({ ...bw, base: e.target.value })} placeholder="https://vault.example.org" aria-label="Server URL" spellCheck={false} />
+              <Input
+                value={bw.base}
+                onChange={(e) => setBw({ ...bw, base: e.target.value })}
+                placeholder="https://vault.example.org"
+                aria-label="Server URL"
+                spellCheck={false}
+              />
               {bw.base.trim() && !bw.base.trim().startsWith('https://') && <div className="text-xs text-danger">Bitwarden's client talks HTTPS only.</div>}
               <div className="text-xs text-fg-tertiary">A private CA must be in this Mac's trust store (Keychain Access › System); there is no per-connection CA file.</div>
             </>

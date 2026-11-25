@@ -175,7 +175,7 @@ export function Browse({ info }: { info: ConnInfo }) {
                       if (name) importRef.mutate({ row: e.ref, ref: key ? `${e.ref}#${key}` : e.ref, name })
                     }}
                   >
-                    <Input value={importNames[e.ref] ?? ''} onChange={(ev) => setImportName(e.ref, ev.target.value)} placeholder="Local name" aria-label={`Local name for ${e.name}`} className="h-7 w-48 font-mono text-xs" spellCheck={false} />
+                    <Input value={importNames[e.ref] ?? ''} onChange={(ev) => setImportName(e.ref, ev.target.value)} placeholder="Local name" aria-label={`Local name for ${e.name}`} className="h-7 w-48 font-mono md:text-xs" spellCheck={false} />
                     <Button type="submit" variant="outline" size="xs" disabled={!(importNames[e.ref] ?? '').trim() || importRef.isPending}>
                       Import to vault
                     </Button>

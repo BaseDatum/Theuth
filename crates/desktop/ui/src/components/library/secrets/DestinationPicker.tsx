@@ -28,7 +28,7 @@ export function DestinationPicker({ value, fields, onChange, disabled }: { value
     <Input
       aria-label={label}
       placeholder={placeholder}
-      className="h-7 text-xs"
+      className="h-7 md:text-xs"
       value={value[key] ?? ''}
       onChange={(e) => set({ [key]: key === 'name' ? e.target.value : e.target.value || null })}
       spellCheck={false}
@@ -42,7 +42,7 @@ export function DestinationPicker({ value, fields, onChange, disabled }: { value
       </ToggleGroup>
       {replacing ? (
         <>
-          <Input aria-label="Search entries" placeholder="Search the connection's entries" className="h-7 text-xs" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <Input aria-label="Search entries" placeholder="Search the connection's entries" className="h-7 md:text-xs" value={search} onChange={(e) => setSearch(e.target.value)} />
           <select aria-label="Entry to replace" className={SELECT} value={value.replace ?? ''} onChange={(e) => set({ replace: e.target.value || '', name: items.data?.entries.find((x) => x.ref === e.target.value)?.name ?? value.name })}>
             <option value="">Choose an entry…</option>
             {items.data?.entries.map((x) => (
@@ -94,7 +94,7 @@ export function DestinationPicker({ value, fields, onChange, disabled }: { value
                 {custom && (
                   <Input
                     aria-label={`custom field name for ${f.name}`}
-                    className="h-7 w-32 text-xs"
+                    className="h-7 w-32 md:text-xs"
                     value={target.slice('field:'.length)}
                     onChange={(e) => set({ fields: { ...value.fields, [f.name]: `field:${e.target.value}` } })}
                   />

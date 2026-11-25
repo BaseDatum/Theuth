@@ -203,7 +203,12 @@ export function SendDialog({ initial, open, onOpenChange }: { initial: SendSourc
               Hide my email from the recipient
               <Switch aria-label="Hide my email" checked={hideEmail} onCheckedChange={setHideEmail} />
             </label>
-            <Input aria-label="Send notes" placeholder="Private notes (never the secret)" value={notes} onChange={(e) => setNotes(e.target.value)} />
+            <Input
+              aria-label="Send notes"
+              placeholder="Private notes (never the secret)"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+            />
             {error && <div className="text-xs text-danger">{error}</div>}
             {busy && (
               <div role="status" className="text-xs text-fg-secondary">
