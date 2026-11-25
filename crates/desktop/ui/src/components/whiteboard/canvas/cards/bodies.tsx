@@ -5,6 +5,7 @@ import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type Re
 import { useQuery } from '@tanstack/react-query'
 import type { CustomRendererProps } from 'streamdown'
 import { useFileUrl } from '@/components/chat/Attachments'
+import { BareSurface } from '@/components/chat/surface/bare'
 import { privateOwner } from '@/lib/private'
 import { useApi } from '@/lib/rpc'
 import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
@@ -201,17 +202,20 @@ export function LiveBody({ card, source, editing }: { card: Card; source: Source
     case 'page':
       return <PageCard card={card} callId={source.call_id} session={source.session} live />
     case 'diagram':
+      // The card is the frame: the chat renderers draw bare (no inner card, label or duplicate title) and fill it.
       return (
-        <div className="absolute inset-0 overflow-hidden p-2 [&_svg]:max-h-full [&_svg]:max-w-full">
-          <Suspense fallback={<Pending />}>
-            {source.lang === 'mermaid' ? (
-              <MermaidFence {...fence(source.code, 'mermaid')} fill />
-            ) : source.lang === 'openui' ? (
-              <OpenUIFence {...fence(source.code, 'openui')} />
-            ) : (
-              <JsonRenderFence {...fence(source.code, 'json-render')} />
-            )}
-          </Suspense>
+        <div className="absolute inset-0 overflow-hidden" data-diagram-body>
+          <BareSurface.Provider value>
+            <Suspense fallback={<Pending />}>
+              {source.lang === 'mermaid' ? (
+                <MermaidFence {...fence(source.code, 'mermaid')} />
+              ) : source.lang === 'openui' ? (
+                <OpenUIFence {...fence(source.code, 'openui')} />
+              ) : (
+                <JsonRenderFence {...fence(source.code, 'json-render')} />
+              )}
+            </Suspense>
+          </BareSurface.Provider>
         </div>
       )
     case 'excerpt':

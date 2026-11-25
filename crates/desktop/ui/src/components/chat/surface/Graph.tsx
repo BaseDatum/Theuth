@@ -17,6 +17,7 @@ import type { DiagramTokens } from '@/lib/diagram-theme'
 import { flattenElk, FONT_PX, type GraphData, ICON_W, type Layout, type LayoutEdge, LINE_PX, structuralHash, toElk, useDiagramTokens, useElkLayout, wrapLabel } from '@/lib/graph-layout'
 import type { GraphState } from "@/rpc/bindings/method.codeindex.output"
 import { DiagramFrame } from '../DiagramFrame'
+import { useBare } from './bare'
 
 type Node = GraphData['nodes'][number]
 type Edge = GraphData['edges'][number]
@@ -488,8 +489,9 @@ export interface Tip {
  */
 export function ElkFrame({ kind, hash, timeout, hover, tip, children }: { kind: string; hash: string; timeout: boolean; hover: string | null; tip: Tip | null; children: ReactNode }) {
   const wrap = useRef<HTMLDivElement>(null)
+  const bare = useBare()
   return (
-    <div ref={wrap}>
+    <div ref={wrap} className={bare ? 'h-full min-h-0' : undefined}>
       <DiagramFrame name={`${kind}-${hash}`} label={kind} kind={`${kind}-block`} title={timeout ? 'layout timed out; showing the text' : undefined}>
         {children}
       </DiagramFrame>

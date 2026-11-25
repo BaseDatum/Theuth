@@ -11,6 +11,7 @@ import { archive, dim, patchCard, restore } from './ops'
 import { IN_PLACE } from './ops'
 import { CardInk } from './InkLayer'
 import { toAbsolute, type CardNodeData } from './binding'
+import { isBare } from './send'
 import { useResizeEnd } from './resize'
 
 export type CardNodeType = Node<CardNodeData, 'card'>
@@ -118,10 +119,13 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
   const versioned = !IN_PLACE.includes(card.kind)
   const stacked = versioned && card.versions.length > 1
   const placeholder = card.placeholder !== undefined
+  // A diagram is just the diagram: no title bar; its title (if any) is a small caption on hover or selection.
+  const bare = isBare(card)
 
   const cls = [
     'wb-card',
     card.kind === 'sticky' && 'sticky',
+    bare && 'bare',
     stacked && 'stacked',
     card.state === 'dimmed' && 'dimmed',
     placeholder && 'placeholder',
@@ -152,13 +156,17 @@ export const CardNode = memo(function CardNode({ data, selected }: NodeProps<Car
         </NodeToolbar>
       )}
       <div className={cls} data-card={card.id} aria-label={`${KIND_NAME[card.kind]}: ${card.title}`}>
-        <div className="wb-head">
-          <span className="wb-title">{card.title || 'Untitled'}</span>
-          <span className="wb-kind">
-            {KIND_NAME[card.kind]}
-            {versioned && card.versions.length > 0 ? ` · v${scrub ?? card.versions.length}` : ''}
-          </span>
-        </div>
+        {bare ? (
+          card.title && <div className="wb-caption">{card.title}</div>
+        ) : (
+          <div className="wb-head">
+            <span className="wb-title">{card.title || 'Untitled'}</span>
+            <span className="wb-kind">
+              {KIND_NAME[card.kind]}
+              {versioned && card.versions.length > 0 ? ` · v${scrub ?? card.versions.length}` : ''}
+            </span>
+          </div>
+        )}
         <div
           className="wb-clip"
           data-body

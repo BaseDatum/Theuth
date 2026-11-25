@@ -105,3 +105,13 @@ it('a finger drags a sticky and a diagram far past their placement sizes; the do
   expect([drawn(sticky).width, drawn(sticky).height]).toEqual([`${b.cards[sticky]!.w}px`, `${b.cards[sticky]!.h}px`])
   expect([drawn(diagram).width, drawn(diagram).height]).toEqual([`${b.cards[diagram]!.w}px`, `${b.cards[diagram]!.h}px`])
 })
+
+it('a diagram card is one surface: no title bar or kind label, its title a caption; a sticky keeps its bar', async () => {
+  const sticky = addCard(doc, { kind: 'sticky', title: 'Idea', x: 0, y: 0, w: 220, h: 150, source: { t: 'sticky', text: 'x' } })
+  const diagram = addCard(doc, { kind: 'diagram', title: 'Flow', x: 400, y: 0, w: 360, h: 260, source: { t: 'diagram', lang: 'mermaid', code: 'flowchart LR\n  A --> B' } })
+  await act(async () => root.render(h(Canvas, { provider: { doc } as never, store, host: HOST })))
+  const card = (id: string) => document.querySelector(`[data-card="${id}"]`)!
+  expect(card(diagram).querySelector('.wb-head')).toBeNull()
+  expect(card(diagram).querySelector('.wb-caption')!.textContent).toBe('Flow')
+  expect(card(sticky).querySelector('.wb-head .wb-title')!.textContent).toBe('Idea')
+})
