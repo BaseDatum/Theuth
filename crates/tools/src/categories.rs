@@ -47,7 +47,7 @@ pub const DEFAULT_CATEGORIES: &[DefaultCategoryDef] = &[
     DefaultCategoryDef {
         id: "interface",
         label: "Interface",
-        description: "Interactive apps, previews, tiles, visual output and user prompts",
+        description: "Interactive apps, previews, tiles and visual output",
     },
     DefaultCategoryDef {
         id: "documentation",
@@ -88,6 +88,11 @@ pub const DEFAULT_CATEGORIES: &[DefaultCategoryDef] = &[
 
 /// The default high-level category of a registered native tool.
 pub fn default_category_for_builtin(tool_name: &str) -> &'static str {
+    match tool_name {
+        "message_user" => return "comms",
+        "ask_user" => return "harness",
+        _ => {}
+    }
     match crate::builtins::category_of(tool_name) {
         "files" | "shell" | "code" | "sandbox" | "autoresearch" => "engineering",
         "web" | "browser" => "web",
@@ -289,6 +294,8 @@ mod tests {
             assert_eq!(crate::builtins::category_of(tool), group, "{tool}");
             assert_eq!(default_category_for_builtin(tool), expected, "{group}");
         }
+        assert_eq!(default_category_for_builtin("message_user"), "comms");
+        assert_eq!(default_category_for_builtin("ask_user"), "harness");
     }
 
     #[test]
