@@ -238,20 +238,34 @@ function Shell({ doc, session: wanted = null, embedded = false, onSession, onClo
   type BubbleState = { text: string; turn: WbTurnInfo | null; session: string }
   const [bubble, setBubble] = useState<BubbleState | null>(null)
   const [undoing, setUndoing] = useState(false)
+  // The whiteboard does not stream the session's transcript (only its state), so the turn's final text is not in the
+  // store when `running` drops: the end of a turn re-reads the history and arms `awaiting`; the bubble opens once that
+  // session has a reply row.
+  const [awaiting, setAwaiting] = useState<string | null>(null)
   const wasRunning = useRef(running)
   useEffect(() => {
     const was = wasRunning.current
     wasRunning.current = running
-    if (!session || !was || running) return
-    const reply = lastReply(useSessions.getState().sessions[session]?.entries ?? [])
-    if (!reply) return
-    const s = session
+    if (running) return setAwaiting(null)
+    if (!session || !was) return
+    setAwaiting(session)
+    api.load_session(session, null, 60).then(
+      (page) => useSessions.getState().loadHistory(session, page, 'replace'),
+      () => {},
+    )
+  }, [running, session, api])
+  // Subscribed only while awaiting: streaming deltas of a running turn do not re-render the view.
+  const reply = useSessions((s) => (awaiting ? lastReply(s.sessions[awaiting]?.entries ?? []) : null))
+  useEffect(() => {
+    if (!awaiting || !reply) return
+    const s = awaiting
+    setAwaiting(null)
     setBubble({ text: reply, turn: null, session: s })
     rpc?.turn(doc, s).then(
       (turn) => setBubble((b) => (b && b.session === s ? { ...b, turn } : b)),
       () => {},
     )
-  }, [running, session, rpc, doc])
+  }, [awaiting, reply, rpc, doc])
   const anchor = bubble ? bubbleAnchor(bubble.turn, board) : null
 
   // ── Off-screen work (design §4.5): placeholders and the cards the target session's latest turn touched, when out
