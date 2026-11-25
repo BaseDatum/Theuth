@@ -371,7 +371,9 @@ pub struct GetAlwaysAsk {
 }
 
 /// 219 §4: the always-ask entries that apply, by where they come from.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply,
+)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AlwaysAskState {
     /// `tools.always_ask`, sorted.
@@ -1517,7 +1519,11 @@ impl ToolRegistry {
         let mut cur = self.parents.get(&id).copied();
         while let Some(p) = cur {
             if let Some(set) = self.always_ask_session.get(&p) {
-                inherited.extend(set.iter().filter(|n| !own.is_some_and(|o| o.contains(*n))).cloned());
+                inherited.extend(
+                    set.iter()
+                        .filter(|n| !own.is_some_and(|o| o.contains(*n)))
+                        .cloned(),
+                );
             }
             cur = self.parents.get(&p).copied();
         }
@@ -1547,13 +1553,20 @@ impl ToolRegistry {
         if risk < Risk::Mutating || !self.is_native(name) {
             return false;
         }
-        let Some(data_dir) = self.config_path.parent().filter(|d| !d.as_os_str().is_empty()) else {
+        let Some(data_dir) = self
+            .config_path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+        else {
             return false;
         };
         let Some(obj) = args.as_object() else {
             return false;
         };
-        let protected = [self.config_path.clone(), data_dir.join("mcp").join("config.yaml")];
+        let protected = [
+            self.config_path.clone(),
+            data_dir.join("mcp").join("config.yaml"),
+        ];
         let protected_real: Vec<Option<PathBuf>> =
             protected.iter().map(|p| crate::seat::real(p)).collect();
         let hits = |raw: &str| {
@@ -1905,7 +1918,15 @@ impl ToolRegistry {
         call: &ToolCall,
         activation: Option<&UserActivation>,
         expected_identity: &str,
-    ) -> Result<(DynTool, ToolSpec, Option<Admitted>, Option<ActorRef<Approval>>), Refused> {
+    ) -> Result<
+        (
+            DynTool,
+            ToolSpec,
+            Option<Admitted>,
+            Option<ActorRef<Approval>>,
+        ),
+        Refused,
+    > {
         use Refused::Unavailable;
         let name = &call.name;
         let tool = self
@@ -1958,7 +1979,10 @@ impl ToolRegistry {
                 None => return Err(Refused::NeedsApproval),
                 // 219 §2.2: nor is it the approval of an always-ask call: the press raises a card.
                 Some(_) if self.always(Some(call.session), name, protected) => {
-                    card = Some(self.approval_actor().map_err(|why| Unavailable(format!("{name}: {why}")))?);
+                    card = Some(
+                        self.approval_actor()
+                            .map_err(|why| Unavailable(format!("{name}: {why}")))?,
+                    );
                 }
                 Some(a) => tracing::info!(
                     tool = %name, risk = ?spec.risk, secrets = mentions,
@@ -2619,7 +2643,8 @@ impl Message<SetAlwaysAsk> for ToolRegistry {
                 } else {
                     next.remove(tool);
                 }
-                let value = serde_json::to_string(&sorted(&next)).unwrap_or_else(|_| "[]".to_owned());
+                let value =
+                    serde_json::to_string(&sorted(&next)).unwrap_or_else(|_| "[]".to_owned());
                 // Persist first (the `SetBuiltinsDisabled` pattern): an entry that cannot be
                 // saved is not applied, so it never silently changes at the next start.
                 runtime::write_config_value(&self.config_path, "tools", "always_ask", &value)
@@ -2664,7 +2689,11 @@ impl Message<RestoreAlwaysAsk> for ToolRegistry {
 impl Message<GetAlwaysAsk> for ToolRegistry {
     type Reply = AlwaysAskState;
 
-    async fn handle(&mut self, m: GetAlwaysAsk, _: &mut Context<Self, Self::Reply>) -> AlwaysAskState {
+    async fn handle(
+        &mut self,
+        m: GetAlwaysAsk,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> AlwaysAskState {
         self.always_ask_state(m.session)
     }
 }
@@ -7049,7 +7078,11 @@ pub(crate) mod tests {
         (reg, cards)
     }
 
-    async fn inspect_action(reg: &ActorRef<ToolRegistry>, session: SessionId, name: &str) -> PolicyAction {
+    async fn inspect_action(
+        reg: &ActorRef<ToolRegistry>,
+        session: SessionId,
+        name: &str,
+    ) -> PolicyAction {
         reg.ask(InspectTool {
             session,
             name: name.into(),
@@ -7160,9 +7193,18 @@ pub(crate) mod tests {
             )
         });
         let session = SessionId::new();
-        assert_eq!(inspect_action(&reg, session, "search").await, PolicyAction::Ask);
-        assert_eq!(inspect_action(&reg, session, "echo").await, PolicyAction::Allow);
-        assert_eq!(inspect_action(&reg, session, "touch").await, PolicyAction::Ask);
+        assert_eq!(
+            inspect_action(&reg, session, "search").await,
+            PolicyAction::Ask
+        );
+        assert_eq!(
+            inspect_action(&reg, session, "echo").await,
+            PolicyAction::Allow
+        );
+        assert_eq!(
+            inspect_action(&reg, session, "touch").await,
+            PolicyAction::Ask
+        );
         reg.tell(SetCap {
             session,
             cap: Some(Risk::ReadOnly),
@@ -7170,16 +7212,23 @@ pub(crate) mod tests {
         .await
         .unwrap();
         let out = reg.ask(Invoke(call("touch", session))).await.unwrap();
-        assert_eq!(out.content, "touch: denied: subagent is capped at read_only", "{out:?}");
+        assert_eq!(
+            out.content, "touch: denied: subagent is capped at read_only",
+            "{out:?}"
+        );
     }
 
     /// 219 §7 (e): with no owner in the conversation an always-ask call is denied, with the
     /// contract's reason, for the session and its subagents.
     #[tokio::test]
     async fn always_ask_denies_when_the_owner_is_absent() {
-        let (reg, cards) =
-            always_ask_registry(vec![Arc::new(Echo)], &["echo"], PathBuf::new(), Decision::Allow)
-                .await;
+        let (reg, cards) = always_ask_registry(
+            vec![Arc::new(Echo)],
+            &["echo"],
+            PathBuf::new(),
+            Decision::Allow,
+        )
+        .await;
         let (thread, child) = (SessionId::new(), SessionId::new());
         reg.tell(SetParent {
             session: child,
@@ -7208,9 +7257,13 @@ pub(crate) mod tests {
     /// human's answer.
     #[tokio::test]
     async fn always_ask_app_press_raises_a_card() {
-        let (reg, cards) =
-            always_ask_registry(vec![Arc::new(Echo)], &["echo"], PathBuf::new(), Decision::Deny)
-                .await;
+        let (reg, cards) = always_ask_registry(
+            vec![Arc::new(Echo)],
+            &["echo"],
+            PathBuf::new(),
+            Decision::Deny,
+        )
+        .await;
         let session = SessionId::new();
         let identity = bound(&reg, session, "echo").await;
         let auto = reg
@@ -7263,7 +7316,9 @@ pub(crate) mod tests {
             };
             assert_eq!(
                 err.to_string(),
-                format!("always_ask: {name} runs inside the agent loop and is never gated; mark the runtime functions it calls instead")
+                format!(
+                    "always_ask: {name} runs inside the agent loop and is never gated; mark the runtime functions it calls instead"
+                )
             );
         }
         let err = reg
@@ -7274,7 +7329,10 @@ pub(crate) mod tests {
             })
             .await
             .unwrap_err();
-        assert!(matches!(err, kameo::error::SendError::HandlerError(AlwaysAskError::Empty)));
+        assert!(matches!(
+            err,
+            kameo::error::SendError::HandlerError(AlwaysAskError::Empty)
+        ));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "# keep me\ntools:\n  approvals: false\n"
@@ -7327,7 +7385,10 @@ pub(crate) mod tests {
         let out = reg.ask(Invoke(write(config_path.clone()))).await.unwrap();
         assert_eq!(out.content, "write_file: denied by user", "{out:?}");
         assert_eq!(*lock(&cards), [(true, false)]);
-        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), "tools: {}\n");
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "tools: {}\n"
+        );
         // A `..` spelling of the same file is caught too.
         let sneaky = dir.join("mcp").join("..").join("config.yaml");
         std::fs::create_dir_all(dir.join("mcp")).unwrap();
