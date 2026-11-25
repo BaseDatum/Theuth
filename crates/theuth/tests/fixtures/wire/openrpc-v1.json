@@ -11784,6 +11784,630 @@
         "format": "uuid",
         "type": "string"
       },
+      "event.artifact_2elayout_2dcommand_2drequested.output.LayoutCallId": {
+        "description": "Correlates a layout command request with its answer and resolution.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2elayout_2dcommand_2drequested.output.LayoutCommandRequested": {
+        "description": "Event: an agent tool wants the connected desktop client to inspect or mutate workspace panes.",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2drequested.output.LayoutCallId"
+              }
+            ],
+            "description": "Correlation id to pass back to `answer_layout_command`."
+          },
+          "op": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2drequested.output.LayoutOp"
+              }
+            ],
+            "description": "Layout operation to execute."
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2drequested.output.SessionId"
+              }
+            ],
+            "description": "Owning session of the calling tool."
+          },
+          "type": {
+            "const": "LayoutCommandRequested",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session",
+          "op",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2elayout_2dcommand_2drequested.output.LayoutOp": {
+        "description": "Operation requested by an agent layout tool and executed by the desktop UI.",
+        "oneOf": [
+          {
+            "description": "List open panes, active route, focus/selection state, and layout tree.",
+            "properties": {
+              "op": {
+                "const": "list",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Open (or reuse) an application route in a pane.",
+            "properties": {
+              "focus": {
+                "description": "Whether to focus/select the opened pane.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "op": {
+                "const": "open_view",
+                "type": "string"
+              },
+              "path": {
+                "description": "Route path starting with `/`.",
+                "type": "string"
+              },
+              "placement": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2drequested.output.PanePlacement"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Optional placement hint."
+              },
+              "target": {
+                "description": "Optional target pane id.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "Optional pane title override.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "op",
+              "path"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Close an open pane by id.",
+            "properties": {
+              "op": {
+                "const": "close",
+                "type": "string"
+              },
+              "pane": {
+                "description": "Pane id to close.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Focus or select an open pane by id.",
+            "properties": {
+              "op": {
+                "const": "focus",
+                "type": "string"
+              },
+              "pane": {
+                "description": "Pane id to focus or select.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Move an open pane relative to a target pane.",
+            "properties": {
+              "edge": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2drequested.output.PaneEdge"
+                  }
+                ],
+                "description": "Edge relative to `target`."
+              },
+              "op": {
+                "const": "move",
+                "type": "string"
+              },
+              "pane": {
+                "description": "Pane id to move.",
+                "type": "string"
+              },
+              "target": {
+                "description": "Target pane id.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "pane",
+              "target",
+              "edge"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Resize a pane's share of its split container.",
+            "properties": {
+              "op": {
+                "const": "resize",
+                "type": "string"
+              },
+              "pane": {
+                "description": "Pane id to resize.",
+                "type": "string"
+              },
+              "share": {
+                "description": "Fractional share in `0.1..=0.9`.",
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "op",
+              "pane",
+              "share"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "event.artifact_2elayout_2dcommand_2drequested.output.PaneEdge": {
+        "description": "Target edge when moving a pane relative to another pane.",
+        "oneOf": [
+          {
+            "const": "left",
+            "description": "Split to the left of the target pane.",
+            "type": "string"
+          },
+          {
+            "const": "right",
+            "description": "Split to the right of the target pane.",
+            "type": "string"
+          },
+          {
+            "const": "top",
+            "description": "Split above the target pane.",
+            "type": "string"
+          },
+          {
+            "const": "bottom",
+            "description": "Split below the target pane.",
+            "type": "string"
+          },
+          {
+            "const": "tab",
+            "description": "Group as a tab inside the target pane's tab strip.",
+            "type": "string"
+          },
+          {
+            "const": "center",
+            "description": "Replace or center-drop onto the target pane.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.artifact_2elayout_2dcommand_2drequested.output.PanePlacement": {
+        "description": "Placement hint when opening an application view with `show_view`.",
+        "oneOf": [
+          {
+            "const": "beside",
+            "description": "Open beside the active pane (default workspace side-pane placement).",
+            "type": "string"
+          },
+          {
+            "const": "left",
+            "description": "Split to the left of the target (or active) pane.",
+            "type": "string"
+          },
+          {
+            "const": "right",
+            "description": "Split to the right of the target (or active) pane.",
+            "type": "string"
+          },
+          {
+            "const": "top",
+            "description": "Split above the target (or active) pane.",
+            "type": "string"
+          },
+          {
+            "const": "bottom",
+            "description": "Split below the target (or active) pane.",
+            "type": "string"
+          },
+          {
+            "const": "tab",
+            "description": "Add as a tab alongside the target pane.",
+            "type": "string"
+          },
+          {
+            "const": "replace",
+            "description": "Replace the target (or active) pane in place.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.artifact_2elayout_2dcommand_2drequested.output.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2elayout_2dcommand_2drequested.receiver.LayoutCallId": {
+        "description": "Correlates a layout command request with its answer and resolution.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2elayout_2dcommand_2drequested.receiver.LayoutCommandRequested": {
+        "description": "Event: an agent tool wants the connected desktop client to inspect or mutate workspace panes.",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2drequested.receiver.LayoutCallId"
+              }
+            ],
+            "description": "Correlation id to pass back to `answer_layout_command`."
+          },
+          "op": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2drequested.receiver.LayoutOp"
+              }
+            ],
+            "description": "Layout operation to execute."
+          },
+          "session": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2drequested.receiver.SessionId"
+              }
+            ],
+            "description": "Owning session of the calling tool."
+          },
+          "type": {
+            "const": "LayoutCommandRequested",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session",
+          "op",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2elayout_2dcommand_2drequested.receiver.LayoutOp": {
+        "description": "Operation requested by an agent layout tool and executed by the desktop UI.",
+        "oneOf": [
+          {
+            "description": "List open panes, active route, focus/selection state, and layout tree.",
+            "properties": {
+              "op": {
+                "const": "list",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Open (or reuse) an application route in a pane.",
+            "properties": {
+              "focus": {
+                "description": "Whether to focus/select the opened pane.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "op": {
+                "const": "open_view",
+                "type": "string"
+              },
+              "path": {
+                "description": "Route path starting with `/`.",
+                "type": "string"
+              },
+              "placement": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2drequested.receiver.PanePlacement"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Optional placement hint."
+              },
+              "target": {
+                "description": "Optional target pane id.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "Optional pane title override.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "op",
+              "path"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Close an open pane by id.",
+            "properties": {
+              "op": {
+                "const": "close",
+                "type": "string"
+              },
+              "pane": {
+                "description": "Pane id to close.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Focus or select an open pane by id.",
+            "properties": {
+              "op": {
+                "const": "focus",
+                "type": "string"
+              },
+              "pane": {
+                "description": "Pane id to focus or select.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Move an open pane relative to a target pane.",
+            "properties": {
+              "edge": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2drequested.receiver.PaneEdge"
+                  }
+                ],
+                "description": "Edge relative to `target`."
+              },
+              "op": {
+                "const": "move",
+                "type": "string"
+              },
+              "pane": {
+                "description": "Pane id to move.",
+                "type": "string"
+              },
+              "target": {
+                "description": "Target pane id.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "pane",
+              "target",
+              "edge"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Resize a pane's share of its split container.",
+            "properties": {
+              "op": {
+                "const": "resize",
+                "type": "string"
+              },
+              "pane": {
+                "description": "Pane id to resize.",
+                "type": "string"
+              },
+              "share": {
+                "description": "Fractional share in `0.1..=0.9`.",
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "op",
+              "pane",
+              "share"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "event.artifact_2elayout_2dcommand_2drequested.receiver.PaneEdge": {
+        "description": "Target edge when moving a pane relative to another pane.",
+        "oneOf": [
+          {
+            "const": "left",
+            "description": "Split to the left of the target pane.",
+            "type": "string"
+          },
+          {
+            "const": "right",
+            "description": "Split to the right of the target pane.",
+            "type": "string"
+          },
+          {
+            "const": "top",
+            "description": "Split above the target pane.",
+            "type": "string"
+          },
+          {
+            "const": "bottom",
+            "description": "Split below the target pane.",
+            "type": "string"
+          },
+          {
+            "const": "tab",
+            "description": "Group as a tab inside the target pane's tab strip.",
+            "type": "string"
+          },
+          {
+            "const": "center",
+            "description": "Replace or center-drop onto the target pane.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.artifact_2elayout_2dcommand_2drequested.receiver.PanePlacement": {
+        "description": "Placement hint when opening an application view with `show_view`.",
+        "oneOf": [
+          {
+            "const": "beside",
+            "description": "Open beside the active pane (default workspace side-pane placement).",
+            "type": "string"
+          },
+          {
+            "const": "left",
+            "description": "Split to the left of the target (or active) pane.",
+            "type": "string"
+          },
+          {
+            "const": "right",
+            "description": "Split to the right of the target (or active) pane.",
+            "type": "string"
+          },
+          {
+            "const": "top",
+            "description": "Split above the target (or active) pane.",
+            "type": "string"
+          },
+          {
+            "const": "bottom",
+            "description": "Split below the target (or active) pane.",
+            "type": "string"
+          },
+          {
+            "const": "tab",
+            "description": "Add as a tab alongside the target pane.",
+            "type": "string"
+          },
+          {
+            "const": "replace",
+            "description": "Replace the target (or active) pane in place.",
+            "type": "string"
+          }
+        ]
+      },
+      "event.artifact_2elayout_2dcommand_2drequested.receiver.SessionId": {
+        "description": "Identifies a conversation; every event carries one.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2elayout_2dcommand_2dresolved.output.LayoutCallId": {
+        "description": "Correlates a layout command request with its answer and resolution.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2elayout_2dcommand_2dresolved.output.LayoutCommandResolved": {
+        "description": "Event: a layout command finished, timed out, or was cancelled.",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2dresolved.output.LayoutCallId"
+              }
+            ],
+            "description": "Correlation id of the resolved request."
+          },
+          "type": {
+            "const": "LayoutCommandResolved",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type"
+        ],
+        "type": "object"
+      },
+      "event.artifact_2elayout_2dcommand_2dresolved.receiver.LayoutCallId": {
+        "description": "Correlates a layout command request with its answer and resolution.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "event.artifact_2elayout_2dcommand_2dresolved.receiver.LayoutCommandResolved": {
+        "description": "Event: a layout command finished, timed out, or was cancelled.",
+        "properties": {
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2dresolved.receiver.LayoutCallId"
+              }
+            ],
+            "description": "Correlation id of the resolved request."
+          },
+          "type": {
+            "const": "LayoutCommandResolved",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type"
+        ],
+        "type": "object"
+      },
       "event.artifact_2enote_2dview_2dopened.output.NoteViewOpened": {
         "description": "Event: a `show_note` call opened a note tile (211 §1).\nWire shape `{ \"type\": \"NoteViewOpened\", \"session\", \"call_id\", \"doc\", \"kind\", \"title\", \"block\" }`.",
         "properties": {
@@ -63262,6 +63886,51 @@
         "description": "Correlates a snapshot request with its answers.",
         "format": "uuid",
         "type": "string"
+      },
+      "method.artifact.input.LayoutCallId": {
+        "description": "Correlates a layout command request with its answer and resolution.",
+        "format": "uuid",
+        "type": "string"
+      },
+      "method.artifact.input.LayoutCommandAnswer": {
+        "description": "A client's terminal answer to a [`LayoutCommandRequested`].",
+        "oneOf": [
+          {
+            "description": "The layout command succeeded and produced a structured JSON result.",
+            "properties": {
+              "kind": {
+                "const": "done",
+                "type": "string"
+              },
+              "result": {
+                "description": "Command-specific JSON payload."
+              }
+            },
+            "required": [
+              "kind",
+              "result"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The layout command could not be completed.",
+            "properties": {
+              "kind": {
+                "const": "failed",
+                "type": "string"
+              },
+              "reason": {
+                "description": "Human-readable failure reason.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "method.artifact.input.PagePreviewAnswer": {
         "description": "A client's answer to a [`PagePreviewRequested`].",
@@ -135639,6 +136308,55 @@
       "x-theuth-owner": "artifact"
     },
     {
+      "name": "answer_layout_command",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.artifact.input.LayoutCallId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "answer",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.artifact.input.LayoutCommandAnswer"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.artifact.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "boolean"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "artifact"
+    },
+    {
       "name": "answer_page_preview",
       "paramStructure": "by-position",
       "params": [
@@ -158209,6 +158927,28 @@
           "$ref": "#/components/schemas/event.artifact_2efile_2dview_2dopened.output.FileViewOpened"
         },
         "topic": "artifact.file-view-opened",
+        "version": 1
+      },
+      {
+        "exposure": "internal",
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2drequested.receiver.LayoutCommandRequested"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2drequested.output.LayoutCommandRequested"
+        },
+        "topic": "artifact.layout-command-requested",
+        "version": 1
+      },
+      {
+        "exposure": "internal",
+        "receiverSchema": {
+          "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2dresolved.receiver.LayoutCommandResolved"
+        },
+        "schema": {
+          "$ref": "#/components/schemas/event.artifact_2elayout_2dcommand_2dresolved.output.LayoutCommandResolved"
+        },
+        "topic": "artifact.layout-command-resolved",
         "version": 1
       },
       {

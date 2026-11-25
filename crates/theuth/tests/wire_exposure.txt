@@ -68,6 +68,8 @@ artifact.diff-view-opened#DiffViewOpened public
 artifact.fence-snapshot-requested internal
 artifact.fence-snapshot-resolved internal
 artifact.file-view-opened#FileViewOpened public
+artifact.layout-command-requested internal
+artifact.layout-command-resolved internal
 artifact.note-view-opened#NoteViewOpened public
 artifact.page-preview-requested internal
 artifact.page-preview-resolved internal
