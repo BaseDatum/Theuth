@@ -269,7 +269,7 @@ export function NewChat({
       <Header session={null} first={first} onClose={onClose} popout={newChatPopout(pane ?? mountKey, preset)} />
       <LinkBanner />
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
-        <EclipseMark className="mx-auto mb-5 size-16" />
+        <EclipseMark className="mx-auto mb-5 size-16" duration={24} />
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
         {/* 215 C3: the draft's model picker lives at the left of the composer's top row (`ComposerModel`), which also answers `/model`. */}
         {(priv && !privateSupported) || (endlessOn && !canQuery2) ? <Unavailable /> : <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} onUncreated={onUncreated} />}
