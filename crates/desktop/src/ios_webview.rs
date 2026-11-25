@@ -711,8 +711,16 @@ async fn on_main_by<T: Send + 'static>(
 
 /// The UI's rectangle (CSS px of the main webview's layout viewport) in `parent`'s coordinates: CSS px scale
 /// by the page zoom into the scroll view's content, whose `convertRect` accounts for the content offset
-/// and insets (safe area, the iPadOS window-controls strip).
-fn frame_in(main: &WKWebView, parent: &UIView, x: f64, y: f64, width: f64, height: f64) -> NSRect {
+/// and insets (safe area, the iPadOS window-controls strip). Also `apple_tile::wb_capture`'s rect (218 §7),
+/// with `parent` the web view itself.
+pub(crate) fn frame_in(
+    main: &WKWebView,
+    parent: &UIView,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> NSRect {
     let scroll = main.scroll_view();
     let zoom = scroll.zoomScale();
     let rect = NSRect::new(

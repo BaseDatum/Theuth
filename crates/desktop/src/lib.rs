@@ -44,6 +44,14 @@ mod web_rules;
 #[cfg(desktop)]
 mod webview;
 
+/// 218 §7: `wb_capture` where WebKit's `takeSnapshot` is not available (Linux, Windows, Android).
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[tauri::command]
+async fn wb_capture(rect: serde_json::Value, width: Option<f64>) -> Result<(), String> {
+    let _ = (rect, width);
+    Err("wb_capture: unsupported".to_owned())
+}
+
 /// Build and run the app. Desktop and mobile share the opener/notification
 /// plugins; everything else is one `cfg` side or the other.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -109,6 +117,8 @@ mod mobile {
             .plugin(tauri_plugin_barcode_scanner::init())
             .plugin(tauri_plugin_deep_link::init())
             .plugin(tauri_plugin_haptics::init())
+            // 218 §6: the whiteboard's native Pencil layer (iPadOS 26; elsewhere `attach` says why not).
+            .plugin(tauri_plugin_ink::init())
             .invoke_handler(tauri::generate_handler![
                 commands::connection,
                 crate::pages::page_put,
@@ -139,7 +149,12 @@ mod mobile {
                 crate::ios_webview::web_storage_capture,
                 // 209 §4.7: the agent's ops on a tile.
                 #[cfg(target_os = "ios")]
-                crate::ios_webview::web_view_call
+                crate::ios_webview::web_view_call,
+                // 218 §7: the whiteboard's snapshot of a rect of the main webview.
+                #[cfg(target_os = "ios")]
+                crate::apple_tile::wb_capture,
+                #[cfg(not(target_os = "ios"))]
+                crate::wb_capture
             ])
             .setup(|app| {
                 let builder =
@@ -395,6 +410,11 @@ mod desktop {
             crate::webview::web_profile_clear,
             crate::webview::web_storage_capture,
             crate::webview::web_view_call,
+            // 218 §7: the whiteboard's snapshot of a rect of the main webview.
+            #[cfg(target_os = "macos")]
+            crate::apple_tile::wb_capture,
+            #[cfg(not(target_os = "macos"))]
+            crate::wb_capture,
         ]);
         // The native menu bar is macOS's (⌘C/⌘V reach the webview through it); GTK would paint it inside the window.
         #[cfg(target_os = "macos")]

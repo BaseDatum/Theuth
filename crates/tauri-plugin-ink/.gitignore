@@ -1,0 +1,5 @@
+# Copied in by `tauri-plugin`'s build script for the iOS build (the Tauri Swift API package).
+/.tauri
+/ios/.build
+/ios/.swiftpm
+/ios/Package.resolved
