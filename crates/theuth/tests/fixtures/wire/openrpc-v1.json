@@ -2489,7 +2489,7 @@
             "description": "The session's effective context changed outside a normal turn\n(design doc 48 §3.2): a [`RemoveContext`] commit, a settled turn /\ncompaction handback, or an undo/redo. Published after commit and\ninstallation in live state; carries no bodies. Clients reload the\naffected session's history at `revision`.",
             "properties": {
               "reason": {
-                "description": "`\"context_edit\"`, `\"settled\"`, `\"rewind\"` or `\"trim\"`.",
+                "description": "`\"context_edit\"`, `\"settled\"`, `\"rewind\"`, `\"trim\"` or `\"cell_nudge\"` (219: a\nplain fence of a finished reply was rewritten as a user cell in place).",
                 "type": "string"
               },
               "revision": {
@@ -5898,7 +5898,7 @@
             "description": "The session's effective context changed outside a normal turn\n(design doc 48 §3.2): a [`RemoveContext`] commit, a settled turn /\ncompaction handback, or an undo/redo. Published after commit and\ninstallation in live state; carries no bodies. Clients reload the\naffected session's history at `revision`.",
             "properties": {
               "reason": {
-                "description": "`\"context_edit\"`, `\"settled\"`, `\"rewind\"` or `\"trim\"`.",
+                "description": "`\"context_edit\"`, `\"settled\"`, `\"rewind\"`, `\"trim\"` or `\"cell_nudge\"` (219: a\nplain fence of a finished reply was rewritten as a user cell in place).",
                 "type": "string"
               },
               "revision": {
@@ -37857,7 +37857,7 @@
         "description": "Which sessions a [`Broadcast`] reaches (62 §0.2).",
         "oneOf": [
           {
-            "description": "Roots whose state is `Running | Awaiting | Approval` or with `jobs + ptys > 0`.",
+            "description": "Roots that are active themselves or have an active descendant subagent\n(child, grandchild, …; advisors excluded). Active = state `Running |\nAwaiting | Approval` or `jobs + ptys > 0`. Never names a subagent.",
             "properties": {
               "kind": {
                 "const": "running",
@@ -40667,6 +40667,31 @@
         },
         "required": [
           "text"
+        ],
+        "type": "object"
+      },
+      "method.agent.output.CellPromotion": {
+        "description": "What `cell_promote` (design doc 219) did with the fence.",
+        "properties": {
+          "detail": {
+            "description": "Why, for `rejected`/`not_found`/`stale` when known (a validation code, a provider error).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.PromoteOutcome"
+              }
+            ],
+            "description": "The outcome."
+          }
+        },
+        "required": [
+          "outcome",
+          "detail"
         ],
         "type": "object"
       },
@@ -46649,6 +46674,36 @@
         ],
         "type": "object"
       },
+      "method.agent.output.PromoteOutcome": {
+        "description": "[`CellPromotion::outcome`].",
+        "oneOf": [
+          {
+            "const": "converted",
+            "description": "The fence is a user cell now; a `ContextChanged { reason: \"cell_nudge\" }` went out.",
+            "type": "string"
+          },
+          {
+            "const": "declined",
+            "description": "The model answered `OK`: it stays a snippet.",
+            "type": "string"
+          },
+          {
+            "const": "rejected",
+            "description": "The model's cell failed a check (or the call failed).",
+            "type": "string"
+          },
+          {
+            "const": "stale",
+            "description": "A turn is running: nothing was replaced.",
+            "type": "string"
+          },
+          {
+            "const": "not_found",
+            "description": "No such reply or fence, or the reply changed meanwhile.",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.output.PromptSuffix": {
         "description": "One saved prompt suffix.",
         "properties": {
@@ -51465,6 +51520,30 @@
         },
         "required": [
           "text"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.CellPromotion": {
+        "description": "What `cell_promote` (design doc 219) did with the fence.",
+        "properties": {
+          "detail": {
+            "description": "Why, for `rejected`/`not_found`/`stale` when known (a validation code, a provider error).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.PromoteOutcome"
+              }
+            ],
+            "description": "The outcome."
+          }
+        },
+        "required": [
+          "outcome"
         ],
         "type": "object"
       },
@@ -57285,6 +57364,36 @@
           "name"
         ],
         "type": "object"
+      },
+      "method.agent.receiver.PromoteOutcome": {
+        "description": "[`CellPromotion::outcome`].",
+        "oneOf": [
+          {
+            "const": "converted",
+            "description": "The fence is a user cell now; a `ContextChanged { reason: \"cell_nudge\" }` went out.",
+            "type": "string"
+          },
+          {
+            "const": "declined",
+            "description": "The model answered `OK`: it stays a snippet.",
+            "type": "string"
+          },
+          {
+            "const": "rejected",
+            "description": "The model's cell failed a check (or the call failed).",
+            "type": "string"
+          },
+          {
+            "const": "stale",
+            "description": "A turn is running: nothing was replaced.",
+            "type": "string"
+          },
+          {
+            "const": "not_found",
+            "description": "No such reply or fence, or the reply changed meanwhile.",
+            "type": "string"
+          }
+        ]
       },
       "method.agent.receiver.PromptSuffix": {
         "description": "One saved prompt suffix.",
@@ -133243,6 +133352,59 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "cells"
+    },
+    {
+      "name": "cell_promote",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "entry",
+          "required": true,
+          "schema": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "fence",
+          "required": true,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "body",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.CellPromotion"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.CellPromotion"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
     },
     {
       "name": "cell_reply_note_get",
