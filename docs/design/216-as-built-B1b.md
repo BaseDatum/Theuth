@@ -25,4 +25,35 @@ spirit below).
 
 ## Deviations
 
-STATUS: draft; finished at the end of the run.
+1. **`watch` is not part of widening.** `Grants` (frozen §5.1) has no `watch` field, so a `watch` edit cannot be compared
+   against the grant. It is covered by the code hash for plugins that carry one; a read-only plugin restarts.
+2. **Code-changed `changed_paths`** come from the files hashed at the last start/approval in this engine run; after an
+   engine restart (no per-file hashes in `grants.yaml`) the card lists every code file.
+3. **`max_risk` of `call`** is enforced by creating the headless session with `CreateSessionOptions.cap = max_risk`
+   (the registry's ceiling) instead of a lookup of the tool's risk in the host; above-cap calls come back as a tool
+   error inside `{content, is_error}`, not `-32003`. `-32004` is never produced: a policy deny is likewise an
+   `is_error` result of `tools::InvokeHumanOnly`.
+4. **`notify` OS notifications** (warn/error) are not sent: only the attention item is filed (`plugin-notify:<name>:<n>`,
+   title suffixed `· plugin <name>`). Hand-off: whoever owns the desktop notification path.
+5. **Input loop disable** ("three minutes in a row at the limit → disabled") is not implemented; `input_per_min`
+   answers `-32005`.
+6. **Validation errors back to the plugin** are a host → plugin `log` notification `{level: error, message, path}`
+   plus a plugin-log line (design §9.4 wording read literally).
+7. **`hello.params.clients`** is `{}` and `engine` is absent (the host has no client registry).
+8. **OpenUI `Action` without `activation`** on an `openui` placement is refused with `NotAPress`.
+9. **A manifest that turns invalid while running** keeps the process (state `running`, `error` = the issues).
+10. The `host::tests::turns_example_end_to_end` unit test of contract §11.2 is `tests/examples.rs`
+    (`turns_and_ping_examples_run_through_the_host`), an integration test with a real vault (file key store) and a
+    `HumanPress` built from `RpcPeer::open()` — both examples run, a `TurnFinished` reaches turns, the reset action
+    and the next surface are checked, and shutdown empties `.pgids`.
+11. Sub-builder decisions (route/catalog/ui/manifest/grants/logs/proc): see their notes at the top of each file;
+    notably `meeting.events#Deleted` does not drop a session from the meeting set (whole life), revisions survive a
+    restart, the stray/long-line reader keeps the first 4 KiB of a discarded line to find its `id`.
+
+## Hand-offs
+
+- Z: OS notification for `notify` at warn/error (deviation 4).
+
+## Gates
+
+GATES

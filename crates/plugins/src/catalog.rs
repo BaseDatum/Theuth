@@ -421,7 +421,13 @@ mod tests {
         assert_eq!(first.scoped, Scoped::Session);
         assert!(!first.delta);
         // Inlined: the nested struct's properties are present, its recursion stays a reference.
+        // schemars wraps a described `$ref` in `allOf`; the inlined body sits inside it.
         let inner = &first.schema["properties"]["inner"];
+        let inner = if inner["allOf"].is_array() {
+            &inner["allOf"][0]
+        } else {
+            inner
+        };
         assert!(inner["properties"]["flag"].is_object(), "{}", first.schema);
         assert!(
             first.schema["definitions"]["Inner"].is_object(),

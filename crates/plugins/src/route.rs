@@ -20,8 +20,9 @@ use crate::proc::Outbox;
 const AGENT_TOPIC: &str = "agent.events";
 /// The topic whose `Started` names a meeting session.
 const MEETING_TOPIC: &str = "meeting.events";
-/// How long the feed waits for the meeting actor before routing without a seed.
-const SEED_WAIT: Duration = Duration::from_secs(30);
+/// How long the feed holds frames for the meeting actor before routing without a seed. Plugins
+/// start in order after `meeting`, so it is registered at once or never (as `secrets::HANDLE_WAIT`).
+const SEED_WAIT: Duration = Duration::from_secs(10);
 
 /// 216 §7.3 (b): `agent.events` fields removed for a meeting session, by `type`.
 const MEETING_STRIP: &[(&str, &str)] = &[

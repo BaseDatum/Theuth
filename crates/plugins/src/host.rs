@@ -564,6 +564,8 @@ pub(crate) async fn boot(rt: runtime::Runtime, actor: ActorRef<PluginsActor>, cf
     rt.shutdown.cancelled().await;
     let grace = Duration::from_millis(cfg.shutdown_grace_ms + 500);
     let _ = tokio::time::timeout(grace, actor.ask(ShutdownAll)).await;
+    // Every tree was asked to stop and killed after its grace (design §5 "Engine shutdown").
+    proc::Pgids::new(paths.pgids()).clear();
 }
 
 #[cfg(test)]
