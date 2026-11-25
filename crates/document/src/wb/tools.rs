@@ -100,6 +100,15 @@ fn one_line(tool: &str, e: &str) -> String {
     }
 }
 
+/// `wb_create`'s text. The transcript card reads its first line, `created whiteboard "<title>" <doc> — …` (the title
+/// JSON-quoted), and the link line, as for `show_whiteboard`'s receipt.
+fn created_receipt(title: &str, doc: &str) -> String {
+    format!(
+        "created whiteboard {} {doc} — show it to the user with show_whiteboard(\"{doc}\")\ntheuth://whiteboards/{doc}\n0 cards",
+        serde_json::to_string(title).unwrap_or_default()
+    )
+}
+
 macro_rules! wb_tool {
     ($tool:ident, $name:literal, $risk:expr, $args:ty, $desc:expr, |$s:ident, $a:ident, $cx:ident| $body:expr) => {
         #[doc = concat!("`", $name, "`.")]
@@ -340,8 +349,8 @@ wb_tool!(WbCreateTool, "wb_create", Risk::Mutating, WbCreateArgs,
                 let _ = w.actor.ask(WbCall { doc: Some(c.doc.clone()), session: cx.session.0, op: Op::Touch }).await;
                 let href = format!("theuth://whiteboards/{}", c.doc);
                 ToolOutput {
-                    structured: Some(serde_json::json!({ "whiteboard": c.doc, "title": c.title, "href": href })),
-                    ..ToolOutput::ok(format!("created whiteboard \"{}\" {} — show it with show_whiteboard(\"{}\")", c.title, c.doc, c.doc))
+                    structured: Some(serde_json::json!({ "whiteboard": c.doc, "title": c.title, "href": href, "cards": 0 })),
+                    ..ToolOutput::ok(created_receipt(&c.title, &c.doc.to_string()))
                 }
             }
             Err(kameo::error::SendError::HandlerError(e)) => ToolOutput::err(one_line("wb_create", &e)),
@@ -473,5 +482,18 @@ mod tests {
         }))
         .unwrap();
         assert!(a.source.is_none());
+    }
+
+    #[test]
+    fn created_receipt_carries_the_card() {
+        let doc = DocId::new().to_string();
+        let r = created_receipt("Checkout \"ideas\"", &doc);
+        let mut lines = r.lines();
+        assert_eq!(
+            lines.next(),
+            Some(format!("created whiteboard \"Checkout \\\"ideas\\\"\" {doc} — show it to the user with show_whiteboard(\"{doc}\")").as_str())
+        );
+        assert_eq!(lines.next(), Some(format!("theuth://whiteboards/{doc}").as_str()));
+        assert_eq!(lines.next(), Some("0 cards"));
     }
 }

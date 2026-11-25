@@ -710,3 +710,24 @@ async fn place_keeps_any_size_above_the_minimum() {
     assert_eq!((wall.w, wall.h), (9000.0, 6500.0));
     stop(actor).await;
 }
+
+/// 218: `wb_create` produces a chat card like any show: its result carries the title, the document, the link and the
+/// card count, in the structured value and in the receipt text the transcript keeps across a reload.
+#[tokio::test]
+async fn create_tool_result_carries_the_chat_card() {
+    let _g = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (actor, _) = start(dir.path()).await;
+    let w = Whiteboards::new(actor.clone());
+    let r = call(&document::wb::tools::WbCreateTool(w.clone()), json!({"title": "Checkout \"ideas\""}), uuid::Uuid::now_v7()).await;
+    let v = ok(&r);
+    let doc = v["whiteboard"].as_str().unwrap().to_owned();
+    assert_eq!(doc.len(), 26);
+    assert_eq!(v["title"], "Checkout \"ideas\"");
+    assert_eq!(v["href"], format!("theuth://whiteboards/{doc}"));
+    assert_eq!(v["cards"], 0);
+    let lines: Vec<&str> = r.content.lines().collect();
+    assert!(lines[0].starts_with(&format!("created whiteboard \"Checkout \\\"ideas\\\"\" {doc} — ")), "{}", r.content);
+    assert_eq!(lines[1..], [format!("theuth://whiteboards/{doc}").as_str(), "0 cards"]);
+    stop(actor).await;
+}
