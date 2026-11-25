@@ -847,9 +847,11 @@ test('the chat banner names HTTP-peer exports only: a chat shared with a contact
   await mount(createElement(NoticeFor, { session: 's-ops' }))
   await vi.waitFor(() => expect(api.contact_list).toHaveBeenCalled())
   expect(body()).not.toContain('Exported')
+  expect(body()).not.toContain('Shared with')
   await reset()
   await mount(createElement(NoticeFor, { session: 's-docs' }))
-  await vi.waitFor(() => expect(body()).toContain('Exported: docs → lab'))
+  await vi.waitFor(() => expect(body()).toContain('Shared with lab: their messages can use this chat\'s tools'))
+  expect(body()).not.toContain('docs')
 })
 
 const WAIT: FirstWaiting = receiveComponent("method.a2a.output.FirstWaiting", { contact: 'bob', machine: "Bob's MacBook", export: 'ops-chat', session: 's-ops', since_ms: NOW, waiting: 1, preview: 'hello' })

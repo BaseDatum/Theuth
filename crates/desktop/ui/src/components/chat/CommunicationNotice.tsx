@@ -2,10 +2,12 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Share2 } from 'lucide-react'
-import { useContacts } from '@/lib/contacts'
+import { useState } from 'react'
+import { names, useContacts } from '@/lib/contacts'
 import { queryKeys, useApi } from '@/lib/rpc'
 import type { A2AExportStatus as A2aExportStatus } from "@/rpc/bindings/method.a2a.output"
 import type { CommunicationState } from "@/rpc/bindings/method.agent.output"
+import { cn } from '@/lib/utils'
 import { useMessagingSheet } from './messaging-sheet'
 
 const NONE: A2aExportStatus[] = []
@@ -17,6 +19,14 @@ const NONE: A2aExportStatus[] = []
  * 183 §12.10: an export granted to a contact is not listed here: the header's `Shared with bob` chip says it, and a
  * contact talks like a mesh peer, not under this banner's design 50 rules.
  */
+/** The exports that make `session` reachable by an HTTP peer: granted one (`peer`, §6.3) that is not a contact. An
+ * export with no peer is reachable by nobody — Stop sharing with a contact leaves exactly that (191: the export stays
+ * for the next share, only the grant goes) — so it is not shared and gets no banner. */
+export function sharedExports(exports: readonly A2aExportStatus[], session: string, contacts: readonly { name: string }[] | undefined): A2aExportStatus[] {
+  const out = exports.filter((e) => e.session === session && e.peer !== null && !contacts?.some((c) => c.name === e.peer))
+  return out.length ? out : NONE
+}
+
 export function useCommunication(session: string | null) {
   const canQuery1 = useQuerySupport(["get_communication"])
   const canQuery1_2 = useQuerySupport(["a2a_status"])
@@ -31,9 +41,7 @@ export function useCommunication(session: string | null) {
     enabled: canQuery1_2 && (session !== null),
   })
   const contacts = useContacts(session !== null).data
-  const exports = session
-    ? (a2a?.exports.filter((e) => e.session === session && !contacts?.some((c) => c.name === e.peer)) ?? NONE)
-    : NONE
+  const exports = session && a2a ? sharedExports(a2a.exports, session, contacts) : NONE
   return { state, exports }
 }
 
@@ -61,11 +69,12 @@ export function CommunicationNotice({
   exports: A2aExportStatus[]
 }) {
   const navigate = useNavigate()
+  const [expanded, setExpanded] = useState(false)
   if (!state) return null
   const open = (
     <button
       type="button"
-      className="min-h-11 shrink-0 px-2 underline underline-offset-2 hover:text-foreground"
+      className="shrink-0 px-2 underline underline-offset-2 hover:text-foreground pointer-coarse:min-h-11"
       // 188: a chat's own messaging is its Messaging… sheet; without a chat only the node-wide switch is left.
       onClick={() =>
         session
@@ -91,21 +100,26 @@ export function CommunicationNotice({
     )
   }
   if (exports.length === 0) return null
-  const peers = exports.map((e) => `${e.name}${e.peer ? ` → ${e.peer}` : ' (no peer granted)'}`).join(', ')
+  const peers = names([...new Set(exports.map((e) => e.peer as string))].map((name) => ({ name })))
+  // One line on a phone (tap the text to read the rest), at most two on a wider box: never a third of the screen.
   return (
     <div
       role="status"
-      className="mb-2 flex items-start gap-2 rounded-xl border border-warning-border/30 bg-warning-bg/40 px-3 py-2 text-sm"
+      data-export-notice=""
+      className="mb-2 flex items-center gap-2 rounded-xl border border-warning-border/30 bg-warning-bg/40 px-3 py-1 text-sm"
     >
-      <Share2 className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
-      <span className="min-w-0 flex-1">
-        <span className="block font-medium text-warning">Exported: {peers}</span>
+      <Share2 className="size-4 shrink-0 text-warning" aria-hidden="true" />
+      <button
+        type="button"
+        aria-expanded={expanded}
+        className={cn('min-w-0 flex-1 py-1 text-left', !expanded && 'line-clamp-2 max-sm:line-clamp-1')}
+        onClick={() => setExpanded((x) => !x)}
+      >
+        <span className="font-medium text-warning">Shared with {peers}</span>
         <span className="text-fg-secondary">
-          Replies in this session can be shared with that peer, and its messages can run this session's
-          tools (approvals still ask you). What you type here stays private: it never joins a peer's task
-          and waits while one runs.
+          : their messages can use this chat's tools; approvals still ask you. What you type here stays private.
         </span>
-      </span>
+      </button>
       {open}
     </div>
   )
