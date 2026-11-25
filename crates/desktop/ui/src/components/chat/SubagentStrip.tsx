@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 import type { AgentInfo } from '@/store/ui-events'
 import { useScope } from '@/store/engine-scope'
 import { useSessionField } from '@/store/sessions'
+import { kernelName, phaseText, useSessionKernels } from '@/components/cells/KernelStrip'
 
 /** Each dash keeps a full-height hit target; the visible dash is the bar's 5px. */
 /** 24 px tall to tap, 16 px of layout (`-my-1`): wrapped rows stack 12 px apart, the hit areas overlapping a little. */
@@ -35,7 +36,7 @@ export function SubagentDashes({ session }: { session: string }) {
 type Dash = { key: string; label: string; color: string; width?: string; beat?: number; open: (() => void) | { terminal: string } }
 
 /**
- * Jobs, terminals, browsers, artifacts, the desktop then reminders, left-aligned against the grabber's right end; each
+ * Jobs, terminals, kernels, browsers, artifacts, the desktop then reminders, left-aligned against the grabber's right end; each
  * category's "+N" at its outer (right) end. A dash opens what it stands for (`tray`: the panels the header used to hold).
  */
 export function BackgroundDashes({ session, tray }: { session: string; tray: Tray }) {
@@ -47,13 +48,15 @@ export function BackgroundDashes({ session, tray }: { session: string; tray: Tra
   const reminders = useSessionField(session, 'reminders')
   const details = useSessionField(session, 'reminderDetails')
   const beats = useSessionField(session, 'jobBeats')
-  const reveal = (card: 'jobs' | 'reminders') => () => {
+  const kernels = useSessionKernels(session)
+  const reveal = (card: 'jobs' | 'kernels' | 'reminders') => () => {
     store.getState().setTodosShown(session, true)
     store.getState().setBackgroundExpanded(session, card, true)
   }
   const categories: [string, Dash[]][] = [
     ['jobs', [...(jobs ?? [])].map((id) => ({ key: id, label: `Job ${id} · show running jobs`, color: backgroundColors.jobs.bg, beat: beats?.[id], open: reveal('jobs') }))],
     ['terminals', [...terminalIds].map((id) => ({ key: id, label: `Terminal ${id} · open terminal`, color: backgroundColors.terminals.bg, beat: beats?.[id], open: { terminal: id } }))],
+    ['kernels', kernels.map((k) => ({ key: JSON.stringify(k.id), label: `Kernel ${kernelName(k)} · ${phaseText(k)} · show kernels`, color: cn(backgroundColors.kernels.bg, k.phase !== 'ready' && 'motion-safe:animate-pulse'), open: reveal('kernels') }))],
     ['browsers', tray.browsers.map((t) => ({ key: t.kind === 'agent' ? 'agent' : t.id, label: targetAction(t), color: backgroundColors.browser.bg, open: () => tray.openBrowser(t) }))],
     ['artifacts', tray.artifacts.map((a) => ({ key: a.call_id, label: `Artifact ${a.title} · open`, color: backgroundColors.artifacts.bg, width: backgroundColors.artifacts.dash, open: () => showArtifact(session, a.call_id) }))],
     ['desktops', tray.vm ? [{ key: tray.vm.name, label: `Desktop of ${tray.vm.name}`, color: backgroundColors.desktop.bg, open: tray.vm.open }] : []],

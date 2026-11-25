@@ -10,6 +10,7 @@ import { useQuerySupport } from '@/rpc/capabilities'
 import type { PendingReminderView } from '@/rpc/bindings/method.agent.output'
 import { useScope } from '@/store/engine-scope'
 import { useSessionField } from '@/store/sessions'
+import { KernelStrip, useSessionKernels } from '@/components/cells/KernelStrip'
 import { BackgroundCard } from './BackgroundCard'
 import { ActivityDot, BackgroundDashes, SubagentDashes, SubagentLink, TerminalLink } from './SubagentStrip'
 import { openSurface, surfaceOf } from './slash'
@@ -38,9 +39,9 @@ export function countdown(firesAt: number, now: number): string {
 
 /**
  * One grabber, fixed against the composer; every populated category opens above it: the to-dos, the tiles (terminals,
- * browser, artifacts, subagents, jobs, desktop, CodeMap — the panels moved out of the header), then the cards. The
- * activity dashes grow out of the bar's ends on its row (subagents left; jobs · terminals · browsers · artifacts ·
- * desktop · reminders right), the `trailing` Advisor pill last.
+ * kernels, browser, artifacts, subagents, jobs, desktop, CodeMap — the panels moved out of the header), then the cards.
+ * The activity dashes grow out of the bar's ends on its row (subagents left; jobs · terminals · kernels · browsers ·
+ * artifacts · desktop · reminders right), the `trailing` Advisor pill last.
  */
 export function BackgroundArea({ session, trailing }: { session: string; trailing?: ReactNode }) {
   const { sessions: store } = useScope()
@@ -57,6 +58,8 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
   const subagentsExpanded = useSessionField(session, 'subagentsExpanded') ?? false
   const jobsExpanded = useSessionField(session, 'jobsExpanded') ?? false
   const remindersExpanded = useSessionField(session, 'remindersExpanded') ?? false
+  const kernelsExpanded = useSessionField(session, 'kernelsExpanded') ?? false
+  const kernels = useSessionKernels(session)
   const now = useClock(shown)
   const tray = useTray(session)
   const focused = usePanes((s) => s.focused === session)
@@ -73,9 +76,10 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
   const terminalCount = new Set([...(terminals ?? []), ...(ptys ?? [])]).size
   const jobCount = jobs?.size ?? 0
   const reminderCount = reminders?.size ?? 0
+  const busyKernels = kernels.filter((k) => k.phase !== 'ready').length
   // `agents` (liveRows) is the uncapped stripRows, so every dash the row could show keeps the bar visible; so does any
   // panel (`trayHasItems`), the bar being its only way in.
-  if (!hasTodos && !agents.length && !jobCount && !terminalCount && !reminderCount && !trayHasItems(tray)) {
+  if (!hasTodos && !agents.length && !jobCount && !terminalCount && !kernels.length && !reminderCount && !trayHasItems(tray)) {
     return trailing ? <div className="mx-auto flex min-h-7 w-full shrink-0 select-none items-center justify-center px-4 text-xs text-fg-tertiary md:max-w-[768px]">{trailing}</div> : null
   }
   const waiting = agents.filter((a) => a.state.state === 'approval').length
@@ -108,6 +112,11 @@ export function BackgroundArea({ session, trailing }: { session: string; trailin
           {(jobCount > 0 || terminalCount > 0) && (
             <BackgroundCard title="Jobs" color={backgroundColors.jobs.bg} summary={[jobCount > 0 && `${jobCount} running`, terminalCount > 0 && `${terminalCount} terminal${terminalCount === 1 ? '' : 's'}`].filter(Boolean).join(' · ')} expanded={jobsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'jobs', open)}>
               {jobsExpanded && <JobsRows session={session} />}
+            </BackgroundCard>
+          )}
+          {kernels.length > 0 && (
+            <BackgroundCard title="Kernels" color={backgroundColors.kernels.bg} summary={`${kernels.length} live${busyKernels ? ` · ${busyKernels} busy` : ''}`} expanded={kernelsExpanded} onExpanded={(open) => store.getState().setBackgroundExpanded(session, 'kernels', open)}>
+              {kernelsExpanded && <KernelStrip session={session} inBar />}
             </BackgroundCard>
           )}
           {reminderCount > 0 && (

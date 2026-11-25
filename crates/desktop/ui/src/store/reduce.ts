@@ -91,6 +91,7 @@ export function empty(id: string): SessionSlice {
     subagentsExpanded: false,
     jobsExpanded: false,
     remindersExpanded: false,
+    kernelsExpanded: false,
     todosShown: false,
   };
 }

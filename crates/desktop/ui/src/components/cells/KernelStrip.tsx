@@ -1,7 +1,7 @@
 // Owner: U1
 import { openPath } from '@tauri-apps/plugin-opener'
 import { ChevronDown, MoreHorizontal } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { notify as toast } from '@/lib/notify'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -16,13 +16,13 @@ import { errorText, refresh, register, useScope } from './store'
 
 export type KernelStripProps = {
   session: string
-  /** Inside the composer's column (171F B7): the composer already centres and pads it. */
-  embedded?: boolean
+  /** The body of the bar's Kernels card (`BackgroundArea`). */
+  inBar?: boolean
 }
 
-/** Kernels the strip shows: a process exists (§5.3 `starting`/`ready`/`busy`). */
+/** Kernels the bar shows: a process exists (§5.3 `starting`/`ready`/`busy`). */
 export const liveKernels = (ks: KernelState[]) => ks.filter((k) => k.phase === 'starting' || k.phase === 'ready' || k.phase === 'busy')
-const phaseText = (k: KernelState) => (k.phase === 'ready' ? 'idle' : k.phase)
+export const phaseText = (k: KernelState) => (k.phase === 'ready' ? 'idle' : k.phase)
 
 /**
  * #6: the kernel's label with its instance — `zsh 5.9 #2` for the second instance of a shell (started for a run while
@@ -88,12 +88,24 @@ function KernelRow({ kernel, api, onError }: { kernel: KernelState; api: Api; on
   )
 }
 
-/** 171 §11.4: the session's live kernels on top of the composer's box; renders nothing without one. */
-export function KernelStrip({ session, embedded = false }: KernelStripProps) {
+/**
+ * The session's live kernels, read now and re-read on the engine's hints: the bar's dashes, tile and Kernels card each
+ * call it (one read per commit, `schedule` coalesces).
+ */
+export function useSessionKernels(session: string): KernelState[] {
   const api = useApi()
-  const scope = { type: 'session', id: session } as const
   useEffect(() => register(api, { type: 'session', id: session }, null), [api, session])
-  const kernels = liveKernels(useScope(scope).kernels)
+  const all = useScope({ type: 'session', id: session }).kernels
+  return useMemo(() => liveKernels(all), [all])
+}
+
+/**
+ * 171 §11.4: the session's live kernels and their actions; renders nothing without one. `inBar`: the body of the bar's
+ * Kernels card, which is the frame and the disclosure, so no border of its own and every row shown.
+ */
+export function KernelStrip({ session, inBar = false }: KernelStripProps) {
+  const api = useApi()
+  const kernels = useSessionKernels(session)
   const [open, setOpen] = useDisclosure(disclosureKey(session, 'kernels'))
   const [envError, setEnvError] = useState<string | null>(null)
   if (kernels.length === 0) return null
@@ -101,14 +113,16 @@ export function KernelStrip({ session, embedded = false }: KernelStripProps) {
   // §5.4: the engine's `env_warning`, else a failed Refresh environment.
   const warning = kernels.map((k) => k.env_warning).find(Boolean) ?? envError
   return (
-    <div className={cn('w-full shrink-0', !embedded && 'mx-auto px-4 md:max-w-[768px]')} role="region" aria-label="Kernels">
-      <div className="flex flex-col gap-1 rounded-t-xl border border-b-0 border-border bg-layer-1 px-3 py-1.5">
+    <div className={cn('w-full shrink-0', !inBar && 'mx-auto px-4 md:max-w-[768px]')} role="region" aria-label="Kernels">
+      <div className={cn('flex flex-col gap-1', !inBar && 'rounded-t-xl border border-b-0 border-border bg-layer-1 px-3 py-1.5')}>
         {warning && (
           <span className="self-start rounded-md border border-warning-border bg-warning-bg px-1.5 text-[11px] text-warning" title={warning}>
             your shell's environment could not be read — Refresh
           </span>
         )}
-        {kernels.length === 1 && first ? (
+        {inBar ? (
+          kernels.map((k) => <KernelRow key={JSON.stringify(k.id)} kernel={k} api={api} onError={setEnvError} />)
+        ) : kernels.length === 1 && first ? (
           <KernelRow kernel={first} api={api} onError={setEnvError} />
         ) : (
           <>

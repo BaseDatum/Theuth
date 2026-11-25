@@ -363,7 +363,7 @@ export function Composer({
   compact?: boolean
   /** 76 §0.12: the talk view's transcript — the box shows but takes nothing; speech is the input. */
   readOnly?: boolean
-  /** 171F B7: the kernel strip, drawn on top of the input box (below the queued chips). */
+  /** 171F B7: a strip drawn on top of the input box (below the queued chips): the contact allow strip. */
   strip?: ReactNode
   /** 215 C2: forwarded as `own` to the toolbar's model picker (157 D1: the page's own pane, a notebook's chat column). */
   ownModel?: boolean

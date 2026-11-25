@@ -45,7 +45,7 @@ test('dictationCommands: theuth\'s slash commands plus the harness\'s, each with
   expect(dictationCommands(null)).toEqual(COMMANDS.map((c) => c.name))
 })
 
-test('171F B7: queued chips, then the kernel strip, then the input box (the strip sits on the box, the chips above it)', () => {
+test('171F B7: queued chips, then the strip, then the input box (the strip sits on the box, the chips above it)', () => {
   const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
   const at = (s: string) => src.indexOf(s)
   expect(at('<QueuedChips')).toBeGreaterThan(0)

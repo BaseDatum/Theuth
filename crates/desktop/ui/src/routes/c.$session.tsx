@@ -40,7 +40,6 @@ import type { SessionSummary } from "@/rpc/bindings/method.agent.output"
 import { freshness, on, useSessionField, useSessions } from '@/store/sessions'
 import { type StampTries, stampTried, stampWanted, unstampedKey } from '@/store/reduce'
 import { ContactAllowStrip } from '@/components/chat/ContactAllowStrip'
-import { KernelStrip } from '@/components/cells/KernelStrip'
 
 /** `seq`: a search hit's stored message seq (49 §7); anything but a safe non-negative integer is dropped.
  * `cell` (171 §14.3): `theuth://c/<session>?cell=<name|ordinal>` — the cell to scroll to and focus.
@@ -217,17 +216,9 @@ export function LiveSession({ session, first, aboveComposer }: { session: string
       <WebPill session={session} />
       {aboveComposer}
       {watching ? (
-        <>
-          <KernelStrip session={session} />
-          <ObservedBar session={session} />
-        </>
+        <ObservedBar session={session} />
       ) : (
-        <Composer key={`c:${session}`} session={session} strip={
-            <>
-              <ContactAllowStrip session={session} embedded />
-              <KernelStrip session={session} embedded />
-            </>
-          } />
+        <Composer key={`c:${session}`} session={session} strip={<ContactAllowStrip session={session} embedded />} />
       )}
     </>
   )
