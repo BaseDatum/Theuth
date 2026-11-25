@@ -8,7 +8,7 @@ import { isTauri } from '@/lib/tauri'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
 import { bytesLabel } from './labels'
-import { SendDialog, type SendSource } from './SendDialog'
+import { SendDialog, type SendSource, copySendLink } from './SendDialog'
 import type { ConnInfo } from '@/rpc/bindings/method.secrets.output'
 
 const when = (ms: number) => new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
@@ -24,15 +24,6 @@ export function Sends({ info }: { info: ConnInfo }) {
   const list = useQuery({ enabled: can, queryKey: queryKeys.secretSends(info.conn), queryFn: () => api.list_sends(info.conn) })
   const [sending, setSending] = useState<SendSource | null>(null)
   const revoke = useAction((id: string) => api.revoke_send(id), { keys: [queryKeys.secretSends(info.conn)] })
-  const copy = async (id: string) => {
-    try {
-      await navigator.clipboard.writeText(await api.copy_send_link(id))
-      notify.success('Copied; the clipboard clears in 60 s')
-      setTimeout(() => void navigator.clipboard.writeText('').catch(() => undefined), 60_000)
-    } catch (e) {
-      notify.error(errorText(e))
-    }
-  }
   if (!can) return null
   return (
     <div className="mb-3 ml-4 flex flex-col gap-1 border-l border-border-subtle pl-4 text-[13px]">
@@ -69,7 +60,7 @@ export function Sends({ info }: { info: ConnInfo }) {
           </div>
           {s.status === 'active' && (
             <div className="flex shrink-0 gap-1">
-              <Button variant="outline" size="sm" onClick={() => void copy(s.id)}>
+              <Button variant="outline" size="sm" onClick={() => void copySendLink(api, s.id)}>
                 Copy link
               </Button>
               <Button variant="ghost" size="sm" disabled={revoke.isPending} onClick={() => confirm(`Revoke ${s.link_secret ?? s.name}?`) && revoke.mutate(s.id)}>

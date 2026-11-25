@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { open as pickFile } from '@tauri-apps/plugin-dialog'
 import { useState } from 'react'
 import { errorText } from '@/components/settings/shared'
@@ -8,12 +9,24 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { notify } from '@/lib/notify'
+import { copySecret } from '@/lib/secret-clipboard'
 import { isTauri } from '@/lib/tauri'
 import { queryKeys, useApi } from '@/lib/rpc'
 import { useQuerySupport } from '@/rpc/capabilities'
+import type { Api } from '@/rpc/bindings/client'
 import type { SendRecord } from '@/rpc/bindings/method.secrets.output'
 import { bytesLabel, fileFits, premiumRefusal } from './labels'
 import { EXTERNAL_DEFAULTS, type SendArgs, type SendPassword } from './types'
+
+/** Copy a Send's link (`copy_send_link`) to the clipboard, cleared after 60 s while still there; never rendered. */
+export async function copySendLink(api: Api, id: string): Promise<void> {
+  try {
+    await copySecret(await api.copy_send_link(id))
+    notify.success('Link copied; the clipboard clears in 60 s unless you copy something else')
+  } catch (e) {
+    notify.error(errorText(e))
+  }
+}
 
 /**
  * What the dialog sends. `text`: a local vault NAME or a `bw/…#field` / `aws/…[#key]` ref (never a value). `file`: an
@@ -32,7 +45,7 @@ type PasswordMode = 'none' | 'from' | 'ask'
  */
 export function SendDialog({ initial, open, onOpenChange }: { initial: SendSource; open: boolean; onOpenChange: (open: boolean) => void }) {
   const api = useApi()
-  const can = useQuerySupport(['list_secret_connections', 'create_send'])
+  const can = useQuerySupport(['list_secret_connections', 'create_send', 'copy_send_link'])
   const conns = useQuery({ enabled: can && open, queryKey: queryKeys.secretConnections, queryFn: () => api.list_secret_connections() })
   const limits = useQuery({ enabled: can && open, queryKey: queryKeys.secretExternalSettings, queryFn: () => api.get_external_settings(), retry: false })
   const bw = (conns.data ?? []).filter((c) => c.backend === 'bw')
@@ -92,15 +105,6 @@ export function SendDialog({ initial, open, onOpenChange }: { initial: SendSourc
     }
   }
   const retryAsText = error !== null && premiumRefusal(error) && source.kind === 'text' && asFile !== null
-  const copyLink = async (id: string) => {
-    try {
-      await navigator.clipboard.writeText(await api.copy_send_link(id))
-      notify.success('Copied; the clipboard clears in 60 s')
-      setTimeout(() => void navigator.clipboard.writeText('').catch(() => undefined), 60_000)
-    } catch (e) {
-      notify.error(errorText(e))
-    }
-  }
   const pick = async () => {
     const path = await pickFile({ multiple: false, directory: false })
     if (typeof path === 'string') setSource({ kind: 'file', file: path, label: path, bytes: null })
@@ -117,7 +121,7 @@ export function SendDialog({ initial, open, onOpenChange }: { initial: SendSourc
             <div>
               Created {created.kind} Send <span className="font-mono">{created.link_secret ?? created.id}</span> on bw/{created.conn}.
             </div>
-            <Button onClick={() => void copyLink(created.id)}>Copy link</Button>
+            <Button onClick={() => void copySendLink(api, created.id)}>Copy link</Button>
             <div className="text-xs text-fg-tertiary">The link is copied to the clipboard, never shown here.</div>
           </div>
         ) : (
@@ -201,6 +205,23 @@ export function SendDialog({ initial, open, onOpenChange }: { initial: SendSourc
             </label>
             <Input aria-label="Send notes" placeholder="Private notes (never the secret)" value={notes} onChange={(e) => setNotes(e.target.value)} />
             {error && <div className="text-xs text-danger">{error}</div>}
+            {busy && (
+              <div role="status" className="text-xs text-fg-secondary">
+                {pwMode === 'ask' ? (
+                  <>
+                    A card asks for the Send's password in your{' '}
+                    <Link to="/attention" className="underline">
+                      inbox
+                    </Link>
+                    ; this dialog waits for it. Once answered, the Send also shows under the connection's Sends.
+                  </>
+                ) : source.kind === 'file' ? (
+                  `Encrypting and uploading ${source.label || 'the file'}${fileBytes !== null ? ` (${bytesLabel(fileBytes)})` : ''}…`
+                ) : (
+                  'Creating the Send…'
+                )}
+              </div>
+            )}
           </div>
         )}
         <DialogFooter>
@@ -223,7 +244,7 @@ export function SendDialog({ initial, open, onOpenChange }: { initial: SendSourc
                 </Button>
               )}
               <Button disabled={busy || !ready} onClick={() => void create(args())}>
-                Create Send
+                {busy ? 'Creating…' : 'Create Send'}
               </Button>
             </>
           )}
