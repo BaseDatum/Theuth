@@ -26,6 +26,7 @@ import { Ctx, type CanvasCtx } from './context'
 import { FrameNode } from './FrameNode'
 import { contains, intersects, pad, scaleOf, shownCards, strokeWorldBox, union } from './geom'
 import { FreeInk, indexInk } from './InkLayer'
+import { ERASER_PX, HOVER_IDLE_MS, hoverLook } from './hover'
 import { MultiTap, PALM_MS, palmActive, penPoints, pointerKind, routePointer, StrokeSamples, type PointerKind } from './input'
 import { LinkEdge } from './LinkEdge'
 import { assignLod, emptyLodState, type Lod } from './lod'
@@ -425,7 +426,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const eraseAt = useCallback((x: number, y: number) => {
     const b = boardRef.current
     const st = store.getState()
-    const tol = 6 / viewRef.current.zoom
+    const tol = ERASER_PX / 2 / viewRef.current.zoom
     const hit: Id[] = []
     for (const s of Object.values(b.ink)) {
       if (lookOf(b, s, st).opacity === 0) continue
@@ -793,6 +794,81 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     }
   }, [commit, doc, drawWet, eraseAt, markAt, penDownCancelsPalm, scheduleWet, store, taps, toWorld, undo])
 
+  // ---- hover preview (218): where the mark lands while the Pencil hovers, or the mouse moves with an ink tool. One
+  // style write per frame on an overlay that takes no pointer and is never ink; hidden on leave, pen-down, a tool with
+  // nothing to show, and (the Pencil) after HOVER_IDLE_MS without a hover move. ----
+  const hoverDot = useRef<HTMLDivElement>(null)
+  const hoverRepaint = useRef<() => void>(() => {})
+  const darkRef = useRef(dark)
+  darkRef.current = dark
+  const spaceRef = useRef(spaceHeld)
+  spaceRef.current = spaceHeld
+  useEffect(() => {
+    const el = wrap.current
+    const dot = hoverDot.current
+    if (!el || !dot) return
+    let at: { x: number; y: number; kind: PointerKind } | null = null
+    let frame = 0
+    let idle: ReturnType<typeof setTimeout> | undefined
+    const hide = () => {
+      at = null
+      cancelAnimationFrame(frame)
+      frame = 0
+      clearTimeout(idle)
+      dot.hidden = true
+    }
+    const paint = () => {
+      frame = 0
+      if (!at) return
+      const s = store.getState()
+      const v = viewRef.current
+      const route = { mode: s.mode, fingerInk: s.fingerInk, readOnly: propsRef.current.readOnly, penDown: s.penDown, palmUntil: palmUntil.current, now: performance.now(), pan: at.kind === 'mouse' && spaceRef.current }
+      const look = hoverLook(at.kind, route, s, v.zoom, darkRef.current)
+      // The mouse's eraser is its cursor already (`data-cursor`).
+      if (!look || (at.kind === 'mouse' && look.ring)) {
+        dot.hidden = true
+        return
+      }
+      const r = el.getBoundingClientRect()
+      const x = at.x - r.left
+      const y = at.y - r.top
+      dot.hidden = false
+      dot.style.width = dot.style.height = `${look.size}px`
+      dot.style.transform = `translate(${x - look.size / 2}px, ${y - look.size / 2}px)`
+      dot.style.background = look.fill ?? 'transparent'
+      dot.style.boxShadow = look.ring ? `inset 0 0 0 1.5px ${look.ring}` : ''
+      dot.style.opacity = String(look.opacity)
+      dot.dataset.world = `${(x - v.x) / v.zoom},${(y - v.y) / v.zoom}`
+    }
+    const schedule = () => {
+      if (at && !frame) frame = requestAnimationFrame(paint)
+    }
+    const move = (e: PointerEvent) => {
+      const kind = pointerKind(e.pointerType)
+      if (kind === 'touch' || e.buttons !== 0 || wet.current) return hide()
+      at = { x: e.clientX, y: e.clientY, kind }
+      schedule()
+      clearTimeout(idle)
+      if (kind === 'pen') idle = setTimeout(hide, HOVER_IDLE_MS)
+    }
+    const out = (e: PointerEvent) => !(e.relatedTarget instanceof Node && el.contains(e.relatedTarget)) && hide()
+    hoverRepaint.current = schedule
+    const off = store.subscribe((s, p) => (s.mode !== p.mode || s.tool !== p.tool || s.colour !== p.colour || s.width !== p.width) && schedule())
+    el.addEventListener('pointermove', move, { capture: true })
+    el.addEventListener('pointerdown', hide, { capture: true })
+    el.addEventListener('pointerleave', hide)
+    el.addEventListener('pointerout', out)
+    return () => {
+      hide()
+      off()
+      hoverRepaint.current = () => {}
+      el.removeEventListener('pointermove', move, { capture: true })
+      el.removeEventListener('pointerdown', hide, { capture: true })
+      el.removeEventListener('pointerleave', hide)
+      el.removeEventListener('pointerout', out)
+    }
+  }, [store])
+
   // Wrapper size (for LOD and the wet canvas).
   useEffect(() => {
     const el = wrap.current
@@ -945,6 +1021,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   const onMove = useCallback((ev: unknown, v: Viewport) => {
     if (ev) fitted.current = true // the owner moved: no late fit
     viewRef.current = { x: v.x, y: v.y, zoom: v.zoom }
+    hoverRepaint.current()
     onViewChange?.(viewRef.current, 'move')
   }, [onViewChange])
   const onMoveEnd = useCallback((_: unknown, v: Viewport) => {
@@ -1091,6 +1168,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
           {anchored && anchored.length > 0 && <Anchored items={anchored} board={board} size={size} right={clusterOpen ? 94 : 24} />}
         </ReactFlow>
         <canvas ref={wetCanvas} className="wb-wet" aria-hidden />
+        <div ref={hoverDot} className="wb-hover" data-hover-preview="" hidden aria-hidden />
         {rubber && <RubberBand r={rubber} />}
         {lasso && <LassoPath pts={lasso.pts} />}
         <Offscreen board={board} width={size.w} height={size.h} onGo={(id) => focus(id, { animate: true })} />
