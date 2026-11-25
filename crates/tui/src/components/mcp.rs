@@ -38,8 +38,9 @@ pub(crate) enum Msg {
     Added(Result<McpServer, String>), Repo(Result<RepoInfo, String>),
     Synced(Result<Vec<SyncResult>, String>), Info(Result<String, String>),
     Created(SessionId, Request), Mutate(Request),
-    /// `get_always_ask` for the markers; an engine without it reads as nothing marked.
-    AlwaysAsk(AlwaysAskState),
+    /// `get_always_ask` for the markers; an engine without the method (-32601) reads as nothing marked, any other error
+    /// is shown and keeps the markers as they were.
+    AlwaysAsk(Result<AlwaysAskState, String>),
     /// The `!` toggle's reply.
     AlwaysAskSet(Result<AlwaysAskState, String>),
 }
@@ -48,7 +49,10 @@ fn send(cx: &mut Cx<'_, '_, Msg>, request: Request) {
         match request {
             Request::ListMcp(session) => Msg::Mcp(api.list_mcp(session).await.map_err(crate::reason)),
             Request::McpStatus => Msg::Progress(api.mcp_status().await.map_err(crate::reason)),
-            Request::GetAlwaysAsk(session) => Msg::AlwaysAsk(api.get_always_ask(session).await.unwrap_or_default()),
+            Request::GetAlwaysAsk(session) => Msg::AlwaysAsk(match api.get_always_ask(session).await {
+                Err(jsonrpsee::core::client::Error::Call(e)) if e.code() == -32601 => Ok(AlwaysAskState::default()),
+                result => result.map_err(crate::reason),
+            }),
             Request::SetAlwaysAsk { session, tool, on } => {
                 Msg::AlwaysAskSet(api.set_always_ask(Some(session), tool, on).await.map_err(crate::reason))
             }
@@ -547,12 +551,12 @@ impl Component for Mcp {
             Input::Message(Msg::Info(Ok(text))) => {
                 cx.plain(Plain::Line(text.clone())); cx.core(CoreAction::Notice(text));
             }
-            Input::Message(Msg::AlwaysAsk(state)) => self.always = state,
+            Input::Message(Msg::AlwaysAsk(Ok(state))) => self.always = state,
             Input::Message(Msg::AlwaysAskSet(Ok(state))) => {
                 cx.core(CoreAction::Notice(crate::model::always_ask_line(&state)));
                 self.always = state;
             }
-            Input::Message(Msg::Mcp(Err(error)) | Msg::Progress(Err(error)) | Msg::Added(Err(error)) | Msg::Repo(Err(error)) | Msg::Synced(Err(error)) | Msg::Info(Err(error)) | Msg::AlwaysAskSet(Err(error))) => cx.error(error),
+            Input::Message(Msg::Mcp(Err(error)) | Msg::Progress(Err(error)) | Msg::Added(Err(error)) | Msg::Repo(Err(error)) | Msg::Synced(Err(error)) | Msg::Info(Err(error)) | Msg::AlwaysAsk(Err(error)) | Msg::AlwaysAskSet(Err(error))) => cx.error(error),
             Input::Tick { .. } if std::mem::take(&mut self.refresh) => {
                 send(cx, Request::ListMcp(cx.core.session));
                 if let Some(session) = cx.core.session { send(cx, Request::GetAlwaysAsk(Some(session))); }
@@ -574,11 +578,12 @@ impl Component for Mcp {
                     ),
                     None => "mcp  ⏎ turn on/off (asks: this session or always)  ␣ cycle risk  ⌫ reset risk  ! always ask (this chat)  →/← tools  l login/logout  s sync  esc close".to_owned(),
                 };
+                // 219 §6.2: the always-ask marker is the first column, apart from the ▸/▾ expander.
                 let mark = |r: &Row<'_>| if r.always_ask(&self.always) { "!" } else { " " };
                 let rows: Vec<_> = self.mcp_rows().iter().map(|r| match r {
                     Row::Server(s) => format!(
-                        "{}{}{:<16} {:>2} tools   {:<20} {:<18} {}{}",
-                        if expanded.contains(&s.name) { "▾" } else { "▸" }, mark(r), s.name,
+                        "{} {} {:<16} {:>2} tools   {:<20} {:<18} {}{}",
+                        mark(r), if expanded.contains(&s.name) { "▾" } else { "▸" }, s.name,
                         if s.connected { s.tools.len().to_string() } else { "–".to_owned() },
                         r.switch().label(),
                         match s.gate {
@@ -592,7 +597,7 @@ impl Component for Mcp {
                         s.repo.as_deref().map_or_else(String::new, |r| format!("   ⟳ {r}")),
                     ),
                     Row::Tool(_, t) => format!(
-                        "   {}{:<24} {:<20} {:<22}{}", mark(r), t.name, r.switch().label(),
+                        "{}     {:<24} {:<20} {:<22}{}", mark(r), t.name, r.switch().label(),
                         match t.gate {
                             Some(Gate::Off) => String::new(),
                             Some(_) => format!("{}* ({})", crate::ui::risk_name(t.risk), action_name(t.action)),

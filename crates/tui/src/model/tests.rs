@@ -3130,6 +3130,18 @@
             false,
         )])));
 
+        // 219 §6.2: a failed `get_always_ask` is shown and keeps the markers it had, so `!` still unmarks.
+        let marked = tools::AlwaysAskState { session: vec!["mcp:fs".into()], ..Default::default() };
+        component_reply(&mut m, "mcp", McpMsg::AlwaysAsk(Ok(marked)));
+        component_reply(&mut m, "mcp", McpMsg::AlwaysAsk(Err("get_always_ask: engine gone".into())));
+        assert!(matches!(m.entries.last(), Some(Entry::Error(e)) if e == "get_always_ask: engine gone"));
+        component_menu_key(&mut m, "mcp", KeyCode::Char('!'));
+        assert!(matches!(
+            component_request::<McpRequest>(&mut rx),
+            Ok(McpRequest::SetAlwaysAsk { tool, on: false, .. }) if tool == "mcp:fs"
+        ));
+        component_reply(&mut m, "mcp", McpMsg::AlwaysAsk(Ok(tools::AlwaysAskState::default())));
+
         // Space never reaches `off`: destructive wraps to annotations.
         component_menu_key(&mut m, "mcp", KeyCode::Char(' '));
         assert!(matches!(
