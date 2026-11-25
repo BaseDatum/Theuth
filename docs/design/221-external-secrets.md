@@ -2006,12 +2006,15 @@ messages, the B0 note (`docs/design/221-as-built-B0.md`) and the fix round on th
 - **`remember_unlock` (D12).** With it on, every lock (manual, idle, on sleep), logout and rebuild
   deletes the sealed key, so after an idle lock the master password is needed again.
 - **Owner RPCs and the press.** `delete_external_secret`, `restore_external_secret`, `create_send`
-  and `revoke_send` take the caller: the owner's own press runs directly; any other caller gets a
-  human-only card (`secrets.external.delete`, `secrets.external.restore`, `secrets.send.create`,
-  `secrets.send.revoke`) while the connection's `…:delete` / `…:write` / `…:send` always ask is in
-  force. `create_send` off a press is refused while `send_owner_only` is on. `copy_send_link` never
-  answers the internal peer or a share guest, whatever `copy_link_needs_press` says. Every
-  always-ask lookup in these RPCs fails closed (no registry, or a registry error, asks).
+  and `revoke_send` take the caller: the owner's own press runs directly; any other caller (the
+  TUI over the internal connection, a share guest) gets a human-only card
+  (`secrets.external.delete`, `secrets.external.restore`, `secrets.create_send`,
+  `secrets.revoke_send`) while the connection's `…:delete` / `…:write` / `…:send` always ask is in
+  force, and `create_send` also while `send_owner_only` is on; it proceeds only on the owner's
+  approval. `copy_send_link` returns the link to the internal peer or a share guest only after the
+  owner approves the human-only card `secrets.copy_send_link`, whatever `copy_link_needs_press`
+  says. Every always-ask lookup in these RPCs fails closed (no registry, or a registry error,
+  asks).
 - **Seeding.** The `ext/seeded/<conn>` stamp is written only after `seed_ask` ran. With
   `secrets.tools: false` connections are built unseeded (nothing reads placeholders) and seeded on
   the first start with the tools on.

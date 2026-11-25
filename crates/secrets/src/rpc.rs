@@ -153,9 +153,9 @@ pub trait CredentialsApi {
     #[method(name = "secrets_power_event")]
     async fn secrets_power_event(&self, kind: String) -> RpcResult<()>;
     /// §12.5: create a Bitwarden Send from the owner's dialog (`args` = `SendCreateArgs` without
-    /// `connection`). The owner's press is the consent. Any other caller is refused while the
-    /// connection's `send_owner_only` is on, and otherwise gets the human-only card
-    /// `secrets.send.create` while the `…:send` always ask is in force.
+    /// `connection`). The owner's press is the consent. Any other caller (the TUI, a guest) gets
+    /// the human-only card `secrets.create_send` while the connection's `send_owner_only` is on
+    /// or its `…:send` always ask is in force, and creates only on the owner's approval.
     #[method(name = "create_send", with_extensions)]
     async fn create_send(
         &self,
@@ -167,12 +167,13 @@ pub trait CredentialsApi {
     async fn list_sends(&self, conn: String) -> RpcResult<Vec<secrets::tools_send::SendRecord>>;
     /// §12.4: revoke a Send. A non-press caller with the Send's connection `…:send` always ask
     /// in force (or a Send this engine has no row for) gets the human-only card
-    /// `secrets.send.revoke`.
+    /// `secrets.revoke_send`.
     #[method(name = "revoke_send", with_extensions)]
     async fn revoke_send(&self, id: String) -> RpcResult<()>;
-    /// §12.5: a Send's link for the clipboard. Never to the internal peer (where the agent's
-    /// halves live) or a share guest; a press runs directly; any other caller gets a human-only
-    /// card while `copy_link_needs_press` is on.
+    /// §12.5: a Send's link for the clipboard. A press gets it directly. The internal peer (where
+    /// the agent's halves live) or a share guest gets it only after the owner approves the
+    /// human-only card `secrets.copy_send_link`; any other caller gets that card while
+    /// `copy_link_needs_press` is on.
     #[method(name = "copy_send_link", with_extensions)]
     async fn copy_send_link(&self, id: String) -> RpcResult<String>;
     /// §9.4 (U1): the unlock cards waiting on this engine, oldest first — what an app reseeds its
@@ -632,25 +633,9 @@ impl CredentialsApiServer for Server {
     ) -> RpcResult<secrets::tools_send::SendRecord> {
         let press = human_press(ext);
         if !press {
-            let owner_only = send(&secrets()?, ConnSettingsOf(conn.clone()))
-                .await?
-                .send_owner_only;
-            if owner_only {
-                return Err(failed(format!(
-                    "send_owner_only is on for {conn}: only the owner's own press creates a Send \
-                     (Settings › Secrets › {conn})"
-                )));
-            }
-            let asks = always_asks("bw", &conn, ::tools::secrets::Direction::Send).await;
-            confirm_loosening(
-                approval_actor().as_ref(),
-                press,
-                asks,
-                "secrets.send.create",
-                serde_json::json!({ "connection": conn, "args": args }),
-            )
-            .await
-            .map_err(failed)?;
+            create_send_gate(&secrets()?, &conn, &args)
+                .await
+                .map_err(failed)?;
         }
         let cx = send_cx().await?;
         let mut args = args;
@@ -696,7 +681,7 @@ impl CredentialsApiServer for Server {
                 approval_actor().as_ref(),
                 press,
                 asks,
-                "secrets.send.revoke",
+                "secrets.revoke_send",
                 serde_json::json!({ "send": id, "connection": conn }),
             )
             .await
@@ -709,27 +694,8 @@ impl CredentialsApiServer for Server {
     }
 
     async fn copy_send_link(&self, ext: &Extensions, id: String) -> RpcResult<String> {
-        // R3: the link is a value outbound; never to the agent's halves or a share guest,
-        // whatever `copy_link_needs_press` says.
-        if ext
-            .get::<rpc_core::RpcPeer>()
-            .is_none_or(|p| p.is_internal() || p.guest().is_some())
-        {
-            return Err(failed(
-                "copy_send_link: only the owner's own app copies a Send link",
-            ));
-        }
         let a = secrets()?;
-        let needs = send(&a, GetExternalSettings).await?.copy_link_needs_press;
-        confirm_loosening(
-            approval_actor().as_ref(),
-            human_press(ext),
-            needs,
-            "secrets.copy_send_link",
-            serde_json::json!({ "send": id }),
-        )
-        .await
-        .map_err(failed)?;
+        copy_link_gate(&a, ext, &id).await.map_err(failed)?;
         let cx = send_cx().await?;
         let link = secrets::tools_send::send_link(&cx, &id)
             .await
@@ -738,6 +704,62 @@ impl CredentialsApiServer for Server {
         let _ = a.tell(Audit(format!("copied the link of Send {id}"))).await;
         Ok(link.as_str().to_owned())
     }
+}
+
+/// R21: `create_send` from a caller that is not the owner's press (the TUI over the internal
+/// connection, a share guest): the human-only card `secrets.create_send` while the connection's
+/// `send_owner_only` is on or its `…:send` always ask is in force; `Ok` only on the owner's
+/// approval.
+pub async fn create_send_gate(
+    actor: &ActorRef<secrets::SecretsActor>,
+    conn: &str,
+    args: &serde_json::Value,
+) -> Result<(), String> {
+    let owner_only = actor
+        .ask(ConnSettingsOf(conn.to_owned()))
+        .await
+        .map_err(|e| e.to_string())?
+        .send_owner_only;
+    let asks = owner_only || always_asks("bw", conn, ::tools::secrets::Direction::Send).await;
+    confirm_loosening(
+        approval_actor().as_ref(),
+        false,
+        asks,
+        "secrets.create_send",
+        serde_json::json!({ "connection": conn, "args": args }),
+    )
+    .await
+}
+
+/// R3/R21: whether `copy_send_link` may return Send `id`'s link to this caller. The owner's
+/// press: yes. The internal connection (where the agent's halves live) or a share guest: only
+/// after the owner approves the human-only card `secrets.copy_send_link`, whatever
+/// `copy_link_needs_press` says. Any other caller: that card while `copy_link_needs_press` is on.
+pub async fn copy_link_gate(
+    actor: &ActorRef<secrets::SecretsActor>,
+    ext: &Extensions,
+    id: &str,
+) -> Result<(), String> {
+    if human_press(ext) {
+        return Ok(());
+    }
+    let agent_side = ext
+        .get::<rpc_core::RpcPeer>()
+        .is_none_or(|p| p.is_internal() || p.guest().is_some());
+    let asks = agent_side
+        || actor
+            .ask(GetExternalSettings)
+            .await
+            .map_err(|e| e.to_string())?
+            .copy_link_needs_press;
+    confirm_loosening(
+        approval_actor().as_ref(),
+        false,
+        asks,
+        "secrets.copy_send_link",
+        serde_json::json!({ "send": id }),
+    )
+    .await
 }
 
 /// `set_connection_setting` / `set_external_setting`: classify, ask the human for a loosening

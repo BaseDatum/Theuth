@@ -1467,6 +1467,86 @@ pub(crate) mod tests {
         });
     }
 
+    /// R3/R21: off the owner's press, `copy_send_link` and `create_send` raise a human-only card
+    /// and go ahead only on the owner's approval (a deny refuses: no link leaves); the press
+    /// needs no card.
+    #[test]
+    fn send_link_and_create_send_off_press_need_the_owners_approval() {
+        serial(async {
+            let dir = tempfile::tempdir().unwrap();
+            let (a, _reg, _) = start(dir.path()).await;
+            a.ask(AddConnection {
+                conn: "personal".into(),
+                cfg: bw(),
+            })
+            .await
+            .unwrap();
+            let approval = ActorRef::<::tools::approval::Approval>::lookup(::tools::APPROVAL_ACTOR)
+                .unwrap()
+                .unwrap();
+            let pending = || async { approval.ask(::tools::PendingApprovals).await.unwrap() };
+            let internal = || {
+                let mut x = jsonrpsee::Extensions::new();
+                x.insert(rpc_core::RpcPeer::internal());
+                x
+            };
+            let (ui, _guard) = rpc_core::RpcPeer::open();
+            let mut owner = jsonrpsee::Extensions::new();
+            owner.insert(ui);
+
+            crate::rpc::copy_link_gate(&a, &owner, "s1").await.unwrap();
+            assert!(pending().await.is_empty(), "a press needs no card");
+
+            for (decision, ok) in [
+                (::tools::Decision::Deny, false),
+                (::tools::Decision::Allow, true),
+            ] {
+                let gate = tokio::spawn({
+                    let (a, ext) = (a.clone(), internal());
+                    async move { crate::rpc::copy_link_gate(&a, &ext, "s1").await }
+                });
+                let card = loop {
+                    if let Some(c) = pending().await.into_iter().next() {
+                        break c;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                };
+                assert!(card.human_only);
+                assert_eq!(card.tool, "secrets.copy_send_link");
+                approval
+                    .ask(::tools::Resolve {
+                        id: card.id,
+                        decision,
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(gate.await.unwrap().is_ok(), ok);
+            }
+
+            // `send_owner_only` is on by default: the TUI's create_send waits on the card.
+            let gate = tokio::spawn({
+                let a = a.clone();
+                async move { crate::rpc::create_send_gate(&a, "personal", &serde_json::json!({})).await }
+            });
+            let card = loop {
+                if let Some(c) = pending().await.into_iter().next() {
+                    break c;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            assert!(card.human_only);
+            assert_eq!(card.tool, "secrets.create_send");
+            approval
+                .ask(::tools::Resolve {
+                    id: card.id,
+                    decision: ::tools::Decision::Allow,
+                })
+                .await
+                .unwrap();
+            gate.await.unwrap().unwrap();
+        });
+    }
+
     /// §9.4: a placeholder on a locked connection raises the unlock card; the typed password
     /// unlocks it and the call resolves; a declined card fails the call.
     #[test]
