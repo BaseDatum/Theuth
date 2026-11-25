@@ -38,12 +38,13 @@ type Stage = 'form' | 'login' | 'unlock'
  */
 export function AddConnection({ existing, onDone }: { existing: readonly string[]; onDone: () => void }) {
   const api = useApi()
-  const core = useApi()
   const qc = useQueryClient()
   const canProfiles = useQuerySupport(['list_aws_profiles'])
   const [backend, setBackend] = useState<Backend>('bw')
   const [conn, setConn] = useState('')
-  const [aws, setAws] = useState({ profile: '', region: 'us-east-1', kms: '', prefix: '' })
+  // No region is preselected: `list_aws_profiles` carries no profile region (§9.1's "default from the profile"), and a
+  // wrong guess lists an empty account.
+  const [aws, setAws] = useState({ profile: '', region: '', kms: '', prefix: '' })
   const [bw, setBw] = useState({ server: 'us' as BwServer, base: '', api: '', identity: '', web: '', email: '', login: 'api_key' as 'api_key' | 'password' })
   const [advanced, setAdvanced] = useState(false)
   const [probe, setProbe] = useState<ConnStatus | null>(null)
@@ -51,7 +52,7 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
   const [error, setError] = useState<string | null>(null)
   const [stage, setStage] = useState<Stage>('form')
   const [saved, setSaved] = useState<ConnInfo | null>(null)
-  const profiles = useQuery({ enabled: canProfiles && backend === 'aws', queryKey: ['aws-profiles'], queryFn: () => core.list_aws_profiles() })
+  const profiles = useQuery({ enabled: canProfiles && backend === 'aws', queryKey: ['aws-profiles'], queryFn: () => api.list_aws_profiles() })
   const name = conn.trim()
   const nameError = !name ? null : !CONN_NAME.test(name) ? 'a–z, 0–9 and -, at most 32' : existing.includes(name) ? 'already a connection' : null
   const cfg = (): ConnConfig =>
@@ -90,7 +91,7 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
       else setStage(info.status.state === 'logged_out' ? 'login' : 'unlock')
     })
   if (saved && stage === 'login')
-    return <LoginCard conn={saved.conn} email={bw.email.trim()} method={bw.login} onDone={() => setStage('unlock')} />
+    return <LoginCard conn={saved.conn} email={bw.email.trim()} method={bw.login} onDone={() => setStage('unlock')} onCancel={onDone} />
   if (saved && stage === 'unlock')
     return (
       <UnlockCard
@@ -129,6 +130,9 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
             ))}
           </select>
           <select aria-label="AWS region" className={SELECT} value={aws.region} onChange={(e) => setAws({ ...aws, region: e.target.value })}>
+            <option value="" disabled>
+              Region…
+            </option>
             {AWS_REGIONS.map((r) => (
               <option key={r} value={r}>
                 {r}
@@ -151,7 +155,8 @@ export function AddConnection({ existing, onDone }: { existing: readonly string[
           {bw.server === 'self_hosted' && (
             <>
               <Input value={bw.base} onChange={(e) => setBw({ ...bw, base: e.target.value })} placeholder="https://vault.example.org" aria-label="Server URL" spellCheck={false} />
-              {bw.base.trim() && !bw.base.trim().startsWith('https://') && <div className="text-xs text-danger">Bitwarden's client talks HTTPS only; a private CA must be trusted by this Mac.</div>}
+              {bw.base.trim() && !bw.base.trim().startsWith('https://') && <div className="text-xs text-danger">Bitwarden's client talks HTTPS only.</div>}
+              <div className="text-xs text-fg-tertiary">A private CA must be in this Mac's trust store (Keychain Access › System); there is no per-connection CA file.</div>
             </>
           )}
           <button type="button" className="self-start text-xs text-fg-secondary underline" onClick={() => setAdvanced(!advanced)}>

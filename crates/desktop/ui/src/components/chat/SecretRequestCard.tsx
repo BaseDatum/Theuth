@@ -141,7 +141,6 @@ export const SecretRequestCard = memo(function SecretRequestCard({
   onError?: (error: string) => void
 }) {
   const api = useApi()
-  const secrets = useApi()
   const [dest, setDest] = useState<DestinationView | null>(destination ?? null)
   const [picking, setPicking] = useState(false)
   const [master, setMaster] = useState('')
@@ -162,7 +161,7 @@ export const SecretRequestCard = memo(function SecretRequestCard({
     setBusy(true)
     try {
       const [value, form, expiresMs] = answerPayload(fields, values, decline, at.ok ? at.at : null)
-      const ok = dest === null ? await api.answer_secret(id, value, form, expiresMs) : await secrets.answer_secret(id, value, form, expiresMs, decline ? null : answerDestination(dest))
+      const ok = dest === null ? await api.answer_secret(id, value, form, expiresMs) : await api.answer_secret(id, value, form, expiresMs, decline ? null : answerDestination(dest))
       if (ok) {
         setValues({})
         onAnswered?.()
@@ -182,7 +181,7 @@ export const SecretRequestCard = memo(function SecretRequestCard({
     setBusy(true)
     setUnlockError(null)
     try {
-      const info = await secrets.connection_unlock(dest.connection, master)
+      const info = await api.connection_unlock(dest.connection, master)
       setDest({ ...dest, status: info.status })
     } catch (e) {
       setUnlockError(e instanceof Error ? e.message : String(e))
