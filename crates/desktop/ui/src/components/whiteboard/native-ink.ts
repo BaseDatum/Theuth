@@ -116,13 +116,19 @@ export async function connectNativeInk(o: {
       } else if (e.action === 'showColorPalette' || e.action === 'showInkAttributes' || e.action === 'showContextualPalette') o.showTools()
     }
   }
-  attached = await (o.attach ?? attachNativeInk)({ strokes: (b) => void bridge.onBatch(b), event: onEvent })
+  // M3: another view took the overlay (a tile beside this route, a remount): pointer ink takes over here.
+  let owned = true
+  const lost = () => {
+    owned = false
+    o.store.getState().set({ nativeInk: false, penDown: false })
+  }
+  attached = await (o.attach ?? attachNativeInk)({ strokes: (b) => void bridge.onBatch(b), event: onEvent, lost })
   const ink = attached
   if (!ink) return null
   let shown = true
   const push = () => {
     const s = o.store.getState()
-    const enabled = shown && s.inkEngine === 'auto' && s.mode !== 'link' && s.mode !== 'erase' && !s.composerOpen
+    const enabled = owned && shown && s.inkEngine === 'auto' && s.mode !== 'link' && s.mode !== 'erase' && !s.composerOpen
     ink.setTool({ tool: s.mode === 'erase' ? 'eraser' : s.tool, colour: inkCss(s.colour, o.dark()), width: s.width })
     ink.setEnabled(enabled)
     ink.setPickerVisible(shown && !s.composerOpen && s.inkEngine === 'auto')
