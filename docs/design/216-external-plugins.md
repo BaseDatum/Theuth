@@ -857,11 +857,21 @@ transcript enters its agent session as `[meeting …]` input batches (`crates/me
 and would be public as `agent.events#InputQueued.text`. So the router keeps the set of **meeting
 sessions** — seeded at host start from `meeting::ListMeetings` (every `MeetingSummary` has its
 `session`), updated by `meeting.events#Started { session }` and `#Deleted` read off the feed — and for
-those sessions strips every text-bearing field of `agent.events` (`TurnStarted.text`,
+those sessions and their descendants (`SubagentSpawned`/`ObservedChildChanged` with a meeting session as
+`parent`, and `parent` in the session list at seed time) strips every text-bearing field of
+`agent.events` (`TurnStarted.text`,
 `InputQueued.text`, `TextDelta.text`, `ReasoningDelta.text`, `ToolCallStarted.args`,
 `ToolCallProgress.args`, `ToolCallFinished.output`, `MessageDelivered.text`, `Error.message`,
-`Suggestions.items`, `TodoChanged.snapshot`, `AdvisoryAdded.advisory`), keeping types, ids, usage and
-timings. Meeting topics, briefs and summaries on `meeting.events`/`meeting.briefs` stay public. This
+`Suggestions.items`, `TodoChanged.snapshot`, `AdvisoryAdded.advisory`, and — owner ruling of
+2026-11-25 on review R24 — `TitleChanged.title`, `StatusChanged.status`, `StatusChanged.title` and
+`ResumeReport.replayed`, which are derived from the transcript), keeping types, ids, usage and
+timings. The sets are seeded from `meeting::ListMeetings` and `agent::ListSessions` (which also
+seeds the remote-session set from `here`); until a seed succeeds, and again after the feed lags
+until a re-seed succeeds (retried every 30 s), the router withholds `agent.events` text for every
+session; the remote drop applies only to sessions known to be remote (review R6). For every meeting,
+not only its session, `meeting.events#OracleDecision` loses `decision.mentions`, `decision.subject` and
+`decision.tier2` (which quotes the subject): verbatim fragments of what was said (owner ruling on
+R24). Meeting topics, briefs and summaries on `meeting.events`/`meeting.briefs` stay public. This
 is the one exposure rule that needs state; it lives in the router beside `external_view`, and
 `agent.events`' `CONDITIONAL` lists it so the snapshot shows it. Rejected: narrowing rule (b) to "raw
 capture streams" with a warning on the card (the owner's call: withhold, do not warn).
@@ -880,6 +890,7 @@ capture streams" with a warning on the card (the owner's call: withhold, do not 
 | `meeting.events#Utterance` | `DROP` | b | Live transcript of other people's speech; they consented to a recording, not to arbitrary code reading it. |
 | `meeting.events#Upcoming.event` and `#Detected.event` (`EventRef`, also in `alternatives`) — fields `description`, `join_url` | `STRIP` | b, a | `EventRef` (`crates/meeting/src/calendar/mod.rs#L82-L107`) carries the invite's agenda (others' words) and the join link (often with an embedded passcode). `title`, `start`, `end`, `join_host`, `organizer` and `attendees` stay public: they are the owner's own calendar metadata, as the owner's own messages are, and meeting plugins need them. |
 | `agent.events` text fields of meeting sessions | router (session set, above) | b | Meeting transcripts reach the agent session as input batches. |
+| `meeting.events#OracleDecision.decision` — fields `mentions`, `subject`, `tier2` | router (all meetings) | b | Verbatim fragments of other people's speech picked out by the oracle (owner ruling on review R24). |
 | `agent.events#MessageDelivered.text` when the sender is a contact | `plugin_view` + new field | b | The body of a contact's (186) message. `MessageDelivered` gains `contact: bool` (`#[serde(default)]`, additive; set from `PeerOrigin.contact_mode.is_some()`, `crates/agent/src/communication.rs#L798-L810`); `text` is stripped only when it is `true`. The same variant carries the owner's own subagents', parent's and jobs' messages (`crates/agent/src/lib.rs#L3772-L3780`), which stay public. |
 | `agent.peer-delivered` `text` and `files` when `origin.contact_mode` is set | `plugin_view` | b | "Bounded, redacted body as consumed" of a peer message (`crates/agent/src/communication.rs#L863-L878`); same content as `MessageDelivered.text`, same rule: stripped for contacts, public for the owner's own mesh peers. |
 | `agent.events#ContactFileChanged` — `file.name`, `file.path` | `STRIP` | b | A contact's file name and where it was saved (`crates/agent/src/communication/files.rs#L181-L221`); size, media type, state and hash stay. |
