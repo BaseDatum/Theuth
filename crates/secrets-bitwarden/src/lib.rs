@@ -958,6 +958,8 @@ fn api_err(e: &ApiError) -> ExtError {
                 ),
                 403 => ExtError::Denied(msg),
                 404 => ExtError::NotFound,
+                // Vaultwarden answers a missing Send / cipher with 400 "… not found".
+                400 if msg.to_lowercase().contains("not found") => ExtError::NotFound,
                 code => ExtError::Sdk(format!("Bitwarden answered {code}: {msg}")),
             }
         }
