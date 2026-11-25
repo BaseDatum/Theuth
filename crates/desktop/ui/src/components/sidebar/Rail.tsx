@@ -20,7 +20,7 @@ import { type SessionSlice, useSessionField, useSessions } from '@/store/session
 import { AgentTree, ago } from './AgentTree'
 import { useDeskList } from './Desks'
 import { ProjectIcon } from './ProjectStyle'
-import { type RowEdit, SessionActivity, SessionEdit, SessionMenu, SessionPending, subagentRunning, useRowTitle, useSessionActions } from './SessionItem'
+import { PinnedGlyph, type RowEdit, SessionActivity, SessionEdit, SessionMenu, SessionPending, subagentRunning, useRowTitle, useSessionActions } from './SessionItem'
 import { buildRows, newChatLabel, ProjectMenu, type Row, UNGROUPED, useSidebarSessions } from './SessionList'
 
 /** One icon of the collapsed rail: 36 px under a mouse, 44 px under a finger (the rail is 56 px). */
@@ -373,6 +373,7 @@ function PopChat({
     <>
       <div className={cn('group/pop-row relative flex items-center rounded-md', recent && 'opacity-70')}>
         <Link to="/c/$session" params={{ session: s.id }} {...drag} data-rail-item data-active={active || undefined} title={title} className={cn(POP_ROW, 'min-w-0 flex-1')} onClick={pop.close}>
+          {s.pinned && <PinnedGlyph />}
           <SessionActivity id={s.id} here={s.here} running={s.running} />
           <SessionPending id={s.id} />
           <span className="min-w-0 flex-1 truncate">{title}</span>

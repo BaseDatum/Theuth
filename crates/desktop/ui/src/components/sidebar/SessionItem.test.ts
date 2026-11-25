@@ -32,12 +32,12 @@ const child = receiveComponent('method.agent.output.SessionSummary', { id: 'chil
 const glyph = (label: string) => document.querySelector(`[role="img"][aria-label="${label}"]`)!
 let unmount = async () => {}
 let client: QueryClient
-async function mount(subagents: SessionSummary[] = [child], endless = false) {
+async function mount(subagents: SessionSummary[] = [child], endless = false, pinned = false) {
   const host = document.body.appendChild(document.createElement('div'))
   const root = createRoot(host)
   client = new QueryClient()
   await act(async () => root.render(createElement(QueryClientProvider, { client, children: createElement(SidebarProvider, null, createElement('div', { onClick: rowClick, onPointerDown: rowPointerDown, onMouseDown: rowMouseDown }, createElement(SessionItem, {
-    id: 'root', title: 'Background work', created: '2026-11-16T12:00:00Z', tags: [], pinned: false, archived: false, project: null, owner: '', epoch: 1, here: true, running: true, endless, subagents, active: false, selected: false, selecting: false, select,
+    id: 'root', title: 'Background work', created: '2026-11-16T12:00:00Z', tags: [], pinned, archived: false, project: null, owner: '', epoch: 1, here: true, running: true, endless, subagents, active: false, selected: false, selecting: false, select,
   }))) })))
   unmount = async () => { await act(async () => root.unmount()) }
 }
@@ -158,4 +158,17 @@ test('a fractal context session shows the ∞ badge labelled Fractal context aft
   await mount([child], true)
   expect(glyph('Fractal context').textContent).toBe('∞')
   expect(document.querySelector('[aria-label*="ndless"], [aria-label*="emory"]')).toBeNull()
+})
+
+test('a pinned chat shows a muted pin leftmost in its row, before the title; an unpinned one shows none', async () => {
+  await mount([child], false, true)
+  const link = document.querySelector('a[href="/c/root"]')!
+  const pin = glyph('Pinned')
+  expect(pin.querySelector('.lucide-pin')).not.toBeNull()
+  expect(pin.className).toContain('text-fg-tertiary/70')
+  expect(link.firstElementChild).toBe(pin)
+  await unmount()
+  document.body.innerHTML = ''
+  await mount()
+  expect(document.querySelector('[aria-label="Pinned"]')).toBeNull()
 })
