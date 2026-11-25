@@ -3,10 +3,11 @@ import { errorText } from '@/components/settings/shared'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { notify } from '@/lib/notify'
 import { useApi } from '@/lib/rpc'
 import type { LoginForm } from '@/rpc/bindings/method.secrets.input'
 import type { LoginStep } from '@/rpc/bindings/method.secrets.output'
-import type { UnlockRequested } from '@/store/unlock-requests'
+import type { UnlockRequestView } from '@/store/unlock-requests'
 
 const CARD = 'flex flex-col gap-2 rounded-xl border border-info-border bg-info-bg px-4 py-3 text-sm'
 
@@ -72,8 +73,11 @@ export function UnlockCard({
   )
 }
 
-/** §9.4: an agent's call needs a locked connection; answered with `answer_unlock(id, password | null)`. */
-export function UnlockRequestCard({ request, onDone }: { request: UnlockRequested; onDone?: () => void }) {
+/**
+ * §9.4: an agent's call needs a locked connection; answered with `answer_unlock(id, password | null)`. The card goes
+ * once answered, declined, or found already answered (`false`: answered elsewhere, timed out, its `Resolved` missed).
+ */
+export function UnlockRequestCard({ request, onDone }: { request: UnlockRequestView; onDone?: () => void }) {
   const api = useApi()
   return (
     <UnlockCard
@@ -81,10 +85,16 @@ export function UnlockRequestCard({ request, onDone }: { request: UnlockRequeste
       account={request.account}
       reason={request.reason}
       onUnlock={async (pw) => {
-        if (!(await api.answer_unlock(request.id, pw))) throw new Error('the unlock request was already answered')
+        const ok = await api.answer_unlock(request.id, pw)
         onDone?.()
+        if (!ok) notify.warning(`The unlock request for bw/${request.conn} was already answered`)
       }}
-      onCancel={() => void api.answer_unlock(request.id, null).finally(() => onDone?.())}
+      onCancel={() =>
+        void api
+          .answer_unlock(request.id, null)
+          .catch((e: unknown) => notify.error(errorText(e)))
+          .finally(() => onDone?.())
+      }
     />
   )
 }
@@ -96,7 +106,19 @@ type Method = LoginForm['method']
  * email + master password, growing a 2FA or new-device step when `connection_login` answers one. Every value stays in
  * this component's state and is cleared once the login is done.
  */
-export function LoginCard({ conn, email: initialEmail, method: initialMethod, onDone }: { conn: string; email: string; method: Method; onDone: () => void }) {
+export function LoginCard({
+  conn,
+  email: initialEmail,
+  method: initialMethod,
+  onDone,
+  onCancel,
+}: {
+  conn: string
+  email: string
+  method: Method
+  onDone: () => void
+  onCancel?: () => void
+}) {
   const api = useApi()
   const [method, setMethod] = useState<Method>(initialMethod)
   const [f, setF] = useState({ client_id: '', client_secret: '', email: initialEmail, password: '', provider: '', code: '', otp: '' })
@@ -114,7 +136,9 @@ export function LoginCard({ conn, email: initialEmail, method: initialMethod, on
           two_factor: step?.step === 'need_two_factor' && f.code ? [f.provider || (step.providers[0] ?? ''), f.code.trim()] : null,
           new_device_otp: step?.step === 'need_new_device_otp' && f.otp ? f.otp.trim() : null,
         }
-  const ready = method === 'api_key' ? f.client_id.trim() && f.client_secret : f.email.trim() && f.password
+  // A 2FA or new-device step needs its code before Continue.
+  const stepReady = step?.step === 'need_two_factor' ? f.code.trim() : step?.step === 'need_new_device_otp' ? f.otp.trim() : true
+  const ready = method === 'api_key' ? f.client_id.trim() && f.client_secret : f.email.trim() && f.password && stepReady
   const submit = async () => {
     setBusy(true)
     setError(null)
@@ -174,6 +198,11 @@ export function LoginCard({ conn, email: initialEmail, method: initialMethod, on
         <Button type="submit" size="sm" disabled={busy || !ready}>
           {step ? 'Continue' : 'Log in'}
         </Button>
+        {onCancel && (
+          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={onCancel}>
+            Cancel
+          </Button>
+        )}
       </div>
     </form>
   )
