@@ -2489,7 +2489,7 @@
             "description": "The session's effective context changed outside a normal turn\n(design doc 48 §3.2): a [`RemoveContext`] commit, a settled turn /\ncompaction handback, or an undo/redo. Published after commit and\ninstallation in live state; carries no bodies. Clients reload the\naffected session's history at `revision`.",
             "properties": {
               "reason": {
-                "description": "`\"context_edit\"`, `\"settled\"`, `\"rewind\"`, `\"trim\"` or `\"cell_nudge\"` (219: a\nplain fence of a finished reply was rewritten as a user cell in place).",
+                "description": "`\"context_edit\"`, `\"settled\"`, `\"rewind\"`, `\"trim\"` or `\"cell_nudge\"` (220: a\nplain fence of a finished reply was rewritten as a user cell in place).",
                 "type": "string"
               },
               "revision": {
@@ -5898,7 +5898,7 @@
             "description": "The session's effective context changed outside a normal turn\n(design doc 48 §3.2): a [`RemoveContext`] commit, a settled turn /\ncompaction handback, or an undo/redo. Published after commit and\ninstallation in live state; carries no bodies. Clients reload the\naffected session's history at `revision`.",
             "properties": {
               "reason": {
-                "description": "`\"context_edit\"`, `\"settled\"`, `\"rewind\"`, `\"trim\"` or `\"cell_nudge\"` (219: a\nplain fence of a finished reply was rewritten as a user cell in place).",
+                "description": "`\"context_edit\"`, `\"settled\"`, `\"rewind\"`, `\"trim\"` or `\"cell_nudge\"` (220: a\nplain fence of a finished reply was rewritten as a user cell in place).",
                 "type": "string"
               },
               "revision": {
@@ -40671,7 +40671,7 @@
         "type": "object"
       },
       "method.agent.output.CellPromotion": {
-        "description": "What `cell_promote` (design doc 219) did with the fence.",
+        "description": "What `cell_promote` (design doc 220) did with the fence.",
         "properties": {
           "detail": {
             "description": "Why, for `rejected`/`not_found`/`stale` when known (a validation code, a provider error).",
@@ -46684,17 +46684,17 @@
           },
           {
             "const": "declined",
-            "description": "The model answered `OK`: it stays a snippet.",
+            "description": "The model answered `OK` (or nothing): it stays a snippet.",
             "type": "string"
           },
           {
             "const": "rejected",
-            "description": "The model's cell failed a check (or the call failed).",
+            "description": "The model's cell failed a check.",
             "type": "string"
           },
           {
             "const": "stale",
-            "description": "A turn is running: nothing was replaced.",
+            "description": "Try again later: a turn is running, or a transient failure (the provider, a timeout,\nthe store) — `detail` says which. The only case where the reply did change is the\ndetail \"converted, but the frame did not reload\".",
             "type": "string"
           },
           {
@@ -51524,7 +51524,7 @@
         "type": "object"
       },
       "method.agent.receiver.CellPromotion": {
-        "description": "What `cell_promote` (design doc 219) did with the fence.",
+        "description": "What `cell_promote` (design doc 220) did with the fence.",
         "properties": {
           "detail": {
             "description": "Why, for `rejected`/`not_found`/`stale` when known (a validation code, a provider error).",
@@ -57375,17 +57375,17 @@
           },
           {
             "const": "declined",
-            "description": "The model answered `OK`: it stays a snippet.",
+            "description": "The model answered `OK` (or nothing): it stays a snippet.",
             "type": "string"
           },
           {
             "const": "rejected",
-            "description": "The model's cell failed a check (or the call failed).",
+            "description": "The model's cell failed a check.",
             "type": "string"
           },
           {
             "const": "stale",
-            "description": "A turn is running: nothing was replaced.",
+            "description": "Try again later: a turn is running, or a transient failure (the provider, a timeout,\nthe store) — `detail` says which. The only case where the reply did change is the\ndetail \"converted, but the frame did not reload\".",
             "type": "string"
           },
           {
