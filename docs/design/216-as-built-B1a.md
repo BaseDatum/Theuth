@@ -55,7 +55,7 @@ is B1b's; this part provides the APIs B1b calls.
    (`exposure` key, contract §5.5), MessageDelivered constructors/patterns in `crates/agent/src/{supervisor.rs,
    supervisor/{acp_resume,activity,child_waits}.rs, acp_child/observed.rs}`, `crates/slack/src/channel.rs`
    (test), `crates/telegram/src/worker.rs` (tests), `crates/tui/src/{model/agents.rs, model/tests.rs,
-   model/components.rs, components/peers.rs}` (B2's crate; announced), the `agent.events` golden.
+   model/components.rs, components/peers.rs}` (B2's crate; announced), the `agent.events` golden, `crates/desktop/ui/src/store/reduce.test.ts` (one literal, orchestrator-assigned), `crates/rpc-compose/tests/wire_parity_inc5.rs` (plugins families).
 
 ## Hand-offs
 
@@ -64,3 +64,21 @@ is B1b's; this part provides the APIs B1b calls.
   meeting-session strip (the field list is in `AgentEvent::CONDITIONAL`) → `tools::secrets::redact_value` → cap.
   Tools: `tools::mcp::{expand, expand_map, risk_from_hints, gate_for, plugin_server_key}`; brokered calls via
   `tools::InvokeHumanOnly`; grants key via `secrets::handle(rt)` → `vault.plugins_grants_key()`.
+
+## Gates run
+
+- `cargo test -p wire` — 12 passed (incl. `external_view_none_without_descriptor`, `drop_and_strip_apply`, the agreement test).
+- `cargo check --tests -p wire -p rpc-core -p secrets -p tools -p agent -p link -p signal -p telegram -p mesh -p a2a -p sandbox -p webprofile -p meeting -p voice -p artifact -p browser -p sessionsync -p slack -p rpc-compose -p tui -p theuth` — green (one `plugins` dead-code warning, B1b's).
+- `cargo test -p theuth --test wire_exposure` (first run, before the accept): `same_topic_impls_must_agree` passed; the name lint found `secrets.events: SecretsRotation.key`, `SecretsRotation.peers.has_key` (reviewed: `KeyInfo` holds a key id hash, no material; now `REVIEWED_PUBLIC`); `catalog_matches_the_tracked_contract` failed only because the fixture had no `exposure` yet (topic sets equal).
+- `just wire-schema` + `cargo test -p theuth --test wire_schema_snapshot`: classifier changes are `Additive` (19 `plugin_*` methods, `plugins.events`, `plugins.ui`), `Nonbreaking` (doc lines), and `ReviewRequired` only for the enum extensions (`AttentionKind::plugin`, `ChannelVia::plugin`), the new `x-theuth.events[].exposure` keys, `MessageDelivered.contact` and the `x-theuth/plugins` set. Reviewed, accepted (fixture copied from the fresh `bindings/openrpc.json`), committed in c21a37291.
+
+## Not verified (blocked)
+
+Linking any `theuth` test/bin fails since ~04:45 with
+`Undefined symbols for architecture arm64: "_btls_sys_SSL_CTX_add_cert_compression_alg", referenced from … libwreq-d226e5450c00421c.rlib`
+— also after `cargo clean -p btls-sys -p wreq` (the rebuild restored `wreq` from the mbx object cache: "10 hits").
+Environment, not code; the same test linked at ~04:30. Still to run once linking works:
+`UPDATE_WIRE_EXPOSURE=1 cargo test -p theuth --test wire_exposure` (writes `crates/theuth/tests/wire_exposure.txt`, not yet in the tree), then
+`cargo test -p theuth --test wire_exposure --test wire_schema_snapshot`, `cargo test -p rpc-compose --test wire_golden --test wire_parity_inc5`,
+`cargo test -p secrets plugins_rows`, `cargo test -p tools --lib mcp` + `registry::tests::invoke_human_only`, `cargo test -p agent --lib contact_`,
+clippy `--no-deps` on wire/secrets/tools/agent, `cargo check -p plugins --features ts`, `just ts-desktop` + `bun run check`.
