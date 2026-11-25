@@ -72,13 +72,21 @@ is B1b's; this part provides the APIs B1b calls.
 - `cargo test -p theuth --test wire_exposure` (first run, before the accept): `same_topic_impls_must_agree` passed; the name lint found `secrets.events: SecretsRotation.key`, `SecretsRotation.peers.has_key` (reviewed: `KeyInfo` holds a key id hash, no material; now `REVIEWED_PUBLIC`); `catalog_matches_the_tracked_contract` failed only because the fixture had no `exposure` yet (topic sets equal).
 - `just wire-schema` + `cargo test -p theuth --test wire_schema_snapshot`: classifier changes are `Additive` (19 `plugin_*` methods, `plugins.events`, `plugins.ui`), `Nonbreaking` (doc lines), and `ReviewRequired` only for the enum extensions (`AttentionKind::plugin`, `ChannelVia::plugin`), the new `x-theuth.events[].exposure` keys, `MessageDelivered.contact` and the `x-theuth/plugins` set. Reviewed, accepted (fixture copied from the fresh `bindings/openrpc.json`), committed in c21a37291.
 
-## Not verified (blocked)
+## Gates after the link fix
 
-Linking any `theuth` test/bin fails since ~04:45 with
-`Undefined symbols for architecture arm64: "_btls_sys_SSL_CTX_add_cert_compression_alg", referenced from … libwreq-d226e5450c00421c.rlib`
-— also after `cargo clean -p btls-sys -p wreq` (the rebuild restored `wreq` from the mbx object cache: "10 hits").
-Environment, not code; the same test linked at ~04:30. Still to run once linking works:
-`UPDATE_WIRE_EXPOSURE=1 cargo test -p theuth --test wire_exposure` (writes `crates/theuth/tests/wire_exposure.txt`, not yet in the tree), then
-`cargo test -p theuth --test wire_exposure --test wire_schema_snapshot`, `cargo test -p rpc-compose --test wire_golden --test wire_parity_inc5`,
-`cargo test -p secrets plugins_rows`, `cargo test -p tools --lib mcp` + `registry::tests::invoke_human_only`, `cargo test -p agent --lib contact_`,
-clippy `--no-deps` on wire/secrets/tools/agent, `cargo check -p plugins --features ts`, `just ts-desktop` + `bun run check`.
+The `theuth` link failure (`_btls_sys_SSL_CTX_add_cert_compression_alg` from a cached `wreq`) was the mbx object cache; rebuilt with
+the plain rustup cargo after `cargo clean -p btls-sys -p wreq`. Theuth-linking targets use `/Users/sky/.cargo/bin/cargo`.
+
+- `cargo test -p theuth --test wire_exposure --test wire_schema_snapshot` — 4 + 1 passed; `wire_exposure.txt` generated, reviewed
+  (every DROP/STRIP/Private/Internal/CONDITIONAL line matches design §7.3), committed in f7cc9547.
+- `cargo test -p secrets --lib plugins_rows` 1 passed; `-p tools --lib mcp` 37 passed; `-p tools --lib invoke_human_only` 1 passed;
+  `-p agent --lib contact_` 35 passed.
+- `cargo clippy -p wire -p secrets -p tools -p agent --no-deps -- -D warnings` — green.
+- `bun run check` in `crates/desktop/ui` — green (bindings already regenerated in the worktree; I did not rerun `just ts-desktop`).
+
+## Not verified
+
+- `cargo test -p rpc-compose --test wire_golden --test wire_parity_inc5`: does not compile while `crates/plugins` (B1b, in flight)
+  fails (`host::Launch` field / arity errors). The plugins families and fixtures are in; rerun once B1b's crate compiles.
+- `cargo check -p plugins --features ts`: fails first in `roster` (`#[ts(optional)]` on non-`Option` fields in
+  `crates/roster/src/attention.rs`, pre-existing, not from 216 B1a) — hand-off to Z.
