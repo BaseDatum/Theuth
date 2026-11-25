@@ -107,9 +107,14 @@ pub(crate) async fn run(data_dir: &Path, config: &figment::Figment, cmd: PluginC
     match cmd {
         PluginCmd::Logs { name, tail, follow } => logs(data_dir, &name, tail, follow).await,
         PluginCmd::Approve { name } => {
-            // The TTY rule runs before anything connects: a script can never approve.
+            // The TTY rule runs before anything connects: a script can never approve. A PTY a
+            // tool started is marked (review R26): the agent drives it, so it is no human press.
             if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
                 eprintln!("t plugin approve needs a terminal");
+                std::process::exit(2);
+            }
+            if std::env::var_os(tools::pty::AGENT_PTY_ENV).is_some() {
+                eprintln!("t plugin approve cannot run in a terminal the agent started; use your own terminal or the desktop");
                 std::process::exit(2);
             }
             approve(&engine(data_dir, config).await, &name).await
@@ -176,6 +181,21 @@ async fn try_engine(data_dir: &Path, config: &figment::Figment) -> Option<WsClie
 fn fail(msg: &str) -> ! {
     eprintln!("{msg}");
     std::process::exit(1)
+}
+
+/// `s` with every control character as a Rust escape (review R11): card strings come from a
+/// manifest the model may have written, and an ANSI sequence could repaint what the human
+/// approves.
+fn clean(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// An RPC reply: a call error is printed and exits 1; a transport error propagates.
@@ -271,27 +291,28 @@ async fn approve(c: &WsClient, name: &str) -> anyhow::Result<()> {
     let Some(card) = d.card else {
         fail(&format!("nothing to approve for {name} ({})", tag(&d.info.state)));
     };
+    let (plugin, version) = (clean(&card.plugin), clean(&card.version));
     let title = match card.kind {
-        plugins::CardKind::Install => format!("Install plugin {} {}?", card.plugin, card.version),
-        plugins::CardKind::Widen => format!("Plugin {} asks for more", card.plugin),
-        plugins::CardKind::CodeChanged => format!("Plugin {} changed its code", card.plugin),
+        plugins::CardKind::Install => format!("Install plugin {plugin} {version}?"),
+        plugins::CardKind::Widen => format!("Plugin {plugin} asks for more"),
+        plugins::CardKind::CodeChanged => format!("Plugin {plugin} changed its code"),
     };
     println!("{title}");
     println!("kind: {}  risk: {}", tag(&card.kind), tag(&card.risk));
     if card.unverified {
-        println!("the saved approval for {} could not be verified", card.plugin);
+        println!("the saved approval for {plugin} could not be verified");
     }
     for l in &card.lines {
-        println!("  [{}] {}{}", tag(&l.risk), l.text, if l.new { "  (new)" } else { "" });
+        println!("  [{}] {}{}", tag(&l.risk), clean(&l.text), if l.new { "  (new)" } else { "" });
     }
     if !card.changed_paths.is_empty() {
         println!("changed:");
         for p in &card.changed_paths {
-            println!("  {p}");
+            println!("  {}", clean(p));
         }
     }
-    println!("folder: {}", card.dir);
-    print!("Approve {} {}? [y/N] ", card.plugin, card.version);
+    println!("folder: {}", clean(&card.dir));
+    print!("Approve {plugin} {version}? [y/N] ");
     std::io::stdout().flush()?;
     let mut answer = String::new();
     std::io::stdin().lock().read_line(&mut answer)?;
@@ -312,15 +333,15 @@ async fn approve(c: &WsClient, name: &str) -> anyhow::Result<()> {
 
 fn print_check(r: &CheckReport) {
     for e in &r.errors {
-        println!("error: {}: {}", if e.path.is_empty() { "/" } else { &e.path }, e.message);
+        println!("error: {}: {}", if e.path.is_empty() { "/".into() } else { clean(&e.path) }, clean(&e.message));
     }
     for w in &r.warnings {
-        println!("warning: {}: {}", if w.path.is_empty() { "/" } else { &w.path }, w.message);
+        println!("warning: {}: {}", if w.path.is_empty() { "/".into() } else { clean(&w.path) }, clean(&w.message));
     }
     if !r.lines.is_empty() {
         println!("the install card will say:");
         for l in &r.lines {
-            println!("  [{}] {}", tag(&l.risk), l.text);
+            println!("  [{}] {}", tag(&l.risk), clean(&l.text));
         }
     }
     println!("{}", if r.ok { "ok" } else { "not ok" });
@@ -590,5 +611,13 @@ mod tests {
         let v = parse_yaml("# registered in code\ntools: [\"presses\"]\nactions: [inc]\non: []\n").unwrap();
         assert_eq!(v["tools"], serde_json::json!(["presses"]));
         assert_eq!(v["on"], serde_json::json!([]));
+    }
+
+    /// R11: control characters from a manifest cannot repaint the approve card.
+    #[test]
+    fn card_strings_are_escaped() {
+        assert_eq!(clean("1.0\x1b[2K\rRuns nothing"), "1.0\\u{1b}[2K\\rRuns nothing");
+        assert_eq!(clean("line\nnext"), "line\\nnext");
+        assert_eq!(clean("plain — ok"), "plain — ok");
     }
 }

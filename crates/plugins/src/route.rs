@@ -20,11 +20,15 @@ use crate::proc::Outbox;
 const AGENT_TOPIC: &str = "agent.events";
 /// The topic whose `Started` names a meeting session.
 const MEETING_TOPIC: &str = "meeting.events";
-/// How long the feed holds frames for the meeting actor before routing without a seed. Plugins
-/// start in order after `meeting`, so it is registered at once or never (as `secrets::HANDLE_WAIT`).
+/// How long the feed waits for the meeting and agent actors when seeding. Plugins start in order
+/// after both, so they are registered at once or never (as `secrets::HANDLE_WAIT`).
 const SEED_WAIT: Duration = Duration::from_secs(10);
+/// How often an unseeded feed tries to seed again (it withholds meanwhile, see [`Scope::seeded`]).
+const RESEED_EVERY: Duration = Duration::from_secs(30);
 
-/// 216 §7.3 (b): `agent.events` fields removed for a meeting session, by `type`.
+/// 216 §7.3 (b): `agent.events` fields removed for a meeting session and its descendants, by
+/// `type`. `TitleChanged`, `StatusChanged` and `ResumeReport.replayed` carry transcript-derived
+/// text too (owner ruling on review R24).
 const MEETING_STRIP: &[(&str, &str)] = &[
     ("TurnStarted", "text"),
     ("InputQueued", "text"),
@@ -38,7 +42,15 @@ const MEETING_STRIP: &[(&str, &str)] = &[
     ("Suggestions", "items"),
     ("TodoChanged", "snapshot"),
     ("AdvisoryAdded", "advisory"),
+    ("TitleChanged", "title"),
+    ("StatusChanged", "status"),
+    ("StatusChanged", "title"),
+    ("ResumeReport", "replayed"),
 ];
+
+/// 216 §7.3 (owner ruling on review R24): `meeting.events#OracleDecision` fields removed for every
+/// meeting, under `decision`: verbatim fragments of what was said. `tier2` quotes the subject.
+const ORACLE_STRIP: &[&str] = &["mentions", "subject", "tier2"];
 
 /// A running plugin as the router sees it.
 #[derive(Clone)]
@@ -59,12 +71,16 @@ pub(crate) type Targets = Arc<RwLock<Vec<Target>>>;
 /// Stateful filters: meeting sessions (whole life), remote sessions (SessionOwnerChanged here:false/true).
 #[derive(Debug, Default)]
 pub(crate) struct Scope {
-    /// Sessions of meetings: `agent.events` text withheld for the session's whole life (Q1).
-    /// A `Deleted` meeting keeps its entry: the frame carries no session, and the agent session
-    /// is deleted with the meeting.
+    /// Sessions of meetings and their descendants: `agent.events` text withheld for the session's
+    /// whole life (Q1). A `Deleted` meeting keeps its entry: the frame carries no session, and the
+    /// agent session is deleted with the meeting.
     meetings: HashSet<String>,
     /// Sessions last seen owned by another engine.
     remote: HashSet<String>,
+    /// Both sets were seeded from the meeting and agent actors and no frame was lost since (review
+    /// R6). While `false` the router withholds `agent.events` text for every session; the remote
+    /// drop applies only to sessions known to be remote.
+    seeded: bool,
 }
 
 impl Scope {
@@ -79,8 +95,17 @@ impl Scope {
     fn observe(&mut self, topic: &str, event: &Value) {
         let tag = event.get("type").and_then(Value::as_str);
         let session = event.get("session").and_then(Value::as_str);
+        let field = |k: &str| event.get(k).and_then(Value::as_str);
         match (topic, tag, session) {
             (MEETING_TOPIC, Some("Started"), Some(s)) => self.add_meeting(s),
+            // R24: a child of a meeting session (or of one of its children) is one too.
+            (AGENT_TOPIC, Some("SubagentSpawned" | "ObservedChildChanged"), _) => {
+                if let (Some(parent), Some(child)) = (field("parent"), field("child"))
+                    && self.meetings.contains(parent)
+                {
+                    self.add_meeting(child);
+                }
+            }
             (AGENT_TOPIC, Some("SessionOwnerChanged"), Some(s)) => {
                 match event.get("here").and_then(Value::as_bool) {
                     Some(false) => {
@@ -93,6 +118,30 @@ impl Scope {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Seed from the session list: every session owned elsewhere is remote, and every descendant
+    /// of a meeting session (already in the set) is a meeting session.
+    fn seed_sessions(&mut self, sessions: &[(String, Option<String>, bool)]) {
+        for (id, _, here) in sessions {
+            if *here {
+                self.remote.remove(id);
+            } else {
+                self.remote.insert(id.clone());
+            }
+        }
+        // Parents may be listed after their children: repeat until nothing is added.
+        loop {
+            let before = self.meetings.len();
+            for (id, parent, _) in sessions {
+                if parent.as_ref().is_some_and(|p| self.meetings.contains(p)) {
+                    self.add_meeting(id);
+                }
+            }
+            if self.meetings.len() == before {
+                break;
+            }
         }
     }
 }
@@ -157,9 +206,12 @@ impl Router {
             map.remove("type");
         }
         if descriptor.topic == AGENT_TOPIC
-            && session.is_some_and(|s| self.scope.meetings.contains(s))
+            && (!self.scope.seeded || session.is_some_and(|s| self.scope.meetings.contains(s)))
         {
             strip_meeting(&mut data);
+        }
+        if descriptor.topic == MEETING_TOPIC {
+            strip_oracle(&mut data);
         }
         ::tools::secrets::redact_value(&mut data);
         cap_strings(&mut data, self.cfg.string_cap);
@@ -275,6 +327,18 @@ fn strip_meeting(data: &mut Value) {
     }
 }
 
+/// Remove [`ORACLE_STRIP`] from a `meeting.events#OracleDecision` frame's `decision`.
+fn strip_oracle(data: &mut Value) {
+    if data.get("type").and_then(Value::as_str) != Some("OracleDecision") {
+        return;
+    }
+    if let Some(decision) = data.get_mut("decision").and_then(Value::as_object_mut) {
+        for field in ORACLE_STRIP {
+            decision.remove(*field);
+        }
+    }
+}
+
 /// Cut every string longer than `cap` bytes to `cap` (at a char boundary) + `…[+N bytes]`.
 fn cap_strings(v: &mut Value, cap: usize) {
     match v {
@@ -318,8 +382,10 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-/// Subscribe to rt.wire_events() FIRST, then seed meetings (meeting::ListMeetings{limit: Some(u32::MAX), project: None}),
-/// then loop until rt.shutdown: Lagged(n) → every target.outbox.lagged(n).
+/// Subscribe to rt.wire_events() FIRST, then seed (meetings, then sessions), then loop until
+/// rt.shutdown. Lagged(n) → every target.outbox.lagged(n), and the sets are re-seeded before the
+/// next frame is routed (frames lost may have named a meeting or a move). Until a seed succeeds
+/// the router fails closed ([`Scope::seeded`]) and retries every [`RESEED_EVERY`].
 pub(crate) async fn feed_loop(rt: runtime::Runtime, targets: Targets, cfg: PluginsConfig) {
     let mut rx = rt.wire_events();
     let versions = rt
@@ -328,10 +394,16 @@ pub(crate) async fn feed_loop(rt: runtime::Runtime, targets: Targets, cfg: Plugi
         .map(|d| (d.topic.to_owned(), d.version))
         .collect();
     let mut router = Router::new(cfg, versions);
-    seed_meetings(&rt, &mut router.scope).await;
+    seed(&rt, &mut router.scope, SEED_WAIT).await;
+    let mut retry = tokio::time::interval(RESEED_EVERY);
+    retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         let item = tokio::select! {
             () = rt.shutdown.cancelled() => break,
+            _ = retry.tick(), if !router.scope.seeded => {
+                seed(&rt, &mut router.scope, Duration::ZERO).await;
+                continue;
+            }
             item = rx.recv() => item,
         };
         match item {
@@ -340,7 +412,10 @@ pub(crate) async fn feed_loop(rt: runtime::Runtime, targets: Targets, cfg: Plugi
                 router.deliver(&frame, &targets, now_ms());
             }
             Err(RecvError::Lagged(n)) => {
-                tracing::warn!(dropped = n, "plugins: wire feed lagged");
+                tracing::warn!(
+                    dropped = n,
+                    "plugins: wire feed lagged; re-seeding session filters"
+                );
                 for t in targets
                     .read()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -348,22 +423,39 @@ pub(crate) async fn feed_loop(rt: runtime::Runtime, targets: Targets, cfg: Plugi
                 {
                     t.outbox.lagged(n);
                 }
+                router.scope.seeded = false;
+                seed(&rt, &mut router.scope, Duration::ZERO).await;
             }
             Err(RecvError::Closed) => break,
         }
     }
 }
 
-/// Every meeting's session into the meeting set, from the meeting actor (when meetings are on).
-async fn seed_meetings(rt: &runtime::Runtime, scope: &mut Scope) {
+/// Seed both sets; [`Scope::seeded`] only when both sources answered. `wait` bounds the wait for
+/// each actor to register: [`SEED_WAIT`] at start, zero on a retry or after a lag (the feed
+/// must not stall), and only the first attempt warns.
+async fn seed(rt: &runtime::Runtime, scope: &mut Scope, wait: Duration) {
+    let meetings = seed_meetings(rt, scope, wait).await;
+    let sessions = meetings && seed_sessions(rt, scope, wait).await;
+    scope.seeded = sessions;
+    if !sessions && !wait.is_zero() {
+        tracing::warn!(
+            "plugins: session filters not seeded; agent.events text withheld until they are"
+        );
+    }
+}
+
+/// Every meeting's session into the meeting set, from the meeting actor. `true` when meetings
+/// are off or the list arrived.
+async fn seed_meetings(rt: &runtime::Runtime, scope: &mut Scope, wait: Duration) -> bool {
     let cfg: meeting::MeetingConfig = rt.section("meeting").unwrap_or_default();
     if !cfg.enabled {
-        return;
+        return true;
     }
     let lookup = rt.lookup_when::<meeting::Meeting>(meeting::MEETING_ACTOR);
-    let Ok(Some(actor)) = tokio::time::timeout(SEED_WAIT, lookup).await else {
-        tracing::warn!("plugins: meeting actor not found; meeting sessions not seeded");
-        return;
+    let Ok(Some(actor)) = tokio::time::timeout(wait, lookup).await else {
+        tracing::debug!("plugins: meeting actor not found; meeting sessions not seeded");
+        return false;
     };
     match actor
         .ask(meeting::ListMeetings {
@@ -376,15 +468,40 @@ async fn seed_meetings(rt: &runtime::Runtime, scope: &mut Scope) {
             for m in list {
                 scope.add_meeting(&m.session.to_string());
             }
+            true
         }
         Err(e) => {
-            tracing::warn!(error = %e, "plugins: ListMeetings failed; meeting sessions not seeded")
+            tracing::warn!(error = %e, "plugins: ListMeetings failed; meeting sessions not seeded");
+            false
+        }
+    }
+}
+
+/// Remote sessions and meeting descendants from the agent supervisor's session list.
+async fn seed_sessions(rt: &runtime::Runtime, scope: &mut Scope, wait: Duration) -> bool {
+    let lookup = rt.lookup_when::<agent::Agents>(agent::AGENT_ACTOR);
+    let Ok(Some(agents)) = tokio::time::timeout(wait, lookup).await else {
+        tracing::debug!("plugins: agent supervisor not found; sessions not seeded");
+        return false;
+    };
+    match agents.ask(agent::ListSessions).await {
+        Ok(list) => {
+            let rows: Vec<(String, Option<String>, bool)> = list
+                .iter()
+                .map(|s| (s.id.to_string(), s.parent.map(|p| p.to_string()), s.here))
+                .collect();
+            scope.seed_sessions(&rows);
+            true
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "plugins: ListSessions failed; sessions not seeded");
+            false
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tokio::io::AsyncBufReadExt as _;
     use wire::{EventDescriptor, EventPolicy, WireFrame};
@@ -393,6 +510,7 @@ mod tests {
     const T: &str = "01a20e56-84d4-775f-ae0c-65af2ba8c55c";
 
     /// Probe events of the route tests.
+    #[expect(dead_code, reason = "only its descriptor is used; frames are JSON")]
     #[derive(Clone, serde::Serialize, schemars::JsonSchema)]
     #[serde(tag = "type")]
     enum Probe {
@@ -487,13 +605,15 @@ mod tests {
             ("meeting.events", 1),
             ("plugins.events", 1),
         ];
-        Router::new(
+        let mut r = Router::new(
             cfg,
             versions
                 .into_iter()
                 .map(|(t, v)| (t.to_owned(), v))
                 .collect(),
-        )
+        );
+        r.scope.seeded = true;
+        r
     }
 
     /// Push a sentinel event, then read lines until it: everything delivered before it, in order.
@@ -520,9 +640,9 @@ mod tests {
     }
 
     /// The vault's redaction hook for tests: one known value.
-    struct Fake;
+    pub(crate) struct Fake;
 
-    fn placeholder() -> String {
+    pub(crate) fn placeholder() -> String {
         ["{", "{", "secret:PASS", "}", "}"].concat()
     }
 
@@ -845,5 +965,112 @@ mod tests {
             json!({"plugin": "turns", "event": "limit_reached", "version": 1, "session": null, "data": {"turns": 50}})
         );
         assert!(delivered(&named.outbox).await.is_empty());
+    }
+
+    /// R6: until the sets are seeded (boot failure, or after a lag) `agent.events` text is
+    /// withheld for every session; frames still flow.
+    #[tokio::test]
+    async fn unseeded_scope_withholds_text() {
+        let turn = |s: &str| json!({"type": "TurnStarted", "session": s, "turn": "01a3", "text": "words", "model": "m", "turn_seq": 1});
+        let deleted = |s: &str| json!({"type": "SessionDeleted", "session": s});
+        let mut sub = topic_sub("agent.events", &[]);
+        sub.deltas = true;
+
+        let mut r = router(PluginsConfig::default());
+        r.scope.seeded = false;
+        let t = target(vec![sub], &["agent.events"], 64);
+        r.deliver(&agent(turn(S)), std::slice::from_ref(&t), 1);
+        r.deliver(&agent(deleted(T)), std::slice::from_ref(&t), 2);
+        let lines = delivered(&t.outbox).await;
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0]["params"]["data"].get("text").is_none(),
+            "{lines:?}"
+        );
+        assert_eq!(lines[1]["params"]["data"]["type"], "SessionDeleted");
+
+        // Seeding from the session list: a session owned elsewhere is remote, a meeting's
+        // descendants (listed before their parent) are meeting sessions.
+        let mut scope = Scope::default();
+        scope.add_meeting("m");
+        scope.seed_sessions(&[
+            ("grandchild".into(), Some("child".into()), true),
+            ("child".into(), Some("m".into()), true),
+            ("away".into(), None, false),
+            ("m".into(), None, true),
+        ]);
+        assert!(scope.meetings.contains("grandchild") && scope.meetings.contains("child"));
+        assert!(scope.remote.contains("away") && !scope.remote.contains("m"));
+    }
+
+    /// R24: a meeting session's children are withheld too, `TitleChanged`/`StatusChanged`/
+    /// `ResumeReport.replayed` are stripped, and `OracleDecision` loses its verbatim fragments
+    /// for every meeting.
+    #[tokio::test]
+    async fn meeting_children_and_oracle_fragments_stripped() {
+        let mut r = router(PluginsConfig::default());
+        let t = target(
+            vec![
+                topic_sub("agent.events", &[]),
+                topic_sub("meeting.events", &[]),
+            ],
+            &["agent.events", "meeting.events"],
+            64,
+        );
+        let targets = std::slice::from_ref(&t);
+        r.scope.add_meeting(S);
+        r.deliver(
+            &agent(json!({"type": "SubagentSpawned", "parent": S, "child": T, "name": "c"})),
+            targets,
+            1,
+        );
+        r.deliver(
+            &agent(json!({"type": "TitleChanged", "session": T, "title": "about Kuiper"})),
+            targets,
+            2,
+        );
+        r.deliver(
+            &agent(json!({"type": "StatusChanged", "session": S, "status": "reading"})),
+            targets,
+            3,
+        );
+        r.deliver(&agent(json!({"type": "ResumeReport", "session": S, "turn": "t", "replayed": [["c", "x"]], "interrupted": [], "lost_jobs": [], "children_restored": 0, "children_handed_off": 0})), targets, 4);
+        let other = "01a20e56-84d4-775f-ae0c-65af2ba8c5aa";
+        r.deliver(
+            &agent(json!({"type": "TitleChanged", "session": other, "title": "mine"})),
+            targets,
+            5,
+        );
+        let oracle = frame(
+            EventDescriptor::of::<meeting::MeetingEvent>(),
+            json!({"type": "OracleDecision", "meeting": "01a2", "decision": {"batch_id": "10:00:00", "family": "meeting.kind", "mode": "auto", "disposition": "skip", "stages": [], "mentions": ["Kuiper belt"], "subject": "Planet Nine", "tier2": "\"Planet Nine\" → no cached brief", "top": [], "latency_ms": 5, "tier": 1, "outcome": null}}),
+        );
+        r.deliver(&oracle, targets, 6);
+        let lines = delivered(&t.outbox).await;
+        let data: Vec<&Value> = lines.iter().map(|l| &l["params"]["data"]).collect();
+        let of = |ty: &str| {
+            data.iter()
+                .filter(|d| d["type"] == ty)
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        let titles = of("TitleChanged");
+        assert_eq!(titles.len(), 2, "{lines:?}");
+        assert!(
+            titles[0].get("title").is_none(),
+            "child of a meeting: {}",
+            titles[0]
+        );
+        assert_eq!(titles[1]["title"], "mine");
+        assert!(of("StatusChanged")[0].get("status").is_none());
+        let resume = of("ResumeReport");
+        assert!(resume[0].get("replayed").is_none());
+        assert_eq!(resume[0]["interrupted"], json!([]));
+        let decision = &of("OracleDecision")[0]["decision"];
+        assert_eq!(decision["batch_id"], "10:00:00", "{decision}");
+        for gone in ["mentions", "subject", "tier2"] {
+            assert!(decision.get(gone).is_none(), "{gone}: {decision}");
+        }
+        assert!(!lines.iter().any(|l| l.to_string().contains("Kuiper")));
     }
 }

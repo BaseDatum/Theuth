@@ -12,8 +12,10 @@ use runtime::SessionId;
 use crate::host::PipeError;
 use crate::types::CallGrant;
 
-/// The plugin's headless session, created on the first brokered call and reused after.
-pub(crate) type SessionSlot = Arc<AsyncMutex<Option<SessionId>>>;
+/// The plugin's headless session and the risk cap it was created with. Created on the first
+/// brokered call and reused while the grant's `max_risk` stays the same; a changed cap (narrowed
+/// or approved wider) opens a fresh session, since a session's cap is fixed at creation.
+pub(crate) type SessionSlot = Arc<AsyncMutex<Option<(SessionId, tools::Risk)>>>;
 
 fn agents_missing() -> PipeError {
     PipeError {
@@ -24,14 +26,17 @@ fn agents_missing() -> PipeError {
 }
 
 /// `plugin: <name>` in project `plugins`, no model turn ever; capped at the grant's `max_risk`
-/// so the registry refuses anything above it.
+/// so the registry refuses anything above it. The held session is reused only while its cap
+/// equals `cap` (review R13).
 async fn headless(
     slot: &SessionSlot,
     plugin: &str,
     cap: tools::Risk,
 ) -> Result<SessionId, PipeError> {
     let mut held = slot.lock().await;
-    if let Some(s) = *held {
+    if let Some((s, held_cap)) = *held
+        && held_cap == cap
+    {
         return Ok(s);
     }
     let agents = kameo::actor::ActorRef::<agent::Agents>::lookup(agent::AGENT_ACTOR)
@@ -59,7 +64,7 @@ async fn headless(
             title: format!("plugin: {plugin}"),
         })
         .await;
-    *held = Some(open.session);
+    *held = Some((open.session, cap));
     Ok(open.session)
 }
 

@@ -76,11 +76,10 @@ impl PluginLog {
             st.file = None;
             st.written = file_len(&day_path(&self.dir, &self.name, day));
         }
-        let clean = ::tools::secrets::redact(text);
+        let clean = escape_controls(::tools::secrets::redact(text).trim_end_matches(['\n', '\r']));
         let line = format!(
-            "{} [{source}] {}\n",
+            "{} [{source}] {clean}\n",
             now.to_rfc3339_opts(SecondsFormat::Secs, false),
-            clean.trim_end_matches(['\n', '\r'])
         );
         if st.written.saturating_add(line.len() as u64) > self.max_bytes {
             st.dropped += 1;
@@ -202,6 +201,21 @@ pub(crate) fn sweep(logs_dir: &Path, days: u32) {
     }
 }
 
+/// Interior newlines, carriage returns and other control characters (tab kept) as Rust escapes,
+/// so one plugin message is one log line and cannot forge `[host]` lines or repaint a terminal
+/// (review R22).
+fn escape_controls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() && c != '\t' {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +266,26 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert!(
             lines[0].ends_with(" [log:info] plain text token=abc123"),
+            "{}",
+            lines[0]
+        );
+    }
+
+    /// R22: an embedded newline cannot forge a second `[host]` line.
+    #[test]
+    fn interior_newlines_are_escaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = PluginLog::new(dir.path(), "ping", 1 << 20);
+        log.line(
+            "log:info",
+            "ok\n2026-11-25T00:00:00+00:00 [host] approved via desktop\r\x1b[2K\n",
+        );
+        let lines = tail(&log.path_today(), 10);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].ends_with(
+                " [log:info] ok\\n2026-11-25T00:00:00+00:00 [host] approved via desktop\\r\\u{1b}[2K"
+            ),
             "{}",
             lines[0]
         );

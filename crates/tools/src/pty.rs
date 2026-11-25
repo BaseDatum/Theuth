@@ -52,6 +52,10 @@ const SETTLE_QUIET: Duration = Duration::from_millis(300);
 const SETTLE_MAX: Duration = Duration::from_secs(2);
 /// A tool reply carries `user attached` this long after a human typed (55 §0.5).
 const USER_ATTACHED: Duration = Duration::from_secs(30);
+/// 216 §8 (review R26): set in every PTY a tool starts, after the caller's own `env`, so
+/// `t plugin approve` can refuse to run inside a terminal the agent drives. A cheap mitigation,
+/// not a boundary: the agent's shell can unset it.
+pub const AGENT_PTY_ENV: &str = "THEUTH_AGENT_PTY";
 /// `wait` default / maximum seconds (22 §4.6).
 const WAIT_DEFAULT: u64 = 30;
 const WAIT_MAX: u64 = 120;
@@ -2028,6 +2032,7 @@ fn spawn(
     for (k, v) in args.env.iter().flatten() {
         cmd.env(k, v);
     }
+    cmd.env(AGENT_PTY_ENV, "1");
     let child = pair.slave.spawn_command(cmd)?;
     drop(pair.slave);
     let pid = child

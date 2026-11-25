@@ -101,8 +101,53 @@ fn topic_entries(
         out.push(entry(d.topic.to_owned(), None, schema));
         return;
     }
-    for (tag, schema) in split {
+    // Review S3: what `external_view` never delivers is never published either. A DROPped
+    // variant has no entry (so a subscription to it fails validation), and every STRIP path is
+    // pruned from its variant's schema.
+    for (tag, mut schema) in split {
+        if d.drop.contains(&tag.as_str()) {
+            continue;
+        }
+        for path in d.strip {
+            let mut segments = path.split('.');
+            if segments.next() == Some(tag.as_str()) {
+                prune(&mut schema, &segments.collect::<Vec<_>>());
+            }
+        }
         out.push(entry(format!("{}#{tag}", d.topic), Some(tag), schema));
+    }
+}
+
+/// Remove the property `path` names from a resolved schema, as `wire`'s `strip_path` removes the
+/// value: arrays (`items`) fan out, and `allOf`/`anyOf`/`oneOf` parts (an `Option`, a flattened
+/// struct) are each followed. The last segment also leaves `required`.
+fn prune(schema: &mut Value, path: &[&str]) {
+    let Some((first, rest)) = path.split_first() else {
+        return;
+    };
+    let Some(map) = schema.as_object_mut() else {
+        return;
+    };
+    for key in ["allOf", "anyOf", "oneOf"] {
+        if let Some(Value::Array(parts)) = map.get_mut(key) {
+            parts.iter_mut().for_each(|p| prune(p, path));
+        }
+    }
+    if let Some(items) = map.get_mut("items") {
+        match items {
+            Value::Array(tuple) => tuple.iter_mut().for_each(|i| prune(i, path)),
+            other => prune(other, path),
+        }
+    }
+    if rest.is_empty() {
+        if let Some(Value::Object(props)) = map.get_mut("properties") {
+            props.remove(*first);
+        }
+        if let Some(Value::Array(required)) = map.get_mut("required") {
+            required.retain(|r| r.as_str() != Some(*first));
+        }
+    } else if let Some(inner) = map.get_mut("properties").and_then(|p| p.get_mut(*first)) {
+        prune(inner, rest);
     }
 }
 
@@ -298,6 +343,7 @@ mod tests {
     use super::*;
 
     /// Probe events of the catalog tests.
+    #[expect(dead_code, reason = "only its schema is used")]
     #[derive(Clone, serde::Serialize, schemars::JsonSchema)]
     #[serde(tag = "type")]
     enum Probe {
@@ -453,5 +499,73 @@ mod tests {
             "{}",
             single.schema
         );
+    }
+
+    /// An enum topic with a DROPped variant and STRIP paths (one through an array).
+    #[expect(dead_code, reason = "only its schema is used")]
+    #[derive(Clone, serde::Serialize, schemars::JsonSchema)]
+    #[serde(tag = "type")]
+    enum Exposed {
+        /// Shown.
+        Shown {
+            /// The session.
+            session: String,
+            /// Others' words.
+            text: String,
+            /// Kept.
+            kept: u32,
+            /// Rows.
+            rows: Vec<Row>,
+        },
+        /// Never shown.
+        Secret {
+            /// A value.
+            value: String,
+        },
+    }
+
+    /// One row.
+    #[derive(Clone, serde::Serialize, schemars::JsonSchema)]
+    struct Row {
+        /// A link.
+        url: String,
+        /// A title.
+        title: String,
+    }
+
+    impl wire::WireEvent for Exposed {
+        const TOPIC: &'static str = "test.catalog-exposed";
+        const DROP: &'static [&'static str] = &["Secret"];
+        const STRIP: &'static [&'static str] = &["Shown.text", "Shown.rows.url"];
+    }
+
+    /// S3: the catalog publishes exactly what `external_view` delivers.
+    #[tokio::test]
+    async fn dropped_variants_and_stripped_fields_are_not_published() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = runtime::Runtime::new(Default::default(), dir.path().to_path_buf());
+        rt.register_wire_event::<Exposed>().await.unwrap();
+        let entries = wire_entries(&rt);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"test.catalog-exposed#Shown"), "{names:?}");
+        assert!(!names.contains(&"test.catalog-exposed#Secret"), "{names:?}");
+        let shown = &entries
+            .iter()
+            .find(|e| e.name == "test.catalog-exposed#Shown")
+            .unwrap()
+            .schema;
+        let text = shown.to_string();
+        assert!(shown["properties"]["kept"].is_object(), "{text}");
+        assert!(shown["properties"].get("text").is_none(), "{text}");
+        assert!(
+            !shown["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r == "text"),
+            "{text}"
+        );
+        assert!(!text.contains("\"url\""), "{text}");
+        assert!(text.contains("\"title\""), "{text}");
     }
 }

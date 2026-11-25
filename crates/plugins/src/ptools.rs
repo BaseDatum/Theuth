@@ -150,8 +150,37 @@ impl ErasedTool for PluginTool {
     }
 }
 
-/// Register `tools` once the registry answers; unregister `gone` first.
-pub(crate) async fn sync(rt: runtime::Runtime, gone: Vec<String>, tools: Vec<PluginTool>) {
+/// Whether a registry entry with source `held` belongs to plugin `plugin` (any version).
+fn owned_by(held: &ToolSource, plugin: &str) -> bool {
+    matches!(held, ToolSource::Plugin { name, .. } if name == plugin)
+}
+
+/// Whether `plugin` may register or remove a name the registry holds for `held` (design §8: a
+/// clash with a native loses; another plugin's or an MCP server's name is never taken either).
+fn may_take(held: Option<&ToolSource>, plugin: &str) -> bool {
+    held.is_none_or(|h| owned_by(h, plugin))
+}
+
+async fn held(
+    reg: &kameo::actor::ActorRef<::tools::ToolRegistry>,
+    name: &str,
+) -> Option<ToolSource> {
+    reg.ask(::tools::registry::ToolSourceOf(name.to_owned()))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Register `tools` of `plugin` once the registry answers; unregister `gone` first. Only names
+/// whose current source is `ToolSource::Plugin { name: plugin }` are removed, and a name held by
+/// another source (native, MCP, another plugin) is never replaced: that tool is skipped with a
+/// warning (review R1).
+pub(crate) async fn sync(
+    rt: runtime::Runtime,
+    plugin: String,
+    gone: Vec<String>,
+    tools: Vec<PluginTool>,
+) {
     let Some(reg) = rt
         .lookup_when::<::tools::ToolRegistry>(::tools::REGISTRY_ACTOR)
         .await
@@ -159,12 +188,51 @@ pub(crate) async fn sync(rt: runtime::Runtime, gone: Vec<String>, tools: Vec<Plu
         return;
     };
     for name in gone {
-        let _ = reg.ask(::tools::UnregisterTool(name)).await;
+        if held(&reg, &name)
+            .await
+            .is_some_and(|h| owned_by(&h, &plugin))
+        {
+            let _ = reg.ask(::tools::UnregisterTool(name)).await;
+        }
     }
     for t in tools {
+        if !may_take(held(&reg, &t.spec.name).await.as_ref(), &plugin) {
+            tracing::warn!(
+                plugin = %plugin,
+                tool = %t.spec.name,
+                "plugins: tool name taken by another source; the plugin's tool is not registered"
+            );
+            continue;
+        }
         let tool: ::tools::DynTool = Arc::new(t);
         let _ = reg.ask(::tools::RegisterTool(tool)).await;
     }
+}
+
+/// Validation errors for manifest tools whose name the registry already holds for another
+/// source (design §8, review R1), so the card never offers them. Empty when the registry is not
+/// running.
+pub(crate) async fn clashes(m: &Manifest) -> Vec<crate::types::CheckIssue> {
+    let Some(reg) =
+        kameo::actor::ActorRef::<::tools::ToolRegistry>::lookup(::tools::REGISTRY_ACTOR)
+            .ok()
+            .flatten()
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (i, t) in m.tools.iter().enumerate() {
+        if !may_take(held(&reg, &t.name).await.as_ref(), &m.name) {
+            out.push(crate::types::CheckIssue {
+                path: format!("/tools/{i}/name"),
+                message: format!(
+                    "a tool named `{}` already exists (native, MCP or another plugin)",
+                    t.name
+                ),
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -183,5 +251,29 @@ mod tests {
         assert_eq!(out.structured, Some(json!({"turns": 0})));
         let err = output(&json!({"content": [{"type": "text", "text": "boom"}], "isError": true}));
         assert!(err.is_error);
+    }
+
+    #[test]
+    fn only_own_or_free_names_are_taken() {
+        let mine = ToolSource::Plugin {
+            name: "turns".into(),
+            version: "0.1.0".into(),
+        };
+        let other = ToolSource::Plugin {
+            name: "other".into(),
+            version: "0.1.0".into(),
+        };
+        assert!(may_take(None, "turns"));
+        assert!(may_take(Some(&mine), "turns"), "own name, any version");
+        assert!(
+            !may_take(Some(&ToolSource::native()), "turns"),
+            "a native wins"
+        );
+        assert!(
+            !may_take(Some(&other), "turns"),
+            "another plugin keeps its name"
+        );
+        assert!(!owned_by(&ToolSource::native(), "turns"));
+        assert!(owned_by(&mine, "turns"));
     }
 }

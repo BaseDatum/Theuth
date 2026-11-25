@@ -391,6 +391,10 @@ pub struct RegisterTool(pub DynTool);
 /// `ask` → `()`. Removes a tool by name; unknown name is a no-op.
 pub struct UnregisterTool(pub String);
 
+/// `ask` → `Option<ToolSource>`: who registered `name`, `None` when nothing is. 216 §8: a plugin
+/// tool never replaces a native, MCP or other plugin's tool, and unregisters only its own names.
+pub struct ToolSourceOf(pub String);
+
 /// `ask` → `Result<(), String>` (kameo lifts `Err` to
 /// `SendError::HandlerError`). Install the activity supervisor's recipients
 /// (47 §4.1). From now on every [`Invoke`] is admitted before it runs and
@@ -2102,6 +2106,18 @@ impl Message<UnregisterTool> for ToolRegistry {
     }
 }
 
+impl Message<ToolSourceOf> for ToolRegistry {
+    type Reply = Option<ToolSource>;
+
+    async fn handle(
+        &mut self,
+        m: ToolSourceOf,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Option<ToolSource> {
+        self.tools.get(&m.0).map(|t| t.source())
+    }
+}
+
 impl Message<RegisterActivity> for ToolRegistry {
     type Reply = Result<(), String>;
 
@@ -2965,6 +2981,18 @@ pub(crate) mod tests {
         async fn call(&self, a: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
             Ok(ToolOutput::ok(a["q"].as_str().unwrap_or_default()))
         }
+    }
+
+    #[tokio::test]
+    async fn tool_source_of_names_the_registrant() {
+        let reg = registry(vec![Arc::new(Echo)], None);
+        assert_eq!(
+            reg.ask(ToolSourceOf("echo".into())).await.unwrap(),
+            Some(ToolSource::native())
+        );
+        assert_eq!(reg.ask(ToolSourceOf("nope".into())).await.unwrap(), None);
+        reg.ask(UnregisterTool("echo".into())).await.unwrap();
+        assert_eq!(reg.ask(ToolSourceOf("echo".into())).await.unwrap(), None);
     }
 
     #[tokio::test]

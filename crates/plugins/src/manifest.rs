@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
-use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+use globset::GlobBuilder;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use tools::Risk;
@@ -122,14 +122,16 @@ pub fn check_name(name: &str) -> Result<(), PluginsError> {
 
 /// Validate a folder without an engine: parse + every §4.3 rule that needs no vault and no
 /// catalog; those two are reported as warnings ("engine not running: secrets and topics not
-/// checked"). Also computes both hashes and the card lines.
+/// checked"). Also computes both hashes and the card lines. The folder may be a source to install
+/// from (`~/Downloads/turns-main`), so its name need not equal the plugin's (review R20).
 pub fn check_offline(dir: &Path) -> CheckReport {
     let offline = issue("", "engine not running: secrets and topics not checked");
-    match load(dir) {
+    match load_source(dir) {
         Ok(parsed) => {
             let m = &parsed.manifest;
             let req = requested(m, &hint_risk);
-            let lines = card_lines(m, &req, None, dir, &|_| None);
+            let per_min = crate::PluginsConfig::default().input_per_min;
+            let lines = card_lines(m, &req, None, dir, per_min, &|_| None);
             let mut warnings = parsed.warnings.clone();
             warnings.push(offline);
             CheckReport {
@@ -138,7 +140,7 @@ pub fn check_offline(dir: &Path) -> CheckReport {
                 errors: Vec::new(),
                 warnings,
                 manifest_sha256: Some(parsed.manifest_sha256.clone()),
-                code_sha256: Some(code_hash(&code_files(dir, m))),
+                code_sha256: Some(code_hash(&code_files(dir))),
                 lines,
             }
         }
@@ -332,6 +334,7 @@ pub(crate) fn parse(text: &str) -> Result<Parsed, Issues> {
             _ => v.warn(path, format!("unknown key `{key}`; ignored")),
         }
     }
+    control_chars(&mut v, "", &json);
 
     let name = match present(top, "name") {
         None => {
@@ -451,9 +454,27 @@ pub(crate) fn parse(text: &str) -> Result<Parsed, Issues> {
     })
 }
 
-/// Read `<dir>/plugin.yaml`, parse, then the folder rules: `name` == folder name, `run[0]` resolves
-/// (absolute, relative to the folder/cwd, or on PATH).
+/// [`load_source`], then the installed-folder rule: `name` == folder name.
 pub(crate) fn load(dir: &Path) -> Result<Parsed, Issues> {
+    let parsed = load_source(dir)?;
+    match dir.file_name().and_then(|f| f.to_str()) {
+        Some(folder) if folder != parsed.manifest.name => Err((
+            vec![issue(
+                "/name",
+                format!(
+                    "name `{}` must equal the folder name `{folder}`",
+                    parsed.manifest.name
+                ),
+            )],
+            parsed.warnings,
+        )),
+        _ => Ok(parsed),
+    }
+}
+
+/// Read `<dir>/plugin.yaml`, parse, then the rules that hold for any folder, installed or a
+/// source to install from: `run[0]` resolves (absolute, relative to the folder/cwd, or on PATH).
+pub(crate) fn load_source(dir: &Path) -> Result<Parsed, Issues> {
     let path = dir.join(FILE);
     let text = std::fs::read_to_string(&path).map_err(|e| {
         (
@@ -463,57 +484,31 @@ pub(crate) fn load(dir: &Path) -> Result<Parsed, Issues> {
     })?;
     let parsed = parse(&text)?;
     let m = &parsed.manifest;
-    let mut errors = Vec::new();
-    if let Some(folder) = dir.file_name().and_then(|f| f.to_str())
-        && folder != m.name
-    {
-        errors.push(issue(
-            "/name",
-            format!("name `{}` must equal the folder name `{folder}`", m.name),
-        ));
-    }
     if let Some(arg0) = m.run.first()
         && !resolves(dir, &m.cwd, arg0)
     {
-        errors.push(issue(
-            "/run/0",
-            format!("`{arg0}` is not a file in the folder and not on PATH"),
+        return Err((
+            vec![issue(
+                "/run/0",
+                format!("`{arg0}` is not a file in the folder and not on PATH"),
+            )],
+            parsed.warnings,
         ));
     }
-    if errors.is_empty() {
-        Ok(parsed)
-    } else {
-        Err((errors, parsed.warnings))
-    }
+    Ok(parsed)
 }
 
-/// rel path → sha256 hex of every `run` argument naming a file in the folder + every `watch` match.
-pub(crate) fn code_files(dir: &Path, m: &Manifest) -> BTreeMap<String, String> {
+/// Directories never hashed: VCS data, dependency caches and build output (rebuilt, not authored).
+const UNHASHED_DIRS: &[&str] = &[".git", "node_modules", "target", "__pycache__"];
+
+/// rel path → sha256 hex of every regular file in the folder, except [`UNHASHED_DIRS`], the root
+/// `plugin.yaml` (it has its own hash and cards) and `.DS_Store` (review R4: a file dropped
+/// beside the entry point, such as `json.py` or `sitecustomize.py`, changes what runs). `watch`
+/// only triggers restarts; it does not scope this.
+pub(crate) fn code_files(dir: &Path) -> BTreeMap<String, String> {
     let root = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    let base = root.join(&m.cwd);
     let mut out = BTreeMap::new();
-    for arg in &m.run {
-        let Ok(file) = base.join(arg).canonicalize() else {
-            continue;
-        };
-        if !file.is_file() {
-            continue;
-        }
-        if let Ok(rel) = file.strip_prefix(&root) {
-            hash_into(&mut out, &file, rel);
-        }
-    }
-    if !m.watch.is_empty() {
-        let mut set = GlobSetBuilder::new();
-        for g in &m.watch {
-            if let Ok(glob) = GlobBuilder::new(g).literal_separator(true).build() {
-                set.add(glob);
-            }
-        }
-        if let Ok(set) = set.build() {
-            walk(&root, &root, &set, &mut out);
-        }
-    }
+    walk(&root, &root, &mut out);
     out
 }
 
@@ -589,13 +584,15 @@ pub(crate) fn needs_code_hash(g: &Grants) -> bool {
 }
 
 /// Install-card lines (contract §5.1 GrantLine, design §10.1 wording). `prior` Some = widen card:
-/// only lines new vs `prior` (new: true) plus the Run line when run/cwd/env changed.
-/// `describe(name)` gives the catalog sentence for `topic#type` / `topic` / `plugin.event`.
+/// only lines new vs `prior` (new: true) plus the Run (and env) line when run/cwd/env changed.
+/// `describe(name)` gives the catalog sentence for `topic#type` / `topic` / `plugin.event`;
+/// `input_per_min` is `plugins.input_per_min`, the rate the Input line promises.
 pub(crate) fn card_lines(
     m: &Manifest,
     req: &Grants,
     prior: Option<&Grants>,
     dir: &Path,
+    input_per_min: u32,
     describe: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<GrantLine> {
     let new = prior.is_some();
@@ -625,6 +622,21 @@ pub(crate) fn card_lines(
             ),
             Risk::Destructive,
         ));
+        // R17: the environment is part of what runs (`PATH`, `LD_PRELOAD`, `NODE_OPTIONS`);
+        // shown with unexpanded values, so a secret appears as its placeholder.
+        if !req.env.is_empty() {
+            let env = req
+                .env
+                .iter()
+                .map(|(k, v)| format!("{k}={}", shlex::try_quote(v).unwrap_or_else(|_| v.into())))
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.push(line(
+                GrantKey::Run,
+                format!("With the environment `{env}`"),
+                Risk::Destructive,
+            ));
+        }
     }
     for s in req
         .secrets
@@ -713,7 +725,7 @@ pub(crate) fn card_lines(
     if req.capabilities.input && prior.is_none_or(|p| !p.capabilities.input) {
         out.push(line(
             GrantKey::Input,
-            "May send messages into your chats as you — at most 6 a minute — which the model then acts on with every tool your policy allows".to_owned(),
+            format!("May send messages into your chats as you — at most {input_per_min} a minute — which the model then acts on with every tool your policy allows"),
             Risk::Destructive,
         ));
     }
@@ -1217,10 +1229,13 @@ fn placement_decls(v: &mut V, val: &Value, plugin: &str) -> Vec<PlacementDecl> {
             None => String::new(),
             Some(x) => v.scalar(&ptr(&base, "label"), x).unwrap_or_default(),
         };
-        let status = drawn
-            && present(p, "status")
-                .and_then(|s| v.boolean(&ptr(&base, "status"), s))
-                .unwrap_or(false);
+        // A `kind: status` placement has no surface: `status` updates are its only output, and
+        // both clients draw it as status-bearing (review S1).
+        let status = kind == PlacementKind::Status
+            || (drawn
+                && present(p, "status")
+                    .and_then(|s| v.boolean(&ptr(&base, "status"), s))
+                    .unwrap_or(false));
         let size = if has_format {
             present(p, "size").and_then(|s| size(v, &ptr(&base, "size"), s))
         } else {
@@ -1530,6 +1545,39 @@ fn present<'a>(m: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
     m.get(key).filter(|v| !v.is_null())
 }
 
+/// Refuse control characters in every key and string of the manifest (review R11): an ANSI
+/// sequence or a carriage return in `version`, `run` or a tool name could repaint the card a
+/// human approves on a terminal. A `description` (at any depth) may hold newlines and tabs.
+fn control_chars(v: &mut V, path: &str, val: &Value) {
+    let bad = |s: &str, prose: bool| {
+        s.chars()
+            .any(|c| c.is_control() && !(prose && (c == '\n' || c == '\t')))
+    };
+    match val {
+        Value::String(s) => {
+            let prose = path.rsplit('/').next() == Some("description");
+            if bad(s, prose) {
+                v.err(path, "control characters are not allowed");
+            }
+        }
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                control_chars(v, &idx(path, i), item);
+            }
+        }
+        Value::Object(map) => {
+            for (k, item) in map {
+                let p = ptr(path, k);
+                if bad(k, false) {
+                    v.err(p.clone(), "control characters are not allowed in a key");
+                }
+                control_chars(v, &p, item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// `^[a-z][a-z0-9-]{0,31}$`.
 fn name_syntax(s: &str) -> bool {
     let b = s.as_bytes();
@@ -1638,35 +1686,51 @@ fn resolves(dir: &Path, cwd: &str, arg0: &str) -> bool {
         || (!arg0.contains('/') && platform::shell::which(arg0).is_some())
 }
 
+fn rel_key(rel: &Path) -> String {
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn hash_into(out: &mut BTreeMap<String, String>, file: &Path, rel: &Path) {
     let Ok(bytes) = std::fs::read(file) else {
         return;
     };
-    let key = rel
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/");
-    out.insert(key, hex::encode(Sha256::digest(&bytes)));
+    out.insert(rel_key(rel), hex::encode(Sha256::digest(&bytes)));
 }
 
-/// Every file under `cur` whose path relative to `root` matches `set`; symlinked dirs and `.git` are not entered.
-fn walk(root: &Path, cur: &Path, set: &GlobSet, out: &mut BTreeMap<String, String>) {
+/// Every regular file under `cur` but the unhashed ones. A symlink to a file is hashed by its
+/// content; any other symlink (a directory, a dangling link) by its target path, since it is not
+/// entered.
+fn walk(root: &Path, cur: &Path, out: &mut BTreeMap<String, String>) {
     let Ok(entries) = std::fs::read_dir(cur) else {
         return;
     };
     for e in entries.flatten() {
         let Ok(ft) = e.file_type() else { continue };
         let path = e.path();
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        let name = e.file_name();
+        let skipped = if ft.is_dir() {
+            UNHASHED_DIRS.iter().any(|d| name == *d)
+        } else {
+            rel == Path::new(FILE) || name == ".DS_Store"
+        };
+        if skipped {
+            continue;
+        }
         if ft.is_dir() {
-            if e.file_name() != ".git" {
-                walk(root, &path, set, out);
-            }
-        } else if path.is_file()
-            && let Ok(rel) = path.strip_prefix(root)
-            && set.is_match(rel)
-        {
+            walk(root, &path, out);
+        } else if path.is_file() {
             hash_into(out, &path, rel);
+        } else if ft.is_symlink()
+            && let Ok(target) = std::fs::read_link(&path)
+        {
+            let digest = Sha256::digest(format!("symlink:{}", target.display()).as_bytes());
+            out.insert(rel_key(rel), hex::encode(digest));
         }
     }
 }
@@ -1869,7 +1933,7 @@ capabilities:                     # optional; each is a line on the install card
 
         let describe =
             |n: &str| (n == "agent.events#TurnFinished").then(|| "a turn finished".to_owned());
-        let lines = card_lines(m, &req, None, Path::new("/x/plugins/turns"), &describe);
+        let lines = card_lines(m, &req, None, Path::new("/x/plugins/turns"), 6, &describe);
         assert_eq!(lines[0].key, GrantKey::Run);
         assert_eq!(lines[0].risk, Risk::Destructive);
         assert_eq!(
@@ -1905,21 +1969,33 @@ capabilities:                     # optional; each is a line on the install card
             ["May call knowledge_search, http_request (read-only), in its own background session"]
         );
         assert_eq!(text_of(GrantKey::Input).len(), 1);
+        assert!(text_of(GrantKey::Input)[0].contains("at most 6 a minute"));
+        let ph = placeholder("github.pat");
+        assert_eq!(
+            text_of(GrantKey::Run)[1],
+            format!("With the environment `GITHUB_TOKEN='{ph}' TURNS_LIMIT=50`"),
+            "R17: env keys and unexpanded values are on the card"
+        );
+        let r32 = card_lines(m, &req, None, Path::new("/x"), 2, &describe);
+        assert!(
+            r32.iter()
+                .any(|l| l.key == GrantKey::Input && l.text.contains("at most 2 a minute"))
+        );
         assert_eq!(
             text_of(GrantKey::Notify),
             ["May add inbox items and notifications"]
         );
         assert!(lines.iter().all(|l| !l.new));
 
-        // Widen: nothing new → no lines; a new emit and a changed env → those two lines.
-        assert!(card_lines(m, &req, Some(&req), Path::new("/x"), &describe).is_empty());
+        // Widen: nothing new → no lines; a new emit and a changed env → Run, env and Emit lines.
+        assert!(card_lines(m, &req, Some(&req), Path::new("/x"), 6, &describe).is_empty());
         let mut prior = req.clone();
         prior.emits.clear();
         prior.env.remove("TURNS_LIMIT");
-        let widen = card_lines(m, &req, Some(&prior), Path::new("/x"), &describe);
+        let widen = card_lines(m, &req, Some(&prior), Path::new("/x"), 6, &describe);
         assert_eq!(
             widen.iter().map(|l| l.key).collect::<Vec<_>>(),
-            [GrantKey::Run, GrantKey::Emit]
+            [GrantKey::Run, GrantKey::Run, GrantKey::Emit]
         );
         assert!(widen.iter().all(|l| l.new));
     }
@@ -2034,7 +2110,7 @@ capabilities:                     # optional; each is a line on the install card
         }
         assert!(p.manifest.capabilities.notify);
         let req = requested(&p.manifest, &hint_risk);
-        let lines = card_lines(&p.manifest, &req, None, Path::new("/x"), &|_| None);
+        let lines = card_lines(&p.manifest, &req, None, Path::new("/x"), 6, &|_| None);
         let placements: Vec<&str> = lines
             .iter()
             .filter(|l| l.key == GrantKey::Placement)
@@ -2044,6 +2120,32 @@ capabilities:                     # optional; each is a line on the install card
             placements,
             ["Adds a tile", "Adds a sidebar icon that opens its tile"]
         );
+    }
+
+    /// S1: a `kind: status` placement always takes `status` updates; others opt in.
+    #[test]
+    fn status_placement_defaults_to_status() {
+        let p = parse(&base(
+            "placements:\n  - {id: s, kind: status, icon: x, label: y}\n  - {id: t, kind: status, icon: x, label: y, status: false}\n  - {id: u, kind: tile, icon: x, label: y, format: markdown}\n  - {id: v, kind: tile, icon: x, label: y, format: markdown, status: true}\n",
+        ))
+        .unwrap_or_else(|(e, _)| panic!("{e:?}"));
+        let status: Vec<bool> = p.manifest.placements.iter().map(|p| p.status).collect();
+        assert_eq!(status, [true, true, false, true]);
+    }
+
+    /// R11: control characters in manifest strings are refused (a description may span lines).
+    #[test]
+    fn control_characters_are_refused() {
+        let e = errors(&base("").replace("version: '1'", "version: \"1\\e[2K\""));
+        assert!(has(&e, "/version"), "{e:?}");
+        let e = errors(&base(
+            "tools:\n  - {name: \"x\\r\", description: d, inputSchema: {type: object}}\n",
+        ));
+        assert!(e.iter().any(|i| i.path.starts_with("/tools/0")), "{e:?}");
+        let e = errors(&base("env: {\"A\\e\": \"1\"}\n"));
+        assert!(has(&e, "/env/A\u{1b}"), "{e:?}");
+        let ok = parse(&base("description: \"line one\\nline\\ttwo\"\n"));
+        assert!(ok.is_ok(), "{:?}", ok.err());
     }
 
     #[test]
@@ -2057,10 +2159,11 @@ capabilities:                     # optional; each is a line on the install card
     }
 
     #[test]
-    fn code_hash_covers_run_and_watch_only() {
+    fn code_hash_covers_every_file_but_caches() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir = tmp.path().join("demo");
         std::fs::create_dir_all(dir.join("lib")).expect("mkdir");
+        std::fs::create_dir_all(dir.join("__pycache__")).expect("mkdir");
         let write = |rel: &str, body: &str| std::fs::write(dir.join(rel), body).expect("write");
         write(
             FILE,
@@ -2070,22 +2173,28 @@ capabilities:                     # optional; each is a line on the install card
         write("main.sh", "echo hi\n");
         write("lib/a.py", "x = 1\n");
         write("README.md", "hello\n");
+        write("__pycache__/a.pyc", "cache\n");
 
         let p = load(&dir).unwrap_or_else(|(e, _)| panic!("{e:?}"));
-        let files = code_files(&dir, &p.manifest);
+        assert_eq!(p.manifest.watch, ["lib/**/*.py"]);
+        let files = code_files(&dir);
         assert_eq!(
             files.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["lib/a.py", "main.sh"]
+            ["README.md", "lib/a.py", "main.sh"]
         );
         let h0 = code_hash(&files);
 
-        write("README.md", "changed\n");
-        assert_eq!(code_hash(&code_files(&dir, &p.manifest)), h0);
-        write("main.sh", "echo bye\n");
-        let h1 = code_hash(&code_files(&dir, &p.manifest));
+        write("__pycache__/a.pyc", "other cache\n");
+        assert_eq!(code_hash(&code_files(&dir)), h0, "caches are not hashed");
+        // R4: a new file beside the entry point, outside `watch`, changes the hash.
+        write("sitecustomize.py", "import os\n");
+        let h1 = code_hash(&code_files(&dir));
         assert_ne!(h1, h0);
+        write("main.sh", "echo bye\n");
+        let h2 = code_hash(&code_files(&dir));
+        assert_ne!(h2, h1);
         write("lib/a.py", "x = 2\n");
-        assert_ne!(code_hash(&code_files(&dir, &p.manifest)), h1);
+        assert_ne!(code_hash(&code_files(&dir)), h2);
 
         let report = check_offline(&dir);
         assert!(report.ok, "{:?}", report.errors);
@@ -2105,16 +2214,17 @@ capabilities:                     # optional; each is a line on the install card
                 .any(|l| l.key == GrantKey::Secret && l.text.contains("`tok`"))
         );
 
-        // Folder rules: the name must equal the folder name.
+        // R20: a source folder may be named anything; an installed folder must carry the name.
         let other = tmp.path().join("other");
         std::fs::create_dir_all(&other).expect("mkdir");
         std::fs::copy(dir.join(FILE), other.join(FILE)).expect("copy");
-        let bad = check_offline(&other);
-        assert!(
-            !bad.ok && bad.errors.iter().any(|e| e.path == "/name"),
-            "{:?}",
-            bad.errors
-        );
+        let source = check_offline(&other);
+        assert!(source.ok, "{:?}", source.errors);
+        assert_eq!(source.name.as_deref(), Some("demo"));
+        let Err((errors, _)) = load(&other) else {
+            panic!("installed under the wrong name must fail");
+        };
+        assert!(errors.iter().any(|e| e.path == "/name"), "{errors:?}");
     }
 
     #[test]

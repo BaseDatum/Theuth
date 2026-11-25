@@ -2,7 +2,7 @@
 //! `surface::parse`, no masked inputs), the per-plugin board of statuses and contents, the state
 //! override of snapshots, and the token-bucket rate limits.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use app::helper::{Helper, ToolSnapshot};
@@ -162,12 +162,16 @@ fn issue(path: &str, message: impl Into<String>) -> CheckIssue {
 /// [`ToolSnapshot`] per `Query`/`Mutation` name (contract §12.4), refusing diagnostics and masked
 /// `Input`s; json-render → `surface::parse`; markdown as is. `helper: None` (no validator available)
 /// accepts openui with the bindings of its `name = Query("x", …)` / `name = Mutation("x", …)` statements.
+/// The source is validated as redacted (design §7.4, review R7), the form [`Board::set_content`]
+/// holds and compares.
 pub(crate) async fn validate(
     helper: Option<&Helper>,
     plugin: &str,
     format: SurfaceFormat,
     source: &str,
 ) -> Result<Vec<SurfaceBinding>, CheckIssue> {
+    let redacted = tools::secrets::redact(source);
+    let source = redacted.as_ref();
     match format {
         SurfaceFormat::Markdown => Ok(Vec::new()),
         SurfaceFormat::JsonRender => surface::parse(source).map(|_| Vec::new()).map_err(|errs| {
@@ -230,16 +234,51 @@ pub(crate) async fn validate(
 }
 
 /// An OpenUI `Input(…)` call with a `"password"` argument (or any other string argument spelling
-/// `password`, as in `type: "password"`) → the refusal, located at `/source` (§9.4).
+/// `password`, as in `type: "password"`) → the refusal, located at `/source` (§9.4). An identifier
+/// argument is resolved through the `name = …` statements it names, transitively, so
+/// `t = "password"` then `Input("pw", t)` is refused too (review R10).
 pub(crate) fn masked_input(source: &str) -> Option<CheckIssue> {
     let toks = lex(source);
+    let statements = statements(source);
     calls(&toks, "Input")
         .any(|(open, close)| {
-            toks[open + 1..close]
-                .iter()
-                .any(|t| matches!(t, Tok::Str(s) if s.trim().eq_ignore_ascii_case("password")))
+            let mut seen = BTreeSet::new();
+            spells_password(&toks[open + 1..close], &statements, &mut seen)
         })
         .then(|| issue("/source", MASKED))
+}
+
+/// Whether `toks` hold a `"password"` string, directly or through a statement an identifier names.
+fn spells_password<'a>(
+    toks: &[Tok],
+    statements: &'a BTreeMap<String, Vec<Tok>>,
+    seen: &mut BTreeSet<&'a str>,
+) -> bool {
+    toks.iter().any(|t| match t {
+        Tok::Str(s) => s.trim().eq_ignore_ascii_case("password"),
+        Tok::Ident(id) => match statements.get_key_value(id.as_str()) {
+            Some((name, body)) if seen.insert(name.as_str()) => {
+                spells_password(body, statements, seen)
+            }
+            _ => false,
+        },
+        Tok::Punct(_) => false,
+    })
+}
+
+/// `name = expr` statements, one per line (OpenUI Lang), as name → tokens of `expr`.
+fn statements(source: &str) -> BTreeMap<String, Vec<Tok>> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let (lhs, rhs) = line.split_once('=')?;
+            let id = lhs.trim();
+            let valid = !id.is_empty()
+                && id.chars().all(ident_char)
+                && !id.starts_with(|c: char| c.is_ascii_digit());
+            (valid && !rhs.starts_with('=')).then(|| (id.to_owned(), lex(rhs)))
+        })
+        .collect()
 }
 
 /// One token of OpenUI source, enough to find calls and their string arguments.
@@ -451,6 +490,11 @@ impl Board {
         ui: UiParams,
         bindings: Vec<SurfaceBinding>,
     ) -> Result<Option<u64>, String> {
+        let ui = UiParams {
+            source: tools::secrets::redact(&ui.source).into_owned(),
+            text: tools::secrets::redact(&ui.text).into_owned(),
+            ..ui
+        };
         let held = self.get(plugin, placement).and_then(|s| s.content.as_ref());
         if held.is_some_and(|h| h.format == ui.format && h.source == ui.source && h.text == ui.text)
         {
@@ -668,6 +712,36 @@ mod tests {
         // Inside a string or on another component, it is not an Input call.
         assert!(masked_input("t = TextContent(\"Input(\\\"pw\\\", \\\"password\\\")\")").is_none());
         assert!(masked_input("t = TextArea(\"pw\", \"password\")").is_none());
+        // R10: a string reached through statements is resolved, transitively and cycle-safe.
+        assert!(masked_input("t = \"password\"\npw = Input(\"pw\", t)").is_some());
+        assert!(masked_input("a = b\nb = {type: \"password\"}\npw = Input(\"pw\", a)").is_some());
+        assert!(masked_input("a = b\nb = a\npw = Input(\"pw\", a)").is_none());
+        assert!(masked_input("t = \"Your name\"\npw = Input(\"pw\", t)").is_none());
+    }
+
+    /// R7: a vault value in `ui.source` is held and compared redacted.
+    #[tokio::test]
+    async fn source_is_redacted_before_validation_and_hold() {
+        ::tools::secrets::install(std::sync::Arc::new(crate::route::tests::Fake));
+        let p = crate::route::tests::placeholder();
+        let raw = "# token hunter22";
+        validate(None, "turns", SurfaceFormat::Markdown, raw)
+            .await
+            .unwrap();
+        let mut board = Board::default();
+        let u = ui("turns", SurfaceFormat::Markdown, raw);
+        assert_eq!(
+            board.set_content("turns", "turns", u, vec![]).unwrap(),
+            Some(1)
+        );
+        let held = board.content("turns", "turns").unwrap();
+        assert_eq!(held.source, Some(format!("# token {p}")));
+        // The plugin sends the same secret again: byte-identical after redaction, no new revision.
+        let again = ui("turns", SurfaceFormat::Markdown, raw);
+        assert_eq!(
+            board.set_content("turns", "turns", again, vec![]).unwrap(),
+            None
+        );
     }
 
     #[test]
