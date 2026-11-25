@@ -1,6 +1,6 @@
 # 221 — External secret backends: AWS Secrets Manager and Bitwarden
 
-Status: design · 2026-11-25 · not built. Extends `37-secrets.md` (the vault, placeholders, scrub,
+Status: design · 2026-11-25 · owner rulings folded in (D1–D7, D13, D16, D17, D20, D22–D25) · not built. Extends `37-secrets.md` (the vault, placeholders, scrub,
 `secret_*` tools; its §11 "Extension: backends" is the seam this doc fills and, where the two
 disagree, this doc wins for external backends) and `219-always-ask.md` (the override every external
 read and write goes through). Reads `216-external-plugins.md` only to reject it as the vehicle (D4).
@@ -226,9 +226,8 @@ turns permanent deletion on:
   → `DELETE /ciphers/{id}` (`#L96`) is used only with `permanent: true` and `allow_permanent_delete`
   on. `ciphers().restore` (`restore.rs#L108`) undoes a trash.
 
-This reverses the first draft's "no delete anywhere", which took the choice away from the user. 37 D5
-("the user deletes") still governs the **local** vault; this doc does not change it, and §14 Q3 asks
-about it.
+This reverses the first draft's "no delete anywhere", which took the choice away from the user. The
+local vault gets the same treatment in D24.
 
 **D14 — Values never reach the model, and `secret_request` with a destination is at least
 `Mutating`.** The `secret_external_*` tools return metadata, receipts and references (§7). A
@@ -275,12 +274,17 @@ What references may reach:
 
 Sends:
 - `manage_all_sends` — `false`: list and revoke Sends theuth did not create.
-- `send_link_to_agent` — `false`: the Send receipt carries the link itself (§14 Q2 records the doubt).
+- `send_link_to_agent` — `false`: the Send receipt carries the link itself (the link is a stand-in,
+  D23).
 - `send_max_file_mb` (harness-wide) — `100`; the ceiling is the server's limit (§12.6).
 
-Copying a link:
+Copying a link and revealing values:
 - `copy_link_needs_press` (harness-wide) — `true`: `copy_send_link` from a non-press caller raises a
   human-only card.
+- `allow_reveal` — `true`: the owner's Reveal action on this connection's values (D25).
+
+Local vault:
+- `secret_delete` — present in `tools.always_ask` (always ask), seeded once (D24).
 
 Not settings, and why. These are capabilities, not permissions:
 - Duo and WebAuthn 2FA (need a browser);
@@ -293,12 +297,76 @@ None of them is a choice theuth makes for the user.
 
 **D21 — How the vault works (invariants, not gates).** Two properties of 37 carry over unchanged to
 external secrets. They are how the vault is built, not permissions a setting toggles:
-- **No value reaches the model.** Tools take references and return metadata and receipts. Values
-  move inside the harness only (37 D1).
-- **Known values are scrubbed from tool output** (37 D3, §11 here).
+- **No secret value reaches the model.** A *secret value* is what a reference resolves to: a local
+  vault version, or an AWS secret, JSON key or Bitwarden field. Tools take references and return
+  metadata and receipts. Values move inside the harness, and to the owner's own eyes through Reveal
+  (D25), never to the agent (37 D1).
+  - A Bitwarden **Send link is not a secret value**. It is a stand-in (D23): a revocable, expiring,
+    count-limited handle the user approved handing out.
+  - Because of that, it is stored and scrubbed like a vault value by default, and
+    `send_link_to_agent` may give it to the model without touching this invariant.
+- **Known values are scrubbed from tool output** (37 D3, §11 here). This covers every vault value,
+  including Send links stored there.
+  - With `send_link_to_agent` on, the link is not written to the vault at all, so the scrub has
+    nothing to rewrite (D23).
 
 The always-ask cards, `HUMAN_ONLY`-style answering and the risk levels are permissions, and they are
 all in D20.
+
+**D22 — Release binaries ship with Bitwarden and are GPL-3.0 works (owner, 2026-11-25).** The
+published desktop app and the `t` releases build with `--features bitwarden`. Linking the
+`sdk-internal` crates under their GPL-3.0 option makes those binaries GPL-3.0 works.
+- Release packaging (milestone B10) ships the GPL-3.0 text, a NOTICE and third-party notices for the
+  `sdk-internal` crates and their dependency tree.
+- theuth's own source licence must be GPL-3.0-compatible. The repo has no `LICENSE` file and no
+  `license` field in `Cargo.toml` today. B10 adds them, and §14 Q1 asks which licence theuth's
+  own source carries.
+- Builds without the feature stay as they are.
+
+**D23 — A Send link is a stand-in, not a secret value (owner, 2026-11-25).** The link is the thing the
+user approved giving away, so D21's "no secret value reaches the model" does not cover it.
+`send_link_to_agent` stays a per-connection setting, default `false`. With it off, the link lives
+in the vault and the agent holds a placeholder (D18). With it on, the link is **not** written to
+the vault. It is kept in its `external_sends` row, sealed with the engine key (for Copy link,
+`copy_send_link`), and the receipt carries it in plain text. It then enters the transcript like any
+text the agent was given, which is what the user chose.
+
+**D24 — The agent may delete a local vault secret: `secret_delete` (owner, 2026-11-25).** This changes
+design 37's rule that only the user deletes:
+- 37 D5 rejects a `secret_delete` tool ("the user deletes, and deletion is the one operation
+  versions cannot undo", `docs/design/37-secrets.md#L74-L77`);
+- 37 §3.2 says "Deletion is the user's" (`#L280`);
+- the `Delete` command is "User surfaces only" (`#L324`; in code, "the model has no delete",
+  `crates/secrets/src/lib.rs#L167-L172`);
+- 37 §12 lists the tool as not built (`#L790`).
+
+`secret_delete` is risk `Destructive` and always ask by default through an ordinary 219 entry
+`secret_delete` in `tools.always_ask`. It is seeded once at first start after this lands (a `meta`
+stamp `seeded/secret_delete`), so a user who removes it keeps it removed. Its behaviour is exactly
+`Vault::delete` (`crates/secrets/src/vault.rs#L846-L849`):
+- the name and **every kept version** go in one transaction, and the deletion replicates across the
+  mesh like any vault row;
+- there is no trash and no restore, because the vault has none;
+- the tool says so on the card and in its description.
+
+The reserved `/` families (`oauth/`, `mesh/`, `sandbox/`, `share/`, `plugins/`) and Send link
+secrets are refused; Sends are revoked with `secret_send_revoke` instead. §7.6.
+
+**D25 — Reveal for external values, on by default (owner, 2026-11-25).** The owner's UI gets a
+**Reveal** action on external values.
+- *Where.* The desktop Secrets page, and the same page wherever it is served: a browser tab against
+  the engine, or iOS over the relay.
+- *Setting.* A per-connection `allow_reveal` (default `true`) turns it off.
+- *Who sees it.* The value goes to the owner's screen only. The press is the consent, so there is no
+  approval card.
+- *Who may call it.* `reveal_external_secret` serves only an owner press, as 219 §2.4 defines it:
+  authenticated, not a share guest, not the internal connection. Every other caller gets an error,
+  not a card: the internal connection is where the agent's halves live, and a value returned there
+  would reach the agent. That refusal is how D21 is enforced, not a permission.
+- *TUI.* The TUI talks over the internal connection, so it has no Reveal. Its rows say "reveal in
+  the desktop app".
+- *Audit.* Every reveal is logged (§11).
+- *Local vault.* Reveal of local vault values is not part of this decision; 37 is unchanged there.
 
 **D15 — Connection operations run on the engine that owns the connection; answers are forwarded,
 never replicated.** A `secret_request` answered on another engine's app reaches the asking engine
@@ -914,6 +982,9 @@ LoggedOut ──login(api key | password+2FA)──▶ Locked ──unlock(maste
 - `delete_external_secret(conn, id, mode)` and `restore_external_secret(conn, id)` back the Delete
   and Restore buttons. The user is the actor, so there is no card.
 - `create_send(conn, args)` and `copy_send_link(id)`: §12.5.
+- `reveal_external_secret(conn, ref) -> String` (D25): an owner press only (219 §2.4's test);
+  every other caller gets `reveal is an owner action in the desktop app`. Refused when the
+  connection's `allow_reveal` is off. Writes the audit line before returning.
   `ask` is read from the always-ask global set.
 - `LoginForm` = `ApiKey { client_id, client_secret }` or
   `Password { email, password, two_factor: Option<(provider, code)>, new_device_otp: Option<String> }`.
@@ -946,6 +1017,7 @@ length (37 D1).
 | `secret_external_create` | `Mutating` | `…:write` (+ `…:read` never) | false |
 | `secret_external_update` | `Destructive` (a Bitwarden field edit keeps no history; AWS keeps one previous stage) | `…:write` | false |
 | `secret_external_delete` | `Destructive` | `…:delete` | false |
+| `secret_delete` (local vault, D24) | `Destructive` | 219 entry `secret_delete` (seeded) | false |
 | `secret_request` + `destination` | `ReadOnly` → `Mutating` via `credentialed` (D14) | `…:write` | false (as today) |
 | any tool with `{{secret:aws/…}}` / `{{secret:bw/…}}` | its own | `…:read` | true |
 | `secret_send_create` / `_list` / `_revoke` | §12.3 | `…:send` (+ owner-only answering, `send_owner_only`) / `…:read` / policy | false |
@@ -1116,6 +1188,32 @@ values); secret_external_import copies one into the vault; secret_request with a
 user for a value and stores it in the manager. You can never see these values.
 ```
 
+### 7.6 Local vault delete (D24)
+
+```rust
+/// `secret_delete`: delete a local vault secret and every kept version. Cannot be undone: the vault has no trash.
+pub struct DeleteArgs {
+    /// The local NAME (`[A-Za-z0-9_.-]{1,64}`). `/` names and Send link secrets are refused.
+    pub name: String,
+    /// The current version number from `secret_list` (`v7`): guards against deleting the wrong name.
+    pub confirm: u32,
+}
+// NAME = "secret_delete", RISK = Destructive, RETURNS = "str", CONSUMES_SECRETS = false
+// → "deleted GITHUB_TOKEN (v7 and 2 older versions); {{secret:GITHUB_TOKEN}} no longer resolves"
+// errors: "GITHUB_TOKEN is at v8, not v7; secret_list shows the current version" | "unknown secret X"
+//   | "send-personal-3fa9c2d1 is a Send link; secret_send_revoke revokes it" | "oauth/… is not a user secret"
+```
+
+- The card always asks (219 entry `secret_delete`, D24). Its args are merged with a preview
+  (`APPROVAL_PREVIEW`): the note, the number of versions, `updated`, and, for a harness key
+  (`anthropic`, `openai`, a gateway, `slack_bot`, …), the line "theuth itself uses this key for
+  <provider>".
+- It runs `secrets::Delete { name }` on the actor, the same path as the user's delete
+  (`crates/secrets/src/lib.rs#L167-L172`), with an added check of `confirm` against the current
+  version inside the actor. It publishes `SecretsChanged`.
+- 37's prompt block gains one sentence: "`secret_delete` removes a secret and all its versions for
+  good; the user is asked first."
+
 ## 8. Settings: the ask mode
 
 - **Settings › Approvals › "Always ask, even when approvals are off"**
@@ -1165,8 +1263,14 @@ user for a value and stores it in the manager. You can never see these values.
   (§12.5) and **Delete** (recoverable; "Delete permanently" appears only when
   `allow_permanent_delete` is on). A **Deleted** filter lists AWS secrets pending deletion and the
   Bitwarden trash, each with **Restore**. The user's browsing goes straight through the owner RPC, not through a tool, so it raises no
-  approval card: the human is the actor. There is no "reveal" button in this design. Whether the
-  user wants one is §14 Q4.
+  approval card: the human is the actor.
+- **Reveal** (D25), on every value-bearing row (an AWS secret or JSON key, a Bitwarden field), unless
+  the connection's `allow_reveal` is off.
+  - It calls `reveal_external_secret(conn, ref)` and shows the value in a masked field with an eye
+    toggle. The value auto-hides after 30 s, and a Copy button clears the clipboard after 60 s.
+  - The value is held in component state only, never in the query cache or local storage, and is
+    dropped on hide.
+  - Every reveal writes an audit line.
 
 ### 9.2 Desktop `SecretRequestCard` (`crates/desktop/ui/src/components/chat/SecretRequestCard.tsx#L108`)
 
@@ -1202,6 +1306,7 @@ user for a value and stores it in the manager. You can never see these values.
 - The unlock modal reuses the request modal's frame: `unlock bw/personal (me@…) · ••••• · enter
   unlock · esc cancel`.
 - The always-ask entries show in the `/always-ask` listing unchanged.
+- No Reveal (D25): the TUI is the internal connection. Value rows show `reveal in the desktop app`.
 
 ### 9.4 Login and unlock cards (all surfaces)
 
@@ -1252,8 +1357,9 @@ Consequences:
 
 ## 11. Security
 
-**Invariants (how the vault works, D21).** No value reaches the model; known values are scrubbed
-from tool output. Everything else below is a permission, and it is a setting (D20).
+**Invariants (how the vault works, D21).** No secret value reaches the model (a Send link is a
+stand-in, D23); known values are scrubbed from tool output. Reveal shows a value to the owner only,
+through an owner press (D25). Everything else below is a permission, and it is a setting (D20).
 
 **Threat model** (37 §8's letters: B = private data, C = egress). This doc adds a B that is much
 larger than the local vault: a whole password manager. The new risks:
@@ -1303,13 +1409,17 @@ The SDK crates log at `debug`, and theuth's default filter keeps `bitwarden_*=wa
 **Audit trail.** Every external access is visible on a card already: the approval (or its absence
 when the user turned ask off) and the `ToolCallStarted` args. Additionally, each `get` / `create` /
 `update` appends a line to `<data_dir>/logs/secrets-external.log`: time, session, call id, ref,
-direction, version, outcome. The line never holds a value. The log is local, `0600`, and rotated like
+direction, version, outcome. A `reveal` line (time, surface, connection, ref, version) is written
+for every Reveal (D25). The line never holds a value. The log is local, `0600`, and rotated like
 other logs. It is not a replicated table, as the engine that did it is the one to ask.
 
 **Licence.** Linking `sdk-internal` under GPL-3.0 makes a binary built with `--features bitwarden`
-a GPL-3.0 work. theuth's own licence must be GPL-3.0-compatible for that binary to be distributed;
-§14 Q4 asks the owner to confirm the release builds enable the feature. Builds without it are
-unaffected. `rbw` (D4) is the fallback if the licence or the pin ever becomes unworkable. It would
+a GPL-3.0 work. The release binaries enable it (D22), so the desktop app and `t` releases are
+GPL-3.0 works.
+- B10 packages the licence text, a NOTICE and the third-party notices.
+- The `bitwarden-license` feature (SDK-licence-only code) stays off, so no non-GPL Bitwarden code
+  is linked (§5.9).
+- Builds without the feature are unaffected. `rbw` (D4) is the fallback if the licence or the pin ever becomes unworkable. It would
 sit behind the same `ExternalBackend` trait.
 
 ## 12. Bitwarden Send
@@ -1368,9 +1478,8 @@ gets a copy button.**
 - Echoes are scrubbed back to the placeholder like any vault value.
 - Peer messages (`send_message`, A2A) are redacted before egress (37 §15.3).
 
-`send_link_to_agent` (D20, default `false`) puts the link itself in the receipt. It is a setting
-because the owner ruled so. Whether a link counts as a "secret value" under the vault invariant
-(D21) is in doubt, so §14 Q2 asks.
+`send_link_to_agent` (D20, default `false`) puts the link itself in the receipt. The link is a
+stand-in, not a secret value (D23), so this does not touch D21.
 
 **D19 — Theuth deletes the Sends it created; `manage_all_sends` widens that.** Deleting a Send
 removes exposure; it destroys no data the user keeps. Revocation follows `tools.policy` for
@@ -1583,7 +1692,8 @@ pub struct SendCreateArgs {
   - `created_ms`, `expiration_ms`, `deletion_ms`, `max_access`;
   - `session`, `call_id`, `revoked_ms`.
 
-  The table never holds the key, the link or the content. It is **not** in `store::TABLES`
+  The table never holds the content. It holds the link only when `send_link_to_agent` is on (D23),
+  sealed with the engine key in a `link_sealed` column; otherwise the link is a vault secret. It is **not** in `store::TABLES`
   (`crates/secrets/src/store.rs#L17`), so it is engine-local, because the Send belongs to that
   engine's connection.
 - **Expiry.** At the deletion date the vault's expiry sweep deletes the link and password secrets
@@ -1715,7 +1825,9 @@ runs none.
   - a connection added by hand-editing config is seeded once, and a removed entry stays removed
     after restart;
   - `meta` rows open only with this engine's key;
-  - nothing under `ext/` appears in `list_secrets` or in `vault`.
+  - nothing under `ext/` appears in `list_secrets` or in `vault`;
+  - `reveal_external_secret` from the internal connection → refused, with no value and no card; from
+    an owner press → the value and an audit line; with `allow_reveal` off → refused.
 
   Also the wire fixture (`just wire-schema-accept`) and `just ts-desktop`.
 - **B5 — `secrets-bitwarden` crate (feature `bitwarden`).** The git dependency at `2b06afa`, the
@@ -1785,35 +1897,54 @@ runs none.
   disclosure, Settings › Secrets (harness-wide D20 keys), add stepper, browse with Delete / Deleted
   filter / Restore, Send dialog (text and file, native picker, artifact card action, "Send as text
   instead"), request card destination strip and picker, unlock card, Approvals labels, and the
-  `lock_on_sleep` power observer (the desktop app sends sleep and screen-lock to the engine). *Check:* `bun run check`, `bunx vitest run` for the touched
+  `lock_on_sleep` power observer (the desktop app sends sleep and screen-lock to the engine), and
+  Reveal (D25) with its 30 s auto-hide and no caching. Tests check that Reveal is hidden when
+  `allow_reveal` is off, and that the revealed value never lands in the query cache. *Check:* `bun run check`, `bunx vitest run` for the touched
   files (`SecretRequestCard.test.ts` fixture gains `destination`), no emoji test.
 - **B8 — TUI and bridges.** `/secrets` connections, `u` / `l` / Enter / `y` / `i`, `/secrets
   connect`, destination line, unlock modal; Slack/Telegram/Signal notice line. *Check:* `cargo test
   -p tui` (the leak test gains an unlock case: the typed password never reaches the transcript or
   the screen buffer).
+- **B6b — `secret_delete` (D24, §7.6).** The tool in `crates/secrets/src/tools.rs` over
+  `Vault::delete`; the one-time seeding of the `secret_delete` always-ask entry; the prompt line.
+  *Check:* `cargo test -p secrets -p tools`:
+  - deleting a three-version secret removes every version, and the placeholder then fails with
+    "unknown secret";
+  - `confirm` ≠ current → refused, nothing deleted;
+  - `oauth/x` and a Send link name are refused;
+  - the card is always ask with approvals off;
+  - removing the entry by press stops the card, and the entry is not re-seeded after a restart.
 - **B9 — Docs and amendments.** 37 §11 marked superseded by this doc; 37 §3.1's `BACKEND/NAME` row;
+  37 D5, §3.2 and §12 amended for `secret_delete` (D24);
   219 §2.1 gains the `secret:` key family; `harness.md` layout gains `logs/secrets-external.log`;
   README crate list and features. *Check:* `cargo clippy -D warnings` on touched crates; `cargo test
   --workspace`.
+- **B10 — Release packaging (D22).** The release jobs build with `--features bitwarden`. They add:
+  - a top-level `LICENSE` with the GPL-3.0 text;
+  - `license` in `[workspace.package]` and in each crate, with theuth's own source licence (§14 Q1);
+  - a `NOTICE` that says the binaries are GPL-3.0 works because they link
+    `bitwarden/sdk-internal@2b06afa` under its GPL-3.0 option, with a pointer to the source and the
+    exact pin;
+  - `THIRD-PARTY-NOTICES` generated from the dependency tree (`cargo about generate` or an
+    equivalent) and checked in for each release.
+
+  The desktop bundle carries `LICENSE`, `NOTICE` and `THIRD-PARTY-NOTICES` in its resources and shows
+  them under About. The `t` archives carry them beside the binary. `cargo deny check licenses`
+  allows `GPL-3.0-only OR LicenseRef-Bitwarden-SDK` for the `bitwarden-*` crates only, and fails on
+  any crate under the SDK licence alone. The GPL's source offer is met by the public repo at the
+  release tag plus the pinned SDK commit.
+
+  *Check:* a release dry run produces bundles that contain the three files; `cargo deny check
+  licenses` passes; `cargo tree -e features -i bitwarden-pm` shows `no-memory-hardening` on and
+  `bitwarden-license` off.
 
 ## 14. Open questions for the owner
 
-The first draft's questions on remembering the unlock, locking on sleep and the Bitwarden write
-scope are now settings with safe defaults (`remember_unlock: false`, `lock_on_sleep: true`,
-`write_scope: personal`; D20). File Sends are decided (D16). What remains:
+The four questions of the previous revision are decided: GPL release builds (D22), the Send link as
+a stand-in (D23), local `secret_delete` (D24) and Reveal (D25). One new question came up while
+writing B10:
 
-1. **Release builds and GPL.** Do the published binaries (desktop app, `t` releases) enable the
-   `bitwarden` feature, which makes them GPL-3.0 works, or is it a build-from-source opt-in?
-2. **Is a Send link a "secret value" under the vault invariant?** D21 keeps "no value reaches the
-   model" as how the vault works, not a setting. D18 stores a Send's link as a vault secret, and
-   `send_link_to_agent` (default `false`) lets the receipt carry the link itself. If a link counts as
-   a value, that setting breaks the invariant and should go. If it is a deliberate hand-out the user
-   approved, it can stay. Which?
-3. **A delete tool for the local vault?** The owner's ruling gave the agent `secret_external_delete`.
-   37 D5 still keeps deletion of **local** vault secrets with the user only (no `secret_delete`
-   tool). This doc does not change 37. Should the same ruling add a local `secret_delete` with its
-   own always-ask entry?
-4. **A Reveal button for the user?** No surface shows an external value to the user; the manager's
-   own app does that. The ruling suggests this is the user's choice too. Should the desktop offer
-   Reveal behind a setting (default off)? Reveal would make `copy_send_link` no longer the only RPC
-   that returns a value outbound.
+1. **theuth's own source licence.** The repo has no `LICENSE` file and no `license` field today.
+   The release binaries will be GPL-3.0 works either way (D22). Which licence does theuth's own
+   source carry? GPL-3.0-or-later, or a GPL-compatible permissive licence such as MIT or Apache-2.0?
+   B10 writes it into `LICENSE`, `NOTICE` and every crate's `license` field.
