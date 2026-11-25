@@ -17,10 +17,10 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { queryKeys, useApi } from '@/lib/rpc'
-import { useDark } from '@/lib/theme'
+import { theuthEditorTheme } from '@/lib/codemirror-theme'
 import type { Meta } from "@/rpc/bindings/method.knowledge.output"
 
-const extensions = [yamlFrontmatter({ content: markdown({ base: markdownLanguage, codeLanguages: languages }) }), EditorView.lineWrapping]
+const extensions = [yamlFrontmatter({ content: markdown({ base: markdownLanguage, codeLanguages: languages }) }), EditorView.lineWrapping, ...theuthEditorTheme]
 
 /** What a host that swallows Escape itself (a Sheet) calls instead: leave, asking first when dirty. */
 export type EditorHandle = { leave(): void }
@@ -37,7 +37,6 @@ type Props = {
 export function Editor({ id, initial, onSaved, onCancel, ref }: Props) {
   const api = useApi()
   const qc = useQueryClient()
-  const dark = useDark()
   const [text, setText] = useState(initial)
   const [error, setError] = useState<string | null>(null)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
@@ -75,7 +74,7 @@ export function Editor({ id, initial, onSaved, onCancel, ref }: Props) {
       <CodeMirror
         value={text}
         autoFocus
-        theme={dark ? 'dark' : 'light'}
+        theme="none"
         extensions={extensions}
         basicSetup={{ lineNumbers: false, foldGutter: false, highlightActiveLine: false }}
         className="min-h-0 flex-1 overflow-auto text-[15px] [&_.cm-editor]:h-full [&_.cm-editor]:bg-transparent [&_.cm-focused]:outline-none [&_.cm-gutters]:bg-transparent"
