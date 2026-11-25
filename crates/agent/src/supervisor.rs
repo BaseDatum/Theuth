@@ -1565,13 +1565,33 @@ impl Agents {
                 }
                 Err(e) => tracing::error!(session = %id, "hidden tools: {e:#}"),
             }
-            // 219 §3.2: as the hides. A list that does not parse leaves the
-            // registry as it is.
-            match self.store.session_always_ask(id).await {
-                Ok(names) => {
-                    let _ = reg.ask(RestoreAlwaysAsk { session: id, names }).await;
+            // 219 §3.2: as the hides, but a list that cannot be read fails
+            // closed (`AlwaysAskUnreadable`), never silently open.
+            self.restore_always_ask(reg, id).await;
+            // An ancestor not spawned here yet (a subagent resumed before its
+            // parent) has neither its entries nor its own parent link in the
+            // registry: restore both from the stored chain so the child
+            // inherits them from its first call. A spawned one did this itself.
+            match self.store.ancestors(id).await {
+                Ok(chain) => {
+                    for (i, &a) in chain.iter().enumerate() {
+                        if self.sessions.contains_key(&a) {
+                            continue;
+                        }
+                        if let Some(&parent) = chain.get(i + 1) {
+                            let _ = reg
+                                .ask(tools::registry::LinkAncestor { session: a, parent })
+                                .await;
+                        }
+                        self.restore_always_ask(reg, a).await;
+                    }
                 }
-                Err(e) => tracing::error!(session = %id, "always-ask tools: {e:#}"),
+                Err(e) => {
+                    tracing::error!(session = %id, "always-ask: parent chain unreadable, every mutating call asks: {e:#}");
+                    let _ = reg
+                        .ask(tools::registry::AlwaysAskUnreadable { session: id })
+                        .await;
+                }
             }
         }
         // 183 R1 (S1): the opt-out both ways, as every reader applies it.
@@ -1584,6 +1604,24 @@ impl Agents {
             && let Some(cwd) = row.cwd.map(PathBuf::from).filter(|c| c.is_dir())
         {
             tools::seat::set_cwd(id, Some(cwd));
+        }
+    }
+
+    /// 219 §3.2: load `id`'s stored always-ask entries into the registry. A
+    /// row that cannot be read or parsed is logged at error level and marks
+    /// the session (and its subagents) "every `Mutating`-or-above call asks"
+    /// until a later restore reads it: unknown entries fail closed.
+    async fn restore_always_ask(&self, reg: &ActorRef<ToolRegistry>, id: SessionId) {
+        match self.store.session_always_ask(id).await {
+            Ok(names) => {
+                let _ = reg.ask(RestoreAlwaysAsk { session: id, names }).await;
+            }
+            Err(e) => {
+                tracing::error!(session = %id, "always-ask tools unreadable, every mutating call asks: {e:#}");
+                let _ = reg
+                    .ask(tools::registry::AlwaysAskUnreadable { session: id })
+                    .await;
+            }
         }
     }
 
@@ -17929,6 +17967,50 @@ pub(crate) mod tests {
             .unwrap();
         a.inherit_approvals(root, None).await;
         assert!(opted_out(&a));
+    }
+
+    /// 219 §3.2 (M1): a subagent spawned before its ancestors (resume order)
+    /// inherits their stored always-ask entries from the stored parent chain,
+    /// not only from ancestors already spawned here.
+    #[test]
+    fn a_subagent_resumed_before_its_parents_inherits_their_always_ask() {
+        crate::with_test_registry(async {
+            let (_scratch, mut a) = agents_with(false).await;
+            tools::registry::start(&a.rt).await.unwrap();
+            let (root, parent, child) = (SessionId::new(), SessionId::new(), SessionId::new());
+            let store = &a.store;
+            store
+                .create_session(root, "m", None, None, None)
+                .await
+                .unwrap();
+            store
+                .create_session(parent, "m", Some(root), Some("p"), None)
+                .await
+                .unwrap();
+            store
+                .create_session(child, "m", Some(parent), Some("c"), None)
+                .await
+                .unwrap();
+            store
+                .set_session_always_ask(root, &["shell".to_owned()])
+                .await
+                .unwrap();
+            store
+                .set_session_always_ask(parent, &["write_file".to_owned()])
+                .await
+                .unwrap();
+            a.inherit_approvals(child, Some(parent)).await;
+            let reg = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+                .unwrap()
+                .unwrap();
+            let state = reg
+                .ask(tools::GetAlwaysAsk {
+                    session: Some(child),
+                })
+                .await
+                .unwrap();
+            assert_eq!(state.inherited, ["shell", "write_file"]);
+        });
     }
 
     /// 50 §5.3, §8: a wait resolves only by its exact id; a disable expires

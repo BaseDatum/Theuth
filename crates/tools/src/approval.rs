@@ -182,7 +182,8 @@ pub struct RequestHumanOnly(pub RequestApproval);
 /// 109 §6.2 (D-call): a stored `answered` row for a `planned` call the
 /// engine died before starting. `tell` before the call replays; the next
 /// [`RequestApproval`] for `(session, call_id)` resolves with `decision`
-/// without asking again.
+/// without asking again, except (219 §2.3) an always-ask request whose stored
+/// answer did not come from [`Answerer::Human`]: that one raises its card.
 #[derive(Clone, Debug)]
 pub struct HonourAnswer {
     /// The asking session.
@@ -194,6 +195,8 @@ pub struct HonourAnswer {
     /// 207: the stored answer was a dismissal (`decision` is `Deny`): the
     /// replay resolves as dismissed.
     pub dismissed: bool,
+    /// The row's `answered_by` (`None` on a row from before it was recorded).
+    pub answered_by: Option<Answerer>,
 }
 
 /// Internal: drop a pending entry whose waiter gave up.
@@ -231,8 +234,8 @@ pub struct Approval {
     timeout: Duration,
     pending: HashMap<ApprovalId, Pending>,
     /// [`HonourAnswer`]s not yet consumed by their call's replay: the
-    /// decision and whether it was a dismissal (207).
-    honoured: HashMap<(SessionId, String), (Decision, bool)>,
+    /// decision, whether it was a dismissal (207) and who gave it.
+    honoured: HashMap<(SessionId, String), (Decision, bool, Option<Answerer>)>,
     /// 109 §6.1: the journal seam the `questions` rows go through.
     pub(crate) journal: Arc<dyn Journal>,
 }
@@ -281,7 +284,8 @@ impl Approval {
         if p.asker.lock().as_ref().is_some_and(|t| t.is_closed()) {
             let _ = p.tx.send(Verdict::Dismissed);
             if p.row.tool_call_id.is_none() {
-                self.settle(p.row, QuestionState::TimedOut, None, None).await;
+                self.settle(p.row, QuestionState::TimedOut, None, None)
+                    .await;
             }
             return false;
         }
@@ -309,8 +313,10 @@ impl Message<HonourAnswer> for Approval {
     type Reply = ();
 
     async fn handle(&mut self, m: HonourAnswer, _: &mut Context<Self, Self::Reply>) {
-        self.honoured
-            .insert((m.session, m.call_id), (m.decision, m.dismissed));
+        self.honoured.insert(
+            (m.session, m.call_id),
+            (m.decision, m.dismissed, m.answered_by),
+        );
     }
 }
 
@@ -324,10 +330,13 @@ impl Approval {
     ) -> DelegatedReply<ApprovalResolved> {
         let (reply, tx) = ctx.reply_sender();
         let id = ApprovalId(uuid::Uuid::now_v7());
-        if let Some((decision, dismissed)) = m
+        // 219 §2.3: the stored answer of a call that is always ask now counts only if a
+        // human gave it; otherwise it is dropped and the card is raised.
+        if let Some((decision, dismissed, _)) = m
             .call_id
             .as_ref()
             .and_then(|c| self.honoured.remove(&(m.session, c.clone())))
+            .filter(|(_, _, by)| !m.always_ask || *by == Some(Answerer::Human))
         {
             // 109 §6.2: the user already answered this call; no second card.
             if let Some(tx) = tx {
@@ -554,7 +563,10 @@ pub async fn dismiss_tool(tool: &str) -> usize {
     else {
         return 0;
     };
-    approval.ask(DismissTool(tool.to_owned())).await.unwrap_or(0)
+    approval
+        .ask(DismissTool(tool.to_owned()))
+        .await
+        .unwrap_or(0)
 }
 
 impl Message<Expire> for Approval {
@@ -578,7 +590,8 @@ impl Message<Gone> for Approval {
         if let Some(p) = self.pending.remove(&m.0)
             && p.row.tool_call_id.is_none()
         {
-            self.settle(p.row, QuestionState::TimedOut, None, None).await;
+            self.settle(p.row, QuestionState::TimedOut, None, None)
+                .await;
         }
     }
 }
@@ -927,6 +940,7 @@ pub(crate) mod tests {
                 call_id: "c1".into(),
                 decision: Decision::Deny,
                 dismissed: false,
+                answered_by: Some(Answerer::Human),
             })
             .await
             .unwrap();
@@ -941,6 +955,50 @@ pub(crate) mod tests {
         assert!(r.timed_out);
         assert_eq!(lock(&seen).len(), 1, "one card for the real ask");
         assert_eq!(journal.questions().len(), 2);
+    }
+
+    /// 219 §2.3: a call that is always ask now replays a stored answer only when a human gave
+    /// it; the double's (or an unattributed) answer is dropped and the card is raised.
+    #[tokio::test]
+    async fn always_ask_replays_only_a_humans_answer() {
+        let (_rt, actor, journal) = actor(Duration::from_millis(20)).await;
+        let session = SessionId::new();
+        let always = |call: &str| RequestApproval {
+            always_ask: true,
+            ..request(session, Some(call))
+        };
+        for (call, by) in [("c1", Some(Answerer::Double)), ("c2", None)] {
+            actor
+                .tell(HonourAnswer {
+                    session,
+                    call_id: call.into(),
+                    decision: Decision::Allow,
+                    dismissed: false,
+                    answered_by: by,
+                })
+                .await
+                .unwrap();
+            let r = actor.ask(always(call)).await.unwrap();
+            assert_eq!((r.decision, r.timed_out), (Decision::Deny, true), "{by:?}");
+        }
+        assert_eq!(journal.questions().len(), 4, "a card for each");
+        actor
+            .tell(HonourAnswer {
+                session,
+                call_id: "c3".into(),
+                decision: Decision::Allow,
+                dismissed: false,
+                answered_by: Some(Answerer::Human),
+            })
+            .await
+            .unwrap();
+        let r = actor.ask(always("c3")).await.unwrap();
+        assert_eq!((r.decision, r.timed_out), (Decision::Allow, false));
+        assert_eq!(
+            journal.questions().len(),
+            4,
+            "no card for the human's answer"
+        );
     }
 
     /// Bus subscriber keeping every resolution it sees.
@@ -1020,6 +1078,7 @@ pub(crate) mod tests {
                 call_id: "c1".into(),
                 decision: Decision::Deny,
                 dismissed: true,
+                answered_by: Some(Answerer::Human),
             })
             .await
             .unwrap();
@@ -1059,7 +1118,15 @@ pub(crate) mod tests {
                     .await
                     .unwrap()
             );
-            assert!(actor.ask(Resolve { id: row.id, decision }).await.unwrap());
+            assert!(
+                actor
+                    .ask(Resolve {
+                        id: row.id,
+                        decision
+                    })
+                    .await
+                    .unwrap()
+            );
             let r = asked.await.unwrap();
             match decision {
                 Decision::Allow => assert_eq!(
@@ -1189,7 +1256,10 @@ pub(crate) mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(
-            actor.ask(DismissTool("share_publish".into())).await.unwrap(),
+            actor
+                .ask(DismissTool("share_publish".into()))
+                .await
+                .unwrap(),
             1
         );
         let e = publish.await.unwrap().unwrap_err();

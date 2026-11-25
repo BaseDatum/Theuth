@@ -73,9 +73,9 @@ Consequences:
 ### 3.2 Per chat
 - Registry field: `always_ask_session: HashMap<SessionId, HashSet<String>>`.
 - Journal: `async fn always_ask(&self, _session: SessionId, _names: Vec<String>) {}`, a default no-op on `tools::Journal`. The agent's impl calls `Store::set_session_always_ask(id, &names)`.
-- Migration `crates/agent/migrations/0073_session_always_ask.sql`:
+- Migration `crates/agent/migrations/0077_session_always_ask.sql`:
   - `ALTER TABLE sessions ADD COLUMN always_ask TEXT NULL;`, a JSON array. An empty list is stored as NULL, mirroring `hidden_tools`.
-  - Bump `SESSIONS_WIRE_SCHEMA` 70 → 71 and fix every test that pins it.
+  - Bump `SESSIONS_WIRE_SCHEMA` 70 → 77 and fix every test that pins it.
 - `Store::session_always_ask(id) -> Vec<String>` is the reader.
 - Restore: `Supervisor::inherit_approvals` sends `RestoreAlwaysAsk { session, names }` next to `RestoreHidden`.
 
@@ -163,7 +163,7 @@ async fn set_always_ask(&self, session: Option<SessionId>, tool: String, on: boo
   - (h) loop-local names rejected;
   - (i) write_file to `<data_dir>/config.yaml` raises an always_ask card.
 - `cargo test -p double` covers that the double skips always_ask cards.
-- `cargo test -p agent` covers the store round-trip, the migration and the schema pin at 71, and restore at spawn.
+- `cargo test -p agent` covers the store round-trip, the migration and the schema pin at 77, and restore at spawn.
 - `cargo test -p theuth --test wire_schema_snapshot` and `cargo test -p rpc-compose`.
 - `cargo test -p tui`, plus the slack/telegram/signal crates compile.
 - Desktop: `bun run check` and `bunx vitest run` for the touched files.
@@ -173,3 +173,21 @@ async fn set_always_ask(&self, session: Option<SessionId>, tool: String, on: boo
 - `shell` and `python` can still write config.yaml or the database, and can read the RPC token and call `resolve_approval` / `set_always_ask`. Mark `shell` always-ask to close this in practice.
 - Tools run by an external harness (claude-acp, omp, opencode) reach `ExternalApproval` with a title, not a stable tool name. A name entry rarely matches them.
 - Loop-local tools are never gated (§2.1).
+- `protected_write` is never true for `ExternalApproval` (it has no args to inspect), so an external harness writing `config.yaml` is not caught by the config-file guard.
+- A hard link to `config.yaml` under another name is not recognised by `protected_write` (it compares paths, not inodes).
+- MCP re-registration: `add_mcp_server` / `remove_mcp_server` / `add_mcp_repo` could re-register a marked server under a new name and shed its `mcp:<server>` / `<server>__<tool>` entries. Covered: while any always-ask entry applies to a session, these three are always ask there (`MCP_ADMIN_TOOLS`).
+
+## 9. As built (deviations from the text above)
+- **App press.** An app press on an always-ask call raises a real card and the `AppInvoke` waits on it; the call runs only after a human allows it (§2.2).
+- **`AlwaysAskError`** has a hand-written `Display` (no `thiserror`). `NotWritten` carries the full reason: `config.yaml not written: <err>` for the harness-wide set, `sessions.always_ask not written: <err>` for a chat (the per-chat journal write is fallible and runs before the in-memory change).
+- **`protected_write`** reads a fixed list of argument names (plain paths and text refs) from `Mutating`-or-above native calls.
+- **Loop-local** names are refused only on add; removing one (hand-edited into `config.yaml`) works.
+- **TS type.** `ApprovalRequested.always_ask` is non-optional in the generated TS type.
+- **Desktop count** (`Always ask: N tools`) counts distinct names across global, chat and inherited.
+- **Tool-row `always`** (harness-wide) keeps an existing chat entry.
+- **TUI** hides the double chip on an always-ask card.
+- **Names are trimmed** once in the RPC handler (forward, human check and registry see the same name) and in the registry, including `tools.always_ask` at load.
+- **Resume order.** Spawning a subagent restores the always-ask rows (and parent links, via `LinkAncestor`) of stored ancestors not spawned yet, so inheritance does not depend on spawn order.
+- **Unreadable row.** A `sessions.always_ask` row (or parent chain) that cannot be read is logged at error level and marks the session `AlwaysAskUnreadable`: every `Mutating`-or-above call in it and its subagents is always ask until a restore reads the row, and its own list cannot be written meanwhile. Only this path sets the mark.
+- **Replay.** `HonourAnswer` carries `answered_by`; a stored answer for a call that is always ask now is replayed only when a human gave it (§2.3's "unchanged" did not hold for rows answered before the mark was added).
+- **Forwarded removal.** When a removal is forwarded to the owner engine and its card there is refused or times out, the error is `always_ask: removing <name> needs approval on <owner engine id, 8 chars>`.

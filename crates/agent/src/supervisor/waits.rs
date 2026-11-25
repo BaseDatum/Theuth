@@ -214,6 +214,8 @@ impl Agents {
                                     call_id: call.call_id.clone(),
                                     decision,
                                     dismissed,
+                                    // 219 §2.3: an always-ask call replays only a human's answer.
+                                    answered_by: row.answered_by,
                                 })
                                 .await;
                             n.honoured += 1;

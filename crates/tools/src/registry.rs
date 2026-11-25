@@ -85,6 +85,11 @@ pub struct ToolRegistry {
     /// 219 §3.2: each chat's own always-ask set (`sessions.always_ask`); subagents
     /// inherit their ancestors' through `parents`.
     always_ask_session: HashMap<SessionId, HashSet<String>>,
+    /// 219 §3.2: sessions whose stored `sessions.always_ask` could not be read at restore
+    /// ([`AlwaysAskUnreadable`]). Their entries are unknown, so every `Mutating`-or-above call
+    /// in them and their subagents is always ask until a [`RestoreAlwaysAsk`] reads the row.
+    /// Only that failure path sets this; no entry a client can write means "everything".
+    always_ask_unreadable: HashSet<SessionId>,
     /// child → parent, from [`SetParent`]; a session inherits its ancestors' pin and hidden set.
     parents: HashMap<SessionId, SessionId>,
     /// Risk ceiling per session from [`SetCap`]: a tool above it is neither
@@ -337,6 +342,11 @@ pub const LOOP_LOCAL_TOOLS: &[&str] = &[
     "ledger",
 ];
 
+/// 219 §2.4: the tools that (re)register MCP servers. Re-adding a server under another name
+/// would escape its `mcp:<server>` and `<server>__<tool>` entries, so while any always-ask
+/// entry applies to a session these calls are always ask there too.
+pub const MCP_ADMIN_TOOLS: &[&str] = &["add_mcp_server", "remove_mcp_server", "add_mcp_repo"];
+
 /// `ask` → `Result<AlwaysAskState, AlwaysAskError>` (219 §4): add (`on`) or remove one
 /// always-ask entry, harness-wide (`session: None`, persisted to `tools.always_ask` before
 /// it is applied) or for one chat and its subagents (written through the journal). An
@@ -360,6 +370,15 @@ pub struct RestoreAlwaysAsk {
     pub session: SessionId,
     /// The row's names.
     pub names: Vec<String>,
+}
+
+/// `ask` → `()`: the session's `sessions.always_ask` row could not be read or parsed at
+/// restore (219 §3.2). Fail closed: every `Mutating`-or-above call in the session and its
+/// subagents is always ask until a [`RestoreAlwaysAsk`] for it succeeds.
+#[derive(Clone, Copy, Debug)]
+pub struct AlwaysAskUnreadable {
+    /// The session whose row failed.
+    pub session: SessionId,
 }
 
 /// `ask` → [`AlwaysAskState`]: the harness-wide set and, with a session, its own and
@@ -389,7 +408,8 @@ pub struct AlwaysAskState {
 pub enum AlwaysAskError {
     /// A loop-local tool ([`LOOP_LOCAL_TOOLS`]) cannot be marked.
     LoopLocal(String),
-    /// `config.yaml` could not be written: the reason.
+    /// The entry could not be stored: `config.yaml not written: <err>` (harness-wide) or
+    /// `sessions.always_ask not written: <err>` (a chat), shown after `always_ask: `.
     NotWritten(String),
     /// The tool name is empty.
     Empty,
@@ -402,7 +422,7 @@ impl std::fmt::Display for AlwaysAskError {
                 f,
                 "always_ask: {name} runs inside the agent loop and is never gated; mark the runtime functions it calls instead"
             ),
-            Self::NotWritten(why) => write!(f, "always_ask: config.yaml not written: {why}"),
+            Self::NotWritten(why) => write!(f, "always_ask: {why}"),
             Self::Empty => f.write_str("always_ask: tool name is empty"),
         }
     }
@@ -804,6 +824,26 @@ impl Message<SetParent> for ToolRegistry {
     }
 }
 
+/// `ask` → `()`: record the stored parent of an ancestor whose actor is not spawned here
+/// (219 §3.2), so a resumed subagent's inheritance walk reaches past it before that ancestor
+/// spawns. Only the link: no [`crate::seat`] is inherited (the ancestor's own spawn seats it
+/// from its row), and a link already known is kept.
+#[derive(Clone, Copy, Debug)]
+pub struct LinkAncestor {
+    /// The ancestor session.
+    pub session: SessionId,
+    /// Its stored parent.
+    pub parent: SessionId,
+}
+
+impl Message<LinkAncestor> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: LinkAncestor, _: &mut Context<Self, Self::Reply>) {
+        self.parents.entry(m.session).or_insert(m.parent);
+    }
+}
+
 /// `tell`: cap `session` (and its subagents) at `cap` — tools above it are
 /// not offered and a call to one is `denied: subagent is capped`. `None`
 /// clears the session's own entry; an ancestor's still applies.
@@ -1142,6 +1182,7 @@ impl Message<Forget> for ToolRegistry {
             self.parents.remove(s);
             self.hidden.remove(s);
             self.always_ask_session.remove(s);
+            self.always_ask_unreadable.remove(s);
             self.pin.remove(s);
             self.cap.remove(s);
             self.turn_cap.remove(s);
@@ -1485,7 +1526,8 @@ impl ToolRegistry {
 
     /// 219 §2.2: `name` (or its MCP server's [`mcp_server_key`]) is in the harness-wide
     /// always-ask set, or in the set of `session` or an ancestor (the walk of
-    /// [`Self::hidden_chain`]).
+    /// [`Self::hidden_chain`]). While any entry applies, the [`MCP_ADMIN_TOOLS`] are always
+    /// ask too (§2.4), so re-registering a server cannot shed its marks.
     fn always_ask_applies(&self, session: Option<SessionId>, name: &str) -> bool {
         let mut sets: Vec<&HashSet<String>> = vec![&self.always_ask];
         let mut cur = session;
@@ -1496,7 +1538,7 @@ impl ToolRegistry {
         if sets.iter().all(|s| s.is_empty()) {
             return false;
         }
-        if sets.iter().any(|s| s.contains(name)) {
+        if MCP_ADMIN_TOOLS.contains(&name) || sets.iter().any(|s| s.contains(name)) {
             return true;
         }
         let server = self.tools.get(name).and_then(|t| match t.source() {
@@ -1541,6 +1583,12 @@ impl ToolRegistry {
     /// the seated cwd; `~` too, though the tools do not expand it) and compared after
     /// canonicalising what exists. Only `Native` tools at `Mutating` or above count: MCP
     /// servers' paths are their own business, and a read-only tool writes nothing.
+    ///
+    /// The native tools that write a caller-chosen path (audited for 219 m5) and the names
+    /// that carry it: `write_file`, `edit`, `indent` (`path`); `move_text` (`before`/`after`/
+    /// `at`, `src`); `copy_text` (`before`/`after`/`at`); `doc_export` (`dest`). Every other
+    /// native writer takes only a name inside a fixed directory. A new path-writing tool must
+    /// use one of these names or extend the lists.
     fn protected_write(
         &self,
         session: SessionId,
@@ -1784,7 +1832,7 @@ impl ToolRegistry {
         }
         let tool = self.tools.get(name);
         let human_only = tool.is_some_and(|t| t.human_only());
-        let always = self.always(session, name, protected);
+        let always = self.always(session, name, risk, protected);
         if (human_only || always) && session.is_some_and(|s| self.owner_absent(s)) {
             return PolicyAction::Deny;
         }
@@ -1808,10 +1856,30 @@ impl ToolRegistry {
         action
     }
 
-    /// 219 §2.2: the call is always ask: the tool is marked ([`Self::always_ask_applies`])
-    /// or the call writes a protected config file (`protected`).
-    fn always(&self, session: Option<SessionId>, name: &str, protected: bool) -> bool {
-        protected || self.always_ask_applies(session, name)
+    /// 219 §2.2: the call is always ask: the tool is marked ([`Self::always_ask_applies`]),
+    /// the call writes a protected config file (`protected`), or it is `Mutating` or above in
+    /// a session whose (or whose ancestor's) stored entries could not be read
+    /// ([`AlwaysAskUnreadable`]).
+    fn always(&self, session: Option<SessionId>, name: &str, risk: Risk, protected: bool) -> bool {
+        protected
+            || self.always_ask_applies(session, name)
+            || (risk >= Risk::Mutating && session.is_some_and(|s| self.always_ask_unknown(s)))
+    }
+
+    /// `id` or an ancestor is in [`Self::always_ask_unreadable`].
+    fn always_ask_unknown(&self, mut id: SessionId) -> bool {
+        if self.always_ask_unreadable.is_empty() {
+            return false;
+        }
+        loop {
+            if self.always_ask_unreadable.contains(&id) {
+                return true;
+            }
+            match self.parents.get(&id) {
+                Some(p) => id = *p,
+                None => return false,
+            }
+        }
     }
 
     /// 210 §7.2: the owner is not the one in this session: a contact turn or inbox
@@ -1846,7 +1914,7 @@ impl ToolRegistry {
             None if self.human_only(name) && self.owner_absent(session) => {
                 "denied: only the owner can approve this, and this conversation is not the owner's (a contact's turn or a non-owner chat thread)".to_owned()
             }
-            None if self.always(Some(session), name, protected) && self.owner_absent(session) => {
+            None if self.always(Some(session), name, risk, protected) && self.owner_absent(session) => {
                 format!(
                     "always ask: {name} needs the owner's approval and the owner is not in this conversation"
                 )
@@ -1978,7 +2046,7 @@ impl ToolRegistry {
                 }
                 None => return Err(Refused::NeedsApproval),
                 // 219 §2.2: nor is it the approval of an always-ask call: the press raises a card.
-                Some(_) if self.always(Some(call.session), name, protected) => {
+                Some(_) if self.always(Some(call.session), name, spec.risk, protected) => {
                     card = Some(
                         self.approval_actor()
                             .map_err(|why| Unavailable(format!("{name}: {why}")))?,
@@ -2173,7 +2241,7 @@ impl Message<ExternalApproval> for ToolRegistry {
             }
         };
         let human_only = self.human_only(&m.tool);
-        let always_ask = self.always_ask_applies(Some(m.session), &m.tool);
+        let always_ask = self.always(Some(m.session), &m.tool, m.risk, false);
         tokio::spawn(async move {
             let req = RequestApproval {
                 session: m.session,
@@ -2649,23 +2717,46 @@ impl Message<SetAlwaysAsk> for ToolRegistry {
                 // saved is not applied, so it never silently changes at the next start.
                 runtime::write_config_value(&self.config_path, "tools", "always_ask", &value)
                     .map_err(|e| {
-                        AlwaysAskError::NotWritten(format!("{}: {e}", self.config_path.display()))
+                        AlwaysAskError::NotWritten(format!(
+                            "config.yaml not written: {}: {e}",
+                            self.config_path.display()
+                        ))
                     })?;
                 self.always_ask = next;
             }
             Some(id) => {
-                let set = self.always_ask_session.entry(id).or_default();
-                let changed = if m.on {
-                    set.insert(tool.to_owned())
-                } else {
-                    set.remove(tool)
-                };
-                let names = sorted(set);
-                if names.is_empty() {
-                    self.always_ask_session.remove(&id);
+                // The stored list is unknown: writing ours over it would drop its entries at
+                // the next spawn, so nothing is written until a restore reads it.
+                if self.always_ask_unreadable.contains(&id) {
+                    return Err(AlwaysAskError::NotWritten(
+                        "sessions.always_ask not written: the stored list could not be read (see the log)".to_owned(),
+                    ));
                 }
-                if changed {
-                    self.journal.always_ask(id, names).await;
+                let mut next = self
+                    .always_ask_session
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_default();
+                let changed = if m.on {
+                    next.insert(tool.to_owned())
+                } else {
+                    next.remove(tool)
+                };
+                if !changed {
+                    return Ok(self.always_ask_state(m.session));
+                }
+                // Write first, apply second (as the harness-wide path): an entry the store
+                // did not keep is not applied, so it never silently changes at the next spawn.
+                self.journal
+                    .always_ask(id, sorted(&next))
+                    .await
+                    .map_err(|e| {
+                        AlwaysAskError::NotWritten(format!("sessions.always_ask not written: {e}"))
+                    })?;
+                if next.is_empty() {
+                    self.always_ask_session.remove(&id);
+                } else {
+                    self.always_ask_session.insert(id, next);
                 }
             }
         }
@@ -2677,12 +2768,21 @@ impl Message<RestoreAlwaysAsk> for ToolRegistry {
     type Reply = ();
 
     async fn handle(&mut self, m: RestoreAlwaysAsk, _: &mut Context<Self, Self::Reply>) {
+        self.always_ask_unreadable.remove(&m.session);
         if m.names.is_empty() {
             self.always_ask_session.remove(&m.session);
         } else {
             self.always_ask_session
                 .insert(m.session, m.names.into_iter().collect());
         }
+    }
+}
+
+impl Message<AlwaysAskUnreadable> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: AlwaysAskUnreadable, _: &mut Context<Self, Self::Reply>) {
+        self.always_ask_unreadable.insert(m.session);
     }
 }
 
@@ -3104,7 +3204,7 @@ impl ToolRegistry {
         let card = match self.gate(call.session, &call.name, spec.risk, mentions, protected) {
             Ok(a) => a.map(|approval| Card {
                 approval,
-                always_ask: self.always(Some(call.session), &call.name, protected),
+                always_ask: self.always(Some(call.session), &call.name, spec.risk, protected),
             }),
             Err(why) => {
                 tx.send(ToolOutput::err(format!("{}: {why}", call.name)));
@@ -3548,8 +3648,16 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             hidden_epoch: 0,
             builtins_disabled: cfg.builtins.disabled.into_iter().collect(),
             categories: cfg.categories,
-            always_ask: cfg.always_ask.into_iter().collect(),
+            // Trimmed as `SetAlwaysAsk` stores them, so a hand-edited `" shell"` still matches.
+            always_ask: cfg
+                .always_ask
+                .iter()
+                .map(|n| n.trim())
+                .filter(|n| !n.is_empty())
+                .map(str::to_owned)
+                .collect(),
             always_ask_session: HashMap::new(),
+            always_ask_unreadable: HashSet::new(),
             parents: HashMap::new(),
             cap: HashMap::new(),
             turn_cap: HashMap::new(),
@@ -3629,6 +3737,7 @@ pub(crate) mod tests {
             categories: ToolCategoriesConfig::default(),
             always_ask: HashSet::new(),
             always_ask_session: HashMap::new(),
+            always_ask_unreadable: HashSet::new(),
             parents: HashMap::new(),
             cap: HashMap::new(),
             turn_cap: HashMap::new(),
@@ -7419,5 +7528,190 @@ pub(crate) mod tests {
         assert!(!out.is_error, "{out:?}");
         assert_eq!(lock(&cards).len(), 2);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A native `add_mcp_server` stand-in (Mutating, runs nothing).
+    struct AddMcp;
+
+    #[async_trait::async_trait]
+    impl Tool for AddMcp {
+        const NAME: &'static str = "add_mcp_server";
+        const RISK: Risk = Risk::Mutating;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok("added"))
+        }
+    }
+
+    /// 219 §2.4 (M2): while any always-ask entry applies to a session, re-registering an MCP
+    /// server (which could shed `mcp:<server>` marks) is always ask there; with none it is not.
+    #[tokio::test]
+    async fn mcp_admin_tools_ask_while_any_entry_applies() {
+        let (reg, _cards) =
+            always_ask_registry(vec![Arc::new(AddMcp)], &[], PathBuf::new(), Decision::Deny).await;
+        let (parent, child, other) = (SessionId::new(), SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            inspect_action(&reg, child, "add_mcp_server").await,
+            PolicyAction::Allow
+        );
+        reg.ask(SetAlwaysAsk {
+            session: Some(parent),
+            tool: "mcp:files".into(),
+            on: true,
+        })
+        .await
+        .unwrap();
+        for s in [parent, child] {
+            assert_eq!(
+                inspect_action(&reg, s, "add_mcp_server").await,
+                PolicyAction::Ask
+            );
+        }
+        assert_eq!(
+            inspect_action(&reg, other, "add_mcp_server").await,
+            PolicyAction::Allow,
+            "no entry applies to an unrelated chat"
+        );
+        let out = reg
+            .ask(Invoke(call("add_mcp_server", child)))
+            .await
+            .unwrap();
+        assert_eq!(out.content, "add_mcp_server: denied by user", "{out:?}");
+    }
+
+    /// 219 §3.2 (m3): a session whose stored list could not be read asks for every
+    /// `Mutating`-or-above call in it and its subagents, refuses to overwrite its list, and a
+    /// successful restore lifts it.
+    #[tokio::test]
+    async fn unreadable_always_ask_row_fails_closed_until_restored() {
+        let (reg, _cards) = always_ask_registry(
+            vec![Arc::new(Echo), Arc::new(Touch)],
+            &[],
+            PathBuf::new(),
+            Decision::Deny,
+        )
+        .await;
+        let (parent, child) = (SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent,
+        })
+        .await
+        .unwrap();
+        reg.ask(AlwaysAskUnreadable { session: parent })
+            .await
+            .unwrap();
+        for s in [parent, child] {
+            assert_eq!(inspect_action(&reg, s, "touch").await, PolicyAction::Ask);
+            assert_eq!(inspect_action(&reg, s, "echo").await, PolicyAction::Allow);
+        }
+        let err = reg
+            .ask(SetAlwaysAsk {
+                session: Some(parent),
+                tool: "touch".into(),
+                on: true,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                kameo::error::SendError::HandlerError(AlwaysAskError::NotWritten(_))
+            ),
+            "{err:?}"
+        );
+        reg.ask(RestoreAlwaysAsk {
+            session: parent,
+            names: vec![],
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            inspect_action(&reg, child, "touch").await,
+            PolicyAction::Allow
+        );
+    }
+
+    /// A journal whose `sessions.always_ask` write fails.
+    struct FailAlwaysAsk;
+
+    impl Journal for FailAlwaysAsk {
+        fn call_started(&self, _: SessionId, _: &str) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn call_finished(
+            &self,
+            _: SessionId,
+            _: &str,
+            _: &ToolOutput,
+        ) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn question(&self, _: QuestionRow) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn wait(
+            &self,
+            _: Option<crate::WaitRow>,
+            _: SessionId,
+            _: &str,
+        ) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn job(&self, _: crate::JobRow) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn pty_screen(&self, _: crate::PtyScreenRow) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async {})
+        }
+        fn always_ask(
+            &self,
+            _: SessionId,
+            _: Vec<String>,
+        ) -> futures::future::BoxFuture<'_, Result<(), String>> {
+            Box::pin(async { Err("disk full".to_owned()) })
+        }
+    }
+
+    /// 219 §3.2 (m4): a chat's entry is written before it is applied: a failed write
+    /// returns `NotWritten` and changes nothing in memory.
+    #[tokio::test]
+    async fn session_always_ask_not_applied_when_not_written() {
+        let reg = ToolRegistry::spawn(ToolRegistry {
+            journal: Arc::new(FailAlwaysAsk),
+            ..build(vec![Arc::new(Echo)], None)
+        });
+        let session = SessionId::new();
+        let err = reg
+            .ask(SetAlwaysAsk {
+                session: Some(session),
+                tool: "echo".into(),
+                on: true,
+            })
+            .await
+            .unwrap_err();
+        let kameo::error::SendError::HandlerError(err) = err else {
+            panic!("{err:?}");
+        };
+        assert_eq!(
+            err.to_string(),
+            "always_ask: sessions.always_ask not written: disk full"
+        );
+        let state = reg
+            .ask(GetAlwaysAsk {
+                session: Some(session),
+            })
+            .await
+            .unwrap();
+        assert!(state.session.is_empty(), "{state:?}");
     }
 }
