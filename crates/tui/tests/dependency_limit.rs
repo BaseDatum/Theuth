@@ -21,6 +21,7 @@ const ALLOWED: &[&str] = &[
     "nodes",
     "oauth",
     "platform",
+    "plugins",
     "roster",
     "rpc",
     "rpc-compose",

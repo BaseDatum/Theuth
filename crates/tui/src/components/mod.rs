@@ -51,6 +51,8 @@ pub mod skills_prompt;
 pub mod acp;
 pub mod providers_login;
 pub mod agents_board;
+// 216: external plugins (`/plugins`, status segments, plugin commands).
+pub mod plugins;
 pub use registry::{Registry, builtin, builtin_with, configured};
 
 #[cfg(test)]

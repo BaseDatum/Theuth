@@ -14,7 +14,7 @@ use jsonrpsee::core::client::ClientT;
 use jsonrpsee::rpc_params;
 use jsonrpsee::ws_client::WsClient;
 use plugins::{
-    CatalogEntry, CheckReport, InstallReport, Lang, LogTail, PluginDetail, PluginInfo, PluginsConfig,
+    CatalogEntry, CheckReport, InstallReport, Lang, PluginDetail, PluginInfo, PluginsConfig,
     ScaffoldReport,
 };
 
@@ -357,7 +357,7 @@ async fn logs(data_dir: &Path, name: &str, tail: u32, follow: bool) -> anyhow::R
         let today = chrono::Local::now().date_naive();
         if today != day {
             // Drain what the old file got before midnight, then start on the new one.
-            offset = print_from(&path, offset)?;
+            print_from(&path, offset)?;
             day = today;
             path = log_path(data_dir, name, day);
             offset = 0;

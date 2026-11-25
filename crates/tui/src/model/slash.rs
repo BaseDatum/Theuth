@@ -124,6 +124,14 @@ impl Model {
                 raw: false,
             })
             .collect();
+        // 216: plugin `/commands` after the built-ins, which win a clash.
+        if let Some(plugins) = self.components.get::<crate::components::plugins::Plugins>() {
+            for (name, hint, desc) in plugins.commands() {
+                if name.starts_with(word) && !rows.iter().any(|r| r.name == name) {
+                    rows.push(SlashRow { name, hint, desc, raw: false });
+                }
+            }
+        }
         let label = self.agent.as_deref().unwrap_or("harness");
         rows.extend(
             self.harness_commands

@@ -42,6 +42,7 @@ models = { workspace = true }
 markdown = { workspace = true }
 surface = { workspace = true }
 oauth = { workspace = true }
+plugins = { workspace = true }  # 216: `/plugins`, status segments, plugin commands
 tokio = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }

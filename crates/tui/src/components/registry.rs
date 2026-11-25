@@ -61,6 +61,8 @@ fn compose(app_enabled: bool, interactive: bool, models: models::Models, advisor
     registry.register(acp::Acp::default()).expect("built-in component registration");
     registry.register(providers_login::ProvidersLogin::default()).expect("built-in component registration");
     registry.register(agents_board::AgentsBoard::default()).expect("built-in component registration");
+    // 216: external plugins.
+    registry.register(super::plugins::Plugins::default()).expect("built-in component registration");
     registry
 }
 

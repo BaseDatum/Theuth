@@ -74,6 +74,11 @@ fn check(lang: Lang, raw: bool, toolchain: &str) {
         Err(e) => panic!("{lang:?}: {e}"),
     };
     let dir = Path::new(&report.dir);
+    if lang == Lang::Js {
+        // Node 18–20 load theuth-plugin.js as ESM only with `"type": "module"` beside it.
+        let pkg = std::fs::read_to_string(dir.join("package.json")).expect("js scaffold has package.json");
+        assert!(pkg.contains(r#""type": "module""#), "{pkg}");
+    }
     let mut argv = run_of(dir);
     match lang {
         Lang::Go => {
