@@ -40,6 +40,15 @@ pub struct ExtCx {
     pub externals: Arc<Externals>,
 }
 
+/// R10: the scrubbing limit, appended to the `secret_external_*` descriptions.
+fn scrub_note() -> String {
+    format!(
+        " A value shorter than {} characters is not scrubbed from tool output: never print one \
+         through a command.",
+        vault::MIN_REDACT
+    )
+}
+
 /// `<backend>/<conn>/<id>[#key]`: the placeholder body of `r`.
 pub fn ref_text(backend: &str, r: &ExtRef) -> String {
     let mut s = format!("{backend}/{}/{}", r.conn, r.id);
@@ -225,7 +234,8 @@ impl Tool for ListTool {
          places, keys and versions, never values. Without `connection`: the connections and their \
          status (no manager is contacted). With it: that manager's entries, each with the \
          `{{secret:…}}` reference to use; `query` filters, `cursor` pages."
-            .into()
+            .to_owned()
+            + &scrub_note()
     }
 
     async fn call(&self, a: ExtListArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -313,7 +323,8 @@ impl Tool for DescribeTool {
         "One external entry's metadata: kind, place, the keys or fields you can reference \
          (`#password`, `#host`), and its versions (the `expected` for update and delete). Never a \
          value."
-            .into()
+            .to_owned()
+            + &scrub_note()
     }
 
     async fn call(&self, a: ExtDescribeArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -526,7 +537,8 @@ impl Tool for CreateTool {
          is the local NAME (put a fresh value there first with secret_capture or secret_request); \
          `destination.name` is the AWS secret name or the Bitwarden item name. Fails if the entry \
          exists (use secret_external_update). Returns the reference to use."
-            .into()
+            .to_owned()
+            + &scrub_note()
     }
 
     async fn call(&self, a: ExtCreateArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -594,7 +606,8 @@ impl Tool for UpdateTool {
          with a local vault secret's current value. `expected` is the version from \
          secret_external_describe; a changed entry is refused, never overwritten. AWS keeps the \
          old value as `:-1`; a Bitwarden field edit keeps only the password's history."
-            .into()
+            .to_owned()
+            + &scrub_note()
     }
 
     async fn call(&self, a: ExtUpdateArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
@@ -829,6 +842,8 @@ mod tests {
     struct Mem {
         conn: String,
         rows: Mutex<HashMap<String, (String, u32)>>,
+        /// The next `create` fails with this (R11).
+        fail_next: Mutex<Option<ExtError>>,
     }
 
     #[async_trait::async_trait]
@@ -888,6 +903,9 @@ mod tests {
             loc: &Location,
             value: Value<'_>,
         ) -> Result<(ExtRef, ExtVersion), ExtError> {
+            if let Some(e) = self.fail_next.lock().unwrap().take() {
+                return Err(e);
+            }
             let Location::Aws { name, .. } = loc else {
                 return Err(ExtError::Unsupported("bw".into()));
             };
@@ -1370,6 +1388,34 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             };
             assert_eq!(row.destination.as_ref().unwrap().destination.name, "ci/npm");
+            // R11: a network failure keeps the request open; the second answer stores.
+            *e.mem.fail_next.lock().unwrap() = Some(ExtError::Network("reset".into()));
+            let err = e
+                .actor
+                .ask(AnswerTo {
+                    answer: Answer {
+                        id,
+                        value: Some("npm_secret_value_123".into()),
+                        values: Default::default(),
+                        expires_ms: None,
+                    },
+                    destination: None,
+                })
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("the request is still open: try again"),
+                "{err}"
+            );
+            assert!(
+                crate::requests::get(e.ext.vault.pool(), id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .answered_ms
+                    .is_none()
+            );
             let mut format_json = destination("ci/npm");
             format_json.format = Some(AwsFormat::String);
             let fresh = e

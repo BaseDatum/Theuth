@@ -46,6 +46,9 @@ pub const KEEP: usize = 5;
 /// too many false positives, and the receipt says so.
 pub const MIN_REDACT: usize = 8;
 
+/// External values [`Vault::remember_external`] keeps for scrubbing (most recently used kept).
+pub const MAX_EXTERNAL: usize = 256;
+
 /// Regex source for a placeholder (221 §3.1). External: group 1 = backend, group 2 =
 /// `CONN/REF` (split and checked by [`crate::external::parse_ref`]), group 3 = `#KEY`. Local:
 /// group 4 = name. Both: group 5 = versions back (1..=4). Any `x/…` matches the external
@@ -1073,14 +1076,29 @@ impl Vault {
     }
 
     /// 221 §3.4: scrub `value` back to `placeholder` in tool output from now on, for the life of
-    /// the process (an external value fetched for a call). Never written anywhere.
+    /// the process (an external value fetched for a call). Never written anywhere. A value
+    /// shorter than [`MIN_REDACT`] chars is never scrubbed, so it is not kept. At most
+    /// [`MAX_EXTERNAL`] values are kept; past that the oldest goes first (R10).
     pub fn remember_external(&self, placeholder: &str, value: &str) {
-        let mut g = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        if g.external
-            .iter()
-            .any(|(p, v)| p == placeholder && v.as_str() == value)
-        {
+        if value.chars().count() < MIN_REDACT {
             return;
+        }
+        let mut g = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some(i) = g
+            .external
+            .iter()
+            .position(|(p, v)| p == placeholder && v.as_str() == value)
+        {
+            // Most recently used last: a value still in use is evicted last.
+            if i + 1 < g.external.len() {
+                let hit = g.external.remove(i);
+                g.external.push(hit);
+                g.scrubber = scrubber(&g.entries, &g.external);
+            }
+            return;
+        }
+        if g.external.len() >= MAX_EXTERNAL {
+            g.external.remove(0);
         }
         g.external
             .push((placeholder.to_owned(), Zeroizing::new(value.to_owned())));
@@ -1779,6 +1797,29 @@ mod tests {
         // A restored value lives in two versions; the current placeholder wins.
         v.restore("tok", 1).await.unwrap();
         assert_eq!(v.redact("first-secret-value"), "{{secret:tok}}");
+    }
+
+    /// R10: external values are capped (the oldest unused goes first); short ones are not kept.
+    #[tokio::test]
+    async fn remember_external_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = open(dir.path()).await;
+        v.remember_external("{{secret:aws/p/first}}", "first-external-value");
+        v.remember_external("{{secret:aws/p/short}}", "1234");
+        for i in 0..MAX_EXTERNAL {
+            v.remember_external(
+                &format!("{{{{secret:aws/p/n{i}}}}}"),
+                &format!("filler-value-{i:05}"),
+            );
+        }
+        assert_eq!(v.read().external.len(), MAX_EXTERNAL);
+        assert_eq!(
+            v.redact("first-external-value"),
+            "first-external-value",
+            "evicted"
+        );
+        assert_eq!(v.redact("filler-value-00255"), "{{secret:aws/p/n255}}");
+        assert!(!v.read().external.iter().any(|(_, x)| x.as_str() == "1234"));
     }
 
     /// The xeus log: `mikrotik.password` = `mikrotik` masked inside its own

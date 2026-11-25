@@ -22,18 +22,18 @@
 //! - events: [`SecretsEvent`]
 //! - [`Vault`] as a library, for `t --secret-set` and `--slack-setup`
 
-/// Provider-owned helpers used by RPC method owners.
-pub mod rpc_support;
 /// Credentials RPC methods and typed client.
 pub mod rpc;
+/// Provider-owned helpers used by RPC method owners.
+pub mod rpc_support;
 pub use rpc::{CredentialsApiClient, rpc_module};
-mod key;
 pub mod connections;
 pub mod expiry;
 pub mod external;
+mod key;
 pub mod requests;
-pub mod store;
 pub mod settings;
+pub mod store;
 pub mod tools;
 pub mod tools_external;
 pub mod tools_send;
@@ -443,7 +443,11 @@ impl SecretsActor {
 
     /// 221 §6: the configured connections and `secrets.external` from `cfg`; `config_path` is
     /// where changes persist.
-    pub fn with_config(mut self, cfg: &SecretsConfig, config_path: Option<std::path::PathBuf>) -> Self {
+    pub fn with_config(
+        mut self,
+        cfg: &SecretsConfig,
+        config_path: Option<std::path::PathBuf>,
+    ) -> Self {
         self.connections = connections::Connections::from_config(cfg, config_path);
         self
     }
@@ -774,9 +778,10 @@ impl SecretsActor {
                         d.connection, row.engine
                     ));
                 }
-                let b = self.externals.by_conn(&d.connection).ok_or_else(|| {
-                    format!("unknown connection {} on this engine", d.connection)
-                })?;
+                let b = self
+                    .externals
+                    .by_conn(&d.connection)
+                    .ok_or_else(|| format!("unknown connection {} on this engine", d.connection))?;
                 // Not consumed: the user unlocks (or logs in) and answers again.
                 match b.status() {
                     external::ConnStatus::Locked => {
@@ -837,7 +842,22 @@ impl SecretsActor {
             }
             match (&dest, backend) {
                 (Some(d), Some(b)) => {
-                    let r = self.store_external(b, d, &row.fields, &values).await;
+                    let r = match self.store_external(b, d, &row.fields, &values).await {
+                        Ok(t) => Ok(t),
+                        // R11: a transient failure leaves the request open; the card stays
+                        // and the user answers again.
+                        Err(Failure { text, retry: true }) => {
+                            let kept = if keep_local {
+                                "; the local copy was kept"
+                            } else {
+                                ""
+                            };
+                            return Err(format!(
+                                "{text}{kept}; the request is still open: try again"
+                            ));
+                        }
+                        Err(Failure { text, .. }) => Err(text),
+                    };
                     let r = match (r, keep_local) {
                         (Ok(t), true) => Ok(format!("{t}; a local copy is kept too")),
                         (Err(e), true) => Err(format!("{e}; the local copy was kept")),
@@ -870,7 +890,7 @@ impl SecretsActor {
         d: &connections::Destination,
         fields: &[SecretRequestField],
         values: &HashMap<String, String>,
-    ) -> Result<String, String> {
+    ) -> Result<String, Failure> {
         let mapped = |f: &SecretRequestField| {
             d.fields
                 .as_ref()
@@ -878,14 +898,16 @@ impl SecretsActor {
                 .cloned()
                 .unwrap_or_default()
         };
-        let typed: Vec<&SecretRequestField> =
-            fields.iter().filter(|f| values.contains_key(&f.name)).collect();
+        let typed: Vec<&SecretRequestField> = fields
+            .iter()
+            .filter(|f| values.contains_key(&f.name))
+            .collect();
         // The value field: the first not mapped to `username` (Bitwarden), else the first.
         let main = typed
             .iter()
             .find(|f| mapped(f) != "username")
             .or(typed.first())
-            .ok_or("nothing to store")?;
+            .ok_or_else(|| Failure::fatal("nothing to store"))?;
         let json = matches!(d.format, Some(connections::AwsFormat::Json));
         let pairs: Vec<(&str, &str)> = typed
             .iter()
@@ -899,7 +921,7 @@ impl SecretsActor {
         let timeout = Duration::from_secs(self.connections.external.timeout_secs);
         if let Some(replace) = &d.replace {
             let (_, r) = external::parse_bare(replace)
-                .ok_or_else(|| format!("{replace:?} is not a reference"))?;
+                .ok_or_else(|| Failure::fatal(format!("{replace:?} is not a reference")))?;
             let v = settle(
                 replace,
                 timeout,
@@ -916,7 +938,8 @@ impl SecretsActor {
             .get(&d.connection)
             .map(|c| c.settings.write_scope)
             .unwrap_or_default();
-        let mut loc = tools_external::location(b.backend(), d, &main.name, scope)?;
+        let mut loc =
+            tools_external::location(b.backend(), d, &main.name, scope).map_err(Failure::fatal)?;
         if let external::Location::Bw { username, .. } = &mut loc {
             *username = typed
                 .iter()
@@ -930,7 +953,26 @@ impl SecretsActor {
             tokio::time::timeout(timeout, b.create(&loc, value)).await,
         )?;
         let t = tools_external::ref_text(b.backend(), &r);
-        Ok(format!("stored in {t} (version {}); use {{{{secret:{t}}}}}", v.id))
+        Ok(format!(
+            "stored in {t} (version {}); use {{{{secret:{t}}}}}",
+            v.id
+        ))
+    }
+}
+
+/// Why [`SecretsActor::store_external`] did not store: the text, and whether the request stays
+/// open for another answer (network, timeout, locked, conflict).
+struct Failure {
+    text: String,
+    retry: bool,
+}
+
+impl Failure {
+    fn fatal(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            retry: false,
+        }
     }
 }
 
@@ -939,14 +981,24 @@ fn settle<T>(
     what: &str,
     timeout: Duration,
     r: Result<Result<T, external::ExtError>, tokio::time::error::Elapsed>,
-) -> Result<T, String> {
+) -> Result<T, Failure> {
+    use external::ExtError as E;
     match r {
         Ok(Ok(v)) => Ok(v),
-        Ok(Err(e)) => Err(format!("{what}: {e}")),
-        Err(_) => Err(format!(
-            "{what}: the manager did not answer in {} s",
-            timeout.as_secs()
-        )),
+        Ok(Err(e)) => Err(Failure {
+            retry: matches!(
+                e,
+                E::Network(_) | E::Timeout | E::Locked | E::Conflict { .. }
+            ),
+            text: format!("{what}: {e}"),
+        }),
+        Err(_) => Err(Failure {
+            text: format!(
+                "{what}: the manager did not answer in {} s",
+                timeout.as_secs()
+            ),
+            retry: true,
+        }),
     }
 }
 
@@ -1270,8 +1322,7 @@ async fn sweeper(rt: Runtime, vault: Arc<Vault>) {
         changes.mark_unchanged();
         sweep(&rt, &vault, now_ms()).await;
         let nap = vault.next_expiry().map_or(SWEEP_MAX_NAP, |t| {
-            Duration::from_millis(t.saturating_sub(now_ms()))
-                .clamp(SWEEP_MIN_NAP, SWEEP_MAX_NAP)
+            Duration::from_millis(t.saturating_sub(now_ms())).clamp(SWEEP_MIN_NAP, SWEEP_MAX_NAP)
         });
         tokio::select! {
             () = tokio::time::sleep(nap) => {}
@@ -1650,7 +1701,8 @@ mod tests {
         let (a, vault) = actor(dir.path(), Duration::from_secs(10)).await;
         let mut pass = field("gh.pass", "Password");
         pass.note = Some("alice's GitHub password".into());
-        let (ask, row) = open_request(&a, Some("GitHub"), vec![field("gh.user", "Username"), pass]).await;
+        let (ask, row) =
+            open_request(&a, Some("GitHub"), vec![field("gh.user", "Username"), pass]).await;
         let at = now_ms() + 3_600_000;
         let values = HashMap::from([
             ("gh.user".to_owned(), "alice".to_owned()),
@@ -1667,14 +1719,20 @@ mod tests {
             .unwrap()
         );
         let out = ask.await.unwrap().unwrap();
-        assert_eq!(out.stored, [("gh.user".to_owned(), 1), ("gh.pass".to_owned(), 1)]);
+        assert_eq!(
+            out.stored,
+            [("gh.user".to_owned(), 1), ("gh.pass".to_owned(), 1)]
+        );
         assert_eq!(out.expires_ms, Some(at), "the receipt names the expiry");
         assert_eq!(vault.expires_ms("gh.user"), Some(at));
         assert_eq!(vault.expires_ms("gh.pass"), Some(at));
         let listed = vault.list();
         let pass = listed.iter().find(|s| s.name == "gh.pass").unwrap();
         assert_eq!(pass.expires.as_deref(), Some(expiry::rfc3339(at).as_str()));
-        assert_eq!(pass.note, "alice's GitHub password", "a field's note is the secret's note");
+        assert_eq!(
+            pass.note, "alice's GitHub password",
+            "a field's note is the secret's note"
+        );
         let user = listed.iter().find(|s| s.name == "gh.user").unwrap();
         assert_eq!(user.note, "Username", "no note: the label");
     }
@@ -1698,7 +1756,10 @@ mod tests {
         assert!(!err.contains("value-for-token"));
         assert!(vault.get("TOKEN", 0).is_none());
         let after = requests::get(vault.pool(), row.id).await.unwrap().unwrap();
-        assert!(after.answered_ms.is_none(), "the card can still be answered");
+        assert!(
+            after.answered_ms.is_none(),
+            "the card can still be answered"
+        );
     }
 
     #[tokio::test]
@@ -1717,7 +1778,12 @@ mod tests {
             .await
         });
         let row = loop {
-            let rows = a.ask(ListRequests { unanswered_only: true }).await.unwrap();
+            let rows = a
+                .ask(ListRequests {
+                    unanswered_only: true,
+                })
+                .await
+                .unwrap();
             if let Some(r) = rows.into_iter().next() {
                 break r;
             }
@@ -1745,8 +1811,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(same.current, 1, "same value, same expiry: nothing written");
-        let info = vault.set("TOKEN", "value-one-long", None, "user").await.unwrap();
-        assert_eq!(info.current, 2, "the same value without the expiry is a new version");
+        let info = vault
+            .set("TOKEN", "value-one-long", None, "user")
+            .await
+            .unwrap();
+        assert_eq!(
+            info.current, 2,
+            "the same value without the expiry is a new version"
+        );
         assert_eq!(info.expires, None);
         assert_eq!(vault.expires_ms("TOKEN"), None);
         assert_eq!(vault.next_expiry(), None);
@@ -1756,7 +1828,10 @@ mod tests {
     async fn an_expired_placeholder_fails_before_the_sweeper_runs() {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::open(dir.path(), KeyStore::File).await.unwrap();
-        vault.set("TOKEN", "older-value-long", None, "user").await.unwrap();
+        vault
+            .set("TOKEN", "older-value-long", None, "user")
+            .await
+            .unwrap();
         let at = now_ms() - 1;
         vault
             .set_expiring("TOKEN", "newer-value-long", None, "user", Some(at))
@@ -1768,7 +1843,11 @@ mod tests {
             assert_eq!(vault.expand(&mut args).unwrap_err(), want, "{p}");
         }
         let mut other = serde_json::json!({"cmd": "echo hi"});
-        assert_eq!(vault.expand(&mut other).unwrap(), 0, "no placeholder, no error");
+        assert_eq!(
+            vault.expand(&mut other).unwrap(),
+            0,
+            "no placeholder, no error"
+        );
     }
 
     #[tokio::test]
@@ -1778,7 +1857,10 @@ mod tests {
         let mut events = tap(&rt).await;
         let vault = Vault::open(dir.path(), KeyStore::File).await.unwrap();
         let now = now_ms();
-        vault.set("GONE", "gone-value-one", None, "user").await.unwrap();
+        vault
+            .set("GONE", "gone-value-one", None, "user")
+            .await
+            .unwrap();
         vault
             .set_expiring("GONE", "gone-value-two", None, "user", Some(now - 1))
             .await
@@ -1787,7 +1869,10 @@ mod tests {
             .set_expiring("LATER", "later-value-x", None, "user", Some(now + 60_000))
             .await
             .unwrap();
-        vault.set("KEPT", "kept-value-xx", None, "user").await.unwrap();
+        vault
+            .set("KEPT", "kept-value-xx", None, "user")
+            .await
+            .unwrap();
         assert_eq!(vault.next_expiry(), Some(now - 1));
 
         assert_eq!(sweep(&rt, &vault, now).await, 1);
@@ -1811,7 +1896,10 @@ mod tests {
             .set_expiring("RACE", "race-value-xx", None, "user", Some(now - 1))
             .await
             .unwrap();
-        vault.set("RACE", "race-value-new", None, "user").await.unwrap();
+        vault
+            .set("RACE", "race-value-new", None, "user")
+            .await
+            .unwrap();
         assert!(!vault.delete_expired("RACE", now).await.unwrap());
         assert!(vault.get("RACE", 0).is_some());
     }
@@ -1828,7 +1916,9 @@ mod tests {
             .unwrap();
         let task = tokio::spawn(sweeper(rt.clone(), vault.clone()));
         // On start: the already-expired one goes.
-        let ev = tokio::time::timeout(Duration::from_secs(5), events.recv()).await.unwrap();
+        let ev = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .unwrap();
         assert!(matches!(ev, Some(SecretsEvent::Changed)));
         assert!(vault.get("BOOT", 0).is_none());
         // Written after the sweeper went to sleep with nothing to wait for: the change re-arms it.
@@ -1836,10 +1926,15 @@ mod tests {
             .set_expiring("SOON", "soon-value-xx", None, "user", Some(now_ms() + 400))
             .await
             .unwrap();
-        let ev = tokio::time::timeout(Duration::from_secs(5), events.recv()).await.unwrap();
+        let ev = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .unwrap();
         assert!(matches!(ev, Some(SecretsEvent::Changed)));
         assert!(vault.get("SOON", 0).is_none());
         rt.shutdown.cancel();
-        tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }
