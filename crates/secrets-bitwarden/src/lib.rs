@@ -129,8 +129,16 @@ impl BwBackend {
     }
 
     /// API-key login with the master password: authenticates, derives the user key (the KDF runs
-    /// on a blocking thread), syncs. `Ready` on success.
+    /// on a blocking thread), syncs. `Ready` on success; on failure the connection is left locked.
     pub async fn unlock(&self, password: Zeroizing<String>) -> Result<ConnStatus, ExtError> {
+        let r = self.open(password).await;
+        if r.is_err() {
+            self.refresh_status();
+        }
+        r
+    }
+
+    async fn open(&self, password: Zeroizing<String>) -> Result<ConnStatus, ExtError> {
         let urls = self.urls.clone().map_err(ExtError::Unsupported)?;
         let (client_id, client_secret) = {
             let creds = self.creds.lock().unwrap_or_else(PoisonError::into_inner);
