@@ -6,15 +6,19 @@
 //! No SDK type crosses this module. Every `Display` string here is model-facing and never carries
 //! a value; [`ExtError::Sdk`] text is scrubbed with `tools::secrets::redact` before it is shown.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, PoisonError, RwLock};
+use std::time::Duration;
 
+use ::tools::secrets::{Direction, ExternalAccess, Fetched, ResolveCx};
+use futures::future::BoxFuture;
 use kameo::message::{Context, Message};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::SecretsActor;
+use crate::vault::{Vault, placeholder_re};
 
 /// The backend ids the placeholder grammar knows (221 §3.2). A reference naming any other backend
 /// that no registered connection serves fails with `unknown secret backend x`.
@@ -353,6 +357,12 @@ impl Externals {
         map.get(conn).filter(|b| b.backend() == backend).cloned()
     }
 
+    /// The connection named `conn`, of whichever backend.
+    pub fn by_conn(&self, conn: &str) -> Option<Arc<dyn ExternalBackend>> {
+        let map = self.map.read().unwrap_or_else(PoisonError::into_inner);
+        map.get(conn).cloned()
+    }
+
     /// Every registered connection, by name.
     pub fn all(&self) -> Vec<Arc<dyn ExternalBackend>> {
         let map = self.map.read().unwrap_or_else(PoisonError::into_inner);
@@ -441,5 +451,475 @@ impl Message<UnregisterExternal> for SecretsActor {
         // Nobody can reach it any more: drop its keys and cached credentials.
         tokio::spawn(async move { b.lock().await });
         true
+    }
+}
+
+/// Split a placeholder's external body (`CONN/REF` after `<backend>/`) into an [`ExtRef`].
+/// `Err` = no `/REF`, or an invalid connection name.
+pub fn parse_ref(backend: &str, rest: &str, key: Option<&str>, back: u8) -> Result<ExtRef, String> {
+    let Some((conn, id)) = rest.split_once('/').filter(|(_, id)| !id.is_empty()) else {
+        return Err(format!(
+            "{backend}/{rest}: an external reference is {backend}/CONNECTION/NAME"
+        ));
+    };
+    if !valid_conn(conn) {
+        return Err(format!(
+            "{backend}/{rest}: {conn:?} is not a connection name ([a-z0-9-], 1 to 32 characters)"
+        ));
+    }
+    Ok(ExtRef {
+        conn: conn.to_owned(),
+        id: id.to_owned(),
+        key: key.map(str::to_owned),
+        back,
+    })
+}
+
+/// An external reference as data (`aws/prod/app/db#password`, no braces): the `ref` / `source`
+/// argument of the `secret_external_*` and `secret_send_*` tools. `None` when it is not one.
+pub fn parse_bare(text: &str) -> Option<(&str, ExtRef)> {
+    let (backend, rest) = text.split_once('/')?;
+    let (rest, key) = match rest.split_once('#') {
+        Some((r, k)) => (r, Some(k)),
+        None => (rest, None),
+    };
+    parse_ref(backend, rest, key, 0).ok().map(|r| (backend, r))
+}
+
+/// One external placeholder in a call's args.
+struct Found {
+    /// The whole `{{secret:…}}` text: the [`Fetched`] key and the scrub placeholder.
+    text: String,
+    backend: String,
+    r: Result<ExtRef, String>,
+}
+
+/// Every distinct external placeholder in the string leaves of `args`, in order.
+fn external_placeholders(args: &serde_json::Value) -> Vec<Found> {
+    fn walk(v: &serde_json::Value, seen: &mut HashSet<String>, out: &mut Vec<Found>) {
+        match v {
+            serde_json::Value::String(s) if s.contains("{{secret:") => {
+                for c in placeholder_re().captures_iter(s) {
+                    let (Some(backend), Some(rest)) = (c.get(1), c.get(2)) else {
+                        continue;
+                    };
+                    if !seen.insert(c[0].to_owned()) {
+                        continue;
+                    }
+                    let back = c.get(5).map_or(0, |m| m.as_str().parse().unwrap_or(0));
+                    out.push(Found {
+                        text: c[0].to_owned(),
+                        backend: backend.as_str().to_owned(),
+                        r: parse_ref(
+                            backend.as_str(),
+                            rest.as_str(),
+                            c.get(3).map(|m| m.as_str()),
+                            back,
+                        ),
+                    });
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|v| walk(v, seen, out)),
+            serde_json::Value::Object(o) => o.values().for_each(|v| walk(v, seen, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(args, &mut HashSet::new(), &mut out);
+    out
+}
+
+/// The `tools::secrets` hook (37 §3.4, 221 §3.3): the vault for local placeholders and the
+/// registered connections for external ones.
+pub struct Hook {
+    vault: Arc<Vault>,
+    externals: Arc<Externals>,
+    /// `secrets.external.timeout_secs`: the bound on one backend call.
+    timeout: Duration,
+}
+
+impl Hook {
+    /// The hook over `vault` and `externals`; every backend call is bounded by `timeout`.
+    pub fn new(vault: Arc<Vault>, externals: Arc<Externals>, timeout: Duration) -> Self {
+        Self {
+            vault,
+            externals,
+            timeout,
+        }
+    }
+
+    /// The access of `conn` in `dir`, when `conn` is a registered connection.
+    fn conn_access(&self, conn: &str, dir: Direction) -> Option<ExternalAccess> {
+        let b = self.externals.by_conn(conn)?;
+        Some(ExternalAccess {
+            backend: b.backend(),
+            conn: conn.to_owned(),
+            dir,
+        })
+    }
+
+    /// The access of a bare reference (`aws/prod/x`) in `dir`, when its connection is registered.
+    fn ref_access(&self, text: &str, dir: Direction) -> Option<ExternalAccess> {
+        let (backend, r) = parse_bare(text)?;
+        let b = self.externals.get(backend, &r.conn)?;
+        Some(ExternalAccess {
+            backend: b.backend(),
+            conn: r.conn,
+            dir,
+        })
+    }
+
+    /// [`::tools::secrets::Secrets::resolve_external`]: fetch every external placeholder in
+    /// `args`, each once; the first failure fails the call.
+    async fn resolve(&self, args: &serde_json::Value) -> Result<Fetched, String> {
+        let found = external_placeholders(args);
+        let mut fetched = Fetched::default();
+        for f in found {
+            if !self.externals.knows_backend(&f.backend) {
+                return Err(format!("unknown secret backend {}", f.backend));
+            }
+            let r = f.r?;
+            let Some(b) = self.externals.get(&f.backend, &r.conn) else {
+                return Err(format!(
+                    "unknown connection {}/{} on this engine; secret_external_list shows the connections",
+                    f.backend, r.conn
+                ));
+            };
+            let body = &f.text["{{secret:".len()..f.text.len() - "}}".len()];
+            let value = match tokio::time::timeout(self.timeout, b.get(&r)).await {
+                Ok(Ok((value, _))) => value,
+                Ok(Err(e)) => return Err(format!("{body}: {e}")),
+                Err(_) => {
+                    return Err(format!(
+                        "{body}: {} did not answer in {} s",
+                        f.backend,
+                        self.timeout.as_secs()
+                    ));
+                }
+            };
+            self.vault.remember_external(&f.text, &value);
+            fetched.insert(f.text, value);
+        }
+        Ok(fetched)
+    }
+}
+
+impl ::tools::secrets::Secrets for Hook {
+    fn expand(&self, args: &mut serde_json::Value) -> Result<usize, String> {
+        self.vault.expand(args)
+    }
+
+    fn expand_with(
+        &self,
+        args: &mut serde_json::Value,
+        fetched: &Fetched,
+    ) -> Result<usize, String> {
+        self.vault.expand_with(args, fetched)
+    }
+
+    /// By tool name for the tools that take references as data (221 §7, §12.3); otherwise every
+    /// external placeholder is a read. A reference to a connection this engine does not have
+    /// gates nothing: the call fails at resolve, or in the tool.
+    fn external_access(&self, tool: &str, args: &serde_json::Value) -> Vec<ExternalAccess> {
+        let arg = |k: &str| args.get(k).and_then(serde_json::Value::as_str);
+        let by_ref = |k: &str, dir| arg(k).and_then(|t| self.ref_access(t, dir));
+        let by_conn = |k: &str, dir| arg(k).and_then(|c| self.conn_access(c, dir));
+        let out: Vec<Option<ExternalAccess>> = match tool {
+            "secret_external_list" | "secret_send_list" => {
+                vec![by_conn("connection", Direction::Read)]
+            }
+            "secret_external_describe" | "secret_external_import" => {
+                vec![by_ref("ref", Direction::Read)]
+            }
+            "secret_external_create" => vec![by_conn("connection", Direction::Write)],
+            "secret_external_update" => vec![by_ref("ref", Direction::Write)],
+            "secret_external_delete" => vec![by_ref("ref", Direction::Delete)],
+            "secret_request" | "secret_request_form" => vec![
+                args.get("destination")
+                    .and_then(|d| d.get("connection"))
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|c| self.conn_access(c, Direction::Write)),
+            ],
+            "secret_send_create" => vec![
+                by_conn("connection", Direction::Send),
+                by_ref("source", Direction::Read),
+                by_ref("file", Direction::Read),
+            ],
+            _ => external_placeholders(args)
+                .into_iter()
+                .filter_map(|f| {
+                    let r = f.r.ok()?;
+                    let b = self.externals.get(&f.backend, &r.conn)?;
+                    Some(Some(ExternalAccess {
+                        backend: b.backend(),
+                        conn: r.conn,
+                        dir: Direction::Read,
+                    }))
+                })
+                .collect(),
+        };
+        let mut out: Vec<ExternalAccess> = out.into_iter().flatten().collect();
+        out.dedup();
+        out
+    }
+
+    fn resolve_external<'a>(
+        &'a self,
+        args: &'a serde_json::Value,
+        _cx: ResolveCx,
+    ) -> BoxFuture<'a, Result<Fetched, String>> {
+        Box::pin(self.resolve(args))
+    }
+
+    fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        self.vault.redact(text)
+    }
+
+    fn redact_value(&self, v: &mut serde_json::Value) {
+        self.vault.redact_value(v);
+    }
+
+    fn redact_spans(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        self.vault.redact_spans(text)
+    }
+
+    fn max_literal_len(&self) -> usize {
+        self.vault.max_literal_len()
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use ::tools::secrets::Secrets as _;
+    use serde_json::json;
+
+    use super::*;
+    use crate::KeyStore;
+
+    /// An in-memory backend `fake/<conn>`: `get` of id `x` answers [`VALUE`] (`#k` → `k=VALUE`),
+    /// anything else `NotFound`; every other method is unsupported.
+    pub(crate) struct Fake(pub(crate) &'static str);
+
+    pub(crate) const VALUE: &str = "s3cret-from-fake";
+
+    #[async_trait::async_trait]
+    impl ExternalBackend for Fake {
+        fn backend(&self) -> &'static str {
+            "fake"
+        }
+        fn conn(&self) -> &str {
+            self.0
+        }
+        fn status(&self) -> ConnStatus {
+            ConnStatus::Ready
+        }
+        async fn probe(&self) -> Result<ConnStatus, ExtError> {
+            Ok(ConnStatus::Ready)
+        }
+        async fn list(&self, _: ListQuery) -> Result<ListPage, ExtError> {
+            Ok(ListPage::default())
+        }
+        async fn describe(&self, _: &ExtRef) -> Result<ExtEntry, ExtError> {
+            Err(ExtError::Unsupported("describe".into()))
+        }
+        async fn get(&self, r: &ExtRef) -> Result<(Zeroizing<String>, ExtVersion), ExtError> {
+            if r.id != "x" {
+                return Err(ExtError::NotFound);
+            }
+            let v = match &r.key {
+                Some(k) => format!("{k}={VALUE}"),
+                None => VALUE.to_owned(),
+            };
+            Ok((
+                Zeroizing::new(v),
+                ExtVersion {
+                    id: "1".into(),
+                    stages: Vec::new(),
+                    changed: None,
+                },
+            ))
+        }
+        async fn create(
+            &self,
+            _: &Location,
+            _: Value<'_>,
+        ) -> Result<(ExtRef, ExtVersion), ExtError> {
+            Err(ExtError::Unsupported("create".into()))
+        }
+        async fn update(
+            &self,
+            _: &ExtRef,
+            _: Value<'_>,
+            _: Option<&ExtVersion>,
+        ) -> Result<ExtVersion, ExtError> {
+            Err(ExtError::Unsupported("update".into()))
+        }
+        async fn delete(
+            &self,
+            _: &ExtRef,
+            _: DeleteMode,
+            _: Option<&ExtVersion>,
+        ) -> Result<DeleteOutcome, ExtError> {
+            Err(ExtError::Unsupported("delete".into()))
+        }
+        async fn restore(&self, _: &ExtRef) -> Result<ExtVersion, ExtError> {
+            Err(ExtError::Unsupported("restore".into()))
+        }
+        async fn lock(&self) {}
+    }
+
+    async fn hook(dir: &std::path::Path) -> (Hook, Arc<Vault>) {
+        let vault = Arc::new(Vault::open(dir, KeyStore::File).await.unwrap());
+        let ext = Arc::new(Externals::default());
+        ext.insert(Arc::new(Fake("c"))).unwrap();
+        (Hook::new(vault.clone(), ext, Duration::from_secs(5)), vault)
+    }
+
+    fn cx() -> ResolveCx {
+        ResolveCx {
+            session: runtime::SessionId::new(),
+            call_id: "1".into(),
+        }
+    }
+
+    /// 221 §13 B2 (a): an external placeholder resolves, expands, and its value is scrubbed
+    /// back to the placeholder in output; a local one beside it still expands.
+    #[tokio::test]
+    async fn external_placeholder_expands_and_scrubs_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (hook, vault) = hook(dir.path()).await;
+        vault
+            .set("LOCAL", "local-value-long", None, "user")
+            .await
+            .unwrap();
+        let mut args =
+            json!({"cmd": "x {{secret:fake/c/x}} {{secret:fake/c/x#k}} {{secret:LOCAL}}"});
+        let fetched = hook.resolve_external(&args, cx()).await.unwrap();
+        assert_eq!(fetched.len(), 2);
+        assert_eq!(hook.expand_with(&mut args, &fetched).unwrap(), 3);
+        assert_eq!(args["cmd"], format!("x {VALUE} k={VALUE} local-value-long"));
+        drop(fetched);
+        assert_eq!(
+            hook.redact(&format!("out {VALUE} and k={VALUE}")),
+            "out {{secret:fake/c/x}} and {{secret:fake/c/x#k}}"
+        );
+        let mut b64 =
+            json!({"o": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, VALUE)});
+        hook.redact_value(&mut b64);
+        assert_eq!(b64["o"], "{{secret:fake/c/x}}");
+    }
+
+    /// 221 §13 B2 (b): an unknown connection, an unknown backend or a missing entry fails the
+    /// whole call; without a resolve, an external placeholder never expands.
+    #[tokio::test]
+    async fn unknown_connection_or_backend_fails_the_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let (hook, vault) = hook(dir.path()).await;
+        let fail = |s: &str| json!({"cmd": format!("ok {{{{secret:fake/c/x}}}} {s}")});
+        let e = hook
+            .resolve_external(&fail("{{secret:fake/nope/x}}"), cx())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            e,
+            "unknown connection fake/nope on this engine; secret_external_list shows the connections"
+        );
+        let e = hook
+            .resolve_external(&fail("{{secret:zz/c/x}}"), cx())
+            .await
+            .unwrap_err();
+        assert_eq!(e, "unknown secret backend zz");
+        let e = hook
+            .resolve_external(&fail("{{secret:oauth/github}}"), cx())
+            .await
+            .unwrap_err();
+        assert_eq!(e, "unknown secret backend oauth");
+        let e = hook
+            .resolve_external(&fail("{{secret:fake/c/y}}"), cx())
+            .await
+            .unwrap_err();
+        assert_eq!(e, "fake/c/y: not found");
+        let mut args = json!({"cmd": "{{secret:fake/c/x}}"});
+        let e = vault.expand(&mut args).unwrap_err();
+        assert!(e.contains("was not resolved"), "{e}");
+    }
+
+    #[test]
+    fn grammar_splits_conn_ref_key_and_back() {
+        let caps = |s: &str| {
+            let c = placeholder_re().captures(s).unwrap();
+            let g = |i| c.get(i).map(|m| m.as_str().to_owned());
+            (g(1), g(2), g(3), g(4), g(5))
+        };
+        assert_eq!(
+            caps("{{secret:aws/prod/app/db/main#password:-1}}"),
+            (
+                Some("aws".into()),
+                Some("prod/app/db/main".into()),
+                Some("password".into()),
+                None,
+                Some("1".into())
+            )
+        );
+        assert_eq!(
+            caps("{{secret:bw/personal/2f1c#field:recovery code}}"),
+            (
+                Some("bw".into()),
+                Some("personal/2f1c".into()),
+                Some("field:recovery code".into()),
+                None,
+                None
+            )
+        );
+        assert_eq!(
+            caps("{{secret:GITHUB:-2}}"),
+            (None, None, None, Some("GITHUB".into()), Some("2".into()))
+        );
+        assert!(parse_ref("aws", "prod", None, 0).is_err());
+        assert!(parse_ref("aws", "Prod/x", None, 0).is_err());
+        assert_eq!(
+            parse_bare("aws/prod/a/b#k").map(|(b, r)| (b.to_owned(), r)),
+            Some((
+                "aws".to_owned(),
+                ExtRef {
+                    conn: "prod".into(),
+                    id: "a/b".into(),
+                    key: Some("k".into()),
+                    back: 0
+                }
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn access_is_parsed_from_placeholders_and_tool_args() {
+        let dir = tempfile::tempdir().unwrap();
+        let (hook, _vault) = hook(dir.path()).await;
+        let acc = |tool: &str, args| {
+            hook.external_access(tool, &args)
+                .into_iter()
+                .map(|a| a.always_ask_key())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            acc(
+                "shell",
+                json!({"c": "{{secret:fake/c/x}} {{secret:fake/c/x}} {{secret:fake/nope/x}}"})
+            ),
+            ["secret:fake/c:read"]
+        );
+        assert!(acc("shell", json!({"c": "{{secret:LOCAL}}"})).is_empty());
+        assert_eq!(
+            acc(
+                "secret_external_delete",
+                json!({"ref": "fake/c/x", "expected": "1"})
+            ),
+            ["secret:fake/c:delete"]
+        );
+        assert_eq!(
+            acc("secret_external_create", json!({"connection": "c"})),
+            ["secret:fake/c:write"]
+        );
+        assert!(acc("secret_external_list", json!({})).is_empty());
     }
 }

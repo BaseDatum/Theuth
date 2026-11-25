@@ -16,6 +16,7 @@ parking_lot = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
+zeroize = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

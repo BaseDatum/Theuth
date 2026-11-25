@@ -32,6 +32,7 @@ pub mod expiry;
 pub mod external;
 pub mod requests;
 pub mod store;
+pub mod settings;
 pub mod tools;
 pub mod vault;
 
@@ -72,6 +73,10 @@ pub struct SecretsConfig {
     pub tools: bool,
     /// How long `secret_request` waits for the user.
     pub request_timeout_secs: u64,
+    /// 221 D20: the harness-wide external-secret settings (`secrets.external`).
+    pub external: settings::ExternalSettings,
+    /// 221 §6: the external connections (`secrets.connections.<conn>`).
+    pub connections: std::collections::BTreeMap<String, settings::ConnectionConfig>,
 }
 
 impl Default for SecretsConfig {
@@ -80,6 +85,8 @@ impl Default for SecretsConfig {
             key_store: KeyStore::Auto,
             tools: true,
             request_timeout_secs: 1800,
+            external: settings::ExternalSettings::default(),
+            connections: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -168,11 +175,22 @@ pub struct Restore {
 }
 
 /// `ask` → `Result<(), String>`: the name and every version. User surfaces
-/// only; the model has no delete. `Err` = unknown name.
+/// (the model's delete is [`DeleteConfirmed`], 221 D24). `Err` = unknown name.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Delete {
     /// The secret.
     pub name: String,
+}
+
+/// `ask` → `Result<u64, String>` (how many versions went): [`Delete`] for `secret_delete` (221
+/// D24), only while `confirm` is the current version, checked inside the delete's transaction.
+/// `Err` = unknown name, or `<name> is at vN, not vM; …`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeleteConfirmed {
+    /// The secret.
+    pub name: String,
+    /// The version the caller saw as current.
+    pub confirm: u32,
 }
 
 /// `ask` → `Result<Outcome, String>`: ask the user to type one or several
@@ -410,6 +428,20 @@ impl Message<Delete> for SecretsActor {
         self.vault.delete(&m.name).await?;
         self.rt.publish(SecretsEvent::Changed).await;
         Ok(())
+    }
+}
+
+impl Message<DeleteConfirmed> for SecretsActor {
+    type Reply = Result<u64, String>;
+
+    async fn handle(
+        &mut self,
+        m: DeleteConfirmed,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        let n = self.vault.delete_confirmed(&m.name, m.confirm).await?;
+        self.rt.publish(SecretsEvent::Changed).await;
+        Ok(n)
     }
 }
 
@@ -785,28 +817,6 @@ pub async fn mesh_device_key_existing(
     vault.mesh_device_key_if_set()
 }
 
-impl ::tools::secrets::Secrets for Vault {
-    fn expand(&self, args: &mut serde_json::Value) -> Result<usize, String> {
-        Vault::expand(self, args)
-    }
-
-    fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
-        Vault::redact(self, text)
-    }
-
-    fn redact_value(&self, v: &mut serde_json::Value) {
-        Vault::redact_value(self, v);
-    }
-
-    fn redact_spans(&self, text: &str) -> Vec<std::ops::Range<usize>> {
-        Vault::redact_spans(self, text)
-    }
-
-    fn max_literal_len(&self) -> usize {
-        Vault::max_literal_len(self)
-    }
-}
-
 /// OAuth grants are vault rows `oauth/<ns>` (67 §5.4): the JSON is the
 /// value, written under the [`Vault::set_if_version`] precondition.
 #[async_trait::async_trait]
@@ -875,18 +885,24 @@ impl runtime::Plugin for SecretsPlugin {
                 return Ok(());
             }
         };
-        let actor = SecretsActor::spawn(SecretsActor::new(
+        let sa = SecretsActor::new(
             vault.clone(),
             rt.clone(),
             Duration::from_secs(cfg.request_timeout_secs),
-        ));
+        );
+        let externals = sa.externals();
+        let actor = SecretsActor::spawn(sa);
         actor.register(SECRETS_ACTOR)?;
         tokio::spawn(replicate(rt.clone(), vault.clone()));
         tokio::spawn(sweeper(rt.clone(), vault.clone()));
         if !cfg.tools {
             return Ok(());
         }
-        ::tools::secrets::install(vault.clone());
+        ::tools::secrets::install(Arc::new(external::Hook::new(
+            vault.clone(),
+            externals,
+            Duration::from_secs(cfg.external.timeout_secs),
+        )));
         let rt = rt.clone();
         let timeout = Duration::from_secs(cfg.request_timeout_secs);
         tokio::spawn(async move {

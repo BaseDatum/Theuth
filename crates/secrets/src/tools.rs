@@ -1,8 +1,8 @@
-//! The `secret_list`, `secret_request`, `secret_request_form`, `secret_capture`
-//! and `secret_restore` tools and the plugin's prompt block (design doc 37 §3.2,
-//! §4; 79 §6.6), registered by `SecretsPlugin::start` once the tool registry is
-//! up. None of them returns a value, ever: names, notes, version numbers, dates
-//! and byte counts only.
+//! The `secret_list`, `secret_request`, `secret_request_form`, `secret_capture`,
+//! `secret_restore` and `secret_delete` tools and the plugin's prompt block (design doc 37
+//! §3.2, §4; 79 §6.6; 221 D24), registered by `SecretsPlugin::start` once the tool registry
+//! is up. None of them returns a value, ever: names, notes, version numbers, dates and byte
+//! counts only.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,12 +12,13 @@ use kameo::error::SendError;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tools::{
-    Invoke, QuestionKind, QuestionRow, QuestionState, REGISTRY_ACTOR, RegisterPrompt, RegisterTool,
-    Risk, Tool, ToolCall, ToolCx, ToolOutput, ToolRegistry, WaitKind, WaitRow,
+    Invoke, PreviewCx, QuestionKind, QuestionRow, QuestionState, REGISTRY_ACTOR, RegisterPrompt,
+    RegisterTool, Risk, SetAlwaysAsk, Tool, ToolCall, ToolCx, ToolOutput, ToolRegistry, WaitKind,
+    WaitRow,
 };
 
 use crate::vault::{self, MIN_REDACT, SecretInfo, Vault};
-use crate::{Outcome, Request, RequestId, SecretRequestField, SecretsActor, expiry};
+use crate::{DeleteConfirmed, Outcome, Request, RequestId, SecretRequestField, SecretsActor, expiry};
 
 /// The plugin's system-prompt block (37 §4). Static, so it never busts the
 /// system cache.
@@ -31,10 +32,12 @@ secret that does not exist? `secret_request` asks the user to type it into a mas
 (username, password, one-time code) on one card with `title` + `fields`; the user may give them an expiry, after \
 which they are deleted. `secret_capture()` runs a tool and stores its output (a fresh token from a login command, \
 a key from a file) without showing it to you — `replace: true` to update one that exists; `secret_restore()` undoes \
-a bad update. Never ask the user to paste a secret into the chat, and never try to print one.";
+a bad update. `secret_delete` removes a secret and all its versions for good; the user is asked first. Never ask \
+the user to paste a secret into the chat, and never try to print one.";
 
-/// Register the five tools and the prompt block on `reg`. `timeout` is the
-/// actor's `request_timeout_secs`, for the `no answer after N s` receipt.
+/// Register the six tools and the prompt block on `reg`, and seed `secret_delete`'s
+/// always-ask entry once (221 D24). `timeout` is the actor's `request_timeout_secs`, for the
+/// `no answer after N s` receipt.
 pub async fn register(
     reg: &ActorRef<ToolRegistry>,
     vault: Arc<Vault>,
@@ -52,7 +55,7 @@ pub async fn register(
         .await;
     let _ = reg
         .ask(RegisterTool(Arc::new(SecretRequestFormTool {
-            actor,
+            actor: actor.clone(),
             timeout,
         })))
         .await;
@@ -60,8 +63,17 @@ pub async fn register(
         .ask(RegisterTool(Arc::new(SecretCaptureTool(vault.clone()))))
         .await;
     let _ = reg
-        .ask(RegisterTool(Arc::new(SecretRestoreTool(vault))))
+        .ask(RegisterTool(Arc::new(SecretRestoreTool(vault.clone()))))
         .await;
+    let _ = reg
+        .ask(RegisterTool(Arc::new(SecretDeleteTool {
+            vault: vault.clone(),
+            actor,
+        })))
+        .await;
+    if let Err(e) = seed_delete_ask(reg, &vault).await {
+        tracing::warn!("secrets: secret_delete always-ask entry not seeded: {e}");
+    }
     let _ = reg
         .ask(RegisterPrompt {
             plugin: "secrets",
@@ -705,6 +717,145 @@ impl Tool for SecretRestoreTool {
     }
 }
 
+/// `meta` stamp: the `secret_delete` always-ask entry was seeded once (221 D24); a user who
+/// removes it keeps it removed.
+pub const SEEDED_SECRET_DELETE: &str = "seeded/secret_delete";
+
+/// Add `secret_delete` to `tools.always_ask` unless this engine did so before.
+pub async fn seed_delete_ask(reg: &ActorRef<ToolRegistry>, vault: &Vault) -> Result<(), String> {
+    let pool = vault.pool();
+    let seeded = crate::store::meta_get(pool, SEEDED_SECRET_DELETE)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    if seeded.is_some() {
+        return Ok(());
+    }
+    reg.ask(SetAlwaysAsk {
+        session: None,
+        tool: <SecretDeleteTool as Tool>::NAME.to_owned(),
+        on: true,
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    crate::store::meta_put(pool, SEEDED_SECRET_DELETE, b"1")
+        .await
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// `secret_delete` (221 §7.6): delete a local vault secret and every kept version.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeleteArgs {
+    /// The local NAME (`[A-Za-z0-9_.-]{1,64}`). `/` names and Send link secrets are refused.
+    pub name: String,
+    /// The current version number from `secret_list` (`v7` → 7): guards against deleting the
+    /// wrong name.
+    pub confirm: u32,
+}
+
+/// The `secret_delete` tool: [`DeleteConfirmed`] on the actor, the user's delete path.
+pub struct SecretDeleteTool {
+    /// Read for the card's preview.
+    pub vault: Arc<Vault>,
+    /// Deletes and announces.
+    pub actor: ActorRef<SecretsActor>,
+}
+
+/// Source a Send's link secret is written with (221 §12.4).
+const SEND_SOURCE: &str = "secret_send_create";
+
+/// Why `name` may not be deleted by the agent, or its current entry.
+fn deletable(vault: &Vault, name: &str) -> Result<SecretInfo, String> {
+    if name.contains('/') {
+        return Err(format!("{name} is not a user secret"));
+    }
+    let info = find(vault, name).ok_or_else(|| format!("unknown secret {name}"))?;
+    let send_name = name.strip_prefix("send-").is_some_and(|rest| {
+        rest.rsplit_once('-').is_some_and(|(conn, hex)| {
+            crate::external::valid_conn(conn)
+                && hex.len() == 8
+                && hex.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+    });
+    if send_name || info.versions.first().is_some_and(|v| v.source == SEND_SOURCE) {
+        return Err(format!(
+            "{name} is a Send link; secret_send_revoke revokes it"
+        ));
+    }
+    Ok(info)
+}
+
+#[async_trait::async_trait]
+impl Tool for SecretDeleteTool {
+    const NAME: &'static str = "secret_delete";
+    const RISK: Risk = Risk::Destructive;
+    const CONSUMES_SECRETS: bool = false;
+    const APPROVAL_PREVIEW: bool = true;
+    type Args = DeleteArgs;
+
+    fn description(&self) -> String {
+        "Delete a local vault secret and every kept version. Cannot be undone: the vault has no \
+         trash and no restore. `confirm` is the current version number from `secret_list` (v7 → 7). \
+         The user is asked first."
+            .into()
+    }
+
+    async fn approval_preview(
+        &self,
+        a: DeleteArgs,
+        _cx: PreviewCx,
+    ) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
+        let info = deletable(&self.vault, &a.name).map_err(anyhow::Error::msg)?;
+        let mut m = serde_json::Map::new();
+        m.insert("note".into(), info.note.into());
+        m.insert("versions".into(), info.versions.len().into());
+        m.insert("updated".into(), info.updated.into());
+        m.insert(
+            "deletes".into(),
+            "every version, for good: the vault has no trash and no restore".into(),
+        );
+        if let Some(source) = info
+            .versions
+            .first()
+            .map(|v| v.source.as_str())
+            .filter(|s| *s != "user" && !s.starts_with("secret_") && !s.starts_with("restore"))
+        {
+            m.insert(
+                "harness".into(),
+                format!("theuth itself set this key ({source}); deleting it may break that").into(),
+            );
+        }
+        Ok(Some(m))
+    }
+
+    async fn call(&self, a: DeleteArgs, _cx: ToolCx) -> anyhow::Result<ToolOutput> {
+        if let Err(e) = deletable(&self.vault, &a.name) {
+            return Ok(ToolOutput::err(e));
+        }
+        let n = match self
+            .actor
+            .ask(DeleteConfirmed {
+                name: a.name.clone(),
+                confirm: a.confirm,
+            })
+            .await
+        {
+            Ok(n) => n,
+            Err(SendError::HandlerError(e)) => return Ok(ToolOutput::err(e)),
+            Err(e) => return Ok(ToolOutput::err(format!("secret_delete: {e}"))),
+        };
+        let older = match n.saturating_sub(1) {
+            0 => String::new(),
+            1 => " and 1 older version".to_owned(),
+            k => format!(" and {k} older versions"),
+        };
+        Ok(ToolOutput::ok(format!(
+            "deleted {name} (v{v}{older}); {{{{secret:{name}}}}} no longer resolves",
+            name = a.name,
+            v = a.confirm,
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -898,5 +1049,144 @@ mod tests {
             list_line(&info(Some(expiry::rfc3339(far))), NOW),
             format!("{base} · expires {}", expiry::local_time(far))
         );
+    }
+}
+
+#[cfg(test)]
+mod delete_tests {
+    use kameo::actor::Spawn;
+    use runtime::{Runtime, SessionId};
+    use tools::{InspectTool, PolicyAction, SessionResources};
+
+    use super::*;
+    use crate::KeyStore;
+
+    fn cx() -> ToolCx {
+        ToolCx {
+            session: SessionId::new(),
+            call_id: "1".into(),
+            quiet: false,
+            resources: SessionResources::durable_arc(std::path::Path::new("/tmp")),
+            cancel: Default::default(),
+            promote_after: None,
+        }
+    }
+
+    async fn tool(dir: &std::path::Path) -> (SecretDeleteTool, Arc<Vault>, Runtime) {
+        let rt = Runtime::new(
+            figment::Figment::from(figment::providers::Serialized::defaults(
+                serde_json::json!({"tools": {"approvals": false}}),
+            )),
+            dir.to_path_buf(),
+        );
+        let vault = Arc::new(Vault::open(dir, KeyStore::File).await.unwrap());
+        let actor = SecretsActor::spawn(SecretsActor::new(
+            vault.clone(),
+            rt.clone(),
+            Duration::from_secs(5),
+        ));
+        (
+            SecretDeleteTool {
+                vault: vault.clone(),
+                actor,
+            },
+            vault,
+            rt,
+        )
+    }
+
+    async fn run(t: &SecretDeleteTool, name: &str, confirm: u32) -> ToolOutput {
+        t.call(
+            DeleteArgs {
+                name: name.into(),
+                confirm,
+            },
+            cx(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// 221 §13 B6b: every version goes and the placeholder no longer resolves; a stale
+    /// `confirm` deletes nothing; `/` names and Send links are refused.
+    #[tokio::test]
+    async fn secret_delete_removes_every_version_only_when_confirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (t, vault, _rt) = tool(dir.path()).await;
+        for v in ["first-value-long", "second-value-long", "third-value-long"] {
+            vault.set("TOK", v, None, "user").await.unwrap();
+        }
+        let out = run(&t, "TOK", 2).await;
+        assert!(out.is_error);
+        assert_eq!(
+            out.content,
+            "TOK is at v3, not v2; secret_list shows the current version"
+        );
+        assert_eq!(find(&vault, "TOK").unwrap().versions.len(), 3, "nothing deleted");
+
+        let out = run(&t, "TOK", 3).await;
+        assert_eq!(
+            out.content,
+            "deleted TOK (v3 and 2 older versions); {{secret:TOK}} no longer resolves",
+            "{out:?}"
+        );
+        assert!(find(&vault, "TOK").is_none());
+        assert!(vault.get("TOK", 2).is_none(), "older versions are gone too");
+        let mut args = serde_json::json!({"a": "{{secret:TOK}}"});
+        assert!(vault.expand(&mut args).unwrap_err().starts_with("unknown secret TOK"));
+        let out = run(&t, "TOK", 3).await;
+        assert!(out.content.starts_with("unknown secret TOK"), "{out:?}");
+
+        vault
+            .set_if_version("oauth/x", "{}", "oauth", None)
+            .await
+            .unwrap();
+        let out = run(&t, "oauth/x", 1).await;
+        assert_eq!(out.content, "oauth/x is not a user secret");
+        assert!(vault.get("oauth/x", 0).is_some());
+        vault
+            .set("send-personal-3fa9c2d1", "https://vault/#/send/a/b", None, "user")
+            .await
+            .unwrap();
+        let out = run(&t, "send-personal-3fa9c2d1", 1).await;
+        assert_eq!(
+            out.content,
+            "send-personal-3fa9c2d1 is a Send link; secret_send_revoke revokes it"
+        );
+        assert!(find(&vault, "send-personal-3fa9c2d1").is_some());
+    }
+
+    /// 221 §13 B6b: the seeded entry makes `secret_delete` ask with approvals off; removing it
+    /// (the user's press) stops the asking, and seeding again does not bring it back.
+    #[tokio::test]
+    async fn secret_delete_is_seeded_once_as_always_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let (t, vault, rt) = tool(dir.path()).await;
+        let reg = ::tools::registry::start(&rt).await.unwrap();
+        reg.ask(RegisterTool(Arc::new(t))).await.unwrap();
+        let session = SessionId::new();
+        let action = || async {
+            reg.ask(InspectTool {
+                session,
+                name: "secret_delete".into(),
+                args: None,
+            })
+            .await
+            .unwrap()
+            .action
+        };
+        assert_eq!(action().await, PolicyAction::Allow, "approvals off, no entry");
+        seed_delete_ask(&reg, &vault).await.unwrap();
+        assert_eq!(action().await, PolicyAction::Ask, "always ask with approvals off");
+        reg.ask(SetAlwaysAsk {
+            session: None,
+            tool: "secret_delete".into(),
+            on: false,
+        })
+        .await
+        .unwrap();
+        assert_eq!(action().await, PolicyAction::Allow);
+        seed_delete_ask(&reg, &vault).await.unwrap();
+        assert_eq!(action().await, PolicyAction::Allow, "a removed entry stays removed");
     }
 }

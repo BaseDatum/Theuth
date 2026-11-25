@@ -1,0 +1,125 @@
+# cargo-deny (`cargo deny check licenses`). 221 §13 B2: the licence allow-list, with the GPL-3.0
+# option of `bitwarden/sdk-internal` (`GPL-3.0-only OR LicenseRef-Bitwarden-SDK`, D3) allowed only
+# for the `bitwarden-*` crates. B10 widens this to every GPL-3.0-compatible licence once theuth's
+# own crates carry `GPL-3.0-or-later` (D26).
+
+[licenses]
+# Permissive licences, all GPL-3.0-compatible.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+# theuth's own crates are `publish = false` and carry no `license` field until B10.
+[licenses.private]
+ignore = true
+
+# D3: the SDK taken under its GPL-3.0 option. Scoped by crate name, never a global allow, so a
+# crate under the Bitwarden SDK licence alone still fails. Names from the `sdk@2b06afa` graph.
+[[licenses.exceptions]]
+name = "bitwarden-api-api"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-api-base"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-api-identity"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-api-key-connector"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-auth"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-collections"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-core"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-core-macro"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-crypto"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-encoding"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-error"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-error-macro"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-ffi"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-ffi-macro"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-logging"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-logging-macro"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-managed-settings-types"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-organizations"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-pm"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-policies"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-random"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-send"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-sensitive-value"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-ssh"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-state"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-state-bridge-macro"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-sync"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-threading"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-uuid"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-uuid-macro"
+allow = ["GPL-3.0-only"]
+[[licenses.exceptions]]
+name = "bitwarden-vault"
+allow = ["GPL-3.0-only"]

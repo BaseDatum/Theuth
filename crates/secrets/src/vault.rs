@@ -29,6 +29,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use zeroize::Zeroizing;
 
+pub use ::tools::secrets::Fetched;
+
 use crate::store;
 
 mod rotation;
@@ -44,8 +46,18 @@ pub const KEEP: usize = 5;
 /// too many false positives, and the receipt says so.
 pub const MIN_REDACT: usize = 8;
 
-/// Regex source for a placeholder: group 1 = name, group 2 = versions back (1..=4).
-pub const PLACEHOLDER: &str = r"\{\{secret:([A-Za-z0-9_.\-]+)(?::-([1-4]))?\}\}";
+/// Regex source for a placeholder (221 §3.1). External: group 1 = backend, group 2 =
+/// `CONN/REF` (split and checked by [`crate::external::parse_ref`]), group 3 = `#KEY`. Local:
+/// group 4 = name. Both: group 5 = versions back (1..=4). Any `x/…` matches the external
+/// branch, so an unknown backend is an error rather than literal text.
+pub const PLACEHOLDER: &str = r"\{\{secret:(?:([A-Za-z0-9_.\-]+)/([A-Za-z0-9/_+=.@\-]{1,600}?)(?:#([^}]{1,128}?))?|([A-Za-z0-9_.\-]+))(?::-([1-4]))?\}\}";
+
+/// [`PLACEHOLDER`], compiled once.
+pub fn placeholder_re() -> &'static Regex {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(PLACEHOLDER).expect("PLACEHOLDER is a valid regex"));
+    &RE
+}
 
 /// Header of the pre-67 single-file vault, still read once for migration.
 const MAGIC: &[u8] = b"theuth-secrets-1\n";
@@ -344,7 +356,21 @@ struct Scrubber {
 
 struct Inner {
     entries: BTreeMap<String, Entry>,
+    /// 221 §3.4: every external value fetched in this process, with its placeholder. Scrubbed
+    /// for the life of the process; never persisted.
+    external: Vec<(String, Zeroizing<String>)>,
     scrubber: Option<Scrubber>,
+}
+
+/// What [`Vault::delete_where`] checks inside its transaction.
+#[derive(Clone, Copy)]
+enum Guard {
+    /// Nothing: the user's delete.
+    None,
+    /// The current version expired at or before this time (ms).
+    ExpiredBy(u64),
+    /// The current version is this one (D24 `confirm`).
+    Version(u32),
 }
 
 /// The encrypted, versioned store. `Send + Sync`; reads are sync from the
@@ -436,6 +462,7 @@ impl Vault {
             key_store,
             inner: RwLock::new(Inner {
                 entries: BTreeMap::new(),
+                external: Vec::new(),
                 scrubber: None,
             }),
             changed: tokio::sync::watch::Sender::new(0),
@@ -692,7 +719,7 @@ impl Vault {
         *self.missing.write().unwrap_or_else(PoisonError::into_inner) = missing;
         entries.retain(|_, e| !e.versions.is_empty());
         let mut g = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        g.scrubber = scrubber(&entries);
+        g.scrubber = scrubber(&entries, &g.external);
         g.entries = entries;
         drop(g);
         self.changed.send_modify(|n| *n = n.wrapping_add(1));
@@ -845,7 +872,15 @@ impl Vault {
 
     /// Remove the name and every version.
     pub async fn delete(&self, name: &str) -> Result<(), String> {
-        self.delete_where(name, None).await.map(|_| ())
+        self.delete_where(name, Guard::None).await.map(|_| ())
+    }
+
+    /// 221 D24: [`Vault::delete`], but only while `confirm` is still the current version (read
+    /// inside the transaction). Returns how many versions went.
+    pub async fn delete_confirmed(&self, name: &str, confirm: u32) -> Result<u64, String> {
+        self.delete_where(name, Guard::Version(confirm))
+            .await
+            .map(Option::unwrap_or_default)
     }
 
     /// [`Vault::delete`] — the same rows, so the deletion replicates the same way —
@@ -853,31 +888,52 @@ impl Vault {
     /// expires at or before `now_ms`: a replace that landed meanwhile keeps the
     /// secret. `Ok(false)` when it no longer expires or is already gone.
     pub async fn delete_expired(&self, name: &str, now_ms: u64) -> Result<bool, String> {
-        match self.delete_where(name, Some(now_ms)).await {
+        match self.delete_where(name, Guard::ExpiredBy(now_ms)).await {
             Err(e) if e == unknown(name) => Ok(false),
-            r => r,
+            r => r.map(|n| n.is_some()),
         }
     }
 
-    /// One transaction: the pointer and every `vault` row of `name`; with
-    /// `expired_by`, only when the current version's `expires_ms` ≤ it (`Ok(false)` otherwise).
-    async fn delete_where(&self, name: &str, expired_by: Option<u64>) -> Result<bool, String> {
+    /// One transaction: the pointer and every `vault` row of `name`, when `guard` holds
+    /// (`Ok(None)` when an expiry guard does not; `Err` when a version guard does not).
+    /// `Ok(Some(n))`: `n` version rows went.
+    async fn delete_where(&self, name: &str, guard: Guard) -> Result<Option<u64>, String> {
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|e| e.to_string())?;
-        if let Some(now) = expired_by {
-            let expires: Option<Option<i64>> = sqlx::query_scalar(
-                "SELECT v.expires_ms FROM vault_current c JOIN vault v \
-                 ON v.name = c.name AND v.version = c.version WHERE c.name = ?",
-            )
-            .bind(name)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-            if !expires.flatten().is_some_and(|t| t as u64 <= now) {
-                return Ok(false);
+        match guard {
+            Guard::None => {}
+            Guard::ExpiredBy(now) => {
+                let expires: Option<Option<i64>> = sqlx::query_scalar(
+                    "SELECT v.expires_ms FROM vault_current c JOIN vault v \
+                     ON v.name = c.name AND v.version = c.version WHERE c.name = ?",
+                )
+                .bind(name)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+                if !expires.flatten().is_some_and(|t| t as u64 <= now) {
+                    return Ok(None);
+                }
+            }
+            Guard::Version(confirm) => {
+                let current: Option<i64> =
+                    sqlx::query_scalar("SELECT version FROM vault_current WHERE name = ?")
+                        .bind(name)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                match current {
+                    None => return Err(unknown(name)),
+                    Some(v) if v != i64::from(confirm) => {
+                        return Err(format!(
+                            "{name} is at v{v}, not v{confirm}; secret_list shows the current version"
+                        ));
+                    }
+                    Some(_) => {}
+                }
             }
         }
         let gone = sqlx::query("DELETE FROM vault_current WHERE name = ?")
@@ -889,23 +945,34 @@ impl Vault {
         if gone == 0 {
             return Err(unknown(name));
         }
-        sqlx::query("DELETE FROM vault WHERE name = ?")
+        let versions = sqlx::query("DELETE FROM vault WHERE name = ?")
             .bind(name)
             .execute(&mut *tx)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+            .rows_affected();
         tx.commit().await.map_err(|e| e.to_string())?;
         self.refresh().await.map_err(|e| format!("{e:#}"))?;
-        Ok(true)
+        Ok(Some(versions))
     }
 
     /// Replace every `{{secret:NAME}}` / `{{secret:NAME:-N}}` in every string
     /// leaf of `args` (keys untouched); returns the count. Err on the first
     /// unknown name or version — `args` may then be partially expanded, so
-    /// the caller must not dispatch it.
+    /// the caller must not dispatch it. An external reference is an error here
+    /// ([`Vault::expand_with`] takes the fetched values).
     pub fn expand(&self, args: &mut serde_json::Value) -> Result<usize, String> {
-        static RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(PLACEHOLDER).expect("PLACEHOLDER is a valid regex"));
+        self.expand_with(args, &Fetched::default())
+    }
+
+    /// [`Vault::expand`], with external placeholders (221 §3.3) replaced from `fetched`. One
+    /// missing from it is an error: `resolve_external` fills every reference first, so that is
+    /// a caller without external support (`mcp::expand`, jobs) or a bug.
+    pub fn expand_with(
+        &self,
+        args: &mut serde_json::Value,
+        fetched: &Fetched,
+    ) -> Result<usize, String> {
         let g = self.read();
         let now = now_ms();
         let mut n = 0;
@@ -914,9 +981,20 @@ impl Vault {
                 return Ok(());
             }
             let mut err = None;
-            let out = RE.replace_all(s, |c: &regex::Captures| -> String {
-                let back = c.get(2).map_or(0, |m| m.as_str().parse().unwrap_or(0));
-                match lookup(&g.entries, &c[1], back, now) {
+            let out = placeholder_re().replace_all(s, |c: &regex::Captures| -> String {
+                let found = match c.get(4) {
+                    Some(name) => {
+                        let back = c.get(5).map_or(0, |m| m.as_str().parse().unwrap_or(0));
+                        lookup(&g.entries, name.as_str(), back, now)
+                    }
+                    None => fetched.get(&c[0]).ok_or_else(|| {
+                        format!(
+                            "{} was not resolved: external secrets expand only in a tool call",
+                            &c[0]
+                        )
+                    }),
+                };
+                match found {
                     Ok(value) => {
                         n += 1;
                         value.to_owned()
@@ -936,6 +1014,22 @@ impl Vault {
             Ok(())
         })?;
         Ok(n)
+    }
+
+    /// 221 §3.4: scrub `value` back to `placeholder` in tool output from now on, for the life of
+    /// the process (an external value fetched for a call). Never written anywhere.
+    pub fn remember_external(&self, placeholder: &str, value: &str) {
+        let mut g = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        if g
+            .external
+            .iter()
+            .any(|(p, v)| p == placeholder && v.as_str() == value)
+        {
+            return;
+        }
+        g.external
+            .push((placeholder.to_owned(), Zeroizing::new(value.to_owned())));
+        g.scrubber = scrubber(&g.entries, &g.external);
     }
 
     /// Every kept version of every value ≥ [`MIN_REDACT`] chars, and its
@@ -1353,28 +1447,42 @@ fn scrub<'a>(sc: Option<&Scrubber>, text: &'a str) -> Cow<'a, str> {
 }
 
 /// Newest version first per name and each text once, so a value two
-/// versions share (a restore) reports the current placeholder.
-fn scrubber(entries: &BTreeMap<String, Entry>) -> Option<Scrubber> {
+/// versions share (a restore) reports the current placeholder. Then the
+/// external values fetched in this process, newest first (221 §3.4).
+fn scrubber(
+    entries: &BTreeMap<String, Entry>,
+    external: &[(String, Zeroizing<String>)],
+) -> Option<Scrubber> {
     let mut patterns: Vec<Zeroizing<String>> = Vec::new();
     let mut placeholders = Vec::new();
-    for (name, e) in entries {
-        for (i, ver) in e.versions.iter().enumerate() {
-            if ver.value.chars().count() < MIN_REDACT {
-                continue;
-            }
-            let ph = if i == 0 {
-                format!("{{{{secret:{name}}}}}")
-            } else {
-                format!("{{{{secret:{name}:-{i}}}}}")
-            };
-            for text in [
-                ver.value.clone(),
-                Zeroizing::new(B64.encode(ver.value.as_bytes())),
-            ] {
-                if !patterns.contains(&text) {
-                    patterns.push(text);
-                    placeholders.push(ph.clone());
-                }
+    let long = |v: &Zeroizing<String>| v.chars().count() >= MIN_REDACT;
+    let local = entries.iter().flat_map(|(name, e)| {
+        e.versions
+            .iter()
+            .enumerate()
+            .filter(|(_, ver)| long(&ver.value))
+            .map(move |(i, ver)| {
+                let ph = if i == 0 {
+                    format!("{{{{secret:{name}}}}}")
+                } else {
+                    format!("{{{{secret:{name}:-{i}}}}}")
+                };
+                (ph, &ver.value)
+            })
+    });
+    let fetched = external
+        .iter()
+        .rev()
+        .filter(|(_, v)| long(v))
+        .map(|(ph, v)| (ph.clone(), v));
+    for (ph, value) in local.chain(fetched) {
+        for text in [
+            value.clone(),
+            Zeroizing::new(B64.encode(value.as_bytes())),
+        ] {
+            if !patterns.contains(&text) {
+                patterns.push(text);
+                placeholders.push(ph.clone());
             }
         }
     }
@@ -1852,7 +1960,8 @@ mod tests {
             "never listed"
         );
         let mut args = serde_json::json!({"a": "{{secret:share/tun.zip/sky/tls}}"});
-        assert_eq!(v.expand(&mut args).unwrap(), 0, "never expanded");
+        // 221 §3.2: a `/` placeholder is external; unresolved, it fails rather than expand.
+        assert!(v.expand(&mut args).is_err(), "never expanded");
         assert_eq!(args["a"], "{{secret:share/tun.zip/sky/tls}}");
         let (names, _) = v.names_written_by(None);
         assert_eq!(names, ["tok"], "not in the unpair preview");
@@ -1893,7 +2002,7 @@ mod tests {
         );
         let placeholder = ["{{", "secret:", row, "}}"].concat();
         let mut args = serde_json::json!({ "a": placeholder });
-        assert_eq!(v.expand(&mut args).unwrap(), 0, "never expanded");
+        assert!(v.expand(&mut args).is_err(), "never expanded");
         assert_eq!(args["a"], placeholder);
 
         let key = v.plugins_grants_key().await.unwrap();
@@ -1980,14 +2089,16 @@ mod tests {
             ["tok"]
         );
 
+        // 221 §3.2: a `/` placeholder is external; unresolved, it fails rather than expand.
         let mut args =
             serde_json::json!({"a": "{{secret:mesh/device_key}}", "b": "{{secret:oauth/gh}}"});
-        assert_eq!(
-            v.expand(&mut args).unwrap(),
-            0,
-            "the placeholder grammar has no `/`"
-        );
+        assert!(v.expand(&mut args).is_err(), "never expanded");
         assert_eq!(args["a"], "{{secret:mesh/device_key}}");
+        assert_eq!(args["b"], "{{secret:oauth/gh}}");
+        // 221 §3.2: the backend namespaces are never vault rows.
+        for name in ["bw/x", "bw/personal/x", "aws/prod/app/db"] {
+            assert!(!writable_name(name), "{name}");
+        }
     }
 
     /// 69 decision 1: two callers racing for the first `mesh/device_key`

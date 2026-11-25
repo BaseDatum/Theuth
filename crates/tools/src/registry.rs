@@ -1554,12 +1554,7 @@ impl ToolRegistry {
     /// [`Self::hidden_chain`]). While any entry applies, the [`MCP_ADMIN_TOOLS`] are always
     /// ask too (§2.4), so re-registering a server cannot shed its marks.
     fn always_ask_applies(&self, session: Option<SessionId>, name: &str) -> bool {
-        let mut sets: Vec<&HashSet<String>> = vec![&self.always_ask];
-        let mut cur = session;
-        while let Some(id) = cur {
-            sets.extend(self.always_ask_session.get(&id));
-            cur = self.parents.get(&id).copied();
-        }
+        let sets = self.always_ask_sets(session);
         if sets.iter().all(|s| s.is_empty()) {
             return false;
         }
@@ -1573,6 +1568,42 @@ impl ToolRegistry {
             ToolSource::Native { .. } => None,
         });
         server.is_some_and(|k| sets.iter().any(|s| s.contains(&k)))
+    }
+
+    /// The harness-wide always-ask set, then `session`'s and each ancestor's.
+    fn always_ask_sets(&self, session: Option<SessionId>) -> Vec<&HashSet<String>> {
+        let mut sets: Vec<&HashSet<String>> = vec![&self.always_ask];
+        let mut cur = session;
+        while let Some(id) = cur {
+            sets.extend(self.always_ask_session.get(&id));
+            cur = self.parents.get(&id).copied();
+        }
+        sets
+    }
+
+    /// 221 D10: the call touches an external connection whose `secret:<backend>/<conn>:<dir>`
+    /// entry is in the harness-wide, session or ancestor set. Only a tool that consumes its
+    /// placeholders reads through them; the `secret_*` tools name connections in their own
+    /// args, which the hook reads by tool name. Folded into `protected` at the three gate sites.
+    fn external_always(
+        &self,
+        session: Option<SessionId>,
+        tool: &DynTool,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> bool {
+        if !tool.consumes_secrets() && !name.starts_with("secret_") {
+            return false;
+        }
+        let access = crate::secrets::external_access(name, args);
+        if access.is_empty() {
+            return false;
+        }
+        let sets = self.always_ask_sets(session);
+        access.iter().any(|a| {
+            let key = a.always_ask_key();
+            sets.iter().any(|s| s.contains(&key))
+        })
     }
 
     /// [`GetAlwaysAsk`]'s answer.
@@ -2056,7 +2087,8 @@ impl ToolRegistry {
         let mentions = mentions(&tool, &call.args);
         // The identity above binds the declared spec; the gate sees the call's risk.
         spec.risk = call_risk(&tool, call.session, spec.risk, &call.args);
-        let protected = self.protected_write(call.session, name, spec.risk, &call.args);
+        let protected = self.protected_write(call.session, name, spec.risk, &call.args)
+            || self.external_always(Some(call.session), &tool, name, &call.args);
         let mut card = None;
         match self.effective(Some(call.session), name, spec.risk, mentions, protected) {
             PolicyAction::Allow => {}
@@ -2220,6 +2252,7 @@ impl Message<InspectTool> for ToolRegistry {
             .map(|a| call_risk(&tool, m.session, tool.spec().risk, a));
         let protected = m.args.as_ref().is_some_and(|a| {
             self.protected_write(m.session, &m.name, risk.unwrap_or(Risk::ReadOnly), a)
+                || self.external_always(Some(m.session), &tool, &m.name, a)
         });
         Ok(self.inspect(&tool, Some(m.session), mentions, risk, protected))
     }
@@ -3252,7 +3285,8 @@ impl ToolRegistry {
         let mentions = mentions(&tool, &call.args);
         // 209 D14: the approval card and the gate both see the call's risk.
         spec.risk = call_risk(&tool, call.session, spec.risk, &call.args);
-        let protected = self.protected_write(call.session, &call.name, spec.risk, &call.args);
+        let protected = self.protected_write(call.session, &call.name, spec.risk, &call.args)
+            || self.external_always(Some(call.session), &tool, &call.name, &call.args);
         let card = match self.gate(call.session, &call.name, spec.risk, mentions, protected) {
             Ok(a) => a.map(|approval| Card {
                 approval,
@@ -3515,10 +3549,20 @@ async fn invoke(
     // Placeholders become values after the gate (the approval card showed the
     // placeholder) and before the tool; an unknown name fails the whole call.
     // A tool that stores its arguments as an artifact keeps them literal.
-    if tool.consumes_secrets()
-        && let Err(e) = crate::secrets::expand(&mut call.args)
-    {
-        return ToolOutput::err(e);
+    // 221 §3.3: external references are fetched first (a network call, after the
+    // approval); `fetched` is dropped, zeroized, before the tool's output exists.
+    if tool.consumes_secrets() {
+        let cx = crate::secrets::ResolveCx {
+            session,
+            call_id: call_id.clone(),
+        };
+        let fetched = match crate::secrets::resolve_external(&call.args, cx).await {
+            Ok(f) => f,
+            Err(e) => return ToolOutput::err(e),
+        };
+        if let Err(e) = crate::secrets::expand_with(&mut call.args, &fetched) {
+            return ToolOutput::err(e);
+        }
     }
     let cancel = CancellationToken::new();
     let promote_after = promote_after.filter(|_| tool.promotable());
@@ -7873,5 +7917,272 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(state.session.is_empty(), "{state:?}");
+    }
+
+    /// 221: a hook standing in for the secrets plugin. `{{secret:bw/<conn>/<id>}}` is a read of
+    /// `bw/<conn>`; it resolves to [`EXT_VALUE`] except for connection `missing`. The tool
+    /// `secret_fake_op` declares `{conn, dir}`. Everything else is the identity, so tests that
+    /// share the process-wide hook see no change.
+    struct ExtHook;
+
+    const EXT_VALUE: &str = "fetched-external-value";
+
+    /// `(placeholder, conn)` of every `{{secret:bw/…}}` in the string leaves of `args`.
+    fn ext_refs(args: &serde_json::Value, out: &mut Vec<(String, String)>) {
+        match args {
+            serde_json::Value::String(s) => {
+                let mut rest = s.as_str();
+                while let Some(i) = rest.find("{{secret:bw/") {
+                    let Some(j) = rest[i..].find("}}") else { break };
+                    let ph = &rest[i..i + j + 2];
+                    let conn = ph["{{secret:bw/".len()..].split('/').next().unwrap_or("");
+                    out.push((ph.to_owned(), conn.to_owned()));
+                    rest = &rest[i + j + 2..];
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|v| ext_refs(v, out)),
+            serde_json::Value::Object(o) => o.values().for_each(|v| ext_refs(v, out)),
+            _ => {}
+        }
+    }
+
+    impl crate::secrets::Secrets for ExtHook {
+        fn expand(&self, _: &mut serde_json::Value) -> Result<usize, String> {
+            Ok(0)
+        }
+        fn expand_with(
+            &self,
+            args: &mut serde_json::Value,
+            fetched: &crate::secrets::Fetched,
+        ) -> Result<usize, String> {
+            let mut refs = Vec::new();
+            ext_refs(args, &mut refs);
+            if let Some(serde_json::Value::String(s)) = args.get_mut("c") {
+                for (ph, _) in &refs {
+                    let v = fetched.get(ph).ok_or("not resolved")?;
+                    *s = s.replace(ph.as_str(), v);
+                }
+            }
+            Ok(refs.len())
+        }
+        fn external_access(
+            &self,
+            tool: &str,
+            args: &serde_json::Value,
+        ) -> Vec<crate::secrets::ExternalAccess> {
+            use crate::secrets::{Direction, ExternalAccess};
+            if tool == "secret_fake_op" {
+                let dir = match args["dir"].as_str() {
+                    Some("write") => Direction::Write,
+                    Some("delete") => Direction::Delete,
+                    Some("send") => Direction::Send,
+                    _ => Direction::Read,
+                };
+                let conn = args["conn"].as_str().unwrap_or_default().to_owned();
+                return vec![ExternalAccess {
+                    backend: "bw",
+                    conn,
+                    dir,
+                }];
+            }
+            let mut refs = Vec::new();
+            ext_refs(args, &mut refs);
+            refs.into_iter()
+                .map(|(_, conn)| ExternalAccess {
+                    backend: "bw",
+                    conn,
+                    dir: Direction::Read,
+                })
+                .collect()
+        }
+        fn resolve_external<'a>(
+            &'a self,
+            args: &'a serde_json::Value,
+            _cx: crate::secrets::ResolveCx,
+        ) -> futures::future::BoxFuture<'a, Result<crate::secrets::Fetched, String>> {
+            Box::pin(async move {
+                let mut refs = Vec::new();
+                ext_refs(args, &mut refs);
+                let mut f = crate::secrets::Fetched::default();
+                for (ph, conn) in refs {
+                    if conn == "missing" {
+                        return Err(format!("unknown connection bw/{conn} on this engine"));
+                    }
+                    f.insert(ph, zeroize::Zeroizing::new(EXT_VALUE.to_owned()));
+                }
+                Ok(f)
+            })
+        }
+        fn redact<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+            std::borrow::Cow::Borrowed(text)
+        }
+        fn redact_value(&self, _: &mut serde_json::Value) {}
+    }
+
+    /// Returns its `c` argument; counts the bodies entered.
+    struct Show(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Tool for Show {
+        const NAME: &'static str = "show";
+        const RISK: Risk = Risk::ReadOnly;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, a: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput::ok(a["c"].as_str().unwrap_or_default()))
+        }
+    }
+
+    /// Takes `{conn, dir}` as data, like the `secret_external_*` tools.
+    struct FakeOp;
+
+    #[async_trait::async_trait]
+    impl Tool for FakeOp {
+        const NAME: &'static str = "secret_fake_op";
+        const RISK: Risk = Risk::ReadOnly;
+        const CONSUMES_SECRETS: bool = false;
+        type Args = serde_json::Value;
+        fn description(&self) -> String {
+            String::new()
+        }
+        async fn call(&self, _: Self::Args, _: ToolCx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok("done"))
+        }
+    }
+
+    fn show(session: SessionId, c: &str) -> ToolCall {
+        ToolCall {
+            args: serde_json::json!({ "c": c }),
+            ..call("show", session)
+        }
+    }
+
+    fn ext_tools() -> (Vec<DynTool>, Arc<std::sync::atomic::AtomicUsize>) {
+        crate::secrets::install(Arc::new(ExtHook));
+        let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        (vec![Arc::new(Show(entered.clone())), Arc::new(FakeOp)], entered)
+    }
+
+    /// 221 §13 B2 (c), (f), (h): `secret:bw/c:read` in the global set raises an always-ask card
+    /// with approvals off and every policy `allow`, which the double cannot answer; after the
+    /// human's Allow the value is fetched and expanded. Without the entry the placeholder runs
+    /// unasked. A resolve error fails the call before the body runs.
+    #[tokio::test]
+    async fn external_read_entry_forces_a_card_and_resolves_after_it() {
+        let (tools, entered) = ext_tools();
+        let (reg, cards) =
+            always_ask_registry(tools, &["secret:bw/c:read"], PathBuf::new(), Decision::Allow).await;
+        let session = SessionId::new();
+        let out = reg
+            .ask(Invoke(show(session, "v={{secret:bw/c/x}}")))
+            .await
+            .unwrap();
+        assert_eq!(out.content, format!("v={EXT_VALUE}"), "{out:?}");
+        assert_eq!(*lock(&cards), [(true, false)], "always ask; the double refused");
+        let out = reg
+            .ask(Invoke(show(session, "v={{secret:bw/other/x}}")))
+            .await
+            .unwrap();
+        assert_eq!(out.content, format!("v={EXT_VALUE}"));
+        assert_eq!(lock(&cards).len(), 1, "another connection's read is not marked");
+        let before = entered.load(Ordering::SeqCst);
+        let out = reg
+            .ask(Invoke(show(session, "{{secret:bw/missing/x}}")))
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert_eq!(out.content, "unknown connection bw/missing on this engine");
+        assert_eq!(entered.load(Ordering::SeqCst), before, "nothing dispatched");
+    }
+
+    /// 221 §13 B2 (d), (e): a parent chat's entry applies to its subagent; with the owner absent
+    /// the call is denied with 219's reason.
+    #[tokio::test]
+    async fn external_entry_is_inherited_and_denied_without_the_owner() {
+        let (tools, entered) = ext_tools();
+        let (reg, cards) = always_ask_registry(tools, &[], PathBuf::new(), Decision::Deny).await;
+        let (parent, child) = (SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent,
+        })
+        .await
+        .unwrap();
+        reg.ask(SetAlwaysAsk {
+            session: Some(parent),
+            tool: "secret:bw/c:read".into(),
+            on: true,
+        })
+        .await
+        .unwrap();
+        let out = reg
+            .ask(Invoke(show(child, "{{secret:bw/c/x}}")))
+            .await
+            .unwrap();
+        assert_eq!(out.content, "show: denied by user");
+        assert_eq!(*lock(&cards), [(true, false)]);
+        reg.tell(SetNonOwnerThread {
+            session: parent,
+            on: true,
+        })
+        .await
+        .unwrap();
+        let out = reg
+            .ask(Invoke(show(child, "{{secret:bw/c/x}}")))
+            .await
+            .unwrap();
+        assert_eq!(
+            out.content,
+            "show: always ask: show needs the owner's approval and the owner is not in this conversation"
+        );
+        assert_eq!(lock(&cards).len(), 1);
+        assert_eq!(entered.load(Ordering::SeqCst), 0);
+    }
+
+    /// 221 §13 B2 (i): each of the four directions is seeded, forces a card, and stops forcing
+    /// it once removed.
+    #[tokio::test]
+    async fn each_seeded_direction_asks_until_removed() {
+        let dir = scratch_dir();
+        let path = dir.join("config.yaml");
+        std::fs::write(&path, "tools:\n  approvals: false\n").unwrap();
+        let (tools, _) = ext_tools();
+        let (reg, cards) = always_ask_registry(tools, &[], path.clone(), Decision::Allow).await;
+        crate::secrets::seed_ask(&reg, "bw", "c").await.unwrap();
+        let state = reg.ask(GetAlwaysAsk { session: None }).await.unwrap();
+        assert_eq!(
+            state.global,
+            [
+                "secret:bw/c:delete",
+                "secret:bw/c:read",
+                "secret:bw/c:send",
+                "secret:bw/c:write"
+            ]
+        );
+        assert!(std::fs::read_to_string(&path).unwrap().contains("secret:bw/c:send"));
+        let session = SessionId::new();
+        for d in ["read", "write", "delete", "send"] {
+            let op = || ToolCall {
+                args: serde_json::json!({"conn": "c", "dir": d}),
+                ..call("secret_fake_op", session)
+            };
+            let n = lock(&cards).len();
+            let out = reg.ask(Invoke(op())).await.unwrap();
+            assert_eq!(out.content, "done", "{d}: {out:?}");
+            assert_eq!(lock(&cards).len(), n + 1, "{d} asks");
+            reg.ask(SetAlwaysAsk {
+                session: None,
+                tool: format!("secret:bw/c:{d}"),
+                on: false,
+            })
+            .await
+            .unwrap();
+            let out = reg.ask(Invoke(op())).await.unwrap();
+            assert_eq!(out.content, "done");
+            assert_eq!(lock(&cards).len(), n + 1, "{d} removed: no card");
+        }
     }
 }
