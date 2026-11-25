@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query'
 import { openPath } from '@tauri-apps/plugin-opener'
 import { ArrowDown, ArrowUp, ChevronRight, FolderOpen, RefreshCw, RotateCw, ScrollText, Trash2 } from 'lucide-react'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
-import { GrantLines, RISK_WORD, grantedLines } from '@/components/plugins/GrantLines'
+import { GrantLines, RISK_WORD, grantedLines, shown } from '@/components/plugins/GrantLines'
 import { PluginIcon } from '@/components/plugins/icons'
 import { LogsSheet } from '@/components/plugins/LogsSheet'
 import { NewPluginPopover } from '@/components/plugins/NewPluginPopover'
@@ -136,7 +136,7 @@ function PluginRow({ info: p, names, index, focused, act }: { info: PluginInfo; 
             <ChevronRight className={`size-4 shrink-0 text-fg-tertiary transition-transform ${open ? 'rotate-90' : ''}`} />
             <PluginIcon icon={icon} className="size-4 shrink-0 text-fg-secondary" />
             <span className="text-sm font-medium break-all">{p.name}</span>
-            {p.version && <span className="shrink-0 text-[13px] text-fg-tertiary">{p.version}</span>}
+            {p.version && <span className="shrink-0 text-[13px] text-fg-tertiary">{shown(p.version)}</span>}
             {p.needs_approval && p.state !== 'awaiting_approval' && (
               <Badge variant="outline" className="shrink-0 font-normal">
                 approval waiting
@@ -148,8 +148,8 @@ function PluginRow({ info: p, names, index, focused, act }: { info: PluginInfo; 
         <Switch checked={p.enabled} disabled={act.enable.isPending} aria-label={`Enable ${p.name}`} onCheckedChange={(on) => act.enable.mutate({ name: p.name, on })} />
         <Uninstall name={p.name} act={act} />
       </div>
-      {p.description && <p className="mt-1 ml-6 text-[13px] break-words text-fg-secondary">{p.description}</p>}
-      {p.error && <p className="mt-1 ml-6 text-[13px] break-words text-destructive">{p.error}</p>}
+      {p.description && <p className="mt-1 ml-6 text-[13px] break-words text-fg-secondary">{shown(p.description)}</p>}
+      {p.error && <p className="mt-1 ml-6 text-[13px] break-words text-destructive">{shown(p.error)}</p>}
       <div className="mt-2 ml-6 flex flex-wrap items-center gap-2">
         <Button variant="outline" size="sm" disabled={act.restart.isPending} onClick={() => act.restart.mutate(p.name)}>
           <RotateCw />
@@ -267,7 +267,7 @@ function Detail({ info: p, act }: { info: PluginInfo; act: Actions }) {
             <div key={pl.id} className="flex items-center gap-3 border-b border-border-subtle py-2 last:border-0">
               <PluginIcon icon={pl.icon} className="size-4 shrink-0 text-fg-secondary" />
               <span className="min-w-0 flex-1 text-sm break-words">
-                {pl.label}
+                {shown(pl.label)}
                 <span className="ml-2 text-[13px] text-fg-tertiary">{pl.command ? pl.command.slash : PLACEMENT_KIND[pl.kind]}</span>
               </span>
               <Switch
@@ -292,13 +292,13 @@ function Detail({ info: p, act }: { info: PluginInfo; act: Actions }) {
         </Block>
       )}
       <Block title="Folder">
-        <code className="font-mono text-xs break-all text-fg-secondary select-all">{p.dir}</code>
+        <code className="font-mono text-xs break-all text-fg-secondary select-all">{shown(p.dir)}</code>
       </Block>
       {warnings.length > 0 && (
         <Block title="Warnings">
           {warnings.map((w) => (
             <p key={w} className="text-[13px] break-words text-warning">
-              {w}
+              {shown(w)}
             </p>
           ))}
         </Block>

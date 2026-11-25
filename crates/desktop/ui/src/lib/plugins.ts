@@ -177,15 +177,16 @@ export function placementsOf(plugins: readonly PluginInfo[] | null, status: Read
     )
 }
 
-export type PluginCommand = { plugin: string; command: CommandInfo }
+/** `hidden`: the owner hid the placement; the slash menu leaves it out, typing it still runs it (216 §9.1). */
+export type PluginCommand = { plugin: string; command: CommandInfo; hidden: boolean }
 
-/** Every runnable plugin's `/command`s, hidden ones included (a hidden placement's command still works) (pure). */
+/** Every runnable plugin's `/command`s, hidden ones included and marked (a hidden placement's command still works) (pure). */
 export function commandsOf(plugins: readonly PluginInfo[] | null): PluginCommand[] {
   if (!plugins) return []
   return [...plugins]
     .filter(drawn)
     .sort(byOrder)
-    .flatMap((p) => p.placements.flatMap((pl) => (pl.kind === 'command' && pl.command ? [{ plugin: p.name, command: pl.command }] : [])))
+    .flatMap((p) => p.placements.flatMap((pl) => (pl.kind === 'command' && pl.command ? [{ plugin: p.name, command: pl.command, hidden: pl.hidden }] : [])))
 }
 
 /** The shown placements of `kind` (contract §12.2). */

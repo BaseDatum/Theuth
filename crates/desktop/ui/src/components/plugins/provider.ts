@@ -16,6 +16,8 @@ export function pluginProvider(
     if (!b) return Promise.reject(new Error(`unknown statement ${ctx.statement_id}`))
     if (b.kind === 'mutation') {
       if (!ctx.action_id) return Promise.reject(new Error('a mutation needs a press'))
+      // `form` is null: the renderer hands the provider only the statement's evaluated arguments, so OpenUI form
+      // fields reach the plugin folded into `args` (bound through `$state`), never as a separate form object.
       return api.plugin_action(p.plugin, p.placement, b.name, args ?? {}, p.session, ctx.action_id, null)
     }
     return api.plugin_query(p.plugin, p.placement, b.name, args ?? {}, p.session)

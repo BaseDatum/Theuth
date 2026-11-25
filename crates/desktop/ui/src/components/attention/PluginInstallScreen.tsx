@@ -4,7 +4,7 @@
 // `plugin_get(name)`, never from the item. A plugin's notice (`plugin-notify:…`): its title and body, and the way to it.
 import { useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { GrantLines } from '@/components/plugins/GrantLines'
+import { GrantLines, shown } from '@/components/plugins/GrantLines'
 import { PluginIcon } from '@/components/plugins/icons'
 import { errorText } from '@/components/settings/shared'
 import { queryKeys, useApi } from '@/lib/rpc'
@@ -62,9 +62,9 @@ function Notice({ item, name }: { item: AttentionItem; name: string }) {
     <>
       <div className="flex flex-col gap-1.5">
         <Attribution name={name} icon="puzzle" />
-        <h1 className="text-xl font-semibold leading-snug md:text-2xl">{item.title}</h1>
+        <h1 className="text-xl font-semibold leading-snug md:text-2xl">{shown(item.title)}</h1>
       </div>
-      {item.detail && <p className="text-sm whitespace-pre-wrap text-fg-secondary">{item.detail}</p>}
+      {item.detail && <p className="text-sm whitespace-pre-wrap text-fg-secondary">{shown(item.detail)}</p>}
     </>
   )
 }
@@ -80,7 +80,7 @@ function Card({ item, name }: { item: AttentionItem; name: string | null }) {
     <>
       <div className="flex flex-col gap-1.5">
         {name && <Attribution name={name} icon={icon} />}
-        <h1 className="text-xl font-semibold leading-snug md:text-2xl">{item.title}</h1>
+        <h1 className="text-xl font-semibold leading-snug md:text-2xl">{shown(item.title)}</h1>
         {card && !stale && <p className="text-sm text-fg-secondary">{CARD_LEAD[card.kind]}</p>}
       </div>
       {detail.error && <p className="text-sm break-words text-danger">{errorText(detail.error)}</p>}
@@ -102,7 +102,7 @@ function Card({ item, name }: { item: AttentionItem; name: string | null }) {
               <ul className="flex flex-col gap-0.5 font-mono text-xs">
                 {card.changed_paths.map((p) => (
                   <li key={p} className="break-all">
-                    {p}
+                    {shown(p)}
                   </li>
                 ))}
               </ul>
@@ -110,9 +110,9 @@ function Card({ item, name }: { item: AttentionItem; name: string | null }) {
           )}
           <div className="grid gap-4 sm:grid-cols-2">
             <Fact label="Folder">
-              <span className="break-all font-mono text-xs">{card.dir}</span>
+              <span className="break-all font-mono text-xs">{shown(card.dir)}</span>
             </Fact>
-            {card.version && <Fact label="Version">{card.version}</Fact>}
+            {card.version && <Fact label="Version">{shown(card.version)}</Fact>}
           </div>
         </>
       )}

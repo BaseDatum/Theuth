@@ -1,17 +1,15 @@
 // 216 §9.4, contract §12.5: one plugin placement's content, whatever hosts it (popover, sheet, tile, command card).
 // The attribution strip sits above and outside the content node; the content switches on `format`: OpenUI through
-// `AppRenderer` and the plugin provider, json-render through the chat's json-render renderer, markdown through the
-// chat's markdown renderer with raw HTML skipped. `loading` and `error` are host-drawn frames.
-import { library } from '@theuth/apps'
+// `AppRenderer` with the plugin-restricted library and the plugin provider, json-render through the chat's
+// json-render renderer, markdown through the chat's markdown renderer with raw HTML skipped. `loading` and `error`
+// are host-drawn frames.
 import { AppRenderer, type AppRendererProps } from '@theuth/apps/renderer'
 import { useNavigate } from '@tanstack/react-router'
 import { LoaderCircle, X } from 'lucide-react'
 import { type ReactNode, useEffect, useMemo, useRef } from 'react'
-import { Streamdown, defaultRehypePlugins } from 'streamdown'
 import { copyToClipboard } from '@/components/apps/openui-actions'
 import { OpenUITheme } from '@/components/apps/openui-theme'
 import { useDark } from '@/components/apps/theme'
-import { markdownComponents, rehypePlugins } from '@/components/chat/MessageAssistant'
 import { FRESH } from '@/components/chat/slash'
 import { JsonRenderFence } from '@/components/chat/surface/JsonRenderFence'
 import { EMPTY, openDraftSession, useDrafts } from '@/lib/drafts'
@@ -22,6 +20,7 @@ import type { SurfaceContent } from '@/rpc/bindings/method.plugins.output'
 import { useConnection } from '@/store/connection'
 import { useSessions } from '@/store/sessions'
 import { Attribution } from './Attribution'
+import { PluginMarkdown, pluginLibrary } from './library'
 import { pluginProvider } from './provider'
 
 export type PluginSurfaceProps = {
@@ -104,17 +103,9 @@ function Body({ plugin, placement, session, content }: Omit<PluginSurfaceProps, 
     case 'json-render':
       return <JsonRenderFence code={source} language="json-render" isIncomplete={false} />
     case 'markdown':
-      return (
-        <Streamdown mode="static" skipHtml rehypePlugins={MARKDOWN_REHYPE} components={markdownComponents} className="[&_a]:underline [&_a]:underline-offset-2 [&_p]:my-1">
-          {source}
-        </Streamdown>
-      )
+      return <PluginMarkdown>{source}</PluginMarkdown>
   }
 }
-
-/** The chat's sanitize/harden steps without `raw`: HTML in a plugin's markdown stays unparsed, and `skipHtml` drops it
- * (216 §9.4: no plugin-drawn inputs). */
-const MARKDOWN_REHYPE = rehypePlugins.filter((p) => p !== defaultRehypePlugins.raw)
 
 const Fallback = ({ text }: { text: string | null }) => <p className="py-2 whitespace-pre-wrap text-fg-secondary">{text ?? 'Nothing to show.'}</p>
 
@@ -163,7 +154,7 @@ function OpenUI({ plugin, placement, session, source, content }: { plugin: strin
       <OpenUITheme mode={dark ? 'dark' : 'light'}>
         <AppRenderer
           response={source}
-          library={library}
+          library={pluginLibrary}
           isStreaming={false}
           generation={gen.current.generation}
           provider={provider}

@@ -4,7 +4,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, test } from 'vitest'
 import type { GrantLine, Grants } from '@/rpc/bindings/method.plugins.output'
-import { GrantLines, grantedLines } from './GrantLines'
+import { GrantLines, grantedLines, shown } from './GrantLines'
 
 const lines: GrantLine[] = [
   { key: 'run', text: 'Runs python3 main.py from ~/.theuth/plugins/turns as you, with your files and network', risk: 'destructive', new: false },
@@ -23,6 +23,14 @@ test('one row per line, the new line marked, every line with its risk word', () 
   expect(rows.map((r) => r.includes('data-new="true"'))).toEqual([false, false, true])
   expect(rows[2]).toContain('>new<')
   expect(rows[0]).not.toContain('>new<')
+})
+
+test('BiDi, control and invisible characters in a line are drawn as escapes, not applied', () => {
+  const spoof: GrantLine = { key: 'run', text: 'Runs ./ok\u202Ehs.exe\u0007\u200B', risk: 'destructive', new: false }
+  const html = renderToStaticMarkup(createElement(GrantLines, { lines: [spoof] }))
+  expect(html).toContain('Runs ./ok\\u202Ehs.exe\\u0007\\u200B')
+  expect(html).not.toMatch(/[\u202e\u0007\u200b]/)
+  expect(shown('a\tb\nc')).toBe('a\tb\nc')
 })
 
 test('a grant reads back as lines: run first, each power with its risk, input destructive', () => {

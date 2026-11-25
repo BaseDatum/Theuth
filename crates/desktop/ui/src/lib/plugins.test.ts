@@ -60,5 +60,5 @@ test('placements: ordered by `order`, hidden ones and unapproved or disabled plu
 test('commands: a hidden command placement still runs', () => {
   const info = { name: 'reset', slash: '/turns:reset', description: 'Reset the count', args: null }
   const plugins = [pluginInfo('turns', [placement('reset', { kind: 'command', hidden: true, format: null, command: info })])]
-  expect(commandsOf(plugins)).toEqual([{ plugin: 'turns', command: info }])
+  expect(commandsOf(plugins)).toEqual([{ plugin: 'turns', command: info, hidden: true }])
 })

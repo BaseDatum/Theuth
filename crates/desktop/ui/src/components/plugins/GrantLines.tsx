@@ -12,6 +12,16 @@ const RISK_TONE: Record<Risk, string> = {
   destructive: 'text-danger',
 }
 
+/** Control, line-separator, zero-width and bidirectional characters: drawn verbatim they can reorder or hide text. */
+const UNSAFE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g
+
+/**
+ * A plugin-supplied string as the owner should read it on an approval card or in Settings (216 §10.1): each control,
+ * BiDi or invisible character shown as its `\uXXXX` escape, so it cannot visually spoof a command, path or line.
+ * Tab and newline stay.
+ */
+export const shown = (s: string): string => s.replace(UNSAFE, (c) => `\\u${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`)
+
 /** One row per line: the text, a "new" chip on a widen card's added lines, the risk word on the right. */
 export function GrantLines({ lines, className }: { lines: readonly GrantLine[]; className?: string }) {
   return (
@@ -20,7 +30,7 @@ export function GrantLines({ lines, className }: { lines: readonly GrantLine[]; 
         <li key={`${line.key}-${i}`} data-grant={line.key} data-new={line.new || undefined} className="flex items-baseline gap-3 border-b border-border-subtle py-2 text-sm last:border-0">
           <span className="min-w-0 flex-1 wrap-break-word">
             {line.new && <span className="mr-2 rounded-full bg-fg-accent/10 px-1.5 py-px text-[11px] font-medium text-fg-accent">new</span>}
-            {line.text}
+            {shown(line.text)}
           </span>
           <span className={cn('shrink-0 text-[13px]', RISK_TONE[line.risk])}>{RISK_WORD[line.risk]}</span>
         </li>

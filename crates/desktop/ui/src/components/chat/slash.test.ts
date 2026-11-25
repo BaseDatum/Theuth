@@ -377,6 +377,12 @@ test('a plugin command is a command with or without arguments; without the plugi
   expect(isCommand('/turns:nope', [], PLUGIN_COMMANDS)).toBe(false)
 })
 
+test('a hidden plugin command leaves the menu but still runs when typed', () => {
+  const hidden = commandsOf([pluginInfo('turns', [placement('reset', { kind: 'command', hidden: true, format: null, command: { name: 'reset', slash: '/turns:reset', description: 'Reset', args: null } })])])
+  expect(slashMenu('/turns', null, hidden)).toEqual([])
+  expect(isCommand('/turns:reset', [], hidden)).toBe(true)
+})
+
 test('running a plugin command calls plugin_command; a ui reply becomes the card, a text reply a note', async () => {
   const store = pluginStore(active())
   store.setState(seed(EMPTY_PLUGINS, 0, [TURNS], []))

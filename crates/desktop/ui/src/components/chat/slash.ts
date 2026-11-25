@@ -203,7 +203,7 @@ export type HarnessMenu = { agent: string; commands: readonly HarnessCommand[]; 
  * commands follow, every row labelled with its source. A harness `skill:<name>` that theuth also has as a skill is
  * listed twice, theuth's row first — typed `/skill:<name>` ⏎ keeps parking theuth's skill, as the hint says; the
  * harness's row is sent raw when picked. 216 §9.1: running plugins' `/<plugin>[:<cmd>]` close the list, labelled
- * `plugin · <name>`; a name a built-in or the harness already lists stays theirs.
+ * `plugin · <name>`; a name a built-in or the harness already lists stays theirs; a hidden one is left out (it still runs typed).
  */
 export function slashMenu(word: string, harness: HarnessMenu | null | undefined, plugins: readonly PluginCommand[] = []): SlashItem[] {
   const own = matches(word)
@@ -217,8 +217,8 @@ export function slashMenu(word: string, harness: HarnessMenu | null | undefined,
       items.push({ name, hint: c.hint ?? '', desc: `${c.description}${skill && harness.skills?.includes(skill) ? ` (${harness.agent}'s — picked, sent as typed)` : ''}`, source: harness.agent, raw: true })
     }
   const taken = new Set(items.map((i) => i.name))
-  for (const { plugin, command } of plugins) {
-    if (!command.slash.startsWith(word) || taken.has(command.slash)) continue
+  for (const { plugin, command, hidden } of plugins) {
+    if (hidden || !command.slash.startsWith(word) || taken.has(command.slash)) continue
     items.push({ name: command.slash, hint: command.args ?? '', desc: command.description, source: `plugin · ${plugin}` })
   }
   return items
