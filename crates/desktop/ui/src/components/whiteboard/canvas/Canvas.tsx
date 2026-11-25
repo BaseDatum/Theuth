@@ -507,9 +507,20 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
   useEffect(() => {
     const el = wrap.current
     if (!el) return
-    const stateNow = () => {
+    // Space held: a mouse drag pans even with the pen tool (React Flow's `panActivationKeyCode`).
+    let space = false
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return
+      const t = e.target as HTMLElement | null
+      space = e.type === 'keydown' && !(t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))
+    }
+    const release = () => {
+      space = false
+    }
+    const stateNow = (e?: PointerEvent) => {
       const s = store.getState()
-      return { mode: s.mode, fingerInk: s.fingerInk, nativeInk: s.nativeInk && s.inkEngine === 'auto', readOnly: propsRef.current.readOnly, penDown: s.penDown, palmUntil: palmUntil.current, now: performance.now() }
+      const pan = !!e && e.pointerType === 'mouse' && (space || e.button !== 0)
+      return { mode: s.mode, fingerInk: s.fingerInk, nativeInk: s.nativeInk && s.inkEngine === 'auto', readOnly: propsRef.current.readOnly, penDown: s.penDown, palmUntil: palmUntil.current, now: performance.now(), pan }
     }
     const isControl = (t: EventTarget | null) => t instanceof Element && t.closest(CONTROL) !== null
     const onPane = (t: EventTarget | null) => t instanceof Element && t.closest('.react-flow__node, .react-flow__edge, .react-flow__handle, .react-flow__nodesselection') === null
@@ -525,7 +536,7 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       suppressClick.current = false
       if (kind === 'touch') taps.down(e.pointerId, e.clientX, e.clientY, e.timeStamp)
       if (isControl(e.target) && kind !== 'touch') return
-      const route = routePointer(kind, stateNow())
+      const route = routePointer(kind, stateNow(e))
       const s = store.getState()
       if (s.mode === 'frame' && kind !== 'pen' && route === 'pass' && onPane(e.target) && !propsRef.current.readOnly) {
         e.preventDefault()
@@ -735,6 +746,9 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
     el.addEventListener('touchstart', touch, { capture: true, passive: false })
     el.addEventListener('touchmove', touch, { capture: true, passive: false })
     el.addEventListener('mousedown', mouse, { capture: true })
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('keyup', onKey)
+    window.addEventListener('blur', release)
     return () => {
       el.removeEventListener('pointerdown', down, { capture: true })
       el.removeEventListener('pointermove', move, { capture: true })
@@ -744,6 +758,9 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
       el.removeEventListener('touchstart', touch, { capture: true })
       el.removeEventListener('touchmove', touch, { capture: true })
       el.removeEventListener('mousedown', mouse, { capture: true })
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onKey)
+      window.removeEventListener('blur', release)
     }
   }, [commit, doc, drawWet, eraseAt, markAt, store, taps, toWorld, undo])
 
@@ -1013,6 +1030,8 @@ function Inner(props: WhiteboardCanvasProps & { handle: React.ForwardedRef<White
           elementsSelectable
           connectionMode={ConnectionMode.Loose}
           panOnDrag={mode !== 'select' && mode !== 'frame'}
+          // With an ink tool the mouse drag draws: a two-finger trackpad scroll pans instead of zooming (pinch, ⌘-scroll zoom).
+          panOnScroll={mode === 'draw' || mode === 'erase'}
           selectionOnDrag={mode === 'select'}
           selectionMode={SelectionMode.Partial}
           panActivationKeyCode="Space"

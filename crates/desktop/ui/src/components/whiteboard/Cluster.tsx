@@ -31,6 +31,7 @@ import { useStore } from 'zustand'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useDark } from '@/lib/theme'
 import type { InkColour, InkTool } from './canvas/model'
+import { pickInkTool } from './canvas/input'
 import type { Mode, WbStore } from './canvas/store'
 import { INK_COLOURS, inkCss } from './ink/colour'
 
@@ -103,7 +104,7 @@ function InkTools({ store, onActivity }: { store: WbStore; onActivity(): void })
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <ClusterButton label={`Ink tools: ${mode === 'erase' ? 'eraser' : current?.label}`} on={mode === 'draw' || mode === 'erase'}>
+        <ClusterButton label={mode === 'erase' ? 'Ink tools: eraser (E)' : `Ink tools: ${current?.label} (P)`} on={mode === 'draw' || mode === 'erase'}>
           {mode === 'erase' ? <Eraser className="size-5" /> : current?.icon}
         </ClusterButton>
       </PopoverTrigger>
@@ -111,7 +112,7 @@ function InkTools({ store, onActivity }: { store: WbStore; onActivity(): void })
         <div className="flex flex-col gap-2" role="group" aria-label="Ink">
           <div className="flex gap-1">
             {TOOLS.map((t) => (
-              <ClusterButton key={t.tool} label={t.label} on={mode !== 'erase' && tool === t.tool} onClick={() => pick({ tool: t.tool, width: WIDTH[t.tool], mode: mode === 'erase' ? 'idle' : mode })}>
+              <ClusterButton key={t.tool} label={t.label} on={mode === 'draw' && tool === t.tool} onClick={() => pick({ ...pickInkTool(mode, tool, t.tool), width: WIDTH[t.tool] })}>
                 {t.icon}
               </ClusterButton>
             ))}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MultiTap, PALM_MS, routePointer, type RouteState } from './input'
+import { MultiTap, PALM_MS, pickInkTool, routePointer, type RouteState } from './input'
 
 const base: RouteState = { mode: 'idle', fingerInk: false, nativeInk: false, readOnly: false, penDown: false, palmUntil: 0, now: 10_000 }
 const s = (p: Partial<RouteState>): RouteState => ({ ...base, ...p })
@@ -41,6 +41,30 @@ describe('input routing (§8.4)', () => {
     expect(routePointer('mouse', s({ mode: 'draw' }))).toBe('ink')
     expect(routePointer('mouse', s({ mode: 'erase' }))).toBe('erase')
     expect(routePointer('mouse', s({ mode: 'link' }))).toBe('pass')
+    for (const mode of ['idle', 'select', 'frame'] as const) expect(routePointer('mouse', s({ mode }))).toBe('pass')
+  })
+
+  it('desktop (no Pencil): the mouse inks with the pen tool even with fingerInk off and no native ink', () => {
+    expect(routePointer('mouse', s({ mode: 'draw', fingerInk: false, nativeInk: false }))).toBe('ink')
+    expect(routePointer('mouse', s({ mode: 'draw', nativeInk: true }))).toBe('ink')
+  })
+
+  it('a mouse pan gesture (Space held, middle button) passes to React Flow even with the pen tool', () => {
+    expect(routePointer('mouse', s({ mode: 'draw', pan: true }))).toBe('pass')
+    expect(routePointer('mouse', s({ mode: 'erase', pan: true }))).toBe('pass')
+  })
+
+  it('picking a pen in the cluster arms draw, so the desktop mouse inks; picking it again disarms', () => {
+    for (const from of ['idle', 'erase', 'select', 'link', 'frame'] as const) {
+      const p = pickInkTool(from, 'pen', 'pen')
+      expect(p).toEqual({ tool: 'pen', mode: 'draw' })
+      expect(routePointer('mouse', s({ mode: p.mode }))).toBe('ink')
+      expect(routePointer('touch', s({ mode: p.mode }))).toBe('pass') // fingers stay pen-only (R2)
+    }
+    expect(pickInkTool('draw', 'pen', 'marker')).toEqual({ tool: 'marker', mode: 'draw' })
+    const off = pickInkTool('draw', 'pen', 'pen')
+    expect(off.mode).toBe('idle')
+    expect(routePointer('mouse', s({ mode: off.mode }))).toBe('pass')
   })
 
   it('palm window: while the pen is down and for 500 ms after, touches are ignored', () => {
