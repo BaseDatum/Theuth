@@ -25466,6 +25466,10 @@
       "event.rpc_2estream.output.ApprovalRequested": {
         "description": "Event: a tool call is waiting on a human. Every UI subscribes.",
         "properties": {
+          "always_ask": {
+            "description": "219 §2.3: the tool is marked always ask: a human must answer, even with approvals\noff. [`ResolveBy`] with any answerer but [`Answerer::Human`] is refused and the double\nskips the card. Unlike `human_only`, any human surface may answer.",
+            "type": "boolean"
+          },
           "args": {
             "description": "Raw arguments; UIs format these per tool (shell: `command`)."
           },
@@ -26133,6 +26137,10 @@
       "event.rpc_2estream.receiver.ApprovalRequested": {
         "description": "Event: a tool call is waiting on a human. Every UI subscribes.",
         "properties": {
+          "always_ask": {
+            "description": "219 §2.3: the tool is marked always ask: a human must answer, even with approvals\noff. [`ResolveBy`] with any answerer but [`Answerer::Human`] is refused and the double\nskips the card. Unlike `human_only`, any human surface may answer.",
+            "type": "boolean"
+          },
           "args": {
             "description": "Raw arguments; UIs format these per tool (shell: `command`)."
           },
@@ -32906,6 +32914,10 @@
       "event.tools_2eapproval_2drequested.output.ApprovalRequested": {
         "description": "Event: a tool call is waiting on a human. Every UI subscribes.",
         "properties": {
+          "always_ask": {
+            "description": "219 §2.3: the tool is marked always ask: a human must answer, even with approvals\noff. [`ResolveBy`] with any answerer but [`Answerer::Human`] is refused and the double\nskips the card. Unlike `human_only`, any human surface may answer.",
+            "type": "boolean"
+          },
           "args": {
             "description": "Raw arguments; UIs format these per tool (shell: `command`)."
           },
@@ -32991,6 +33003,10 @@
       "event.tools_2eapproval_2drequested.receiver.ApprovalRequested": {
         "description": "Event: a tool call is waiting on a human. Every UI subscribes.",
         "properties": {
+          "always_ask": {
+            "description": "219 §2.3: the tool is marked always ask: a human must answer, even with approvals\noff. [`ResolveBy`] with any answerer but [`Answerer::Human`] is refused and the double\nskips the card. Unlike `human_only`, any human surface may answer.",
+            "type": "boolean"
+          },
           "args": {
             "description": "Raw arguments; UIs format these per tool (shell: `command`)."
           },
@@ -40184,6 +40200,38 @@
             "type": "object"
           }
         ]
+      },
+      "method.agent.output.AlwaysAskState": {
+        "description": "219 §4: the always-ask entries that apply, by where they come from.",
+        "properties": {
+          "global": {
+            "description": "`tools.always_ask`, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "inherited": {
+            "description": "Entries from ancestor chats not in `session`, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "session": {
+            "description": "This chat's own entries, sorted; empty for a global query.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "global",
+          "session",
+          "inherited"
+        ],
+        "type": "object"
       },
       "method.agent.output.ApprovalsState": {
         "description": "Whether prompts are on, globally and for the session asked about.",
@@ -51144,6 +51192,38 @@
             "type": "object"
           }
         ]
+      },
+      "method.agent.receiver.AlwaysAskState": {
+        "description": "219 §4: the always-ask entries that apply, by where they come from.",
+        "properties": {
+          "global": {
+            "description": "`tools.always_ask`, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "inherited": {
+            "description": "Entries from ancestor chats not in `session`, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "session": {
+            "description": "This chat's own entries, sorted; empty for a global query.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "global",
+          "session",
+          "inherited"
+        ],
+        "type": "object"
       },
       "method.agent.receiver.ApprovalsState": {
         "description": "Whether prompts are on, globally and for the session asked about.",
@@ -139166,6 +139246,39 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "get_always_ask",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.AlwaysAskState"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.AlwaysAskState"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "get_app",
       "paramStructure": "by-position",
       "params": [
@@ -147382,6 +147495,55 @@
         },
         "x-theuth-receiverSchema": {
           "$ref": "#/components/schemas/method.agent.receiver.AdvisorDefaults"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_always_ask",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "tool",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "on",
+          "required": true,
+          "schema": {
+            "type": "boolean"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.AlwaysAskState"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.AlwaysAskState"
         }
       },
       "x-theuth-audience": "owner",
