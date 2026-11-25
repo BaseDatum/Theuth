@@ -3,7 +3,7 @@
 
 import { create } from 'zustand'
 
-export type ToolsTab = 'builtins' | 'mcp'
+export type ToolsTab = 'categories' | 'builtins' | 'mcp'
 
 type State = {
   /** The chat whose sheet is open; keyed by chat, so a split pane opens only its own. */
@@ -17,7 +17,7 @@ type State = {
 
 export const useToolsSheet = create<State>((set) => ({
   session: null,
-  tab: 'builtins',
+  tab: 'categories',
   setTab: (tab) => set({ tab }),
   show: (session, tab) => set(tab ? { session, tab } : { session }),
   hide: () => set({ session: null }),

@@ -22,10 +22,10 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-/// Tooling RPC methods and typed clients.
-pub mod rpc_tooling;
 /// Settings RPC methods and typed clients.
 pub mod rpc_settings;
+/// Tooling RPC methods and typed clients.
+pub mod rpc_tooling;
 
 /// Assemble this plugin's RPC methods.
 pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
@@ -40,6 +40,7 @@ pub mod activity;
 pub mod approval;
 pub mod ask;
 pub mod builtins;
+pub mod categories;
 pub mod communication;
 pub mod doc;
 pub mod edit;
@@ -80,6 +81,10 @@ pub use builtins::{
     BUILTIN_CATEGORY_PREFIX, BuiltinCategory, BuiltinTool, BuiltinsConfig, category_key,
     category_of,
 };
+pub use categories::{
+    CustomCategoryDef, TOOL_CATEGORY_PREFIX, ToolCategoriesConfig, ToolCategoryInfo,
+    tool_category_key,
+};
 pub use communication::{CommunicationAccess, Disabled};
 pub use jobs::CloseSessions;
 pub use jobs::{
@@ -114,9 +119,10 @@ pub use registry::{
     SetTurnCap, mark_non_owner_thread,
 };
 pub use registry::{
-    BuiltinsSwitchError, CloseTreeAll, ExpectParticipants, HarnessInvoke, HiddenEpoch,
-    ListBuiltins, MCP_SERVER_HIDE_PREFIX, OpenTree, ParticipantsReady, RegisterLifecycle,
-    SetBuiltinsDisabled, mcp_server_key,
+    BuiltinsSwitchError, CloseTreeAll, DefaultHiddenCategories, DeleteToolCategory,
+    ExpectParticipants, HarnessInvoke, HiddenEpoch, ListBuiltins, ListToolCategories,
+    MCP_SERVER_HIDE_PREFIX, OpenTree, ParticipantsReady, RegisterLifecycle, SetBuiltinsDisabled,
+    SetDefaultToolCategories, SetMcpCategory, SetToolCategory, UpsertToolCategory, mcp_server_key,
 };
 pub use reminder::{
     CancelReminder, CancelReminders, RearmReminder, ReminderEvent, ReminderView, SetReminder,
@@ -671,6 +677,9 @@ pub struct ToolsConfig {
     pub pty_tree_cpu_pct: u8,
     /// 206: the harness-wide builtin switch (`tools.builtins.disabled`).
     pub builtins: BuiltinsConfig,
+    /// High-level tool categories, assignments and new-session defaults.
+    #[serde(default)]
+    pub categories: ToolCategoriesConfig,
 }
 
 impl Default for ToolsConfig {
@@ -690,6 +699,7 @@ impl Default for ToolsConfig {
             pty_reaction_secs: 10,
             pty_tree_cpu_pct: 2,
             builtins: BuiltinsConfig::default(),
+            categories: ToolCategoriesConfig::default(),
         }
     }
 }

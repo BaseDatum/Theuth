@@ -13,9 +13,10 @@ import { cn } from '@/lib/utils'
 import { useQuerySupport, useSupported } from '@/rpc/capabilities'
 import type { McpServer } from '@/rpc/bindings/method.mcp_2dserver.output'
 import { BuiltinsMenu } from './BuiltinsMenu'
+import { CategoriesMenu } from './CategoriesMenu'
 import { MenuCheck } from './MenuCheck'
 import { mcpPowerRequirements, toolsRequirements } from './requirements'
-import { useToolsSheet } from './tools-sheet'
+import { type ToolsTab, useToolsSheet } from './tools-sheet'
 
 /** Longest error text a row shows; the whole text is its tooltip. */
 const ERROR_CHARS = 120
@@ -23,48 +24,55 @@ const ERROR_CHARS = 120
 /** A switch flip in flight (`on`: where it goes) or the last one that failed (`error`). */
 type Flip = { on: boolean; error?: string }
 
-/** #4, 206: the composer's tools switch beside `+` — for this chat (`''`: the new-chat draft), one checkbox per
- * builtin category ("Builtins") and per MCP server ("MCP servers", each with a harness-wide on/off switch too), and
- * the chat's full Tools… sheet (per-tool switches) at the bottom, opened on the tab shown here. Hides go through
- * `lib/mcp-hide`, like the sheet's. An engine
- * without `list_builtins` gets the server list alone (today's popover), one without the MCP methods the Builtins panel
- * alone; the bottom button only where the sheet is mounted (`Header` gates it on `toolsRequirements`). */
+/** The composer's tools switch beside `+`: high-level Categories first, then fine-grained Builtins and MCP servers.
+ * Every checkbox applies to this chat (`''`: the new-chat draft) through `lib/mcp-hide`; the full Tools… sheet opens
+ * on the same tab. Older engines keep whichever of the three panels their RPCs support. */
+
 export function McpMenu({ session, className }: { session: string; className?: string }) {
+  const toolCategories = useQuerySupport(['list_tool_categories', 'set_mcp_hidden'])
   const mcp = useQuerySupport(['list_mcp', 'set_mcp_hidden'])
   const builtins = useQuerySupport(['list_builtins', 'set_mcp_hidden'])
   const sheet = useSupported(toolsRequirements)
   const [open, setOpen] = useState(false)
   const chosen = useToolsSheet((s) => s.tab)
   const setTab = useToolsSheet((s) => s.setTab)
-  if (!mcp && !builtins) return null
-  const tab = !builtins ? 'mcp' : !mcp ? 'builtins' : chosen
+  if (!toolCategories && !mcp && !builtins) return null
+  const fallback: ToolsTab = toolCategories ? 'categories' : builtins ? 'builtins' : 'mcp'
+  const tab =
+    (chosen === 'categories' && toolCategories) || (chosen === 'builtins' && builtins) || (chosen === 'mcp' && mcp) ? chosen : fallback
+  const panelCount = Number(toolCategories) + Number(builtins) + Number(mcp)
   const servers = <McpServersMenu session={session} enabled={mcp && open && tab === 'mcp'} />
-  const categories = <BuiltinsMenu session={session} enabled={builtins && open && tab === 'builtins'} />
+  const builtinsPanel = <BuiltinsMenu session={session} enabled={builtins && open && tab === 'builtins'} />
+  const categoriesPanel = <CategoriesMenu session={session} enabled={toolCategories && open && tab === 'categories'} />
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
           className={cn('size-9 shrink-0 rounded-full text-fg-secondary', className)}
-          aria-label={builtins ? 'Tools and MCP servers' : 'MCP servers'}
+          aria-label={toolCategories || builtins ? 'Tools and MCP servers' : 'MCP servers'}
         >
           <Plug className="size-5" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className={cn('p-1', builtins ? 'w-72' : 'w-64')}>
-        {mcp && builtins ? (
-          <Tabs value={tab} onValueChange={(v) => setTab(v === 'mcp' ? 'mcp' : 'builtins')} className="gap-1">
+      <PopoverContent align="start" className={cn('p-1', toolCategories || builtins ? 'w-72' : 'w-64')}>
+        {panelCount > 1 ? (
+          <Tabs value={tab} onValueChange={(v) => setTab(v as ToolsTab)} className="gap-1">
             <TabsList className="w-full">
-              <TabsTrigger value="builtins">Builtins</TabsTrigger>
-              <TabsTrigger value="mcp">MCP servers</TabsTrigger>
+              {toolCategories && <TabsTrigger value="categories">Categories</TabsTrigger>}
+              {builtins && <TabsTrigger value="builtins">Builtins</TabsTrigger>}
+              {mcp && <TabsTrigger value="mcp">MCP servers</TabsTrigger>}
             </TabsList>
-            <TabsContent value="builtins">{categories}</TabsContent>
-            <TabsContent value="mcp">{servers}</TabsContent>
+            {toolCategories && <TabsContent value="categories">{categoriesPanel}</TabsContent>}
+            {builtins && <TabsContent value="builtins">{builtinsPanel}</TabsContent>}
+            {mcp && <TabsContent value="mcp">{servers}</TabsContent>}
           </Tabs>
+        ) : toolCategories ? (
+          categoriesPanel
         ) : mcp ? (
           servers
         ) : (
-          categories
+          builtinsPanel
         )}
         {sheet && (
           <div className="mt-1 border-t border-border-subtle pt-1">

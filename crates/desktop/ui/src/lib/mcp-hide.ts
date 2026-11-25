@@ -4,6 +4,7 @@
 // A not-yet-created chat (`session === ''`) keeps its hides in the draft (`useDrafts.setHidden`); they are applied
 // when the chat is created (`openDraftSession`).
 
+import { useQueryClient } from '@tanstack/react-query'
 import { useDrafts } from '@/lib/drafts'
 import { useApi } from '@/lib/rpc'
 import type { McpServer } from '@/rpc/bindings/method.mcp_2dserver.output'
@@ -48,11 +49,16 @@ export function withDraftHides(s: McpServer, hidden: Record<string, boolean> | u
 /** Apply hide ops to `session` (`''`: the draft; `null`: no chat — refused), in order. */
 export function useMcpHide(session: string | null): (ops: HideOp[]) => Promise<null> {
   const api = useApi()
+  const qc = useQueryClient()
   return async (ops) => {
-    if (session === null) throw new Error('Open a chat first')
-    for (const op of ops) {
-      if (session === '') useDrafts.getState().setHidden(op.names, op.hidden)
-      else await api.set_mcp_hidden(session, op.names, op.hidden)
+    try {
+      if (session === null) throw new Error('Open a chat first')
+      for (const op of ops) {
+        if (session === '') useDrafts.getState().setHidden(op.names, op.hidden)
+        else await api.set_mcp_hidden(session, op.names, op.hidden)
+      }
+    } finally {
+      await qc.invalidateQueries({ queryKey: ['tool-categories'] })
     }
     return null
   }
