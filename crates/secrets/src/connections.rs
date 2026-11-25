@@ -152,6 +152,60 @@ impl ConnConfig {
         m.insert("backend".into(), stored.backend.clone().into());
         serde_json::from_value(serde_json::Value::Object(m)).map_err(|e| e.to_string())
     }
+
+    /// R16/R19: every Bitwarden server URL (`base_url`, `api_url`, `identity_url`,
+    /// `web_vault_url`) is `https://`, or `http://` to a loopback host only, so the master
+    /// password, the API key and Send links never cross the network in clear.
+    pub fn check_urls(&self) -> Result<(), String> {
+        let Self::Bw {
+            base_url,
+            api_url,
+            identity_url,
+            web_vault_url,
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        for (key, url) in [
+            ("base_url", base_url),
+            ("api_url", api_url),
+            ("identity_url", identity_url),
+            ("web_vault_url", web_vault_url),
+        ] {
+            if let Some(url) = url
+                && !secure_url(url)
+            {
+                return Err(format!(
+                    "{key} {url:?} must be https:// (http:// only for localhost)"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `https://…`, or `http://` to `localhost`, `127.0.0.0/8` or `[::1]`.
+fn secure_url(url: &str) -> bool {
+    let Some((scheme, rest)) = url.trim().split_once("://") else {
+        return false;
+    };
+    match scheme.to_ascii_lowercase().as_str() {
+        "https" => true,
+        "http" => {
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+            let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+            let host = match host.strip_prefix('[') {
+                Some(v6) => v6.split_once(']').map_or("", |(h, _)| h),
+                None => host.split(':').next().unwrap_or(""),
+            };
+            host.parse::<std::net::IpAddr>()
+                .map_or(host.eq_ignore_ascii_case("localhost"), |ip| {
+                    ip.is_loopback()
+                })
+        }
+        _ => false,
+    }
 }
 
 /// §6.3 `ConnInfo.ask`: which of the connection's always-ask entries are in the global set.
@@ -474,6 +528,11 @@ impl SecretsActor {
         let Some(f) = self.connections.factories.get(cfg.backend()) else {
             return;
         };
+        // A hand-edited config with a clear-text server URL is never built (R19).
+        if let Err(e) = cfg.check_urls() {
+            tracing::warn!("secrets: connection {conn} not built: {e}");
+            return;
+        }
         let store = ConnStore::new(self.vault.clone(), cfg.backend(), conn);
         match f.build(conn, &cfg, store) {
             Ok(b) => {
@@ -675,6 +734,7 @@ impl Message<BuildProbe> for SecretsActor {
     type Reply = Result<Arc<dyn ExternalBackend>, String>;
 
     async fn handle(&mut self, m: BuildProbe, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        m.cfg.check_urls()?;
         let backend = m.cfg.backend();
         let f = self
             .connections
@@ -713,6 +773,7 @@ impl Message<AddConnection> for SecretsActor {
         if self.connections.conns.contains_key(&m.conn) {
             return Err(format!("connection {} exists", m.conn));
         }
+        m.cfg.check_urls()?;
         let stored = m.cfg.stored(&ConnSettings::default())?;
         self.seed(m.cfg.backend(), &m.conn).await?;
         self.connections.conns.insert(m.conn.clone(), stored);
@@ -1056,6 +1117,50 @@ pub(crate) mod tests {
         }
     }
 
+    /// R19: Bitwarden server URLs are https, or http to a loopback host only.
+    #[test]
+    fn bitwarden_urls_need_https_off_loopback() {
+        let with = |url: &str| ConnConfig::Bw {
+            server: BwServer::SelfHosted,
+            base_url: Some(url.into()),
+            api_url: None,
+            identity_url: None,
+            web_vault_url: None,
+            email: "me@example.org".into(),
+            login: BwLogin::ApiKey,
+        };
+        for ok in [
+            "https://vault.example.org",
+            "HTTPS://vault.example.org/",
+            "http://localhost:8080",
+            "http://127.0.0.1:8000/x",
+            "http://[::1]:80",
+        ] {
+            assert_eq!(with(ok).check_urls(), Ok(()), "{ok}");
+        }
+        for bad in [
+            "http://vault.example.org",
+            "http://localhost.evil.org",
+            "http://127.0.0.1@evil.org",
+            "http://192.168.1.2",
+            "vault.example.org",
+            "ftp://localhost",
+        ] {
+            assert!(with(bad).check_urls().is_err(), "{bad}");
+        }
+        let mut web = bw();
+        if let ConnConfig::Bw { web_vault_url, .. } = &mut web {
+            *web_vault_url = Some("http://send.example.org".into());
+        }
+        assert_eq!(
+            web.check_urls(),
+            Err(
+                "web_vault_url \"http://send.example.org\" must be https:// (http:// only for localhost)"
+                    .into()
+            )
+        );
+    }
+
     /// The plugin's start, by hand: the registry (and approval service), the actor over the
     /// config in `dir/config.yaml`, seeding at load, the factory.
     async fn start(
@@ -1389,7 +1494,8 @@ pub(crate) mod tests {
                     async move {
                         for pw in [None, Some("pw")] {
                             loop {
-                                let ids: Vec<_> = ext.pending_unlocks();
+                                let ids: Vec<_> =
+                                    ext.unlock_requests().into_iter().map(|v| v.id).collect();
                                 if let Some(id) = ids.first() {
                                     assert!(ext.answer_unlock(
                                         *id,
@@ -1408,6 +1514,33 @@ pub(crate) mod tests {
             let f = hook.resolve_external(&args, cx()).await.unwrap();
             assert_eq!(f.get("{{secret:bw/personal/x#password}}"), Some(VALUE));
             answers.await.unwrap();
+
+            // R17: two calls on a locked connection raise one card; both take its outcome.
+            ext.by_conn("personal").unwrap().lock().await;
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let answering = tokio::spawn({
+                let (ext, done) = (ext.clone(), done.clone());
+                async move {
+                    let mut cards = 0;
+                    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                        for v in ext.unlock_requests() {
+                            assert_eq!(v.conn, "personal");
+                            if ext.answer_unlock(v.id, Some(Zeroizing::new("pw".to_owned()))) {
+                                cards += 1;
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    cards
+                }
+            });
+            let (x, y) = tokio::join!(
+                hook.resolve_external(&args, cx()),
+                hook.resolve_external(&args, cx())
+            );
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            assert!(x.is_ok() && y.is_ok());
+            assert_eq!(answering.await.unwrap(), 1, "one card for both calls");
         });
     }
 }

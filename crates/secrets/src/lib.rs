@@ -1044,6 +1044,33 @@ impl Message<SetEngine> for SecretsActor {
     }
 }
 
+/// `ask` → `Result<Option<String>, String>`: D15 — the engine an answer to request `id` must be
+/// forwarded to: `Some(engine)` when the row is unanswered, stores into an external manager (its
+/// own destination, or `destination` = the answer names one) and was asked on another engine.
+pub struct ForeignOwner {
+    /// The request.
+    pub id: RequestId,
+    /// The answer carries a destination.
+    pub destination: bool,
+}
+
+impl Message<ForeignOwner> for SecretsActor {
+    type Reply = Result<Option<String>, String>;
+
+    async fn handle(&mut self, m: ForeignOwner, _: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let row = requests::get(self.vault.pool(), m.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(row
+            .filter(|r| {
+                r.answered_ms.is_none()
+                    && (m.destination || r.destination.is_some())
+                    && r.engine != self.engine()
+            })
+            .map(|r| r.engine))
+    }
+}
+
 impl Message<ListRequests> for SecretsActor {
     type Reply = Result<Vec<SecretRequest>, String>;
 

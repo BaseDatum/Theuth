@@ -47,8 +47,9 @@ pub trait CredentialsApi {
     /// `source: user`. `expires_ms` (absolute Unix ms, in the future) makes every stored value
     /// expire and be deleted then; `None` = never. 221 §7.3: `destination` is the card's final
     /// destination for a request that stores into an external manager (`None` keeps the one the
-    /// request named). `true` if it was still unanswered.
-    #[method(name = "answer_secret")]
+    /// request named). `true` if it was still unanswered. D15: a request with a destination is
+    /// answered on the engine that owns the asking session; another engine forwards it there.
+    #[method(name = "answer_secret", with_extensions)]
     async fn answer_secret(
         &self,
         id: secrets::RequestId,
@@ -174,10 +175,32 @@ pub trait CredentialsApi {
     /// card while `copy_link_needs_press` is on.
     #[method(name = "copy_send_link", with_extensions)]
     async fn copy_send_link(&self, id: String) -> RpcResult<String>;
+    /// §9.4 (U1): the unlock cards waiting on this engine, oldest first — what an app reseeds its
+    /// cards from on (re)connect. Fields as `ExternalUnlockRequested`.
+    #[method(name = "list_unlock_requests")]
+    async fn list_unlock_requests(&self) -> RpcResult<Vec<secrets::external::UnlockRequestView>>;
 }
 
 fn failed(e: impl std::fmt::Display) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(ASK_FAILED, e.to_string(), None::<()>)
+}
+
+/// D15: send `method` with positional `params` to engine `engine` over the mesh (the agent's
+/// `rpc_forward::to_engine`). `Ok(None)`: run it here (this engine, or already forwarded).
+pub type EngineForward =
+    for<'a> fn(
+        &'a Extensions,
+        &'a str,
+        &'static str,
+        serde_json::Value,
+    ) -> futures::future::BoxFuture<'a, RpcResult<Option<serde_json::Value>>>;
+
+static FORWARD: std::sync::OnceLock<EngineForward> = std::sync::OnceLock::new();
+
+/// Install the D15 forward once, before dispatch (the RPC composition does). Without it an
+/// answer for another engine's destination request is refused with "answer it there".
+pub fn install_engine_forward(f: EngineForward) {
+    let _ = FORWARD.set(f);
 }
 
 /// 219 §2.4: the owner's own press (desktop/app socket, a paired device): authenticated, not a
@@ -315,14 +338,37 @@ impl CredentialsApiServer for Server {
 
     async fn answer_secret(
         &self,
+        ext: &Extensions,
         id: secrets::RequestId,
         value: Option<String>,
         values: Option<HashMap<String, String>>,
         expires_ms: Option<u64>,
         destination: Option<Destination>,
     ) -> RpcResult<bool> {
+        let a = secrets()?;
+        // D15: a destination request is written by the engine that owns the asking session; the
+        // value travels once over the mesh RPC, never as a replicated row.
+        if let Some(fwd) = FORWARD.get()
+            && let Some(engine) = send(
+                &a,
+                secrets::ForeignOwner {
+                    id,
+                    destination: destination.is_some(),
+                },
+            )
+            .await?
+            && let Some(v) = fwd(
+                ext,
+                &engine,
+                "answer_secret",
+                serde_json::json!([id, value, values, expires_ms, destination]),
+            )
+            .await?
+        {
+            return serde_json::from_value(v).map_err(failed);
+        }
         send(
-            &secrets()?,
+            &a,
             secrets::AnswerTo {
                 answer: secrets::Answer {
                     id,
@@ -420,6 +466,10 @@ impl CredentialsApiServer for Server {
     ) -> RpcResult<bool> {
         let ext = send(&secrets()?, GetExternals).await?;
         Ok(ext.answer_unlock(id, password.map(Zeroizing::new)))
+    }
+
+    async fn list_unlock_requests(&self) -> RpcResult<Vec<secrets::external::UnlockRequestView>> {
+        Ok(send(&secrets()?, GetExternals).await?.unlock_requests())
     }
 
     async fn set_connection_setting(

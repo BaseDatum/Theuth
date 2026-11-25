@@ -435,13 +435,41 @@ pub struct Externals {
     /// The bus the unlock card goes out on, and how long it waits; `None` = no card (a locked
     /// connection fails the call).
     unlock: Option<(runtime::Runtime, Duration)>,
-    /// Unlock cards waiting for [`Externals::answer_unlock`].
+    /// Unlock cards waiting for [`Externals::answer_unlock`], oldest first.
     pending: std::sync::Mutex<
-        std::collections::HashMap<
-            crate::RequestId,
+        Vec<(
+            UnlockRequestView,
             tokio::sync::oneshot::Sender<Option<Zeroizing<String>>>,
-        >,
+        )>,
     >,
+    /// R17: per connection, one unlock card at a time; calls that waited behind it share its
+    /// outcome.
+    gates: std::sync::Mutex<BTreeMap<String, Arc<UnlockGate>>>,
+}
+
+/// One connection's unlock card serialisation (R17).
+#[derive(Default)]
+struct UnlockGate {
+    /// Bumped when a card resolves.
+    resolved: std::sync::atomic::AtomicU64,
+    /// Held while a card is up; the last card's outcome.
+    last: tokio::sync::Mutex<Option<Result<(), String>>>,
+}
+
+/// An open unlock card (§9.4): the `ExternalUnlockRequested` fields, for `list_unlock_requests`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct UnlockRequestView {
+    /// Answer with this id.
+    pub id: crate::RequestId,
+    /// The connection.
+    pub conn: String,
+    /// `aws` | `bw`.
+    pub backend: String,
+    /// What the card names: `me@… · vault.bitwarden.eu`.
+    pub account: String,
+    /// Why: `a tool call uses bw/personal/2f1c…#password`.
+    pub reason: String,
 }
 
 impl fmt::Debug for Externals {
@@ -475,42 +503,64 @@ impl Externals {
     }
 
     /// §9.4: ask the user to unlock `b` on the unlock card and unlock it with the typed password.
-    /// `Err` (model-facing): declined, timed out, no card possible, or the unlock failed.
+    /// `Err` (model-facing): declined, timed out, no card possible, or the unlock failed. R17:
+    /// one card per connection at a time; a call that waited behind a card takes its outcome.
     pub async fn request_unlock(
         &self,
         b: &Arc<dyn ExternalBackend>,
         reason: String,
     ) -> Result<(), String> {
+        use std::sync::atomic::Ordering::SeqCst;
         let name = format!("{}/{}", b.backend(), b.conn());
         let Some((rt, timeout)) = &self.unlock else {
             return Err(format!("{name} is locked; unlock it in the Secrets page"));
         };
-        let id = crate::RequestId(uuid::Uuid::now_v7());
+        let gate = self
+            .gates
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(b.conn().to_owned())
+            .or_default()
+            .clone();
+        let seen = gate.resolved.load(SeqCst);
+        let mut last = gate.last.lock().await;
+        if gate.resolved.load(SeqCst) != seen
+            && let Some(out) = last.clone()
+        {
+            return out;
+        }
+        if matches!(b.status(), ConnStatus::Ready) {
+            return Ok(());
+        }
+        let view = UnlockRequestView {
+            id: crate::RequestId(uuid::Uuid::now_v7()),
+            conn: b.conn().to_owned(),
+            backend: b.backend().to_owned(),
+            account: self
+                .accounts
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(b.conn())
+                .cloned()
+                .unwrap_or_default(),
+            reason,
+        };
+        let id = view.id;
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, tx);
-        let account = self
-            .accounts
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(b.conn())
-            .cloned()
-            .unwrap_or_default();
+            .push((view.clone(), tx));
         rt.publish(crate::SecretsEvent::UnlockRequested {
             id,
-            conn: b.conn().to_owned(),
-            backend: b.backend().to_owned(),
-            account,
-            reason,
+            conn: view.conn,
+            backend: view.backend,
+            account: view.account,
+            reason: view.reason,
         })
         .await;
         let answer = tokio::time::timeout(*timeout, rx).await;
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
+        self.take_pending(id);
         let out = match answer {
             Ok(Ok(Some(password))) => match b.unlock(password).await {
                 Ok(ConnStatus::Ready) => Ok(()),
@@ -523,6 +573,9 @@ impl Externals {
                 timeout.as_secs()
             )),
         };
+        *last = Some(out.clone());
+        gate.resolved.fetch_add(1, SeqCst);
+        drop(last);
         rt.publish(crate::SecretsEvent::UnlockResolved {
             id,
             unlocked: out.is_ok(),
@@ -531,21 +584,27 @@ impl Externals {
         out
     }
 
-    /// The unlock cards waiting for an answer.
-    pub fn pending_unlocks(&self) -> Vec<crate::RequestId> {
+    /// The unlock cards waiting for an answer, oldest first (`list_unlock_requests`).
+    pub fn unlock_requests(&self) -> Vec<UnlockRequestView> {
         let p = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-        p.keys().copied().collect()
+        p.iter().map(|(v, _)| v.clone()).collect()
     }
 
     /// Answer an unlock card: `Some(password)` unlocks, `None` declines. `false` when `id` is not
     /// waiting (answered, timed out, another engine's).
     pub fn answer_unlock(&self, id: crate::RequestId, password: Option<Zeroizing<String>>) -> bool {
-        let tx = self
-            .pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
-        tx.is_some_and(|tx| tx.send(password).is_ok())
+        self.take_pending(id)
+            .is_some_and(|tx| tx.send(password).is_ok())
+    }
+
+    /// Remove card `id` from the waiting list.
+    fn take_pending(
+        &self,
+        id: crate::RequestId,
+    ) -> Option<tokio::sync::oneshot::Sender<Option<Zeroizing<String>>>> {
+        let mut p = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let i = p.iter().position(|(v, _)| v.id == id)?;
+        Some(p.remove(i).1)
     }
 }
 
@@ -837,6 +896,9 @@ impl ::tools::secrets::Secrets for Hook {
         let by_ref = |k: &str, dir| arg(k).and_then(|t| self.ref_access(t, dir));
         let by_conn = |k: &str, dir| arg(k).and_then(|c| self.conn_access(c, dir));
         let out: Vec<Option<ExternalAccess>> = match tool {
+            // R16: without `connection`, `secret_external_list` names the connections, their
+            // status and account summaries (emails, regions, servers) from config, and contacts
+            // no manager, so it gates nothing; with one, the connection's read ask applies.
             "secret_external_list" | "secret_send_list" => {
                 vec![by_conn("connection", Direction::Read)]
             }
