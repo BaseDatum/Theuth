@@ -16,7 +16,9 @@
 //! - commands on the [`SECRETS_ACTOR`] actor ([`SecretsActor`]): [`List`],
 //!   [`Set`], [`Restore`], [`Delete`], [`Request`], [`Answer`], [`Waive`], [`PendingRequests`],
 //!   [`ListRequests`], [`SetEngine`], [`Handle`]; 183: [`GetRotation`] (the mesh reaches the
-//!   keyring through [`Handle`] and the [`Vault`] methods directly)
+//!   keyring through [`Handle`] and the [`Vault`] methods directly); 221: [`RegisterExternal`],
+//!   [`UnregisterExternal`]
+//! - [`external::ExternalBackend`]: the trait external backend crates implement
 //! - events: [`SecretsEvent`]
 //! - [`Vault`] as a library, for `t --secret-set` and `--slack-setup`
 
@@ -27,6 +29,7 @@ pub mod rpc;
 pub use rpc::{CredentialsApiClient, rpc_module};
 mod key;
 pub mod expiry;
+pub mod external;
 pub mod requests;
 pub mod store;
 pub mod tools;
@@ -44,6 +47,7 @@ use runtime::{Runtime, SessionId};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
+pub use external::{ExternalBackend, RegisterExternal, UnregisterExternal};
 pub use vault::{
     KEEP, KeyInfo, KeyStore, MESH_PREFIX, OAUTH_PREFIX, PLUGINS_GRANTS_KEY, PLUGINS_PREFIX,
     RetireHold, RotationPeer, RotationPhase, RotationState, SHARE_PREFIX, SecretInfo, SecretsList,
@@ -342,6 +346,8 @@ pub struct SecretsActor {
     /// This engine's mesh id once the mesh told us ([`SetEngine`]).
     engine: Option<String>,
     pending: HashMap<RequestId, Waiter>,
+    /// 221 §4: the external connections, shared with the `tools::secrets` hook.
+    externals: Arc<external::Externals>,
 }
 
 impl SecretsActor {
@@ -353,7 +359,13 @@ impl SecretsActor {
             timeout,
             engine: None,
             pending: HashMap::new(),
+            externals: Arc::default(),
         }
+    }
+
+    /// The external connections this actor registers into ([`RegisterExternal`]).
+    pub fn externals(&self) -> Arc<external::Externals> {
+        self.externals.clone()
     }
 }
 
