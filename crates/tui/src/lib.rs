@@ -916,7 +916,7 @@ fn print_event(out: &mut impl Write, model: &Model, ev: &UiEvent) {
             if s.session { "on" } else { "off" },
             if s.global { "on" } else { "off" }
         ),
-        UiEvent::AlwaysAsk(s) => writeln!(out, "{}", model::always_ask_line(&s)),
+        UiEvent::AlwaysAsk(s) => writeln!(out, "{}", model::always_ask_line(s)),
         UiEvent::Approval(req) => writeln!(
             out,
             "approve {} ({:?}){}{}? [y/n]\n{}",
