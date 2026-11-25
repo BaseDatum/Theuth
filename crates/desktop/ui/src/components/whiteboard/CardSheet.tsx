@@ -21,6 +21,7 @@ import { useSessions } from '@/store/sessions'
 import type { Card, Source } from './canvas/model'
 import { versionOf } from './canvas/model'
 import { KIND_LABEL } from './OutlineView'
+import { webUrl } from './add'
 
 function PageBody({ session, callId, title }: { session: string; callId: string; title: string }) {
   const api = useApi()
@@ -80,15 +81,21 @@ function Body({ card, source, blobUrl, onSession }: { card: Card; source: Source
       return <DiffBody session={source.frozen?.session ?? source.session} spec={source.spec as DiffSpec} className="p-2" />
     case 'terminal':
       return <Terminal session={source.session} job={source.job} label={card.title} className="h-full" />
-    case 'web':
+    case 'web': {
+      // 218 review B1: a web card's URL is agent-writable. Only http(s) with a dotted host is shown, in an opaque-origin
+      // sandbox (no allow-same-origin, no popups, no referrer) so it can never act as an app origin inside the main
+      // webview. The native WebFrame (§12.6) needs an engine web view this card does not have; the link opens the browser.
+      const url = webUrl(source.url)
+      if (!url) return <p className="p-6 text-sm text-fg-secondary">This card's address is not a web page (only http and https are shown).</p>
       return (
         <div className="flex h-full flex-col">
-          <a href={source.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 px-4 py-2 text-sm text-accent">
-            <ExternalLink className="size-4" /> {source.url}
+          <a href={url} target="_blank" rel="noreferrer noopener" className="flex items-center gap-1.5 px-4 py-2 text-sm text-accent">
+            <ExternalLink className="size-4" /> {url}
           </a>
-          <iframe title={card.title} src={source.url} sandbox="allow-scripts allow-forms allow-same-origin allow-popups" className="min-h-0 flex-1 border-0 bg-white" />
+          <iframe title={card.title} src={url} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" className="min-h-0 flex-1 border-0 bg-white" />
         </div>
       )
+    }
     case 'image':
       return <ImageBody source={source} blobUrl={blobUrl} />
     case 'sticky':

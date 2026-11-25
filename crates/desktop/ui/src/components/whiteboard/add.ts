@@ -39,6 +39,24 @@ export function asUrl(text: string): string | null {
   }
 }
 
+/**
+ * 218 review B1: the URL a stored `web` card may show, or null. The value is agent-writable, so only `http:`/`https:`
+ * with a dotted host passes — never `asset:`, `tauri:`, `theuth-page:`, `file:`, `javascript:`, `data:` or a bare
+ * `localhost`/dev URL that would load app content inside the main webview. No scheme is added: the stored text must
+ * already be an absolute http(s) URL.
+ */
+export function webUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !/^https?:\/\//i.test(raw.trim())) return null
+  try {
+    const u = new URL(raw.trim())
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    if (!u.hostname.includes('.') || u.username || u.password) return null
+    return u.href
+  } catch {
+    return null
+  }
+}
+
 /** An image's card size: its aspect, the default card's area. */
 export function imageSize(w: number, h: number): [number, number] {
   if (!(w > 0 && h > 0)) return SIZE.image

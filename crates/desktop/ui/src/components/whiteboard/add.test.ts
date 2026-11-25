@@ -24,3 +24,16 @@ describe('file excerpt', () => {
     expect(e.end).toBe(17)
   })
 })
+
+describe('webUrl (218 review B1)', () => {
+  it('passes absolute http(s) URLs with a dotted host', async () => {
+    const { webUrl } = await import('./add')
+    expect(webUrl('https://example.com/a?b=1')).toBe('https://example.com/a?b=1')
+    expect(webUrl(' http://news.ycombinator.com ')).toBe('http://news.ycombinator.com/')
+  })
+  it('refuses every other scheme, app origins, bare hosts and credentials', async () => {
+    const { webUrl } = await import('./add')
+    for (const bad of ['asset://localhost/x', 'tauri://localhost/', 'theuth-page://x/y', 'file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,hi', 'http://localhost:1420/', 'https://user:pw@example.com', 'example.com', '', 42, null])
+      expect(webUrl(bad), String(bad)).toBeNull()
+  })
+})
