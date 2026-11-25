@@ -2495,7 +2495,7 @@
             "description": "The session's effective context changed outside a normal turn\n(design doc 48 §3.2): a [`RemoveContext`] commit, a settled turn /\ncompaction handback, or an undo/redo. Published after commit and\ninstallation in live state; carries no bodies. Clients reload the\naffected session's history at `revision`.",
             "properties": {
               "reason": {
-                "description": "`\"context_edit\"`, `\"settled\"`, `\"rewind\"` or `\"trim\"`.",
+                "description": "`\"context_edit\"`, `\"settled\"`, `\"rewind\"`, `\"trim\"` or `\"cell_nudge\"` (220: a\nplain fence of a finished reply was rewritten as a user cell in place).",
                 "type": "string"
               },
               "revision": {
@@ -5914,7 +5914,7 @@
             "description": "The session's effective context changed outside a normal turn\n(design doc 48 §3.2): a [`RemoveContext`] commit, a settled turn /\ncompaction handback, or an undo/redo. Published after commit and\ninstallation in live state; carries no bodies. Clients reload the\naffected session's history at `revision`.",
             "properties": {
               "reason": {
-                "description": "`\"context_edit\"`, `\"settled\"`, `\"rewind\"` or `\"trim\"`.",
+                "description": "`\"context_edit\"`, `\"settled\"`, `\"rewind\"`, `\"trim\"` or `\"cell_nudge\"` (220: a\nplain fence of a finished reply was rewritten as a user cell in place).",
                 "type": "string"
               },
               "revision": {
@@ -41388,6 +41388,31 @@
         ],
         "type": "object"
       },
+      "method.agent.output.CellPromotion": {
+        "description": "What `cell_promote` (design doc 220) did with the fence.",
+        "properties": {
+          "detail": {
+            "description": "Why, for `rejected`/`not_found`/`stale` when known (a validation code, a provider error).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.output.PromoteOutcome"
+              }
+            ],
+            "description": "The outcome."
+          }
+        },
+        "required": [
+          "outcome",
+          "detail"
+        ],
+        "type": "object"
+      },
       "method.agent.output.ChannelChat": {
         "description": "172: a direct conversation or a shared one.",
         "oneOf": [
@@ -47372,6 +47397,36 @@
         ],
         "type": "object"
       },
+      "method.agent.output.PromoteOutcome": {
+        "description": "[`CellPromotion::outcome`].",
+        "oneOf": [
+          {
+            "const": "converted",
+            "description": "The fence is a user cell now; a `ContextChanged { reason: \"cell_nudge\" }` went out.",
+            "type": "string"
+          },
+          {
+            "const": "declined",
+            "description": "The model answered `OK` (or nothing): it stays a snippet.",
+            "type": "string"
+          },
+          {
+            "const": "rejected",
+            "description": "The model's cell failed a check.",
+            "type": "string"
+          },
+          {
+            "const": "stale",
+            "description": "Try again later: a turn is running, or a transient failure (the provider, a timeout,\nthe store) — `detail` says which. The only case where the reply did change is the\ndetail \"converted, but the frame did not reload\".",
+            "type": "string"
+          },
+          {
+            "const": "not_found",
+            "description": "No such reply or fence, or the reply changed meanwhile.",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.output.PromptSuffix": {
         "description": "One saved prompt suffix.",
         "properties": {
@@ -50504,6 +50559,67 @@
         ],
         "type": "object"
       },
+      "method.agent.output.ToolCategoryInfo": {
+        "description": "One tool category as an app shows it.",
+        "properties": {
+          "builtin_count": {
+            "description": "Number of registered native tools in [`Self::builtin_tools`].",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "builtin_tools": {
+            "description": "Registered native tool names in this category, sorted by name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "custom": {
+            "description": "Whether this is a user-created rather than default category.",
+            "type": "boolean"
+          },
+          "default_enabled": {
+            "description": "Whether the category is enabled in brand-new root interactive sessions.",
+            "type": "boolean"
+          },
+          "description": {
+            "description": "One-line summary of the category.",
+            "type": "string"
+          },
+          "hidden": {
+            "description": "Whether the requested session or an ancestor hides this category.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Stable id; its session hide key is `tcat:<id>`.",
+            "type": "string"
+          },
+          "label": {
+            "description": "Display name.",
+            "type": "string"
+          },
+          "mcp_servers": {
+            "description": "MCP server names assigned to this category, sorted by name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "description",
+          "custom",
+          "default_enabled",
+          "hidden",
+          "builtin_count",
+          "builtin_tools",
+          "mcp_servers"
+        ],
+        "type": "object"
+      },
       "method.agent.output.ToolOutput": {
         "description": "Result returned to the model. Errors are content, not `Err`: the model\nmust see them.",
         "properties": {
@@ -52188,6 +52304,30 @@
         },
         "required": [
           "text"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.CellPromotion": {
+        "description": "What `cell_promote` (design doc 220) did with the fence.",
+        "properties": {
+          "detail": {
+            "description": "Why, for `rejected`/`not_found`/`stale` when known (a validation code, a provider error).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.receiver.PromoteOutcome"
+              }
+            ],
+            "description": "The outcome."
+          }
+        },
+        "required": [
+          "outcome"
         ],
         "type": "object"
       },
@@ -58014,6 +58154,36 @@
         ],
         "type": "object"
       },
+      "method.agent.receiver.PromoteOutcome": {
+        "description": "[`CellPromotion::outcome`].",
+        "oneOf": [
+          {
+            "const": "converted",
+            "description": "The fence is a user cell now; a `ContextChanged { reason: \"cell_nudge\" }` went out.",
+            "type": "string"
+          },
+          {
+            "const": "declined",
+            "description": "The model answered `OK` (or nothing): it stays a snippet.",
+            "type": "string"
+          },
+          {
+            "const": "rejected",
+            "description": "The model's cell failed a check.",
+            "type": "string"
+          },
+          {
+            "const": "stale",
+            "description": "Try again later: a turn is running, or a transient failure (the provider, a timeout,\nthe store) — `detail` says which. The only case where the reply did change is the\ndetail \"converted, but the frame did not reload\".",
+            "type": "string"
+          },
+          {
+            "const": "not_found",
+            "description": "No such reply or fence, or the reply changed meanwhile.",
+            "type": "string"
+          }
+        ]
+      },
       "method.agent.receiver.PromptSuffix": {
         "description": "One saved prompt suffix.",
         "properties": {
@@ -61035,6 +61205,67 @@
           "cache_read",
           "cache_write",
           "unknown_calls"
+        ],
+        "type": "object"
+      },
+      "method.agent.receiver.ToolCategoryInfo": {
+        "description": "One tool category as an app shows it.",
+        "properties": {
+          "builtin_count": {
+            "description": "Number of registered native tools in [`Self::builtin_tools`].",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "builtin_tools": {
+            "description": "Registered native tool names in this category, sorted by name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "custom": {
+            "description": "Whether this is a user-created rather than default category.",
+            "type": "boolean"
+          },
+          "default_enabled": {
+            "description": "Whether the category is enabled in brand-new root interactive sessions.",
+            "type": "boolean"
+          },
+          "description": {
+            "description": "One-line summary of the category.",
+            "type": "string"
+          },
+          "hidden": {
+            "description": "Whether the requested session or an ancestor hides this category.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Stable id; its session hide key is `tcat:<id>`.",
+            "type": "string"
+          },
+          "label": {
+            "description": "Display name.",
+            "type": "string"
+          },
+          "mcp_servers": {
+            "description": "MCP server names assigned to this category, sorted by name.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "description",
+          "custom",
+          "default_enabled",
+          "hidden",
+          "builtin_count",
+          "builtin_tools",
+          "mcp_servers"
         ],
         "type": "object"
       },
@@ -136860,6 +137091,59 @@
       "x-theuth-owner": "cells"
     },
     {
+      "name": "cell_promote",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/method.agent.input.SessionId"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "entry",
+          "required": true,
+          "schema": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "fence",
+          "required": true,
+          "schema": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "body",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.CellPromotion"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.CellPromotion"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "cell_reply_note_get",
       "paramStructure": "by-position",
       "params": [
@@ -138837,6 +139121,32 @@
         },
         "x-theuth-receiverSchema": {
           "type": "boolean"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "delete_tool_category",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
         }
       },
       "x-theuth-audience": "owner",
@@ -144029,6 +144339,45 @@
         "x-theuth-receiverSchema": {
           "items": {
             "$ref": "#/components/schemas/method.agent.receiver.TerminalSummary"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "list_tool_categories",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "session",
+          "required": false,
+          "schema": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/method.agent.input.SessionId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.ToolCategoryInfo"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.ToolCategoryInfo"
           },
           "type": "array"
         }
@@ -151008,6 +151357,35 @@
       "x-theuth-owner": "dreaming"
     },
     {
+      "name": "set_default_tool_categories",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "disabled",
+          "required": true,
+          "schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "set_effort",
       "paramStructure": "by-position",
       "params": [
@@ -151413,6 +151791,43 @@
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_mcp_category",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "server",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "category",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "x-theuth-aliases": []
         }
@@ -152795,6 +153210,43 @@
               "type": "null"
             }
           ]
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_tool_category",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "tool",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "category",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "null"
+        },
+        "x-theuth-receiverSchema": {
+          "type": "null"
         }
       },
       "x-theuth-audience": "owner",
@@ -155396,6 +155848,54 @@
       "x-theuth-audience": "owner",
       "x-theuth-namedParams": true,
       "x-theuth-owner": "update"
+    },
+    {
+      "name": "upsert_tool_category",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "label",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "description",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.ToolCategoryInfo"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.ToolCategoryInfo"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
     },
     {
       "name": "usage_limits",

@@ -20,6 +20,8 @@ export const cellTheme = [
     },
     '.cm-specialChar': { color: 'var(--status-danger-fg)', backgroundColor: 'var(--status-danger-bg)' },
     '.cm-run-gutter .cm-gutterElement': { width: '18px', color: 'var(--fg-accent)', cursor: 'pointer', textAlign: 'center' },
+    // 220: the per-line copy marker beside the ►.
+    '.cm-copy-gutter .cm-gutterElement': { width: '18px', color: 'var(--fg-tertiary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' },
   }),
   highlightSpecialChars({ addSpecialChars: /[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/ }),
 ]

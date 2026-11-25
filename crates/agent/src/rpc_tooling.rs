@@ -1,18 +1,19 @@
 use crate as agent;
 use agent::rpc_forward as forward;
+use agent::rpc_support::RpcServerExt;
 use agent::{Agents, ShowPrompt};
 use jsonrpsee::Extensions;
 use jsonrpsee::core::{RpcResult, async_trait};
 use jsonrpsee::proc_macros::rpc;
 use jsonrpsee::types::ErrorObjectOwned;
+use rpc_core::{Server, ask};
 use runtime::SessionId;
 use tools::{
-    ApprovalsState, BuiltinCategory, BuiltinsSwitchError, ListBuiltins, SetApprovals,
-    SetBuiltinsDisabled, SetHidden, ToolRegistry,
+    ApprovalsState, BuiltinCategory, BuiltinsSwitchError, DeleteToolCategory, ListBuiltins,
+    ListToolCategories, SetApprovals, SetBuiltinsDisabled, SetDefaultToolCategories, SetHidden,
+    SetMcpCategory, SetToolCategory, ToolCategoryInfo, ToolRegistry, UpsertToolCategory,
 };
 use uuid::Uuid;
-use rpc_core::{ask, Server};
-use agent::rpc_support::RpcServerExt;
 
 /// 193 §7: the registry tools `session_call_tool` runs for an ACP child's MCP shim; the shim
 /// lists exactly these (with the registry's own specs from `list_tools`).
@@ -62,6 +63,33 @@ pub trait AgentToolingApi {
     /// `set_mcp_hidden` set, by name or `cat:<id>`), answered by the session's owner.
     #[method(name = "list_builtins", with_extensions)]
     async fn list_builtins(&self, session: Option<SessionId>) -> RpcResult<Vec<BuiltinCategory>>;
+    /// List high-level tool categories. With `session`, visibility and the list itself are
+    /// answered by that session's owner, as for `list_builtins`.
+    #[method(name = "list_tool_categories", with_extensions)]
+    async fn list_tool_categories(
+        &self,
+        session: Option<SessionId>,
+    ) -> RpcResult<Vec<ToolCategoryInfo>>;
+    /// Create or update a custom tool category in this engine's `config.yaml`.
+    #[method(name = "upsert_tool_category", with_extensions)]
+    async fn upsert_tool_category(
+        &self,
+        id: Option<String>,
+        label: String,
+        description: Option<String>,
+    ) -> RpcResult<ToolCategoryInfo>;
+    /// Delete a custom tool category and its assignments and new-chat default.
+    #[method(name = "delete_tool_category", with_extensions)]
+    async fn delete_tool_category(&self, id: String) -> RpcResult<()>;
+    /// Assign an MCP server to a tool category, or clear the assignment with `None`.
+    #[method(name = "set_mcp_category", with_extensions)]
+    async fn set_mcp_category(&self, server: String, category: Option<String>) -> RpcResult<()>;
+    /// Override a native tool's category, or restore its default with `None`.
+    #[method(name = "set_tool_category", with_extensions)]
+    async fn set_tool_category(&self, tool: String, category: Option<String>) -> RpcResult<()>;
+    /// Set the category hides persisted into brand-new root interactive sessions.
+    #[method(name = "set_default_tool_categories", with_extensions)]
+    async fn set_default_tool_categories(&self, disabled: Vec<String>) -> RpcResult<()>;
     /// 206: switch builtin tools off (`disabled: true`) or on again for every session
     /// on an engine; `names` are registered builtin names and `cat:<id>` keys (when
     /// switching on, also any name in the set, so a stale entry can go). With
@@ -94,7 +122,6 @@ pub trait AgentToolingApi {
 
 #[async_trait]
 impl AgentToolingApiServer for Server {
-
     async fn session_call_tool(
         &self,
         ext: &Extensions,
@@ -161,6 +188,73 @@ impl AgentToolingApiServer for Server {
             return Ok(r);
         }
         ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, ListBuiltins(session)).await
+    }
+
+    async fn list_tool_categories(
+        &self,
+        ext: &Extensions,
+        session: Option<SessionId>,
+    ) -> RpcResult<Vec<ToolCategoryInfo>> {
+        self.authorize_opt_fwd(ext, session).await?;
+        if let Some(s) = session
+            && let Some(r) = forward::route(ext, s, "list_tool_categories", (session,)).await?
+        {
+            return Ok(r);
+        }
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, ListToolCategories(session)).await
+    }
+
+    async fn upsert_tool_category(
+        &self,
+        ext: &Extensions,
+        id: Option<String>,
+        label: String,
+        description: Option<String>,
+    ) -> RpcResult<ToolCategoryInfo> {
+        self.authorize_opt_fwd(ext, None).await?;
+        ask::<ToolRegistry, _>(
+            tools::REGISTRY_ACTOR,
+            UpsertToolCategory {
+                id,
+                label,
+                description,
+            },
+        )
+        .await
+    }
+
+    async fn delete_tool_category(&self, ext: &Extensions, id: String) -> RpcResult<()> {
+        self.authorize_opt_fwd(ext, None).await?;
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, DeleteToolCategory { id }).await
+    }
+
+    async fn set_mcp_category(
+        &self,
+        ext: &Extensions,
+        server: String,
+        category: Option<String>,
+    ) -> RpcResult<()> {
+        self.authorize_opt_fwd(ext, None).await?;
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetMcpCategory { server, category }).await
+    }
+
+    async fn set_tool_category(
+        &self,
+        ext: &Extensions,
+        tool: String,
+        category: Option<String>,
+    ) -> RpcResult<()> {
+        self.authorize_opt_fwd(ext, None).await?;
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetToolCategory { tool, category }).await
+    }
+
+    async fn set_default_tool_categories(
+        &self,
+        ext: &Extensions,
+        disabled: Vec<String>,
+    ) -> RpcResult<()> {
+        self.authorize_opt_fwd(ext, None).await?;
+        ask::<ToolRegistry, _>(tools::REGISTRY_ACTOR, SetDefaultToolCategories { disabled }).await
     }
 
     async fn set_builtins_disabled(

@@ -44,7 +44,7 @@ export const TAB_IDS = [
   'machine', 'machines', 'devices', 'messaging', 'vms',
   'shared', 'contacts', 'shared-chats', 'shared-notes', 'sharing', 'domains',
   'signal', 'slack', 'telegram',
-  'tools', 'builtins', 'search', 'mcp', 'computer', 'browser',
+  'categories', 'tools', 'builtins', 'search', 'mcp', 'computer', 'browser',
   'plugins',
 ] as const
 

@@ -9,6 +9,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
 import { useDrafts } from '@/lib/drafts'
 import type { BuiltinCategory } from '@/lib/builtins'
+import type { ToolCategoryInfo } from '@/rpc/bindings/method.agent.output'
 import type { McpServer } from "@/rpc/bindings/method.mcp_2dserver.output"
 import { SessionMenu } from './SessionMenu'
 import { ToolsSheet } from './ToolsSheet'
@@ -22,12 +23,24 @@ vi.mock('@tanstack/react-router', async (original) => ({
 }))
 
 const listed: (string | null)[] = []
+const hiddenCalls: unknown[][] = []
 const fs = { name: 'fs', connected: true, gate: null, tools: [], repo: null, auth: 'none', home: null, home_name: null, home_here: true, everywhere: false, state: 'running', reason: null } as McpServer
 const files: BuiltinCategory = {
   id: 'files',
   label: 'Files',
   description: 'Read, search and edit files on this machine',
   tools: [{ name: 'read_file', description: '', risk: 'read_only', direct: true, disabled: false, hidden: false }],
+}
+const engineering: ToolCategoryInfo = {
+  id: 'engineering',
+  label: 'Engineering',
+  description: 'Files, shell and code',
+  custom: false,
+  default_enabled: true,
+  hidden: false,
+  builtin_count: 1,
+  builtin_tools: ['read_file'],
+  mcp_servers: [],
 }
 // Every other reader answers an empty list; the menu and the sheet only need these.
 const answers: Record<string, (...a: never[]) => unknown> = {
@@ -40,6 +53,12 @@ const answers: Record<string, (...a: never[]) => unknown> = {
     return [fs]
   },
   list_builtins: () => [files],
+  list_tool_categories: () => [engineering],
+  set_mcp_hidden: (session: string, names: string[], hidden: boolean) => {
+    hiddenCalls.push([session, names, hidden])
+    engineering.hidden = hidden
+    return null
+  },
 }
 vi.mock('@/lib/rpc', async (original) => ({
   ...(await original<typeof Rpc>()),
@@ -62,20 +81,30 @@ function builtins(on: boolean) {
   const added = on ? [{ name: 'list_builtins' }, { name: 'set_builtins_disabled' }] : []
   connection.setState({ discovery: { ...d, document: { ...d.document, methods: [...methods, ...added] } } })
 }
+function categories(on: boolean) {
+  const d = connection.getState().discovery
+  contract ??= d
+  const methods = d.document.methods.filter((m) => m.name !== 'list_tool_categories')
+  const added = on ? [{ name: 'list_tool_categories' }] : []
+  connection.setState({ discovery: { ...d, document: { ...d.document, methods: [...methods, ...added] } } })
+}
 const ANSWERS = new Set(Object.keys(answers))
 afterEach(() => {
   if (contract) connection.setState({ discovery: contract })
   contract = null
   for (const k of Object.keys(answers)) if (!ANSWERS.has(k)) delete answers[k]
   listed.length = 0
-  useToolsSheet.setState({ session: null, tab: 'builtins' })
+  hiddenCalls.length = 0
+  engineering.hidden = false
+  useToolsSheet.setState({ session: null, tab: 'categories' })
   useDrafts.setState({ settings: {}, opening: null })
 })
 const dialog = () => document.querySelector('[role="dialog"]')
 const tabTrigger = (label: string) => [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => t.textContent === label)!
 
-test('⋯ › Tools… opens the Tools sheet of that chat only, on Builtins; its MCP servers tab lists the servers for that chat', async () => {
+test('⋯ › Tools… opens Categories first, then Builtins and the MCP servers for that chat only', async () => {
   builtins(true)
+  categories(true)
   const host = document.body.appendChild(document.createElement('div'))
   const root = createRoot(host)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -95,11 +124,18 @@ test('⋯ › Tools… opens the Tools sheet of that chat only, on Builtins; its
   await vi.waitFor(() => {
     const dialogs = document.querySelectorAll('[role="dialog"]')
     expect(dialogs).toHaveLength(1)
-    expect(dialogs[0]!.textContent).toContain('built-in tools and MCP servers')
-    expect(dialogs[0]!.textContent).toContain('Files')
+    expect(dialogs[0]!.textContent).toContain('tool categories, built-in tools and MCP servers')
+    expect(dialogs[0]!.textContent).toContain('Engineering')
   })
+  expect([...document.querySelectorAll('[role="tab"]')].map((t) => t.textContent)).toEqual(['Categories', 'Builtins', 'MCP servers'])
+  expect(tabTrigger('Categories').getAttribute('aria-selected')).toBe('true')
   expect(listed).toEqual([])
+  const engineeringHere = dialog()!.querySelector<HTMLInputElement>('input[aria-label="Engineering in this chat"]')!
+  await act(async () => engineeringHere.click())
+  await vi.waitFor(() => expect(hiddenCalls).toEqual([['s1', ['tcat:engineering'], true]]))
   // Radix tabs switch on mousedown.
+  await act(async () => tabTrigger('Builtins').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })))
+  await vi.waitFor(() => expect(dialog()?.textContent).toContain('Files'))
   await act(async () => tabTrigger('MCP servers').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })))
   await vi.waitFor(() => expect(dialog()?.textContent).toContain('fs'))
   expect(useToolsSheet.getState().tab).toBe('mcp')
@@ -110,6 +146,7 @@ test('⋯ › Tools… opens the Tools sheet of that chat only, on Builtins; its
 
 test('the draft menu edits pending messaging and approvals and opens its own Tools sheet without creating a chat', async () => {
   builtins(true)
+  categories(true)
   // The sheet keeps the tab it was last on: Tools… opens it on MCP servers here.
   useToolsSheet.setState({ tab: 'mcp' })
   const setters = { set_approvals: vi.fn(), set_communication: vi.fn(), create_session: vi.fn(), new_session: vi.fn() }
@@ -150,8 +187,9 @@ test('the draft menu edits pending messaging and approvals and opens its own Too
   host.remove()
 })
 
-test('show(session, tab) opens on that tab; an engine without list_builtins gets the MCP list alone, as before', async () => {
+test('show(session, tab) opens Categories or Builtins; an engine without either gets the MCP list alone', async () => {
   builtins(true)
+  categories(true)
   useToolsSheet.setState({ tab: 'mcp' })
   const host = document.body.appendChild(document.createElement('div'))
   const root = createRoot(host)
@@ -160,7 +198,13 @@ test('show(session, tab) opens on that tab; an engine without list_builtins gets
   await act(async () => useToolsSheet.getState().show('s1', 'builtins'))
   await vi.waitFor(() => expect(dialog()?.textContent).toContain('Files'))
   expect(tabTrigger('Builtins').getAttribute('aria-selected')).toBe('true')
-  await act(async () => builtins(false))
+  await act(async () => useToolsSheet.getState().show('s1', 'categories'))
+  await vi.waitFor(() => expect(dialog()?.textContent).toContain('Engineering'))
+  expect(tabTrigger('Categories').getAttribute('aria-selected')).toBe('true')
+  await act(async () => {
+    builtins(false)
+    categories(false)
+  })
   await vi.waitFor(() => expect(dialog()?.textContent).toContain('fs'))
   expect(document.querySelector('[role="tablist"]')).toBeNull()
   expect(dialog()?.textContent).toContain('The MCP servers and tools this chat')

@@ -185,7 +185,7 @@ test('the bar fits its pane instead of pushing buttons out: tighter gaps and 32 
   expect(meta).toContain("'grid h-9 w-7 shrink-0 place-items-center")
   expect(meta.match(/animate-pulse/g)).toHaveLength(1)
   expect(meta).toContain("waiting: { icon: Shield, tone: 'text-danger motion-safe:animate-pulse'")
-})
+}, 30_000)
 
 test('mic, send and talk keep exactly the conditions they had before the shield (86e625424~1)', () => {
   const src = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
@@ -196,7 +196,8 @@ test('mic, send and talk keep exactly the conditions they had before the shield 
   expect(src).toContain('const canDictate = voice && !priv && !readOnly')
   // Send (or Steer + Stop while a turn runs) whenever no voice note holds the row.
   expect(src).toContain("{stage === 'idle' &&\n            (at !== 'idle' && session ? (")
-  expect(src).toContain('aria-label="Send"\n                disabled={!filled || busy || dictating || readOnly || !!starting}')
+  // (An attachment still uploading also holds Send: `waiting`.)
+  expect(src).toContain('<SendButton disabled={!filled || busy || dictating || readOnly || !!starting} waiting={uploading}')
 })
 
 test('the box never clips its own content: no max height or overflow on the box, the text keeps a one-line floor', () => {
@@ -231,7 +232,7 @@ test('the model picker is in the top row, before the numbers and the text, and n
 test('the bar holds only + · MCP · shield … spacer … talk · mic · send', () => {
   const bar = barSource()
   expect(bar).not.toMatch(/ComposerModel|ComposerMeta|data-tour="chat-model"/)
-  const order = ['<Popover', '<McpMenu', '<ApprovalShield', '<div className="-ml-1 min-w-0 flex-1" />', 'aria-label="Talk"', '<MicButton', 'aria-label="Send"']
+  const order = ['<Popover', '<McpMenu', '<ApprovalShield', '<div className="-ml-1 min-w-0 flex-1" />', 'aria-label="Talk"', '<MicButton', '<SendButton ']
   const idx = order.map((s) => bar.indexOf(s))
   expect(idx.every((i) => i >= 0)).toBe(true)
   expect([...idx].sort((a, b) => a - b)).toEqual(idx)

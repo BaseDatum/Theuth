@@ -43,7 +43,7 @@ import type { Gate } from "@/rpc/bindings/method.mcp_2dserver.output"
 import type { McpHomeAction } from '@/rpc/bindings/method.mcp_2dserver.input'
 import type { McpServer } from "@/rpc/bindings/method.mcp_2dserver.output"
 import type { McpToolInfo } from "@/rpc/bindings/method.mcp_2dserver.output"
-import type { Risk } from "@/rpc/bindings/method.agent.output"
+import type { Risk, ToolCategoryInfo } from "@/rpc/bindings/method.agent.output"
 import type { SyncResult } from "@/rpc/bindings/method.agent.output"
 import { useConnection } from '@/store/connection'
 
@@ -59,6 +59,7 @@ function serverSwitch(s: McpServer): SwitchState {
 
 /** The gate select's `annotations` sentinel: no explicit risk override. */
 const ANNOTATIONS = 'annotations'
+const NO_CATEGORY = '__none__'
 /** Why a "this chat" switch is greyed on Settings › Tools › MCP: it needs the chat it would apply to. */
 export const CHAT_HINT = 'Open from a chat: ⋯ › Tools… or /tools'
 const RISKS: [Exclude<Gate, 'off'>, string][] = [
@@ -75,6 +76,7 @@ export const RISK_NAME: Record<Risk, string> = {
 /** The mutations every server and tool row shares; owned by `Tools`. */
 type Actions = {
   gate: Action<{ server: string; tool: string | null; gate: Gate | null }, null>
+  category: Action<{ server: string; category: string | null }, null>
   hidden: Action<HideOp[], null>
   switchTo: Action<{ server: McpServer; to: SwitchState }, void>
   /** The sign-in URL the engine opened on its host, and whether that host is this machine (`local`). */
@@ -96,6 +98,10 @@ function useMcpActions(session: string | null): Actions {
       (v: { server: string; tool: string | null; gate: Gate | null }) =>
         api.set_mcp_gate(v.server, v.tool, v.gate),
       { keys },
+    ),
+    category: useAction(
+      (v: { server: string; category: string | null }) => api.set_mcp_category(v.server, v.category),
+      { keys: [...keys, ['tool-categories']] },
     ),
     hidden: useAction(hide, { keys }),
     // ⏎ in the TUI: turning on undoes whichever switch is off; off asks for the scope.
@@ -146,11 +152,17 @@ export function McpServersTab() {
 export function Tools({ session }: { session: string | null }) {
   const canQuery1 = useQuerySupport(["list_mcp"])
   const canQuery1_2 = useQuerySupport(["mcp_status"])
+  const canCategorize = useQuerySupport(['list_tool_categories', 'set_mcp_category'])
   const api = useApi()
   const hidden = useDrafts((s) => s.settings.hidden)
   const servers = useQuery({ enabled: canQuery1,
     queryKey: queryKeys.mcp(session),
     queryFn: () => api.list_mcp(session || null),
+  })
+  const categories = useQuery({
+    enabled: canCategorize,
+    queryKey: queryKeys.toolCategories(null),
+    queryFn: () => api.list_tool_categories(null),
   })
   // Under the `mcp` prefix: every `McpProgress` event refreshes it with the list.
   const status = useQuery({ enabled: canQuery1_2, queryKey: ['mcp', 'status'], queryFn: () => api.mcp_status() })
@@ -182,6 +194,7 @@ export function Tools({ session }: { session: string | null }) {
         </p>
       )}
       {servers.error && <p className="py-2 text-[13px] break-words text-destructive">{errorText(servers.error)}</p>}
+      {categories.error && <p className="py-2 text-[13px] break-words text-destructive">{errorText(categories.error)}</p>}
       {servers.data?.length === 0 && (
         <Empty>
           No tool servers yet. An MCP server gives the harness tools (files, browsers, APIs…); add one with a git URL
@@ -190,7 +203,17 @@ export function Tools({ session }: { session: string | null }) {
       )}
       {servers.data?.map((server) => {
         const s = session === '' ? withDraftHides(server, hidden) : server
-        return <ServerRow key={s.name} server={s} session={session} machines={machines} act={act} />
+        return (
+          <ServerRow
+            key={s.name}
+            server={s}
+            session={session}
+            machines={machines}
+            categories={canCategorize ? categories.data : undefined}
+            categorizable={canCategorize}
+            act={act}
+          />
+        )
       })}
     </Section>
   )
@@ -244,12 +267,16 @@ function ServerRow({
   server: s,
   session,
   machines,
+  categories,
+  categorizable,
   act,
 }: {
   server: McpServer
   session: string | null
   /** The mesh's engines; null until it answers. */
   machines: Engine[] | null
+  categories: ToolCategoryInfo[] | undefined
+  categorizable: boolean
   act: Actions
 }) {
   const [open, setOpen] = useState(false)
@@ -342,6 +369,14 @@ function ServerRow({
           disabled={sw === 'always'}
           onChange={(gate) => act.gate.mutate({ server: s.name, tool: null, gate })}
         />
+        {categorizable && (
+          <CategorySelect
+            server={s.name}
+            categories={categories}
+            disabled={act.category.isPending}
+            onChange={(category) => act.category.mutate({ server: s.name, category })}
+          />
+        )}
         {s.auth !== 'none' && (
           <>
             {s.auth === 'logged_in' && <span className="text-[13px] text-fg-secondary">logged in</span>}
@@ -455,6 +490,36 @@ function Status({ on, label, className }: { on: boolean; label: string; classNam
       <Dot on={on} />
       {label}
     </span>
+  )
+}
+
+/** Assign a whole MCP server in its header controls, independently of its per-tool switches. */
+function CategorySelect({
+  server,
+  categories,
+  disabled,
+  onChange,
+}: {
+  server: string
+  categories: ToolCategoryInfo[] | undefined
+  disabled: boolean
+  onChange: (category: string | null) => void
+}) {
+  const value = categories?.find((c) => c.mcp_servers.includes(server))?.id ?? NO_CATEGORY
+  return (
+    <Select
+      value={value}
+      disabled={disabled || categories === undefined}
+      onValueChange={(v) => onChange(v === NO_CATEGORY ? null : v)}
+    >
+      <SelectTrigger size="sm" className="w-40" aria-label={`Category for ${server}`}>
+        <SelectValue placeholder="Category" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={NO_CATEGORY}>No category</SelectItem>
+        {categories?.map((c) => <SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>)}
+      </SelectContent>
+    </Select>
   )
 }
 

@@ -334,7 +334,7 @@ export const MessageAssistant = memo(function MessageAssistant({
   // ponytail: a forward scan per mounted reply per store change; index entries by id if transcripts grow past thousands.
   const laterAssistant = useSessions((s) => hasLaterAssistant(s.sessions[session]?.entries ?? [], id))
   const fence = useMemo<FenceContext>(
-    () => ({ running: ownRunning, hasLaterAssistant: laterAssistant, session: readOnly ? undefined : session, entry: id }),
+    () => ({ running: ownRunning, hasLaterAssistant: laterAssistant, session: readOnly ? undefined : session, entry: id, readOnly }),
     [ownRunning, laterAssistant, readOnly, session, id],
   )
   // 197 §8: the stored row's fences, offered only once settled and when their count matches the fences in `text`.

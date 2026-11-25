@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { isApple } from '@/lib/chord'
+import { copyText, copyToClipboard } from '@/lib/code-copy'
 import { useEngineLabel } from '@/lib/owner'
 import { isDesktop, touch } from '@/lib/platform'
 import { useApi } from '@/lib/rpc'
@@ -17,7 +18,7 @@ import type { CellRef } from "@/rpc/bindings/method.cells.output"
 import type { CellRun } from "@/rpc/bindings/method.cells.output"
 import { useConnection } from '@/store/connection'
 import { CodeTokens } from './CodeTokens'
-import { setPicked, setStoppedAt, usePicked, useStoppedAt } from './edits'
+import { setPicked, setStoppedAt, useEdit, usePicked, useStoppedAt } from './edits'
 import { AnsiText, CellContainer, CellOutputs, ExecutionCount } from './Outputs'
 import { clock, duration, ended, errorText, exitText, refKey, scopeOf } from './store'
 import type { CellProps, CellViewState } from './types'
@@ -263,6 +264,21 @@ function LiveTerminal({ run, code, label }: { run: CellRun; code: string; label:
   )
 }
 
+/** 220: copy the cell's code as on screen (the user's edit, else the fence), without its `#|` header (`copyText`). */
+function CopyCell({ lang, code }: { lang: string; code: string }) {
+  const [done, setDone] = useState(false)
+  const copy = async () => {
+    if (!(await copyToClipboard(copyText(lang, code)))) return
+    setDone(true)
+    setTimeout(() => setDone(false), 2000)
+  }
+  return (
+    <Button variant="ghost" size="icon-sm" className="text-fg-tertiary pointer-coarse:min-h-12" aria-label="Copy cell" title="Copy the code (no #| lines)" onClick={() => void copy()}>
+      {done ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
+    </Button>
+  )
+}
+
 /** Copy the run's clean text (`cell_output`, no ANSI, §8.6). */
 function CopyOutput({ run }: { run: CellRun }) {
   const api = useApi()
@@ -353,7 +369,7 @@ export function announce(text: string) {
 }
 
 /** 171 §11.1: the one cell component for chat, notes and notebooks. */
-export function Cell({ cellRef, cell, runnable, view, state, latest, host, callbacks, editor, readOnly }: CellProps) {
+export function Cell({ cellRef, cell, code, runnable, view, state, latest, host, callbacks, editor, readOnly }: CellProps) {
   const extras = useContext(CellExtras)
   const dataDir = useConnection((s) => s.info?.data_dir)
   const label = labelOf(cell)
@@ -361,6 +377,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
   const o = cell.options
   const k = refKey(cellRef)
   const picked = usePicked(k)
+  const edited = useEdit(k)
   const run = picked ?? latest
   const waiting = latest?.input
   const live = latest?.state === 'running' || latest?.state === 'queued'
@@ -506,6 +523,7 @@ export function Cell({ cellRef, cell, runnable, view, state, latest, host, callb
       {latest?.state === 'running' && <span className="font-mono text-xs text-fg-accent tabular-nums">running {duration(elapsed).replace(' s', 's')}</span>}
       <span className="ml-auto flex items-center gap-1">
         {cell.lang === 'python' && run && <ExecutionCount count={null} isExecuting={latest?.state === 'running'} />}
+        <CopyCell lang={cell.lang} code={edited ?? code} />
         <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-fg-tertiary pointer-coarse:h-12" aria-pressed={raw} onClick={() => setRaw(!raw)}>
           #|
         </Button>

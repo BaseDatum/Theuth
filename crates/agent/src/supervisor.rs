@@ -29,10 +29,10 @@ use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
 use tools::{
     ActivitySink, Admission, Admit, ApprovalId, ApprovalRequested, ApprovalResolved,
-    InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId, JobKind, Jobs, ListPrompts,
-    ListTools, Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity, RegisterPrompt,
-    RegisterTool, ReminderEvent, RestoreApprovals, RestoreHidden, Risk, SetCap, SetParent,
-    SetPromoteAfter, Settle, ToolRegistry,
+    DefaultHiddenCategories, InstallCommunicationAccess, JOBS_ACTOR, JobEvent, JobExit, JobId,
+    JobKind, Jobs, ListPrompts, ListTools, Notice, REGISTRY_ACTOR, RearmReminder, RegisterActivity,
+    RegisterPrompt, RegisterTool, ReminderEvent, RestoreApprovals, RestoreHidden, Risk, SetCap,
+    SetParent, SetPromoteAfter, Settle, ToolRegistry,
 };
 use uuid::Uuid;
 
@@ -67,10 +67,11 @@ use crate::lifecycle::{
 use crate::loop_::{
     CancelPeerScope, CancelTurn, CatalogChanged, CompactNow, CompactionOverride,
     ContextBreakdownNow, ContextHistoryNow, ContextItemsNow, GetToolset, HarvestNow, IsRunning,
-    PEER_INTAKE, PeerInput, QueuedInputs, QuietInput, RedoTurn, RemoveContextNow, ResetRuntimeNow,
+    PEER_INTAKE, PeerInput, PromoteFence, QueuedInputs, QuietInput, RedoTurn, RemoveContextNow, ResetRuntimeNow,
     RestartTurn, ResumedTurn, Session, SessionState, SetBudgetNow, SetCompactionOverride,
-    SetMemoryNow, SetPendingEffort, SetTalking, SetTitlePin, SetToolsetOverride, SuppressPeerInputs,
-    SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks, text_of,
+    SetMemoryNow, SetPendingEffort, SetTalking, SetTitlePin, SetToolsetOverride,
+    SuppressPeerInputs, SwitchModel, TrimTurn, UndoTurn, UserInput, WithdrawInput, prompt_blocks,
+    text_of,
 };
 use crate::peers::{
     DiscoverPeersTool, ListModelsTool, Nodes, PeerMessageTool, SendMessageTool, SpawnSubagentTool,
@@ -102,7 +103,7 @@ use crate::{
     SetEscalateModel, SetMaxSalvages, SetMaxToolRounds, SetModel, SetStreamIdle, SetSubagentModel,
     SetSubagentTimeout, SetTalk, SetTitleModel, SetToolset, SetVisionModel, ShowPrompt, SideCall,
     SideCallable, SideReply, SkillBody, SkillMeta, Steer, SyncSkills, TALK_COALESCE_MS,
-    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, UserRenameSession, Withdraw,
+    TALK_PARK_CAP_MS, TalkLive, TrimAssistant, Undo, UseSkill, UserRenameSession, Withdraw, CellPromote,
     effort_of,
 };
 use crate::{
@@ -133,8 +134,8 @@ use tools::{
 // 109: handler bodies in their own files so the waves do not collide.
 mod acp_resume; // 109 W4
 mod activity; // 155 W1
-mod auto_archive;
 pub(crate) mod advisor; // 125 W1
+mod auto_archive;
 pub mod child_waits; // 139 W3
 mod drain;
 pub mod pause; // 179
@@ -1090,6 +1091,26 @@ impl Agents {
                         None,
                     )
                     .await?;
+                if parent.is_none()
+                    && desk.is_none()
+                    && let Some(reg) = ActorRef::<ToolRegistry>::lookup(REGISTRY_ACTOR)
+                        .ok()
+                        .flatten()
+                {
+                    let defaults = reg.ask(DefaultHiddenCategories).await?;
+                    if !defaults.is_empty() {
+                        store.set_session_hidden(id, &defaults).await?;
+                        if private_root.is_some() {
+                            // `inherit_approvals` reads the durable store; private roots
+                            // persist to their private store, so seed the registry directly.
+                            reg.ask(RestoreHidden {
+                                session: id,
+                                tools: defaults,
+                            })
+                            .await?;
+                        }
+                    }
+                }
                 if let Some(e) = &effort {
                     store.set_effort(id, Some(e)).await?;
                 }
@@ -4159,6 +4180,59 @@ impl Message<EditTurn> for Agents {
             self.ledger.release(m.session, ticket);
         }
         r
+    }
+}
+
+/// 220: off the mailbox — the session's side call takes up to its 20 s budget.
+impl Message<CellPromote> for Agents {
+    type Reply = kameo::reply::DelegatedReply<Result<crate::rpc_turns::CellPromotion, String>>;
+
+    async fn handle(&mut self, m: CellPromote, ctx: &mut Context<Self, Self::Reply>) -> Self::Reply {
+        let (reply, tx) = ctx.reply_sender();
+        let Some(tx) = tx else { return reply };
+        let actor = match self
+            .actor(m.session)
+            .await
+            .and_then(|a| a.native().cloned())
+        {
+            Ok(actor) => actor,
+            Err(e) => {
+                tx.send(Err(e));
+                return reply;
+            }
+        };
+        tokio::spawn(async move {
+            tx.send(
+                actor
+                    .ask(PromoteFence {
+                        seq: Some(m.seq),
+                        ordinal: m.fence,
+                        body: Some(m.body),
+                        auto: false,
+                        digest: None,
+                        reason: "user",
+                    })
+                    .await
+                    .map_err(|e| e.to_string()),
+            );
+        });
+        reply
+    }
+}
+
+/// `tell` (220): a session rewrote a reply's fence as a cell in place — the RPC's or the
+/// automatic nudge. A context edit like [`TrimAssistant`]: cached searches and admitted
+/// candidates are stale.
+pub(crate) struct CellPromoted {
+    pub session: SessionId,
+}
+
+impl Message<CellPromoted> for Agents {
+    type Reply = ();
+
+    async fn handle(&mut self, m: CellPromoted, _: &mut Context<Self, Self::Reply>) {
+        self.search.invalidate();
+        self.ledger.bump(m.session);
     }
 }
 
@@ -20945,7 +21019,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let text = next_turn(&mut rx, chat).await;
-        assert!(text.contains("<skill name=\"review\">") && text.contains("look at this"), "{text}");
+        assert!(
+            text.contains("<skill name=\"review\">") && text.contains("look at this"),
+            "{text}"
+        );
         let (_, _, history) = store.frame(chat).await.unwrap();
         let rows = user_rows(history);
         let opener = rows.last().expect("the skill's user row");
@@ -20974,9 +21051,17 @@ pub(crate) mod tests {
         next_turn(&mut rx, chat).await;
         let (_, _, history) = store.frame(chat).await.unwrap();
         let rows = user_rows(history);
-        let plain = rows.iter().rev().find(|m| text_of(&m.content).contains("again")).expect("second row");
+        let plain = rows
+            .iter()
+            .rev()
+            .find(|m| text_of(&m.content).contains("again"))
+            .expect("second row");
         assert!(
-            !plain.content.parts().iter().any(|p| matches!(p, genai::chat::ContentPart::Binary(_))),
+            !plain
+                .content
+                .parts()
+                .iter()
+                .any(|p| matches!(p, genai::chat::ContentPart::Binary(_))),
             "{:?}",
             plain.content
         );

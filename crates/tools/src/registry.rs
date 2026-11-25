@@ -24,6 +24,9 @@ use crate::activity::{self, Activity, ActivitySink, Kind, OperationId};
 use crate::approval::{Approval, Decision, RequestApproval, RequestHumanOnly};
 use crate::ask::{AskUser, AskUserTool};
 use crate::builtins::{self, BUILTIN_CATEGORY_PREFIX, BuiltinCategory, BuiltinTool, CATEGORIES};
+use crate::categories::{
+    self, CustomCategoryDef, TOOL_CATEGORY_PREFIX, ToolCategoriesConfig, ToolCategoryInfo,
+};
 use crate::communication::{self, Admitted, CommunicationAccess};
 use crate::jobs::{CloseSessions, InstallActivity, JOBS_ACTOR, Jobs, lock};
 use crate::journal::{InstallJournal, Journal, NoopJournal, QuestionRow};
@@ -73,6 +76,8 @@ pub struct ToolRegistry {
     /// names and [`builtins::category_key`]s hidden for every session. Seeded at
     /// [`start`], changed by [`SetBuiltinsDisabled`]; never touches MCP tools.
     builtins_disabled: HashSet<String>,
+    /// High-level tool categories and their builtin/MCP assignments.
+    categories: ToolCategoriesConfig,
     /// child → parent, from [`SetParent`]; a session inherits its ancestors' pin and hidden set.
     parents: HashMap<SessionId, SessionId>,
     /// Risk ceiling per session from [`SetCap`]: a tool above it is neither
@@ -256,6 +261,58 @@ impl std::fmt::Display for BuiltinsSwitchError {
             ),
         }
     }
+}
+
+/// `ask` → every high-level tool category, defaults first in display order and
+/// custom categories sorted by label. With a session, `hidden` includes ancestors.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ListToolCategories(pub Option<SessionId>);
+
+/// `ask` → the `tcat:<id>` hides a brand-new root interactive session starts with.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DefaultHiddenCategories;
+
+/// `ask` → create or replace a custom category, persisted before it is applied.
+#[derive(Clone, Debug)]
+pub struct UpsertToolCategory {
+    /// Existing custom id to update, a new explicit id, or `None` to slugify `label`.
+    pub id: Option<String>,
+    /// Display name; leading and trailing whitespace is trimmed.
+    pub label: String,
+    /// One-line summary; `None` stores an empty description.
+    pub description: Option<String>,
+}
+
+/// `ask` → delete a custom category and every assignment/default referring to it.
+#[derive(Clone, Debug)]
+pub struct DeleteToolCategory {
+    /// Custom category id to delete.
+    pub id: String,
+}
+
+/// `ask` → assign an MCP server to a category, or clear its assignment with `None`.
+#[derive(Clone, Debug)]
+pub struct SetMcpCategory {
+    /// MCP server name.
+    pub server: String,
+    /// Existing default or custom category id, or `None` to clear.
+    pub category: Option<String>,
+}
+
+/// `ask` → override a native tool's default category, or clear the override.
+#[derive(Clone, Debug)]
+pub struct SetToolCategory {
+    /// Registered native tool name (or a stale name when clearing).
+    pub tool: String,
+    /// Existing default or custom category id, or `None` to clear.
+    pub category: Option<String>,
+}
+
+/// `ask` → set the categories hidden in brand-new root interactive sessions.
+#[derive(Clone, Debug)]
+pub struct SetDefaultToolCategories {
+    /// Existing category ids; sorted and deduplicated before persistence.
+    pub disabled: Vec<String>,
 }
 
 /// `ask` → [`ToolOutput`] (206): [`Invoke`] for a call the harness makes itself (a
@@ -1158,6 +1215,8 @@ impl ToolRegistry {
         }
         // The server key, resolved on the first set that names any server.
         let mut server: Option<Option<String>> = None;
+        // MCP category key, resolved only when a hide set names a tool category.
+        let mut category: Option<Option<String>> = None;
         loop {
             if let Some(h) = self.hidden.get(&id) {
                 if h.contains(name) {
@@ -1179,6 +1238,19 @@ impl ToolRegistry {
                         return true;
                     }
                 }
+                if h.iter().any(|k| k.starts_with(TOOL_CATEGORY_PREFIX)) {
+                    let key = category.get_or_insert_with(|| {
+                        self.tools.get(name).and_then(|t| match t.source() {
+                            ToolSource::Mcp { .. } => self
+                                .effective_category_of(name)
+                                .map(|id| categories::tool_category_key(&id)),
+                            ToolSource::Native { .. } => None,
+                        })
+                    });
+                    if key.as_ref().is_some_and(|k| h.contains(k)) {
+                        return true;
+                    }
+                }
             }
             match self.parents.get(&id) {
                 Some(p) => id = *p,
@@ -1194,6 +1266,21 @@ impl ToolRegistry {
             .is_some_and(|t| matches!(t.source(), ToolSource::Native { .. }))
     }
 
+    /// The effective high-level category: native tools default by builtin group and
+    /// may be overridden; MCP tools inherit their server's explicit assignment.
+    fn effective_category_of(&self, name: &str) -> Option<String> {
+        match self.tools.get(name)?.source() {
+            ToolSource::Native { .. } => Some(
+                self.categories
+                    .tool_assignments
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| categories::default_category_for_builtin(name).to_owned()),
+            ),
+            ToolSource::Mcp { server, .. } => self.categories.mcp_assignments.get(&server).cloned(),
+        }
+    }
+
     /// 206: builtin `name` is off by a builtin switch: its name or category key is in the
     /// harness-wide set, or its category key is in the hidden set of `id` or an ancestor.
     /// A hide by plain name is [`Self::is_hidden`]'s own business. MCP tools: never.
@@ -1206,6 +1293,19 @@ impl ToolRegistry {
             })
             .clone()
         };
+        let mut tool_category: Option<Option<String>> = None;
+        let mut tool_category = || {
+            tool_category
+                .get_or_insert_with(|| {
+                    self.tools.get(name).and_then(|tool| match tool.source() {
+                        ToolSource::Native { .. } => self
+                            .effective_category_of(name)
+                            .map(|id| categories::tool_category_key(&id)),
+                        ToolSource::Mcp { .. } => None,
+                    })
+                })
+                .clone()
+        };
         if !self.builtins_disabled.is_empty()
             && let Some(k) = key()
             && (self.builtins_disabled.contains(name) || self.builtins_disabled.contains(&k))
@@ -1213,11 +1313,19 @@ impl ToolRegistry {
             return true;
         }
         loop {
-            if let Some(h) = self.hidden.get(&id)
-                && h.iter().any(|k| k.starts_with(BUILTIN_CATEGORY_PREFIX))
-                && key().is_some_and(|k| h.contains(&k))
-            {
-                return true;
+            if let Some(h) = self.hidden.get(&id) {
+                if h.iter().any(|k| k.starts_with(BUILTIN_CATEGORY_PREFIX))
+                    && key().is_some_and(|k| h.contains(&k))
+                {
+                    return true;
+                }
+                // Kept in this switch, not `hidden_apart_from_switch`: harness-owned
+                // invocations deliberately bypass category hides for native tools.
+                if h.iter().any(|k| k.starts_with(TOOL_CATEGORY_PREFIX))
+                    && tool_category().is_some_and(|k| h.contains(&k))
+                {
+                    return true;
+                }
             }
             match self.parents.get(&id) {
                 Some(p) => id = *p,
@@ -1236,6 +1344,69 @@ impl ToolRegistry {
                 None => return sets,
             }
         }
+    }
+
+    fn category_exists(&self, id: &str) -> bool {
+        categories::default_category(id).is_some()
+            || self.categories.custom.iter().any(|c| c.id == id)
+    }
+
+    /// Native tools and assigned MCP servers grouped by effective category. The
+    /// maps are ordered, and native tool vectors are sorted when a DTO is built.
+    fn category_members(&self) -> (BTreeMap<String, Vec<String>>, BTreeMap<String, Vec<String>>) {
+        let mut native: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (name, tool) in &self.tools {
+            if !matches!(tool.source(), ToolSource::Native { .. }) {
+                continue;
+            }
+            if let Some(category) = self.effective_category_of(name) {
+                native.entry(category).or_default().push(name.clone());
+            }
+        }
+        let mut mcp: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (server, category) in &self.categories.mcp_assignments {
+            mcp.entry(category.clone())
+                .or_default()
+                .push(server.clone());
+        }
+        (native, mcp)
+    }
+
+    fn category_info(
+        &self,
+        definition: (&str, &str, &str),
+        custom: bool,
+        hidden_chain: &[&HashSet<String>],
+        native_members: &mut BTreeMap<String, Vec<String>>,
+        mcp_members: &mut BTreeMap<String, Vec<String>>,
+    ) -> ToolCategoryInfo {
+        let (id, label, description) = definition;
+        let mut builtin_tools = native_members.remove(id).unwrap_or_default();
+        builtin_tools.sort();
+        let key = categories::tool_category_key(id);
+        ToolCategoryInfo {
+            id: id.to_owned(),
+            label: label.to_owned(),
+            description: description.to_owned(),
+            custom,
+            default_enabled: !self.categories.default_disabled.iter().any(|d| d == id),
+            hidden: hidden_chain.iter().any(|set| set.contains(&key)),
+            builtin_count: builtin_tools.len() as u32,
+            builtin_tools,
+            mcp_servers: mcp_members.remove(id).unwrap_or_default(),
+        }
+    }
+
+    /// Serialize as JSON flow syntax (also YAML) and persist before memory changes.
+    fn persist_categories<T: Serialize + ?Sized>(
+        &self,
+        field: &str,
+        value: &T,
+    ) -> Result<(), String> {
+        let value = serde_json::to_string(value)
+            .map_err(|e| format!("could not serialize tools.categories.{field}: {e}"))?;
+        runtime::write_nested_config_value(&self.config_path, "tools", "categories", field, &value)
+            .map_err(|e| format!("{} could not be written: {e}", self.config_path.display()))
     }
 
     /// 206: a name [`SetBuiltinsDisabled`] accepts: a registered builtin or the key of
@@ -1852,6 +2023,12 @@ impl Message<ListBuiltins> for ToolRegistry {
             }
             let category = builtins::category_of(name);
             let key = builtins::category_key(category);
+            let tool_category = if chain.is_empty() {
+                None
+            } else {
+                self.effective_category_of(name)
+                    .map(|id| categories::tool_category_key(&id))
+            };
             let names = |set: &HashSet<String>| set.contains(name) || set.contains(&key);
             let spec = tool.spec();
             by_category.entry(category).or_default().push(BuiltinTool {
@@ -1860,7 +2037,9 @@ impl Message<ListBuiltins> for ToolRegistry {
                 risk: spec.risk,
                 direct: spec.direct,
                 disabled: names(&self.builtins_disabled),
-                hidden: chain.iter().any(|set| names(set)),
+                hidden: chain.iter().any(|set| {
+                    names(set) || tool_category.as_ref().is_some_and(|key| set.contains(key))
+                }),
             });
         }
         CATEGORIES
@@ -1927,6 +2106,254 @@ impl Message<SetBuiltinsDisabled> for ToolRegistry {
         self.builtins_disabled = next;
         // Running turns re-list before their next model call; python re-lists per cell.
         self.hidden_epoch += 1;
+        Ok(())
+    }
+}
+
+impl Message<ListToolCategories> for ToolRegistry {
+    type Reply = Vec<ToolCategoryInfo>;
+
+    async fn handle(
+        &mut self,
+        ListToolCategories(session): ListToolCategories,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<ToolCategoryInfo> {
+        let chain = session.map(|s| self.hidden_chain(s)).unwrap_or_default();
+        let (mut native, mut mcp) = self.category_members();
+        let mut infos =
+            Vec::with_capacity(categories::DEFAULT_CATEGORIES.len() + self.categories.custom.len());
+        for c in categories::DEFAULT_CATEGORIES {
+            infos.push(self.category_info(
+                (c.id, c.label, c.description),
+                false,
+                &chain,
+                &mut native,
+                &mut mcp,
+            ));
+        }
+        let mut custom: Vec<_> = self.categories.custom.iter().collect();
+        custom.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.id.cmp(&b.id)));
+        for c in custom {
+            infos.push(self.category_info(
+                (&c.id, &c.label, &c.description),
+                true,
+                &chain,
+                &mut native,
+                &mut mcp,
+            ));
+        }
+        infos
+    }
+}
+
+impl Message<DefaultHiddenCategories> for ToolRegistry {
+    type Reply = Vec<String>;
+
+    async fn handle(
+        &mut self,
+        _: DefaultHiddenCategories,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Vec<String> {
+        self.categories
+            .default_disabled
+            .iter()
+            .map(|id| categories::tool_category_key(id))
+            .collect()
+    }
+}
+
+impl Message<UpsertToolCategory> for ToolRegistry {
+    type Reply = Result<ToolCategoryInfo, String>;
+
+    async fn handle(
+        &mut self,
+        m: UpsertToolCategory,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<ToolCategoryInfo, String> {
+        let label = m.label.trim().to_owned();
+        if label.is_empty() {
+            return Err("category label cannot be empty".to_owned());
+        }
+        let description = m.description.unwrap_or_default();
+        let mut next = self.categories.custom.clone();
+        let definition = match m.id {
+            Some(id) => {
+                if categories::default_category(&id).is_some() {
+                    return Err(format!("default category `{id}` cannot be changed"));
+                }
+                let definition = CustomCategoryDef {
+                    id,
+                    label,
+                    description,
+                };
+                if let Some(current) = next.iter_mut().find(|c| c.id == definition.id) {
+                    *current = definition.clone();
+                } else {
+                    categories::validate_category_id(&definition.id)?;
+                    next.push(definition.clone());
+                }
+                definition
+            }
+            None => {
+                let base = categories::slugify_category_label(&label);
+                categories::validate_category_id(&base)?;
+                let mut id = base.clone();
+                let mut suffix = 2_u64;
+                while self.category_exists(&id) {
+                    let ending = format!("-{suffix}");
+                    let stem_len = 48_usize.saturating_sub(ending.len()).min(base.len());
+                    id = format!("{}{ending}", &base[..stem_len]);
+                    categories::validate_category_id(&id)?;
+                    suffix += 1;
+                }
+                let definition = CustomCategoryDef {
+                    id,
+                    label,
+                    description,
+                };
+                next.push(definition.clone());
+                definition
+            }
+        };
+
+        self.persist_categories("custom", &next)?;
+        self.categories.custom = next;
+        let (mut native, mut mcp) = self.category_members();
+        Ok(self.category_info(
+            (&definition.id, &definition.label, &definition.description),
+            true,
+            &[],
+            &mut native,
+            &mut mcp,
+        ))
+    }
+}
+
+impl Message<DeleteToolCategory> for ToolRegistry {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: DeleteToolCategory,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        if categories::default_category(&m.id).is_some() {
+            return Err(format!("default category `{}` cannot be deleted", m.id));
+        }
+        if !self.categories.custom.iter().any(|c| c.id == m.id) {
+            return Err(format!("unknown custom category `{}`", m.id));
+        }
+
+        let mut next = self.categories.clone();
+        next.custom.retain(|c| c.id != m.id);
+        next.mcp_assignments.retain(|_, category| category != &m.id);
+        next.tool_assignments
+            .retain(|_, category| category != &m.id);
+        next.default_disabled.retain(|id| id != &m.id);
+
+        self.persist_categories("custom", &next.custom)?;
+        if next.mcp_assignments != self.categories.mcp_assignments {
+            self.persist_categories("mcp_assignments", &next.mcp_assignments)?;
+        }
+        if next.tool_assignments != self.categories.tool_assignments {
+            self.persist_categories("tool_assignments", &next.tool_assignments)?;
+        }
+        if next.default_disabled != self.categories.default_disabled {
+            self.persist_categories("default_disabled", &next.default_disabled)?;
+        }
+        self.categories = next;
+        self.hidden_epoch += 1;
+        Ok(())
+    }
+}
+
+impl Message<SetMcpCategory> for ToolRegistry {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetMcpCategory,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        if let Some(category) = &m.category
+            && !self.category_exists(category)
+        {
+            return Err(format!("unknown tool category `{category}`"));
+        }
+        let mut next = self.categories.mcp_assignments.clone();
+        match &m.category {
+            Some(category) => {
+                next.insert(m.server, category.clone());
+            }
+            None => {
+                next.remove(&m.server);
+            }
+        }
+        if next == self.categories.mcp_assignments {
+            return Ok(());
+        }
+        self.persist_categories("mcp_assignments", &next)?;
+        self.categories.mcp_assignments = next;
+        self.hidden_epoch += 1;
+        Ok(())
+    }
+}
+
+impl Message<SetToolCategory> for ToolRegistry {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        m: SetToolCategory,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        if m.category.is_some() && !self.is_native(&m.tool) {
+            return Err(format!("`{}` is not a registered native tool", m.tool));
+        }
+        if let Some(category) = &m.category
+            && !self.category_exists(category)
+        {
+            return Err(format!("unknown tool category `{category}`"));
+        }
+        let mut next = self.categories.tool_assignments.clone();
+        match m.category.as_deref() {
+            Some(category) if category != categories::default_category_for_builtin(&m.tool) => {
+                next.insert(m.tool, category.to_owned());
+            }
+            _ => {
+                next.remove(&m.tool);
+            }
+        }
+        if next == self.categories.tool_assignments {
+            return Ok(());
+        }
+        self.persist_categories("tool_assignments", &next)?;
+        self.categories.tool_assignments = next;
+        self.hidden_epoch += 1;
+        Ok(())
+    }
+}
+
+impl Message<SetDefaultToolCategories> for ToolRegistry {
+    type Reply = Result<(), String>;
+
+    async fn handle(
+        &mut self,
+        mut m: SetDefaultToolCategories,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<(), String> {
+        for id in &m.disabled {
+            if !self.category_exists(id) {
+                return Err(format!("unknown tool category `{id}`"));
+            }
+        }
+        m.disabled.sort();
+        m.disabled.dedup();
+        if m.disabled == self.categories.default_disabled {
+            return Ok(());
+        }
+        self.persist_categories("default_disabled", &m.disabled)?;
+        self.categories.default_disabled = m.disabled;
         Ok(())
     }
 }
@@ -2641,7 +3068,10 @@ async fn invoke(
         admitted,
         crate::egress::scope(
             lan,
-            crate::approval::approved_scope(approved, async move { tool.call(call.args, cx).await }),
+            crate::approval::approved_scope(
+                approved,
+                async move { tool.call(call.args, cx).await },
+            ),
         ),
     ));
     let key = (session, call_id.clone());
@@ -2846,6 +3276,7 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             hidden: HashMap::new(),
             hidden_epoch: 0,
             builtins_disabled: cfg.builtins.disabled.into_iter().collect(),
+            categories: cfg.categories,
             parents: HashMap::new(),
             cap: HashMap::new(),
             turn_cap: HashMap::new(),
@@ -2922,6 +3353,7 @@ pub(crate) mod tests {
             hidden: HashMap::new(),
             hidden_epoch: 0,
             builtins_disabled: HashSet::new(),
+            categories: ToolCategoriesConfig::default(),
             parents: HashMap::new(),
             cap: HashMap::new(),
             turn_cap: HashMap::new(),
@@ -3806,6 +4238,441 @@ pub(crate) mod tests {
             ),
             ["echo"]
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Unwrap a category command's handler `Result` instead of kameo's lifted error.
+    macro_rules! category_command {
+        ($reg:expr, $message:expr) => {
+            match $reg.ask($message).await {
+                Ok(value) => Ok(value),
+                Err(kameo::error::SendError::HandlerError(e)) => Err(e),
+                Err(e) => panic!("registry: {e}"),
+            }
+        };
+    }
+
+    fn tool_category<'a>(infos: &'a [ToolCategoryInfo], id: &str) -> &'a ToolCategoryInfo {
+        infos.iter().find(|c| c.id == id).unwrap()
+    }
+
+    fn saved_categories(dir: &std::path::Path) -> ToolCategoriesConfig {
+        let path = dir.join("config.yaml");
+        let rt = Runtime::new(
+            figment::Figment::new()
+                .merge(<figment::providers::Yaml as figment::providers::Format>::file(&path)),
+            dir.to_path_buf(),
+        );
+        config(&rt).unwrap().categories
+    }
+
+    #[tokio::test]
+    async fn category_hide_covers_native_and_mcp_but_not_harness_invoke() {
+        let (reg, dir) = switchable(vec![
+            Arc::new(DocRead),
+            Arc::new(FilesMcp("search", Risk::ReadOnly)),
+        ]);
+        category_command!(
+            &reg,
+            SetMcpCategory {
+                server: "files".into(),
+                category: Some("documentation".into()),
+            }
+        )
+        .unwrap();
+        let (parent, child, other) = (SessionId::new(), SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent,
+        })
+        .await
+        .unwrap();
+        reg.ask(SetHidden {
+            session: parent,
+            tools: vec![categories::tool_category_key("documentation")],
+            hidden: true,
+        })
+        .await
+        .unwrap();
+
+        assert!(tool_names(reg.ask(ListTools(Some(child))).await.unwrap()).is_empty());
+        assert_eq!(
+            tool_names(reg.ask(ListTools(Some(other))).await.unwrap()),
+            ["doc_read", "search"]
+        );
+        let out = reg.ask(Invoke(call("doc_read", child))).await.unwrap();
+        assert!(out.is_error);
+        let out = reg
+            .ask(HarnessInvoke(call("doc_read", child)))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(out.content, "doc_read");
+
+        let infos = reg.ask(ListToolCategories(Some(child))).await.unwrap();
+        let documentation = tool_category(&infos, "documentation");
+        assert!(documentation.hidden);
+        assert_eq!(documentation.builtin_tools, ["doc_read"]);
+        assert_eq!(documentation.builtin_count, 1);
+        assert_eq!(documentation.mcp_servers, ["files"]);
+        let builtins = reg.ask(ListBuiltins(Some(child))).await.unwrap();
+        assert!(
+            builtins
+                .iter()
+                .flat_map(|c| &c.tools)
+                .find(|t| t.name == "doc_read")
+                .unwrap()
+                .hidden
+        );
+
+        reg.ask(SetHidden {
+            session: parent,
+            tools: vec![categories::tool_category_key("documentation")],
+            hidden: false,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            tool_names(reg.ask(ListTools(Some(child))).await.unwrap()),
+            ["doc_read", "search"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn custom_categories_create_update_delete_and_clear_references() {
+        let (reg, dir) = switchable(vec![
+            Arc::new(DocRead),
+            Arc::new(FilesMcp("search", Risk::ReadOnly)),
+        ]);
+        let created = category_command!(
+            &reg,
+            UpsertToolCategory {
+                id: None,
+                label: "  Research Notes  ".into(),
+                description: Some("Papers and notes".into()),
+            }
+        )
+        .unwrap();
+        assert_eq!(created.id, "research-notes");
+        assert_eq!(created.label, "Research Notes");
+        assert_eq!(created.description, "Papers and notes");
+        assert!(created.custom);
+
+        let duplicate = category_command!(
+            &reg,
+            UpsertToolCategory {
+                id: None,
+                label: "Research Notes".into(),
+                description: None,
+            }
+        )
+        .unwrap();
+        assert_eq!(duplicate.id, "research-notes-2");
+        let updated = category_command!(
+            &reg,
+            UpsertToolCategory {
+                id: Some("research-notes".into()),
+                label: " Knowledge Base ".into(),
+                description: None,
+            }
+        )
+        .unwrap();
+        assert_eq!(updated.label, "Knowledge Base");
+        assert_eq!(updated.description, "");
+        assert!(
+            category_command!(
+                &reg,
+                UpsertToolCategory {
+                    id: Some("web".into()),
+                    label: "Not Web".into(),
+                    description: None,
+                }
+            )
+            .unwrap_err()
+            .contains("default category")
+        );
+        assert!(
+            category_command!(
+                &reg,
+                UpsertToolCategory {
+                    id: Some("Bad Id".into()),
+                    label: "Bad".into(),
+                    description: None,
+                }
+            )
+            .is_err()
+        );
+
+        category_command!(
+            &reg,
+            SetMcpCategory {
+                server: "files".into(),
+                category: Some("research-notes".into()),
+            }
+        )
+        .unwrap();
+        category_command!(
+            &reg,
+            SetToolCategory {
+                tool: "doc_read".into(),
+                category: Some("research-notes".into()),
+            }
+        )
+        .unwrap();
+        category_command!(
+            &reg,
+            SetDefaultToolCategories {
+                disabled: vec!["research-notes".into()],
+            }
+        )
+        .unwrap();
+        assert_eq!(
+            reg.ask(DefaultHiddenCategories).await.unwrap(),
+            ["tcat:research-notes"]
+        );
+
+        let before = reg.ask(HiddenEpoch).await.unwrap();
+        category_command!(
+            &reg,
+            DeleteToolCategory {
+                id: "research-notes".into(),
+            }
+        )
+        .unwrap();
+        assert_eq!(reg.ask(HiddenEpoch).await.unwrap(), before + 1);
+        let infos = reg.ask(ListToolCategories(None)).await.unwrap();
+        assert!(!infos.iter().any(|c| c.id == "research-notes"));
+        assert_eq!(
+            tool_category(&infos, "documentation").builtin_tools,
+            ["doc_read"]
+        );
+        assert!(infos.iter().all(|c| c.mcp_servers.is_empty()));
+        assert!(reg.ask(DefaultHiddenCategories).await.unwrap().is_empty());
+        assert!(
+            category_command!(
+                &reg,
+                DeleteToolCategory {
+                    id: "engineering".into(),
+                }
+            )
+            .unwrap_err()
+            .contains("default category")
+        );
+
+        let cfg = saved_categories(&dir);
+        assert_eq!(cfg.custom.len(), 1);
+        assert_eq!(cfg.custom[0].id, "research-notes-2");
+        assert!(cfg.mcp_assignments.is_empty());
+        assert!(cfg.tool_assignments.is_empty());
+        assert!(cfg.default_disabled.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn generated_category_ids_keep_suffixes_within_the_length_limit() {
+        let (reg, dir) = switchable(Vec::new());
+        let label = "x".repeat(48);
+        let first = category_command!(
+            &reg,
+            UpsertToolCategory {
+                id: None,
+                label: label.clone(),
+                description: None,
+            }
+        )
+        .unwrap();
+        assert_eq!(first.id, label);
+        let second = category_command!(
+            &reg,
+            UpsertToolCategory {
+                id: None,
+                label,
+                description: None,
+            }
+        )
+        .unwrap();
+        assert_eq!(second.id, format!("{}-2", "x".repeat(46)));
+        assert_eq!(second.id.len(), 48);
+        categories::validate_category_id(&second.id).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn mcp_category_assignment_changes_visibility_and_persists() {
+        let (reg, dir) = switchable(vec![Arc::new(FilesMcp("search", Risk::ReadOnly))]);
+        let session = SessionId::new();
+        reg.ask(SetHidden {
+            session,
+            tools: vec![categories::tool_category_key("design")],
+            hidden: true,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            tool_names(reg.ask(ListTools(Some(session))).await.unwrap()),
+            ["search"]
+        );
+        let before = reg.ask(HiddenEpoch).await.unwrap();
+        category_command!(
+            &reg,
+            SetMcpCategory {
+                server: "files".into(),
+                category: Some("design".into()),
+            }
+        )
+        .unwrap();
+        assert_eq!(reg.ask(HiddenEpoch).await.unwrap(), before + 1);
+        assert!(tool_names(reg.ask(ListTools(Some(session))).await.unwrap()).is_empty());
+        assert_eq!(
+            tool_category(&reg.ask(ListToolCategories(None)).await.unwrap(), "design").mcp_servers,
+            ["files"]
+        );
+
+        category_command!(
+            &reg,
+            SetMcpCategory {
+                server: "files".into(),
+                category: None,
+            }
+        )
+        .unwrap();
+        assert_eq!(
+            tool_names(reg.ask(ListTools(Some(session))).await.unwrap()),
+            ["search"]
+        );
+        assert!(
+            category_command!(
+                &reg,
+                SetMcpCategory {
+                    server: "files".into(),
+                    category: Some("missing".into()),
+                }
+            )
+            .is_err()
+        );
+        let cfg = saved_categories(&dir);
+        assert!(cfg.mcp_assignments.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn native_tool_category_override_moves_tool_and_can_return_to_default() {
+        let (reg, dir) = switchable(vec![Arc::new(DocRead)]);
+        category_command!(
+            &reg,
+            SetToolCategory {
+                tool: "doc_read".into(),
+                category: Some("design".into()),
+            }
+        )
+        .unwrap();
+        let infos = reg.ask(ListToolCategories(None)).await.unwrap();
+        assert_eq!(tool_category(&infos, "design").builtin_tools, ["doc_read"]);
+        assert!(
+            tool_category(&infos, "documentation")
+                .builtin_tools
+                .is_empty()
+        );
+
+        let session = SessionId::new();
+        reg.ask(SetHidden {
+            session,
+            tools: vec![categories::tool_category_key("design")],
+            hidden: true,
+        })
+        .await
+        .unwrap();
+        assert!(
+            reg.ask(Invoke(call("doc_read", session)))
+                .await
+                .unwrap()
+                .is_error
+        );
+        category_command!(
+            &reg,
+            SetToolCategory {
+                tool: "doc_read".into(),
+                category: Some("documentation".into()),
+            }
+        )
+        .unwrap();
+        assert!(
+            !reg.ask(Invoke(call("doc_read", session)))
+                .await
+                .unwrap()
+                .is_error
+        );
+        let infos = reg.ask(ListToolCategories(None)).await.unwrap();
+        assert_eq!(
+            tool_category(&infos, "documentation").builtin_tools,
+            ["doc_read"]
+        );
+        assert!(
+            category_command!(
+                &reg,
+                SetToolCategory {
+                    tool: "missing".into(),
+                    category: Some("web".into()),
+                }
+            )
+            .is_err()
+        );
+        // Clearing is allowed for a stale tool name.
+        category_command!(
+            &reg,
+            SetToolCategory {
+                tool: "missing".into(),
+                category: None,
+            }
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn default_disabled_categories_are_validated_sorted_and_persisted() {
+        let (reg, dir) = switchable(Vec::new());
+        category_command!(
+            &reg,
+            SetDefaultToolCategories {
+                disabled: vec!["web".into(), "design".into(), "web".into()],
+            }
+        )
+        .unwrap();
+        assert_eq!(
+            reg.ask(DefaultHiddenCategories).await.unwrap(),
+            ["tcat:design", "tcat:web"]
+        );
+        let infos = reg.ask(ListToolCategories(None)).await.unwrap();
+        assert!(!tool_category(&infos, "design").default_enabled);
+        assert!(!tool_category(&infos, "web").default_enabled);
+        assert!(tool_category(&infos, "engineering").default_enabled);
+        assert!(infos.iter().all(|c| !c.hidden));
+        let cfg = saved_categories(&dir);
+        assert_eq!(cfg.default_disabled, ["design", "web"]);
+
+        assert!(
+            category_command!(
+                &reg,
+                SetDefaultToolCategories {
+                    disabled: vec!["missing".into()],
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            reg.ask(DefaultHiddenCategories).await.unwrap(),
+            ["tcat:design", "tcat:web"]
+        );
+        category_command!(
+            &reg,
+            SetDefaultToolCategories {
+                disabled: Vec::new()
+            }
+        )
+        .unwrap();
+        assert!(reg.ask(DefaultHiddenCategories).await.unwrap().is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -5775,7 +6642,10 @@ pub(crate) mod tests {
             Ok(Some(m))
         }
         async fn call(&self, args: Self::Args, cx: ToolCx) -> anyhow::Result<ToolOutput> {
-            assert!(args.get("url").is_none(), "the card's keys reached the call");
+            assert!(
+                args.get("url").is_none(),
+                "the card's keys reached the call"
+            );
             let url = lock(&self.shown)
                 .remove(&(cx.session, cx.call_id))
                 .ok_or_else(|| anyhow::anyhow!("no preview"))?;
@@ -5786,7 +6656,11 @@ pub(crate) mod tests {
 
     /// Answers every card with one decision and records the card's args.
     #[derive(kameo::Actor)]
-    struct Answer(ActorRef<Approval>, Decision, Arc<Mutex<Vec<serde_json::Value>>>);
+    struct Answer(
+        ActorRef<Approval>,
+        Decision,
+        Arc<Mutex<Vec<serde_json::Value>>>,
+    );
 
     impl Message<crate::approval::ApprovalRequested> for Answer {
         type Reply = ();
