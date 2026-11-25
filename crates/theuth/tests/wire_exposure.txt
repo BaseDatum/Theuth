@@ -76,6 +76,7 @@ artifact.shown#ArtifactShown public
 artifact.web-view-call-requested internal
 artifact.web-view-call-resolved internal
 artifact.web-view-opened#WebViewOpened public
+artifact.whiteboard-view-opened#WhiteboardViewOpened public
 autoresearch.events#ExperimentFinished public
 autoresearch.events#ExperimentProgress public
 autoresearch.events#ExperimentStarted public
