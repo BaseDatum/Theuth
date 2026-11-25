@@ -1,0 +1,154 @@
+import { useQuerySupport } from '@/rpc/capabilities'
+import { useQuery } from '@tanstack/react-query'
+import { Send, Trash2 } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { notify as toast } from '@/lib/notify'
+import { Empty, Row, useAction } from '@/components/settings/shared'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { queryKeys, useApi } from '@/lib/rpc'
+import type { SecretInfo } from "@/rpc/bindings/method.secrets.output"
+import { describeExpiry } from '@/components/chat/secret-expiry'
+import { SendDialog } from './SendDialog'
+
+const EMPTY_FORM = { name: '', value: '', note: '' }
+
+/** `2026-09-16T10:02:11Z` → the user's locale, minutes precision. */
+function when(iso: string): string {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+/**
+ * `/secrets` (37 §6): names, notes and versions from `list_secrets`; a value is typed once into the password
+ * field, sent by `set_secret`, and never comes back — no length, no preview. The form doubles as Replace
+ * (prefilled name = a new version of that name). `canSend` (a Bitwarden connection exists, 221 §12.5): each row gets
+ * Send…, which shares its current value through a Bitwarden Send.
+ */
+export function LocalList({ canSend }: { canSend: boolean }) {
+  const canQuery1 = useQuerySupport(["list_secrets"])
+  const api = useApi()
+  const list = useQuery({ enabled: canQuery1, queryKey: queryKeys.secrets, queryFn: () => api.list_secrets() })
+  const [form, setForm] = useState(EMPTY_FORM)
+  const [history, setHistory] = useState<string | null>(null)
+  const valueRef = useRef<HTMLInputElement>(null)
+  const add = useAction((v: typeof form) => api.set_secret(v.name, v.value, v.note || null), {
+    keys: [queryKeys.secrets],
+    onSuccess: (s) => {
+      setForm(EMPTY_FORM)
+      toast.success(`Stored ${s.name} v${s.current}`)
+    },
+  })
+  const restore = useAction((v: { name: string; back: number }) => api.restore_secret(v.name, v.back), {
+    keys: [queryKeys.secrets],
+    onSuccess: (s) => toast.success(`${s.name}: v${s.current} restored`),
+  })
+  const remove = useAction((name: string) => api.delete_secret(name), { keys: [queryKeys.secrets] })
+  const [sending, setSending] = useState<string | null>(null)
+  const ready = form.name.trim() && form.value
+  const replace = (s: SecretInfo) => {
+    setForm({ name: s.name, value: '', note: s.note })
+    valueRef.current?.focus()
+  }
+
+  return (
+      <>
+        {sending && <SendDialog open initial={{ kind: 'text', source: sending, label: `local ${sending}` }} onOpenChange={(o) => !o && setSending(null)} />}
+        {list.data?.secrets.length === 0 && (
+          <Empty>
+            No secret yet. A secret is a value the harness can hand to tools by name — the model references it as a
+            placeholder and never sees the value. Add one below.
+          </Empty>
+        )}
+        {list.data?.secrets.map((s) => (
+          <div key={s.name} className="border-b border-border-subtle last:border-0">
+            <Row
+              label={<span className="font-mono">{s.name}</span>}
+              description={
+                <>
+                  v{s.current} · {s.versions.length} kept{s.note && <> · {s.note}</>} · {when(s.updated)}
+                  {s.expires && <span title={when(s.expires)}> · {describeExpiry(s.expires)}</span>}
+                </>
+              }
+            >
+              <Button variant="outline" size="sm" onClick={() => replace(s)}>
+                Replace
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setHistory(history === s.name ? null : s.name)}>
+                History
+              </Button>
+              {canSend && (
+                <Button variant="ghost" size="icon-sm" aria-label={`Send ${s.name}`} onClick={() => setSending(s.name)}>
+                  <Send />
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Delete ${s.name}`}
+                disabled={remove.isPending}
+                onClick={() => confirm(`Delete ${s.name} and all ${s.versions.length} versions?`) && remove.mutate(s.name)}
+              >
+                <Trash2 />
+              </Button>
+            </Row>
+            {history === s.name && (
+              <div className="mb-3 ml-4 flex flex-col gap-1 text-[13px] text-fg-secondary">
+                {s.versions.map((v, i) => (
+                  <div key={v.v} className="flex items-center justify-between gap-4">
+                    <span>
+                      v{v.v} · {when(v.created)} · {v.source}
+                      {i === 0 && <span className="text-fg-tertiary"> · current</span>}
+                    </span>
+                    {i > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={restore.isPending}
+                        onClick={() => restore.mutate({ name: s.name, back: i })}
+                      >
+                        Restore
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+        <form
+          className="mt-4 grid grid-cols-[1fr_2fr_2fr_auto] gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (ready) add.mutate({ name: form.name.trim(), value: form.value, note: form.note.trim() })
+          }}
+        >
+          <Input
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            placeholder="Name"
+            aria-label="Secret name"
+            spellCheck={false}
+          />
+          <Input
+            ref={valueRef}
+            type="password"
+            value={form.value}
+            onChange={(e) => setForm({ ...form, value: e.target.value })}
+            placeholder="Value"
+            aria-label="value"
+            autoComplete="off"
+          />
+          <Input
+            value={form.note}
+            onChange={(e) => setForm({ ...form, note: e.target.value })}
+            placeholder="Note (what it is for)"
+            aria-label="Note"
+          />
+          <Button type="submit" variant="outline" disabled={!ready || add.isPending}>
+            {list.data?.secrets.some((s) => s.name === form.name.trim()) ? 'Replace' : 'Add'}
+          </Button>
+        </form>
+      </>
+  )
+}

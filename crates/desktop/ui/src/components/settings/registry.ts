@@ -35,7 +35,7 @@ export function isTab(id: string): boolean {
 export const TAB_IDS = [
   'appearance', 'app', 'shortcuts',
   'models', 'helpers', 'providers',
-  'loop', 'memory', 'approvals', 'advisor', 'autoresearch', 'harnesses',
+  'loop', 'memory', 'approvals', 'external-secrets', 'advisor', 'autoresearch', 'harnesses',
   'suffixes', 'system',
   'dreaming', 'double', 'decision',
   'voice', 'dictation', 'voice-dictionary', 'voice-key', 'voice-history',

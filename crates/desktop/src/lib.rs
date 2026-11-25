@@ -36,6 +36,8 @@ mod models;
 mod pages;
 #[cfg(desktop)]
 mod point;
+#[cfg(target_os = "macos")]
+mod power;
 #[cfg(desktop)]
 mod quit;
 #[cfg(desktop)]
@@ -457,6 +459,9 @@ mod desktop {
                 companion::init(app.handle())?;
                 #[cfg(target_os = "macos")]
                 crate::dock::init(app.handle());
+                // 221 D20 `lock_on_sleep`: sleep and screen lock → `power-lock` → the webview → the engine.
+                #[cfg(target_os = "macos")]
+                crate::power::init(app.handle());
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 deep_links(app.handle());
                 // 166 R1: last, so a user launch shows a window that is fully set up.

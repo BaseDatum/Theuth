@@ -25,6 +25,7 @@ import { MessageUser } from './MessageUser'
 import { MessageVision } from './MessageVision'
 import { SendCard } from './SendCard'
 import { SecretRequestCard, eventFields } from './SecretRequestCard'
+import { destinationOf } from '@/components/library/secrets/api'
 import { Details, DisclosureScope, useScopedDisclosure } from './disclosure'
 import { ResultCard } from '@/components/cells/ResultCard'
 import { resolveSender, useDirectory } from './peer-identity'
@@ -313,7 +314,7 @@ export function PromptCard({ prompt, from }: { prompt: Prompt; from?: AgentInfo 
     ) : prompt.type === 'AskRequested' ? (
       <AskCard ask={prompt} />
     ) : (
-      <SecretRequestCard id={prompt.id} title={prompt.title} note={prompt.title ? undefined : prompt.note} fields={eventFields(prompt)} expires={prompt.expires} />
+      <SecretRequestCard id={prompt.id} title={prompt.title} note={prompt.title ? undefined : prompt.note} fields={eventFields(prompt)} expires={prompt.expires} destination={destinationOf(prompt)} />
     )
   const card = by ? (
     <>

@@ -6,7 +6,17 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useApi } from '@/lib/rpc'
 import type { SecretRequestField } from "@/rpc/bindings/method.secrets.output"
 import { useSecretRequests } from '@/store/approvals'
+import { useSecretsApi } from '@/components/library/secrets/api'
+import { DestinationPicker } from '@/components/library/secrets/DestinationPicker'
+import { destinationLine } from '@/components/library/secrets/labels'
+import type { Destination, DestinationView } from '@/components/library/secrets/types'
 import { choiceFromSuggestion, type ExpiryChoice, type ExpiryUnit, formatExpiry, msToLocalInput, resolveExpiry } from './secret-expiry'
+
+/** The `Destination` an answer carries: the view without its engine-resolved display fields. */
+export function answerDestination(d: DestinationView): Destination {
+  const { backend: _b, summary: _s, status: _st, current_rev: _r, ...dest } = d
+  return dest
+}
 
 /**
  * The positional `answer_secret(id, value, values, expires_ms)` tail: `[value, null, at]` for one field,
@@ -104,6 +114,10 @@ function ExpiryControl({ choice, onChange, disabled, now }: { choice: ExpiryChoi
  * Values live only in this component's state. `origin` names where the request was raised (a VM's name, 79 §6.6);
  * `onAnswered` fires after a successful answer (the inbox refetches its rows). `onError` (the inbox, which never
  * toasts) takes a failure, or "already answered", instead of the toast.
+ *
+ * 221 §9.2 `destination`: a Destination strip above the fields (where the values go), Change opens the picker, a locked
+ * Bitwarden destination asks for the master password inline first, and Store sends the final destination as
+ * `answer_secret`'s tail. The expiry control shows only with "keep a local copy": neither manager expires values.
  */
 export const SecretRequestCard = memo(function SecretRequestCard({
   id,
@@ -112,6 +126,7 @@ export const SecretRequestCard = memo(function SecretRequestCard({
   fields,
   expires,
   origin,
+  destination,
   onAnswered,
   onError,
 }: {
@@ -121,25 +136,34 @@ export const SecretRequestCard = memo(function SecretRequestCard({
   fields: SecretRequestField[]
   expires?: string | null
   origin?: string | null
+  destination?: DestinationView | null
   onAnswered?: () => void
   onError?: (error: string) => void
 }) {
   const api = useApi()
+  const secrets = useSecretsApi()
+  const [dest, setDest] = useState<DestinationView | null>(destination ?? null)
+  const [picking, setPicking] = useState(false)
+  const [master, setMaster] = useState('')
+  const [unlockError, setUnlockError] = useState<string | null>(null)
+  const locked = dest !== null && dest.status.state === 'locked'
+  const expiryShown = dest === null || dest.keep_local
   const [values, setValues] = useState<Record<string, string>>({})
   const [expiry, setExpiry] = useState<ExpiryChoice>(() => choiceFromSuggestion(expires))
   const [busy, setBusy] = useState(false)
   const now = Date.now()
   const resolved = resolveExpiry(expiry, now)
-  const complete = fields.every((f) => values[f.name]) && resolved.ok
+  const complete = fields.every((f) => values[f.name]) && (resolved.ok || !expiryShown) && !locked && (dest === null || (dest.replace === null ? dest.name.trim() !== '' : dest.replace !== ''))
   const one = fields.length === 1 ? fields[0] : null
   const answer = async (decline: boolean) => {
     // "In 2 hours" counts from the moment the user stores.
-    const at = resolveExpiry(expiry, Date.now())
+    const at = expiryShown ? resolveExpiry(expiry, Date.now()) : ({ ok: true, at: null } as const)
     if (!decline && !at.ok) return
     setBusy(true)
     try {
       const [value, form, expiresMs] = answerPayload(fields, values, decline, at.ok ? at.at : null)
-      if (await api.answer_secret(id, value, form, expiresMs)) {
+      const ok = dest === null ? await api.answer_secret(id, value, form, expiresMs) : await secrets.answer_secret(id, value, form, expiresMs, decline ? null : answerDestination(dest))
+      if (ok) {
         setValues({})
         onAnswered?.()
       } else {
@@ -150,6 +174,20 @@ export const SecretRequestCard = memo(function SecretRequestCard({
     } catch (e) {
       ;(onError ?? toast.error)(e instanceof Error ? e.message : String(e))
     } finally {
+      setBusy(false)
+    }
+  }
+  const unlock = async () => {
+    if (!dest) return
+    setBusy(true)
+    setUnlockError(null)
+    try {
+      const info = await secrets.connection_unlock(dest.connection, master)
+      setDest({ ...dest, status: info.status })
+    } catch (e) {
+      setUnlockError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setMaster('')
       setBusy(false)
     }
   }
@@ -178,6 +216,46 @@ export const SecretRequestCard = memo(function SecretRequestCard({
           </div>
         )}
       </div>
+      {dest && (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2 rounded-md bg-bg-secondary px-2 py-1.5 text-xs" aria-label="Destination">
+            <span className="min-w-0 flex-1">
+              <span className="text-fg-tertiary">Destination </span>
+              {destinationLine(dest)}
+              {dest.keep_local && <span className="text-fg-tertiary"> · and a local copy</span>}
+            </span>
+            <Button type="button" size="xs" variant="ghost" disabled={busy} aria-expanded={picking} onClick={() => setPicking(!picking)}>
+              Change
+            </Button>
+          </div>
+          {picking && <DestinationPicker value={dest} fields={fields} onChange={setDest} disabled={busy} />}
+          {locked && (
+            <div className="flex flex-col gap-1">
+              <div className="flex gap-2">
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  aria-label={`master password for ${dest.connection}`}
+                  placeholder={`Unlock bw/${dest.connection}: master password`}
+                  value={master}
+                  onChange={(e) => setMaster(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      if (master) void unlock()
+                    }
+                  }}
+                  disabled={busy}
+                />
+                <Button type="button" size="sm" variant="outline" disabled={busy || !master} onClick={() => void unlock()}>
+                  Unlock
+                </Button>
+              </div>
+              {unlockError && <div className="text-xs text-danger">{unlockError}</div>}
+            </div>
+          )}
+        </div>
+      )}
       {fields.map((f) => (
         <label key={f.name} className="flex flex-col gap-1">
           {!one && (
@@ -198,7 +276,7 @@ export const SecretRequestCard = memo(function SecretRequestCard({
           />
         </label>
       ))}
-      <ExpiryControl choice={expiry} onChange={setExpiry} disabled={busy} now={now} />
+      {expiryShown && <ExpiryControl choice={expiry} onChange={setExpiry} disabled={busy} now={now} />}
       <div className="flex gap-2">
         <Button type="submit" size="sm" className="pointer-coarse:h-11 pointer-coarse:flex-1" disabled={busy || !complete}>
           Store

@@ -14,6 +14,7 @@ import { AlertNotifier } from '@/lib/alerts'
 import { describe } from '@/lib/describe'
 import { installDictationListeners, refreshStatus, setModel } from '@/lib/dictation'
 import { companionAlive, onCompanionAlive, useCompanionAlive } from '@/lib/companion'
+import { usePowerLock } from '@/lib/power-lock'
 import { EngineSwitch } from '@/lib/engine-switch'
 import { FocusTracker, Throttle, deriveFocus } from '@/lib/event-focus'
 import { useMeetingHotkeys } from '@/lib/meeting-hotkeys'
@@ -700,6 +701,7 @@ function Shell({ engine, onRelaunch }: { engine: string; onRelaunch(): void }) {
   const refused = useEngines((s) => s.presence[engine] === 'refused')
   const ready = useConnection((s) => routerMounted(s, engine === LOCAL, refused))
   useInvalidateOn()
+  usePowerLock()
   useSuffixSync()
   useEventSideEffects(scope(engine))
   useEventFocus(scope(engine))

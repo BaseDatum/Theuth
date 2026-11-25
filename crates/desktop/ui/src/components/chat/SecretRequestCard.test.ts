@@ -2,7 +2,8 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeAll, expect, test, vi } from 'vitest'
 import type * as Rpc from '@/lib/rpc'
-import { SecretRequestCard, answerPayload, eventFields } from './SecretRequestCard'
+import { SecretRequestCard, answerDestination, answerPayload, eventFields } from './SecretRequestCard'
+import type { DestinationView } from '@/components/library/secrets/types'
 import { choiceFromSuggestion, describeExpiry, formatExpiry, localInputToMs, msToLocalInput, resolveExpiry } from './secret-expiry'
 
 vi.mock('@/lib/rpc', async (original) => ({ ...(await original<typeof Rpc>()), useApi: () => ({}) }))
@@ -18,6 +19,25 @@ const FORM = [
   { name: 'gh.user', label: 'Username', masked: false, current: null },
   { name: 'gh.pass', label: 'Password', masked: true, current: 2, note: "alice's GitHub password" },
 ]
+// 221 §7.3: the same form stored into Bitwarden; `fields` maps each form field to the item's field.
+const DEST: DestinationView = {
+  connection: 'personal',
+  name: 'GitHub — CI',
+  replace: null,
+  keep_local: false,
+  kms_key_id: null,
+  format: null,
+  org: null,
+  collection: null,
+  folder: 'theuth',
+  item: 'login',
+  fields: { 'gh.user': 'username', 'gh.pass': 'password' },
+  uri: null,
+  backend: 'bw',
+  summary: 'me@example.org · vault.bitwarden.eu',
+  status: { state: 'ready' },
+  current_rev: null,
+}
 
 const card = (props: Record<string, unknown>) => renderToStaticMarkup(createElement(SecretRequestCard, { id: 'r1', fields: FORM, ...props } as Parameters<typeof SecretRequestCard>[0]))
 
@@ -90,4 +110,26 @@ test('lists say how long is left', () => {
   expect(describeExpiry(new Date(NOW + 3 * H).toISOString(), NOW)).toBe('expires in 3 h')
   expect(describeExpiry(new Date(NOW + 72 * H).toISOString(), NOW)).toBe(`expires ${formatExpiry(NOW + 72 * H, NOW)}`)
   expect(describeExpiry(new Date(NOW - 1).toISOString(), NOW)).toBe('expired')
+})
+
+test('221 §9.2: a destination shows its strip, hides the expiry (neither manager expires values) and answers with the bare Destination', () => {
+  const html = card({ destination: DEST })
+  expect(html).toContain('Bitwarden · personal › Personal / theuth · new login &quot;GitHub — CI&quot;')
+  expect(html).toContain('>Change<')
+  expect(html).not.toContain('Kept until you delete it')
+  const local = card({ destination: { ...DEST, keep_local: true } })
+  expect(local).toContain('and a local copy')
+  expect(local).toContain('Kept until you delete it')
+  const answered = answerDestination(DEST)
+  expect(answered).not.toHaveProperty('status')
+  expect(answered).not.toHaveProperty('summary')
+  expect(answered).toMatchObject({ connection: 'personal', name: 'GitHub — CI', fields: { 'gh.pass': 'password' } })
+})
+
+test('221 §9.2: a locked Bitwarden destination asks for the master password on the card, and Store waits for it', () => {
+  const html = card({ destination: { ...DEST, status: { state: 'locked' } } })
+  expect(html).toContain('aria-label="master password for personal"')
+  expect(html.match(/<button[^>]*type="submit"[^>]*>/)?.[0]).toContain('disabled')
+  const aws = card({ destination: { ...DEST, backend: 'aws', connection: 'prod', summary: 'work-admin · eu-west-1', name: 'app/ci/token', format: 'json', kms_key_id: 'alias/app' } })
+  expect(aws).toContain('AWS · prod (work-admin, eu-west-1) · app/ci/token · JSON · KMS alias/app')
 })

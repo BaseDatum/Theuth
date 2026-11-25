@@ -7,6 +7,7 @@ import { notify as toast } from '@/lib/notify'
 import { type HomeAction, homeActions, homeChip, stateText } from '@/components/library/mcp-home'
 import { AlwaysAskSelect } from '@/components/library/AlwaysAskSelect'
 import { segments } from '@/components/library/names'
+import { secretAskLabel } from '@/components/library/secrets/labels'
 import { type Action, Dot, Empty, Section, errorText, toastSync, useAction } from '@/components/settings/shared'
 import { type Engine, engines } from '@/components/tasks/home'
 import { useMesh } from '@/components/tasks/queries'
@@ -477,8 +478,13 @@ function ToolRow({
   )
 }
 
-/** A server or tool name with a `<wbr/>` after every underscore run: wraps at `_`/`__`, never mid-word. */
+/**
+ * A server or tool name with a `<wbr/>` after every underscore run: wraps at `_`/`__`, never mid-word. A 221
+ * `secret:<backend>/<conn>:<direction>` always-ask key reads `personal (Bitwarden) · read`, the key itself in its title.
+ */
 export function Name({ name }: { name: string }) {
+  const secret = secretAskLabel(name)
+  if (secret) return <span title={name}>{secret}</span>
   return segments(name).map((seg, i) => (
     <Fragment key={i}>
       {i > 0 && <wbr />}
