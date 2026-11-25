@@ -78,14 +78,10 @@
   --chart-6: #566472; /* slate */
   --chart-7: #6b7a24; /* nile */
   --chart-8: #7a4a2a; /* umber */
-  /* 82: the electric waveform (components/ui/electric-waveform) — no white-hot core in the light theme. */
-  --electric-heat: 0%;
 }
 
 .dark {
   color-scheme: dark;
-  /* 82: the waveform's white-hot core follows theuth's `.dark` (the vendored `dark:` fallback is the same class). */
-  --electric-heat: 70%;
   --bg-page: #12100e; /* soot */
   --bg-layer-1: #1c1915; /* soot-2: raised surface */
   --bg-layer-2: #2a241c; /* basalt: input wells */
