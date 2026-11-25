@@ -56,7 +56,9 @@ fn push(out: &mut Vec<u8>, dx: i64, dy: i64, p: f32, dt: u8) {
 pub fn decode(o: [f64; 2], bytes: &[u8]) -> Vec<(f64, f64, f32, u32)> {
     let (mut sx, mut sy, mut st) = (0i64, 0i64, 0u32);
     bytes
-        .chunks_exact(6)
+        .as_chunks::<6>()
+        .0
+        .iter()
         .map(|c| {
             sx += i16::from_le_bytes([c[0], c[1]]) as i64;
             sy += i16::from_le_bytes([c[2], c[3]]) as i64;
@@ -133,7 +135,7 @@ mod tests {
         assert_eq!(d.len(), 4);
         let last = d.last().unwrap();
         assert_eq!((last.0, last.1, last.3), (10_000.0, -5.0, 40));
-        for c in b.chunks_exact(6) {
+        for c in b.as_chunks::<6>().0 {
             let dx = i16::from_le_bytes([c[0], c[1]]);
             assert!(dx.unsigned_abs() <= 32_767);
         }

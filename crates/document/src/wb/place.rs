@@ -193,7 +193,7 @@ pub fn frame_around(cards: &[[f64; 4]]) -> Option<[f64; 4]> {
     let y0 = cards.iter().map(|b| b[1]).fold(f64::MAX, f64::min);
     let x1 = cards.iter().map(|b| b[0] + b[2]).fold(f64::MIN, f64::max);
     let y1 = cards.iter().map(|b| b[1] + b[3]).fold(f64::MIN, f64::max);
-    (!cards.is_empty()).then(|| [x0 - PAD, y0 - PAD - BAND, x1 - x0 + 2.0 * PAD, y1 - y0 + 2.0 * PAD + BAND])
+    (!cards.is_empty()).then_some([x0 - PAD, y0 - PAD - BAND, x1 - x0 + 2.0 * PAD, y1 - y0 + 2.0 * PAD + BAND])
 }
 
 #[cfg(test)]
@@ -237,13 +237,13 @@ mod tests {
                 let kind = KINDS[(rng.next() % 10) as usize];
                 let (w, h) = default_size(kind, Some("phone"));
                 let mut c = card(&format!("C{round:03}{i:03}"), kind, [rng.range(-800.0, 2400.0), rng.range(-600.0, 1800.0), w, h], "t", vec![]);
-                if rng.next() % 7 == 0 {
+                if rng.next().is_multiple_of(7) {
                     c.state = CardState::Archived;
                 }
                 s.cards.push(c);
             }
             for i in 0..(rng.next() % 20) {
-                let anchored = rng.next() % 3 == 0;
+                let anchored = rng.next().is_multiple_of(3);
                 s.strokes.push(StrokeInfo {
                     id: format!("S{i:03}"),
                     n: 2,
@@ -257,8 +257,8 @@ mod tests {
             s.cards.sort_by(|a, b| a.id.cmp(&b.id));
             let kind = KINDS[(rng.next() % 10) as usize];
             let (w, h) = default_size(kind, None);
-            let near = (n > 0 && rng.next() % 2 == 0).then(|| s.cards[(rng.next() as usize) % n].id.clone());
-            let spot = place(&s, &Want { w, h, near: near.as_deref(), below_first: rng.next() % 2 == 0, frame: None });
+            let near = (n > 0 && rng.next().is_multiple_of(2)).then(|| s.cards[(rng.next() as usize) % n].id.clone());
+            let spot = place(&s, &Want { w, h, near: near.as_deref(), below_first: rng.next().is_multiple_of(2), frame: None });
             let b = [spot.x, spot.y, w, h];
             for o in obstacles(&s) {
                 assert!(!overlaps(b, o), "round {round}: {b:?} overlaps {o:?}");
@@ -298,7 +298,7 @@ mod tests {
         assert_eq!(placed[0], (PAD, BAND + PAD));
         assert_eq!(placed[1], (PAD + w + GAP, BAND + PAD));
         let per_row = placed.iter().filter(|p| p.1 == BAND + PAD).count();
-        assert!(per_row >= 3 && per_row < 9, "{per_row} in the first row");
+        assert!((3..9).contains(&per_row), "{per_row} in the first row");
         // The next card wraps to a new row at the left edge, under the first row.
         assert_eq!(placed[per_row], (PAD, BAND + PAD + h + GAP));
         // Every card sits inside the (grown) frame.

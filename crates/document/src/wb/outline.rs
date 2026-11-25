@@ -81,7 +81,7 @@ pub fn fnv16(bytes: &[u8]) -> String {
 pub fn rows(items: &[(String, [f64; 4])]) -> Vec<Vec<String>> {
     let mut sorted: Vec<&(String, [f64; 4])> = items.iter().collect();
     sorted.sort_by(|a, b| a.1[1].total_cmp(&b.1[1]).then(a.1[0].total_cmp(&b.1[0])));
-    let mut out: Vec<(f64, f64, Vec<&(String, [f64; 4])>)> = Vec::new();
+    let mut out: Vec<RowAcc<'_>> = Vec::new();
     for it in sorted {
         let centre = it.1[1] + it.1[3] / 2.0;
         match out.last_mut() {
@@ -102,7 +102,7 @@ fn alias_n(a: &str) -> u32 {
 }
 
 /// The cards the outline lists (not archived), with the frame each sits in (`None` = loose).
-fn listed<'a>(s: &'a Snapshot) -> Vec<(&'a Card, Option<&'a Frame>)> {
+fn listed(s: &Snapshot) -> Vec<(&Card, Option<&Frame>)> {
     s.cards
         .iter()
         .filter(|c| c.state != CardState::Archived)
@@ -235,8 +235,13 @@ pub struct Counts {
     pub marks: u32,
 }
 
+/// Rows of aliases, top to bottom, each left to right.
+pub type Rows = Vec<Vec<String>>;
+/// A row being built: its top, its bottom, its boxes.
+type RowAcc<'a> = (f64, f64, Vec<&'a (String, [f64; 4])>);
+
 /// The rows of every frame (reading order) and of the loose cards.
-pub fn layout(s: &Snapshot) -> (Vec<(&Frame, Vec<Vec<String>>)>, Vec<Vec<String>>) {
+pub fn layout(s: &Snapshot) -> (Vec<(&Frame, Rows)>, Rows) {
     let cards = listed(s);
     let boxes = |frame: Option<&str>| -> Vec<(String, [f64; 4])> {
         cards

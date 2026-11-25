@@ -869,8 +869,7 @@ fn undo(w: &mut W, inv: &[Inv]) -> (u32, Vec<(String, &'static str)>) {
                     .map(|(k, _)| k.clone());
                 let extra = now
                     .keys()
-                    .filter(|k| !after.contains_key(*k) && !matches!(k.as_str(), "versions" | "snap" | "pin"))
-                    .next()
+                    .find(|k| !after.contains_key(*k) && !matches!(k.as_str(), "versions" | "snap" | "pin"))
                     .cloned();
                 if let Some(k) = changed.or(extra) {
                     skip(id, why(&k), &mut skipped);
@@ -1441,7 +1440,7 @@ fn place_card(w: &mut W, session: uuid::Uuid, a: super::tools::WbPlaceArgs) -> R
     let source = a.source.map(|s| check_source(a.kind, s, session)).transpose()?;
     let frame = a.frame.as_deref().map(|f| {
         let id = need(&w.snap, f, "frame")?;
-        w.snap.frame(&id).map(|f| f.clone()).ok_or_else(|| format!("{f} is not a frame"))
+        w.snap.frame(&id).cloned().ok_or_else(|| format!("{f} is not a frame"))
     }).transpose()?;
     let near = a.near.as_deref().map(|n| need_card(&w.snap, n).map(|c| c.id.clone())).transpose()?;
     let device = a

@@ -360,6 +360,7 @@ async fn doc_tools_refuse_a_whiteboard() {
     stop(actor).await;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn put_mark(m: &Maps, t: &mut yrs::TransactionMut, id: &str, card: &str, ver: u32, state: &str, sent_at: i64, strokes: &[&str]) {
     let mark = model::Mark {
         id: id.into(),
