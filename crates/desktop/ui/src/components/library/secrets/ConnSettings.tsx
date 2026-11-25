@@ -18,7 +18,7 @@ const FLAGS: { key: Flag; label: string; cost: string; bw?: boolean }[] = [
   { key: 'allow_reveal', label: 'Reveal', cost: 'Your Reveal button on this page shows values on this screen; each reveal is logged.' },
   { key: 'allow_permanent_delete', label: 'Allow permanent delete', cost: 'A delete may skip the recovery window or the trash; a mistake cannot be undone.' },
   { key: 'remember_unlock', label: 'Remember unlock', cost: "Bitwarden stays unlocked across restarts; this machine's key then protects your vault instead of your master password.", bw: true },
-  { key: 'lock_on_sleep', label: 'Lock on sleep', cost: 'Locks when this Mac sleeps or its screen locks; the next use asks for the master password.', bw: true },
+  { key: 'lock_on_sleep', label: 'Lock on sleep', cost: 'Locks when this Mac sleeps, its display sleeps or its screen locks (macOS app only); the next use asks for the master password.', bw: true },
   { key: 'agent_may_request_login', label: 'Agent may ask you to log in', cost: 'A logged-out connection shows you a login card for the agent’s call instead of failing it.', bw: true },
   { key: 'expose_password_history', label: 'Expose password history', cost: 'References may reach a login’s old passwords (#password:-1 … -4).', bw: true },
   { key: 'expose_totp_seed', label: 'Expose TOTP seed', cost: 'References may expand the TOTP seed itself, not only the current code.', bw: true },
@@ -28,9 +28,10 @@ const FLAGS: { key: Flag; label: string; cost: string; bw?: boolean }[] = [
   { key: 'manage_all_sends', label: 'Manage all Sends', cost: 'List and revoke Sends theuth did not create.', bw: true },
 ]
 
-const COUNTS: { key: Count; label: string; cost: string; min: number; max: number; aws?: boolean; bw?: boolean }[] = [
+/** `max`: the engine's own bound (AWS's 7–30 day window); none where the engine sets none. */
+const COUNTS: { key: Count; label: string; cost: string; min: number; max?: number; aws?: boolean; bw?: boolean }[] = [
   { key: 'delete_recovery_days', label: 'Recovery window (days)', cost: 'How long AWS keeps a deleted secret before it purges it (7–30).', min: 7, max: 30, aws: true },
-  { key: 'lock_after_idle_secs', label: 'Lock after idle (seconds)', cost: '0 locks only on quit; the unlock card reappears on the next use.', min: 0, max: 604_800, bw: true },
+  { key: 'lock_after_idle_secs', label: 'Lock after idle (seconds)', cost: '0 locks only on quit; the unlock card reappears on the next use.', min: 0, bw: true },
 ]
 
 /** §8: "Ask before every …" — a second view of the connection's `secret:` entries in `tools.always_ask`. */
@@ -84,7 +85,7 @@ export function ConnSettingsPanel({ info }: { info: ConnInfo }) {
             className="h-8 w-24"
             onBlur={(e) => {
               const n = Number(e.currentTarget.value)
-              if (Number.isInteger(n) && n >= c.min && n <= c.max && n !== s[c.key]) set.mutate({ key: c.key, value: n })
+              if (Number.isInteger(n) && n >= c.min && (c.max === undefined || n <= c.max) && n !== s[c.key]) set.mutate({ key: c.key, value: n })
             }}
           />
         </Row>
@@ -117,14 +118,13 @@ export function ExternalSettingsPanel() {
           key={s.send_max_file_mb}
           type="number"
           min={1}
-          max={525}
           defaultValue={s.send_max_file_mb}
           aria-label="Send file size limit in MB"
           className="h-8 w-24"
           disabled={!q.data}
           onBlur={(e) => {
             const n = Number(e.currentTarget.value)
-            if (Number.isInteger(n) && n >= 1 && n <= 525 && n !== s.send_max_file_mb) set.mutate({ key: 'send_max_file_mb', value: n })
+            if (Number.isInteger(n) && n >= 1 && n !== s.send_max_file_mb) set.mutate({ key: 'send_max_file_mb', value: n })
           }}
         />
       </Row>
