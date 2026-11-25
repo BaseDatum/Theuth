@@ -1919,7 +1919,9 @@ impl Channel {
             // 37 §7: the model asked the user for a secret; say where to enter it
             // (never here). The session's thread, else the nearest bound
             // ancestor's, else the owner DM (Ask's routing). 221 §9.4: one that
-            // stores into an external manager is answered in the app only.
+            // stores into an external manager is answered in the app only, and its
+            // notice (which names the connection) goes to the owner DM only, never
+            // a shared thread.
             Event::Secret(secrets::SecretsEvent::Requested {
                 session,
                 name,
@@ -1927,20 +1929,25 @@ impl Channel {
                 destination,
                 ..
             }) => {
-                let md = match &destination {
-                    Some(d) => external_secret_notice(
-                        &name,
-                        &note,
-                        &format!("{}/{}", d.backend, d.destination.connection),
+                let (md, target) = match &destination {
+                    Some(d) => (
+                        external_secret_notice(
+                            &name,
+                            &note,
+                            &format!("{}/{}", d.backend, d.destination.connection),
+                        ),
+                        None,
                     ),
-                    None => secret_notice(&name, &note),
+                    None => (
+                        secret_notice(&name, &note),
+                        self.bound(session).or_else(|| {
+                            self.ancestors(session)
+                                .into_iter()
+                                .next()
+                                .map(|(k, t, _)| (k, t))
+                        }),
+                    ),
                 };
-                let target = self.bound(session).or_else(|| {
-                    self.ancestors(session)
-                        .into_iter()
-                        .next()
-                        .map(|(k, t, _)| (k, t))
-                });
                 match target {
                     Some((key, thread)) => {
                         let _ = self.worker(&key, &thread).send(Out::Note(md));
@@ -4405,6 +4412,47 @@ pub(crate) mod tests {
             .await;
         assert!(f.api.calls().is_empty());
         assert!(f.chan.lock().cards.is_empty());
+    }
+
+    /// 221 §9.4: a request into an external manager names the connection; it is a notice to the
+    /// owner DM only, never the session's (possibly shared) bound thread.
+    #[tokio::test]
+    async fn external_secret_request_is_a_notice_to_the_owner_only() {
+        let f = fixture();
+        f.bind(FRIEND);
+        let request = |destination: serde_json::Value| -> secrets::SecretsEvent {
+            serde_json::from_value(serde_json::json!({
+                "type": "SecretRequested", "id": uuid::Uuid::new_v4(), "session": f.stub.session,
+                "name": "gh.token", "note": "GitHub", "current": null, "destination": destination,
+            }))
+            .unwrap()
+        };
+        f.chan
+            .route(Event::Secret(request(serde_json::json!({
+                "connection": "personal", "name": "GitHub — CI", "backend": "bw",
+                "summary": "me@example.org · vault.bitwarden.com", "status": {"state": "ready"},
+            }))))
+            .await;
+        // A local request still goes to the bound thread; once it lands, the external one has
+        // had every chance to land there too.
+        f.chan
+            .route(Event::Secret(request(serde_json::Value::Null)))
+            .await;
+        let local = format!(
+            "post_markdown {DM} 100.1 {}",
+            secret_notice("gh.token", "GitHub")
+        );
+        f.until(|calls| calls.contains(&local)).await;
+        assert_eq!(
+            f.api.calls(),
+            vec![
+                format!(
+                    "post_markdown {OWNER_DM} - {}",
+                    external_secret_notice("gh.token", "GitHub", "bw/personal")
+                ),
+                local,
+            ]
+        );
     }
 
     #[tokio::test]
