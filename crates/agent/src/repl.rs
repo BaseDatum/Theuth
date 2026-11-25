@@ -88,7 +88,7 @@ step, never a whole file or result. `tools(query)` lists tools, `help(name)` sho
 parameters and description, `bindings()` lists your persisted globals. `/cwd` is the working \
 directory (read-only); write files with `write_file()`.";
 
-const RUNTIME_BLOCK: &str = "## Runtime
+pub(crate) const RUNTIME_BLOCK: &str = "## Runtime
 `python` runs a sandboxed Python 3.14 subset (Monty): no third-party packages, no
 generators, no class inheritance; stdlib: json re math datetime time random copy collections
 itertools functools dataclasses pathlib base64 hashlib decimal bisect csv tomllib os.path
@@ -529,8 +529,21 @@ pub fn indexed(specs: &[ToolSpec], runtime_only: bool) -> impl Iterator<Item = &
 /// Direct tools stay awaitable in a cell either way - the model knows them
 /// from their definitions.
 pub fn prompt_block(specs: &[ToolSpec], runtime_only: bool) -> String {
-    let mut out = String::from(RUNTIME_BLOCK);
+    prompt_block_with_header(specs, runtime_only, None)
+}
+
+/// Like [`prompt_block`], but replaces the leading `## Runtime` header text with `header`
+/// when provided (for `core.runtime` prompt overrides).
+pub fn prompt_block_with_header(
+    specs: &[ToolSpec],
+    runtime_only: bool,
+    header: Option<&str>,
+) -> String {
+    let mut out = String::from(header.unwrap_or(RUNTIME_BLOCK));
     for spec in indexed(specs, runtime_only) {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
         out.push_str(&signature(spec));
         out.push('\n');
     }

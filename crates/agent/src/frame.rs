@@ -16,7 +16,7 @@ use crate::endless::ViewBlock;
 use crate::skills;
 
 /// theuth's own opening sentence: what a user session and theuth's desk are.
-const THEUTH_HEADER: &str = "You are theuth, a meta-harness on the user's machine: an orchestrator that gets work done by delegating it \
+pub(crate) const THEUTH_HEADER: &str = "You are theuth, a meta-harness on the user's machine: an orchestrator that gets work done by delegating it \
 to subagents and to other AI harnesses, then checking and reporting the result. Your own tools are for \
 small direct actions and for verifying what others did.";
 
@@ -102,6 +102,16 @@ confidence - a Jira issue, a pull request, a commit, a git repository, a file on
 dashboard - write it as a markdown link `[name](url)`, every time, without being asked: the user should never \
 have to ask for the link to something you named. When you do not know the URL, write the name without a link \
 and say nothing about it; never invent a URL.";
+
+/// Default `## Guidance` section assembled for attended or unattended sessions.
+pub(crate) fn default_guidance(attended: bool) -> String {
+    [
+        GUIDANCE_HEAD,
+        if attended { REPORT_VISUALLY } else { "" },
+        GUIDANCE_TAIL,
+    ]
+    .concat()
+}
 
 /// The line an unattended session gets where the surface block would have been.
 pub const UNATTENDED_LINE: &str = "Nobody reads this session directly: write results as plain, terse text for the agent or channel that receives them; do not draw diagrams or cards.";
@@ -468,10 +478,14 @@ pub fn baseline_dated(
     cwd: &Path,
 ) -> String {
     let cwd = cwd.display();
+    let overrides = crate::prompt_sections::load_overrides(data_dir);
     let (persona, standing) = match identity {
         Some(id) => (id, String::new()),
         None => (
-            THEUTH_HEADER,
+            overrides
+                .get("core.header")
+                .map(String::as_str)
+                .unwrap_or(THEUTH_HEADER),
             root_only(
                 &std::fs::read_to_string(data_dir.join("prompt.md")).unwrap_or_default(),
                 attended,
@@ -507,12 +521,10 @@ pub fn baseline_dated(
     }
     let skills_dir = skills::dir(data_dir);
     let skills = skills::index(&skills_dir);
-    let guidance = [
-        GUIDANCE_HEAD,
-        if attended { REPORT_VISUALLY } else { "" },
-        GUIDANCE_TAIL,
-    ]
-    .concat();
+    let guidance = overrides
+        .get("core.guidance")
+        .cloned()
+        .unwrap_or_else(|| default_guidance(attended));
     [
         header.as_str(),
         &standing,
@@ -520,8 +532,22 @@ pub fn baseline_dated(
         &skills::prompt_index(&skills),
         peer_line,
         plugin_blocks,
-        if advised { ADVISORY_PARAGRAPH } else { "" },
-        if consult { CONSULT_PARAGRAPH } else { "" },
+        if advised {
+            overrides
+                .get("core.advisory")
+                .map(String::as_str)
+                .unwrap_or(ADVISORY_PARAGRAPH)
+        } else {
+            ""
+        },
+        if consult {
+            overrides
+                .get("core.consult")
+                .map(String::as_str)
+                .unwrap_or(CONSULT_PARAGRAPH)
+        } else {
+            ""
+        },
         &guidance,
     ]
     .iter()

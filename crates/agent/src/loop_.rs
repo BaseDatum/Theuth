@@ -4340,6 +4340,7 @@ pub(crate) fn prompt_blocks(
             "app" | "cells" => None, // 171:A1
             _ => Some(block),
         })
+        .filter(|b| !b.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -6053,9 +6054,12 @@ impl Turn {
             && toolset
                 .as_ref()
                 .is_none_or(|t| t.prompts.iter().any(|p| p == "cells"));
-        let blocks = crate::notebooks::prompt_blocks(
+        let prompt_overrides = crate::prompt_sections::load_overrides(&self.shared.rt.data_dir);
+        crate::prompt_sections::apply_plugin_overrides(&mut prompts, &prompt_overrides);
+        let blocks = crate::notebooks::prompt_blocks_with(
             prompt_blocks(prompts, toolset.as_ref(), attended),
             bound,
+            prompt_overrides.get("core.notebooks").map(String::as_str),
         );
         let subagent_model = self
             .shared
@@ -6149,8 +6153,14 @@ impl Turn {
                     .is_none_or(|t| t.tools.iter().any(|n| n == status::NAME))
                 && local_ok(status::NAME)
             {
-                b.push('\n');
-                b.push_str(status::PROMPT);
+                let status_prompt = prompt_overrides
+                    .get("core.status")
+                    .map(String::as_str)
+                    .unwrap_or(status::PROMPT);
+                if !status_prompt.trim().is_empty() {
+                    b.push('\n');
+                    b.push_str(status_prompt);
+                }
             }
             // R1-D1: a native child of an endless parent opens with the parent's view.
             if self.shared.parent_view {
@@ -6168,10 +6178,15 @@ impl Turn {
             && toolset.as_ref().is_none_or(|t| t.runtime)
             && local_ok(repl::NAME)
         {
-            baseline.push_str("\n\n");
-            baseline.push_str(
-                &self.pinned_index(repl::prompt_block(&specs, self.shared.cfg.runtime_only)),
-            );
+            let runtime_block = self.pinned_index(repl::prompt_block_with_header(
+                &specs,
+                self.shared.cfg.runtime_only,
+                prompt_overrides.get("core.runtime").map(String::as_str),
+            ));
+            if !runtime_block.is_empty() {
+                baseline.push_str("\n\n");
+                baseline.push_str(&runtime_block);
+            }
             for s in repl::indexed(&specs, self.shared.cfg.runtime_only) {
                 self.runtime_names.insert(repl::sanitize_ident(&s.name));
                 self.runtime_names.insert(s.name.clone());
@@ -6179,8 +6194,14 @@ impl Turn {
         }
         // 137 §9: VIEW_DOC closes an endless turn's system prompt (constant bytes).
         if self.view.is_some() {
-            baseline.push_str("\n\n");
-            baseline.push_str(Endless::view_doc());
+            let view_doc = prompt_overrides
+                .get("core.endless")
+                .map(String::as_str)
+                .unwrap_or(Endless::view_doc());
+            if !view_doc.trim().is_empty() {
+                baseline.push_str("\n\n");
+                baseline.push_str(view_doc);
+            }
         }
         if baseline != self.state.baseline {
             if !self.state.baseline.is_empty() {

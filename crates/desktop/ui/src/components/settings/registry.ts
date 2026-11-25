@@ -7,15 +7,15 @@ import { meetings } from '@/components/settings/categories/meetings'
 import { models } from '@/components/settings/categories/models'
 import { network } from '@/components/settings/categories/network'
 import { plugins } from '@/components/settings/categories/plugins'
+import { prompt } from '@/components/settings/categories/prompt'
 import { sharing } from '@/components/settings/categories/sharing'
-import { suffixes } from '@/components/settings/categories/suffixes'
 import { tools } from '@/components/settings/categories/tools'
 import { voice } from '@/components/settings/categories/voice'
 import type { SettingsCategory, SettingsTab } from '@/components/settings/types'
 import { supports, type Discovery } from '@/rpc/discovery'
 
 /** 188: the categories column, top to bottom. 210: Sharing after Network (public web sharing, §7.4 item 4); 213: its hub. 216: Plugins last. */
-export const CATEGORIES: readonly SettingsCategory[] = [general, models, agent, suffixes, learning, voice, meetings, calendar, network, sharing, channels, tools, plugins]
+export const CATEGORIES: readonly SettingsCategory[] = [general, models, agent, prompt, learning, voice, meetings, calendar, network, sharing, channels, tools, plugins]
 
 /** A tab id and the category it belongs to. */
 export type Placed = { category: SettingsCategory; tab: SettingsTab }
@@ -36,7 +36,7 @@ export const TAB_IDS = [
   'appearance', 'app', 'shortcuts',
   'models', 'helpers', 'providers',
   'loop', 'memory', 'approvals', 'advisor', 'autoresearch', 'harnesses',
-  'suffixes',
+  'suffixes', 'system',
   'dreaming', 'double', 'decision',
   'voice', 'dictation', 'voice-dictionary', 'voice-key', 'voice-history',
   'meetings', 'detection', 'live', 'speakers', 'templates',

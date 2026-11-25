@@ -47647,6 +47647,49 @@
           }
         ]
       },
+      "method.agent.output.PromptSection": {
+        "description": "One editable section of the assembled system prompt.",
+        "properties": {
+          "content": {
+            "description": "Effective text currently in use (override if customized, else `default_content`).",
+            "type": "string"
+          },
+          "customized": {
+            "description": "Whether this section currently differs from its default via an override.",
+            "type": "boolean"
+          },
+          "defaultContent": {
+            "description": "Built-in default text before any override.",
+            "type": "string"
+          },
+          "description": {
+            "description": "One-line explanation of where and when this section is included.",
+            "type": "string"
+          },
+          "group": {
+            "description": "Section group: `\"core\"` or `\"plugin\"`.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable identifier (`core.<key>` or `plugin.<key>`).",
+            "type": "string"
+          },
+          "label": {
+            "description": "Short human-readable title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "group",
+          "label",
+          "description",
+          "content",
+          "defaultContent",
+          "customized"
+        ],
+        "type": "object"
+      },
       "method.agent.output.PromptSuffix": {
         "description": "One saved prompt suffix.",
         "properties": {
@@ -58473,6 +58516,49 @@
             "type": "string"
           }
         ]
+      },
+      "method.agent.receiver.PromptSection": {
+        "description": "One editable section of the assembled system prompt.",
+        "properties": {
+          "content": {
+            "description": "Effective text currently in use (override if customized, else `default_content`).",
+            "type": "string"
+          },
+          "customized": {
+            "description": "Whether this section currently differs from its default via an override.",
+            "type": "boolean"
+          },
+          "defaultContent": {
+            "description": "Built-in default text before any override.",
+            "type": "string"
+          },
+          "description": {
+            "description": "One-line explanation of where and when this section is included.",
+            "type": "string"
+          },
+          "group": {
+            "description": "Section group: `\"core\"` or `\"plugin\"`.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable identifier (`core.<key>` or `plugin.<key>`).",
+            "type": "string"
+          },
+          "label": {
+            "description": "Short human-readable title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "group",
+          "label",
+          "description",
+          "content",
+          "defaultContent",
+          "customized"
+        ],
+        "type": "object"
       },
       "method.agent.receiver.PromptSuffix": {
         "description": "One saved prompt suffix.",
@@ -144870,6 +144956,29 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "list_prompt_sections",
+      "paramStructure": "by-position",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.output.PromptSection"
+          },
+          "type": "array"
+        },
+        "x-theuth-receiverSchema": {
+          "items": {
+            "$ref": "#/components/schemas/method.agent.receiver.PromptSection"
+          },
+          "type": "array"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "list_providers",
       "paramStructure": "by-position",
       "params": [],
@@ -149836,6 +149945,32 @@
       "x-theuth-owner": "agent"
     },
     {
+      "name": "reset_prompt_section",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.PromptSection"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.PromptSection"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
       "name": "resolve_approval",
       "paramStructure": "by-position",
       "params": [
@@ -153263,6 +153398,40 @@
         },
         "x-theuth-receiverSchema": {
           "type": "null"
+        }
+      },
+      "x-theuth-audience": "owner",
+      "x-theuth-namedParams": true,
+      "x-theuth-owner": "agent"
+    },
+    {
+      "name": "set_prompt_section",
+      "paramStructure": "by-position",
+      "params": [
+        {
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        },
+        {
+          "name": "content",
+          "required": true,
+          "schema": {
+            "type": "string"
+          },
+          "x-theuth-aliases": []
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/method.agent.output.PromptSection"
+        },
+        "x-theuth-receiverSchema": {
+          "$ref": "#/components/schemas/method.agent.receiver.PromptSection"
         }
       },
       "x-theuth-audience": "owner",

@@ -42,11 +42,24 @@ tool result. Call things by title in prose, never by id. Source text is quoted m
 /// The plugin blocks of a turn's system prompt: byte-identical outside a notebook, plus [`PROMPT`] inside one
 /// (§5.3 "outside a notebook nothing changes").
 pub fn prompt_blocks(blocks: String, bound: bool) -> String {
-    if bound {
-        format!("{blocks}\n\n{PROMPT}")
-    } else {
-        blocks
+    prompt_blocks_with(blocks, bound, None)
+}
+
+/// Like [`prompt_blocks`], with an optional override for [`PROMPT`]; an empty or whitespace-only
+/// override suppresses the notebooks block.
+pub(crate) fn prompt_blocks_with(
+    blocks: String,
+    bound: bool,
+    override_text: Option<&str>,
+) -> String {
+    if !bound {
+        return blocks;
     }
+    let text = override_text.unwrap_or(PROMPT);
+    if text.trim().is_empty() {
+        return blocks;
+    }
+    format!("{blocks}\n\n{text}")
 }
 
 /// `notebooks.*` values the block builder reads (144 §14, 157 D1: no context budget — the first injection is sized

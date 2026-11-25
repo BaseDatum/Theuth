@@ -23,8 +23,8 @@ test('tab ids are unique across categories, and TAB_IDS lists them in column ord
   expect(ids).toEqual([...TAB_IDS])
 })
 
-test('188: thirteen categories in column order (#3 Prompt suffixes after Agent, 210 Sharing after Network, 216 Plugins last), each with 1 to 6 tabs', () => {
-  expect(CATEGORIES.map((category) => category.id)).toEqual(['general', 'models', 'agent', 'suffixes', 'learning', 'voice', 'meetings', 'calendar', 'network', 'sharing', 'channels', 'tools', 'plugins'])
+test('188: thirteen categories in column order (#3 Prompt after Agent, 210 Sharing after Network, 216 Plugins last), each with 1 to 6 tabs', () => {
+  expect(CATEGORIES.map((category) => category.id)).toEqual(['general', 'models', 'agent', 'prompt', 'learning', 'voice', 'meetings', 'calendar', 'network', 'sharing', 'channels', 'tools', 'plugins'])
   for (const category of CATEGORIES) {
     expect(category.tabs.length).toBeGreaterThanOrEqual(1)
     expect(category.tabs.length).toBeLessThanOrEqual(7)
@@ -49,6 +49,16 @@ test('Sky 2026-11-11: Tools opens on MCP (the servers theuth uses, at `tools`), 
     ['computer', 'Computer use'],
     ['browser', 'Browser'],
   ])
+})
+
+test('Prompt holds Suffixes and System, and System declares the prompt section methods', () => {
+  const prompt = CATEGORIES.find((category) => category.id === 'prompt')!
+  expect(prompt.tabs.map((tab) => [tab.id, tab.label])).toEqual([
+    ['suffixes', 'Suffixes'],
+    ['system', 'System'],
+  ])
+  const system = prompt.tabs.find((tab) => tab.id === 'system')!
+  expect(system.required?.methods).toEqual(['list_prompt_sections', 'set_prompt_section', 'reset_prompt_section'])
 })
 
 test('216: Plugins is one tab, at `plugins`, needing the plugins methods and the `plugins.ui` topic', () => {

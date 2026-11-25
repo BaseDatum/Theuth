@@ -58,6 +58,8 @@ pub mod rpc_forward;
 pub mod rpc_jobs;
 /// Skill RPC server and client methods.
 pub mod rpc_skills;
+/// System prompt section RPC methods (list, edit, and reset core and plugin sections).
+pub mod rpc_prompts;
 /// Prompt suffix RPC methods (mesh-wide list, per-chat "every message" suffix).
 pub mod rpc_suffixes;
 /// Turn RPC server and client methods.
@@ -81,6 +83,7 @@ pub fn rpc_module(server: rpc_core::Server) -> rpc_core::DescribedModule {
         rpc_settings::rpc_module(server.clone()),
         rpc_jobs::rpc_module(server.clone()),
         rpc_skills::rpc_module(server.clone()),
+        rpc_prompts::rpc_module(server.clone()),
         rpc_suffixes::rpc_module(server.clone()),
         rpc_whiteboards::rpc_module(server.clone()),
         rpc_graph::rpc_module(server.clone()),
@@ -119,6 +122,8 @@ pub mod overviews;
 pub mod peers;
 pub mod polish;
 pub mod project;
+/// System prompt section listing, overrides, and reset helpers.
+pub mod prompt_sections;
 pub mod providers;
 pub mod repl;
 pub mod search;

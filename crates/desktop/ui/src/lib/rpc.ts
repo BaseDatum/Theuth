@@ -210,6 +210,8 @@ export const queryKeys = {
   plugins: ['plugins'] as const,
   plugin: (name: string) => ['plugins', name] as const,
   pluginLogs: (name: string) => ['plugins', 'logs', name] as const,
+  /** `list_prompt_sections()`: Settings › Prompt › System. */
+  promptSections: ['prompt-sections'] as const,
 }
 
 /** One `list_sessions` row with `SessionOwnerChanged` applied; the list is returned as is when the session is not in it. */
