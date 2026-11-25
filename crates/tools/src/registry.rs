@@ -78,6 +78,13 @@ pub struct ToolRegistry {
     builtins_disabled: HashSet<String>,
     /// High-level tool categories and their builtin/MCP assignments.
     categories: ToolCategoriesConfig,
+    /// 219 §3.1: the harness-wide always-ask set (`tools.always_ask`): tool names and
+    /// [`mcp_server_key`]s whose calls always raise a human card. Seeded at [`start`],
+    /// changed by [`SetAlwaysAsk`] with no session.
+    always_ask: HashSet<String>,
+    /// 219 §3.2: each chat's own always-ask set (`sessions.always_ask`); subagents
+    /// inherit their ancestors' through `parents`.
+    always_ask_session: HashMap<SessionId, HashSet<String>>,
     /// child → parent, from [`SetParent`]; a session inherits its ancestors' pin and hidden set.
     parents: HashMap<SessionId, SessionId>,
     /// Risk ceiling per session from [`SetCap`]: a tool above it is neither
@@ -314,6 +321,92 @@ pub struct SetDefaultToolCategories {
     /// Existing category ids; sorted and deduplicated before persistence.
     pub disabled: Vec<String>,
 }
+
+/// 219 §2.1: tools that run inside the agent loop and never pass the registry, so an
+/// always-ask entry for them could never fire: `python`, `todo`, `set_status`, `advise`,
+/// `consult` and the endless tools. [`SetAlwaysAsk`] refuses to add them.
+pub const LOOP_LOCAL_TOOLS: &[&str] = &[
+    "python",
+    "todo",
+    "set_status",
+    "advise",
+    "consult",
+    "zoom",
+    "recall",
+    "date",
+    "ledger",
+];
+
+/// `ask` → `Result<AlwaysAskState, AlwaysAskError>` (219 §4): add (`on`) or remove one
+/// always-ask entry, harness-wide (`session: None`, persisted to `tools.always_ask` before
+/// it is applied) or for one chat and its subagents (written through the journal). An
+/// entry is a registered tool name or an [`mcp_server_key`]. Setting the current state
+/// changes nothing and writes nothing. No human check here: that is the RPC layer's (§2.4).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetAlwaysAsk {
+    /// The chat, or `None` for the harness-wide set.
+    pub session: Option<SessionId>,
+    /// Tool name or [`mcp_server_key`].
+    pub tool: String,
+    /// `true` adds the entry.
+    pub on: bool,
+}
+
+/// `ask` → `()`: replace a session's own always-ask set with the list loaded from its
+/// `sessions.always_ask` row (actor spawn) without writing it back. Empty clears it.
+#[derive(Clone, Debug)]
+pub struct RestoreAlwaysAsk {
+    /// The session.
+    pub session: SessionId,
+    /// The row's names.
+    pub names: Vec<String>,
+}
+
+/// `ask` → [`AlwaysAskState`]: the harness-wide set and, with a session, its own and
+/// its ancestors' entries.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GetAlwaysAsk {
+    /// The chat asked about; `None` reports the harness-wide set only.
+    pub session: Option<SessionId>,
+}
+
+/// 219 §4: the always-ask entries that apply, by where they come from.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, kameo::Reply)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct AlwaysAskState {
+    /// `tools.always_ask`, sorted.
+    pub global: Vec<String>,
+    /// This chat's own entries, sorted; empty for a global query.
+    pub session: Vec<String>,
+    /// Entries from ancestor chats not in `session`, sorted.
+    pub inherited: Vec<String>,
+}
+
+/// Why [`SetAlwaysAsk`] changed nothing (219 §4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AlwaysAskError {
+    /// A loop-local tool ([`LOOP_LOCAL_TOOLS`]) cannot be marked.
+    LoopLocal(String),
+    /// `config.yaml` could not be written: the reason.
+    NotWritten(String),
+    /// The tool name is empty.
+    Empty,
+}
+
+impl std::fmt::Display for AlwaysAskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LoopLocal(name) => write!(
+                f,
+                "always_ask: {name} runs inside the agent loop and is never gated; mark the runtime functions it calls instead"
+            ),
+            Self::NotWritten(why) => write!(f, "always_ask: config.yaml not written: {why}"),
+            Self::Empty => f.write_str("always_ask: tool name is empty"),
+        }
+    }
+}
+
+impl std::error::Error for AlwaysAskError {}
 
 /// `ask` → [`ToolOutput`] (206): [`Invoke`] for a call the harness makes itself (a
 /// notebook read, an overview's `show`, a Settings test), not a model. It skips only
@@ -1046,6 +1139,7 @@ impl Message<Forget> for ToolRegistry {
             self.resources.remove(s);
             self.parents.remove(s);
             self.hidden.remove(s);
+            self.always_ask_session.remove(s);
             self.pin.remove(s);
             self.cap.remove(s);
             self.turn_cap.remove(s);
@@ -1387,6 +1481,122 @@ impl ToolRegistry {
             .map_err(|e| format!("{} could not be written: {e}", self.config_path.display()))
     }
 
+    /// 219 §2.2: `name` (or its MCP server's [`mcp_server_key`]) is in the harness-wide
+    /// always-ask set, or in the set of `session` or an ancestor (the walk of
+    /// [`Self::hidden_chain`]).
+    fn always_ask_applies(&self, session: Option<SessionId>, name: &str) -> bool {
+        let mut sets: Vec<&HashSet<String>> = vec![&self.always_ask];
+        let mut cur = session;
+        while let Some(id) = cur {
+            sets.extend(self.always_ask_session.get(&id));
+            cur = self.parents.get(&id).copied();
+        }
+        if sets.iter().all(|s| s.is_empty()) {
+            return false;
+        }
+        if sets.iter().any(|s| s.contains(name)) {
+            return true;
+        }
+        let server = self.tools.get(name).and_then(|t| match t.source() {
+            ToolSource::Mcp { server, .. } => Some(mcp_server_key(&server)),
+            ToolSource::Native { .. } => None,
+        });
+        server.is_some_and(|k| sets.iter().any(|s| s.contains(&k)))
+    }
+
+    /// [`GetAlwaysAsk`]'s answer.
+    fn always_ask_state(&self, session: Option<SessionId>) -> AlwaysAskState {
+        let Some(id) = session else {
+            return AlwaysAskState {
+                global: sorted(&self.always_ask),
+                ..AlwaysAskState::default()
+            };
+        };
+        let own = self.always_ask_session.get(&id);
+        let mut inherited = HashSet::new();
+        let mut cur = self.parents.get(&id).copied();
+        while let Some(p) = cur {
+            if let Some(set) = self.always_ask_session.get(&p) {
+                inherited.extend(set.iter().filter(|n| !own.is_some_and(|o| o.contains(*n))).cloned());
+            }
+            cur = self.parents.get(&p).copied();
+        }
+        AlwaysAskState {
+            global: sorted(&self.always_ask),
+            session: own.map(sorted).unwrap_or_default(),
+            inherited: sorted(&inherited),
+        }
+    }
+
+    /// 219 §2.4: a built-in tool call that writes `<data_dir>/config.yaml` or
+    /// `<data_dir>/mcp/config.yaml` is always ask. The written paths are read from the
+    /// argument names the file tools use (`path`; `before`/`after`/`at` refs, cut at `#`;
+    /// `move_text`'s `src`, which it deletes from), resolved like the tools do (relative to
+    /// the seated cwd; `~` too, though the tools do not expand it) and compared after
+    /// canonicalising what exists. Only `Native` tools at `Mutating` or above count: MCP
+    /// servers' paths are their own business, and a read-only tool writes nothing.
+    fn protected_write(
+        &self,
+        session: SessionId,
+        name: &str,
+        risk: Risk,
+        args: &serde_json::Value,
+    ) -> bool {
+        const PLAIN: &[&str] = &["path", "dest", "destination", "to", "file", "out", "output"];
+        const REFS: &[&str] = &["before", "after", "at"];
+        if risk < Risk::Mutating || !self.is_native(name) {
+            return false;
+        }
+        let Some(data_dir) = self.config_path.parent().filter(|d| !d.as_os_str().is_empty()) else {
+            return false;
+        };
+        let Some(obj) = args.as_object() else {
+            return false;
+        };
+        let protected = [self.config_path.clone(), data_dir.join("mcp").join("config.yaml")];
+        let protected_real: Vec<Option<PathBuf>> =
+            protected.iter().map(|p| crate::seat::real(p)).collect();
+        let hits = |raw: &str| {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return false;
+            }
+            let expanded = match raw.strip_prefix("~") {
+                Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+                    match std::env::home_dir() {
+                        Some(home) => home.join(rest.trim_start_matches(['/', '\\'])),
+                        None => PathBuf::from(raw),
+                    }
+                }
+                _ => PathBuf::from(raw),
+            };
+            let path = crate::seat::resolve(session, &expanded);
+            let real = crate::seat::real(&path);
+            protected.iter().zip(&protected_real).any(|(p, pr)| {
+                let same = |a: &std::path::Path, b: &std::path::Path| {
+                    a == b
+                        || (cfg!(any(target_os = "macos", windows))
+                            && a.as_os_str()
+                                .to_string_lossy()
+                                .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy()))
+                };
+                same(&path, p)
+                    || match (&real, pr) {
+                        (Some(a), Some(b)) => same(a, b),
+                        (Some(a), None) => same(a, p),
+                        _ => false,
+                    }
+            })
+        };
+        let plain = PLAIN.iter().filter_map(|k| obj.get(*k)?.as_str());
+        let refs = REFS
+            .iter()
+            .chain((name == "move_text").then_some(&"src"))
+            .filter_map(|k| obj.get(*k)?.as_str())
+            .map(|r| r.split_once('#').map_or(r, |(p, _)| p));
+        plain.chain(refs).any(hits)
+    }
+
     /// 206: a name [`SetBuiltinsDisabled`] accepts: a registered builtin or the key of
     /// a known category.
     fn is_builtin_name(&self, name: &str) -> bool {
@@ -1545,20 +1755,24 @@ impl ToolRegistry {
     /// its nearest pin ([`SetApprovals`], 183 §4.5), else `tools.approvals`.
     /// `Deny` is never rewritten. A [`crate::Tool::HUMAN_ONLY`] tool (210 §7.2) is `Deny` in a
     /// contact turn or a session bound to a non-owner chat thread, else at least `Ask`, and
-    /// neither the session pin nor `tools.approvals: false` rewrites that `Ask`.
+    /// neither the session pin nor `tools.approvals: false` rewrites that `Ask`. 219 §2.2: so
+    /// is an always-ask call ([`Self::always`]; `protected` is [`Self::protected_write`] of
+    /// the call's args).
     fn effective(
         &self,
         session: Option<SessionId>,
         name: &str,
         risk: Risk,
         mentions: bool,
+        protected: bool,
     ) -> PolicyAction {
         if session.is_some_and(|s| self.capped(s, name, risk).is_some()) {
             return PolicyAction::Deny;
         }
         let tool = self.tools.get(name);
         let human_only = tool.is_some_and(|t| t.human_only());
-        if human_only && session.is_some_and(|s| self.owner_absent(s)) {
+        let always = self.always(session, name, protected);
+        if (human_only || always) && session.is_some_and(|s| self.owner_absent(s)) {
             return PolicyAction::Deny;
         }
         let by_card = tool.is_some_and(|t| t.approved_by_card());
@@ -1568,7 +1782,7 @@ impl ToolRegistry {
         if mentions {
             action = action.max(PolicyAction::Ask);
         }
-        if human_only {
+        if human_only || always {
             return action.max(PolicyAction::Ask);
         }
         if action == PolicyAction::Ask
@@ -1579,6 +1793,12 @@ impl ToolRegistry {
             action = PolicyAction::Allow;
         }
         action
+    }
+
+    /// 219 §2.2: the call is always ask: the tool is marked ([`Self::always_ask_applies`])
+    /// or the call writes a protected config file (`protected`).
+    fn always(&self, session: Option<SessionId>, name: &str, protected: bool) -> bool {
+        protected || self.always_ask_applies(session, name)
     }
 
     /// 210 §7.2: the owner is not the one in this session: a contact turn or inbox
@@ -1607,11 +1827,16 @@ impl ToolRegistry {
 
     /// Why a `Deny` from [`Self::effective`] happened, for the model: the cap
     /// names its ceiling so the subagent knows the refusal is not the policy's.
-    fn denied(&self, session: SessionId, name: &str, risk: Risk) -> String {
+    fn denied(&self, session: SessionId, name: &str, risk: Risk, protected: bool) -> String {
         match self.capped(session, name, risk) {
             Some(cap) => format!("denied: subagent is capped at {cap}"),
             None if self.human_only(name) && self.owner_absent(session) => {
                 "denied: only the owner can approve this, and this conversation is not the owner's (a contact's turn or a non-owner chat thread)".to_owned()
+            }
+            None if self.always(Some(session), name, protected) && self.owner_absent(session) => {
+                format!(
+                    "always ask: {name} needs the owner's approval and the owner is not in this conversation"
+                )
             }
             None => "denied by policy".to_owned(),
         }
@@ -1626,37 +1851,42 @@ impl ToolRegistry {
         name: &str,
         risk: Risk,
         mentions: bool,
+        protected: bool,
     ) -> Result<Option<ActorRef<Approval>>, String> {
-        match self.effective(Some(session), name, risk, mentions) {
+        match self.effective(Some(session), name, risk, mentions, protected) {
             PolicyAction::Allow => Ok(None),
-            PolicyAction::Deny => Err(self.denied(session, name, risk)),
-            PolicyAction::Ask => {
-                if self.approval.is_none() {
-                    self.approval = ActorRef::<Approval>::lookup(APPROVAL_ACTOR).ok().flatten();
-                }
-                self.approval
-                    .clone()
-                    .map(Some)
-                    .ok_or_else(|| "approval required but no approval actor is running".to_owned())
-            }
+            PolicyAction::Deny => Err(self.denied(session, name, risk, protected)),
+            PolicyAction::Ask => self.approval_actor().map(Some),
         }
     }
 
+    /// The approval actor, looked up at first need.
+    fn approval_actor(&mut self) -> Result<ActorRef<Approval>, String> {
+        if self.approval.is_none() {
+            self.approval = ActorRef::<Approval>::lookup(APPROVAL_ACTOR).ok().flatten();
+        }
+        self.approval
+            .clone()
+            .ok_or_else(|| "approval required but no approval actor is running".to_owned())
+    }
+
     /// Spec, origin, identity and effective action of one tool; `risk` is
-    /// the call's risk when args were given ([`call_risk`]), else the spec's.
+    /// the call's risk when args were given ([`call_risk`]), else the spec's;
+    /// `protected` is [`Self::protected_write`] of those args.
     fn inspect(
         &self,
         tool: &DynTool,
         session: Option<SessionId>,
         mentions: bool,
         risk: Option<Risk>,
+        protected: bool,
     ) -> ToolInspection {
         let mut spec = tool.spec();
         if let Some(risk) = risk {
             spec.risk = risk;
         }
         ToolInspection {
-            action: self.effective(session, &spec.name, spec.risk, mentions),
+            action: self.effective(session, &spec.name, spec.risk, mentions, protected),
             identity: identity(tool, &spec),
             source: tool.source(),
             spec,
@@ -1667,12 +1897,15 @@ impl ToolRegistry {
     /// other (46 §6.3): visibility, communication availability (50 §0.5),
     /// the bound identity, the current schema, that the activation is for
     /// *this* call, then policy. `Err` is the reply for a call that never ran.
+    /// The last element is the approval actor when the press is not the approval
+    /// (219 §2.2: an always-ask call raises a real card).
+    #[allow(clippy::type_complexity)]
     fn admit_app(
         &mut self,
         call: &ToolCall,
         activation: Option<&UserActivation>,
         expected_identity: &str,
-    ) -> Result<(DynTool, ToolSpec, Option<Admitted>), Refused> {
+    ) -> Result<(DynTool, ToolSpec, Option<Admitted>, Option<ActorRef<Approval>>), Refused> {
         use Refused::Unavailable;
         let name = &call.name;
         let tool = self
@@ -1707,10 +1940,12 @@ impl ToolRegistry {
         let mentions = mentions(&tool, &call.args);
         // The identity above binds the declared spec; the gate sees the call's risk.
         spec.risk = call_risk(&tool, call.session, spec.risk, &call.args);
-        match self.effective(Some(call.session), name, spec.risk, mentions) {
+        let protected = self.protected_write(call.session, name, spec.risk, &call.args);
+        let mut card = None;
+        match self.effective(Some(call.session), name, spec.risk, mentions, protected) {
             PolicyAction::Allow => {}
             PolicyAction::Deny => {
-                let why = self.denied(call.session, name, spec.risk);
+                let why = self.denied(call.session, name, spec.risk, protected);
                 return Err(Unavailable(format!("{name}: {why}")));
             }
             PolicyAction::Ask => match activation {
@@ -1721,6 +1956,10 @@ impl ToolRegistry {
                     )));
                 }
                 None => return Err(Refused::NeedsApproval),
+                // 219 §2.2: nor is it the approval of an always-ask call: the press raises a card.
+                Some(_) if self.always(Some(call.session), name, protected) => {
+                    card = Some(self.approval_actor().map_err(|why| Unavailable(format!("{name}: {why}")))?);
+                }
                 Some(a) => tracing::info!(
                     tool = %name, risk = ?spec.risk, secrets = mentions,
                     record = %a.record_call_id, action = %a.action_id, request = %a.request_id,
@@ -1728,14 +1967,15 @@ impl ToolRegistry {
                 ),
             },
         }
-        Ok((tool, spec, admitted))
+        Ok((tool, spec, admitted, card))
     }
 
-    /// Admission, approval (if `approval`), secret expansion and the tool
+    /// Admission, approval (if `card`), secret expansion and the tool
     /// body, off the mailbox; `done` receives the output when the body has
     /// actually stopped. Shared by [`Invoke`] and [`AppInvoke`]: the app
-    /// entry only ever arrives here with `approval == None`, its `Ask`
-    /// already answered by the activation in [`Self::admit_app`]. `admitted`
+    /// entry arrives here with `card == None`, its `Ask` already answered by
+    /// the activation in [`Self::admit_app`], except for an always-ask call
+    /// (219 §2.2). `admitted`
     /// is the communication admission from [`Self::admit`], re-checked in
     /// [`invoke`] once approval resolved (50 §8). `promote_after` is the
     /// session's promotion delay (145 §0.4) — [`Invoke`] only; an app call
@@ -1746,7 +1986,7 @@ impl ToolRegistry {
         tool: DynTool,
         spec: ToolSpec,
         call: ToolCall,
-        approval: Option<ActorRef<Approval>>,
+        card: Option<Card>,
         admitted: Option<Admitted>,
         promote_after: Option<Duration>,
         done: impl FnOnce(ToolOutput) + Send + 'static,
@@ -1800,7 +2040,7 @@ impl ToolRegistry {
                     tool,
                     spec,
                     call,
-                    approval,
+                    card,
                     admitted,
                     activity,
                     gate,
@@ -1819,6 +2059,12 @@ impl ToolRegistry {
     }
 }
 
+/// An approval card to raise before a call runs (219 §2.3: `always_ask` marks it so).
+struct Card {
+    approval: ActorRef<Approval>,
+    always_ask: bool,
+}
+
 impl Message<AppInvoke> for ToolRegistry {
     type Reply = DelegatedReply<AppInvoked>;
 
@@ -1827,8 +2073,12 @@ impl Message<AppInvoke> for ToolRegistry {
         let Some(tx) = tx else { return reply };
         match self.admit_app(&m.call, m.activation.as_ref(), &m.expected_identity) {
             Err(r) => tx.send(r.into()),
-            Ok((tool, spec, admitted)) => {
-                self.dispatch(tool, spec, m.call, None, admitted, None, move |out| {
+            Ok((tool, spec, admitted, approval)) => {
+                let card = approval.map(|approval| Card {
+                    approval,
+                    always_ask: true,
+                });
+                self.dispatch(tool, spec, m.call, card, admitted, None, move |out| {
                     tx.send(AppInvoked::Completed(out));
                 });
             }
@@ -1849,7 +2099,10 @@ impl Message<InspectTool> for ToolRegistry {
             .args
             .as_ref()
             .map(|a| call_risk(&tool, m.session, tool.spec().risk, a));
-        Ok(self.inspect(&tool, Some(m.session), mentions, risk))
+        let protected = m.args.as_ref().is_some_and(|a| {
+            self.protected_write(m.session, &m.name, risk.unwrap_or(Risk::ReadOnly), a)
+        });
+        Ok(self.inspect(&tool, Some(m.session), mentions, risk, protected))
     }
 }
 
@@ -1865,7 +2118,7 @@ impl Message<DescribeTools> for ToolRegistry {
             .tools
             .iter()
             .filter(|(name, _)| !session.is_some_and(|s| self.is_hidden(s, name)))
-            .map(|(_, t)| self.inspect(t, session, false, None))
+            .map(|(_, t)| self.inspect(t, session, false, None, false))
             .filter(|i| session.is_none_or(|s| self.capped(s, &i.spec.name, i.spec.risk).is_none()))
             .collect();
         out.sort_by(|a, b| a.spec.name.cmp(&b.spec.name));
@@ -1883,7 +2136,7 @@ impl Message<ExternalApproval> for ToolRegistry {
     ) -> Self::Reply {
         let (reply, tx) = ctx.reply_sender();
         let Some(tx) = tx else { return reply };
-        let approval = match self.gate(m.session, &m.tool, m.risk, false) {
+        let approval = match self.gate(m.session, &m.tool, m.risk, false, false) {
             Ok(None) => {
                 tx.send(ExternalVerdict::plain(Decision::Allow));
                 return reply;
@@ -1896,6 +2149,7 @@ impl Message<ExternalApproval> for ToolRegistry {
             }
         };
         let human_only = self.human_only(&m.tool);
+        let always_ask = self.always_ask_applies(Some(m.session), &m.tool);
         tokio::spawn(async move {
             let req = RequestApproval {
                 session: m.session,
@@ -1903,6 +2157,7 @@ impl Message<ExternalApproval> for ToolRegistry {
                 args: m.args,
                 risk: m.risk,
                 call_id: None,
+                always_ask,
             };
             let asked = if human_only {
                 approval.ask(RequestHumanOnly(req)).await.ok()
@@ -2334,6 +2589,91 @@ impl Message<SetDefaultToolCategories> for ToolRegistry {
         self.categories.default_disabled = m.disabled;
         Ok(())
     }
+    }
+}
+
+impl Message<SetAlwaysAsk> for ToolRegistry {
+    type Reply = Result<AlwaysAskState, AlwaysAskError>;
+
+    async fn handle(
+        &mut self,
+        m: SetAlwaysAsk,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Result<AlwaysAskState, AlwaysAskError> {
+        let tool = m.tool.trim();
+        if tool.is_empty() {
+            return Err(AlwaysAskError::Empty);
+        }
+        // Removing a loop-local entry (hand-edited into config.yaml) stays possible.
+        if m.on && LOOP_LOCAL_TOOLS.contains(&tool) {
+            return Err(AlwaysAskError::LoopLocal(tool.to_owned()));
+        }
+        match m.session {
+            None => {
+                if self.always_ask.contains(tool) == m.on {
+                    return Ok(self.always_ask_state(None));
+                }
+                let mut next = self.always_ask.clone();
+                if m.on {
+                    next.insert(tool.to_owned());
+                } else {
+                    next.remove(tool);
+                }
+                let value = serde_json::to_string(&sorted(&next)).unwrap_or_else(|_| "[]".to_owned());
+                // Persist first (the `SetBuiltinsDisabled` pattern): an entry that cannot be
+                // saved is not applied, so it never silently changes at the next start.
+                runtime::write_config_value(&self.config_path, "tools", "always_ask", &value)
+                    .map_err(|e| {
+                        AlwaysAskError::NotWritten(format!("{}: {e}", self.config_path.display()))
+                    })?;
+                self.always_ask = next;
+            }
+            Some(id) => {
+                let set = self.always_ask_session.entry(id).or_default();
+                let changed = if m.on {
+                    set.insert(tool.to_owned())
+                } else {
+                    set.remove(tool)
+                };
+                let names = sorted(set);
+                if names.is_empty() {
+                    self.always_ask_session.remove(&id);
+                }
+                if changed {
+                    self.journal.always_ask(id, names).await;
+                }
+            }
+        }
+        Ok(self.always_ask_state(m.session))
+    }
+}
+
+impl Message<RestoreAlwaysAsk> for ToolRegistry {
+    type Reply = ();
+
+    async fn handle(&mut self, m: RestoreAlwaysAsk, _: &mut Context<Self, Self::Reply>) {
+        if m.names.is_empty() {
+            self.always_ask_session.remove(&m.session);
+        } else {
+            self.always_ask_session
+                .insert(m.session, m.names.into_iter().collect());
+        }
+    }
+}
+
+impl Message<GetAlwaysAsk> for ToolRegistry {
+    type Reply = AlwaysAskState;
+
+    async fn handle(&mut self, m: GetAlwaysAsk, _: &mut Context<Self, Self::Reply>) -> AlwaysAskState {
+        self.always_ask_state(m.session)
+    }
+}
+
+/// A set's entries, sorted.
+fn sorted(set: &HashSet<String>) -> Vec<String> {
+    let mut v: Vec<String> = set.iter().cloned().collect();
+    v.sort();
+    v
 }
 
 impl Message<InstallCommunicationAccess> for ToolRegistry {
@@ -2731,8 +3071,12 @@ impl ToolRegistry {
         let mentions = mentions(&tool, &call.args);
         // 209 D14: the approval card and the gate both see the call's risk.
         spec.risk = call_risk(&tool, call.session, spec.risk, &call.args);
-        let approval = match self.gate(call.session, &call.name, spec.risk, mentions) {
-            Ok(a) => a,
+        let protected = self.protected_write(call.session, &call.name, spec.risk, &call.args);
+        let card = match self.gate(call.session, &call.name, spec.risk, mentions, protected) {
+            Ok(a) => a.map(|approval| Card {
+                approval,
+                always_ask: self.always(Some(call.session), &call.name, protected),
+            }),
             Err(why) => {
                 tx.send(ToolOutput::err(format!("{}: {why}", call.name)));
                 return reply;
@@ -2743,7 +3087,7 @@ impl ToolRegistry {
             tool,
             spec,
             call,
-            approval,
+            card,
             admitted,
             promote_after,
             move |out| tx.send(out),
@@ -2842,7 +3186,7 @@ async fn invoke(
     tool: DynTool,
     spec: ToolSpec,
     mut call: ToolCall,
-    approval: Option<ActorRef<Approval>>,
+    card: Option<Card>,
     admitted: Option<Admitted>,
     activity: Activity,
     gate: Option<Arc<dyn ExecutionGate>>,
@@ -2856,7 +3200,11 @@ async fn invoke(
     let call_id = call.id.clone();
     let suspend = || gate.as_ref().and_then(|g| g.suspend(session));
     let mut approved = None;
-    if let Some(approval) = approval {
+    if let Some(Card {
+        approval,
+        always_ask,
+    }) = card
+    {
         // 210 §7.3: the tool's own card details (`share_publish`: the exact URL) join the args
         // the card shows; `call` keeps the model's args. A refusal here raises no card.
         let mut args = call.args.clone();
@@ -2879,6 +3227,7 @@ async fn invoke(
             args,
             risk: spec.risk,
             call_id: Some(call_id.clone()),
+            always_ask,
         };
         let suspended = suspend();
         let human_only = tool.human_only();
@@ -3170,6 +3519,8 @@ pub async fn start(rt: &Runtime) -> anyhow::Result<ActorRef<ToolRegistry>> {
             hidden_epoch: 0,
             builtins_disabled: cfg.builtins.disabled.into_iter().collect(),
             categories: cfg.categories,
+            always_ask: cfg.always_ask.into_iter().collect(),
+            always_ask_session: HashMap::new(),
             parents: HashMap::new(),
             cap: HashMap::new(),
             turn_cap: HashMap::new(),
@@ -3247,6 +3598,8 @@ pub(crate) mod tests {
             hidden_epoch: 0,
             builtins_disabled: HashSet::new(),
             categories: ToolCategoriesConfig::default(),
+            always_ask: HashSet::new(),
+            always_ask_session: HashMap::new(),
             parents: HashMap::new(),
             cap: HashMap::new(),
             turn_cap: HashMap::new(),
@@ -6626,5 +6979,384 @@ pub(crate) mod tests {
         let out = reg.ask(Invoke(call("publish", thread))).await.unwrap();
         assert!(out.content.contains("approval required"), "{out:?}");
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// What [`Human`] saw: per card, `(always_ask, double's ResolveBy accepted)`.
+    type Cards = Arc<Mutex<Vec<(bool, bool)>>>;
+
+    /// Bus subscriber: tries every card as the double first, then answers it as a human
+    /// with its decision when the double was refused.
+    #[derive(kameo::Actor)]
+    struct Human(ActorRef<Approval>, Decision, Cards);
+
+    impl Message<crate::approval::ApprovalRequested> for Human {
+        type Reply = ();
+        async fn handle(
+            &mut self,
+            m: crate::approval::ApprovalRequested,
+            _: &mut Context<Self, ()>,
+        ) {
+            let double = self
+                .0
+                .ask(crate::approval::ResolveBy {
+                    id: m.id,
+                    decision: Decision::Allow,
+                    by: crate::journal::Answerer::Double,
+                })
+                .await
+                .unwrap();
+            lock(&self.2).push((m.always_ask, double));
+            if !double {
+                let _ = self
+                    .0
+                    .ask(crate::approval::Resolve {
+                        id: m.id,
+                        decision: self.1,
+                    })
+                    .await;
+            }
+        }
+    }
+
+    const ALL_ALLOW: Policy = Policy {
+        read_only: PolicyAction::Allow,
+        mutating: PolicyAction::Allow,
+        destructive: PolicyAction::Allow,
+    };
+
+    /// A registry with every policy `allow` and `tools.approvals: false`, an approval actor
+    /// and a [`Human`] answering `decision` on the bus.
+    async fn always_ask_registry(
+        tools: Vec<DynTool>,
+        global: &[&str],
+        config_path: PathBuf,
+        decision: Decision,
+    ) -> (ActorRef<ToolRegistry>, Cards) {
+        let rt = Runtime::new(figment::Figment::new(), std::env::temp_dir());
+        let approval = Approval::spawn(Approval::new(rt.clone(), Duration::from_secs(5)));
+        let reg = ToolRegistry::spawn(ToolRegistry {
+            policy: ALL_ALLOW,
+            approvals: false,
+            approval: Some(approval.clone()),
+            always_ask: global.iter().map(|s| (*s).to_owned()).collect(),
+            config_path,
+            ..build(tools, None)
+        });
+        let cards: Cards = Arc::default();
+        let human = Human::spawn(Human(approval, decision, cards.clone()));
+        rt.subscribe::<Human, crate::approval::ApprovalRequested>(&human)
+            .await;
+        (reg, cards)
+    }
+
+    async fn inspect_action(reg: &ActorRef<ToolRegistry>, session: SessionId, name: &str) -> PolicyAction {
+        reg.ask(InspectTool {
+            session,
+            name: name.into(),
+            args: None,
+        })
+        .await
+        .unwrap()
+        .action
+    }
+
+    /// 219 §7 (a), (g): a harness-wide entry asks with approvals off and every policy
+    /// `allow`; the card says `always_ask`, the double's answer is refused and the human's
+    /// runs it. An unmarked tool under the same switches never asks.
+    #[tokio::test]
+    async fn always_ask_global_entry_asks_with_approvals_off() {
+        let (reg, cards) = always_ask_registry(
+            vec![Arc::new(Echo), Arc::new(Touch)],
+            &["echo"],
+            PathBuf::new(),
+            Decision::Allow,
+        )
+        .await;
+        let session = SessionId::new();
+        let out = reg.ask(Invoke(call("touch", session))).await.unwrap();
+        assert!(!out.is_error, "{out:?}");
+        assert!(lock(&cards).is_empty(), "an unmarked tool asked");
+        let out = reg.ask(Invoke(call("echo", session))).await.unwrap();
+        assert_eq!(out.content, "hi", "{out:?}");
+        assert_eq!(*lock(&cards), [(true, false)]);
+    }
+
+    /// 219 §7 (b): a chat's entry asks with the chat's pin off and is inherited by a
+    /// subagent; [`GetAlwaysAsk`] reports it as the child's `inherited`; removing it stops
+    /// the asking.
+    #[tokio::test]
+    async fn always_ask_session_entry_is_inherited() {
+        let (reg, cards) =
+            always_ask_registry(vec![Arc::new(Echo)], &[], PathBuf::new(), Decision::Deny).await;
+        let (parent, child) = (SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent,
+        })
+        .await
+        .unwrap();
+        reg.ask(SetApprovals {
+            session: Some(parent),
+            enabled: false,
+            clear: false,
+        })
+        .await
+        .unwrap();
+        let state = reg
+            .ask(SetAlwaysAsk {
+                session: Some(parent),
+                tool: "echo".into(),
+                on: true,
+            })
+            .await
+            .unwrap();
+        assert_eq!(state.session, ["echo"]);
+        for s in [parent, child] {
+            let out = reg.ask(Invoke(call("echo", s))).await.unwrap();
+            assert_eq!(out.content, "echo: denied by user", "{out:?}");
+        }
+        assert_eq!(*lock(&cards), [(true, false), (true, false)]);
+        let state = reg
+            .ask(GetAlwaysAsk {
+                session: Some(child),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            state,
+            AlwaysAskState {
+                global: vec![],
+                session: vec![],
+                inherited: vec!["echo".into()],
+            }
+        );
+        reg.ask(SetAlwaysAsk {
+            session: Some(parent),
+            tool: "echo".into(),
+            on: false,
+        })
+        .await
+        .unwrap();
+        let out = reg.ask(Invoke(call("echo", child))).await.unwrap();
+        assert_eq!(out.content, "hi", "{out:?}");
+        assert_eq!(lock(&cards).len(), 2);
+    }
+
+    /// 219 §7 (c), (d): an `mcp:<server>` entry marks the server's tools, and only them; a
+    /// cap's `Deny` still wins over always ask.
+    #[tokio::test]
+    async fn always_ask_matches_mcp_server_and_cap_still_denies() {
+        let reg = ToolRegistry::spawn(ToolRegistry {
+            policy: ALL_ALLOW,
+            approvals: false,
+            always_ask: ["mcp:files".to_owned(), "touch".to_owned()].into(),
+            ..build(
+                vec![
+                    Arc::new(FilesMcp("search", Risk::ReadOnly)),
+                    Arc::new(Echo),
+                    Arc::new(Touch),
+                ],
+                None,
+            )
+        });
+        let session = SessionId::new();
+        assert_eq!(inspect_action(&reg, session, "search").await, PolicyAction::Ask);
+        assert_eq!(inspect_action(&reg, session, "echo").await, PolicyAction::Allow);
+        assert_eq!(inspect_action(&reg, session, "touch").await, PolicyAction::Ask);
+        reg.tell(SetCap {
+            session,
+            cap: Some(Risk::ReadOnly),
+        })
+        .await
+        .unwrap();
+        let out = reg.ask(Invoke(call("touch", session))).await.unwrap();
+        assert_eq!(out.content, "touch: denied: subagent is capped at read_only", "{out:?}");
+    }
+
+    /// 219 §7 (e): with no owner in the conversation an always-ask call is denied, with the
+    /// contract's reason, for the session and its subagents.
+    #[tokio::test]
+    async fn always_ask_denies_when_the_owner_is_absent() {
+        let (reg, cards) =
+            always_ask_registry(vec![Arc::new(Echo)], &["echo"], PathBuf::new(), Decision::Allow)
+                .await;
+        let (thread, child) = (SessionId::new(), SessionId::new());
+        reg.tell(SetParent {
+            session: child,
+            parent: thread,
+        })
+        .await
+        .unwrap();
+        reg.tell(SetNonOwnerThread {
+            session: thread,
+            on: true,
+        })
+        .await
+        .unwrap();
+        for s in [thread, child] {
+            let out = reg.ask(Invoke(call("echo", s))).await.unwrap();
+            assert_eq!(
+                out.content,
+                "echo: always ask: echo needs the owner's approval and the owner is not in this conversation"
+            );
+        }
+        assert!(lock(&cards).is_empty());
+    }
+
+    /// 219 §7 (f): an app press does not approve an always-ask call: an automatic call
+    /// needs approval, a pressed one raises a real always-ask card and runs only on the
+    /// human's answer.
+    #[tokio::test]
+    async fn always_ask_app_press_raises_a_card() {
+        let (reg, cards) =
+            always_ask_registry(vec![Arc::new(Echo)], &["echo"], PathBuf::new(), Decision::Deny)
+                .await;
+        let session = SessionId::new();
+        let identity = bound(&reg, session, "echo").await;
+        let auto = reg
+            .ask(AppInvoke {
+                call: call("echo", session),
+                activation: None,
+                expected_identity: identity.clone(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(auto, AppInvoked::NeedsApproval), "{auto:?}");
+        assert!(lock(&cards).is_empty());
+        let pressed = reg
+            .ask(AppInvoke {
+                call: call("echo", session),
+                activation: press("1"),
+                expected_identity: identity,
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(&pressed, AppInvoked::Completed(out) if out.content == "echo: denied by user"),
+            "{pressed:?}"
+        );
+        assert_eq!(*lock(&cards), [(true, false)]);
+    }
+
+    /// 219 §7 (h): loop-local names and an empty name are refused and change nothing; a
+    /// harness-wide entry persists to `tools.always_ask` and a restart reads it back.
+    #[tokio::test]
+    async fn always_ask_rejects_loop_local_and_persists_global() {
+        let dir = scratch_dir();
+        let path = dir.join("config.yaml");
+        std::fs::write(&path, "# keep me\ntools:\n  approvals: false\n").unwrap();
+        let reg = ToolRegistry::spawn(ToolRegistry {
+            config_path: path.clone(),
+            ..build(vec![Arc::new(Echo)], None)
+        });
+        for name in LOOP_LOCAL_TOOLS {
+            let err = reg
+                .ask(SetAlwaysAsk {
+                    session: None,
+                    tool: (*name).into(),
+                    on: true,
+                })
+                .await
+                .unwrap_err();
+            let kameo::error::SendError::HandlerError(err) = err else {
+                panic!("{err:?}");
+            };
+            assert_eq!(
+                err.to_string(),
+                format!("always_ask: {name} runs inside the agent loop and is never gated; mark the runtime functions it calls instead")
+            );
+        }
+        let err = reg
+            .ask(SetAlwaysAsk {
+                session: None,
+                tool: " ".into(),
+                on: true,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, kameo::error::SendError::HandlerError(AlwaysAskError::Empty)));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# keep me\ntools:\n  approvals: false\n"
+        );
+        for tool in ["mcp:files", "echo"] {
+            reg.ask(SetAlwaysAsk {
+                session: None,
+                tool: tool.into(),
+                on: true,
+            })
+            .await
+            .unwrap();
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep me"), "{text}");
+        let rt = Runtime::new(
+            figment::Figment::new()
+                .merge(<figment::providers::Yaml as figment::providers::Format>::file(&path)),
+            dir.clone(),
+        );
+        let cfg = config(&rt).unwrap();
+        assert_eq!(cfg.always_ask, ["echo", "mcp:files"]);
+        assert!(!cfg.approvals);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 219 §7 (i): a built-in file tool writing `<data_dir>/config.yaml` or
+    /// `<data_dir>/mcp/config.yaml` asks with an always-ask card even with approvals off
+    /// and nothing marked; another file in the data dir does not.
+    #[tokio::test]
+    async fn always_ask_guards_config_file_writes() {
+        let dir = scratch_dir();
+        let config_path = dir.join("config.yaml");
+        std::fs::write(&config_path, "tools: {}\n").unwrap();
+        let (reg, cards) = always_ask_registry(
+            vec![Arc::new(fs::WriteFile), Arc::new(crate::text::MoveText)],
+            &[],
+            config_path.clone(),
+            Decision::Deny,
+        )
+        .await;
+        let session = SessionId::new();
+        let write = |path: PathBuf| {
+            app_call(
+                "write_file",
+                session,
+                serde_json::json!({"path": path, "content": "x"}),
+            )
+        };
+        let out = reg.ask(Invoke(write(config_path.clone()))).await.unwrap();
+        assert_eq!(out.content, "write_file: denied by user", "{out:?}");
+        assert_eq!(*lock(&cards), [(true, false)]);
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), "tools: {}\n");
+        // A `..` spelling of the same file is caught too.
+        let sneaky = dir.join("mcp").join("..").join("config.yaml");
+        std::fs::create_dir_all(dir.join("mcp")).unwrap();
+        let out = reg.ask(Invoke(write(sneaky))).await.unwrap();
+        assert_eq!(out.content, "write_file: denied by user", "{out:?}");
+        let mcp = reg
+            .ask(InspectTool {
+                session,
+                name: "write_file".into(),
+                args: Some(serde_json::json!({"path": dir.join("mcp/config.yaml"), "content": ""})),
+            })
+            .await
+            .unwrap();
+        assert_eq!(mcp.action, PolicyAction::Ask);
+        let moved = reg
+            .ask(InspectTool {
+                session,
+                name: "move_text".into(),
+                args: Some(serde_json::json!({
+                    "src": format!("{}#L1-L1@abc", config_path.display()),
+                    "at": format!("{}#end", dir.join("other.txt").display()),
+                })),
+            })
+            .await
+            .unwrap();
+        assert_eq!(moved.action, PolicyAction::Ask);
+        let out = reg.ask(Invoke(write(dir.join("other.txt")))).await.unwrap();
+        assert!(!out.is_error, "{out:?}");
+        assert_eq!(lock(&cards).len(), 2);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -89,6 +89,11 @@ pub struct ApprovalRequested {
     /// click, and [`ResolveBy`] with any answerer but [`Answerer::Human`] is refused.
     #[serde(default)]
     pub human_only: bool,
+    /// 219 §2.3: the tool is marked always ask: a human must answer, even with approvals
+    /// off. [`ResolveBy`] with any answerer but [`Answerer::Human`] is refused and the double
+    /// skips the card. Unlike `human_only`, any human surface may answer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub always_ask: bool,
 }
 
 impl wire::WireEvent for ApprovalRequested {
@@ -164,6 +169,8 @@ pub struct RequestApproval {
     /// The gated tool call (109 §6.1: the `questions.tool_call_id`); `None`
     /// for an external approval that belongs to no call.
     pub call_id: Option<String>,
+    /// 219 §2.3: the call is always ask; the card carries `always_ask: true`.
+    pub always_ask: bool,
 }
 
 /// 210 §7.2: [`RequestApproval`] for a [`crate::Tool::HUMAN_ONLY`] tool. Same reply; the
@@ -341,6 +348,7 @@ impl Approval {
             args: m.args,
             risk: m.risk,
             human_only,
+            always_ask: m.always_ask,
         };
         let asked_at = Utc::now();
         let deadline = asked_at + self.timeout;
@@ -473,15 +481,16 @@ impl Message<ResolveBy> for Approval {
     type Reply = bool;
 
     /// 210 §7.2: a human-only row answers only to [`Answerer::Human`]; any other answerer
-    /// (the double) is refused with `false` and the row stays pending for the owner.
+    /// (the double) is refused with `false` and the row stays pending for the owner. 219
+    /// §2.3: so does an always-ask row (any human may answer it).
     async fn handle(&mut self, m: ResolveBy, _: &mut Context<Self, Self::Reply>) -> bool {
         if m.by != Answerer::Human
             && self
                 .pending
                 .get(&m.id)
-                .is_some_and(|p| p.requested.human_only)
+                .is_some_and(|p| p.requested.human_only || p.requested.always_ask)
         {
-            tracing::warn!(id = ?m.id, by = ?m.by, "refused: a human-only approval answers only to the owner");
+            tracing::warn!(id = ?m.id, by = ?m.by, "refused: a human-only or always-ask approval answers only to a human");
             return false;
         }
         self.resolve(m.id, m.decision, m.by).await
@@ -742,6 +751,7 @@ pub(crate) mod tests {
             args: serde_json::json!({ "command": "rm x" }),
             risk: Risk::Destructive,
             call_id: call_id.map(Into::into),
+            always_ask: false,
         }
     }
 

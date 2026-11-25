@@ -956,8 +956,9 @@ impl Message<ApprovalRequested> for Double {
     type Reply = ();
 
     async fn handle(&mut self, m: ApprovalRequested, ctx: &mut Context<Self, ()>) {
-        // 210 §7.2: a human-only card (share consent) is never trained on or predicted.
-        if m.human_only || !self.cfg.capture.approvals {
+        // 210 §7.2: a human-only card (share consent) is never trained on or predicted;
+        // 219 §2.3: nor is an always-ask card (a human must answer it).
+        if m.human_only || m.always_ask || !self.cfg.capture.approvals {
             return;
         }
         let mcp = self.is_mcp(m.session, &m.tool).await;
@@ -1606,6 +1607,7 @@ mod tests {
                     args,
                     risk,
                     call_id: None,
+                    always_ask: false,
                 })
                 .await
                 .unwrap();
@@ -2359,10 +2361,42 @@ mod tests {
                 args: serde_json::json!({"name": "demo"}),
                 risk: Risk::Mutating,
                 call_id: None,
+                always_ask: false,
             }))
             .await
             .unwrap();
         // The bus delivers in order: the human-only card was handled before this one.
+        let id = h
+            .raise(s, "shell", serde_json::json!({"command": "git push"}))
+            .await;
+        let predicted: Vec<String> = h
+            .probe
+            .predicted
+            .lock()
+            .iter()
+            .map(|p| p.question_id.clone())
+            .collect();
+        assert_eq!(predicted, vec![id.0.to_string()]);
+        h.stop().await;
+    }
+
+    /// 219 §2.3: an always-ask approval gets no card in the double: no prediction, no example.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn always_ask_cards_are_never_seen() {
+        let h = Harness::new(oracle(0.8), 30).await;
+        let s = SessionId::new();
+        h.approval
+            .tell(RequestApproval {
+                session: s,
+                tool: "shell".into(),
+                args: serde_json::json!({"command": "git push"}),
+                risk: Risk::Mutating,
+                call_id: None,
+                always_ask: true,
+            })
+            .await
+            .unwrap();
+        // The bus delivers in order: the always-ask card was handled before this one.
         let id = h
             .raise(s, "shell", serde_json::json!({"command": "git push"}))
             .await;
