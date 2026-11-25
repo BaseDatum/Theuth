@@ -326,6 +326,7 @@ async fn list_scopes_to_the_prefix_filters_the_query_and_caches_the_page() {
             r.filters().len() == 1
                 && r.filters()[0].key() == Some(&FilterNameStringType::Name)
                 && r.filters()[0].values() == ["app/"]
+                && r.include_planned_deletion() == Some(false)
         })
         .then_output(|| {
             ListSecretsOutput::builder()
@@ -346,9 +347,22 @@ async fn list_scopes_to_the_prefix_filters_the_query_and_caches_the_page() {
                 .next_token("page-2")
                 .build()
         });
+    let deleted = mock!(Client::list_secrets)
+        .match_requests(|r| r.include_planned_deletion() == Some(true))
+        .then_output(|| {
+            ListSecretsOutput::builder()
+                .secret_list(SecretListEntry::builder().name("app/live").build())
+                .secret_list(
+                    SecretListEntry::builder()
+                        .name("app/old")
+                        .deleted_date(DateTime::from_secs(1_700_000_000))
+                        .build(),
+                )
+                .build()
+        });
     let mut c = cfg();
     c.prefix = Some("app/".into());
-    let b = backend(c, &[&list]);
+    let b = backend(c, &[&list, &deleted]);
 
     let page = b.list(ListQuery::default()).await.unwrap();
     let names: Vec<_> = page.entries.iter().map(|e| e.r#ref.as_str()).collect();
@@ -363,11 +377,13 @@ async fn list_scopes_to_the_prefix_filters_the_query_and_caches_the_page() {
         Some("2023-11-14T22:13:20Z")
     );
     assert_eq!(db.versions[1].changed, None);
+    assert_eq!(db.recoverable_until, None);
 
     let page = b
         .list(ListQuery {
             query: Some("DB".into()),
             cursor: None,
+            deleted: false,
         })
         .await
         .unwrap();
@@ -377,6 +393,21 @@ async fn list_scopes_to_the_prefix_filters_the_query_and_caches_the_page() {
         list.num_calls(),
         2,
         "the unqueried page came from the cache"
+    );
+
+    let page = b
+        .list(ListQuery {
+            deleted: true,
+            ..ListQuery::default()
+        })
+        .await
+        .unwrap();
+    let names: Vec<_> = page.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["app/old"], "only entries pending deletion");
+    // At least the 7-day minimum window from the deletion.
+    assert_eq!(
+        page.entries[0].recoverable_until.as_deref(),
+        Some("2023-11-21T22:13:20Z")
     );
 }
 
@@ -404,22 +435,24 @@ impl std::fmt::Display for SsoTokenExpired {
 
 impl StdError for SsoTokenExpired {}
 
-fn failing_backend(provider: Failing) -> (AwsBackend, Rule) {
-    let list = mock!(Client::list_secrets).then_output(|| ListSecretsOutput::builder().build());
+/// A client whose credentials chain fails. No mock interceptor: it answers before identity
+/// resolution, so the failure would never surface. The HTTP client is never reached.
+fn failing_backend(provider: Failing) -> AwsBackend {
     let mut c = cfg();
     c.profile = Some("work-admin".into());
-    let client = mock_client!(
-        aws_sdk_secretsmanager,
-        RuleMode::MatchAny,
-        &[&list],
-        move |b| b.credentials_provider(Failing(provider.0))
+    let client = Client::from_conf(
+        aws_sdk_secretsmanager::Config::builder()
+            .with_test_defaults_v2()
+            .http_client(aws_smithy_mocks::create_mock_http_client())
+            .credentials_provider(provider)
+            .build(),
     );
-    (AwsBackend::with_client(c, client), list)
+    AwsBackend::with_client(c, client)
 }
 
 #[tokio::test]
 async fn an_expired_sso_session_is_expired_with_the_login_hint() {
-    let (b, list) = failing_backend(Failing(|| {
+    let b = failing_backend(Failing(|| {
         CredentialsError::provider_error(SsoTokenExpired)
     }));
     let err = b.list(ListQuery::default()).await.unwrap_err();
@@ -430,12 +463,11 @@ async fn an_expired_sso_session_is_expired_with_the_login_hint() {
         b.probe().await.unwrap(),
         ConnStatus::Expired { hint: hint.into() }
     );
-    assert_eq!(list.num_calls(), 0, "nothing was sent");
 }
 
 #[tokio::test]
 async fn no_credentials_is_logged_out() {
-    let (b, _) = failing_backend(Failing(|| {
+    let b = failing_backend(Failing(|| {
         CredentialsError::not_loaded("no providers in chain provided credentials")
     }));
     assert_eq!(

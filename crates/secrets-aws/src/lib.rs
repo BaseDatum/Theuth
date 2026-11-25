@@ -109,7 +109,8 @@ impl AwsConnConfig {
     }
 }
 
-type ListKey = (Option<String>, Option<String>);
+/// `(query, cursor, deleted)` of a cached `ListSecrets` page.
+type ListKey = (Option<String>, Option<String>, bool);
 
 /// One AWS Secrets Manager connection.
 pub struct AwsBackend {
@@ -256,6 +257,7 @@ impl AwsBackend {
         kms: Option<&str>,
         changed: Option<&DateTime>,
         stages: Option<&HashMap<String, Vec<String>>>,
+        deleted: Option<&DateTime>,
     ) -> ExtEntry {
         ExtEntry {
             r#ref: self.reference(name),
@@ -269,6 +271,7 @@ impl AwsBackend {
                 kms.unwrap_or("aws/secretsmanager")
             ),
             versions: versions(stages, changed),
+            recoverable_until: deleted.and_then(restorable_until),
         }
     }
 
@@ -363,7 +366,7 @@ impl ExternalBackend for AwsBackend {
     }
 
     async fn list(&self, q: ListQuery) -> Result<ListPage, ExtError> {
-        let key = (q.query.clone(), q.cursor.clone());
+        let key = (q.query.clone(), q.cursor.clone(), q.deleted);
         if let Some((at, page)) = self
             .lists
             .lock()
@@ -380,7 +383,8 @@ impl ExternalBackend for AwsBackend {
                     .await
                     .list_secrets()
                     .max_results(PAGE)
-                    .set_next_token(q.cursor.clone());
+                    .set_next_token(q.cursor.clone())
+                    .include_planned_deletion(q.deleted);
                 if let Some(p) = &self.cfg.prefix {
                     req = req.filters(name_filter(p));
                 }
@@ -401,12 +405,14 @@ impl ExternalBackend for AwsBackend {
                                 || s.description()
                                     .is_some_and(|d| d.to_lowercase().contains(n))
                         });
-                        (in_scope && hit).then(|| {
+                        let wanted = s.deleted_date().is_some() == q.deleted;
+                        (in_scope && hit && wanted).then(|| {
                             self.entry(
                                 name,
                                 s.kms_key_id(),
                                 s.last_changed_date(),
                                 s.secret_versions_to_stages(),
+                                s.deleted_date(),
                             )
                         })
                     })
@@ -432,6 +438,7 @@ impl ExternalBackend for AwsBackend {
                 d.kms_key_id(),
                 d.last_changed_date(),
                 d.version_ids_to_stages(),
+                d.deleted_date(),
             ))
         })
         .await
@@ -655,6 +662,14 @@ fn name_filter(prefix: &str) -> Filter {
 
 fn rfc3339(t: &DateTime) -> Option<String> {
     t.fmt(DateTimeFormat::DateTime).ok()
+}
+
+/// The earliest a pending deletion can be purged. `ListSecrets` gives `DeletedDate` as when the
+/// delete happened, not the window, so this is the lower bound: AWS's 7-day minimum window.
+fn restorable_until(deleted: &DateTime) -> Option<String> {
+    rfc3339(&DateTime::from_secs(
+        deleted.secs().checked_add(7 * 24 * 3600)?,
+    ))
 }
 
 /// An SSO session that is expired or was never started: the user runs `aws sso login`.
