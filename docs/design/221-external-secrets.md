@@ -628,6 +628,16 @@ verification and hard-codes a device id (theuth does its own token request, §5.
 CLI does not create or edit items yet, so it is no reference for vault writes (§5.6). It is a
 reference for Sends (§12.2).
 
+**B0 amendment (2026-11-25, `docs/design/221-as-built-B0.md`).** The sequence ran against
+Vaultwarden 1.37.5. Where the subsections below differ, the as-built doc wins:
+- no `bitwarden-pm`: `ClientBuilder` + `PasswordManagerTokenHandler` and the sub-crates directly
+  (§5.1, §5.10); `bitwarden-core` needs feature `internal`;
+- the user id comes from the API key's `client_id` (`user.<uuid>`), not the JWT (§5.3, G5);
+- Vaultwarden 1.37.5 accepted an edit whose `lastKnownRevisionDate` was 1.1 s stale, so §4's and
+  §5.6's "real compare-and-swap" is coarse: `update`/`delete` compare `expected` against the
+  freshly synced revision themselves first;
+- the SDK pins `argon2 = "=0.6.0-rc.8"`; `crates/share` is held at that rc to share the slot.
+
 ### 5.1 Client construction, custom servers
 
 - `ClientSettings { identity_url, api_url, user_agent, device_type, device_identifier,
