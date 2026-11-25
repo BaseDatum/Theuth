@@ -32,6 +32,17 @@ the human press, `t plugin …`, the harness note and the TUI.
 - **B1**: `manifest::RESERVED_NAMES` must cover every TUI command, including the components' (`crate::components::builtin().slash_specs()`), not only `model/slash.rs` — `cargo test -p tui tui_commands_are_reserved_plugin_names` lists what is missing. `scaffold::new_plugin` calls `manifest::check_name`; until it is implemented every scaffold answers its `NotImplemented`.
 - **B1**: the RPC/agent-tool `ask` helpers accept any reply whose `kameo::Reply` is `Ok = R, Error = PluginsError` (so `DelegatedReply<Result<…>>` works).
 
+## Gates run
+
+- `cargo check -p tui -p theuth --tests` — green (after the `super::View` shadowing fix in `components/plugins.rs`).
+- `cargo test -p plugins --lib -- press:: rpc:: atools:: scaffold::` — 19 passed.
+- `cargo test -p plugins --test scaffold` — 8 passed (py, py raw, js incl. `package.json`, sh, sh raw, rb, go, rs).
+- `cargo test -p tui` — 259 passed, `tui_commands_are_reserved_plugin_names` failed on the then-current `RESERVED_NAMES`; B1b added the component commands in 06cf78168 (not re-run by B2).
+- `cargo clippy -p plugins --tests --no-deps -- -D warnings` — B2 hits (atools `result_large_err`, constant asserts; scaffold `collapsible_if`) fixed in 0032d942e; the remaining hits at that run were B1's files.
+
 ## Not verified
 
-See the gate list in the final report.
+- `cargo clippy -p tui --no-deps -- -D warnings`: the last run could not build `plugins` (a B1 file mid-edit) and was stopped at wrap-up.
+- CLI acceptance (`t plugin new demo --lang sh`, `echo y | t plugin approve demo` → exit 2, offline `t plugin check`): not run; `plugin_cli.rs` passed to Fix-A.
+- No engine-backed run of the RPC methods, agent tools or the TUI component.
+- Files handed over at wrap-up: Fix-C (`tui/src/components/plugins.rs`, `model/slash.rs`), Fix-D (`scaffold.rs`, `atools.rs`, `tests/scaffold.rs`), Fix-A (`plugin_cli.rs`).
