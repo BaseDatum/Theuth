@@ -6,7 +6,7 @@ import { Check, ChevronDown, ChevronRight, Folder, HatGlasses } from 'lucide-rea
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { Composer, type DraftCreate } from '@/components/chat/Composer'
 import { Header } from '@/components/chat/Header'
-import { Mark } from '@/components/Mark'
+import { EclipseMark } from '@/components/Mark'
 import { LinkBanner } from '@/components/link/LinkFailure'
 import { ProjectPicker } from '@/components/chat/ProjectPicker'
 import { age } from '@/components/tasks/helpers'
@@ -269,7 +269,7 @@ export function NewChat({
       <Header session={null} first={first} onClose={onClose} popout={newChatPopout(pane ?? mountKey, preset)} />
       <LinkBanner />
       <div className="flex min-h-0 flex-1 flex-col justify-center pb-24">
-        <Mark className="mx-auto mb-5 size-16 shrink-0" />
+        <EclipseMark className="mx-auto mb-5 size-16" />
         <h1 className="mb-6 text-center text-[28px] leading-9 font-semibold">Where should we begin?</h1>
         {/* 215 C3: the draft's model picker lives at the left of the composer's top row (`ComposerModel`), which also answers `/model`. */}
         {(priv && !privateSupported) || (endlessOn && !canQuery2) ? <Unavailable /> : <Composer session={null} pane={pane} draftCreate={draft} onCreated={onCreated} onUncreated={onUncreated} />}

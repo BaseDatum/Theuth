@@ -1,7 +1,8 @@
-import { Atom, Eclipse, Flip, Orbit, Ripple } from 'loading-dev'
+import { Atom, Eclipse, Flip, Orbit } from 'loading-dev'
 import type { ComponentProps } from 'react'
 import { cn } from '@/lib/utils'
 import type { Activity } from '@/store/sessions'
+import { EclipseMark } from '@/components/Mark'
 import { Pulse } from './Pulse'
 
 /*
@@ -13,11 +14,11 @@ import { Pulse } from './Pulse'
 /** A tool call is running: the small orbit after the tool name. */
 export const ToolSpinner = () => <Orbit size={14} className="shrink-0 text-fg-tertiary" />
 
-/** The model is thinking: a ripple; `className` sizes the box (`size-3.5`) for the sidebar's activity glyph. */
+/** The model is thinking: the Θ-moon eclipsing (a 3 s loop); `className` sizes the box (`size-3.5`) for the sidebar's activity glyph. */
 export function ThinkingIndicator({ className, ...props }: ComponentProps<'span'>) {
   return (
     <span className={cn('inline-flex size-3.5 shrink-0 items-center justify-center', className)} {...props}>
-      <Ripple size={14} />
+      <EclipseMark className="size-3.5" duration={3} />
     </span>
   )
 }
@@ -38,7 +39,7 @@ export function ActivityIndicator({ activity }: { activity: Activity }) {
       {activity === 'harvesting' ? (
         <Eclipse size={14} className="text-fg-tertiary" />
       ) : activity === 'thinking' || activity === 'reasoning' ? (
-        <Ripple size={14} />
+        <EclipseMark className="size-3.5" duration={3} />
       ) : activity === 'tool' ? (
         <Orbit size={14} className="text-fg-tertiary" />
       ) : (

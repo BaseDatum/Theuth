@@ -1214,3 +1214,21 @@ html .tg-canvas .tg-edge {
     animation: none;
   }
 }
+
+/* EclipseMark (components/Mark.tsx): the shadow disc's path across the moon. Rest pose = the logo's crescent (+4). */
+.theta-eclipse {
+  transform: translateX(4px);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .theta-eclipse {
+    animation: theta-eclipse 8s infinite;
+  }
+}
+@keyframes theta-eclipse {
+  0% { transform: translateX(-90px); animation-timing-function: cubic-bezier(0.3, 0, 0.6, 1); }
+  38% { transform: translateX(0); animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
+  46% { transform: translateX(4px); animation-timing-function: linear; }
+  70% { transform: translateX(4px); animation-timing-function: cubic-bezier(0.4, 0, 0.7, 1); }
+  94% { transform: translateX(90px); }
+  100% { transform: translateX(90px); }
+}
