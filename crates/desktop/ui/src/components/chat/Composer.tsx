@@ -340,6 +340,10 @@ export function Composer({
   readOnly = false,
   strip,
   ownModel,
+  lead,
+  deliver,
+  draftScope,
+  carries = false,
 }: {
   session: string | null
   /** The split pane this composer sits in when it is not `session`'s (a draft pane's id); `null` = not tiled, always addressed. */
@@ -365,6 +369,16 @@ export function Composer({
   strip?: ReactNode
   /** 215 C2: forwarded as `own` to the toolbar's model picker (157 D1: the page's own pane, a notebook's chat column). */
   ownModel?: boolean
+  /** 218: buttons at the toolbar's left end, before Add (the whiteboard's tools button and session picker). */
+  lead?: ReactNode
+  /** 218: the host sends a plain message itself (the whiteboard's send: images, context, a first send's session) and
+   * answers the session it went to; a new session it made is not navigated to (`onSent` gets it). Commands, `/skill:`
+   * and parked skills keep their own paths. */
+  deliver?: (m: { text: string; files: string[]; clientId: string }) => Promise<string>
+  /** The draft key's prefix (default: `panel:` with `onCreated`, else none): a host that keeps its own drafts. */
+  draftScope?: string
+  /** 218: the host sends something besides the words (the whiteboard's fresh marks): an empty box can send. */
+  carries?: boolean
 }) {
   const client = useConnection(s => s.client)
   const canQuery1 = useQuerySupport(["list_models"])
@@ -409,7 +423,7 @@ export function Composer({
   })
   // A panel's composer (`onCreated`) keeps its own draft apart from the chat page's for the same session.
   // The draft is the store's (`lib/drafts`): durable across remounts, pane switches and a relaunch.
-  const draftKey = `${onCreated ? 'panel:' : ''}${session ?? ''}`
+  const draftKey = `${draftScope ?? (onCreated ? 'panel:' : '')}${session ?? ''}`
   const { text, pastes, unsent } = useDrafts((s) => s.by[draftKey] ?? EMPTY)
   const setText = (t: string) => useDrafts.getState().setText(draftKey, t)
   const setPastes = (p: Pastes | ((held: Pastes) => Pastes)) => useDrafts.getState().setPastes(draftKey, p)
@@ -921,7 +935,7 @@ export function Composer({
   const submit = async (spoken?: string, interject = false, typed?: string) => {
     const pick = typed !== undefined
     const line = spoken ?? typed ?? text.trim()
-    if ((!line && !skills.length && !held) || busy || starting || uploading) return
+    if ((!line && !skills.length && !held && !carries) || busy || starting || uploading) return
     // 153 §6.1: the typed box after a dictation is what was actually sent — the engine learns single-word edits from it.
     if (spoken === undefined && typed === undefined && lastDictation.current) dictation.correction(api, lastDictation.current, line, me.current)
     lastDictation.current = null
@@ -992,7 +1006,10 @@ export function Composer({
         if (spoken && !text) setText(spoken)
         useDrafts.getState().sending(draftKey, clientId)
       }
-      if (session && running) {
+      if (deliver) {
+        if (session && running && interject) await api.cancel(session, null, 'input')
+        target = await deliver({ text: body, files, clientId })
+      } else if (session && running) {
         steered = true
         // 171F4 N7: the chip and then the `you` row show the attached files at once (the engine's echo has none).
         applyEvents([{ type: 'InputQueued', session, id: clientId, text: body, defer: false, files }])
@@ -1065,7 +1082,8 @@ export function Composer({
       // routed retry is either stamped by its `TurnStarted` already (then this is a no-op) or echoed by it after.
       // A steer's chip self-heals: the engine's `InputInjected` for the same id removes it.
       if (!pick && unsent && target && !steered) useSessions.getState().unmarkSent(target, body)
-      if (target && !session && !elsewhere) {
+      if (deliver) onSent?.(target ?? '')
+      else if (target && !session && !elsewhere) {
         if (onCreated) onCreated(target)
         else await navigate({ to: '/c/$session', params: { session: target } })
       } else if (session) onSent?.(session)
@@ -1135,7 +1153,7 @@ export function Composer({
       dict.active &&
       (dict.active.before.trim() || dict.active.after.trim() || dict.active.utts.some((u) => dictation.shown(u).trim() !== '')),
   )
-  const filled = Boolean(text.trim() || skills.length || held || dictatedFilled)
+  const filled = Boolean(text.trim() || skills.length || held || dictatedFilled || carries)
   const at = phase(Boolean(session && running), queued?.length ?? 0)
   const gesture = (g: 'press' | 'interrupt') => {
     if (dictating) {
@@ -1485,6 +1503,7 @@ export function Composer({
             for room. */}
         <div data-composer-bar="" className={cn('mt-1 flex items-center gap-1', barFit(barTight))}>
           {/* 89 VOICE-HOLD: a held or locked note takes the row — Delete (locked) · dot + timer stand in for Add. */}
+          {stage === 'idle' && lead}
           {stage === 'locked' && <DeleteNote onClick={() => stopRecording(true)} />}
           {stage !== 'idle' && <RecordingMeta secs={secs} stage={stage} />}
           <Popover

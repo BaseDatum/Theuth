@@ -29,7 +29,7 @@ export function Bubble(p: BubbleProps) {
   return (
     <div
       role="status"
-      className={`wb-glass wb-rise w-[262px] rounded-2xl px-3 py-2.5 text-[12.5px] leading-[1.45] ${p.floating ? `absolute z-20 bottom-[calc(80px+var(--safe-bottom,0px))] ${p.beside ? 'right-[calc(94px+var(--safe-right,0px))]' : 'right-[calc(24px+var(--safe-right,0px))]'}` : ''}`}
+      className={`wb-glass wb-rise w-[262px] rounded-2xl px-3 py-2.5 text-[12.5px] leading-[1.45] ${p.floating ? `absolute z-20 bottom-[var(--wb-dock,calc(80px+var(--safe-bottom,0px)))] ${p.beside ? 'right-[calc(94px+var(--safe-right,0px))]' : 'right-[calc(24px+var(--safe-right,0px))]'}` : ''}`}
       aria-label="The agent's reply"
       onPointerDown={(e) => e.stopPropagation()}
     >

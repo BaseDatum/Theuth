@@ -5,13 +5,19 @@ const base: RouteState = { mode: 'idle', fingerInk: false, readOnly: false, penD
 const s = (p: Partial<RouteState>): RouteState => ({ ...base, ...p })
 
 describe('input routing (§8.4)', () => {
-  it('pen inks in every mode except link (pointer) and erase; never passes to pan', () => {
+  it('pen inks in every mode except link and hand (pointer) and erase; never passes to pan', () => {
     for (const mode of ['idle', 'draw', 'select', 'frame'] as const) expect(routePointer('pen', s({ mode }))).toBe('ink')
     expect(routePointer('pen', s({ mode: 'link' }))).toBe('pass')
     expect(routePointer('pen', s({ mode: 'erase' }))).toBe('erase')
   })
 
-  it('pen never reaches pan: every pen route other than link mode is taken before React Flow', () => {
+  it('hand: no pointer inks — the Pencil, a finger (even with fingerInk) and the mouse all pass to pan and select', () => {
+    expect(routePointer('pen', s({ mode: 'hand' }))).toBe('pass')
+    expect(routePointer('touch', s({ mode: 'hand', fingerInk: true }))).toBe('pass')
+    expect(routePointer('mouse', s({ mode: 'hand' }))).toBe('pass')
+  })
+
+  it('pen never reaches pan: every pen route other than link and hand mode is taken before React Flow', () => {
     for (const mode of ['idle', 'draw', 'erase', 'select', 'frame'] as const) {
       for (const readOnly of [false, true]) {
         expect(routePointer('pen', s({ mode, readOnly }))).not.toBe('pass')

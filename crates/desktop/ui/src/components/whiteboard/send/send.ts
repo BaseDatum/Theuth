@@ -51,8 +51,10 @@ export type SendInput = {
   plan?: SendPlan
   /** Card id → frame id, for merging per frame. */
   frameOf?: (card: Id) => Id | undefined
-  /** No session yet (R1): the model/effort picked in the sheet for the session this send creates; null = defaults. */
+  /** No session yet (R1): the model/effort picked in the composer for the session this send creates; null = defaults. */
   pick?: NewSessionPick
+  /** The composer's own attachments (files, pictures, references), sent ahead of the whiteboard's images. */
+  files?: string[]
 }
 
 export type NewSessionPick = { model: string | null; effort: string | null }
@@ -68,6 +70,9 @@ export async function blobBase64(blob: Blob): Promise<string> {
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
   return btoa(bin)
 }
+
+/** A planned image's identity across re-plans (the tray's React key; what a removal remembers). */
+export const imageKey = (i: PlannedImage): string => `${i.card ?? 'canvas'}:${i.zoomOf ?? ''}:${i.marks.join(',')}`
 
 /** The tray's "×": the image goes, and so do its marks (they stay fresh, for a later send) and their zoom images. */
 export function withoutImage(plan: SendPlan, index: number): SendPlan {
@@ -127,8 +132,8 @@ export async function sendWhiteboard(d: SendDeps, i: SendInput): Promise<SendRes
       stored.add(m)
     }
   }
-  // 4. Attachments — none when the model cannot see them.
-  const files: string[] = []
+  // 4. Attachments: the composer's, then the whiteboard's images — those only when the model can see them.
+  const files: string[] = [...(i.files ?? [])]
   const sent: WbSentImage[] = []
   if (i.vision) {
     for (const { image, blob } of blobs) {
