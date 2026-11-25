@@ -3,6 +3,7 @@
 import { AppWindow, FileCode2, FileDiff, FileText, Globe, Image as ImageIcon, MessageSquare, Shapes, StickyNote, Terminal as TerminalIcon, type LucideIcon } from 'lucide-react'
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react'
 import type { CustomRendererProps } from 'streamdown'
+import type { DiffSpec } from '@/rpc/bindings/method.artifact.input'
 import { useSessions } from '@/store/sessions'
 import { useCanvas } from '../context'
 import type { Card, CardKind, Source } from '../model'
@@ -158,8 +159,8 @@ export function LiveBody({ card, source, editing }: { card: Card; source: Source
       return (
         <div className="absolute inset-0 overflow-hidden">
           <Suspense fallback={<Pending />}>
-            {/* 218-TEMP(wire): the diff spec is opaque JSON in the whiteboard schema */}
-            <DiffBody session={source.frozen?.session ?? source.session} spec={source.spec as never} />
+            {/* The whiteboard schema stores the 212 diff spec as opaque JSON (§2.2); the engine validated it on write. */}
+            <DiffBody session={source.frozen?.session ?? source.session} spec={source.spec as DiffSpec} />
           </Suspense>
           {source.as_of !== undefined && (
             <span className="absolute right-2 bottom-2 rounded bg-layer-1 px-1.5 text-[10px] text-fg-tertiary">
